@@ -3,10 +3,13 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from psi_agent.session.tools import load_tools_from_workspace
 
 
-def test_load_tools_single_function(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_load_tools_single_function(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "bash.py").write_text(
@@ -21,7 +24,7 @@ def test_load_tools_single_function(tmp_path: Path) -> None:
     """)
     )
 
-    tools = load_tools_from_workspace(tools_dir)
+    tools = await load_tools_from_workspace(tools_dir)
     assert len(tools) == 1
     assert tools["bash"].name == "bash"
     assert "Execute a bash command" in tools["bash"].description
@@ -30,7 +33,8 @@ def test_load_tools_single_function(tmp_path: Path) -> None:
     assert "command" in params["required"]
 
 
-def test_load_tools_multiple_functions(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_load_tools_multiple_functions(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "bash.py").write_text(
@@ -53,13 +57,14 @@ def test_load_tools_multiple_functions(tmp_path: Path) -> None:
     """)
     )
 
-    tools = load_tools_from_workspace(tools_dir)
+    tools = await load_tools_from_workspace(tools_dir)
     assert len(tools) == 2
     assert "bash" in tools
     assert "read_file" in tools
 
 
-def test_load_tools_ignores_private_functions(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_load_tools_ignores_private_functions(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "bash.py").write_text(
@@ -72,13 +77,14 @@ def test_load_tools_ignores_private_functions(tmp_path: Path) -> None:
     """)
     )
 
-    tools = load_tools_from_workspace(tools_dir)
+    tools = await load_tools_from_workspace(tools_dir)
     assert len(tools) == 1
     assert "bash" in tools
     assert "_helper" not in tools
 
 
-def test_load_tools_ignores_non_async(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_load_tools_ignores_non_async(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "bash.py").write_text(
@@ -91,25 +97,28 @@ def test_load_tools_ignores_non_async(tmp_path: Path) -> None:
     """)
     )
 
-    tools = load_tools_from_workspace(tools_dir)
+    tools = await load_tools_from_workspace(tools_dir)
     assert len(tools) == 1
     assert "bash" in tools
 
 
-def test_load_tools_empty_dir(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_load_tools_empty_dir(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
 
-    tools = load_tools_from_workspace(tools_dir)
+    tools = await load_tools_from_workspace(tools_dir)
     assert len(tools) == 0
 
 
-def test_load_tools_missing_dir(tmp_path: Path) -> None:
-    tools = load_tools_from_workspace(tmp_path / "nonexistent")
+@pytest.mark.anyio
+async def test_load_tools_missing_dir(tmp_path: Path) -> None:
+    tools = await load_tools_from_workspace(tmp_path / "nonexistent")
     assert len(tools) == 0
 
 
-def test_load_tools_ignores_non_matching_function_name(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_load_tools_ignores_non_matching_function_name(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
     tools_dir.mkdir()
     (tools_dir / "bash.py").write_text(
@@ -123,7 +132,7 @@ def test_load_tools_ignores_non_matching_function_name(tmp_path: Path) -> None:
     """)
     )
 
-    tools = load_tools_from_workspace(tools_dir)
+    tools = await load_tools_from_workspace(tools_dir)
     assert len(tools) == 1
     assert "bash" in tools
     assert "other_name" not in tools

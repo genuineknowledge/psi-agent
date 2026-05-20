@@ -5,12 +5,14 @@ import sys
 
 from aiohttp import ClientSession, UnixConnector
 from loguru import logger
+from prompt_toolkit.shortcuts import PromptSession
 
 
 async def run_repl(session_socket: str) -> None:
     logger.info(f"Connecting to session at {session_socket}")
 
     connector = UnixConnector(path=session_socket)
+    prompt_session = PromptSession()
 
     try:
         async with ClientSession(connector=connector) as session:
@@ -19,7 +21,7 @@ async def run_repl(session_socket: str) -> None:
 
             while True:
                 try:
-                    user_input = input("> ")  # noqa: ASYNC250
+                    user_input = await prompt_session.prompt_async("> ")
                 except EOFError, KeyboardInterrupt:
                     print("\nGoodbye!")
                     break

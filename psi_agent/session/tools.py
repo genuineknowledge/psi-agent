@@ -5,18 +5,21 @@ import inspect
 import sys
 from pathlib import Path
 
+import anyio
 from loguru import logger
 
 from psi_agent.protocol import ToolFunction
 
 
-def load_tools_from_workspace(tools_dir: Path) -> dict[str, ToolFunction]:
+async def load_tools_from_workspace(tools_dir: Path) -> dict[str, ToolFunction]:
     tools: dict[str, ToolFunction] = {}
-    if not tools_dir.is_dir():
+    tools_anyio = anyio.Path(str(tools_dir))
+
+    if not await tools_anyio.is_dir():
         logger.warning(f"Tools directory not found: {tools_dir}")
         return tools
 
-    for py_file in sorted(tools_dir.glob("*.py")):
+    async for py_file in tools_anyio.glob("*.py"):
         if py_file.name.startswith("_"):
             continue
 

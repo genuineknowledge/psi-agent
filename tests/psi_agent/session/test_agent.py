@@ -98,7 +98,7 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
     """)
     )
 
-    tools = load_tools_from_workspace(tools_dir)
+    tools = await load_tools_from_workspace(tools_dir)
 
     request_count = 0
 

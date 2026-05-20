@@ -63,11 +63,11 @@ class SessionConfig:
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
 
-        workspace_path = Path(self.workspace).resolve()  # noqa: ASYNC240
+        workspace_path = Path(str(await anyio.Path(self.workspace).resolve()))
         logger.info(f"Loading workspace from {workspace_path}")
 
-        tools = load_tools_from_workspace(workspace_path / "tools")
-        schedules = load_schedules_from_workspace(workspace_path / "schedules")
+        tools = await load_tools_from_workspace(workspace_path / "tools")
+        schedules = await load_schedules_from_workspace(workspace_path / "schedules")
 
         system_prompt = None
         builder = _load_system_prompt_builder(workspace_path)
@@ -86,9 +86,9 @@ class SessionConfig:
         )
 
         # Register actual tool callables
-        tools_dir = workspace_path / "tools"
-        if tools_dir.is_dir():
-            for py_file in sorted(tools_dir.glob("*.py")):
+        tools_anyio = anyio.Path(str(workspace_path / "tools"))
+        if await tools_anyio.is_dir():
+            async for py_file in tools_anyio.glob("*.py"):
                 if py_file.name.startswith("_"):
                     continue
                 name = py_file.stem

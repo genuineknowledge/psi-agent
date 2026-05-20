@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import anyio
 import yaml
 from croniter import croniter
 from loguru import logger
@@ -46,10 +47,8 @@ class Schedule:
 
     def should_run_now(self) -> bool:
         now = time.time()
-        # Reset prev to get an accurate comparison
         self._cron_iter = croniter(self.cron, now)
         prev_time = self._cron_iter.get_prev()
-        # Re-set for get_next
         self._cron_iter = croniter(self.cron, now)
         return prev_time > self._last_run
 
@@ -76,20 +75,23 @@ def _parse_yaml_header(content: str) -> tuple[dict | None, str]:
     return header, body
 
 
-def load_schedules_from_workspace(schedules_dir: Path) -> list[Schedule]:
+async def load_schedules_from_workspace(schedules_dir: Path) -> list[Schedule]:
     schedules: list[Schedule] = []
-    if not schedules_dir.is_dir():
+    sched_anyio = anyio.Path(str(schedules_dir))
+
+    if not await sched_anyio.is_dir():
         logger.warning(f"Schedules directory not found: {schedules_dir}")
         return schedules
 
-    for task_dir in sorted(schedules_dir.iterdir()):
-        if not task_dir.is_dir():
+    async for task_dir in sched_anyio.iterdir():
+        task_dir_anyio = anyio.Path(str(task_dir))
+        if not await task_dir_anyio.is_dir():
             continue
-        task_file = task_dir / "TASK.md"
-        if not task_file.exists():
+        task_file = task_dir_anyio / "TASK.md"
+        if not await task_file.exists():
             continue
 
-        content = task_file.read_text()
+        content = await task_file.read_text()
         header, body = _parse_yaml_header(content)
         if header is None:
             logger.warning(f"No valid YAML header in {task_file}, skipping")
