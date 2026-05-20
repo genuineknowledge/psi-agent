@@ -6,7 +6,7 @@
 
 **Architecture:** 单 Python package（`psi_agent/`），tyro Union dataclasses 驱动 CLI 子命令。所有 IO 异步（anyio）。组件通过 aiohttp Unix socket 通信。Session 解析 workspace 目录结构并按需执行 tool。
 
-**Tech Stack:** Python >= 3.14, anyio, aiohttp, tyro, loguru, ruff, hatch-vcs, pytest + pytest-asyncio(anyio mode)
+**Tech Stack:** Python >= 3.14, anyio, aiohttp, tyro, loguru, prompt-toolkit, ruff, ty, hatch-vcs, pytest + pytest-asyncio(anyio mode)
 
 **Design Spec:** `docs/superpowers/specs/2026-05-20-psi-agent-design.md`
 
@@ -19,7 +19,7 @@
 - Create: `.gitignore`
 - Create: `psi_agent/__init__.py`
 
-- [ ] **Step 1: 创建 pyproject.toml**
+- [x] **Step 1: 创建 pyproject.toml**
 
 ```toml
 [build-system]
@@ -70,7 +70,7 @@ asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 ```
 
-- [ ] **Step 2: 创建 .gitignore**
+- [x] **Step 2: 创建 .gitignore**
 
 ```
 __pycache__/
@@ -84,13 +84,13 @@ dist/
 *.sock
 ```
 
-- [ ] **Step 3: 创建 psi_agent/__init__.py**
+- [x] **Step 3: 创建 psi_agent/__init__.py**
 
 ```python
 """psi-agent: A microkernel-style agent framework."""
 ```
 
-- [ ] **Step 4: 创建测试目录结构，添加 conftest.py**
+- [x] **Step 4: 创建测试目录结构，添加 conftest.py**
 
 ```bash
 mkdir -p tests/psi_agent/ai tests/psi_agent/session tests/psi_agent/channel
@@ -104,7 +104,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 ```
 
-- [ ] **Step 5: 安装依赖并设置初始 git tag**
+- [x] **Step 5: 安装依赖并设置初始 git tag**
 
 ```bash
 uv sync
@@ -123,7 +123,7 @@ Expected: `uv build` 成功生成 `dist/psi_agent-0.1.0.tar.gz`
 - Create: `psi_agent/logging.py`
 - Create: `tests/psi_agent/test_logging.py`
 
-- [ ] **Step 1: 写测试**
+- [x] **Step 1: 写测试**
 
 ```python
 # tests/psi_agent/test_logging.py
@@ -146,7 +146,7 @@ def test_setup_logging_verbose_debug():
     logger.remove(handler_id)
 ```
 
-- [ ] **Step 2: 实现 logging.py**
+- [x] **Step 2: 实现 logging.py**
 
 ```python
 # psi_agent/logging.py
@@ -171,7 +171,7 @@ def setup_logging(*, verbose: bool = False) -> int:
     return handler_id
 ```
 
-- [ ] **Step 3: 跑测试 + 提交**
+- [x] **Step 3: 跑测试 + 提交**
 
 ```bash
 uv run pytest tests/psi_agent/test_logging.py -v
@@ -349,6 +349,23 @@ def main() -> None:
 
 ### Task 14: 集成测试 + Ruff + Ty 检查
 
-- [ ] 端到端集成测试：启动 AI server → 启动 session → CLI channel 发送消息 → 验证流式响应
-- [ ] `uv run ruff check .` 无错误
-- [ ] `uv run ruff format --check .` 无差异
+- [x] 端到端集成测试：启动 AI server → 启动 session → CLI channel 发送消息 → 验证流式响应
+- [x] `uv run ruff check .` 无错误
+- [x] `uv run ruff format --check .` 无差异
+
+---
+
+## 实现备注
+
+实现过程中进行的质量修正：
+
+| 修正 | 说明 |
+|------|------|
+| REPL 改用 `prompt-toolkit` | `PromptSession.prompt_async()` 替换阻塞式 `input()`，消除 ASYNC250 |
+| Session 全链路 `anyio.Path` | `Path.resolve()`、`is_dir()`、`read_text()`、`glob()` 等全部改为 async，消除 ASYNC240 |
+| 合并嵌套 `async with` | 3 处 `ClientSession` + `session.post()` 合并为单语句，消除 SIM117 |
+| `SockSite` 替换 `TCPSite._server` | 测试中通过预绑定 socket 获取随机端口，消除 `unresolved-attribute` |
+| Dev deps 补充 | 添加 `ty>=0.0.38` 类型检查、`prompt-toolkit>=3.0` 异步 REPL |
+
+最终抑制仅剩 3 处（2 处测试桩 ARG001 + 1 处 tyro 类型推断局限），均为合理例外。
+
