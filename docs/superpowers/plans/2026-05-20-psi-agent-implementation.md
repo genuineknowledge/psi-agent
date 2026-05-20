@@ -347,11 +347,87 @@ def main() -> None:
 
 ---
 
-### Task 14: 集成测试 + Ruff + Ty 检查
+### Task 14: 基础集成测试 + Ruff + Ty 检查
 
 - [x] 端到端集成测试：启动 AI server → 启动 session → CLI channel 发送消息 → 验证流式响应
 - [x] `uv run ruff check .` 无错误
 - [x] `uv run ruff format --check .` 无差异
+
+---
+
+### Task 15: 全面 Corner Case 集成测试
+
+**Files:**
+- Create: `tests/integration/conftest.py`
+- Create: `tests/integration/test_ai_error_handling.py`
+- Create: `tests/integration/test_session_concurrency.py`
+- Create: `tests/integration/test_session_tools.py`
+- Create: `tests/integration/test_session_workspace.py`
+- Create: `tests/integration/test_channel_error.py`
+- Create: `tests/integration/test_channel_repl_cli.py`
+- Create: `tests/integration/test_end_to_end.py`
+
+#### Sub-task 15a: conftest.py — 共享 Fixtures
+
+- [x] `temp_workspace` — 创建临时 workspace（含 tools/、systems/system.py、schedules/）
+- [x] `mock_ai_server` — 启动 mock AI aiohttp TCP server，支持可配置响应序列
+- [x] `running_session` — 启动完整 session 进程，返回 channel socket path
+- [x] `read_sse` — 从 socket 读 SSE 流的工具函数
+
+#### Sub-task 15b: AI 层异常处理（8 tests）
+
+- [x] 空 messages 数组 → 400 error JSON
+- [x] 缺失 stream 字段 → 默认 streaming 正常
+- [x] 非 JSON body → 400 error JSON
+- [x] 上游连接拒绝 → 502 error JSON
+- [x] 上游 SSE 流中途断开 → 正常结束不 hang
+- [x] 上游 401/403 → 透传错误
+- [x] Anthropic 空 content blocks → 正常返回 stop chunk
+- [x] Anthropic 多 tool_use block 并行 → tool_calls 正确分 index
+
+#### Sub-task 15c: Session 并发/锁（4 tests）
+
+- [x] 第一个请求占锁时第二个返回 503 error JSON
+- [x] 锁释放后第三个请求正常处理
+- [x] schedule 触发时锁被占用 → 排队等待
+- [x] 两次连续请求 share 同一个 history → 验证 history 累积
+
+#### Sub-task 15d: Tool 执行 corner case（6 tests）
+
+- [x] tool 抛出异常 → 以错误文本作为 tool result
+- [x] tool 返回非字符串（int） → 转为字符串
+- [x] tool 返回 None → 转为 "None"
+- [x] tool 无参数 → properties/required 均为空
+- [x] tool 参数类型为 list[str] → fallback 为 "string"
+- [x] AI 无限 tool_call 循环 → 10 轮后返回 `[Max tool rounds reached]`
+
+#### Sub-task 15e: Workspace 兼容性（5 tests）
+
+- [x] tools/ 不存在 → 空 tools 列表，agent 正常运行
+- [x] schedules/ 不存在 → 空 schedules 列表
+- [x] systems/system.py 不存在 → system_prompt=None
+- [x] system_prompt_builder() 抛异常 → catch，不影响启动
+- [x] 完整 workspace + 无 tool_call 的正常对话
+
+#### Sub-task 15f: Channel 错误处理（4 tests）
+
+- [x] session socket 不存在 → 打印友好错误，exit code 1
+- [x] session 中途崩溃 → 打印错误退出
+- [x] 收到 503 error JSON → 打印 "Session busy"
+- [x] CLI --message 为空 → 正常处理
+
+#### Sub-task 15g: Channel REPL/CLI（4 tests）
+
+- [x] CLI 发送消息 → stdout 包含回复
+- [x] REPL 多条消息 → history 在 session 端累积
+- [x] SSE 流中 reasoning_content 和 content 交错 → 各自独立显示
+- [x] 收到多个 choices → 迭代所有 choice
+
+#### Sub-task 15h: 端到端全链路 mock（3 tests）
+
+- [x] mock AI → session → CLI → 全链路 SSE 正确
+- [x] mock AI 返回 tool_call + 最终文本 → tool 执行 → reasoning_content + content
+- [x] channel 发 2 条消息 → session history 正确累积
 
 ---
 
