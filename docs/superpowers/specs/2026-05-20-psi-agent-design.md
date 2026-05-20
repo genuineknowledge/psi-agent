@@ -24,6 +24,7 @@ psi-agent 是一个"微内核"式的 Python agent 框架。三个独立组件—
 | 异步 IO | `anyio`（禁止使用 `asyncio` 原生 API、`pathlib`） |
 | HTTP 客户端 | `aiohttp` |
 | CLI | `tyro`（Union dataclasses + 嵌套子命令） |
+| CLI REPL | `prompt-toolkit`（async `prompt_async`） |
 | 日志 | `loguru` |
 | Lint/Format | `ruff` |
 | 类型检查 | `ty`（Astral 出品，Rust 实现） |
