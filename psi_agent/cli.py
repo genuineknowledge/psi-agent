@@ -9,7 +9,7 @@ from psi_agent.ai.anthropic_messages import AnthropicMessages
 from psi_agent.ai.openai_completions import OpenAICompletions
 from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.repl import ChannelRepl
-from psi_agent.session import SessionConfig
+from psi_agent.session import Session
 
 AiGroup = Annotated[
     Annotated[OpenAICompletions, conf.subcommand(name="openai-completions")]
@@ -26,5 +26,5 @@ ChannelGroup = Annotated[
 def main() -> None:
     import anyio
 
-    cmd = tyro.cli(SessionConfig | AiGroup | ChannelGroup)  # ty: ignore[no-matching-overload]
+    cmd = tyro.cli(Session | AiGroup | ChannelGroup)  # ty: ignore[no-matching-overload]
     anyio.run(cmd.run)

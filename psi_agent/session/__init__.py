@@ -42,7 +42,7 @@ def _load_system_prompt_builder(workspace_path: Path) -> Any:
 
 
 @dataclass
-class SessionConfig:
+class Session:
     """Start a session backed by a workspace and AI."""
 
     workspace: str
