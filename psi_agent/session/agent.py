@@ -4,7 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from aiohttp import ClientSession, UnixConnector
+from aiohttp import ClientSession, TCPConnector, UnixConnector
 from loguru import logger
 
 from psi_agent.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
@@ -201,13 +201,15 @@ class SessionAgent:
             )
 
     async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
-        connector = UnixConnector(path=self.ai_socket)
+        if self.ai_socket.startswith(("http://", "https://")):
+            connector = TCPConnector(ssl=self.ai_socket.startswith("https://"))
+            endpoint = self.ai_socket.rstrip("/") + "/chat/completions"
+        else:
+            connector = UnixConnector(path=self.ai_socket)
+            endpoint = "http://localhost/v1/chat/completions"
         async with (
             ClientSession(connector=connector) as session,
-            session.post(
-                "http://localhost/v1/chat/completions",
-                json=request_body,
-            ) as resp,
+            session.post(endpoint, json=request_body) as resp,
         ):
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:
