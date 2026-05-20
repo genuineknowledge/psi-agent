@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import anyio
 from aiohttp import ClientSession, TCPConnector, web
@@ -202,7 +203,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
 
 async def _convert_anthropic_stream_to_openai_sse(
     response: web.StreamResponse,
-    upstream_content: anyio.abc.ByteStream,
+    upstream_content: Any,
 ) -> None:
     current_tool_calls: dict[int, dict] = {}
     chunk_index = 0

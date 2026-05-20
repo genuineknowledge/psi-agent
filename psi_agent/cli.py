@@ -26,5 +26,5 @@ ChannelGroup = Annotated[
 def main() -> None:
     import anyio
 
-    cmd = tyro.cli(SessionConfig | AiGroup | ChannelGroup)
+    cmd = tyro.cli(SessionConfig | AiGroup | ChannelGroup)  # ty: ignore[no-matching-overload]
     anyio.run(cmd.run)

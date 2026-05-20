@@ -74,7 +74,7 @@ async def test_anthropic_thinking_conversion(tmp_path: Path) -> None:
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
 
-    host, port, *_ = site._server.sockets[0].getsockname()
+    host, port, *_ = site._server.sockets[0].getsockname()  # ty: ignore[unresolved-attribute]
 
     try:
         config = AnthropicMessages(
@@ -155,7 +155,7 @@ async def test_anthropic_tool_use_conversion(tmp_path: Path) -> None:
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
 
-    host, port, *_ = site._server.sockets[0].getsockname()
+    host, port, *_ = site._server.sockets[0].getsockname()  # ty: ignore[unresolved-attribute]
 
     try:
         config = AnthropicMessages(

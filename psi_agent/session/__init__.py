@@ -4,7 +4,9 @@ import importlib.util
 import inspect
 import sys
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
+from typing import Any
 
 import anyio
 from loguru import logger
@@ -16,7 +18,7 @@ from psi_agent.session.server import serve_session
 from psi_agent.session.tools import load_tools_from_workspace
 
 
-def _load_system_prompt_builder(workspace_path: Path) -> any:
+def _load_system_prompt_builder(workspace_path: Path) -> Any:
     system_py = workspace_path / "systems" / "system.py"
     if not system_py.exists():
         logger.warning(f"No system.py found at {system_py}")
@@ -67,12 +69,12 @@ class SessionConfig:
         tools = load_tools_from_workspace(workspace_path / "tools")
         schedules = load_schedules_from_workspace(workspace_path / "schedules")
 
-        system_prompt: str | None = None
+        system_prompt = None
         builder = _load_system_prompt_builder(workspace_path)
         if builder:
             try:
                 system_prompt = await builder()
-                logger.info(f"System prompt loaded ({len(system_prompt)} chars)")
+                logger.info(f"System prompt loaded ({len(system_prompt) if system_prompt else 0} chars)")
             except Exception as e:
                 logger.error(f"Failed to build system prompt: {e}")
 
@@ -128,4 +130,4 @@ class SessionConfig:
 
         async with anyio.create_task_group() as tg:
             tg.start_soon(schedule_loop)
-            tg.start_soon(serve_session, channel_socket=self.channel_socket, agent=agent, lock=lock)
+            tg.start_soon(partial(serve_session, channel_socket=self.channel_socket, agent=agent, lock=lock))

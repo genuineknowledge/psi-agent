@@ -63,14 +63,14 @@ async def test_server_streaming_response(tmp_path: Path) -> None:
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
 
-    host, port, *_ = site._server.sockets[0].getsockname()
+    port: int = site._server.sockets[0].getsockname()[1]  # ty: ignore[unresolved-attribute]
 
     try:
         config = OpenAICompletions(
             session_socket=str(socket_path),
             model="gpt-test",
             api_key="sk-test",
-            base_url=f"http://{host}:{port}/v1",
+            base_url=f"http://127.0.0.1:{port}/v1",
         )
 
         async with anyio.create_task_group() as tg:

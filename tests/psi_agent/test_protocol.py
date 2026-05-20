@@ -27,9 +27,9 @@ def test_message_with_tool_calls() -> None:
     assert "content" not in d
 
 
-async def _bash_tool(command: str) -> str:
+async def _bash_tool(command: str) -> str:  # noqa: ARG001
     """Execute a bash command."""
-    ...
+    return ""
 
 
 def test_tool_function_from_callable_basic() -> None:
@@ -42,14 +42,14 @@ def test_tool_function_from_callable_basic() -> None:
     assert "command" in tf.parameters["required"]
 
 
-async def _search_tool(query: str, limit: int = 10) -> str:
+async def _search_tool(query: str, limit: int = 10) -> str:  # noqa: ARG001
     """Search for information.
 
     Args:
         query: The search query.
         limit: Max results to return.
     """
-    ...
+    return ""
 
 
 def test_tool_function_from_callable_with_default() -> None:
@@ -60,7 +60,8 @@ def test_tool_function_from_callable_with_default() -> None:
     assert tf.parameters["properties"]["limit"]["description"] == "Max results to return."
 
 
-async def _ping_tool() -> str: ...
+async def _ping_tool() -> str:
+    return ""
 
 
 def test_tool_function_from_callable_no_docstring() -> None:
