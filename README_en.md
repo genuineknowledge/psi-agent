@@ -2,15 +2,25 @@
 
 > [中文](README.md)
 
-A micro-framework for assembling AI agents from Python sockets. No config files, no database — three components start independently and plug together over Unix sockets.
+A micro-framework for assembling AI agents from Python sockets.
+
+You write Python functions and Markdown. The framework handles socket communication, tool calling, SSE streaming, and cron scheduling for you.
 
 ## Why
 
-- **Simple composition**: ai, session, channel — three standalone processes connected through sockets. No central config, no database dependency
+- **Simple composition**: ai, session, channel — three standalone processes connected through sockets. No central config, no database
 - **Workspace is the agent**: Drop Python functions in `workspace/` for tools, write a system prompt for personality, add a cron for scheduled tasks
 - **Streaming interactions**: REPL shows AI reasoning (dimmed) and final response in real time
 
+## Architecture
+
+```
+User ←→ Channel (REPL/CLI) ──Unix socket── Session ──Unix socket── AI (OpenAI/Anthropic)
+```
+
 ## Quick Start
+
+> Requires Python >= 3.14
 
 Three terminals, three commands:
 
@@ -66,9 +76,7 @@ A workspace is an agent:
 my-workspace/
 ├── tools/                    # One .py file = one tool
 │   └── bash.py               # async def bash(command: str) -> str
-├── skills/                   # */SKILL.md skill documentation
-│   └── bash-expert/
-│       └── SKILL.md
+├── skills/                   # */SKILL.md skill docs (enumerated by system_prompt_builder)
 ├── schedules/                # Cron-triggered tasks
 │   └── daily-report/
 │       └── TASK.md           # YAML header (name, cron) + Markdown body
@@ -112,6 +120,10 @@ uv run ty check              # types
 uv run pytest -v             # tests
 ```
 
+## Author
+
+Hao Zhang <hzhangxyz@outlook.com>
+
 ## License
 
-MIT
+GNU Affero General Public License v3.0 or later. See [LICENSE](LICENSE).
