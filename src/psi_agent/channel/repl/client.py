@@ -16,12 +16,12 @@ async def run_repl(session_socket: str) -> None:
     logger.info(f"Connecting to session at {session_socket}")
 
     connector = UnixConnector(path=session_socket)
-    prompt_session = PromptSession()
+    prompt_session = PromptSession(multiline=True)
 
     try:
         async with ClientSession(connector=connector) as session:
-            logger.info("Connected to session. Type your message (Ctrl+D to exit).")
-            console.print(Panel("psi-agent REPL — type your message and press Enter", subtitle="Ctrl+D to exit"))
+            logger.info("Connected to session. Enter for newline, Alt+Enter to send (Ctrl+D to exit).")
+            console.print(Panel("psi-agent REPL — Enter for newline, Alt+Enter to send", subtitle="Ctrl+D to exit"))
 
             while True:
                 try:
