@@ -42,7 +42,8 @@ psi/
 ├── pyproject.toml
 ├── README.md                       # 中文
 ├── AGENTS.md                       # 中文
-├── psi_agent/
+├── src/
+│   └── psi_agent/
 │   ├── __init__.py
 │   ├── cli.py                      # tyro CLI 入口
 │   ├── logging.py                  # loguru 配置
