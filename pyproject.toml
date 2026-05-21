@@ -15,6 +15,7 @@ dependencies = [
     "croniter>=6.0",
     "pyyaml>=6.0",
     "prompt-toolkit>=3.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -37,9 +38,6 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20"]
-
-[tool.ruff.lint.per-file-ignores]
-"psi_agent/channel/**/*.py" = ["T201"]  # print() is intentional terminal output
 
 [tool.ruff.format]
 quote-style = "double"

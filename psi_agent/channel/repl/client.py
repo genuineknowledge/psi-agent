@@ -6,6 +6,10 @@ import sys
 from aiohttp import ClientSession, UnixConnector
 from loguru import logger
 from prompt_toolkit.shortcuts import PromptSession
+from rich.console import Console
+from rich.panel import Panel
+
+console = Console(highlight=False)
 
 
 async def run_repl(session_socket: str) -> None:
@@ -17,13 +21,13 @@ async def run_repl(session_socket: str) -> None:
     try:
         async with ClientSession(connector=connector) as session:
             logger.info("Connected to session. Type your message (Ctrl+D to exit).")
-            print("Connected to psi-agent session. Type your message and press Enter.\n")
+            console.print(Panel("psi-agent REPL — type your message and press Enter", subtitle="Ctrl+D to exit"))
 
             while True:
                 try:
                     user_input = await prompt_session.prompt_async("> ")
                 except EOFError, KeyboardInterrupt:
-                    print("\nGoodbye!")
+                    console.print("\nGoodbye!")
                     break
 
                 if not user_input.strip():
@@ -43,12 +47,12 @@ async def run_repl(session_socket: str) -> None:
                         body = await resp.text()
                         try:
                             error = json.loads(body)
-                            print(f"\nError: {error.get('error', {}).get('message', body)}")
+                            console.print(f"\n[red]Error: {error.get('error', {}).get('message', body)}[/red]")
                         except Exception:
-                            print(f"\nError: {body}")
+                            console.print(f"\n[red]Error: {body}[/red]")
                         continue
 
-                    print()
+                    console.print()
 
                     async for raw_line in resp.content:
                         line = raw_line.decode().strip()
@@ -70,14 +74,14 @@ async def run_repl(session_socket: str) -> None:
 
                             if reasoning:
                                 logger.debug(f"Reasoning: {reasoning}")
-                                print(f"\033[90m[思考] {reasoning}\033[0m", end="", flush=True)
+                                console.print(reasoning, style="dim", end="")
 
                             if content:
-                                print(content, end="", flush=True)
+                                console.print(content, end="")
 
-                    print("\n")
+                    console.print("\n")
 
     except Exception as e:
         logger.error(f"REPL error: {e}")
-        print(f"Error: {e}")
+        console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)

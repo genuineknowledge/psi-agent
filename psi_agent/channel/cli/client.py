@@ -5,6 +5,9 @@ import sys
 
 from aiohttp import ClientSession, UnixConnector
 from loguru import logger
+from rich.console import Console
+
+console = Console(highlight=False)
 
 
 async def run_cli(*, session_socket: str, message: str) -> None:
@@ -28,9 +31,9 @@ async def run_cli(*, session_socket: str, message: str) -> None:
                     body = await resp.text()
                     try:
                         error = json.loads(body)
-                        print(f"Error: {error.get('error', {}).get('message', body)}")
+                        console.print(f"[red]Error: {error.get('error', {}).get('message', body)}[/red]")
                     except Exception:
-                        print(f"Error: {body}")
+                        console.print(f"[red]Error: {body}[/red]")
                     sys.exit(1)
 
                 async for raw_line in resp.content:
@@ -53,14 +56,14 @@ async def run_cli(*, session_socket: str, message: str) -> None:
 
                         if reasoning:
                             logger.debug(f"Reasoning: {reasoning}")
-                            print(f"\033[90m[思考] {reasoning}\033[0m", end="", flush=True)
+                            console.print(reasoning, style="dim", end="")
 
                         if content:
-                            print(content, end="", flush=True)
+                            console.print(content, end="")
 
-                print()
+                console.print()
 
     except Exception as e:
         logger.error(f"CLI error: {e}")
-        print(f"Error: {e}")
+        console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
