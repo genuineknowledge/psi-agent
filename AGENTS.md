@@ -13,6 +13,21 @@ psi-agent 是一个**微内核**式的 agent 框架。核心理念是：
 5. **一切异步**: 所有 IO 操作使用 `anyio`，永不使用 `asyncio` 原生 API 或 `pathlib`
 6. **零抑制**: 不堆 `noqa`，不设 `per-file-ignores`。代码本身应符合规则
 
+## 技术栈
+
+| 领域 | 技术 |
+|------|------|
+| 异步 | `anyio`（禁止使用 `asyncio` 原生 API、`pathlib`） |
+| HTTP | `aiohttp`（Unix socket + TCP） |
+| CLI | `tyro`（Union dataclasses + 嵌套子命令） |
+| REPL | `prompt-toolkit`（multiline async prompt）+ `rich`（终端格式化） |
+| 日志 | `loguru` |
+| Lint/Format | `ruff` |
+| 类型检查 | `ty`（Astral 出品，Rust 实现） |
+| 测试 | `pytest` + `pytest-asyncio`（anyio mode） |
+| 构建 | `uv` + `hatchling` + `hatch-vcs` |
+| Python | >= 3.14 |
+
 ## 代码结构
 
 ```

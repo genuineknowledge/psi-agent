@@ -1,26 +1,18 @@
 # psi-agent
 
-微内核式 Python Agent 框架。三个独立组件——ai、session、channel——通过 Unix domain socket 以 OpenAI-compatible HTTP/SSE 协议通信。
+> [English](README_en.md)
 
-## 设计理念
+一个用 Python socket 拼装 AI agent 的微框架。无需配置文件，不用连数据库，三个组件各自启动，通过 Unix socket 组合即可。
 
-- **微内核**: 核心极简，功能由 workspace 定义
-- **无状态组件**: ai/session/channel 各自独立，通过 socket 任意组合
-- **全异步**: 所有 IO 使用 anyio，永不使用 asyncio 原生 API 或 pathlib
-- **充分日志**: loguru 全覆盖，每个 chunk 可追踪
-- **现代 Python**: 3.14+，src-layout，无历史包袱
-- **零抑制**: ruff 和 ty 不设 per-file-ignore，不堆 noqa
+## 为什么选它
 
-## 架构
-
-```
-Channel (REPL/CLI) ←→ Session ←→ AI (OpenAI/Anthropic)
-                   Unix socket  Unix socket
-```
-
-三个组件各自独立启动，通过 socket 路径连接。Session 单一 history 全内存，无持久化。
+- **简单组合**：ai、session、channel 三个独立进程，socket 对插即用。没有中心配置，不依赖数据库
+- **Workspace 即 Agent**：在 `workspace/` 下丢几个 Python 函数就是 tools，写个 system prompt 就是 agent 人格，加个 cron 就是定时任务
+- **流式交互**：REPL 实时显示 AI 思考过程（dim 样式）和最终回复，所见即所得
 
 ## 快速开始
+
+三个终端，三步跑起来：
 
 ```bash
 # 安装
@@ -41,44 +33,50 @@ uv run psi-agent session \
 
 # 终端 3：REPL 交互
 uv run psi-agent channel repl --session-socket ./channel.sock
-# 或单次 CLI
+```
+
+REPL 操作：`Enter` 换行，`Alt+Enter` 发送，`Ctrl+D` 退出。
+
+也可以一句命令搞定：
+
+```bash
 uv run psi-agent channel cli \
   --session-socket ./channel.sock \
   --message "列出当前目录的文件"
 ```
 
-### REPL 操作
-
-- `Enter` — 换行（多行输入）
-- `Alt+Enter` — 发送消息
-- `Ctrl+D` — 退出
-- 思考过程以 dim 样式显示，正文正常显示
-
-## CLI 结构
+## CLI 一览
 
 ```
 psi-agent
 ├── ai
-│   ├── openai-completions    # OpenAI 兼容透传后端
-│   └── anthropic-messages    # Anthropic→OpenAI 转换后端
+│   ├── openai-completions    # OpenAI 兼容透传
+│   └── anthropic-messages    # Anthropic→OpenAI 转换
 ├── session                    # Session + workspace 管理
 └── channel
-    ├── repl                   # 交互式 REPL（Rich + prompt_toolkit）
-    └── cli                    # 单次消息 CLI（Rich 格式化输出）
+    ├── repl                   # 交互式 REPL
+    └── cli                    # 单次消息
 ```
 
-## Workspace 结构
+## 定义你自己的 Agent
+
+一个 workspace 就是一个 agent：
 
 ```
-workspace/
-├── tools/           # *.py 文件，每个定义一个 tool 函数
-├── skills/          # */SKILL.md 技能文档（system_prompt_builder 遍历）
-├── schedules/       # */TASK.md 定时任务（YAML 头 + cron + body）
+my-workspace/
+├── tools/                    # 每个 .py 文件定义一个 tool
+│   └── bash.py               # async def bash(command: str) -> str
+├── skills/                   # */SKILL.md 技能文档
+│   └── bash-expert/
+│       └── SKILL.md
+├── schedules/                # 定时任务
+│   └── daily-report/
+│       └── TASK.md           # YAML 头 (name, cron) + Markdown body
 └── systems/
-    └── system.py    # async def system_prompt_builder() -> str
+    └── system.py             # async def system_prompt_builder() -> str
 ```
 
-### Tool 定义
+Tool 就是一个 async 函数，**函数名 = 文件名**，参数类型自动映射为 JSON Schema：
 
 ```python
 # tools/bash.py
@@ -86,7 +84,6 @@ import anyio
 
 async def bash(command: str) -> str:
     """Execute a bash command.
-
     Args:
         command: The command to run.
     """
@@ -94,12 +91,7 @@ async def bash(command: str) -> str:
     return result.stdout.decode().strip()
 ```
 
-- 文件名 = 函数名
-- async 函数、非私有
-- 参数类型注解自动映射为 JSON Schema 类型
-- Google-style `Args:` 解析为参数描述
-
-### 定时任务
+定时任务的 body 会在触发时作为消息发送给 AI：
 
 ```markdown
 ---
@@ -109,46 +101,16 @@ cron: "0 12 * * *"
 请生成一份项目进展日报。
 ```
 
-触发后的 AI 回复暂存，下一次 channel 请求时和新回复一起返回。
+更多细节见 `examples/a-simple-bash-only-workspace/`。
 
 ## 开发
 
 ```bash
 uv run ruff check .          # lint
-uv run ruff format --check . # 格式检查
-uv run ty check              # 类型检查
-uv run pytest -v             # 全量测试
-uv build                     # 构建
+uv run ruff format --check . # 格式
+uv run ty check              # 类型
+uv run pytest -v             # 测试
 ```
-
-### 集成测试
-
-```bash
-# 需要真实 API —— 设置环境变量
-export PSI_TEST_OPENAI_API_KEY="sk-xxx"
-export PSI_TEST_OPENAI_BASE_URL="https://api.llm.ustc.edu.cn/v1"
-export PSI_TEST_OPENAI_MODEL="deepseek-v4-flash-ascend"
-export PSI_TEST_ANTHROPIC_API_KEY="sk-xxx"
-export PSI_TEST_ANTHROPIC_BASE_URL="https://api.llm.ustc.edu.cn/v1"
-export PSI_TEST_ANTHROPIC_MODEL="deepseek-v4-flash-ascend"
-
-uv run pytest -v
-```
-
-## 技术栈
-
-| 领域 | 技术 |
-|------|------|
-| 异步 | anyio |
-| HTTP | aiohttp |
-| CLI | tyro |
-| REPL | prompt-toolkit + Rich |
-| 日志 | loguru |
-| Lint/Format | ruff |
-| 类型检查 | ty |
-| 测试 | pytest + pytest-asyncio |
-| 构建 | uv + hatchling + hatch-vcs |
-| Python | >= 3.14 |
 
 ## 许可
 
