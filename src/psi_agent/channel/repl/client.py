@@ -21,11 +21,12 @@ async def run_repl(session_socket: str) -> None:
     try:
         async with ClientSession(connector=connector) as session:
             logger.info("Connected to session. Enter for newline, Alt+Enter to send (Ctrl+D to exit).")
-            console.print(Panel("psi-agent REPL — Enter for newline, Alt+Enter to send", subtitle="Ctrl+D to exit"))
+            console.print(Panel.fit("psi-agent REPL — Enter newline, Alt+Enter send"))
+            console.print("[dim]Ctrl+D to exit[/dim]\n")
 
             while True:
                 try:
-                    user_input = await prompt_session.prompt_async("> ", prompt_continuation="... ")
+                    user_input = await prompt_session.prompt_async("> ", prompt_continuation=". ")
                 except EOFError, KeyboardInterrupt:
                     console.print("\nGoodbye!")
                     break
