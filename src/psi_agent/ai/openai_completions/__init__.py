@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from psi_agent.logging import setup_logging
+
 from .server import serve_openai_completions
 
 
@@ -29,7 +31,6 @@ class OpenAICompletions:
 
     async def run(self) -> None:
         """Start the server and block until cancelled."""
-        from psi_agent.logging import setup_logging
 
         setup_logging(verbose=self.verbose)
         await serve_openai_completions(

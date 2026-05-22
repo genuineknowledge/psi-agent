@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
 import re
+import typing
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -40,12 +42,8 @@ class ToolFunction:
         doc = inspect.getdoc(func) or ""
         param_desc = cls._parse_param_descriptions(doc)
         type_hints = {}
-        try:
-            import typing
-
+        with contextlib.suppress(Exception):
             type_hints = typing.get_type_hints(func)
-        except Exception:
-            pass
         properties: dict[str, Any] = {}
         required: list[str] = []
         for param_name, param in sig.parameters.items():

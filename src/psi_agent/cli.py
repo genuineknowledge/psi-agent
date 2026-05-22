@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
+import anyio
 import tyro
 from tyro import conf
 
@@ -24,7 +25,5 @@ ChannelGroup = Annotated[
 
 
 def main() -> None:
-    import anyio
-
     cmd = tyro.cli(Session | AiGroup | ChannelGroup)  # ty: ignore[no-matching-overload]
     anyio.run(cmd.run)

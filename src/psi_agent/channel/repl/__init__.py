@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from psi_agent.logging import setup_logging
+
 from .client import run_repl
 
 
@@ -16,7 +18,6 @@ class ChannelRepl:
     """Enable DEBUG-level logging."""
 
     async def run(self) -> None:
-        from psi_agent.logging import setup_logging
 
         setup_logging(verbose=self.verbose)
         await run_repl(self.session_socket)

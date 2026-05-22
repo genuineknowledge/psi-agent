@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import textwrap
 from pathlib import Path
 
@@ -8,6 +9,9 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from psi_agent.session.agent import SessionAgent
+from psi_agent.session.scheduler import load_schedules_from_workspace
+from psi_agent.session.tools import load_tools_from_workspace
 from tests.integration.conftest import MockAIServer
 
 
@@ -55,12 +59,8 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
     (ws / "systems").mkdir()
     (ws / "systems" / "system.py").write_text("async def system_prompt_builder() -> str:\n    return 'test'\n")
 
-    from psi_agent.session.tools import load_tools_from_workspace
-
     tools = await load_tools_from_workspace(ws / "tools")
     assert len(tools) == 0
-
-    from psi_agent.session.agent import SessionAgent
 
     agent = SessionAgent(ai_socket=base_url, tools=tools, model="test", system_prompt="test")
     chunks = []
@@ -71,7 +71,6 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
 
 @pytest.mark.anyio
 async def test_missing_schedules_dir_graceful(tmp_path: Path) -> None:
-    from psi_agent.session.scheduler import load_schedules_from_workspace
 
     schedules = await load_schedules_from_workspace(tmp_path / "nonexistent")
     assert len(schedules) == 0
@@ -81,8 +80,6 @@ async def test_missing_schedules_dir_graceful(tmp_path: Path) -> None:
 async def test_missing_system_py(mock_ai_server: MockAIServer) -> None:
     mock_ai_server.set_responses([_chunk(content="no system", finish_reason="stop")])
     base_url = await mock_ai_server.start()
-
-    from psi_agent.session.agent import SessionAgent
 
     agent = SessionAgent(ai_socket=base_url, tools={}, model="test")
     assert len(agent.history) == 0
@@ -95,7 +92,6 @@ async def test_missing_system_py(mock_ai_server: MockAIServer) -> None:
 
 @pytest.mark.anyio
 async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> None:
-    import socket as _sock
 
     ws = tmp_path / "ws"
     (ws / "tools").mkdir(parents=True)
@@ -116,7 +112,7 @@ async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> 
     app.router.add_post("/v1/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    sock = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     site = web.SockSite(runner, sock)
@@ -205,9 +201,6 @@ async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server
         ]
     )
     base_url = await mock_ai_server.start()
-
-    from psi_agent.session.agent import SessionAgent
-    from psi_agent.session.tools import load_tools_from_workspace
 
     tools = await load_tools_from_workspace(ws / "tools")
     assert len(tools) == 1

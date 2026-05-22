@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 
 import anyio
@@ -57,7 +58,6 @@ async def _stop_process(proc) -> None:
 
 @pytest.mark.anyio
 async def test_second_request_gets_503_when_busy(tmp_path: Path) -> None:
-    import socket as _sock
 
     async def slow_handler(request: web.Request) -> web.StreamResponse:
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
@@ -71,7 +71,7 @@ async def test_second_request_gets_503_when_busy(tmp_path: Path) -> None:
     app.router.add_post("/v1/chat/completions", slow_handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    sock = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     site = web.SockSite(runner, sock)

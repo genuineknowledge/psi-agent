@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 
 import anyio
@@ -111,7 +112,6 @@ async def test_full_pipeline_mock_ai(tmp_path: Path, mock_ai_server: MockAIServe
 @pytest.mark.anyio
 async def test_full_pipeline_with_tool(tmp_path: Path) -> None:
     """Full pipeline with tool call: mock AI -> tool execution -> final response."""
-    import socket as _sock
 
     req_count = 0
 
@@ -145,7 +145,7 @@ async def test_full_pipeline_with_tool(tmp_path: Path) -> None:
     app.router.add_post("/v1/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    sock = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     site = web.SockSite(runner, sock)
@@ -203,7 +203,6 @@ async def test_full_pipeline_with_tool(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_multiple_messages_history_accumulates(tmp_path: Path) -> None:
     """Two channel messages should cause history accumulation in session."""
-    import socket as _sock
 
     req_count = 0
 
@@ -220,7 +219,7 @@ async def test_multiple_messages_history_accumulates(tmp_path: Path) -> None:
     app.router.add_post("/v1/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    sock = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     site = web.SockSite(runner, sock)

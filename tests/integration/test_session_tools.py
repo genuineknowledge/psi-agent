@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from psi_agent.protocol import ToolFunction
+from psi_agent.session.agent import MAX_TOOL_ROUNDS, SessionAgent
 from tests.integration.conftest import MockAIServer
 
 
@@ -55,9 +57,6 @@ async def test_tool_throws_exception_caught(tmp_path: Path, mock_ai_server: Mock
     )
     base_url = await mock_ai_server.start()
 
-    from psi_agent.protocol import ToolFunction
-    from psi_agent.session.agent import SessionAgent
-
     async def bad_tool(**kwargs) -> str:
         raise RuntimeError("Simulated tool failure")
 
@@ -82,9 +81,6 @@ async def test_tool_returns_int_converted_to_string(mock_ai_server: MockAIServer
         ]
     )
     base_url = await mock_ai_server.start()
-
-    from psi_agent.protocol import ToolFunction
-    from psi_agent.session.agent import SessionAgent
 
     async def int_tool(**kwargs) -> int:
         return 42
@@ -111,9 +107,6 @@ async def test_tool_returns_none_converted(mock_ai_server: MockAIServer) -> None
     )
     base_url = await mock_ai_server.start()
 
-    from psi_agent.protocol import ToolFunction
-    from psi_agent.session.agent import SessionAgent
-
     async def none_tool(**kwargs) -> None:
         return None
 
@@ -137,8 +130,6 @@ async def test_tool_no_parameters(mock_ai_server: MockAIServer) -> None:
         ]
     )
 
-    from psi_agent.protocol import ToolFunction
-
     async def ping() -> str:
         return "pong"
 
@@ -150,7 +141,6 @@ async def test_tool_no_parameters(mock_ai_server: MockAIServer) -> None:
 
 @pytest.mark.anyio
 async def test_tool_list_string_parameter(mock_ai_server: MockAIServer) -> None:
-    from psi_agent.protocol import ToolFunction
 
     async def multi(commands: list[str]) -> str:
         """Execute multiple commands."""
@@ -167,9 +157,6 @@ async def test_max_tool_rounds_limit(mock_ai_server: MockAIServer) -> None:
         responses.append(_chunk(tool_calls=[_tc("echo", '{"message":"loop"}')], finish_reason="tool_calls"))
     mock_ai_server.set_responses(responses)
     base_url = await mock_ai_server.start()
-
-    from psi_agent.protocol import ToolFunction
-    from psi_agent.session.agent import MAX_TOOL_ROUNDS, SessionAgent
 
     async def echo_tool(message: str) -> str:
         return "echo"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 
 import anyio
@@ -181,7 +182,6 @@ async def test_upstream_sse_disconnects_mid_stream(tmp_path: Path, mock_ai_serve
 
 @pytest.mark.anyio
 async def test_upstream_401_tunnelled(tmp_path: Path) -> None:
-    import socket as _sock
 
     async def handler(request: web.Request) -> web.StreamResponse:
         return web.json_response({"error": {"message": "Unauthorized", "type": "auth", "code": "401"}}, status=401)
@@ -190,7 +190,7 @@ async def test_upstream_401_tunnelled(tmp_path: Path) -> None:
     app.router.add_post("/v1/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    sock = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     site = web.SockSite(runner, sock)
@@ -259,7 +259,6 @@ async def test_anthropic_empty_content_blocks(tmp_path: Path, mock_ai_server: Mo
 
 @pytest.mark.anyio
 async def test_anthropic_multi_tool_use_blocks(tmp_path: Path) -> None:
-    import socket as _sock
 
     async def handler(request: web.Request) -> web.StreamResponse:
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
@@ -289,7 +288,7 @@ async def test_anthropic_multi_tool_use_blocks(tmp_path: Path) -> None:
     app.router.add_post("/v1/messages", handler)
     runner = web.AppRunner(app)
     await runner.setup()
-    sock = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", 0))
     port = sock.getsockname()[1]
     site = web.SockSite(runner, sock)
