@@ -359,3 +359,124 @@ async def test_agent_tool_returns_int(tmp_path: Path) -> None:
         assert "42" in reasoning
     finally:
         await runner.cleanup()
+
+
+# --- Additional edge case tests ---
+
+
+@pytest.mark.anyio
+async def test_agent_tcp_connector(tmp_path: Path) -> None:
+    """Agent should work with http:// TCP URL for ai_socket."""
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = json.dumps({"id": "t", "choices": [{"delta": {"content": "tcp works"}, "finish_reason": "stop"}]})
+        await resp.write(f"data: {chunk}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+        assert "tcp works" in content
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_ai_non_200_response(tmp_path: Path) -> None:
+    """AI returning non-200 should yield an error chunk."""
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return web.json_response({"error": "bad request"}, status=400)
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+        assert "Error" in content or "400" in content
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_non_data_sse_line(tmp_path: Path) -> None:
+    """SSE lines not starting with 'data: ' should be skipped."""
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(b":comment\n")
+        await resp.write(b"event: ping\ndata: {}\n\n")
+        await resp.write(
+            b"data: "
+            + json.dumps({"id": "t", "choices": [{"delta": {"content": "after event"}, "finish_reason": "stop"}]}).encode()  # noqa: E501
+            + b"\n\n"
+        )
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+        assert "after event" in content
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_empty_content_stop(tmp_path: Path) -> None:
+    """AI returning stop with no content should not crash."""
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(
+            b"data: "
+            + json.dumps({"id": "t", "choices": [{"delta": {}, "finish_reason": "stop"}]}).encode()
+            + b"\n\n"
+        )
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        assert len(chunks) >= 1
+    finally:
+        await runner.cleanup()

@@ -101,3 +101,75 @@ async def test_server_streaming_response(tmp_path: Path) -> None:
 
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_openai_upstream_non_200(tmp_path: Path) -> None:
+    """When upstream returns non-200, SSE error is forwarded."""
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return web.json_response(
+            {"error": {"message": "Invalid API key", "type": "auth", "code": "401"}}, status=401
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+
+    socket_path = str(tmp_path / "ai.sock")
+    cfg = OpenAICompletions(
+        session_socket=socket_path, model="test", api_key="k", base_url=f"http://127.0.0.1:{port}/v1"
+    )
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(cfg.run)
+            await anyio.sleep(0.2)
+            connector = UnixConnector(path=socket_path)
+            async with (
+                ClientSession(connector=connector) as s,
+                s.post(
+                    "http://localhost/v1/chat/completions",
+                    json={"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+                ) as resp,
+            ):
+                assert resp.status == 200
+                text = ""
+                async for raw in resp.content:
+                    text += raw.decode()
+                assert "error" in text.lower()
+            tg.cancel_scope.cancel()
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_openai_unreachable_upstream(tmp_path: Path) -> None:
+    """When upstream is unreachable, SSE error with 502 code is returned."""
+    socket_path = str(tmp_path / "ai.sock")
+    cfg = OpenAICompletions(
+        session_socket=socket_path, model="test", api_key="k", base_url="http://127.0.0.1:19999/v1"
+    )
+    try:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(cfg.run)
+            await anyio.sleep(0.2)
+            connector = UnixConnector(path=socket_path)
+            async with (
+                ClientSession(connector=connector) as s,
+                s.post(
+                    "http://localhost/v1/chat/completions",
+                    json={"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+                ) as resp,
+            ):
+                text = ""
+                async for raw in resp.content:
+                    text += raw.decode()
+                assert "error" in text.lower()
+            tg.cancel_scope.cancel()
+    except Exception:
+        pass

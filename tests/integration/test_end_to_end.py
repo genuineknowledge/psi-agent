@@ -276,3 +276,61 @@ async def test_multiple_messages_history_accumulates(tmp_path: Path) -> None:
         await _stop_process(ses_proc)
         await _stop_process(ai_proc)
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_multi_turn_history_accumulates(tmp_path: Path) -> None:
+    """Three channel messages should accumulate history correctly."""
+    req_count = 0
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        nonlocal req_count
+        req_count += 1
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(f"data: {_chunk(content=f'turn {req_count}', finish_reason='stop')}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+
+    ai_socket = str(tmp_path / "ai.sock")
+    channel_socket = str(tmp_path / "channel.sock")
+
+    ai_proc = await anyio.open_process([
+        "uv", "run", "psi-agent", "ai", "openai-completions",
+        "--session-socket", ai_socket, "--model", "test", "--api-key", "k",
+        "--base-url", f"http://127.0.0.1:{port}/v1",
+    ])
+    ses_proc = await anyio.open_process([
+        "uv", "run", "psi-agent", "session",
+        "--workspace", "examples/a-simple-bash-only-workspace",
+        "--channel-socket", channel_socket, "--ai-socket", ai_socket, "--model", "test",
+    ])
+
+    try:
+        assert await _wait_for_socket(ai_socket)
+        assert await _wait_for_socket(channel_socket)
+        chunks1 = await read_sse(channel_socket, "msg1")
+        await anyio.sleep(0.3)
+        chunks2 = await read_sse(channel_socket, "msg2")
+        await anyio.sleep(0.3)
+        chunks3 = await read_sse(channel_socket, "msg3")
+        c1 = "".join(c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks1)
+        c2 = "".join(c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks2)
+        c3 = "".join(c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks3)
+        assert "turn 1" in c1
+        assert "turn 2" in c2
+        assert "turn 3" in c3
+    finally:
+        await _stop_process(ses_proc)
+        await _stop_process(ai_proc)
+        await runner.cleanup()

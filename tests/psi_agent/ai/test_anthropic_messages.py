@@ -333,3 +333,92 @@ def test_convert_tools_missing_function_field() -> None:
     assert len(result) == 1
     assert result[0]["name"] == ""
     assert result[0]["input_schema"] == {"type": "object", "properties": {}, "required": []}
+
+
+# --- Stream conversion edge case tests ---
+
+from psi_agent.ai.anthropic_messages.server import _convert_anthropic_stream_to_openai_sse  # noqa: E402
+
+
+class _FakeStreamResponse:
+    """Minimal fake aiohttp response for testing SSE conversion."""
+    def __init__(self):
+        self._written: list[str] = []
+
+    async def write(self, data: bytes) -> None:
+        self._written.append(data.decode())
+
+
+class _FakeByteStream:
+    def __init__(self, lines: list[str]):
+        self._lines = lines
+        self._idx = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._idx >= len(self._lines):
+            raise StopAsyncIteration
+        line = self._lines[self._idx] + "\n"
+        self._idx += 1
+        return line.encode()
+
+
+@pytest.mark.anyio
+async def test_anthropic_sse_json_decode_error() -> None:
+    """JSON decode error in SSE data should be skipped gracefully."""
+    resp = _FakeStreamResponse()
+    stream = _FakeByteStream(["data: not-json-at-all", "event: message_stop", "data: {}"])
+    await _convert_anthropic_stream_to_openai_sse(resp, stream)
+    all_written = "".join(resp._written)
+    assert "finish_reason" in all_written
+
+
+@pytest.mark.anyio
+async def test_anthropic_sse_unknown_event_type() -> None:
+    """Unknown event type should be skipped."""
+    resp = _FakeStreamResponse()
+    stream = _FakeByteStream(["data: {\"type\": \"unknown_xyz\", \"index\": 0}", "event: message_stop", "data: {}"])
+    await _convert_anthropic_stream_to_openai_sse(resp, stream)
+    all_written = "".join(resp._written)
+    assert "finish_reason" in all_written
+
+
+@pytest.mark.anyio
+async def test_anthropic_sse_non_data_non_event_line() -> None:
+    """Line not starting with data: or event: should still be parsed."""
+    resp = _FakeStreamResponse()
+    stream = _FakeByteStream(["{\"type\": \"message_stop\"}", "data: {}"])
+    await _convert_anthropic_stream_to_openai_sse(resp, stream)
+    all_written = "".join(resp._written)
+    assert "finish_reason" in all_written
+
+
+@pytest.mark.anyio
+async def test_anthropic_sse_message_delta_event() -> None:
+    """message_delta event type should be handled without crashing."""
+    resp = _FakeStreamResponse()
+    stream = _FakeByteStream([
+        "data: {\"type\": \"message_delta\", \"delta\": {\"stop_reason\": \"end_turn\"}}",
+        "event: message_stop",
+        "data: {}",
+    ])
+    await _convert_anthropic_stream_to_openai_sse(resp, stream)
+    all_written = "".join(resp._written)
+    assert "finish_reason" in all_written
+
+
+@pytest.mark.anyio
+async def test_anthropic_sse_input_json_for_unknown_index() -> None:
+    """input_json_delta for an index not in current_tool_calls should be handled."""
+    resp = _FakeStreamResponse()
+    stream = _FakeByteStream([
+        "data: {\"type\": \"content_block_delta\", \"index\": 99, "
+        "\"delta\": {\"type\": \"input_json_delta\", \"partial_json\": \"{\\\"x\\\": 1}\"}}",
+        "event: message_stop",
+        "data: {}",
+    ])
+    await _convert_anthropic_stream_to_openai_sse(resp, stream)
+    all_written = "".join(resp._written)
+    assert "finish_reason" in all_written

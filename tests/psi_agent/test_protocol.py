@@ -286,3 +286,25 @@ def test_parse_param_descriptions_multiline() -> None:
     doc = "Args:\n    x: First line.\n        Continuation line."
     result = ToolFunction._parse_param_descriptions(doc)
     assert result["x"] == "First line. Continuation line."
+
+
+def test_chat_completion_chunk_to_dict_direct() -> None:
+    chunk = ChatCompletionChunk(
+        id="c1", model="test",
+        choices=[StreamChoice(
+            index=0,
+            delta=DeltaMessage(content="ok", reasoning_content="think"),
+            finish_reason="stop",
+        )],
+    )
+    d = chunk.to_dict()
+    assert d["id"] == "c1"
+    assert d["choices"][0]["delta"]["reasoning_content"] == "think"
+
+
+def test_message_to_dict_omits_none_fields() -> None:
+    msg = Message(role="user", content="hi", tool_calls=None, tool_call_id=None, name=None)
+    d = msg.to_dict()
+    assert "tool_calls" not in d
+    assert "tool_call_id" not in d
+    assert "name" not in d

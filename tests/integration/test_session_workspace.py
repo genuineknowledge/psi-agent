@@ -212,3 +212,28 @@ async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server
     assert len(chunks) > 0
     content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
     assert len(content) > 0
+
+
+@pytest.mark.anyio
+async def test_unicode_message_handling(tmp_path: Path, mock_ai_server: MockAIServer) -> None:
+    """Session should handle unicode/emoji messages correctly."""
+    mock_ai_server.set_responses([_chunk(content="received unicode", finish_reason="stop")])
+    base_url = await mock_ai_server.start()
+
+    ws = tmp_path / "ws"
+    (ws / "tools").mkdir(parents=True)
+    (ws / "tools" / "echo.py").write_text(
+        'async def echo(message: str) -> str:\n    return f"ECHO: {message}"\n'
+    )
+    (ws / "systems").mkdir()
+    (ws / "systems" / "system.py").write_text(
+        "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n"
+    )
+
+    tools = await load_tools_from_workspace(ws / "tools")
+    agent = SessionAgent(ai_socket=base_url, tools=tools, model="test", system_prompt="You are a test assistant.")
+
+    msg = "你好世界 🌍 — emoji and unicode test"
+    chunks = [c async for c in agent.run({"role": "user", "content": msg})]
+    content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+    assert len(content) > 0, "Should receive a response for unicode message"

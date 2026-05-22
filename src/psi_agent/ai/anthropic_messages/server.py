@@ -204,7 +204,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
 
 
 async def _convert_anthropic_stream_to_openai_sse(
-    response: web.StreamResponse,
+    response: Any,
     upstream_content: Any,
 ) -> None:
     current_tool_calls: dict[int, dict] = {}
