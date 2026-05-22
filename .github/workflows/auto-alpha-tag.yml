@@ -1,0 +1,85 @@
+name: Auto Alpha Tag
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  auto-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag-name: ${{ steps.create-tag.outputs.tag-name }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - run: git fetch --tags origin
+      - id: create-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_DATA=$(gh run list \
+            --workflow=CI \
+            --branch=main \
+            --status=success \
+            --limit=1 \
+            --json headSha)
+
+          if [ -z "$RUN_DATA" ] || [ "$RUN_DATA" = "[]" ]; then
+            echo "::notice::No successful CI runs on main, skipping"
+            exit 0
+          fi
+
+          COMMIT_SHA=$(echo "$RUN_DATA" | jq -r '.[0].headSha')
+          echo "Last successful CI commit: $COMMIT_SHA"
+
+          EXISTING_TAGS=$(git tag --list --points-at "$COMMIT_SHA")
+          if [ -n "$EXISTING_TAGS" ]; then
+            echo "::notice::Commit already tagged, skipping"
+            exit 0
+          fi
+
+          DESCRIBE_OUTPUT=$(git describe --tags --match 'v*-alpha*' "$COMMIT_SHA" 2>/dev/null || true)
+          if [ -z "$DESCRIBE_OUTPUT" ]; then
+            echo "::notice::No existing alpha tag found, skipping"
+            exit 0
+          fi
+
+          VERSION_PREFIX=$(echo "$DESCRIBE_OUTPUT" | sed 's/-alpha[0-9]*-[0-9]*-g[0-9a-f]*$//')
+          if [ -z "$VERSION_PREFIX" ]; then
+            echo "::warning::Failed to extract version prefix from $DESCRIBE_OUTPUT"
+            exit 0
+          fi
+
+          NEW_TAG="${VERSION_PREFIX}-alpha$(date +%Y%m%d)"
+          if git tag -l "$NEW_TAG" | grep -q "$NEW_TAG"; then
+            echo "::notice::Tag $NEW_TAG already exists, skipping"
+            exit 0
+          fi
+
+          echo "Creating tag $NEW_TAG on $COMMIT_SHA"
+          git tag "$NEW_TAG" "$COMMIT_SHA"
+          git push origin "$NEW_TAG"
+          echo "::notice::Created and pushed $NEW_TAG"
+          echo "tag-name=$NEW_TAG" >> $GITHUB_OUTPUT
+
+  publish:
+    needs: auto-tag
+    if: needs.auto-tag.outputs.tag-name != ''
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.auto-tag.outputs.tag-name }}
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+      - run: uv build
+      - uses: pypa/gh-action-pypi-publish@release/v1
