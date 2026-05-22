@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 
-from aiohttp import ClientSession, UnixConnector
+from aiohttp import ClientConnectorError, ClientSession, UnixConnector
 from loguru import logger
 from prompt_toolkit.shortcuts import PromptSession
 from rich.console import Console
@@ -82,7 +82,13 @@ async def run_repl(session_socket: str) -> None:
 
                     console.print("\n")
 
+    except ConnectionRefusedError:
+        console.print("[red]Cannot connect to session. Is the session running?[/red]")
+        sys.exit(1)
+    except ClientConnectorError as e:
+        console.print(f"[red]Connection error: {e}[/red]")
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"REPL error: {e}")
-        console.print(f"[red]Error: {e}[/red]")
+        logger.exception("Unexpected REPL error")
+        console.print(f"[red]Unexpected error: {e}[/red]")
         sys.exit(1)

@@ -8,8 +8,17 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from psi_agent.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.server import handle_chat_completions
+
+
+class _FailingSessionAgent(SessionAgent):
+    """SessionAgent that raises an exception mid-stream."""
+
+    async def run(self, user_message: dict):
+        yield ChatCompletionChunk(choices=[StreamChoice(delta=DeltaMessage(content="partial"))])
+        raise RuntimeError("boom")
 
 
 @pytest.mark.anyio
@@ -129,8 +138,8 @@ async def test_handle_non_user_role_coercion(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_agent_run_exception_produces_error_chunk(tmp_path: Path) -> None:
-    """When agent runs successfully, response is returned correctly."""
+async def test_agent_run_success_flow(tmp_path: Path) -> None:
+    """When agent runs successfully, response is streamed correctly."""
 
     async def ai_handler(request: web.Request) -> web.StreamResponse:
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
@@ -181,3 +190,44 @@ async def test_agent_run_exception_produces_error_chunk(tmp_path: Path) -> None:
             await runner.cleanup()
     finally:
         await ai_runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_run_raises_produces_error_chunk(tmp_path: Path) -> None:
+    """When agent.run() raises mid-stream, the server catches it and sends error chunk."""
+    agent = _FailingSessionAgent(ai_socket="http://nonexistent/v1", tools={}, model="test")
+    lock = anyio.Lock()
+
+    app = web.Application()
+    app["agent"] = agent
+    app["lock"] = lock
+    app.router.add_post("/v1/chat/completions", handle_chat_completions)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    socket_path = str(tmp_path / "s.sock")
+    site = web.UnixSite(runner, socket_path)
+    await site.start()
+
+    try:
+        await anyio.sleep(0.1)
+        connector = UnixConnector(path=socket_path)
+        timeout = ClientTimeout(total=5)
+        all_chunks: list[str] = []
+        async with (
+            ClientSession(connector=connector, timeout=timeout) as s,
+            s.post(
+                "http://localhost/v1/chat/completions",
+                json={"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            ) as resp,
+        ):
+            assert resp.status == 200
+            async for raw in resp.content:
+                line = raw.decode().strip()
+                if line.startswith("data: "):
+                    all_chunks.append(line[6:])
+        all_text = "".join(all_chunks)
+        assert "Session Error" in all_text, f"Expected error chunk, got: {all_text[:300]}"
+        assert "boom" in all_text.lower(), f"Expected 'boom' in error, got: {all_text[:300]}"
+    finally:
+        await runner.cleanup()

@@ -2,14 +2,12 @@ from __future__ import annotations
 
 ## """Integration tests using real LLM APIs. Set env vars to enable each test group."""##
 import os
-import signal
-import subprocess
-import time
 from pathlib import Path
 
-import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector
+
+from tests.integration.conftest import _kill, _start_psi, _wait_for_socket
 
 
 def _require_env(*names: str) -> tuple[str, ...]:
@@ -40,37 +38,6 @@ async def _read_sse_stream(connector: UnixConnector, socket_path: str, model: st
             if chunk.startswith("data: ") and chunk != "data: [DONE]":
                 chunks.append(chunk)
     return chunks
-
-
-def _start_psi(*args: str) -> subprocess.Popen:
-    return subprocess.Popen(
-        ["uv", "run", "psi-agent", *args],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-
-
-async def _wait_for_socket(sock_path: Path, timeout_sec: float = 10.0) -> None:
-    deadline = time.monotonic() + timeout_sec
-    sock_anyio = anyio.Path(str(sock_path))
-    while time.monotonic() < deadline:
-        if await sock_anyio.exists():
-            await anyio.sleep(0.3)
-            return
-        await anyio.sleep(0.1)
-    pytest.fail(f"Socket {sock_path} not created within {timeout_sec}s")
-
-
-def _kill(proc: subprocess.Popen) -> None:
-    proc.send_signal(signal.SIGTERM)
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-
-
-# --- OpenAI tests ---
 
 
 @pytest.mark.anyio

@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import anyio
-import yaml
 from croniter import croniter
 from loguru import logger
+
+from psi_agent._yaml import parse_yaml_header
 
 
 @dataclass
@@ -18,26 +18,10 @@ class Schedule:
     task_content: str
     _cron_iter: croniter = field(init=False)
     _last_run: float = field(default=0.0, init=False)
-    _pending_response: list[dict] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self._cron_iter = croniter(self.cron, time.time())
         self._last_run = time.time()
-
-    @property
-    def pending_response(self) -> list[dict] | None:
-        return self._pending_response
-
-    @pending_response.setter
-    def pending_response(self, value: list[dict] | None) -> None:
-        self._pending_response = value
-
-    @property
-    def has_pending(self) -> bool:
-        return self._pending_response is not None
-
-    def clear_pending(self) -> None:
-        self._pending_response = None
 
     def get_next_run(self) -> float:
         return self._cron_iter.get_next()
@@ -62,19 +46,6 @@ class Schedule:
         }
 
 
-def _parse_yaml_header(content: str) -> tuple[dict | None, str]:
-    match = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
-    if not match:
-        return None, content
-    try:
-        header = yaml.safe_load(match.group(1))
-    except yaml.YAMLError as e:
-        logger.warning(f"Failed to parse YAML header: {e}")
-        return None, content
-    body = content[match.end() :]
-    return header, body
-
-
 async def load_schedules_from_workspace(schedules_dir: Path) -> list[Schedule]:
     schedules: list[Schedule] = []
     sched_anyio = anyio.Path(str(schedules_dir))
@@ -92,7 +63,7 @@ async def load_schedules_from_workspace(schedules_dir: Path) -> list[Schedule]:
             continue
 
         content = await task_file.read_text()
-        header, body = _parse_yaml_header(content)
+        header, body = parse_yaml_header(content)
         if header is None:
             logger.warning(f"No valid YAML header in {task_file}, skipping")
             continue

@@ -90,3 +90,31 @@ async def test_cli_empty_message(tmp_path: Path) -> None:
         assert isinstance(chunks, list)
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_cli_handles_session_non_200_error(tmp_path: Path) -> None:
+    """CLI should print error message and exit code 1 when session returns non-200."""
+    channel_socket = tmp_path / "error.sock"
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return web.json_response({"error": {"message": "something went wrong"}}, status=500)
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, str(channel_socket))
+    await site.start()
+
+    try:
+        await anyio.sleep(0.2)
+        result = await anyio.run_process(
+            ["uv", "run", "psi-agent", "channel", "cli", "--session-socket", str(channel_socket), "--message", "hello"],
+            check=False,
+        )
+        assert result.returncode != 0, f"Expected non-zero exit, got {result.returncode}"
+        output = result.stdout.decode() if result.stdout else ""
+        assert "Error" in output or "something went wrong" in output, f"Got: {output[:200]}"
+    finally:
+        await runner.cleanup()

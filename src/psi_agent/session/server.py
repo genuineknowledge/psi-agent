@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 
 import anyio
 from aiohttp import web
@@ -8,6 +9,8 @@ from loguru import logger
 
 from psi_agent.protocol import ChatCompletionChunk, DeltaMessage, ErrorResponse, StreamChoice
 from psi_agent.session.agent import SessionAgent
+
+AGENT_RUN_TIMEOUT: float = 300.0
 
 
 async def serve_session(
@@ -35,6 +38,8 @@ async def serve_session(
     finally:
         logger.info(f"Shutting down session server on {channel_socket}")
         await runner.cleanup()
+        with suppress(FileNotFoundError):
+            await anyio.Path(channel_socket).unlink()
 
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
@@ -69,17 +74,31 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             "Connection": "keep-alive",
         },
     )
-    await response.prepare(request)
 
     async with lock:
+        await response.prepare(request)
         logger.info("Acquired session lock, processing request")
         try:
-            async for chunk in agent.run(user_message):
-                await response.write(chunk.to_sse().encode())
-                logger.debug(
-                    f"Chunk sent: content={chunk.choices[0].delta.content!r}, "
-                    f"reasoning={chunk.choices[0].delta.reasoning_content!r}"
-                )
+            with anyio.fail_after(AGENT_RUN_TIMEOUT):
+                async for chunk in agent.run(user_message):
+                    await response.write(chunk.to_sse().encode())
+                    logger.debug(
+                        f"Chunk sent: content={chunk.choices[0].delta.content!r}, "
+                        f"reasoning={chunk.choices[0].delta.reasoning_content!r}"
+                    )
+        except TimeoutError:
+            logger.error(f"Agent run timed out after {AGENT_RUN_TIMEOUT}s")
+            err_chunk = ChatCompletionChunk(
+                id="timeout",
+                choices=[
+                    StreamChoice(
+                        index=0,
+                        delta=DeltaMessage(content="[Session Timeout]"),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+            await response.write(err_chunk.to_sse().encode())
         except Exception as e:
             logger.error(f"Error in agent run: {e}")
             err_chunk = ChatCompletionChunk(

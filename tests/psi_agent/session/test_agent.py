@@ -446,6 +446,32 @@ async def test_agent_ai_non_200_response(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
+    """AI error chunks should not be appended to conversation history."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return web.json_response({"error": "bad request"}, status=400)
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        history_len_before = len(agent.history)
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        assert len(chunks) >= 1
+        assert len(agent.history) == history_len_before + 1  # only user message added
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_agent_non_data_sse_line(tmp_path: Path) -> None:
     """SSE lines not starting with 'data: ' should be skipped."""
 

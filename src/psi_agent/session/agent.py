@@ -81,7 +81,7 @@ class SessionAgent:
 
                 if chunk.choices:
                     for choice in chunk.choices:
-                        if choice.finish_reason:
+                        if choice.finish_reason and not finish_reason:
                             finish_reason = choice.finish_reason
                         if choice.delta.content:
                             accumulated_content += choice.delta.content
@@ -102,6 +102,10 @@ class SessionAgent:
                                     acc["function"]["name"] = func["name"]
                                 if func.get("arguments"):
                                     acc["function"]["arguments"] += func["arguments"]
+
+                if finish_reason == "error":
+                    logger.warning("AI returned error, stopping without saving to history")
+                    return
 
                 if finish_reason == "stop":
                     logger.debug("AI finished with stop")
@@ -222,7 +226,7 @@ class SessionAgent:
                         StreamChoice(
                             index=0,
                             delta=DeltaMessage(content=f"[AI Error: {resp.status}]"),
-                            finish_reason="stop",
+                            finish_reason="error",
                         )
                     ],
                 )

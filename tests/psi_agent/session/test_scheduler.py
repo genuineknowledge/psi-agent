@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from psi_agent.session.scheduler import Schedule, _parse_yaml_header, load_schedules_from_workspace
+from psi_agent._yaml import parse_yaml_header
+from psi_agent.session.scheduler import Schedule, load_schedules_from_workspace
 
 
 @pytest.mark.anyio
@@ -92,24 +93,13 @@ def test_schedule_get_next_run() -> None:
     assert next_run > time.time()
 
 
-def test_schedule_pending_response() -> None:
-    s = Schedule(name="test", cron="* * * * *", task_content="run")
-    assert s.pending_response is None
-    s.pending_response = [{"key": "value"}]
-    assert s.pending_response == [{"key": "value"}]
-    assert s.has_pending
-    s.clear_pending()
-    assert s.pending_response is None
-    assert not s.has_pending
-
-
 # --- Missing coverage tests ---
 
 
 def test_parse_yaml_header_error() -> None:
     # Malformed YAML
     content = "---\n: invalid yaml: :\n---\nbody"
-    header, body = _parse_yaml_header(content)
+    header, body = parse_yaml_header(content)
     assert header is None
     assert body == content
 
@@ -134,12 +124,3 @@ def test_get_prev_run() -> None:
     assert prev is not None
     # get_prev_run should be < current time
     assert prev < time.time()
-
-
-def test_pending_response_empty_list() -> None:
-    s = Schedule(name="test", cron="* * * * *", task_content="run")
-    # has_pending checks `is not None` — empty list IS a pending response
-    s.pending_response = []
-    assert s.has_pending
-    s.pending_response = None
-    assert not s.has_pending

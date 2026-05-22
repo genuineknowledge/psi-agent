@@ -6,7 +6,6 @@ import signal
 import socket
 import subprocess
 import textwrap
-import time
 from pathlib import Path
 
 import anyio
@@ -158,9 +157,9 @@ def _start_psi(*args: str) -> subprocess.Popen:
 
 
 async def _wait_for_socket(sock_path: Path, timeout_sec: float = 10.0) -> None:
-    deadline = time.monotonic() + timeout_sec
+    deadline = anyio.current_time() + timeout_sec
     sock_anyio = anyio.Path(str(sock_path))
-    while time.monotonic() < deadline:
+    while anyio.current_time() < deadline:
         if await sock_anyio.exists():
             await anyio.sleep(0.3)
             return
