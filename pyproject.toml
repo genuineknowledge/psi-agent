@@ -25,6 +25,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
     "ruff>=0.11",
     "ty>=0.0.38",
 ]
@@ -50,3 +51,7 @@ indent-style = "space"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+addopts = ["--strict-markers", "-ra", "--cov"]
+
+[tool.coverage.run]
+source = ["src/psi_agent"]
