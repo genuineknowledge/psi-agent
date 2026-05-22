@@ -199,3 +199,90 @@ def test_error_response_to_json() -> None:
     assert data["error"]["message"] == "Something wrong"
     assert data["error"]["type"] == "internal_error"
     assert data["error"]["code"] == "500"
+
+# --- Missing coverage tests ---
+
+
+def test_delta_message_to_dict() -> None:
+    dm = DeltaMessage(content="hi", role="assistant")
+    d = dm.to_dict()
+    assert d == {"content": "hi", "role": "assistant"}
+
+
+def test_delta_message_empty_to_dict() -> None:
+    dm = DeltaMessage()
+    assert dm.to_dict() == {}
+
+
+def test_error_response_to_dict() -> None:
+    err = ErrorResponse(message="msg", type="err", code="500")
+    d = err.to_dict()
+    assert d["error"]["message"] == "msg"
+
+
+def test_python_type_to_json_float() -> None:
+    assert ToolFunction._python_type_to_json_type(float) == "number"
+
+
+def test_python_type_to_json_bool() -> None:
+    assert ToolFunction._python_type_to_json_type(bool) == "boolean"
+
+
+def test_python_type_to_json_unknown_fallback() -> None:
+    assert ToolFunction._python_type_to_json_type(bytes) == "string"
+
+
+def test_chat_completion_request_from_dict_with_tools() -> None:
+    data = {
+        "model": "test",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{"type": "function", "function": {"name": "t1", "description": "d", "parameters": {}}}],
+        "stream": True,
+        "temperature": 0.7,
+        "max_tokens": 100,
+    }
+    req = ChatCompletionRequest.from_dict(data)
+    assert req.model == "test"
+    assert len(req.tools) == 1
+    assert req.tools[0].function is not None
+    assert req.tools[0].function.name == "t1"
+    assert req.temperature == 0.7
+    assert req.max_tokens == 100
+
+
+def test_message_with_tool_call_id_and_name() -> None:
+    msg = Message(role="tool", tool_call_id="c1", name="bash", content="result")
+    d = msg.to_dict()
+    assert d == {"role": "tool", "tool_call_id": "c1", "name": "bash", "content": "result"}
+
+
+def test_tool_function_from_callable_all_defaults() -> None:
+    async def f(a: str = "x", b: int = 1) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["required"] == []
+
+
+def test_tool_function_from_callable_with_bool() -> None:
+    async def f(verbose: bool = False) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["properties"]["verbose"]["type"] == "boolean"
+
+
+def test_parse_description_only() -> None:
+    desc = ToolFunction._parse_description("Short description.")
+    assert desc == "Short description."
+
+
+def test_parse_description_with_args_stop() -> None:
+    desc = ToolFunction._parse_description("First line.\nArgs:\n    x: something")
+    assert desc == "First line."
+
+
+def test_parse_param_descriptions_multiline() -> None:
+    doc = "Args:\n    x: First line.\n        Continuation line."
+    result = ToolFunction._parse_param_descriptions(doc)
+    assert result["x"] == "First line. Continuation line."

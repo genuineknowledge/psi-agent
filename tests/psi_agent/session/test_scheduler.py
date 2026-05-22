@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from psi_agent.session.scheduler import Schedule, load_schedules_from_workspace
+from psi_agent.session.scheduler import Schedule, _parse_yaml_header, load_schedules_from_workspace
 
 
 @pytest.mark.anyio
@@ -100,4 +100,45 @@ def test_schedule_pending_response() -> None:
     assert s.has_pending
     s.clear_pending()
     assert s.pending_response is None
+    assert not s.has_pending
+
+# --- Missing coverage tests ---
+
+
+def test_parse_yaml_header_error() -> None:
+    # Malformed YAML
+    content = "---\n: invalid yaml: :\n---\nbody"
+    header, body = _parse_yaml_header(content)
+    assert header is None
+    assert body == content
+
+
+def test_schedule_invalid_cron_raises() -> None:
+
+    with pytest.raises(ValueError):
+        Schedule(name="bad", cron="not a cron", task_content="run")
+
+
+def test_schedule_mark_run_prevents_should_run() -> None:
+
+    s = Schedule(name="every-min", cron="* * * * *", task_content="run")
+    # Force a past run time to simulate having just run
+    s._last_run = time.time()
+    assert not s.should_run_now()
+
+
+def test_get_prev_run() -> None:
+    s = Schedule(name="daily", cron="0 12 * * *", task_content="run")
+    prev = s.get_prev_run()
+    assert prev is not None
+    # get_prev_run should be < current time
+    assert prev < time.time()
+
+
+def test_pending_response_empty_list() -> None:
+    s = Schedule(name="test", cron="* * * * *", task_content="run")
+    # has_pending checks `is not None` — empty list IS a pending response
+    s.pending_response = []
+    assert s.has_pending
+    s.pending_response = None
     assert not s.has_pending

@@ -193,3 +193,143 @@ async def test_anthropic_tool_use_conversion(tmp_path: Path) -> None:
 
     finally:
         await runner.cleanup()
+
+
+# --- Unit tests for Anthropic protocol conversion functions ---
+
+from psi_agent.ai.anthropic_messages.server import (  # noqa: E402
+    _convert_openai_messages_to_anthropic,
+    _convert_openai_tools_to_anthropic,
+)
+
+
+def test_convert_system_message_to_anthropic() -> None:
+    messages = [{"role": "system", "content": "You are helpful."}]
+    result, _system = _convert_openai_messages_to_anthropic(messages)
+    assert result == []
+    assert _system == ["You are helpful."]
+
+
+def test_convert_multiple_system_messages() -> None:
+    messages = [
+        {"role": "system", "content": "Be polite."},
+        {"role": "system", "content": "Be concise."},
+    ]
+    result, _system = _convert_openai_messages_to_anthropic(messages)
+    assert result == []
+    assert _system == ["Be polite.", "Be concise."]
+
+
+def test_convert_user_message() -> None:
+    messages = [{"role": "user", "content": "hello"}]
+    result, _system = _convert_openai_messages_to_anthropic(messages)
+    assert result == [{"role": "user", "content": "hello"}]
+    assert _system == []
+
+
+def test_convert_assistant_message() -> None:
+    messages = [{"role": "assistant", "content": "Hi there!"}]
+    result, _system = _convert_openai_messages_to_anthropic(messages)
+    assert result == [{"role": "assistant", "content": "Hi there!"}]
+    assert _system == []
+
+
+def test_convert_assistant_tool_calls() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": '{"command": "ls"}'},
+                }
+            ],
+        }
+    ]
+    result, _system = _convert_openai_messages_to_anthropic(messages)
+    assert len(result) == 1
+    assert result[0]["role"] == "assistant"
+    assert isinstance(result[0]["content"], list)
+    assert result[0]["content"][0]["type"] == "tool_use"
+    assert result[0]["content"][0]["name"] == "bash"
+    assert result[0]["content"][0]["input"] == {"command": "ls"}
+
+
+def test_convert_assistant_tool_calls_invalid_json() -> None:
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": "not-json"},
+                }
+            ],
+        }
+    ]
+    result, _ = _convert_openai_messages_to_anthropic(messages)
+    assert result[0]["content"][0]["input"] == {}
+
+
+def test_convert_tool_result() -> None:
+    messages = [{"role": "tool", "tool_call_id": "call_1", "content": "output text"}]
+    result, _ = _convert_openai_messages_to_anthropic(messages)
+    assert len(result) == 1
+    assert result[0]["role"] == "user"
+    assert result[0]["content"][0]["type"] == "tool_result"
+    assert result[0]["content"][0]["tool_use_id"] == "call_1"
+    assert result[0]["content"][0]["content"] == "output text"
+
+
+def test_convert_tool_result_empty_content() -> None:
+    messages = [{"role": "tool", "tool_call_id": "call_1", "content": ""}]
+    result, _ = _convert_openai_messages_to_anthropic(messages)
+    assert result[0]["content"][0]["content"] == ""
+
+
+def test_convert_mixed_messages() -> None:
+    messages = [
+        {"role": "system", "content": "System prompt"},
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"},
+        {"role": "user", "content": "Bye"},
+    ]
+    result, _system = _convert_openai_messages_to_anthropic(messages)
+    assert _system == ["System prompt"]
+    assert len(result) == 3
+    assert result[0]["role"] == "user"
+    assert result[1]["role"] == "assistant"
+    assert result[2]["role"] == "user"
+
+
+def test_convert_tools_empty_list() -> None:
+    result = _convert_openai_tools_to_anthropic([])
+    assert result == []
+
+
+def test_convert_tools_single() -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]},
+            },
+        }
+    ]
+    result = _convert_openai_tools_to_anthropic(tools)
+    assert len(result) == 1
+    assert result[0]["name"] == "bash"
+    assert result[0]["description"] == "Run a command"
+    assert result[0]["input_schema"]["type"] == "object"
+
+
+def test_convert_tools_missing_function_field() -> None:
+    tools = [{"type": "function"}]
+    result = _convert_openai_tools_to_anthropic(tools)
+    assert len(result) == 1
+    assert result[0]["name"] == ""
+    assert result[0]["input_schema"] == {"type": "object", "properties": {}, "required": []}

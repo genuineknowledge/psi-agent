@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import socket as _s
 import textwrap
 from pathlib import Path
 
 import pytest
 from aiohttp import web
 
-from psi_agent.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice
+from psi_agent.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.tools import load_tools_from_workspace
 
@@ -250,3 +251,111 @@ async def test_agent_history_accumulation(tmp_path: Path) -> None:
         assert len(agent.history) >= 4
     finally:
         await mock_server.cleanup()
+
+
+# --- Missing coverage: tool execution error paths ---
+
+
+async def _make_inline_ai_handler(responses: list[dict]):
+    """Create an aiohttp handler that returns predefined responses per request."""
+    req_count = 0
+    async def handler(request: web.Request) -> web.StreamResponse:
+        nonlocal req_count
+        idx = min(req_count, len(responses) - 1)
+        req_count += 1
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(f"data: {json.dumps(responses[idx])}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+    return handler
+
+
+def _tc(name: str, args: str) -> dict:
+    return {
+        "id": "mock", "object": "chat.completion.chunk", "created": 0, "model": "test",
+        "choices": [{"index": 0, "delta": {
+            "tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": name, "arguments": args}}],
+        }, "finish_reason": "tool_calls"}],
+    }
+
+
+def _stop(content: str) -> dict:
+    return {
+        "id": "mock", "object": "chat.completion.chunk", "created": 0, "model": "test",
+        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": "stop"}],
+    }
+
+
+@pytest.mark.anyio
+async def test_agent_tool_not_registered(tmp_path: Path) -> None:
+    handler = await _make_inline_ai_handler([_tc("unknown", '{}'), _stop("done")])
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        tf = ToolFunction(name="unknown", description="X", parameters={"type": "object", "properties": {}, "required": []})  # noqa: E501
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={"unknown": tf}, model="test")
+        chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
+        reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
+        assert "not found" in reasoning.lower()
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
+    handler = await _make_inline_ai_handler([_tc("crash", '{}'), _stop("recovered")])
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        async def crash_tool() -> str:
+            msg = "BOOM"
+            raise RuntimeError(msg)
+            return ""
+        tf = ToolFunction(name="crash", description="X", parameters={"type": "object", "properties": {}, "required": []})  # noqa: E501
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={"crash": tf}, model="test")
+        agent.register_tool_func("crash", crash_tool)
+        chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
+        reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
+        assert "BOOM" in reasoning or "RuntimeError" in reasoning
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_tool_returns_int(tmp_path: Path) -> None:
+    handler = await _make_inline_ai_handler([_tc("int_tool", '{}'), _stop("done")])
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        async def int_tool() -> int:
+            return 42
+        tf = ToolFunction(name="int_tool", description="X", parameters={"type": "object", "properties": {}, "required": []})  # noqa: E501
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={"int_tool": tf}, model="test")
+        agent.register_tool_func("int_tool", int_tool)
+        chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
+        reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
+        assert "42" in reasoning
+    finally:
+        await runner.cleanup()
