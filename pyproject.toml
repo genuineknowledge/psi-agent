@@ -52,6 +52,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 addopts = ["--strict-markers", "-ra", "--cov"]
+markers = ["slow: slow tests (schedule-based, > 30s)"]
 
 [tool.coverage.run]
 source = ["src/psi_agent"]

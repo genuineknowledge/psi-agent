@@ -8,7 +8,7 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
-from tests.integration.conftest import MockAIServer
+from tests.integration.conftest import MockAIServer, read_sse
 
 
 async def _send_async(socket_path: str, message: str) -> int:
@@ -265,3 +265,254 @@ async def test_history_accumulation_across_requests(tmp_path: Path, mock_ai_serv
         await _stop_process(ses_proc)
         await _stop_process(ai_proc)
         await mock_ai_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_three_channel_requests_fifo_order(tmp_path: Path) -> None:
+    """Three concurrent channel requests should complete in FIFO order."""
+    req_order: list[str] = []
+
+    async def slow_handler(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        msg = body["messages"][-1]["content"]  # last message = actual user input
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await anyio.sleep(0.5)
+        chunk = json.dumps(
+            {
+                "id": "mock",
+                "choices": [{"delta": {"content": msg}, "finish_reason": "stop"}],
+            }
+        )
+        await resp.write(f"data: {chunk}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        req_order.append(msg)
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", slow_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+
+    ai_socket = str(tmp_path / "ai.sock")
+    channel_socket = str(tmp_path / "channel.sock")
+
+    ai_proc = await anyio.open_process(
+        [
+            "uv",
+            "run",
+            "psi-agent",
+            "ai",
+            "openai-completions",
+            "--session-socket",
+            ai_socket,
+            "--model",
+            "test",
+            "--api-key",
+            "k",
+            "--base-url",
+            f"http://127.0.0.1:{port}/v1",
+        ]
+    )
+    ses_proc = await anyio.open_process(
+        [
+            "uv",
+            "run",
+            "psi-agent",
+            "session",
+            "--workspace",
+            "examples/a-simple-bash-only-workspace",
+            "--channel-socket",
+            channel_socket,
+            "--ai-socket",
+            ai_socket,
+            "--model",
+            "test",
+        ]
+    )
+
+    try:
+        assert await _wait_socket(ai_socket)
+        assert await _wait_socket(channel_socket)
+
+        async def read1() -> None:
+            await read_sse(channel_socket, "first")
+
+        async def read2() -> None:
+            await read_sse(channel_socket, "second")
+
+        async def read3() -> None:
+            await read_sse(channel_socket, "third")
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(read1)
+            tg.start_soon(read2)
+            tg.start_soon(read3)
+
+        assert len(req_order) >= 3, f"Expected >= 3 requests, got {len(req_order)}: {req_order}"
+        assert req_order[:3] == ["first", "second", "third"], f"FIFO violated: {req_order}"
+    finally:
+        await _stop_process(ses_proc)
+        await _stop_process(ai_proc)
+        await runner.cleanup()
+
+
+@pytest.mark.slow
+@pytest.mark.anyio
+async def test_channel_queues_behind_schedule(tmp_path: Path) -> None:
+    """Channel request queues behind a running schedule task."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = json.dumps({"id": "mock", "choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+        await resp.write(f"data: {chunk}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+
+    ai_socket = str(tmp_path / "ai.sock")
+    channel_socket = str(tmp_path / "channel.sock")
+
+    ai_proc = await anyio.open_process(
+        [
+            "uv",
+            "run",
+            "psi-agent",
+            "ai",
+            "openai-completions",
+            "--session-socket",
+            ai_socket,
+            "--model",
+            "test",
+            "--api-key",
+            "k",
+            "--base-url",
+            f"http://127.0.0.1:{port}/v1",
+        ]
+    )
+    ses_proc = await anyio.open_process(
+        [
+            "uv",
+            "run",
+            "psi-agent",
+            "session",
+            "--workspace",
+            "examples/a-simple-bash-only-workspace",
+            "--channel-socket",
+            channel_socket,
+            "--ai-socket",
+            ai_socket,
+            "--model",
+            "test",
+        ]
+    )
+
+    try:
+        assert await _wait_socket(ai_socket)
+        assert await _wait_socket(channel_socket)
+
+        # Wait for schedule to fire (~31s for first sleep + check)
+        await anyio.sleep(32)
+
+        # Send channel request — should queue behind schedule and succeed
+        chunks = await read_sse(channel_socket, "after schedule")
+        assert len(chunks) > 0
+    finally:
+        await _stop_process(ses_proc)
+        await _stop_process(ai_proc)
+        await runner.cleanup()
+
+
+@pytest.mark.slow
+@pytest.mark.anyio
+async def test_schedule_queues_behind_channel(tmp_path: Path) -> None:
+    """Schedule task queues behind a running channel request."""
+
+    async def slow_handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await anyio.sleep(4.0)
+        chunk = json.dumps({"id": "mock", "choices": [{"delta": {"content": "slow"}, "finish_reason": "stop"}]})
+        await resp.write(f"data: {chunk}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", slow_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+
+    ai_socket = str(tmp_path / "ai.sock")
+    channel_socket = str(tmp_path / "channel.sock")
+
+    ai_proc = await anyio.open_process(
+        [
+            "uv",
+            "run",
+            "psi-agent",
+            "ai",
+            "openai-completions",
+            "--session-socket",
+            ai_socket,
+            "--model",
+            "test",
+            "--api-key",
+            "k",
+            "--base-url",
+            f"http://127.0.0.1:{port}/v1",
+        ]
+    )
+    ses_proc = await anyio.open_process(
+        [
+            "uv",
+            "run",
+            "psi-agent",
+            "session",
+            "--workspace",
+            "examples/a-simple-bash-only-workspace",
+            "--channel-socket",
+            channel_socket,
+            "--ai-socket",
+            ai_socket,
+            "--model",
+            "test",
+        ]
+    )
+
+    try:
+        assert await _wait_socket(ai_socket)
+        assert await _wait_socket(channel_socket)
+
+        # Wait just under 30s, then send channel request
+        await anyio.sleep(29)
+        chunks = await read_sse(channel_socket, "before schedule")
+        assert len(chunks) > 0
+
+        # Schedule fires at ~30s, queues behind channel, processes after
+        await anyio.sleep(5)  # Wait for schedule to complete
+        chunks2 = await read_sse(channel_socket, "after schedule")
+        assert len(chunks2) > 0
+    finally:
+        await _stop_process(ses_proc)
+        await _stop_process(ai_proc)
+        await runner.cleanup()
