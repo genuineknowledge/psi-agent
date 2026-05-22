@@ -318,7 +318,7 @@ async def test_agent_tool_not_registered(tmp_path: Path) -> None:
     try:
         tf = ToolFunction(
             name="unknown", description="X", parameters={"type": "object", "properties": {}, "required": []}
-        )  # noqa: E501
+        )
         agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={"unknown": tf}, model="test")
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
@@ -348,7 +348,7 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
 
         tf = ToolFunction(
             name="crash", description="X", parameters={"type": "object", "properties": {}, "required": []}
-        )  # noqa: E501
+        )
         agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={"crash": tf}, model="test")
         agent.register_tool_func("crash", crash_tool)
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
@@ -377,7 +377,7 @@ async def test_agent_tool_returns_int(tmp_path: Path) -> None:
 
         tf = ToolFunction(
             name="int_tool", description="X", parameters={"type": "object", "properties": {}, "required": []}
-        )  # noqa: E501
+        )
         agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={"int_tool": tf}, model="test")
         agent.register_tool_func("int_tool", int_tool)
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
@@ -458,7 +458,7 @@ async def test_agent_non_data_sse_line(tmp_path: Path) -> None:
             b"data: "
             + json.dumps(
                 {"id": "t", "choices": [{"delta": {"content": "after event"}, "finish_reason": "stop"}]}
-            ).encode()  # noqa: E501
+            ).encode()
             + b"\n\n"
         )
         await resp.write(b"data: [DONE]\n\n")

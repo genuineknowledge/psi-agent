@@ -9,6 +9,11 @@ import pytest
 from aiohttp import ClientSession, UnixConnector, web
 
 from psi_agent.ai.anthropic_messages import AnthropicMessages
+from psi_agent.ai.anthropic_messages.server import (
+    _convert_anthropic_stream_to_openai_sse,
+    _convert_openai_messages_to_anthropic,
+    _convert_openai_tools_to_anthropic,
+)
 
 
 def test_cli_dataclass() -> None:
@@ -197,11 +202,6 @@ async def test_anthropic_tool_use_conversion(tmp_path: Path) -> None:
 
 # --- Unit tests for Anthropic protocol conversion functions ---
 
-from psi_agent.ai.anthropic_messages.server import (  # noqa: E402
-    _convert_openai_messages_to_anthropic,
-    _convert_openai_tools_to_anthropic,
-)
-
 
 def test_convert_system_message_to_anthropic() -> None:
     messages = [{"role": "system", "content": "You are helpful."}]
@@ -336,8 +336,6 @@ def test_convert_tools_missing_function_field() -> None:
 
 
 # --- Stream conversion edge case tests ---
-
-from psi_agent.ai.anthropic_messages.server import _convert_anthropic_stream_to_openai_sse  # noqa: E402
 
 
 class _FakeStreamResponse:
