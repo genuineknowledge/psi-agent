@@ -123,7 +123,7 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
      │ POST /v1/chat/completions                              │
      │ (不发送 history)         │                              │
      │────────────────────────▶│                              │
-     │                         │ 持有锁（忙→503 error JSON）   │
+     │                         │ 持有锁（后续请求排队等待）    │
      │                         │ 拼上 history + tools         │
      │                         │                              │
      │                         │ POST /v1/chat/completions    │
@@ -256,7 +256,7 @@ class Session:
 ```
 收到 channel 请求时：
   0. 检查暂存 schedule 响应 → 有则先流式返回（reasoning_content + content）
-  1. 持有锁（忙则返回 503 error JSON）
+  1. 获取 `anyio.Lock`（FIFO 排队等待）
   2. 将 user message 追加到 self.history
   3. 构建请求：model + history + tools → POST ai_socket
   4. SSE 流处理循环：
@@ -286,8 +286,7 @@ class Session:
 - 一个 session 实例只有一个 history
 
 **多 Channel 并发**：
-- 单请求处理，全局 `anyio.Lock`
-- 忙时返回 `503` + error JSON
+- 单请求处理，全局 `anyio.Lock`，后续请求 FIFO 排队等待
 
 ### 6.4 Tool 定义格式
 

@@ -274,7 +274,7 @@ git add psi_agent/logging.py tests/psi_agent/test_logging.py && git commit -m "f
 
 aiohttp Unix socket server 监听 `channel_socket`:
 - `POST /v1/chat/completions`: 解析请求，用 `SessionAgent.run()` 处理，SSE 流式返回
-- 用 `anyio.Lock` 确保单请求；忙时返回 503 + error JSON
+- 用 `anyio.Lock` 确保单请求，后续请求 FIFO 排队
 - 请求 body 中的 messages 只取最后一条 user 消息
 
 `SessionConfig.run()`: 加载 workspace（tools, system_prompt, schedules），启动后台 schedule runner，启动 channel server。
@@ -387,7 +387,7 @@ def main() -> None:
 
 #### Sub-task 15c: Session 并发/锁（4 tests）
 
-- [x] 第一个请求占锁时第二个返回 503 error JSON
+- [x] 第二个请求排队等待，第一个完成后顺序处理
 - [x] 锁释放后第三个请求正常处理
 - [x] schedule 触发时锁被占用 → 排队等待
 - [x] 两次连续请求 share 同一个 history → 验证 history 累积
@@ -413,7 +413,7 @@ def main() -> None:
 
 - [x] session socket 不存在 → 打印友好错误，exit code 1
 - [x] session 中途崩溃 → 打印错误退出
-- [x] 收到 503 error JSON → 打印 "Session busy"
+- [x] 并发请求排队，按 FIFO 顺序处理
 - [x] CLI --message 为空 → 正常处理
 
 #### Sub-task 15g: Channel REPL/CLI（4 tests）

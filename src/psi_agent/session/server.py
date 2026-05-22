@@ -9,14 +9,6 @@ from loguru import logger
 from psi_agent.protocol import ChatCompletionChunk, DeltaMessage, ErrorResponse, StreamChoice
 from psi_agent.session.agent import SessionAgent
 
-SESSION_BUSY_ERROR = {
-    "error": {
-        "message": "Session is currently processing another request",
-        "type": "session_busy",
-        "code": "busy",
-    }
-}
-
 
 async def serve_session(
     *,
@@ -49,10 +41,6 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.info("Received channel request")
     agent: SessionAgent = request.app["agent"]
     lock: anyio.Lock = request.app["lock"]
-
-    if lock.locked():
-        logger.warning("Session busy, returning 503")
-        return web.json_response(SESSION_BUSY_ERROR, status=503)
 
     try:
         body = await request.json()

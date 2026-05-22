@@ -57,7 +57,7 @@ async def _stop_process(proc) -> None:
 
 
 @pytest.mark.anyio
-async def test_second_request_gets_503_when_busy(tmp_path: Path) -> None:
+async def test_concurrent_requests_queue_and_succeed(tmp_path: Path) -> None:
 
     async def slow_handler(request: web.Request) -> web.StreamResponse:
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
@@ -135,7 +135,7 @@ async def test_second_request_gets_503_when_busy(tmp_path: Path) -> None:
             tg.start_soon(send_second)
 
         assert first_status == 200, f"Expected 200, got {first_status}"
-        assert second_status == 503, f"Expected 503, got {second_status}"
+        assert second_status == 200, f"Expected 200, got {second_status}"
 
     finally:
         await _stop_process(ses_proc)
