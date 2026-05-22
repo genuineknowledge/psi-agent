@@ -350,7 +350,7 @@ dependencies = [
     { name = "tyro" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -365,15 +365,18 @@ requires-dist = [
     { name = "croniter", specifier = ">=6.0" },
     { name = "loguru", specifier = ">=0.7" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.11" },
-    { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.38" },
     { name = "tyro", specifier = ">=0.9" },
 ]
-provides-extras = ["dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "ruff", specifier = ">=0.11" },
+    { name = "ty", specifier = ">=0.0.38" },
+]
 
 [[package]]
 name = "pygments"

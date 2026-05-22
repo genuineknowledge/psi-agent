@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "psi-agent"
 dynamic = ["version"]
 description = "A microkernel-style agent framework"
+readme = "README.md"
 authors = [{name = "Hao Zhang", email = "hzhangxyz@outlook.com"}]
 license = {text = "AGPL-3.0-or-later"}
 requires-python = ">=3.14"
@@ -20,7 +21,7 @@ dependencies = [
     "rich>=13.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
