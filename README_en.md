@@ -126,4 +126,4 @@ Hao Zhang <hzhangxyz@outlook.com>
 
 ## License
 
-GNU Affero General Public License v3.0 or later. See [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 or later. See [LICENSE](LICENSE.md).
