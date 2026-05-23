@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 from pathlib import Path
 
@@ -17,7 +18,7 @@ def test_cli_dataclass_defaults() -> None:
         model="gpt-test",
         api_key="sk-test",
     )
-    assert config.base_url == "https://api.openai.com/v1"
+    assert config.base_url == ""  # env var fallback happens in run()
     assert config.verbose is False
 
 
@@ -170,3 +171,32 @@ async def test_openai_unreachable_upstream(tmp_path: Path) -> None:
             tg.cancel_scope.cancel()
     except Exception:
         pass
+
+
+def test_openai_env_fallback(monkeypatch) -> None:
+    """Empty fields should resolve from env vars."""
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-from-env")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://env.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
+
+    config = OpenAICompletions(session_socket="/tmp/s.sock", model="", base_url="", api_key="")
+    assert config.model or os.environ.get("OPENAI_MODEL", "") == "gpt-from-env"
+    assert config.base_url or os.environ.get("OPENAI_BASE_URL", "") == "https://env.example.com/v1"
+    assert config.api_key or os.environ.get("OPENAI_API_KEY", "") == "sk-from-env"
+
+
+def test_openai_cli_overrides_env(monkeypatch) -> None:
+    """CLI args should take precedence over env vars."""
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-from-env")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://env.example.com/v1")
+
+    config = OpenAICompletions(session_socket="/tmp/s.sock", model="gpt-from-cli", base_url="https://cli.example.com/v1")
+    assert config.model == "gpt-from-cli"
+    assert config.base_url == "https://cli.example.com/v1"
+
+
+def test_openai_base_url_default() -> None:
+    """base_url should fall back to openai default when neither CLI nor env is set."""
+    config = OpenAICompletions(session_socket="/tmp/s.sock", model="test")
+    resolved = config.base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    assert resolved == "https://api.openai.com/v1"

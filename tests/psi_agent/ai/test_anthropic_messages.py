@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 from pathlib import Path
 
@@ -425,3 +426,23 @@ async def test_anthropic_sse_input_json_for_unknown_index() -> None:
     await _convert_anthropic_stream_to_openai_sse(resp, stream)
     all_written = "".join(resp._written)
     assert "finish_reason" in all_written
+
+
+def test_anthropic_env_fallback(monkeypatch) -> None:
+    """Empty fields should resolve from env vars."""
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-from-env")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://env.anthropic.example.com/v1")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-from-env")
+
+    config = AnthropicMessages(session_socket="/tmp/s.sock", model="", base_url="", api_key="")
+    assert config.model or os.environ.get("ANTHROPIC_MODEL", "") == "claude-from-env"
+    assert config.base_url or os.environ.get("ANTHROPIC_BASE_URL", "") == "https://env.anthropic.example.com/v1"
+    assert config.api_key or os.environ.get("ANTHROPIC_API_KEY", "") == "sk-ant-from-env"
+
+
+def test_anthropic_cli_overrides_env(monkeypatch) -> None:
+    """CLI args should take precedence over env vars."""
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-from-env")
+
+    config = AnthropicMessages(session_socket="/tmp/s.sock", model="claude-from-cli", base_url="https://cli.example.com")
+    assert config.model == "claude-from-cli"

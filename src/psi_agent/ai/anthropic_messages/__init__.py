@@ -19,11 +19,11 @@ class AnthropicMessages:
     session_socket: str
     """Path to the Unix domain socket to listen on."""
 
-    model: str
-    """Model name to use for upstream requests."""
+    model: str = ""
+    """Model name to use for upstream requests. Falls back to ANTHROPIC_MODEL env var."""
 
-    base_url: str
-    """Base URL of the upstream Anthropic-compatible API."""
+    base_url: str = ""
+    """Base URL of the upstream Anthropic-compatible API. Falls back to ANTHROPIC_BASE_URL env var."""
 
     api_key: str = ""
     """API key for the upstream service (x-api-key header). Falls back to ANTHROPIC_API_KEY env var."""
@@ -33,11 +33,13 @@ class AnthropicMessages:
 
     async def run(self) -> None:
         """Start the server and block until cancelled."""
+        model = self.model or os.environ.get("ANTHROPIC_MODEL", "")
         api_key = self.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        base_url = self.base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
         setup_logging(verbose=self.verbose)
         await serve_anthropic_messages(
             socket_path=self.session_socket,
-            model=self.model,
+            model=model,
             api_key=api_key,
-            base_url=self.base_url,
+            base_url=base_url,
         )
