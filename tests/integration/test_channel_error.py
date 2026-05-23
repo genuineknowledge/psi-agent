@@ -32,8 +32,8 @@ async def test_cli_session_socket_not_exists(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_session_busy_returns_503(tmp_path: Path) -> None:
-    """Session should return 503 error JSON when busy."""
+async def test_channel_client_handles_non_200(tmp_path: Path) -> None:
+    """Channel client should handle non-200 error responses."""
     channel_socket = tmp_path / "busy.sock"
 
     async def busy_handler(request: web.Request) -> web.StreamResponse:
