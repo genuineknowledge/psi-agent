@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import suppress
 from typing import Any
 
 import anyio
@@ -38,8 +37,6 @@ async def serve_anthropic_messages(
     finally:
         logger.info(f"Shutting down anthropic-messages on {socket_path}")
         await runner.cleanup()
-        with suppress(FileNotFoundError):
-            await anyio.Path(socket_path).unlink()
 
 
 def _convert_openai_tools_to_anthropic(tools: list[dict]) -> list[dict]:

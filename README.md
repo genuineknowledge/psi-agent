@@ -28,12 +28,12 @@
 # 安装
 uv sync
 
-# 终端 1：启动 AI 后端
+# 终端 1：启动 AI 后端（--api-key 可选，不传则读 OPENAI_API_KEY 环境变量）
 uv run psi-agent ai openai-completions \
   --session-socket ./ai.sock \
-  --model tencent/hy3-preview:free \
-  --api-key sk-or-v1-xxxx \
-  --base-url https://openrouter.ai/api/v1
+  --model gpt-4o-mini \
+  --api-key $OPENAI_API_KEY \
+  --base-url https://api.openai.com/v1
 
 # 终端 2：启动 Session
 uv run psi-agent session \

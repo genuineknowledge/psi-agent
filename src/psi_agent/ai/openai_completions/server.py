@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import suppress
 
 import anyio
 from aiohttp import ClientSession, TCPConnector, web
@@ -37,8 +36,6 @@ async def serve_openai_completions(
     finally:
         logger.info(f"Shutting down openai-completions on {socket_path}")
         await runner.cleanup()
-        with suppress(FileNotFoundError):
-            await anyio.Path(socket_path).unlink()
 
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:

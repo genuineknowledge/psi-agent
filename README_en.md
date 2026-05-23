@@ -28,12 +28,12 @@ Three terminals, three commands:
 # Install
 uv sync
 
-# Terminal 1: Start AI backend
+# Terminal 1: Start AI backend (--api-key optional, reads OPENAI_API_KEY env if omitted)
 uv run psi-agent ai openai-completions \
   --session-socket ./ai.sock \
-  --model tencent/hy3-preview:free \
-  --api-key sk-or-v1-xxxx \
-  --base-url https://openrouter.ai/api/v1
+  --model gpt-4o-mini \
+  --api-key $OPENAI_API_KEY \
+  --base-url https://api.openai.com/v1
 
 # Terminal 2: Start Session
 uv run psi-agent session \

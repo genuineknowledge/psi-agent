@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import suppress
 
 import anyio
 from aiohttp import web
@@ -38,8 +37,6 @@ async def serve_session(
     finally:
         logger.info(f"Shutting down session server on {channel_socket}")
         await runner.cleanup()
-        with suppress(FileNotFoundError):
-            await anyio.Path(channel_socket).unlink()
 
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
