@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import inspect
+from pathlib import Path
+
 import anyio
 from loguru import logger
 
 
-async def bash(command: str) -> str:
+async def bash(command: str, *, cwd: str | None = None) -> str:
     """Execute a bash command and return the combined stdout and stderr output.
 
     Args:
         command: The bash command to execute. Use with caution.
+        cwd: Working directory. Defaults to the workspace root.
     """
-    logger.info(f"Executing bash command: {command}")
+    if cwd is None:
+        cwd = str(Path(inspect.getfile(bash)).parent.parent)
+
+    logger.info(f"Executing bash command: {command} (cwd={cwd})")
     try:
-        result = await anyio.run_process(["/bin/bash", "-c", command])
+        result = await anyio.run_process(["/bin/bash", "-c", command], cwd=cwd)
         stdout = result.stdout.decode().strip()
         stderr = result.stderr.decode().strip()
         output = stdout
