@@ -148,9 +148,24 @@ async def test_upstream_connection_refused(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_upstream_sse_disconnects_mid_stream(tmp_path: Path, mock_ai_server: MockAIServer) -> None:
-    mock_ai_server.set_responses([_chunk(content="partial")])
-    await mock_ai_server.start()
+async def test_upstream_sse_disconnects_mid_stream(tmp_path: Path) -> None:
+    """Truncated upstream SSE should be forwarded gracefully — partial content received, no crash."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(f"data: {_chunk(content='partial')}\n\n".encode())
+        return resp  # no [DONE], connection closes here
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
 
     socket_path = str(tmp_path / "ai.sock")
     ai_proc = await anyio.open_process(
@@ -167,17 +182,19 @@ async def test_upstream_sse_disconnects_mid_stream(tmp_path: Path, mock_ai_serve
             "--api-key",
             "k",
             "--base-url",
-            mock_ai_server.base_url,
+            f"http://127.0.0.1:{port}/v1",
         ]
     )
 
     try:
         assert await _wait_socket(socket_path)
         chunks = await read_sse(socket_path, "hello")
-        all_text = "".join(json.dumps(c) for c in chunks)
-        assert "error" in all_text.lower()
+        assert len(chunks) >= 1
+        content = "".join(c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks)
+        assert "partial" in content, f"Expected partial content, got: {content[:200]}"
     finally:
         await _stop_process(ai_proc)
+        await runner.cleanup()
 
 
 @pytest.mark.anyio
