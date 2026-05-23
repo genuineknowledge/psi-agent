@@ -46,6 +46,7 @@ psi/
 │   └── psi_agent/
 │   ├── __init__.py
 │   ├── cli.py                      # tyro CLI 入口
+│   ├── _yaml.py                    # 共享 YAML header 解析
 │   ├── logging.py                  # loguru 配置
 │   ├── protocol.py                 # OpenAI 兼容协议类型
 │   ├── ai/
@@ -99,10 +100,10 @@ psi/
 │       ├── tools/
 │       │   └── bash.py
 │       ├── skills/
-│       │   └── bash-expert/
+│       │   └── hyw/
 │       │       └── SKILL.md
 │       ├── schedules/
-│       │   └── daily-report/
+│       │   └── test-task/
 │       │       └── TASK.md
 │       └── systems/
 │           └── system.py
@@ -148,16 +149,18 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
 
 **通信协议**：所有 socket 端点使用标准 HTTP/SSE（OpenAI Chat Completions 兼容格式），通过 aiohttp 的 Unix socket 支持。
 
-**错误响应格式**（统一）：
-```json
-{
-  "error": {
-    "message": "Session is currently processing another request",
-    "type": "session_busy",
-    "code": "busy"
-  }
-}
-```
+**错误响应格式**（两种形式）：
+
+1. **非流式（HTTP 层面）**：请求解析失败等，在 `response.prepare()` 之前返回
+   ```json
+   {"error": {"message": "...", "type": "...", "code": "..."}}
+   ```
+
+2. **流式（SSE 层面）**：已 commit HTTP 200 后发生的错误（上游异常、连接断开等），使用 ChatCompletionChunk 格式
+   ```json
+   {"id": "error", "choices": [{"index": 0, "delta": {"content": "[Upstream Error 401]: ..."}, "finish_reason": "error"}]}
+   ```
+   所有层统一使用 `finish_reason="error"` 标记流式错误，Session 检测到后不写入 conversation history。
 
 ---
 
@@ -168,11 +171,11 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
 **Dataclass**（定义在 `psi_agent/ai/openai_completions/__init__.py`）：
 ```python
 @dataclass
-class AiOpenAICompletions:
+class OpenAICompletions:
     session_socket: str
-    model: str
-    api_key: str
-    base_url: str = "https://api.openai.com/v1"
+    model: str = ""
+    api_key: str = ""
+    base_url: str = ""
     verbose: bool = False
 
     async def run(self) -> None: ...
@@ -182,6 +185,8 @@ class AiOpenAICompletions:
 - 在 `session_socket` 上启动 aiohttp Unix socket HTTP server
 - 接收 OpenAI-compatible `POST /v1/chat/completions` 请求
 - 转发到 `base_url`（设置 `model` + `api_key` 的 Authorization header）
+- `--model`、`--base-url`、`--api-key` 均为可选参数，未提供则从环境变量 `OPENAI_MODEL` / `OPENAI_BASE_URL` / `OPENAI_API_KEY` 读取
+- `base_url` 最终 fallback 为 `https://api.openai.com/v1`
 - 流式 SSE 透传
 - 每个请求和 chunk 打 DEBUG 日志
 
@@ -190,11 +195,11 @@ class AiOpenAICompletions:
 **Dataclass**（定义在 `psi_agent/ai/anthropic_messages/__init__.py`）：
 ```python
 @dataclass
-class AiAnthropicMessages:
+class AnthropicMessages:
     session_socket: str
-    model: str
-    api_key: str
-    base_url: str
+    model: str = ""
+    api_key: str = ""
+    base_url: str = ""
     verbose: bool = False
 
     async def run(self) -> None: ...
@@ -204,6 +209,7 @@ class AiAnthropicMessages:
 - 接收 OpenAI-compatible `POST /v1/chat/completions` 请求
 - 将 OpenAI 格式的 messages 和 tools 转换为 Anthropic Messages API 格式
 - 转发到 `base_url`（x-api-key header + anthropic-version header）
+- `--model`、`--base-url`、`--api-key` 均可选，未提供则从环境变量 `ANTHROPIC_MODEL` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` 读取
 - 将 Anthropic 响应流转换为 OpenAI SSE 格式：
   - Anthropic `thinking` block → OpenAI `reasoning_content`
   - Anthropic `text` block → OpenAI `content`
@@ -228,9 +234,9 @@ class Session:
     async def run(self) -> None: ...
 ```
 
-### 6.2 Workspace 解析（`workspace.py`）
+### 6.2 Workspace 解析
 
-**Tool 加载**（`tools.py`）：
+**Tool 加载**（`tools.py` + `session/__init__.py`）：
 - 遍历 `workspace/tools/*.py`
 - 对每个 `.py` 文件，找到**与文件名同名**的函数（例如 `bash.py` → `bash` 函数）
 - 用 `inspect.signature()` 解析参数（类型注解、默认值）
@@ -247,7 +253,7 @@ class Session:
 - 遍历 `workspace/schedules/*/TASK.md`
 - 解析 YAML front matter（`name`, `cron`）
 - 用 `croniter` 解析 cron 表达式
-- 启动后台 anyio task，轮询检查触发时机
+- 启动独立 anyio task，每个 schedule 一个 task，各自 sleep + 触发
 - 触发时：将 markdown body 作为 user message 加上标注（"[Schedule Task: {name}]"）发送给 AI
 - AI 回复暂存于 session 内部，下次 channel 请求时和新回复一起返回
 
@@ -270,9 +276,11 @@ class Session:
          d. 将 assistant_message(tool_calls) + tool_result 追加到 history
          e. 将 tool 调用意图和结果包装为 reasoning_content chunk，发送到 channel
          f. 继续第 3 步（最多循环 10 轮）
-     - finish_reason="stop":
-         最终 content 流式完成
-  5. 释放锁
+      - finish_reason="stop":
+          最终 content 流式完成
+      - finish_reason="error":
+          停止处理，错误不写入 history
+   5. 释放锁
 ```
 
 **Schedule 响应处理**：
@@ -340,7 +348,7 @@ class ChannelRepl:
   - SSE 流式接收，实时显示：
     - `reasoning_content`：dimmed/灰色显示（标注 `[思考]`）
     - `content`：正常显示
-  - Ctrl+C / Ctrl+D 退出
+  - Ctrl+D 退出
 - 历史不传递，每次请求只发一条 user message
 
 ### 7.2 CLI（`channel/cli/`）
@@ -389,7 +397,7 @@ ChannelGroup = Annotated[
 ]
 
 def main() -> None:
-    cmd = tyro.cli(SessionConfig | AiGroup | ChannelGroup)
+    cmd = tyro.cli(Session | AiGroup | ChannelGroup)
     anyio.run(cmd.run)
 ```
 
@@ -501,28 +509,40 @@ async def bash(command: str) -> str:
 """Build the system prompt for the bash-only agent."""
 import inspect
 from pathlib import Path
+from psi_agent._yaml import parse_yaml_header
 
 async def system_prompt_builder() -> str:
-    skills_dir = Path(inspect.getfile(system_prompt_builder)).parent.parent / "skills"
+    current_file = Path(inspect.getfile(system_prompt_builder))
+    workspace_root = current_file.parent.parent
+    skills_dir = workspace_root / "skills"
+
     skills = []
-    for skill_dir in skills_dir.iterdir():
-        if skill_dir.is_dir():
+    if skills_dir.is_dir():
+        for skill_dir in sorted(skills_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
             skill_md = skill_dir / "SKILL.md"
-            if skill_md.exists():
-                skills.append(skill_md.read_text())
+            if not skill_md.exists():
+                continue
+            header, _ = parse_yaml_header(skill_md.read_text())
+            if header and header.get("name") and header.get("description"):
+                skills.append(f"- {header['name']}: {header['description']}")
 
-    workspace_root = Path(inspect.getfile(system_prompt_builder)).parent.parent
+    skills_text = "\n".join(skills) if skills else "(None)"
 
-    return f"""You are a helpful assistant with bash access.
-Workspace location: {workspace_root}
+    return f"""You are a helpful AI assistant.
 
-Available skills:
-{chr(10).join(skills)}
+## Workspace
+Location: {workspace_root}
 
-Use the bash tool when you need to execute commands."""
+## Skills
+Location: {skills_dir}
+
+Available:
+{skills_text}"""
 ```
 
-### `schedules/daily-report/TASK.md`
+### `schedules/test-task/TASK.md`
 ```yaml
 ---
 name: daily-report
@@ -537,4 +557,7 @@ cron: "0 12 * * *"
 
 | 日期 | 版本 | 变更 |
 |------|------|------|
-| 2026-05-20 | v0.1.0-draft | 初始设计规格 |
+| 2026-05-20 | v0.1.0-draft | 初始设计规格：微内核架构、三组件 Unix socket 通信、OpenAI/Anthropic AI 后端、REPL+CLI Channel、Workspace 驱动 |
+| 2026-05-21 | v0.1.1 | 技术栈补充：prompt-toolkit 异步 REPL；集成测试计划扩展（15 个 corner case 类别，40+ 测试场景） |
+| 2026-05-22 | v0.1.2 | 架构调整：src-layout、Rich Console 替代 print()、per-file-ignore 清零、ruff 规则扩展（B/RUF/N/T20/PLC）、2 处 ty:ignore 定型 |
+| 2026-05-23 | v0.2.0 | 并发模型重构（FIFO 排队）、调度器重构（每 schedule 独立 task）、统一 SSE 流错误格式、去重 _yaml.py、CLI 参数全支持环境变量（model/base_url/api_key）、错误不污染 history、137 测试全绿 |

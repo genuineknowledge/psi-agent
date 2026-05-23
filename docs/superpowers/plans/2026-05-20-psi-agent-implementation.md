@@ -55,10 +55,10 @@ source = "vcs"
 
 [tool.ruff]
 target-version = "py314"
-line-length = 100
+line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4"]
+select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -198,7 +198,7 @@ git add psi_agent/logging.py tests/psi_agent/test_logging.py && git commit -m "f
 
 **Files:** `psi_agent/ai/__init__.py`, `psi_agent/ai/openai_completions/__init__.py`, `psi_agent/ai/openai_completions/server.py`, `tests/psi_agent/ai/test_openai_completions.py`
 
-**Dataclass:** `AiOpenAICompletions(session_socket, model, api_key, base_url, verbose)` with `async run()`
+**Dataclass:** `OpenAICompletions(session_socket, model, api_key, base_url, verbose)` with `async run()`
 
 **Server:** aiohttp Unix socket HTTP server，接收 `POST /v1/chat/completions`，透传到上游（设置 Authorization header + model），SSE 流式返回。每个 chunk 打 DEBUG 日志。
 
@@ -243,7 +243,7 @@ git add psi_agent/logging.py tests/psi_agent/test_logging.py && git commit -m "f
 3. 用 `croniter` 解析 cron 表达式
 4. `Schedule.to_user_message()` 生成带标注的 user message
 
-`ScheduleRunner` 后台 anyio task 定期检查触发。
+`_run_one_schedule` 独立 anyio task，每个 schedule 一个。
 
 ---
 
@@ -277,7 +277,7 @@ aiohttp Unix socket server 监听 `channel_socket`:
 - 用 `anyio.Lock` 确保单请求，后续请求 FIFO 排队
 - 请求 body 中的 messages 只取最后一条 user 消息
 
-`SessionConfig.run()`: 加载 workspace（tools, system_prompt, schedules），启动后台 schedule runner，启动 channel server。
+`Session.run()`: 加载 workspace（tools, system_prompt, schedules），每个 schedule 启动独立 anyio task，启动 channel server。
 
 ---
 
@@ -312,14 +312,14 @@ aiohttp Unix socket server 监听 `channel_socket`:
 from tyro import conf
 from typing import Annotated
 
-from psi_agent.ai.openai_completions import AiOpenAICompletions
-from psi_agent.ai.anthropic_messages import AiAnthropicMessages
-from psi_agent.session import SessionConfig
+from psi_agent.ai.openai_completions import OpenAICompletions
+from psi_agent.ai.anthropic_messages import AnthropicMessages
+from psi_agent.session import Session
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.cli import ChannelCli
 
 AiGroup = Annotated[
-    AiOpenAICompletions | AiAnthropicMessages,
+    OpenAICompletions | AnthropicMessages,
     conf.subcommand(name="ai", description="AI backend services"),
 ]
 ChannelGroup = Annotated[
@@ -329,7 +329,7 @@ ChannelGroup = Annotated[
 
 def main() -> None:
     import anyio
-    cmd = tyro.cli(SessionConfig | AiGroup | ChannelGroup)
+    cmd = tyro.cli(Session | AiGroup | ChannelGroup)
     anyio.run(cmd.run)
 ```
 
@@ -457,10 +457,23 @@ def main() -> None:
 | GitHub CI | `.github/workflows/ci.yml`（push/PR → lint → test，tag → PyPI publish via Trusted Publisher） |
 | Dependabot | `.github/dependabot.yml`（pip + github-actions，weekly） |
 | 最终抑制 | **2 处 ty:ignore**（tyro overload + pytest fixture），**0 ruff noqa**，**0 per-file-ignore** |
+| 并发/调度重构 | FIFO 排队替代 503、每 schedule 独立 anyio task、去重 _yaml.py、统一 SSE 错误格式、CLI 环境变量支持（model/base_url/api_key）、`response.prepare()` 移入 lock、Socket 手动清理策略 |
 
 ### 最终测试覆盖
 
 - **单元测试**: 97 tests（覆盖所有源模块除 `cli.py` 和 channel 客户端）
-- **集成测试**: 32 tests（AI 层、Session 并发/tool/workspace、Channel、端到端）
+- **集成测试**: 36 tests（AI 层、Session 并发/tool/workspace、Channel、端到端）
 - **真实 API 测试**: 4 tests（通过 `PSI_TEST_*` 环境变量注入凭证）
+- **总计**: 137 tests
 
+
+---
+
+## 版本历史
+
+| 日期 | 版本 | 变更 |
+|------|------|------|
+| 2026-05-20 | v0.1.0 | 15 任务实施计划：脚手架、协议类型、AI 层、Session 层（tools/scheduler/agent/server）、Channel 层（REPL/CLI）、CLI 入口、示例 Workspace |
+| 2026-05-21 | v0.1.1 | 集成测试计划扩展：15 个 corner case 类别（40+ 测试场景）；实现备注补充（Rich、src-layout、per-file-ignore 清零） |
+| 2026-05-22 | v0.1.2 | 最终测试覆盖数（133 tests）；质量修正汇总（src-layout、Rich、ruff 规则、AGPLv3、CI/CD、Dependabot） |
+| 2026-05-23 | v0.2.0 | 并发模型重构（FIFO queuing）、调度器重构（per-task）、统一 SSE 错误格式、CLI 环境变量支持、_yaml.py 去重；测试数 133→137 |
