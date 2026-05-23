@@ -183,7 +183,6 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                     }
                 )
                 await response.write(f"data: {err_chunk}\n\n".encode())
-                await response.write(b"data: [DONE]\n\n")
                 return response
 
             await _convert_anthropic_stream_to_openai_sse(response, upstream_resp.content)
@@ -203,10 +202,8 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             }
         )
         await response.write(f"data: {err_chunk}\n\n".encode())
-        await response.write(b"data: [DONE]\n\n")
         return response
 
-    await response.write(b"data: [DONE]\n\n")
     logger.debug("Request completed")
     return response
 
