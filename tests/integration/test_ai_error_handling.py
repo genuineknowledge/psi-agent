@@ -174,8 +174,8 @@ async def test_upstream_sse_disconnects_mid_stream(tmp_path: Path, mock_ai_serve
     try:
         assert await _wait_socket(socket_path)
         chunks = await read_sse(socket_path, "hello")
-        assert len(chunks) >= 1
-        assert any("partial" in json.dumps(c) for c in chunks)
+        all_text = "".join(json.dumps(c) for c in chunks)
+        assert "error" in all_text.lower()
     finally:
         await _stop_process(ai_proc)
 
@@ -218,8 +218,11 @@ async def test_upstream_401_tunnelled(tmp_path: Path) -> None:
     try:
         assert await _wait_socket(socket_path)
         chunks = await read_sse(socket_path, "hello")
-        all_text = "".join(json.dumps(c) for c in chunks)
-        assert "error" in all_text.lower()
+        assert len(chunks) >= 1, "Expected at least 1 error chunk"
+        content = chunks[0].get("choices", [{}])[0].get("delta", {}).get("content", "")
+        finish = chunks[0].get("choices", [{}])[0].get("finish_reason", "")
+        assert "Upstream Error 401" in content, f"Got: {content[:200]}"
+        assert finish == "error", f"Expected finish_reason='error', got {finish!r}"
     finally:
         await _stop_process(proc)
         await runner.cleanup()
