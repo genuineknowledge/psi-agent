@@ -120,16 +120,16 @@ Expected: `uv build` 成功生成 `dist/psi_agent-0.1.0.tar.gz`
 ### Task 2: 日志模块
 
 **Files:**
-- Create: `psi_agent/logging.py`
-- Create: `tests/psi_agent/test_logging.py`
+- Create: `psi_agent/_logging.py`
+- Create: `tests/psi_agent/test__logging.py`
 
 - [x] **Step 1: 写测试**
 
 ```python
-# tests/psi_agent/test_logging.py
+# tests/psi_agent/test__logging.py
 from loguru import logger
 
-from psi_agent.logging import setup_logging
+from psi_agent._logging import setup_logging
 
 
 def test_setup_logging_default_info():
@@ -146,10 +146,10 @@ def test_setup_logging_verbose_debug():
     logger.remove(handler_id)
 ```
 
-- [x] **Step 2: 实现 logging.py**
+- [x] **Step 2: 实现 _logging.py**
 
 ```python
-# psi_agent/logging.py
+# psi_agent/_logging.py
 import sys
 
 from loguru import logger
@@ -174,15 +174,15 @@ def setup_logging(*, verbose: bool = False) -> int:
 - [x] **Step 3: 跑测试 + 提交**
 
 ```bash
-uv run pytest tests/psi_agent/test_logging.py -v
-git add psi_agent/logging.py tests/psi_agent/test_logging.py && git commit -m "feat: add loguru-based logging setup"
+uv run pytest tests/psi_agent/test__logging.py -v
+git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m "feat: add loguru-based logging setup"
 ```
 
 ---
 
 ### Task 3: OpenAI 协议类型
 
-**Files:** `psi_agent/protocol.py`, `tests/psi_agent/test_protocol.py`
+**Files:** `psi_agent/_protocol.py`, `tests/psi_agent/test__protocol.py`
 
 实现 `Message`, `ToolFunction`, `ToolDef`, `ChatCompletionRequest`, `DeltaMessage`, `StreamChoice`, `ChatCompletionChunk`, `ErrorResponse` 等 dataclass。核心功能：
 - `ToolFunction.from_callable()` 从 async 函数 inspect 出 name/description/parameters
@@ -477,3 +477,4 @@ def main() -> None:
 | 2026-05-21 | v0.1.1 | 集成测试计划扩展：15 个 corner case 类别（40+ 测试场景）；实现备注补充（Rich、src-layout、per-file-ignore 清零） |
 | 2026-05-22 | v0.1.2 | 最终测试覆盖数（133 tests）；质量修正汇总（src-layout、Rich、ruff 规则、AGPLv3、CI/CD、Dependabot） |
 | 2026-05-23 | v0.2.0 | 并发模型重构（FIFO queuing）、调度器重构（per-task）、统一 SSE 错误格式、CLI 环境变量支持、_yaml.py 去重；测试数 133→137 |
+| 2026-05-24 | v0.2.1 | 内部模块规范化：`logging.py` → `_logging.py`、`protocol.py` → `_protocol.py` |

@@ -6,7 +6,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
-from psi_agent.protocol import ChatCompletionChunk, DeltaMessage, ErrorResponse, StreamChoice
+from psi_agent._protocol import ChatCompletionChunk, DeltaMessage, ErrorResponse, StreamChoice
 from psi_agent.session.agent import SessionAgent
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from psi_agent.logging import setup_logging
+from psi_agent._logging import setup_logging
 
 from .server import serve_anthropic_messages
 

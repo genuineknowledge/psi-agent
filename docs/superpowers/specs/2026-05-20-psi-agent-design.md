@@ -47,8 +47,8 @@ psi/
 │   ├── __init__.py
 │   ├── cli.py                      # tyro CLI 入口
 │   ├── _yaml.py                    # 共享 YAML header 解析
-│   ├── logging.py                  # loguru 配置
-│   ├── protocol.py                 # OpenAI 兼容协议类型
+│   ├── _logging.py                  # loguru 配置
+│   ├── _protocol.py                 # OpenAI 兼容协议类型
 │   ├── ai/
 │   │   ├── __init__.py
 │   │   ├── openai_completions/
@@ -416,7 +416,7 @@ psi-agent channel cli --session-socket ... --message ...
 
 ## 9. 日志规范
 
-**配置**（`psi_agent/logging.py`）：
+**配置**（`psi_agent/_logging.py`）：
 ```python
 from loguru import logger
 
@@ -561,3 +561,4 @@ cron: "0 12 * * *"
 | 2026-05-21 | v0.1.1 | 技术栈补充：prompt-toolkit 异步 REPL；集成测试计划扩展（15 个 corner case 类别，40+ 测试场景） |
 | 2026-05-22 | v0.1.2 | 架构调整：src-layout、Rich Console 替代 print()、per-file-ignore 清零、ruff 规则扩展（B/RUF/N/T20/PLC）、2 处 ty:ignore 定型 |
 | 2026-05-23 | v0.2.0 | 并发模型重构（FIFO 排队）、调度器重构（每 schedule 独立 task）、统一 SSE 流错误格式、去重 _yaml.py、CLI 参数全支持环境变量（model/base_url/api_key）、错误不污染 history、137 测试全绿 |
+| 2026-05-24 | v0.2.1 | 内部模块规范化：`logging.py` → `_logging.py`、`protocol.py` → `_protocol.py` |

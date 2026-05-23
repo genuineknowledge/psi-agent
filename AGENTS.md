@@ -51,8 +51,8 @@ src/
 └── psi_agent/
     ├── cli.py                  # tyro CLI 入口，定义 top-level Union
     ├── _yaml.py               # 共享 YAML header 解析（scheduler + workspace system.py）
-    ├── logging.py              # loguru 配置，verbose→DEBUG
-    ├── protocol.py             # OpenAI 兼容协议 dataclass
+    ├── _logging.py              # loguru 配置，verbose→DEBUG
+    ├── _protocol.py             # OpenAI 兼容协议 dataclass
     ├── ai/
     │   ├── openai_completions/ # OpenAI→OpenAI 透传后端
     │   └── anthropic_messages/ # Anthropic→OpenAI 转换后端（含 thinking 转换）

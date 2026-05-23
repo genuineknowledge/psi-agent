@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from psi_agent.logging import setup_logging
+from psi_agent._logging import setup_logging
 
 from .client import run_cli
 

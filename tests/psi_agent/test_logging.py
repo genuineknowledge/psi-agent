@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from loguru import logger
 
-from psi_agent.logging import setup_logging
+from psi_agent._logging import setup_logging
 
 
 def test_setup_logging_default_info() -> None:

@@ -12,7 +12,7 @@ from typing import Any
 import anyio
 from loguru import logger
 
-from psi_agent.logging import setup_logging
+from psi_agent._logging import setup_logging
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.scheduler import Schedule, load_schedules_from_workspace
 from psi_agent.session.server import serve_session

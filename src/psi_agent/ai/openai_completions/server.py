@@ -6,7 +6,7 @@ import anyio
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
 from loguru import logger
 
-from psi_agent.protocol import ErrorResponse
+from psi_agent._protocol import ErrorResponse
 
 
 async def serve_openai_completions(
