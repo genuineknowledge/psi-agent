@@ -80,8 +80,8 @@ src/
 7. 注册 tool callables：重新遍历 tools/*.py，找到 async 函数并 agent.register_tool_func(name, func)
 8. 创建 anyio.Lock()
 9. 启动 anyio.task_group：
-   ├── schedule_loop(): 动态 sleep（最多 30s）检查 cron，触发时将 AI 回复暂存
-   └── partial(serve_session, ...): aiohttp Unix socket server
+   ├── serve_session(...): aiohttp Unix socket server
+   └── 每个 schedule 一个独立 anyio task（各自 sleep + 触发）
 ```
 
 **关键点**：tool 的注册分两阶段——
@@ -158,14 +158,16 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 ## Schedule 机制完整流程
 
 ```
-后台 loop（动态 sleep，最多 30s）：
-  for schedule in schedules:
-    if schedule.should_run_now():    ← croniter 比较上次运行时间
+每个 schedule 一个独立 anyio task：
+  while True:
+    croniter.get_next_run()         ← 计算下次触发时间
+    await anyio.sleep(触发时间 - now) ← 睡到触发
+    if schedule.should_run_now():   ← 双重确认
       schedule.mark_run()
       用 schedule.to_user_message() 构造带标注的 user msg
         ↓
-      async with lock:               ← 等当前请求完成
-        调用 agent.run(msg)          ← AI 处理
+      async with lock:              ← 等当前请求完成
+        调用 agent.run(msg)         ← AI 处理
         流式结果追加到 pending_chunks
         agent.set_pending_schedule_chunks(chunks)
         ↓
@@ -176,8 +178,8 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 
 关键点：
 - Schedule 响应的 content 和 reasoning_content 各自存在于各自的消息周期，不会交错
-- 如果连续多个 schedule 在同一个 30s 窗口触发，按顺序逐个处理
-- cron 表达式非法时，加载阶段直接 skip 该 schedule
+- 多个 schedule 可以并发 sleep，但通过 lock 串行触发
+- cron 表达式非法时，该 schedule task 每 60s 重试一次
 
 ## Anthropic 转换细节
 
