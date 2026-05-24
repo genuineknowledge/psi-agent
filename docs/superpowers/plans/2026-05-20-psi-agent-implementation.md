@@ -182,7 +182,7 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 
 ### Task 3: OpenAI 协议类型
 
-**Files:** `psi_agent/_protocol.py`, `tests/psi_agent/test__protocol.py`
+**Files:** `psi_agent/session/protocol.py`, `tests/psi_agent/session/test_protocol.py`
 
 实现 `Message`, `ToolFunction`, `ToolDef`, `ChatCompletionRequest`, `DeltaMessage`, `StreamChoice`, `ChatCompletionChunk`, `ErrorResponse` 等 dataclass。核心功能：
 - `ToolFunction.from_callable()` 从 async 函数 inspect 出 name/description/parameters
@@ -478,3 +478,4 @@ def main() -> None:
 | 2026-05-22 | v0.1.2 | 最终测试覆盖数（133 tests）；质量修正汇总（src-layout、Rich、ruff 规则、AGPLv3、CI/CD、Dependabot） |
 | 2026-05-23 | v0.2.0 | 并发模型重构（FIFO queuing）、调度器重构（per-task）、统一 SSE 错误格式、CLI 环境变量支持、_yaml.py 去重；测试数 133→137 |
 | 2026-05-24 | v0.2.1 | 内部模块规范化：`logging.py` → `_logging.py`、`protocol.py` → `_protocol.py` |
+| 2026-05-24 | v0.2.2 | 协议类型拆分：`_protocol.py` 拆为 `session/protocol.py` + `ai/common.py`，ErrorResponse 独立实现，提取 `build_error_sse_chunk` |

@@ -52,19 +52,20 @@ src/
     ├── cli.py                  # tyro CLI 入口，定义 top-level Union
     ├── _yaml.py               # 共享 YAML header 解析（scheduler + workspace system.py）
     ├── _logging.py              # loguru 配置，verbose→DEBUG
-    ├── _protocol.py             # OpenAI 兼容协议 dataclass
     ├── ai/
-    │   ├── openai_completions/ # OpenAI→OpenAI 透传后端
-    │   └── anthropic_messages/ # Anthropic→OpenAI 转换后端（含 thinking 转换）
+    │   ├── common.py               # AI 后端共享（ErrorResponse + build_error_sse_chunk）
+    │   ├── openai_completions/     # OpenAI→OpenAI 透传后端
+    │   └── anthropic_messages/     # Anthropic→OpenAI 转换后端（含 thinking 转换）
     ├── session/
-    │   ├── __init__.py         # Session dataclass + run()，workspace 加载入口
-    │   ├── server.py           # channel 端 aiohttp server，单锁串行
-    │   ├── agent.py            # 核心 agent loop（history + tool call + streaming）
-    │   ├── tools.py            # workspace tools 加载（async anyio.Path）
-    │   └── scheduler.py        # cron-based 定时任务（croniter）
+    │   ├── __init__.py             # Session dataclass + run()，workspace 加载入口
+    │   ├── server.py               # channel 端 aiohttp server，单锁串行
+    │   ├── agent.py                # 核心 agent loop（history + tool call + streaming）
+    │   ├── protocol.py             # Session 层协议类型（ChatCompletionChunk 等）
+    │   ├── tools.py                # workspace tools 加载（async anyio.Path）
+    │   └── scheduler.py            # cron-based 定时任务（croniter）
     └── channel/
-        ├── repl/               # 交互式 REPL（Rich Console + prompt_toolkit multiline）
-        └── cli/                # 单次消息 CLI（Rich 格式化输出）
+        ├── repl/                   # 交互式 REPL（Rich Console + prompt_toolkit multiline）
+        └── cli/                    # 单次消息 CLI（Rich 格式化输出）
 ```
 
 项目使用 **src-layout**（`src/psi_agent/`），由 `uv sync` 安装为 editable package。

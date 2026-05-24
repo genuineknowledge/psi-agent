@@ -7,7 +7,7 @@ from typing import Any
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, UnixConnector
 from loguru import logger
 
-from psi_agent._protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
+from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 
 MAX_TOOL_ROUNDS = 10
 

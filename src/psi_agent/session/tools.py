@@ -8,7 +8,7 @@ from pathlib import Path
 import anyio
 from loguru import logger
 
-from psi_agent._protocol import ToolFunction
+from psi_agent.session.protocol import ToolFunction
 
 
 async def load_tools_from_workspace(tools_dir: Path) -> dict[str, ToolFunction]:

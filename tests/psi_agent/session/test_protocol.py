@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from psi_agent._protocol import (
+from psi_agent.session.protocol import (
     ChatCompletionChunk,
     DeltaMessage,
     ErrorResponse,

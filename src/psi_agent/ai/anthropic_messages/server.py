@@ -7,7 +7,7 @@ import anyio
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
 from loguru import logger
 
-from psi_agent._protocol import ErrorResponse
+from psi_agent.ai.common import ErrorResponse, build_error_sse_chunk
 
 
 async def serve_anthropic_messages(
@@ -169,38 +169,14 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             if upstream_resp.status != 200:
                 error_text = await upstream_resp.text()
                 logger.error(f"Upstream error: {error_text[:500]}")
-                err_chunk = json.dumps(
-                    {
-                        "id": "error",
-                        "model": "",
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {"content": f"[Upstream Error {upstream_resp.status}]: {error_text[:300]}"},
-                                "finish_reason": "error",
-                            }
-                        ],
-                    }
-                )
+                err_chunk = build_error_sse_chunk(f"[Upstream Error {upstream_resp.status}]: {error_text[:300]}")
                 await response.write(f"data: {err_chunk}\n\n".encode())
                 return response
 
             await _convert_anthropic_stream_to_openai_sse(response, upstream_resp.content)
     except Exception as e:
         logger.error(f"Error forwarding to upstream: {e}")
-        err_chunk = json.dumps(
-            {
-                "id": "error",
-                "model": "",
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"content": f"[Upstream Connection Error]: {e}"},
-                        "finish_reason": "error",
-                    }
-                ],
-            }
-        )
+        err_chunk = build_error_sse_chunk(f"[Upstream Connection Error]: {e}")
         await response.write(f"data: {err_chunk}\n\n".encode())
         return response
 

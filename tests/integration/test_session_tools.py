@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from psi_agent._protocol import ToolFunction
 from psi_agent.session.agent import MAX_TOOL_ROUNDS, SessionAgent
+from psi_agent.session.protocol import ToolFunction
 from tests.integration.conftest import MockAIServer
 
 
