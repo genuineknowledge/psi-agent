@@ -3,11 +3,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import anyio
 from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
 from loguru import logger
 
-from psi_agent.ai.common import ErrorResponse, build_error_sse_chunk
+from psi_agent.ai.common import ErrorResponse, SSEChunk, serve_ai_backend
 
 
 async def serve_anthropic_messages(
@@ -17,26 +16,14 @@ async def serve_anthropic_messages(
     api_key: str,
     base_url: str,
 ) -> None:
-    logger.info(f"Starting anthropic-messages AI service on {socket_path} (model={model}, base_url={base_url})")
-
-    app = web.Application()
-    app["model"] = model
-    app["api_key"] = api_key
-    app["base_url"] = base_url
-    app.router.add_post("/v1/chat/completions", handle_chat_completions)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.UnixSite(runner, socket_path)
-    await site.start()
-
-    logger.info(f"anthropic-messages listening on {socket_path}")
-
-    try:
-        await anyio.sleep_forever()
-    finally:
-        logger.info(f"Shutting down anthropic-messages on {socket_path}")
-        await runner.cleanup()
+    await serve_ai_backend(
+        socket_path=socket_path,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        name="anthropic-messages",
+        handler=handle_chat_completions,
+    )
 
 
 def _convert_openai_tools_to_anthropic(tools: list[dict]) -> list[dict]:
@@ -169,15 +156,23 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             if upstream_resp.status != 200:
                 error_text = await upstream_resp.text()
                 logger.error(f"Upstream error: {error_text[:500]}")
-                err_chunk = build_error_sse_chunk(f"[Upstream Error {upstream_resp.status}]: {error_text[:300]}")
-                await response.write(f"data: {err_chunk}\n\n".encode())
+                chunk = SSEChunk(
+                    delta_content=f"[Upstream Error {upstream_resp.status}]: {error_text[:300]}",
+                    finish_reason="error",
+                    chunk_id="error",
+                )
+                await response.write(chunk.to_sse().encode())
                 return response
 
             await _convert_anthropic_stream_to_openai_sse(response, upstream_resp.content)
     except Exception as e:
         logger.error(f"Error forwarding to upstream: {e}")
-        err_chunk = build_error_sse_chunk(f"[Upstream Connection Error]: {e}")
-        await response.write(f"data: {err_chunk}\n\n".encode())
+        chunk = SSEChunk(
+            delta_content=f"[Upstream Connection Error]: {e}",
+            finish_reason="error",
+            chunk_id="error",
+        )
+        await response.write(chunk.to_sse().encode())
         return response
 
     logger.debug("Request completed")
@@ -239,38 +234,14 @@ async def _convert_anthropic_stream_to_openai_sse(
 
             if delta_type == "thinking_delta":
                 thinking_text = delta.get("thinking", "")
-                chunk = {
-                    "id": f"chatcmpl-{chunk_index}",
-                    "object": "chat.completion.chunk",
-                    "created": 0,
-                    "model": "",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"reasoning_content": thinking_text},
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                await response.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                chunk = SSEChunk(delta_reasoning=thinking_text, chunk_id=f"chatcmpl-{chunk_index}")
+                await response.write(chunk.to_sse().encode())
                 chunk_index += 1
 
             elif delta_type == "text_delta":
                 text = delta.get("text", "")
-                chunk = {
-                    "id": f"chatcmpl-{chunk_index}",
-                    "object": "chat.completion.chunk",
-                    "created": 0,
-                    "model": "",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"content": text},
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                await response.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                chunk = SSEChunk(delta_content=text, chunk_id=f"chatcmpl-{chunk_index}")
+                await response.write(chunk.to_sse().encode())
                 chunk_index += 1
 
             elif delta_type == "input_json_delta":
@@ -278,46 +249,19 @@ async def _convert_anthropic_stream_to_openai_sse(
                 if index in current_tool_calls:
                     current_tool_calls[index]["function"]["arguments"] += partial
                     tc_copy = dict(current_tool_calls[index])
-                    # Send partial tool_call delta
-                    chunk = {
-                        "id": f"chatcmpl-{chunk_index}",
-                        "object": "chat.completion.chunk",
-                        "created": 0,
-                        "model": "",
-                        "choices": [
+                    chunk = SSEChunk(
+                        delta_tool_calls=[
                             {
-                                "index": 0,
-                                "delta": {
-                                    "tool_calls": [
-                                        {
-                                            "index": index,
-                                            "id": tc_copy.get("id", ""),
-                                            "type": "function",
-                                            "function": {
-                                                "name": tc_copy["function"]["name"],
-                                                "arguments": partial,
-                                            },
-                                        }
-                                    ],
-                                },
-                                "finish_reason": None,
+                                "index": index,
+                                "id": tc_copy.get("id", ""),
+                                "type": "function",
+                                "function": {"name": tc_copy["function"]["name"], "arguments": partial},
                             }
                         ],
-                    }
-                    await response.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                        chunk_id=f"chatcmpl-{chunk_index}",
+                    )
+                    await response.write(chunk.to_sse().encode())
                     chunk_index += 1
 
-    final_chunk = {
-        "id": f"chatcmpl-{chunk_index}",
-        "object": "chat.completion.chunk",
-        "created": 0,
-        "model": "",
-        "choices": [
-            {
-                "index": 0,
-                "delta": {},
-                "finish_reason": "stop",
-            }
-        ],
-    }
-    await response.write(f"data: {json.dumps(final_chunk)}\n\n".encode())
+    chunk = SSEChunk(finish_reason="stop", chunk_id=f"chatcmpl-{chunk_index}")
+    await response.write(chunk.to_sse().encode())

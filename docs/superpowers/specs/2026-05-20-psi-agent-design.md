@@ -49,7 +49,7 @@ psi/
 │   ├── _yaml.py                    # 共享 YAML header 解析
 │   ├── _logging.py                  # loguru 配置
 │   ├── ai/
-│   ├── common.py               # AI 后端共享（ErrorResponse, build_error_sse_chunk）
+│   ├── common.py               # AI 后端共享（ErrorResponse, SSEChunk, serve_ai_backend）
 │   ├── openai_completions/
 │   └── anthropic_messages/
 ├── session/
@@ -170,6 +170,13 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
 ---
 
 ## 5. AI 层
+
+### 5.0 共享模块（`ai/common.py`）
+
+两个后端共享的代码：
+- **`ErrorResponse`**：HTTP 层非流式错误响应（OpenAI `{"error": {...}}` 格式）
+- **`SSEChunk`**：SSE 层流式 chunk，封装 `delta_content`/`delta_reasoning`/`delta_tool_calls`/`finish_reason`，提供 `to_sse()` 生成完整 `data: {...}\n\n` 字符串
+- **`serve_ai_backend()`**：Unix socket 服务器脚手架，封装 `web.Application` 创建、路由注册、`AppRunner`/`UnixSite` 生命周期
 
 ### 5.1 openai-completions
 
@@ -568,3 +575,4 @@ cron: "0 12 * * *"
 | 2026-05-23 | v0.2.0 | 并发模型重构（FIFO 排队）、调度器重构（每 schedule 独立 task）、统一 SSE 流错误格式、去重 _yaml.py、CLI 参数全支持环境变量（model/base_url/api_key）、错误不污染 history、137 测试全绿 |
 | 2026-05-24 | v0.2.1 | 内部模块规范化：`logging.py` → `_logging.py`、`protocol.py` → `_protocol.py` |
 | 2026-05-24 | v0.2.2 | 协议类型拆分：`_protocol.py` 拆为 `session/protocol.py` + `ai/common.py`，消除跨层共享依赖 |
+| 2026-05-24 | v0.2.3 | AI 层抽象：`SSEChunk` dataclass 替代裸 dict 构造 + `serve_ai_backend()` 消除 serve 重复 |

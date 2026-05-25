@@ -53,7 +53,7 @@ src/
     ├── _yaml.py               # 共享 YAML header 解析（scheduler + workspace system.py）
     ├── _logging.py              # loguru 配置，verbose→DEBUG
     ├── ai/
-    │   ├── common.py               # AI 后端共享（ErrorResponse + build_error_sse_chunk）
+    │   ├── common.py               # AI 后端共享（ErrorResponse + SSEChunk + serve_ai_backend）
     │   ├── openai_completions/     # OpenAI→OpenAI 透传后端
     │   └── anthropic_messages/     # Anthropic→OpenAI 转换后端（含 thinking 转换）
     ├── session/

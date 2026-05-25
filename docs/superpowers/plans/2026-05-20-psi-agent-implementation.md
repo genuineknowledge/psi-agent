@@ -458,6 +458,7 @@ def main() -> None:
 | Dependabot | `.github/dependabot.yml`（pip + github-actions，weekly） |
 | 最终抑制 | **2 处 ty:ignore**（tyro overload + pytest fixture），**0 ruff noqa**，**0 per-file-ignore** |
 | 并发/调度重构 | FIFO 排队替代 503、每 schedule 独立 anyio task、去重 _yaml.py、统一 SSE 错误格式、CLI 环境变量支持（model/base_url/api_key）、`response.prepare()` 移入 lock、Socket 手动清理策略 |
+| AI 层抽象 | `SSEChunk` dataclass 替代 `build_error_sse_chunk` + anthropic 中 4 处裸 dict（7 个构造点 → 统一类型）；`serve_ai_backend()` 消除两个 `serve_*` 函数的 30 行重复 |
 
 ### 最终测试覆盖
 
@@ -479,3 +480,4 @@ def main() -> None:
 | 2026-05-23 | v0.2.0 | 并发模型重构（FIFO queuing）、调度器重构（per-task）、统一 SSE 错误格式、CLI 环境变量支持、_yaml.py 去重；测试数 133→137 |
 | 2026-05-24 | v0.2.1 | 内部模块规范化：`logging.py` → `_logging.py`、`protocol.py` → `_protocol.py` |
 | 2026-05-24 | v0.2.2 | 协议类型拆分：`_protocol.py` 拆为 `session/protocol.py` + `ai/common.py`，ErrorResponse 独立实现，提取 `build_error_sse_chunk` |
+| 2026-05-24 | v0.2.3 | AI 层抽象：`SSEChunk` dataclass 替代 `build_error_sse_chunk` + 4 处裸 dict；`serve_ai_backend()` 消除两个 `serve_*` 的 15 行重复 |
