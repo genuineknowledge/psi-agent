@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import anyio
 from aiohttp import web
@@ -66,7 +67,7 @@ async def serve_ai_backend(
     name: str,
     handler: Callable[[web.Request], Coroutine[Any, Any, web.StreamResponse]],
 ) -> None:
-    """Serve an AI backend on a Unix socket with shared scaffolding."""
+    """Serve an AI backend on a Unix socket or local TCP URL."""
 
     logger.info(f"Starting {name} AI service on {socket_path} (model={model}, base_url={base_url})")
 
@@ -78,7 +79,7 @@ async def serve_ai_backend(
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.UnixSite(runner, socket_path)
+    site = _make_site(runner, socket_path)
     await site.start()
 
     logger.info(f"{name} listening on {socket_path}")
@@ -88,3 +89,12 @@ async def serve_ai_backend(
     finally:
         logger.info(f"Shutting down {name} on {socket_path}")
         await runner.cleanup()
+
+
+def _make_site(runner: web.AppRunner, socket_path: str) -> web.BaseSite:
+    if socket_path.startswith("http://"):
+        parsed = urlparse(socket_path)
+        if not parsed.hostname or parsed.port is None:
+            raise ValueError(f"TCP AI backend URL must include host and port: {socket_path}")
+        return web.TCPSite(runner, parsed.hostname, parsed.port)
+    return web.UnixSite(runner, socket_path)

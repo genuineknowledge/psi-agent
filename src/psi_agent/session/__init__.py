@@ -69,6 +69,65 @@ async def _run_one_schedule(schedule: Schedule, agent: SessionAgent, lock: anyio
             logger.error(f"Error processing schedule {schedule.name}: {e}")
 
 
+async def build_session_agent(
+    *,
+    workspace: str,
+    ai_socket: str,
+    model: str,
+) -> SessionAgent:
+    workspace_path = Path(str(await anyio.Path(workspace).resolve()))
+    logger.info(f"Loading workspace from {workspace_path}")
+
+    tools = await load_tools_from_workspace(workspace_path / "tools")
+    system_prompt = await _build_system_prompt_from_workspace(workspace_path)
+
+    agent = SessionAgent(
+        ai_socket=ai_socket,
+        tools=tools,
+        model=model,
+        system_prompt=system_prompt,
+    )
+
+    await _register_tool_callables(workspace_path, agent)
+    return agent
+
+
+async def _build_system_prompt_from_workspace(workspace_path: Path) -> str | None:
+    builder = _load_system_prompt_builder(workspace_path)
+    if builder is None:
+        return None
+    try:
+        sp = await builder()
+        logger.info(f"System prompt loaded ({len(sp) if sp else 0} chars)")
+        return sp
+    except Exception as e:
+        logger.error(f"Failed to build system prompt: {e}")
+        return None
+
+
+async def _register_tool_callables(workspace_path: Path, agent: SessionAgent) -> None:
+    tools_anyio = anyio.Path(str(workspace_path / "tools"))
+    if not await tools_anyio.is_dir():
+        return
+    async for py_file in tools_anyio.glob("*.py"):
+        if py_file.name.startswith("_"):
+            continue
+        name = py_file.stem
+        try:
+            spec = importlib.util.spec_from_file_location(f"psi_tool_{name}", str(py_file))
+            if spec is None or spec.loader is None:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[f"psi_tool_{name}"] = module
+            spec.loader.exec_module(module)
+            func = getattr(module, name, None)
+            if func and inspect.iscoroutinefunction(func):
+                agent.register_tool_func(name, func)
+                logger.info(f"Registered tool callable: {name}")
+        except Exception as e:
+            logger.error(f"Failed to register tool {name}: {e}")
+
+
 @dataclass
 class Session:
     """Start a session backed by a workspace and AI."""
@@ -96,7 +155,7 @@ class Session:
 
         tools = await load_tools_from_workspace(workspace_path / "tools")
         schedules = await load_schedules_from_workspace(workspace_path / "schedules")
-        system_prompt = await self._build_system_prompt(workspace_path)
+        system_prompt = await _build_system_prompt_from_workspace(workspace_path)
 
         agent = SessionAgent(
             ai_socket=self.ai_socket,
@@ -105,7 +164,7 @@ class Session:
             system_prompt=system_prompt,
         )
 
-        await self._register_tool_callables(workspace_path, agent)
+        await _register_tool_callables(workspace_path, agent)
 
         lock = anyio.Lock()
 
@@ -113,37 +172,3 @@ class Session:
             tg.start_soon(partial(serve_session, channel_socket=self.channel_socket, agent=agent, lock=lock))
             for schedule in schedules:
                 tg.start_soon(partial(_run_one_schedule, schedule, agent, lock))
-
-    async def _build_system_prompt(self, workspace_path: Path) -> str | None:
-        builder = _load_system_prompt_builder(workspace_path)
-        if builder is None:
-            return None
-        try:
-            sp = await builder()
-            logger.info(f"System prompt loaded ({len(sp) if sp else 0} chars)")
-            return sp
-        except Exception as e:
-            logger.error(f"Failed to build system prompt: {e}")
-            return None
-
-    async def _register_tool_callables(self, workspace_path: Path, agent: SessionAgent) -> None:
-        tools_anyio = anyio.Path(str(workspace_path / "tools"))
-        if not await tools_anyio.is_dir():
-            return
-        async for py_file in tools_anyio.glob("*.py"):
-            if py_file.name.startswith("_"):
-                continue
-            name = py_file.stem
-            try:
-                spec = importlib.util.spec_from_file_location(f"psi_tool_{name}", str(py_file))
-                if spec is None or spec.loader is None:
-                    continue
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[f"psi_tool_{name}"] = module
-                spec.loader.exec_module(module)
-                func = getattr(module, name, None)
-                if func and inspect.iscoroutinefunction(func):
-                    agent.register_tool_func(name, func)
-                    logger.info(f"Registered tool callable: {name}")
-            except Exception as e:
-                logger.error(f"Failed to register tool {name}: {e}")

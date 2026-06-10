@@ -55,6 +55,27 @@ uv run psi-agent channel cli \
   --message "列出当前目录的文件"
 ```
 
+也可以让外部框架直接调用 `psi-agent run`。推荐把模型配置放在
+`~/.psi-agent/config.toml`，不要让调用方保存 API key：
+
+```toml
+default_profile = "fusion"
+
+[profiles.fusion]
+ai = "openai-completions"      # or "anthropic-messages"
+model = "gpt-4o-mini"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY" # recommended; reads the key from your shell env
+# api_key = "..."              # supported, but api_key_env is safer
+```
+
+```bash
+uv run psi-agent run \
+  --workspace ./examples/a-simple-bash-only-workspace \
+  --message "用一句话说明你能做什么" \
+  --profile fusion
+```
+
 ## CLI 一览
 
 ```
@@ -63,6 +84,7 @@ psi-agent
 │   ├── openai-completions    # OpenAI 兼容透传
 │   └── anthropic-messages    # Anthropic→OpenAI 转换
 ├── session                    # Session + workspace 管理
+├── run                        # 一次性 workspace-backed agent 调用
 └── channel
     ├── repl                   # 交互式 REPL
     └── cli                    # 单次消息
