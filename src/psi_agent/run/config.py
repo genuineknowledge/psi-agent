@@ -16,6 +16,7 @@ class RunProfileConfig:
     ai: AiBackendName | None = None
     model: str = ""
     api_key: str = ""
+    api_key_env: str = ""
     base_url: str = ""
     workspace: str = ""
 
@@ -36,10 +37,37 @@ def load_run_profile_config(
             )
         return RunProfileConfig()
 
-    data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+    if path.is_dir():
+        raise UserFacingError(
+            f"psi-agent config path is a directory: {path}",
+            "Pass --config PATH with a TOML file, or run psi-agent init to create one.",
+        )
+
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+    except UnicodeDecodeError:
+        raise UserFacingError(
+            f"psi-agent config is not UTF-8 text: {path}",
+            "Save config.toml as UTF-8 text, or run psi-agent init to regenerate it.",
+        ) from None
+    except tomllib.TOMLDecodeError as e:
+        line = getattr(e, "lineno", None)
+        location = f" near line {line}" if isinstance(line, int) else ""
+        raise UserFacingError(
+            f"psi-agent config is not valid TOML: {path}",
+            f"Check quotes, brackets, and profile tables{location}.",
+        ) from None
+    except OSError as e:
+        raise UserFacingError(
+            f"Cannot read psi-agent config: {path}",
+            f"Check that --config points to a readable TOML file. ({type(e).__name__})",
+        ) from None
 
     if not isinstance(data, dict):
-        raise ValueError(f"psi-agent config must be a TOML table: {path}")
+        raise UserFacingError(
+            f"psi-agent config must be a TOML table: {path}",
+            "Run psi-agent init to regenerate a starter config.",
+        )
 
     profile_name = (
         profile or os.environ.get("PSI_AGENT_PROFILE", "") or _optional_str(data, "default_profile") or "default"
@@ -73,6 +101,7 @@ def load_run_profile_config(
         ai=ai,
         model=_optional_str(raw_profile, "model"),
         api_key=api_key,
+        api_key_env=api_key_env,
         base_url=_optional_str(raw_profile, "base_url"),
         workspace=_optional_str(raw_profile, "workspace") or _optional_str(data, "default_workspace"),
     )
@@ -90,7 +119,10 @@ def _optional_str(table: dict, key: str) -> str:
     if value is None:
         return ""
     if not isinstance(value, str):
-        raise ValueError(f"psi-agent config field must be a string: {key}")
+        raise UserFacingError(
+            f"psi-agent config field must be a string: {key}",
+            f'Open config.toml and quote the value, for example {key} = "...".',
+        )
     return value
 
 
@@ -102,6 +134,7 @@ def _optional_ai(table: dict, key: str) -> AiBackendName | None:
         return "openai-completions"
     if value == "anthropic-messages":
         return "anthropic-messages"
-    raise ValueError(
-        f'psi-agent config field "ai" must be one of: openai-completions, anthropic-messages; got {value!r}'
+    raise UserFacingError(
+        f'psi-agent config field "ai" must be one of: openai-completions, anthropic-messages; got {value!r}',
+        'Open config.toml and set ai = "openai-completions" or ai = "anthropic-messages".',
     )

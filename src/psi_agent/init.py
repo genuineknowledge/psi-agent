@@ -118,7 +118,7 @@ def _write_workspace(workspace_path: Path, *, force: bool) -> None:
             f"Workspace path is not a directory: {workspace_path}",
             "Choose a directory path with --workspace.",
         )
-    workspace_path.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(workspace_path, name="Workspace")
     _write_file(
         workspace_path / "systems" / "system.py",
         _default_system_py(),
@@ -151,7 +151,7 @@ def _write_config(
             f"Config path is a directory: {config_path}",
             "Choose a file path with --config.",
         )
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(config_path.parent, name="Config parent")
     config_path.write_text(
         textwrap.dedent(
             f"""\
@@ -185,7 +185,7 @@ def _validate_profile_name(profile: str) -> None:
 
 
 def _write_file(path: Path, content: str, *, force: bool) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(path.parent, name="Workspace subdirectory")
     if path.exists() and not force:
         return
     if path.exists() and path.is_dir():
@@ -194,6 +194,23 @@ def _write_file(path: Path, content: str, *, force: bool) -> None:
             "Move the directory or choose another workspace.",
         )
     path.write_text(content, encoding="utf-8")
+
+
+def _ensure_directory(path: Path, *, name: str) -> None:
+    if path.exists():
+        if path.is_dir():
+            return
+        raise UserFacingError(
+            f"{name} path is not a directory: {path}",
+            "Choose a directory path and run psi-agent init again.",
+        )
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise UserFacingError(
+            f"Cannot create {name.lower()} directory: {path}",
+            f"Check the path and permissions, then run psi-agent init again. ({type(e).__name__})",
+        ) from None
 
 
 def _default_system_py() -> str:

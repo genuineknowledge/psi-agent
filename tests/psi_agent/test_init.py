@@ -83,6 +83,24 @@ async def test_init_rejects_workspace_file(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_init_rejects_workspace_parent_file(tmp_path: Path) -> None:
+    workspace_parent = tmp_path / "workspace-parent"
+    workspace_parent.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(UserFacingError, match="Cannot create workspace directory"):
+        await Init(config=str(tmp_path / "config.toml"), workspace=str(workspace_parent / "workspace")).run()
+
+
+@pytest.mark.anyio
+async def test_init_rejects_config_parent_file(tmp_path: Path) -> None:
+    config_parent = tmp_path / "config-parent"
+    config_parent.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(UserFacingError, match="Config parent path is not a directory"):
+        await Init(config=str(config_parent / "config.toml"), workspace=str(tmp_path / "workspace")).run()
+
+
+@pytest.mark.anyio
 async def test_init_rejects_generated_file_path_that_is_directory(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     (workspace / "systems" / "system.py").mkdir(parents=True)

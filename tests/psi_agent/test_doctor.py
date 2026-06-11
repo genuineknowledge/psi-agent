@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from psi_agent.doctor import Doctor
+from psi_agent.errors import UserFacingError
 
 
 def _make_workspace(tmp_path: Path) -> Path:
@@ -86,3 +87,43 @@ async def test_doctor_uses_default_workspace_from_config(
     assert "[OK] Workspace" in output
     assert "not checked" not in output
     assert "Result: ready." in output
+
+
+@pytest.mark.anyio
+async def test_doctor_reports_invalid_config_as_fail(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('default_profile = "fusion"\n[profiles.fusion\n', encoding="utf-8")
+
+    with pytest.raises(UserFacingError, match="doctor found"):
+        await Doctor(config=str(config_path)).run()
+
+    output = capsys.readouterr().out
+    assert "[FAIL] Profile config:" in output
+    assert "not valid TOML" in output
+
+
+@pytest.mark.anyio
+async def test_doctor_reports_missing_configured_api_key_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        textwrap.dedent(
+            """\
+            default_profile = "fusion"
+
+            [profiles.fusion]
+            ai = "openai-completions"
+            model = "test-model"
+            api_key_env = "PSI_TEST_DOCTOR_MISSING_KEY"
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PSI_TEST_DOCTOR_MISSING_KEY", raising=False)
+
+    with pytest.raises(UserFacingError, match="doctor found"):
+        await Doctor(config=str(config_path)).run()
+
+    output = capsys.readouterr().out
+    assert "[FAIL] API key: missing; set PSI_TEST_DOCTOR_MISSING_KEY" in output

@@ -134,7 +134,9 @@ def _check_profile(*, config: str, profile: str, profile_config: RunProfileConfi
     model_env = "ANTHROPIC_MODEL" if ai == "anthropic-messages" else "OPENAI_MODEL"
     base_url_env = "ANTHROPIC_BASE_URL" if ai == "anthropic-messages" else "OPENAI_BASE_URL"
     base_url_default = "https://api.anthropic.com/v1" if ai == "anthropic-messages" else "https://api.openai.com/v1"
-    api_key_env = "ANTHROPIC_API_KEY" if ai == "anthropic-messages" else "OPENAI_API_KEY"
+    api_key_env = profile_config.api_key_env or (
+        "ANTHROPIC_API_KEY" if ai == "anthropic-messages" else "OPENAI_API_KEY"
+    )
 
     checks = [_Check("OK", "Profile config", f"loaded: {path}")]
     checks.append(_status_for_value("AI backend", profile_config.ai or "openai-completions"))
@@ -145,7 +147,8 @@ def _check_profile(*, config: str, profile: str, profile_config: RunProfileConfi
             profile_config.base_url or os.environ.get(base_url_env, base_url_default),
         )
     )
-    checks.append(_status_for_value("API key", profile_config.api_key or os.environ.get(api_key_env, "")))
+    api_key = profile_config.api_key or os.environ.get(api_key_env, "")
+    checks.append(_status_for_api_key(api_key=api_key, api_key_env=api_key_env))
     return checks
 
 
@@ -163,3 +166,9 @@ def _status_for_value(name: str, value: object) -> _Check:
             detail = "configured (hidden)"
         return _Check("OK", name, detail)
     return _Check("FAIL", name, "missing")
+
+
+def _status_for_api_key(*, api_key: str, api_key_env: str) -> _Check:
+    if api_key:
+        return _Check("OK", "API key", "configured (hidden)")
+    return _Check("FAIL", "API key", f"missing; set {api_key_env}")
