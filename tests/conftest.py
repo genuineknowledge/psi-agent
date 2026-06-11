@@ -22,10 +22,15 @@ from yarl import URL
 from psi_agent.net import cleanup_endpoint_sidecar, make_server_site, read_endpoint_sidecar
 
 _IS_WINDOWS = os.name == "nt"
-_TEST_TEMP_ROOT = Path(__file__).resolve().parents[1] / ".pytest-local"
+_TEST_TEMP_ROOT = (
+    Path(__file__).resolve().parents[1] / ".pytest-local"
+    if _IS_WINDOWS
+    else Path(os.environ.get("PSI_TEST_TEMP_ROOT", "/tmp/psi-agent-pytest"))
+)
+
+_TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 if _IS_WINDOWS:
-    _TEST_TEMP_ROOT.mkdir(exist_ok=True)
     os.environ["TEMP"] = str(_TEST_TEMP_ROOT)
     os.environ["TMP"] = str(_TEST_TEMP_ROOT)
     os.environ["TMPDIR"] = str(_TEST_TEMP_ROOT)
@@ -55,12 +60,11 @@ if _IS_WINDOWS:
 
 
 def pytest_configure(config: Any) -> None:
-    if not _IS_WINDOWS:
-        return
     config.option.basetemp = str(_TEST_TEMP_ROOT / f"run-{uuid.uuid4().hex}")
-    config.option.cacheclear = True
-    _patch_attr(_pytest.pathlib, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
-    _patch_attr(_pytest.tmpdir, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
+    if _IS_WINDOWS:
+        config.option.cacheclear = True
+        _patch_attr(_pytest.pathlib, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
+        _patch_attr(_pytest.tmpdir, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
 
 
 if _IS_WINDOWS:
