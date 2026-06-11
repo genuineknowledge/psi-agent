@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import sys
 import tempfile
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -136,7 +140,7 @@ async def run_once(
             model=effective_model,
         )
 
-    with tempfile.TemporaryDirectory(prefix="psi-agent-run-") as tmp_dir:
+    with _temporary_directory(prefix="psi-agent-run-") as tmp_dir:
         backend_socket = _make_temporary_backend_endpoint(tmp_dir)
         async with anyio.create_task_group() as tg:
             tg.start_soon(
@@ -158,6 +162,25 @@ async def run_once(
             )
             tg.cancel_scope.cancel()
             return result
+
+
+@contextmanager
+def _temporary_directory(*, prefix: str) -> Iterator[str]:
+    root = Path(tempfile.gettempdir())
+    for _ in range(100):
+        path = root / f"{prefix}{uuid.uuid4().hex}"
+        try:
+            path.mkdir(mode=0o755)
+        except FileExistsError:
+            continue
+        break
+    else:
+        raise FileExistsError(f"Could not create temporary directory under {root}")
+
+    try:
+        yield str(path)
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 async def _run_against_ai_socket(
