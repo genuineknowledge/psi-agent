@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import signal
 import socket
@@ -168,8 +169,14 @@ async def _wait_for_socket(sock_path: Path, timeout_sec: float = 10.0) -> None:
 
 
 def _kill(proc: subprocess.Popen) -> None:
-    proc.send_signal(signal.SIGTERM)
+    if proc.poll() is not None:
+        return
+    try:
+        proc.send_signal(signal.SIGTERM)
+    except ProcessLookupError:
+        return
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()

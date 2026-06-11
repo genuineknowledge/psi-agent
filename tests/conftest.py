@@ -21,14 +21,16 @@ from yarl import URL
 
 from psi_agent.net import cleanup_endpoint_sidecar, make_server_site, read_endpoint_sidecar
 
+_IS_WINDOWS = os.name == "nt"
 _TEST_TEMP_ROOT = Path(__file__).resolve().parents[1] / ".pytest-local"
-_TEST_TEMP_ROOT.mkdir(exist_ok=True)
 
-os.environ["TEMP"] = str(_TEST_TEMP_ROOT)
-os.environ["TMP"] = str(_TEST_TEMP_ROOT)
-os.environ["TMPDIR"] = str(_TEST_TEMP_ROOT)
-tempfile.tempdir = str(_TEST_TEMP_ROOT)
-os.environ.setdefault("UV_CACHE_DIR", str(_TEST_TEMP_ROOT / "uv-cache"))
+if _IS_WINDOWS:
+    _TEST_TEMP_ROOT.mkdir(exist_ok=True)
+    os.environ["TEMP"] = str(_TEST_TEMP_ROOT)
+    os.environ["TMP"] = str(_TEST_TEMP_ROOT)
+    os.environ["TMPDIR"] = str(_TEST_TEMP_ROOT)
+    tempfile.tempdir = str(_TEST_TEMP_ROOT)
+    os.environ.setdefault("UV_CACHE_DIR", str(_TEST_TEMP_ROOT / "uv-cache"))
 
 
 def _skip_cleanup_dead_symlinks(root: Path) -> None:
@@ -39,26 +41,29 @@ def _patch_attr(target: object, name: str, value: object) -> None:
     setattr(target, name, value)
 
 
-@pytest.fixture
-def tmp_path(request: pytest.FixtureRequest) -> Generator[Path]:
-    safe_name = re.sub(r"[\W]", "_", request.node.name)[:40]
-    path = _TEST_TEMP_ROOT / f"{safe_name}-{uuid.uuid4().hex}"
-    path.mkdir(mode=0o755)
-    try:
-        yield path
-    finally:
-        shutil.rmtree(path, ignore_errors=True)
+if _IS_WINDOWS:
+
+    @pytest.fixture
+    def tmp_path(request: pytest.FixtureRequest) -> Generator[Path]:
+        safe_name = re.sub(r"[\W]", "_", request.node.name)[:40]
+        path = _TEST_TEMP_ROOT / f"{safe_name}-{uuid.uuid4().hex}"
+        path.mkdir(mode=0o755)
+        try:
+            yield path
+        finally:
+            shutil.rmtree(path, ignore_errors=True)
 
 
 def pytest_configure(config: Any) -> None:
+    if not _IS_WINDOWS:
+        return
     config.option.basetemp = str(_TEST_TEMP_ROOT / f"run-{uuid.uuid4().hex}")
     config.option.cacheclear = True
-    if os.name == "nt":
-        _patch_attr(_pytest.pathlib, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
-        _patch_attr(_pytest.tmpdir, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
+    _patch_attr(_pytest.pathlib, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
+    _patch_attr(_pytest.tmpdir, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
 
 
-if os.name == "nt":
+if _IS_WINDOWS:
     _original_open_process = anyio.open_process
     _original_request = aiohttp.ClientSession._request
 
