@@ -6,6 +6,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent.net import cleanup_endpoint_sidecar, make_server_site
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, ErrorResponse, StreamChoice
 
@@ -25,7 +26,7 @@ async def serve_session(
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.UnixSite(runner, channel_socket)
+    site = await make_server_site(runner, channel_socket)
     await site.start()
 
     logger.info(f"Session server listening on {channel_socket}")
@@ -35,6 +36,7 @@ async def serve_session(
     finally:
         logger.info(f"Shutting down session server on {channel_socket}")
         await runner.cleanup()
+        cleanup_endpoint_sidecar(channel_socket)
 
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:

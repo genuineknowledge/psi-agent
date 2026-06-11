@@ -76,6 +76,23 @@ uv run psi-agent run \
   --profile fusion
 ```
 
+### Fusion Flow workspace
+
+`examples/fusion-flow-workspace` packages the Fusion Flow skill bundle as a
+psi-agent workspace skill. Use it when natural-language user requests should
+author or run `.flow.ts` multi-agent workflows:
+
+```bash
+uv run psi-agent run \
+  --workspace ./examples/fusion-flow-workspace \
+  --profile fusion \
+  --message "Build a parallel code-review workflow with security, performance, and readability reviewers."
+```
+
+The workspace loads `skills/fusion-flow/SKILL.md`, writes generated flows under
+`skills/fusion-flow/examples/`, and uses `FLOW_ENGINE=psi` with a separate
+executor workspace to avoid recursive self-calls.
+
 ## CLI 一览
 
 ```

@@ -1,0 +1,18 @@
+{
+  "name": "fusion-flow",
+  "version": "0.7.3-skill",
+  "description": "Fusion Flow — standalone Fuclaw skill bundle. Describe a workflow in natural language; the LLM (via SKILL.md) authors a .flow.ts and you run it. No bundled demo flows. v0.7+: LLM calls shell out to an external CLI engine (claude/openclaw/hermes/psi) + flow.exec runs external commands.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "doctor": "node doctor.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

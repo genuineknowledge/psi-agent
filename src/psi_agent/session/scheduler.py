@@ -62,7 +62,7 @@ async def load_schedules_from_workspace(schedules_dir: Path) -> list[Schedule]:
         if not await task_file.exists():
             continue
 
-        content = await task_file.read_text()
+        content = await task_file.read_text(encoding="utf-8", errors="replace")
         header, body = parse_yaml_header(content)
         if header is None:
             logger.warning(f"No valid YAML header in {task_file}, skipping")

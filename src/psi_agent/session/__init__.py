@@ -16,10 +16,15 @@ from psi_agent._logging import setup_logging
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.scheduler import Schedule, load_schedules_from_workspace
 from psi_agent.session.server import serve_session
-from psi_agent.session.tools import load_tools_from_workspace
+from psi_agent.session.tools import load_tool_callables_from_workspace, load_tools_from_workspace
 
 
-def _load_system_prompt_builder(workspace_path: Path) -> Any:
+def _load_system_prompt_builder(
+    workspace_path: Path,
+    *,
+    model: str | None = None,
+    tool_names: list[str] | None = None,
+) -> Any:
     system_py = workspace_path / "systems" / "system.py"
     if not system_py.exists():
         logger.warning(f"No system.py found at {system_py}")
@@ -33,10 +38,33 @@ def _load_system_prompt_builder(workspace_path: Path) -> Any:
         sys.modules["psi_workspace_system"] = module
         spec.loader.exec_module(module)
         func = getattr(module, "system_prompt_builder", None)
-        if func is None or not inspect.iscoroutinefunction(func):
-            logger.warning(f"system_prompt_builder not found or not async in {system_py}")
+        if func is not None:
+            if not inspect.iscoroutinefunction(func):
+                logger.warning(f"system_prompt_builder in {system_py} is not async")
+                return None
+            return func
+
+        system_class = getattr(module, "System", None)
+        if system_class is None:
+            logger.warning(f"system_prompt_builder or System class not found in {system_py}")
             return None
-        return func
+
+        system = system_class(anyio.Path(str(workspace_path)))
+        method = getattr(system, "build_system_prompt", None)
+        if method is None or not inspect.iscoroutinefunction(method):
+            logger.warning(f"System.build_system_prompt not found or not async in {system_py}")
+            return None
+
+        async def build_from_system_class() -> str:
+            params = inspect.signature(method).parameters
+            kwargs: dict[str, Any] = {}
+            if "model" in params:
+                kwargs["model"] = model
+            if "tool_names" in params:
+                kwargs["tool_names"] = tool_names or []
+            return await method(**kwargs)
+
+        return build_from_system_class
     except Exception as e:
         logger.error(f"Failed to load system_prompt_builder: {e}")
         return None
@@ -79,7 +107,11 @@ async def build_session_agent(
     logger.info(f"Loading workspace from {workspace_path}")
 
     tools = await load_tools_from_workspace(workspace_path / "tools")
-    system_prompt = await _build_system_prompt_from_workspace(workspace_path)
+    system_prompt = await _build_system_prompt_from_workspace(
+        workspace_path,
+        model=model,
+        tool_names=list(tools),
+    )
 
     agent = SessionAgent(
         ai_socket=ai_socket,
@@ -92,8 +124,13 @@ async def build_session_agent(
     return agent
 
 
-async def _build_system_prompt_from_workspace(workspace_path: Path) -> str | None:
-    builder = _load_system_prompt_builder(workspace_path)
+async def _build_system_prompt_from_workspace(
+    workspace_path: Path,
+    *,
+    model: str | None = None,
+    tool_names: list[str] | None = None,
+) -> str | None:
+    builder = _load_system_prompt_builder(workspace_path, model=model, tool_names=tool_names)
     if builder is None:
         return None
     try:
@@ -106,26 +143,10 @@ async def _build_system_prompt_from_workspace(workspace_path: Path) -> str | Non
 
 
 async def _register_tool_callables(workspace_path: Path, agent: SessionAgent) -> None:
-    tools_anyio = anyio.Path(str(workspace_path / "tools"))
-    if not await tools_anyio.is_dir():
-        return
-    async for py_file in tools_anyio.glob("*.py"):
-        if py_file.name.startswith("_"):
-            continue
-        name = py_file.stem
-        try:
-            spec = importlib.util.spec_from_file_location(f"psi_tool_{name}", str(py_file))
-            if spec is None or spec.loader is None:
-                continue
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[f"psi_tool_{name}"] = module
-            spec.loader.exec_module(module)
-            func = getattr(module, name, None)
-            if func and inspect.iscoroutinefunction(func):
-                agent.register_tool_func(name, func)
-                logger.info(f"Registered tool callable: {name}")
-        except Exception as e:
-            logger.error(f"Failed to register tool {name}: {e}")
+    callables = await load_tool_callables_from_workspace(workspace_path / "tools")
+    for name, func in callables.items():
+        agent.register_tool_func(name, func)
+        logger.info(f"Registered tool callable: {name}")
 
 
 @dataclass
@@ -155,7 +176,11 @@ class Session:
 
         tools = await load_tools_from_workspace(workspace_path / "tools")
         schedules = await load_schedules_from_workspace(workspace_path / "schedules")
-        system_prompt = await _build_system_prompt_from_workspace(workspace_path)
+        system_prompt = await _build_system_prompt_from_workspace(
+            workspace_path,
+            model=self.model,
+            tool_names=list(tools),
+        )
 
         agent = SessionAgent(
             ai_socket=self.ai_socket,

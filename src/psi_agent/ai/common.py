@@ -6,11 +6,12 @@ import json
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
 
 import anyio
 from aiohttp import web
 from loguru import logger
+
+from psi_agent.net import cleanup_endpoint_sidecar, make_server_site
 
 
 @dataclass
@@ -79,7 +80,7 @@ async def serve_ai_backend(
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = _make_site(runner, socket_path)
+    site = await make_server_site(runner, socket_path)
     await site.start()
 
     logger.info(f"{name} listening on {socket_path}")
@@ -89,12 +90,4 @@ async def serve_ai_backend(
     finally:
         logger.info(f"Shutting down {name} on {socket_path}")
         await runner.cleanup()
-
-
-def _make_site(runner: web.AppRunner, socket_path: str) -> web.BaseSite:
-    if socket_path.startswith("http://"):
-        parsed = urlparse(socket_path)
-        if not parsed.hostname or parsed.port is None:
-            raise ValueError(f"TCP AI backend URL must include host and port: {socket_path}")
-        return web.TCPSite(runner, parsed.hostname, parsed.port)
-    return web.UnixSite(runner, socket_path)
+        cleanup_endpoint_sidecar(socket_path)
