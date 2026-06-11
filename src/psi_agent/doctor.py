@@ -8,7 +8,7 @@ from pathlib import Path
 
 from psi_agent._logging import setup_logging
 from psi_agent.errors import UserFacingError
-from psi_agent.run.config import load_run_profile_config
+from psi_agent.run.config import RunProfileConfig, load_run_profile_config
 
 
 @dataclass
@@ -36,12 +36,14 @@ class Doctor:
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
+        profile_config = _load_profile_for_doctor(config=self.config, profile=self.profile)
+        workspace = self.workspace or (profile_config.workspace if profile_config is not None else "")
 
         checks = [
             _check_python(),
             _check_console_encoding(),
-            *_check_workspace(self.workspace),
-            *_check_profile(config=self.config, profile=self.profile),
+            *_check_workspace(workspace),
+            *_check_profile(config=self.config, profile=self.profile, profile_config=profile_config),
         ]
 
         sys.stdout.write("psi-agent doctor\n\n")
@@ -107,26 +109,43 @@ def _check_workspace(workspace: str) -> list[_Check]:
     return checks
 
 
-def _check_profile(*, config: str, profile: str) -> list[_Check]:
+def _load_profile_for_doctor(*, config: str, profile: str) -> RunProfileConfig | None:
+    path = _resolve_config_path(config)
+    if not path.exists() and not profile and not config and not os.environ.get("PSI_AGENT_PROFILE"):
+        return None
+    try:
+        return load_run_profile_config(config_path=config, profile=profile, require_api_key_env=False)
+    except UserFacingError:
+        return None
+
+
+def _check_profile(*, config: str, profile: str, profile_config: RunProfileConfig | None) -> list[_Check]:
     path = _resolve_config_path(config)
     if not path.exists() and not profile and not config and not os.environ.get("PSI_AGENT_PROFILE"):
         return [_Check("WARN", "Profile config", f"not found: {path}")]
 
-    try:
-        profile_config = load_run_profile_config(config_path=config, profile=profile)
-    except UserFacingError as e:
-        return [_Check("FAIL", "Profile config", str(e).replace("\n", " "))]
+    if profile_config is None:
+        try:
+            profile_config = load_run_profile_config(config_path=config, profile=profile, require_api_key_env=False)
+        except UserFacingError as e:
+            return [_Check("FAIL", "Profile config", str(e).replace("\n", " "))]
+
+    ai = profile_config.ai or "openai-completions"
+    model_env = "ANTHROPIC_MODEL" if ai == "anthropic-messages" else "OPENAI_MODEL"
+    base_url_env = "ANTHROPIC_BASE_URL" if ai == "anthropic-messages" else "OPENAI_BASE_URL"
+    base_url_default = "https://api.anthropic.com/v1" if ai == "anthropic-messages" else "https://api.openai.com/v1"
+    api_key_env = "ANTHROPIC_API_KEY" if ai == "anthropic-messages" else "OPENAI_API_KEY"
 
     checks = [_Check("OK", "Profile config", f"loaded: {path}")]
     checks.append(_status_for_value("AI backend", profile_config.ai or "openai-completions"))
-    checks.append(_status_for_value("Model", profile_config.model or os.environ.get("OPENAI_MODEL", "")))
+    checks.append(_status_for_value("Model", profile_config.model or os.environ.get(model_env, "")))
     checks.append(
         _status_for_value(
             "Base URL",
-            profile_config.base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            profile_config.base_url or os.environ.get(base_url_env, base_url_default),
         )
     )
-    checks.append(_status_for_value("API key", profile_config.api_key or os.environ.get("OPENAI_API_KEY", "")))
+    checks.append(_status_for_value("API key", profile_config.api_key or os.environ.get(api_key_env, "")))
     return checks
 
 

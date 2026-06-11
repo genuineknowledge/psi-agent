@@ -17,9 +17,15 @@ class RunProfileConfig:
     model: str = ""
     api_key: str = ""
     base_url: str = ""
+    workspace: str = ""
 
 
-def load_run_profile_config(*, config_path: str = "", profile: str = "") -> RunProfileConfig:
+def load_run_profile_config(
+    *,
+    config_path: str = "",
+    profile: str = "",
+    require_api_key_env: bool = True,
+) -> RunProfileConfig:
     path, explicit_path = _resolve_config_path(config_path)
     explicit_profile = bool(profile or os.environ.get("PSI_AGENT_PROFILE", ""))
     if not path.exists():
@@ -57,7 +63,7 @@ def load_run_profile_config(*, config_path: str = "", profile: str = "") -> RunP
     api_key_env = _optional_str(raw_profile, "api_key_env")
     if not api_key and api_key_env:
         api_key = os.environ.get(api_key_env, "")
-        if not api_key:
+        if not api_key and require_api_key_env:
             raise UserFacingError(
                 f"Environment variable is not set: {api_key_env}",
                 f"Set {api_key_env} before running psi-agent, or update api_key_env in config.toml.",
@@ -68,6 +74,7 @@ def load_run_profile_config(*, config_path: str = "", profile: str = "") -> RunP
         model=_optional_str(raw_profile, "model"),
         api_key=api_key,
         base_url=_optional_str(raw_profile, "base_url"),
+        workspace=_optional_str(raw_profile, "workspace") or _optional_str(data, "default_workspace"),
     )
 
 

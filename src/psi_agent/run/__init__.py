@@ -40,11 +40,11 @@ class RunResult:
 class Run:
     """Run a one-shot workspace-backed agent call."""
 
-    workspace: str
-    """Path to the workspace directory."""
-
     message: str
     """Message to send to the agent."""
+
+    workspace: str = ""
+    """Path to the workspace directory. Falls back to default_workspace in config."""
 
     ai_socket: str = ""
     """Existing AI backend socket path or http(s) /v1 endpoint. If omitted, a temporary backend is started."""
@@ -122,10 +122,10 @@ async def run_once(
     profile: str = "",
     config: str = "",
 ) -> RunResult:
-    workspace_path = resolve_workspace_path(workspace)
     profile_config = (
         load_run_profile_config(config_path=config, profile=profile)
         if _should_load_profile_config(
+            workspace=workspace,
             ai_socket=ai_socket,
             ai=ai,
             model=model,
@@ -136,6 +136,7 @@ async def run_once(
         )
         else RunProfileConfig()
     )
+    workspace_path = resolve_workspace_path(workspace or profile_config.workspace)
     effective_ai = _resolve_ai(ai=ai, profile_config=profile_config)
     effective_model = _resolve_model(ai=effective_ai, model=model or profile_config.model)
     effective_api_key = api_key or profile_config.api_key
@@ -316,6 +317,7 @@ def _resolve_ai(*, ai: str, profile_config: RunProfileConfig) -> AiBackend:
 
 def _should_load_profile_config(
     *,
+    workspace: str,
     ai_socket: str,
     ai: str,
     model: str,
@@ -324,6 +326,8 @@ def _should_load_profile_config(
     profile: str,
     config: str,
 ) -> bool:
+    if not workspace:
+        return True
     return bool(profile or config or os.environ.get("PSI_AGENT_PROFILE")) or not (
         ai_socket or ai or model or api_key or base_url
     )

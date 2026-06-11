@@ -9,7 +9,7 @@ import pytest
 from aiohttp import web
 
 from psi_agent.errors import UserFacingError
-from psi_agent.run import run_once
+from psi_agent.run import _friendly_agent_error, _resolve_base_url, run_once
 from psi_agent.run.config import load_run_profile_config
 
 
@@ -100,6 +100,26 @@ def test_run_profile_config_reports_missing_api_key_env(tmp_path: Path) -> None:
 
     with pytest.raises(UserFacingError, match="Environment variable is not set"):
         load_run_profile_config(config_path=str(config_path))
+
+
+def test_run_friendly_agent_error_classifies_common_failures() -> None:
+    assert str(_friendly_agent_error("Upstream Error 401 unauthorized")).startswith(
+        "Model service authentication failed."
+    )
+    assert str(_friendly_agent_error("Cannot connect to host")).startswith("Cannot connect to the model service.")
+    assert str(_friendly_agent_error("request timed out")).startswith("The model service did not respond in time.")
+    assert str(_friendly_agent_error("unexpected provider failure")).startswith("Agent run failed.")
+
+
+def test_resolve_base_url_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    assert _resolve_base_url(ai="openai-completions", base_url="") == "https://api.openai.com/v1"
+    assert _resolve_base_url(ai="anthropic-messages", base_url="") == "https://api.anthropic.com/v1"
+    assert (
+        _resolve_base_url(ai="openai-completions", base_url="https://custom.example/v1") == "https://custom.example/v1"
+    )
 
 
 @pytest.mark.anyio
@@ -216,3 +236,51 @@ async def test_run_once_uses_profile_config_for_temporary_backend(
     assert upstream_requests
     assert upstream_requests[0]["model"] == "profile-model"
     assert upstream_requests[0]["messages"][-1] == {"role": "user", "content": "hi from fusion"}
+
+
+@pytest.mark.anyio
+async def test_run_once_uses_default_workspace_from_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    request_bodies: list[dict] = []
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        request_bodies.append(await request.json())
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_chunk(content="default workspace works", finish_reason="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    runner, base_url = await _start_tcp_ai_server(handler)
+    config_path = tmp_path / "psi-agent-config.toml"
+    workspace_toml = str(workspace).replace("\\", "\\\\")
+    config_path.write_text(
+        textwrap.dedent(
+            f"""\
+            default_profile = "fusion"
+            default_workspace = "{workspace_toml}"
+
+            [profiles.fusion]
+            ai = "openai-completions"
+            model = "profile-model"
+            base_url = "https://example.test/v1"
+            api_key_env = "PSI_TEST_PROFILE_KEY"
+            """
+        )
+    )
+    monkeypatch.setenv("PSI_TEST_PROFILE_KEY", "sk-from-env")
+
+    try:
+        result = await run_once(
+            workspace="",
+            message="hi from default workspace",
+            ai_socket=base_url,
+            config=str(config_path),
+        )
+    finally:
+        await runner.cleanup()
+
+    assert result.text == "default workspace works"
+    assert result.had_error is False
+    assert request_bodies
+    assert request_bodies[0]["messages"][0]["content"] == "You are a test one-shot agent."

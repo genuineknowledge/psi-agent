@@ -22,6 +22,19 @@ User ←→ Channel (REPL/CLI) ──Unix socket── Session ──Unix socket
 
 > Requires Python >= 3.14
 
+Beginner-friendly one-shot setup:
+
+```bash
+uv sync
+uv run psi-agent init
+uv run psi-agent doctor
+uv run psi-agent run --message "Summarize what you can do in one sentence"
+```
+
+`psi-agent init` creates `~/.psi-agent/config.toml` and a default workspace at
+`~/.psi-agent/workspaces/default`. Set the API key environment variable shown by
+`psi-agent init` before running a real model request.
+
 Three terminals, three commands:
 
 ```bash
@@ -105,6 +118,7 @@ psi-agent
 │   └── anthropic-messages    # Anthropic→OpenAI conversion
 ├── session                    # Session + workspace management
 ├── run                        # One-shot workspace-backed agent call
+├── init                       # Starter config and default workspace setup
 ├── doctor                     # Setup checks and next-step guidance
 └── channel
     ├── repl                   # Interactive REPL
