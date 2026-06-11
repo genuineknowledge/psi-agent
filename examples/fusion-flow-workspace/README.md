@@ -8,8 +8,8 @@ Expected flow:
 user natural language
 -> psi-agent loads this workspace
 -> system prompt points at skills/fusion-flow/SKILL.md
--> agent authors a .flow.ts under skills/fusion-flow/examples
--> Fusion Flow runtime executes the flow
+-> agent authors a .flow.ts under flows/<task-slug>/
+-> Fusion Flow runtime executes the flow and writes runs under flows/<task-slug>/runs/
 -> FLOW_ENGINE=psi calls psi-agent run for flow.session / evaluate / choice
 ```
 
@@ -26,6 +26,13 @@ The bundled Fusion Flow skill lives at:
 
 ```text
 skills/fusion-flow/
+```
+
+Generated user task artifacts live outside the skill:
+
+```text
+flows/<task-slug>/<task-slug>.flow.ts
+flows/<task-slug>/runs/<run-id>/
 ```
 
 Do not put provider keys in this workspace. Keep model credentials in psi-agent profiles

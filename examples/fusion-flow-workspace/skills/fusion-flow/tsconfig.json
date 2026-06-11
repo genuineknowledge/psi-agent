@@ -13,6 +13,7 @@
   },
   "include": [
     "examples/**/*.ts",
+    "../../flows/**/*.ts",
     "runtime/**/*.d.mts"
   ]
 }

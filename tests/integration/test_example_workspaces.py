@@ -35,7 +35,7 @@ def _copy_workspace(src: Path, dst: Path) -> None:
         (
             "fusion-flow-workspace",
             {"bash", "edit", "read", "write"},
-            {"Fusion Flow Trigger", "skills/fusion-flow/SKILL.md", "FLOW_ENGINE=psi"},
+            {"Fusion Flow Trigger", "skills/fusion-flow/SKILL.md", "flows/<task-slug>", "runsDir", "FLOW_ENGINE=psi"},
         ),
     ],
 )

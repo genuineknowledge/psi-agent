@@ -43,7 +43,7 @@ class System:
         skills_dir = workspace_resolved / "skills"
         fusion_skill_dir = skills_dir / "fusion-flow"
         fusion_skill_md = fusion_skill_dir / "SKILL.md"
-        fusion_examples_dir = fusion_skill_dir / "examples"
+        flows_dir = workspace_resolved / "flows"
 
         repo_root = Path(str(workspace_resolved)).parents[1]
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
@@ -87,14 +87,26 @@ To activate Fusion Flow:
 1. Read the full skill instructions at:
    {fusion_skill_md}
    Relative path: skills/fusion-flow/SKILL.md
-2. Author generated `.flow.ts` files under:
-   {fusion_examples_dir}
+2. Keep the skill itself immutable. Author generated task files under:
+   {flows_dir}/<task-slug>/
+   Use this layout:
+   - {flows_dir}/<task-slug>/<task-slug>.flow.ts
+   - {flows_dir}/<task-slug>/runs/<run-id>/
 3. Use the Fusion Flow runtime from:
    {fusion_skill_dir / "runtime" / "agent-flow-core.bundle.mjs"}
-4. Typecheck from the Fusion Flow skill directory:
+   Generated flows in flows/<task-slug>/ import it with:
+   ../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs
+4. Typecheck from the Fusion Flow skill directory. Its tsconfig includes ../../flows/**/*.ts:
    cd "{fusion_skill_dir}" && npm run typecheck
 5. Run generated flows from the Fusion Flow skill directory:
-   cd "{fusion_skill_dir}" && npx tsx examples/<generated>.flow.ts
+   cd "{fusion_skill_dir}" && npx tsx ../../flows/<task-slug>/<task-slug>.flow.ts
+
+When generating the run(...) options, always include both:
+- programPath normalized from import.meta.url
+- runsDir set to the generated flow's sibling ./runs directory
+
+This keeps each user's `.flow.ts`, meta.json, execution-graph.json, bindings/, and trace/
+together under one task folder instead of writing user artifacts into skills/.
 
 ## psi-agent Engine Defaults
 

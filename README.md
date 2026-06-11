@@ -1,168 +1,230 @@
 # psi-agent
 
-> [English](README_en.md)
+A microkernel-style agent framework. A workspace defines the agent:
+system prompt, tools, skills, schedules, and memory live in ordinary files.
 
-用 Python socket 拼装 AI agent 的微框架。
+## Requirements
 
-你只需要写 Python 函数和 Markdown——剩下的 socket 通信、tool calling、SSE 流式、定时任务框架全替你做了。
+- Python 3.14 or newer
+- uv
+- A model API key for the backend you choose
 
-## 为什么选它
+## Quick Start
 
-- **简单组合**：ai、session、channel 三个独立进程，socket 对插即用。没有中心配置，不依赖数据库
-- **Workspace 即 Agent**：在 `workspace/` 下丢几个 Python 函数就是 tools，写个 system prompt 就是 agent 人格，加个 cron 就是定时任务
-- **流式交互**：REPL 实时显示 AI 思考过程（dim 样式）和最终回复，所见即所得
-
-## 架构
-
-```
-用户 ←→ Channel (REPL/CLI) ──Unix socket── Session ──Unix socket── AI (OpenAI/Anthropic)
-```
-
-## 快速开始
-
-> 需要 Python >= 3.14
-
-三个终端，三步跑起来：
+From a cloned checkout:
 
 ```bash
-# 安装
 uv sync
-
-# 终端 1：启动 AI 后端（--api-key 可选，不传则读 OPENAI_API_KEY 环境变量）
-uv run psi-agent ai openai-completions \
-  --session-socket ./ai.sock \
-  --model gpt-4o-mini \
-  --api-key $OPENAI_API_KEY \
-  --base-url https://api.openai.com/v1
-
-# 终端 2：启动 Session
-uv run psi-agent session \
-  --workspace ./examples/a-simple-bash-only-workspace \
-  --channel-socket ./channel.sock \
-  --ai-socket ./ai.sock
-
-# 终端 3：REPL 交互
-uv run psi-agent channel repl --session-socket ./channel.sock
+uv run psi-agent init
+uv run psi-agent doctor
+uv run psi-agent run --message "Summarize what you can do in one sentence"
 ```
 
-REPL 操作：`Enter` 换行，`Alt+Enter` 发送，`Ctrl+D` 退出。
+`psi-agent init` creates:
 
-也可以一句命令搞定：
+```text
+~/.psi-agent/config.toml
+~/.psi-agent/workspaces/default/
+```
+
+Set the API key environment variable shown by `psi-agent init`.
+
+macOS or Linux:
 
 ```bash
-uv run psi-agent channel cli \
-  --session-socket ./channel.sock \
-  --message "列出当前目录的文件"
+export OPENAI_API_KEY="your-key"
 ```
 
-也可以让外部框架直接调用 `psi-agent run`。推荐把模型配置放在
-`~/.psi-agent/config.toml`，不要让调用方保存 API key：
+Windows PowerShell:
+
+```powershell
+$env:OPENAI_API_KEY = "your-key"
+```
+
+Use Anthropic defaults instead:
+
+```bash
+uv run psi-agent init --ai anthropic-messages
+```
+
+## Upgrade
+
+From a cloned checkout:
+
+```bash
+git pull --ff-only
+uv sync
+uv run psi-agent doctor
+```
+
+If the upgrade fails, keep the existing checkout and run `uv run psi-agent doctor`.
+The command reports the next step without printing API key values.
+
+## One-Shot Run
+
+Use this for external callers such as Fusion Flow:
+
+```bash
+uv run psi-agent run \
+  --workspace examples/a-simple-bash-only-workspace \
+  --profile fusion \
+  --message "Summarize what you can do in one sentence"
+```
+
+If `--workspace` is omitted, `psi-agent run` reads `default_workspace` from
+`~/.psi-agent/config.toml`.
+
+Example config:
 
 ```toml
+config_version = 1
 default_profile = "fusion"
+default_workspace = "/absolute/path/to/workspace"
 
 [profiles.fusion]
 ai = "openai-completions"      # or "anthropic-messages"
 model = "gpt-4o-mini"
 base_url = "https://api.openai.com/v1"
-api_key_env = "OPENAI_API_KEY" # recommended; reads the key from your shell env
-# api_key = "..."              # supported, but api_key_env is safer
+api_key_env = "OPENAI_API_KEY"
 ```
+
+Prefer `api_key_env` over storing `api_key` directly in the config file.
+
+## Interactive Mode
+
+Three-process mode is useful when you want a persistent session.
+
+Terminal 1:
+
+```bash
+uv run psi-agent ai openai-completions \
+  --session-socket ./ai.sock \
+  --model gpt-4o-mini \
+  --api-key "$OPENAI_API_KEY" \
+  --base-url https://api.openai.com/v1
+```
+
+Terminal 2:
+
+```bash
+uv run psi-agent session \
+  --workspace examples/a-simple-bash-only-workspace \
+  --channel-socket ./channel.sock \
+  --ai-socket ./ai.sock
+```
+
+Terminal 3:
+
+```bash
+uv run psi-agent channel repl --session-socket ./channel.sock
+```
+
+REPL controls:
+
+- `Enter`: new line
+- `Alt+Enter`: send
+- `Ctrl+D`: exit
+
+## Fusion Flow Workspace
+
+`examples/fusion-flow-workspace` packages Fusion Flow as a psi-agent skill.
+Use it when a natural-language request should create or run a multi-agent
+`.flow.ts` workflow.
 
 ```bash
 uv run psi-agent run \
-  --workspace ./examples/a-simple-bash-only-workspace \
-  --message "用一句话说明你能做什么" \
-  --profile fusion
-```
-
-### Fusion Flow workspace
-
-`examples/fusion-flow-workspace` packages the Fusion Flow skill bundle as a
-psi-agent workspace skill. Use it when natural-language user requests should
-author or run `.flow.ts` multi-agent workflows:
-
-```bash
-uv run psi-agent run \
-  --workspace ./examples/fusion-flow-workspace \
+  --workspace examples/fusion-flow-workspace \
   --profile fusion \
   --message "Build a parallel code-review workflow with security, performance, and readability reviewers."
 ```
 
-The workspace loads `skills/fusion-flow/SKILL.md`, writes generated flows under
-`skills/fusion-flow/examples/`, and uses `FLOW_ENGINE=psi` with a separate
-executor workspace to avoid recursive self-calls.
+Fusion Flow files are separated by responsibility:
 
-## CLI 一览
-
-```
-psi-agent
-├── ai
-│   ├── openai-completions    # OpenAI 兼容透传
-│   └── anthropic-messages    # Anthropic→OpenAI 转换
-├── session                    # Session + workspace 管理
-├── run                        # 一次性 workspace-backed agent 调用
-└── channel
-    ├── repl                   # 交互式 REPL
-    └── cli                    # 单次消息
+```text
+skills/fusion-flow/                 # immutable skill bundle and runtime
+flows/<task-slug>/<task-slug>.flow.ts
+flows/<task-slug>/runs/<run-id>/     # meta.json, execution-graph.json, bindings/, trace/
 ```
 
-## 定义你自己的 Agent
+For `FLOW_ENGINE=psi`, keep provider URLs and API keys in psi-agent profile
+config, not in Fusion Flow `.env` files.
 
-一个 workspace 就是一个 agent：
+## Workspace Layout
 
-```
+```text
 my-workspace/
-├── tools/                    # 每个 .py 文件定义一个 tool
-│   └── bash.py               # async def bash(command: str) -> str
-├── skills/                   # */SKILL.md 技能文档（system_prompt_builder 自行遍历）
-├── schedules/                # 定时任务
-│   └── daily-report/
-│       └── TASK.md           # YAML 头 (name, cron) + Markdown body
-└── systems/
-    └── system.py             # async def system_prompt_builder() -> str
+|-- systems/
+|   `-- system.py          # async def system_prompt_builder() -> str
+|-- tools/
+|   `-- bash.py            # one async function per tool file
+|-- skills/
+|   `-- example/SKILL.md   # skill instructions loaded by the workspace prompt
+|-- schedules/
+|   `-- daily/TASK.md      # optional cron task
+`-- memory.md              # optional workspace memory
 ```
 
-Tool 就是一个 async 函数，**函数名 = 文件名**，参数类型自动映射为 JSON Schema：
+Tool example:
 
 ```python
-# tools/bash.py
 import anyio
 
+
 async def bash(command: str) -> str:
-    """Execute a bash command.
-    Args:
-        command: The command to run.
-    """
-    result = await anyio.run_process(["/bin/bash", "-c", command])
+    """Execute a shell command."""
+    result = await anyio.run_process(["bash", "-lc", command])
     return result.stdout.decode().strip()
 ```
 
-定时任务的 body 会在 cron 触发时作为消息发送给 AI：
+## Troubleshooting
 
-```markdown
----
-name: daily-report
-cron: "0 12 * * *"
----
-请生成一份项目进展日报。
-```
-
-更多细节见 `examples/a-simple-bash-only-workspace/`。
-
-## 开发
+Run:
 
 ```bash
-uv run ruff check .          # lint
-uv run ruff format --check . # 格式
-uv run ty check              # 类型
-uv run pytest -v             # 测试
+uv run psi-agent doctor
 ```
 
-## 作者
+Common messages:
 
-Hao Zhang <hzhangxyz@outlook.com>
+```text
+API key: missing; set OPENAI_API_KEY
+```
 
-## 许可
+Set the environment variable named in the output.
 
-GNU Affero General Public License v3.0 or later. 详见 [LICENSE](LICENSE.md)。
+```text
+Workspace not found
+```
+
+Run `uv run psi-agent init`, or pass `--workspace PATH`.
+
+```text
+psi-agent config is not valid TOML
+```
+
+Check quotes and `[profiles.<name>]` table headers in `~/.psi-agent/config.toml`.
+
+```text
+Cannot connect to the model service
+```
+
+Check `base_url`, network access, and whether the provider is reachable.
+
+## Development
+
+```bash
+uv run ruff check .
+uv run ruff format --check .
+uv run ty check .
+uv run pytest -v
+```
+
+Real API tests are disabled by default:
+
+```bash
+PSI_RUN_REAL_API_TESTS=1 uv run pytest tests/integration/test_real_api.py -v
+```
+
+## License
+
+GNU Affero General Public License v3.0 or later. See [LICENSE](LICENSE.md).

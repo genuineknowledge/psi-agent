@@ -34,4 +34,6 @@ async def test_run_once_uses_fusion_flow_workspace_prompt(
     system_prompt = mock_ai_server.request_bodies[0]["messages"][0]["content"]
     assert "Fusion Flow Trigger" in system_prompt
     assert "skills/fusion-flow/SKILL.md" in system_prompt
+    assert "flows/<task-slug>" in system_prompt
+    assert "runsDir" in system_prompt
     assert "FLOW_ENGINE=psi" in system_prompt
