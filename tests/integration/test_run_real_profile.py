@@ -9,7 +9,13 @@ import pytest
 from psi_agent.run import run_once
 
 
+def _real_api_enabled() -> bool:
+    return os.environ.get("PSI_RUN_REAL_API_TESTS", "").lower() in {"1", "true", "yes", "on"}
+
+
 def _require_env(*names: str) -> tuple[str, ...]:
+    if not _real_api_enabled():
+        pytest.skip("Set PSI_RUN_REAL_API_TESTS=1 to run real API tests")
     missing = [name for name in names if not os.environ.get(name)]
     if missing:
         pytest.skip(f"Missing env vars: {', '.join(missing)}")
@@ -33,6 +39,7 @@ def _make_workspace(tmp_path: Path) -> Path:
 
 
 @pytest.mark.anyio
+@pytest.mark.real_api
 async def test_run_profile_real_openai_compatible_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     api_key, base_url, model = _require_env(
         "PSI_TEST_OPENAI_API_KEY",
