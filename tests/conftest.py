@@ -31,6 +31,14 @@ tempfile.tempdir = str(_TEST_TEMP_ROOT)
 os.environ.setdefault("UV_CACHE_DIR", str(_TEST_TEMP_ROOT / "uv-cache"))
 
 
+def _skip_cleanup_dead_symlinks(root: Path) -> None:
+    _ = root
+
+
+def _patch_attr(target: object, name: str, value: object) -> None:
+    setattr(target, name, value)
+
+
 @pytest.fixture
 def tmp_path(request: pytest.FixtureRequest) -> Generator[Path]:
     safe_name = re.sub(r"[\W]", "_", request.node.name)[:40]
@@ -46,8 +54,8 @@ def pytest_configure(config: Any) -> None:
     config.option.basetemp = str(_TEST_TEMP_ROOT / f"run-{uuid.uuid4().hex}")
     config.option.cacheclear = True
     if os.name == "nt":
-        _pytest.pathlib.cleanup_dead_symlinks = lambda root: None
-        _pytest.tmpdir.cleanup_dead_symlinks = lambda root: None
+        _patch_attr(_pytest.pathlib, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
+        _patch_attr(_pytest.tmpdir, "cleanup_dead_symlinks", _skip_cleanup_dead_symlinks)
 
 
 if os.name == "nt":
@@ -93,7 +101,8 @@ if os.name == "nt":
             await self._process.aclose()
 
         def send_signal(self, sig: signal.Signals) -> None:
-            if sig in {signal.SIGTERM, signal.SIGKILL}:
+            sigkill = getattr(signal, "SIGKILL", None)
+            if sig == signal.SIGTERM or (sigkill is not None and sig == sigkill):
                 _kill_process_tree(self.pid)
                 return
             self._process.send_signal(sig)
@@ -143,7 +152,7 @@ if os.name == "nt":
             limit=kwargs.get("limit", 100),
             limit_per_host=kwargs.get("limit_per_host", 0),
         )
-        connector._psi_agent_sidecar_endpoint = endpoint  # type: ignore[attr-defined]
+        _patch_attr(connector, "_psi_agent_sidecar_endpoint", endpoint)
         return connector
 
     async def _request_with_sidecar(self: aiohttp.ClientSession, method: str, str_or_url: Any, **kwargs: Any) -> Any:
@@ -164,8 +173,8 @@ if os.name == "nt":
                 str_or_url = rewritten
         return await _original_request(self, method, str_or_url, **kwargs)
 
-    web.UnixSite = WindowsUnixSite  # type: ignore[assignment]
-    aiohttp.UnixConnector = _windows_unix_connector  # type: ignore[assignment]
-    aiohttp.connector.UnixConnector = _windows_unix_connector  # type: ignore[assignment]
-    aiohttp.ClientSession._request = _request_with_sidecar  # type: ignore[method-assign]
-    anyio.open_process = _open_process_with_tree_cleanup  # type: ignore[assignment]
+    _patch_attr(web, "UnixSite", WindowsUnixSite)
+    _patch_attr(aiohttp, "UnixConnector", _windows_unix_connector)
+    _patch_attr(aiohttp.connector, "UnixConnector", _windows_unix_connector)
+    _patch_attr(aiohttp.ClientSession, "_request", _request_with_sidecar)
+    _patch_attr(anyio, "open_process", _open_process_with_tree_cleanup)

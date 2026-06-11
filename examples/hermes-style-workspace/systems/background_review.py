@@ -133,9 +133,7 @@ class BackgroundReview:
         self._complete_fn = complete_fn
         self._tool_executors: ToolExecutors = tool_executors or {}
         self._turn_count: int = 0
-        self._workspace_dir: anyio.Path | None = (
-            anyio.Path(str(workspace_dir)) if workspace_dir is not None else None
-        )
+        self._workspace_dir: anyio.Path | None = anyio.Path(str(workspace_dir)) if workspace_dir is not None else None
         # Startup curator check — runs after event loop is available
         if self._workspace_dir is not None:
             asyncio.create_task(
@@ -148,8 +146,12 @@ class BackgroundReview:
         try:
             from systems.curator import maybe_run_curator
 
+            workspace_dir = self._workspace_dir
+            if workspace_dir is None:
+                return
+
             await maybe_run_curator(
-                self._workspace_dir,
+                workspace_dir,
                 self._simple_complete_fn(),
                 idle_for_seconds=float("inf"),
             )
@@ -266,9 +268,7 @@ class BackgroundReview:
             try:
                 response = await self._complete_fn(loop_messages, tool_schemas)
             except Exception as exc:
-                logger.debug(
-                    "BackgroundReview: LLM call failed at iteration %d: %s", iteration, exc
-                )
+                logger.debug("BackgroundReview: LLM call failed at iteration %d: %s", iteration, exc)
                 return
 
             # Extract assistant message
@@ -283,9 +283,7 @@ class BackgroundReview:
             tool_calls = assistant_msg.get("tool_calls") or []
             if not tool_calls:
                 # No tool call → review complete
-                logger.debug(
-                    "BackgroundReview: review finished at iteration %d (no tool call)", iteration
-                )
+                logger.debug("BackgroundReview: review finished at iteration %d (no tool call)", iteration)
                 return
 
             # Execute each tool call
@@ -300,9 +298,7 @@ class BackgroundReview:
                         f"Tool '{tool_name}' is not available in this review context. "
                         f"Only {sorted(allowed_tools)} are permitted."
                     )
-                    logger.debug(
-                        "BackgroundReview: blocked tool call '%s' (not in whitelist)", tool_name
-                    )
+                    logger.debug("BackgroundReview: blocked tool call '%s' (not in whitelist)", tool_name)
                 else:
                     executor = self._tool_executors.get(tool_name)
                     if executor is None:
@@ -323,9 +319,7 @@ class BackgroundReview:
                     }
                 )
 
-        logger.debug(
-            "BackgroundReview: reached MAX_REVIEW_ITERATIONS (%d), stopping", MAX_REVIEW_ITERATIONS
-        )
+        logger.debug("BackgroundReview: reached MAX_REVIEW_ITERATIONS (%d), stopping", MAX_REVIEW_ITERATIONS)
 
 
 # ---------------------------------------------------------------------------

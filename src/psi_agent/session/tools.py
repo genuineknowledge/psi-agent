@@ -3,15 +3,19 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any, cast
 
 import anyio
 from loguru import logger
 
 from psi_agent.session.protocol import ToolFunction
 
+ToolCallable = Callable[..., Awaitable[Any]]
 
-def _load_tool_module(py_file: Path, module_name: str) -> object | None:
+
+def _load_tool_module(py_file: anyio.Path, module_name: str) -> object | None:
     try:
         spec = importlib.util.spec_from_file_location(module_name, str(py_file))
         if spec is None or spec.loader is None:
@@ -26,7 +30,7 @@ def _load_tool_module(py_file: Path, module_name: str) -> object | None:
         return None
 
 
-def _get_tool_callable(module: object, tool_name: str, py_file: Path) -> object | None:
+def _get_tool_callable(module: object, tool_name: str, py_file: anyio.Path) -> ToolCallable | None:
     candidates = (tool_name, "tool")
     for candidate in candidates:
         func = getattr(module, candidate, None)
@@ -38,14 +42,14 @@ def _get_tool_callable(module: object, tool_name: str, py_file: Path) -> object 
         if candidate.startswith("_"):
             logger.debug(f"Skipping private function '{candidate}'")
             continue
-        return func
+        return cast(ToolCallable, func)
 
     logger.warning(f"Function '{tool_name}' or fallback 'tool' not found in {py_file}")
     return None
 
 
-async def load_tool_callables_from_workspace(tools_dir: Path) -> dict[str, object]:
-    funcs: dict[str, object] = {}
+async def load_tool_callables_from_workspace(tools_dir: Path) -> dict[str, ToolCallable]:
+    funcs: dict[str, ToolCallable] = {}
     tools_anyio = anyio.Path(str(tools_dir))
 
     if not await tools_anyio.is_dir():

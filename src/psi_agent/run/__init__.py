@@ -265,6 +265,8 @@ def _resolve_model(*, ai: AiBackend, model: str) -> str:
 def _resolve_ai(*, ai: str, profile_config: RunProfileConfig) -> AiBackend:
     if not ai:
         return profile_config.ai or "openai-completions"
-    if ai in ("openai-completions", "anthropic-messages"):
-        return ai
+    if ai == "openai-completions":
+        return "openai-completions"
+    if ai == "anthropic-messages":
+        return "anthropic-messages"
     raise ValueError(f"Unsupported AI backend: {ai}")

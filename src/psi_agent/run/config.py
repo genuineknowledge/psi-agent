@@ -74,8 +74,10 @@ def _optional_ai(table: dict, key: str) -> AiBackendName | None:
     value = _optional_str(table, key)
     if not value:
         return None
-    if value in ("openai-completions", "anthropic-messages"):
-        return value
+    if value == "openai-completions":
+        return "openai-completions"
+    if value == "anthropic-messages":
+        return "anthropic-messages"
     raise ValueError(
         f'psi-agent config field "ai" must be one of: openai-completions, anthropic-messages; got {value!r}'
     )
