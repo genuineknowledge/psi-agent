@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from psi_agent.errors import UserFacingError
+
 AiBackendName = Literal["openai-completions", "anthropic-messages"]
 
 
@@ -19,9 +21,13 @@ class RunProfileConfig:
 
 def load_run_profile_config(*, config_path: str = "", profile: str = "") -> RunProfileConfig:
     path, explicit_path = _resolve_config_path(config_path)
+    explicit_profile = bool(profile or os.environ.get("PSI_AGENT_PROFILE", ""))
     if not path.exists():
-        if explicit_path:
-            raise FileNotFoundError(f"psi-agent config file not found: {path}")
+        if explicit_path or explicit_profile:
+            raise UserFacingError(
+                f"psi-agent config file not found: {path}",
+                "Create ~/.psi-agent/config.toml or pass --config PATH.",
+            )
         return RunProfileConfig()
 
     data = tomllib.loads(path.read_text(encoding="utf-8-sig"))
@@ -34,17 +40,28 @@ def load_run_profile_config(*, config_path: str = "", profile: str = "") -> RunP
     )
     profiles = data.get("profiles")
     if not isinstance(profiles, dict):
-        raise ValueError(f"psi-agent config missing [profiles.{profile_name}] table: {path}")
+        raise UserFacingError(
+            f"psi-agent config missing [profiles.{profile_name}] table: {path}",
+            "Add the requested profile table or choose an existing --profile.",
+        )
 
     raw_profile = profiles.get(profile_name)
     if not isinstance(raw_profile, dict):
-        raise ValueError(f"psi-agent profile not found: {profile_name}")
+        raise UserFacingError(
+            f"psi-agent profile not found: {profile_name}",
+            "Check default_profile in config.toml or pass --profile with an existing profile name.",
+        )
 
     ai = _optional_ai(raw_profile, "ai")
     api_key = _optional_str(raw_profile, "api_key")
     api_key_env = _optional_str(raw_profile, "api_key_env")
     if not api_key and api_key_env:
         api_key = os.environ.get(api_key_env, "")
+        if not api_key:
+            raise UserFacingError(
+                f"Environment variable is not set: {api_key_env}",
+                f"Set {api_key_env} before running psi-agent, or update api_key_env in config.toml.",
+            )
 
     return RunProfileConfig(
         ai=ai,

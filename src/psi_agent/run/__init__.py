@@ -16,18 +16,17 @@ from typing import Literal
 from urllib.parse import urlparse
 
 import anyio
-from rich.console import Console
 
 from psi_agent._logging import setup_logging
 from psi_agent.ai.anthropic_messages.server import serve_anthropic_messages
 from psi_agent.ai.openai_completions.server import serve_openai_completions
+from psi_agent.errors import UserFacingError
 from psi_agent.run.config import RunProfileConfig, load_run_profile_config
 from psi_agent.session import build_session_agent
+from psi_agent.workspace import resolve_workspace_path
 
 AiBackend = Literal["openai-completions", "anthropic-messages"]
 OutputFormat = Literal["text", "json"]
-
-console_err = Console(stderr=True, highlight=False)
 
 
 @dataclass(frozen=True)
@@ -79,21 +78,17 @@ class Run:
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
-        try:
-            result = await run_once(
-                workspace=self.workspace,
-                message=self.message,
-                ai_socket=self.ai_socket,
-                ai=self.ai,
-                model=self.model,
-                api_key=self.api_key,
-                base_url=self.base_url,
-                profile=self.profile,
-                config=self.config,
-            )
-        except Exception as e:
-            console_err.print(f"Error: {e}", style="red", markup=False)
-            sys.exit(1)
+        result = await run_once(
+            workspace=self.workspace,
+            message=self.message,
+            ai_socket=self.ai_socket,
+            ai=self.ai,
+            model=self.model,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            profile=self.profile,
+            config=self.config,
+        )
 
         if self.show_reasoning and result.reasoning:
             sys.stderr.write(result.reasoning)
@@ -102,8 +97,9 @@ class Run:
 
         if result.had_error:
             message = result.text or result.reasoning or "Agent run failed"
-            console_err.print(f"Error: {message}", style="red", markup=False)
-            sys.exit(1)
+            if self.verbose:
+                raise UserFacingError(f"Agent run failed: {message}")
+            raise _friendly_agent_error(message)
 
         if self.output_format == "json":
             sys.stdout.write(json.dumps({"text": result.text}, ensure_ascii=False))
@@ -126,7 +122,20 @@ async def run_once(
     profile: str = "",
     config: str = "",
 ) -> RunResult:
-    profile_config = load_run_profile_config(config_path=config, profile=profile)
+    workspace_path = resolve_workspace_path(workspace)
+    profile_config = (
+        load_run_profile_config(config_path=config, profile=profile)
+        if _should_load_profile_config(
+            ai_socket=ai_socket,
+            ai=ai,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            profile=profile,
+            config=config,
+        )
+        else RunProfileConfig()
+    )
     effective_ai = _resolve_ai(ai=ai, profile_config=profile_config)
     effective_model = _resolve_model(ai=effective_ai, model=model or profile_config.model)
     effective_api_key = api_key or profile_config.api_key
@@ -134,11 +143,18 @@ async def run_once(
 
     if ai_socket:
         return await _run_against_ai_socket(
-            workspace=workspace,
+            workspace=str(workspace_path),
             message=message,
             ai_socket=ai_socket,
             model=effective_model,
         )
+
+    _validate_temporary_backend_config(
+        ai=effective_ai,
+        model=effective_model,
+        api_key=effective_api_key,
+        base_url=effective_base_url,
+    )
 
     with _temporary_directory(prefix="psi-agent-run-") as tmp_dir:
         backend_socket = _make_temporary_backend_endpoint(tmp_dir)
@@ -155,7 +171,7 @@ async def run_once(
             )
             await _wait_for_backend(backend_socket)
             result = await _run_against_ai_socket(
-                workspace=workspace,
+                workspace=str(workspace_path),
                 message=message,
                 ai_socket=backend_socket,
                 model=effective_model,
@@ -220,7 +236,7 @@ async def _serve_temporary_backend(
             socket_path=socket_path,
             model=model,
             api_key=api_key or os.environ.get("OPENAI_API_KEY", ""),
-            base_url=base_url or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            base_url=_resolve_base_url(ai=ai, base_url=base_url),
         )
         return
 
@@ -228,7 +244,7 @@ async def _serve_temporary_backend(
         socket_path=socket_path,
         model=model,
         api_key=api_key or os.environ.get("ANTHROPIC_API_KEY", ""),
-        base_url=base_url or os.environ.get("ANTHROPIC_BASE_URL", ""),
+        base_url=_resolve_base_url(ai=ai, base_url=base_url),
     )
 
 
@@ -292,4 +308,83 @@ def _resolve_ai(*, ai: str, profile_config: RunProfileConfig) -> AiBackend:
         return "openai-completions"
     if ai == "anthropic-messages":
         return "anthropic-messages"
-    raise ValueError(f"Unsupported AI backend: {ai}")
+    raise UserFacingError(
+        f"Unsupported AI backend: {ai}",
+        "Use --ai openai-completions or --ai anthropic-messages.",
+    )
+
+
+def _should_load_profile_config(
+    *,
+    ai_socket: str,
+    ai: str,
+    model: str,
+    api_key: str,
+    base_url: str,
+    profile: str,
+    config: str,
+) -> bool:
+    return bool(profile or config or os.environ.get("PSI_AGENT_PROFILE")) or not (
+        ai_socket or ai or model or api_key or base_url
+    )
+
+
+def _validate_temporary_backend_config(
+    *,
+    ai: AiBackend,
+    model: str,
+    api_key: str,
+    base_url: str,
+) -> None:
+    env_key = "OPENAI_API_KEY" if ai == "openai-completions" else "ANTHROPIC_API_KEY"
+    effective_api_key = api_key or os.environ.get(env_key, "")
+    if not effective_api_key:
+        raise UserFacingError(
+            "API key is not configured.",
+            f"Set {env_key}, pass --api-key, or configure api_key_env in ~/.psi-agent/config.toml.",
+        )
+
+    if not model:
+        env_model = "OPENAI_MODEL" if ai == "openai-completions" else "ANTHROPIC_MODEL"
+        raise UserFacingError(
+            "Model is not configured.",
+            f"Set {env_model}, pass --model, or configure model in ~/.psi-agent/config.toml.",
+        )
+
+    if not _resolve_base_url(ai=ai, base_url=base_url):
+        env_base_url = "OPENAI_BASE_URL" if ai == "openai-completions" else "ANTHROPIC_BASE_URL"
+        raise UserFacingError(
+            "Base URL is not configured.",
+            f"Set {env_base_url}, pass --base-url, or configure base_url in ~/.psi-agent/config.toml.",
+        )
+
+
+def _resolve_base_url(*, ai: AiBackend, base_url: str) -> str:
+    if base_url:
+        return base_url
+    if ai == "openai-completions":
+        return os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    return os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")
+
+
+def _friendly_agent_error(message: str) -> UserFacingError:
+    lower = message.lower()
+    if "401" in lower or "unauthorized" in lower or "authentication" in lower or "api key" in lower:
+        return UserFacingError(
+            "Model service authentication failed.",
+            "Check your API key environment variable or profile config, then try again.",
+        )
+    if "connection error" in lower or "cannot connect" in lower or "connection refused" in lower:
+        return UserFacingError(
+            "Cannot connect to the model service.",
+            "Check your base_url/network settings, or run with --verbose for technical details.",
+        )
+    if "timeout" in lower or "timed out" in lower:
+        return UserFacingError(
+            "The model service did not respond in time.",
+            "Try again, or check your network and model provider status.",
+        )
+    return UserFacingError(
+        "Agent run failed.",
+        "Run again with --verbose to see technical details.",
+    )

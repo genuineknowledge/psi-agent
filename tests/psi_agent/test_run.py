@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
+from psi_agent.errors import UserFacingError
 from psi_agent.run import run_once
 from psi_agent.run.config import load_run_profile_config
 
@@ -79,6 +80,52 @@ def test_run_profile_config_accepts_utf8_bom(tmp_path: Path) -> None:
     assert config.model == "profile-model"
     assert config.base_url == "https://example.test/v1"
     assert config.api_key == "sk-test"
+
+
+def test_run_profile_config_reports_missing_api_key_env(tmp_path: Path) -> None:
+    config_path = tmp_path / "psi-agent-config.toml"
+    config_path.write_text(
+        textwrap.dedent(
+            """\
+            default_profile = "fusion"
+
+            [profiles.fusion]
+            ai = "openai-completions"
+            model = "profile-model"
+            base_url = "https://example.test/v1"
+            api_key_env = "PSI_TEST_MISSING_KEY"
+            """
+        )
+    )
+
+    with pytest.raises(UserFacingError, match="Environment variable is not set"):
+        load_run_profile_config(config_path=str(config_path))
+
+
+@pytest.mark.anyio
+async def test_run_once_reports_missing_workspace() -> None:
+    with pytest.raises(UserFacingError, match="Workspace not found"):
+        await run_once(
+            workspace="does-not-exist",
+            message="hello",
+            ai="openai-completions",
+            model="test",
+            api_key="k",
+        )
+
+
+@pytest.mark.anyio
+async def test_run_once_reports_missing_api_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = _make_workspace(tmp_path)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    with pytest.raises(UserFacingError, match="API key is not configured"):
+        await run_once(
+            workspace=str(workspace),
+            message="hello",
+            ai="openai-completions",
+            model="test",
+        )
 
 
 @pytest.mark.anyio

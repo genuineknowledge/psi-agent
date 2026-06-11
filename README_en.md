@@ -28,6 +28,9 @@ Three terminals, three commands:
 # Install
 uv sync
 
+# Check your setup
+uv run psi-agent doctor --workspace ./examples/fusion-flow-workspace
+
 # Terminal 1: Start AI backend (--api-key optional, reads OPENAI_API_KEY env if omitted)
 uv run psi-agent ai openai-completions \
   --session-socket ./ai.sock \
@@ -102,6 +105,7 @@ psi-agent
 │   └── anthropic-messages    # Anthropic→OpenAI conversion
 ├── session                    # Session + workspace management
 ├── run                        # One-shot workspace-backed agent call
+├── doctor                     # Setup checks and next-step guidance
 └── channel
     ├── repl                   # Interactive REPL
     └── cli                    # One-shot message

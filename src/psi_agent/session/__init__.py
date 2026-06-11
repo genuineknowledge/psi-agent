@@ -17,6 +17,7 @@ from psi_agent.session.agent import SessionAgent
 from psi_agent.session.scheduler import Schedule, load_schedules_from_workspace
 from psi_agent.session.server import serve_session
 from psi_agent.session.tools import load_tool_callables_from_workspace, load_tools_from_workspace
+from psi_agent.workspace import resolve_workspace_path
 
 
 def _load_system_prompt_builder(
@@ -103,7 +104,7 @@ async def build_session_agent(
     ai_socket: str,
     model: str,
 ) -> SessionAgent:
-    workspace_path = Path(str(await anyio.Path(workspace).resolve()))
+    workspace_path = resolve_workspace_path(workspace)
     logger.info(f"Loading workspace from {workspace_path}")
 
     tools = await load_tools_from_workspace(workspace_path / "tools")
@@ -171,7 +172,7 @@ class Session:
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
 
-        workspace_path = Path(str(await anyio.Path(self.workspace).resolve()))
+        workspace_path = resolve_workspace_path(self.workspace)
         logger.info(f"Loading workspace from {workspace_path}")
 
         tools = await load_tools_from_workspace(workspace_path / "tools")
