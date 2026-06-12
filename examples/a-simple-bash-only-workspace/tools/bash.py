@@ -1,35 +1,42 @@
-"""Execute bash commands."""
+"""Async bash tool for executing shell commands."""
 
 from __future__ import annotations
 
-import inspect
-from pathlib import Path
+import asyncio
 
 import anyio
-from loguru import logger
 
 
-async def bash(command: str, *, cwd: str | None = None) -> str:
-    """Execute a bash command and return the combined stdout and stderr output.
+async def tool(command: str, timeout_seconds: int = 30, cwd: str | None = None) -> str:
+    """Execute a bash command asynchronously.
 
     Args:
-        command: The bash command to execute. Use with caution.
-        cwd: Working directory. Defaults to the workspace root.
-    """
-    if cwd is None:
-        cwd = str(Path(inspect.getfile(bash)).parent.parent)
+        command: The bash command to execute.
+        timeout_seconds: Timeout in seconds. Defaults to 30.
+        cwd: Working directory for the command. Defaults to None.
 
-    logger.info(f"Executing bash command: {command} (cwd={cwd})")
+    Returns:
+        Command output as string, or error message if execution fails.
+    """
     try:
-        result = await anyio.run_process(["/bin/bash", "-c", command], cwd=cwd)
-        stdout = result.stdout.decode().strip()
-        stderr = result.stderr.decode().strip()
-        output = stdout
-        if stderr:
-            output += f"\n[stderr]\n{stderr}"
-        output = output.strip() or "(no output)"
-        logger.debug(f"Bash result: {output[:200]}")
-        return output
+        working_dir = anyio.Path(cwd) if cwd else None
+
+        process = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=working_dir,
+        )
+
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout_seconds,
+        )
+
+        if process.returncode != 0:
+            return f"Error (exit code {process.returncode}): {stderr.decode()}"
+        return stdout.decode()
+    except TimeoutError:
+        return f"Error: Command timed out after {timeout_seconds} seconds"
     except Exception as e:
-        logger.error(f"Bash command failed: {e}")
-        return f"Error executing command: {e}"
+        return f"Error: {e}"
