@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 import sys
 
-from aiohttp import ClientConnectorError, ClientSession, ClientTimeout, UnixConnector
+from aiohttp import ClientConnectorError, ClientTimeout
 from loguru import logger
 from prompt_toolkit.shortcuts import PromptSession
 from rich.console import Console
 from rich.panel import Panel
+
+from psi_agent.net import make_client_session
 
 console = Console(highlight=False)
 
@@ -15,11 +17,11 @@ console = Console(highlight=False)
 async def run_repl(session_socket: str) -> None:
     logger.info(f"Connecting to session at {session_socket}")
 
-    connector = UnixConnector(path=session_socket)
     prompt_session = PromptSession(multiline=True)
 
     try:
-        async with ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session:
+        client_session, endpoint = make_client_session(session_socket, timeout=ClientTimeout(total=None))
+        async with client_session as session:
             logger.info("Connected to session. Enter for newline, Alt+Enter to send (Ctrl+D to exit).")
             console.print(Panel.fit("psi-agent REPL — Enter newline, Alt+Enter send"))
             console.print("[dim]Ctrl+D to exit[/dim]\n")
@@ -40,10 +42,7 @@ async def run_repl(session_socket: str) -> None:
                     "stream": True,
                 }
 
-                async with session.post(
-                    "http://localhost/v1/chat/completions",
-                    json=req_data,
-                ) as resp:
+                async with session.post(endpoint, json=req_data) as resp:
                     if resp.status != 200:
                         body = await resp.text()
                         try:

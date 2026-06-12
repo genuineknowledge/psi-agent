@@ -20,7 +20,7 @@ async def test_load_schedule_with_yaml_header(tmp_path: Path) -> None:
         name: daily-report
         cron: "0 12 * * *"
         ---
-        请生成项目进展日报。
+        Generate the project status report.
     """)
     )
 
@@ -29,7 +29,7 @@ async def test_load_schedule_with_yaml_header(tmp_path: Path) -> None:
     s = schedules[0]
     assert s.name == "daily-report"
     assert s.cron == "0 12 * * *"
-    assert "请生成项目进展日报" in s.task_content
+    assert "Generate the project status report." in s.task_content
 
 
 @pytest.mark.anyio
@@ -106,10 +106,10 @@ def test_parse_yaml_header_error() -> None:
 
 def test_parse_yaml_header_success() -> None:
     """parse_yaml_header correctly extracts YAML front matter and separates body."""
-    content = "---\nname: daily-report\ncron: '0 12 * * *'\n---\n请生成日报。"
+    content = "---\nname: daily-report\ncron: '0 12 * * *'\n---\nGenerate the report."
     header, body = parse_yaml_header(content)
     assert header == {"name": "daily-report", "cron": "0 12 * * *"}
-    assert body == "请生成日报。"
+    assert body == "Generate the report."
 
 
 def test_schedule_invalid_cron_raises() -> None:
