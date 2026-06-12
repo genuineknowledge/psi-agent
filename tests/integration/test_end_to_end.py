@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import socket
 from pathlib import Path
@@ -47,11 +48,17 @@ async def _wait_for_socket(sock_path: str, timeout_sec: float = 15.0) -> bool:
 
 
 async def _stop_process(proc) -> None:
-    proc.terminate()
+    if proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
     try:
         await proc.wait()
     except Exception:
-        proc.kill()
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
 
 
 @pytest.mark.anyio

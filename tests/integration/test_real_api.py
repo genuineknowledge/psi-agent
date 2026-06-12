@@ -10,8 +10,14 @@ from aiohttp import ClientSession, ClientTimeout, UnixConnector
 from tests.integration.conftest import _kill, _start_psi, _wait_for_socket
 
 
+def _real_api_enabled() -> bool:
+    return os.environ.get("PSI_RUN_REAL_API_TESTS", "").lower() in {"1", "true", "yes", "on"}
+
+
 def _require_env(*names: str) -> tuple[str, ...]:
     """Return env var values or skip the test."""
+    if not _real_api_enabled():
+        pytest.skip("Set PSI_RUN_REAL_API_TESTS=1 to run real API tests")
     missing = [n for n in names if not os.environ.get(n)]
     if missing:
         pytest.skip(f"Missing env vars: {', '.join(missing)}")
@@ -41,6 +47,7 @@ async def _read_sse_stream(connector: UnixConnector, socket_path: str, model: st
 
 
 @pytest.mark.anyio
+@pytest.mark.real_api
 async def test_openai_layer_real_api(tmp_path: Path) -> None:
     api_key, base_url, model = _require_env(
         "PSI_TEST_OPENAI_API_KEY", "PSI_TEST_OPENAI_BASE_URL", "PSI_TEST_OPENAI_MODEL"
@@ -76,6 +83,7 @@ async def test_openai_layer_real_api(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.real_api
 async def test_openai_layer_ignores_client_model(tmp_path: Path) -> None:
     api_key, base_url, model = _require_env(
         "PSI_TEST_OPENAI_API_KEY", "PSI_TEST_OPENAI_BASE_URL", "PSI_TEST_OPENAI_MODEL"
@@ -111,6 +119,7 @@ async def test_openai_layer_ignores_client_model(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.real_api
 async def test_session_end_to_end(tmp_path: Path) -> None:
     api_key, base_url, model = _require_env(
         "PSI_TEST_OPENAI_API_KEY", "PSI_TEST_OPENAI_BASE_URL", "PSI_TEST_OPENAI_MODEL"
@@ -165,6 +174,7 @@ async def test_session_end_to_end(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.real_api
 async def test_anthropic_layer_real_api(tmp_path: Path) -> None:
     api_key, base_url, model = _require_env(
         "PSI_TEST_ANTHROPIC_API_KEY", "PSI_TEST_ANTHROPIC_BASE_URL", "PSI_TEST_ANTHROPIC_MODEL"
