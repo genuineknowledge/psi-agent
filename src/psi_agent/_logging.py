@@ -7,7 +7,7 @@ from loguru import logger
 
 def setup_logging(*, verbose: bool = False) -> int:
     logger.remove()
-    level = "DEBUG" if verbose else "INFO"
+    level = "DEBUG" if verbose else "CRITICAL"
     handler_id = logger.add(
         sys.stderr,
         level=level,
