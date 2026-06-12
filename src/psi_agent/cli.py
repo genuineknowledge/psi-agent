@@ -11,6 +11,7 @@ from psi_agent.ai.anthropic_messages import AnthropicMessages
 from psi_agent.ai.openai_completions import OpenAICompletions
 from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.repl import ChannelRepl
+from psi_agent.doctor import Doctor
 from psi_agent.errors import UserFacingError
 from psi_agent.run import Run
 from psi_agent.session import Session
@@ -27,13 +28,14 @@ ChannelGroup = Annotated[
 ]
 
 RunCommand = Annotated[Run, conf.subcommand(name="run")]
+DoctorCommand = Annotated[Doctor, conf.subcommand(name="doctor")]
 
 
 def main() -> None:
     _configure_console_encoding()
     cmd = None
     try:
-        cmd = tyro.cli(Session | RunCommand | AiGroup | ChannelGroup)  # ty: ignore[no-matching-overload]
+        cmd = tyro.cli(Session | RunCommand | DoctorCommand | AiGroup | ChannelGroup)  # ty: ignore[no-matching-overload]
         anyio.run(cmd.run)
     except UserFacingError as e:
         _print_error(str(e))
