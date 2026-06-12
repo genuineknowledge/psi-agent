@@ -44,6 +44,28 @@ def test_system_prompt_builder_loads(tmp_path: Path) -> None:
     assert result == "test prompt"
 
 
+def test_system_class_build_system_prompt_loads(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    systems = ws / "systems"
+    systems.mkdir(parents=True)
+    (systems / "system.py").write_text(
+        """
+class System:
+    def __init__(self, workspace_dir):
+        self.workspace_dir = workspace_dir
+
+    async def build_system_prompt(self, model=None, tool_names=None):
+        return f"{model}:{','.join(tool_names or [])}:{self.workspace_dir.name}"
+""".strip()
+    )
+
+    builder = _load_system_prompt_builder(ws, model="test-model", tool_names=["bash", "read"])
+    assert builder is not None
+
+    result = asyncio.run(builder())
+    assert result == "test-model:bash,read:ws"
+
+
 def test_syntax_error_in_system_py(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     systems = ws / "systems"
