@@ -130,4 +130,3 @@ def test_run_profile_config_reports_invalid_ai(tmp_path: Path) -> None:
 
     with pytest.raises(UserFacingError, match='field "ai" must be one of'):
         load_run_profile_config(config_path=str(config_path))
-
