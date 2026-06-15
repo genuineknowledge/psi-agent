@@ -10,3 +10,4 @@ dist/
 .pytest-tmp/
 *.sock
 .coverage
+.skills_prompt_snapshot.json

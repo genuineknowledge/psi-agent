@@ -1,6 +1,0 @@
-{
-  "manifest": {
-    "example": 1780854481797583834
-  },
-  "skills_xml": "<available_skills>\n  <skill name=\"example\" category=\"example\">\n    <description>Demonstrates how to define a skill. Replace this with your own skill instructions.</description>\n  </skill>\n</available_skills>"
-}

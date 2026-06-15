@@ -12,6 +12,7 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
 import contextlib
+import hashlib
 import json
 import os
 import platform
@@ -367,12 +368,19 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     if not skill_entries:
         return ""
 
-    # Build manifest for cache comparison: {skill_name: mtime_ns}
-    # (category changes invalidate cache because they affect XML structure)
-    manifest: dict[str, int] = {}
+    # Build manifest from file content instead of mtimes so checkout/rebase
+    # operations do not invalidate the cache.
+    manifest: dict[str, str] = {}
+    skill_contents: dict[str, str] = {}
     for name, skill_md in skill_entries:
-        stat = await skill_md.stat()
-        manifest[name] = stat.st_mtime_ns
+        content = await _read_file_optional(skill_md)
+        if content is None:
+            continue
+        skill_contents[name] = content
+        manifest[name] = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    if not skill_contents:
+        return ""
 
     # Try cache
     snapshot_path = workspace_dir / _SKILLS_SNAPSHOT_FILE
@@ -385,8 +393,8 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
 
     # Parse SKILL.md files
     skills: list[dict[str, str]] = []
-    for name, skill_md in sorted(skill_entries):
-        content = await _read_file_optional(skill_md)
+    for name in sorted(skill_contents):
+        content = skill_contents[name]
         if not content:
             continue
         # Parse YAML frontmatter
@@ -439,8 +447,8 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     lines.append("</available_skills>")
     skills_xml = "\n".join(lines)
 
-    # Save cache (manifest keyed by mtime_ns; category changes force re-parse
-    # because mtime updates when SKILL.md is edited)
+    # Save cache (manifest keyed by content hash; category changes force
+    # re-parse because category lives in SKILL.md content)
     with contextlib.suppress(OSError):
         await snapshot_path.write_text(
             json.dumps({"manifest": manifest, "skills_xml": skills_xml}, indent=2),
