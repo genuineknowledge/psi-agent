@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import pathlib
@@ -126,8 +127,10 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     if not await skills_dir.exists():
         return ""
 
-    # --- Build manifest (mtime_ns + size per SKILL.md) ---
-    manifest: dict[str, dict[str, int]] = {}
+    # --- Build manifest from SKILL.md content ---
+    # Content hashes keep the local snapshot stable across checkout/rebase
+    # operations that change mtimes without changing skill instructions.
+    manifest: dict[str, str] = {}
     skill_dirs: list[anyio.Path] = []
     async for skill_path in skills_dir.iterdir():
         if not await skill_path.is_dir():
@@ -137,13 +140,10 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
             continue
         skill_dirs.append(skill_path)
         try:
-            stat = await skill_md.stat()
-            manifest[str(skill_md)] = {
-                "mtime_ns": int(stat.st_mtime_ns),
-                "size": int(stat.st_size),
-            }
+            content = await skill_md.read_text(encoding="utf-8")
+            manifest[str(skill_md)] = hashlib.sha256(content.encode("utf-8")).hexdigest()
         except Exception:
-            manifest[str(skill_md)] = {"mtime_ns": 0, "size": 0}
+            manifest[str(skill_md)] = ""
 
     if not manifest:
         return ""
