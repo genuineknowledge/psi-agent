@@ -6,7 +6,9 @@ metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fucla
 
 # OpenFlow Skill (Fuclaw)
 
-This skill is the OpenClaw integration for **`@agent-flow/core`** (alias: Fuclaw) — a TypeScript runtime that executes multi-agent workflows and emits a full **execution graph** for replay. Unlike OpenProse, where the LLM *is* the VM, here the VM is a Node.js process; the LLM only orchestrates running it and reading its artifacts.
+This skill is the psi-agent workspace integration for **`@agent-flow/core`** (alias: Fuclaw) — a TypeScript runtime that executes multi-agent workflows and emits a full **execution graph** for replay. Unlike OpenProse, where the LLM *is* the VM, here the VM is a Node.js process; the LLM only orchestrates running it and reading its artifacts.
+
+> **Workspace layout.** Treat `skills/fusion-flow/` as an immutable skill/runtime bundle. Never write generated `.flow.ts` files, `runs/`, or task artifacts inside the skill directory. For every user task, create `<workspaceDir>/flows/<task-slug>/`, write exactly one flow at `<workspaceDir>/flows/<task-slug>/<task-slug>.flow.ts`, and let runtime artifacts land under `<workspaceDir>/flows/<task-slug>/runs/<runId>/`. Run commands from `<skillDir> = <workspaceDir>/skills/fusion-flow` so `npm run typecheck` and `npx tsx` use the bundled dependencies and tsconfig.
 
 > **No slash commands.** This skill is triggered by **natural-language intent**, never by a `/flow xxx` command. The user just talks: "帮我写个并行调研的工作流" / "跑一下刚生成的那个" / "刚才那个跑完了吗". Do NOT teach, suggest, or expect any `/flow run` / `/flow show` / `/flow author` syntax — those slash commands do not exist and printing them to the user is a bug (a user in an environment without this skill installed will see "命令没找到"). Map what the user *means* to the actions below.
 
@@ -39,18 +41,18 @@ Do **not** activate this skill for `.prose` files — those belong to OpenProse.
 
 | Aspect | OpenProse | OpenFlow (Fuclaw) |
 | --- | --- | --- |
-| VM substrate | LLM session simulating prose.md | Node.js + tsx running `core/src` |
+| VM substrate | LLM session simulating prose.md | Node.js + tsx running the bundled Fusion Flow runtime |
 | Program format | `.prose` markdown DSL | `.flow.ts` TypeScript |
 | Sub-agent spawn | OpenClaw `sessions_spawn` | `@agent-flow/core` shelling out to an external agent CLI (claude / openclaw / hermes / psi) |
-| State directory | `.prose/runs/<id>/` | `core/runs/<id>/` |
+| State directory | `.prose/runs/<id>/` | `flows/<task-slug>/runs/<id>/` |
 | Replay artifact | `bindings/*.md` + `state.md` | `bindings/` + `trace/` + **`execution-graph.json`** |
 | Control flow | Prose VM keywords | `flow.parallel / if / loopUntil / map / pipeline / retry / block / ...` |
 
 The skill's job is **not** to interpret a DSL. The job is to:
 
 1. Resolve the user's `.flow.ts` target.
-2. Shell out to `tsx <file>` inside the core checkout.
-3. Surface the resulting `runs/<id>/` and explain the execution graph.
+2. Shell out to `tsx <file>` from `<skillDir>` so bundled dependencies are used.
+3. Surface the resulting `flows/<task-slug>/runs/<id>/` and explain the execution graph.
 
 ## Intent Routing
 
@@ -61,47 +63,39 @@ The user talks in natural language. Map what they **mean** to one of these actio
 | "我能用这个干嘛 / 你能帮我做什么" | Describe capabilities in plain language (see "Capabilities" at the bottom) + offer to build a flow |
 | "跑一下这个 / 帮我跑 X / 执行这个 .flow.ts" | Run a `.flow.ts` the user already has (e.g. one you just generated in Authoring Mode) via `tsx`, surface `runId` + key bindings. **This skill no longer ships runnable demo examples** — there is no keyword→example catalog to resolve against; the only thing you run is a `.flow.ts` the user points at or that author just produced. |
 | "接着上次那个跑 / 只重跑改动的部分" | (v0.6) Re-run reusing the old `runs/<runId>/`; cached bindings skip the LLM. See "Resume" section |
-| "看看结果 / 刚才那个跑完了吗 / 上次跑得怎么样" | Read `core/runs/<runId>/execution-graph.json` (or the most recent run) and walk the user through it |
-| "环境齐不齐 / 能不能跑 / 帮我检查下" | Verify Node, tsx, `core/.env` (API keys), `corePath` config, and authoring readiness |
+| "看看结果 / 刚才那个跑完了吗 / 上次跑得怎么样" | Read `flows/<task-slug>/runs/<runId>/execution-graph.json` (or the most recent run) and walk the user through it |
+| "环境齐不齐 / 能不能跑 / 帮我检查下" | Verify Node, tsx, `<skillDir>/.env`, `<skillDir>/node_modules`, and authoring readiness |
 | **"帮我写个工作流做 X / 帮我编排 / 我想让几个 agent ..."** | **Generate a new `.flow.ts` from natural language. See "Authoring Mode" below.** |
 | Anything else workflow-shaped | Interpret intent against this table |
 
 ## Running a Program
 
 ```bash
-# Inside core checkout, with .env present
-cd <corePath>
-npx tsx <abs-path-to-flow-file>
+# Inside the immutable Fusion Flow skill bundle, with dependencies installed
+cd <skillDir>
+npx tsx ../../flows/<task-slug>/<task-slug>.flow.ts
 ```
 
-`<corePath>` is plugin config (optional in schema). Resolution order on every run/show invocation:
+Resolve paths on every run/show invocation:
 
-1. Read it from the plugin config in `~/.openclaw/openclaw.json` under `plugins.entries.open-flow.config.corePath`.
-2. If unset, **try auto-detect**: if the OpenClaw process CWD (or any ancestor of it) contains a `core/package.json` whose `name` field equals `@agent-flow/core`, treat that `<dir>/core` as `corePath`.
-3. If still unset, **ask the user once** in plain Chinese / English: "你的 FuClaw repo 根目录的绝对路径是？需要 .../core 这一层。"
-4. Once you have a verified path (the directory exists and contains `package.json` with `@agent-flow/core`), **remember it for the rest of this session** and use it for all subsequent runs. Do not re-ask within the same session.
-5. If the user wants to persist it across sessions, tell them this command (verified against OpenClaw 2026.5.18):
-   ```bash
-   openclaw config set plugins.entries.open-flow.config.corePath /abs/path/to/FuClaw-OpenProse/core
-   ```
-   The dot-path writes into `~/.openclaw/openclaw.json`. Verify with:
-   ```bash
-   openclaw config get plugins.entries.open-flow.config.corePath
-   ```
+1. `<workspaceDir>` is the psi-agent workspace root containing `AGENTS.md`, `systems/`, `tools/`, `skills/`, and `flows/`.
+2. `<skillDir>` is `<workspaceDir>/skills/fusion-flow`; it must contain `package.json`, `tsconfig.json`, and `SKILL.md`.
+3. `<taskDir>` is `<workspaceDir>/flows/<task-slug>`; generated `.flow.ts` files and `runs/` artifacts live here.
+4. If any of these cannot be resolved, ask the user once for the workspace root. Do not scan sibling repos or temp folders.
 
-Never guess a path without verification. Never hardcode `D:/...` or any user-specific path.
+Never guess a path without verification. Never hardcode `D:/...` or any user-specific path. Never write task files under `skills/fusion-flow/`.
 
 To pass `flow.input` overrides, append `--input.<name>=<value>` after the file path:
 
 ```bash
-npx tsx examples/flow-author-20260606-001.flow.ts --input.question="MySQL 还是 Postgres？" --input.context="..."
+cd <skillDir> && npx tsx ../../flows/<task-slug>/<task-slug>.flow.ts --input.question="MySQL 还是 Postgres？" --input.context="..."
 ```
 
 After the run, the script prints two lines you must capture:
 
 ```
 [run] <runId>
-[run] dir: <abs-path-to-runs/runId>
+[run] dir: <workspaceDir>/flows/<task-slug>/runs/<runId>
 ```
 
 Use that `runId` to walk the user through the run (see "Reading a Run").
@@ -111,8 +105,8 @@ Use that `runId` to walk the user through the run (see "Reading a Run").
 If a run blew up halfway, or the user wants to re-execute only the parts whose inputs changed, append `--resume=<runId>` to the `tsx` command:
 
 ```bash
-npx tsx examples/flow-author-20260606-001.flow.ts --resume=20260529-030614-slnw7h
-npx tsx examples/flow-author-20260606-001.flow.ts --resume=last        # latest run in core/runs/
+cd <skillDir> && npx tsx ../../flows/<task-slug>/<task-slug>.flow.ts --resume=20260529-030614-slnw7h
+cd <skillDir> && npx tsx ../../flows/<task-slug>/<task-slug>.flow.ts --resume=last        # latest run in flows/<task-slug>/runs/
 ```
 
 How it behaves:
@@ -134,7 +128,7 @@ Caveats to mention if asked:
 
 Before executing anything that calls the LLM (any `.flow.ts` the user wrote or that author generated, i.e. anything using `flow.agent` / `flow.session` / `flow.evaluate`):
 
-1. Confirm the configured engine CLI is on PATH (`claude --version` for the default). v0.7 auth is the engine CLI's own config, not a key in `core/.env`.
+1. Confirm the configured engine CLI is on PATH (`claude --version` for the default). v0.7 auth is the engine CLI's own config, not a key in `<skillDir>/.env`.
 2. Internally estimate cost/latency from the flow's node count (each LLM call is a CLI subprocess, ~3-10s each; a fan-out with N reviewer sessions ≈ N calls). Fold that into the single plain-language heads-up line ("预计几分钟") — don't dump the per-node math on the user.
 3. Say the one heads-up line, then **run — do not ask "要不要跑" or wait for approval.** The user already asked for the task; building + running the flow is how you do it. (Only exception: they explicitly said "只生成别跑".)
 
@@ -142,7 +136,7 @@ A flow whose LLM calls are all replaced by `flow.service` mocks (no `flow.agent`
 
 ### Running is the runtime's job, not yours
 
-When the user asks to run a `.flow.ts`, your ENTIRE job is: resolve `corePath`, run `cd <corePath> && npx tsx <file>` (one command), then report what the runtime printed. The runtime spawns subprocesses (`uv`, `python`, etc.) under its own designed environment — git-bash autodetect, clean-env baseline, Windows shell handling. **You do not pre-flight the subprocess environment.** Specifically, before running:
+When the user asks to run a `.flow.ts`, your ENTIRE job is: resolve `<skillDir>` and the target flow, run `cd <skillDir> && npx tsx <flow-file>` (one command; use an absolute path or a path relative to `<skillDir>`), then report what the runtime printed. The runtime spawns subprocesses (`uv`, `python`, etc.) under its own designed environment — git-bash autodetect, clean-env baseline, Windows shell handling. **You do not pre-flight the subprocess environment.** Specifically, before running:
 
 - Do NOT check whether `uv` / `python` / `claude` is "on PATH" in your shell. Your PATH is not the runtime's PATH. A missing binary in your shell does NOT mean the flow will fail.
 - Do NOT `pip install` / `npm install` / modify PATH to "fix" a tool you think is missing.
@@ -173,12 +167,12 @@ While a run is in flight, your only sources of truth are the runtime's stdout an
 
 ## Reading a Run
 
-When the user wants to see a run's result ("跑完了吗 / 看看结果"), perform these reads in parallel (resolve the target `runId`, or pick the most recent `core/runs/*/` if they said "上次 / last"):
+When the user wants to see a run's result ("跑完了吗 / 看看结果"), perform these reads in parallel (resolve the target `runId`, or pick the most recent `flows/<task-slug>/runs/*/` if they said "上次 / last"):
 
-- `core/runs/<runId>/meta.json` — top-level status, durations, call counts
-- `core/runs/<runId>/execution-graph.json` — the tree
-- `core/runs/<runId>/bindings/` — list filenames; read `final.md` if present
-- `core/runs/<runId>/trace/*.json` — only on demand (these are large)
+- `flows/<task-slug>/runs/<runId>/meta.json` — top-level status, durations, call counts
+- `flows/<task-slug>/runs/<runId>/execution-graph.json` — the tree
+- `flows/<task-slug>/runs/<runId>/bindings/` — list filenames; read `final.md` if present
+- `flows/<task-slug>/runs/<runId>/trace/*.json` — only on demand (these are large)
 
 Then summarize for the user. **Default (non-technical user): keep it short and friendly** — lead with the result, not the metrics:
 
@@ -192,12 +186,12 @@ Then summarize for the user. **Default (non-technical user): keep it short and f
 
 | File | Location | Purpose |
 | --- | --- | --- |
-| `prose.md` analogue | None — the runtime IS the VM | TS code in `core/src/` |
-| `core/src/flow.ts` | Plugin install root | All `flow.xxx` API impl |
-| `core/src/run.ts` | Plugin install root | `run()` wrapper + Agent factory |
-| `core/examples/` | Plugin install root | Bundled examples |
-| `core/runs/<runId>/` | Plugin install root | Per-run artifacts (graph, bindings, trace) |
-| `core/.env` | User responsibility | FLOW_ENGINE selection + optional ANTHROPIC_* passthrough for claude engine + FLOW_PSI_* for psi-agent |
+| `prose.md` analogue | None — the runtime IS the VM | Bundled runtime under `skills/fusion-flow/runtime/` |
+| `skills/fusion-flow/runtime/` | Skill directory | All `flow.xxx` API impl + `run()` wrapper |
+| `flows/<task-slug>/<task-slug>.flow.ts` | Workspace task directory | Generated program for one user task |
+| `skills/fusion-flow/examples/` | Skill directory | Placeholder only; do not write generated task files here |
+| `flows/<task-slug>/runs/<runId>/` | Workspace task directory | Per-run artifacts (graph, bindings, trace) |
+| `skills/fusion-flow/.env` | User responsibility | FLOW_ENGINE selection + optional ANTHROPIC_* passthrough for claude engine + FLOW_PSI_* for psi-agent |
 
 ## Authoring Mode
 
@@ -210,7 +204,7 @@ This is the v0.3 flagship: turn a natural-language intent into a runnable `.flow
 ### When to enter Authoring Mode
 
 - User describes a workflow they want built: "帮我写个工作流 ..." / "make a flow that ..." / "帮我编排 ..." / similar.
-- User asks "帮我写一个 flow ..." / "make a flow that ..." / similar in OpenClaw TUI.
+- User asks "帮我写一个 flow ..." / "make a flow that ..." / similar in this psi-agent workspace.
 - User edits an existing `.flow.ts` and asks you to "rewrite" or "扩展".
 - **User describes a workflow-shaped task without naming "flow"** — anything needing two or more coordinated agents / parallel branches / a multi-step pipeline / judge-then-branch (see "When to Activate"). In that case, don't wait for the word "flow": offer to build one, then run the author loop below.
 
@@ -218,8 +212,8 @@ This is the v0.3 flagship: turn a natural-language intent into a runnable `.flow
 
 1. **Understand intent** — restate the user's goal in 1 sentence. If genuinely ambiguous, ask **one** clarifying question (don't grill them). While doing this, note whether the user looks like a *developer* (asked to edit a `.flow.ts`, mentioned primitives/TS) — that's the only case where you show technical detail in step 5. Everyone else gets the minimal plain-language summary.
 2. **Pick primitives** — match intent to one of the 5 patterns (see "Reference Patterns" below). Decide which `flow.xxx` are needed. Don't be exotic; reach for the primitives the inlined example uses.
-3. **Generate** the file at `<corePath>/examples/flow-author-<YYYYMMDD>-<NNN>.flow.ts`. Follow the standard skeleton in "Code Template".
-4. **Compile** — run `cd <corePath> && npm run typecheck` (which is `tsc --noEmit` with the project's tsconfig). **Do NOT use `npx tsc --noEmit <file>`** on a single file — that bypasses tsconfig and falls back to commonjs defaults, producing fake errors about top-level await / import.meta. Always use the npm script. Fix any real errors yourself, up to **3 rounds**. After 3 rounds of failures, stop and tell the user what you tried.
+3. **Generate** the file at `<workspaceDir>/flows/<task-slug>/<task-slug>.flow.ts`. Use a short lowercase slug from the user's task. Follow the standard skeleton in "Code Template".
+4. **Compile** — run `cd <skillDir> && npm run typecheck` (which is `tsc --noEmit` with the bundled tsconfig that includes `../../flows/**/*.ts`). **Do NOT use `npx tsc --noEmit <file>`** on a single file — that bypasses tsconfig and falls back to commonjs defaults, producing fake errors about top-level await / import.meta. Always use the npm script. Fix any real errors yourself, up to **3 rounds**. After 3 rounds of failures, stop and tell the user what you tried.
 5. **Run it directly** — the user asked you to do a task, not to hand them a file. Once typecheck passes, say ONE friendly heads-up line ("🚀 方案定了，正在帮你跑，预计几分钟…" — a notice, NOT a question), then immediately run the flow. **Do NOT ask "要不要跑 / 跑不跑" and do NOT wait for `跑`.** Building the file is an internal step toward doing the task; the user wants the result, so produce it. (The only exception: the user *explicitly* said "只生成别跑 / 先给我看看别执行" — then stop after typecheck. Absent that, run.)
 
 Never mention the `.flow.ts` file, its path, primitive names, or "我生成了一个文件" to the user. From their side you are just doing the task they asked for. If they ask "你在干嘛 / 怎么做的", answer in plain business language ("我让几个分析分头跑、再汇总"), never "我写了个 TypeScript 文件然后执行它".
@@ -252,7 +246,7 @@ These are not style preferences. Each one was observed corrupting a real author 
 1. **Don't fake a result instead of running.** The user wants the real outcome. After typecheck passes you RUN the flow (see step 5) — you do not stop and hand back a file, and you never substitute a made-up answer for an actual run. The runtime spawns the sub-agents; your job is to kick it off and report what comes back.
 2. **Write OR run any extra `.flow.ts` beyond the one file the task needs** — not an `*-offline.flow.ts` twin, not a "simpler version", not a "v2", not a "test harness". One intent = one file. An offline twin with baked-in output (mock numbers, OR the real numbers you looked up) is a forgery, not a test: it always "passes" regardless of what the real tool does. The real run IS the verification. If the user later wants an offline twin, that is a separate explicit request.
 3. **Report numbers you did not get from a real run** — never present mock data, sample data, or figures you pulled from an old `output/` dir / `validation_report.json` as if they are *this* flow's result. The only result you report is what the run you just executed actually returned. If a run fails, report the failure (see "When a run fails") — don't paper over it with invented numbers.
-4. **Work anywhere other than the resolved `corePath`** — the generated file goes in `<corePath>/examples/`, and `corePath` is the directory resolved in "Running a Program" (the symlinked skill's repo, NOT a copy you found by searching the filesystem). Do NOT scan `D:/tmp`, the OpenClaw workspace, or any sibling `*-publish` / bundle copy for "a flow project" and start writing/`npm install`/running there. If you can't resolve `corePath`, ask the user — do not pick a random copy. (Observed: agent ignored the real repo and built files inside an unrelated publish snapshot.)
+4. **Work anywhere other than the resolved workspace task directory** — the generated file goes in `<workspaceDir>/flows/<task-slug>/`, and `<skillDir>` is only used as the command cwd for dependencies. Do NOT write generated files, runs, or task scratch files inside `skills/fusion-flow/`. Do NOT scan `D:/tmp`, sibling repos, or publish snapshots for "a flow project" and start writing/`npm install`/running there. If you can't resolve `<workspaceDir>` and `<skillDir>`, ask the user — do not pick a random copy. (Observed: agent ignored the real repo and built files inside an unrelated publish snapshot.)
 
 The real run is how you verify and how you deliver — there is no "spend-free preview" step to offer the user. typecheck is your only pre-run check; after it passes, run.
 
@@ -269,7 +263,7 @@ Keep this **minimal**. A real investor ("悠悠") and an internal teammate ("张
 That's it — one line, then you run. Do **not** add `做什么 / 要多久 / 你会拿到` as separate fields, do not list steps, do not show 🔧/🎯/📝 lines, do not show the file path, do not ask for approval. If the user is clearly a **developer** (asked to edit a `.flow.ts`, mentioned primitives/TS, or explicitly asks "用了哪些原语 / 给我看结构 / 文件在哪"), you may then show the technical detail **on demand**:
 
 ```
-🔧 parallel × 1, choice × 1, session × 5 ｜ 套路：异构 fan-out + 选边 ｜ 文件：examples/flow-author-<id>.flow.ts
+🔧 parallel × 1, choice × 1, session × 5 ｜ 套路：异构 fan-out + 选边 ｜ 文件：flows/<task-slug>/<task-slug>.flow.ts
 ```
 
 Only show that line when a developer explicitly asks for it. Never push it at a business user, and never volunteer the file path unprompted.
@@ -311,7 +305,7 @@ This composite flow (technology selection) exercises **11 primitives** and folds
 // SCENARIO: 技术选型综合工作流 —— 多 expert 并行调研 + 同构评分 + LLM 选边 + 综合
 // 套路：复合工作流。候选数可变；每个候选内部跑一个可复用 block（研究 + 自评）。
 
-import { run } from "../runtime/agent-flow-core.bundle.mjs"; // bundle mode (this folder). Source-repo mode: "../src/index.js"
+import { run } from "../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs";
 
 await run(
   async ({ flow, save }) => {
@@ -530,27 +524,17 @@ The author skill must catch and refuse to emit code that does any of these:
 6. **Using an agentic session or `flow.exec` to get a boolean / single value.** Both return free-form output, not strict JSON. Use `flow.evaluate({kind: "boolean" | "number" | "choice"})` (preferably on `engine: "claude"` for the native `--json-schema` path) instead. If the user really wants agentic autonomy *and* a structured answer, parse `result.text` / `result.stdout` with a regex/heuristic and document the fragility.
 7. **Relaying an external tool's API key through Fuclaw's `env`.** When generating a `flow.exec` that wraps an external tool (a Python pipeline, a CLI with its own config), do NOT thread that tool's API key through `env: { SOME_KEY: process.env.SOME_KEY }`. The key usually lives in the *external tool's own* config (read by its own dotenv at its `cwd`), not in Fuclaw's `process.env` — so the relay resolves to `""` and silently breaks the tool's auth while looking correct. It also drags the secret into Fuclaw's process memory for no reason. Pass through `env` only what the subprocess genuinely can't obtain itself (e.g. `PYTHONPATH`); for credentials, set `cwd` to the tool's dir and let it read its own config.
 
-### Runtime mode detection (which `import` path to use)
+### Runtime path
 
-Before writing the import line, decide which of two runtime modes the user is in. The author skill MUST pick the right one — wrong import = `tsc` fails or runtime crashes.
+In the psi-agent workspace, generated flows live in `flows/<task-slug>/` and import the immutable runtime bundle from the skill directory.
 
-**Mode A — source repo mode** (the user is inside the cloned Fuclaw / OpenProse repo, generated file goes to `core/examples/flow-author-*.flow.ts`):
-
-```ts
-import { run } from "../src/index.js";
-```
-
-How to detect: the working directory contains `core/src/index.ts` and `core/examples/`, OR the user said "in the repo" / corePath is set.
-
-**Mode B — skill bundle mode** (the user copied the `dist/fusion-flow/` folder standalone, generated file goes to `examples/flow-author-*.flow.ts` next to a `runtime/` folder):
+Always use this import:
 
 ```ts
-import { run } from "../runtime/agent-flow-core.bundle.mjs";
+import { run } from "../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs";
 ```
 
-How to detect: the working directory has `runtime/agent-flow-core.bundle.mjs` and a sibling `examples/` folder, OR the user said "from the skill bundle" / "from dist/fusion-flow" / "I copied the folder".
-
-**If unsure, ask the user once.** Cost of guessing wrong: every file fails `tsc`. Cost of asking: one short question.
+Do not use source-repo imports such as `../src/index.js`, and do not place generated files under `skills/fusion-flow/examples/` just to make `../runtime/...` work. The skill directory is not the task workspace.
 
 ### Code template
 
@@ -561,7 +545,7 @@ Every generated file follows this skeleton. Comments at top are mandatory:
 // SCENARIO: <one-line user-facing description>
 // AUTHORED: <YYYY-MM-DD HH:mm:ss> by Fuclaw authoring mode from intent: "<original user intent>"
 
-import { run } from "<PICK_ONE_PER_RUNTIME_MODE_BELOW>";
+import { run } from "../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs";
 
 await run(
   async ({ flow, save }) => {
@@ -598,12 +582,12 @@ The Windows-path regex in `programPath` is **always** required — it normalizes
 
 ### TSC error self-repair
 
-After generation, run `npx tsc --noEmit`. Common errors and fixes:
+After generation, run `cd <skillDir> && npm run typecheck`. Common errors and fixes:
 
 - `Property 'paralel' does not exist on type 'FlowAPI'` — typo. The correct name is `parallel`. Check [`core/README.md`](../../../core/README.md) primitive table.
 - `Type 'X' is not assignable to type 'Y'` on a `flow.evaluate` call — most often `kind` was wrong (e.g. `"num"` instead of `"number"`).
 - `'someVar' is possibly 'undefined'` after `flow.call` or `flow.ifElse` — these return `T | undefined`. Use `?? <fallback>` or pull the call inside a function that always provides else.
-- `error TS2307: Cannot find module '../src/index.js'` (or `'../runtime/agent-flow-core.bundle.mjs'`) — **wrong runtime mode import path**, not a missing dependency. This is the #1 high-frequency trap (see "Runtime mode detection"). Bundle mode (`dist/fusion-flow/`, has a `runtime/` folder) must import `../runtime/agent-flow-core.bundle.mjs`; source-repo mode (has `core/src/`) must import `../src/index.js`. Check which folder you're actually in and match the path — don't add a dependency.
+- `error TS2307: Cannot find module '../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs'` — the flow is not under `flows/<task-slug>/`, the skill runtime bundle is missing, or the relative path was changed. Fix the workspace layout; don't add a dependency.
 - `Cannot find name 'flow'` — the closure parameter is destructured: `async ({ flow, save }) => { ... }`. Check the skeleton.
 - `Property 'X' does not exist on type` for context bindings — the binding-name string in `flow.session(...)`'s 3rd arg is opaque to TS. Re-read the corresponding `save`/`output` calls and align.
 
@@ -612,8 +596,7 @@ If the same error survives 3 rewrites, stop and ask the user. Don't loop indefin
 ### Running it (automatic, right after typecheck)
 
 1. Run the file (no approval step — this follows directly from step 5 of the author loop):
-   - **Mode A (source repo):** `cd <corePath> && npx tsx examples/flow-author-<id>.flow.ts`
-   - **Mode B (skill bundle):** `cd <bundleDir> && npx tsx examples/flow-author-<id>.flow.ts`
+   - `cd <skillDir> && npx tsx ../../flows/<task-slug>/<task-slug>.flow.ts`
 2. Capture `[run] <runId>` and `[run] dir: ...` from stdout (these are for *you*, not for the user).
 3. After completion (or on error), fall back to the "Reading a Run" protocol — summarize the run for the user in plain business language. Lead with the result, not the file or the metrics.
 4. Only if the user asks how to re-run it later: tell them the command. Don't volunteer the file path or `npx tsx` line unprompted — for a non-technical user it's noise.
@@ -631,19 +614,19 @@ When the user asks to check their environment ("环境齐不齐 / 能不能跑")
 ```bash
 node --version                 # need ≥ 20
 npx tsx --version              # any
-ls <corePath>/.env             # optional in v0.7 (FLOW_ENGINE config); the engine CLI's own auth is what matters
-ls <corePath>/node_modules     # must exist; if not, run `npm install` in <corePath>
+ls <skillDir>/.env             # optional in v0.7 (FLOW_ENGINE config); the engine CLI's own auth is what matters
+ls <skillDir>/node_modules     # must exist; if not, run `npm install` in <skillDir>
 claude --version               # the configured FLOW_ENGINE CLI must be on PATH (default: claude)
 ```
 
-Report each as ✓ / ✗. Never echo any API key value. In v0.7 `core/.env` no longer holds an LLM-direct key — auth is the engine CLI's own config (the claude engine will passthrough `ANTHROPIC_*` from the shell environment if present, else use claude's own login).
+Report each as ✓ / ✗. Never echo any API key value. In v0.7 `<skillDir>/.env` no longer holds an LLM-direct key — auth is the engine CLI's own config (the claude engine will passthrough `ANTHROPIC_*` from the shell environment if present, else use claude's own login).
 
 ### Authoring readiness (v0.3)
 
 Authoring no longer depends on any external reference `.flow.ts` — the full-featured example is **inlined in this SKILL.md** ("Reference Patterns" → "Full-featured in-context example"), so author works as long as the SKILL.md is loaded. The only environment prerequisite is a clean typecheck (generated code must not inherit broken types):
 
 ```bash
-cd <corePath> && npx tsc --noEmit                    # everything compiles
+cd <skillDir> && npm run typecheck                   # everything compiles, including ../../flows/**/*.ts
 ```
 
 If `tsc --noEmit` errors, report:
@@ -718,9 +701,9 @@ When the user asks what this skill can do ("你能帮我做什么 / 我能用这
   • "环境齐不齐 / 能不能跑"                        → 检查 Node + tsx + .env + authoring 就绪度
 
 我不再附带「现成 demo 例子」——你想要什么工作流，直接描述，我现写给你。
-corePath: 需要先配置（见 "Running a Program" 一节）
+生成文件和运行记录都在 workspace 的 `flows/<task-slug>/` 下；skill 目录只提供 runtime 和依赖。
 ```
 
 ## Security + Approvals
 
-`.flow.ts` files are **TypeScript code** — they run with the privileges of the OpenClaw process. Always show the user the file you're about to execute when they reference it for the first time. For remote URLs, refuse: running a `.flow.ts` from a URL is intentionally not supported in v0.1.
+`.flow.ts` files are **TypeScript code** — they run with the privileges of the psi-agent process. Always show the user the file you're about to execute when they reference it for the first time. For remote URLs, refuse: running a `.flow.ts` from a URL is intentionally not supported in v0.1.
