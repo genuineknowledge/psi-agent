@@ -14,13 +14,25 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import importlib.util
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import anyio
-from curator import maybe_run_curator
+
+try:
+    from systems.curator import maybe_run_curator
+except ModuleNotFoundError:
+    _CURATOR_PATH = Path(__file__).with_name("curator.py")
+    _CURATOR_SPEC = importlib.util.spec_from_file_location("hermes_curator", _CURATOR_PATH)
+    if _CURATOR_SPEC is None or _CURATOR_SPEC.loader is None:
+        raise
+    _CURATOR_MODULE = importlib.util.module_from_spec(_CURATOR_SPEC)
+    _CURATOR_SPEC.loader.exec_module(_CURATOR_MODULE)
+    maybe_run_curator = _CURATOR_MODULE.maybe_run_curator
 
 logger = logging.getLogger(__name__)
 
