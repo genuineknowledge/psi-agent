@@ -23,6 +23,7 @@ from psi_agent.channel.platform import (
 )
 from psi_agent.channel.qqbot import ChannelQQBot
 from psi_agent.channel.repl import ChannelRepl
+from psi_agent.channel.weixin_ilink import ChannelWeixinIlink
 from psi_agent.doctor import Doctor
 from psi_agent.errors import UserFacingError
 from psi_agent.gateway.profile import ProfileGateway
@@ -47,6 +48,7 @@ ChannelGroup = Annotated[
     | Annotated[ChannelQQBot, conf.subcommand(name="qqbot")]
     | Annotated[ChannelQQBridge, conf.subcommand(name="qq-bridge")]
     | Annotated[ChannelWeChatBridge, conf.subcommand(name="wechat-bridge")]
+    | Annotated[ChannelWeixinIlink, conf.subcommand(name="weixin-ilink")]
     | Annotated[ChannelFeishu, conf.subcommand(name="feishu")]
     | Annotated[ChannelDingTalk, conf.subcommand(name="dingtalk")],
     conf.subcommand(name="channel", description="User interface channels"),
