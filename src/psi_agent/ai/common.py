@@ -11,6 +11,8 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent.net import cleanup_endpoint_sidecar, make_server_site
+
 
 @dataclass
 class ErrorResponse:
@@ -66,7 +68,7 @@ async def serve_ai_backend(
     name: str,
     handler: Callable[[web.Request], Coroutine[Any, Any, web.StreamResponse]],
 ) -> None:
-    """Serve an AI backend on a Unix socket with shared scaffolding."""
+    """Serve an AI backend on a Unix socket or local TCP URL."""
 
     logger.info(f"Starting {name} AI service on {socket_path} (model={model}, base_url={base_url})")
 
@@ -78,7 +80,7 @@ async def serve_ai_backend(
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.UnixSite(runner, socket_path)
+    site = await make_server_site(runner, socket_path)
     await site.start()
 
     logger.info(f"{name} listening on {socket_path}")
@@ -88,3 +90,4 @@ async def serve_ai_backend(
     finally:
         logger.info(f"Shutting down {name} on {socket_path}")
         await runner.cleanup()
+        cleanup_endpoint_sidecar(socket_path)
