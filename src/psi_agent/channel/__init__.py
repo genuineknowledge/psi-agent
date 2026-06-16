@@ -11,12 +11,14 @@ from psi_agent.channel.platform import (
     ChannelWeChatBridge,
     ChannelWhatsApp,
 )
+from psi_agent.channel.qqbot import ChannelQQBot
 
 __all__ = [
     "ChannelDingTalk",
     "ChannelDiscord",
     "ChannelFeishu",
     "ChannelLink",
+    "ChannelQQBot",
     "ChannelQQBridge",
     "ChannelSlack",
     "ChannelTelegram",
