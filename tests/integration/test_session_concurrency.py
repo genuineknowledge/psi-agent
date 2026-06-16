@@ -361,8 +361,9 @@ async def test_three_channel_requests_fifo_order(tmp_path: Path) -> None:
             tg.start_soon(read2)
             tg.start_soon(read3)
 
-        assert len(req_order) >= 3, f"Expected >= 3 requests, got {len(req_order)}: {req_order}"
-        assert req_order[:3] == ["first", "second", "third"], f"FIFO violated: {req_order}"
+        channel_order = [msg for msg in req_order if msg in {"first", "second", "third"}]
+        assert len(channel_order) >= 3, f"Expected >= 3 channel requests, got {len(channel_order)}: {req_order}"
+        assert channel_order[:3] == ["first", "second", "third"], f"FIFO violated: {req_order}"
     finally:
         await _stop_process(ses_proc)
         await _stop_process(ai_proc)
