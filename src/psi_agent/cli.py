@@ -11,6 +11,7 @@ from psi_agent.ai.anthropic_messages import AnthropicMessages
 from psi_agent.ai.openai_completions import OpenAICompletions
 from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.link import ChannelLinkInfo
+from psi_agent.channel.platform import ChannelDiscord, ChannelSlack, ChannelTelegram, ChannelWhatsApp
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.doctor import Doctor
 from psi_agent.errors import UserFacingError
@@ -27,7 +28,11 @@ AiGroup = Annotated[
 ChannelGroup = Annotated[
     Annotated[ChannelRepl, conf.subcommand(name="repl")]
     | Annotated[ChannelCli, conf.subcommand(name="cli")]
-    | Annotated[ChannelLinkInfo, conf.subcommand(name="link")],
+    | Annotated[ChannelLinkInfo, conf.subcommand(name="link")]
+    | Annotated[ChannelTelegram, conf.subcommand(name="telegram")]
+    | Annotated[ChannelWhatsApp, conf.subcommand(name="whatsapp")]
+    | Annotated[ChannelDiscord, conf.subcommand(name="discord")]
+    | Annotated[ChannelSlack, conf.subcommand(name="slack")],
     conf.subcommand(name="channel", description="User interface channels"),
 ]
 

@@ -1,22 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
+import os
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 from urllib.parse import urlparse
 
 import anyio
-from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
+from aiohttp import ClientSession, ClientTimeout, TCPConnector, WSMsgType, web
 from loguru import logger
 
+from psi_agent._logging import setup_logging
 from psi_agent.channel.session_client import collect_session_reply
 from psi_agent.errors import UserFacingError
 from psi_agent.net import make_server_site
 
 PlatformProvider = Literal["telegram", "whatsapp", "discord", "slack", "qq", "wechat", "feishu", "dingtalk"]
+DiscordMode = Literal["webhook", "gateway"]
+
+DISCORD_DEFAULT_GATEWAY_URL = "wss://gateway.discord.gg/?v=10&encoding=json"
+DISCORD_DEFAULT_GATEWAY_INTENTS = 1 | 512 | 4096 | 32768
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,11 @@ ADAPTER_KEY = web.AppKey("adapter", PlatformAdapter)
 BACKGROUND_TASKS_KEY = web.AppKey("background_tasks", set[asyncio.Task[None]])
 DEDUPLICATION_STORE_KEY = web.AppKey("deduplication_store", DeduplicationStore)
 DEDUPLICATION_STORES_KEY = web.AppKey("deduplication_stores", dict[str, DeduplicationStore])
+
+
+@dataclass
+class DiscordGatewayState:
+    sequence: int | None = None
 
 
 async def serve_platform_channel(
@@ -285,6 +298,594 @@ def _message_deduplication_key(message: PlatformMessage) -> str:
     return ""
 
 
+async def serve_discord_gateway_channel(
+    *,
+    session_socket: str,
+    bot_token: str,
+    api_base_url: str,
+    gateway_url: str,
+    gateway_intents: int,
+) -> None:
+    adapter = DiscordAdapter(bot_token=bot_token, api_base_url=api_base_url)
+    timeout = ClientTimeout(total=None)
+
+    async with ClientSession(timeout=timeout) as session:
+        while True:
+            try:
+                logger.info(f"Connecting to Discord Gateway at {gateway_url}")
+                async with session.ws_connect(gateway_url) as ws:
+                    await _run_discord_gateway_connection(
+                        ws=ws,
+                        session=session,
+                        session_socket=session_socket,
+                        adapter=adapter,
+                        bot_token=bot_token,
+                        gateway_intents=gateway_intents,
+                    )
+            except Exception as e:
+                logger.error(f"Discord Gateway connection error: {e}")
+                await anyio.sleep(5)
+
+
+async def _run_discord_gateway_connection(
+    *,
+    ws,
+    session: ClientSession,
+    session_socket: str,
+    adapter: DiscordAdapter,
+    bot_token: str,
+    gateway_intents: int,
+) -> None:
+    state = DiscordGatewayState()
+
+    async with anyio.create_task_group() as tg:
+        async for msg in ws:
+            if msg.type == WSMsgType.TEXT:
+                payload = json.loads(msg.data)
+                sequence = payload.get("s")
+                if isinstance(sequence, int):
+                    state.sequence = sequence
+
+                op = payload.get("op")
+                if op == 10:
+                    interval_ms = _discord_heartbeat_interval(payload)
+                    await _discord_identify(ws, bot_token=bot_token, gateway_intents=gateway_intents)
+                    tg.start_soon(_discord_heartbeat_loop, ws, state, interval_ms / 1000)
+                    continue
+                if op == 0 and payload.get("t") == "MESSAGE_CREATE":
+                    data = payload.get("d")
+                    if isinstance(data, dict):
+                        await _handle_discord_gateway_message(
+                            session=session,
+                            session_socket=session_socket,
+                            adapter=adapter,
+                            event=cast(dict[str, Any], data),
+                        )
+                    continue
+                if op in {7, 9}:
+                    logger.warning(f"Discord Gateway requested reconnect, op={op}")
+                    tg.cancel_scope.cancel()
+                    return
+            elif msg.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR}:
+                tg.cancel_scope.cancel()
+                return
+
+
+async def _discord_identify(ws, *, bot_token: str, gateway_intents: int) -> None:
+    await ws.send_json(
+        {
+            "op": 2,
+            "d": {
+                "token": bot_token,
+                "intents": gateway_intents,
+                "properties": {
+                    "os": os.name,
+                    "browser": "psi-agent",
+                    "device": "psi-agent",
+                },
+            },
+        }
+    )
+
+
+async def _discord_heartbeat_loop(ws, state: DiscordGatewayState, interval_seconds: float) -> None:
+    while True:
+        await anyio.sleep(interval_seconds)
+        await ws.send_json({"op": 1, "d": state.sequence})
+
+
+async def _handle_discord_gateway_message(
+    *,
+    session: ClientSession,
+    session_socket: str,
+    adapter: DiscordAdapter,
+    event: dict[str, Any],
+) -> None:
+    for message in adapter.extract_messages(event):
+        reply = await collect_session_reply(session_socket=session_socket, message=message.text)
+        if reply:
+            await adapter.send_reply(session, message, reply)
+
+
+def _discord_heartbeat_interval(payload: dict[str, Any]) -> int:
+    data = payload.get("d")
+    if not isinstance(data, dict):
+        raise UserFacingError("Discord Gateway hello payload is missing heartbeat metadata.")
+    interval = data.get("heartbeat_interval")
+    if not isinstance(interval, int):
+        raise UserFacingError("Discord Gateway hello payload is missing heartbeat_interval.")
+    return interval
+
+
+@dataclass(frozen=True)
+class TelegramAdapter:
+    token: str
+    api_base_url: str = "https://api.telegram.org"
+    webhook_secret: str = ""
+
+    provider: PlatformProvider = "telegram"
+
+    async def validate_post(self, request: web.Request, raw_body: bytes) -> None:
+        _ = raw_body
+        if self.webhook_secret and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != self.webhook_secret:
+            raise web.HTTPUnauthorized(text="invalid Telegram webhook secret")
+
+    async def handle_get(self, request: web.Request) -> web.StreamResponse | None:
+        _ = request
+        return None
+
+    async def handle_control(self, body: dict[str, Any]) -> web.StreamResponse | None:
+        _ = body
+        return None
+
+    def extract_messages(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        update = body.get("message") or body.get("edited_message") or body.get("channel_post")
+        if not isinstance(update, dict):
+            return []
+
+        text = update.get("text") or update.get("caption")
+        chat = update.get("chat")
+        if not text or not isinstance(chat, dict):
+            return []
+
+        chat_id = chat.get("id")
+        if chat_id is None:
+            return []
+
+        sender = update.get("from") if isinstance(update.get("from"), dict) else {}
+        update_id = body.get("update_id")
+        message_id = update.get("message_id")
+        metadata = {
+            key: value
+            for key, value in {
+                "event_id": str(update_id) if update_id is not None else "",
+                "message_id": str(message_id) if message_id is not None else "",
+            }.items()
+            if value
+        }
+        return [
+            PlatformMessage(
+                provider="telegram",
+                target_id=str(chat_id),
+                user_id=str(sender.get("id") or ""),
+                text=str(text),
+                metadata=metadata,
+            )
+        ]
+
+    async def send_reply(self, session: ClientSession, message: PlatformMessage, text: str) -> None:
+        url = f"{self.api_base_url.rstrip('/')}/bot{self.token}/sendMessage"
+        payload = {"chat_id": message.target_id, "text": text}
+        await post_platform_json(session, url, payload)
+
+
+@dataclass(frozen=True)
+class WhatsAppAdapter:
+    token: str
+    phone_number_id: str
+    api_base_url: str = "https://graph.facebook.com"
+    verify_token: str = ""
+
+    provider: PlatformProvider = "whatsapp"
+
+    async def validate_post(self, request: web.Request, raw_body: bytes) -> None:
+        _ = request, raw_body
+
+    async def handle_get(self, request: web.Request) -> web.StreamResponse | None:
+        if request.query.get("hub.mode") != "subscribe":
+            return None
+        if self.verify_token and request.query.get("hub.verify_token") != self.verify_token:
+            raise web.HTTPForbidden(text="invalid WhatsApp verify token")
+        challenge = request.query.get("hub.challenge", "")
+        return web.Response(text=challenge)
+
+    async def handle_control(self, body: dict[str, Any]) -> web.StreamResponse | None:
+        _ = body
+        return None
+
+    def extract_messages(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        messages: list[PlatformMessage] = []
+        for entry in _iter_dicts(body.get("entry")):
+            for change in _iter_dicts(entry.get("changes")):
+                value = change.get("value")
+                if not isinstance(value, dict):
+                    continue
+                for item in _iter_dicts(value.get("messages")):
+                    text = _whatsapp_message_text(item)
+                    sender = item.get("from")
+                    if text and sender:
+                        message_id = item.get("id")
+                        messages.append(
+                            PlatformMessage(
+                                provider="whatsapp",
+                                target_id=str(sender),
+                                user_id=str(sender),
+                                text=text,
+                                metadata={"message_id": str(message_id)} if message_id else {},
+                            )
+                        )
+        return messages
+
+    async def send_reply(self, session: ClientSession, message: PlatformMessage, text: str) -> None:
+        url = f"{self.api_base_url.rstrip('/')}/{self.phone_number_id}/messages"
+        headers = {"Authorization": f"Bearer {self.token}"}
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": message.target_id,
+            "type": "text",
+            "text": {"body": text},
+        }
+        await post_platform_json(session, url, payload, headers=headers)
+
+
+@dataclass(frozen=True)
+class SlackAdapter:
+    bot_token: str
+    api_base_url: str = "https://slack.com/api"
+    signing_secret: str = ""
+
+    provider: PlatformProvider = "slack"
+
+    async def validate_post(self, request: web.Request, raw_body: bytes) -> None:
+        if not self.signing_secret:
+            return
+        timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+        signature = request.headers.get("X-Slack-Signature", "")
+        base = b"v0:" + timestamp.encode() + b":" + raw_body
+        digest = hmac.new(self.signing_secret.encode(), base, hashlib.sha256).hexdigest()
+        expected = f"v0={digest}"
+        if not hmac.compare_digest(signature, expected):
+            raise web.HTTPUnauthorized(text="invalid Slack signature")
+
+    async def handle_get(self, request: web.Request) -> web.StreamResponse | None:
+        _ = request
+        return None
+
+    async def handle_control(self, body: dict[str, Any]) -> web.StreamResponse | None:
+        if body.get("type") == "url_verification":
+            return web.Response(text=str(body.get("challenge", "")))
+        return None
+
+    def extract_messages(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        event = body.get("event")
+        if not isinstance(event, dict):
+            return []
+        if event.get("type") != "message" or event.get("subtype") or event.get("bot_id"):
+            return []
+
+        channel = event.get("channel")
+        text = event.get("text")
+        if not channel or not text:
+            return []
+
+        event_id = _first_string(body, "event_id", "eventId")
+        message_id = _first_string(event, "client_msg_id", "ts", "event_ts")
+        metadata = {
+            key: value
+            for key, value in {
+                "event_id": event_id,
+                "message_id": message_id,
+            }.items()
+            if value
+        }
+        return [
+            PlatformMessage(
+                provider="slack",
+                target_id=str(channel),
+                user_id=str(event.get("user") or ""),
+                text=str(text),
+                metadata=metadata,
+            )
+        ]
+
+    async def send_reply(self, session: ClientSession, message: PlatformMessage, text: str) -> None:
+        url = f"{self.api_base_url.rstrip('/')}/chat.postMessage"
+        headers = {"Authorization": f"Bearer {self.bot_token}"}
+        payload = {"channel": message.target_id, "text": text}
+        await post_platform_json(session, url, payload, headers=headers)
+
+
+@dataclass(frozen=True)
+class DiscordAdapter:
+    bot_token: str
+    api_base_url: str = "https://discord.com/api/v10"
+    relay_secret: str = ""
+
+    provider: PlatformProvider = "discord"
+
+    async def validate_post(self, request: web.Request, raw_body: bytes) -> None:
+        _ = raw_body
+        if self.relay_secret and request.headers.get("Authorization") != f"Bearer {self.relay_secret}":
+            raise web.HTTPUnauthorized(text="invalid Discord relay secret")
+
+    async def handle_get(self, request: web.Request) -> web.StreamResponse | None:
+        _ = request
+        return None
+
+    async def handle_control(self, body: dict[str, Any]) -> web.StreamResponse | None:
+        if body.get("type") == 1:
+            return web.json_response({"type": 1})
+        return None
+
+    def extract_messages(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        if body.get("type") in {2, 4}:
+            return self._extract_interaction(body)
+        return self._extract_message_create(body)
+
+    async def send_reply(self, session: ClientSession, message: PlatformMessage, text: str) -> None:
+        interaction_id = message.metadata.get("interaction_id")
+        interaction_token = message.metadata.get("interaction_token")
+        if interaction_id and interaction_token:
+            url = f"{self.api_base_url.rstrip('/')}/interactions/{interaction_id}/{interaction_token}/callback"
+            await post_platform_json(session, url, {"type": 4, "data": {"content": text}})
+            return
+
+        url = f"{self.api_base_url.rstrip('/')}/channels/{message.target_id}/messages"
+        headers = {"Authorization": f"Bot {self.bot_token}"}
+        await post_platform_json(session, url, {"content": text}, headers=headers)
+
+    def _extract_message_create(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        raw_author = body.get("author")
+        author = raw_author if isinstance(raw_author, dict) else {}
+        if author.get("bot"):
+            return []
+
+        channel_id = body.get("channel_id")
+        content = body.get("content")
+        if not channel_id or not content:
+            return []
+
+        return [
+            PlatformMessage(
+                provider="discord",
+                target_id=str(channel_id),
+                user_id=str(author.get("id") or ""),
+                text=str(content),
+                metadata={"message_id": str(body.get("id"))} if body.get("id") else {},
+            )
+        ]
+
+    def _extract_interaction(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        channel_id = body.get("channel_id")
+        interaction_id = body.get("id")
+        interaction_token = body.get("token")
+        if not channel_id or not interaction_id or not interaction_token:
+            return []
+
+        raw_data = body.get("data")
+        data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+        text = _discord_interaction_text(data)
+        if not text:
+            return []
+
+        raw_member = body.get("member")
+        member = raw_member if isinstance(raw_member, dict) else {}
+        raw_user = member.get("user") or body.get("user")
+        user = raw_user if isinstance(raw_user, dict) else {}
+        return [
+            PlatformMessage(
+                provider="discord",
+                target_id=str(channel_id),
+                user_id=str(user.get("id") or ""),
+                text=text,
+                metadata={
+                    "interaction_id": str(interaction_id),
+                    "interaction_token": str(interaction_token),
+                },
+            )
+        ]
+
+
+@dataclass
+class ChannelTelegram:
+    """Telegram webhook channel."""
+
+    session_socket: str
+    """Path to the session Unix domain socket."""
+
+    token: str = ""
+    """Telegram bot token. Falls back to TELEGRAM_BOT_TOKEN."""
+
+    listen: str = "http://127.0.0.1:8080"
+    """HTTP endpoint to listen on."""
+
+    webhook_path: str = "/webhook"
+    """Webhook path when listen does not include a path."""
+
+    api_base_url: str = "https://api.telegram.org"
+    """Telegram Bot API base URL."""
+
+    webhook_secret: str = ""
+    """Optional Telegram webhook secret token."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
+
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        token = self.token or os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        if not token:
+            raise UserFacingError("Missing Telegram bot token.", "Pass --token or set TELEGRAM_BOT_TOKEN.")
+        await serve_platform_channel(
+            session_socket=self.session_socket,
+            listen=self.listen,
+            webhook_path=self.webhook_path,
+            adapter=TelegramAdapter(token=token, api_base_url=self.api_base_url, webhook_secret=self.webhook_secret),
+        )
+
+
+@dataclass
+class ChannelWhatsApp:
+    """WhatsApp Cloud API webhook channel."""
+
+    session_socket: str
+    """Path to the session Unix domain socket."""
+
+    token: str = ""
+    """WhatsApp Cloud API access token. Falls back to WHATSAPP_ACCESS_TOKEN."""
+
+    phone_number_id: str = ""
+    """WhatsApp phone number ID. Falls back to WHATSAPP_PHONE_NUMBER_ID."""
+
+    listen: str = "http://127.0.0.1:8080"
+    """HTTP endpoint to listen on."""
+
+    webhook_path: str = "/webhook"
+    """Webhook path when listen does not include a path."""
+
+    api_base_url: str = "https://graph.facebook.com"
+    """WhatsApp Graph API base URL."""
+
+    verify_token: str = ""
+    """Optional WhatsApp webhook verification token. Falls back to WHATSAPP_VERIFY_TOKEN."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
+
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        token = self.token or os.environ.get("WHATSAPP_ACCESS_TOKEN", "")
+        phone_number_id = self.phone_number_id or os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
+        verify_token = self.verify_token or os.environ.get("WHATSAPP_VERIFY_TOKEN", "")
+        if not token:
+            raise UserFacingError("Missing WhatsApp access token.", "Pass --token or set WHATSAPP_ACCESS_TOKEN.")
+        if not phone_number_id:
+            raise UserFacingError(
+                "Missing WhatsApp phone number ID.",
+                "Pass --phone-number-id or set WHATSAPP_PHONE_NUMBER_ID.",
+            )
+        await serve_platform_channel(
+            session_socket=self.session_socket,
+            listen=self.listen,
+            webhook_path=self.webhook_path,
+            adapter=WhatsAppAdapter(
+                token=token,
+                phone_number_id=phone_number_id,
+                api_base_url=self.api_base_url,
+                verify_token=verify_token,
+            ),
+        )
+
+
+@dataclass
+class ChannelDiscord:
+    """Discord webhook relay or Gateway channel."""
+
+    session_socket: str
+    """Path to the session Unix domain socket."""
+
+    bot_token: str = ""
+    """Discord bot token. Falls back to DISCORD_BOT_TOKEN."""
+
+    mode: DiscordMode = "webhook"
+    """Discord channel mode: webhook or gateway."""
+
+    listen: str = "http://127.0.0.1:8080"
+    """HTTP endpoint to listen on in webhook mode."""
+
+    webhook_path: str = "/webhook"
+    """Webhook path when listen does not include a path in webhook mode."""
+
+    api_base_url: str = "https://discord.com/api/v10"
+    """Discord API base URL."""
+
+    gateway_url: str = DISCORD_DEFAULT_GATEWAY_URL
+    """Discord Gateway WebSocket URL."""
+
+    gateway_intents: int = DISCORD_DEFAULT_GATEWAY_INTENTS
+    """Discord Gateway intents bitfield."""
+
+    relay_secret: str = ""
+    """Optional bearer token required for custom message relay POSTs."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
+
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        bot_token = self.bot_token or os.environ.get("DISCORD_BOT_TOKEN", "")
+        if not bot_token:
+            raise UserFacingError("Missing Discord bot token.", "Pass --bot-token or set DISCORD_BOT_TOKEN.")
+        if self.mode == "gateway":
+            await serve_discord_gateway_channel(
+                session_socket=self.session_socket,
+                bot_token=bot_token,
+                api_base_url=self.api_base_url,
+                gateway_url=self.gateway_url,
+                gateway_intents=self.gateway_intents,
+            )
+            return
+        await serve_platform_channel(
+            session_socket=self.session_socket,
+            listen=self.listen,
+            webhook_path=self.webhook_path,
+            adapter=DiscordAdapter(bot_token=bot_token, api_base_url=self.api_base_url, relay_secret=self.relay_secret),
+        )
+
+
+@dataclass
+class ChannelSlack:
+    """Slack Events API webhook channel."""
+
+    session_socket: str
+    """Path to the session Unix domain socket."""
+
+    bot_token: str = ""
+    """Slack bot token. Falls back to SLACK_BOT_TOKEN."""
+
+    listen: str = "http://127.0.0.1:8080"
+    """HTTP endpoint to listen on."""
+
+    webhook_path: str = "/webhook"
+    """Webhook path when listen does not include a path."""
+
+    api_base_url: str = "https://slack.com/api"
+    """Slack Web API base URL."""
+
+    signing_secret: str = ""
+    """Optional Slack signing secret. Falls back to SLACK_SIGNING_SECRET."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
+
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        bot_token = self.bot_token or os.environ.get("SLACK_BOT_TOKEN", "")
+        signing_secret = self.signing_secret or os.environ.get("SLACK_SIGNING_SECRET", "")
+        if not bot_token:
+            raise UserFacingError("Missing Slack bot token.", "Pass --bot-token or set SLACK_BOT_TOKEN.")
+        await serve_platform_channel(
+            session_socket=self.session_socket,
+            listen=self.listen,
+            webhook_path=self.webhook_path,
+            adapter=SlackAdapter(
+                bot_token=bot_token,
+                api_base_url=self.api_base_url,
+                signing_secret=signing_secret,
+            ),
+        )
+
+
 async def post_platform_json(
     session: ClientSession,
     url: str,
@@ -344,3 +945,50 @@ def _redacted_url_for_log(url: str) -> str:
     if not parsed.scheme or not parsed.netloc:
         return url
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+
+
+def _iter_dicts(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict):
+            items.append(cast(dict[str, Any], item))
+    return items
+
+
+def _whatsapp_message_text(message: dict[str, Any]) -> str:
+    text = message.get("text")
+    if isinstance(text, dict) and text.get("body"):
+        return str(text["body"])
+
+    button = message.get("button")
+    if isinstance(button, dict) and button.get("text"):
+        return str(button["text"])
+
+    interactive = message.get("interactive")
+    if isinstance(interactive, dict):
+        for key in ("button_reply", "list_reply"):
+            reply = interactive.get(key)
+            if isinstance(reply, dict):
+                title = reply.get("title")
+                if title:
+                    return str(title)
+    return ""
+
+
+def _discord_interaction_text(data: dict[str, Any]) -> str:
+    options = data.get("options")
+    if isinstance(options, list):
+        values = [str(option["value"]) for option in options if isinstance(option, dict) and option.get("value")]
+        if values:
+            return " ".join(values)
+    return str(data.get("name") or "")
+
+
+def _first_string(data: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = data.get(key)
+        if value is not None and value != "":
+            return str(value)
+    return ""

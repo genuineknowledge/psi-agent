@@ -4,17 +4,23 @@ import json
 import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import pytest
 from aiohttp import ClientSession, web
+from aiohttp.web_response import Response
 
 from psi_agent.channel.platform import (
+    DiscordAdapter,
     PlatformAdapter,
     PlatformMessage,
     PlatformProvider,
+    SlackAdapter,
+    TelegramAdapter,
+    WhatsAppAdapter,
     post_platform_json,
+    serve_discord_gateway_channel,
     serve_platform_channel,
     serve_platform_channels,
 )
@@ -28,6 +34,196 @@ async def test_platform_webhook_calls_session_and_adapter_reply() -> None:
         incoming_payload={"target_id": "target-1", "text": "hello", "message_id": "msg-1"},
         expected_session_message="hello",
         expected_reply={"target_id": "target-1", "text": "reply text", "in_reply_to": "msg-1"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("adapter", "payload", "target_id", "text"),
+    [
+        (
+            TelegramAdapter(token="telegram-token"),
+            {"message": {"chat": {"id": 123}, "from": {"id": 456}, "text": "hello tg"}},
+            "123",
+            "hello tg",
+        ),
+        (
+            WhatsAppAdapter(token="wa-token", phone_number_id="phone-id"),
+            {
+                "entry": [
+                    {"changes": [{"value": {"messages": [{"from": "15551234567", "text": {"body": "hello wa"}}]}}]}
+                ]
+            },
+            "15551234567",
+            "hello wa",
+        ),
+        (
+            DiscordAdapter(bot_token="discord-token"),
+            {"channel_id": "channel-1", "author": {"id": "user-1"}, "content": "hello discord"},
+            "channel-1",
+            "hello discord",
+        ),
+        (
+            SlackAdapter(bot_token="slack-token"),
+            {
+                "type": "event_callback",
+                "event": {"type": "message", "channel": "C1", "user": "U1", "text": "hello slack"},
+            },
+            "C1",
+            "hello slack",
+        ),
+    ],
+)
+def test_foreign_platform_adapters_extract_messages(
+    adapter,
+    payload: dict[str, object],
+    target_id: str,
+    text: str,
+) -> None:
+    messages = adapter.extract_messages(payload)
+
+    assert len(messages) == 1
+    assert messages[0].target_id == target_id
+    assert messages[0].text == text
+
+
+@pytest.mark.anyio
+async def test_slack_url_verification() -> None:
+    response = await SlackAdapter(bot_token="slack-token").handle_control(
+        {"type": "url_verification", "challenge": "challenge-value"}
+    )
+
+    assert isinstance(response, Response)
+    assert response.text == "challenge-value"
+
+
+@pytest.mark.anyio
+async def test_discord_ping_control_response() -> None:
+    response = await DiscordAdapter(bot_token="discord-token").handle_control({"type": 1})
+
+    assert isinstance(response, Response)
+    assert response.text is not None
+    assert json.loads(response.text)["type"] == 1
+
+
+@pytest.mark.anyio
+async def test_telegram_webhook_calls_session_and_platform_api() -> None:
+    await _assert_webhook_calls_session_and_platform_api(
+        adapter=TelegramAdapter(token="telegram-token"),
+        platform_route="/bottelegram-token/sendMessage",
+        incoming_payload={"message": {"chat": {"id": 123}, "from": {"id": 456}, "text": "hello"}},
+        expected_session_message="hello",
+        expected_platform_payload={"chat_id": "123", "text": "reply text"},
+    )
+
+
+@pytest.mark.anyio
+async def test_whatsapp_webhook_calls_session_and_platform_api() -> None:
+    await _assert_webhook_calls_session_and_platform_api(
+        adapter=WhatsAppAdapter(token="wa-token", phone_number_id="phone-id"),
+        platform_route="/phone-id/messages",
+        incoming_payload={
+            "entry": [{"changes": [{"value": {"messages": [{"from": "15551234567", "text": {"body": "hello wa"}}]}}]}]
+        },
+        expected_session_message="hello wa",
+        expected_platform_payload={
+            "messaging_product": "whatsapp",
+            "to": "15551234567",
+            "type": "text",
+            "text": {"body": "reply text"},
+        },
+    )
+
+
+@pytest.mark.anyio
+async def test_discord_relay_calls_session_and_platform_api() -> None:
+    await _assert_webhook_calls_session_and_platform_api(
+        adapter=DiscordAdapter(bot_token="discord-token"),
+        platform_route="/channels/channel-1/messages",
+        incoming_payload={"channel_id": "channel-1", "author": {"id": "user-1"}, "content": "hello discord"},
+        expected_session_message="hello discord",
+        expected_platform_payload={"content": "reply text"},
+    )
+
+
+@pytest.mark.anyio
+async def test_discord_gateway_calls_session_and_platform_api() -> None:
+    session_payloads: list[dict[str, object]] = []
+    platform_payloads: list[dict[str, object]] = []
+    gateway_identifies: list[dict[str, object]] = []
+    reply_sent = anyio.Event()
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        session_payloads.append(await request.json())
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {"choices": [{"delta": {"content": "gateway reply"}}]}
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def platform_handler(request: web.Request) -> web.Response:
+        platform_payloads.append(await request.json())
+        reply_sent.set()
+        return web.json_response({"ok": True})
+
+    async def gateway_handler(request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        await ws.send_json({"op": 10, "d": {"heartbeat_interval": 45000}})
+        gateway_identifies.append(await ws.receive_json(timeout=5))
+        await ws.send_json(
+            {
+                "op": 0,
+                "s": 1,
+                "t": "MESSAGE_CREATE",
+                "d": {
+                    "channel_id": "channel-1",
+                    "author": {"id": "user-1"},
+                    "content": "hello gateway",
+                },
+            }
+        )
+        with anyio.fail_after(5):
+            await reply_sent.wait()
+        await ws.close()
+        return ws
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer([("POST", "/channels/channel-1/messages", platform_handler)]) as platform_base_url,
+        _TcpServer([("GET", "/gateway", gateway_handler)]) as gateway_base_url,
+        anyio.create_task_group() as tg,
+    ):
+        tg.start_soon(
+            _serve_discord_gateway_channel,
+            f"{session_base_url}/v1",
+            "discord-token",
+            platform_base_url,
+            f"{gateway_base_url}/gateway",
+        )
+        with anyio.fail_after(5):
+            await reply_sent.wait()
+        tg.cancel_scope.cancel()
+
+    assert session_payloads[0]["messages"] == [{"role": "user", "content": "hello gateway"}]
+    assert platform_payloads == [{"content": "gateway reply"}]
+    assert gateway_identifies[0]["op"] == 2
+    identify_data = gateway_identifies[0]["d"]
+    assert isinstance(identify_data, dict)
+    assert cast(dict[str, Any], identify_data)["token"] == "discord-token"
+
+
+@pytest.mark.anyio
+async def test_slack_webhook_calls_session_and_platform_api() -> None:
+    await _assert_webhook_calls_session_and_platform_api(
+        adapter=SlackAdapter(bot_token="slack-token"),
+        platform_route="/chat.postMessage",
+        incoming_payload={
+            "type": "event_callback",
+            "event": {"type": "message", "channel": "C1", "user": "U1", "text": "hello slack"},
+        },
+        expected_session_message="hello slack",
+        expected_platform_payload={"channel": "C1", "text": "reply text"},
     )
 
 
@@ -176,6 +372,94 @@ async def test_platform_json_post_handles_provider_error() -> None:
             await post_platform_json(session, f"{platform_base_url}/send", {"text": "hello"})
 
 
+@pytest.mark.anyio
+async def test_whatsapp_webhook_verification() -> None:
+    async with _TcpListener() as channel_url, anyio.create_task_group() as tg:
+        tg.start_soon(
+            _serve_platform_channel,
+            "http://127.0.0.1:9/v1",
+            channel_url,
+            WhatsAppAdapter(token="wa-token", phone_number_id="phone-id", verify_token="verify-me"),
+        )
+        await anyio.sleep(0.2)
+
+        async with (
+            ClientSession() as client,
+            client.get(
+                f"{channel_url}/webhook",
+                params={
+                    "hub.mode": "subscribe",
+                    "hub.verify_token": "verify-me",
+                    "hub.challenge": "challenge-value",
+                },
+            ) as response,
+        ):
+            assert response.status == 200
+            assert await response.text() == "challenge-value"
+
+        tg.cancel_scope.cancel()
+
+
+async def _assert_webhook_calls_session_and_platform_api(
+    *,
+    adapter,
+    platform_route: str,
+    incoming_payload: dict[str, object],
+    expected_session_message: str,
+    expected_platform_payload: dict[str, object],
+) -> None:
+    session_payloads: list[dict[str, object]] = []
+    platform_payloads: list[dict[str, object]] = []
+    reply_sent = anyio.Event()
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        session_payloads.append(await request.json())
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {"choices": [{"delta": {"reasoning_content": "hidden", "content": "reply text"}}]}
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def platform_handler(request: web.Request) -> web.Response:
+        platform_payloads.append(await request.json())
+        reply_sent.set()
+        return web.json_response({"ok": True})
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer([("POST", platform_route, platform_handler)]) as platform_base_url,
+        _TcpListener() as channel_url,
+        anyio.create_task_group() as tg,
+    ):
+        adapter = _with_api_base_url(adapter, platform_base_url)
+        tg.start_soon(
+            _serve_platform_channel,
+            f"{session_base_url}/v1",
+            channel_url,
+            adapter,
+        )
+        await anyio.sleep(0.2)
+
+        async with (
+            ClientSession() as client,
+            client.post(
+                f"{channel_url}/webhook",
+                json=incoming_payload,
+            ) as response,
+        ):
+            assert response.status == 200
+            assert await response.json() == {"ok": True, "messages": 1, "queued": 1, "duplicates": 0}
+
+        with anyio.fail_after(5):
+            await reply_sent.wait()
+
+        tg.cancel_scope.cancel()
+
+    assert session_payloads[0]["messages"] == [{"role": "user", "content": expected_session_message}]
+    assert platform_payloads == [expected_platform_payload]
+
+
 async def _assert_platform_webhook_calls_session_and_reply(
     *,
     adapter: _FakeAdapter,
@@ -247,6 +531,50 @@ async def _serve_platform_channels(
         listen=listen,
         routes=routes,
     )
+
+
+async def _serve_discord_gateway_channel(
+    session_socket: str,
+    bot_token: str,
+    api_base_url: str,
+    gateway_url: str,
+) -> None:
+    await serve_discord_gateway_channel(
+        session_socket=session_socket,
+        bot_token=bot_token,
+        api_base_url=api_base_url,
+        gateway_url=gateway_url,
+        gateway_intents=1 | 512 | 4096 | 32768,
+    )
+
+
+def _with_api_base_url(adapter, api_base_url: str):
+    if isinstance(adapter, TelegramAdapter):
+        return TelegramAdapter(
+            token=adapter.token,
+            api_base_url=api_base_url,
+            webhook_secret=adapter.webhook_secret,
+        )
+    if isinstance(adapter, WhatsAppAdapter):
+        return WhatsAppAdapter(
+            token=adapter.token,
+            phone_number_id=adapter.phone_number_id,
+            api_base_url=api_base_url,
+            verify_token=adapter.verify_token,
+        )
+    if isinstance(adapter, DiscordAdapter):
+        return DiscordAdapter(
+            bot_token=adapter.bot_token,
+            api_base_url=api_base_url,
+            relay_secret=adapter.relay_secret,
+        )
+    if isinstance(adapter, SlackAdapter):
+        return SlackAdapter(
+            bot_token=adapter.bot_token,
+            api_base_url=api_base_url,
+            signing_secret=adapter.signing_secret,
+        )
+    raise AssertionError(f"unexpected adapter: {adapter!r}")
 
 
 @dataclass
