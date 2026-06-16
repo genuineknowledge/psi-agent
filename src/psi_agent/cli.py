@@ -24,6 +24,7 @@ from psi_agent.channel.platform import (
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.doctor import Doctor
 from psi_agent.errors import UserFacingError
+from psi_agent.gateway.profile import ProfileGateway
 from psi_agent.init import Init
 from psi_agent.run import Run
 from psi_agent.session import Session
@@ -52,6 +53,7 @@ ChannelGroup = Annotated[
 RunCommand = Annotated[Run, conf.subcommand(name="run")]
 DoctorCommand = Annotated[Doctor, conf.subcommand(name="doctor")]
 InitCommand = Annotated[Init, conf.subcommand(name="init")]
+ProfileGatewayCommand = Annotated[ProfileGateway, conf.subcommand(name="gateway")]
 
 
 def main() -> None:
@@ -59,7 +61,7 @@ def main() -> None:
     cmd = None
     try:
         cmd = tyro.cli(  # ty: ignore[no-matching-overload]
-            Session | RunCommand | DoctorCommand | InitCommand | AiGroup | ChannelGroup
+            Session | RunCommand | DoctorCommand | InitCommand | ProfileGatewayCommand | AiGroup | ChannelGroup
         )
         anyio.run(cmd.run)
     except UserFacingError as e:
