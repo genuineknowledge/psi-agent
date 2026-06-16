@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import socket
+import sys
 import tempfile
 import uuid
 from collections.abc import Iterator
@@ -15,6 +17,7 @@ from urllib.parse import urlparse
 
 import anyio
 
+from psi_agent._logging import setup_logging
 from psi_agent.ai.anthropic_messages.server import serve_anthropic_messages
 from psi_agent.ai.openai_completions.server import serve_openai_completions
 from psi_agent.errors import UserFacingError
@@ -23,6 +26,7 @@ from psi_agent.session import build_session_agent
 from psi_agent.workspace import resolve_workspace_path
 
 AiBackend = Literal["openai-completions", "anthropic-messages"]
+OutputFormat = Literal["text", "json"]
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,80 @@ class RunResult:
     text: str
     reasoning: str
     had_error: bool = False
+
+
+@dataclass
+class Run:
+    """Run a one-shot workspace-backed agent call."""
+
+    message: str
+    """Message to send to the agent."""
+
+    workspace: str = ""
+    """Path to the workspace directory. Falls back to default_workspace in config."""
+
+    ai_socket: str = ""
+    """Existing AI backend socket path or http(s) /v1 endpoint. If omitted, a temporary backend is started."""
+
+    ai: str = ""
+    """AI backend to start when ai_socket is omitted. Allowed: openai-completions, anthropic-messages."""
+
+    model: str = ""
+    """Model name. Falls back to backend-specific environment variables."""
+
+    api_key: str = ""
+    """API key for the temporary backend. Falls back to backend-specific environment variables."""
+
+    base_url: str = ""
+    """Base URL for the temporary backend. Falls back to backend-specific environment variables."""
+
+    profile: str = ""
+    """Profile name in the psi-agent config file."""
+
+    config: str = ""
+    """Path to psi-agent config TOML. Defaults to PSI_AGENT_CONFIG or ~/.psi-agent/config.toml."""
+
+    output_format: OutputFormat = "text"
+    """Output format for stdout."""
+
+    show_reasoning: bool = False
+    """Write reasoning and tool trace chunks to stderr."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
+
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        result = await run_once(
+            workspace=self.workspace,
+            message=self.message,
+            ai_socket=self.ai_socket,
+            ai=self.ai,
+            model=self.model,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            profile=self.profile,
+            config=self.config,
+        )
+
+        if self.show_reasoning and result.reasoning:
+            sys.stderr.write(result.reasoning)
+            if not result.reasoning.endswith("\n"):
+                sys.stderr.write("\n")
+
+        if result.had_error:
+            message = result.text or result.reasoning or "Agent run failed"
+            if self.verbose:
+                raise UserFacingError(f"Agent run failed: {message}")
+            raise _friendly_agent_error(message)
+
+        if self.output_format == "json":
+            sys.stdout.write(json.dumps({"text": result.text}, ensure_ascii=False))
+            sys.stdout.write("\n")
+        else:
+            sys.stdout.write(result.text)
+            if not result.text.endswith("\n"):
+                sys.stdout.write("\n")
 
 
 async def run_once(
@@ -291,3 +369,26 @@ def _resolve_base_url(*, ai: AiBackend, base_url: str) -> str:
     if ai == "openai-completions":
         return os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
     return os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1")
+
+
+def _friendly_agent_error(message: str) -> UserFacingError:
+    lower = message.lower()
+    if "401" in lower or "unauthorized" in lower or "authentication" in lower or "api key" in lower:
+        return UserFacingError(
+            "Model service authentication failed.",
+            "Check your API key environment variable or profile config, then try again.",
+        )
+    if "connection error" in lower or "cannot connect" in lower or "connection refused" in lower:
+        return UserFacingError(
+            "Cannot connect to the model service.",
+            "Check your base_url/network settings, or run with --verbose for technical details.",
+        )
+    if "timeout" in lower or "timed out" in lower:
+        return UserFacingError(
+            "The model service did not respond in time.",
+            "Try again, or check your network and model provider status.",
+        )
+    return UserFacingError(
+        "Agent run failed.",
+        "Run again with --verbose to see technical details.",
+    )
