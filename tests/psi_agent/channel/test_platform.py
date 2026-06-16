@@ -12,12 +12,16 @@ from aiohttp import ClientSession, web
 from aiohttp.web_response import Response
 
 from psi_agent.channel.platform import (
+    DingTalkAdapter,
     DiscordAdapter,
+    FeishuAdapter,
     PlatformAdapter,
     PlatformMessage,
     PlatformProvider,
+    QQBridgeAdapter,
     SlackAdapter,
     TelegramAdapter,
+    WeChatBridgeAdapter,
     WhatsAppAdapter,
     post_platform_json,
     serve_discord_gateway_channel,
@@ -71,9 +75,67 @@ async def test_platform_webhook_calls_session_and_adapter_reply() -> None:
             "C1",
             "hello slack",
         ),
+        (
+            WeChatBridgeAdapter(),
+            {
+                "type": "message",
+                "message": {
+                    "conversation_id": "room-1",
+                    "user_id": "user-1",
+                    "message_id": "msg-1",
+                    "text": "hello wechat",
+                },
+            },
+            "room-1",
+            "hello wechat",
+        ),
+        (
+            QQBridgeAdapter(),
+            {
+                "type": "message",
+                "message": {
+                    "channel_id": "channel-1",
+                    "user_id": "user-1",
+                    "message_id": "msg-1",
+                    "text": "hello qq",
+                },
+            },
+            "channel-1",
+            "hello qq",
+        ),
+        (
+            FeishuAdapter(tenant_access_token="tenant-token"),
+            {
+                "schema": "2.0",
+                "header": {"event_type": "im.message.receive_v1"},
+                "event": {
+                    "sender": {"sender_id": {"open_id": "ou_1"}},
+                    "message": {
+                        "message_id": "om_1",
+                        "chat_id": "oc_1",
+                        "message_type": "text",
+                        "content": '{"text":"hello feishu"}',
+                    },
+                },
+            },
+            "oc_1",
+            "hello feishu",
+        ),
+        (
+            DingTalkAdapter(),
+            {
+                "conversationId": "cid-1",
+                "senderId": "sender-1",
+                "msgId": "msg-1",
+                "msgtype": "text",
+                "text": {"content": "hello dingtalk"},
+            },
+            "cid-1",
+            "hello dingtalk",
+        ),
     ],
 )
-def test_foreign_platform_adapters_extract_messages(
+def test_platform_adapters_extract_messages(
     adapter,
     payload: dict[str, object],
     target_id: str,
@@ -224,6 +286,214 @@ async def test_slack_webhook_calls_session_and_platform_api() -> None:
         },
         expected_session_message="hello slack",
         expected_platform_payload={"channel": "C1", "text": "reply text"},
+    )
+
+
+@pytest.mark.anyio
+async def test_wechat_bridge_webhook_calls_session_and_reply_url() -> None:
+    await _assert_webhook_calls_session_and_platform_api(
+        adapter=WeChatBridgeAdapter(reply_url="/wechat/reply"),
+        platform_route="/wechat/reply",
+        incoming_payload={
+            "type": "message",
+            "message": {
+                "conversation_id": "room-1",
+                "user_id": "user-1",
+                "message_id": "msg-1",
+                "text": "hello wechat",
+            },
+        },
+        expected_session_message="hello wechat",
+        expected_platform_payload={
+            "conversation_id": "room-1",
+            "user_id": "user-1",
+            "text": "reply text",
+            "in_reply_to": "msg-1",
+        },
+    )
+
+
+@pytest.mark.anyio
+async def test_wechat_bridge_secret_validation() -> None:
+    async with _TcpListener() as channel_url, anyio.create_task_group() as tg:
+        tg.start_soon(
+            _serve_platform_channel,
+            "http://127.0.0.1:9/v1",
+            channel_url,
+            WeChatBridgeAdapter(bridge_secret="bridge-secret"),
+        )
+        await anyio.sleep(0.2)
+
+        async with ClientSession() as client:
+            async with client.post(f"{channel_url}/webhook", json={"type": "ping"}) as response:
+                assert response.status == 401
+
+            async with client.post(
+                f"{channel_url}/webhook",
+                json={"type": "ping"},
+                headers={"Authorization": "Bearer bridge-secret"},
+            ) as response:
+                assert response.status == 200
+                assert await response.json() == {"ok": True, "provider": "wechat", "type": "pong"}
+
+        tg.cancel_scope.cancel()
+
+
+@pytest.mark.anyio
+async def test_qq_bridge_webhook_calls_session_and_reply_url() -> None:
+    await _assert_webhook_calls_session_and_platform_api(
+        adapter=QQBridgeAdapter(reply_url="/qq/reply"),
+        platform_route="/qq/reply",
+        incoming_payload={
+            "type": "message",
+            "message": {
+                "channel_id": "channel-1",
+                "user_id": "user-1",
+                "message_id": "msg-1",
+                "text": "hello qq",
+            },
+        },
+        expected_session_message="hello qq",
+        expected_platform_payload={
+            "conversation_id": "channel-1",
+            "user_id": "user-1",
+            "text": "reply text",
+            "in_reply_to": "msg-1",
+        },
+    )
+
+
+@pytest.mark.anyio
+async def test_feishu_webhook_calls_session_and_platform_api() -> None:
+    await _assert_webhook_calls_session_and_platform_api(
+        adapter=FeishuAdapter(tenant_access_token="tenant-token"),
+        platform_route="/open-apis/im/v1/messages/om_1/reply",
+        incoming_payload={
+            "schema": "2.0",
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {
+                "sender": {"sender_id": {"open_id": "ou_1"}},
+                "message": {
+                    "message_id": "om_1",
+                    "chat_id": "oc_1",
+                    "message_type": "text",
+                    "content": '{"text":"hello feishu"}',
+                },
+            },
+        },
+        expected_session_message="hello feishu",
+        expected_platform_payload={"msg_type": "text", "content": '{"text": "reply text"}'},
+    )
+
+
+@pytest.mark.anyio
+async def test_feishu_webhook_fetches_tenant_token_from_app_credentials() -> None:
+    session_payloads: list[dict[str, object]] = []
+    token_requests: list[dict[str, object]] = []
+    platform_payloads: list[dict[str, object]] = []
+    reply_sent = anyio.Event()
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        session_payloads.append(await request.json())
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {"choices": [{"delta": {"content": "reply text"}}]}
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def token_handler(request: web.Request) -> web.Response:
+        token_requests.append(await request.json())
+        return web.json_response({"code": 0, "tenant_access_token": "tenant-from-app"})
+
+    async def platform_handler(request: web.Request) -> web.Response:
+        platform_payloads.append(
+            {
+                "authorization": request.headers.get("Authorization"),
+                "body": await request.json(),
+            }
+        )
+        reply_sent.set()
+        return web.json_response({"code": 0})
+
+    incoming_payload = {
+        "schema": "2.0",
+        "header": {"event_type": "im.message.receive_v1"},
+        "event": {
+            "sender": {"sender_id": {"open_id": "ou_1"}},
+            "message": {
+                "message_id": "om_1",
+                "chat_id": "oc_1",
+                "message_type": "text",
+                "content": '{"text":"hello feishu"}',
+            },
+        },
+    }
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer(
+            [
+                ("POST", "/open-apis/auth/v3/tenant_access_token/internal", token_handler),
+                ("POST", "/open-apis/im/v1/messages/om_1/reply", platform_handler),
+            ]
+        ) as platform_base_url,
+        _TcpListener() as channel_url,
+        anyio.create_task_group() as tg,
+    ):
+        tg.start_soon(
+            _serve_platform_channel,
+            f"{session_base_url}/v1",
+            channel_url,
+            FeishuAdapter(app_id="cli_test", app_secret="app-secret", api_base_url=platform_base_url),
+        )
+        await anyio.sleep(0.2)
+
+        async with (
+            ClientSession() as client,
+            client.post(f"{channel_url}/webhook", json=incoming_payload) as response,
+        ):
+            assert response.status == 200
+            assert await response.json() == {"ok": True, "messages": 1, "queued": 1, "duplicates": 0}
+
+        with anyio.fail_after(5):
+            await reply_sent.wait()
+        tg.cancel_scope.cancel()
+
+    assert token_requests == [{"app_id": "cli_test", "app_secret": "app-secret"}]
+    assert platform_payloads == [
+        {
+            "authorization": "Bearer tenant-from-app",
+            "body": {"msg_type": "text", "content": '{"text": "reply text"}'},
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_feishu_url_verification() -> None:
+    response = await FeishuAdapter(tenant_access_token="tenant-token", verification_token="verify-me").handle_control(
+        {"type": "url_verification", "token": "verify-me", "challenge": "challenge-value"}
+    )
+
+    assert isinstance(response, Response)
+    assert response.text is not None
+    assert json.loads(response.text) == {"challenge": "challenge-value"}
+
+
+@pytest.mark.anyio
+async def test_dingtalk_webhook_calls_session_and_session_webhook() -> None:
+    await _assert_webhook_calls_session_and_platform_api(
+        adapter=DingTalkAdapter(session_webhook="/dingtalk/reply"),
+        platform_route="/dingtalk/reply",
+        incoming_payload={
+            "conversationId": "cid-1",
+            "senderId": "sender-1",
+            "msgId": "msg-1",
+            "msgtype": "text",
+            "text": {"content": "hello dingtalk"},
+        },
+        expected_session_message="hello dingtalk",
+        expected_platform_payload={"msgtype": "text", "text": {"content": "reply text"}},
     )
 
 
@@ -573,6 +843,38 @@ def _with_api_base_url(adapter, api_base_url: str):
             bot_token=adapter.bot_token,
             api_base_url=api_base_url,
             signing_secret=adapter.signing_secret,
+        )
+    if isinstance(adapter, WeChatBridgeAdapter):
+        reply_url = adapter.reply_url
+        if reply_url.startswith("/"):
+            reply_url = f"{api_base_url}{reply_url}"
+        return WeChatBridgeAdapter(
+            reply_url=reply_url,
+            bridge_secret=adapter.bridge_secret,
+        )
+    if isinstance(adapter, QQBridgeAdapter):
+        reply_url = adapter.reply_url
+        if reply_url.startswith("/"):
+            reply_url = f"{api_base_url}{reply_url}"
+        return QQBridgeAdapter(
+            reply_url=reply_url,
+            bridge_secret=adapter.bridge_secret,
+        )
+    if isinstance(adapter, FeishuAdapter):
+        return FeishuAdapter(
+            tenant_access_token=adapter.tenant_access_token,
+            app_id=adapter.app_id,
+            app_secret=adapter.app_secret,
+            api_base_url=api_base_url,
+            verification_token=adapter.verification_token,
+        )
+    if isinstance(adapter, DingTalkAdapter):
+        session_webhook = adapter.session_webhook
+        if session_webhook.startswith("/"):
+            session_webhook = f"{api_base_url}{session_webhook}"
+        return DingTalkAdapter(
+            session_webhook=session_webhook,
+            outgoing_token=adapter.outgoing_token,
         )
     raise AssertionError(f"unexpected adapter: {adapter!r}")
 

@@ -696,6 +696,338 @@ class DiscordAdapter:
         ]
 
 
+@dataclass(frozen=True)
+class WeChatBridgeAdapter:
+    reply_url: str = ""
+    bridge_secret: str = ""
+
+    provider: PlatformProvider = "wechat"
+
+    async def validate_post(self, request: web.Request, raw_body: bytes) -> None:
+        _ = raw_body
+        if not self.bridge_secret:
+            return
+        authorization = request.headers.get("Authorization", "")
+        header_secret = request.headers.get("X-WeChat-Bridge-Secret", "")
+        if authorization == f"Bearer {self.bridge_secret}" or header_secret == self.bridge_secret:
+            return
+        raise web.HTTPUnauthorized(text="invalid WeChat bridge secret")
+
+    async def handle_get(self, request: web.Request) -> web.StreamResponse | None:
+        _ = request
+        return None
+
+    async def handle_control(self, body: dict[str, Any]) -> web.StreamResponse | None:
+        if body.get("type") == "ping":
+            return web.json_response({"ok": True, "provider": self.provider, "type": "pong"})
+        return None
+
+    def extract_messages(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        event_type = body.get("type") or body.get("event")
+        if event_type and event_type not in {"message", "text"}:
+            return []
+
+        raw_message = body.get("message")
+        message = raw_message if isinstance(raw_message, dict) else body
+        text = _first_string(message, "text", "content", "body")
+        if not text:
+            return []
+
+        target_id = _first_string(
+            message,
+            "conversation_id",
+            "chat_id",
+            "room_id",
+            "group_id",
+            "target_id",
+            "user_id",
+            "from_user",
+        )
+        if not target_id:
+            return []
+
+        user_id = _first_string(message, "user_id", "from_user", "sender_id", "open_id")
+        message_id = _first_string(message, "message_id", "msg_id", "id")
+        event_id = _first_string(body, "event_id", "eventId", "uuid")
+        reply_url = _first_string(message, "reply_url") or _first_string(body, "reply_url")
+
+        metadata = {
+            key: value
+            for key, value in {
+                "event_id": event_id,
+                "conversation_id": target_id,
+                "message_id": message_id,
+                "reply_url": reply_url,
+            }.items()
+            if value
+        }
+        return [
+            PlatformMessage(
+                provider="wechat",
+                target_id=target_id,
+                user_id=user_id,
+                text=text,
+                metadata=metadata,
+            )
+        ]
+
+    async def send_reply(self, session: ClientSession, message: PlatformMessage, text: str) -> None:
+        reply_url = message.metadata.get("reply_url") or self.reply_url
+        if not reply_url:
+            raise UserFacingError(
+                "Missing WeChat bridge reply URL.",
+                "Pass --reply-url, set WECHAT_BRIDGE_REPLY_URL, or include reply_url in the bridge payload.",
+            )
+
+        payload = {
+            "conversation_id": message.metadata.get("conversation_id") or message.target_id,
+            "user_id": message.user_id,
+            "text": text,
+        }
+        message_id = message.metadata.get("message_id")
+        if message_id:
+            payload["in_reply_to"] = message_id
+
+        headers = {"Authorization": f"Bearer {self.bridge_secret}"} if self.bridge_secret else None
+        await post_platform_json(session, reply_url, payload, headers=headers)
+
+
+@dataclass(frozen=True)
+class QQBridgeAdapter:
+    reply_url: str = ""
+    bridge_secret: str = ""
+
+    provider: PlatformProvider = "qq"
+
+    async def validate_post(self, request: web.Request, raw_body: bytes) -> None:
+        _ = raw_body
+        if not self.bridge_secret:
+            return
+        authorization = request.headers.get("Authorization", "")
+        header_secret = request.headers.get("X-QQ-Bridge-Secret", "")
+        if authorization == f"Bearer {self.bridge_secret}" or header_secret == self.bridge_secret:
+            return
+        raise web.HTTPUnauthorized(text="invalid QQ bridge secret")
+
+    async def handle_get(self, request: web.Request) -> web.StreamResponse | None:
+        _ = request
+        return None
+
+    async def handle_control(self, body: dict[str, Any]) -> web.StreamResponse | None:
+        if body.get("type") == "ping":
+            return web.json_response({"ok": True, "provider": self.provider, "type": "pong"})
+        return None
+
+    def extract_messages(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        event_type = body.get("type") or body.get("event")
+        if event_type and event_type not in {"message", "text"}:
+            return []
+
+        raw_message = body.get("message")
+        message = raw_message if isinstance(raw_message, dict) else body
+        text = _first_string(message, "text", "content", "body")
+        if not text:
+            return []
+
+        target_id = _first_string(
+            message,
+            "conversation_id",
+            "channel_id",
+            "group_id",
+            "chat_id",
+            "target_id",
+            "user_id",
+            "open_id",
+        )
+        if not target_id:
+            return []
+
+        user_id = _first_string(message, "user_id", "author_id", "sender_id", "open_id")
+        message_id = _first_string(message, "message_id", "msg_id", "id")
+        event_id = _first_string(body, "event_id", "eventId", "uuid")
+        reply_url = _first_string(message, "reply_url") or _first_string(body, "reply_url")
+        metadata = {
+            key: value
+            for key, value in {
+                "event_id": event_id,
+                "conversation_id": target_id,
+                "message_id": message_id,
+                "reply_url": reply_url,
+            }.items()
+            if value
+        }
+        return [
+            PlatformMessage(
+                provider="qq",
+                target_id=target_id,
+                user_id=user_id,
+                text=text,
+                metadata=metadata,
+            )
+        ]
+
+    async def send_reply(self, session: ClientSession, message: PlatformMessage, text: str) -> None:
+        reply_url = message.metadata.get("reply_url") or self.reply_url
+        if not reply_url:
+            raise UserFacingError(
+                "Missing QQ bridge reply URL.",
+                "Pass --reply-url, set QQ_BRIDGE_REPLY_URL, or include reply_url in the bridge payload.",
+            )
+
+        payload = {
+            "conversation_id": message.metadata.get("conversation_id") or message.target_id,
+            "user_id": message.user_id,
+            "text": text,
+        }
+        message_id = message.metadata.get("message_id")
+        if message_id:
+            payload["in_reply_to"] = message_id
+
+        headers = {"Authorization": f"Bearer {self.bridge_secret}"} if self.bridge_secret else None
+        await post_platform_json(session, reply_url, payload, headers=headers)
+
+
+@dataclass(frozen=True)
+class FeishuAdapter:
+    tenant_access_token: str = ""
+    app_id: str = ""
+    app_secret: str = ""
+    api_base_url: str = "https://open.feishu.cn"
+    verification_token: str = ""
+
+    provider: PlatformProvider = "feishu"
+
+    async def validate_post(self, request: web.Request, raw_body: bytes) -> None:
+        _ = request, raw_body
+
+    async def handle_get(self, request: web.Request) -> web.StreamResponse | None:
+        _ = request
+        return None
+
+    async def handle_control(self, body: dict[str, Any]) -> web.StreamResponse | None:
+        if body.get("type") != "url_verification":
+            return None
+        if self.verification_token and body.get("token") != self.verification_token:
+            raise web.HTTPForbidden(text="invalid Feishu verification token")
+        return web.json_response({"challenge": str(body.get("challenge") or "")})
+
+    def extract_messages(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        raw_event = body.get("event")
+        event = raw_event if isinstance(raw_event, dict) else body
+        raw_header = body.get("header")
+        header = raw_header if isinstance(raw_header, dict) else {}
+        raw_message = event.get("message")
+        message = raw_message if isinstance(raw_message, dict) else event
+
+        text = _feishu_message_text(message)
+        target_id = _first_string(message, "chat_id", "open_chat_id", "chatId")
+        if not text or not target_id:
+            return []
+
+        message_id = _first_string(message, "message_id", "messageId", "id")
+        event_id = _first_string(header, "event_id", "eventId") or _first_string(body, "event_id", "eventId", "uuid")
+        metadata = {
+            key: value
+            for key, value in {
+                "event_id": event_id,
+                "message_id": message_id,
+                "chat_id": target_id,
+            }.items()
+            if value
+        }
+        return [
+            PlatformMessage(
+                provider="feishu",
+                target_id=target_id,
+                user_id=_feishu_sender_id(event),
+                text=text,
+                metadata=metadata,
+            )
+        ]
+
+    async def send_reply(self, session: ClientSession, message: PlatformMessage, text: str) -> None:
+        message_id = message.metadata.get("message_id")
+        tenant_access_token = self.tenant_access_token or await _fetch_feishu_tenant_access_token(
+            session=session,
+            api_base_url=self.api_base_url,
+            app_id=self.app_id,
+            app_secret=self.app_secret,
+        )
+        headers = {"Authorization": f"Bearer {tenant_access_token}"}
+        content = json.dumps({"text": text}, ensure_ascii=False)
+        if message_id:
+            url = f"{self.api_base_url.rstrip('/')}/open-apis/im/v1/messages/{message_id}/reply"
+            payload = {"msg_type": "text", "content": content}
+        else:
+            url = f"{self.api_base_url.rstrip('/')}/open-apis/im/v1/messages?receive_id_type=chat_id"
+            payload = {"receive_id": message.target_id, "msg_type": "text", "content": content}
+        await post_platform_json(session, url, payload, headers=headers)
+
+
+@dataclass(frozen=True)
+class DingTalkAdapter:
+    session_webhook: str = ""
+    outgoing_token: str = ""
+
+    provider: PlatformProvider = "dingtalk"
+
+    async def validate_post(self, request: web.Request, raw_body: bytes) -> None:
+        _ = request, raw_body
+
+    async def handle_get(self, request: web.Request) -> web.StreamResponse | None:
+        _ = request
+        return None
+
+    async def handle_control(self, body: dict[str, Any]) -> web.StreamResponse | None:
+        if body.get("type") == "ping":
+            return web.json_response({"ok": True, "provider": self.provider, "type": "pong"})
+        return None
+
+    def extract_messages(self, body: dict[str, Any]) -> list[PlatformMessage]:
+        if self.outgoing_token and body.get("token") != self.outgoing_token:
+            return []
+
+        msg_type = body.get("msgtype") or body.get("msgType")
+        if msg_type and msg_type != "text":
+            return []
+
+        text = _dingtalk_message_text(body)
+        target_id = _first_string(body, "conversationId", "conversation_id", "chat_id")
+        if not text or not target_id:
+            return []
+
+        message_id = _first_string(body, "msgId", "message_id", "id")
+        event_id = _first_string(body, "event_id", "eventId", "uuid")
+        reply_url = _first_string(body, "sessionWebhook", "reply_url")
+        metadata = {
+            key: value
+            for key, value in {
+                "event_id": event_id,
+                "message_id": message_id,
+                "reply_url": reply_url,
+            }.items()
+            if value
+        }
+        return [
+            PlatformMessage(
+                provider="dingtalk",
+                target_id=target_id,
+                user_id=_first_string(body, "senderId", "senderStaffId", "senderNick", "user_id"),
+                text=text,
+                metadata=metadata,
+            )
+        ]
+
+    async def send_reply(self, session: ClientSession, message: PlatformMessage, text: str) -> None:
+        reply_url = message.metadata.get("reply_url") or self.session_webhook
+        if not reply_url:
+            raise UserFacingError(
+                "Missing DingTalk session webhook.",
+                "Pass --session-webhook, set DINGTALK_SESSION_WEBHOOK, or include sessionWebhook in the payload.",
+            )
+        await post_platform_json(session, reply_url, {"msgtype": "text", "text": {"content": text}})
+
+
 @dataclass
 class ChannelTelegram:
     """Telegram webhook channel."""
@@ -886,6 +1218,164 @@ class ChannelSlack:
         )
 
 
+@dataclass
+class ChannelWeChatBridge:
+    """WeChat/QClaw normalized bridge webhook channel."""
+
+    session_socket: str
+    """Path to the session Unix domain socket."""
+
+    listen: str = "http://127.0.0.1:8080"
+    """HTTP endpoint to listen on."""
+
+    webhook_path: str = "/webhook"
+    """Webhook path when listen does not include a path."""
+
+    reply_url: str = ""
+    """Bridge reply endpoint. Falls back to WECHAT_BRIDGE_REPLY_URL."""
+
+    bridge_secret: str = ""
+    """Optional bearer/header secret. Falls back to WECHAT_BRIDGE_SECRET."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
+
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        reply_url = self.reply_url or os.environ.get("WECHAT_BRIDGE_REPLY_URL", "")
+        bridge_secret = self.bridge_secret or os.environ.get("WECHAT_BRIDGE_SECRET", "")
+        await serve_platform_channel(
+            session_socket=self.session_socket,
+            listen=self.listen,
+            webhook_path=self.webhook_path,
+            adapter=WeChatBridgeAdapter(reply_url=reply_url, bridge_secret=bridge_secret),
+        )
+
+
+@dataclass
+class ChannelQQBridge:
+    """QQ normalized bridge webhook channel."""
+
+    session_socket: str
+    """Path to the session Unix domain socket."""
+
+    listen: str = "http://127.0.0.1:8080"
+    """HTTP endpoint to listen on."""
+
+    webhook_path: str = "/webhook"
+    """Webhook path when listen does not include a path."""
+
+    reply_url: str = ""
+    """Bridge reply endpoint. Falls back to QQ_BRIDGE_REPLY_URL."""
+
+    bridge_secret: str = ""
+    """Optional bearer/header secret. Falls back to QQ_BRIDGE_SECRET."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
+
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        reply_url = self.reply_url or os.environ.get("QQ_BRIDGE_REPLY_URL", "")
+        bridge_secret = self.bridge_secret or os.environ.get("QQ_BRIDGE_SECRET", "")
+        await serve_platform_channel(
+            session_socket=self.session_socket,
+            listen=self.listen,
+            webhook_path=self.webhook_path,
+            adapter=QQBridgeAdapter(reply_url=reply_url, bridge_secret=bridge_secret),
+        )
+
+
+@dataclass
+class ChannelFeishu:
+    """Feishu/Lark Events API webhook channel."""
+
+    session_socket: str
+    """Path to the session Unix domain socket."""
+
+    tenant_access_token: str = ""
+    """Feishu tenant access token. Falls back to FEISHU_TENANT_ACCESS_TOKEN."""
+
+    app_id: str = ""
+    """Feishu app ID. Falls back to FEISHU_APP_ID when tenant access token is omitted."""
+
+    app_secret: str = ""
+    """Feishu app secret. Falls back to FEISHU_APP_SECRET when tenant access token is omitted."""
+
+    listen: str = "http://127.0.0.1:8080"
+    """HTTP endpoint to listen on."""
+
+    webhook_path: str = "/webhook"
+    """Webhook path when listen does not include a path."""
+
+    api_base_url: str = "https://open.feishu.cn"
+    """Feishu/Lark Open API base URL."""
+
+    verification_token: str = ""
+    """Optional event subscription verification token. Falls back to FEISHU_VERIFICATION_TOKEN."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
+
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        tenant_access_token = self.tenant_access_token or os.environ.get("FEISHU_TENANT_ACCESS_TOKEN", "")
+        app_id = self.app_id or os.environ.get("FEISHU_APP_ID", "")
+        app_secret = self.app_secret or os.environ.get("FEISHU_APP_SECRET", "")
+        verification_token = self.verification_token or os.environ.get("FEISHU_VERIFICATION_TOKEN", "")
+        if not tenant_access_token and not (app_id and app_secret):
+            raise UserFacingError(
+                "Missing Feishu credentials.",
+                "Pass --tenant-access-token, set FEISHU_TENANT_ACCESS_TOKEN, or set FEISHU_APP_ID/FEISHU_APP_SECRET.",
+            )
+        await serve_platform_channel(
+            session_socket=self.session_socket,
+            listen=self.listen,
+            webhook_path=self.webhook_path,
+            adapter=FeishuAdapter(
+                tenant_access_token=tenant_access_token,
+                app_id=app_id,
+                app_secret=app_secret,
+                api_base_url=self.api_base_url,
+                verification_token=verification_token,
+            ),
+        )
+
+
+@dataclass
+class ChannelDingTalk:
+    """DingTalk outgoing robot webhook channel."""
+
+    session_socket: str
+    """Path to the session Unix domain socket."""
+
+    listen: str = "http://127.0.0.1:8080"
+    """HTTP endpoint to listen on."""
+
+    webhook_path: str = "/webhook"
+    """Webhook path when listen does not include a path."""
+
+    session_webhook: str = ""
+    """Fallback DingTalk sessionWebhook. Falls back to DINGTALK_SESSION_WEBHOOK."""
+
+    outgoing_token: str = ""
+    """Optional outgoing robot token. Falls back to DINGTALK_OUTGOING_TOKEN."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
+
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        session_webhook = self.session_webhook or os.environ.get("DINGTALK_SESSION_WEBHOOK", "")
+        outgoing_token = self.outgoing_token or os.environ.get("DINGTALK_OUTGOING_TOKEN", "")
+        await serve_platform_channel(
+            session_socket=self.session_socket,
+            listen=self.listen,
+            webhook_path=self.webhook_path,
+            adapter=DingTalkAdapter(session_webhook=session_webhook, outgoing_token=outgoing_token),
+        )
+
+
 async def post_platform_json(
     session: ClientSession,
     url: str,
@@ -911,6 +1401,40 @@ async def post_platform_json(
             error = data.get("msg") or data.get("message") or body[:300]
             raise UserFacingError(f"Platform API request failed: code={data.get('code')}: {error}")
         logger.info(f"Platform API request succeeded: {_redacted_url_for_log(url)}")
+
+
+async def _fetch_feishu_tenant_access_token(
+    *,
+    session: ClientSession,
+    api_base_url: str,
+    app_id: str,
+    app_secret: str,
+) -> str:
+    if not app_id or not app_secret:
+        raise UserFacingError(
+            "Missing Feishu tenant access token.",
+            "Pass --tenant-access-token, set FEISHU_TENANT_ACCESS_TOKEN, or configure app_id/app_secret.",
+        )
+
+    url = f"{api_base_url.rstrip('/')}/open-apis/auth/v3/tenant_access_token/internal"
+    async with session.post(url, json={"app_id": app_id, "app_secret": app_secret}) as response:
+        body = await response.text()
+        if response.status >= 400:
+            raise UserFacingError(f"Feishu tenant token request failed: HTTP {response.status}: {body[:300]}")
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            raise UserFacingError(f"Feishu tenant token response is not JSON: {body[:300]}") from None
+        if not isinstance(data, dict):
+            raise UserFacingError("Feishu tenant token response is not an object.")
+        if data.get("code") not in {None, 0}:
+            raise UserFacingError(
+                f"Feishu tenant token request failed: code={data.get('code')}: {data.get('msg') or body[:300]}"
+            )
+        token = data.get("tenant_access_token")
+        if not token:
+            raise UserFacingError("Feishu tenant token response did not include tenant_access_token.")
+        return str(token)
 
 
 def _resolve_webhook_path(listen: str, webhook_path: str) -> str:
@@ -984,6 +1508,42 @@ def _discord_interaction_text(data: dict[str, Any]) -> str:
         if values:
             return " ".join(values)
     return str(data.get("name") or "")
+
+
+def _feishu_message_text(message: dict[str, Any]) -> str:
+    message_type = _first_string(message, "message_type", "messageType")
+    if message_type and message_type != "text":
+        return ""
+
+    content = message.get("content")
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            return content
+        if isinstance(parsed, dict) and parsed.get("text"):
+            return str(parsed["text"])
+        return content
+    if isinstance(content, dict) and content.get("text"):
+        return str(content["text"])
+    return _first_string(message, "text", "body")
+
+
+def _feishu_sender_id(event: dict[str, Any]) -> str:
+    raw_sender = event.get("sender")
+    sender = raw_sender if isinstance(raw_sender, dict) else {}
+    raw_sender_id = sender.get("sender_id")
+    sender_id = raw_sender_id if isinstance(raw_sender_id, dict) else {}
+    return _first_string(sender_id, "open_id", "user_id", "union_id") or _first_string(sender, "open_id", "user_id")
+
+
+def _dingtalk_message_text(body: dict[str, Any]) -> str:
+    raw_text = body.get("text")
+    if isinstance(raw_text, dict) and raw_text.get("content"):
+        return str(raw_text["content"])
+    if isinstance(raw_text, str):
+        return raw_text
+    return _first_string(body, "content", "body")
 
 
 def _first_string(data: dict[str, Any], *keys: str) -> str:

@@ -11,7 +11,16 @@ from psi_agent.ai.anthropic_messages import AnthropicMessages
 from psi_agent.ai.openai_completions import OpenAICompletions
 from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.link import ChannelLinkInfo
-from psi_agent.channel.platform import ChannelDiscord, ChannelSlack, ChannelTelegram, ChannelWhatsApp
+from psi_agent.channel.platform import (
+    ChannelDingTalk,
+    ChannelDiscord,
+    ChannelFeishu,
+    ChannelQQBridge,
+    ChannelSlack,
+    ChannelTelegram,
+    ChannelWeChatBridge,
+    ChannelWhatsApp,
+)
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.doctor import Doctor
 from psi_agent.errors import UserFacingError
@@ -32,7 +41,11 @@ ChannelGroup = Annotated[
     | Annotated[ChannelTelegram, conf.subcommand(name="telegram")]
     | Annotated[ChannelWhatsApp, conf.subcommand(name="whatsapp")]
     | Annotated[ChannelDiscord, conf.subcommand(name="discord")]
-    | Annotated[ChannelSlack, conf.subcommand(name="slack")],
+    | Annotated[ChannelSlack, conf.subcommand(name="slack")]
+    | Annotated[ChannelQQBridge, conf.subcommand(name="qq-bridge")]
+    | Annotated[ChannelWeChatBridge, conf.subcommand(name="wechat-bridge")]
+    | Annotated[ChannelFeishu, conf.subcommand(name="feishu")]
+    | Annotated[ChannelDingTalk, conf.subcommand(name="dingtalk")],
     conf.subcommand(name="channel", description="User interface channels"),
 ]
 
