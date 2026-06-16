@@ -56,6 +56,7 @@ addopts = ["--strict-markers", "-ra", "--cov=src/psi_agent"]
 markers = [
     "slow: slow tests (schedule-based, > 30s)",
     "real_api: tests that call external LLM APIs and require PSI_RUN_REAL_API_TESTS=1",
+    "real_channel: tests that call external messaging platform APIs and require PSI_RUN_REAL_CHANNEL_TESTS=1",
 ]
 
 [tool.coverage.run]

@@ -125,6 +125,194 @@ REPL controls:
 - `Alt+Enter`: send
 - `Ctrl+D`: exit
 
+Validate and normalize a channel link:
+
+```bash
+uv run psi-agent channel link --url https://t.me/psi_agent/42
+```
+
+Supported link families:
+
+- Telegram: `tg://`, `telegram://`, `t.me`
+- WhatsApp: `whatsapp://`, `wa.me`, `chat.whatsapp.com`
+- Discord: `discord://`, `discord.com`, `discord.gg`
+- Slack: `slack://`, `slack.com`, `app.slack.com`
+- REPL session links: `repl://`
+- QQ: `qq://`, `mqq://`, `qm.qq.com`, `qun.qq.com`, `bot.q.qq.com`
+- WeChat/QClaw: `wechat://`, `weixin://`, `wecom://`, `wechat-bridge://`, `qclaw.qq.com`
+- Feishu/Lark: `feishu://`, `lark://`, `feishu.cn`, `larksuite.com`
+- DingTalk: `dingtalk://`, `ding://`, `dingtalk.com`, `oapi.dingtalk.com`
+
+REPL means "Read-Eval-Print Loop": an interactive terminal loop, not a full TUI.
+
+## Platform Channels
+
+Channel adapters receive messages from chat platforms, send user text to the
+existing psi-agent session socket, then post the model reply back through the
+platform API.
+
+Webhook-style channels listen on `http://127.0.0.1:8080/webhook` by default.
+Use `--listen` and `--webhook-path` to change the local endpoint.
+
+Examples:
+
+```bash
+uv run psi-agent channel telegram --session-socket ./channel.sock --token "$TELEGRAM_BOT_TOKEN"
+uv run psi-agent channel whatsapp --session-socket ./channel.sock --token "$WHATSAPP_ACCESS_TOKEN" --phone-number-id "$WHATSAPP_PHONE_NUMBER_ID"
+uv run psi-agent channel discord --session-socket ./channel.sock --bot-token "$DISCORD_BOT_TOKEN"
+uv run psi-agent channel slack --session-socket ./channel.sock --bot-token "$SLACK_BOT_TOKEN"
+uv run psi-agent channel feishu --session-socket ./channel.sock --tenant-access-token "$FEISHU_TENANT_ACCESS_TOKEN"
+uv run psi-agent channel dingtalk --session-socket ./channel.sock
+```
+
+Gateway/long-poll channels do not expose a local webhook. They connect out to
+the platform service:
+
+```bash
+uv run psi-agent channel discord --mode gateway --session-socket ./channel.sock --bot-token "$DISCORD_BOT_TOKEN"
+uv run psi-agent channel qqbot --session-socket ./channel.sock --app-id "$QQ_APP_ID" --client-secret "$QQ_CLIENT_SECRET"
+uv run psi-agent channel weixin-ilink --session-socket ./channel.sock --token "$WEIXIN_TOKEN" --account-id "$WEIXIN_ACCOUNT_ID"
+```
+
+Bridge channels are available for external transport processes that already
+normalize incoming QQ/WeChat messages:
+
+```bash
+uv run psi-agent channel qq-bridge --session-socket ./channel.sock --reply-url "$QQ_BRIDGE_REPLY_URL"
+uv run psi-agent channel wechat-bridge --session-socket ./channel.sock --reply-url "$WECHAT_BRIDGE_REPLY_URL"
+```
+
+## Profile Gateway Runtime
+
+`psi-agent gateway` starts a profile-based gateway as one local runtime:
+AI backend, session server, schedules, channel adapters, `channel_directory.json`,
+and `gateway_state.json` are owned by the profile process. This is the right
+entrypoint when multiple software channels should share one agent profile.
+
+Telegram, Slack, WhatsApp, Feishu, DingTalk, QQ bridge, and WeChat bridge use
+HTTP webhook entries. Discord can run in webhook relay mode or connect to
+Discord's official Gateway. Native QQBot and Weixin iLink currently run as
+standalone channel processes.
+
+Example `~/.psi-agent/gateway/profiles/default/profile.yaml`:
+
+```yaml
+name: default
+workspace: D:/File/FuClaw/psi-agent/examples/a-simple-bash-only-workspace
+ai: openai-completions
+model: gpt-4o-mini
+base_url: https://api.openai.com/v1
+api_key_env: OPENAI_API_KEY
+
+channels:
+  - name: telegram
+    type: telegram
+    listen: http://127.0.0.1:8080
+    webhook_path: /telegram/webhook
+    token: ""
+    webhook_secret: ""
+
+  - name: wechat
+    type: wechat-bridge
+    listen: http://127.0.0.1:8080
+    webhook_path: /wechat/webhook
+    reply_url: ""
+    bridge_secret: ""
+
+  - name: feishu
+    type: feishu
+    listen: http://127.0.0.1:8080
+    webhook_path: /feishu/webhook
+    app_id: ""
+    app_secret: ""
+    verification_token: ""
+```
+
+Run it:
+
+```bash
+uv run psi-agent gateway --profile default
+```
+
+Discord can also run as a Gateway client for real `MESSAGE_CREATE` events:
+
+```bash
+uv run psi-agent channel discord \
+  --mode gateway \
+  --session-socket ./channel.sock \
+  --bot-token "$DISCORD_BOT_TOKEN"
+```
+
+The Discord bot needs message content intent enabled in the Discord Developer
+Portal and the matching gateway intents in `--gateway-intents`.
+
+Native QQBot uses QQ Bot OpenAPI v2 credentials, fetches the official Gateway
+URL, receives `C2C_MESSAGE_CREATE` and `GROUP_AT_MESSAGE_CREATE`, then replies
+through `/v2/users/{openid}/messages` or `/v2/groups/{group_openid}/messages`.
+
+Weixin iLink uses Tencent iLink Bot API long polling. It requires an existing
+`WEIXIN_TOKEN` and `WEIXIN_ACCOUNT_ID`; QR login helper and media delivery are
+not implemented yet.
+
+The WeChat bridge channel is for an external normalized bridge process. The
+bridge should POST normalized messages to psi-agent:
+
+```json
+{
+  "type": "message",
+  "message": {
+    "conversation_id": "room-1",
+    "user_id": "user-1",
+    "message_id": "msg-1",
+    "text": "hello"
+  },
+  "reply_url": "https://bridge.example/reply"
+}
+```
+
+psi-agent replies to `reply_url` or `--reply-url` with:
+
+```json
+{
+  "conversation_id": "room-1",
+  "user_id": "user-1",
+  "text": "reply",
+  "in_reply_to": "msg-1"
+}
+```
+
+Set `WECHAT_BRIDGE_SECRET` or pass `--bridge-secret` to require
+`Authorization: Bearer <secret>` or `X-WeChat-Bridge-Secret: <secret>` on
+incoming bridge requests.
+
+The QQ bridge channel uses the same normalized bridge contract for an external
+QQ bridge process. Use `QQ_BRIDGE_REPLY_URL` and `QQ_BRIDGE_SECRET` for the
+bridge reply endpoint and optional shared secret.
+
+The Feishu channel accepts Events API message events such as
+`im.message.receive_v1` and replies through
+`/open-apis/im/v1/messages/{message_id}/reply`. Use
+`--api-base-url https://open.larksuite.com` for Lark tenants.
+
+The DingTalk channel targets outgoing robots. It reads incoming text messages
+and replies through the per-message `sessionWebhook`; `--session-webhook` is
+only needed as a fallback when the incoming payload does not include one.
+
+Real platform smoke tests are disabled by default because they send messages
+through real platform APIs. Enable them only with test accounts:
+
+```bash
+PSI_RUN_REAL_CHANNEL_TESTS=1 uv run pytest tests/integration/test_real_channels.py -v
+```
+
+Required variables by test:
+
+- Telegram: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_TEST_CHAT_ID`
+- WhatsApp: `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TEST_RECIPIENT`
+- Slack: `SLACK_BOT_TOKEN`, `SLACK_TEST_CHANNEL_ID`
+- Discord relay: `DISCORD_BOT_TOKEN`, `DISCORD_TEST_CHANNEL_ID`
+- Discord Gateway manual inbound: also set `PSI_RUN_REAL_DISCORD_GATEWAY_TESTS=1` and `DISCORD_GATEWAY_TEST_TEXT`
+
 ## Fusion Flow Workspace
 
 `examples/fusion-flow-workspace` packages Fusion Flow as a psi-agent skill.
