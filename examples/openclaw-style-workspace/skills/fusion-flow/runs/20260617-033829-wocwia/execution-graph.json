@@ -1,0 +1,133 @@
+{
+  "runId": "20260617-033829-wocwia",
+  "root": {
+    "id": "run-root",
+    "type": "run",
+    "startedAt": "2026-06-17T03:38:29.063Z",
+    "status": "ok",
+    "children": [
+      {
+        "id": "parallel-0001",
+        "type": "parallel",
+        "joinStrategy": "all",
+        "taskCount": 5,
+        "startedAt": "2026-06-17T03:38:29.065Z",
+        "status": "ok",
+        "children": [
+          {
+            "id": "session-0002",
+            "type": "session",
+            "agent": "http2_researcher",
+            "bindingName": "http2_researcher",
+            "traceFile": "trace/http2_researcher.json",
+            "startedAt": "2026-06-17T03:38:29.066Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 2031,
+              "output": 586
+            },
+            "engine": "claude",
+            "costUSD": 0.03405775,
+            "endedAt": "2026-06-17T03:38:53.890Z",
+            "durationMs": 24824
+          },
+          {
+            "id": "session-0003",
+            "type": "session",
+            "agent": "http3_researcher",
+            "bindingName": "http3_researcher",
+            "traceFile": "trace/http3_researcher.json",
+            "startedAt": "2026-06-17T03:38:29.068Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 1921,
+              "output": 674
+            },
+            "engine": "claude",
+            "costUSD": 0.036039749999999995,
+            "endedAt": "2026-06-17T03:38:49.461Z",
+            "durationMs": 20394
+          },
+          {
+            "id": "session-0004",
+            "type": "session",
+            "agent": "ws_researcher",
+            "bindingName": "ws_researcher",
+            "traceFile": "trace/ws_researcher.json",
+            "startedAt": "2026-06-17T03:38:29.068Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 1842,
+              "output": 648
+            },
+            "engine": "claude",
+            "costUSD": 0.034947000000000006,
+            "endedAt": "2026-06-17T03:38:50.301Z",
+            "durationMs": 21233
+          },
+          {
+            "id": "session-0005",
+            "type": "session",
+            "agent": "sse_researcher",
+            "bindingName": "sse_researcher",
+            "traceFile": "trace/sse_researcher.json",
+            "startedAt": "2026-06-17T03:38:29.069Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 1549,
+              "output": 726
+            },
+            "engine": "claude",
+            "costUSD": 0.03597025,
+            "endedAt": "2026-06-17T03:38:52.320Z",
+            "durationMs": 23252
+          },
+          {
+            "id": "session-0006",
+            "type": "session",
+            "agent": "grpc_researcher",
+            "bindingName": "grpc_researcher",
+            "traceFile": "trace/grpc_researcher.json",
+            "startedAt": "2026-06-17T03:38:29.069Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 1838,
+              "output": 633
+            },
+            "engine": "claude",
+            "costUSD": 0.0346695,
+            "endedAt": "2026-06-17T03:39:12.828Z",
+            "durationMs": 43759
+          }
+        ],
+        "endedAt": "2026-06-17T03:39:12.828Z",
+        "durationMs": 43762
+      },
+      {
+        "id": "session-0007",
+        "type": "session",
+        "agent": "synthesizer",
+        "bindingName": "synthesizer",
+        "traceFile": "trace/synthesizer.json",
+        "startedAt": "2026-06-17T03:39:12.828Z",
+        "status": "ok",
+        "children": [],
+        "tokens": {
+          "input": 3520,
+          "output": 947
+        },
+        "engine": "claude",
+        "costUSD": 0.05530625000000001,
+        "endedAt": "2026-06-17T03:39:49.635Z",
+        "durationMs": 36807
+      }
+    ],
+    "endedAt": "2026-06-17T03:39:49.638Z",
+    "durationMs": 80575
+  }
+}

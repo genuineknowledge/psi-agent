@@ -1,0 +1,29 @@
+{
+  "runId": "20260617-032253-iar6cu",
+  "startedAt": "2026-06-17T03:22:53.660Z",
+  "endedAt": "2026-06-17T03:23:01.052Z",
+  "durationMs": 7392,
+  "status": "ok",
+  "sessionCalls": {
+    "researcher_a": 1,
+    "researcher_b": 1
+  },
+  "evaluatorCalls": {},
+  "serviceCalls": {},
+  "totalTokens": {
+    "input": 3237,
+    "output": 354
+  },
+  "llmCalls": 2,
+  "userTokens": {
+    "input": 3237,
+    "output": 354
+  },
+  "userLlmCalls": 2,
+  "evaluatorTokens": {
+    "input": 0,
+    "output": 0
+  },
+  "evaluatorLlmCalls": 0,
+  "resumed": false
+}

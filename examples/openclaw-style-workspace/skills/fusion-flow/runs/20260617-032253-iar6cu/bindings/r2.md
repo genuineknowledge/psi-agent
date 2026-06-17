@@ -1,0 +1,1 @@
+uvloop 的核心优势在于它基于 libuv（Node.js 同款事件循环库），用 Cython 编写，把事件循环的热路径下沉到 C 层，避免了纯 Python 实现的解释器开销。它优化了 I/O 多路复用的调用（如 epoll/kqueue）和回调调度，减少了每次事件处理的 Python 函数调用次数。同时它对 Future、Transport 等对象做了更高效的内存管理和更少的中间层封装。实测在网络吞吐场景下通常能比标准 asyncio 快 2-4 倍。

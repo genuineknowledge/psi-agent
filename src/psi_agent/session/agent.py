@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 from aiohttp import ClientTimeout
@@ -10,7 +10,9 @@ from loguru import logger
 from psi_agent.net import make_client_session
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 
-MAX_TOOL_ROUNDS = 10
+MAX_TOOL_ROUNDS = 50
+
+AfterTurnFn = Callable[[list[dict], int, list[str]], Awaitable[None]]
 
 
 class SessionAgent:
@@ -21,21 +23,46 @@ class SessionAgent:
         tools: dict[str, ToolFunction],
         model: str,
         system_prompt: str | None = None,
+        after_turn_fn: AfterTurnFn | None = None,
     ) -> None:
         self.ai_socket = ai_socket
         self.tools = tools
         self._tool_funcs: dict[str, Any] = {}
         self.model = model
+        self._background_tasks: set = set()  # prevent GC of fire-and-forget tasks
         self.history: list[dict] = []
         if system_prompt:
             self.history.append({"role": "system", "content": system_prompt})
         self._pending_schedule_chunks: list[ChatCompletionChunk] = []
+        self._after_turn_fn = after_turn_fn
+        # Snapshot of last turn's stats, set at end of run() for spawn_after_turn_task()
+        self._last_tool_call_count: int = 0
+        self._last_called_tools: list[str] = []
+        self._last_history_snapshot: list[dict] = []
 
     def register_tool_func(self, name: str, func: Any) -> None:
         self._tool_funcs[name] = func
 
     def set_pending_schedule_chunks(self, chunks: list[ChatCompletionChunk]) -> None:
         self._pending_schedule_chunks = chunks
+
+    def spawn_after_turn_task(self) -> None:
+        """Spawn the after_turn background task. Call this after agent.run() completes."""
+        if self._after_turn_fn is None:
+            return
+        import asyncio
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._background_tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.error(f"after_turn task failed: {t.exception()}", exc_info=t.exception())
+
+        logger.info(f"Spawning after_turn task (tool_call_count={self._last_tool_call_count})")
+        task = asyncio.create_task(
+            self._after_turn_fn(self._last_history_snapshot, self._last_tool_call_count, self._last_called_tools)
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(_on_done)
 
     async def run(self, user_message: dict) -> AsyncIterator[ChatCompletionChunk]:
         # Yield pending schedule response chunks first
@@ -47,6 +74,9 @@ class SessionAgent:
 
         self.history.append(user_message)
         logger.debug(f"History now has {len(self.history)} messages")
+
+        tool_call_count = 0
+        called_tools: list[str] = []
 
         for _round in range(MAX_TOOL_ROUNDS):
             logger.debug(f"Agent loop round {_round + 1}/{MAX_TOOL_ROUNDS}")
@@ -112,15 +142,17 @@ class SessionAgent:
                     logger.debug("AI finished with stop")
                     if accumulated_content:
                         self.history.append({"role": "assistant", "content": accumulated_content})
+                    # Save snapshot for spawn_after_turn_task() called by server after run() completes
+                    self._last_tool_call_count = tool_call_count
+                    self._last_called_tools = list(called_tools)
+                    self._last_history_snapshot = list(self.history)
                     return
 
                 if finish_reason == "tool_calls":
                     logger.info("AI requested tool calls, processing...")
 
-                    # Order accumulated tool_calls by index
                     ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
 
-                    # Add assistant message with tool_calls to history
                     self.history.append(
                         {
                             "role": "assistant",
@@ -129,7 +161,6 @@ class SessionAgent:
                         }
                     )
 
-                    # Execute each tool call
                     for tc in ordered_calls:
                         func_info = tc.get("function", {})
                         func_name = func_info.get("name", "")
@@ -137,10 +168,12 @@ class SessionAgent:
 
                         try:
                             args = json.loads(func_args_str)
-                        except json.JSONDecodeError, TypeError:
+                        except (json.JSONDecodeError, TypeError):
                             args = {}
 
                         logger.info(f"Executing tool: {func_name}({args})")
+                        tool_call_count += 1
+                        called_tools.append(func_name)
 
                         yield ChatCompletionChunk(
                             id="tool_call",
@@ -204,6 +237,10 @@ class SessionAgent:
                     )
                 ],
             )
+            # Save snapshot for spawn_after_turn_task() called by server
+            self._last_tool_call_count = tool_call_count
+            self._last_called_tools = list(called_tools)
+            self._last_history_snapshot = list(self.history)
 
     async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
         client_session, endpoint = make_client_session(self.ai_socket, timeout=ClientTimeout(total=None))

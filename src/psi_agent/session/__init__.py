@@ -71,6 +71,121 @@ def _load_system_prompt_builder(
         return None
 
 
+def _load_after_turn_fn(
+    workspace_path: Path,
+    *,
+    ai_socket: str | None = None,
+    model: str | None = None,
+    tool_callables: dict[str, Any] | None = None,
+) -> Any:
+    """Load System.after_turn as an after-turn callback, if defined."""
+    system_py = workspace_path / "systems" / "system.py"
+    if not system_py.exists():
+        logger.warning(f"_load_after_turn_fn: system.py not found at {system_py}")
+        return None
+    try:
+        module = sys.modules.get("psi_workspace_system")
+        if module is None:
+            logger.warning("_load_after_turn_fn: psi_workspace_system not in sys.modules")
+            return None
+        system_class = getattr(module, "System", None)
+        if system_class is None:
+            logger.warning("_load_after_turn_fn: System class not found in module")
+            return None
+        system = system_class(anyio.Path(str(workspace_path)))
+        method = getattr(system, "after_turn", None)
+        if method is None or not inspect.iscoroutinefunction(method):
+            logger.warning(f"_load_after_turn_fn: after_turn not found or not async (method={method})")
+            return None
+
+        # If the workspace System.after_turn accepts extra kwargs, inject them
+        params = inspect.signature(method).parameters
+        logger.info(f"_load_after_turn_fn: after_turn params={list(params)}, ai_socket={ai_socket!r}")
+        if "ai_socket" in params or "complete_fn" in params:
+            # Build complete_fn from ai_socket for BackgroundReview
+            if ai_socket is not None:
+                from psi_agent.session.agent import SessionAgent  # noqa: PLC0415
+                _ai_socket = ai_socket
+                _model = model or "gpt-4"
+
+                async def _complete_fn(messages: list[dict], tools: list[dict]) -> dict:
+                    import json  # noqa: PLC0415
+                    import aiohttp  # noqa: PLC0415
+                    payload: dict = {"model": _model, "messages": messages, "stream": True}
+                    if tools:
+                        payload["tools"] = tools
+                    connector = aiohttp.UnixConnector(path=_ai_socket)
+                    accumulated_content = ""
+                    accumulated_tool_calls: dict[int, dict] = {}
+                    finish_reason = None
+                    async with aiohttp.ClientSession(connector=connector) as s:
+                        async with s.post(
+                            "http://localhost/v1/chat/completions",
+                            json=payload,
+                            timeout=aiohttp.ClientTimeout(total=300),
+                        ) as resp:
+                            resp.raise_for_status()
+                            async for raw_line in resp.content:
+                                line = raw_line.decode().strip()
+                                if not line or not line.startswith("data: "):
+                                    continue
+                                data_str = line[6:]
+                                if data_str == "[DONE]":
+                                    continue
+                                try:
+                                    chunk = json.loads(data_str)
+                                except json.JSONDecodeError:
+                                    continue
+                                for choice in chunk.get("choices", []):
+                                    if choice.get("finish_reason"):
+                                        finish_reason = choice["finish_reason"]
+                                    delta = choice.get("delta", {})
+                                    if delta.get("content"):
+                                        accumulated_content += delta["content"]
+                                    for tc in delta.get("tool_calls", []):
+                                        idx = tc.get("index", 0)
+                                        if idx not in accumulated_tool_calls:
+                                            accumulated_tool_calls[idx] = {
+                                                "id": tc.get("id", ""),
+                                                "type": "function",
+                                                "function": {"name": "", "arguments": ""},
+                                            }
+                                        acc = accumulated_tool_calls[idx]
+                                        if tc.get("id"):
+                                            acc["id"] = tc["id"]
+                                        func = tc.get("function", {})
+                                        if func.get("name"):
+                                            acc["function"]["name"] = func["name"]
+                                        if func.get("arguments"):
+                                            acc["function"]["arguments"] += func["arguments"]
+                    message: dict = {"role": "assistant", "content": accumulated_content or None}
+                    if accumulated_tool_calls:
+                        message["tool_calls"] = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
+                    return {"choices": [{"message": message, "finish_reason": finish_reason}]}
+
+                async def _after_turn_with_fn(
+                    messages: list[dict], tool_call_count: int, called_tools: list[str]
+                ) -> None:
+                    await method(
+                        messages,
+                        tool_call_count,
+                        called_tools,
+                        complete_fn=_complete_fn,
+                        tool_executors=tool_callables or {},
+                    )
+
+                logger.info("_load_after_turn_fn: returning _after_turn_with_fn (complete_fn injected)")
+                return _after_turn_with_fn
+
+            logger.warning("_load_after_turn_fn: ai_socket is None, returning bare method (complete_fn will be None)")
+        else:
+            logger.info("_load_after_turn_fn: after_turn has no complete_fn param, returning bare method")
+        return method
+    except Exception as e:
+        logger.error(f"Failed to load after_turn: {e}")
+        return None
+
+
 async def _run_one_schedule(schedule: Schedule, agent: SessionAgent, lock: anyio.Lock) -> None:
     logger.info(f"Schedule runner started: {schedule.name} ({schedule.cron})")
     while True:
@@ -94,6 +209,7 @@ async def _run_one_schedule(schedule: Schedule, agent: SessionAgent, lock: anyio
                         pending_chunks.append(chunk)
                     agent.set_pending_schedule_chunks(pending_chunks)
                     logger.info(f"Schedule {schedule.name} response stored ({len(pending_chunks)} chunks)")
+                    agent.spawn_after_turn_task()
         except Exception as e:
             logger.error(f"Error processing schedule {schedule.name}: {e}")
 
@@ -183,14 +299,24 @@ class Session:
             tool_names=list(tools),
         )
 
+        tool_callables = await load_tool_callables_from_workspace(workspace_path / "tools")
+
         agent = SessionAgent(
             ai_socket=self.ai_socket,
             tools=tools,
             model=self.model,
             system_prompt=system_prompt,
+            after_turn_fn=_load_after_turn_fn(
+                workspace_path,
+                ai_socket=self.ai_socket,
+                model=self.model,
+                tool_callables=tool_callables,
+            ),
         )
 
-        await _register_tool_callables(workspace_path, agent)
+        for name, func in tool_callables.items():
+            agent.register_tool_func(name, func)
+            logger.info(f"Registered tool callable: {name}")
 
         lock = anyio.Lock()
 

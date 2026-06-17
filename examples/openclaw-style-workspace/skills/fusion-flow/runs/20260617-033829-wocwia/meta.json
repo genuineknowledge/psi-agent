@@ -1,0 +1,33 @@
+{
+  "runId": "20260617-033829-wocwia",
+  "startedAt": "2026-06-17T03:38:29.063Z",
+  "endedAt": "2026-06-17T03:39:49.638Z",
+  "durationMs": 80575,
+  "status": "ok",
+  "sessionCalls": {
+    "http3_researcher": 1,
+    "ws_researcher": 1,
+    "sse_researcher": 1,
+    "http2_researcher": 1,
+    "grpc_researcher": 1,
+    "synthesizer": 1
+  },
+  "evaluatorCalls": {},
+  "serviceCalls": {},
+  "totalTokens": {
+    "input": 12701,
+    "output": 4214
+  },
+  "llmCalls": 6,
+  "userTokens": {
+    "input": 12701,
+    "output": 4214
+  },
+  "userLlmCalls": 6,
+  "evaluatorTokens": {
+    "input": 0,
+    "output": 0
+  },
+  "evaluatorLlmCalls": 0,
+  "resumed": false
+}

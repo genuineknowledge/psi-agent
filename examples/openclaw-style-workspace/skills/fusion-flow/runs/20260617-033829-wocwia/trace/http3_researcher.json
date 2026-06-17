@@ -1,0 +1,18 @@
+{
+  "agent": "http3_researcher",
+  "provider": "cli:claude",
+  "model": "",
+  "startedAt": "2026-06-17T03:38:29.068Z",
+  "endedAt": "2026-06-17T03:38:49.448Z",
+  "durationMs": 0,
+  "system": "你是网络协议性能分析师。针对 HTTP/3 (QUIC) 在实时通信场景下的延迟表现，给出详细分析：\n\n## 1. 协议机制\nQUIC 0-RTT 握手、无队头阻塞多路复用、连接迁移、内置 TLS 1.3——各对延迟的影响。\n\n## 2. 延迟数据\n- 连接建立延迟：1-RTT vs 0-RTT（首次/重连）\n- 首字节时间 (TTFB) — 与 HTTP/2 的对比\n- 在高丢包网络（>1%）下的尾延迟表现（QUIC 的独立流特性）\n- 小消息延迟 vs HTTP/2\n- 连接迁移带来的延迟收益（WiFi→5G 切换场景）\n\n## 3. 实时场景适配\n- 聊天/消息推送：0-RTT 让重连消息几乎零延迟\n- 直播弹幕：无 HOL blocking，万级并发流延迟更稳定\n- 游戏：QUIC 数据报扩展（不可靠传输模式）\n- 视频会议：QUIC 的拥塞控制可定制性\n\n## 4. 与其他协议对比要点\n- vs HTTP/2：解决 TCP HOL blocking 的量化收益\n- vs WebSocket over QUIC (WebTransport)：未来方向\n- 当前 HTTP/3 部署率与兼容性风险\n\n## 5. 最佳实践\n- 何时选 HTTP/3\n- 调优参数（拥塞控制算法选择、0-RTT 安全权衡）\n\n输出 markdown，数据优先。给出具体 benchmark 数字（注明来源）。\n限制 ≤ 600 字中文。",
+  "userPrompt": "## context.protocol\n\nHTTP/3\n\n---\n\n分析 HTTP/3 (QUIC) 在实时通信场景下的延迟表现。",
+  "context": {
+    "protocol": "HTTP/3"
+  },
+  "output": "# HTTP/3 (QUIC) 实时通信延迟分析\n\n## 1. 协议机制对延迟影响\n- **0-RTT**：重连复用会话票据，应用数据随首包发送，省 1 个 RTT。\n- **无队头阻塞**：流级独立，单流丢包不阻塞其余流（解决 TCP 层 HOL）。\n- **连接迁移**：以 Connection ID 标识，IP 变更不重握手。\n- **TLS 1.3 内置**：传输+加密握手合并，1-RTT 完成。\n\n## 2. 延迟数据\n| 指标 | HTTP/3 | HTTP/2(TCP+TLS) |\n|---|---|---|\n| 首次握手 | 1-RTT | 2-3 RTT |\n| 重连 | 0-RTT | 1-2 RTT |\n| TTFB | 较 H2 低约 100-300ms（弱网更明显，Google/Cloudflare 实测）|—|\n\n- **高丢包(>1%)**：Fastly/Cloudflare 报告丢包 2% 时 H3 尾延迟(p99)较 H2 改善可达 ~30%，因独立流避免连带重传等待。\n- **连接迁移**：WiFi→5G 切换，H3 避免重建连接，省 ~1 个握手 RTT（可达数百 ms）。\n\n*来源：Cloudflare、Fastly、Google QUIC 论文 (SIGCOMM'17)。具体数字随网络条件波动，需自测验证。*\n\n## 3. 实时场景适配\n- **消息推送**：0-RTT 重连近零延迟，适合频繁断连移动端。\n- **直播弹幕**：万级并发流无 HOL，p99 更稳。\n- **游戏**：QUIC DATAGRAM 扩展(RFC 9221)提供不可靠传输，避免重传抖动。\n- **视频会议**：可插拔拥塞控制（BBR/CUBIC 可选），适配实时码率。\n\n## 4. 协议对比\n- **vs HTTP/2**：弱网/丢包收益显著；理想网络差异小。\n- **vs WebTransport**：基于 H3，支持双向流+数据报，是浏览器实时通信未来方向（替代部分 WebSocket）。\n- **部署**：约 30%+ 网站支持(W3Techs)；UDP 可能被中间设备限速/封锁，需 TCP 回退。\n\n## 5. 最佳实践\n- **选 H3**：移动端、弱网、高丢包、频繁重连场景。\n- **调优**：实时选 BBR；0-RTT 仅用于幂等请求（防重放）；启用迁移；监控 UDP 阻断率并保留回退。\n\n---\n*注：以上为典型量化趋势，benchmark 数字依环境差异大，上线前请按实际链路压测。*",
+  "inputTokens": 1921,
+  "outputTokens": 674,
+  "cacheReadTokens": 6882,
+  "cacheWriteTokens": 983
+}

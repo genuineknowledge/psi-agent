@@ -96,6 +96,11 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             )
             await response.write(err_chunk.to_sse().encode())
 
+    # Spawn after_turn background task outside the lock so it doesn't block
+    # the next request. Must be created here (not inside the async generator)
+    # to guarantee the event loop has a chance to schedule it.
+    agent.spawn_after_turn_task()
+
     await response.write(b"data: [DONE]\n\n")
     logger.debug("Session request completed")
     return response

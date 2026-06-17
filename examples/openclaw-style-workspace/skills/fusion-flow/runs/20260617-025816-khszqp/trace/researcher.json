@@ -1,0 +1,18 @@
+{
+  "agent": "researcher",
+  "provider": "cli:claude",
+  "model": "",
+  "startedAt": "2026-06-17T02:58:16.631Z",
+  "endedAt": "2026-06-17T02:59:42.056Z",
+  "durationMs": 0,
+  "system": "你是 Stack Overflow 开发者调查数据分析师。\n基于 Stack Overflow 2024 Annual Developer Survey 数据，对指定编程语言给出薪资分析：\n\n## 薪资概览\n- 全球年收入中位数（USD）\n- 25th / 75th 百分位区间\n- 该语言开发者平均工作经验年数\n\n## 地区差异\n- 薪资最高的 3 个国家/地区及对应中位数\n\n## 职业维度\n- 使用该语言的 Top 3 职业角色及对应薪资\n\n## 关键洞察\n- 与上一年（2023）对比的趋势变化（涨/跌/持平）\n- 与其他语言的相对排名\n\n输出为结构化 markdown，数据不足时明确标注「数据不可得」，不编造数字。\n注：Stack Overflow 2024 Survey 实际样本约 65,000+ 开发者，薪资数据以 USD 报告。",
+  "userPrompt": "## context.language\n\nRust\n\n---\n\n请分析 Stack Overflow 2024 调查中「Rust」语言的开发者薪资分布。",
+  "context": {
+    "language": "Rust"
+  },
+  "output": "我需要先说明一个限制：当前工作区里没有 Stack Overflow 2024 调查的原始数据集，我也无法在不编造的情况下凭记忆给出精确的薪资百分位、分国家中位数或分职业薪资。按照「数据不足时明确标注、不编造数字」的要求，下面对无法核实的具体数字一律标注「数据不可得」，只保留我能合理确认的定性信息（并标注其确定性）。\n\n# Rust 开发者薪资分析（Stack Overflow 2024 Developer Survey）\n\n> ⚠️ 数据来源说明：本工作区未加载 SO 2024 调查原始数据（`survey_results_public.csv`）。以下精确数值在没有原始数据交叉验证的前提下无法给出，标注为「数据不可得」，不做估算填充。\n\n## 薪资概览\n| 指标 | 数值 |\n|---|---|\n| 全球年收入中位数（USD） | 数据不可得（需原始数据 `ConvertedCompYearly` 字段按语言筛选后计算） |\n| 25th 百分位 | 数据不可得 |\n| 75th 百分位 | 数据不可得 |\n| 平均工作经验年数 | 数据不可得（对应 `YearsCodePro` 字段） |\n\n## 地区差异\n薪资最高的 3 个国家/地区及中位数：**数据不可得**\n（需按 `Country` 分组、对 Rust 使用者子集计算各国中位数后排序）\n\n## 职业维度\n使用 Rust 的 Top 3 职业角色及对应薪资：**数据不可得**\n（需按 `DevType` 字段交叉分析）\n\n## 关键洞察\n- 与 2023 对比的趋势：**薪资数值层面数据不可得**。定性层面可确认的是 Rust 在 SO 调查中连续多年位列「最受推崇 / most admired」语言榜首（这一点确定性较高，但不等同于薪资趋势）。\n- 与其他语言的相对排名：**精确薪资排名数据不可得**。业界普遍观察到 Rust 因供给稀缺、多用于系统/区块链/基础设施领域，薪资中位数通常处于偏高区间——但具体名次需原始数据支撑，此处不给定排名数字。\n\n---\n\n## 如何得到真实数字\n\n如果你能提供以下任一项，我可以立刻产出带核实数字的完整报告：\n\n1. **原始 CSV**：把 `survey_results_public.csv` 放到工作区，我用脚本按 `LanguageHaveWorkedWith` 含 \"Rust\" 筛选后计算所有指标。\n2. **允许联网**：确认后我去抓取 Stack Overflow 官方 2024 结果页（technology / Rust 薪资部分）的公开数据。\n\n要我用哪种方式继续？告诉我数据位置或确认联网，我就接着跑。",
+  "inputTokens": 2112,
+  "outputTokens": 888,
+  "cacheReadTokens": 7036,
+  "cacheWriteTokens": 1005
+}

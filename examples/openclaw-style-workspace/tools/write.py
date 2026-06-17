@@ -5,7 +5,7 @@ from __future__ import annotations
 import anyio
 
 
-async def tool(file_path: str, content: str) -> str:
+async def write(file_path: str, content: str) -> str:
     """Create or overwrite a file with the given content.
 
     Args:

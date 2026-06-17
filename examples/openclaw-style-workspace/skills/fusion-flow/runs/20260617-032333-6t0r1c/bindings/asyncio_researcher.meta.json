@@ -1,0 +1,11 @@
+{
+  "name": "asyncio_researcher",
+  "producedBy": "asyncio_researcher",
+  "producedAt": "2026-06-17T03:26:03.285Z",
+  "tokens": {
+    "input": 3805,
+    "output": 5716
+  },
+  "sourceNode": "session-0002",
+  "inputHash": "0232fe29569ce557"
+}

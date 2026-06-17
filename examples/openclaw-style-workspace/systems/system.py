@@ -1,4 +1,26 @@
-# ruff: noqa: E402, I001
+"""OpenClaw-style workspace system configuration.
+
+This module replicates OpenClaw's buildAgentSystemPrompt() mechanism in Python,
+adapted to psi-agent's System class interface.
+
+Architecture mirrors OpenClaw's four-layer call stack:
+  attempt.py          → buildAttemptSystemPrompt()  (raw-mode + provider rewrite)
+  system_prompt.py    → buildEmbeddedSystemPrompt() (tools[] → toolNames[] adapter)
+  system_config.py    → buildConfiguredAgentSystemPrompt() (config parsing)
+  system.py / System  → buildAgentSystemPrompt()    ★ this file ★
+
+Prompt structure:
+  [stable prefix]                    ← cached across turns
+    Identity · Tooling · Tool Call Style · Execution Bias · Safety
+    Tool-aware sections · Sub-agent · MCP · LSP
+    Skills index · Memory guidance · Project Context
+    Workspace · Sandbox · Authorized Senders · Bootstrap
+  <!-- OPENCLAW_CACHE_BOUNDARY -->
+  [dynamic suffix]                   ← rebuilt every turn
+    Messaging · Voice/TTS · Heartbeats · Silent Replies
+    Platform hint · Model Aliases · Memory (volatile) · User Profile
+    Provider contribution · Current Date & Time · Runtime
+"""
 
 from __future__ import annotations
 
@@ -15,11 +37,16 @@ import contextlib
 import json
 import os
 import platform
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Any
 
+# BackgroundReview is imported lazily inside get_background_review() to avoid
+# import errors when the event loop is not yet running.
+
 import anyio
+from loguru import logger
 from prompt_sections import (
     BOOTSTRAP_PENDING_SECTION,
     CONTEXT_FILE_ORDER,
@@ -43,14 +70,64 @@ from prompt_sections import (
     build_model_identity_line,
     build_reactions_section,
     build_runtime_line,
+    build_flows_section,
     build_skills_section,
     build_tooling_section,
     build_tts_section,
     build_workspace_section,
 )
 
+# ---------------------------------------------------------------------------
+# Public tokens (used by psi-session to filter heartbeat / silent replies)
+# ---------------------------------------------------------------------------
+
 HEARTBEAT_OK = "HEARTBEAT_OK"
 CACHE_BOUNDARY = "\n<!-- OPENCLAW_CACHE_BOUNDARY -->\n"
+
+# ---------------------------------------------------------------------------
+# BackgroundReview singleton — lazy-initialised by get_background_review()
+# ---------------------------------------------------------------------------
+
+_background_review: Any | None = None
+
+
+def get_background_review(
+    complete_fn: Callable[[list[dict[str, Any]], list[dict[str, Any]]], Awaitable[dict[str, Any]]],
+    tool_executors: dict[str, Callable[..., Awaitable[str]]] | None = None,
+    workspace_dir: anyio.Path | str | None = None,
+) -> Any:
+    """Return the module-level BackgroundReview singleton, creating it if needed.
+
+    Lazily imports BackgroundReview so this module can be imported safely before
+    an asyncio event loop is running.  The first call (which happens inside a
+    running loop, triggered by psi-session) creates the instance and spawns the
+    startup curator check.
+
+    Args:
+        complete_fn: Async LLM completion function
+            ``(messages, tools) -> response_dict``.
+        tool_executors: Mapping of tool name to async callable.
+        workspace_dir: Workspace root path passed to BackgroundReview for the
+            startup curator check.
+
+    Returns:
+        The BackgroundReview singleton instance.
+    """
+    global _background_review
+    if _background_review is None:
+        from background_review import BackgroundReview  # noqa: PLC0415
+
+        _background_review = BackgroundReview(
+            complete_fn=complete_fn,
+            tool_executors=tool_executors,
+            workspace_dir=workspace_dir,
+        )
+    return _background_review
+
+
+# ---------------------------------------------------------------------------
+# Paths for user-level files (mirrors OpenClaw's ~/.openclaw/ convention)
+# ---------------------------------------------------------------------------
 
 _OPENCLAW_HOME = anyio.Path(os.path.expanduser("~/.openclaw"))
 _SOUL_MD_PATH = _OPENCLAW_HOME / "SOUL.md"
@@ -61,7 +138,16 @@ _MEMORY_MAX_CHARS = 20_000
 _USER_MD_MAX_CHARS = 10_000
 _CONTEXT_FILE_MAX_CHARS = 40_000
 
+# ---------------------------------------------------------------------------
+# Skills snapshot cache filename
+# ---------------------------------------------------------------------------
+
 _SKILLS_SNAPSHOT_FILE = ".skills_prompt_snapshot.json"
+_FLOWS_SNAPSHOT_FILE = ".flows_prompt_snapshot.json"
+
+# ---------------------------------------------------------------------------
+# Summarisation constants (compact_history)
+# ---------------------------------------------------------------------------
 
 CompleteFn = Callable[[list[dict[str, Any]]], Awaitable[str]]
 
@@ -149,7 +235,20 @@ Summarize the prefix to provide context for the retained suffix:
 Be concise. Focus on what's needed to understand the kept suffix.\
 """
 
+# ---------------------------------------------------------------------------
+# Helpers — heartbeat / silent token stripping
+# ---------------------------------------------------------------------------
+
+
 def strip_heartbeat_token(text: str) -> tuple[str, bool]:
+    """Strip HEARTBEAT_OK from text edges, handling markdown wrappers.
+
+    Args:
+        text: The text to process.
+
+    Returns:
+        Tuple of (remaining_text, did_strip).
+    """
     trimmed = text.strip()
     if not trimmed or HEARTBEAT_OK not in trimmed:
         return trimmed, False
@@ -186,6 +285,7 @@ def _has_meaningful_text(text: str) -> bool:
 
 
 def has_meaningful_conversation_content(message: dict[str, Any]) -> bool:
+    """Return True if a message contains real user-AI dialogue content."""
     content = message.get("content")
     if isinstance(content, str):
         return _has_meaningful_text(content)
@@ -208,6 +308,7 @@ def is_real_conversation_message(
     history: list[dict[str, Any]],
     index: int,
 ) -> bool:
+    """Return True if message is part of a real user-AI dialogue."""
     role = message.get("role")
     if role in ("user", "assistant"):
         return has_meaningful_conversation_content(message)
@@ -224,7 +325,13 @@ def _contains_real_conversation_messages(history: list[dict[str, Any]]) -> bool:
     return any(is_real_conversation_message(m, history, i) for i, m in enumerate(history))
 
 
+# ---------------------------------------------------------------------------
+# Helpers — token estimation and history trimming
+# ---------------------------------------------------------------------------
+
+
 def _estimate_tokens(message: dict[str, Any]) -> int:
+    """Estimate token count for a message using chars/4 heuristic."""
     content = message.get("content", "")
     if isinstance(content, str):
         return len(content) // 4 + 4
@@ -244,6 +351,12 @@ def _truncate_for_summary(text: str, max_chars: int) -> str:
 
 
 def _find_cut_point(history: list[dict[str, Any]], keep_tokens: int) -> tuple[int, bool]:
+    """Walk history from the end, accumulate tokens until keep_tokens is reached.
+
+    Returns:
+        (cut_index, is_split_turn) — cut_index is the first index to keep;
+        is_split_turn is True when the cut falls inside an assistant turn.
+    """
     accumulated = 0
     for i in range(len(history) - 1, -1, -1):
         accumulated += _estimate_tokens(history[i])
@@ -256,6 +369,7 @@ def _find_cut_point(history: list[dict[str, Any]], keep_tokens: int) -> tuple[in
 
 
 def _find_turn_start(history: list[dict[str, Any]], from_index: int) -> int:
+    """Walk backwards from from_index to find the start of the current turn."""
     for i in range(from_index - 1, -1, -1):
         if history[i].get("role") == "user":
             return i + 1
@@ -263,6 +377,7 @@ def _find_turn_start(history: list[dict[str, Any]], from_index: int) -> int:
 
 
 def _build_summarization_prompt(messages: list[dict[str, Any]]) -> str:
+    """Render messages as an XML conversation block for summarisation."""
     parts: list[str] = []
     for msg in messages:
         role = msg.get("role", "")
@@ -316,7 +431,13 @@ def _build_summarization_prompt(messages: list[dict[str, Any]]) -> str:
     return "<conversation>\n" + "\n\n".join(parts) + "\n</conversation>"
 
 
+# ---------------------------------------------------------------------------
+# Async helpers — file reading
+# ---------------------------------------------------------------------------
+
+
 def _strip_frontmatter(content: str) -> str:
+    """Strip YAML frontmatter (---...---) from file content."""
     if not content.startswith("---"):
         return content
     end = content.find("\n---", 3)
@@ -326,6 +447,7 @@ def _strip_frontmatter(content: str) -> str:
 
 
 async def _read_file_optional(path: anyio.Path, max_chars: int = 0) -> str | None:
+    """Read a file if it exists. Return None if missing or unreadable."""
     if not await path.exists():
         return None
     try:
@@ -338,13 +460,23 @@ async def _read_file_optional(path: anyio.Path, max_chars: int = 0) -> str | Non
 
 
 async def _read_bootstrap_file(path: anyio.Path, max_chars: int = 0) -> str | None:
+    """Read a bootstrap file, stripping frontmatter. None if missing."""
     content = await _read_file_optional(path, max_chars)
     if content is None:
         return None
     return _strip_frontmatter(content)
 
 
+# ---------------------------------------------------------------------------
+# Stable prefix sections
+# ---------------------------------------------------------------------------
+
+
 async def _load_soul_md() -> str:
+    """Load identity from ~/.openclaw/SOUL.md, fallback to default.
+
+    Mirrors OpenClaw's SOUL.md identity mechanism.
+    """
     content = await _read_bootstrap_file(_SOUL_MD_PATH)
     if content and content.strip():
         return content.strip()
@@ -352,6 +484,19 @@ async def _load_soul_md() -> str:
 
 
 async def _build_skills_index(workspace_dir: anyio.Path) -> str:
+    """Scan skills/ directory and build <available_skills> XML block.
+
+    Supports a snapshot cache (.skills_prompt_snapshot.json) to avoid
+    re-parsing SKILL.md files when nothing has changed.
+
+    Mirrors OpenClaw's skills loading pipeline (session.ts / workspace.ts).
+
+    Args:
+        workspace_dir: Path to the workspace directory.
+
+    Returns:
+        XML block string, or empty string if no skills found.
+    """
     skills_dir = workspace_dir / "skills"
     if not await skills_dir.exists():
         return ""
@@ -450,6 +595,97 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     return skills_xml
 
 
+async def _build_flows_index(workspace_dir: anyio.Path) -> str:
+    """Scan flows/curated/ directory and build <available_flows> XML block.
+
+    Supports a snapshot cache (.flows_prompt_snapshot.json) to avoid
+    re-parsing FLOW.md files when nothing has changed.
+
+    Args:
+        workspace_dir: Path to the workspace directory.
+
+    Returns:
+        XML block string, or empty string if no curated flows found.
+    """
+    flows_dir = workspace_dir / "flows" / "curated"
+    if not await flows_dir.exists():
+        return ""
+
+    flow_entries: list[tuple[str, anyio.Path]] = []
+    async for entry in flows_dir.iterdir():
+        if await entry.is_dir() and not entry.name.startswith("."):
+            flow_md = entry / "FLOW.md"
+            if await flow_md.exists():
+                flow_entries.append((entry.name, flow_md))
+
+    if not flow_entries:
+        return ""
+
+    manifest: dict[str, int] = {}
+    for name, flow_md in flow_entries:
+        stat = await flow_md.stat()
+        manifest[name] = stat.st_mtime_ns
+
+    snapshot_path = workspace_dir / _FLOWS_SNAPSHOT_FILE
+    with contextlib.suppress(OSError, json.JSONDecodeError, KeyError):
+        if await snapshot_path.exists():
+            raw = await snapshot_path.read_text(encoding="utf-8")
+            cached = json.loads(raw)
+            if cached.get("manifest") == manifest:
+                return cached.get("flows_xml", "")
+
+    flows: list[dict[str, str]] = []
+    for name, flow_md in sorted(flow_entries):
+        content = await _read_file_optional(flow_md)
+        if not content:
+            continue
+        flow_info: dict[str, str] = {"name": name, "description": "", "category": ""}
+        if content.startswith("---"):
+            end = content.find("\n---", 3)
+            if end != -1:
+                fm = content[3:end]
+                for line in fm.splitlines():
+                    if ":" in line:
+                        key, _, val = line.partition(":")
+                        flow_info[key.strip()] = val.strip().strip('"').strip("'")
+        flows.append(flow_info)
+
+    if not flows:
+        return ""
+
+    use_groups = any(f.get("category") for f in flows)
+    lines = ["<available_flows>"]
+    if use_groups:
+        groups: dict[str, list[dict[str, str]]] = {}
+        for f in flows:
+            cat = f.get("category") or "general"
+            groups.setdefault(cat, []).append(f)
+        for cat, cat_flows in groups.items():
+            lines.append(f'  <category name="{cat}">')
+            for f in cat_flows:
+                lines.append(f'    <flow name="{f["name"]}"')
+                if f.get("description"):
+                    lines.append(f'      description="{f["description"]}"')
+                lines.append("    />")
+            lines.append("  </category>")
+    else:
+        for f in flows:
+            lines.append(f'  <flow name="{f["name"]}"')
+            if f.get("description"):
+                lines.append(f'    description="{f["description"]}"')
+            lines.append("  />")
+    lines.append("</available_flows>")
+    flows_xml = "\n".join(lines)
+
+    with contextlib.suppress(OSError):
+        await snapshot_path.write_text(
+            json.dumps({"manifest": manifest, "flows_xml": flows_xml}, indent=2),
+            encoding="utf-8",
+        )
+
+    return flows_xml
+
+
 async def _build_context_file(workspace_dir: anyio.Path) -> str:
     """Scan workspace for a project context file and return its content.
 
@@ -481,7 +717,7 @@ async def _build_context_file(workspace_dir: anyio.Path) -> str:
             break
         search_dir = parent
 
-    # 2-3. Workspace-local files - skip files already loaded by _build_bootstrap_files
+    # 2–3. Workspace-local files — skip files already loaded by _build_bootstrap_files
     # (AGENTS.md is in CONTEXT_FILE_ORDER so it appears in Bootstrap Files block)
     for name in ("CLAUDE.md", ".cursorrules"):
         candidate = workspace_dir / name
@@ -703,8 +939,123 @@ async def _build_dynamic_context_files(workspace_dir: anyio.Path) -> str:
     return "\n\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Helpers — flow path resolution
+# ---------------------------------------------------------------------------
+
+
+def _resolve_flow_path(path: str, tool_calls: list[dict]) -> str | None:
+    """Resolve a (possibly relative) .flow.ts path to an absolute path.
+
+    Tries to find the real path by:
+    1. Using it as-is if already absolute.
+    2. Inferring cwd from a preceding `cd` command in bash tool calls.
+    3. Scanning common fusion-flow output directories.
+
+    Args:
+        path: Raw path string from a tool call argument.
+        tool_calls: All tool calls from the current turn (for cd detection).
+
+    Returns:
+        Absolute path string if the file exists, else None.
+    """
+    import os as _os
+
+    if _os.path.isabs(path) and _os.path.isfile(path):
+        return path
+
+    # Try to extract cwd from bash `cd` commands in the same turn
+    cwd_candidates: list[str] = []
+    for tc in tool_calls:
+        func = tc.get("function", {}) if isinstance(tc, dict) else {}
+        if func.get("name") != "bash":
+            continue
+        try:
+            args = json.loads(func.get("arguments", "{}") or "{}")
+        except Exception:
+            args = {}
+        cmd = args.get("command", "")
+        for m in re.finditer(r"(?:^|;|\n)\s*cd\s+([^\s;&#|]+)", cmd):
+            cwd_candidates.append(m.group(1).strip())
+
+    for cwd in reversed(cwd_candidates):
+        candidate = _os.path.join(cwd, path)
+        if _os.path.isfile(candidate):
+            return _os.path.abspath(candidate)
+
+    # Fallback: search fusion-flow examples dirs and flows/ subdirs
+    ws_str = str(anyio.Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))
+    search_roots = [
+        _os.path.expanduser("~"),
+        "/tmp",
+    ]
+    filename = _os.path.basename(path)
+    # Check workspace flows/adhoc and flows/curated first (fast, no walk needed)
+    for sub in ("adhoc", "curated"):
+        for dirpath, _dirs, files in _os.walk(_os.path.join(ws_str, "flows", sub)):
+            if filename in files:
+                return _os.path.join(dirpath, filename)
+    for root in search_roots:
+        for dirpath, _dirs, files in _os.walk(root):
+            if "fusion-flow" in dirpath and filename in files:
+                return _os.path.join(dirpath, filename)
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# System class — psi-agent workspace interface
+# ---------------------------------------------------------------------------
+
+
 class System:
+    """OpenClaw-style workspace system configuration.
+
+    Implements psi-agent's System class interface:
+      - build_system_prompt(model, tool_names) -> str
+      - compact_history(history, complete_fn, max_tokens, keep_recent_tokens) -> list
+
+    Prompt structure (mirrors buildAgentSystemPrompt):
+
+    ┌─ STABLE PREFIX (cached across turns) ───────────────────────────────────┐
+    │  Identity (SOUL.md or default)                                           │
+    │  Tooling section                                                         │
+    │  Tool Call Style                                                         │
+    │  Execution Bias                                                          │
+    │  Safety                                                                  │
+    │  Tool-aware sections (bash / file-edit / task-completion)                │
+    │  Sub-agent delegation [mock]                                             │
+    │  MCP tools [mock]                                                        │
+    │  LSP tools [mock]                                                        │
+    │  Skills index (<available_skills> XML)                                   │
+    │  Memory guidance + citations [mock]                                      │
+    │  Workspace section                                                       │
+    │  Sandbox [mock]                                                          │
+    │  Authorized senders                                                      │
+    │  Bootstrap files (SOUL/IDENTITY/USER/TOOLS/HEARTBEAT/BOOTSTRAP/DIFF)    │
+    │  Project Context (AGENTS.md / CLAUDE.md / .cursorrules / .hermes.md)    │
+    │  Reasoning format [mock]                                                 │
+    ├─ <!-- OPENCLAW_CACHE_BOUNDARY --> ───────────────────────────────────────┤
+    │  Messaging channel guidance (OPENCLAW_CHANNEL)                           │
+    │  TTS / Voice hint [mock]                                                 │
+    │  Heartbeats                                                              │
+    │  Silent Replies                                                          │
+    │  Platform hint (OPENCLAW_PLATFORM)                                       │
+    │  Model aliases (OPENCLAW_MODEL_ALIASES)                                  │
+    │  Memory volatile (workspace/memory.md)                                   │
+    │  User Profile (~/.openclaw/USER.md)                                      │
+    │  Provider contribution (OPENCLAW_PROVIDER_HINT) [mock]                  │
+    │  Current Date & Time                                                     │
+    │  Runtime info                                                            │
+    └──────────────────────────────────────────────────────────────────────────┘
+    """
+
     def __init__(self, workspace_dir: anyio.Path) -> None:
+        """Initialise the System instance.
+
+        Args:
+            workspace_dir: Path to the workspace directory.
+        """
         self._workspace_dir = workspace_dir
         self._previous_summary: str | None = None
 
@@ -715,6 +1066,23 @@ class System:
         prompt_mode: str = "full",
         help_skill_name: str | None = None,
     ) -> str:
+        """Build the full system prompt for this workspace.
+
+        Args:
+            model: Current model name, forwarded to Runtime section.
+            tool_names: Tool names active in this session, used for
+                        Tooling section and tool-aware section injection.
+            prompt_mode: "full" (default) or "minimal". Minimal mode skips
+                         heavy stable-prefix sections (skills, memory, context,
+                         bootstrap, etc.) for sub-agent use cases.
+            help_skill_name: Optional skill name whose SKILL.md is used as
+                             help guidance. When set and the SKILL.md exists,
+                             PSI_AGENT_HELP_GUIDANCE is injected after the
+                             identity line in the stable prefix.
+
+        Returns:
+            Complete system prompt string.
+        """
         tools = tool_names or await _scan_tool_names(self._workspace_dir)
         is_minimal = prompt_mode != "full"
 
@@ -722,10 +1090,12 @@ class System:
         identity = await _load_soul_md()
         if not is_minimal:
             skills_xml = await _build_skills_index(self._workspace_dir)
+            flows_xml = await _build_flows_index(self._workspace_dir)
             context_file = await _build_context_file(self._workspace_dir)
             bootstrap = await _build_bootstrap_files(self._workspace_dir)
         else:
             skills_xml = ""
+            flows_xml = ""
             context_file = ""
             bootstrap = ""
 
@@ -761,9 +1131,32 @@ class System:
             if skills_section:
                 stable_parts += ["", skills_section]
 
+        # Flows — skip in minimal
+        if not is_minimal:
+            flows_section = build_flows_section(flows_xml)
+            if flows_section:
+                stable_parts += ["", flows_section]
+
         # Memory guidance — skip in minimal
         if not is_minimal:
             stable_parts += ["", MEMORY_SECTION]
+
+        # Self-evolution tool guidance — skill_manage, memory, flow_manage (skip in minimal)
+        if not is_minimal:
+            stable_parts += [
+                "",
+                "## Self-Evolution Tools\n"
+                "- `skill_manage` — Create, patch, view, or list workspace skills. "
+                "Use `action=create` to add a new skill, `action=patch` to update an existing one, "
+                "`action=view` to read a skill's SKILL.md, `action=list` to see all skills.\n"
+                "- `memory` — Read, write, append, or clear persistent memory in `memory.md`. "
+                "Use `action=read` to retrieve memory, `action=write` to overwrite, "
+                "`action=append` to add content, `action=clear` to reset.\n"
+                "- `flow_manage` — Create, patch, view, list, or promote workspace flows. "
+                "Curated flows live in `flows/curated/` as FLOW.md (YAML frontmatter + description + embedded ```typescript block). "
+                "Adhoc flows (generated by fusion-flow skill) live in `flows/adhoc/<name>/flow.ts`. "
+                "Use `action=promote` to graduate an adhoc flow to curated.",
+            ]
 
         # Workspace (absolute path, mirrors OpenClaw behaviour)
         workspace_abs = str(await self._workspace_dir.resolve())
@@ -863,6 +1256,144 @@ class System:
 
         return stable_prefix + CACHE_BOUNDARY + dynamic_suffix
 
+    async def after_turn(
+        self,
+        messages: list[dict[str, Any]],
+        tool_call_count: int,
+        called_tools: list[str],
+        complete_fn: Any = None,
+        tool_executors: dict[str, Any] | None = None,
+    ) -> None:
+        """Post-turn hook: detect new .flow.ts files and trigger background flow review.
+
+        Called by psi-session after every agent turn. Inspects bash and write
+        tool calls to find newly written .flow.ts files, then delegates to
+        BackgroundReview.maybe_spawn_flow_review().
+
+        Args:
+            messages: Full conversation history including current turn.
+            tool_call_count: Number of tool calls made this turn.
+            called_tools: List of tool names called this turn.
+            complete_fn: Async LLM completion function.
+            tool_executors: Tool executor mapping passed to BackgroundReview.
+        """
+        if complete_fn is None:
+            return
+
+        logger.debug("after_turn: entered, tool_call_count={}, called_tools={}", tool_call_count, called_tools)
+
+        # Collect tool_calls only from the current turn (messages since last user message).
+        # Walk backwards until we hit the last user message.
+        tool_calls: list[dict[str, Any]] = []
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                break
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    tool_calls.append(tc)
+
+        new_flow_files = []
+        for tc in tool_calls:
+            func = tc.get("function", {}) if isinstance(tc, dict) else {}
+            name = func.get("name", "")
+            args_raw = func.get("arguments", "{}")
+            try:
+                args = json.loads(args_raw) if args_raw else {}
+            except Exception:
+                args = {}
+
+            if name == "write":
+                path = args.get("file_path", "") or args.get("path", "")
+                if path.endswith(".flow.ts") or (path.endswith(".ts") and ("/flows/adhoc/" in path or "/flows/curated/" in path)):
+                    resolved = _resolve_flow_path(path, tool_calls)
+                    if resolved:
+                        new_flow_files.append(resolved)
+
+            elif name == "bash":
+                command = args.get("command", "")
+                for m in re.finditer(r"(\S+\.flow\.ts)", command):
+                    candidate = m.group(1)
+                    resolved = _resolve_flow_path(candidate, tool_calls)
+                    if resolved:
+                        new_flow_files.append(resolved)
+                # Also detect flow.ts writes in flows/adhoc/ or flows/curated/
+                for m in re.finditer(r"(\S+/flows/(?:adhoc|curated)/\S+\.ts)", command):
+                    candidate = m.group(1)
+                    resolved = _resolve_flow_path(candidate, tool_calls)
+                    if resolved:
+                        new_flow_files.append(resolved)
+
+        new_flow_files = list(dict.fromkeys(new_flow_files))
+        logger.debug("after_turn: new_flow_files={}", new_flow_files)
+
+        # Only trigger review for adhoc flows that have a successful run with >= threshold LLM calls
+        FLOW_LLM_CALL_THRESHOLD = 3
+        adhoc_str = str(self._workspace_dir / "flows" / "adhoc")
+
+        def _flow_llm_calls(flow_ts_path: str) -> int:
+            flow_dir = _os.path.dirname(flow_ts_path)
+            runs_dir = _os.path.join(flow_dir, "runs")
+            if not _os.path.isdir(runs_dir):
+                return 0
+            best = 0
+            for run_id in _os.listdir(runs_dir):
+                meta = _os.path.join(runs_dir, run_id, "meta.json")
+                if not _os.path.isfile(meta):
+                    continue
+                try:
+                    data = json.loads(open(meta).read())
+                    if data.get("status") == "ok":
+                        best = max(best, data.get("llmCalls", 0))
+                except Exception:
+                    pass
+            return best
+
+        qualifying = [
+            f for f in new_flow_files
+            if f.startswith(adhoc_str) and _flow_llm_calls(f) >= FLOW_LLM_CALL_THRESHOLD
+        ]
+        logger.debug("after_turn: qualifying={} (llm_threshold={})", qualifying, FLOW_LLM_CALL_THRESHOLD)
+
+        br = get_background_review(
+            complete_fn=complete_fn,
+            tool_executors=tool_executors,
+            workspace_dir=self._workspace_dir,
+        )
+        await br.maybe_spawn(
+            messages_snapshot=messages,
+            tool_call_count=tool_call_count,
+            new_flow_files=qualifying or None,
+        )
+
+        # Curator: only triggered when the agent replied CURATOR_OK (from the schedule)
+        last_assistant_text = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "assistant":
+                for block in msg.get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        last_assistant_text += block.get("text", "")
+                if isinstance(msg.get("content"), str):
+                    last_assistant_text = msg["content"]
+                break
+
+        if "__PSI_CURATOR_TICK__" in last_assistant_text:
+            async def _run_curator() -> None:
+                try:
+                    import sys as _sys
+                    _sys.path.insert(0, str(self._workspace_dir / "systems"))
+                    from curator import maybe_run_curator  # noqa: PLC0415
+                    result = await maybe_run_curator(
+                        workspace_dir=self._workspace_dir,
+                        complete_fn=complete_fn,
+                        idle_for_seconds=0.0,
+                    )
+                    if result:
+                        logger.info("curator: {}", result[:200])
+                except Exception as exc:
+                    logger.warning("curator background task failed: {}", exc)
+
+            asyncio.create_task(_run_curator(), name=f"curator-turn{self._turn_count}")
+
     async def compact_history(
         self,
         history: list[dict[str, Any]],
@@ -870,6 +1401,26 @@ class System:
         max_tokens: int = 4000,
         keep_recent_tokens: int | None = None,
     ) -> list[dict[str, Any]]:
+        """Compact conversation history using LLM summarisation.
+
+        Algorithm (mirrors OpenClaw's compaction logic):
+        1. Skip if no real conversation content.
+        2. Estimate total tokens; return unchanged if within budget.
+        3. Find cut point by walking backwards to keep keep_recent_tokens.
+        4. Handle split turn (cut fell inside an assistant message).
+        5. Generate incremental summary (update previous if exists).
+        6. On complete_fn failure, fallback to simple truncation.
+
+        Args:
+            history: Conversation messages with role and content.
+            complete_fn: Async function (messages) -> summary string.
+            max_tokens: Token budget; trigger compaction above this.
+            keep_recent_tokens: Tokens to preserve verbatim. Defaults to
+                                half of max_tokens.
+
+        Returns:
+            Compacted history: [summary_message, ...recent_messages].
+        """
         if not _contains_real_conversation_messages(history):
             return history
 
@@ -946,6 +1497,84 @@ class System:
                 "role": "assistant",
                 "content": f"[Conversation Summary]\n{combined}",
             }
-            return [summary_msg, *recent_messages]
+            return [summary_msg] + recent_messages
 
         return recent_messages
+
+
+# ---------------------------------------------------------------------------
+# CLI smoke-test
+# ---------------------------------------------------------------------------
+
+
+async def _smoke_test() -> None:
+    import sys as _sys
+
+    workspace = anyio.Path(__file__).parent.parent
+    system = System(workspace)
+    tool_names = ["bash", "read", "write", "edit", "memory_read", "memory_write", "web_search"]
+
+    # Test 1: full mode (default)
+    prompt = await system.build_system_prompt(
+        model="claude-sonnet-4-6",
+        tool_names=tool_names,
+    )
+    print(prompt)
+    print("\n" + "=" * 60)
+    print(f"Total chars: {len(prompt)}")
+    print(f"Cache boundary present: {'OPENCLAW_CACHE_BOUNDARY' in prompt}")
+    if "OPENCLAW_CACHE_BOUNDARY" not in prompt:
+        _sys.exit(1)
+
+    # Test 2: minimal mode — must not contain <available_skills> or ## Memory
+    minimal_prompt = await system.build_system_prompt(
+        model="claude-sonnet-4-6",
+        tool_names=tool_names,
+        prompt_mode="minimal",
+    )
+    print("\n" + "=" * 60)
+    print("Minimal mode:")
+    print(f"  Total chars: {len(minimal_prompt)}")
+    print(f"  Cache boundary present: {'OPENCLAW_CACHE_BOUNDARY' in minimal_prompt}")
+    print(f"  Skills absent: {'<available_skills>' not in minimal_prompt}")
+    # MEMORY_SECTION guidance contains a unique phrase not in memory.md content
+    memory_guidance_phrase = "Keep following it throughout the session"
+    print(f"  Memory guidance absent: {memory_guidance_phrase not in minimal_prompt}")
+    if "OPENCLAW_CACHE_BOUNDARY" not in minimal_prompt:
+        _sys.exit(1)
+    if "<available_skills>" in minimal_prompt:
+        print("ERROR: minimal mode should not contain <available_skills>")
+        _sys.exit(1)
+
+    # Test 3: help_skill_name pointing to existing skill
+    help_prompt = await system.build_system_prompt(
+        model="claude-sonnet-4-6",
+        tool_names=tool_names,
+        help_skill_name="example",
+    )
+    print("\n" + "=" * 60)
+    print("Help skill (existing):")
+    print(f"  Help guidance present: {'## Help' in help_prompt}")
+
+    # Test 4: help_skill_name pointing to nonexistent skill — must not raise
+    no_help_prompt = await system.build_system_prompt(
+        model="claude-sonnet-4-6",
+        tool_names=tool_names,
+        help_skill_name="nonexistent-skill",
+    )
+    print(f"  Nonexistent skill — no crash, Help absent: {'## Help' not in no_help_prompt}")
+
+    print("\nAll smoke tests passed.")
+
+
+async def system_prompt_builder() -> str:
+    """psi-agent loader entry point."""
+    import os as _os
+
+    workspace_dir = anyio.Path(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    system = System(workspace_dir)
+    return await system.build_system_prompt()
+
+
+if __name__ == "__main__":
+    anyio.run(_smoke_test)

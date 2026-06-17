@@ -2,11 +2,11 @@
 
 _Learn about the person you're helping. Update this as you go._
 
-- **Name:**
-- **What to call them:**
-- **Pronouns:** _(optional)_
-- **Timezone:**
-- **Notes:**
+- **Name:** sby
+- **What to call them:** sby
+- **Pronouns:** —
+- **Timezone:** UTC+8 (Shanghai)
+- **Notes:** Working on psi-agent project. Prefers concise answers. Frequently does technology research and comparison analysis.
 
 ## Context
 

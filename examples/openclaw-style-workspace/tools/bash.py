@@ -1,16 +1,16 @@
-"""Bash tool for executing shell commands."""
+"""Bash tool — execute shell commands."""
 
 from __future__ import annotations
 
 import asyncio
 
 
-async def tool(command: str, timeout_seconds: int = 30) -> str:
+async def bash(command: str, timeout: int = 30) -> str:
     """Execute a shell command and return its output.
 
     Args:
         command: The shell command to execute.
-        timeout_seconds: Maximum seconds to wait for the command to complete.
+        timeout: Maximum seconds to wait for the command to complete.
 
     Returns:
         Combined stdout and stderr output, with exit code appended on failure.
@@ -21,11 +21,11 @@ async def tool(command: str, timeout_seconds: int = 30) -> str:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
     except TimeoutError:
         process.kill()
         await process.communicate()
-        return f"[Error] Command timed out after {timeout_seconds}s: {command}"
+        return f"[Error] Command timed out after {timeout}s: {command}"
 
     out = stdout.decode(errors="replace")
     err = stderr.decode(errors="replace")

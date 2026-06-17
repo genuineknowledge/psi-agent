@@ -1,0 +1,79 @@
+{
+  "runId": "20260617-032333-6t0r1c",
+  "root": {
+    "id": "run-root",
+    "type": "run",
+    "startedAt": "2026-06-17T03:23:33.539Z",
+    "status": "ok",
+    "children": [
+      {
+        "id": "parallel-0001",
+        "type": "parallel",
+        "joinStrategy": "all",
+        "taskCount": 2,
+        "startedAt": "2026-06-17T03:23:33.542Z",
+        "status": "ok",
+        "children": [
+          {
+            "id": "session-0002",
+            "type": "session",
+            "agent": "asyncio_researcher",
+            "bindingName": "asyncio_researcher",
+            "traceFile": "trace/asyncio_researcher.json",
+            "startedAt": "2026-06-17T03:23:33.543Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 3805,
+              "output": 5716
+            },
+            "engine": "claude",
+            "costUSD": 0.18186575,
+            "endedAt": "2026-06-17T03:26:03.287Z",
+            "durationMs": 149744
+          },
+          {
+            "id": "session-0003",
+            "type": "session",
+            "agent": "uvloop_researcher",
+            "bindingName": "uvloop_researcher",
+            "traceFile": "trace/uvloop_researcher.json",
+            "startedAt": "2026-06-17T03:23:33.545Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 6005,
+              "output": 8393
+            },
+            "engine": "claude",
+            "costUSD": 0.2702115,
+            "endedAt": "2026-06-17T03:28:27.653Z",
+            "durationMs": 294108
+          }
+        ],
+        "endedAt": "2026-06-17T03:28:27.653Z",
+        "durationMs": 294111
+      },
+      {
+        "id": "session-0004",
+        "type": "session",
+        "agent": "synthesizer",
+        "bindingName": "synthesizer",
+        "traceFile": "trace/synthesizer.json",
+        "startedAt": "2026-06-17T03:28:27.656Z",
+        "status": "ok",
+        "children": [],
+        "tokens": {
+          "input": 7388,
+          "output": 5081
+        },
+        "engine": "claude",
+        "costUSD": 0.19646375,
+        "endedAt": "2026-06-17T03:30:22.648Z",
+        "durationMs": 114992
+      }
+    ],
+    "endedAt": "2026-06-17T03:30:22.651Z",
+    "durationMs": 409112
+  }
+}

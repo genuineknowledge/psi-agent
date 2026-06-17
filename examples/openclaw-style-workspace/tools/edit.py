@@ -5,7 +5,7 @@ from __future__ import annotations
 import anyio
 
 
-async def tool(file_path: str, old_string: str, new_string: str) -> str:
+async def edit(file_path: str, old_string: str, new_string: str) -> str:
     """Make a precise string replacement in a file.
 
     The old_string must appear exactly once in the file. If it appears

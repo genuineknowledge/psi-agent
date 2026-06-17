@@ -1,0 +1,151 @@
+{
+  "runId": "20260617-030518-jfzfm1",
+  "root": {
+    "id": "run-root",
+    "type": "run",
+    "startedAt": "2026-06-17T03:05:18.572Z",
+    "status": "ok",
+    "children": [
+      {
+        "id": "parallel-0001",
+        "type": "parallel",
+        "joinStrategy": "all",
+        "taskCount": 6,
+        "startedAt": "2026-06-17T03:05:18.575Z",
+        "status": "ok",
+        "children": [
+          {
+            "id": "session-0002",
+            "type": "session",
+            "agent": "researcher",
+            "bindingName": "researcher",
+            "traceFile": "trace/researcher.json",
+            "startedAt": "2026-06-17T03:05:18.576Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 2031,
+              "output": 678
+            },
+            "engine": "claude",
+            "costUSD": 0.03643875,
+            "endedAt": "2026-06-17T03:05:41.005Z",
+            "durationMs": 22429
+          },
+          {
+            "id": "session-0003",
+            "type": "session",
+            "agent": "researcher",
+            "bindingName": "researcher",
+            "traceFile": "trace/researcher.json",
+            "startedAt": "2026-06-17T03:05:18.578Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 2029,
+              "output": 640
+            },
+            "engine": "claude",
+            "costUSD": 0.035751250000000005,
+            "endedAt": "2026-06-17T03:05:45.640Z",
+            "durationMs": 27062
+          },
+          {
+            "id": "session-0004",
+            "type": "session",
+            "agent": "researcher",
+            "bindingName": "researcher",
+            "traceFile": "trace/researcher.json",
+            "startedAt": "2026-06-17T03:05:18.578Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 2100,
+              "output": 718
+            },
+            "engine": "claude",
+            "costUSD": 0.03807625,
+            "endedAt": "2026-06-17T03:06:25.027Z",
+            "durationMs": 66449
+          },
+          {
+            "id": "session-0005",
+            "type": "session",
+            "agent": "researcher",
+            "bindingName": "researcher",
+            "traceFile": "trace/researcher.json",
+            "startedAt": "2026-06-17T03:05:18.579Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 2223,
+              "output": 732
+            },
+            "engine": "claude",
+            "costUSD": 0.03894225,
+            "endedAt": "2026-06-17T03:05:44.745Z",
+            "durationMs": 26166
+          },
+          {
+            "id": "session-0006",
+            "type": "session",
+            "agent": "researcher",
+            "bindingName": "researcher",
+            "traceFile": "trace/researcher.json",
+            "startedAt": "2026-06-17T03:05:18.579Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 2365,
+              "output": 708
+            },
+            "engine": "claude",
+            "costUSD": 0.03862525,
+            "endedAt": "2026-06-17T03:06:02.599Z",
+            "durationMs": 44020
+          },
+          {
+            "id": "session-0007",
+            "type": "session",
+            "agent": "researcher",
+            "bindingName": "researcher",
+            "traceFile": "trace/researcher.json",
+            "startedAt": "2026-06-17T03:05:18.579Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 1946,
+              "output": 917
+            },
+            "engine": "claude",
+            "costUSD": 0.04292375,
+            "endedAt": "2026-06-17T03:06:53.662Z",
+            "durationMs": 95083
+          }
+        ],
+        "endedAt": "2026-06-17T03:06:53.663Z",
+        "durationMs": 95088
+      },
+      {
+        "id": "session-0008",
+        "type": "session",
+        "agent": "synthesizer",
+        "bindingName": "synthesizer",
+        "traceFile": "trace/synthesizer.json",
+        "startedAt": "2026-06-17T03:06:53.663Z",
+        "status": "ok",
+        "children": [],
+        "tokens": {
+          "input": 3697,
+          "output": 2398
+        },
+        "engine": "claude",
+        "costUSD": 0.09688300000000001,
+        "endedAt": "2026-06-17T03:08:01.972Z",
+        "durationMs": 68309
+      }
+    ],
+    "endedAt": "2026-06-17T03:08:01.974Z",
+    "durationMs": 163402
+  }
+}

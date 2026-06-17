@@ -1,0 +1,11 @@
+{
+  "name": "tester",
+  "producedBy": "tester",
+  "producedAt": "2026-06-17T03:22:42.647Z",
+  "tokens": {
+    "input": 1665,
+    "output": 224
+  },
+  "sourceNode": "session-0001",
+  "inputHash": "d145cc8f320a4883"
+}

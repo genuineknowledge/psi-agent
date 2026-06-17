@@ -1,0 +1,28 @@
+{
+  "runId": "20260617-032234-etwx5h",
+  "startedAt": "2026-06-17T03:22:34.242Z",
+  "endedAt": "2026-06-17T03:22:42.651Z",
+  "durationMs": 8409,
+  "status": "ok",
+  "sessionCalls": {
+    "tester": 1
+  },
+  "evaluatorCalls": {},
+  "serviceCalls": {},
+  "totalTokens": {
+    "input": 1665,
+    "output": 224
+  },
+  "llmCalls": 1,
+  "userTokens": {
+    "input": 1665,
+    "output": 224
+  },
+  "userLlmCalls": 1,
+  "evaluatorTokens": {
+    "input": 0,
+    "output": 0
+  },
+  "evaluatorLlmCalls": 0,
+  "resumed": false
+}

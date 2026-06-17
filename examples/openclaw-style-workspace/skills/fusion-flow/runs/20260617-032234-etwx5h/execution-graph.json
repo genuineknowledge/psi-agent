@@ -1,0 +1,31 @@
+{
+  "runId": "20260617-032234-etwx5h",
+  "root": {
+    "id": "run-root",
+    "type": "run",
+    "startedAt": "2026-06-17T03:22:34.242Z",
+    "status": "ok",
+    "children": [
+      {
+        "id": "session-0001",
+        "type": "session",
+        "agent": "tester",
+        "bindingName": "tester",
+        "traceFile": "trace/tester.json",
+        "startedAt": "2026-06-17T03:22:34.244Z",
+        "status": "ok",
+        "children": [],
+        "tokens": {
+          "input": 1665,
+          "output": 224
+        },
+        "engine": "claude",
+        "costUSD": 0.022010250000000002,
+        "endedAt": "2026-06-17T03:22:42.650Z",
+        "durationMs": 8405
+      }
+    ],
+    "endedAt": "2026-06-17T03:22:42.651Z",
+    "durationMs": 8409
+  }
+}

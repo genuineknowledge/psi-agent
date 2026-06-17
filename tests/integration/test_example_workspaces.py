@@ -24,13 +24,8 @@ def _copy_workspace(src: Path, dst: Path) -> None:
     [
         (
             "openclaw-style-workspace",
-            {"bash", "edit", "memory_read", "memory_write", "read", "web_search", "write"},
+            {"bash", "edit", "memory", "read", "web_search", "write"},
             {"OPENCLAW_CACHE_BOUNDARY", "Tool Call Style"},
-        ),
-        (
-            "hermes-style-workspace",
-            {"bash", "computer_use", "kanban_show", "memory", "session_search", "skill_manage"},
-            {"Conversation started:", "Skills"},
         ),
         (
             "fusion-flow-workspace",

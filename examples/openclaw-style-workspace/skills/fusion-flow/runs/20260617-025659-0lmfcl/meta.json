@@ -1,0 +1,26 @@
+{
+  "runId": "20260617-025659-0lmfcl",
+  "startedAt": "2026-06-17T02:56:59.335Z",
+  "endedAt": "2026-06-17T02:56:59.346Z",
+  "durationMs": 11,
+  "status": "ok",
+  "sessionCalls": {},
+  "evaluatorCalls": {},
+  "serviceCalls": {},
+  "totalTokens": {
+    "input": 0,
+    "output": 0
+  },
+  "llmCalls": 0,
+  "userTokens": {
+    "input": 0,
+    "output": 0
+  },
+  "userLlmCalls": 0,
+  "evaluatorTokens": {
+    "input": 0,
+    "output": 0
+  },
+  "evaluatorLlmCalls": 0,
+  "resumed": false
+}

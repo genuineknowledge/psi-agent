@@ -1,0 +1,11 @@
+{
+  "name": "synthesizer",
+  "producedBy": "synthesizer",
+  "producedAt": "2026-06-17T03:30:22.640Z",
+  "tokens": {
+    "input": 7388,
+    "output": 5081
+  },
+  "sourceNode": "session-0004",
+  "inputHash": "289a6ecebb255583"
+}

@@ -532,7 +532,7 @@ The author skill must catch and refuse to emit code that does any of these:
 
 ### Runtime mode detection (which `import` path to use)
 
-Before writing the import line, decide which of two runtime modes the user is in. The author skill MUST pick the right one — wrong import = `tsc` fails or runtime crashes.
+Before writing the import line, decide which of three runtime modes the user is in. The author skill MUST pick the right one — wrong import = `tsc` fails or runtime crashes.
 
 **Mode A — source repo mode** (the user is inside the cloned Fuclaw / OpenProse repo, generated file goes to `core/examples/flow-author-*.flow.ts`):
 
@@ -549,6 +549,14 @@ import { run } from "../runtime/agent-flow-core.bundle.mjs";
 ```
 
 How to detect: the working directory has `runtime/agent-flow-core.bundle.mjs` and a sibling `examples/` folder, OR the user said "from the skill bundle" / "from dist/fusion-flow" / "I copied the folder".
+
+**Mode C — workspace-adhoc mode** (the flow is managed by `flow_manage` at `flows/adhoc/<slug>/flow.ts`, and the skill bundle lives at `skills/fusion-flow/` with its `runtime/` folder):
+
+```ts
+import { run } from "../../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs";
+```
+
+How to detect: `flows/adhoc/` and `skills/fusion-flow/runtime/agent-flow-core.bundle.mjs` both exist at the workspace root, and `skills/fusion-flow/tsconfig.json` already includes `../../flows/**/*.ts` in its `include` array. The typecheck command is still `cd skills/fusion-flow && npm run typecheck`. This is the preferred mode when `flow_manage` manages flows rather than placing files in `core/examples/` or `examples/` alongside the runtime.
 
 **If unsure, ask the user once.** Cost of guessing wrong: every file fails `tsc`. Cost of asking: one short question.
 
@@ -603,7 +611,7 @@ After generation, run `npx tsc --noEmit`. Common errors and fixes:
 - `Property 'paralel' does not exist on type 'FlowAPI'` — typo. The correct name is `parallel`. Check [`core/README.md`](../../../core/README.md) primitive table.
 - `Type 'X' is not assignable to type 'Y'` on a `flow.evaluate` call — most often `kind` was wrong (e.g. `"num"` instead of `"number"`).
 - `'someVar' is possibly 'undefined'` after `flow.call` or `flow.ifElse` — these return `T | undefined`. Use `?? <fallback>` or pull the call inside a function that always provides else.
-- `error TS2307: Cannot find module '../src/index.js'` (or `'../runtime/agent-flow-core.bundle.mjs'`) — **wrong runtime mode import path**, not a missing dependency. This is the #1 high-frequency trap (see "Runtime mode detection"). Bundle mode (`dist/fusion-flow/`, has a `runtime/` folder) must import `../runtime/agent-flow-core.bundle.mjs`; source-repo mode (has `core/src/`) must import `../src/index.js`. Check which folder you're actually in and match the path — don't add a dependency.
+- `error TS2307: Cannot find module '../src/index.js'` (or `'../runtime/agent-flow-core.bundle.mjs'`) — **wrong runtime mode import path**, not a missing dependency. This is the #1 high-frequency trap (see "Runtime mode detection"). Bundle mode (`dist/fusion-flow/`, has a `runtime/` folder) must import `../runtime/agent-flow-core.bundle.mjs`; source-repo mode (has `core/src/`) must import `../src/index.js`; workspace-adhoc mode (`flows/adhoc/` + `skills/fusion-flow/`) must import `../../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs`. Check which folder you're actually in and match the path — don't add a dependency.
 - `Cannot find name 'flow'` — the closure parameter is destructured: `async ({ flow, save }) => { ... }`. Check the skeleton.
 - `Property 'X' does not exist on type` for context bindings — the binding-name string in `flow.session(...)`'s 3rd arg is opaque to TS. Re-read the corresponding `save`/`output` calls and align.
 

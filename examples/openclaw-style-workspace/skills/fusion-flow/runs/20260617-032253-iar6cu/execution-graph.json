@@ -1,0 +1,61 @@
+{
+  "runId": "20260617-032253-iar6cu",
+  "root": {
+    "id": "run-root",
+    "type": "run",
+    "startedAt": "2026-06-17T03:22:53.660Z",
+    "status": "ok",
+    "children": [
+      {
+        "id": "parallel-0001",
+        "type": "parallel",
+        "joinStrategy": "all",
+        "taskCount": 2,
+        "startedAt": "2026-06-17T03:22:53.662Z",
+        "status": "ok",
+        "children": [
+          {
+            "id": "session-0002",
+            "type": "session",
+            "agent": "researcher_a",
+            "bindingName": "researcher_a",
+            "traceFile": "trace/researcher_a.json",
+            "startedAt": "2026-06-17T03:22:53.663Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 1780,
+              "output": 183
+            },
+            "engine": "claude",
+            "costUSD": 0.021355,
+            "endedAt": "2026-06-17T03:23:00.564Z",
+            "durationMs": 6901
+          },
+          {
+            "id": "session-0003",
+            "type": "session",
+            "agent": "researcher_b",
+            "bindingName": "researcher_b",
+            "traceFile": "trace/researcher_b.json",
+            "startedAt": "2026-06-17T03:22:53.665Z",
+            "status": "ok",
+            "children": [],
+            "tokens": {
+              "input": 1457,
+              "output": 171
+            },
+            "engine": "claude",
+            "costUSD": 0.019812,
+            "endedAt": "2026-06-17T03:23:01.051Z",
+            "durationMs": 7386
+          }
+        ],
+        "endedAt": "2026-06-17T03:23:01.051Z",
+        "durationMs": 7389
+      }
+    ],
+    "endedAt": "2026-06-17T03:23:01.052Z",
+    "durationMs": 7392
+  }
+}

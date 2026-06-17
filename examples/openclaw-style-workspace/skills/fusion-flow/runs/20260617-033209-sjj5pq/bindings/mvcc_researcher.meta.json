@@ -1,0 +1,11 @@
+{
+  "name": "mvcc_researcher",
+  "producedBy": "mvcc_researcher",
+  "producedAt": "2026-06-17T03:34:03.623Z",
+  "tokens": {
+    "input": 3359,
+    "output": 4243
+  },
+  "sourceNode": "session-0005",
+  "inputHash": "d5f06ad6a2d2278c"
+}

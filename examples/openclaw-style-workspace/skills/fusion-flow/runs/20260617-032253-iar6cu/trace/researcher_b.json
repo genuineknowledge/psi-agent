@@ -1,0 +1,15 @@
+{
+  "agent": "researcher_b",
+  "provider": "cli:claude",
+  "model": "",
+  "startedAt": "2026-06-17T03:22:53.665Z",
+  "endedAt": "2026-06-17T03:23:01.050Z",
+  "durationMs": 0,
+  "system": "你是 Python 专家。回答简洁准确。只输出3-5句话。",
+  "userPrompt": "解释 uvloop 比 asyncio 快的主要原因。",
+  "output": "uvloop 的核心优势在于它基于 libuv（Node.js 同款事件循环库），用 Cython 编写，把事件循环的热路径下沉到 C 层，避免了纯 Python 实现的解释器开销。它优化了 I/O 多路复用的调用（如 epoll/kqueue）和回调调度，减少了每次事件处理的 Python 函数调用次数。同时它对 Future、Transport 等对象做了更高效的内存管理和更少的中间层封装。实测在网络吞吐场景下通常能比标准 asyncio 快 2-4 倍。",
+  "inputTokens": 1457,
+  "outputTokens": 171,
+  "cacheReadTokens": 5929,
+  "cacheWriteTokens": 846
+}

@@ -1,0 +1,50 @@
+{
+  "runId": "20260617-031515-j4enrv",
+  "root": {
+    "id": "run-root",
+    "type": "run",
+    "startedAt": "2026-06-17T03:15:15.721Z",
+    "status": "error",
+    "children": [
+      {
+        "id": "parallel-0001",
+        "type": "parallel",
+        "joinStrategy": "all",
+        "taskCount": 2,
+        "startedAt": "2026-06-17T03:15:15.723Z",
+        "status": "error",
+        "children": [
+          {
+            "id": "session-0002",
+            "type": "session",
+            "agent": "asyncio_researcher",
+            "bindingName": "asyncio_researcher",
+            "traceFile": "trace/asyncio_researcher.json",
+            "startedAt": "2026-06-17T03:15:15.724Z",
+            "status": "error",
+            "children": [],
+            "endedAt": "2026-06-17T03:20:15.859Z",
+            "durationMs": 300135,
+            "errorMessage": "runSubprocess: subprocess timed out after 300000ms, SIGKILLed. command=\"claude -p --output-format json --bare --tools \"\nstderr tail: "
+          },
+          {
+            "id": "session-0003",
+            "type": "session",
+            "agent": "uvloop_researcher",
+            "bindingName": "uvloop_researcher",
+            "traceFile": "trace/uvloop_researcher.json",
+            "startedAt": "2026-06-17T03:15:15.726Z",
+            "status": "running",
+            "children": []
+          }
+        ],
+        "endedAt": "2026-06-17T03:20:15.859Z",
+        "durationMs": 300136,
+        "errorMessage": "runSubprocess: subprocess timed out after 300000ms, SIGKILLed. command=\"claude -p --output-format json --bare --tools \"\nstderr tail: "
+      }
+    ],
+    "endedAt": "2026-06-17T03:20:15.859Z",
+    "durationMs": 300138,
+    "errorMessage": "runSubprocess: subprocess timed out after 300000ms, SIGKILLed. command=\"claude -p --output-format json --bare --tools \"\nstderr tail: "
+  }
+}

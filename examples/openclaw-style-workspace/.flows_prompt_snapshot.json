@@ -1,0 +1,9 @@
+{
+  "manifest": {
+    "data-analysis-pipeline": 1781635894558635891,
+    "simple-summarizer": 1781635894563635915,
+    "test-promote-flow": 1781636024474199319,
+    "parallel-research-6-frameworks": 1781632355692342901
+  },
+  "flows_xml": "<available_flows>\n  <category name=\"analysis\">\n    <flow name=\"data-analysis-pipeline\"\n      description=\"Parallel data analysis across multiple datasets \u2014 fan-out researcher agents then synthesizer + writer\"\n    />\n  </category>\n  <category name=\"research\">\n    <flow name=\"parallel-research-6-frameworks\"\n      description=\"Parallel N-framework technology research: fan-out researcher agents \u2192 synthesizer merges into structured comparison report with matrix, deep-dive, selection guide, and trends.\"\n    />\n    <flow name=\"test-promote-flow\"\n      description=\"Parallel research with reviewer \u2014 fan-out two researcher agents then reviewer synthesizes\"\n    />\n  </category>\n  <category name=\"utility\">\n    <flow name=\"simple-summarizer\"\n      description=\"Single-agent summarization flow \u2014 thin wrapper around a summarizer agent\"\n    />\n  </category>\n</available_flows>"
+}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import anyio
 
 
-async def tool(file_path: str, offset: int = 0, limit: int = 0) -> str:
+async def read(file_path: str, offset: int = 0, limit: int = 0) -> str:
     """Read file contents, optionally with line offset and limit.
 
     Args:

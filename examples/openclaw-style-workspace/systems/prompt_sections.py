@@ -5,8 +5,6 @@ Mock sections are clearly labelled; wire them up via environment variables
 or by subclassing System.
 """
 
-# ruff: noqa: E501
-
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
@@ -27,75 +25,117 @@ TOOLING_HEADER = (
 TOOLING_FOOTER = "TOOLS.md is usage guidance, not availability."
 
 # Core tool summaries — mirrors OpenClaw coreToolSummaries (system-prompt.ts:726-763)
+# Tools marked [not implemented] are OpenClaw-only and have no tools/*.py counterpart.
 CORE_TOOL_SUMMARIES: dict[str, str] = {
+    # --- File operations ---
     "read": "Read file contents",
     "write": "Create or overwrite files",
     "edit": "Make precise edits to files",
     "apply_patch": "Apply multi-file patches",
-    "grep": "Search file contents for patterns",
+    "grep": "Search file contents for regex patterns",
     "find": "Find files by glob pattern",
-    "ls": "List directory contents",
-    "exec": "Run shell commands (pty available for TTY-required CLIs)",
-    "process": "Manage background exec sessions",
+    "glob_files": "Expand glob patterns and return matching paths",
+    # "ls": "List directory contents",            # [not implemented]
+    # "exec": "Run shell commands (pty available for TTY-required CLIs)",  # [not implemented] — use bash
+    # "process": "Manage background exec sessions",  # [not implemented]
+    # --- Shell ---
+    "bash": "Execute shell commands",
+    # --- Web ---
     "web_search": "Search the web using the configured provider",
     "web_fetch": "Fetch and extract readable content from a URL",
-    "browser": "Control web browser",
-    "canvas": "Present/eval/snapshot the Canvas",
-    "nodes": "List/describe/notify/camera/screen on paired nodes",
-    "cron": "Manage cron jobs and wake events",
-    "message": "Send messages and channel actions",
-    "gateway": "Manage OpenClaw gateway config and lifecycle",
-    "agents_list": "List available agents",
-    "sessions_list": "List active sessions",
-    "sessions_history": "Read session history",
-    "sessions_send": "Send a message to another session",
-    "sessions_spawn": "Spawn a sub-agent session",
-    "sessions_yield": "Yield and wait for sub-agent completion events",
-    "subagents": "Manage and inspect sub-agents",
-    "session_status": "Get current session status",
-    "skill_workshop": "Create and manage workspace skills",
-    "image": "Analyze an image with the configured image model",
-    "image_generate": "Generate images with the configured image-generation model",
-    # psi-agent workspace tools
-    "bash": "Execute shell commands",
+    # --- Browser / Canvas / Nodes — OpenClaw-only, not implemented ---
+    # "browser": "Control web browser",           # [not implemented]
+    # "canvas": "Present/eval/snapshot the Canvas",  # [not implemented]
+    # "nodes": "List/describe/notify/camera/screen on paired nodes",  # [not implemented]
+    # --- Scheduling ---
+    "cron": "List and inspect workspace schedule entries",
+    # --- Messaging / Gateway — OpenClaw-only, not implemented ---
+    # "message": "Send messages and channel actions",  # [not implemented]
+    # "gateway": "Manage OpenClaw gateway config and lifecycle",  # [not implemented]
+    # --- Multi-agent — OpenClaw-only, not implemented ---
+    # "agents_list": "List available agents",     # [not implemented]
+    # "sessions_list": "List active sessions",    # [not implemented]
+    # "sessions_history": "Read session history", # [not implemented]
+    # "sessions_send": "Send a message to another session",  # [not implemented]
+    # "sessions_spawn": "Spawn a sub-agent session",  # [not implemented]
+    # "sessions_yield": "Yield and wait for sub-agent completion events",  # [not implemented]
+    # "subagents": "Manage and inspect sub-agents",  # [not implemented]
+    # "session_status": "Get current session status",  # [not implemented]
+    # "skill_workshop": "Create and manage workspace skills",  # [not implemented]
+    # --- Vision / Media ---
+    # "image": "Analyze an image with the configured image model",  # [not implemented]
+    # "image_generate": "Generate images with the configured image-generation model",  # [not implemented]
+    "vision_analyze": "Analyze an image file (requires multimodal model; stub)",
+    # --- Productivity ---
+    "todo": "Manage a persistent todo list (add/list/complete)",
+    "clarify": "Surface a clarifying question for the user",
+    "update_plan": "Read or write the workspace plan.md",
+    "pdf": "Extract text content from a PDF file",
+    # --- Dev / Search ---
+    "execute_code": "Execute a Python code string in a subprocess",
+    "session_search": "Search workspace text files for a query string",
+    # --- Memory ---
     "memory_read": "Read persistent memory",
     "memory_write": "Write or update persistent memory",
+    # --- Skills ---
+    "skill_manage": "Manage workspace skills (list/view/install)",
 }
 
 # Display order — mirrors OpenClaw toolOrder (system-prompt.ts:765-794)
+# Unavailable (OpenClaw-only) tools are commented out with [not implemented].
 TOOL_ORDER: list[str] = [
+    # --- File operations ---
     "read",
     "write",
     "edit",
     "apply_patch",
     "grep",
     "find",
-    "ls",
-    "exec",
-    "process",
+    "glob_files",
+    # "ls",             # [not implemented]
+    # --- Shell ---
+    "bash",
+    # "exec",           # [not implemented] — use bash
+    # "process",        # [not implemented]
+    # --- Web ---
     "web_search",
     "web_fetch",
-    "browser",
-    "canvas",
-    "nodes",
+    # --- Browser / Canvas / Nodes ---
+    # "browser",        # [not implemented]
+    # "canvas",         # [not implemented]
+    # "nodes",          # [not implemented]
+    # --- Scheduling ---
     "cron",
-    "message",
-    "gateway",
-    "agents_list",
-    "sessions_list",
-    "sessions_history",
-    "sessions_send",
-    "sessions_spawn",
-    "sessions_yield",
-    "subagents",
-    "session_status",
-    "skill_workshop",
-    "image",
-    "image_generate",
-    # psi-agent extras
-    "bash",
+    # --- Messaging / Gateway ---
+    # "message",        # [not implemented]
+    # "gateway",        # [not implemented]
+    # --- Multi-agent ---
+    # "agents_list",    # [not implemented]
+    # "sessions_list",  # [not implemented]
+    # "sessions_history",  # [not implemented]
+    # "sessions_send",  # [not implemented]
+    # "sessions_spawn", # [not implemented]
+    # "sessions_yield", # [not implemented]
+    # "subagents",      # [not implemented]
+    # "session_status", # [not implemented]
+    # "skill_workshop", # [not implemented]
+    # --- Vision / Media ---
+    # "image",          # [not implemented]
+    # "image_generate", # [not implemented]
+    "vision_analyze",
+    # --- Productivity ---
+    "todo",
+    "clarify",
+    "update_plan",
+    "pdf",
+    # --- Dev / Search ---
+    "execute_code",
+    "session_search",
+    # --- Memory ---
     "memory_read",
     "memory_write",
+    # --- Skills ---
+    "skill_manage",
 ]
 
 # ---------------------------------------------------------------------------
@@ -162,6 +202,32 @@ If several apply, choose the most specific. If none clearly apply, read none.
 One skill up front max. Never guess/fabricate skill paths.
 External API writes: batch when safe, avoid tight loops, respect 429/Retry-After.\
 """
+
+# ---------------------------------------------------------------------------
+# § Flows
+# ---------------------------------------------------------------------------
+
+FLOWS_HEADER = """\
+## Flows
+**Always check <available_flows> first before generating any new flow.**
+- If an existing flow matches or is similar to the current task: use `flow_manage action=view` to read it, then reuse or adapt it. Prefer reuse and modification over creating from scratch.
+- Only generate a new flow.ts (save to flows/adhoc/<name>/flow.ts) when no existing flow is close enough to reuse.\
+"""
+
+
+def build_flows_section(flows_xml: str) -> str:
+    """Build the ## Flows section wrapping the available_flows XML block.
+
+    Args:
+        flows_xml: The <available_flows>...</available_flows> XML string.
+
+    Returns:
+        Formatted flows section, or empty string if no flows.
+    """
+    if not flows_xml.strip():
+        return ""
+    return FLOWS_HEADER + "\n" + flows_xml
+
 
 # ---------------------------------------------------------------------------
 # § Memory  (system-prompt.ts:279-292)

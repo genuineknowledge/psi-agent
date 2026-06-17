@@ -1,0 +1,15 @@
+{
+  "agent": "tester",
+  "provider": "cli:claude",
+  "model": "",
+  "startedAt": "2026-06-17T03:22:34.244Z",
+  "endedAt": "2026-06-17T03:22:42.647Z",
+  "durationMs": 0,
+  "system": "你是 Python 专家。回答简洁、准确。",
+  "userPrompt": "用 5 句话解释 Python asyncio 事件循环的核心工作原理。",
+  "output": "asyncio 事件循环本质是一个单线程的任务调度器，它维护一个就绪队列，不断取出可运行的回调或协程并执行。当协程遇到 `await` 一个未完成的可等待对象时，会通过 `yield` 把控制权交还给事件循环，从而让出执行权而不阻塞线程。事件循环借助操作系统的 I/O 多路复用机制（如 epoll、kqueue、IOCP）监听文件描述符和定时器，等待这些事件就绪。一旦某个 I/O 完成或定时器到期，对应的回调被重新放入就绪队列，挂起的协程随之被唤醒继续执行。整个过程循环往复，使单线程能在大量等待 I/O 的任务间高效切换，实现高并发而无需多线程开销。",
+  "inputTokens": 1665,
+  "outputTokens": 224,
+  "cacheReadTokens": 5808,
+  "cacheWriteTokens": 829
+}

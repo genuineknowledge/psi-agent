@@ -1,0 +1,11 @@
+{
+  "name": "http2_researcher",
+  "producedBy": "http2_researcher",
+  "producedAt": "2026-06-17T03:38:53.888Z",
+  "tokens": {
+    "input": 2031,
+    "output": 586
+  },
+  "sourceNode": "session-0002",
+  "inputHash": "24f71978b3e5e800"
+}

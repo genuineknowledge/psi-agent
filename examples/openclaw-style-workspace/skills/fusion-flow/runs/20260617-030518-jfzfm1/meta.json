@@ -1,0 +1,29 @@
+{
+  "runId": "20260617-030518-jfzfm1",
+  "startedAt": "2026-06-17T03:05:18.572Z",
+  "endedAt": "2026-06-17T03:08:01.974Z",
+  "durationMs": 163402,
+  "status": "ok",
+  "sessionCalls": {
+    "researcher": 1,
+    "synthesizer": 1
+  },
+  "evaluatorCalls": {},
+  "serviceCalls": {},
+  "totalTokens": {
+    "input": 16391,
+    "output": 6791
+  },
+  "llmCalls": 7,
+  "userTokens": {
+    "input": 16391,
+    "output": 6791
+  },
+  "userLlmCalls": 7,
+  "evaluatorTokens": {
+    "input": 0,
+    "output": 0
+  },
+  "evaluatorLlmCalls": 0,
+  "resumed": false
+}

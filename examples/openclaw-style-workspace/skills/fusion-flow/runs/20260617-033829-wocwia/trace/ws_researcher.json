@@ -1,0 +1,18 @@
+{
+  "agent": "ws_researcher",
+  "provider": "cli:claude",
+  "model": "",
+  "startedAt": "2026-06-17T03:38:29.068Z",
+  "endedAt": "2026-06-17T03:38:50.298Z",
+  "durationMs": 0,
+  "system": "你是网络协议性能分析师。针对 WebSocket 在实时通信场景下的延迟表现，给出详细分析：\n\n## 1. 协议机制\n全双工长连接、帧开销（最小 2 字节）、无队头阻塞、升级握手 (HTTP→WS)——各对延迟的影响。\n\n## 2. 延迟数据\n- 连接建立延迟：HTTP Upgrade → 101 Switching Protocols（含 TLS）\n- 单消息往返延迟 (RTT) — 不同 payload 大小（64B / 1KB / 16KB）\n- 高频小消息场景：每秒 1000 条消息的延迟分布 (p50/p95/p99)\n- 长连接下的尾延迟（是否受 TCP 拥塞控制累积影响）\n- 与 HTTP 长轮询、SSE 的延迟对比\n\n## 3. 实时场景适配\n- 聊天：websocket 是事实标准，延迟表现如何\n- 实时协作（在线文档）：OT/CRDT 同步延迟\n- 游戏：ws vs UDP 方案的差距\n- 金融行情推送：亚毫秒级是否可行\n- 物联网：低带宽下的 ws 帧效率\n\n## 4. 与其他协议对比要点\n- vs SSE：双向性的延迟收益\n- vs gRPC streaming：适用场景分界\n- vs WebTransport：下一代替代方案前瞻\n\n## 5. 最佳实践\n- 心跳与断线重连策略的延迟影响\n- 消息压缩 (permessage-deflate) 的延迟/CPU 权衡\n\n输出 markdown，数据优先。给出具体 benchmark 数字（注明来源）。\n限制 ≤ 600 字中文。",
+  "userPrompt": "## context.protocol\n\nWebSocket\n\n---\n\n分析 WebSocket 在实时通信场景下的延迟表现。",
+  "context": {
+    "protocol": "WebSocket"
+  },
+  "output": "# WebSocket 实时通信延迟分析\n\n## 1. 协议机制\n全双工长连接免去重复握手；帧头最小 2B（小载荷开销＜HTTP 数百字节头）；单连接内无 HTTP 队头阻塞，但仍受 TCP 字节流顺序约束；升级握手仅首次产生 1×RTT（+TLS 1.3 1-RTT）。\n\n## 2. 延迟数据（典型值，注明来源）\n| 项 | 数值 | 来源 |\n|---|---|---|\n| 建连(TLS1.3,同区域) | ~2×RTT≈20–40ms | Cloudflare 博客实测区间 |\n| 单消息 RTT 64B/1KB/16KB | ~0.5/0.6/1.2ms(LAN) | 公开 ws benchmark 量级 |\n| 1000 msg/s p50/p95/p99 | ~0.6/1.5/3ms(同城) | 同上量级估算 |\n| 尾延迟 | 持续大流量下受 TCP 拥塞窗/重传放大，p99 可升至 10ms+ | Nagle/拥塞控制机理 |\n\n注：以上为公开测试常见量级，跨网络受 RTT 主导，非权威基准；精确值需自测。\n\n## 3. 实时场景\n- 聊天：事实标准，端到端 50–150ms 体感无感。\n- 协作文档：传输非瓶颈，OT/CRDT 合并计算占主导。\n- 游戏：ws 走 TCP，丢包触发重传致卡顿；竞技类仍首选 UDP/WebRTC。\n- 金融行情：亚毫秒仅限同机房内网；公网受 RTT 限制不可行。\n- 物联网：2B 帧头省带宽，优于 HTTP 轮询。\n\n## 4. 协议对比\n- vs SSE：SSE 单向，回传需另开 HTTP；ws 双向省 1 次建连往返。\n- vs gRPC streaming：gRPC 适合强类型微服务内部流；浏览器端 ws 更通用。\n- vs WebTransport：基于 HTTP/3+QUIC，支持不可靠/多流，消除 TCP 队头阻塞，是低延迟下一代方案。\n\n## 5. 最佳实践\n- 心跳 ping/pong 间隔 20–30s，过频增负载、过疏致 NAT 超时重连（重连=数十 ms 抖动）。\n- permessage-deflate：大文本省带宽，但压缩增 CPU 与微秒级延迟；高频小消息建议关闭。\n\n（核心结论：公网延迟由 RTT 主导，ws 优势在省握手与双向；极致低延迟选 WebTransport/UDP。）",
+  "inputTokens": 1842,
+  "outputTokens": 648,
+  "cacheReadTokens": 6849,
+  "cacheWriteTokens": 978
+}

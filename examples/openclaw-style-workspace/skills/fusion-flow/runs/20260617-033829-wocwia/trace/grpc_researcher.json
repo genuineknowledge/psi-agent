@@ -1,0 +1,18 @@
+{
+  "agent": "grpc_researcher",
+  "provider": "cli:claude",
+  "model": "",
+  "startedAt": "2026-06-17T03:38:29.069Z",
+  "endedAt": "2026-06-17T03:39:12.825Z",
+  "durationMs": 0,
+  "system": "你是网络协议性能分析师。针对 gRPC 在实时通信场景下的延迟表现，给出详细分析：\n\n## 1. 协议机制\nHTTP/2 传输、Protobuf 序列化、四种调用模式（unary/server-streaming/client-streaming/bidi）——各对延迟的影响。\n\n## 2. 延迟数据\n- 连接建立延迟：TCP + TLS + HTTP/2 握手 + gRPC 首帧\n- Unary RPC 延迟：不同 payload 大小 (1B/1KB/100KB) 的 p50/p99\n- Server Streaming RPC：首字节时间 vs 完整流结束时间\n- Bidi Streaming：高频小消息的往返延迟\n- Protobuf 序列化/反序列化的 CPU 开销对延迟的贡献\n- 对比 REST+JSON 的延迟量化\n\n## 3. 实时场景适配\n- 微服务间实时通信：gRPC 的默认选择地位\n- 实时数据管道：server streaming 推送大量数据的延迟表现\n- 聊天机器人：bidi streaming 对话的延迟\n- IoT/边缘：gRPC 在低带宽下的表现\n- gRPC-Web：浏览器端延迟权衡\n\n## 4. 与其他协议对比要点\n- vs WebSocket + JSON：序列化效率的延迟差距\n- vs HTTP/2 REST：头部压缩和二进制帧的共享优势\n- vs 自定义 TCP/UDP 协议：gRPC 的额外开销有多大\n\n## 5. 最佳实践\n- 连接池与 Keepalive 配置对尾延迟的影响\n- 选择合适的 RPC 模式（一/多/流）减少延迟\n- deadline 与重试策略\n\n输出 markdown，数据优先。给出具体 benchmark 数字（注明来源）。\n限制 ≤ 600 字中文。",
+  "userPrompt": "## context.protocol\n\ngRPC\n\n---\n\n分析 gRPC 在实时通信场景下的延迟表现。",
+  "context": {
+    "protocol": "gRPC"
+  },
+  "output": "# gRPC 实时延迟分析\n\n## 1. 机制对延迟的影响\nHTTP/2 多路复用消除队头阻塞（连接层仍受 TCP 影响）；Protobuf 二进制编码体积约为 JSON 的 30-50%，解析更快。四模式中 unary 延迟最低；bidi 复用单连接，省去重复握手。\n\n## 2. 延迟数据（参考量级，环境强相关）\n| 项 | 数值 |\n|---|---|\n| 连接建立 (TCP+TLS1.3+H2) | ~1-2 RTT，局域网 1-3ms |\n| Unary 1B p50/p99 | ~0.3/1ms（同机房，gRPC 官方基准 ghz/qps） |\n| Unary 1KB | ~0.4/1.5ms |\n| Unary 100KB | ~1-3/8ms（带宽主导） |\n| Server streaming 首字节 | ≈单 RPC RTT；后续帧仅传输耗时 |\n| Bidi 高频小消息 RTT | 同机房 0.2-0.5ms（连接复用） |\n| Protobuf 序列化 1KB | ~1-5µs，对总延迟贡献 <5% |\n\n对比 REST+JSON：同载荷 gRPC 通常快 20-60%，主因序列化+二进制帧（来源：Google gRPC benchmarks、各厂商如 DreamFactory/YugabyteDB 公开测试，数值随硬件波动，需自测）。\n\n## 3. 实时场景\n- 微服务内部通信：低延迟+强类型，默认首选。\n- 实时数据管道：server streaming 推送，首字节快、吞吐高。\n- 聊天机器人：bidi 维持长连接，对话往返延迟低。\n- IoT/边缘：Protobuf 省带宽，弱网下优于 JSON；但 HTTP/2 在高丢包时不及 QUIC。\n- gRPC-Web：需代理转译，牺牲流式能力，浏览器端延迟略增。\n\n## 4. 协议对比\n- vs WebSocket+JSON：序列化更省、强 schema，延迟更稳。\n- vs HTTP/2 REST：共享头部压缩与二进制帧，gRPC 额外赢在 Protobuf。\n- vs 自定义 TCP/UDP：gRPC 多 HTTP/2+TLS 开销（每调用约几十µs~ms 级），换取通用性与可维护性。\n\n## 5. 最佳实践\n- 连接池 + Keepalive，避免重连尾延迟。\n- 按场景选模式：单次用 unary，持续推用 streaming。\n- 设置 deadline，配合指数退避重试，防尾延迟放大。\n\n注：以上为典型量级，生产前务必用 ghz/自有负载实测。",
+  "inputTokens": 1838,
+  "outputTokens": 633,
+  "cacheReadTokens": 6934,
+  "cacheWriteTokens": 990
+}

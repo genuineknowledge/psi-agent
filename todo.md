@@ -1,0 +1,6 @@
+- Stage 3: Archive api-error-handling
+- 综合比对报告撰写中
+- Parallel analysis: Stack Overflow 2024 salary distribution by programming language
+- 并行抓取10个主流开源项目的 issue/PR 统计数据
+- 汇总分析 issue 解决周期和 PR 合并率
+- 生成结构化对比报告

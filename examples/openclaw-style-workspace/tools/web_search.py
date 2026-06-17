@@ -1,4 +1,4 @@
-"""Web search tool with a mock implementation.
+"""Web search tool — search the web (mock implementation).
 
 NOTE: This is a mock tool. To enable real search, replace the _mock_search()
 call with an actual search provider (e.g. SerpAPI, Tavily, Brave Search API).
@@ -7,10 +7,8 @@ Set the appropriate API key in the environment variable documented below.
 
 from __future__ import annotations
 
-import os
 
-
-async def tool(query: str, num_results: int = 5) -> str:
+async def web_search(query: str, num_results: int = 5) -> str:
     """Search the web for information.
 
     Args:
@@ -23,11 +21,13 @@ async def tool(query: str, num_results: int = 5) -> str:
     Environment:
         WEB_SEARCH_API_KEY: API key for the search provider (not set = mock mode).
     """
+    import os
+
     api_key = os.environ.get("WEB_SEARCH_API_KEY", "")
     if not api_key:
         return _mock_search(query, num_results)
 
-    # Real implementation stub; wire up your preferred provider here.
+    # Real implementation stub — wire up your preferred provider here.
     # Example: Tavily
     # import aiohttp
     # async with aiohttp.ClientSession() as session:
