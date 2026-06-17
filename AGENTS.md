@@ -58,6 +58,7 @@ src/
     │   ├── common.py                 # ErrorResponse + serve_ai_backend
     │   └── server.py                 # 统一 handler（any-llm-sdk）
     ├── session/
+    │   ├── AGENTS.md                # Session 层设计文档
     │   ├── __init__.py             # Session dataclass + run()，workspace 加载入口
     │   ├── server.py               # channel 端 aiohttp server，单锁串行
     │   ├── agent.py                # 核心 agent loop（history + tool call + streaming）
@@ -65,35 +66,17 @@ src/
     │   ├── tools.py                # workspace tools 加载（async anyio.Path）
     │   └── scheduler.py            # cron-based 定时任务（croniter）
     └── channel/
+        ├── AGENTS.md                # Channel 层设计文档
         ├── repl/                   # 交互式 REPL（Rich Console + prompt_toolkit multiline）
         └── cli/                    # 单次消息 CLI（Rich 格式化输出）
 ```
 
 项目使用 **src-layout**（`src/psi_agent/`），由 `uv sync` 安装为 editable package。
 
-## Workspace 启动流程
-
-`Session.run()` 的启动顺序（该顺序有依赖关系，不可随意调整）：
-
-```
-1. setup_logging(verbose)
-2. 解析 workspace 路径（anyio.Path.resolve()）
-3. load_tools_from_workspace(tools_dir)     → tools 元数据（name, description, parameters）
-4. load_schedules_from_workspace(...)       → Schedule 列表
-5. 加载 system_prompt_builder()             → 调用 -> system_prompt 字符串
-6. 创建 SessionAgent(..., system_prompt)
-7. 注册 tool callables：重新遍历 tools/*.py，找到 async 函数并 agent.register_tool_func(name, func)
-8. 创建 anyio.Lock()
-9. 启动 anyio.task_group：
-   ├── serve_session(...): aiohttp Unix socket server
-   └── 每个 schedule 一个独立 anyio task（各自 sleep + 触发）
-```
-
-**关键点**：tool 的注册分两阶段——
-- `load_tools_from_workspace()` 解析**元数据**（给 AI 看的 function definition）
-- `register_tool_func()` 绑定**实际 callable**（session 执行时调用）
-
-两者都在 `run()` 中完成，使用同一个 `workspace/tools/*.py` 文件列表，但加载目的不同。
+各层的详细设计文档见：
+- **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理
+- **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制
+- **Channel 层**: `src/psi_agent/channel/AGENTS.md` — 终端输出、REPL/CLI 约定
 
 ## 核心通信协议
 
@@ -120,105 +103,6 @@ SSE 流中的特殊字段：
    ```
    所有层统一使用 `finish_reason="error"` 标记流式错误，Session 检测到后不写入 conversation history。
 
-## Agent Loop 逻辑
-
-1. 收到 channel 请求
-2. 检查暂存的 schedule 响应 → 有则先流式返回
-3. 获取 `anyio.Lock`（忙则 FIFO 排队等待）
-4. User message 追加到 history
-5. 发送 `history + tools` 到 AI socket（streaming）
-6. 解析 SSE 流：
-   - content → yield 给 channel
-   - reasoning_content → yield 给 channel
-   - tool_calls → 累积（按 index 拼接 partial JSON）
-   - finish_reason="tool_calls" → 执行 tool → 结果追加到 history → 回到步骤 5
-   - finish_reason="stop" → 最终 content 追加到 history → 释放锁
-7. 最多 10 轮 tool call
-
-**注意**：
-- Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
-- `response.prepare()` 在 lock 内执行——客户端在 lock 释放前不会看到 HTTP 200，避免"快速返回 200 然后 hang"的误导行为。
-- AI 返回非 200 错误时，错误信息不会写入 conversation history（`finish_reason="error"`），避免污染后续对话。
-
-## Tool 加载约定
-
-- `workspace/tools/*.py` 中的每个 `.py` 文件
-- 找到**与文件名同名**的 `async def` 函数
-- 用 `inspect.signature()` 提取参数（类型注解 → JSON Schema 类型）
-- 用 `inspect.getdoc()` 提取描述（支持 Google-style 的 `Args:` 格式）
-- 函数必须是 async、非私有（`_` 开头跳过）
-- Tool 加载使用 `anyio.Path`，全链路 async
-
-## Tool 调用细节
-
-**参数类型解析**：
-由于项目全量使用 `from __future__ import annotations`，函数注解以字符串形式存储。因此 `ToolFunction.from_callable()` 必须用 `typing.get_type_hints()` 解析，**不能**直接读 `param.annotation`。
-
-**流式 Tool Call 累积**：
-AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_calls` 逐步补充同一 index 的参数。Agent 用 `accumulated_tool_calls: dict[int, dict]` 按 index 累积：
-- `id`：取第一次非空值
-- `function.name`：取第一次非空值
-- `function.arguments`：**拼接**所有 partial JSON 片段
-
-收到 `finish_reason="tool_calls"` 后，按 index 排序生成完整 tool_calls 列表，逐一执行。
-
-**Tool 执行容错**：
-- `arguments` 可能不是合法 JSON → `json.loads` 包在 try/except 中，失败时 fallback 为 `{}`
-- Tool 函数可能抛异常 → 以错误文本作为 tool result 返回，不中断 agent loop
-- Tool 返回非字符串（int, None） → 通过 `str()` 强转
-
-## Schedule 机制完整流程
-
-```
-每个 schedule 一个独立 anyio task：
-  while True:
-    croniter.get_next_run()         ← 计算下次触发时间
-    await anyio.sleep(触发时间 - now) ← 睡到触发
-    if schedule.should_run_now():   ← 双重确认
-      schedule.mark_run()
-      用 schedule.to_user_message() 构造带标注的 user msg
-        ↓
-      async with lock:              ← 等当前请求完成
-        调用 agent.run(msg)         ← AI 处理
-        流式结果追加到 pending_chunks
-        agent.set_pending_schedule_chunks(chunks)
-        ↓
-      下次 channel 请求到达时：
-        SessionAgent.run() 开头先 yield 所有 _pending_schedule_chunks
-        然后正常处理当前 channel 消息
-```
-
-关键点：
-- Schedule 响应的 content 和 reasoning_content 各自存在于各自的消息周期，不会交错
-- 多个 schedule 可以并发 sleep，但通过 lock 串行触发
-- cron 表达式非法时，该 schedule task 每 60s 重试一次
-
-## Anthropic 转换细节
-
-- System message → Anthropic `system` 字段
-- Assistant tool_calls → Anthropic `tool_use` content blocks
-- Tool result → Anthropic `tool_result` content blocks
-- Anthropic `thinking_delta` → OpenAI `reasoning_content`
-- Anthropic `text_delta` → OpenAI `content`
-- Anthropic `input_json_delta` → OpenAI partial `tool_calls` delta
-
-**已知局限**：`content_block_stop` 事件未处理，导致 Anthropic 流中的 tool_use 完成信号无法映射为 OpenAI 的 `finish_reason="tool_calls"`。当前通过最终的 `message_stop` 事件发送 `finish_reason="stop"` 来结束。该局限已列入未来扩展方向。
-
-## AI 层行为约定
-
-- **Model 参数覆盖**：AI 层收到 body 中的 `model` 字段会被**忽略**，统一替换为启动时配置的 `--model`。这是有意设计——AI 层就是用来隐藏上游 model 细节的
-- **错误透传**：上游返回的非 200 响应，错误信息通过 ChatCompletionChunk SSE error 格式透传给下游
-- **50+ provider 支持**：基于 any-llm-sdk，通过 `--provider` 参数指定，全部透传处理
-- **API Key 环境变量**：`--api-key` 为可选参数，若不提供则自动从环境变量 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 读取。`--model` 和 `--base-url` 同样支持对应的环境变量 fallback
-
-## SessionAgent 支持 TCP URL
-
-`SessionAgent.ai_socket` 支持两种形式：
-- Unix socket 路径 → 使用 `UnixConnector`
-- `http://` / `https://` 开头的 TCP URL → 使用 `TCPConnector`
-
-这允许测试中使用 TCP mock server 代替 Unix socket。
-
 ## 日志约定
 
 - 所有模块使用 `from loguru import logger`
@@ -226,23 +110,6 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 - DEBUG 必须覆盖：每个 SSE chunk、tool 执行、锁获取/释放
 - 格式：`时间 | 级别 | 模块:函数:行号 - 消息`
 - Channel 客户端使用 `rich.console.Console` 做终端输出，**禁止使用 `print()`**
-
-## Channel 终端输出约定
-
-- Channel 客户端（repl、cli）是终端 UI 程序，需要格式化输出
-- **使用 `rich.console.Console`** 替代 `print()`
-- 思考过程（reasoning_content）：`console.print(..., style="dim")`
-- 错误信息：`console.print("[red]Error: ...[/red]")`
-- REPL 欢迎页：`console.print(Panel(...))`
-- **`Console(highlight=False)`**：禁用自动语法高亮，避免 Rich 误把 AI 回复当代码着色
-- **整个仓库不允许 `print()`**——T20 (flake8-print) 规则强制，无 per-file-ignore
-
-## REPL 约定
-
-- 使用 `prompt_toolkit` 的 `PromptSession(multiline=True)`
-- `Enter` 换行，`Alt+Enter`（Escape+Enter）发送
-- PS1: `> `，PS2: `. `（同宽对齐）
-- `Ctrl+D` 退出
 
 ## 关键注意事项（踩坑经验）
 
@@ -337,4 +204,3 @@ uv build                         # 构建
 - [ ] 更多 AI 后端（Gemini、本地模型等）
 - [ ] Session history 持久化（可选）
 - [ ] Channel 广播/多客户端队列
-- [ ] Anthropic `content_block_stop` 的 tool_calls finish_reason 转换
