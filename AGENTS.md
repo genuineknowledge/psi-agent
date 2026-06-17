@@ -53,9 +53,10 @@ src/
     ├── _yaml.py               # 共享 YAML header 解析（scheduler + workspace system.py）
     ├── _logging.py              # loguru 配置，verbose→DEBUG
     ├── ai/
-    │   ├── common.py               # AI 后端共享（ErrorResponse + SSEChunk + serve_ai_backend）
-    │   ├── openai_completions/     # OpenAI→OpenAI 透传后端
-    │   └── anthropic_messages/     # Anthropic→OpenAI 转换后端（含 thinking 转换）
+    │   ├── AGENTS.md                # AI 层设计文档
+    │   ├── __init__.py               # AiBackend dataclass + run()
+    │   ├── common.py                 # ErrorResponse + serve_ai_backend
+    │   └── server.py                 # 统一 handler（any-llm-sdk）
     ├── session/
     │   ├── __init__.py             # Session dataclass + run()，workspace 加载入口
     │   ├── server.py               # channel 端 aiohttp server，单锁串行
@@ -206,8 +207,8 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 ## AI 层行为约定
 
 - **Model 参数覆盖**：AI 层收到 body 中的 `model` 字段会被**忽略**，统一替换为启动时配置的 `--model`。这是有意设计——AI 层就是用来隐藏上游 model 细节的
-- **错误透传**：上游返回的非 200 响应，错误信息通过 SSE error JSON 格式透传给下游
-- **SSE 行透传**：openai-completions 模式下上游 SSE 行原样透传（不做格式转换）
+- **错误透传**：上游返回的非 200 响应，错误信息通过 ChatCompletionChunk SSE error 格式透传给下游
+- **50+ provider 支持**：基于 any-llm-sdk，通过 `--provider` 参数指定，全部透传处理
 - **API Key 环境变量**：`--api-key` 为可选参数，若不提供则自动从环境变量 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 读取。`--model` 和 `--base-url` 同样支持对应的环境变量 fallback
 
 ## SessionAgent 支持 TCP URL

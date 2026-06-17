@@ -49,7 +49,8 @@ async def test_openai_layer_real_api(tmp_path: Path) -> None:
 
     proc = _start_psi(
         "ai",
-        "openai-completions",
+        "--provider",
+        "openai",
         "--session-socket",
         str(socket_path),
         "--model",
@@ -84,7 +85,8 @@ async def test_openai_layer_ignores_client_model(tmp_path: Path) -> None:
 
     proc = _start_psi(
         "ai",
-        "openai-completions",
+        "--provider",
+        "openai",
         "--session-socket",
         str(socket_path),
         "--model",
@@ -120,7 +122,8 @@ async def test_session_end_to_end(tmp_path: Path) -> None:
 
     ai_proc = _start_psi(
         "ai",
-        "openai-completions",
+        "--provider",
+        "openai",
         "--session-socket",
         str(ai_socket),
         "--model",
@@ -173,7 +176,8 @@ async def test_anthropic_layer_real_api(tmp_path: Path) -> None:
 
     proc = _start_psi(
         "ai",
-        "anthropic-messages",
+        "--provider",
+        "anthropic",
         "--session-socket",
         str(socket_path),
         "--model",

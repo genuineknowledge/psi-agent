@@ -48,19 +48,9 @@ psi/
 │   ├── cli.py                      # tyro CLI 入口
 │   ├── _yaml.py                    # 共享 YAML header 解析
 │   ├── _logging.py                  # loguru 配置
-│   ├── ai/
-│   ├── common.py               # AI 后端共享（ErrorResponse, SSEChunk, serve_ai_backend）
-│   ├── openai_completions/
-│   └── anthropic_messages/
-├── session/
-│   ├── protocol.py             # Session 层协议类型（ChatCompletionChunk 等）
-│   ├── ai/
+│   ├── ai/  (统一多 provider，基于 any-llm-sdk)
+│   ├── common.py               # AI 后端共享（ErrorResponse + serve_ai_backend）
 │   │   ├── __init__.py
-│   │   ├── openai_completions/
-│   │   │   ├── __init__.py         # OpenAICompletions dataclass + run()
-│   │   │   └── server.py           # aiohttp Unix socket server
-│   │   └── anthropic_messages/
-│   │       ├── __init__.py         # AnthropicMessages dataclass + run()
 │   │       └── server.py           # aiohttp Unix socket server + thinking 转换
 │   ├── session/
 │   │   ├── __init__.py             # Session dataclass + run()
@@ -91,8 +81,8 @@ psi/
 │   │   └── test_session_workspace.py
 │   └── psi_agent/
 │       ├── ai/
-│       │   ├── test_openai_completions.py
-│       │   └── test_anthropic_messages.py
+│       │   ├── test_ai_backend.py
+│       │   └── test_common.py
 │       ├── session/
 │       │   ├── test_agent.py
 │       │   ├── test_tools.py
@@ -171,62 +161,38 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
 
 ## 5. AI 层
 
+AI 层是一个统一的多 provider LLM 客户端，通过 Unix socket 对外提供 OpenAI-compatible HTTP/SSE 服务。基于 [any-llm-sdk](https://github.com/mozilla-ai/any-llm) 支持 50+ LLM provider，含 Anthropic→OpenAI SSE 格式自动转换。
+
 ### 5.0 共享模块（`ai/common.py`）
 
-两个后端共享的代码：
 - **`ErrorResponse`**：HTTP 层非流式错误响应（OpenAI `{"error": {...}}` 格式）
-- **`SSEChunk`**：SSE 层流式 chunk，封装 `delta_content`/`delta_reasoning`/`delta_tool_calls`/`finish_reason`，提供 `to_sse()` 生成完整 `data: {...}\n\n` 字符串
-- **`serve_ai_backend()`**：Unix socket 服务器脚手架，封装 `web.Application` 创建、路由注册、`AppRunner`/`UnixSite` 生命周期
+- **`serve_ai_backend()`**：Unix socket 服务器脚手架
 
-### 5.1 openai-completions
+### 5.1 AiBackend
 
-**Dataclass**（定义在 `psi_agent/ai/openai_completions/__init__.py`）：
+**Dataclass**（`psi_agent/ai/__init__.py`）：
+
 ```python
 @dataclass
-class OpenAICompletions:
+class AiBackend:
     session_socket: str
-    model: str = ""
-    api_key: str = ""
-    base_url: str = ""
+    provider: str = ""       # any-llm-sdk provider key（openai, anthropic, gemini, ...）
+    model: str = ""          # 模型名
+    api_key: str = ""        # 上游 API key
+    base_url: str = ""       # 上游 base URL
     verbose: bool = False
-
-    async def run(self) -> None: ...
+    async def run(self) -> None
 ```
 
-**行为**：
-- 在 `session_socket` 上启动 aiohttp Unix socket HTTP server
-- 接收 OpenAI-compatible `POST /v1/chat/completions` 请求
-- 转发到 `base_url`（设置 `model` + `api_key` 的 Authorization header）
-- `--model`、`--base-url`、`--api-key` 均为可选参数，未提供则从环境变量 `OPENAI_MODEL` / `OPENAI_BASE_URL` / `OPENAI_API_KEY` 读取
-- `base_url` 最终 fallback 为 `https://api.openai.com/v1`
-- 流式 SSE 透传
-- 每个请求和 chunk 打 DEBUG 日志
+全部参数可选，fallback 到 `PSI_AI_PROVIDER` / `PSI_AI_MODEL` / `PSI_AI_API_KEY` / `PSI_AI_BASE_URL` 环境变量。
 
-### 5.2 anthropic-messages
+### 5.2 Handler（`ai/server.py`）
 
-**Dataclass**（定义在 `psi_agent/ai/anthropic_messages/__init__.py`）：
-```python
-@dataclass
-class AnthropicMessages:
-    session_socket: str
-    model: str = ""
-    api_key: str = ""
-    base_url: str = ""
-    verbose: bool = False
+接收 Session 发来的 body，透传给 `any_llm.acompletion(provider=..., stream=True, ...)`，SSE chunk 通过 `chunk.model_dump_json()` 序列化返回。
 
-    async def run(self) -> None: ...
-```
+### 5.3 支持的 Provider
 
-**行为**：
-- 接收 OpenAI-compatible `POST /v1/chat/completions` 请求
-- 将 OpenAI 格式的 messages 和 tools 转换为 Anthropic Messages API 格式
-- 转发到 `base_url`（x-api-key header + anthropic-version header）
-- `--model`、`--base-url`、`--api-key` 均可选，未提供则从环境变量 `ANTHROPIC_MODEL` / `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` 读取
-- 将 Anthropic 响应流转换为 OpenAI SSE 格式：
-  - Anthropic `thinking` block → OpenAI `reasoning_content`
-  - Anthropic `text` block → OpenAI `content`
-  - Anthropic `tool_use` block → OpenAI `tool_calls`
-- 每个 chunk 打 DEBUG 日志
+any-llm-sdk 原生支持的 50+ provider 全部可用，无需额外配置。包括：OpenAI, Anthropic, Gemini, DeepSeek, Mistral, Groq, Ollama, Cerebras, Cohere, Perplexity, Fireworks, Together, xAI, Bedrock, Azure, VertexAI 等。
 
 ---
 
@@ -392,14 +358,13 @@ class ChannelCli:
 from typing import Annotated
 from tyro import conf
 
-from psi_agent.ai.openai_completions import OpenAICompletions
-from psi_agent.ai.anthropic_messages import AnthropicMessages
+from psi_agent.ai import AiBackend
 from psi_agent.session import Session
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.cli import ChannelCli
 
 AiGroup = Annotated[
-    OpenAICompletions | AnthropicMessages,
+    AiBackend,
     conf.subcommand(name="ai", description="AI backend services"),
 ]
 
@@ -416,8 +381,8 @@ def main() -> None:
 生成的 CLI 结构：
 ```
 psi-agent session --workspace ... --channel-socket ... --ai-socket ...
-psi-agent ai openai-completions --session-socket ... --model ... --api-key ... --base-url ...
-psi-agent ai anthropic-messages --session-socket ... --model ... --api-key ... --base-url ...
+psi-agent ai --provider openai --session-socket ... --model ... --api-key ... --base-url ...
+psi-agent ai --provider anthropic --session-socket ... --model ... --api-key ... --base-url ...
 psi-agent channel repl --session-socket ...
 psi-agent channel cli --session-socket ... --message ...
 ```
@@ -576,3 +541,4 @@ cron: "0 12 * * *"
 | 2026-05-24 | v0.2.1 | 内部模块规范化：`logging.py` → `_logging.py`、`protocol.py` → `_protocol.py` |
 | 2026-05-24 | v0.2.2 | 协议类型拆分：`_protocol.py` 拆为 `session/protocol.py` + `ai/common.py`，消除跨层共享依赖 |
 | 2026-05-24 | v0.2.3 | AI 层抽象：`SSEChunk` dataclass 替代裸 dict 构造 + `serve_ai_backend()` 消除 serve 重复 |
+| 2026-06-17 | v0.3.0 | 统一 AI 后端：采用 any-llm-sdk 替代手写 Anthropic→OpenAI 转换，单一 `AiBackend` 支持 50+ provider |

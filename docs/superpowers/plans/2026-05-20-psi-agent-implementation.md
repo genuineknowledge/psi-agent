@@ -6,7 +6,7 @@
 
 **Architecture:** 单 Python package src-layout（`src/psi_agent/`），tyro Union dataclasses 驱动 CLI 子命令。所有 IO 异步（anyio）。组件通过 aiohttp Unix socket 通信。Session 解析 workspace 目录结构并按需执行 tool。
 
-**Tech Stack:** Python >= 3.14, anyio, aiohttp, tyro, loguru, prompt-toolkit, rich, ruff, ty, hatch-vcs, pytest + pytest-asyncio(anyio mode)
+**Tech Stack:** Python >= 3.14, anyio, aiohttp, tyro, loguru, prompt-toolkit, rich, ruff, ty, hatch-vcs, any-llm-sdk, pytest + pytest-asyncio(anyio mode)
 
 **Design Spec:** `docs/superpowers/specs/2026-05-20-psi-agent-design.md`
 
@@ -194,33 +194,21 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 
 ---
 
-### Task 4: AI 层 — openai-completions
+### Task 4: AI 层 — 统一后端（原 openai-completions + anthropic-messages）
 
-**Files:** `psi_agent/ai/__init__.py`, `psi_agent/ai/openai_completions/__init__.py`, `psi_agent/ai/openai_completions/server.py`, `tests/psi_agent/ai/test_openai_completions.py`
+> ⚠️ v0.3.0 已替换为单一 `AiBackend`（见"后续质量改进"）
 
-**Dataclass:** `OpenAICompletions(session_socket, model, api_key, base_url, verbose)` with `async run()`
+**Files (原):** `psi_agent/ai/openai_completions/`, `psi_agent/ai/anthropic_messages/`
 
-**Server:** aiohttp Unix socket HTTP server，接收 `POST /v1/chat/completions`，透传到上游（设置 Authorization header + model），SSE 流式返回。每个 chunk 打 DEBUG 日志。
+**Files (现):** `psi_agent/ai/__init__.py`, `psi_agent/ai/common.py`, `psi_agent/ai/server.py`
 
-**测试:** mock 上游 aiohttp server，验证透传正确性。
+**Dataclass:** `AiBackend(session_socket, provider, model, api_key, base_url, verbose)` with `async run()`
 
----
-
-### Task 5: AI 层 — anthropic-messages
-
-**Files:** `psi_agent/ai/anthropic_messages/__init__.py`, `psi_agent/ai/anthropic_messages/server.py`, `tests/psi_agent/ai/test_anthropic_messages.py`
-
-**核心逻辑:**
-- `_convert_openai_messages_to_anthropic()`: OpenAI messages → Anthropic messages（含 system/tool/tool_result 转换）
-- `_convert_openai_tools_to_anthropic()`: OpenAI tool defs → Anthropic tool format
-- `_convert_anthropic_stream_to_openai_sse()`: Anthropic SSE events → OpenAI SSE chunks
-  - `thinking_delta` → `reasoning_content`
-  - `text_delta` → `content`
-  - `input_json_delta` → `tool_calls`
+**Server:** 使用 [any-llm-sdk](https://github.com/mozilla-ai/any-llm) 的 `acompletion()` 转发到上游，支持 50+ provider，Anthropic→OpenAI SSE 格式转换自动处理。
 
 ---
 
-### Task 6: Session — Tool 加载
+### Task 5: Session — Tool 加载
 
 **Files:** `psi_agent/session/__init__.py`, `psi_agent/session/tools.py`, `tests/psi_agent/session/test_tools.py`
 
@@ -233,7 +221,7 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 
 ---
 
-### Task 7: Session — Scheduler
+### Task 6: Session — Scheduler
 
 **Files:** `psi_agent/session/scheduler.py`, `tests/psi_agent/session/test_scheduler.py`
 
@@ -247,7 +235,7 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 
 ---
 
-### Task 8: Session — Agent Loop
+### Task 7: Session — Agent Loop
 
 **Files:** `psi_agent/session/agent.py`, `tests/psi_agent/session/test_agent.py`
 
@@ -268,7 +256,7 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 
 ---
 
-### Task 9: Session — Channel-facing HTTP Server
+### Task 8: Session — Channel-facing HTTP Server
 
 **Files:** `psi_agent/session/server.py`, `psi_agent/session/__init__.py` (更新)
 
@@ -281,7 +269,7 @@ aiohttp Unix socket server 监听 `channel_socket`:
 
 ---
 
-### Task 10: Channel — REPL
+### Task 9: Channel — REPL
 
 **Files:** `psi_agent/channel/__init__.py`, `psi_agent/channel/repl/__init__.py`, `psi_agent/channel/repl/client.py`, `tests/psi_agent/channel/test_repl.py`
 
@@ -294,7 +282,7 @@ aiohttp Unix socket server 监听 `channel_socket`:
 
 ---
 
-### Task 11: Channel — CLI
+### Task 10: Channel — CLI
 
 **Files:** `psi_agent/channel/cli/__init__.py`, `psi_agent/channel/cli/client.py`, `tests/psi_agent/channel/test_cli.py`
 
@@ -304,7 +292,7 @@ aiohttp Unix socket server 监听 `channel_socket`:
 
 ---
 
-### Task 12: CLI 入口
+### Task 11: CLI 入口
 
 **Files:** `psi_agent/cli.py`
 
@@ -312,14 +300,13 @@ aiohttp Unix socket server 监听 `channel_socket`:
 from tyro import conf
 from typing import Annotated
 
-from psi_agent.ai.openai_completions import OpenAICompletions
-from psi_agent.ai.anthropic_messages import AnthropicMessages
+from psi_agent.ai import AiBackend
 from psi_agent.session import Session
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.cli import ChannelCli
 
 AiGroup = Annotated[
-    OpenAICompletions | AnthropicMessages,
+    AiBackend,
     conf.subcommand(name="ai", description="AI backend services"),
 ]
 ChannelGroup = Annotated[
@@ -335,19 +322,19 @@ def main() -> None:
 
 ---
 
-### Task 13: 示例 Workspace + README + AGENTS.md
+### Task 12: 示例 Workspace + README + AGENTS.md
 
 **Files:**
 - `examples/a-simple-bash-only-workspace/tools/bash.py`
-- `examples/a-simple-bash-only-workspace/skills/bash-expert/SKILL.md`
-- `examples/a-simple-bash-only-workspace/schedules/daily-report/TASK.md`
+- `examples/a-simple-bash-only-workspace/skills/hyw/SKILL.md`
+- `examples/a-simple-bash-only-workspace/schedules/test-task/TASK.md`
 - `examples/a-simple-bash-only-workspace/systems/system.py`
 - `README.md`（中文）
 - `AGENTS.md`（中文）
 
 ---
 
-### Task 14: 基础集成测试 + Ruff + Ty 检查
+### Task 13: 基础集成测试 + Ruff + Ty 检查
 
 - [x] 端到端集成测试：启动 AI server → 启动 session → CLI channel 发送消息 → 验证流式响应
 - [x] `uv run ruff check .` 无错误
@@ -355,7 +342,7 @@ def main() -> None:
 
 ---
 
-### Task 15: 全面 Corner Case 集成测试
+### Task 14: 全面 Corner Case 集成测试
 
 **Files:**
 - Create: `tests/integration/conftest.py`
@@ -459,13 +446,14 @@ def main() -> None:
 | 最终抑制 | **2 处 ty:ignore**（tyro overload + pytest fixture），**0 ruff noqa**，**0 per-file-ignore** |
 | 并发/调度重构 | FIFO 排队替代 503、每 schedule 独立 anyio task、去重 _yaml.py、统一 SSE 错误格式、CLI 环境变量支持（model/base_url/api_key）、`response.prepare()` 移入 lock、Socket 手动清理策略 |
 | AI 层抽象 | `SSEChunk` dataclass 替代 `build_error_sse_chunk` + anthropic 中 4 处裸 dict（7 个构造点 → 统一类型）；`serve_ai_backend()` 消除两个 `serve_*` 函数的 30 行重复 |
+| AI 后端统一 | 采用 Mozilla any-llm-sdk，删除 `openai_completions/` 和 `anthropic_messages/` 子包（~500 行手写转换），单一 `AiBackend` 支持 50+ provider；净减 700 行 |
 
 ### 最终测试覆盖
 
-- **单元测试**: 97 tests（覆盖所有源模块除 `cli.py` 和 channel 客户端）
-- **集成测试**: 36 tests（AI 层、Session 并发/tool/workspace、Channel、端到端）
+- **单元测试**: ~78 tests（覆盖除 `cli.py` 和 channel 客户端外的所有源模块）
+- **集成测试**: ~24 tests（AI 层、Session 并发/tool/workspace、Channel、端到端）
 - **真实 API 测试**: 4 tests（通过 `PSI_TEST_*` 环境变量注入凭证）
-- **总计**: 137 tests
+- **总计**: 102 tests（+ 2 slow + 4 real API = 108）
 
 
 ---
@@ -481,3 +469,4 @@ def main() -> None:
 | 2026-05-24 | v0.2.1 | 内部模块规范化：`logging.py` → `_logging.py`、`protocol.py` → `_protocol.py` |
 | 2026-05-24 | v0.2.2 | 协议类型拆分：`_protocol.py` 拆为 `session/protocol.py` + `ai/common.py`，ErrorResponse 独立实现，提取 `build_error_sse_chunk` |
 | 2026-05-24 | v0.2.3 | AI 层抽象：`SSEChunk` dataclass 替代 `build_error_sse_chunk` + 4 处裸 dict；`serve_ai_backend()` 消除两个 `serve_*` 的 15 行重复 |
+| 2026-06-17 | v0.3.0 | 统一 AI 后端：采用 any-llm-sdk，删除 `openai_completions/` 和 `anthropic_messages/` 子包，单一 `AiBackend` 支持 50+ provider |

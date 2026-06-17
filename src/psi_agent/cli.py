@@ -6,15 +6,13 @@ import anyio
 import tyro
 from tyro import conf
 
-from psi_agent.ai.anthropic_messages import AnthropicMessages
-from psi_agent.ai.openai_completions import OpenAICompletions
+from psi_agent.ai import AiBackend
 from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.session import Session
 
 AiGroup = Annotated[
-    Annotated[OpenAICompletions, conf.subcommand(name="openai-completions")]
-    | Annotated[AnthropicMessages, conf.subcommand(name="anthropic-messages")],
+    AiBackend,
     conf.subcommand(name="ai", description="AI backend services"),
 ]
 

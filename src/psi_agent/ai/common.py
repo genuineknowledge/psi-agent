@@ -25,41 +25,10 @@ class ErrorResponse:
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
 
-@dataclass
-class SSEChunk:
-    """A typed SSE chunk for OpenAI Chat Completions format.
-
-    Use to_sse() to get the complete 'data: {...}\n\n' string.
-    """
-
-    delta_content: str = ""
-    delta_reasoning: str = ""
-    delta_tool_calls: list[dict] | None = None
-    finish_reason: str | None = None
-    chunk_id: str = ""
-
-    def to_sse(self) -> str:
-        delta: dict = {}
-        if self.delta_content:
-            delta["content"] = self.delta_content
-        if self.delta_reasoning:
-            delta["reasoning_content"] = self.delta_reasoning
-        if self.delta_tool_calls is not None:
-            delta["tool_calls"] = self.delta_tool_calls
-        return f"data: {
-            json.dumps(
-                {
-                    'id': self.chunk_id or 'chatcmpl-unknown',
-                    'choices': [{'index': 0, 'delta': delta, 'finish_reason': self.finish_reason}],
-                },
-                ensure_ascii=False,
-            )
-        }\n\n"
-
-
 async def serve_ai_backend(
     *,
     socket_path: str,
+    provider: str,
     model: str,
     api_key: str,
     base_url: str,
@@ -71,6 +40,7 @@ async def serve_ai_backend(
     logger.info(f"Starting {name} AI service on {socket_path} (model={model}, base_url={base_url})")
 
     app = web.Application()
+    app["provider"] = provider
     app["model"] = model
     app["api_key"] = api_key
     app["base_url"] = base_url
