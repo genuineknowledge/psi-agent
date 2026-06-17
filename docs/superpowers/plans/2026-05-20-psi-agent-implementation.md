@@ -440,7 +440,7 @@ def main() -> None:
 | Rich 终端 | 15 处 `print()` → `console.print()`（`style="dim"` 思考过程、`[red]` 错误），T201 per-file-ignore 删除 |
 | per-file-ignore 清零 | 5 条 → 0 条（通过 anyio 等效替代消除 ASYNC220/221/240/251 + 移除 E402） |
 | Ruff 规则补充 | select 加 `"PLC"`（`PLC0415` 禁止非顶级 import），29 处修复 |
-| AGPLv3 | `LICENSE.md` + pyproject.toml license/author 字段 |
+| MIT 许可证 | `LICENSE.md` + pyproject.toml license/author 字段 |
 | GitHub CI | `.github/workflows/ci.yml`（push/PR → lint → test，tag → PyPI publish via Trusted Publisher） |
 | Dependabot | `.github/dependabot.yml`（pip + github-actions，weekly） |
 | 最终抑制 | **2 处 ty:ignore**（tyro overload + pytest fixture），**0 ruff noqa**，**0 per-file-ignore** |

@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "A microkernel-style agent framework"
 readme = "README.md"
 authors = [{name = "Hao Zhang", email = "hzhangxyz@outlook.com"}]
-license = {text = "AGPL-3.0-or-later"}
+license = {text = "MIT"}
 requires-python = ">=3.14"
 dependencies = [
     "anyio>=4.13.0",
