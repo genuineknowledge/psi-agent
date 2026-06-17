@@ -2,13 +2,25 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import cast
 
 from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
 
-from psi_agent.ai.common import ErrorResponse
+
+@dataclass
+class ErrorResponse:
+    message: str
+    type: str
+    code: str
+
+    def to_dict(self) -> dict:
+        return {"error": {"message": self.message, "type": self.type, "code": self.code}}
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False)
 
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:

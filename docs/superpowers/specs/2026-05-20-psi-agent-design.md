@@ -49,7 +49,6 @@ psi/
 │   ├── _yaml.py                    # 共享 YAML header 解析
 │   ├── _logging.py                  # loguru 配置
 │   ├── ai/  (统一多 provider，基于 any-llm-sdk)
-│   ├── common.py               # AI 后端共享（ErrorResponse + serve_ai_backend）
 │   │   ├── __init__.py
 │   │       └── server.py           # aiohttp Unix socket server + thinking 转换
 │   ├── session/
@@ -82,7 +81,6 @@ psi/
 │   └── psi_agent/
 │       ├── ai/
 │       │   ├── test_ai_backend.py
-│       │   └── test_common.py
 │       ├── session/
 │       │   ├── test_agent.py
 │       │   ├── test_tools.py
@@ -163,7 +161,6 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
 
 AI 层是一个统一的多 provider LLM 客户端，通过 Unix socket 对外提供 OpenAI-compatible HTTP/SSE 服务。基于 [any-llm-sdk](https://github.com/mozilla-ai/any-llm) 支持 50+ LLM provider，含 Anthropic→OpenAI SSE 格式自动转换。
 
-### 5.0 共享模块（`ai/common.py`）
 
 - **`ErrorResponse`**：HTTP 层非流式错误响应（OpenAI `{"error": {...}}` 格式）
 - **`serve_ai_backend()`**：Unix socket 服务器脚手架
@@ -539,6 +536,5 @@ cron: "0 12 * * *"
 | 2026-05-22 | v0.1.2 | 架构调整：src-layout、Rich Console 替代 print()、per-file-ignore 清零、ruff 规则扩展（B/RUF/N/T20/PLC）、2 处 ty:ignore 定型 |
 | 2026-05-23 | v0.2.0 | 并发模型重构（FIFO 排队）、调度器重构（每 schedule 独立 task）、统一 SSE 流错误格式、去重 _yaml.py、CLI 参数全支持环境变量（model/base_url/api_key）、错误不污染 history、137 测试全绿 |
 | 2026-05-24 | v0.2.1 | 内部模块规范化：`logging.py` → `_logging.py`、`protocol.py` → `_protocol.py` |
-| 2026-05-24 | v0.2.2 | 协议类型拆分：`_protocol.py` 拆为 `session/protocol.py` + `ai/common.py`，消除跨层共享依赖 |
 | 2026-05-24 | v0.2.3 | AI 层抽象：`SSEChunk` dataclass 替代裸 dict 构造 + `serve_ai_backend()` 消除 serve 重复 |
 | 2026-06-17 | v0.3.0 | 统一 AI 后端：采用 any-llm-sdk 替代手写 Anthropic→OpenAI 转换，单一 `AiBackend` 支持 50+ provider |

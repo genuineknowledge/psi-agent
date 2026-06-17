@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from psi_agent.ai.common import ErrorResponse
+from psi_agent.ai.server import ErrorResponse
 
 
 def test_error_response_to_dict() -> None:

@@ -26,9 +26,9 @@ Session ── POST /v1/chat/completions ──► AI (Unix socket)
 
 | 文件 | 职责 |
 |------|------|
-| `__init__.py` | `AiBackend` dataclass + `run()` — CLI 入口 |
-| `common.py` | `ErrorResponse` + `serve_ai_backend()` 服务器脚手架 |
-| `server.py` | `handle_chat_completions()` — 请求处理 |
+| `__init__.py` | `AiBackend` dataclass + `run()` + `serve_ai_backend()` |
+
+| `server.py` | `ErrorResponse` + `handle_chat_completions()` |
 
 ## 数据流
 

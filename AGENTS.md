@@ -54,9 +54,8 @@ src/
     ├── _logging.py              # loguru 配置，verbose→DEBUG
     ├── ai/
     │   ├── AGENTS.md                # AI 层设计文档
-    │   ├── __init__.py               # AiBackend dataclass + run()
-    │   ├── common.py                 # ErrorResponse + serve_ai_backend
-    │   └── server.py                 # 统一 handler（any-llm-sdk）
+    │   ├── __init__.py               # AiBackend + serve_ai_backend
+    │   └── server.py                 # ErrorResponse + handler
     ├── session/
     │   ├── AGENTS.md                # Session 层设计文档
     │   ├── __init__.py             # Session dataclass + run()，workspace 加载入口

@@ -5,10 +5,48 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+import anyio
+from aiohttp import web
+from aiohttp.typedefs import Handler
+from loguru import logger
+
 from psi_agent._logging import setup_logging
 
-from .common import serve_ai_backend
 from .server import handle_chat_completions
+
+
+async def serve_ai_backend(
+    *,
+    socket_path: str,
+    provider: str,
+    model: str,
+    api_key: str,
+    base_url: str,
+    handler: Handler,
+) -> None:
+    """Serve an AI backend on a Unix socket."""
+
+    logger.info(f"Starting AI service on {socket_path} (model={model}, base_url={base_url})")
+
+    app = web.Application()
+    app["provider"] = provider
+    app["model"] = model
+    app["api_key"] = api_key
+    app["base_url"] = base_url
+    app.router.add_post("/v1/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, socket_path)
+    await site.start()
+
+    logger.info(f"AI listening on {socket_path}")
+
+    try:
+        await anyio.sleep_forever()
+    finally:
+        logger.info(f"Shutting down AI on {socket_path}")
+        await runner.cleanup()
 
 
 @dataclass
@@ -46,6 +84,5 @@ class AiBackend:
             model=model,
             api_key=api_key,
             base_url=base_url,
-            name="ai",
             handler=handle_chat_completions,
         )
