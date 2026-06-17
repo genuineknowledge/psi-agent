@@ -28,8 +28,9 @@ Three terminals, three commands:
 # Install
 uv sync
 
-# Terminal 1: Start AI backend (--api-key optional, reads OPENAI_API_KEY env if omitted)
-uv run psi-agent ai openai-completions \
+# Terminal 1: Start AI backend (--api-key optional, reads PSI_AI_API_KEY env if omitted)
+uv run psi-agent ai \
+  --provider openai \
   --session-socket ./ai.sock \
   --model gpt-4o-mini \
   --api-key $OPENAI_API_KEY \
@@ -59,9 +60,7 @@ uv run psi-agent channel cli \
 
 ```
 psi-agent
-├── ai
-│   ├── openai-completions    # OpenAI-compatible passthrough
-│   └── anthropic-messages    # Anthropic→OpenAI conversion
+├── ai                        # Unified AI backend (50+ providers)
 ├── session                    # Session + workspace management
 └── channel
     ├── repl                   # Interactive REPL

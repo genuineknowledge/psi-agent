@@ -81,8 +81,8 @@ src/
 
 所有组件通过 **aiohttp Unix socket** 以 **OpenAI Chat Completions HTTP/SSE** 格式通信：
 
-- **AI socket**: Session 作为客户端访问，`POST /v1/chat/completions`
-- **Channel socket**: Session 作为服务端，`POST /v1/chat/completions`
+- **AI socket**: Session 作为客户端访问，`POST /chat/completions`
+- **Channel socket**: Session 作为服务端，`POST /chat/completions`
 
 SSE 流中的特殊字段：
 - `delta.content` — AI 最终文本回复

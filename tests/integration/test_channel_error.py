@@ -43,7 +43,7 @@ async def test_channel_client_handles_non_200(tmp_path: Path) -> None:
         )
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", busy_handler)
+    app.router.add_post("/chat/completions", busy_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.UnixSite(runner, str(channel_socket))
@@ -56,7 +56,7 @@ async def test_channel_client_handles_non_200(tmp_path: Path) -> None:
         async with (
             ClientSession(connector=connector, timeout=timeout) as session,
             session.post(
-                "http://localhost/v1/chat/completions",
+                "http://localhost/chat/completions",
                 json={"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True},
             ) as resp,
         ):
@@ -78,7 +78,7 @@ async def test_cli_empty_message(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.UnixSite(runner, str(channel_socket))
@@ -101,7 +101,7 @@ async def test_cli_handles_session_non_200_error(tmp_path: Path) -> None:
         return web.json_response({"error": {"message": "something went wrong"}}, status=500)
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.UnixSite(runner, str(channel_socket))

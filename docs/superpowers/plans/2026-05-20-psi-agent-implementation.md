@@ -261,7 +261,7 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 **Files:** `psi_agent/session/server.py`, `psi_agent/session/__init__.py` (更新)
 
 aiohttp Unix socket server 监听 `channel_socket`:
-- `POST /v1/chat/completions`: 解析请求，用 `SessionAgent.run()` 处理，SSE 流式返回
+- `POST /chat/completions`: 解析请求，用 `SessionAgent.run()` 处理，SSE 流式返回
 - 用 `anyio.Lock` 确保单请求，后续请求 FIFO 排队
 - 请求 body 中的 messages 只取最后一条 user 消息
 
@@ -276,7 +276,7 @@ aiohttp Unix socket server 监听 `channel_socket`:
 `ChannelRepl.run()`:
 1. 连接 `session_socket` Unix socket
 2. 交互式循环：显示 `> `，读取行
-3. `POST /v1/chat/completions`（不发送 history）
+3. `POST /chat/completions`（不发送 history）
 4. SSE 流式读取，实时打印 reasoning_content（dimmed）和 content
 5. Ctrl+C/D 退出
 

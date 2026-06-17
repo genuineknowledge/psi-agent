@@ -44,7 +44,7 @@ class MockAIServer:
 
     async def start(self, handler) -> str:
         self._app = web.Application()
-        self._app.router.add_post("/v1/chat/completions", handler)
+        self._app.router.add_post("/chat/completions", handler)
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         site = web.UnixSite(self._runner, str(self.socket_path))
@@ -307,7 +307,7 @@ def _stop(content: str) -> dict:
 async def test_agent_tool_not_registered(tmp_path: Path) -> None:
     handler = await _make_inline_ai_handler([_tc("unknown", "{}"), _stop("done")])
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -319,7 +319,7 @@ async def test_agent_tool_not_registered(tmp_path: Path) -> None:
         tf = ToolFunction(
             name="unknown", description="X", parameters={"type": "object", "properties": {}, "required": []}
         )
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={"unknown": tf}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={"unknown": tf}, model="test")
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
         assert "not found" in reasoning.lower()
@@ -331,7 +331,7 @@ async def test_agent_tool_not_registered(tmp_path: Path) -> None:
 async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
     handler = await _make_inline_ai_handler([_tc("crash", "{}"), _stop("recovered")])
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -349,7 +349,7 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
         tf = ToolFunction(
             name="crash", description="X", parameters={"type": "object", "properties": {}, "required": []}
         )
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={"crash": tf}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={"crash": tf}, model="test")
         agent.register_tool_func("crash", crash_tool)
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
@@ -362,7 +362,7 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
 async def test_agent_tool_returns_int(tmp_path: Path) -> None:
     handler = await _make_inline_ai_handler([_tc("int_tool", "{}"), _stop("done")])
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -378,7 +378,7 @@ async def test_agent_tool_returns_int(tmp_path: Path) -> None:
         tf = ToolFunction(
             name="int_tool", description="X", parameters={"type": "object", "properties": {}, "required": []}
         )
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={"int_tool": tf}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={"int_tool": tf}, model="test")
         agent.register_tool_func("int_tool", int_tool)
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
@@ -403,7 +403,7 @@ async def test_agent_tcp_connector(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -412,7 +412,7 @@ async def test_agent_tcp_connector(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, model="test")
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
         content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
         assert "tcp works" in content
@@ -428,7 +428,7 @@ async def test_agent_ai_non_200_response(tmp_path: Path) -> None:
         return web.json_response({"error": "bad request"}, status=400)
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -437,7 +437,7 @@ async def test_agent_ai_non_200_response(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, model="test")
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
         content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
         assert "Error" in content or "400" in content
@@ -453,7 +453,7 @@ async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
         return web.json_response({"error": "bad request"}, status=400)
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -462,7 +462,7 @@ async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, model="test")
         history_len_before = len(agent.history)
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
         assert len(chunks) >= 1
@@ -491,7 +491,7 @@ async def test_agent_non_data_sse_line(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -500,7 +500,7 @@ async def test_agent_non_data_sse_line(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, model="test")
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
         content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
         assert "after event" in content
@@ -522,7 +522,7 @@ async def test_agent_empty_content_stop(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -531,7 +531,7 @@ async def test_agent_empty_content_stop(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, model="test")
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
         assert len(chunks) >= 1
     finally:

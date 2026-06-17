@@ -143,7 +143,7 @@ async def test_full_pipeline_with_tool(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -170,7 +170,7 @@ async def test_full_pipeline_with_tool(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ],
     )
     ses_proc = await anyio.open_process(
@@ -218,7 +218,7 @@ async def test_multiple_messages_history_accumulates(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -245,7 +245,7 @@ async def test_multiple_messages_history_accumulates(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ],
     )
     ses_proc = await anyio.open_process(
@@ -296,7 +296,7 @@ async def test_multi_turn_history_accumulates(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -323,7 +323,7 @@ async def test_multi_turn_history_accumulates(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ]
     )
     ses_proc = await anyio.open_process(

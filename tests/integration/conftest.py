@@ -88,7 +88,7 @@ class MockAIServer:
                 await resp.write(b"data: [DONE]\n\n")
             return resp
 
-        app.router.add_post("/v1/chat/completions", handler)
+        app.router.add_post("/chat/completions", handler)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -97,7 +97,7 @@ class MockAIServer:
         self.port = sock.getsockname()[1]
         site = web.SockSite(self._runner, sock)
         await site.start()
-        self.base_url = f"http://127.0.0.1:{self.port}/v1"
+        self.base_url = f"http://127.0.0.1:{self.port}"
         return self.base_url
 
     async def cleanup(self) -> None:
@@ -123,7 +123,7 @@ async def read_sse(socket_path: str, message: str = "hello", *, timeout_sec: flo
     connector = UnixConnector(path=socket_path)
     async with (
         ClientSession(connector=connector, timeout=timeout) as session,
-        session.post("http://localhost/v1/chat/completions", json=body) as resp,
+        session.post("http://localhost/chat/completions", json=body) as resp,
     ):
         async for raw in resp.content:
             line = raw.decode().strip()

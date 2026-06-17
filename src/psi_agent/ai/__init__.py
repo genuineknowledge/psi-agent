@@ -33,7 +33,7 @@ async def serve_ai_backend(
     app["model"] = model
     app["api_key"] = api_key
     app["base_url"] = base_url
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
 
     runner = web.AppRunner(app)
     await runner.setup()

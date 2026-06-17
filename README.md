@@ -28,8 +28,9 @@
 # 安装
 uv sync
 
-# 终端 1：启动 AI 后端（--api-key 可选，不传则读 OPENAI_API_KEY 环境变量）
-uv run psi-agent ai openai-completions \
+# 终端 1：启动 AI 后端（--api-key 可选，不传则读 PSI_AI_API_KEY 环境变量）
+uv run psi-agent ai \
+  --provider openai \
   --session-socket ./ai.sock \
   --model gpt-4o-mini \
   --api-key $OPENAI_API_KEY \
@@ -59,9 +60,7 @@ uv run psi-agent channel cli \
 
 ```
 psi-agent
-├── ai
-│   ├── openai-completions    # OpenAI 兼容透传
-│   └── anthropic-messages    # Anthropic→OpenAI 转换
+├── ai                        # 统一 AI 后端（支持 50+ provider）
 ├── session                    # Session + workspace 管理
 └── channel
     ├── repl                   # 交互式 REPL

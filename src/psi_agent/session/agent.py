@@ -210,7 +210,7 @@ class SessionAgent:
             endpoint = self.ai_socket.rstrip("/") + "/chat/completions"
         else:
             connector = UnixConnector(path=self.ai_socket)
-            endpoint = "http://localhost/v1/chat/completions"
+            endpoint = "http://localhost/chat/completions"
         async with (
             ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session,
             session.post(endpoint, json=request_body) as resp,

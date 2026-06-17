@@ -21,7 +21,7 @@ async def serve_session(
     app = web.Application()
     app["agent"] = agent
     app["lock"] = lock
-    app.router.add_post("/v1/chat/completions", handle_chat_completions)
+    app.router.add_post("/chat/completions", handle_chat_completions)
 
     runner = web.AppRunner(app)
     await runner.setup()

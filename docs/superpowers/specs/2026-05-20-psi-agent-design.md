@@ -114,13 +114,13 @@ psi/
 ```
 Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
      │                         │                              │
-     │ POST /v1/chat/completions                              │
+     │ POST /chat/completions                              │
      │ (不发送 history)         │                              │
      │────────────────────────▶│                              │
      │                         │ 持有锁（后续请求排队等待）    │
      │                         │ 拼上 history + tools         │
      │                         │                              │
-     │                         │ POST /v1/chat/completions    │
+     │                         │ POST /chat/completions    │
      │                         │ (streaming + tools)          │
      │                         │─────────────────────────────▶│
      │                         │                              │
@@ -319,7 +319,7 @@ class ChannelRepl:
 - 连接 `session_socket`（aiohttp Unix socket 客户端）
 - 交互式 REPL 循环：
   - 显示 `> ` 提示符，读取用户输入
-  - `POST /v1/chat/completions` 发送消息（不含 history）
+  - `POST /chat/completions` 发送消息（不含 history）
   - SSE 流式接收，实时显示：
     - `reasoning_content`：dimmed/灰色显示（标注 `[思考]`）
     - `content`：正常显示
@@ -341,7 +341,7 @@ class ChannelCli:
 
 **行为**：
 - 连接 `session_socket`
-- `POST /v1/chat/completions` 发送 `message`
+- `POST /chat/completions` 发送 `message`
 - SSE 流式接收，实时显示 reasoning_content + content
 - 显示完毕后退出
 

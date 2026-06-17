@@ -111,7 +111,7 @@ async def test_non_json_body_returns_400(tmp_path: Path, mock_ai_server: MockAIS
         timeout = ClientTimeout(total=5)
         async with (
             ClientSession(connector=connector, timeout=timeout) as s,
-            s.post("http://localhost/v1/chat/completions", data="not json") as resp,
+            s.post("http://localhost/chat/completions", data="not json") as resp,
         ):
             body = await resp.text()
             assert resp.status >= 400 or "error" in body.lower()
@@ -161,7 +161,7 @@ async def test_upstream_sse_disconnects_mid_stream(tmp_path: Path) -> None:
         return resp  # no [DONE], connection closes here
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -186,7 +186,7 @@ async def test_upstream_sse_disconnects_mid_stream(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ]
     )
 
@@ -208,7 +208,7 @@ async def test_upstream_401_tunnelled(tmp_path: Path) -> None:
         return web.json_response({"error": {"message": "Unauthorized", "type": "auth", "code": "401"}}, status=401)
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -233,7 +233,7 @@ async def test_upstream_401_tunnelled(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ]
     )
 
@@ -336,7 +336,7 @@ async def test_anthropic_multi_tool_use_blocks(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ]
     )
 

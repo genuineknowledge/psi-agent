@@ -29,7 +29,7 @@ async def test_handle_invalid_json_body(tmp_path: Path) -> None:
     lock = anyio.Lock()
     app["agent"] = agent
     app["lock"] = lock
-    app.router.add_post("/v1/chat/completions", handle_chat_completions)
+    app.router.add_post("/chat/completions", handle_chat_completions)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -43,7 +43,7 @@ async def test_handle_invalid_json_body(tmp_path: Path) -> None:
         timeout = ClientTimeout(total=5)
         async with (
             ClientSession(connector=connector, timeout=timeout) as s,
-            s.post("http://localhost/v1/chat/completions", data="not json") as resp,
+            s.post("http://localhost/chat/completions", data="not json") as resp,
         ):
             assert resp.status == 400
     finally:
@@ -58,7 +58,7 @@ async def test_handle_empty_messages(tmp_path: Path) -> None:
     lock = anyio.Lock()
     app["agent"] = agent
     app["lock"] = lock
-    app.router.add_post("/v1/chat/completions", handle_chat_completions)
+    app.router.add_post("/chat/completions", handle_chat_completions)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -73,7 +73,7 @@ async def test_handle_empty_messages(tmp_path: Path) -> None:
         async with (
             ClientSession(connector=connector, timeout=timeout) as s,
             s.post(
-                "http://localhost/v1/chat/completions",
+                "http://localhost/chat/completions",
                 json={"model": "test", "messages": [], "stream": True},
             ) as resp,
         ):
@@ -95,7 +95,7 @@ async def test_handle_non_user_role_coercion(tmp_path: Path) -> None:
         return resp
 
     ai_app = web.Application()
-    ai_app.router.add_post("/v1/chat/completions", ai_handler)
+    ai_app.router.add_post("/chat/completions", ai_handler)
     ai_runner = web.AppRunner(ai_app)
     await ai_runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -105,13 +105,13 @@ async def test_handle_non_user_role_coercion(tmp_path: Path) -> None:
     await ai_site.start()
 
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, model="test")
         lock = anyio.Lock()
 
         app = web.Application()
         app["agent"] = agent
         app["lock"] = lock
-        app.router.add_post("/v1/chat/completions", handle_chat_completions)
+        app.router.add_post("/chat/completions", handle_chat_completions)
 
         runner = web.AppRunner(app)
         await runner.setup()
@@ -126,7 +126,7 @@ async def test_handle_non_user_role_coercion(tmp_path: Path) -> None:
             async with (
                 ClientSession(connector=connector, timeout=timeout) as s,
                 s.post(
-                    "http://localhost/v1/chat/completions",
+                    "http://localhost/chat/completions",
                     json={"model": "test", "messages": [{"role": "assistant", "content": "ignored"}], "stream": True},
                 ) as resp,
             ):
@@ -150,7 +150,7 @@ async def test_agent_run_success_flow(tmp_path: Path) -> None:
         return resp
 
     ai_app = web.Application()
-    ai_app.router.add_post("/v1/chat/completions", ai_handler)
+    ai_app.router.add_post("/chat/completions", ai_handler)
     ai_runner = web.AppRunner(ai_app)
     await ai_runner.setup()
     sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
@@ -160,13 +160,13 @@ async def test_agent_run_success_flow(tmp_path: Path) -> None:
     await ai_site.start()
 
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}/v1", tools={}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, model="test")
         lock = anyio.Lock()
 
         app = web.Application()
         app["agent"] = agent
         app["lock"] = lock
-        app.router.add_post("/v1/chat/completions", handle_chat_completions)
+        app.router.add_post("/chat/completions", handle_chat_completions)
 
         runner = web.AppRunner(app)
         await runner.setup()
@@ -181,7 +181,7 @@ async def test_agent_run_success_flow(tmp_path: Path) -> None:
             async with (
                 ClientSession(connector=connector, timeout=timeout) as s,
                 s.post(
-                    "http://localhost/v1/chat/completions",
+                    "http://localhost/chat/completions",
                     json={"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True},
                 ) as resp,
             ):
@@ -201,7 +201,7 @@ async def test_agent_run_raises_produces_error_chunk(tmp_path: Path) -> None:
     app = web.Application()
     app["agent"] = agent
     app["lock"] = lock
-    app.router.add_post("/v1/chat/completions", handle_chat_completions)
+    app.router.add_post("/chat/completions", handle_chat_completions)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -217,7 +217,7 @@ async def test_agent_run_raises_produces_error_chunk(tmp_path: Path) -> None:
         async with (
             ClientSession(connector=connector, timeout=timeout) as s,
             s.post(
-                "http://localhost/v1/chat/completions",
+                "http://localhost/chat/completions",
                 json={"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True},
             ) as resp,
         ):

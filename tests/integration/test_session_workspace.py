@@ -109,7 +109,7 @@ async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> 
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -152,7 +152,7 @@ async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> 
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ]
     )
 
@@ -165,7 +165,7 @@ async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> 
         async with (
             ClientSession(connector=connector, timeout=timeout) as session,
             session.post(
-                "http://localhost/v1/chat/completions",
+                "http://localhost/chat/completions",
                 json={"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True},
             ) as resp,
         ):

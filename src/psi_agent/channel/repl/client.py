@@ -41,7 +41,7 @@ async def run_repl(session_socket: str) -> None:
                 }
 
                 async with session.post(
-                    "http://localhost/v1/chat/completions",
+                    "http://localhost/chat/completions",
                     json=req_data,
                 ) as resp:
                     if resp.status != 200:

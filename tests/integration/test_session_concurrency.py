@@ -17,7 +17,7 @@ async def _send_async(socket_path: str, message: str) -> int:
     timeout = ClientTimeout(total=5)
     async with (
         ClientSession(connector=connector, timeout=timeout) as session,
-        session.post("http://localhost/v1/chat/completions", json=body) as resp,
+        session.post("http://localhost/chat/completions", json=body) as resp,
     ):
         return resp.status
 
@@ -68,7 +68,7 @@ async def test_concurrent_requests_queue_and_succeed(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", slow_handler)
+    app.router.add_post("/chat/completions", slow_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -95,7 +95,7 @@ async def test_concurrent_requests_queue_and_succeed(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ]
     )
     ses_proc = await anyio.open_process(
@@ -293,7 +293,7 @@ async def test_three_channel_requests_fifo_order(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", slow_handler)
+    app.router.add_post("/chat/completions", slow_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -320,7 +320,7 @@ async def test_three_channel_requests_fifo_order(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ]
     )
     ses_proc = await anyio.open_process(
@@ -380,7 +380,7 @@ async def test_channel_queues_behind_schedule(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -407,7 +407,7 @@ async def test_channel_queues_behind_schedule(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ]
     )
     ses_proc = await anyio.open_process(
@@ -458,7 +458,7 @@ async def test_schedule_queues_behind_channel(tmp_path: Path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", slow_handler)
+    app.router.add_post("/chat/completions", slow_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -485,7 +485,7 @@ async def test_schedule_queues_behind_channel(tmp_path: Path) -> None:
             "--api-key",
             "k",
             "--base-url",
-            f"http://127.0.0.1:{port}/v1",
+            f"http://127.0.0.1:{port}",
         ]
     )
     ses_proc = await anyio.open_process(

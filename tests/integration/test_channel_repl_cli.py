@@ -140,7 +140,7 @@ async def test_sse_reasoning_and_content_interleaved(tmp_path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
@@ -150,7 +150,7 @@ async def test_sse_reasoning_and_content_interleaved(tmp_path) -> None:
     await site.start()
 
     try:
-        chunks = await _read_tcp_sse(f"http://127.0.0.1:{port}/v1", "test")
+        chunks = await _read_tcp_sse(f"http://127.0.0.1:{port}", "test")
         reasonings = [c.get("choices", [{}])[0].get("delta", {}).get("reasoning_content", "") for c in chunks]
         contents = [c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks]
         assert any("thinking" in r for r in reasonings)
@@ -181,7 +181,7 @@ async def test_multiple_choices_iterated(tmp_path) -> None:
         return resp
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     sock = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
@@ -191,7 +191,7 @@ async def test_multiple_choices_iterated(tmp_path) -> None:
     await site.start()
 
     try:
-        chunks = await _read_tcp_sse(f"http://127.0.0.1:{port}/v1", "test")
+        chunks = await _read_tcp_sse(f"http://127.0.0.1:{port}", "test")
         all_text = json.dumps(chunks)
         assert "choice0" in all_text
         assert "choice1" in all_text

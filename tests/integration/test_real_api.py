@@ -30,7 +30,7 @@ async def _read_sse_stream(connector: UnixConnector, socket_path: str, model: st
     timeout = ClientTimeout(total=60)
     async with (
         ClientSession(connector=connector, timeout=timeout) as session,
-        session.post("http://localhost/v1/chat/completions", json=body) as resp,
+        session.post("http://localhost/chat/completions", json=body) as resp,
     ):
         assert resp.status == 200, f"Got status {resp.status}: {await resp.text()}"
         async for raw in resp.content:

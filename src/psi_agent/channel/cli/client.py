@@ -24,7 +24,7 @@ async def run_cli(*, session_socket: str, message: str) -> None:
             }
 
             async with session.post(
-                "http://localhost/v1/chat/completions",
+                "http://localhost/chat/completions",
                 json=req_data,
             ) as resp:
                 if resp.status != 200:
