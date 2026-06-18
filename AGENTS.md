@@ -142,7 +142,7 @@ SSE 流中的特殊字段：
 - **集成测试**: 独立目录 `tests/integration/`，用 `tests/__init__.py` 和 `tests/integration/__init__.py` 使 test 目录成为 package
 - **无需 conftest path hack**: `uv sync` 将 psi-agent 安装为 editable package，`import psi_agent` 直接可用
 - **Mock AI socket**: `aiohttp.web.Application` + `UnixSite`/`SockSite`（获取随机端口用预绑定 socket）
-- **真实 API 测试**: 通过环境变量 `PSI_TEST_OPENAI_*` / `PSI_TEST_ANTHROPIC_*` 注入凭证，未设置时自动 skip
+- **`@pytest.mark.schedule`**：标记需要 >30s 的 schedule 相关测试，`pytest -m "not schedule"` 跳过
 - **所有 async 操作使用 anyio**: 禁止在 async 上下文中直接调用 `subprocess`、`time.sleep`、`pathlib.Path` 方法。详见上方"关键注意事项"第 4 条
 
 ### 集成测试 Mock Server

@@ -452,8 +452,7 @@ def main() -> None:
 
 - **单元测试**: ~78 tests（覆盖除 `cli.py` 和 channel 客户端外的所有源模块）
 - **集成测试**: ~24 tests（AI 层、Session 并发/tool/workspace、Channel、端到端）
-- **真实 API 测试**: 4 tests（通过 `PSI_TEST_*` 环境变量注入凭证）
-- **总计**: 102 tests（+ 2 slow + 4 real API = 108）
+- **总计**: 100 tests（`-m "not schedule"`，+ 2 schedule 仅本地）
 
 
 ---

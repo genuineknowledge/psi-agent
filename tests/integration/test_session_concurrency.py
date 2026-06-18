@@ -366,7 +366,7 @@ async def test_three_channel_requests_fifo_order(tmp_path: Path) -> None:
         await runner.cleanup()
 
 
-@pytest.mark.slow
+@pytest.mark.schedule
 @pytest.mark.anyio
 async def test_channel_queues_behind_schedule(tmp_path: Path) -> None:
     """Channel request queues behind a running schedule task."""
@@ -443,7 +443,7 @@ async def test_channel_queues_behind_schedule(tmp_path: Path) -> None:
         await runner.cleanup()
 
 
-@pytest.mark.slow
+@pytest.mark.schedule
 @pytest.mark.anyio
 async def test_schedule_queues_behind_channel(tmp_path: Path) -> None:
     """Schedule task queues behind a running channel request."""

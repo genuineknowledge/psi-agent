@@ -74,7 +74,6 @@ psi/
 │   │   ├── test_channel_error.py
 │   │   ├── test_channel_repl_cli.py
 │   │   ├── test_end_to_end.py
-│   │   ├── test_real_api.py
 │   │   ├── test_session_concurrency.py
 │   │   ├── test_session_tools.py
 │   │   └── test_session_workspace.py

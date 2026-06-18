@@ -27,13 +27,6 @@ jobs:
           python-version: "3.14"
       - run: uv sync
       - run: uv run pytest -v
-        env:
-          PSI_TEST_OPENAI_API_KEY: ${{ secrets.PSI_TEST_OPENAI_API_KEY }}
-          PSI_TEST_OPENAI_BASE_URL: ${{ secrets.PSI_TEST_OPENAI_BASE_URL }}
-          PSI_TEST_OPENAI_MODEL: ${{ secrets.PSI_TEST_OPENAI_MODEL }}
-          PSI_TEST_ANTHROPIC_API_KEY: ${{ secrets.PSI_TEST_ANTHROPIC_API_KEY }}
-          PSI_TEST_ANTHROPIC_BASE_URL: ${{ secrets.PSI_TEST_ANTHROPIC_BASE_URL }}
-          PSI_TEST_ANTHROPIC_MODEL: ${{ secrets.PSI_TEST_ANTHROPIC_MODEL }}
 
   publish:
     needs: [lint, test]
