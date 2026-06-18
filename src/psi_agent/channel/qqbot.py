@@ -279,19 +279,27 @@ async def _run_qqbot_gateway_connection(
                 op = payload.get("op")
                 if op == 10:
                     interval_ms = _qqbot_heartbeat_interval(cast(dict[str, Any], payload))
+                    logger.info(f"QQ Bot Gateway hello received; heartbeat_interval={interval_ms}ms")
                     await _qqbot_identify(ws, adapter=adapter, session=session, gateway_intents=gateway_intents)
                     tg.start_soon(_qqbot_heartbeat_loop, ws, state, interval_ms / 1000)
                     continue
-                if op == 0 and payload.get("t") in QQBOT_DISPATCH_EVENTS:
-                    await _handle_qqbot_gateway_message(
-                        session=session,
-                        session_socket=session_socket,
-                        adapter=adapter,
-                        payload=cast(dict[str, Any], payload),
-                    )
+                if op == 0:
+                    event_type = str(payload.get("t") or "")
+                    if event_type == "READY":
+                        logger.info("QQ Bot Gateway ready")
+                    elif event_type in QQBOT_DISPATCH_EVENTS:
+                        logger.info(f"QQ Bot Gateway dispatch received: {event_type}")
+                        await _handle_qqbot_gateway_message(
+                            session=session,
+                            session_socket=session_socket,
+                            adapter=adapter,
+                            payload=cast(dict[str, Any], payload),
+                        )
+                    elif event_type:
+                        logger.info(f"QQ Bot Gateway dispatch ignored: {event_type}")
                     continue
                 if op in {7, 9}:
-                    logger.warning(f"QQ Bot Gateway requested reconnect, op={op}")
+                    logger.warning(f"QQ Bot Gateway requested reconnect, op={op}, data={payload.get('d')!r}")
                     tg.cancel_scope.cancel()
                     return
             elif msg.type in {WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR}:

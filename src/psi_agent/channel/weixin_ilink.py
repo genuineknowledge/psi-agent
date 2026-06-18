@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import os
 import random
+import re
+import sys
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlencode
 
 import anyio
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
@@ -37,6 +42,18 @@ API_TIMEOUT_MS = 15_000
 RETRY_DELAY_SECONDS = 2.0
 BACKOFF_DELAY_SECONDS = 30.0
 MAX_CONSECUTIVE_FAILURES = 3
+QR_LOGIN_TIMEOUT_SECONDS = 180.0
+QR_LOGIN_POLL_INTERVAL_SECONDS = 2.0
+QR_LOGIN_MAX_REFRESHES = 3
+QR_BOT_TYPE = 3
+DEFAULT_STATE_DIR = "~/.psi-agent/channels/weixin-ilink"
+
+QR_WAIT_STATUSES = {"wait", "scaned", "scanned"}
+QR_REDIRECT_STATUSES = {"scaned_but_redirect"}
+QR_SUCCESS_STATUSES = {"confirmed", "success", "connected"}
+QR_NOOP_SUCCESS_STATUSES = {"binded_redirect"}
+QR_REFRESH_STATUSES = {"expired", "verify_code_blocked"}
+QR_VERIFY_STATUSES = {"need_verifycode", "need_verify_code"}
 
 
 @dataclass(frozen=True)
@@ -57,6 +74,25 @@ class WeixinIlinkState:
 
     sync_buf: str = ""
     context_tokens: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WeixinIlinkCredentials:
+    """Persisted Tencent iLink bot login credentials."""
+
+    token: str
+    account_id: str
+    base_url: str = ILINK_BASE_URL
+    user_id: str = ""
+    storage_id: str = ""
+    saved_at: str = ""
+
+    def client(self) -> WeixinIlinkClient:
+        return WeixinIlinkClient(
+            token=self.token,
+            account_id=self.account_id,
+            base_url=(self.base_url or ILINK_BASE_URL).rstrip("/"),
+        )
 
 
 @dataclass(frozen=True)
@@ -119,11 +155,52 @@ class WeixinIlinkClient:
         )
 
 
+async def request_weixin_ilink_qrcode(
+    session: ClientSession,
+    *,
+    base_url: str = ILINK_BASE_URL,
+    local_tokens: list[str] | None = None,
+    timeout_ms: int = API_TIMEOUT_MS,
+) -> dict[str, Any]:
+    endpoint = f"{EP_GET_BOT_QR}?{urlencode({'bot_type': QR_BOT_TYPE})}"
+    return await _api_post(
+        session,
+        base_url=base_url,
+        endpoint=endpoint,
+        payload={"local_token_list": local_tokens or []},
+        token="",
+        timeout_ms=timeout_ms,
+    )
+
+
+async def get_weixin_ilink_qrcode_status(
+    session: ClientSession,
+    *,
+    base_url: str,
+    qrcode: str,
+    verify_code: str = "",
+    timeout_ms: int = API_TIMEOUT_MS,
+) -> dict[str, Any]:
+    params = {"qrcode": qrcode}
+    if verify_code:
+        params["verify_code"] = verify_code
+    try:
+        return await _api_get(
+            session,
+            base_url=base_url,
+            endpoint=f"{EP_GET_QR_STATUS}?{urlencode(params)}",
+            token="",
+            timeout_ms=timeout_ms,
+        )
+    except TimeoutError:
+        return {"ret": 0, "status": "wait"}
+
+
 @dataclass
 class ChannelWeixinIlink:
     """WeChat personal account channel using Tencent iLink long polling."""
 
-    session_socket: str
+    session_socket: str = ""
     """Path to the session Unix domain socket."""
 
     token: str = ""
@@ -135,33 +212,49 @@ class ChannelWeixinIlink:
     base_url: str = ""
     """Tencent iLink API base URL. Falls back to WEIXIN_BASE_URL."""
 
+    state_dir: str = ""
+    """Directory for QR-login account state. Falls back to WEIXIN_STATE_DIR or ~/.psi-agent/channels/weixin-ilink."""
+
     long_poll_timeout_ms: int = LONG_POLL_TIMEOUT_MS
     """Long-poll getupdates timeout in milliseconds."""
+
+    login_timeout_seconds: float = QR_LOGIN_TIMEOUT_SECONDS
+    """Seconds to wait for QR login confirmation."""
 
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
     qr: bool = False
-    """Print QR login helper guidance. First version still requires token/account credentials."""
+    """Start QR login and save credentials for future channel runs."""
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
+        base_url = (self.base_url or os.environ.get("WEIXIN_BASE_URL", ILINK_BASE_URL)).rstrip("/")
+        state_dir = resolve_weixin_ilink_state_dir(self.state_dir)
         if self.qr:
-            await print_weixin_ilink_qr_help()
+            credentials = await login_weixin_ilink_by_qr(
+                state_dir=state_dir,
+                base_url=base_url,
+                timeout_seconds=self.login_timeout_seconds,
+            )
+            sys.stdout.write(
+                f"Weixin iLink login saved: account={_safe_id(credentials.account_id)} "
+                f"state={state_dir}\n"
+            )
             return
 
-        token = self.token or os.environ.get("WEIXIN_TOKEN", "")
-        account_id = self.account_id or os.environ.get("WEIXIN_ACCOUNT_ID", "")
-        base_url = self.base_url or os.environ.get("WEIXIN_BASE_URL", ILINK_BASE_URL)
-        if not token:
-            raise UserFacingError("Missing Weixin iLink token.", "Pass --token or set WEIXIN_TOKEN.")
-        if not account_id:
-            raise UserFacingError("Missing Weixin iLink account ID.", "Pass --account-id or set WEIXIN_ACCOUNT_ID.")
+        credentials = resolve_weixin_ilink_credentials(
+            token=self.token,
+            account_id=self.account_id,
+            base_url=base_url,
+            state_dir=state_dir,
+        )
+        if not self.session_socket:
+            raise UserFacingError("Missing session socket.", "Pass --session-socket for the Weixin iLink channel.")
 
-        client = WeixinIlinkClient(token=token, account_id=account_id, base_url=base_url.rstrip("/"))
         await run_weixin_ilink_channel(
             session_socket=self.session_socket,
-            client=client,
+            client=credentials.client(),
             long_poll_timeout_ms=self.long_poll_timeout_ms,
         )
 
@@ -214,16 +307,29 @@ async def poll_weixin_ilink_once(
         state.sync_buf = new_sync_buf
 
     messages = extract_weixin_ilink_messages(response, account_id=client.account_id)
+    if messages:
+        logger.info(f"weixin-ilink received messages: count={len(messages)}")
     for message in messages:
+        logger.info(
+            "weixin-ilink message received: "
+            f"peer={_safe_id(message.peer_id)} sender={_safe_id(message.sender_id)} "
+            f"message={_safe_id(message.message_id)} text_len={len(message.text)}"
+        )
         if message.context_token:
             state.context_tokens[message.peer_id] = message.context_token
         reply = await collect_session_reply(session_socket=session_socket, message=message.text)
         if reply:
-            await client.send_text(
+            send_response = await client.send_text(
                 session,
                 to_user_id=message.peer_id,
                 text=reply,
                 context_token=state.context_tokens.get(message.peer_id, ""),
+            )
+            _raise_for_ilink_error(send_response, "sendmessage")
+            logger.info(
+                "weixin-ilink reply sent: "
+                f"peer={_safe_id(message.peer_id)} message={_safe_id(message.message_id)} "
+                f"reply_len={len(reply)}"
             )
     return messages
 
@@ -261,12 +367,236 @@ def extract_weixin_ilink_messages(response: dict[str, Any], *, account_id: str) 
     return messages
 
 
-async def print_weixin_ilink_qr_help() -> None:
-    _ = EP_GET_BOT_QR, EP_GET_QR_STATUS
+def resolve_weixin_ilink_credentials(
+    *,
+    token: str = "",
+    account_id: str = "",
+    base_url: str = ILINK_BASE_URL,
+    state_dir: Path | None = None,
+) -> WeixinIlinkCredentials:
+    env_token = os.environ.get("WEIXIN_TOKEN", "")
+    env_account_id = os.environ.get("WEIXIN_ACCOUNT_ID", "")
+    resolved_token = token or env_token
+    resolved_account_id = account_id or env_account_id
+    if resolved_token and resolved_account_id:
+        return WeixinIlinkCredentials(
+            token=resolved_token,
+            account_id=resolved_account_id,
+            base_url=base_url,
+            storage_id=normalize_weixin_ilink_account_id(resolved_account_id),
+        )
+
+    credentials = load_weixin_ilink_credentials(state_dir or resolve_weixin_ilink_state_dir(""))
+    if credentials is not None:
+        return credentials
+
     raise UserFacingError(
-        "Weixin iLink QR login helper is not implemented yet.",
-        "First version requires existing WEIXIN_TOKEN and WEIXIN_ACCOUNT_ID credentials.",
+        "Missing Weixin iLink credentials.",
+        "Run `psi-agent channel weixin-ilink --qr --session-socket <socket>` to scan login, "
+        "or pass --token/--account-id.",
     )
+
+
+async def login_weixin_ilink_by_qr(
+    *,
+    state_dir: Path,
+    base_url: str = ILINK_BASE_URL,
+    timeout_seconds: float = QR_LOGIN_TIMEOUT_SECONDS,
+    poll_interval_seconds: float = QR_LOGIN_POLL_INTERVAL_SECONDS,
+) -> WeixinIlinkCredentials:
+    await anyio.Path(state_dir).mkdir(parents=True, exist_ok=True)
+    timeout = ClientTimeout(total=None)
+    async with ClientSession(connector=TCPConnector(ssl=base_url.startswith("https://")), timeout=timeout) as session:
+        local_tokens = recent_weixin_ilink_tokens(state_dir)
+        current_base_url = base_url.rstrip("/")
+        qrcode = ""
+        refresh_count = 0
+        deadline = anyio.current_time() + timeout_seconds
+
+        while True:
+            if not qrcode:
+                qr_response = await request_weixin_ilink_qrcode(
+                    session,
+                    base_url=current_base_url,
+                    local_tokens=local_tokens,
+                )
+                _raise_for_ilink_error(qr_response, "get_bot_qrcode")
+                qrcode = _first_string(qr_response, "qrcode", "qrCode", "qr_code")
+                qrcode_url = _first_string(
+                    qr_response,
+                    "qrcode_img_content",
+                    "qrcodeImgContent",
+                    "qrcode_url",
+                    "qrDataUrl",
+                    "qrcodeUrl",
+                )
+                if not qrcode or not qrcode_url:
+                    raise UserFacingError(f"Weixin iLink QR response missing qrcode fields: {_redact(qr_response)}")
+                sys.stdout.write("Scan this Weixin QR code URL with WeChat:\n")
+                sys.stdout.write(f"{qrcode_url}\n")
+                sys.stdout.flush()
+
+            if anyio.current_time() >= deadline:
+                raise UserFacingError("Weixin iLink QR login timed out.", "Run the --qr command again.")
+
+            status = await get_weixin_ilink_qrcode_status(
+                session,
+                base_url=current_base_url,
+                qrcode=qrcode,
+            )
+            _raise_for_ilink_error(status, "get_qrcode_status")
+            status_name = str(status.get("status") or "").lower()
+
+            if status_name in QR_SUCCESS_STATUSES:
+                credentials = credentials_from_weixin_ilink_status(status, base_url=current_base_url)
+                save_weixin_ilink_credentials(state_dir, credentials)
+                return credentials
+            if status_name in QR_NOOP_SUCCESS_STATUSES:
+                existing = load_weixin_ilink_credentials(state_dir)
+                if existing is None:
+                    raise UserFacingError(
+                        "Weixin iLink reported an existing binding but no local account state was found.",
+                        "Remove the stale remote binding or scan with a fresh account.",
+                    )
+                return existing
+            if status_name in QR_REDIRECT_STATUSES:
+                redirect_host = _first_string(status, "redirect_host", "redirectHost")
+                if redirect_host:
+                    current_base_url = _normalize_weixin_redirect_base_url(redirect_host)
+                    logger.info(f"Weixin iLink QR login redirected to {current_base_url}")
+                await anyio.sleep(poll_interval_seconds)
+                continue
+            if status_name in QR_REFRESH_STATUSES:
+                refresh_count += 1
+                if refresh_count > QR_LOGIN_MAX_REFRESHES:
+                    raise UserFacingError(
+                        "Weixin iLink QR login expired too many times.",
+                        "Run the --qr command again.",
+                    )
+                qrcode = ""
+                continue
+            if status_name in QR_VERIFY_STATUSES:
+                verify_code = (await asyncio.to_thread(input, "Enter WeChat verification code: ")).strip()
+                verify_status = await get_weixin_ilink_qrcode_status(
+                    session,
+                    base_url=current_base_url,
+                    qrcode=qrcode,
+                    verify_code=verify_code,
+                )
+                _raise_for_ilink_error(verify_status, "get_qrcode_status")
+                if str(verify_status.get("status") or "").lower() in QR_SUCCESS_STATUSES:
+                    credentials = credentials_from_weixin_ilink_status(verify_status, base_url=current_base_url)
+                    save_weixin_ilink_credentials(state_dir, credentials)
+                    return credentials
+                await anyio.sleep(poll_interval_seconds)
+                continue
+
+            if status_name and status_name not in QR_WAIT_STATUSES:
+                logger.info(f"Weixin iLink QR login status ignored: {status_name}")
+            await anyio.sleep(poll_interval_seconds)
+
+
+def credentials_from_weixin_ilink_status(status: dict[str, Any], *, base_url: str) -> WeixinIlinkCredentials:
+    token = _first_string(status, "bot_token", "botToken", "token")
+    account_id = _first_string(status, "ilink_bot_id", "ilinkBotId", "account_id", "accountId")
+    if not token:
+        raise UserFacingError(f"Weixin iLink QR login did not return bot_token: {_redact(status)}")
+    if not account_id:
+        raise UserFacingError(f"Weixin iLink QR login did not return ilink_bot_id: {_redact(status)}")
+
+    status_base_url = _first_string(status, "baseurl", "baseUrl", "base_url") or base_url
+    user_id = _first_string(status, "ilink_user_id", "ilinkUserId", "user_id", "userId")
+    return WeixinIlinkCredentials(
+        token=token,
+        account_id=account_id,
+        base_url=status_base_url.rstrip("/"),
+        user_id=user_id,
+        storage_id=normalize_weixin_ilink_account_id(account_id),
+        saved_at=dt.datetime.now(dt.UTC).isoformat(),
+    )
+
+
+def resolve_weixin_ilink_state_dir(raw: str) -> Path:
+    state_dir = raw or os.environ.get("WEIXIN_STATE_DIR", "") or os.environ.get("OPENCLAW_STATE_DIR", "")
+    if state_dir:
+        return Path(state_dir).expanduser().resolve()
+    return Path(DEFAULT_STATE_DIR).expanduser().resolve()
+
+
+def load_weixin_ilink_credentials(state_dir: Path) -> WeixinIlinkCredentials | None:
+    account_dir = state_dir / "accounts"
+    accounts = _read_json_object(state_dir / "accounts.json")
+    candidates: list[str] = []
+    if accounts is not None:
+        raw_accounts = accounts.get("accounts")
+        if isinstance(raw_accounts, list):
+            for item in raw_accounts:
+                if isinstance(item, str):
+                    candidates.append(item)
+                elif isinstance(item, dict):
+                    account_id = _first_string(item, "account_id", "accountId", "id")
+                    if account_id:
+                        candidates.append(account_id)
+
+    if account_dir.exists():
+        candidates.extend(
+            path.stem
+            for path in sorted(account_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        )
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        storage_id = normalize_weixin_ilink_account_id(candidate)
+        if storage_id in seen:
+            continue
+        seen.add(storage_id)
+        credentials = _load_weixin_ilink_account_file(account_dir / f"{storage_id}.json", storage_id=storage_id)
+        if credentials is not None:
+            return credentials
+
+    return _load_openclaw_legacy_credentials(state_dir)
+
+
+def save_weixin_ilink_credentials(state_dir: Path, credentials: WeixinIlinkCredentials) -> None:
+    storage_id = credentials.storage_id or normalize_weixin_ilink_account_id(credentials.account_id)
+    account_dir = state_dir / "accounts"
+    account_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "token": credentials.token,
+        "accountId": credentials.account_id,
+        "savedAt": credentials.saved_at or dt.datetime.now(dt.UTC).isoformat(),
+        "baseUrl": credentials.base_url,
+        "userId": credentials.user_id,
+    }
+    (account_dir / f"{storage_id}.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    accounts_path = state_dir / "accounts.json"
+    accounts = _read_json_object(accounts_path) or {}
+    raw_accounts = accounts.get("accounts")
+    existing = [item for item in raw_accounts if isinstance(item, str)] if isinstance(raw_accounts, list) else []
+    ordered = [storage_id, *[item for item in existing if normalize_weixin_ilink_account_id(item) != storage_id]]
+    accounts_path.write_text(json.dumps({"accounts": ordered[:10]}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def recent_weixin_ilink_tokens(state_dir: Path, limit: int = 10) -> list[str]:
+    tokens: list[str] = []
+    account_dir = state_dir / "accounts"
+    if account_dir.exists():
+        for path in sorted(account_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            data = _read_json_object(path)
+            if data is None:
+                continue
+            token = _first_string(data, "token", "bot_token", "botToken")
+            if token:
+                tokens.append(token)
+            if len(tokens) >= limit:
+                break
+    return tokens
+
+
+def normalize_weixin_ilink_account_id(account_id: str) -> str:
+    normalized = account_id.strip().replace("@", "-").replace(".", "-")
+    normalized = re.sub(r"[^A-Za-z0-9_-]+", "-", normalized)
+    return normalized.strip("-") or "default"
 
 
 async def _api_post(
@@ -283,6 +613,32 @@ async def _api_post(
 
     async def request() -> dict[str, Any]:
         async with session.post(url, data=body, headers=_headers(token, body)) as response:
+            raw = await response.text()
+            if response.status >= 400:
+                raise UserFacingError(f"Weixin iLink {endpoint} failed: HTTP {response.status}: {raw[:300]}")
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                raise UserFacingError(f"Weixin iLink {endpoint} response is not JSON: {raw[:300]}") from None
+            if not isinstance(data, dict):
+                raise UserFacingError(f"Weixin iLink {endpoint} response is not an object.")
+            return cast(dict[str, Any], data)
+
+    return await asyncio.wait_for(request(), timeout=timeout_ms / 1000)
+
+
+async def _api_get(
+    session: ClientSession,
+    *,
+    base_url: str,
+    endpoint: str,
+    token: str,
+    timeout_ms: int,
+) -> dict[str, Any]:
+    url = f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+
+    async def request() -> dict[str, Any]:
+        async with session.get(url, headers=_headers(token, "")) as response:
             raw = await response.text()
             if response.status >= 400:
                 raise UserFacingError(f"Weixin iLink {endpoint} failed: HTTP {response.status}: {raw[:300]}")
@@ -371,3 +727,65 @@ def _safe_id(value: str, keep: int = 8) -> str:
 
 def _random_wechat_uin() -> str:
     return str(random.randint(100_000_000, 999_999_999))
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return cast(dict[str, Any], data) if isinstance(data, dict) else None
+
+
+def _load_weixin_ilink_account_file(path: Path, *, storage_id: str) -> WeixinIlinkCredentials | None:
+    data = _read_json_object(path)
+    if data is None:
+        return None
+    token = _first_string(data, "token", "bot_token", "botToken")
+    if not token:
+        return None
+    account_id = _first_string(data, "accountId", "account_id", "ilink_bot_id", "ilinkBotId") or storage_id
+    return WeixinIlinkCredentials(
+        token=token,
+        account_id=account_id,
+        base_url=_first_string(data, "baseUrl", "baseurl", "base_url") or ILINK_BASE_URL,
+        user_id=_first_string(data, "userId", "user_id", "ilink_user_id", "ilinkUserId"),
+        storage_id=storage_id,
+        saved_at=_first_string(data, "savedAt", "saved_at"),
+    )
+
+
+def _load_openclaw_legacy_credentials(state_dir: Path) -> WeixinIlinkCredentials | None:
+    legacy_path = state_dir / "credentials" / "openclaw-weixin" / "credentials.json"
+    data = _read_json_object(legacy_path)
+    if data is None:
+        return None
+    token = _first_string(data, "token", "bot_token", "botToken")
+    account_id = _first_string(data, "accountId", "account_id", "ilink_bot_id", "ilinkBotId")
+    if not token or not account_id:
+        return None
+    return WeixinIlinkCredentials(
+        token=token,
+        account_id=account_id,
+        base_url=_first_string(data, "baseUrl", "baseurl", "base_url") or ILINK_BASE_URL,
+        user_id=_first_string(data, "userId", "user_id", "ilink_user_id", "ilinkUserId"),
+        storage_id=normalize_weixin_ilink_account_id(account_id),
+    )
+
+
+def _normalize_weixin_redirect_base_url(redirect_host: str) -> str:
+    if redirect_host.startswith(("http://", "https://")):
+        return redirect_host.rstrip("/")
+    return f"https://{redirect_host.strip('/')}"
+
+
+def _redact(data: dict[str, Any]) -> str:
+    redacted = dict(data)
+    for key in ("token", "bot_token", "botToken", "Authorization", "authorization"):
+        if key in redacted:
+            redacted[key] = "***"
+    return json.dumps(redacted, ensure_ascii=False)[:500]
