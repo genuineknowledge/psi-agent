@@ -174,6 +174,17 @@ uv run psi-agent channel qqbot --session-socket ./channel.sock --app-id "$QQ_APP
 uv run psi-agent channel weixin-ilink --session-socket ./channel.sock --token "$WEIXIN_TOKEN" --account-id "$WEIXIN_ACCOUNT_ID"
 ```
 
+Weixin iLink can also login by QR code and save local credentials:
+
+```bash
+uv run psi-agent channel weixin-ilink --qr
+uv run psi-agent channel weixin-ilink --session-socket ./channel.sock
+```
+
+The default state directory is `~/.psi-agent/channels/weixin-ilink`. Use
+`--state-dir`, `WEIXIN_STATE_DIR`, or `OPENCLAW_STATE_DIR` to read or write a
+different account state directory.
+
 Bridge channels are available for external transport processes that already
 normalize incoming QQ/WeChat messages:
 
@@ -250,9 +261,10 @@ Native QQBot uses QQ Bot OpenAPI v2 credentials, fetches the official Gateway
 URL, receives `C2C_MESSAGE_CREATE` and `GROUP_AT_MESSAGE_CREATE`, then replies
 through `/v2/users/{openid}/messages` or `/v2/groups/{group_openid}/messages`.
 
-Weixin iLink uses Tencent iLink Bot API long polling. It requires an existing
-`WEIXIN_TOKEN` and `WEIXIN_ACCOUNT_ID`; QR login helper and media delivery are
-not implemented yet.
+Weixin iLink uses Tencent iLink Bot API long polling. It supports QR login via
+`get_bot_qrcode` / `get_qrcode_status`, saves `bot_token` and `ilink_bot_id`
+locally, and can still accept explicit `WEIXIN_TOKEN` and `WEIXIN_ACCOUNT_ID`.
+Media delivery is not implemented yet.
 
 The WeChat bridge channel is for an external normalized bridge process. The
 bridge should POST normalized messages to psi-agent:
@@ -312,6 +324,10 @@ Required variables by test:
 - Slack: `SLACK_BOT_TOKEN`, `SLACK_TEST_CHANNEL_ID`
 - Discord relay: `DISCORD_BOT_TOKEN`, `DISCORD_TEST_CHANNEL_ID`
 - Discord Gateway manual inbound: also set `PSI_RUN_REAL_DISCORD_GATEWAY_TESTS=1` and `DISCORD_GATEWAY_TEST_TEXT`
+- QQBot Gateway credential smoke: `QQ_APP_ID`, `QQ_CLIENT_SECRET`
+- QQBot Gateway manual inbound: also set `PSI_RUN_REAL_QQBOT_GATEWAY_TESTS=1` and `QQ_GATEWAY_TEST_TEXT`
+- Weixin iLink getupdates smoke: `WEIXIN_TOKEN`, `WEIXIN_ACCOUNT_ID`
+- Weixin iLink manual inbound: also set `PSI_RUN_REAL_WEIXIN_ILINK_TESTS=1` and `WEIXIN_ILINK_TEST_TEXT`
 
 ## Fusion Flow Workspace
 

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>psi-agent 通道接入与真实账号测试说明</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #5f6b7a;
+      --line: #d8dee8;
+      --panel: #f7f9fc;
+      --ok: #0b7a53;
+      --warn: #9a5b00;
+      --bad: #a83232;
+      --code: #111827;
+    }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+      color: var(--ink);
+      background: #fff;
+      line-height: 1.7;
+    }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 40px 24px 56px;
+    }
+    h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.25; }
+    h2 { margin: 34px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 22px; }
+    p { margin: 8px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: 14px; }
+    th, td { border: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: var(--panel); font-weight: 700; }
+    code, pre { font-family: Consolas, "SFMono-Regular", Menlo, monospace; color: var(--code); }
+    code { background: #eef2f6; border-radius: 4px; padding: 1px 5px; }
+    pre { overflow: auto; background: #f3f5f8; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 13px; line-height: 1.5; }
+    ul { margin: 8px 0 12px 22px; padding: 0; }
+    li { margin: 4px 0; }
+    .meta { color: var(--muted); margin-bottom: 24px; }
+    .summary { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 18px 0 24px; }
+    .tag { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .ok { background: #e7f6f3; color: var(--ok); }
+    .warn { background: #fff4df; color: var(--warn); }
+    .bad { background: #fdecec; color: var(--bad); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>psi-agent 通道接入与真实账号测试说明</h1>
+  <p class="meta">更新日期：2026-06-16 ｜ 范围：Telegram、WhatsApp、Discord、Slack，以及国内通道的测试前置说明</p>
+
+  <section class="summary">
+    <p><strong>当前结论：</strong>国外通道的协议 adapter、link parser、mock E2E 和真实账号测试入口已经接好。Telegram、Slack、Discord 已经做过真实账号闭环；WhatsApp 因 Meta 账号/号码验证暂时阻塞。</p>
+    <p><strong>真实闭环定义：</strong>用户在聊天软件发消息，平台通过 webhook 或 Gateway 把事件送到 psi-agent，psi-agent 调用 session/model 生成回复，再通过平台 API 发回同一个聊天窗口。</p>
+  </section>
+
+  <h2>代码入口</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>模块</th>
+        <th>职责</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>src/psi_agent/channel/link.py</code></td>
+        <td>解析和归一化 channel 链接，例如 <code>t.me</code>、<code>slack://</code>、<code>feishu://</code>、<code>dingtalk://</code>。不负责收发消息。</td>
+      </tr>
+      <tr>
+        <td><code>src/psi_agent/channel/platform.py</code></td>
+        <td>平台 adapter：验签、解析入站消息、调用 psi-agent session、发送平台回复。</td>
+      </tr>
+      <tr>
+        <td><code>src/psi_agent/gateway/profile.py</code></td>
+        <td>统一 profile gateway runtime：同时启动 AI backend、session server、多个 channel adapter，并写本 profile 的状态文件。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>国外通道状态</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>平台</th>
+        <th>入站方式</th>
+        <th>出站方式</th>
+        <th>状态</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Telegram</td>
+        <td>Bot webhook，需要公网 HTTPS URL</td>
+        <td>Bot API <code>sendMessage</code></td>
+        <td><span class="tag ok">真实闭环已测过</span></td>
+      </tr>
+      <tr>
+        <td>Slack</td>
+        <td>Events API webhook，需要公网 HTTPS URL</td>
+        <td>Web API <code>chat.postMessage</code></td>
+        <td><span class="tag ok">真实闭环已测过</span></td>
+      </tr>
+      <tr>
+        <td>Discord</td>
+        <td>Gateway <code>MESSAGE_CREATE</code>，也保留 webhook/relay 测试入口</td>
+        <td>REST API <code>/channels/{channel_id}/messages</code></td>
+        <td><span class="tag ok">真实 Gateway 闭环已测过</span></td>
+      </tr>
+      <tr>
+        <td>WhatsApp</td>
+        <td>Cloud API webhook，需要 Meta 开发者账号和公网 HTTPS URL</td>
+        <td>Cloud API messages endpoint</td>
+        <td><span class="tag warn">等待 Meta 账号/号码验证</span></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>真实测试环境变量模板</h2>
+  <p>真实测试默认跳过，只有设置 <code>PSI_RUN_REAL_CHANNEL_TESTS=1</code> 后才会调用外部平台 API。不要把真实 token 提交进仓库。</p>
+  <pre><code>$env:PSI_RUN_REAL_CHANNEL_TESTS = "1"
+$env:PUBLIC_WEBHOOK_BASE_URL = "https://your-public-https-domain.example"
+
+$env:TELEGRAM_BOT_TOKEN = "..."
+$env:TELEGRAM_TEST_CHAT_ID = "..."
+$env:TELEGRAM_WEBHOOK_SECRET = "psi-agent-test-secret"
+
+$env:SLACK_BOT_TOKEN = "..."
+$env:SLACK_TEST_CHANNEL_ID = "..."
+$env:SLACK_SIGNING_SECRET = "..."
+
+$env:DISCORD_BOT_TOKEN = "..."
+$env:DISCORD_TEST_CHANNEL_ID = "..."
+$env:PSI_RUN_REAL_DISCORD_GATEWAY_TESTS = "1"
+$env:DISCORD_GATEWAY_TEST_TEXT = "psi-agent gateway test"
+
+$env:WHATSAPP_ACCESS_TOKEN = "..."
+$env:WHATSAPP_PHONE_NUMBER_ID = "..."
+$env:WHATSAPP_TEST_RECIPIENT = "..."
+$env:WHATSAPP_VERIFY_TOKEN = "psi-agent-verify-token"</code></pre>
+
+  <h2>测试命令</h2>
+  <pre><code>uv run pytest tests/psi_agent/channel/test_link.py -q
+uv run pytest tests/psi_agent/channel/test_platform.py -q
+uv run pytest tests/integration/test_real_channels.py -v</code></pre>
+
+  <p>当前的真实 smoke test 会等待平台 <code>send_reply()</code> 返回；不是只测 webhook 入队。因此如果 token、权限或平台 API 有问题，测试会失败或超时。</p>
+
+  <h2>公网 HTTPS</h2>
+  <p>Telegram、Slack、WhatsApp 的 webhook 需要公网 HTTPS 地址。本机开发可用 ngrok、Pinggy、Cloudflare Tunnel 等隧道工具把本地 <code>8080</code> 暴露出去。公网地址变化后，需要重新到平台控制台更新 webhook URL。</p>
+  <p>Discord Gateway 不需要公网 HTTPS，因为是 psi-agent 主动连 Discord Gateway。</p>
+</main>
+</body>
+</html>

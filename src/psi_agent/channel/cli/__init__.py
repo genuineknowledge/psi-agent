@@ -20,7 +20,13 @@ class ChannelCli:
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
-    async def run(self) -> None:
+    show_reasoning: bool = False
+    """Print reasoning and tool trace chunks."""
 
+    async def run(self) -> None:
         setup_logging(verbose=self.verbose)
-        await run_cli(session_socket=self.session_socket, message=self.message)
+        await run_cli(
+            session_socket=self.session_socket,
+            message=self.message,
+            show_reasoning=self.show_reasoning,
+        )

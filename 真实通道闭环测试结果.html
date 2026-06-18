@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>psi-agent 真实通道闭环测试结果</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #5f6b7a;
+      --line: #d8dee8;
+      --panel: #f7f9fc;
+      --ok: #0b7a53;
+      --warn: #9a5b00;
+      --bad: #a83232;
+      --code: #111827;
+    }
+    body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; color: var(--ink); background: #fff; line-height: 1.7; }
+    main { max-width: 1040px; margin: 0 auto; padding: 40px 24px 56px; }
+    h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.25; }
+    h2 { margin: 34px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 22px; }
+    p { margin: 8px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: 14px; }
+    th, td { border: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: var(--panel); font-weight: 700; }
+    code, pre { font-family: Consolas, "SFMono-Regular", Menlo, monospace; color: var(--code); }
+    code { background: #eef2f6; border-radius: 4px; padding: 1px 5px; }
+    pre { overflow: auto; background: #f3f5f8; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 13px; line-height: 1.5; }
+    ul { margin: 8px 0 12px 22px; padding: 0; }
+    li { margin: 4px 0; }
+    .meta { color: var(--muted); margin-bottom: 24px; }
+    .summary { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 18px 0 24px; }
+    .tag { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .ok { background: #e7f6f3; color: var(--ok); }
+    .warn { background: #fff4df; color: var(--warn); }
+    .bad { background: #fdecec; color: var(--bad); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>psi-agent 真实通道闭环测试结果</h1>
+  <p class="meta">更新日期：2026-06-16 ｜ 记录范围：Telegram、Discord、Slack、WhatsApp</p>
+
+  <section class="summary">
+    <p><strong>结论：</strong>Telegram、Discord、Slack 已经用测试账号跑通过“用户发消息 -> 平台事件 -> psi-agent -> 平台可见回复”的真实闭环。WhatsApp 因 Meta 开发者账号和号码验证问题暂时不继续投入。</p>
+    <p><strong>注意：</strong>测试过程中不得把 token、secret、真实账号密码写入文档或提交到仓库。环境变量文件只保留在本地临时路径。</p>
+  </section>
+
+  <h2>总览</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>平台</th>
+        <th>入站</th>
+        <th>出站</th>
+        <th>真实闭环状态</th>
+        <th>说明</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Telegram</td>
+        <td>Bot webhook，经公网 HTTPS 隧道转发到本机</td>
+        <td>Telegram Bot API <code>sendMessage</code></td>
+        <td><span class="tag ok">已通过</span></td>
+        <td>需要设置 bot token、测试 chat id，并在测试前绑定 webhook URL。</td>
+      </tr>
+      <tr>
+        <td>Discord</td>
+        <td>Discord Gateway <code>MESSAGE_CREATE</code></td>
+        <td>Discord REST API 发频道消息</td>
+        <td><span class="tag ok">已通过</span></td>
+        <td>Gateway 模式不需要公网 HTTPS。需要开启 message content intent，并把 bot 加进测试服务器/频道。</td>
+      </tr>
+      <tr>
+        <td>Slack</td>
+        <td>Events API webhook，经公网 HTTPS 隧道转发到本机</td>
+        <td>Slack Web API <code>chat.postMessage</code></td>
+        <td><span class="tag ok">已通过</span></td>
+        <td>需要 bot event、OAuth scope、重新安装应用、把 bot 邀请进测试频道。</td>
+      </tr>
+      <tr>
+        <td>WhatsApp</td>
+        <td>WhatsApp Cloud API webhook</td>
+        <td>Cloud API messages endpoint</td>
+        <td><span class="tag warn">暂缓</span></td>
+        <td>阻塞点是 Meta 开发者账号/号码验证，不是当前 psi-agent adapter 代码。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>链路说明</h2>
+  <pre><code>用户在聊天软件发消息
+  -> 平台 webhook 或 Gateway
+  -> psi_agent.channel.platform 对应 adapter
+  -> psi-agent session socket
+  -> AI backend / model
+  -> adapter.send_reply()
+  -> 平台聊天窗口出现回复</code></pre>
+
+  <h2>已修正的测试点</h2>
+  <ul>
+    <li>真实 channel smoke test 现在会等待 <code>send_reply()</code> 返回，不再只确认 webhook 入队。</li>
+    <li>平台 webhook 处理采用异步入队返回，HTTP 响应为 <code>{"ok": true, "messages": 1, "queued": 1, "duplicates": 0}</code>。</li>
+    <li>飞书、钉钉、微信桥、QQ桥的本地 mock E2E 已纳入单元测试。</li>
+    <li><code>psi-agent gateway</code> 是通用 profile runtime，不引入任何外部项目专有概念。</li>
+  </ul>
+
+  <h2>重新执行真实测试</h2>
+  <pre><code>uv run pytest tests/integration/test_real_channels.py -v</code></pre>
+  <p>执行前需要配置对应平台环境变量。Telegram、Slack、WhatsApp 的公网 HTTPS URL 变化后，平台控制台的 webhook URL 也要同步更新。</p>
+</main>
+</body>
+</html>

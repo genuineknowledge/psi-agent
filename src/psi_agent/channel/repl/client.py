@@ -74,7 +74,6 @@ async def run_repl(session_socket: str) -> None:
 
                             if reasoning:
                                 logger.debug(f"Reasoning: {reasoning}")
-                                console.print(reasoning, style="dim", end="")
 
                             if content:
                                 console.print(content, end="")

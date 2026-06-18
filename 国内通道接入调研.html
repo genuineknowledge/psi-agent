@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>psi-agent 国内通道接入调研</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #5f6b7a;
+      --line: #d8dee8;
+      --panel: #f7f9fc;
+      --ok: #0b7a53;
+      --warn: #9a5b00;
+      --bad: #a83232;
+      --code: #111827;
+    }
+    body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif; color: var(--ink); background: #fff; line-height: 1.7; }
+    main { max-width: 1080px; margin: 0 auto; padding: 40px 24px 56px; }
+    h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.25; }
+    h2 { margin: 34px 0 12px; padding-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 22px; }
+    h3 { margin: 24px 0 8px; font-size: 18px; }
+    p { margin: 8px 0; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0 18px; font-size: 14px; }
+    th, td { border: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; }
+    th { background: var(--panel); font-weight: 700; }
+    code, pre { font-family: Consolas, "SFMono-Regular", Menlo, monospace; color: var(--code); }
+    code { background: #eef2f6; border-radius: 4px; padding: 1px 5px; }
+    pre { overflow: auto; background: #f3f5f8; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; font-size: 13px; line-height: 1.5; }
+    ul { margin: 8px 0 12px 22px; padding: 0; }
+    li { margin: 4px 0; }
+    a { color: #155eef; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .meta { color: var(--muted); margin-bottom: 24px; }
+    .summary { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px 18px; margin: 18px 0 24px; }
+    .tag { display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+    .ok { background: #e7f6f3; color: var(--ok); }
+    .warn { background: #fff4df; color: var(--warn); }
+    .bad { background: #fdecec; color: var(--bad); }
+  </style>
+</head>
+<body>
+<main>
+  <h1>psi-agent 国内通道接入调研</h1>
+  <p class="meta">更新日期：2026-06-16 ｜ 范围：QQ、微信、飞书、钉钉 ｜ 目标：明确实现顺序和风险边界</p>
+
+  <section class="summary">
+    <p><strong>当前方案：</strong>飞书、钉钉优先走官方开放平台事件/机器人能力，已经有 psi-agent adapter 和本地 mock E2E。微信、QQ 先落在“外部 bridge -> psi-agent 标准化 webhook -> bridge reply”的边界上，避免把个人号逆向协议放进 psi-agent。</p>
+    <p><strong>命名边界：</strong><code>psi-agent gateway</code> 是本项目自己的 profile runtime，只负责统一启动 AI backend、session 和多个 channel adapter；它不是某个外部项目，也不等于微信/QQ 的登录桥。</p>
+  </section>
+
+  <h2>优先级</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>平台</th>
+        <th>当前实现</th>
+        <th>推荐下一步</th>
+        <th>主要风险</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>飞书</td>
+        <td><code>feishu</code>/<code>lark</code> link parser；Events API webhook adapter；支持 <code>app_id/app_secret</code> 换 tenant token；本地 mock E2E。</td>
+        <td>补充真实租户回归：事件订阅、消息权限、应用发布和 bot 入群。</td>
+        <td>租户管理员权限、应用可见范围、事件订阅 URL、公网 HTTPS、消息权限。</td>
+      </tr>
+      <tr>
+        <td>钉钉</td>
+        <td><code>dingtalk</code>/<code>ding</code> link parser；Outgoing Robot HTTP adapter；通过 <code>sessionWebhook</code> 回复；真实测试已跑过。</td>
+        <td>补 Stream 模式 adapter 或配置入口，支持更稳定的长连接收消息。</td>
+        <td>组织权限、机器人发布、是否必须 @ 机器人、Stream/HTTP 模式差异。</td>
+      </tr>
+      <tr>
+        <td>微信</td>
+        <td><code>wechat</code>/<code>weixin</code>/<code>wechat-bridge</code> link parser；<code>wechat-bridge</code> 标准化 webhook adapter；本地 mock E2E。</td>
+        <td>确认可用的微信 bridge 接口契约：入站 payload、reply URL、鉴权、媒体消息格式。</td>
+        <td>没有通用个人微信 Bot API；不应在 psi-agent 内实现个人号逆向协议。</td>
+      </tr>
+      <tr>
+        <td>QQ</td>
+        <td><code>qq</code>/<code>mqq</code> link parser；<code>qq-bridge</code> 标准化 webhook adapter；本地 mock E2E。</td>
+        <td>确认 QQ Agent/QQ 机器人开放平台路线，后续再决定是否做 native gateway/API adapter。</td>
+        <td>平台审核、沙箱限制、权限、OpenID/频道/群聊模型、connector 稳定性。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>当前代码链路</h2>
+  <pre><code>平台或外部 bridge
+  -> src/psi_agent/channel/platform.py adapter
+  -> psi-agent session socket
+  -> AI backend / model
+  -> adapter.send_reply()
+  -> 平台或 bridge 发回聊天窗口</code></pre>
+
+  <h2>微信/QQ bridge 契约</h2>
+  <p>psi-agent 侧不负责登录微信或 QQ，而是接收外部 bridge 转发的标准化消息。最小入站 payload：</p>
+  <pre><code>{
+  "type": "message",
+  "message": {
+    "conversation_id": "room-1",
+    "user_id": "user-1",
+    "message_id": "msg-1",
+    "text": "hello"
+  },
+  "reply_url": "https://bridge.example/reply"
+}</code></pre>
+  <p>最小出站 payload：</p>
+  <pre><code>{
+  "conversation_id": "room-1",
+  "user_id": "user-1",
+  "text": "reply",
+  "in_reply_to": "msg-1"
+}</code></pre>
+  <p>鉴权支持 <code>Authorization: Bearer &lt;secret&gt;</code> 或平台专用 bridge secret header。</p>
+
+  <h2>飞书</h2>
+  <ul>
+    <li>入站：飞书开放平台 Events API，重点事件是 <code>im.message.receive_v1</code>。</li>
+    <li>出站：消息回复 API <code>/open-apis/im/v1/messages/{message_id}/reply</code>，或按 <code>chat_id</code> 主动发送消息。</li>
+    <li>psi-agent adapter 已支持直接传 <code>tenant_access_token</code>，也支持 <code>app_id/app_secret</code> 自动换 token。</li>
+  </ul>
+
+  <h2>钉钉</h2>
+  <ul>
+    <li>当前 HTTP 方案：应用机器人收到消息后回调到 psi-agent，payload 中的 <code>sessionWebhook</code> 用于回复。</li>
+    <li>真实使用中群聊通常要求 @ 机器人后才触发，这是钉钉机器人触发规则，不是 psi-agent 逻辑问题。</li>
+    <li>后续需要支持 Stream 模式，用长连接减少公网 webhook 配置和回调稳定性问题。</li>
+  </ul>
+
+  <h2>已验证命令</h2>
+  <pre><code>uv run pytest tests/psi_agent/channel/test_link.py -q
+uv run pytest tests/psi_agent/channel/test_platform.py -q
+uv run pytest tests/psi_agent/gateway/test_profile.py -q
+uv run psi-agent gateway --help</code></pre>
+
+  <h2>参考入口</h2>
+  <ul>
+    <li><a href="https://bot.q.qq.com/wiki/">QQ 机器人官方文档</a></li>
+    <li><a href="https://bot.q.qq.com/wiki/agent-qqbot/">QQ 机器人 Agent 接入 / QQ 龙虾机器人</a></li>
+    <li><a href="https://qclaw.qq.com/">QClaw 官方站点</a></li>
+    <li><a href="https://qclaw.qq.com/docs/206087648449069056">QClaw 微信接入指南</a></li>
+    <li><a href="https://open.feishu.cn/document/server-docs/im-v1/message/create">飞书开放平台：发送消息 API</a></li>
+    <li><a href="https://open.dingtalk.com/document/">钉钉开放平台文档</a></li>
+  </ul>
+</main>
+</body>
+</html>

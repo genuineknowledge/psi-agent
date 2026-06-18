@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 
-from aiohttp import ClientSession, ClientTimeout, TCPConnector, web
+from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
 from psi_agent.ai.common import ErrorResponse, SSEChunk, serve_ai_backend
+from psi_agent.net import make_tcp_connector
 
 
 async def serve_openai_completions(
@@ -65,7 +66,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     try:
         use_ssl = base_url.startswith("https")
         async with (
-            ClientSession(connector=TCPConnector(ssl=use_ssl), timeout=ClientTimeout(total=None)) as session,
+            ClientSession(connector=make_tcp_connector(ssl=use_ssl), timeout=ClientTimeout(total=None)) as session,
             session.post(upstream_url, json=body, headers=headers) as upstream_resp,
         ):
             logger.info(f"Upstream response status: {upstream_resp.status}")
