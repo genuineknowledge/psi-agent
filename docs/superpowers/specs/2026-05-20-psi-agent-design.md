@@ -155,6 +155,8 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
    ```
    所有层统一使用 `finish_reason="error"` 标记流式错误，Session 检测到后不写入 conversation history。
 
+> `finish_reason="error"` 是 psi-agent 的扩展，不在 OpenAI 标准枚举内（标准仅 `stop`/`length`/`tool_calls`/`content_filter`/`function_call`）。仅用于内部层间通信。
+
 ---
 
 ## 5. AI 层
@@ -162,7 +164,7 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
 AI 层是一个统一的多 provider LLM 客户端，通过 Unix socket 对外提供 OpenAI-compatible HTTP/SSE 服务。基于 [any-llm-sdk](https://github.com/mozilla-ai/any-llm) 支持 50+ LLM provider，含 Anthropic→OpenAI SSE 格式自动转换。
 
 
-- **`ErrorResponse`**：HTTP 层非流式错误响应（OpenAI `{"error": {...}}` 格式）
+- **错误处理**：HTTP 层返回 OpenAI 格式 `{"error": {...}}` JSON；SSE 层使用 ChatCompletionChunk + `finish_reason="error"`
 - **`serve_ai_backend()`**：Unix socket 服务器脚手架
 
 ### 5.1 AiBackend

@@ -55,7 +55,7 @@ src/
     ├── ai/
     │   ├── AGENTS.md                # AI 层设计文档
     │   ├── __init__.py               # AiBackend + serve_ai_backend
-    │   └── server.py                 # ErrorResponse + handler
+    │   └── server.py                 # handler（请求处理）
     ├── session/
     │   ├── AGENTS.md                # Session 层设计文档
     │   ├── __init__.py             # Session dataclass + run()，workspace 加载入口
@@ -101,6 +101,8 @@ SSE 流中的特殊字段：
    {"id": "error", "choices": [{"index": 0, "delta": {"content": "[Upstream Error 401]: ..."}, "finish_reason": "error"}]}
    ```
    所有层统一使用 `finish_reason="error"` 标记流式错误，Session 检测到后不写入 conversation history。
+
+> `finish_reason="error"` 是 psi-agent 的扩展，不在 OpenAI 标准枚举内（标准仅 `stop`/`length`/`tool_calls`/`content_filter`/`function_call`）。仅用于内部层间通信，不暴露给外部。
 
 ## 日志约定
 

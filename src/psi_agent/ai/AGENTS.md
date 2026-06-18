@@ -28,7 +28,7 @@ Session ── POST /chat/completions ──► AI (Unix socket)
 |------|------|
 | `__init__.py` | `AiBackend` dataclass + `run()` + `serve_ai_backend()` |
 
-| `server.py` | `ErrorResponse` + `handle_chat_completions()` |
+| `server.py` | `handle_chat_completions()` — 请求处理 |
 
 ## 数据流
 
@@ -54,7 +54,7 @@ Session ── POST /chat/completions ──► AI (Unix socket)
 
 ## 请求透传
 
-Session 发送的 body 中，除 `model` 被启动配置覆盖、`messages` 和 `tools` 被显式提取外，其余字段（`temperature`, `max_tokens` 等）全部通过 `**body` 透传给 any-llm-sdk。
+Session 发送的 body 中，除 `model` 被启动配置覆盖、`messages` 被显式提取外，其余字段（`tools`, `temperature`, `max_tokens` 等）全部通过 `**body` 透传给 any-llm-sdk。
 
 ## Provider 支持
 
@@ -64,17 +64,11 @@ Anthropic→OpenAI 格式转换由 any-llm-sdk 自动完成，包括 `thinking_d
 
 ## 错误处理
 
-- **HTTP 层**（`response.prepare()` 之前）：`ErrorResponse` → `web.json_response(status=4xx/5xx)`
-- **SSE 层**（`response.prepare()` 之后）：ChatCompletionChunk error chunk → `finish_reason="error"`
+- **HTTP 层**（`response.prepare()` 之前）：返回 OpenAI 格式 `{"error": {...}}` JSON + HTTP 4xx/5xx
+- **SSE 层**（`response.prepare()` 之后）：ChatCompletionChunk error chunk → `finish_reason="error"`（psi-agent 内部扩展，非 OpenAI 标准）
 
 ## 依赖
 
 - `any-llm-sdk >= 1.17`：多 provider 客户端
 - `aiohttp`：Unix socket HTTP server
 - `anyio`：异步 runtime
-
-## 测试
-
-- `tests/psi_agent/ai/test_common.py`：ErrorResponse 测试
-- `tests/psi_agent/ai/test_ai_backend.py`：AiBackend dataclass 测试
-- 集成测试通过 `tests/integration/` 覆盖全链路
