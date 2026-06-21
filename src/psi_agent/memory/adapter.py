@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -73,7 +73,7 @@ class SessionMemoryAdapter:
         if not user_content and not assistant_content:
             return
         assert self.client is not None
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         try:
             await self.client.add(
                 [

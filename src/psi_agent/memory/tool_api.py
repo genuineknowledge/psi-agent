@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from psi_agent.memory.client import FusionMemoryClient, friendly_memory_error
 from psi_agent.memory.config import (
@@ -37,7 +36,7 @@ async def memory_action(
         return await memory_write(content=text, mode=action)
     if action == "clear":
         return await memory_clear()
-    return "Unknown action: {!r}. Use read, search, write, append, or clear.".format(action)
+    return f"Unknown action: {action!r}. Use read, search, write, append, or clear."
 
 
 async def memory_read(query: str = "", limit: int = 8) -> str:
@@ -73,7 +72,7 @@ async def memory_write(content: str, mode: str = "write") -> str:
         return friendly_memory_error(exc)
     accepted = result.get("accepted_fact_ids") or []
     spans = result.get("span_ids") or []
-    return "Fusion Memory saved. accepted_facts={}, spans={}".format(len(accepted), len(spans))
+    return f"Fusion Memory saved. accepted_facts={len(accepted)}, spans={len(spans)}"
 
 
 async def memory_clear(allow_cross_session: bool = True) -> str:
@@ -128,4 +127,4 @@ def _workspace_dir() -> str:
 def _sectioned_content(content: str, section: str) -> str:
     if not section.strip():
         return content
-    return "## {}\n\n{}".format(section.strip(), content)
+    return f"## {section.strip()}\n\n{content}"

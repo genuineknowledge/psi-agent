@@ -12,6 +12,7 @@ import anyio
 import pytest
 from aiohttp import web
 
+from psi_agent.memory import tool_api
 from psi_agent.memory.client import FusionMemoryClient, FusionMemoryError
 from psi_agent.memory.config import (
     MAX_MEMORY_INJECT_MAX_CHARS,
@@ -49,8 +50,6 @@ def test_tool_api_timeout_env_is_clamped_to_fail_open_budget(
     value: str | None,
     expected: float,
 ) -> None:
-    from psi_agent.memory import tool_api
-
     if value is None:
         monkeypatch.delenv("PSI_MEMORY_TIMEOUT_SECONDS", raising=False)
     else:
@@ -75,8 +74,6 @@ def test_tool_api_inject_max_chars_env_is_bounded(
     value: str | None,
     expected: int,
 ) -> None:
-    from psi_agent.memory import tool_api
-
     if value is None:
         monkeypatch.delenv("PSI_MEMORY_INJECT_MAX_CHARS", raising=False)
     else:
@@ -130,17 +127,16 @@ async def test_memory_client_health_add_search_and_answer_context() -> None:
     app.router.add_post("/answer-context", answer_context)
     app.router.add_post("/clear", clear)
 
-    async with _running_app(app) as base_url:
-        async with FusionMemoryClient(base_url) as client:
-            assert (await client.health())["ok"] is True
-            added = await client.add({"role": "user", "content": "x"}, {"workspace_id": "w"})
-            assert added["accepted_fact_ids"] == ["fact_1"]
-            found = await client.search("q", {"workspace_id": "w"})
-            assert found["candidates"][0]["text"] == "prefers Qdrant"
-            pack = await client.answer_context("q", {"workspace_id": "w"})
-            assert pack["facts"][0]["text"] == "User prefers Qdrant."
-            cleared = await client.clear({"workspace_id": "w"}, allow_cross_session=True)
-            assert cleared["ok"] is True
+    async with _running_app(app) as base_url, FusionMemoryClient(base_url) as client:
+        assert (await client.health())["ok"] is True
+        added = await client.add({"role": "user", "content": "x"}, {"workspace_id": "w"})
+        assert added["accepted_fact_ids"] == ["fact_1"]
+        found = await client.search("q", {"workspace_id": "w"})
+        assert found["candidates"][0]["text"] == "prefers Qdrant"
+        pack = await client.answer_context("q", {"workspace_id": "w"})
+        assert pack["facts"][0]["text"] == "User prefers Qdrant."
+        cleared = await client.clear({"workspace_id": "w"}, allow_cross_session=True)
+        assert cleared["ok"] is True
 
 
 @pytest.mark.anyio
@@ -157,10 +153,9 @@ async def test_memory_client_sanitizes_errors() -> None:
         )
 
     app.router.add_get("/health", health)
-    async with _running_app(app) as base_url:
-        async with FusionMemoryClient(base_url) as client:
-            with pytest.raises(FusionMemoryError) as exc_info:
-                await client.health()
+    async with _running_app(app) as base_url, FusionMemoryClient(base_url) as client:
+        with pytest.raises(FusionMemoryError) as exc_info:
+            await client.health()
 
     message = str(exc_info.value)
     assert message == "Fusion Memory request failed with HTTP 503."
@@ -178,10 +173,9 @@ async def test_memory_client_sanitizes_timeout_errors() -> None:
         return web.json_response({"ok": True})
 
     app.router.add_get("/health", health)
-    async with _running_app(app) as base_url:
-        async with FusionMemoryClient(base_url, timeout_seconds=0.01) as client:
-            with pytest.raises(FusionMemoryError) as exc_info:
-                await client.health()
+    async with _running_app(app) as base_url, FusionMemoryClient(base_url, timeout_seconds=0.01) as client:
+        with pytest.raises(FusionMemoryError) as exc_info:
+            await client.health()
 
     assert str(exc_info.value) == "Fusion Memory request timed out."
 
@@ -300,6 +294,6 @@ async def _running_app(app: web.Application) -> AsyncIterator[str]:
     sockets = site._server.sockets
     assert sockets is not None
     try:
-        yield "http://127.0.0.1:{}".format(sockets[0].getsockname()[1])
+        yield f"http://127.0.0.1:{sockets[0].getsockname()[1]}"
     finally:
         await runner.cleanup()

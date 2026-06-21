@@ -29,7 +29,7 @@ class MemoryConfig:
     memory_timeout_seconds: float = 1.0
 
     @classmethod
-    def from_env(cls, workspace: str) -> "MemoryConfig":
+    def from_env(cls, workspace: str) -> MemoryConfig:
         return cls(
             workspace=workspace,
             memory_enabled=_env_bool("PSI_MEMORY_ENABLED", False),
