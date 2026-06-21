@@ -12,17 +12,64 @@ import anyio
 CompleteFn = Callable[[list[dict[str, Any]]], Awaitable[str]]
 
 
-async def _parse_skill_description(skill_md_path: anyio.Path) -> str | None:
+async def _parse_skill_frontmatter(skill_md_path: anyio.Path) -> dict[str, str]:
     content = await skill_md_path.read_text(encoding="utf-8", errors="replace")
     frontmatter_match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
     if not frontmatter_match:
-        return None
+        return {"name": "", "description": "", "category": "general"}
 
     frontmatter = frontmatter_match.group(1)
-    description_match = re.search(r"^description:\s*(.+)$", frontmatter, re.MULTILINE)
-    if description_match:
-        return description_match.group(1).strip().strip('"').strip("'")
-    return None
+
+    def _extract(field: str) -> str:
+        match = re.search(rf"^{field}:\s*(.+)$", frontmatter, re.MULTILINE)
+        return match.group(1).strip().strip('"').strip("'") if match else ""
+
+    description = _extract("description")
+    if len(description) > 60:
+        description = description[:57] + "..."
+
+    return {
+        "name": _extract("name"),
+        "description": description,
+        "category": _extract("category") or "general",
+    }
+
+
+async def _build_skills_index(skills_dir: anyio.Path) -> str:
+    if not await skills_dir.exists():
+        return "No skills configured."
+
+    skills_by_category: dict[str, list[tuple[str, str]]] = {}
+    async for skill_path in skills_dir.iterdir():
+        if not await skill_path.is_dir():
+            continue
+        skill_md = skill_path / "SKILL.md"
+        if not await skill_md.exists():
+            continue
+        frontmatter = await _parse_skill_frontmatter(skill_md)
+        skills_by_category.setdefault(frontmatter["category"], []).append(
+            (frontmatter["name"] or skill_path.name, frontmatter["description"])
+        )
+
+    if not skills_by_category:
+        return "No skills configured."
+
+    index_lines: list[str] = []
+    for category in sorted(skills_by_category):
+        index_lines.append(f"  {category}:")
+        for name, description in sorted(skills_by_category[category]):
+            if description:
+                index_lines.append(f"    - {name}: {description}")
+            else:
+                index_lines.append(f"    - {name}")
+
+    return (
+        "Before replying, scan the skills below. If a skill matches or is even partially relevant "
+        "to your task, you MUST load it by reading the corresponding SKILL.md file and follow its "
+        "instructions. Err on the side of loading; skills contain specialized workflows, pitfalls, "
+        "and user-preferred conventions.\n\n"
+        "<available_skills>\n" + "\n".join(index_lines) + "\n</available_skills>"
+    )
 
 
 def _estimate_tokens(message: dict[str, Any]) -> int:
@@ -48,17 +95,7 @@ class System:
         repo_root = Path(str(workspace_resolved)).parents[1]
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
 
-        skill_descriptions: list[str] = []
-        if await skills_dir.exists():
-            async for skill_path in skills_dir.iterdir():
-                if not await skill_path.is_dir():
-                    continue
-                skill_md = skill_path / "SKILL.md"
-                if not await skill_md.exists():
-                    continue
-                description = await _parse_skill_description(skill_md)
-                if description:
-                    skill_descriptions.append(f"- {skill_path.name}: {description}")
+        skills_index = await _build_skills_index(skills_dir)
 
         tool_names = tool_names or []
         model_line = f"\nModel: {model}" if model else ""
@@ -70,11 +107,12 @@ Fusion Flow workflows from natural language.
 ## Workspace
 
 Workspace directory: {workspace_resolved}
+Skills directory: {skills_dir}
 Available tools: {tools_line}{model_line}
 
-## Available Skills
+## Skills (mandatory)
 
-{chr(10).join(skill_descriptions) if skill_descriptions else "No skills configured."}
+{skills_index}
 
 ## Fusion Flow Trigger
 
