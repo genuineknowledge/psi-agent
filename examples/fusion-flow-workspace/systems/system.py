@@ -72,6 +72,64 @@ async def _build_skills_index(skills_dir: anyio.Path) -> str:
     )
 
 
+async def _build_flows_index(flows_dir: anyio.Path) -> str:
+    curated_dir = flows_dir / "curated"
+    task_lines: list[str] = []
+    curated_lines: list[str] = []
+
+    if await curated_dir.exists():
+        async for flow_dir in curated_dir.iterdir():
+            if not await flow_dir.is_dir() or flow_dir.name.startswith("."):
+                continue
+            flow_md = flow_dir / "FLOW.md"
+            if not await flow_md.exists():
+                continue
+            raw = await flow_md.read_text(encoding="utf-8", errors="replace")
+            frontmatter_match = re.match(r"^---\n(.*?)\n---", raw, re.DOTALL)
+            description = ""
+            category = "general"
+            if frontmatter_match:
+                frontmatter = frontmatter_match.group(1)
+                desc_match = re.search(r"^description:\s*(.+)$", frontmatter, re.MULTILINE)
+                category_match = re.search(r"^category:\s*(.+)$", frontmatter, re.MULTILINE)
+                if desc_match:
+                    description = desc_match.group(1).strip().strip('"').strip("'")
+                if category_match:
+                    category = category_match.group(1).strip().strip('"').strip("'") or "general"
+            suffix = f": {description}" if description else ""
+            curated_lines.append(f"    - {flow_dir.name} ({category}){suffix}")
+
+    if await flows_dir.exists():
+        async for task_dir in flows_dir.iterdir():
+            if not await task_dir.is_dir() or task_dir.name.startswith(".") or task_dir.name in {"curated", "adhoc"}:
+                continue
+            preferred = task_dir / f"{task_dir.name}.flow.ts"
+            if await preferred.exists():
+                task_lines.append(f"    - {task_dir.name}: {preferred.name}")
+                continue
+            async for flow_file in task_dir.glob("*.flow.ts"):
+                task_lines.append(f"    - {task_dir.name}: {flow_file.name}")
+                break
+
+    if not curated_lines and not task_lines:
+        return "No reusable flows configured."
+
+    index_lines = [
+        "Before creating a new workflow, scan the reusable flows below. If a curated flow fits, "
+        "view it with `flow_manage` and adapt it instead of starting from scratch.",
+        "",
+        "<available_flows>",
+    ]
+    if curated_lines:
+        index_lines.append("  curated:")
+        index_lines.extend(sorted(curated_lines))
+    if task_lines:
+        index_lines.append("  generated_tasks:")
+        index_lines.extend(sorted(task_lines))
+    index_lines.append("</available_flows>")
+    return "\n".join(index_lines)
+
+
 def _estimate_tokens(message: dict[str, Any]) -> int:
     content = message.get("content", "")
     if isinstance(content, str):
@@ -96,6 +154,7 @@ class System:
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
 
         skills_index = await _build_skills_index(skills_dir)
+        flows_index = await _build_flows_index(flows_dir)
 
         tool_names = tool_names or []
         model_line = f"\nModel: {model}" if model else ""
@@ -113,6 +172,10 @@ Available tools: {tools_line}{model_line}
 ## Skills (mandatory)
 
 {skills_index}
+
+## Reusable Flows
+
+{flows_index}
 
 ## Fusion Flow Trigger
 
@@ -146,6 +209,26 @@ When generating the run(...) options, always include both:
 This keeps each user's `.flow.ts`, meta.json, execution-graph.json, bindings/, and trace/
 together under one task folder instead of writing user artifacts into skills/.
 
+## Self-Evolution Tools
+
+This workspace exposes explicit, user-visible self-evolution tools:
+
+- `skill_manage` can list, view, create, and patch workspace skills.
+- `flow_manage` can list, view, create, patch, and promote reusable Fusion Flow assets.
+
+Use these tools only when the current task produces reusable workflow knowledge or the user asks
+to maintain the workspace. Never silently rewrite user-authored assets.
+
+Rules:
+
+1. Keep `skills/fusion-flow/` immutable. It is the runtime bundle, not a generated skill.
+2. Treat skills without `created_by: agent` as read-only. View them for context, but do not patch them.
+3. New learned procedures belong in `skills/<skill-name>/SKILL.md` via `skill_manage(action="create")`.
+4. Reusable workflow templates belong in `flows/curated/<flow-name>/FLOW.md` via `flow_manage`.
+5. One-off task executions still belong in `flows/<task-slug>/`.
+6. Promote a generated task flow only after it has useful, reusable structure; include a concise
+   description of when to reuse it.
+
 ## psi-agent Engine Defaults
 
 Fusion Flow may call external agent CLI engines. For this workspace, prefer the psi engine.
@@ -170,7 +253,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
 - Before running a flow, ensure the Fusion Flow skill directory has dependencies installed.
 - If `node_modules` is missing, ask the user before running `npm install` unless they already requested full execution.
 - Prefer concise user-facing progress updates and report generated file paths.
-- Use `read`, `write`, `edit`, and `bash` tools as needed.
+- Use `read`, `write`, `edit`, `bash`, `skill_manage`, and `flow_manage` tools as needed.
 """
 
     async def compact_history(

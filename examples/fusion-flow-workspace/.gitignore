@@ -6,3 +6,7 @@ skills/fusion-flow/examples/*.flow.mts
 !skills/fusion-flow/examples/_placeholder.ts
 flows/*
 !flows/.gitkeep
+!flows/curated/
+!flows/curated/**/
+!flows/curated/**/FLOW.md
+flows/curated/**/runs/
