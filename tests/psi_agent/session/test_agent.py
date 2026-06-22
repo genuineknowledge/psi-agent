@@ -5,6 +5,7 @@ import socket as _s
 import textwrap
 from pathlib import Path
 
+import anyio
 import pytest
 from aiohttp import web
 
@@ -536,3 +537,83 @@ async def test_agent_empty_content_stop(tmp_path: Path) -> None:
         assert len(chunks) >= 1
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_after_turn_snapshot_records_tool_usage(tmp_path: Path) -> None:
+    handler = await _make_inline_ai_handler([_tc("get_weather", '{"city": "Beijing"}'), _stop("done")])
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+
+    snapshots: list[tuple[list[dict], int, list[str]]] = []
+
+    async def after_turn(messages: list[dict], tool_call_count: int, called_tools: list[str]) -> None:
+        snapshots.append((messages, tool_call_count, called_tools))
+
+    try:
+        tf = ToolFunction(
+            name="get_weather",
+            description="Get weather.",
+            parameters={"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+        )
+        agent = SessionAgent(
+            ai_socket=f"http://127.0.0.1:{port}/v1",
+            tools={"get_weather": tf},
+            model="test",
+            after_turn_fn=after_turn,
+        )
+        agent.register_tool_func("get_weather", _get_weather)
+
+        chunks = [c async for c in agent.run({"role": "user", "content": "weather"})]
+        assert any(c.choices[0].delta.content == "done" for c in chunks if c.choices)
+
+        await agent.run_after_turn()
+
+        assert len(snapshots) == 1
+        messages, tool_call_count, called_tools = snapshots[0]
+        assert tool_call_count == 1
+        assert called_tools == ["get_weather"]
+        assert messages[-1] == {"role": "assistant", "content": "done"}
+        assert any(message.get("role") == "tool" and "sunny" in message.get("content", "") for message in messages)
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_after_turn_exception_is_fail_open(tmp_path: Path) -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content="ok", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    event = anyio.Event()
+
+    async def after_turn(messages: list[dict], tool_call_count: int, called_tools: list[str]) -> None:
+        _ = messages
+        _ = tool_call_count
+        _ = called_tools
+        event.set()
+        raise RuntimeError("after-turn boom")
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(ai_socket=ai_socket, tools={}, model="test", after_turn_fn=after_turn)
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+        assert content == "ok"
+
+        await agent.run_after_turn()
+
+        assert event.is_set()
+    finally:
+        await mock_server.cleanup()

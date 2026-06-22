@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import anyio
 from aiohttp import web
@@ -16,12 +17,14 @@ async def serve_session(
     channel_socket: str,
     agent: SessionAgent,
     lock: anyio.Lock,
+    after_turn_task_group: Any | None = None,
 ) -> None:
     logger.info(f"Starting session server on {channel_socket}")
 
     app = web.Application()
     app["agent"] = agent
     app["lock"] = lock
+    app["after_turn_task_group"] = after_turn_task_group
     app.router.add_post("/v1/chat/completions", handle_chat_completions)
 
     runner = web.AppRunner(app)
@@ -97,5 +100,6 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             await response.write(err_chunk.to_sse().encode())
 
     await response.write(b"data: [DONE]\n\n")
+    agent.spawn_after_turn_task(request.app.get("after_turn_task_group"))
     logger.debug("Session request completed")
     return response
