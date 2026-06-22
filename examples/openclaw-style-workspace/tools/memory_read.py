@@ -1,47 +1,19 @@
-"""Memory read tool for the agent's persistent memory."""
+"""Read persistent memory from Fusion Memory."""
 
 from __future__ import annotations
 
-import anyio
+from psi_agent.memory.tool_api import memory_read as _memory_read
 
 
-async def tool(section: str = "") -> str:
-    """Read the agent's persistent memory from memory.md.
+async def memory_read(query: str = "", limit: int = 8) -> str:
+    """Read relevant persistent memory using a query.
 
     Args:
-        section: Optional section heading to read (e.g. "Goals"). If empty,
-                 returns the full memory file.
+        query: What to retrieve from persistent memory. Leave empty for broad
+            user preferences and stable project facts.
+        limit: Maximum number of retrieved memory items to request.
 
     Returns:
-        Memory contents, or a message if no memory exists yet.
+        Retrieved memory context or a no-results message.
     """
-    workspace_dir = anyio.Path(__file__).parent.parent
-    memory_path = workspace_dir / "memory.md"
-
-    if not await memory_path.exists():
-        return "[Memory is empty; no memory.md found]"
-
-    content = await memory_path.read_text(encoding="utf-8", errors="replace")
-    if not content.strip():
-        return "[Memory is empty]"
-
-    if not section:
-        return content
-
-    # Extract the requested section
-    lines = content.splitlines()
-    in_section = False
-    result: list[str] = []
-    for line in lines:
-        if line.startswith("## ") and section.lower() in line.lower():
-            in_section = True
-            result.append(line)
-            continue
-        if in_section:
-            if line.startswith("## ") and section.lower() not in line.lower():
-                break
-            result.append(line)
-
-    if not result:
-        return f"[Section '{section}' not found in memory]"
-    return "\n".join(result)
+    return await _memory_read(query=query, limit=limit)

@@ -61,7 +61,7 @@ def _convert_openai_messages_to_anthropic(
                 func = tc.get("function", {})
                 try:
                     args = json.loads(func.get("arguments", "{}"))
-                except json.JSONDecodeError, TypeError:
+                except (json.JSONDecodeError, TypeError):
                     args = {}
                 tool_use_blocks.append(
                     {
