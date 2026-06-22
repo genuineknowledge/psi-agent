@@ -6,7 +6,7 @@ from typing import Any
 from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
-from psi_agent.ai.common import ErrorResponse, SSEChunk, serve_ai_backend
+from psi_agent.ai.common import ErrorResponse, SSEChunk, serve_ai_backend, write_sse_bytes
 from psi_agent.net import make_tcp_connector
 
 
@@ -162,10 +162,13 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                     finish_reason="error",
                     chunk_id="error",
                 )
-                await response.write(chunk.to_sse().encode())
+                await write_sse_bytes(response, chunk.to_sse().encode())
                 return response
 
             await _convert_anthropic_stream_to_openai_sse(response, upstream_resp.content)
+    except (ConnectionResetError, BrokenPipeError):
+        logger.info("Downstream client disconnected while forwarding upstream response")
+        return response
     except Exception as e:
         logger.error(f"Error forwarding to upstream: {e}")
         chunk = SSEChunk(
@@ -173,7 +176,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             finish_reason="error",
             chunk_id="error",
         )
-        await response.write(chunk.to_sse().encode())
+        await write_sse_bytes(response, chunk.to_sse().encode())
         return response
 
     logger.debug("Request completed")
@@ -236,13 +239,15 @@ async def _convert_anthropic_stream_to_openai_sse(
             if delta_type == "thinking_delta":
                 thinking_text = delta.get("thinking", "")
                 chunk = SSEChunk(delta_reasoning=thinking_text, chunk_id=f"chatcmpl-{chunk_index}")
-                await response.write(chunk.to_sse().encode())
+                if not await write_sse_bytes(response, chunk.to_sse().encode()):
+                    return
                 chunk_index += 1
 
             elif delta_type == "text_delta":
                 text = delta.get("text", "")
                 chunk = SSEChunk(delta_content=text, chunk_id=f"chatcmpl-{chunk_index}")
-                await response.write(chunk.to_sse().encode())
+                if not await write_sse_bytes(response, chunk.to_sse().encode()):
+                    return
                 chunk_index += 1
 
             elif delta_type == "input_json_delta":
@@ -261,8 +266,9 @@ async def _convert_anthropic_stream_to_openai_sse(
                         ],
                         chunk_id=f"chatcmpl-{chunk_index}",
                     )
-                    await response.write(chunk.to_sse().encode())
+                    if not await write_sse_bytes(response, chunk.to_sse().encode()):
+                        return
                     chunk_index += 1
 
     chunk = SSEChunk(finish_reason="stop", chunk_id=f"chatcmpl-{chunk_index}")
-    await response.write(chunk.to_sse().encode())
+    await write_sse_bytes(response, chunk.to_sse().encode())

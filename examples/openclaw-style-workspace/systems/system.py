@@ -22,6 +22,7 @@ from typing import Any
 
 import anyio
 from prompt_sections import (
+    ASSISTANT_OUTPUT_DIRECTIVES_SECTION,
     BOOTSTRAP_PENDING_SECTION,
     CONTEXT_FILE_ORDER,
     DOCS_SECTION,
@@ -816,6 +817,7 @@ class System:
         # Webchat canvas / messaging channel guidance
         channel = os.environ.get("OPENCLAW_CHANNEL", "")
         dynamic_parts += [MESSAGING_SECTION_MOCK, ""]
+        dynamic_parts += [ASSISTANT_OUTPUT_DIRECTIVES_SECTION, ""]
 
         # TTS / Voice
         tts_hint = os.environ.get("OPENCLAW_TTS_HINT", "").strip()

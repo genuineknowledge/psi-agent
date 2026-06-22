@@ -228,3 +228,42 @@ async def test_fusion_flow_workspace_after_turn_can_create_curated_flow(tmp_path
     flow_text = flow_md.read_text(encoding="utf-8")
     assert "Reusable review-created flow" in flow_text
     assert "export const marker = \"review\";" in flow_text
+
+
+@pytest.mark.anyio
+async def test_hermes_weixin_platform_prompt_advertises_media_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "hermes-style-workspace"
+    _copy_workspace(REPO_ROOT / "examples" / "hermes-style-workspace", workspace)
+    monkeypatch.setenv("HERMES_PLATFORM", "weixin")
+
+    tools = await load_tools_from_workspace(workspace / "tools")
+    prompt = await _build_system_prompt_from_workspace(
+        workspace,
+        model="test-model",
+        tool_names=sorted(tools),
+    )
+
+    assert prompt is not None
+    assert "You are on Weixin/WeChat" in prompt
+    assert "MEDIA:/absolute/path/to/file" in prompt
+    assert "Do NOT tell the user you lack file-sending capability" in prompt
+
+
+@pytest.mark.anyio
+async def test_openclaw_prompt_includes_assistant_output_directives(tmp_path: Path) -> None:
+    workspace = tmp_path / "openclaw-style-workspace"
+    _copy_workspace(REPO_ROOT / "examples" / "openclaw-style-workspace", workspace)
+
+    tools = await load_tools_from_workspace(workspace / "tools")
+    prompt = await _build_system_prompt_from_workspace(
+        workspace,
+        model="test-model",
+        tool_names=sorted(tools),
+    )
+
+    assert prompt is not None
+    assert "## Assistant Output Directives" in prompt
+    assert "`MEDIA:<path-or-url>` on its own line requests attachment delivery." in prompt

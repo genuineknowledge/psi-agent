@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import anyio
+from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp import web
 from loguru import logger
 
@@ -57,6 +58,17 @@ class SSEChunk:
                 ensure_ascii=False,
             )
         }\n\n"
+
+
+async def write_sse_bytes(response: Any, payload: bytes) -> bool:
+    """Write SSE bytes and return False when the downstream client disconnected."""
+
+    try:
+        await response.write(payload)
+        return True
+    except (ClientConnectionResetError, ConnectionResetError, BrokenPipeError):
+        logger.info("Downstream SSE client disconnected; stopping stream")
+        return False
 
 
 async def serve_ai_backend(

@@ -264,7 +264,24 @@ through `/v2/users/{openid}/messages` or `/v2/groups/{group_openid}/messages`.
 Weixin iLink uses Tencent iLink Bot API long polling. It supports QR login via
 `get_bot_qrcode` / `get_qrcode_status`, saves `bot_token` and `ilink_bot_id`
 locally, and can still accept explicit `WEIXIN_TOKEN` and `WEIXIN_ACCOUNT_ID`.
-Media delivery is not implemented yet.
+Agent replies can send local files through Weixin iLink with Hermes-style
+`MEDIA:` lines. The channel removes the marker from the visible text, uploads
+the file, then sends it as a native Weixin file item:
+
+```text
+Here is the report.
+MEDIA:/absolute/path/to/report.pdf
+```
+
+Relative paths are resolved under `WEIXIN_MEDIA_ROOTS`, `WEIXIN_SEND_FILE_ROOTS`,
+`PSI_WORKSPACE_DIR`, or the channel process working directory. Unsupported file
+extensions fall back to a text explanation instead of attempting upload. Override
+the default extension allowlist with comma-separated `WEIXIN_MEDIA_ALLOWED_EXTENSIONS`.
+Inbound Weixin file items are downloaded locally before the message is forwarded
+to the agent. The forwarded text includes a `FILE:/absolute/path` line plus basic
+metadata, so tools and agent code can read the received file from disk. Files are
+stored under `~/.psi-agent/channels/weixin-ilink/files` by default, or under
+`WEIXIN_DOWNLOAD_DIR` when that environment variable is set.
 
 The WeChat bridge channel is for an external normalized bridge process. The
 bridge should POST normalized messages to psi-agent:
