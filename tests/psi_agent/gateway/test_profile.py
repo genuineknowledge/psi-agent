@@ -35,6 +35,42 @@ def _make_workspace(tmp_path: Path) -> Path:
     return workspace
 
 
+def _make_after_turn_workspace(tmp_path: Path) -> Path:
+    workspace = tmp_path / "after-turn-workspace"
+    (workspace / "systems").mkdir(parents=True)
+    (workspace / "tools").mkdir()
+    (workspace / "systems" / "system.py").write_text(
+        textwrap.dedent(
+            """\
+            import json
+
+
+            class System:
+                def __init__(self, workspace_dir):
+                    self.workspace_dir = workspace_dir
+
+                async def build_system_prompt(self):
+                    return "You are a profile gateway runtime test agent."
+
+                async def after_turn(self, messages, tool_call_count, called_tools, **kwargs):
+                    _ = kwargs
+                    payload = {
+                        "messages": len(messages),
+                        "last": messages[-1],
+                        "tool_call_count": tool_call_count,
+                        "called_tools": called_tools,
+                    }
+                    await (self.workspace_dir / "after_turn_gateway.json").write_text(
+                        json.dumps(payload),
+                        encoding="utf-8",
+                    )
+            """
+        ),
+        encoding="utf-8",
+    )
+    return workspace
+
+
 def test_load_gateway_profile_reads_profile_yaml(tmp_path: Path) -> None:
     workspace = _make_workspace(tmp_path)
     profile_dir = tmp_path / "gateway" / "profiles" / "colin"
@@ -255,6 +291,90 @@ async def test_profile_gateway_serves_multiple_paths_on_one_listener(tmp_path: P
             "in_reply_to": "qq-msg-1",
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_profile_gateway_runs_workspace_after_turn(tmp_path: Path) -> None:
+    workspace = _make_after_turn_workspace(tmp_path)
+    profile_dir = tmp_path / "profile"
+    reply_received = anyio.Event()
+    replies: list[dict[str, object]] = []
+
+    async def ai_handler(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        message = body["messages"][-1]["content"]
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {"choices": [{"delta": {"content": f"reply: {message}"}, "finish_reason": "stop"}]}
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def reply_handler(request: web.Request) -> web.Response:
+        replies.append(await request.json())
+        reply_received.set()
+        return web.json_response({"ok": True})
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", ai_handler)]) as ai_base_url,
+        _TcpServer([("POST", "/reply", reply_handler)]) as reply_base_url,
+        _TcpListener() as channel_url,
+        anyio.create_task_group() as tg,
+    ):
+        profile = GatewayProfile(
+            name="after-turn",
+            profile_dir=profile_dir,
+            workspace=str(workspace),
+            ai="openai-completions",
+            model="test-model",
+            ai_socket=f"{ai_base_url}/v1",
+            channels=(
+                _channel(
+                    name="wechat",
+                    kind="wechat-bridge",
+                    listen=channel_url,
+                    webhook_path="/wechat/webhook",
+                    reply_url=f"{reply_base_url}/reply",
+                    bridge_secret="bridge-secret",
+                ),
+            ),
+        )
+        tg.start_soon(serve_profile_gateway, profile)
+        await _wait_http_ready(f"{channel_url}/wechat/webhook")
+
+        async with (
+            ClientSession() as session,
+            session.post(
+                f"{channel_url}/wechat/webhook",
+                json={
+                    "type": "message",
+                    "message": {
+                        "conversation_id": "room-1",
+                        "user_id": "user-1",
+                        "message_id": "msg-1",
+                        "text": "hello after turn",
+                    },
+                },
+                headers={"Authorization": "Bearer bridge-secret"},
+            ) as response,
+        ):
+            assert response.status == 200
+
+        with anyio.fail_after(5):
+            await reply_received.wait()
+            marker = anyio.Path(str(workspace / "after_turn_gateway.json"))
+            for _ in range(100):
+                if await marker.exists():
+                    break
+                await anyio.sleep(0.05)
+            assert await marker.exists()
+        tg.cancel_scope.cancel()
+
+    payload = json.loads((workspace / "after_turn_gateway.json").read_text(encoding="utf-8"))
+    assert payload["last"] == {"role": "assistant", "content": "reply: hello after turn"}
+    assert payload["tool_call_count"] == 0
+    assert payload["called_tools"] == []
+    assert replies[0]["text"] == "reply: hello after turn"
 
 
 def _channel(**kwargs):

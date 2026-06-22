@@ -170,9 +170,17 @@ async def serve_profile_gateway(profile: GatewayProfile) -> None:
                     effective_api_key,
                     effective_base_url,
                 )
-            tg.start_soon(partial(serve_session, channel_socket=session_endpoint, agent=agent, lock=lock))
+            tg.start_soon(
+                partial(
+                    serve_session,
+                    channel_socket=session_endpoint,
+                    agent=agent,
+                    lock=lock,
+                    after_turn_task_group=tg,
+                )
+            )
             for schedule in schedules:
-                tg.start_soon(_run_one_schedule, schedule, agent, lock)
+                tg.start_soon(_run_one_schedule, schedule, agent, lock, tg)
             for channel in _discord_gateway_channels(enabled_channels):
                 tg.start_soon(_serve_discord_gateway_profile_channel, session_endpoint, channel)
             for listen, routes in _platform_channel_groups(enabled_channels).items():
