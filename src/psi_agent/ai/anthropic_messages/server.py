@@ -166,7 +166,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 return response
 
             await _convert_anthropic_stream_to_openai_sse(response, upstream_resp.content)
-    except (ConnectionResetError, BrokenPipeError):
+    except ConnectionResetError, BrokenPipeError:
         logger.info("Downstream client disconnected while forwarding upstream response")
         return response
     except Exception as e:

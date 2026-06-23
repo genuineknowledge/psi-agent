@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import anyio
-from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp import web
+from aiohttp.client_exceptions import ClientConnectionResetError
 from loguru import logger
 
 from psi_agent.net import cleanup_endpoint_sidecar, make_server_site
@@ -66,7 +66,7 @@ async def write_sse_bytes(response: Any, payload: bytes) -> bool:
     try:
         await response.write(payload)
         return True
-    except (ClientConnectionResetError, ConnectionResetError, BrokenPipeError):
+    except ClientConnectionResetError, ConnectionResetError, BrokenPipeError:
         logger.info("Downstream SSE client disconnected; stopping stream")
         return False
 

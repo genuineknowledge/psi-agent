@@ -87,7 +87,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                     logger.debug(f"Upstream chunk: {line[:200]}")
                     if not await write_sse_bytes(response, (line + "\n\n").encode()):
                         return response
-    except (ConnectionResetError, BrokenPipeError):
+    except ConnectionResetError, BrokenPipeError:
         logger.info("Downstream client disconnected while forwarding upstream response")
         return response
     except Exception as e:

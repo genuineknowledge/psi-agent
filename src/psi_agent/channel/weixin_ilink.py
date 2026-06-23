@@ -19,6 +19,7 @@ from urllib.parse import quote, urlencode
 
 import anyio
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from loguru import logger
 
 from psi_agent._logging import setup_logging
@@ -270,7 +271,7 @@ class WeixinIlinkClient:
         to_user_id: str,
         path: Path,
     ) -> WeixinUploadedMedia:
-        raw = path.read_bytes()
+        raw = await anyio.Path(path).read_bytes()
         aes_key = secrets.token_bytes(16)
         aes_key_hex = aes_key.hex()
         encrypted = _aes_128_ecb_encrypt(raw, aes_key)
@@ -940,7 +941,9 @@ async def _upload_weixin_encrypted_file(
     payload: bytes,
 ) -> dict[str, Any]:
     async def request() -> dict[str, Any]:
-        async with session.post(upload_url, data=payload, headers={"Content-Type": "application/octet-stream"}) as response:
+        async with session.post(
+            upload_url, data=payload, headers={"Content-Type": "application/octet-stream"}
+        ) as response:
             raw = await response.text()
             if response.status >= 400:
                 raise UserFacingError(f"Weixin iLink file upload failed: HTTP {response.status}: {raw[:300]}")
@@ -962,14 +965,6 @@ async def _upload_weixin_encrypted_file(
 
 
 def _aes_128_ecb_encrypt(data: bytes, key: bytes) -> bytes:
-    try:
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    except ImportError as exc:
-        raise UserFacingError(
-            "Weixin iLink file sending requires the cryptography package.",
-            "Install cryptography or disable MEDIA file sending.",
-        ) from exc
-
     padding = 16 - (len(data) % 16)
     padded = data + bytes([padding]) * padding
     encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
@@ -1097,12 +1092,12 @@ def _extract_weixin_inbound_media(item_list: list[dict[str, Any]]) -> list[Weixi
         raw_size = raw_media.get("len", raw_media.get("size", raw_media.get("file_size", raw_media.get("fileSize", 0))))
         try:
             size = int(raw_size)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             size = 0
         raw_encrypt_type = nested.get("encrypt_type", nested.get("encryptType", raw_media.get("encrypt_type", 0)))
         try:
             encrypt_type = int(raw_encrypt_type)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             encrypt_type = 0
 
         media.append(
@@ -1151,19 +1146,19 @@ async def _download_weixin_inbound_media(
 
 def _format_weixin_inbound_media(*, path: Path, media: WeixinInboundMedia) -> str:
     lines = [
-        "用户发送了文件：",
+        "用户发送了文件:",
         f"FILE:{path}",
-        f"文件名：{media.file_name}",
+        f"文件名: {media.file_name}",
     ]
     if media.size > 0:
-        lines.append(f"大小：{media.size} bytes")
+        lines.append(f"大小: {media.size} bytes")
     if media.md5:
-        lines.append(f"MD5：{media.md5}")
+        lines.append(f"MD5: {media.md5}")
     return "\n".join(lines)
 
 
 def _format_weixin_inbound_media_failure(*, media: WeixinInboundMedia, error: str) -> str:
-    return f"用户发送了文件，但微信入站下载失败：{media.file_name}\n原因：{error}"
+    return f"用户发送了文件, 但微信入站下载失败: {media.file_name}\n原因: {error}"
 
 
 def _weixin_inbound_media_path(*, peer_id: str, message_id: str, file_name: str) -> Path:
@@ -1224,14 +1219,6 @@ def _parse_weixin_aes_key(aes_key: str) -> bytes:
 
 
 def _aes_128_ecb_decrypt(data: bytes, key: bytes) -> bytes:
-    try:
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    except ImportError as exc:
-        raise UserFacingError(
-            "Weixin iLink file download requires the cryptography package.",
-            "Install cryptography or disable inbound file download.",
-        ) from exc
-
     decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
     padded = decryptor.update(data) + decryptor.finalize()
     if not padded:
