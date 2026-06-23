@@ -90,7 +90,7 @@ function onKeydown(e) {
     <!-- conversation (always single-column; comparison is done via OS split-screen) -->
     <div ref="logEl" class="log">
       <div v-if="!messages.length" class="empty">
-        发一条消息开始对话。打开右侧「Hermes 同场景对比」切换为 Hermes 模式。
+        发一条消息开始对话。关闭右侧全部模块（或用「模块总开关」）即可切换到 Hermes 原生模式。
       </div>
       <template v-for="(msg, i) in messages" :key="i">
         <div v-if="msg.role === 'user'" class="row user">
