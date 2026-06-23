@@ -98,18 +98,10 @@ class SessionMemoryAdapter:
             self._warn_once("Fusion Memory write failed; continuing without memory.")
 
     def _can_read(self) -> bool:
-        return bool(
-            self.config.memory_enabled
-            and self.config.memory_auto_read
-            and self.client is not None
-        )
+        return bool(self.config.memory_enabled and self.config.memory_auto_read and self.client is not None)
 
     def _can_write(self) -> bool:
-        return bool(
-            self.config.memory_enabled
-            and self.config.memory_auto_write
-            and self.client is not None
-        )
+        return bool(self.config.memory_enabled and self.config.memory_auto_write and self.client is not None)
 
     def _warn_once(self, message: str) -> None:
         if not self._warned:

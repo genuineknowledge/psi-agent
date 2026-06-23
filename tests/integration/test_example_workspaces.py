@@ -36,16 +36,18 @@ def _copy_workspace(src: Path, dst: Path) -> None:
         ),
         (
             "fusion-flow-workspace",
-            {"bash", "edit", "flow_manage", "read", "skill_manage", "write"},
+            {"bash", "edit", "flow_manage", "memory", "read", "skill_manage", "write"},
             {
                 "Fusion Flow Trigger",
                 "Self-Evolution Tools",
                 "flow_manage",
+                "memory",
                 "skill_manage",
                 "skills/fusion-flow/SKILL.md",
                 "flows/<task-slug>",
                 "runsDir",
                 "FLOW_ENGINE=psi",
+                "PSI_MEMORY_ENABLED",
             },
         ),
     ],
@@ -76,7 +78,10 @@ async def test_migrated_example_workspace_loads_system_prompt_and_tools(
 
 
 @pytest.mark.anyio
-async def test_hermes_web_platform_prompt_advertises_file_delivery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_hermes_web_platform_prompt_advertises_file_delivery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workspace = tmp_path / "hermes-style-workspace"
     _copy_workspace(REPO_ROOT / "examples" / "hermes-style-workspace", workspace)
     monkeypatch.setenv("HERMES_PLATFORM", "web")
@@ -87,6 +92,7 @@ async def test_hermes_web_platform_prompt_advertises_file_delivery(tmp_path: Pat
         tool_names=["bash"],
     )
 
+    assert prompt is not None
     assert "MEDIA:/absolute/path/to/file" in prompt
     assert "Do NOT tell the user you lack file-sending capability" in prompt
 
@@ -243,4 +249,76 @@ async def test_fusion_flow_workspace_after_turn_can_create_curated_flow(tmp_path
     assert flow_md.exists()
     flow_text = flow_md.read_text(encoding="utf-8")
     assert "Reusable review-created flow" in flow_text
-    assert "export const marker = \"review\";" in flow_text
+    assert 'export const marker = "review";' in flow_text
+
+
+@pytest.mark.anyio
+async def test_fusion_flow_workspace_after_turn_can_write_memory(tmp_path: Path) -> None:
+    workspace = tmp_path / "fusion-flow-workspace"
+    _copy_workspace(REPO_ROOT / "examples" / "fusion-flow-workspace", workspace)
+    system_class = _load_workspace_system(workspace)
+    system = system_class(workspace)
+
+    memory_calls: list[dict[str, str]] = []
+    complete_calls = 0
+
+    async def memory(**kwargs: str) -> str:
+        memory_calls.append(kwargs)
+        return "Fusion Memory saved. accepted_facts=1, spans=1"
+
+    async def complete_fn(
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        nonlocal complete_calls
+        complete_calls += 1
+        assert tools is not None
+        assert any(tool["function"]["name"] == "memory" for tool in tools)
+        if complete_calls == 1:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "memory",
+                                        "arguments": (
+                                            '{"action":"write",'
+                                            '"section":"project",'
+                                            '"content":"Fusion Flow validates generated flows '
+                                            'from the skill directory."}'
+                                        ),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            }
+        assert messages[-1]["role"] == "tool"
+        return {"choices": [{"message": {"role": "assistant", "content": "Nothing to save."}}]}
+
+    await system.after_turn(
+        [
+            {"role": "user", "content": "Remember this validation convention."},
+            {"role": "assistant", "content": "Noted the stable Fusion Flow convention."},
+        ],
+        1,
+        ["memory"],
+        complete_fn=complete_fn,
+        tool_executors={"memory": memory},
+    )
+
+    assert complete_calls == 2
+    assert memory_calls == [
+        {
+            "action": "write",
+            "section": "project",
+            "content": "Fusion Flow validates generated flows from the skill directory.",
+        }
+    ]

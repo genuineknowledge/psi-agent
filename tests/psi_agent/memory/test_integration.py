@@ -6,7 +6,7 @@ import textwrap
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import pytest
@@ -29,8 +29,10 @@ from psi_agent.session.tools import load_tool_callables_from_workspace, load_too
 def test_memory_client_default_timeout_stays_below_first_token_budget() -> None:
     client = FusionMemoryClient("http://127.0.0.1:8765")
 
-    assert client.timeout.total == pytest.approx(1.0)
-    assert client.timeout.total < 2.0
+    total = client.timeout.total
+    assert total is not None
+    assert total == pytest.approx(1.0)
+    assert total < 2.0
 
 
 @pytest.mark.parametrize(
@@ -243,7 +245,7 @@ async def test_memory_tool_wrappers_load_with_filename_or_tool_function(tmp_path
 @pytest.mark.anyio
 async def test_session_agent_injects_and_records_memory_context() -> None:
     memory = _FakeMemoryAdapter()
-    agent = SessionAgent(ai_socket="unused", tools={}, model="test", memory_adapter=memory)
+    agent = SessionAgent(ai_socket="unused", tools={}, model="test", memory_adapter=cast(Any, memory))
 
     async def fake_stream(request_body: dict[str, Any]) -> AsyncIterator[ChatCompletionChunk]:
         memory.seen_messages = list(request_body["messages"])
@@ -259,7 +261,7 @@ async def test_session_agent_injects_and_records_memory_context() -> None:
             ],
         )
 
-    agent._stream_ai_request = fake_stream  # type: ignore[method-assign]
+    agent._stream_ai_request = cast(Any, fake_stream)
 
     chunks = [chunk async for chunk in agent.run({"role": "user", "content": "question"})]
 
@@ -291,7 +293,9 @@ async def _running_app(app: web.Application) -> AsyncIterator[str]:
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
-    sockets = site._server.sockets
+    server = site._server
+    assert server is not None
+    sockets = getattr(server, "sockets", None)
     assert sockets is not None
     try:
         yield f"http://127.0.0.1:{sockets[0].getsockname()[1]}"

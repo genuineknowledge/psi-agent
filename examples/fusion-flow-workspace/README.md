@@ -35,5 +35,22 @@ flows/<task-slug>/<task-slug>.flow.ts
 flows/<task-slug>/runs/<run-id>/
 ```
 
+Self-evolution:
+
+```text
+after-turn review
+-> memory for durable facts
+-> skill_manage for reusable procedures
+-> flow_manage for curated workflow templates
+```
+
+Fusion Memory is opt-in and fail-open. Enable it only when the external memory service is
+available:
+
+```bash
+PSI_MEMORY_ENABLED=true
+PSI_MEMORY_BASE_URL=http://127.0.0.1:8765
+```
+
 Do not put provider keys in this workspace. Keep model credentials in psi-agent profiles
 such as `~/.psi-agent/config.toml`, or pass them through environment variables.

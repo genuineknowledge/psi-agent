@@ -31,7 +31,9 @@ Only update workspace assets when the conversation produced reusable knowledge:
 - workflow-authoring patterns that should become reusable curated flows
 - recurring Fusion Flow structure, validation, or runtime practices
 - corrections to an agent-created skill or a new class-level skill
+- durable user preferences, environment facts, or stable project facts
 
+Use `memory` for durable facts that should be retrieved in later sessions.
 Use `skill_manage` for reusable non-flow procedures.
 Use `flow_manage` for reusable Fusion Flow templates.
 
@@ -62,6 +64,26 @@ def _build_self_evolution_tool_schemas() -> list[dict[str, Any]]:
                         "content": {"type": "string"},
                         "category": {"type": "string"},
                         "description": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "memory",
+                "description": "Read, write, append, or clear durable Fusion Memory facts.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["read", "search", "write", "append", "clear"],
+                        },
+                        "content": {"type": "string"},
+                        "query": {"type": "string"},
+                        "section": {"type": "string"},
                     },
                     "required": ["action"],
                 },
@@ -102,7 +124,7 @@ async def _run_self_evolution_review(
     complete_fn: ReviewCompleteFn,
     tool_executors: ToolExecutors,
 ) -> None:
-    allowed_tools = {"skill_manage", "flow_manage"}
+    allowed_tools = {"skill_manage", "flow_manage", "memory"}
     tool_schemas = _build_self_evolution_tool_schemas()
     loop_messages = [*messages, {"role": "user", "content": _SELF_EVOLUTION_PROMPT}]
 
@@ -363,6 +385,8 @@ This workspace exposes explicit, user-visible self-evolution tools:
 
 - `skill_manage` can list, view, create, and patch workspace skills.
 - `flow_manage` can list, view, create, patch, and promote reusable Fusion Flow assets.
+- `memory` can read, write, append, or clear durable Fusion Memory facts when the
+  memory service is configured.
 
 Use these tools only when the current task produces reusable workflow knowledge or the user asks
 to maintain the workspace. Never silently rewrite user-authored assets.
@@ -376,6 +400,13 @@ Rules:
 5. One-off task executions still belong in `flows/<task-slug>/`.
 6. Promote a generated task flow only after it has useful, reusable structure; include a concise
    description of when to reuse it.
+7. Durable user preferences, stable environment details, and stable project facts may be stored
+   with `memory`. Never store secrets, API keys, temporary troubleshooting output, or private data.
+
+Fusion Memory is opt-in and fail-open:
+
+PSI_MEMORY_ENABLED=true
+PSI_MEMORY_BASE_URL=http://127.0.0.1:8765
 
 ## psi-agent Engine Defaults
 
@@ -401,7 +432,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
 - Before running a flow, ensure the Fusion Flow skill directory has dependencies installed.
 - If `node_modules` is missing, ask the user before running `npm install` unless they already requested full execution.
 - Prefer concise user-facing progress updates and report generated file paths.
-- Use `read`, `write`, `edit`, `bash`, `skill_manage`, and `flow_manage` tools as needed.
+- Use `read`, `write`, `edit`, `bash`, `memory`, `skill_manage`, and `flow_manage` tools as needed.
 """
 
     async def compact_history(
@@ -440,6 +471,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
             tool_call_count >= SELF_EVOLUTION_TOOL_THRESHOLD
             or "flow_manage" in called
             or "skill_manage" in called
+            or "memory" in called
             or ("bash" in called and "write" in called)
             or "edit" in called
         )
@@ -448,7 +480,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
 
         review_tools = {
             name: tool_executors[name]
-            for name in ("skill_manage", "flow_manage")
+            for name in ("skill_manage", "flow_manage", "memory")
             if name in tool_executors
         }
         if not review_tools:

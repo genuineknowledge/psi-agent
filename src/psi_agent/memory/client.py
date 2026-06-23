@@ -12,10 +12,7 @@ class FusionMemoryError(RuntimeError):
 
 
 def friendly_memory_error(_exc: BaseException) -> str:
-    return (
-        "Fusion Memory is not available. Continue without memory, "
-        "then run fusion-memory doctor."
-    )
+    return "Fusion Memory is not available. Continue without memory, then run fusion-memory doctor."
 
 
 class FusionMemoryClient:
