@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
-from psi_agent.ai.common import ErrorResponse, SSEChunk
+import pytest
+from aiohttp.client_exceptions import ClientConnectionResetError
+
+from psi_agent.ai.common import ErrorResponse, SSEChunk, write_sse_bytes
 
 
 def test_error_response_to_dict() -> None:
@@ -73,3 +76,12 @@ def test_sse_chunk_empty_to_sse() -> None:
     assert data["choices"][0]["delta"] == {}
     assert data["choices"][0]["finish_reason"] is None
     assert data["id"] == "chatcmpl-unknown"
+
+
+@pytest.mark.anyio
+async def test_write_sse_bytes_returns_false_when_client_disconnects() -> None:
+    class ClosedResponse:
+        async def write(self, _payload: bytes) -> None:
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+    assert await write_sse_bytes(ClosedResponse(), b"data: {}\n\n") is False

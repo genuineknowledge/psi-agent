@@ -446,7 +446,9 @@ PLATFORM_HINTS: dict[str, str] = {
         "MEDIA:/absolute/path/to/file in your response. Images are sent as native "
         "photos, videos play inline when supported, and other files arrive as "
         "downloadable documents. You can also include image URLs in markdown "
-        "format ![alt](url) and they will be downloaded and sent as native media when possible."
+        "format ![alt](url) and they will be downloaded and sent as native media when possible. "
+        "Do NOT tell the user you lack file-sending capability — use MEDIA: syntax whenever "
+        "file delivery is appropriate."
     ),
     "wecom": (
         "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "

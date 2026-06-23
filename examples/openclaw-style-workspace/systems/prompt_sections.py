@@ -279,6 +279,18 @@ MESSAGING_SECTION_MOCK = """\
 """
 
 # ---------------------------------------------------------------------------
+# § Assistant Output Directives  (OpenClaw Web UI delivery metadata)
+# ---------------------------------------------------------------------------
+
+ASSISTANT_OUTPUT_DIRECTIVES_SECTION = """\
+## Assistant Output Directives
+Use these when you need delivery metadata in an assistant message:
+- `MEDIA:<path-or-url>` on its own line requests attachment delivery.
+- To request native file delivery on supported messaging channels, create or locate the file first, then include the MEDIA line in your final response.
+- Do not say you cannot send files when a supported channel can deliver MEDIA attachments.\
+"""
+
+# ---------------------------------------------------------------------------
 # § Voice / TTS  (system-prompt.ts:559-568)
 # ---------------------------------------------------------------------------
 

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import datetime as dt
+import hashlib
 import json
 import os
 import random
 import re
+import secrets
 import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import anyio
 from aiohttp import ClientSession, ClientTimeout, TCPConnector
@@ -22,17 +26,21 @@ from psi_agent.channel.session_client import collect_session_reply
 from psi_agent.errors import UserFacingError
 
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
+WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 ILINK_APP_ID = "bot"
 ILINK_APP_CLIENT_VERSION = (2 << 16) | (2 << 8) | 0
 CHANNEL_VERSION = "2.2.0"
 
 EP_GET_UPDATES = "ilink/bot/getupdates"
 EP_SEND_MESSAGE = "ilink/bot/sendmessage"
+EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 EP_GET_BOT_QR = "ilink/bot/get_bot_qrcode"
 EP_GET_QR_STATUS = "ilink/bot/get_qrcode_status"
 
 ITEM_TEXT = 1
 ITEM_VOICE = 3
+ITEM_FILE = 4
+MEDIA_TYPE_FILE = 3
 MSG_TYPE_USER = 1
 MSG_TYPE_BOT = 2
 MSG_STATE_FINISH = 2
@@ -54,6 +62,25 @@ QR_SUCCESS_STATUSES = {"confirmed", "success", "connected"}
 QR_NOOP_SUCCESS_STATUSES = {"binded_redirect"}
 QR_REFRESH_STATUSES = {"expired", "verify_code_blocked"}
 QR_VERIFY_STATUSES = {"need_verifycode", "need_verify_code"}
+DEFAULT_FILE_EXTENSIONS = {
+    ".csv",
+    ".doc",
+    ".docx",
+    ".gif",
+    ".jpeg",
+    ".jpg",
+    ".json",
+    ".md",
+    ".pdf",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".txt",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
+MEDIA_LINE_RE = re.compile(r"^\s*MEDIA:\s*(?P<path>.+?)\s*$")
 
 
 @dataclass(frozen=True)
@@ -66,6 +93,40 @@ class WeixinIlinkMessage:
     message_id: str = ""
     context_token: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WeixinReplyMedia:
+    """A local file attachment requested by an agent reply MEDIA marker."""
+
+    path: Path
+    display_name: str
+
+
+@dataclass(frozen=True)
+class WeixinInboundMedia:
+    """A file-like item received from Tencent iLink."""
+
+    file_name: str
+    size: int = 0
+    md5: str = ""
+    download_url: str = ""
+    encrypt_query_param: str = ""
+    aes_key: str = ""
+    encrypt_type: int = 0
+    kind: str = "file"
+
+
+@dataclass(frozen=True)
+class WeixinUploadedMedia:
+    """Encrypted CDN upload descriptor used by iLink file_item media."""
+
+    encrypt_query_param: str
+    aes_key: str
+    encrypt_type: int
+    raw_size: int
+    md5: str
+    display_name: str
 
 
 @dataclass
@@ -134,13 +195,61 @@ class WeixinIlinkClient:
         if not text.strip():
             raise ValueError("Weixin iLink reply text must not be empty.")
 
+        return await self.send_items(
+            session,
+            to_user_id=to_user_id,
+            items=[{"type": ITEM_TEXT, "text_item": {"text": text}}],
+            context_token=context_token,
+            client_id=client_id,
+        )
+
+    async def send_file(
+        self,
+        session: ClientSession,
+        *,
+        to_user_id: str,
+        path: Path,
+        context_token: str = "",
+        client_id: str = "",
+    ) -> dict[str, Any]:
+        upload = await self.upload_file(session, to_user_id=to_user_id, path=path)
+        return await self.send_items(
+            session,
+            to_user_id=to_user_id,
+            items=[
+                {
+                    "type": ITEM_FILE,
+                    "file_item": {
+                        "file_name": upload.display_name,
+                        "len": str(upload.raw_size),
+                        "media": {
+                            "encrypt_query_param": upload.encrypt_query_param,
+                            "aes_key": upload.aes_key,
+                            "encrypt_type": upload.encrypt_type,
+                        },
+                    },
+                }
+            ],
+            context_token=context_token,
+            client_id=client_id,
+        )
+
+    async def send_items(
+        self,
+        session: ClientSession,
+        *,
+        to_user_id: str,
+        items: list[dict[str, Any]],
+        context_token: str = "",
+        client_id: str = "",
+    ) -> dict[str, Any]:
         message: dict[str, Any] = {
             "from_user_id": "",
             "to_user_id": to_user_id,
             "client_id": client_id or f"psi-weixin-{uuid.uuid4().hex}",
             "message_type": MSG_TYPE_BOT,
             "message_state": MSG_STATE_FINISH,
-            "item_list": [{"type": ITEM_TEXT, "text_item": {"text": text}}],
+            "item_list": items,
         }
         if context_token:
             message["context_token"] = context_token
@@ -153,6 +262,85 @@ class WeixinIlinkClient:
             token=self.token,
             timeout_ms=API_TIMEOUT_MS,
         )
+
+    async def upload_file(
+        self,
+        session: ClientSession,
+        *,
+        to_user_id: str,
+        path: Path,
+    ) -> WeixinUploadedMedia:
+        raw = path.read_bytes()
+        aes_key = secrets.token_bytes(16)
+        aes_key_hex = aes_key.hex()
+        encrypted = _aes_128_ecb_encrypt(raw, aes_key)
+        file_md5 = hashlib.md5(raw).hexdigest()
+        display_name, upload_key, upload_url_response = await self._get_upload_url_for_file(
+            session,
+            to_user_id=to_user_id,
+            original_name=path.name,
+            raw_size=len(raw),
+            encrypted_size=len(encrypted),
+            file_md5=file_md5,
+            aes_key=aes_key_hex,
+        )
+        upload_url = _weixin_cdn_upload_url(upload_url_response, filekey=upload_key)
+
+        upload_response = await _upload_weixin_encrypted_file(session, upload_url=upload_url, payload=encrypted)
+        encrypt_query_param = _weixin_encrypt_query_param(
+            upload_response=upload_response,
+        )
+        if not encrypt_query_param:
+            raise UserFacingError("Weixin iLink file upload response did not include x-encrypted-param.")
+
+        return WeixinUploadedMedia(
+            encrypt_query_param=encrypt_query_param,
+            aes_key=base64.b64encode(aes_key_hex.encode("ascii")).decode("ascii"),
+            encrypt_type=1,
+            raw_size=len(raw),
+            md5=file_md5,
+            display_name=display_name,
+        )
+
+    async def _get_upload_url_for_file(
+        self,
+        session: ClientSession,
+        *,
+        to_user_id: str,
+        original_name: str,
+        raw_size: int,
+        encrypted_size: int,
+        file_md5: str,
+        aes_key: str,
+    ) -> tuple[str, str, dict[str, Any]]:
+        last_response: dict[str, Any] = {}
+        for display_name in _weixin_upload_file_name_candidates(original_name):
+            upload_key = secrets.token_hex(16)
+            response = await _api_post(
+                session,
+                base_url=self.base_url,
+                endpoint=EP_GET_UPLOAD_URL,
+                payload={
+                    "filekey": upload_key,
+                    "rawsize": raw_size,
+                    "rawfilemd5": file_md5,
+                    "filesize": encrypted_size,
+                    "aeskey": aes_key,
+                    "media_type": MEDIA_TYPE_FILE,
+                    "no_need_thumb": True,
+                    "to_user_id": to_user_id,
+                },
+                token=self.token,
+                timeout_ms=API_TIMEOUT_MS,
+            )
+            last_response = response
+            if response.get("ret") in {None, 0} and response.get("errcode") in {None, 0}:
+                return display_name, upload_key, response
+            if not _should_retry_weixin_upload_name(response, original_name=original_name, display_name=display_name):
+                _raise_for_ilink_error(response, "getuploadurl")
+
+        _raise_for_ilink_error(last_response, "getuploadurl")
+        raise UserFacingError("Weixin iLink getuploadurl failed.")
 
 
 async def request_weixin_ilink_qrcode(
@@ -305,7 +493,13 @@ async def poll_weixin_ilink_once(
     if isinstance(new_sync_buf, str):
         state.sync_buf = new_sync_buf
 
-    messages = extract_weixin_ilink_messages(response, account_id=client.account_id)
+    messages = await extract_weixin_ilink_messages_with_media(
+        response,
+        account_id=client.account_id,
+        session=session,
+        base_url=client.base_url,
+        token=client.token,
+    )
     if messages:
         logger.info(f"weixin-ilink received messages: count={len(messages)}")
     for message in messages:
@@ -318,19 +512,72 @@ async def poll_weixin_ilink_once(
             state.context_tokens[message.peer_id] = message.context_token
         reply = await collect_session_reply(session_socket=session_socket, message=message.text)
         if reply:
-            send_response = await client.send_text(
-                session,
+            await send_weixin_ilink_reply(
+                session=session,
+                client=client,
                 to_user_id=message.peer_id,
-                text=reply,
+                reply=reply,
                 context_token=state.context_tokens.get(message.peer_id, ""),
             )
-            _raise_for_ilink_error(send_response, "sendmessage")
             logger.info(
                 "weixin-ilink reply sent: "
                 f"peer={_safe_id(message.peer_id)} message={_safe_id(message.message_id)} "
                 f"reply_len={len(reply)}"
             )
     return messages
+
+
+async def send_weixin_ilink_reply(
+    *,
+    session: ClientSession,
+    client: WeixinIlinkClient,
+    to_user_id: str,
+    reply: str,
+    context_token: str = "",
+) -> None:
+    text, media = extract_weixin_reply_media(reply)
+    if text.strip():
+        send_response = await client.send_text(
+            session,
+            to_user_id=to_user_id,
+            text=text,
+            context_token=context_token,
+        )
+        _raise_for_ilink_error(send_response, "sendmessage")
+
+    for attachment in media:
+        send_response = await client.send_file(
+            session,
+            to_user_id=to_user_id,
+            path=attachment.path,
+            context_token=context_token,
+        )
+        _raise_for_ilink_error(send_response, "sendmessage")
+
+
+def extract_weixin_reply_media(reply: str, *, roots: list[Path] | None = None) -> tuple[str, list[WeixinReplyMedia]]:
+    text_lines: list[str] = []
+    media: list[WeixinReplyMedia] = []
+    allowed_roots = roots or _default_weixin_media_roots()
+    allowed_extensions = _allowed_weixin_file_extensions()
+
+    for line in reply.splitlines():
+        match = MEDIA_LINE_RE.match(line)
+        if match is None:
+            text_lines.append(line)
+            continue
+
+        raw_path = match.group("path").strip().strip('"')
+        try:
+            path = _resolve_weixin_media_path(raw_path, roots=allowed_roots)
+            if path.suffix.lower() not in allowed_extensions:
+                text_lines.append(f"Weixin cannot send this file type: {path.suffix.lower()} ({path.name})")
+                continue
+            media.append(WeixinReplyMedia(path=path, display_name=path.name))
+        except UserFacingError as exc:
+            text_lines.append(str(exc))
+
+    return "\n".join(line for line in text_lines if line.strip()).strip(), media
 
 
 def extract_weixin_ilink_messages(response: dict[str, Any], *, account_id: str) -> list[WeixinIlinkMessage]:
@@ -359,6 +606,67 @@ def extract_weixin_ilink_messages(response: dict[str, Any], *, account_id: str) 
                 text=text,
                 sender_id=sender_id,
                 message_id=_first_string(raw_message, "msg_id", "msgid", "message_id", "client_id"),
+                context_token=context_token,
+                raw=raw_message,
+            )
+        )
+    return messages
+
+
+async def extract_weixin_ilink_messages_with_media(
+    response: dict[str, Any],
+    *,
+    account_id: str,
+    session: ClientSession,
+    base_url: str,
+    token: str,
+) -> list[WeixinIlinkMessage]:
+    messages: list[WeixinIlinkMessage] = []
+    for raw_message in _iter_dicts(response.get("msgs")):
+        sender_id = _first_string(raw_message, "from_user_id", "fromUserId")
+        if not sender_id or sender_id == account_id:
+            continue
+
+        item_list = raw_message.get("item_list")
+        if not isinstance(item_list, list):
+            continue
+
+        peer_id = _peer_id(raw_message, account_id=account_id)
+        if not peer_id:
+            continue
+
+        message_id = _first_string(raw_message, "msg_id", "msgid", "message_id", "client_id")
+        text_parts: list[str] = []
+        text = _extract_text(cast(list[dict[str, Any]], item_list)).strip()
+        if text:
+            text_parts.append(text)
+
+        for media in _extract_weixin_inbound_media(cast(list[dict[str, Any]], item_list)):
+            try:
+                path = await _download_weixin_inbound_media(
+                    session,
+                    media=media,
+                    peer_id=peer_id,
+                    message_id=message_id or "message",
+                    base_url=base_url,
+                    token=token,
+                )
+                text_parts.append(_format_weixin_inbound_media(path=path, media=media))
+            except Exception as exc:
+                logger.warning(f"weixin-ilink inbound file download failed: {exc}")
+                text_parts.append(_format_weixin_inbound_media_failure(media=media, error=str(exc)))
+
+        message_text = "\n".join(part for part in text_parts if part.strip()).strip()
+        if not message_text:
+            continue
+
+        context_token = _first_string(raw_message, "context_token", "contextToken")
+        messages.append(
+            WeixinIlinkMessage(
+                peer_id=peer_id,
+                text=message_text,
+                sender_id=sender_id,
+                message_id=message_id,
                 context_token=context_token,
                 raw=raw_message,
             )
@@ -625,6 +933,49 @@ async def _api_post(
     return await asyncio.wait_for(request(), timeout=timeout_ms / 1000)
 
 
+async def _upload_weixin_encrypted_file(
+    session: ClientSession,
+    *,
+    upload_url: str,
+    payload: bytes,
+) -> dict[str, Any]:
+    async def request() -> dict[str, Any]:
+        async with session.post(upload_url, data=payload, headers={"Content-Type": "application/octet-stream"}) as response:
+            raw = await response.text()
+            if response.status >= 400:
+                raise UserFacingError(f"Weixin iLink file upload failed: HTTP {response.status}: {raw[:300]}")
+            result: dict[str, Any] = {}
+            encrypted_param = response.headers.get("x-encrypted-param")
+            if encrypted_param:
+                result["encrypt_query_param"] = encrypted_param
+            if not raw.strip():
+                return result
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                return result
+            if isinstance(data, dict):
+                result.update(cast(dict[str, Any], data))
+            return result
+
+    return await asyncio.wait_for(request(), timeout=API_TIMEOUT_MS / 1000)
+
+
+def _aes_128_ecb_encrypt(data: bytes, key: bytes) -> bytes:
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError as exc:
+        raise UserFacingError(
+            "Weixin iLink file sending requires the cryptography package.",
+            "Install cryptography or disable MEDIA file sending.",
+        ) from exc
+
+    padding = 16 - (len(data) % 16)
+    padded = data + bytes([padding]) * padding
+    encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+    return encryptor.update(padded) + encryptor.finalize()
+
+
 async def _api_get(
     session: ClientSession,
     *,
@@ -698,9 +1049,324 @@ def _extract_text(item_list: list[dict[str, Any]]) -> str:
             voice_item = item.get("voice_item")
             if isinstance(voice_item, dict):
                 text = voice_item.get("text")
-                if text:
-                    return str(text)
+            if text:
+                return str(text)
     return ""
+
+
+def _extract_weixin_inbound_media(item_list: list[dict[str, Any]]) -> list[WeixinInboundMedia]:
+    media: list[WeixinInboundMedia] = []
+    for item in item_list:
+        file_item = item.get("file_item")
+        image_item = item.get("image_item") or item.get("imageItem")
+        raw_media = file_item if isinstance(file_item, dict) else image_item if isinstance(image_item, dict) else None
+        if raw_media is None:
+            continue
+
+        file_name = _first_string(
+            raw_media,
+            "file_name",
+            "fileName",
+            "name",
+            "title",
+        )
+        download_url = _first_string(
+            raw_media,
+            "download_url",
+            "downloadUrl",
+            "file_url",
+            "fileUrl",
+            "url",
+        )
+        nested_media = raw_media.get("media")
+        nested = nested_media if isinstance(nested_media, dict) else {}
+        if not download_url:
+            download_url = _first_string(
+                nested,
+                "download_url",
+                "downloadUrl",
+                "file_url",
+                "fileUrl",
+                "url",
+                "full_url",
+                "fullUrl",
+            )
+        if not file_name:
+            file_name = _file_name_from_url(download_url) or ("image.jpg" if raw_media is image_item else "file")
+
+        raw_size = raw_media.get("len", raw_media.get("size", raw_media.get("file_size", raw_media.get("fileSize", 0))))
+        try:
+            size = int(raw_size)
+        except (TypeError, ValueError):
+            size = 0
+        raw_encrypt_type = nested.get("encrypt_type", nested.get("encryptType", raw_media.get("encrypt_type", 0)))
+        try:
+            encrypt_type = int(raw_encrypt_type)
+        except (TypeError, ValueError):
+            encrypt_type = 0
+
+        media.append(
+            WeixinInboundMedia(
+                file_name=_sanitize_weixin_file_name(file_name),
+                size=size,
+                md5=_first_string(raw_media, "md5", "file_md5", "fileMd5"),
+                download_url=download_url,
+                encrypt_query_param=_first_string(nested, "encrypt_query_param", "encryptQueryParam"),
+                aes_key=_first_string(nested, "aes_key", "aesKey", "key"),
+                encrypt_type=encrypt_type,
+                kind="image" if raw_media is image_item else "file",
+            )
+        )
+    return media
+
+
+async def _download_weixin_inbound_media(
+    session: ClientSession,
+    *,
+    media: WeixinInboundMedia,
+    peer_id: str,
+    message_id: str,
+    base_url: str,
+    token: str,
+) -> Path:
+    if not media.download_url and not media.encrypt_query_param:
+        raise UserFacingError("missing download url")
+
+    url = _resolve_weixin_download_url(
+        media.download_url,
+        encrypted_query_param=media.encrypt_query_param,
+        base_url=base_url,
+    )
+    async with session.get(url, headers=_download_headers(token)) as response:
+        raw = await response.read()
+        if response.status >= 400:
+            raise UserFacingError(f"download HTTP {response.status}: {raw[:120]!r}")
+
+    data = _maybe_decrypt_weixin_media(raw, media)
+    path = _weixin_inbound_media_path(peer_id=peer_id, message_id=message_id, file_name=media.file_name)
+    await anyio.Path(path.parent).mkdir(parents=True, exist_ok=True)
+    await anyio.Path(path).write_bytes(data)
+    return path
+
+
+def _format_weixin_inbound_media(*, path: Path, media: WeixinInboundMedia) -> str:
+    lines = [
+        "用户发送了文件：",
+        f"FILE:{path}",
+        f"文件名：{media.file_name}",
+    ]
+    if media.size > 0:
+        lines.append(f"大小：{media.size} bytes")
+    if media.md5:
+        lines.append(f"MD5：{media.md5}")
+    return "\n".join(lines)
+
+
+def _format_weixin_inbound_media_failure(*, media: WeixinInboundMedia, error: str) -> str:
+    return f"用户发送了文件，但微信入站下载失败：{media.file_name}\n原因：{error}"
+
+
+def _weixin_inbound_media_path(*, peer_id: str, message_id: str, file_name: str) -> Path:
+    root = _weixin_download_root()
+    safe_peer = normalize_weixin_ilink_account_id(peer_id) or "peer"
+    safe_message = normalize_weixin_ilink_account_id(message_id) or "message"
+    return root / safe_peer / safe_message / _sanitize_weixin_file_name(file_name)
+
+
+def _weixin_download_root() -> Path:
+    raw = os.environ.get("WEIXIN_DOWNLOAD_DIR", "")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (Path(DEFAULT_STATE_DIR).expanduser() / "files").resolve()
+
+
+def _resolve_weixin_download_url(
+    raw_url: str,
+    *,
+    encrypted_query_param: str = "",
+    base_url: str,
+) -> str:
+    if raw_url.startswith(("http://", "https://")):
+        return raw_url
+    if raw_url.startswith("/"):
+        return f"{base_url.rstrip('/')}{raw_url}"
+    if encrypted_query_param:
+        cdn_base_url = os.environ.get("WEIXIN_CDN_BASE_URL", "").strip() or WEIXIN_CDN_BASE_URL
+        return f"{cdn_base_url.rstrip('/')}/download?encrypted_query_param={quote(encrypted_query_param, safe='')}"
+    return f"{base_url.rstrip('/')}/{raw_url.lstrip('/')}"
+
+
+def _download_headers(token: str) -> dict[str, str]:
+    headers = _headers(token, "")
+    headers.pop("Content-Length", None)
+    return headers
+
+
+def _maybe_decrypt_weixin_media(data: bytes, media: WeixinInboundMedia) -> bytes:
+    if media.encrypt_type != 1 or not media.aes_key:
+        return data
+    try:
+        key = _parse_weixin_aes_key(media.aes_key)
+    except (ValueError, binascii.Error) as exc:
+        raise UserFacingError("invalid inbound media AES key") from exc
+    return _aes_128_ecb_decrypt(data, key)
+
+
+def _parse_weixin_aes_key(aes_key: str) -> bytes:
+    decoded = base64.b64decode(aes_key)
+    if len(decoded) == 16:
+        return decoded
+    if len(decoded) == 32:
+        decoded_text = decoded.decode("ascii")
+        if re.fullmatch(r"[0-9a-fA-F]{32}", decoded_text):
+            return bytes.fromhex(decoded_text)
+    raise ValueError("invalid AES key length")
+
+
+def _aes_128_ecb_decrypt(data: bytes, key: bytes) -> bytes:
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError as exc:
+        raise UserFacingError(
+            "Weixin iLink file download requires the cryptography package.",
+            "Install cryptography or disable inbound file download.",
+        ) from exc
+
+    decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+    padded = decryptor.update(data) + decryptor.finalize()
+    if not padded:
+        return padded
+    padding = padded[-1]
+    if padding < 1 or padding > 16:
+        raise UserFacingError("invalid inbound media AES padding")
+    return padded[:-padding]
+
+
+def _sanitize_weixin_file_name(file_name: str) -> str:
+    cleaned = Path(file_name.strip().replace("\\", "/")).name
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]+", "_", cleaned).strip(" .")
+    return cleaned or "file"
+
+
+def _file_name_from_url(url: str) -> str:
+    if not url:
+        return ""
+    return Path(url.split("?", 1)[0].rstrip("/")).name
+
+
+def _resolve_weixin_media_path(raw_path: str, *, roots: list[Path]) -> Path:
+    if not raw_path:
+        raise UserFacingError("Weixin MEDIA marker is missing a file path.")
+
+    candidate = Path(raw_path).expanduser()
+    candidates = [candidate] if candidate.is_absolute() else [root / candidate for root in roots]
+    resolved_roots = [_resolve_existing_root(root) for root in roots]
+    for item in candidates:
+        try:
+            resolved = item.resolve(strict=True)
+        except FileNotFoundError:
+            continue
+        if not resolved.is_file():
+            raise UserFacingError(f"Weixin MEDIA path is not a file: {raw_path}")
+        if not _is_relative_to_any(resolved, resolved_roots):
+            raise UserFacingError(f"Weixin MEDIA path is outside allowed roots: {raw_path}")
+        return resolved
+
+    raise UserFacingError(f"Weixin MEDIA file does not exist: {raw_path}")
+
+
+def _default_weixin_media_roots() -> list[Path]:
+    raw = os.environ.get("WEIXIN_MEDIA_ROOTS") or os.environ.get("WEIXIN_SEND_FILE_ROOTS", "")
+    roots = [Path(item).expanduser() for item in raw.split(os.pathsep) if item.strip()]
+    workspace = os.environ.get("PSI_WORKSPACE_DIR") or os.environ.get("WORKSPACE_DIR")
+    if workspace:
+        roots.append(Path(workspace).expanduser())
+    roots.append(Path.cwd())
+    return roots
+
+
+def _allowed_weixin_file_extensions() -> set[str]:
+    raw = os.environ.get("WEIXIN_MEDIA_ALLOWED_EXTENSIONS", "")
+    if not raw.strip():
+        return DEFAULT_FILE_EXTENSIONS
+    return {item.strip().lower() for item in raw.split(",") if item.strip().startswith(".")}
+
+
+def _weixin_upload_file_name_candidates(original_name: str) -> list[str]:
+    if Path(original_name).suffix.lower() not in {".md", ".markdown"}:
+        return [original_name]
+    return [original_name, f"{Path(original_name).stem}.txt"]
+
+
+def _weixin_cdn_upload_url(upload_url_response: dict[str, Any], *, filekey: str) -> str:
+    upload_full_url = _first_string(
+        upload_url_response,
+        "upload_full_url",
+        "uploadFullUrl",
+        "upload_url",
+        "uploadUrl",
+        "uploadurl",
+        "url",
+    )
+    if upload_full_url.strip():
+        return upload_full_url.strip()
+
+    upload_param = _first_string(upload_url_response, "upload_param", "uploadParam")
+    if not upload_param:
+        raise UserFacingError("Weixin iLink getuploadurl response did not include upload_full_url or upload_param.")
+
+    cdn_base_url = (
+        os.environ.get("WEIXIN_CDN_BASE_URL", "").strip()
+        or _first_string(upload_url_response, "cdn_base_url", "cdnBaseUrl", "cdn_url", "cdnUrl")
+        or WEIXIN_CDN_BASE_URL
+    )
+    return (
+        f"{cdn_base_url.rstrip('/')}/upload?"
+        f"encrypted_query_param={quote(upload_param, safe='')}&filekey={quote(filekey, safe='')}"
+    )
+
+
+def _weixin_encrypt_query_param(*, upload_response: dict[str, Any]) -> str:
+    value = _first_string(
+        upload_response,
+        "encrypt_query_param",
+        "encrypted_query_param",
+        "encryptQueryParam",
+        "encryptedQueryParam",
+    )
+    if value:
+        return value
+    return ""
+
+
+def _should_retry_weixin_upload_name(
+    response: dict[str, Any],
+    *,
+    original_name: str,
+    display_name: str,
+) -> bool:
+    if display_name != original_name:
+        return False
+    if Path(original_name).suffix.lower() not in {".md", ".markdown"}:
+        return False
+    return response.get("ret") == -2 or response.get("errcode") == -2
+
+
+def _resolve_existing_root(root: Path) -> Path:
+    try:
+        return root.resolve(strict=True)
+    except FileNotFoundError:
+        return root.resolve(strict=False)
+
+
+def _is_relative_to_any(path: Path, roots: list[Path]) -> bool:
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 def _iter_dicts(value: object) -> list[dict[str, Any]]:

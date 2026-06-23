@@ -5,7 +5,7 @@ import json
 from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
-from psi_agent.ai.common import ErrorResponse, SSEChunk, serve_ai_backend
+from psi_agent.ai.common import ErrorResponse, SSEChunk, serve_ai_backend, write_sse_bytes
 from psi_agent.net import make_tcp_connector
 
 
@@ -78,14 +78,18 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                     finish_reason="error",
                     chunk_id="error",
                 )
-                await response.write(chunk.to_sse().encode())
+                await write_sse_bytes(response, chunk.to_sse().encode())
                 return response
 
             async for raw_line in upstream_resp.content:
                 line = raw_line.decode().strip()
                 if line:
                     logger.debug(f"Upstream chunk: {line[:200]}")
-                    await response.write((line + "\n\n").encode())
+                    if not await write_sse_bytes(response, (line + "\n\n").encode()):
+                        return response
+    except (ConnectionResetError, BrokenPipeError):
+        logger.info("Downstream client disconnected while forwarding upstream response")
+        return response
     except Exception as e:
         logger.error(f"Error forwarding to upstream: {e}")
         chunk = SSEChunk(
@@ -93,7 +97,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             finish_reason="error",
             chunk_id="error",
         )
-        await response.write(chunk.to_sse().encode())
+        await write_sse_bytes(response, chunk.to_sse().encode())
         return response
 
     logger.debug("Request completed")

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
+import re
+import secrets
 import socket
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from aiohttp import ClientSession, web
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from psi_agent.channel.weixin_ilink import (
     WeixinIlinkClient,
@@ -14,6 +20,7 @@ from psi_agent.channel.weixin_ilink import (
     WeixinIlinkState,
     credentials_from_weixin_ilink_status,
     extract_weixin_ilink_messages,
+    extract_weixin_reply_media,
     load_weixin_ilink_credentials,
     login_weixin_ilink_by_qr,
     normalize_weixin_ilink_account_id,
@@ -23,6 +30,13 @@ from psi_agent.channel.weixin_ilink import (
     save_weixin_ilink_credentials,
 )
 from psi_agent.errors import UserFacingError
+
+
+def _encrypt_test_weixin_payload(data: bytes, aes_key: bytes) -> bytes:
+    padding = 16 - (len(data) % 16)
+    padded = data + bytes([padding]) * padding
+    encryptor = Cipher(algorithms.AES(aes_key), modes.ECB()).encryptor()
+    return encryptor.update(padded) + encryptor.finalize()
 
 
 def test_extract_weixin_ilink_text_message_updates_peer_and_context() -> None:
@@ -47,6 +61,31 @@ def test_extract_weixin_ilink_text_message_updates_peer_and_context() -> None:
     assert messages[0].message_id == "msg-1"
     assert messages[0].context_token == "ctx-1"
     assert messages[0].text == "hello weixin"
+
+
+def test_extract_weixin_reply_media_removes_media_lines(tmp_path) -> None:
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-1.4\n")
+
+    text, media = extract_weixin_reply_media(
+        f"请查收报告。\nMEDIA:{report}\n谢谢",
+        roots=[tmp_path],
+    )
+
+    assert text == "请查收报告。\n谢谢"
+    assert len(media) == 1
+    assert media[0].path == report
+    assert media[0].display_name == "report.pdf"
+
+
+def test_extract_weixin_reply_media_rejects_unsupported_extension(tmp_path) -> None:
+    tex = tmp_path / "paper.tex"
+    tex.write_text(r"\section{Draft}", encoding="utf-8")
+
+    text, media = extract_weixin_reply_media(f"MEDIA:{tex}", roots=[tmp_path])
+
+    assert text == "Weixin cannot send this file type: .tex (paper.tex)"
+    assert media == []
 
 
 def test_weixin_ilink_credentials_from_status_normalizes_storage_id() -> None:
@@ -213,6 +252,586 @@ async def test_weixin_ilink_poll_calls_session_and_sendmessage() -> None:
     assert sent_msg["message_state"] == 2
     assert sent_msg["context_token"] == "ctx-1"
     assert sent_msg["item_list"] == [{"type": 1, "text_item": {"text": "reply text"}}]
+
+
+@pytest.mark.anyio
+async def test_weixin_ilink_poll_uploads_and_sends_media_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 report bytes\n")
+    monkeypatch.setenv("WEIXIN_MEDIA_ROOTS", str(tmp_path))
+
+    session_payloads: list[dict[str, object]] = []
+    getupdates_payloads: list[dict[str, object]] = []
+    upload_url_payloads: list[dict[str, object]] = []
+    upload_bodies: list[bytes] = []
+    sendmessage_payloads: list[dict[str, object]] = []
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        session_payloads.append(await request.json())
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {"choices": [{"delta": {"content": f"请查收\nMEDIA:{report}\n"}}]}
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def getupdates_handler(request: web.Request) -> web.Response:
+        getupdates_payloads.append(await request.json())
+        return web.json_response(
+            {
+                "ret": 0,
+                "get_updates_buf": "sync-next",
+                "msgs": [
+                    {
+                        "from_user_id": "user-1",
+                        "to_user_id": "account-1",
+                        "msg_id": "msg-1",
+                        "context_token": "ctx-1",
+                        "item_list": [{"type": 1, "text_item": {"text": "send report"}}],
+                    }
+                ],
+            }
+        )
+
+    async def getuploadurl_handler(request: web.Request) -> web.Response:
+        upload_url_payloads.append(await request.json())
+        return web.json_response(
+            {
+                "ret": 0,
+                "upload_full_url": f"{ilink_base_url}/cdn/upload",
+                "upload_param": "upload-param-1",
+            }
+        )
+
+    async def upload_handler(request: web.Request) -> web.Response:
+        upload_bodies.append(await request.read())
+        return web.json_response({"ret": 0, "encrypt_query_param": "encrypted-param-1"})
+
+    async def sendmessage_handler(request: web.Request) -> web.Response:
+        sendmessage_payloads.append(await request.json())
+        return web.json_response({"ret": 0})
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer(
+            [
+                ("POST", "/ilink/bot/getupdates", getupdates_handler),
+                ("POST", "/ilink/bot/getuploadurl", getuploadurl_handler),
+                ("POST", "/cdn/upload", upload_handler),
+                ("POST", "/ilink/bot/sendmessage", sendmessage_handler),
+            ]
+        ) as ilink_base_url,
+        ClientSession() as http_session,
+    ):
+        state = WeixinIlinkState(sync_buf="sync-prev")
+        messages = await poll_weixin_ilink_once(
+            session_socket=f"{session_base_url}/v1",
+            client=WeixinIlinkClient(token="token-1", account_id="account-1", base_url=ilink_base_url),
+            state=state,
+            session=http_session,
+            timeout_ms=1000,
+        )
+
+    assert [message.text for message in messages] == ["send report"]
+    assert session_payloads[0]["messages"] == [{"role": "user", "content": "send report"}]
+    assert getupdates_payloads[0]["get_updates_buf"] == "sync-prev"
+    assert re.fullmatch(r"[0-9a-f]{32}", cast(str, upload_url_payloads[0]["filekey"]))
+    assert upload_url_payloads[0]["media_type"] == 3
+    assert upload_url_payloads[0]["rawsize"] == report.stat().st_size
+    assert upload_url_payloads[0]["rawfilemd5"]
+    assert upload_url_payloads[0]["filesize"] == len(upload_bodies[0])
+    assert re.fullmatch(r"[0-9a-f]{32}", cast(str, upload_url_payloads[0]["aeskey"]))
+    assert upload_url_payloads[0]["no_need_thumb"] is True
+    assert upload_bodies
+    assert len(upload_bodies[0]) % 16 == 0
+    assert len(sendmessage_payloads) == 2
+    assert cast(dict[str, Any], sendmessage_payloads[0]["msg"])["item_list"] == [
+        {"type": 1, "text_item": {"text": "请查收"}}
+    ]
+
+    sent_msg = cast(dict[str, Any], sendmessage_payloads[1]["msg"])
+    assert sent_msg["to_user_id"] == "user-1"
+    assert sent_msg["context_token"] == "ctx-1"
+    assert sent_msg["item_list"][0]["type"] == 4
+    file_item = sent_msg["item_list"][0]["file_item"]
+    assert file_item["file_name"] == "report.pdf"
+    assert file_item["len"] == str(report.stat().st_size)
+    aes_key = cast(str, file_item["media"]["aes_key"])
+    assert re.fullmatch(r"[0-9a-f]{32}", base64.b64decode(aes_key).decode("ascii"))
+    assert file_item["media"]["encrypt_query_param"] == "encrypted-param-1"
+
+
+@pytest.mark.anyio
+async def test_weixin_ilink_poll_retries_markdown_media_as_txt(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    guide = tmp_path / "AGENTS.md"
+    guide.write_text("# AGENTS\n\nhello\n", encoding="utf-8")
+    monkeypatch.setenv("WEIXIN_MEDIA_ROOTS", str(tmp_path))
+
+    upload_url_payloads: list[dict[str, object]] = []
+    sendmessage_payloads: list[dict[str, object]] = []
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        _ = await request.json()
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {"choices": [{"delta": {"content": f"MEDIA:{guide}\n"}}]}
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def getupdates_handler(request: web.Request) -> web.Response:
+        _ = await request.json()
+        return web.json_response(
+            {
+                "ret": 0,
+                "get_updates_buf": "sync-next",
+                "msgs": [
+                    {
+                        "from_user_id": "user-1",
+                        "to_user_id": "account-1",
+                        "msg_id": "msg-1",
+                        "context_token": "ctx-1",
+                        "item_list": [{"type": 1, "text_item": {"text": "send guide"}}],
+                    }
+                ],
+            }
+        )
+
+    async def getuploadurl_handler(request: web.Request) -> web.Response:
+        payload = await request.json()
+        upload_url_payloads.append(payload)
+        if len(upload_url_payloads) == 1:
+            return web.json_response({"ret": -2})
+        return web.json_response(
+            {
+                "ret": 0,
+                "upload_full_url": f"{ilink_base_url}/cdn/upload",
+                "upload_param": "upload-param-1",
+            }
+        )
+
+    async def upload_handler(request: web.Request) -> web.Response:
+        _ = await request.read()
+        return web.json_response({"ret": 0, "encrypt_query_param": "encrypted-param-1"})
+
+    async def sendmessage_handler(request: web.Request) -> web.Response:
+        sendmessage_payloads.append(await request.json())
+        return web.json_response({"ret": 0})
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer(
+            [
+                ("POST", "/ilink/bot/getupdates", getupdates_handler),
+                ("POST", "/ilink/bot/getuploadurl", getuploadurl_handler),
+                ("POST", "/cdn/upload", upload_handler),
+                ("POST", "/ilink/bot/sendmessage", sendmessage_handler),
+            ]
+        ) as ilink_base_url,
+        ClientSession() as http_session,
+    ):
+        await poll_weixin_ilink_once(
+            session_socket=f"{session_base_url}/v1",
+            client=WeixinIlinkClient(token="token-1", account_id="account-1", base_url=ilink_base_url),
+            state=WeixinIlinkState(sync_buf="sync-prev"),
+            session=http_session,
+            timeout_ms=1000,
+        )
+
+    assert len(upload_url_payloads) == 2
+    assert all(re.fullmatch(r"[0-9a-f]{32}", cast(str, payload["filekey"])) for payload in upload_url_payloads)
+    assert len(sendmessage_payloads) == 1
+    sent_msg = cast(dict[str, Any], sendmessage_payloads[0]["msg"])
+    file_item = sent_msg["item_list"][0]["file_item"]
+    assert file_item["file_name"] == "AGENTS.txt"
+    assert file_item["len"] == str(guide.stat().st_size)
+
+
+@pytest.mark.anyio
+async def test_weixin_ilink_poll_uses_upload_response_header_when_full_url_has_query(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 report bytes\n")
+    monkeypatch.setenv("WEIXIN_MEDIA_ROOTS", str(tmp_path))
+
+    sendmessage_payloads: list[dict[str, object]] = []
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        _ = await request.json()
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {"choices": [{"delta": {"content": f"MEDIA:{report}\n"}}]}
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def getupdates_handler(request: web.Request) -> web.Response:
+        _ = await request.json()
+        return web.json_response(
+            {
+                "ret": 0,
+                "get_updates_buf": "sync-next",
+                "msgs": [
+                    {
+                        "from_user_id": "user-1",
+                        "to_user_id": "account-1",
+                        "msg_id": "msg-1",
+                        "context_token": "ctx-1",
+                        "item_list": [{"type": 1, "text_item": {"text": "send report"}}],
+                    }
+                ],
+            }
+        )
+
+    async def getuploadurl_handler(request: web.Request) -> web.Response:
+        _ = await request.json()
+        return web.json_response(
+            {
+                "ret": 0,
+                "upload_full_url": f"{ilink_base_url}/cdn/upload?encrypt_query_param=url-param-1",
+            }
+        )
+
+    async def upload_handler(request: web.Request) -> web.Response:
+        _ = await request.read()
+        return web.Response(status=200, headers={"x-encrypted-param": "header-param-1"})
+
+    async def sendmessage_handler(request: web.Request) -> web.Response:
+        sendmessage_payloads.append(await request.json())
+        return web.json_response({"ret": 0})
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer(
+            [
+                ("POST", "/ilink/bot/getupdates", getupdates_handler),
+                ("POST", "/ilink/bot/getuploadurl", getuploadurl_handler),
+                ("POST", "/cdn/upload", upload_handler),
+                ("POST", "/ilink/bot/sendmessage", sendmessage_handler),
+            ]
+        ) as ilink_base_url,
+        ClientSession() as http_session,
+    ):
+        await poll_weixin_ilink_once(
+            session_socket=f"{session_base_url}/v1",
+            client=WeixinIlinkClient(token="token-1", account_id="account-1", base_url=ilink_base_url),
+            state=WeixinIlinkState(sync_buf="sync-prev"),
+            session=http_session,
+            timeout_ms=1000,
+        )
+
+    sent_msg = cast(dict[str, Any], sendmessage_payloads[0]["msg"])
+    file_item = sent_msg["item_list"][0]["file_item"]
+    assert file_item["media"]["encrypt_query_param"] == "header-param-1"
+
+
+@pytest.mark.anyio
+async def test_weixin_ilink_poll_builds_cdn_upload_url_and_uses_response_header(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = tmp_path / "report.pdf"
+    report.write_bytes(b"%PDF-1.4 report bytes\n")
+    monkeypatch.setenv("WEIXIN_MEDIA_ROOTS", str(tmp_path))
+
+    upload_paths: list[str] = []
+    sendmessage_payloads: list[dict[str, object]] = []
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        _ = await request.json()
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {"choices": [{"delta": {"content": f"MEDIA:{report}\n"}}]}
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def getupdates_handler(request: web.Request) -> web.Response:
+        _ = await request.json()
+        return web.json_response(
+            {
+                "ret": 0,
+                "get_updates_buf": "sync-next",
+                "msgs": [
+                    {
+                        "from_user_id": "user-1",
+                        "to_user_id": "account-1",
+                        "msg_id": "msg-1",
+                        "context_token": "ctx-1",
+                        "item_list": [{"type": 1, "text_item": {"text": "send report"}}],
+                    }
+                ],
+            }
+        )
+
+    async def getuploadurl_handler(request: web.Request) -> web.Response:
+        _ = await request.json()
+        return web.json_response(
+            {
+                "ret": 0,
+                "upload_param": "upload param/with+chars=",
+                "cdn_base_url": ilink_base_url,
+            }
+        )
+
+    async def upload_handler(request: web.Request) -> web.Response:
+        upload_paths.append(request.raw_path)
+        _ = await request.read()
+        return web.Response(status=200, headers={"x-encrypted-param": "header-param-1"})
+
+    async def sendmessage_handler(request: web.Request) -> web.Response:
+        sendmessage_payloads.append(await request.json())
+        return web.json_response({"ret": 0})
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer(
+            [
+                ("POST", "/ilink/bot/getupdates", getupdates_handler),
+                ("POST", "/ilink/bot/getuploadurl", getuploadurl_handler),
+                ("POST", "/upload", upload_handler),
+                ("POST", "/ilink/bot/sendmessage", sendmessage_handler),
+            ]
+        ) as ilink_base_url,
+        ClientSession() as http_session,
+    ):
+        await poll_weixin_ilink_once(
+            session_socket=f"{session_base_url}/v1",
+            client=WeixinIlinkClient(token="token-1", account_id="account-1", base_url=ilink_base_url),
+            state=WeixinIlinkState(sync_buf="sync-prev"),
+            session=http_session,
+            timeout_ms=1000,
+        )
+
+    assert upload_paths
+    assert upload_paths[0].startswith("/upload?")
+    query = parse_qs(urlsplit(upload_paths[0]).query)
+    assert query["encrypted_query_param"] == ["upload param/with+chars="]
+    assert re.fullmatch(r"[0-9a-f]{32}", query["filekey"][0])
+    sent_msg = cast(dict[str, Any], sendmessage_payloads[0]["msg"])
+    file_item = sent_msg["item_list"][0]["file_item"]
+    assert file_item["media"]["encrypt_query_param"] == "header-param-1"
+
+
+@pytest.mark.anyio
+async def test_weixin_ilink_poll_downloads_inbound_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WEIXIN_DOWNLOAD_DIR", str(tmp_path / "downloads"))
+    session_payloads: list[dict[str, object]] = []
+    download_bodies = [b"%PDF-1.4 inbound report\n"]
+    sendmessage_payloads: list[dict[str, object]] = []
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        session_payloads.append(await request.json())
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = {"choices": [{"delta": {"content": "received"}}]}
+        await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def getupdates_handler(request: web.Request) -> web.Response:
+        _ = await request.json()
+        return web.json_response(
+            {
+                "ret": 0,
+                "get_updates_buf": "sync-next",
+                "msgs": [
+                    {
+                        "from_user_id": "user-1",
+                        "to_user_id": "account-1",
+                        "msg_id": "msg-1",
+                        "context_token": "ctx-1",
+                        "item_list": [
+                            {"type": 1, "text_item": {"text": "请看文件"}},
+                            {
+                                "type": 4,
+                                "file_item": {
+                                    "file_name": "report.pdf",
+                                    "len": len(download_bodies[0]),
+                                    "md5": "md5-1",
+                                    "download_url": f"{ilink_base_url}/cdn/download/report.pdf",
+                                },
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+
+    async def download_handler(request: web.Request) -> web.Response:
+        return web.Response(body=download_bodies[0], content_type="application/pdf")
+
+    async def sendmessage_handler(request: web.Request) -> web.Response:
+        sendmessage_payloads.append(await request.json())
+        return web.json_response({"ret": 0})
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer(
+            [
+                ("POST", "/ilink/bot/getupdates", getupdates_handler),
+                ("GET", "/cdn/download/report.pdf", download_handler),
+                ("POST", "/ilink/bot/sendmessage", sendmessage_handler),
+            ]
+        ) as ilink_base_url,
+        ClientSession() as http_session,
+    ):
+        messages = await poll_weixin_ilink_once(
+            session_socket=f"{session_base_url}/v1",
+            client=WeixinIlinkClient(token="token-1", account_id="account-1", base_url=ilink_base_url),
+            state=WeixinIlinkState(sync_buf="sync-prev"),
+            session=http_session,
+            timeout_ms=1000,
+        )
+
+    assert len(messages) == 1
+    inbound_text = cast(list[dict[str, str]], session_payloads[0]["messages"])[0]["content"]
+    assert "请看文件" in inbound_text
+    assert "FILE:" in inbound_text
+    assert "report.pdf" in inbound_text
+    downloaded_path = tmp_path / "downloads" / "user-1" / "msg-1" / "report.pdf"
+    assert downloaded_path.read_bytes() == download_bodies[0]
+    assert sendmessage_payloads
+
+
+@pytest.mark.anyio
+async def test_weixin_ilink_poll_downloads_inbound_file_from_cdn_media(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WEIXIN_DOWNLOAD_DIR", str(tmp_path / "downloads"))
+    session_payloads: list[dict[str, object]] = []
+    plaintext = b"%PDF-1.4 inbound report via cdn\n"
+    aes_key = secrets.token_bytes(16)
+    encrypted_body = _encrypt_test_weixin_payload(plaintext, aes_key)
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        session_payloads.append(await request.json())
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def getupdates_handler(request: web.Request) -> web.Response:
+        _ = await request.json()
+        return web.json_response(
+            {
+                "ret": 0,
+                "get_updates_buf": "sync-next",
+                "msgs": [
+                    {
+                        "from_user_id": "user-1",
+                        "to_user_id": "account-1",
+                        "msg_id": "msg-1",
+                        "context_token": "ctx-1",
+                        "item_list": [
+                            {
+                                "type": 4,
+                                "file_item": {
+                                    "file_name": "__agent_1.pdf",
+                                    "len": str(len(plaintext)),
+                                    "md5": hashlib.md5(plaintext).hexdigest(),
+                                    "media": {
+                                        "encrypt_query_param": "download-param-1",
+                                        "aes_key": base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii"),
+                                        "encrypt_type": 1,
+                                    },
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+    async def download_handler(request: web.Request) -> web.Response:
+        assert request.query["encrypted_query_param"] == "download-param-1"
+        return web.Response(body=encrypted_body, content_type="application/octet-stream")
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer(
+            [
+                ("POST", "/ilink/bot/getupdates", getupdates_handler),
+                ("GET", "/download", download_handler),
+            ]
+        ) as ilink_base_url,
+        ClientSession() as http_session,
+    ):
+        monkeypatch.setenv("WEIXIN_CDN_BASE_URL", ilink_base_url)
+        messages = await poll_weixin_ilink_once(
+            session_socket=f"{session_base_url}/v1",
+            client=WeixinIlinkClient(token="token-1", account_id="account-1", base_url=ilink_base_url),
+            state=WeixinIlinkState(sync_buf="sync-prev"),
+            session=http_session,
+            timeout_ms=1000,
+        )
+
+    assert len(messages) == 1
+    inbound_text = cast(list[dict[str, str]], session_payloads[0]["messages"])[0]["content"]
+    assert "FILE:" in inbound_text
+    assert "__agent_1.pdf" in inbound_text
+    downloaded_path = tmp_path / "downloads" / "user-1" / "msg-1" / "__agent_1.pdf"
+    assert downloaded_path.read_bytes() == plaintext
+
+
+@pytest.mark.anyio
+async def test_weixin_ilink_poll_reports_inbound_file_download_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WEIXIN_DOWNLOAD_DIR", str(tmp_path / "downloads"))
+    session_payloads: list[dict[str, object]] = []
+
+    async def session_handler(request: web.Request) -> web.StreamResponse:
+        session_payloads.append(await request.json())
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    async def getupdates_handler(request: web.Request) -> web.Response:
+        _ = await request.json()
+        return web.json_response(
+            {
+                "ret": 0,
+                "get_updates_buf": "sync-next",
+                "msgs": [
+                    {
+                        "from_user_id": "user-1",
+                        "to_user_id": "account-1",
+                        "msg_id": "msg-1",
+                        "item_list": [
+                            {
+                                "type": 4,
+                                "file_item": {
+                                    "file_name": "report.pdf",
+                                    "len": 123,
+                                    "md5": "md5-1",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+    async with (
+        _TcpServer([("POST", "/v1/chat/completions", session_handler)]) as session_base_url,
+        _TcpServer([("POST", "/ilink/bot/getupdates", getupdates_handler)]) as ilink_base_url,
+        ClientSession() as http_session,
+    ):
+        messages = await poll_weixin_ilink_once(
+            session_socket=f"{session_base_url}/v1",
+            client=WeixinIlinkClient(token="token-1", account_id="account-1", base_url=ilink_base_url),
+            state=WeixinIlinkState(sync_buf="sync-prev"),
+            session=http_session,
+            timeout_ms=1000,
+        )
+
+    assert len(messages) == 1
+    inbound_text = cast(list[dict[str, str]], session_payloads[0]["messages"])[0]["content"]
+    assert "report.pdf" in inbound_text
+    assert "missing download url" in inbound_text
 
 
 @pytest.mark.anyio
