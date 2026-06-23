@@ -32,6 +32,9 @@ class Session:
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
+    session_id: str | None = None
+    """Session history identifier.  None → auto-generate UUID."""
+
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
 
@@ -42,6 +45,7 @@ class Session:
             ai_socket=self.ai_socket,
             workspace_path=workspace_path,
             max_tool_rounds=self.max_tool_rounds,
+            session_id=self.session_id,
         )
 
         lock = anyio.Lock()

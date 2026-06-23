@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
-from psi_agent.session.agent import SessionAgent
+from psi_agent.session.agent import SessionAgent, _load_history, _save_history
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.tools import load_tools_from_workspace
 
@@ -537,3 +537,126 @@ async def test_agent_empty_content_stop(tmp_path: Path) -> None:
         assert len(chunks) >= 1
     finally:
         await runner.cleanup()
+
+
+# --- History persistence tests ---
+
+
+@pytest.mark.anyio
+async def test_load_history_empty_file(tmp_path: Path) -> None:
+    path = tmp_path / "histories" / "session.jsonl"
+    history = await _load_history(path)
+    assert history == []
+
+
+@pytest.mark.anyio
+async def test_load_history_existing_file(tmp_path: Path) -> None:
+    path = tmp_path / "histories" / "session.jsonl"
+    path.parent.mkdir()
+    path.write_text('{"role": "user", "content": "hi"}\n{"role": "assistant", "content": "hello"}\n')
+    history = await _load_history(path)
+    assert len(history) == 2
+    assert history[0] == {"role": "user", "content": "hi"}
+
+
+@pytest.mark.anyio
+async def test_load_history_corrupt_line_skipped(tmp_path: Path) -> None:
+    path = tmp_path / "histories" / "session.jsonl"
+    path.parent.mkdir()
+    path.write_text('{"role": "user", "content": "hi"}\nnot valid json\n{"role": "assistant", "content": "ok"}\n')
+    history = await _load_history(path)
+    assert len(history) == 2
+    assert history[0]["role"] == "user"
+    assert history[1]["role"] == "assistant"
+
+
+@pytest.mark.anyio
+async def test_save_and_load_roundtrip(tmp_path: Path) -> None:
+    path = tmp_path / "histories" / "session.jsonl"
+    path.parent.mkdir()
+    msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "q"}]
+    await _save_history(path, msgs)
+    loaded = await _load_history(path)
+    assert loaded == msgs
+
+
+@pytest.mark.anyio
+async def test_history_saved_after_stop(tmp_path: Path) -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        chunk = json.dumps({"id": "t", "choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})
+        await resp.write(f"data: {chunk}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        history_path = tmp_path / "histories" / "s.jsonl"
+        history_path.parent.mkdir()
+
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, history_path=history_path)
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+        assert "ok" in content
+
+        assert history_path.exists()
+        loaded = await _load_history(history_path)
+        assert len(loaded) == 2
+        assert loaded[0]["role"] == "user"
+        assert loaded[1]["role"] == "assistant"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_history_not_saved_on_error(tmp_path: Path) -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return web.Response(status=500)
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        history_path = tmp_path / "histories" / "s.jsonl"
+        history_path.parent.mkdir()
+        history_path.write_text('{"role": "system", "content": "original"}\n')
+
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, history_path=history_path)
+        async for _ in agent.run({"role": "user", "content": "hi"}):
+            pass
+
+        loaded = await _load_history(history_path)
+        assert len(loaded) == 1
+        assert loaded[0]["content"] == "original"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_histories_dir_and_gitignore_created(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "tools").mkdir()
+    (workspace / "schedules").mkdir()
+
+    histories_dir = workspace / "histories"
+
+    agent = await SessionAgent.create(ai_socket="http://x", workspace_path=workspace, session_id="test")
+    assert histories_dir.is_dir()
+    assert (histories_dir / ".gitignore").read_text() == "*\n"
+    assert agent._history_path is not None

@@ -244,7 +244,7 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 - `self._tool_funcs: dict[str, callable]` — 已注册的实际 tool 函数
 - `self._pending_schedule_chunks: list[ChatCompletionChunk]` — 暂存的 schedule 响应
 
-`async run(user_message: dict) -> AsyncIterator[ChatCompletionChunk]`:
+`async run(user_message: dict, extra_params: dict | None = None) -> AsyncIterator[ChatCompletionChunk]`:
 1. 惰性构建 system prompt（首次 run，history 尚无 system 消息）
 2. 如果有 `_pending_schedule_chunks`，先 yield 所有暂存 chunk，清空暂存
 3. 将 user_message 追加到 history

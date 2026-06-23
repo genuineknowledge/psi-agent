@@ -36,7 +36,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
    - content → yield 给 channel
    - reasoning_content → yield 给 channel
    - tool_calls → 累积（按 index 拼接 partial JSON）
-   - finish_reason="tool_calls" → 执行 tool → 结果追加到 history → 回到步骤 6
+   - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 7
    - finish_reason="stop" → 最终 content 追加到 history → 释放锁
    - finish_reason="error" → 不写入 history，直接返回
 8. 最多 `max_tool_rounds` 轮 tool call
@@ -69,7 +69,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - 文件中所有非 `_` 开头的 `async def` 函数都会被加载为 tool
 - 参数类型必须为 `str`、`int`、`float`、`bool`、`list[X]` 或 `X | None`（`Optional[X]`）
 - `*args`、`**kwargs` 和多类型 Union（`int | str`）不支持，抛 `TypeError`
-- `get_type_hints()` 解析失败时直接抛异常——tool 被跳过并打印 error
+- `get_type_hints()` 解析失败时 `from_callable()` 抛出异常，加载器捕获后跳过该 tool 并打印 error
 - 只支持 Google-style docstring（`Args:` 段落，`Returns:` 和 `Yields:` 作为描述结束标记）
 - 用 `inspect.signature()` 提取参数（类型注解 → JSON Schema 类型）
 - 用 `inspect.getdoc()` 提取描述（支持 Google-style 的 `Args:` 格式）
@@ -115,3 +115,13 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 - Schedule 响应的 content 和 reasoning_content 各自存在于各自的消息周期，不会交错
 - 多个 schedule 可以并发 sleep，但通过 lock 串行触发
 - cron 表达式在加载时验证，非法表达式会导致该 schedule 被跳过
+
+## History 持久化
+
+Session 支持将对话历史持久化到 `workspace/histories/{session_id}.jsonl`：
+
+- `Session.session_id: str | None = None` — None 时自动生成 UUID，给定字符串时可 resume
+- 加载：`SessionAgent.create()` 中从 jsonl 逐行读取，非法行跳过 + warning
+- 保存：仅在 `finish_reason="stop"` 且 content 成功追加后，覆盖写入整个 history
+- error / tool_calls 中间状态 / 异常 → 不写盘
+- 首次使用时自动创建 `histories/` 目录 + `.gitignore`（忽略全部文件）

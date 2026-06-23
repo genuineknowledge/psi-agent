@@ -54,7 +54,8 @@ psi/
 │   ├── session/
 │   │   ├── __init__.py             # Session dataclass + run()
 │   │   ├── server.py               # aiohttp Unix socket server（channel 端）
-│   │   ├── agent.py                # 核心 agent loop
+│   │   ├── agent.py                # 核心 agent loop + history 持久化
+│   │   ├── protocol.py             # 协议类型（ToolFunction, ChatCompletionChunk 等）
 │   │   ├── tools.py                # 从 tools/*.py 加载 tool 函数
 │   │   └── scheduler.py            # cron 调度器
 │   └── channel/
@@ -79,11 +80,13 @@ psi/
 │   │   └── test_session_workspace.py
 │   └── psi_agent/
 │       ├── ai/
-│       │   ├── test_ai_backend.py
+│       │   ├── test_ai.py
 │       ├── session/
+│       │   ├── test_protocol.py
 │       │   ├── test_agent.py
 │       │   ├── test_tools.py
-│       │   └── test_scheduler.py
+│       │   ├── test_scheduler.py
+│       │   └── test_session.py
 │       └── channel/
 │           ├── test_repl.py
 │           └── test_cli.py
@@ -130,7 +133,7 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
      │                         │ [若 tool_calls]              │
      │                         │ 解析 → await tool() →       │
      │                         │ 追加结果到 messages →        │
-     │                         │ 再次请求 AI（循环，最多10轮）│
+      │                         │ 再次请求 AI（循环，可配置，默认128轮）│
      │                         │─────────────────────────────▶│
      │                         │          ...                 │
      │                         │                              │
@@ -206,6 +209,7 @@ class Session:
     ai_socket: str
     max_tool_rounds: int = 128
     verbose: bool = False
+    session_id: str | None = None
 
     async def run(self) -> None: ...
 ```
@@ -266,7 +270,7 @@ class Session:
 **关于 history**：
 - Channel 不发送 history；每次请求只带最新一条 user message
 - Session 内部维护 `self.history: list[dict]`，每轮追加
-- History 仅存在于内存，不持久化
+- `finish_reason="stop"` 后将完整 history 持久化到 `workspace/histories/{session_id}.jsonl`
 - 一个 session 实例只有一个 history
 
 **多 Channel 并发**：
@@ -415,6 +419,7 @@ def setup_logging(*, verbose: bool = False) -> None:
 | Session | Tool 加载（每个 tool 名称和参数） | INFO |
 | Session | Tool 调用（函数名、参数、返回值摘要） | INFO |
 | Session | Schedule 触发、AI 请求发送 | INFO |
+| Session | History 加载/保存 | INFO/DEBUG |
 | Session | 错误（繁忙、AI socket 不可达等） | ERROR |
 | Channel | Socket 连接/断开 | INFO |
 | Channel | 消息发送/接收 | DEBUG |

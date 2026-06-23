@@ -4,6 +4,7 @@ import importlib.util
 import inspect
 import json
 import sys
+import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,8 @@ class SessionAgent:
         schedules: list | None = None,
         system_prompt_builder: Callable[..., Any] | None = None,
         max_tool_rounds: int = 128,
+        history: list[dict] | None = None,
+        history_path: Path | None = None,
     ) -> None:
         """Initialize an agent backed by an AI server.
 
@@ -35,9 +38,9 @@ class SessionAgent:
         named pipe for the AI backend.  ``tools`` provides the metadata
         (name + JSON Schema) sent to the AI.
 
-        ``tool_funcs`` and ``schedules`` are loaded by ``create()`` from a
-        workspace.  ``system_prompt_builder`` is called lazily on the first
-        ``run()`` to build the system prompt.
+        ``tool_funcs``, ``schedules`` and ``system_prompt_builder`` are
+        loaded by ``create()`` from a workspace.  ``history`` and
+        ``history_path`` are loaded from / written to for session persistence.
 
         The plain ``__init__`` is test-friendly — all workspace-derived
         fields default to empty/None.
@@ -48,7 +51,8 @@ class SessionAgent:
         self.schedules = schedules if schedules is not None else []
         self._system_prompt_builder = system_prompt_builder
         self.max_tool_rounds = max_tool_rounds
-        self.history: list[dict] = []
+        self.history = history if history is not None else []
+        self._history_path = history_path
         self._pending_schedule_chunks: list[ChatCompletionChunk] = []
 
     @classmethod
@@ -58,14 +62,21 @@ class SessionAgent:
         ai_socket: str,
         workspace_path: Path,
         max_tool_rounds: int = 128,
+        session_id: str | None = None,
     ) -> SessionAgent:
         """Factory: load tools, schedules and system prompt from a workspace.
+
+        If ``session_id`` is ``None`` a UUID is auto-generated.  The
+        history JSONL file is loaded from / saved to
+        ``workspace/histories/{session_id}.jsonl``.
 
         This is the production entry point.  The plain ``__init__`` can
         be used directly in tests when you want to inject mock tools.
         """
         tools, tool_funcs = await load_tools_from_workspace(workspace_path / "tools")
         schedules = await load_schedules_from_workspace(workspace_path / "schedules")
+
+        history, history_path = await _init_history(workspace_path, session_id)
 
         return cls(
             ai_socket=ai_socket,
@@ -74,6 +85,8 @@ class SessionAgent:
             schedules=schedules,
             system_prompt_builder=_load_system_prompt_builder(workspace_path),
             max_tool_rounds=max_tool_rounds,
+            history=history,
+            history_path=history_path,
         )
 
     def set_pending_schedule_chunks(self, chunks: list[ChatCompletionChunk]) -> None:
@@ -195,6 +208,8 @@ class SessionAgent:
                     logger.debug("AI finished with stop")
                     if accumulated_content:
                         self.history.append({"role": "assistant", "content": accumulated_content})
+                        if self._history_path is not None:
+                            await _save_history(self._history_path, self.history)
                     return
 
                 if finish_reason == "tool_calls":
@@ -467,6 +482,70 @@ class SessionAgent:
         await response.write(b"data: [DONE]\n\n")
         logger.debug("Session request completed")
         return response
+
+
+async def _init_history(
+    workspace_path: Path,
+    session_id: str | None = None,
+) -> tuple[list[dict], Path]:
+    """Set up the history directory and load an existing JSONL file.
+
+    Returns the loaded message list and the path to the JSONL file.
+    """
+    session_id = session_id or uuid.uuid4().hex
+    histories_dir = anyio.Path(str(workspace_path / "histories"))
+    dir_created = False
+    if not await histories_dir.is_dir():
+        await histories_dir.mkdir(parents=True)
+        logger.info(f"Created histories directory: {histories_dir}")
+        dir_created = True
+    if dir_created:
+        await (histories_dir / ".gitignore").write_text("*\n")
+        logger.debug(f"Created .gitignore in {histories_dir}")
+
+    history_path = workspace_path / "histories" / f"{session_id}.jsonl"
+    history = await _load_history(history_path)
+    return history, history_path
+
+
+async def _load_history(path: Path) -> list[dict]:
+    """Load conversation history from a JSONL file.
+
+    Each line must be a valid JSON object (a message dict).  Corrupt
+    lines are skipped with a warning.
+    """
+    history: list[dict] = []
+    path_anyio = anyio.Path(str(path))
+    if not await path_anyio.exists():
+        logger.info(f"No history file found at {path}")
+        return history
+
+    content = await path_anyio.read_text()
+    for lineno, line in enumerate(content.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            history.append(json.loads(stripped))
+        except json.JSONDecodeError:
+            logger.warning(f"Skipping malformed line {lineno} in {path}")
+
+    logger.info(f"History loaded from {path} ({len(history)} messages)")
+    return history
+
+
+async def _save_history(path: Path, history: list[dict]) -> None:
+    """Overwrite a JSONL file with the current conversation history.
+
+    Errors are caught and logged — a failed save does not interrupt
+    the ongoing conversation.
+    """
+    try:
+        content = "\n".join(json.dumps(msg, ensure_ascii=False) for msg in history) + "\n"
+        await anyio.Path(str(path)).write_text(content)
+        logger.debug(f"History saved to {path} ({len(history)} messages)")
+    except Exception as e:
+        logger.error(f"Failed to save history: {e}")
 
 
 def _load_system_prompt_builder(workspace_path: Path) -> Callable[..., Any] | None:
