@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import urlparse
 
 import anyio
 from aiohttp import web
@@ -8,6 +9,20 @@ from loguru import logger
 
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, ErrorResponse, StreamChoice
+
+
+def _build_site(runner: web.AppRunner, socket_path: str) -> web.BaseSite:
+    """Resolve a listen address into the matching aiohttp site.
+
+    Same three address forms as the AI side: TCP URL, Windows named pipe, or
+    Unix domain socket path. Lets a channel reach the session over any of them.
+    """
+    if socket_path.startswith(("http://", "https://")):
+        parsed = urlparse(socket_path)
+        return web.TCPSite(runner, host=parsed.hostname or "127.0.0.1", port=parsed.port or 8000)
+    if socket_path.startswith("npipe://") or socket_path.startswith("\\\\.\\pipe\\"):
+        return web.NamedPipeSite(runner, socket_path.removeprefix("npipe://"))
+    return web.UnixSite(runner, socket_path)
 
 
 async def serve_session(
@@ -25,7 +40,7 @@ async def serve_session(
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.UnixSite(runner, channel_socket)
+    site = _build_site(runner, channel_socket)
     await site.start()
 
     logger.info(f"Session server listening on {channel_socket}")
