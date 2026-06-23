@@ -104,6 +104,7 @@ async def test_profile_gateway_serves_profile_channel_and_writes_state(tmp_path:
     async with (
         _TcpServer([("POST", "/v1/chat/completions", ai_handler)]) as ai_base_url,
         _TcpServer([("POST", "/reply", reply_handler)]) as reply_base_url,
+        _TcpListener() as session_base_url,
         _TcpListener() as channel_url,
         anyio.create_task_group() as tg,
     ):
@@ -114,6 +115,7 @@ async def test_profile_gateway_serves_profile_channel_and_writes_state(tmp_path:
             ai="openai-completions",
             model="test-model",
             ai_socket=f"{ai_base_url}/v1",
+            session_socket=f"{session_base_url}/v1",
             channels=(
                 _channel(
                     name="wechat",
@@ -194,6 +196,7 @@ async def test_profile_gateway_serves_multiple_paths_on_one_listener(tmp_path: P
     async with (
         _TcpServer([("POST", "/v1/chat/completions", ai_handler)]) as ai_base_url,
         _TcpServer([("POST", "/reply", reply_handler)]) as reply_base_url,
+        _TcpListener() as session_base_url,
         _TcpListener() as channel_url,
         anyio.create_task_group() as tg,
     ):
@@ -204,6 +207,7 @@ async def test_profile_gateway_serves_multiple_paths_on_one_listener(tmp_path: P
             ai="openai-completions",
             model="test-model",
             ai_socket=f"{ai_base_url}/v1",
+            session_socket=f"{session_base_url}/v1",
             channels=(
                 _channel(
                     name="wechat",
