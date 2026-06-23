@@ -204,7 +204,7 @@ class Session:
     workspace: str
     channel_socket: str
     ai_socket: str
-    model: str = "gpt-4"
+    max_tool_rounds: int = 128
     verbose: bool = False
 
     async def run(self) -> None: ...
@@ -212,13 +212,10 @@ class Session:
 
 ### 6.2 Workspace 解析
 
-**Tool 加载**（`tools.py` + `session/__init__.py`）：
-- 遍历 `workspace/tools/*.py`
-- 对每个 `.py` 文件，找到**与文件名同名**的函数（例如 `bash.py` → `bash` 函数）
-- 用 `inspect.signature()` 解析参数（类型注解、默认值）
-- 用 `inspect.getdoc()` 提取 docstring
-- 构建 OpenAI function tool definition
-- Tool 函数必须是 `async def`
+**Tool 加载**（`tools.py`）：
+- 遍历 `workspace/tools/*.py`（不含 `_` 开头文件）
+- 文件内所有非 `_` 开头的 `async def` 函数均加载为 tool
+- 同名 tool 冲突时跳过并记录 warning
 
 **System Prompt 加载**：
 - 从 `workspace/systems/system.py` 导入 `system_prompt_builder`
@@ -229,34 +226,37 @@ class Session:
 - 遍历 `workspace/schedules/*/TASK.md`
 - 解析 YAML front matter（`name`, `cron`）
 - 用 `croniter` 解析 cron 表达式
-- 启动独立 anyio task，每个 schedule 一个 task，各自 sleep + 触发
-- 触发时：将 markdown body 作为 user message 加上标注（"[Schedule Task: {name}]"）发送给 AI
+- 启动独立 anyio task（`scheduler.py:run_one_schedule`），每个 schedule 一个 task，各自 sleep + 触发
+- 触发时：将 markdown body 作为 user message 发送给 AI
 - AI 回复暂存于 session 内部，下次 channel 请求时和新回复一起返回
 
 ### 6.3 Agent Loop（`agent.py`）
 
 ```
-收到 channel 请求时：
-  0. 检查暂存 schedule 响应 → 有则先流式返回（reasoning_content + content）
+收到 channel 请求时（handle_chat_completions handler）：
+  0. 解析 request body → 取最后一条 user message
   1. 获取 `anyio.Lock`（FIFO 排队等待）
-  2. 将 user message 追加到 self.history
-  3. 构建请求：model + history + tools → POST ai_socket
-  4. SSE 流处理循环：
-     - 收到 content delta     → 作为 StreamChunk（content），发送到 channel
-     - 收到 reasoning delta   → 作为 StreamChunk（reasoning_content），发送到 channel
-     - 收到 tool_calls delta  → 累积
-     - finish_reason="tool_calls":
-         a. 解析完整 tool_calls
-         b. 在已注册 tools 中查找匹配的函数
-         c. await tool(**args)，得到结果
-         d. 将 assistant_message(tool_calls) + tool_result 追加到 history
-         e. 将 tool 调用意图和结果包装为 reasoning_content chunk，发送到 channel
-         f. 继续第 3 步（最多循环 10 轮）
-      - finish_reason="stop":
-          最终 content 流式完成
-      - finish_reason="error":
-          停止处理，错误不写入 history
-   5. 释放锁
+  2. agent.run(user_message) 内部：
+     a. 惰性构建 system prompt（首次 run，history 尚无 system 消息）
+     b. 检查暂存 schedule 响应 → 有则先流式返回
+     c. 将 user message 追加到 self.history
+     d. 构建请求：history + tools → POST ai_socket（streaming）
+     e. SSE 流处理：
+        - content delta          → yield 到 channel
+        - reasoning delta        → yield 到 channel
+        - tool_calls delta       → 累积（按 index 拼接 partial JSON）
+        - finish_reason="tool_calls":
+            a. 解析完整 tool_calls
+            b. 在已注册 tools 中查找匹配的函数
+            c. await tool(**args)
+            d. 追加 assistant_message(tool_calls) + tool_result 到 history
+            e. yield reasoning_content chunks 到 channel
+            f. 回到步骤 d（最多 max_tool_rounds 轮，可配置，默认 10）
+        - finish_reason="stop":
+           最终 content 追加到 history，释放锁
+        - finish_reason="error":
+           停止处理，错误不写入 history
+  3. 释放锁
 ```
 
 **Schedule 响应处理**：
@@ -298,7 +298,7 @@ Session 启动时构建 tools 列表，每次发 AI 请求时附带：
 
 ### 6.5 最大 Tool Call 轮数
 
-限制为 10 轮，防止死循环。
+可配置，默认 128 轮（`Session(max_tool_rounds=...)`），防止死循环。
 
 ---
 

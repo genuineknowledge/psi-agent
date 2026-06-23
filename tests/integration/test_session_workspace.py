@@ -59,10 +59,11 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
     (ws / "systems").mkdir()
     (ws / "systems" / "system.py").write_text("async def system_prompt_builder() -> str:\n    return 'test'\n")
 
-    tools = await load_tools_from_workspace(ws / "tools")
+    tools, _ = await load_tools_from_workspace(ws / "tools")
     assert len(tools) == 0
 
-    agent = SessionAgent(ai_socket=base_url, tools=tools, model="test", system_prompt="test")
+    agent = SessionAgent(ai_socket=base_url, tools=tools)
+    agent.history.append({"role": "system", "content": "test"})
     chunks = []
     async for c in agent.run({"role": "user", "content": "hi"}):
         chunks.append(c)
@@ -81,7 +82,7 @@ async def test_missing_system_py(mock_ai_server: MockAIServer) -> None:
     mock_ai_server.set_responses([_chunk(content="no system", finish_reason="stop")])
     base_url = await mock_ai_server.start()
 
-    agent = SessionAgent(ai_socket=base_url, tools={}, model="test")
+    agent = SessionAgent(ai_socket=base_url, tools={})
     assert len(agent.history) == 0
 
     chunks = []
@@ -133,8 +134,6 @@ async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> 
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ]
     )
     ai_proc = await anyio.open_process(
@@ -203,10 +202,11 @@ async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server
     )
     base_url = await mock_ai_server.start()
 
-    tools = await load_tools_from_workspace(ws / "tools")
+    tools, _ = await load_tools_from_workspace(ws / "tools")
     assert len(tools) == 1
 
-    agent = SessionAgent(ai_socket=base_url, tools=tools, model="test", system_prompt="You are a test assistant.")
+    agent = SessionAgent(ai_socket=base_url, tools=tools)
+    agent.history.append({"role": "system", "content": "You are a test assistant."})
     chunks = []
     async for c in agent.run({"role": "user", "content": "hello"}):
         chunks.append(c)
@@ -229,8 +229,8 @@ async def test_unicode_message_handling(tmp_path: Path, mock_ai_server: MockAISe
         "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n"
     )
 
-    tools = await load_tools_from_workspace(ws / "tools")
-    agent = SessionAgent(ai_socket=base_url, tools=tools, model="test", system_prompt="You are a test assistant.")
+    tools, _ = await load_tools_from_workspace(ws / "tools")
+    agent = SessionAgent(ai_socket=base_url, tools=tools)
 
     msg = "你好世界 🌍 — emoji and unicode test"
     chunks = [c async for c in agent.run({"role": "user", "content": msg})]

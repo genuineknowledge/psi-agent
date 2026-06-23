@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from psi_agent.session.protocol import (
     ChatCompletionChunk,
     DeltaMessage,
-    ErrorResponse,
     StreamChoice,
     ToolFunction,
 )
@@ -57,7 +58,6 @@ def test_tool_function_from_callable_no_docstring() -> None:
 def test_chat_completion_chunk_to_sse() -> None:
     chunk = ChatCompletionChunk(
         id="c1",
-        model="test",
         choices=[StreamChoice(index=0, delta=DeltaMessage(content="Hello"))],
     )
     sse = chunk.to_sse()
@@ -100,14 +100,6 @@ def test_chat_completion_chunk_tool_calls_in_delta() -> None:
     assert tc[0]["function"]["name"] == "bash"
 
 
-def test_error_response_to_json() -> None:
-    err = ErrorResponse(message="Something wrong", type="internal_error", code="500")
-    data = json.loads(err.to_json())
-    assert data["error"]["message"] == "Something wrong"
-    assert data["error"]["type"] == "internal_error"
-    assert data["error"]["code"] == "500"
-
-
 # --- Missing coverage tests ---
 
 
@@ -120,24 +112,6 @@ def test_delta_message_to_dict() -> None:
 def test_delta_message_empty_to_dict() -> None:
     dm = DeltaMessage()
     assert dm.to_dict() == {}
-
-
-def test_error_response_to_dict() -> None:
-    err = ErrorResponse(message="msg", type="err", code="500")
-    d = err.to_dict()
-    assert d["error"]["message"] == "msg"
-
-
-def test_python_type_to_json_float() -> None:
-    assert ToolFunction._python_type_to_json_type(float) == "number"
-
-
-def test_python_type_to_json_bool() -> None:
-    assert ToolFunction._python_type_to_json_type(bool) == "boolean"
-
-
-def test_python_type_to_json_unknown_fallback() -> None:
-    assert ToolFunction._python_type_to_json_type(bytes) == "string"
 
 
 def test_tool_function_from_callable_all_defaults() -> None:
@@ -175,7 +149,6 @@ def test_parse_param_descriptions_multiline() -> None:
 def test_chat_completion_chunk_to_dict_direct() -> None:
     chunk = ChatCompletionChunk(
         id="c1",
-        model="test",
         choices=[
             StreamChoice(
                 index=0,
@@ -187,3 +160,271 @@ def test_chat_completion_chunk_to_dict_direct() -> None:
     d = chunk.to_dict()
     assert d["id"] == "c1"
     assert d["choices"][0]["delta"]["reasoning_content"] == "think"
+
+
+def test_tool_function_optional_none_type() -> None:
+    """X | None should be unwrapped to X and marked as not-required."""
+
+    async def f(verbose: bool | None = None) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["properties"]["verbose"]["type"] == "boolean"
+    assert "verbose" not in tf.parameters["required"]
+
+
+def test_tool_function_unsupported_type_raises() -> None:
+    async def f(data: bytes) -> str:
+        return "ok"
+
+    with pytest.raises(TypeError, match="Unsupported parameter type"):
+        ToolFunction.from_callable(f)
+
+
+def test_tool_function_multi_type_union_raises() -> None:
+    """int | str should be rejected."""
+
+    async def f(flag: int | str) -> str:
+        return "ok"
+
+    with pytest.raises(TypeError, match="Unsupported union type"):
+        ToolFunction.from_callable(f)
+
+
+def test_tool_function_multi_type_union_with_none_raises() -> None:
+    """int | str | None should be rejected."""
+
+    async def f(flag: int | str | None) -> str:
+        return "ok"
+
+    with pytest.raises(TypeError, match="Unsupported union type"):
+        ToolFunction.from_callable(f)
+
+
+def test_tool_function_list_int_parameter() -> None:
+    """list[int] should be resolved to array of integer."""
+
+    async def f(values: list[int]) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["properties"]["values"]["type"] == "array"
+    assert tf.parameters["properties"]["values"]["items"]["type"] == "integer"
+
+
+def test_tool_function_list_unsupported_item_raises() -> None:
+    """list[bytes] should be rejected."""
+
+    async def f(data: list[bytes]) -> str:
+        return "ok"
+
+    with pytest.raises(TypeError, match="Unsupported list item type"):
+        ToolFunction.from_callable(f)
+
+
+def test_tool_function_optional_without_default() -> None:
+    """X | None with NO default value should be not-required."""
+
+    async def f(verbose: bool | None) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["properties"]["verbose"]["type"] == "boolean"
+    assert "verbose" not in tf.parameters["required"]
+
+
+def test_tool_function_float_parameter() -> None:
+    """float should be mapped to number."""
+
+    async def f(temperature: float = 0.7) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["properties"]["temperature"]["type"] == "number"
+
+
+def test_tool_function_ignores_self_param() -> None:
+    """self parameter should not appear in the tool definition."""
+
+    async def f(self, command: str) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert "self" not in tf.parameters["properties"]
+    assert "command" in tf.parameters["properties"]
+
+
+def test_parse_description_stops_at_yields() -> None:
+    """Description should stop at Yields section, like Args and Returns."""
+
+    desc = ToolFunction._parse_description("Short description.\nYields:\n    x: something")
+    assert desc == "Short description."
+
+
+def test_parse_description_stops_at_returns() -> None:
+    """Description should stop at Returns section."""
+
+    desc = ToolFunction._parse_description("Short description.\n\nReturns:\n    str")
+    assert desc == "Short description."
+
+
+def test_stream_choice_to_dict() -> None:
+    sc = StreamChoice(index=0, delta=DeltaMessage(content="hi"), finish_reason="stop")
+    d = sc.to_dict()
+    assert d["index"] == 0
+    assert d["delta"]["content"] == "hi"
+    assert d["finish_reason"] == "stop"
+
+
+def test_stream_choice_to_dict_no_finish_reason() -> None:
+    sc = StreamChoice(index=1, delta=DeltaMessage(tool_calls=[{"index": 0}]))
+    d = sc.to_dict()
+    assert d["index"] == 1
+    assert d["delta"]["tool_calls"] == [{"index": 0}]
+    assert "finish_reason" not in d
+
+
+def test_tool_function_ignores_variadic() -> None:
+    """*args and **kwargs should raise TypeError."""
+
+    async def f(command: str, *args: str) -> str:
+        return "ok"
+
+    with pytest.raises(TypeError, match="Variadic parameters"):
+        ToolFunction.from_callable(f)
+
+
+def test_tool_function_kwargs_raises() -> None:
+    """**kwargs should raise TypeError."""
+
+    async def f(**kwargs: int) -> str:
+        return "ok"
+
+    with pytest.raises(TypeError, match="Variadic parameters"):
+        ToolFunction.from_callable(f)
+
+
+# --- Additional coverage tests ---
+
+
+def test_delta_message_reasoning_only() -> None:
+    dm = DeltaMessage(reasoning_content="think")
+    assert dm.to_dict() == {"reasoning_content": "think"}
+
+
+def test_delta_message_tool_calls_only() -> None:
+    dm = DeltaMessage(tool_calls=[{"index": 0}])
+    assert dm.to_dict() == {"tool_calls": [{"index": 0}]}
+
+
+def test_delta_message_all_fields() -> None:
+    dm = DeltaMessage(content="hi", role="assistant", reasoning_content="think", tool_calls=[{"index": 0}])
+    d = dm.to_dict()
+    assert d == {"content": "hi", "role": "assistant", "reasoning_content": "think", "tool_calls": [{"index": 0}]}
+
+
+def test_stream_choice_default() -> None:
+    sc = StreamChoice()
+    d = sc.to_dict()
+    assert d == {"index": 0, "delta": {}}
+
+
+def test_tool_function_list_float_parameter() -> None:
+    """list[float] should be array of number."""
+
+    async def f(vals: list[float]) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["properties"]["vals"]["type"] == "array"
+    assert tf.parameters["properties"]["vals"]["items"]["type"] == "number"
+
+
+def test_tool_function_list_bool_parameter() -> None:
+    """list[bool] should be array of boolean."""
+
+    async def f(flags: list[bool]) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["properties"]["flags"]["items"]["type"] == "boolean"
+
+
+def test_tool_function_cls_skip() -> None:
+    """cls parameter should be skipped."""
+
+    async def f(cls, command: str) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert "cls" not in tf.parameters["properties"]
+    assert "command" in tf.parameters["properties"]
+
+
+def test_tool_function_no_annotation_defaults_string() -> None:
+    """Missing type annotation should default to 'string'."""
+
+    async def f(x) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["properties"]["x"]["type"] == "string"
+
+
+def test_tool_function_dict_generic_raises() -> None:
+    """dict type should raise TypeError."""
+
+    async def f(data: dict[str, int]) -> str:
+        return "ok"
+
+    with pytest.raises(TypeError, match="Unsupported generic type"):
+        ToolFunction.from_callable(f)
+
+
+def test_tool_function_nested_list_raises() -> None:
+    """list[list[int]] should raise TypeError."""
+
+    async def f(matrix: list[list[int]]) -> str:
+        return "ok"
+
+    with pytest.raises(TypeError, match="Unsupported list item type"):
+        ToolFunction.from_callable(f)
+
+
+def test_tool_function_keyword_only_required() -> None:
+    """Keyword-only param without default should be required."""
+
+    async def f(*, name: str) -> str:
+        return "ok"
+
+    tf = ToolFunction.from_callable(f)
+    assert tf.parameters["properties"]["name"]["type"] == "string"
+    assert "name" in tf.parameters["required"]
+
+
+def test_parse_description_blank_lines() -> None:
+    """Blank lines between description paragraphs should be ignored."""
+
+    desc = ToolFunction._parse_description("First.\n\nSecond.\nArgs:\n    x: y")
+    assert desc == "First. Second."
+
+
+def test_parse_param_descriptions_stops_at_returns() -> None:
+    """Returns section should stop Args parsing."""
+
+    result = ToolFunction._parse_param_descriptions("Args:\n    x: first\nReturns:\n    str")
+    assert result == {"x": "first"}
+
+
+def test_parse_param_descriptions_empty_args() -> None:
+    """Empty Args section should return empty dict."""
+
+    result = ToolFunction._parse_param_descriptions("Args:")
+    assert result == {}
+
+
+def test_parse_param_descriptions_empty_value() -> None:
+    """Parameter with no description text after colon."""
+
+    result = ToolFunction._parse_param_descriptions("Args:\n    x:")
+    assert result == {"x": ""}

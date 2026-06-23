@@ -184,11 +184,11 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 
 **Files:** `psi_agent/session/protocol.py`, `tests/psi_agent/session/test_protocol.py`
 
-实现 `Message`, `ToolFunction`, `ToolDef`, `ChatCompletionRequest`, `DeltaMessage`, `StreamChoice`, `ChatCompletionChunk`, `ErrorResponse` 等 dataclass。核心功能：
-- `ToolFunction.from_callable()` 从 async 函数 inspect 出 name/description/parameters
-- `ChatCompletionRequest.to_json()` / `from_dict()` 序列化
+实现 `ToolFunction`, `DeltaMessage`, `StreamChoice`, `ChatCompletionChunk`, `Schedule` 等 dataclass。核心功能：
+- `ToolFunction.from_callable()` 从 async 函数 inspect 出 name/description/parameters（JSON Schema）
 - `ChatCompletionChunk.to_sse()` 生成 SSE 格式字符串
-- `ErrorResponse.to_json()` 生成 OpenAI 兼容错误响应
+- `StreamChoice.to_dict()` / `DeltaMessage.to_dict()` 条件序列化
+- 错误响应使用 inline dict（`{"error": {...}}`）
 
 具体代码参考 spec 文档第 5 节。TDD：先写测试覆盖序列化/SSE生成/from_callable，再实现。
 
@@ -212,10 +212,10 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 
 **Files:** `psi_agent/session/__init__.py`, `psi_agent/session/tools.py`, `tests/psi_agent/session/test_tools.py`
 
-`load_tools_from_workspace(tools_dir: Path) -> dict[str, ToolFunction]`:
+`load_tools_from_workspace(tools_dir: Path) -> tuple[dict[str, ToolFunction], dict[str, Callable[..., Any]]]`:
 1. 遍历 `tools_dir/*.py`
 2. 对每个 `.py` 文件，用 `importlib` 动态加载模块
-3. 找到与文件名同名的 `async def` 函数
+3. 找到文件中所有非 `_` 开头的 `async def` 函数
 4. 用 `ToolFunction.from_callable()` 构建 OpenAI tool 定义
 5. 跳过非 async、私有（`_` 开头）函数
 
@@ -229,9 +229,9 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 1. 遍历 `schedules/*/TASK.md`
 2. 解析 YAML front matter（`name`, `cron`）
 3. 用 `croniter` 解析 cron 表达式
-4. `Schedule.to_user_message()` 生成带标注的 user message
+4. `Schedule` 是纯配置数据类（`name, cron, task_content`），运行时 cron 状态由 `run_one_schedule` 维护
 
-`_run_one_schedule` 独立 anyio task，每个 schedule 一个。
+`run_one_schedule` 独立 anyio task，每个 schedule 一个。
 
 ---
 
@@ -241,18 +241,18 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 
 `SessionAgent` 类：
 - `self.history: list[dict]` — 单一 history
-- `self._lock: anyio.Lock` — 串行锁
 - `self._tool_funcs: dict[str, callable]` — 已注册的实际 tool 函数
-- `self._pending_schedule_response: Optional[list[ChatCompletionChunk]]` — 暂存的 schedule 响应
+- `self._pending_schedule_chunks: list[ChatCompletionChunk]` — 暂存的 schedule 响应
 
 `async run(user_message: dict) -> AsyncIterator[ChatCompletionChunk]`:
-1. 如果有 `_pending_schedule_response`，先 yield 所有暂存 chunk，清空暂存
-2. 将 user_message 追加到 history
-3. 构建 OpenAI 请求（history + tools），POST ai_socket，流式读取
-4. 积累 tool_calls fragments
-5. 收到 `finish_reason="stop"` → 结束
-6. 收到 `finish_reason="tool_calls"` → 执行 tool（用非 streaming 请求获取完整 tool_calls 消息），将结果加到 history，yield reasoning_content chunks，回到步骤 3
-7. 最多 10 轮 tool call
+1. 惰性构建 system prompt（首次 run，history 尚无 system 消息）
+2. 如果有 `_pending_schedule_chunks`，先 yield 所有暂存 chunk，清空暂存
+3. 将 user_message 追加到 history
+4. 构建 OpenAI 请求（history + tools），POST ai_socket，流式读取
+5. 积累 tool_calls fragments
+6. 收到 `finish_reason="stop"` → 结束
+7. 收到 `finish_reason="tool_calls"` → 流式累积的 tool_calls 按 index 排序 → 执行 tool → 结果追加到 history → yield reasoning_content chunks → 回到步骤 4
+8. 最多 `max_tool_rounds` 轮 tool call（CLI 可配置，默认 128）
 
 ---
 
@@ -265,7 +265,7 @@ aiohttp Unix socket server 监听 `channel_socket`:
 - 用 `anyio.Lock` 确保单请求，后续请求 FIFO 排队
 - 请求 body 中的 messages 只取最后一条 user 消息
 
-`Session.run()`: 加载 workspace（tools, system_prompt, schedules），每个 schedule 启动独立 anyio task，启动 channel server。
+`Session.run()`: 通过 `SessionAgent.create()` 加载 workspace，启动 channel server（`serve_session`）和 schedule tasks（`run_one_schedule`），每个 schedule 一个独立 anyio task。
 
 ---
 
@@ -381,7 +381,7 @@ def main() -> None:
 - [x] tool 返回非字符串（int） → 转为字符串
 - [x] tool 返回 None → 转为 "None"
 - [x] tool 无参数 → properties/required 均为空
-- [x] tool 参数类型为 list[str] → fallback 为 "string"
+- [x] tool 参数类型为 list[str] → `{"type": "array", "items": {"type": "string"}}`
 - [x] AI 无限 tool_call 循环 → 10 轮后返回 `[Max tool rounds reached]`
 
 #### Sub-task 15e: Workspace 兼容性（5 tests）
@@ -448,7 +448,7 @@ def main() -> None:
 
 - **单元测试**: ~78 tests（覆盖除 `cli.py` 和 channel 客户端外的所有源模块）
 - **集成测试**: ~24 tests（AI 层、Session 并发/tool/workspace、Channel、端到端）
-- **总计**: 100 tests（`-m "not schedule"`，+ 2 schedule 仅本地）
+- **总计**: 126 tests（`-m "not schedule"`，+ 2 schedule 仅本地）
 
 
 ---

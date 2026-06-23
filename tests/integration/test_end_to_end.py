@@ -93,8 +93,6 @@ async def test_full_pipeline_mock_ai(tmp_path: Path, mock_ai_server: MockAIServe
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ],
     )
 
@@ -185,8 +183,6 @@ async def test_full_pipeline_with_tool(tmp_path: Path) -> None:
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ],
     )
 
@@ -260,8 +256,6 @@ async def test_multiple_messages_history_accumulates(tmp_path: Path) -> None:
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ],
     )
 
@@ -338,8 +332,6 @@ async def test_multi_turn_history_accumulates(tmp_path: Path) -> None:
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ]
     )
 

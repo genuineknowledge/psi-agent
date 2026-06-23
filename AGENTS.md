@@ -58,9 +58,9 @@ src/
     │   └── server.py                 # handler（请求处理）
     ├── session/
     │   ├── AGENTS.md                # Session 层设计文档
-    │   ├── __init__.py             # Session dataclass + run()，workspace 加载入口
-    │   ├── server.py               # channel 端 aiohttp server，单锁串行
-    │   ├── agent.py                # 核心 agent loop（history + tool call + streaming）
+    │       ├── __init__.py             # Session dataclass + run()，入口编排
+    │   ├── server.py               # serve_session — aiohttp Unix socket 脚手架
+    │   ├── agent.py                # SessionAgent — history + agent loop + tool exec + handler
     │   ├── protocol.py             # Session 层协议类型（ChatCompletionChunk 等）
     │   ├── tools.py                # workspace tools 加载（async anyio.Path）
     │   └── scheduler.py            # cron-based 定时任务（croniter）
@@ -130,9 +130,9 @@ SSE 流中的特殊字段：
    | `time.sleep()` | `await anyio.sleep()` |
    | `Path.exists()` | `await anyio.Path().exists()` |
 
-5. **System prompt 容错**：`system_prompt_builder()` 可能抛异常或返回 None。启动阶段必须 catch 异常，不影响 session 启动（此时 system_prompt 为 None）
+5. **System prompt 容错**：`system_prompt_builder()` 可能抛异常或返回 None。首次 `run()` 调用时必须 catch 异常，不影响后续对话（此时 history 中没有 system 消息）
 
-6. **Tool 函数必须 awaitable**：`load_tools_from_workspace` 只加载 `async def` 函数。普通函数会被跳过并打印 warning
+6. **Tool 函数必须 awaitable**：`load_tools_from_workspace` 只加载 `async def` 函数。普通函数会被静默跳过
 
 ## 测试约定
 

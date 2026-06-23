@@ -108,8 +108,6 @@ async def test_channel_receives_content_from_session(tmp_path, mock_ai_server: M
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ],
     )
 

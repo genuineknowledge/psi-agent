@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from psi_agent.session import _load_system_prompt_builder
+from psi_agent.session.agent import _load_system_prompt_builder
 
 
 def test_system_py_not_exists(tmp_path: Path) -> None:

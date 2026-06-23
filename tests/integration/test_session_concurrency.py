@@ -110,8 +110,6 @@ async def test_concurrent_requests_queue_and_succeed(tmp_path: Path) -> None:
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ]
     )
 
@@ -183,8 +181,6 @@ async def test_third_request_succeeds_after_lock_released(tmp_path: Path) -> Non
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ]
     )
 
@@ -246,8 +242,6 @@ async def test_history_accumulation_across_requests(tmp_path: Path, mock_ai_serv
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ]
     )
 
@@ -335,8 +329,6 @@ async def test_three_channel_requests_fifo_order(tmp_path: Path) -> None:
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ]
     )
 
@@ -422,8 +414,6 @@ async def test_channel_queues_behind_schedule(tmp_path: Path) -> None:
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ]
     )
 
@@ -500,8 +490,6 @@ async def test_schedule_queues_behind_channel(tmp_path: Path) -> None:
             channel_socket,
             "--ai-socket",
             ai_socket,
-            "--model",
-            "test",
         ]
     )
 

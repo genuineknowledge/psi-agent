@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import textwrap
-import time
 from pathlib import Path
 
 import pytest
@@ -71,26 +70,11 @@ async def test_load_schedule_missing_name(tmp_path: Path) -> None:
     assert len(schedules) == 0
 
 
-def test_schedule_to_user_message() -> None:
-    s = Schedule(name="test-schedule", cron="* * * * *", task_content="Run the report")
-    msg = s.to_user_message()
-    assert msg["role"] == "user"
-    assert "[Schedule Task: test-schedule]" in msg["content"]
-    assert "Run the report" in msg["content"]
-
-
-def test_schedule_should_run_now() -> None:
-    s = Schedule(name="every-min", cron="* * * * *", task_content="run")
-    assert not s.should_run_now()
-    s._last_run = time.time() - 3600
-    assert s.should_run_now()
-
-
-def test_schedule_get_next_run() -> None:
-    s = Schedule(name="daily", cron="0 12 * * *", task_content="run")
-    next_run = s.get_next_run()
-    assert next_run is not None
-    assert next_run > time.time()
+def test_schedule_dataclass_fields() -> None:
+    s = Schedule(name="test", cron="* * * * *", task_content="Run")
+    assert s.name == "test"
+    assert s.cron == "* * * * *"
+    assert s.task_content == "Run"
 
 
 # --- Missing coverage tests ---
@@ -112,23 +96,11 @@ def test_parse_yaml_header_success() -> None:
     assert body == "请生成日报。"
 
 
-def test_schedule_invalid_cron_raises() -> None:
+@pytest.mark.anyio
+async def test_load_schedule_invalid_cron_skipped(tmp_path: Path) -> None:
+    schedules_dir = tmp_path / "schedules" / "bad"
+    schedules_dir.mkdir(parents=True)
+    (schedules_dir / "TASK.md").write_text('---\nname: bad\ncron: "not a cron"\n---\nTask')
 
-    with pytest.raises(ValueError):
-        Schedule(name="bad", cron="not a cron", task_content="run")
-
-
-def test_schedule_mark_run_prevents_should_run() -> None:
-
-    s = Schedule(name="every-min", cron="* * * * *", task_content="run")
-    # Force a past run time to simulate having just run
-    s._last_run = time.time()
-    assert not s.should_run_now()
-
-
-def test_get_prev_run() -> None:
-    s = Schedule(name="daily", cron="0 12 * * *", task_content="run")
-    prev = s.get_prev_run()
-    assert prev is not None
-    # get_prev_run should be < current time
-    assert prev < time.time()
+    schedules = await load_schedules_from_workspace(tmp_path / "schedules")
+    assert len(schedules) == 0

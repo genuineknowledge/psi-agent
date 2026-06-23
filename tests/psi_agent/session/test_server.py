@@ -10,7 +10,6 @@ from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice
-from psi_agent.session.server import handle_chat_completions
 
 
 class _FailingSessionAgent(SessionAgent):
@@ -25,11 +24,10 @@ class _FailingSessionAgent(SessionAgent):
 async def test_handle_invalid_json_body(tmp_path: Path) -> None:
     """When request body is not valid JSON, return 400."""
     app = web.Application()
-    agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={}, model="test")
+    agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={})
     lock = anyio.Lock()
-    app["agent"] = agent
     app["lock"] = lock
-    app.router.add_post("/chat/completions", handle_chat_completions)
+    app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -54,11 +52,10 @@ async def test_handle_invalid_json_body(tmp_path: Path) -> None:
 async def test_handle_empty_messages(tmp_path: Path) -> None:
     """When messages list is empty, return 400."""
     app = web.Application()
-    agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={}, model="test")
+    agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={})
     lock = anyio.Lock()
-    app["agent"] = agent
     app["lock"] = lock
-    app.router.add_post("/chat/completions", handle_chat_completions)
+    app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -105,13 +102,13 @@ async def test_handle_non_user_role_coercion(tmp_path: Path) -> None:
     await ai_site.start()
 
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={})
         lock = anyio.Lock()
 
         app = web.Application()
         app["agent"] = agent
         app["lock"] = lock
-        app.router.add_post("/chat/completions", handle_chat_completions)
+        app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
         runner = web.AppRunner(app)
         await runner.setup()
@@ -160,13 +157,13 @@ async def test_agent_run_success_flow(tmp_path: Path) -> None:
     await ai_site.start()
 
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, model="test")
+        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={})
         lock = anyio.Lock()
 
         app = web.Application()
         app["agent"] = agent
         app["lock"] = lock
-        app.router.add_post("/chat/completions", handle_chat_completions)
+        app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
         runner = web.AppRunner(app)
         await runner.setup()
@@ -195,13 +192,13 @@ async def test_agent_run_success_flow(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_agent_run_raises_produces_error_chunk(tmp_path: Path) -> None:
     """When agent.run() raises mid-stream, the server catches it and sends error chunk."""
-    agent = _FailingSessionAgent(ai_socket="http://nonexistent/v1", tools={}, model="test")
+    agent = _FailingSessionAgent(ai_socket="http://nonexistent/v1", tools={})
     lock = anyio.Lock()
 
     app = web.Application()
     app["agent"] = agent
     app["lock"] = lock
-    app.router.add_post("/chat/completions", handle_chat_completions)
+    app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
     runner = web.AppRunner(app)
     await runner.setup()
