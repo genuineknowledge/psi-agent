@@ -73,7 +73,7 @@ psi-agent
 
 ```
 my-workspace/
-├── tools/                    # 每个 .py 文件定义一个 tool
+├── tools/                    # 每个 .py 文件定义若干 tool（所有非 _ 的 async def）
 │   └── bash.py               # async def bash(command: str) -> str
 ├── skills/                   # */SKILL.md 技能文档（system_prompt_builder 自行遍历）
 ├── schedules/                # 定时任务
@@ -83,7 +83,7 @@ my-workspace/
     └── system.py             # async def system_prompt_builder() -> str
 ```
 
-Tool 就是一个 async 函数，**函数名 = 文件名**，参数类型自动映射为 JSON Schema：
+Tool 就是一个 async 函数，文件中所有非 `_` 开头的 `async def` 都会加载为 tool：
 
 ```python
 # tools/bash.py

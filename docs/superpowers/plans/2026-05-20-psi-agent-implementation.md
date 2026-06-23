@@ -200,7 +200,7 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 
 **Files (原):** `psi_agent/ai/openai_completions/`, `psi_agent/ai/anthropic_messages/`
 
-**Files (现):** `psi_agent/ai/__init__.py`, `psi_agent/ai/common.py`, `psi_agent/ai/server.py`
+**Files (现):** `psi_agent/ai/__init__.py`, `psi_agent/ai/server.py`
 
 **Dataclass:** `Ai(session_socket, provider, model, api_key, base_url, verbose)` with `async run()`
 

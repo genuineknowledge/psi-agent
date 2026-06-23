@@ -73,7 +73,7 @@ A workspace is an agent:
 
 ```
 my-workspace/
-├── tools/                    # One .py file = one tool
+├── tools/                    # One .py file = one or more tools (all non-_ async def)
 │   └── bash.py               # async def bash(command: str) -> str
 ├── skills/                   # */SKILL.md skill docs (enumerated by system_prompt_builder)
 ├── schedules/                # Cron-triggered tasks
@@ -83,7 +83,7 @@ my-workspace/
     └── system.py             # async def system_prompt_builder() -> str
 ```
 
-A tool is just an async function — **function name = filename**, parameter types auto-map to JSON Schema:
+A tool is just an async function — every non-`_` `async def` in the file is loaded as a tool:
 
 ```python
 # tools/bash.py
