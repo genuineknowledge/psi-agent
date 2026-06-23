@@ -509,6 +509,8 @@ async def _init_history(
     Returns the loaded message list and the path to the JSONL file.
     """
     session_id = session_id or uuid.uuid4().hex
+    logger.info(f"Starting session: {session_id}")
+
     histories_dir = anyio.Path(str(workspace_path / "histories"))
     dir_created = False
     if not await histories_dir.is_dir():
