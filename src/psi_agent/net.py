@@ -18,7 +18,7 @@ class HostAliasResolver(AbstractResolver):
 
     def __init__(self, aliases: dict[str, str]) -> None:
         self._aliases = {host.lower(): ip for host, ip in aliases.items()}
-        self._default = DefaultResolver()
+        self._default: AbstractResolver = DefaultResolver()
 
     async def resolve(
         self,
@@ -28,7 +28,7 @@ class HostAliasResolver(AbstractResolver):
     ) -> list[ResolveResult]:
         alias = self._aliases.get(host.lower())
         if not alias:
-            return await self._default.resolve(host, port, family)
+            return await self._default.resolve(host=host, port=port, family=family)
         return [
             cast(
                 ResolveResult,
@@ -118,10 +118,11 @@ def parse_host_aliases(raw: str | None = None) -> dict[str, str]:
 
 
 def make_tcp_connector(*, ssl: bool | None = None) -> TCPConnector:
+    connector_ssl = True if ssl is None else ssl
     aliases = parse_host_aliases()
     if aliases:
-        return TCPConnector(ssl=ssl, resolver=HostAliasResolver(aliases))
-    return TCPConnector(ssl=ssl)
+        return TCPConnector(ssl=connector_ssl, resolver=HostAliasResolver(aliases))
+    return TCPConnector(ssl=connector_ssl)
 
 
 def make_client_session(endpoint: str, *, timeout: ClientTimeout | None = None) -> tuple[ClientSession, str]:

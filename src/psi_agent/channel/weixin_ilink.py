@@ -238,8 +238,7 @@ class ChannelWeixinIlink:
                 timeout_seconds=self.login_timeout_seconds,
             )
             sys.stdout.write(
-                f"Weixin iLink login saved: account={_safe_id(credentials.account_id)} "
-                f"state={state_dir}\n"
+                f"Weixin iLink login saved: account={_safe_id(credentials.account_id)} state={state_dir}\n"
             )
             return
 
@@ -540,8 +539,7 @@ def load_weixin_ilink_credentials(state_dir: Path) -> WeixinIlinkCredentials | N
 
     if account_dir.exists():
         candidates.extend(
-            path.stem
-            for path in sorted(account_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+            path.stem for path in sorted(account_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         )
 
     seen: set[str] = set()
