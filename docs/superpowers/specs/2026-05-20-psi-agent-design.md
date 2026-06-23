@@ -48,6 +48,7 @@ psi/
 │   ├── cli.py                      # tyro CLI 入口
 │   ├── _yaml.py                    # 共享 YAML header 解析
 │   ├── _socket.py                  # 共享 socket 工具（prefix-based transport 解析）
+│   ├── _run.py                     # YAML 批量启动（psi-agent run config.yml）
 │   ├── _logging.py                  # loguru 配置
 │   ├── ai/  (统一多 provider，基于 any-llm-sdk)
 │   │   ├── __init__.py
@@ -358,6 +359,7 @@ class ChannelCli:
 from typing import Annotated
 from tyro import conf
 
+from psi_agent._run import Run
 from psi_agent.ai import Ai
 from psi_agent.session import Session
 from psi_agent.channel.repl import ChannelRepl
@@ -369,7 +371,8 @@ ChannelGroup = Annotated[
 ]
 
 def main() -> None:
-    cmd = tyro.cli(Session | Ai | ChannelGroup)
+    cmd = tyro.cli(Run | Ai | Session | ChannelGroup)
+    anyio.run(cmd.run)
     anyio.run(cmd.run)
 ```
 
@@ -380,6 +383,7 @@ psi-agent ai --provider openai --session-socket ... --model ... --api-key ... --
 psi-agent ai --provider anthropic --session-socket ... --model ... --api-key ... --base-url ...
 psi-agent channel repl --session-socket ...
 psi-agent channel cli --session-socket ... --message ...
+psi-agent run config.yml
 ```
 
 全局共用 `--verbose` 参数开启 DEBUG 日志。

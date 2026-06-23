@@ -56,6 +56,7 @@ src/
     ├── cli.py                  # tyro CLI 入口，定义 top-level Union
     ├── _yaml.py               # 共享 YAML header 解析（scheduler + workspace system.py）
     ├── _socket.py              # 共享 socket 工具（prefix-based transport 解析）
+    ├── _run.py                 # YAML 配置批量启动（psi-agent run config.yml）
     ├── _logging.py              # loguru 配置，verbose→DEBUG
     ├── ai/
     │   ├── AGENTS.md                # AI 层设计文档
