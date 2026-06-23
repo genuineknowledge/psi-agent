@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
+import re
+import uuid
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote, unquote
 
 import anyio
 from aiohttp import web
+from aiohttp.client_exceptions import ClientConnectionResetError
 from loguru import logger
 
 from psi_agent.channel.session_client import stream_session_reply
@@ -13,10 +20,60 @@ from psi_agent.net import make_server_site
 from .page import INDEX_HTML
 
 SESSION_SOCKET_KEY = web.AppKey("session_socket", str)
+UPLOAD_ROOT_KEY = web.AppKey("upload_root", Path)
+DOWNLOAD_ROOTS_KEY = web.AppKey("download_roots", list[Path])
+DEFAULT_UPLOAD_DIR = "~/.psi-agent/channel-web/uploads"
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 async def handle_index(request: web.Request) -> web.StreamResponse:
     return web.Response(text=INDEX_HTML, content_type="text/html")
+
+
+async def handle_upload(request: web.Request) -> web.StreamResponse:
+    reader = await request.multipart()
+    field = await reader.next()
+    if field is None or field.name != "file":
+        return web.json_response({"error": "missing file"}, status=400)
+
+    original_name = _sanitize_file_name(unquote(field.filename or "upload.bin"))
+    upload_root = request.app[UPLOAD_ROOT_KEY]
+    upload_id = uuid.uuid4().hex
+    upload_dir = upload_root / upload_id
+    path = upload_dir / original_name
+
+    data = await field.read(decode=False)
+    if len(data) > _max_upload_bytes():
+        return web.json_response({"error": "file too large"}, status=413)
+
+    await anyio.Path(upload_dir).mkdir(parents=True, exist_ok=True)
+    await anyio.Path(path).write_bytes(data)
+    return web.json_response(
+        {
+            "id": upload_id,
+            "name": original_name,
+            "path": str(path),
+            "size": len(data),
+            "content_type": field.headers.get("Content-Type", "application/octet-stream"),
+        }
+    )
+
+
+async def handle_download(request: web.Request) -> web.StreamResponse:
+    raw_path = str(request.query.get("path", ""))
+    if not raw_path:
+        return web.json_response({"error": "missing path"}, status=400)
+
+    try:
+        path = _resolve_download_path(raw_path, request.app[DOWNLOAD_ROOTS_KEY])
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=403)
+
+    return web.FileResponse(
+        path,
+        headers={"Content-Disposition": _content_disposition(path.name)},
+        chunk_size=256 * 1024,
+    )
 
 
 async def handle_chat(request: web.Request) -> web.StreamResponse:
@@ -31,8 +88,10 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
         return web.json_response({"error": "invalid JSON"}, status=400)
 
     message = str(body.get("message", "")).strip()
-    if not message:
+    attachments = _parse_attachments(body.get("attachments"), request.app[UPLOAD_ROOT_KEY])
+    if not message and not attachments:
         return web.json_response({"error": "empty message"}, status=400)
+    message = _compose_message_with_attachments(message, attachments)
 
     session_socket = request.app[SESSION_SOCKET_KEY]
 
@@ -50,22 +109,29 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
             if delta.content:
                 payload["content"] = delta.content
             if payload:
-                await resp.write(f"data: {json.dumps(payload)}\n\n".encode())
+                if not await _write_sse_payload(resp, payload):
+                    return resp
     except UserFacingError as e:
-        await resp.write(f"data: {json.dumps({'error': str(e)})}\n\n".encode())
+        if not await _write_sse_payload(resp, {"error": str(e)}):
+            return resp
     except Exception as e:
         logger.exception("Web channel chat error")
-        await resp.write(f"data: {json.dumps({'error': f'Unexpected error: {e}'})}\n\n".encode())
+        if not await _write_sse_payload(resp, {"error": f"Unexpected error: {e}"}):
+            return resp
 
-    await resp.write(b"data: [DONE]\n\n")
+    await _write_sse_done(resp)
     return resp
 
 
-async def serve_web_channel(*, session_socket: str, listen: str) -> None:
+async def serve_web_channel(*, session_socket: str, listen: str, upload_dir: str = "") -> None:
     app = web.Application()
     app[SESSION_SOCKET_KEY] = session_socket
+    app[UPLOAD_ROOT_KEY] = _resolve_upload_root(upload_dir)
+    app[DOWNLOAD_ROOTS_KEY] = _resolve_download_roots(app[UPLOAD_ROOT_KEY])
     app.router.add_get("/", handle_index)
     app.router.add_post("/api/chat", handle_chat)
+    app.router.add_post("/api/upload", handle_upload)
+    app.router.add_get("/api/download", handle_download)
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -79,3 +145,107 @@ async def serve_web_channel(*, session_socket: str, listen: str) -> None:
         await anyio.sleep_forever()
     finally:
         await runner.cleanup()
+
+
+def _resolve_upload_root(raw: str = "") -> Path:
+    configured = raw or os.environ.get("PSI_WEB_UPLOAD_DIR", "") or DEFAULT_UPLOAD_DIR
+    return Path(configured).expanduser().resolve()
+
+
+def _max_upload_bytes() -> int:
+    raw = os.environ.get("PSI_WEB_UPLOAD_MAX_BYTES", "")
+    if not raw:
+        return MAX_UPLOAD_BYTES
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return MAX_UPLOAD_BYTES
+    return parsed if parsed > 0 else MAX_UPLOAD_BYTES
+
+
+def _sanitize_file_name(name: str) -> str:
+    cleaned = Path(name.strip().replace("\\", "/")).name
+    cleaned = re.sub(r"[\x00-\x1f\x7f]+", "_", cleaned)
+    cleaned = re.sub(r'[<>:"|?*]+', "_", cleaned).strip(" .")
+    return cleaned or "upload.bin"
+
+
+def _resolve_download_roots(upload_root: Path) -> list[Path]:
+    raw = os.environ.get("PSI_WEB_DOWNLOAD_ROOTS", "")
+    roots = [upload_root, Path.cwd().resolve()]
+    if raw:
+        roots.extend(Path(item).expanduser().resolve() for item in raw.split(os.pathsep) if item.strip())
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        if root not in seen:
+            unique.append(root)
+            seen.add(root)
+    return unique
+
+
+def _resolve_download_path(raw_path: str, roots: list[Path]) -> Path:
+    path = Path(raw_path).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError("download file does not exist")
+    for root in roots:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        return path
+    raise ValueError("download path is outside allowed directories")
+
+
+def _content_disposition(name: str) -> str:
+    fallback = re.sub(r"[^A-Za-z0-9._ -]+", "_", name).strip(" .") or "download"
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name)}"
+
+
+def _parse_attachments(value: Any, upload_root: Path) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    attachments: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        raw_path = str(item.get("path", ""))
+        if not raw_path:
+            continue
+        path = Path(raw_path).expanduser().resolve()
+        try:
+            path.relative_to(upload_root)
+        except ValueError as exc:
+            raise web.HTTPBadRequest(text="attachment path is outside upload directory") from exc
+        if not path.is_file():
+            raise web.HTTPBadRequest(text="attachment file does not exist")
+        attachments.append({"name": _sanitize_file_name(str(item.get("name") or path.name)), "path": str(path)})
+    return attachments
+
+
+def _compose_message_with_attachments(message: str, attachments: list[dict[str, str]]) -> str:
+    if not attachments:
+        return message
+    lines = [message] if message else []
+    lines.append("用户上传了附件：")
+    for item in attachments:
+        lines.append(f"- {item['name']}")
+        lines.append(f"FILE:{item['path']}")
+    return "\n".join(lines)
+
+
+async def _write_sse_payload(resp: web.StreamResponse, payload: dict[str, str]) -> bool:
+    return await _write_sse_bytes(resp, f"data: {json.dumps(payload)}\n\n".encode())
+
+
+async def _write_sse_done(resp: web.StreamResponse) -> bool:
+    return await _write_sse_bytes(resp, b"data: [DONE]\n\n")
+
+
+async def _write_sse_bytes(resp: web.StreamResponse, data: bytes) -> bool:
+    try:
+        await resp.write(data)
+    except (ClientConnectionResetError, ConnectionResetError):
+        logger.debug("Web channel client disconnected while streaming SSE")
+        return False
+    return True

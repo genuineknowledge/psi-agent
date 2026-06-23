@@ -8,6 +8,7 @@ from typing import Any
 from aiohttp import ClientTimeout
 from loguru import logger
 
+from psi_agent.memory.adapter import SessionMemoryAdapter
 from psi_agent.net import make_client_session
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 
@@ -25,6 +26,7 @@ class SessionAgent:
         model: str,
         system_prompt: str | None = None,
         after_turn_fn: AfterTurnFn | None = None,
+        memory_adapter: SessionMemoryAdapter | None = None,
     ) -> None:
         self.ai_socket = ai_socket
         self.tools = tools
@@ -36,6 +38,7 @@ class SessionAgent:
             self.history.append({"role": "system", "content": system_prompt})
         self._pending_schedule_chunks: list[ChatCompletionChunk] = []
         self._after_turn_snapshot: AfterTurnSnapshot | None = None
+        self._memory = memory_adapter
 
     def register_tool_func(self, name: str, func: Any) -> None:
         self._tool_funcs[name] = func
@@ -85,194 +88,202 @@ class SessionAgent:
                 yield chunk
             self._pending_schedule_chunks = []
 
+        memory_context = await self._retrieve_memory_context(user_message)
         self.history.append(user_message)
+        memory_message = self._insert_memory_context(memory_context)
         logger.debug(f"History now has {len(self.history)} messages")
 
         tool_call_count = 0
         called_tools: list[str] = []
 
-        for _round in range(MAX_TOOL_ROUNDS):
-            logger.debug(f"Agent loop round {_round + 1}/{MAX_TOOL_ROUNDS}")
+        try:
+            for _round in range(MAX_TOOL_ROUNDS):
+                logger.debug(f"Agent loop round {_round + 1}/{MAX_TOOL_ROUNDS}")
 
-            tool_defs = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    },
+                tool_defs = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.parameters,
+                        },
+                    }
+                    for t in self.tools.values()
+                ]
+
+                request_body = {
+                    "model": self.model,
+                    "messages": list(self.history),
+                    "tools": tool_defs,
+                    "stream": True,
                 }
-                for t in self.tools.values()
-            ]
 
-            request_body = {
-                "model": self.model,
-                "messages": self.history,
-                "tools": tool_defs,
-                "stream": True,
-            }
+                logger.info(f"Sending request to AI socket: {self.ai_socket}")
+                logger.debug(f"Request messages count: {len(self.history)}, tools: {len(tool_defs)}")
 
-            logger.info(f"Sending request to AI socket: {self.ai_socket}")
-            logger.debug(f"Request messages count: {len(self.history)}, tools: {len(tool_defs)}")
+                finish_reason: str | None = None
+                accumulated_tool_calls: dict[int, dict] = {}
+                accumulated_content: str = ""
+                tool_calls_requested = False
 
-            finish_reason: str | None = None
-            accumulated_tool_calls: dict[int, dict] = {}
-            accumulated_content: str = ""
-            tool_calls_requested = False
+                async for chunk in self._stream_ai_request(request_body):
+                    yield chunk
 
-            async for chunk in self._stream_ai_request(request_body):
-                yield chunk
+                    if chunk.choices:
+                        for choice in chunk.choices:
+                            if choice.finish_reason and not finish_reason:
+                                finish_reason = choice.finish_reason
+                            if choice.delta.content:
+                                accumulated_content += choice.delta.content
+                            if choice.delta.tool_calls:
+                                for tc in choice.delta.tool_calls:
+                                    idx = tc.get("index", 0)
+                                    if idx not in accumulated_tool_calls:
+                                        accumulated_tool_calls[idx] = {
+                                            "id": tc.get("id", ""),
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                    acc = accumulated_tool_calls[idx]
+                                    if tc.get("id"):
+                                        acc["id"] = tc["id"]
+                                    func = tc.get("function", {})
+                                    if func.get("name"):
+                                        acc["function"]["name"] = func["name"]
+                                    if func.get("arguments"):
+                                        acc["function"]["arguments"] += func["arguments"]
 
-                if chunk.choices:
-                    for choice in chunk.choices:
-                        if choice.finish_reason and not finish_reason:
-                            finish_reason = choice.finish_reason
-                        if choice.delta.content:
-                            accumulated_content += choice.delta.content
-                        if choice.delta.tool_calls:
-                            for tc in choice.delta.tool_calls:
-                                idx = tc.get("index", 0)
-                                if idx not in accumulated_tool_calls:
-                                    accumulated_tool_calls[idx] = {
-                                        "id": tc.get("id", ""),
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                acc = accumulated_tool_calls[idx]
-                                if tc.get("id"):
-                                    acc["id"] = tc["id"]
-                                func = tc.get("function", {})
-                                if func.get("name"):
-                                    acc["function"]["name"] = func["name"]
-                                if func.get("arguments"):
-                                    acc["function"]["arguments"] += func["arguments"]
+                    if finish_reason == "error":
+                        logger.warning("AI returned error, stopping without saving to history")
+                        return
 
-                if finish_reason == "error":
-                    logger.warning("AI returned error, stopping without saving to history")
-                    return
+                    if finish_reason == "stop":
+                        logger.debug("AI finished with stop")
+                        if accumulated_content:
+                            self.history.append({"role": "assistant", "content": accumulated_content})
+                        await self._record_memory_turn(user_message, accumulated_content)
+                        self._save_after_turn_snapshot(tool_call_count, called_tools)
+                        return
 
-                if finish_reason == "stop":
-                    logger.debug("AI finished with stop")
-                    if accumulated_content:
-                        self.history.append({"role": "assistant", "content": accumulated_content})
-                    self._save_after_turn_snapshot(tool_call_count, called_tools)
-                    return
+                    if finish_reason == "tool_calls":
+                        logger.info("AI requested tool calls, processing...")
+                        tool_calls_requested = True
 
-                if finish_reason == "tool_calls":
-                    logger.info("AI requested tool calls, processing...")
-                    tool_calls_requested = True
+                        # Order accumulated tool_calls by index
+                        ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
 
-                    # Order accumulated tool_calls by index
-                    ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
-
-                    # Add assistant message with tool_calls to history
-                    self.history.append(
-                        {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": ordered_calls,
-                        }
-                    )
-
-                    # Execute each tool call
-                    for tc in ordered_calls:
-                        func_info = tc.get("function", {})
-                        func_name = func_info.get("name", "")
-                        func_args_str = func_info.get("arguments", "{}")
-
-                        try:
-                            args = json.loads(func_args_str)
-                        except (json.JSONDecodeError, TypeError):
-                            args = {}
-
-                        logger.info(f"Executing tool: {func_name}({args})")
-                        tool_call_count += 1
-                        called_tools.append(func_name)
-
-                        yield ChatCompletionChunk(
-                            id="tool_call",
-                            model=self.model,
-                            choices=[
-                                StreamChoice(
-                                    index=0,
-                                    delta=DeltaMessage(
-                                        reasoning_content=(
-                                            f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
-                                        ),
-                                    ),
-                                )
-                            ],
-                        )
-
-                        func = self._tool_funcs.get(func_name)
-                        if func is None:
-                            result = f"Error: Tool '{func_name}' not found"
-                            logger.error(result)
-                        else:
-                            try:
-                                result = await func(**args)
-                                logger.info(f"Tool result ({func_name}): {str(result)[:200]}")
-                            except Exception as e:
-                                result = f"Error executing tool '{func_name}': {e}"
-                                logger.error(result)
-
-                        yield ChatCompletionChunk(
-                            id="tool_result",
-                            model=self.model,
-                            choices=[
-                                StreamChoice(
-                                    index=0,
-                                    delta=DeltaMessage(reasoning_content=f"[Tool Result: {str(result)[:500]}]"),
-                                )
-                            ],
-                        )
-
+                        # Add assistant message with tool_calls to history
                         self.history.append(
                             {
-                                "role": "tool",
-                                "tool_call_id": tc.get("id", ""),
-                                "name": func_name,
-                                "content": str(result),
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": ordered_calls,
                             }
                         )
 
-                    break
+                        # Execute each tool call
+                        for tc in ordered_calls:
+                            func_info = tc.get("function", {})
+                            func_name = func_info.get("name", "")
+                            func_args_str = func_info.get("arguments", "{}")
 
-            if not tool_calls_requested:
-                # Stream ended without a stop/error/tool_calls finish_reason
-                # (the stop/error/tool_calls branches above return or break).
-                # Do NOT silently re-send the identical request, which would
-                # burn through every remaining round and surface as a spurious
-                # "[Max tool rounds reached]" right at the start of a task.
-                logger.warning(
-                    f"AI stream ended without actionable finish_reason "
-                    f"(finish_reason={finish_reason!r}); stopping"
-                )
-                if accumulated_content:
-                    self.history.append({"role": "assistant", "content": accumulated_content})
-                self._save_after_turn_snapshot(tool_call_count, called_tools)
-                return
+                            try:
+                                args = json.loads(func_args_str)
+                            except (json.JSONDecodeError, TypeError):
+                                args = {}
 
-        else:
-            logger.warning(f"Reached max tool rounds ({MAX_TOOL_ROUNDS}), stopping")
-            self._save_after_turn_snapshot(tool_call_count, called_tools)
-            yield ChatCompletionChunk(
-                id="max_rounds",
-                model=self.model,
-                choices=[
-                    StreamChoice(
-                        index=0,
-                        delta=DeltaMessage(
-                            content=(
-                                f"\n\n[Reached the maximum of {MAX_TOOL_ROUNDS} tool rounds for this turn. "
-                                f"Stopping here — send another message to continue.]"
+                            logger.info(f"Executing tool: {func_name}({args})")
+                            tool_call_count += 1
+                            called_tools.append(func_name)
+
+                            yield ChatCompletionChunk(
+                                id="tool_call",
+                                model=self.model,
+                                choices=[
+                                    StreamChoice(
+                                        index=0,
+                                        delta=DeltaMessage(
+                                            reasoning_content=(
+                                                f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
+                                            ),
+                                        ),
+                                    )
+                                ],
                             )
-                        ),
-                        finish_reason="stop",
+
+                            func = self._tool_funcs.get(func_name)
+                            if func is None:
+                                result = f"Error: Tool '{func_name}' not found"
+                                logger.error(result)
+                            else:
+                                try:
+                                    result = await func(**args)
+                                    logger.info(f"Tool result ({func_name}): {str(result)[:200]}")
+                                except Exception as e:
+                                    result = f"Error executing tool '{func_name}': {e}"
+                                    logger.error(result)
+
+                            yield ChatCompletionChunk(
+                                id="tool_result",
+                                model=self.model,
+                                choices=[
+                                    StreamChoice(
+                                        index=0,
+                                        delta=DeltaMessage(reasoning_content=f"[Tool Result: {str(result)[:500]}]"),
+                                    )
+                                ],
+                            )
+
+                            self.history.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tc.get("id", ""),
+                                    "name": func_name,
+                                    "content": str(result),
+                                }
+                            )
+
+                        break
+
+                if not tool_calls_requested:
+                    # Stream ended without a stop/error/tool_calls finish_reason
+                    # (the stop/error/tool_calls branches above return or break).
+                    # Do NOT silently re-send the identical request, which would
+                    # burn through every remaining round and surface as a spurious
+                    # "[Max tool rounds reached]" right at the start of a task.
+                    logger.warning(
+                        f"AI stream ended without actionable finish_reason "
+                        f"(finish_reason={finish_reason!r}); stopping"
                     )
-                ],
-            )
+                    if accumulated_content:
+                        self.history.append({"role": "assistant", "content": accumulated_content})
+                    await self._record_memory_turn(user_message, accumulated_content)
+                    self._save_after_turn_snapshot(tool_call_count, called_tools)
+                    return
+
+            else:
+                logger.warning(f"Reached max tool rounds ({MAX_TOOL_ROUNDS}), stopping")
+                self._save_after_turn_snapshot(tool_call_count, called_tools)
+                yield ChatCompletionChunk(
+                    id="max_rounds",
+                    model=self.model,
+                    choices=[
+                        StreamChoice(
+                            index=0,
+                            delta=DeltaMessage(
+                                content=(
+                                    f"\n\n[Reached the maximum of {MAX_TOOL_ROUNDS} tool rounds for this turn. "
+                                    f"Stopping here — send another message to continue.]"
+                                )
+                            ),
+                            finish_reason="stop",
+                        )
+                    ],
+                )
+        finally:
+            if memory_message is not None:
+                self.history.remove(memory_message)
 
     def _save_after_turn_snapshot(self, tool_call_count: int, called_tools: list[str]) -> None:
         self._after_turn_snapshot = (deepcopy(self.history), tool_call_count, list(called_tools))
@@ -281,6 +292,29 @@ class SessionAgent:
         snapshot = self._after_turn_snapshot
         self._after_turn_snapshot = None
         return snapshot
+
+    async def close(self) -> None:
+        if self._memory is not None:
+            await self._memory.close()
+            self._memory = None
+
+    async def _retrieve_memory_context(self, user_message: dict[str, Any]) -> str | None:
+        if self._memory is None:
+            return None
+        return await self._memory.retrieve_for_turn(user_message)
+
+    async def _record_memory_turn(self, user_message: dict[str, Any], assistant_content: str) -> None:
+        if self._memory is None:
+            return
+        await self._memory.record_turn(user_message, assistant_content)
+
+    def _insert_memory_context(self, memory_context: str | None) -> dict[str, str] | None:
+        if not memory_context:
+            return None
+        message = {"role": "system", "content": memory_context}
+        insert_at = 1 if self.history and self.history[0].get("role") == "system" else 0
+        self.history.insert(insert_at, message)
+        return message
 
     async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
         client_session, endpoint = make_client_session(self.ai_socket, timeout=ClientTimeout(total=None))

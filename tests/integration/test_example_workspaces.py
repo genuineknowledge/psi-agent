@@ -76,6 +76,22 @@ async def test_migrated_example_workspace_loads_system_prompt_and_tools(
 
 
 @pytest.mark.anyio
+async def test_hermes_web_platform_prompt_advertises_file_delivery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "hermes-style-workspace"
+    _copy_workspace(REPO_ROOT / "examples" / "hermes-style-workspace", workspace)
+    monkeypatch.setenv("HERMES_PLATFORM", "web")
+
+    prompt = await _build_system_prompt_from_workspace(
+        workspace,
+        model="test-model",
+        tool_names=["bash"],
+    )
+
+    assert "MEDIA:/absolute/path/to/file" in prompt
+    assert "Do NOT tell the user you lack file-sending capability" in prompt
+
+
+@pytest.mark.anyio
 async def test_fusion_flow_workspace_self_evolution_tools_manage_agent_assets(tmp_path: Path) -> None:
     workspace = tmp_path / "fusion-flow-workspace"
     _copy_workspace(REPO_ROOT / "examples" / "fusion-flow-workspace", workspace)

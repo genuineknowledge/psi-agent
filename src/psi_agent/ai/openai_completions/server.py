@@ -24,7 +24,7 @@ async def _write_to_client(response: _Writable, data: bytes, *, context: str) ->
     try:
         await response.write(data)
         return True
-    except ClientConnectionResetError, ConnectionResetError:
+    except (ClientConnectionResetError, ConnectionResetError):
         logger.debug(f"Client disconnected while {context}; aborting stream")
         return False
 
@@ -107,7 +107,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                     logger.debug(f"Upstream chunk: {line[:200]}")
                     if not await _write_to_client(response, (line + "\n\n").encode(), context="streaming response"):
                         return response
-    except ClientConnectionResetError, ConnectionResetError:
+    except (ClientConnectionResetError, ConnectionResetError):
         # Client hung up mid-stream; nothing left to write to. Not an error.
         logger.debug("Client disconnected during streaming; aborting")
         return response

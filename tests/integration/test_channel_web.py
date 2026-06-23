@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
+from functools import partial
+from pathlib import Path
+from urllib.parse import quote
 
 import anyio
 import pytest
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientSession, ClientTimeout, FormData
 
 from tests.integration.conftest import MockAIServer
 
@@ -66,14 +70,21 @@ async def _stop_process(proc) -> None:
             proc.kill()
 
 
-async def _read_web_chat(base_url: str, message: str = "hello") -> tuple[str, str]:
+async def _read_web_chat(
+    base_url: str,
+    message: str = "hello",
+    attachments: list[dict[str, str]] | None = None,
+) -> tuple[str, str]:
     """Send a message to the web channel /api/chat and collect content + reasoning."""
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     timeout = ClientTimeout(total=15)
     async with (
         ClientSession(timeout=timeout) as session,
-        session.post(base_url.rstrip("/") + "/api/chat", json={"message": message}) as resp,
+        session.post(
+            base_url.rstrip("/") + "/api/chat",
+            json={"message": message, "attachments": attachments or []},
+        ) as resp,
     ):
         assert resp.status == 200, f"Got {resp.status}"
         async for raw in resp.content:
@@ -103,9 +114,9 @@ async def test_web_channel_streams_session_reply(tmp_path, mock_ai_server: MockA
 
     ai_proc = await anyio.open_process(
         [
-            "uv",
-            "run",
-            "psi-agent",
+            sys.executable,
+            "-c",
+            "from psi_agent.cli import main; main()",
             "ai",
             "openai-completions",
             "--session-socket",
@@ -120,9 +131,9 @@ async def test_web_channel_streams_session_reply(tmp_path, mock_ai_server: MockA
     )
     ses_proc = await anyio.open_process(
         [
-            "uv",
-            "run",
-            "psi-agent",
+            sys.executable,
+            "-c",
+            "from psi_agent.cli import main; main()",
             "session",
             "--workspace",
             "examples/a-simple-bash-only-workspace",
@@ -142,9 +153,9 @@ async def test_web_channel_streams_session_reply(tmp_path, mock_ai_server: MockA
 
         web_proc = await anyio.open_process(
             [
-                "uv",
-                "run",
-                "psi-agent",
+                sys.executable,
+                "-c",
+                "from psi_agent.cli import main; main()",
                 "channel",
                 "web",
                 "--session-socket",
@@ -158,8 +169,159 @@ async def test_web_channel_streams_session_reply(tmp_path, mock_ai_server: MockA
         content, reasoning = await _read_web_chat(web_listen, "hi")
         assert "Hello from web" in content, f"Got content: {content[:200]}"
         assert "thinking" in reasoning, f"Got reasoning: {reasoning[:200]}"
+
+        async with ClientSession(timeout=ClientTimeout(total=5)) as session, session.get(web_listen) as resp:
+            page = await resp.text()
+        assert "dolphin-agent" in page
+        assert '<div class="app sidebar-collapsed" id="app">' in page
+        assert 'placeholder="输入消息给 dolphin-agent..."' in page
+        assert ">发送</button>" in page
+        assert ">Send</button>" not in page
+        assert "Message dolphin-agent..." not in page
+        assert 'class="context-sidebar"' not in page
+        assert "280px" not in page
+        assert "renderMarkdown" in page
+        assert "thinking-panel" in page
+        assert "tool-panel" in page
+        assert "appendReasoning" in page
+        assert "createTracePanel" in page
+        assert "appendThinkingTrace" in page
+        assert "appendToolTrace" in page
+        assert "summarizeTrace" in page
+        assert "trace-summary" in page
+        assert "shouldAutoScroll" in page
+        assert "jump-bottom" in page
+        assert ">⤓</button>" in page
+        assert ">Bottom</button>" not in page
+        assert "toggleSidebar" in page
+        assert "›" in page
+        assert "‹" in page
+        assert "sidebar-collapsed" in page
+        assert "typing-dots" in page
+        assert "createTypingDots" in page
+        assert "assistant-loader" in page
+        assert "assistant-output" in page
+        assert "setTraceWaiting" in page
+        assert "tool-waiting" in page
+        assert "renderFileCards" in page
+        assert "extractMediaAttachments" in page
+        assert "/api/download?path=" in page
     finally:
         if web_proc is not None:
             await _stop_process(web_proc)
         await _stop_process(ses_proc)
         await _stop_process(ai_proc)
+
+
+@pytest.mark.anyio
+async def test_web_channel_uploads_file_and_forwards_attachment_path(tmp_path: Path) -> None:
+    session_messages: list[str] = []
+
+    async def session_handler(request):
+        body = await request.json()
+        session_messages.append(body["messages"][0]["content"])
+        resp = web.StreamResponse(
+            status=200,
+            headers={"Content-Type": "text/event-stream"},
+        )
+        await resp.prepare(request)
+        await resp.write(f"data: {_chunk(content='read file', finish_reason='stop')}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    from aiohttp import web
+
+    session_app = web.Application()
+    session_app.router.add_post("/v1/chat/completions", session_handler)
+    runner = web.AppRunner(session_app)
+    await runner.setup()
+    session_sock = str(tmp_path / "session.sock")
+    site = web.UnixSite(runner, session_sock)
+    await site.start()
+
+    from psi_agent.channel.web.server import serve_web_channel
+
+    web_listen = "http://127.0.0.1:8801"
+    upload_root = tmp_path / "uploads"
+    web_task = None
+    try:
+        async with anyio.create_task_group() as tg:
+            web_task = tg
+            tg.start_soon(partial(serve_web_channel, session_socket=session_sock, listen=web_listen, upload_dir=str(upload_root)))
+            assert await _wait_for_http(web_listen)
+
+            data = FormData()
+            data.add_field(
+                "file",
+                b"hello attachment",
+                filename="简历 2026.pdf",
+                content_type="text/plain",
+            )
+            async with ClientSession(timeout=ClientTimeout(total=10)) as http:
+                async with http.post(web_listen + "/api/upload", data=data) as resp:
+                    assert resp.status == 200
+                    uploaded = await resp.json()
+
+            assert uploaded["name"] == "简历 2026.pdf"
+            uploaded_path = Path(uploaded["path"])
+            assert uploaded_path.exists()
+            assert uploaded_path.read_text(encoding="utf-8") == "hello attachment"
+
+            content, _reasoning = await _read_web_chat(
+                web_listen,
+                "请读取附件",
+                attachments=[uploaded],
+            )
+            assert content == "read file"
+            assert len(session_messages) == 1
+            assert "请读取附件" in session_messages[0]
+            assert "简历 2026.pdf" in session_messages[0]
+            assert f"FILE:{uploaded_path}" in session_messages[0]
+            tg.cancel_scope.cancel()
+    finally:
+        if web_task is not None:
+            web_task.cancel_scope.cancel()
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_web_channel_downloads_allowed_file_with_unicode_name(tmp_path: Path) -> None:
+    from aiohttp import web
+
+    session_app = web.Application()
+    runner = web.AppRunner(session_app)
+    await runner.setup()
+    session_sock = str(tmp_path / "session.sock")
+    site = web.UnixSite(runner, session_sock)
+    await site.start()
+
+    from psi_agent.channel.web.server import serve_web_channel
+
+    upload_root = tmp_path / "uploads"
+    download_file = upload_root / "报告 2026.txt"
+    await anyio.Path(upload_root).mkdir(parents=True, exist_ok=True)
+    await anyio.Path(download_file).write_text("download body", encoding="utf-8")
+
+    web_listen = "http://127.0.0.1:8802"
+    web_task = None
+    try:
+        async with anyio.create_task_group() as tg:
+            web_task = tg
+            tg.start_soon(partial(serve_web_channel, session_socket=session_sock, listen=web_listen, upload_dir=str(upload_root)))
+            assert await _wait_for_http(web_listen)
+
+            async with ClientSession(timeout=ClientTimeout(total=10)) as http:
+                url = web_listen + "/api/download?path=" + quote(str(download_file), safe="")
+                async with http.get(url) as resp:
+                    assert resp.status == 200
+                    body = await resp.text()
+                    disposition = resp.headers.get("Content-Disposition", "")
+
+            assert body == "download body"
+            assert "filename*=UTF-8''" in disposition
+            assert "%E6%8A%A5%E5%91%8A%202026.txt" in disposition
+            tg.cancel_scope.cancel()
+    finally:
+        if web_task is not None:
+            web_task.cancel_scope.cancel()
+        await runner.cleanup()

@@ -472,6 +472,14 @@ PLATFORM_HINTS: dict[str, str] = {
         "code fences). Treat this like a conversation, not a document. Keep responses "
         "brief and natural."
     ),
+    "web": (
+        "You are in the dolphin-agent web chat. Markdown formatting is supported. "
+        "You CAN send files to the user: to deliver a file, include "
+        "MEDIA:/absolute/path/to/file in your response on its own line. The web UI "
+        "will render it as a downloadable attachment card and hide the MEDIA tag. "
+        "Do NOT tell the user you lack file-sending capability — use MEDIA: syntax "
+        "whenever the user asks you to provide or download a generated file."
+    ),
 }
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,8 @@ from aiohttp import ClientTimeout
 from loguru import logger
 
 from psi_agent._logging import setup_logging
+from psi_agent.memory.adapter import SessionMemoryAdapter
+from psi_agent.memory.config import MemoryConfig
 from psi_agent.net import make_client_session
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.protocol import ToolFunction
@@ -277,6 +279,8 @@ async def build_session_agent(
         model=model,
         tool_executors=tool_callables,
     )
+    memory_adapter = SessionMemoryAdapter(MemoryConfig.from_env(str(workspace_path)))
+    await memory_adapter.start()
 
     agent = SessionAgent(
         ai_socket=ai_socket,
@@ -284,6 +288,7 @@ async def build_session_agent(
         model=model,
         system_prompt=system_prompt,
         after_turn_fn=after_turn_fn,
+        memory_adapter=memory_adapter,
     )
 
     _register_tool_callables(agent, tool_callables)
@@ -368,6 +373,8 @@ class Session:
             model=self.model,
             tool_executors=tool_callables,
         )
+        memory_adapter = SessionMemoryAdapter(MemoryConfig.from_env(str(workspace_path)))
+        await memory_adapter.start()
 
         agent = SessionAgent(
             ai_socket=self.ai_socket,
@@ -375,6 +382,7 @@ class Session:
             model=self.model,
             system_prompt=system_prompt,
             after_turn_fn=after_turn_fn,
+            memory_adapter=memory_adapter,
         )
 
         _register_tool_callables(agent, tool_callables)

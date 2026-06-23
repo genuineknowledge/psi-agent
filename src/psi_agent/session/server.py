@@ -39,6 +39,7 @@ async def serve_session(
     finally:
         logger.info(f"Shutting down session server on {channel_socket}")
         await runner.cleanup()
+        await agent.close()
         cleanup_endpoint_sidecar(channel_socket)
 
 
