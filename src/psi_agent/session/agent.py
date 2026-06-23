@@ -4,10 +4,20 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from aiohttp import BaseConnector, ClientSession, ClientTimeout, NamedPipeConnector, TCPConnector, UnixConnector
+from aiohttp import ClientSession, ClientTimeout, TCPConnector, UnixConnector
 from loguru import logger
 
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
+
+# NamedPipeConnector only exists on Windows builds of aiohttp (Proactor event loop).
+# Guard the import so the module loads everywhere; absence becomes a clear runtime error.
+try:
+    from aiohttp import NamedPipeConnector as _NamedPipeConnector
+except ImportError:  # pragma: no cover - platform dependent
+    _NamedPipeConnector = None
+
+NPIPE_PREFIX = "npipe://"
+WIN_PIPE_PREFIX = "\\\\.\\pipe\\"
 
 MAX_TOOL_ROUNDS = 10
 
@@ -205,20 +215,30 @@ class SessionAgent:
             )
 
     @staticmethod
-    def _build_connector(ai_socket: str) -> tuple[BaseConnector, str]:
+    def _build_connector(ai_socket: str) -> tuple[Any, str]:
         """Resolve the AI backend address into an aiohttp connector and request endpoint.
 
         Supports three transports, distinguished purely by the address string:
         - ``http://`` / ``https://`` URL          -> TCP port           (TCPConnector)
         - ``npipe://`` / ``\\\\.\\pipe\\`` path      -> Windows named pipe (NamedPipeConnector)
         - anything else (a filesystem path)        -> Unix domain socket (UnixConnector)
+
+        Returns a ``(connector, endpoint)`` tuple. The connector type is ``Any``
+        because the concrete aiohttp connector classes differ across versions and
+        platforms (NamedPipeConnector is Windows-only).
         """
         if ai_socket.startswith(("http://", "https://")):
-            connector: BaseConnector = TCPConnector(ssl=ai_socket.startswith("https://"))
+            connector: Any = TCPConnector(ssl=ai_socket.startswith("https://"))
             endpoint = ai_socket.rstrip("/") + "/chat/completions"
-        elif ai_socket.startswith("npipe://") or ai_socket.startswith("\\\\.\\pipe\\"):
-            pipe_path = ai_socket.removeprefix("npipe://")
-            connector = NamedPipeConnector(path=pipe_path)
+        elif ai_socket.startswith(NPIPE_PREFIX) or ai_socket.startswith(WIN_PIPE_PREFIX):
+            if _NamedPipeConnector is None:
+                raise RuntimeError(
+                    f"Named pipe address {ai_socket!r} requires aiohttp's NamedPipeConnector, "
+                    "which is only available on Windows. Use a Unix socket path or an http:// URL instead."
+                )
+            # Strip the npipe:// scheme if present; a raw \\.\pipe\ path is passed through unchanged.
+            pipe_path = ai_socket[len(NPIPE_PREFIX) :] if ai_socket.startswith(NPIPE_PREFIX) else ai_socket
+            connector = _NamedPipeConnector(path=pipe_path)
             endpoint = "http://localhost/chat/completions"
         else:
             connector = UnixConnector(path=ai_socket)
@@ -227,59 +247,57 @@ class SessionAgent:
 
     async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
         connector, endpoint = self._build_connector(self.ai_socket)
-        async with (
-            ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session,
-            session.post(endpoint, json=request_body) as resp,
-        ):
-            logger.info(f"AI response status: {resp.status}")
-            if resp.status != 200:
-                error_text = await resp.text()
-                logger.error(f"AI error: {error_text[:500]}")
-                yield ChatCompletionChunk(
-                    id="error",
-                    model=self.model,
-                    choices=[
-                        StreamChoice(
-                            index=0,
-                            delta=DeltaMessage(content=f"[AI Error: {resp.status}]"),
-                            finish_reason="error",
-                        )
-                    ],
-                )
-                return
-
-            async for raw_line in resp.content:
-                line = raw_line.decode().strip()
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    continue
-
-                try:
-                    data = json.loads(data_str)
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse SSE data: {data_str[:100]}")
-                    continue
-
-                choices_data = data.get("choices", [])
-                for c in choices_data:
-                    delta_data = c.get("delta", {})
-                    delta = DeltaMessage(
-                        content=delta_data.get("content"),
-                        role=delta_data.get("role"),
-                        reasoning_content=delta_data.get("reasoning_content"),
-                        tool_calls=delta_data.get("tool_calls"),
-                    )
+        async with ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session:
+            async with session.post(endpoint, json=request_body) as resp:
+                logger.info(f"AI response status: {resp.status}")
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    logger.error(f"AI error: {error_text[:500]}")
                     yield ChatCompletionChunk(
-                        id=data.get("id", "chatcmpl-unknown"),
-                        model=data.get("model", ""),
-                        created=data.get("created", 0),
+                        id="error",
+                        model=self.model,
                         choices=[
                             StreamChoice(
-                                index=c.get("index", 0),
-                                delta=delta,
-                                finish_reason=c.get("finish_reason"),
+                                index=0,
+                                delta=DeltaMessage(content=f"[AI Error: {resp.status}]"),
+                                finish_reason="error",
                             )
                         ],
                     )
+                    return
+
+                async for raw_line in resp.content:
+                    line = raw_line.decode().strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        continue
+
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse SSE data: {data_str[:100]}")
+                        continue
+
+                    choices_data = data.get("choices", [])
+                    for c in choices_data:
+                        delta_data = c.get("delta", {})
+                        delta = DeltaMessage(
+                            content=delta_data.get("content"),
+                            role=delta_data.get("role"),
+                            reasoning_content=delta_data.get("reasoning_content"),
+                            tool_calls=delta_data.get("tool_calls"),
+                        )
+                        yield ChatCompletionChunk(
+                            id=data.get("id", "chatcmpl-unknown"),
+                            model=data.get("model", ""),
+                            created=data.get("created", 0),
+                            choices=[
+                                StreamChoice(
+                                    index=c.get("index", 0),
+                                    delta=delta,
+                                    finish_reason=c.get("finish_reason"),
+                                )
+                            ],
+                        )
