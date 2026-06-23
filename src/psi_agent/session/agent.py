@@ -211,13 +211,12 @@ class SessionAgent:
                 if finish_reason == "stop":
                     logger.debug("AI finished with stop")
                     if accumulated_content or accumulated_reasoning:
-                        self.history.append(
-                            {
-                                "role": "assistant",
-                                "content": accumulated_content,
-                                "reasoning_content": accumulated_reasoning,
-                            }
-                        )
+                        assistant_msg: dict = {"role": "assistant"}
+                        if accumulated_content:
+                            assistant_msg["content"] = accumulated_content
+                        if accumulated_reasoning:
+                            assistant_msg["reasoning_content"] = accumulated_reasoning
+                        self.history.append(assistant_msg)
                         if self._history_path is not None:
                             await _save_history(self._history_path, self.history)
                     return
@@ -229,14 +228,12 @@ class SessionAgent:
                     ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
 
                     # Add assistant message with tool_calls to history
-                    self.history.append(
-                        {
-                            "role": "assistant",
-                            "content": None,
-                            "reasoning_content": accumulated_reasoning,
-                            "tool_calls": ordered_calls,
-                        }
-                    )
+                    assistant_msg: dict = {"role": "assistant", "tool_calls": ordered_calls}
+                    if accumulated_content:
+                        assistant_msg["content"] = accumulated_content
+                    if accumulated_reasoning:
+                        assistant_msg["reasoning_content"] = accumulated_reasoning
+                    self.history.append(assistant_msg)
 
                     # Execute each tool call
                     for tc in ordered_calls:
@@ -307,13 +304,12 @@ class SessionAgent:
                     f"saving {len(accumulated_content)} chars of content and stopping"
                 )
                 if accumulated_content or accumulated_reasoning:
-                    self.history.append(
-                        {
-                            "role": "assistant",
-                            "content": accumulated_content,
-                            "reasoning_content": accumulated_reasoning,
-                        }
-                    )
+                    assistant_msg: dict = {"role": "assistant"}
+                    if accumulated_content:
+                        assistant_msg["content"] = accumulated_content
+                    if accumulated_reasoning:
+                        assistant_msg["reasoning_content"] = accumulated_reasoning
+                    self.history.append(assistant_msg)
                 return
 
         else:
