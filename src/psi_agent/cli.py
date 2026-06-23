@@ -23,6 +23,7 @@ from psi_agent.channel.platform import (
 )
 from psi_agent.channel.qqbot import ChannelQQBot
 from psi_agent.channel.repl import ChannelRepl
+from psi_agent.channel.web import ChannelWeb
 from psi_agent.channel.weixin_ilink import ChannelWeixinIlink
 from psi_agent.doctor import Doctor
 from psi_agent.errors import UserFacingError
@@ -39,6 +40,7 @@ AiGroup = Annotated[
 
 ChannelGroup = Annotated[
     Annotated[ChannelRepl, conf.subcommand(name="repl")]
+    | Annotated[ChannelWeb, conf.subcommand(name="web")]
     | Annotated[ChannelCli, conf.subcommand(name="cli")]
     | Annotated[ChannelLinkInfo, conf.subcommand(name="link")]
     | Annotated[ChannelTelegram, conf.subcommand(name="telegram")]

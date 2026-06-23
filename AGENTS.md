@@ -65,6 +65,7 @@ src/
     │   └── scheduler.py            # cron-based 定时任务（croniter）
     └── channel/
         ├── repl/                   # 交互式 REPL（Rich Console + prompt_toolkit multiline）
+        ├── web/                    # 网页端聊天（REPL 的浏览器接口：aiohttp 静态页 + /api/chat SSE 转发）
         └── cli/                    # 单次消息 CLI（Rich 格式化输出）
 ```
 
