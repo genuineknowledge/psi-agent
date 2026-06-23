@@ -61,8 +61,7 @@ async def test_tool_throws_exception_caught(tmp_path: Path, mock_ai_server: Mock
         raise RuntimeError("Simulated tool failure")
 
     tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
-    agent = SessionAgent(ai_socket=base_url, tools={"echo": tf})
-    agent.register_tool_func("echo", bad_tool)
+    agent = SessionAgent(ai_socket=base_url, tools={"echo": tf}, tool_funcs={"echo": bad_tool})
 
     chunks = []
     async for c in agent.run({"role": "user", "content": "test"}):
@@ -86,8 +85,7 @@ async def test_tool_returns_int_converted_to_string(mock_ai_server: MockAIServer
         return 42
 
     tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
-    agent = SessionAgent(ai_socket=base_url, tools={"echo": tf})
-    agent.register_tool_func("echo", int_tool)
+    agent = SessionAgent(ai_socket=base_url, tools={"echo": tf}, tool_funcs={"echo": int_tool})
 
     chunks = []
     async for c in agent.run({"role": "user", "content": "test"}):
@@ -111,8 +109,7 @@ async def test_tool_returns_none_converted(mock_ai_server: MockAIServer) -> None
         return None
 
     tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
-    agent = SessionAgent(ai_socket=base_url, tools={"echo": tf})
-    agent.register_tool_func("echo", none_tool)
+    agent = SessionAgent(ai_socket=base_url, tools={"echo": tf}, tool_funcs={"echo": none_tool})
 
     chunks = []
     async for c in agent.run({"role": "user", "content": "test"}):
@@ -163,8 +160,7 @@ async def test_max_tool_rounds_limit(mock_ai_server: MockAIServer) -> None:
         return "echo"
 
     tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
-    agent = SessionAgent(ai_socket=base_url, tools={"echo": tf}, max_tool_rounds=10)
-    agent.register_tool_func("echo", echo_tool)
+    agent = SessionAgent(ai_socket=base_url, tools={"echo": tf}, max_tool_rounds=10, tool_funcs={"echo": echo_tool})
 
     chunks = []
     async for c in agent.run({"role": "user", "content": "loop"}):

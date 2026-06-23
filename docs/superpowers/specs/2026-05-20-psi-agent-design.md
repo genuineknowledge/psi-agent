@@ -234,14 +234,14 @@ class Session:
 
 ```
 收到 channel 请求时（handle_chat_completions handler）：
-  0. 解析 request body → 取最后一条 user message
+  0. 解析 request body → 取最后一条 user message，其余字段透传到 AI
   1. 获取 `anyio.Lock`（FIFO 排队等待）
-  2. agent.run(user_message) 内部：
+  2. agent.run(user_message, extra_params=...) 内部：
      a. 惰性构建 system prompt（首次 run，history 尚无 system 消息）
      b. 检查暂存 schedule 响应 → 有则先流式返回
      c. 将 user message 追加到 self.history
-     d. 构建请求：history + tools → POST ai_socket（streaming）
-     e. SSE 流处理：
+     d. 构建请求：history + tools + extra_params → POST ai_socket（streaming）
+     e. SSE 流处理（每 chunk 恰好 1 个 choice，多 choice 报错，0 choice 心跳跳过）：
         - content delta          → yield 到 channel
         - reasoning delta        → yield 到 channel
         - tool_calls delta       → 累积（按 index 拼接 partial JSON）
@@ -251,7 +251,7 @@ class Session:
             c. await tool(**args)
             d. 追加 assistant_message(tool_calls) + tool_result 到 history
             e. yield reasoning_content chunks 到 channel
-            f. 回到步骤 d（最多 max_tool_rounds 轮，可配置，默认 10）
+            f. 回到步骤 d（最多 max_tool_rounds 轮，可配置，默认 128）
         - finish_reason="stop":
            最终 content 追加到 history，释放锁
         - finish_reason="error":
