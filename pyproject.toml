@@ -22,8 +22,12 @@ dependencies = [
     "any-llm-sdk>=1.18.0",
 ]
 
+[project.optional-dependencies]
+all = ["mcp>=1.28.0"]
+
 [dependency-groups]
 dev = [
+    "mcp>=1.28.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
