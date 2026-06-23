@@ -142,6 +142,7 @@ def _write_config(
     model: str,
     base_url: str,
     api_key_env: str,
+    api_key: str = "",
     force: bool,
 ) -> bool:
     if config_path.exists() and not force:
@@ -152,23 +153,35 @@ def _write_config(
             "Choose a file path with --config.",
         )
     _ensure_directory(config_path.parent, name="Config parent")
-    config_path.write_text(
-        textwrap.dedent(
-            f"""\
-            config_version = 1
-            default_profile = {_toml_string(profile)}
-            default_workspace = {_toml_string(str(workspace_path))}
-
-            [profiles.{profile}]
-            ai = {_toml_string(ai)}
-            model = {_toml_string(model)}
-            base_url = {_toml_string(base_url)}
-            api_key_env = {_toml_string(api_key_env)}
-            """
-        ),
-        encoding="utf-8",
+    profile_lines = [
+        f"[profiles.{profile}]",
+        f"ai = {_toml_string(ai)}",
+        f"model = {_toml_string(model)}",
+        f"base_url = {_toml_string(base_url)}",
+        f"api_key_env = {_toml_string(api_key_env)}",
+    ]
+    if api_key:
+        profile_lines.append(f"api_key = {_toml_string(api_key)}")
+    config_text = (
+        f"config_version = 1\n"
+        f"default_profile = {_toml_string(profile)}\n"
+        f"default_workspace = {_toml_string(str(workspace_path))}\n"
+        f"\n" + "\n".join(profile_lines) + "\n"
     )
+    config_path.write_text(config_text, encoding="utf-8")
+    if api_key:
+        _restrict_file_permissions(config_path)
     return True
+
+
+def _restrict_file_permissions(path: Path) -> None:
+    """Restrict a file to owner read/write on POSIX. No-op on Windows."""
+    if os.name == "nt":
+        return
+    try:
+        path.chmod(0o600)
+    except OSError:
+        sys.stderr.write(f"Warning: could not restrict permissions on {path}\n")
 
 
 def _toml_string(value: str) -> str:

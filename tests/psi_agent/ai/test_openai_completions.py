@@ -7,9 +7,48 @@ from pathlib import Path
 
 import anyio
 import pytest
-from aiohttp import ClientSession, UnixConnector, web
+from aiohttp import ClientConnectionResetError, ClientSession, UnixConnector, web
 
 from psi_agent.ai.openai_completions import OpenAICompletions
+from psi_agent.ai.openai_completions.server import _write_to_client
+
+
+class _ResetResponse:
+    """Stand-in StreamResponse whose write() raises like a hung-up client."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+        self.writes = 0
+
+    async def write(self, data: bytes) -> None:
+        self.writes += 1
+        raise self._exc
+
+
+class _OkResponse:
+    def __init__(self) -> None:
+        self.data = b""
+
+    async def write(self, data: bytes) -> None:
+        self.data += data
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("exc", [ClientConnectionResetError(), ConnectionResetError()])
+async def test_write_to_client_swallows_disconnect(exc: BaseException) -> None:
+    """A client disconnect mid-stream returns False instead of raising."""
+    resp = _ResetResponse(exc)
+    ok = await _write_to_client(resp, b"data: x\n\n", context="streaming response")
+    assert ok is False
+    assert resp.writes == 1
+
+
+@pytest.mark.anyio
+async def test_write_to_client_success() -> None:
+    resp = _OkResponse()
+    ok = await _write_to_client(resp, b"data: x\n\n", context="streaming response")
+    assert ok is True
+    assert resp.data == b"data: x\n\n"
 
 
 def test_cli_dataclass_defaults() -> None:

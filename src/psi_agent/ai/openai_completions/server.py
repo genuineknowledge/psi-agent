@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 import json
+from typing import Protocol
 
-from aiohttp import ClientSession, ClientTimeout, web
+from aiohttp import ClientConnectionResetError, ClientSession, ClientTimeout, web
 from loguru import logger
 
 from psi_agent.ai.common import ErrorResponse, SSEChunk, serve_ai_backend
 from psi_agent.net import make_tcp_connector
+
+
+class _Writable(Protocol):
+    async def write(self, data: bytes) -> None: ...
+
+
+async def _write_to_client(response: _Writable, data: bytes, *, context: str) -> bool:
+    """Write to the downstream client, treating a disconnect as a normal stop.
+
+    Returns True on success, False if the client already closed the connection.
+    A reset here means the caller hung up mid-stream; it is not an upstream
+    error and must not be logged as a traceback.
+    """
+    try:
+        await response.write(data)
+        return True
+    except ClientConnectionResetError, ConnectionResetError:
+        logger.debug(f"Client disconnected while {context}; aborting stream")
+        return False
 
 
 async def serve_openai_completions(
@@ -78,14 +98,19 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                     finish_reason="error",
                     chunk_id="error",
                 )
-                await response.write(chunk.to_sse().encode())
+                await _write_to_client(response, chunk.to_sse().encode(), context="forwarding upstream error")
                 return response
 
             async for raw_line in upstream_resp.content:
                 line = raw_line.decode().strip()
                 if line:
                     logger.debug(f"Upstream chunk: {line[:200]}")
-                    await response.write((line + "\n\n").encode())
+                    if not await _write_to_client(response, (line + "\n\n").encode(), context="streaming response"):
+                        return response
+    except ClientConnectionResetError, ConnectionResetError:
+        # Client hung up mid-stream; nothing left to write to. Not an error.
+        logger.debug("Client disconnected during streaming; aborting")
+        return response
     except Exception as e:
         logger.error(f"Error forwarding to upstream: {e}")
         chunk = SSEChunk(
@@ -93,7 +118,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             finish_reason="error",
             chunk_id="error",
         )
-        await response.write(chunk.to_sse().encode())
+        await _write_to_client(response, chunk.to_sse().encode(), context="forwarding upstream connection error")
         return response
 
     logger.debug("Request completed")

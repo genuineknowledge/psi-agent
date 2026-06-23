@@ -12,6 +12,7 @@ from psi_agent.channel.platform import (
     ChannelWhatsApp,
 )
 from psi_agent.channel.qqbot import ChannelQQBot
+from psi_agent.channel.web import ChannelWeb
 from psi_agent.channel.weixin_ilink import ChannelWeixinIlink
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "ChannelSlack",
     "ChannelTelegram",
     "ChannelWeChatBridge",
+    "ChannelWeb",
     "ChannelWeixinIlink",
     "ChannelWhatsApp",
     "parse_channel_link",

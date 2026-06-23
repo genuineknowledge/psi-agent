@@ -23,6 +23,7 @@ from psi_agent.channel.platform import (
 )
 from psi_agent.channel.qqbot import ChannelQQBot
 from psi_agent.channel.repl import ChannelRepl
+from psi_agent.channel.web import ChannelWeb
 from psi_agent.channel.weixin_ilink import ChannelWeixinIlink
 from psi_agent.doctor import Doctor
 from psi_agent.errors import UserFacingError
@@ -30,6 +31,7 @@ from psi_agent.gateway.profile import ProfileGateway
 from psi_agent.init import Init
 from psi_agent.run import Run
 from psi_agent.session import Session
+from psi_agent.setup import Setup
 
 AiGroup = Annotated[
     Annotated[OpenAICompletions, conf.subcommand(name="openai-completions")]
@@ -39,6 +41,7 @@ AiGroup = Annotated[
 
 ChannelGroup = Annotated[
     Annotated[ChannelRepl, conf.subcommand(name="repl")]
+    | Annotated[ChannelWeb, conf.subcommand(name="web")]
     | Annotated[ChannelCli, conf.subcommand(name="cli")]
     | Annotated[ChannelLinkInfo, conf.subcommand(name="link")]
     | Annotated[ChannelTelegram, conf.subcommand(name="telegram")]
@@ -57,6 +60,7 @@ ChannelGroup = Annotated[
 RunCommand = Annotated[Run, conf.subcommand(name="run")]
 DoctorCommand = Annotated[Doctor, conf.subcommand(name="doctor")]
 InitCommand = Annotated[Init, conf.subcommand(name="init")]
+SetupCommand = Annotated[Setup, conf.subcommand(name="setup")]
 ProfileGatewayCommand = Annotated[ProfileGateway, conf.subcommand(name="gateway")]
 
 
@@ -65,7 +69,14 @@ def main() -> None:
     cmd = None
     try:
         cmd = tyro.cli(  # ty: ignore[no-matching-overload]
-            Session | RunCommand | DoctorCommand | InitCommand | ProfileGatewayCommand | AiGroup | ChannelGroup
+            Session
+            | RunCommand
+            | DoctorCommand
+            | InitCommand
+            | SetupCommand
+            | ProfileGatewayCommand
+            | AiGroup
+            | ChannelGroup
         )
         anyio.run(cmd.run)
     except UserFacingError as e:

@@ -47,6 +47,41 @@ Use Anthropic defaults instead:
 uv run psi-agent init --ai anthropic-messages
 ```
 
+## One-Line Setup
+
+For a guided install, run the bootstrap script from a cloned checkout. It
+installs `uv` if missing, syncs dependencies, then launches an interactive
+wizard that writes your config and an optional chat channel.
+
+macOS or Linux:
+
+```bash
+./bootstrap.sh
+```
+
+Windows PowerShell:
+
+```powershell
+./bootstrap.ps1
+```
+
+The bootstrap scripts download and run the official `uv` installer from
+`astral.sh` when `uv` is not already present. Review the scripts first if you
+prefer to install `uv` yourself.
+
+The wizard is also available on its own once dependencies are synced:
+
+```bash
+uv run psi-agent setup
+```
+
+`psi-agent setup` prompts for the AI backend, model, base URL, and API key,
+then writes the key directly into `~/.psi-agent/config.toml` (owner-only
+permissions on macOS and Linux). It can also configure a Feishu or WeChat
+bridge channel and generate the matching gateway `profile.yaml`. The wizard
+needs an interactive terminal; for non-interactive setup use `psi-agent init`
+and set the API key environment variable.
+
 ## Upgrade
 
 From a cloned checkout:
