@@ -4,7 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
-from aiohttp import ClientSession, ClientTimeout, TCPConnector, UnixConnector
+from aiohttp import BaseConnector, ClientSession, ClientTimeout, NamedPipeConnector, TCPConnector, UnixConnector
 from loguru import logger
 
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
@@ -136,7 +136,7 @@ class SessionAgent:
 
                         try:
                             args = json.loads(func_args_str)
-                        except json.JSONDecodeError, TypeError:
+                        except (json.JSONDecodeError, TypeError):
                             args = {}
 
                         logger.info(f"Executing tool: {func_name}({args})")
@@ -204,13 +204,29 @@ class SessionAgent:
                 ],
             )
 
-    async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
-        if self.ai_socket.startswith(("http://", "https://")):
-            connector = TCPConnector(ssl=self.ai_socket.startswith("https://"))
-            endpoint = self.ai_socket.rstrip("/") + "/chat/completions"
-        else:
-            connector = UnixConnector(path=self.ai_socket)
+    @staticmethod
+    def _build_connector(ai_socket: str) -> tuple[BaseConnector, str]:
+        """Resolve the AI backend address into an aiohttp connector and request endpoint.
+
+        Supports three transports, distinguished purely by the address string:
+        - ``http://`` / ``https://`` URL          -> TCP port           (TCPConnector)
+        - ``npipe://`` / ``\\\\.\\pipe\\`` path      -> Windows named pipe (NamedPipeConnector)
+        - anything else (a filesystem path)        -> Unix domain socket (UnixConnector)
+        """
+        if ai_socket.startswith(("http://", "https://")):
+            connector: BaseConnector = TCPConnector(ssl=ai_socket.startswith("https://"))
+            endpoint = ai_socket.rstrip("/") + "/chat/completions"
+        elif ai_socket.startswith("npipe://") or ai_socket.startswith("\\\\.\\pipe\\"):
+            pipe_path = ai_socket.removeprefix("npipe://")
+            connector = NamedPipeConnector(path=pipe_path)
             endpoint = "http://localhost/chat/completions"
+        else:
+            connector = UnixConnector(path=ai_socket)
+            endpoint = "http://localhost/chat/completions"
+        return connector, endpoint
+
+    async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
+        connector, endpoint = self._build_connector(self.ai_socket)
         async with (
             ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session,
             session.post(endpoint, json=request_body) as resp,
