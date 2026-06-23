@@ -212,14 +212,17 @@ async def _run_against_ai_socket(
     reasoning_parts: list[str] = []
     had_error = False
 
-    async for chunk in agent.run({"role": "user", "content": message}):
-        for choice in chunk.choices:
-            if choice.delta.content:
-                content_parts.append(choice.delta.content)
-            if choice.delta.reasoning_content:
-                reasoning_parts.append(choice.delta.reasoning_content)
-            if choice.finish_reason == "error":
-                had_error = True
+    try:
+        async for chunk in agent.run({"role": "user", "content": message}):
+            for choice in chunk.choices:
+                if choice.delta.content:
+                    content_parts.append(choice.delta.content)
+                if choice.delta.reasoning_content:
+                    reasoning_parts.append(choice.delta.reasoning_content)
+                if choice.finish_reason == "error":
+                    had_error = True
+    finally:
+        await agent.close()
 
     return RunResult(text="".join(content_parts), reasoning="".join(reasoning_parts), had_error=had_error)
 
