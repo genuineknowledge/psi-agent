@@ -49,9 +49,29 @@ uv run psi-agent init --ai anthropic-messages
 
 ## One-Line Setup
 
-For a guided install, run the bootstrap script from a cloned checkout. It
-installs `uv` if missing, syncs dependencies, then launches an interactive
-wizard that writes your config and an optional chat channel.
+The fastest path needs no manual clone. The remote installer installs `uv` if
+missing, clones psi-agent into `~/.psi-agent/psi-agent`, syncs dependencies,
+then launches the interactive setup wizard.
+
+macOS, Linux, or WSL2:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/genuineknowledge/psi-agent/feat/web-channel-setup-flow/install.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/genuineknowledge/psi-agent/feat/web-channel-setup-flow/install.ps1 | iex
+```
+
+The installer downloads and runs the official `uv` installer from `astral.sh`
+when `uv` is not already present, and clones from GitHub. Review the script
+first if you prefer. Useful overrides: `PSI_AGENT_BRANCH`, `PSI_AGENT_HOME`,
+and `PSI_AGENT_SKIP_SETUP=1` (clone and sync only, skip the wizard).
+
+If you already have a cloned checkout, run the bootstrap script instead. It
+skips the clone step and reuses the current directory.
 
 macOS or Linux:
 
@@ -64,10 +84,6 @@ Windows PowerShell:
 ```powershell
 ./bootstrap.ps1
 ```
-
-The bootstrap scripts download and run the official `uv` installer from
-`astral.sh` when `uv` is not already present. Review the scripts first if you
-prefer to install `uv` yourself.
 
 The wizard is also available on its own once dependencies are synced:
 
