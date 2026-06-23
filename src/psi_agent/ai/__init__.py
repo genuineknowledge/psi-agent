@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import anyio
 from aiohttp import web
@@ -15,7 +16,24 @@ from psi_agent._logging import setup_logging
 from .server import handle_chat_completions
 
 
-async def serve_ai_backend(
+def _build_site(runner: web.AppRunner, socket_path: str) -> web.BaseSite:
+    """Resolve a listen address into the matching aiohttp site.
+
+    Mirrors ``SessionAgent._build_connector`` so the server side accepts the
+    same three address forms the client can dial:
+    - ``http://host:port`` / ``https://...`` -> TCP port           (TCPSite)
+    - ``npipe://`` / ``\\\\.\\pipe\\`` path     -> Windows named pipe (NamedPipeSite)
+    - anything else (a filesystem path)       -> Unix domain socket (UnixSite)
+    """
+    if socket_path.startswith(("http://", "https://")):
+        parsed = urlparse(socket_path)
+        return web.TCPSite(runner, host=parsed.hostname or "127.0.0.1", port=parsed.port or 8000)
+    if socket_path.startswith("npipe://") or socket_path.startswith("\\\\.\\pipe\\"):
+        return web.NamedPipeSite(runner, socket_path.removeprefix("npipe://"))
+    return web.UnixSite(runner, socket_path)
+
+
+async def serve_ai(
     *,
     socket_path: str,
     provider: str,
@@ -37,7 +55,7 @@ async def serve_ai_backend(
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.UnixSite(runner, socket_path)
+    site = _build_site(runner, socket_path)
     await site.start()
 
     logger.info(f"AI listening on {socket_path}")
@@ -50,7 +68,7 @@ async def serve_ai_backend(
 
 
 @dataclass
-class AiBackend:
+class Ai:
     """Start an AI backend service that forwards to any LLM provider."""
 
     session_socket: str
@@ -78,7 +96,7 @@ class AiBackend:
         api_key = self.api_key or os.environ.get("PSI_AI_API_KEY", "")
         base_url = self.base_url or os.environ.get("PSI_AI_BASE_URL", "")
         setup_logging(verbose=self.verbose)
-        await serve_ai_backend(
+        await serve_ai(
             socket_path=self.session_socket,
             provider=provider,
             model=model,
