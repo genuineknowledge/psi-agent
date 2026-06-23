@@ -227,4 +227,4 @@ async def test_fusion_flow_workspace_after_turn_can_create_curated_flow(tmp_path
     assert flow_md.exists()
     flow_text = flow_md.read_text(encoding="utf-8")
     assert "Reusable review-created flow" in flow_text
-    assert "export const marker = \"review\";" in flow_text
+    assert 'export const marker = "review";' in flow_text
