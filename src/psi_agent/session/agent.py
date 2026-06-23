@@ -11,7 +11,7 @@ from loguru import logger
 from psi_agent.net import make_client_session
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 
-MAX_TOOL_ROUNDS = 10
+MAX_TOOL_ROUNDS = 30
 AfterTurnFn = Callable[[list[dict], int, list[str]], Awaitable[None]]
 AfterTurnSnapshot = tuple[list[dict], int, list[str]]
 
@@ -119,6 +119,7 @@ class SessionAgent:
             finish_reason: str | None = None
             accumulated_tool_calls: dict[int, dict] = {}
             accumulated_content: str = ""
+            tool_calls_requested = False
 
             async for chunk in self._stream_ai_request(request_body):
                 yield chunk
@@ -160,6 +161,7 @@ class SessionAgent:
 
                 if finish_reason == "tool_calls":
                     logger.info("AI requested tool calls, processing...")
+                    tool_calls_requested = True
 
                     # Order accumulated tool_calls by index
                     ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
@@ -237,6 +239,21 @@ class SessionAgent:
 
                     break
 
+            if not tool_calls_requested:
+                # Stream ended without a stop/error/tool_calls finish_reason
+                # (the stop/error/tool_calls branches above return or break).
+                # Do NOT silently re-send the identical request, which would
+                # burn through every remaining round and surface as a spurious
+                # "[Max tool rounds reached]" right at the start of a task.
+                logger.warning(
+                    f"AI stream ended without actionable finish_reason "
+                    f"(finish_reason={finish_reason!r}); stopping"
+                )
+                if accumulated_content:
+                    self.history.append({"role": "assistant", "content": accumulated_content})
+                self._save_after_turn_snapshot(tool_call_count, called_tools)
+                return
+
         else:
             logger.warning(f"Reached max tool rounds ({MAX_TOOL_ROUNDS}), stopping")
             self._save_after_turn_snapshot(tool_call_count, called_tools)
@@ -246,7 +263,12 @@ class SessionAgent:
                 choices=[
                     StreamChoice(
                         index=0,
-                        delta=DeltaMessage(content="[Max tool rounds reached]"),
+                        delta=DeltaMessage(
+                            content=(
+                                f"\n\n[Reached the maximum of {MAX_TOOL_ROUNDS} tool rounds for this turn. "
+                                f"Stopping here — send another message to continue.]"
+                            )
+                        ),
                         finish_reason="stop",
                     )
                 ],

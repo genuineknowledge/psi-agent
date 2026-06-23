@@ -170,7 +170,7 @@ async def test_max_tool_rounds_limit(mock_ai_server: MockAIServer) -> None:
         chunks.append(c)
 
     all_content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
-    assert "Max tool rounds" in all_content
+    assert "maximum of" in all_content and "tool rounds" in all_content
 
     tool_call_count = sum(
         1
@@ -180,3 +180,25 @@ async def test_max_tool_rounds_limit(mock_ai_server: MockAIServer) -> None:
         and "Tool Call" in (c.choices[0].delta.reasoning_content or "")
     )
     assert tool_call_count <= MAX_TOOL_ROUNDS
+
+
+@pytest.mark.anyio
+async def test_stream_without_finish_reason_stops(mock_ai_server: MockAIServer) -> None:
+    # A stream that ends with no actionable finish_reason (None) must not be
+    # silently re-sent every round until the tool-round cap is hit.
+    mock_ai_server.set_responses([_chunk(content="partial reply", finish_reason=None)])
+    base_url = await mock_ai_server.start()
+
+    tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
+    agent = SessionAgent(ai_socket=base_url, tools={"echo": tf}, model="test")
+
+    chunks = []
+    async for c in agent.run({"role": "user", "content": "hi"}):
+        chunks.append(c)
+
+    # Exactly one request to the AI socket: no silent re-send loop.
+    assert len(mock_ai_server.request_bodies) == 1
+
+    all_content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+    assert "maximum of" not in all_content
+    assert "partial reply" in all_content
