@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -10,6 +12,152 @@ from typing import Any
 import anyio
 
 CompleteFn = Callable[[list[dict[str, Any]]], Awaitable[str]]
+ReviewCompleteFn = Callable[
+    [list[dict[str, Any]], list[dict[str, Any]] | None],
+    Awaitable[dict[str, Any]],
+]
+ToolExecutors = dict[str, Callable[..., Awaitable[Any]]]
+
+logger = logging.getLogger(__name__)
+
+MAX_SELF_EVOLUTION_ITERATIONS = 6
+SELF_EVOLUTION_TOOL_THRESHOLD = 2
+
+_SELF_EVOLUTION_PROMPT = (
+    "Review the completed turn and decide whether this Fusion Flow workspace should learn from it."
+    """
+
+Only update workspace assets when the conversation produced reusable knowledge:
+- workflow-authoring patterns that should become reusable curated flows
+- recurring Fusion Flow structure, validation, or runtime practices
+- corrections to an agent-created skill or a new class-level skill
+
+Use `skill_manage` for reusable non-flow procedures.
+Use `flow_manage` for reusable Fusion Flow templates.
+
+Rules:
+1. Do not update anything for one-off task facts, transient errors, secrets, local credentials, or user-private data.
+2. Do not patch user-authored skills or the immutable `skills/fusion-flow/` runtime skill.
+3. Prefer patching an existing agent-created asset over creating a narrow duplicate.
+4. If nothing is worth saving, reply exactly: Nothing to save.
+"""
+)
+
+
+def _build_self_evolution_tool_schemas() -> list[dict[str, Any]]:
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "skill_manage",
+                "description": "Create, patch, view, or list workspace skills.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "view", "create", "patch"],
+                        },
+                        "skill_name": {"type": "string"},
+                        "content": {"type": "string"},
+                        "category": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "flow_manage",
+                "description": "Create, patch, view, list, or promote reusable Fusion Flow assets.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "view", "create", "patch", "promote"],
+                        },
+                        "flow_name": {"type": "string"},
+                        "description": {"type": "string"},
+                        "category": {"type": "string"},
+                        "body": {"type": "string"},
+                        "flow_ts": {"type": "string"},
+                        "target": {
+                            "type": "string",
+                            "enum": ["curated", "tasks", "adhoc", "all"],
+                        },
+                    },
+                    "required": ["action"],
+                },
+            },
+        },
+    ]
+
+
+async def _run_self_evolution_review(
+    *,
+    messages: list[dict[str, Any]],
+    complete_fn: ReviewCompleteFn,
+    tool_executors: ToolExecutors,
+) -> None:
+    allowed_tools = {"skill_manage", "flow_manage"}
+    tool_schemas = _build_self_evolution_tool_schemas()
+    loop_messages = [*messages, {"role": "user", "content": _SELF_EVOLUTION_PROMPT}]
+
+    for iteration in range(MAX_SELF_EVOLUTION_ITERATIONS):
+        try:
+            response = await complete_fn(loop_messages, tool_schemas)
+        except Exception as exc:
+            logger.debug("Fusion Flow self-evolution LLM call failed at iteration %d: %s", iteration, exc)
+            return
+
+        choices = response.get("choices") or []
+        if not choices:
+            logger.debug("Fusion Flow self-evolution got empty choices at iteration %d", iteration)
+            return
+
+        assistant_msg = choices[0].get("message") or {}
+        if not isinstance(assistant_msg, dict):
+            return
+        loop_messages.append(assistant_msg)
+
+        tool_calls = assistant_msg.get("tool_calls") or []
+        if not tool_calls:
+            return
+
+        for tool_call in tool_calls:
+            call_id = tool_call.get("id", "")
+            function = tool_call.get("function") or {}
+            tool_name = function.get("name", "")
+            args_raw = function.get("arguments") or "{}"
+
+            if tool_name not in allowed_tools:
+                result = f"Tool {tool_name!r} is not allowed in Fusion Flow self-evolution."
+            else:
+                executor = tool_executors.get(tool_name)
+                if executor is None:
+                    result = f"Tool {tool_name!r} is not registered."
+                else:
+                    try:
+                        args = json.loads(args_raw)
+                    except (TypeError, json.JSONDecodeError):
+                        args = {}
+                    try:
+                        result = await executor(**args)
+                    except Exception as exc:
+                        logger.debug("Fusion Flow self-evolution tool %r failed: %s", tool_name, exc)
+                        result = f"Tool {tool_name!r} raised an error: {exc}"
+
+            loop_messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": tool_name,
+                    "content": str(result),
+                }
+            )
 
 
 async def _parse_skill_frontmatter(skill_md_path: anyio.Path) -> dict[str, str]:
@@ -277,3 +425,38 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
                 cut_index = i
                 break
         return history[cut_index:]
+
+    async def after_turn(
+        self,
+        messages: list[dict[str, Any]],
+        tool_call_count: int,
+        called_tools: list[str],
+        *,
+        complete_fn: ReviewCompleteFn,
+        tool_executors: ToolExecutors,
+    ) -> None:
+        called = set(called_tools)
+        should_review = (
+            tool_call_count >= SELF_EVOLUTION_TOOL_THRESHOLD
+            or "flow_manage" in called
+            or "skill_manage" in called
+            or ("bash" in called and "write" in called)
+            or "edit" in called
+        )
+        if not should_review:
+            return
+
+        review_tools = {
+            name: tool_executors[name]
+            for name in ("skill_manage", "flow_manage")
+            if name in tool_executors
+        }
+        if not review_tools:
+            logger.debug("Fusion Flow self-evolution skipped: no review tools registered")
+            return
+
+        await _run_self_evolution_review(
+            messages=messages,
+            complete_fn=complete_fn,
+            tool_executors=review_tools,
+        )
