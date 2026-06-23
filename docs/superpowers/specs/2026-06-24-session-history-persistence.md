@@ -102,14 +102,13 @@ def __init__(
 
 在 `finish_reason="stop"` 分支，`self.history.append(...)` 之后，调用 `_save_history()`。
 
-### `_save_history(path, history)` (module-level)
+### `_save_history(path, history)` (module-level, async)
 
 ```python
-def _save_history(path: Path, history: list[dict]) -> None:
+async def _save_history(path: Path, history: list[dict]) -> None:
     try:
-        with open(path, "w") as f:
-            for msg in history:
-                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        content = "\n".join(json.dumps(msg, ensure_ascii=False) for msg in history) + "\n"
+        await anyio.Path(str(path)).write_text(content)
         logger.debug(f"History saved to {path} ({len(history)} messages)")
     except Exception as e:
         logger.error(f"Failed to save history: {e}")

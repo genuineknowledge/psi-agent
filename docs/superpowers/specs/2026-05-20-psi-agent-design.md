@@ -536,3 +536,4 @@ cron: "0 12 * * *"
 | 2026-05-24 | v0.2.1 | 内部模块规范化：`logging.py` → `_logging.py`、`protocol.py` → `_protocol.py` |
 | 2026-05-24 | v0.2.3 | AI 层抽象：`SSEChunk` dataclass 替代裸 dict 构造 + `serve_ai_backend()` 消除 serve 重复 |
 | 2026-06-17 | v0.3.0 | 统一 AI 后端：采用 any-llm-sdk 替代手写 Anthropic→OpenAI 转换，单一 `Ai` 支持 50+ provider |
+| 2026-06-24 | v0.4.0 | Session 全面重构：协议类型内联、tool 加载通用化、schedule 纯配置化、参数透传、单 choice 强制、history JSONL 持久化、Interleaved CoT 支持 |
