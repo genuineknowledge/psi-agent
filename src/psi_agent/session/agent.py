@@ -171,6 +171,7 @@ class SessionAgent:
             finish_reason: str | None = None
             accumulated_tool_calls: dict[int, dict] = {}
             accumulated_content: str = ""
+            accumulated_reasoning: str = ""
 
             # --- SSE stream consumption ---
             async for chunk in self._stream_ai_request(request_body):
@@ -182,6 +183,8 @@ class SessionAgent:
                         finish_reason = choice.finish_reason
                     if choice.delta.content:
                         accumulated_content += choice.delta.content
+                    if choice.delta.reasoning_content:
+                        accumulated_reasoning += choice.delta.reasoning_content
                     if choice.delta.tool_calls:
                         for tc in choice.delta.tool_calls:
                             idx = tc.get("index", 0)
@@ -206,8 +209,14 @@ class SessionAgent:
 
                 if finish_reason == "stop":
                     logger.debug("AI finished with stop")
-                    if accumulated_content:
-                        self.history.append({"role": "assistant", "content": accumulated_content})
+                    if accumulated_content or accumulated_reasoning:
+                        self.history.append(
+                            {
+                                "role": "assistant",
+                                "content": accumulated_content,
+                                "reasoning_content": accumulated_reasoning,
+                            }
+                        )
                         if self._history_path is not None:
                             await _save_history(self._history_path, self.history)
                     return
@@ -223,6 +232,7 @@ class SessionAgent:
                         {
                             "role": "assistant",
                             "content": None,
+                            "reasoning_content": accumulated_reasoning,
                             "tool_calls": ordered_calls,
                         }
                     )
@@ -295,8 +305,14 @@ class SessionAgent:
                     f"Unexpected finish_reason={finish_reason!r}, "
                     f"saving {len(accumulated_content)} chars of content and stopping"
                 )
-                if accumulated_content:
-                    self.history.append({"role": "assistant", "content": accumulated_content})
+                if accumulated_content or accumulated_reasoning:
+                    self.history.append(
+                        {
+                            "role": "assistant",
+                            "content": accumulated_content,
+                            "reasoning_content": accumulated_reasoning,
+                        }
+                    )
                 return
 
         else:

@@ -86,6 +86,8 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 - `function.name`：取第一次非空值
 - `function.arguments`：**拼接**所有 partial JSON 片段
 
+同时累积 `reasoning_content`（AI 的思考过程）——DeepSeek V4 等 reasoning model 要求 tool call 轮次中 `reasoning_content` 必须完整回传到 API。
+
 收到 `finish_reason="tool_calls"` 后，按 index 排序生成完整 tool_calls 列表，逐一执行。
 
 **Tool 执行容错**：

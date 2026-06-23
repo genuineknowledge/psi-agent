@@ -245,19 +245,16 @@ class Session:
      b. 检查暂存 schedule 响应 → 有则先流式返回
      c. 将 user message 追加到 self.history
      d. 构建请求：history + tools + extra_params → POST ai_socket（streaming）
-     e. SSE 流处理（每 chunk 恰好 1 个 choice，多 choice 报错，0 choice 心跳跳过）：
-        - content delta          → yield 到 channel
-        - reasoning delta        → yield 到 channel
-        - tool_calls delta       → 累积（按 index 拼接 partial JSON）
-        - finish_reason="tool_calls":
-            a. 解析完整 tool_calls
-            b. 在已注册 tools 中查找匹配的函数
-            c. await tool(**args)
-            d. 追加 assistant_message(tool_calls) + tool_result 到 history
-            e. yield reasoning_content chunks 到 channel
-            f. 回到步骤 d（最多 max_tool_rounds 轮，可配置，默认 128）
-        - finish_reason="stop":
-           最终 content 追加到 history，释放锁
+      e. SSE 流处理（每 chunk 恰好 1 个 choice，多 choice 报错，0 choice 心跳跳过）：
+         - content delta          → yield 到 channel + 累计
+         - reasoning delta        → yield 到 channel + 累计
+         - tool_calls delta       → 累积（按 index 拼接 partial JSON）
+         - finish_reason="tool_calls":
+             a. 解析完整 tool_calls
+             b. 追加 assistant_message(tool_calls) + reasoning_content + tool_result 到 history
+             c. 回到步骤 d（最多 max_tool_rounds 轮，可配置，默认 128）
+         - finish_reason="stop":
+            最终 content + reasoning_content 追加到 history，释放锁
         - finish_reason="error":
            停止处理，错误不写入 history
   3. 释放锁
