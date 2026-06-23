@@ -40,11 +40,17 @@ class AgentRoutes:
 AGENT_ROUTES_KEY = web.AppKey("agent_routes", AgentRoutes)
 UPLOAD_ROOT_KEY = web.AppKey("upload_root", Path)
 DOWNLOAD_ROOTS_KEY = web.AppKey("download_roots", list[Path])
+FRONTEND_DIST_KEY = web.AppKey("frontend_dist", Path)
 DEFAULT_UPLOAD_DIR = "~/.psi-agent/channel-web/uploads"
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 async def handle_index(request: web.Request) -> web.StreamResponse:
+    dist = request.app.get(FRONTEND_DIST_KEY)
+    if dist is not None:
+        index = dist / "index.html"
+        if index.is_file():
+            return web.FileResponse(index)
     return web.Response(text=INDEX_HTML, content_type="text/html")
 
 
@@ -159,7 +165,9 @@ def _parse_route_flags(body: dict[str, Any]) -> tuple[bool, bool]:
     return flow, security
 
 
-async def serve_web_channel(*, routes: AgentRoutes, listen: str, upload_dir: str = "") -> None:
+async def serve_web_channel(
+    *, routes: AgentRoutes, listen: str, upload_dir: str = "", frontend_dist: str = ""
+) -> None:
     app = web.Application()
     app[AGENT_ROUTES_KEY] = routes
     app[UPLOAD_ROOT_KEY] = _resolve_upload_root(upload_dir)
@@ -168,6 +176,12 @@ async def serve_web_channel(*, routes: AgentRoutes, listen: str, upload_dir: str
     app.router.add_post("/api/chat", handle_chat)
     app.router.add_post("/api/upload", handle_upload)
     app.router.add_get("/api/download", handle_download)
+
+    dist = _resolve_frontend_dist(frontend_dist)
+    if dist is not None:
+        app[FRONTEND_DIST_KEY] = dist
+        app.router.add_static("/assets", dist / "assets")
+        logger.info(f"Serving built frontend from {dist}")
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -186,6 +200,14 @@ async def serve_web_channel(*, routes: AgentRoutes, listen: str, upload_dir: str
 def _resolve_upload_root(raw: str = "") -> Path:
     configured = raw or os.environ.get("PSI_WEB_UPLOAD_DIR", "") or DEFAULT_UPLOAD_DIR
     return Path(configured).expanduser().resolve()
+
+
+def _resolve_frontend_dist(raw: str = "") -> Path | None:
+    """Locate the built Vue frontend (dist/). Defaults to ./frontend/dist next to this module."""
+    configured = raw or os.environ.get("PSI_WEB_FRONTEND_DIST", "")
+    candidate = Path(configured).expanduser() if configured else Path(__file__).parent / "frontend" / "dist"
+    candidate = candidate.resolve()
+    return candidate if (candidate / "index.html").is_file() else None
 
 
 def _max_upload_bytes() -> int:

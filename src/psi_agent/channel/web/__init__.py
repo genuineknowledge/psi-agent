@@ -39,6 +39,9 @@ class ChannelWeb:
     hermes_onguard: str = ""
     """flow=off, security=on   →  examples/hermes-onguard"""
 
+    frontend_dist: str = ""
+    """Path to the built Vue frontend (dist/). Defaults to ./frontend/dist next to the web module."""
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -51,4 +54,6 @@ class ChannelWeb:
             hermes_offguard=self.hermes_offguard or self.session_socket,
             hermes_onguard=self.hermes_onguard or self.session_socket,
         )
-        await serve_web_channel(routes=routes, listen=self.listen, upload_dir=self.upload_dir)
+        await serve_web_channel(
+            routes=routes, listen=self.listen, upload_dir=self.upload_dir, frontend_dist=self.frontend_dist
+        )
