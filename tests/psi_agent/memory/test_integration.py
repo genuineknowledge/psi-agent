@@ -6,12 +6,13 @@ import textwrap
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import anyio
 import pytest
 from aiohttp import web
 
+from psi_agent.memory import tool_api
 from psi_agent.memory.client import FusionMemoryClient, FusionMemoryError
 from psi_agent.memory.config import (
     MAX_MEMORY_INJECT_MAX_CHARS,
@@ -27,9 +28,11 @@ from psi_agent.session.tools import load_tool_callables_from_workspace, load_too
 
 def test_memory_client_default_timeout_stays_below_first_token_budget() -> None:
     client = FusionMemoryClient("http://127.0.0.1:8765")
+    timeout_total = client.timeout.total
 
-    assert client.timeout.total == pytest.approx(1.0)
-    assert client.timeout.total < 2.0
+    assert timeout_total is not None
+    assert timeout_total == pytest.approx(1.0)
+    assert timeout_total < 2.0
 
 
 @pytest.mark.parametrize(
@@ -49,8 +52,6 @@ def test_tool_api_timeout_env_is_clamped_to_fail_open_budget(
     value: str | None,
     expected: float,
 ) -> None:
-    from psi_agent.memory import tool_api
-
     if value is None:
         monkeypatch.delenv("PSI_MEMORY_TIMEOUT_SECONDS", raising=False)
     else:
@@ -75,8 +76,6 @@ def test_tool_api_inject_max_chars_env_is_bounded(
     value: str | None,
     expected: int,
 ) -> None:
-    from psi_agent.memory import tool_api
-
     if value is None:
         monkeypatch.delenv("PSI_MEMORY_INJECT_MAX_CHARS", raising=False)
     else:
@@ -130,17 +129,16 @@ async def test_memory_client_health_add_search_and_answer_context() -> None:
     app.router.add_post("/answer-context", answer_context)
     app.router.add_post("/clear", clear)
 
-    async with _running_app(app) as base_url:
-        async with FusionMemoryClient(base_url) as client:
-            assert (await client.health())["ok"] is True
-            added = await client.add({"role": "user", "content": "x"}, {"workspace_id": "w"})
-            assert added["accepted_fact_ids"] == ["fact_1"]
-            found = await client.search("q", {"workspace_id": "w"})
-            assert found["candidates"][0]["text"] == "prefers Qdrant"
-            pack = await client.answer_context("q", {"workspace_id": "w"})
-            assert pack["facts"][0]["text"] == "User prefers Qdrant."
-            cleared = await client.clear({"workspace_id": "w"}, allow_cross_session=True)
-            assert cleared["ok"] is True
+    async with _running_app(app) as base_url, FusionMemoryClient(base_url) as client:
+        assert (await client.health())["ok"] is True
+        added = await client.add({"role": "user", "content": "x"}, {"workspace_id": "w"})
+        assert added["accepted_fact_ids"] == ["fact_1"]
+        found = await client.search("q", {"workspace_id": "w"})
+        assert found["candidates"][0]["text"] == "prefers Qdrant"
+        pack = await client.answer_context("q", {"workspace_id": "w"})
+        assert pack["facts"][0]["text"] == "User prefers Qdrant."
+        cleared = await client.clear({"workspace_id": "w"}, allow_cross_session=True)
+        assert cleared["ok"] is True
 
 
 @pytest.mark.anyio
@@ -157,10 +155,9 @@ async def test_memory_client_sanitizes_errors() -> None:
         )
 
     app.router.add_get("/health", health)
-    async with _running_app(app) as base_url:
-        async with FusionMemoryClient(base_url) as client:
-            with pytest.raises(FusionMemoryError) as exc_info:
-                await client.health()
+    async with _running_app(app) as base_url, FusionMemoryClient(base_url) as client:
+        with pytest.raises(FusionMemoryError) as exc_info:
+            await client.health()
 
     message = str(exc_info.value)
     assert message == "Fusion Memory request failed with HTTP 503."
@@ -178,10 +175,9 @@ async def test_memory_client_sanitizes_timeout_errors() -> None:
         return web.json_response({"ok": True})
 
     app.router.add_get("/health", health)
-    async with _running_app(app) as base_url:
-        async with FusionMemoryClient(base_url, timeout_seconds=0.01) as client:
-            with pytest.raises(FusionMemoryError) as exc_info:
-                await client.health()
+    async with _running_app(app) as base_url, FusionMemoryClient(base_url, timeout_seconds=0.01) as client:
+        with pytest.raises(FusionMemoryError) as exc_info:
+            await client.health()
 
     assert str(exc_info.value) == "Fusion Memory request timed out."
 
@@ -249,7 +245,7 @@ async def test_memory_tool_wrappers_load_with_filename_or_tool_function(tmp_path
 @pytest.mark.anyio
 async def test_session_agent_injects_and_records_memory_context() -> None:
     memory = _FakeMemoryAdapter()
-    agent = SessionAgent(ai_socket="unused", tools={}, model="test", memory_adapter=memory)
+    agent = SessionAgent(ai_socket="unused", tools={}, model="test", memory_adapter=cast(Any, memory))
 
     async def fake_stream(request_body: dict[str, Any]) -> AsyncIterator[ChatCompletionChunk]:
         memory.seen_messages = list(request_body["messages"])
@@ -265,7 +261,7 @@ async def test_session_agent_injects_and_records_memory_context() -> None:
             ],
         )
 
-    agent._stream_ai_request = fake_stream  # type: ignore[method-assign]
+    cast(Any, agent)._stream_ai_request = fake_stream
 
     chunks = [chunk async for chunk in agent.run({"role": "user", "content": "question"})]
 
@@ -297,9 +293,10 @@ async def _running_app(app: web.Application) -> AsyncIterator[str]:
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
-    sockets = site._server.sockets
+    assert site._server is not None
+    sockets = cast(Any, site._server).sockets
     assert sockets is not None
     try:
-        yield "http://127.0.0.1:{}".format(sockets[0].getsockname()[1])
+        yield f"http://127.0.0.1:{sockets[0].getsockname()[1]}"
     finally:
         await runner.cleanup()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -73,7 +73,7 @@ class SessionMemoryAdapter:
         if not user_content and not assistant_content:
             return
         assert self.client is not None
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         try:
             await self.client.add(
                 [
@@ -98,18 +98,10 @@ class SessionMemoryAdapter:
             self._warn_once("Fusion Memory write failed; continuing without memory.")
 
     def _can_read(self) -> bool:
-        return bool(
-            self.config.memory_enabled
-            and self.config.memory_auto_read
-            and self.client is not None
-        )
+        return bool(self.config.memory_enabled and self.config.memory_auto_read and self.client is not None)
 
     def _can_write(self) -> bool:
-        return bool(
-            self.config.memory_enabled
-            and self.config.memory_auto_write
-            and self.client is not None
-        )
+        return bool(self.config.memory_enabled and self.config.memory_auto_write and self.client is not None)
 
     def _warn_once(self, message: str) -> None:
         if not self._warned:

@@ -27,7 +27,7 @@ def format_memory_context(pack: dict[str, Any], *, max_chars: int = 12000) -> st
         return None
 
     query = pack.get("query")
-    parts = [_PREAMBLE.strip()]
+    parts: list[str] = [_PREAMBLE.strip()]
     if query:
         parts.append(f"Query: {query}")
     parts.extend(sections)

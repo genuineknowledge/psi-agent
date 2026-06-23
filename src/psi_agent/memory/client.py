@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 import aiohttp
@@ -13,10 +12,7 @@ class FusionMemoryError(RuntimeError):
 
 
 def friendly_memory_error(_exc: BaseException) -> str:
-    return (
-        "Fusion Memory is not available. Continue without memory, "
-        "then run fusion-memory doctor."
-    )
+    return "Fusion Memory is not available. Continue without memory, then run fusion-memory doctor."
 
 
 class FusionMemoryClient:
@@ -27,7 +23,7 @@ class FusionMemoryClient:
         self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
         self._session: aiohttp.ClientSession | None = None
 
-    async def __aenter__(self) -> "FusionMemoryClient":
+    async def __aenter__(self) -> FusionMemoryClient:
         await self._ensure_session()
         return self
 
@@ -123,7 +119,7 @@ class FusionMemoryClient:
                 return data
         except FusionMemoryError:
             raise
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise FusionMemoryError("Fusion Memory request timed out.") from exc
         except aiohttp.ClientConnectionError as exc:
             raise FusionMemoryError("Fusion Memory connection failed.") from exc

@@ -29,7 +29,7 @@ async def run_repl(session_socket: str) -> None:
             while True:
                 try:
                     user_input = await prompt_session.prompt_async("> ", prompt_continuation=". ")
-                except (EOFError, KeyboardInterrupt):
+                except EOFError, KeyboardInterrupt:
                     console.print("\nGoodbye!")
                     break
 
