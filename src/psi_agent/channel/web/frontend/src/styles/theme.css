@@ -1,0 +1,66 @@
+:root {
+  --r-lg: 8px; --r-xl: 12px; --r-2xl: 16px; --r-full: 9999px;
+  --accent: #4D6BFE; --accent-2: #3651D9; --on-accent: #FFFFFF;
+  --hermes: #E6A817; --on-hermes: #2A2200;
+}
+:root[data-theme="light"] {
+  --bg: #F4F6F8; --surface: #FFFFFF; --surface-2: #F0F2F5; --surface-inset: #F7F8FA;
+  --line: #E3E7EC; --line-soft: #EDF0F3;
+  --text: #14171C; --muted: #6B727D; --soft: #9098A2;
+  --accent-soft: #E8ECFF; --hermes-soft: #FBEFCC; --user-bubble: #E8ECFF;
+  --shadow: 0 1px 2px rgba(15, 23, 42, .06);
+  --code-bg: #F0F2F5;
+}
+:root[data-theme="dark"] {
+  --bg: #0E0F13; --surface: #191B21; --surface-2: #21242C; --surface-inset: #15171C;
+  --line: #2C3038; --line-soft: #23262E;
+  --text: #ECEFF3; --muted: #A7ADB8; --soft: #C8CED8;
+  --accent-soft: #1C2552; --hermes-soft: #33290A; --user-bubble: #2A3464;
+  --shadow: 0 12px 30px rgba(0, 0, 0, .28);
+  --code-bg: #121419;
+}
+
+/* Hermes mode: recolor the accent system to the Hermes gold.
+   Layered on top of light/dark via the data-accent attribute. */
+:root[data-accent="hermes"] {
+  --accent: #E6A817; --accent-2: #C8900F; --on-accent: #2A2200;
+}
+:root[data-theme="light"][data-accent="hermes"] {
+  --accent-soft: #FBEFCC; --user-bubble: #FBEFCC;
+}
+:root[data-theme="dark"][data-accent="hermes"] {
+  --accent-soft: #4A3B10; --user-bubble: #4A3B10;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font: 14px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+  transition: background .2s ease, color .2s ease;
+}
+#app { height: 100vh; }
+
+/* shared markdown */
+.markdown-body p { margin: 0 0 8px; }
+.markdown-body p:last-child { margin-bottom: 0; }
+.markdown-body ol, .markdown-body ul { margin: 6px 0 8px 20px; padding: 0; }
+.markdown-body li { margin: 3px 0; }
+.markdown-body code {
+  font-family: "Geist Mono", ui-monospace, Consolas, monospace;
+  background: var(--code-bg); border-radius: 5px; padding: 1px 5px; font-size: .9em;
+}
+.markdown-body strong { font-weight: 650; }
+
+/* typing dots */
+.typing { display: inline-flex; gap: 5px; align-items: center; min-height: 18px; }
+.typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: bounce 1s infinite; }
+.typing span:nth-child(2) { animation-delay: .14s; }
+.typing span:nth-child(3) { animation-delay: .28s; }
+@keyframes bounce {
+  0%, 80%, 100% { opacity: .35; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-4px); }
+}

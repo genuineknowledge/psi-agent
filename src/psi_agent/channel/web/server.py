@@ -4,6 +4,7 @@ import json
 import os
 import re
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote
@@ -19,7 +20,24 @@ from psi_agent.net import make_server_site
 
 from .page import INDEX_HTML
 
-SESSION_SOCKET_KEY = web.AppKey("session_socket", str)
+
+@dataclass(frozen=True)
+class AgentRoutes:
+    """Maps the UI's (flow, security) switches to four agent session endpoints."""
+
+    default: str
+    fusion_offguard: str  # flow=on,  security=off
+    fusion_onguard: str   # flow=on,  security=on
+    hermes_offguard: str  # flow=off, security=off
+    hermes_onguard: str   # flow=off, security=on
+
+    def select(self, *, flow: bool, security: bool) -> str:
+        if flow:
+            return self.fusion_onguard if security else self.fusion_offguard
+        return self.hermes_onguard if security else self.hermes_offguard
+
+
+AGENT_ROUTES_KEY = web.AppKey("agent_routes", AgentRoutes)
 UPLOAD_ROOT_KEY = web.AppKey("upload_root", Path)
 DOWNLOAD_ROOTS_KEY = web.AppKey("download_roots", list[Path])
 DEFAULT_UPLOAD_DIR = "~/.psi-agent/channel-web/uploads"
@@ -77,10 +95,11 @@ async def handle_download(request: web.Request) -> web.StreamResponse:
 
 
 async def handle_chat(request: web.Request) -> web.StreamResponse:
-    """Proxy one user message to the session and stream the reply back as SSE.
+    """Proxy one user message to the routed agent and stream the reply as SSE.
 
-    Mirrors what the REPL does: forward the message to the session socket,
-    then relay `content` (and `reasoning_content`) deltas to the browser.
+    The browser sends ``{message, modules, compare}``. We route to one of four
+    agents by ``modules.flow`` / ``modules.security`` (see ``AgentRoutes``), then
+    relay ``content`` (and ``reasoning``) deltas back.
     """
     try:
         body = await request.json()
@@ -93,7 +112,10 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
         return web.json_response({"error": "empty message"}, status=400)
     message = _compose_message_with_attachments(message, attachments)
 
-    session_socket = request.app[SESSION_SOCKET_KEY]
+    flow, security = _parse_route_flags(body)
+    routes = request.app[AGENT_ROUTES_KEY]
+    session_socket = routes.select(flow=flow, security=security)
+    logger.info(f"Web chat routed to flow={flow} security={security} -> {session_socket}")
 
     resp = web.StreamResponse(
         status=200,
@@ -123,9 +145,23 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
     return resp
 
 
-async def serve_web_channel(*, session_socket: str, listen: str, upload_dir: str = "") -> None:
+def _parse_route_flags(body: dict[str, Any]) -> tuple[bool, bool]:
+    """Derive (flow, security) from the request body.
+
+    `compare=true` (Hermes mode) forces flow off so it lands on a hermes-* agent.
+    """
+    modules = body.get("modules")
+    modules = modules if isinstance(modules, dict) else {}
+    flow = bool(modules.get("flow", True))
+    security = bool(modules.get("security", True))
+    if bool(body.get("compare", False)):
+        flow = False
+    return flow, security
+
+
+async def serve_web_channel(*, routes: AgentRoutes, listen: str, upload_dir: str = "") -> None:
     app = web.Application()
-    app[SESSION_SOCKET_KEY] = session_socket
+    app[AGENT_ROUTES_KEY] = routes
     app[UPLOAD_ROOT_KEY] = _resolve_upload_root(upload_dir)
     app[DOWNLOAD_ROOTS_KEY] = _resolve_download_roots(app[UPLOAD_ROOT_KEY])
     app.router.add_get("/", handle_index)
