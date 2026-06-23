@@ -420,5 +420,5 @@ def _first_string(data: dict[str, Any], *keys: str) -> str:
 def _coerce_int(value: object, *, default: int) -> int:
     try:
         return int(cast(Any, value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
