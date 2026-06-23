@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import sys
 
-from aiohttp import ClientSession, ClientTimeout, UnixConnector
+from aiohttp import ClientSession, ClientTimeout
 from loguru import logger
 from rich.console import Console
+
+from psi_agent.channel import build_connector
 
 console = Console(highlight=False)
 
@@ -13,7 +15,7 @@ console = Console(highlight=False)
 async def run_cli(*, session_socket: str, message: str) -> None:
     logger.info(f"Connecting to session at {session_socket}")
 
-    connector = UnixConnector(path=session_socket)
+    connector, endpoint = build_connector(session_socket)
 
     try:
         async with ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session:
@@ -24,7 +26,7 @@ async def run_cli(*, session_socket: str, message: str) -> None:
             }
 
             async with session.post(
-                "http://localhost/chat/completions",
+                endpoint,
                 json=req_data,
             ) as resp:
                 if resp.status != 200:
