@@ -181,7 +181,7 @@ class SessionAgent:
 
                         try:
                             args = json.loads(func_args_str)
-                        except (json.JSONDecodeError, TypeError):
+                        except json.JSONDecodeError, TypeError:
                             args = {}
 
                         logger.info(f"Executing tool: {func_name}({args})")

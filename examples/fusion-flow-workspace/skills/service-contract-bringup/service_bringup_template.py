@@ -27,6 +27,7 @@ NOTE FOR REAL TASKS: in selftest the services are torn down at the end to stay t
 In an actual task you LEAVE THE PROCESS RUNNING — it is the deliverable. Never clean
 it up as a final step.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,6 +47,7 @@ from typing import Callable
 @dataclass
 class Probe:
     """One out-of-band check the grader would run: connect from outside, assert literally."""
+
     desc: str
     check: Callable[[], None]  # raises AssertionError on failure
 
@@ -113,6 +115,7 @@ def probe_tcp_listening(host: str, port: int) -> Probe:
     def chk():
         with socket.create_connection((host, port), timeout=3):
             pass
+
     return Probe(f"TCP {host}:{port} is listening", chk)
 
 
@@ -122,34 +125,40 @@ def probe_http_body(url: str, want_status: int, want_body: bytes) -> Probe:
             status, body = r.status, r.read()
         _assert(status == want_status, f"status {status} != {want_status}")
         _assert(want_body in body, f"body {body!r} missing {want_body!r}")
+
     return Probe(f"GET {url} -> {want_status} + exact content", chk)
 
 
 def probe_cmdline_token(pid_getter: Callable[[], int], token: str) -> Probe:
     """Mirror graders that read /proc/<pid>/cmdline for a literal contract token."""
+
     def chk():
         cl = Path(f"/proc/{pid_getter()}/cmdline").read_bytes().replace(b"\0", b" ").decode()
         _assert(token in cl, f"cmdline missing token {token!r}: {cl!r}")
+
     return Probe(f"process cmdline carries {token!r}", chk)
 
 
 def probe_unix_socket_exists(path: str) -> Probe:
     import stat
+
     def chk():
         _assert(os.path.exists(path), f"socket path {path} missing")
         _assert(stat.S_ISSOCK(os.stat(path).st_mode), f"{path} is not a socket")
+
     return Probe(f"UNIX socket exists at exact path {path}", chk)
 
 
 def probe_unix_request(path: str, send: bytes, want: bytes) -> Probe:
     def chk():
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s = _unix_stream_socket()
         s.settimeout(3)
         s.connect(path)
         s.sendall(send)
         got = s.recv(256)
         s.close()
         _assert(want in got, f"reply {got!r} missing {want!r}")
+
     return Probe(f"UNIX control {path} answers {send!r}->{want!r}", chk)
 
 
@@ -168,7 +177,9 @@ def instance_http_file(port: int = 8731) -> Service:
     def launch() -> subprocess.Popen:
         p = subprocess.Popen(
             [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
-            cwd=tmp, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            cwd=tmp,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         holder["p"] = p
         return p
@@ -219,15 +230,16 @@ def instance_unix_control(sock_path: str | None = None) -> Service:
     holder: dict[str, subprocess.Popen] = {}
 
     def launch() -> subprocess.Popen:
-        p = subprocess.Popen([sys.executable, "-c", _UNIX_SERVER_SRC, sock_path],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        p = subprocess.Popen(
+            [sys.executable, "-c", _UNIX_SERVER_SRC, sock_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
         holder["p"] = p
         return p
 
     def ready() -> bool:
         if not os.path.exists(sock_path):
             return False
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s = _unix_stream_socket()
         s.settimeout(1)
         s.connect(sock_path)
         s.close()
@@ -243,6 +255,13 @@ def instance_unix_control(sock_path: str | None = None) -> Service:
             probe_unix_request(sock_path, b"PING\n", b"PONG"),
         ],
     )
+
+
+def _unix_stream_socket() -> socket.socket:
+    af_unix = getattr(socket, "AF_UNIX", None)
+    if af_unix is None:
+        raise RuntimeError("UNIX sockets are not supported on this platform")
+    return socket.socket(af_unix, socket.SOCK_STREAM)
 
 
 # ----------------------------------------------------------------------- selftest
