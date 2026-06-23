@@ -12,6 +12,10 @@ psi-agent 是一个**微内核**式的 agent 框架。核心理念是：
 4. **组合优于继承**: 三个独立组件通过 Unix socket 任意组合
 5. **一切异步**: 所有 IO 操作使用 `anyio`，永不使用 `asyncio` 原生 API 或 `pathlib`
 6. **零抑制**: 不堆 `noqa`，不设 `per-file-ignores`。代码本身应符合规则
+7. **显式单 choice 模型**: Session 和 AI 之间每 SSE chunk 保证恰好 1 个 choice。多 choice 作为错误处理，0 choice 静默跳过（心跳）
+8. **参数透传**: Channel 请求中除 `messages` 外的不认识参数全部穿透到 AI 层，不丢失
+9. **类型精确化**: 避免裸 `tuple`/`dict`。尽量用 `tuple[X, Y]` 或具体类型（如 `aiohttp.BaseConnector`）
+10. **关键字参数风格统一**: `__init__` 参数顺序 ≡ 初始化赋值顺序。所有 connector 使用显式 `path=`/`ssl=` 等关键字
 
 ## 架构决策记录
 
@@ -58,7 +62,7 @@ src/
     │   └── server.py                 # handler（请求处理）
     ├── session/
     │   ├── AGENTS.md                # Session 层设计文档
-    │       ├── __init__.py             # Session dataclass + run()，入口编排
+    │   ├── __init__.py             # Session dataclass + run()，入口编排
     │   ├── server.py               # serve_session — aiohttp Unix socket 脚手架
     │   ├── agent.py                # SessionAgent — history + agent loop + tool exec + handler
     │   ├── protocol.py             # Session 层协议类型（ChatCompletionChunk 等）

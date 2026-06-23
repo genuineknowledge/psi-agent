@@ -152,8 +152,7 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     try:
-        agent = SessionAgent(ai_socket=ai_socket, tools=tools)
-        agent.register_tool_func("get_weather", _get_weather)
+        agent = SessionAgent(ai_socket=ai_socket, tools=tools, tool_funcs={"get_weather": _get_weather})
 
         user_msg = {"role": "user", "content": "What's the weather in Beijing?"}
         chunks = []
@@ -349,8 +348,9 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
         tf = ToolFunction(
             name="crash", description="X", parameters={"type": "object", "properties": {}, "required": []}
         )
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={"crash": tf})
-        agent.register_tool_func("crash", crash_tool)
+        agent = SessionAgent(
+            ai_socket=f"http://127.0.0.1:{port}", tools={"crash": tf}, tool_funcs={"crash": crash_tool}
+        )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
         assert "BOOM" in reasoning or "RuntimeError" in reasoning
@@ -378,8 +378,9 @@ async def test_agent_tool_returns_int(tmp_path: Path) -> None:
         tf = ToolFunction(
             name="int_tool", description="X", parameters={"type": "object", "properties": {}, "required": []}
         )
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={"int_tool": tf})
-        agent.register_tool_func("int_tool", int_tool)
+        agent = SessionAgent(
+            ai_socket=f"http://127.0.0.1:{port}", tools={"int_tool": tf}, tool_funcs={"int_tool": int_tool}
+        )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
         assert "42" in reasoning

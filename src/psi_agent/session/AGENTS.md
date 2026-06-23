@@ -26,12 +26,13 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 ## Agent Loop 逻辑
 
 1. 收到 channel 请求 → `handle_chat_completions`（SessionAgent 方法）
-2. 惰性构建 system prompt（首次 run() 时，如果 history 尚无 system 消息）
-3. 检查暂存的 schedule 响应 → 有则先流式返回
-4. 获取 `anyio.Lock`（忙则 FIFO 排队等待）
-5. User message 追加到 history
-6. 发送 `history + tools` 到 AI socket（streaming）
-7. 解析 SSE 流：
+2. 提取 messages[-1] 作为 user_message，其余字段透传为 extra_params
+3. 惰性构建 system prompt（首次 run() 时，如果 history 尚无 system 消息）
+4. 检查暂存的 schedule 响应 → 有则先流式返回
+5. 获取 `anyio.Lock`（忙则 FIFO 排队等待）
+6. User message 追加到 history
+7. 发送 `history + tools + extra_params` 到 AI socket（streaming）
+8. 解析 SSE 流（每 chunk 恰好 1 个 choice，多 choice 报错，0 choice 心跳跳过）：
    - content → yield 给 channel
    - reasoning_content → yield 给 channel
    - tool_calls → 累积（按 index 拼接 partial JSON）
@@ -44,6 +45,8 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
 - `response.prepare()` 在 lock 内执行——客户端在 lock 释放前不会看到 HTTP 200。
 - `handle_chat_completions` 是 SessionAgent 的成员方法，以 bound method 传给 `serve_session`。
+- Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。
+- AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
 - AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history。
 
 ## 其他约定

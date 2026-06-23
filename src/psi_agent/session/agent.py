@@ -24,6 +24,9 @@ class SessionAgent:
         *,
         ai_socket: str,
         tools: dict[str, ToolFunction],
+        tool_funcs: dict[str, Callable[..., Any]] | None = None,
+        schedules: list | None = None,
+        system_prompt_builder: Callable[..., Any] | None = None,
         max_tool_rounds: int = 128,
     ) -> None:
         """Initialize an agent backed by an AI server.
@@ -32,18 +35,21 @@ class SessionAgent:
         named pipe for the AI backend.  ``tools`` provides the metadata
         (name + JSON Schema) sent to the AI.
 
-        The lower-level constructor is test-friendly.  For production use
-        the ``create()`` classmethod which also loads tools, schedules,
-        and the system prompt from a workspace.
+        ``tool_funcs`` and ``schedules`` are loaded by ``create()`` from a
+        workspace.  ``system_prompt_builder`` is called lazily on the first
+        ``run()`` to build the system prompt.
+
+        The plain ``__init__`` is test-friendly — all workspace-derived
+        fields default to empty/None.
         """
         self.ai_socket = ai_socket
         self.tools = tools
-        self._tool_funcs: dict[str, Callable[..., Any]] = {}
-        self._system_prompt_builder: Callable[..., Any] | None = None
+        self._tool_funcs = tool_funcs if tool_funcs else {}
+        self.schedules = schedules if schedules is not None else []
+        self._system_prompt_builder = system_prompt_builder
         self.max_tool_rounds = max_tool_rounds
         self.history: list[dict] = []
         self._pending_schedule_chunks: list[ChatCompletionChunk] = []
-        self.schedules: list = []  # populated by create()
 
     @classmethod
     async def create(
@@ -61,22 +67,14 @@ class SessionAgent:
         tools, tool_funcs = await load_tools_from_workspace(workspace_path / "tools")
         schedules = await load_schedules_from_workspace(workspace_path / "schedules")
 
-        agent = cls(ai_socket=ai_socket, tools=tools, max_tool_rounds=max_tool_rounds)
-        agent.schedules = schedules
-        for name in tool_funcs:
-            agent.register_tool_func(name, tool_funcs[name])
-            logger.info(f"Registered tool callable: {name}")
-        agent._system_prompt_builder = _load_system_prompt_builder(workspace_path)
-        return agent
-
-    def register_tool_func(self, name: str, func: Callable[..., Any]) -> None:
-        """Register a callable for a previously-loaded tool.
-
-        Tool metadata (from ``load_tools_from_workspace``) tells the AI what
-        functions exist.  This method binds the actual ``async def`` function
-        that will be invoked when the AI requests the tool.
-        """
-        self._tool_funcs[name] = func
+        return cls(
+            ai_socket=ai_socket,
+            tools=tools,
+            tool_funcs=tool_funcs,
+            schedules=schedules,
+            system_prompt_builder=_load_system_prompt_builder(workspace_path),
+            max_tool_rounds=max_tool_rounds,
+        )
 
     def set_pending_schedule_chunks(self, chunks: list[ChatCompletionChunk]) -> None:
         """Stash schedule-response chunks for the next channel request.
@@ -88,7 +86,7 @@ class SessionAgent:
         """
         self._pending_schedule_chunks = chunks
 
-    async def run(self, user_message: dict) -> AsyncIterator[ChatCompletionChunk]:
+    async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[ChatCompletionChunk]:
         """Run one turn of the ReAct agent loop.
 
         Takes a single user message (channel sends only the latest, never
@@ -146,11 +144,13 @@ class SessionAgent:
                 for t in self.tools.values()
             ]
 
-            request_body = {
+            request_body: dict = {
                 "messages": self.history,
                 "tools": tool_defs,
                 "stream": True,
             }
+            if extra_params:
+                request_body |= extra_params
 
             logger.info(f"Sending request to AI socket: {self.ai_socket}")
             logger.debug(f"Request messages count: {len(self.history)}, tools: {len(tool_defs)}")
@@ -164,30 +164,28 @@ class SessionAgent:
                 yield chunk
 
                 if chunk.choices:
-                    for choice in chunk.choices:
-                        if choice.finish_reason and not finish_reason:
-                            finish_reason = choice.finish_reason
-                        if choice.delta.content:
-                            accumulated_content += choice.delta.content
-                        if choice.delta.tool_calls:
-                            # Streaming tool calls arrive piecemeal across
-                            # multiple SSE chunks with the same index.
-                            for tc in choice.delta.tool_calls:
-                                idx = tc.get("index", 0)
-                                if idx not in accumulated_tool_calls:
-                                    accumulated_tool_calls[idx] = {
-                                        "id": tc.get("id", ""),
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                acc = accumulated_tool_calls[idx]
-                                if tc.get("id"):
-                                    acc["id"] = tc["id"]
-                                func = tc.get("function", {})
-                                if func.get("name"):
-                                    acc["function"]["name"] = func["name"]
-                                if func.get("arguments"):
-                                    acc["function"]["arguments"] += func["arguments"]
+                    choice = chunk.choices[0]
+                    if choice.finish_reason and not finish_reason:
+                        finish_reason = choice.finish_reason
+                    if choice.delta.content:
+                        accumulated_content += choice.delta.content
+                    if choice.delta.tool_calls:
+                        for tc in choice.delta.tool_calls:
+                            idx = tc.get("index", 0)
+                            if idx not in accumulated_tool_calls:
+                                accumulated_tool_calls[idx] = {
+                                    "id": tc.get("id", ""),
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
+                            acc = accumulated_tool_calls[idx]
+                            if tc.get("id"):
+                                acc["id"] = tc["id"]
+                            func = tc.get("function", {})
+                            if func.get("name"):
+                                acc["function"]["name"] = func["name"]
+                            if func.get("arguments"):
+                                acc["function"]["arguments"] += func["arguments"]
 
                 if finish_reason == "error":
                     logger.warning("AI returned error, stopping without saving to history")
@@ -299,7 +297,7 @@ class SessionAgent:
                 ],
             )
 
-    def _build_connector_and_endpoint(self) -> tuple:
+    def _build_connector_and_endpoint(self) -> tuple[aiohttp.BaseConnector, str]:
         """Resolve self.ai_socket to an aiohttp connector and HTTP endpoint.
 
         Supported transports:
@@ -311,7 +309,7 @@ class SessionAgent:
             connector = aiohttp.TCPConnector(ssl=self.ai_socket.startswith("https://"))
             endpoint = self.ai_socket.rstrip("/") + "/chat/completions"
         elif self.ai_socket.startswith("\\\\.\\pipe\\"):
-            connector = aiohttp.NamedPipeConnector(self.ai_socket)
+            connector = aiohttp.NamedPipeConnector(path=self.ai_socket)
             endpoint = "http://localhost/chat/completions"
         else:
             connector = aiohttp.UnixConnector(path=self.ai_socket)
@@ -363,27 +361,43 @@ class SessionAgent:
                     continue
 
                 choices_data = data.get("choices", [])
-                for c in choices_data:
-                    delta_data = c.get("delta")
-                    if not isinstance(delta_data, dict):
-                        delta_data = {}
-                    delta = DeltaMessage(
-                        content=delta_data.get("content"),
-                        role=delta_data.get("role"),
-                        reasoning_content=delta_data.get("reasoning_content"),
-                        tool_calls=delta_data.get("tool_calls"),
-                    )
+                if len(choices_data) > 1:
+                    logger.warning(f"Expected 1 choice, got {len(choices_data)}, yielding error")
                     yield ChatCompletionChunk(
-                        id=data.get("id", "chatcmpl-unknown"),
-                        created=data.get("created", 0),
+                        id="error",
                         choices=[
                             StreamChoice(
-                                index=c.get("index", 0),
-                                delta=delta,
-                                finish_reason=c.get("finish_reason"),
+                                index=0,
+                                delta=DeltaMessage(content=f"[AI Error: expected 1 choice, got {len(choices_data)}]"),
+                                finish_reason="error",
                             )
                         ],
                     )
+                    return
+                if not choices_data:
+                    continue
+
+                c = choices_data[0]
+                delta_data = c.get("delta")
+                if not isinstance(delta_data, dict):
+                    delta_data = {}
+                delta = DeltaMessage(
+                    content=delta_data.get("content"),
+                    role=delta_data.get("role"),
+                    reasoning_content=delta_data.get("reasoning_content"),
+                    tool_calls=delta_data.get("tool_calls"),
+                )
+                yield ChatCompletionChunk(
+                    id=data.get("id", "chatcmpl-unknown"),
+                    created=data.get("created", 0),
+                    choices=[
+                        StreamChoice(
+                            index=c.get("index", 0),
+                            delta=delta,
+                            finish_reason=c.get("finish_reason"),
+                        )
+                    ],
+                )
 
     async def handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
         """Channel-facing HTTP/SSE handler — one request per channel message.
@@ -405,7 +419,7 @@ class SessionAgent:
                 status=400,
             )
 
-        messages = body.get("messages", [])
+        messages = body.pop("messages", [])
         if not messages:
             return web.json_response(
                 {"error": {"message": "No messages in request", "type": "invalid_request", "code": "400"}},
@@ -430,7 +444,7 @@ class SessionAgent:
             await response.prepare(request)
             logger.info("Acquired session lock, processing request")
             try:
-                async for chunk in self.run(user_message):
+                async for chunk in self.run(user_message, extra_params=body):
                     await response.write(chunk.to_sse().encode())
                     logger.debug(
                         f"Chunk sent: content={chunk.choices[0].delta.content!r}, "

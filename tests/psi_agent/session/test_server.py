@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket as _s
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import anyio
@@ -15,7 +16,7 @@ from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, Stream
 class _FailingSessionAgent(SessionAgent):
     """SessionAgent that raises an exception mid-stream."""
 
-    async def run(self, user_message: dict):
+    async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[ChatCompletionChunk]:
         yield ChatCompletionChunk(choices=[StreamChoice(delta=DeltaMessage(content="partial"))])
         raise RuntimeError("boom")
 

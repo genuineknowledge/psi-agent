@@ -158,8 +158,8 @@ async def test_sse_reasoning_and_content_interleaved(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_multiple_choices_iterated(tmp_path) -> None:
-    """When SSE has multiple choices, all deltas should be extracted."""
+async def test_multiple_choices_error(tmp_path) -> None:
+    """Multiple choices in one chunk should result in an error."""
 
     async def handler(request: web.Request) -> web.StreamResponse:
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
