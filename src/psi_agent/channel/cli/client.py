@@ -20,7 +20,6 @@ async def run_cli(*, session_socket: str, message: str) -> None:
     try:
         async with ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session:
             req_data = {
-                "model": "psi-agent",
                 "messages": [{"role": "user", "content": message}],
                 "stream": True,
             }
@@ -55,6 +54,10 @@ async def run_cli(*, session_socket: str, message: str) -> None:
                         delta = choice.get("delta", {})
                         reasoning = delta.get("reasoning_content")
                         content = delta.get("content")
+
+                        if choice.get("finish_reason") == "error":
+                            console.print(f"\n[red]Error: {content}[/red]")
+                            continue
 
                         if reasoning:
                             logger.debug(f"Reasoning: {reasoning}")

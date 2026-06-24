@@ -12,7 +12,7 @@ class ChannelCli:
     """One-shot CLI channel."""
 
     session_socket: str
-    """Path to the session Unix domain socket."""
+    """Session socket path (Unix/TCP/Named Pipe)."""
 
     message: str
     """Message to send to the session."""

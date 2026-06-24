@@ -12,7 +12,7 @@ class ChannelRepl:
     """Interactive REPL channel."""
 
     session_socket: str
-    """Path to the session Unix domain socket."""
+    """Session socket path (Unix/TCP/Named Pipe)."""
 
     verbose: bool = False
     """Enable DEBUG-level logging."""

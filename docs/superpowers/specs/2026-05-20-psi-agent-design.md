@@ -325,7 +325,7 @@ class ChannelRepl:
   - 显示 `> ` 提示符，读取用户输入
   - `POST /chat/completions` 发送消息（不含 history）
   - SSE 流式接收，实时显示：
-    - `reasoning_content`：dimmed/灰色显示（标注 `[思考]`）
+    - `reasoning_content`：dimmed/灰色显示
     - `content`：正常显示
   - Ctrl+D 退出
 - 历史不传递，每次请求只发一条 user message

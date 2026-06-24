@@ -29,7 +29,7 @@ async def run_repl(session_socket: str) -> None:
             while True:
                 try:
                     user_input = await prompt_session.prompt_async("> ", prompt_continuation=". ")
-                except EOFError, KeyboardInterrupt:
+                except (EOFError, KeyboardInterrupt):
                     console.print("\nGoodbye!")
                     break
 
@@ -37,7 +37,6 @@ async def run_repl(session_socket: str) -> None:
                     continue
 
                 req_data = {
-                    "model": "psi-agent",
                     "messages": [{"role": "user", "content": user_input}],
                     "stream": True,
                 }
@@ -75,6 +74,10 @@ async def run_repl(session_socket: str) -> None:
                             reasoning = delta.get("reasoning_content")
                             content = delta.get("content")
 
+                            if choice.get("finish_reason") == "error":
+                                console.print(f"\n[red]Error: {content}[/red]")
+                                continue
+
                             if reasoning:
                                 logger.debug(f"Reasoning: {reasoning}")
                                 console.print(reasoning, style="dim", end="")
@@ -84,9 +87,6 @@ async def run_repl(session_socket: str) -> None:
 
                     console.print("\n")
 
-    except ConnectionRefusedError:
-        console.print("[red]Cannot connect to session. Is the session running?[/red]")
-        sys.exit(1)
     except ClientConnectorError as e:
         console.print(f"[red]Connection error: {e}[/red]")
         sys.exit(1)
