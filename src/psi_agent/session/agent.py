@@ -339,7 +339,7 @@ class SessionAgent:
         connector, endpoint = self._build_connector_and_endpoint()
         async with (
             aiohttp.ClientSession(
-                connector=connector, timeout=aiohttp.ClientTimeout(total=300, sock_connect=30, sock_read=60)
+                connector=connector, timeout=aiohttp.ClientTimeout(total=None)
             ) as session,
             session.post(endpoint, json=request_body) as resp,
         ):

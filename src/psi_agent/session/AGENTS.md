@@ -51,7 +51,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 
 ## 其他约定
 
-- AI 连接超时：`ClientTimeout(total=300, sock_connect=30, sock_read=60)`
+- AI 连接超时：`ClientTimeout(total=None)` — 语义：不超时，与 channel 一致
 - 流式 `delta` 字段可能为 `null`（非缺失 key），agent 用 `isinstance(delta_data, dict)` 校验
 - Tool 模块在 `sys.modules` 中以 `psi_tool_` 前缀注册，避免与 stdlib 同名冲突
 - Schedule 加载时捕获坏 cron 表达式（不会导致整个 session 启动崩溃）
