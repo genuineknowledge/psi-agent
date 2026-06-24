@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import os
 import sys
 import time
 from collections.abc import Awaitable, Callable
@@ -318,6 +319,12 @@ async def _load_workspace_tools_and_callables(
 ) -> tuple[dict[str, ToolFunction], dict[str, ToolCallable]]:
     tools_dir = workspace_path / "tools"
     callables = await load_tool_callables_from_workspace(tools_dir)
+    disabled_tools = _disabled_tool_names_from_env()
+    if disabled_tools:
+        for tool_name in sorted(disabled_tools):
+            callables.pop(tool_name, None)
+        logger.info(f"Disabled workspace tool(s) via PSI_AGENT_DISABLED_TOOLS: {sorted(disabled_tools)}")
+
     tools: dict[str, ToolFunction] = {}
     for tool_name, func in callables.items():
         tool_func = ToolFunction.from_callable(func)
@@ -327,6 +334,13 @@ async def _load_workspace_tools_and_callables(
 
     logger.info(f"Loaded {len(tools)} tool(s) from {tools_dir}")
     return tools, callables
+
+
+def _disabled_tool_names_from_env() -> set[str]:
+    raw = os.environ.get("PSI_AGENT_DISABLED_TOOLS", "")
+    if not raw.strip():
+        return set()
+    return {item.strip() for item in raw.split(",") if item.strip()}
 
 
 def _register_tool_callables(agent: SessionAgent, callables: dict[str, ToolCallable]) -> None:

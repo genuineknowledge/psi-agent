@@ -46,3 +46,17 @@ export async function streamChat({ message, modules, compare, onEvent, signal })
     }
   }
 }
+
+export async function restartSession({ modules, compare }) {
+  const resp = await fetch('/api/restart-session', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modules, compare }),
+  })
+
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => '')
+    throw new Error(`重启失败 ${resp.status}${detail ? '：' + detail : ''}`)
+  }
+  return await resp.json()
+}

@@ -769,9 +769,9 @@ function extractThinkBlocks(text) {
   return { visible, thinking };
 }
 
-function extractMediaAttachments(source) {
+function extractFileAttachments(source) {
   const files = [];
-  const visible = source.replace(/(^|\\n)MEDIA:\\s*(.+?)(?=\\n|$)/g, (match, prefix, rawPath) => {
+  const visible = source.replace(/(^|\\n)(?:FILE|MEDIA):\\s*(.+?)(?=\\n|$)/g, (match, prefix, rawPath) => {
     const path = rawPath.trim();
     if (path) files.push({ path, name: fileNameFromPath(path), url: downloadUrlForPath(path) });
     return prefix;
@@ -874,7 +874,7 @@ function appendContent(text, view) {
   const extracted = extractThinkBlocks(view.rawContent);
   view.inlineThinkingText = extracted.thinking;
   updateInlineThinkingPanel(view);
-  const media = extractMediaAttachments(extracted.visible);
+  const media = extractFileAttachments(extracted.visible);
   const hasVisibleContent = Boolean(media.visible.trim() || media.files.length);
   setAssistantLoading(view, !hasVisibleContent);
   view.output.innerHTML = hasVisibleContent ? renderMarkdown(media.visible) : '';

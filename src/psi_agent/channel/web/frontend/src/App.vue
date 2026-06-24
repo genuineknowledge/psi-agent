@@ -3,12 +3,20 @@ import { reactive, ref, computed, watch } from 'vue'
 import { MODULES, DEFAULT_STATE } from './lib/modules.js'
 import ChatPanel from './components/ChatPanel.vue'
 import ControlPanel from './components/ControlPanel.vue'
+import EvolutionDrawer from './components/EvolutionDrawer.vue'
+import { restartSession } from './lib/chat.js'
+import dolphinLogo from './assets/dolphin.jpg'
 
 const theme = ref('light')
 function setTheme(t) {
   theme.value = t
   document.documentElement.dataset.theme = t
 }
+
+// Self-evolution drawer (embeds the demo module via the /demo/ proxy).
+const drawerOpen = ref(false)
+function openDrawer() { drawerOpen.value = true }
+function closeDrawer() { drawerOpen.value = false }
 
 // Shared switch state. The master switch reflects three states:
 //   all off  → Hermes mode (gold theme, knob left)
@@ -41,13 +49,36 @@ function toggleModule(key) {
 }
 
 const activeCount = computed(() => MODULES.filter((m) => modules[m.key]).length)
+const chatKey = ref(0)
+const restarting = ref(false)
+
+function modulesPayload() {
+  const obj = {}
+  for (const key of Object.keys(modules)) obj[key] = modules[key]
+  return obj
+}
+
+async function refreshCurrentSession() {
+  if (restarting.value) return
+  restarting.value = true
+  try {
+    await restartSession({ modules: modulesPayload(), compare: allOff.value })
+    chatKey.value += 1
+  } catch (e) {
+    window.alert(String(e && e.message ? e.message : e))
+  } finally {
+    restarting.value = false
+  }
+}
 </script>
 
 <template>
   <div class="app">
     <header class="topbar">
       <div class="brand">
-        <div class="mark">D</div>
+        <div class="mark">
+          <img :src="dolphinLogo" alt="dolphin" />
+        </div>
         <div>
           <div class="brand-name">dolphin-agent</div>
           <div class="brand-sub">composable agent framework</div>
@@ -63,14 +94,19 @@ const activeCount = computed(() => MODULES.filter((m) => modules[m.key]).length)
     </header>
 
     <div class="body">
-      <ChatPanel :modules="modules" :compare="allOff" :active-count="activeCount" />
+      <ChatPanel :key="chatKey" :modules="modules" :compare="allOff" :active-count="activeCount" />
       <ControlPanel
         :modules="modules"
         :master-state="masterState"
+        :restarting="restarting"
         @toggle-module="toggleModule"
         @set-all="setAll"
+        @open-drawer="openDrawer"
+        @restart-session="refreshCurrentSession"
       />
     </div>
+
+    <EvolutionDrawer :open="drawerOpen" @close="closeDrawer" />
   </div>
 </template>
 
@@ -82,9 +118,10 @@ const activeCount = computed(() => MODULES.filter((m) => modules[m.key]).length)
 }
 .brand { display: flex; align-items: center; gap: 12px; }
 .mark {
-  width: 34px; height: 34px; border-radius: var(--r-lg); background: var(--accent);
-  display: grid; place-items: center; color: var(--on-accent); font-weight: 800; font-size: 18px;
+  width: 34px; height: 34px; border-radius: var(--r-lg); overflow: hidden;
+  display: grid; place-items: center; background: #fff;
 }
+.mark img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .brand-name { font-weight: 700; font-size: 16px; }
 .brand-sub { font-size: 11px; color: var(--muted); }
 .top-right { display: flex; align-items: center; gap: 14px; }

@@ -5,19 +5,37 @@ const props = defineProps({
   modules: { type: Object, required: true },
   // 'off' (all modules off / Hermes) | 'on' (all on) | 'mid' (partial)
   masterState: { type: String, default: 'on' },
+  restarting: { type: Boolean, default: false },
 })
-const emit = defineEmits(['toggle-module', 'set-all'])
+const emit = defineEmits(['toggle-module', 'set-all', 'open-drawer', 'restart-session'])
 
 // Clicking the master switch: from full-on go to all-off, otherwise turn all on.
 function clickMaster() {
   emit('set-all', props.masterState !== 'on')
+}
+
+// Drawer cards open a side panel instead of toggling the switch.
+function clickModule(m) {
+  if (m.drawer) emit('open-drawer', m.key)
+  else emit('toggle-module', m.key)
 }
 </script>
 
 <template>
   <aside class="panel" :class="{ hermes: masterState === 'off' }">
     <div class="panel-head">
-      <div class="p-title">框架能力开关</div>
+      <div class="head-row">
+        <div class="p-title">框架能力开关</div>
+        <button
+          class="refresh-btn"
+          type="button"
+          title="重启当前 Session 并清理历史"
+          :disabled="restarting"
+          @click.stop="emit('restart-session')"
+        >
+          <span :class="{ spinning: restarting }">⟳</span>
+        </button>
+      </div>
       <div class="p-sub">
         {{ masterState === 'off' ? '已切换到 Hermes 原生模式，开启任一模块即可返回' : '实时切换模块，观察 agent 行为差异' }}
       </div>
@@ -28,15 +46,16 @@ function clickMaster() {
         v-for="m in MODULES"
         :key="m.key"
         class="toggle"
-        :class="{ on: modules[m.key] }"
-        @click="emit('toggle-module', m.key)"
+        :class="{ on: modules[m.key], 'has-drawer': m.drawer }"
+        @click="clickModule(m)"
       >
         <div class="t-icon">{{ m.icon }}</div>
         <div class="t-text">
           <div class="t-name">{{ m.name }}</div>
           <div class="t-desc">{{ m.desc }}</div>
         </div>
-        <div class="switch"><div class="knob"></div></div>
+        <div v-if="m.drawer" class="drawer-cue" title="展开演示面板">›</div>
+        <div v-else class="switch"><div class="knob"></div></div>
       </div>
     </div>
 
@@ -75,8 +94,19 @@ function clickMaster() {
   display: flex; flex-direction: column; gap: 14px; border-radius: var(--r-2xl);
   background: var(--surface); border: 1px solid var(--line); padding: 18px; overflow-y: auto;
 }
+.head-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .panel-head .p-title { font-weight: 700; font-size: 15px; }
 .panel-head .p-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.refresh-btn {
+  width: 30px; height: 30px; border-radius: var(--r-lg); border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--muted); display: grid; place-items: center;
+  cursor: pointer; font: inherit; font-size: 16px; line-height: 1; flex: 0 0 auto;
+}
+.refresh-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.refresh-btn:disabled { cursor: wait; opacity: .7; }
+.refresh-btn span { display: inline-block; }
+.refresh-btn .spinning { animation: refresh-spin .8s linear infinite; }
+@keyframes refresh-spin { to { transform: rotate(360deg); } }
 
 .toggle-list { display: flex; flex-direction: column; gap: 10px; }
 .toggle {
@@ -102,6 +132,16 @@ function clickMaster() {
 }
 .toggle.on .switch { background: var(--accent); }
 .toggle.on .knob { transform: translateX(16px); background: #fff; }
+
+/* Drawer card: opens a side panel; shows a chevron cue instead of a switch. */
+.toggle.has-drawer { border-color: var(--accent); }
+.drawer-cue {
+  width: 22px; height: 22px; border-radius: var(--r-full); flex: 0 0 auto;
+  display: grid; place-items: center; font-size: 16px; font-weight: 700;
+  color: var(--accent); background: var(--accent-soft);
+  transition: transform .16s ease;
+}
+.toggle.has-drawer:hover .drawer-cue { transform: translateX(2px); }
 
 /* Hermes mode: upper modules are all off and tinted gold instead of grey.
    In direct-entry they're also locked (.disabled); in manual-entry they stay

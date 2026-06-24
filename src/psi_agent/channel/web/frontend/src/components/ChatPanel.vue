@@ -38,15 +38,18 @@ async function send() {
   scrollDown()
 
   const compareMode = props.compare
-  const agent = {
+  messages.value.push({
     role: 'agent',
     compare: compareMode,
     dolphin: { trace: '', answer: '' },
     hermes: { answer: '' },
     error: '',
     loading: true,
-  }
-  messages.value.push(agent)
+  })
+  // Hold the reactive proxy (not the raw object) so per-frame mutations
+  // below actually trigger re-renders. Mutating the pre-push object would
+  // bypass Vue's reactivity and the stream would only paint once at the end.
+  const agent = messages.value[messages.value.length - 1]
   scrollDown()
 
   try {

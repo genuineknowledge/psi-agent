@@ -42,6 +42,12 @@ class ChannelWeb:
     frontend_dist: str = ""
     """Path to the built Vue frontend (dist/). Defaults to ./frontend/dist next to the web module."""
 
+    demo_target: str = ""
+    """Upstream HTTP base for the embedded demo module, proxied under /demo/.
+
+    Falls back to PSI_WEB_DEMO_TARGET or http://127.0.0.1:8099.
+    """
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -55,5 +61,9 @@ class ChannelWeb:
             hermes_onguard=self.hermes_onguard or self.session_socket,
         )
         await serve_web_channel(
-            routes=routes, listen=self.listen, upload_dir=self.upload_dir, frontend_dist=self.frontend_dist
+            routes=routes,
+            listen=self.listen,
+            upload_dir=self.upload_dir,
+            frontend_dist=self.frontend_dist,
+            demo_target=self.demo_target,
         )
