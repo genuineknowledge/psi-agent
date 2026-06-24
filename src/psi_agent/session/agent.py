@@ -14,12 +14,12 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
-from .server import APP_LOCK
-
 from psi_agent._socket import resolve_connector_and_endpoint
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.scheduler import load_schedules_from_workspace
 from psi_agent.session.tools import load_tools_from_workspace
+
+from .server import APP_LOCK
 
 
 class SessionAgent:

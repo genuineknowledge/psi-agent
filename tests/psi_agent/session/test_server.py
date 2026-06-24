@@ -10,8 +10,8 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
 from psi_agent.session.agent import SessionAgent
-from psi_agent.session.server import APP_LOCK
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice
+from psi_agent.session.server import APP_LOCK
 
 
 class _FailingSessionAgent(SessionAgent):

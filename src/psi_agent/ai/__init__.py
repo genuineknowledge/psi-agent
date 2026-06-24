@@ -10,16 +10,16 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger
 
+from psi_agent._logging import setup_logging
+from psi_agent._socket import create_site
+
 # Use AppKey for type-safe application state access
 APP_PROVIDER: web.AppKey[str] = web.AppKey("provider", str)
 APP_MODEL: web.AppKey[str] = web.AppKey("model", str)
 APP_API_KEY: web.AppKey[str] = web.AppKey("api_key", str)
 APP_BASE_URL: web.AppKey[str] = web.AppKey("base_url", str)
 
-from psi_agent._logging import setup_logging
-from psi_agent._socket import create_site
-
-from .server import handle_chat_completions
+from .server import handle_chat_completions  # noqa: E402
 
 
 async def serve_ai(

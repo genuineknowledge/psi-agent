@@ -5,9 +5,9 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger
 
-APP_LOCK: web.AppKey[anyio.Lock] = web.AppKey("lock", anyio.Lock)
-
 from psi_agent._socket import create_site
+
+APP_LOCK: web.AppKey[anyio.Lock] = web.AppKey("lock", anyio.Lock)
 
 
 async def serve_session(
