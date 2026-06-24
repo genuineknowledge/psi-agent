@@ -112,7 +112,7 @@ def _make_complete_fn(*, ai_socket: str, model: str) -> CompleteFn:
         if tools:
             request_body["tools"] = tools
 
-        client_session, endpoint = make_client_session(ai_socket, timeout=ClientTimeout(total=300))
+        client_session, endpoint = make_client_session(ai_socket, timeout=ClientTimeout(total=None))
         async with client_session as session, session.post(endpoint, json=request_body) as resp:
             if resp.status != 200:
                 error_text = await resp.text()

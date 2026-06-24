@@ -181,6 +181,15 @@ async def handle_chat(request: web.Request) -> web.StreamResponse:
     session_socket = routes.select(flow=flow, security=security)
     logger.info(f"Web chat routed to flow={flow} security={security} -> {session_socket}")
 
+    # fusion-offguard (flow on, security off) ignores the system-prompt
+    # Chinese-reasoning directive far more often than the other routes, so
+    # reinforce it at the user-message level where it actually sticks.
+    if True:  # 所有路由都加，DeepSeek 的 reasoning 语言 system prompt 压不住
+        message = (
+            "（请务必全程使用简体中文思考，思考过程也用简体中文，不要用英文。）\n"
+            + message
+        )
+
     resp = web.StreamResponse(
         status=200,
         headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
@@ -260,7 +269,7 @@ async def serve_web_channel(
     app.router.add_get("/", handle_index)
 
     async def _open_demo_client(app: web.Application) -> None:
-        app[DEMO_CLIENT_KEY] = ClientSession(timeout=ClientTimeout(total=60))
+        app[DEMO_CLIENT_KEY] = ClientSession(timeout=ClientTimeout(total=None))
 
     async def _close_demo_client(app: web.Application) -> None:
         await app[DEMO_CLIENT_KEY].close()
