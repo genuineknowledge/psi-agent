@@ -17,6 +17,7 @@ from loguru import logger
 from psi_agent._socket import resolve_connector_and_endpoint
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.scheduler import load_schedules_from_workspace
+from psi_agent.session.server import APP_LOCK
 from psi_agent.session.tools import load_tools_from_workspace
 
 
@@ -100,7 +101,9 @@ class SessionAgent:
         """
         self._pending_schedule_chunks = chunks
 
-    async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[ChatCompletionChunk]:
+    async def run(
+        self, user_message: dict, extra_params: dict | None = None, trace_id: str | None = None
+    ) -> AsyncIterator[ChatCompletionChunk]:
         """Run one turn of the ReAct agent loop.
 
         Takes a single user message (channel sends only the latest, never
@@ -175,34 +178,37 @@ class SessionAgent:
             accumulated_reasoning: str = ""
 
             # --- SSE stream consumption ---
-            async for chunk in self._stream_ai_request(request_body):
+            async for chunk in self._stream_ai_request(request_body, trace_id=trace_id):
                 yield chunk
 
                 if chunk.choices:
                     choice = chunk.choices[0]
                     if choice.finish_reason and not finish_reason:
                         finish_reason = choice.finish_reason
-                    if choice.delta.content:
-                        accumulated_content += choice.delta.content
-                    if choice.delta.reasoning_content:
-                        accumulated_reasoning += choice.delta.reasoning_content
-                    if choice.delta.tool_calls:
-                        for tc in choice.delta.tool_calls:
-                            idx = tc.get("index", 0)
-                            if idx not in accumulated_tool_calls:
-                                accumulated_tool_calls[idx] = {
-                                    "id": tc.get("id", ""),
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""},
-                                }
-                            acc = accumulated_tool_calls[idx]
-                            if tc.get("id"):
-                                acc["id"] = tc["id"]
-                            func = tc.get("function", {})
-                            if func.get("name"):
-                                acc["function"]["name"] = func["name"]
-                            if func.get("arguments"):
-                                acc["function"]["arguments"] += func["arguments"]
+
+                    delta = choice.delta
+                    if delta:
+                        if delta.content:
+                            accumulated_content += delta.content
+                        if delta.reasoning_content:
+                            accumulated_reasoning += delta.reasoning_content
+                        if delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                idx = tc.get("index", 0)
+                                if idx not in accumulated_tool_calls:
+                                    accumulated_tool_calls[idx] = {
+                                        "id": tc.get("id", ""),
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+                                acc = accumulated_tool_calls[idx]
+                                if tc.get("id"):
+                                    acc["id"] = tc["id"]
+                                func = tc.get("function", {})
+                                if func.get("name"):
+                                    acc["function"]["name"] = func["name"]
+                                if func.get("arguments"):
+                                    acc["function"]["arguments"] += func["arguments"]
 
                 if finish_reason == "error":
                     logger.warning("AI returned error, stopping without saving to history")
@@ -243,7 +249,7 @@ class SessionAgent:
 
                         try:
                             args = json.loads(func_args_str)
-                        except json.JSONDecodeError, TypeError:
+                        except (json.JSONDecodeError, TypeError):
                             logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
                             args = {}
 
@@ -329,7 +335,9 @@ class SessionAgent:
         """Resolve self.ai_socket to an aiohttp connector and HTTP endpoint."""
         return resolve_connector_and_endpoint(self.ai_socket)
 
-    async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
+    async def _stream_ai_request(
+        self, request_body: dict, trace_id: str | None = None
+    ) -> AsyncIterator[ChatCompletionChunk]:
         """Send a request to the AI backend and yield parsed SSE chunks.
 
         Parses the SSE stream into ``ChatCompletionChunk`` objects — one
@@ -337,11 +345,15 @@ class SessionAgent:
         error chunk with ``finish_reason="error"`` and the stream terminates.
         """
         connector, endpoint = self._build_connector_and_endpoint()
+        headers = {}
+        if trace_id:
+            headers["X-Trace-ID"] = trace_id
+
         async with (
             aiohttp.ClientSession(
                 connector=connector, timeout=aiohttp.ClientTimeout(total=None)
             ) as session,
-            session.post(endpoint, json=request_body) as resp,
+            session.post(endpoint, json=request_body, headers=headers) as resp,
         ):
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:
@@ -419,67 +431,70 @@ class SessionAgent:
         sends only the latest user message (no history); the agent
         maintains its own conversation history internally.
         """
-        logger.info("Received channel request")
-        lock: anyio.Lock = request.app["lock"]
+        trace_id = request.headers.get("X-Trace-ID", uuid.uuid4().hex)
+        with logger.contextualize(trace_id=trace_id):
+            logger.info("Received channel request")
+            lock: anyio.Lock = request.app[APP_LOCK]
 
-        try:
-            body: dict = await request.json()
-            logger.debug(f"Channel request body: {json.dumps(body, ensure_ascii=False)[:500]}")
-        except Exception as e:
-            logger.error(f"Failed to parse request body: {e}")
-            return web.json_response(
-                {"error": {"message": str(e), "type": "invalid_request", "code": "400"}},
-                status=400,
-            )
-
-        messages = body.pop("messages", [])
-        if not messages:
-            return web.json_response(
-                {"error": {"message": "No messages in request", "type": "invalid_request", "code": "400"}},
-                status=400,
-            )
-
-        user_message = messages[-1]
-        if user_message.get("role") != "user":
-            user_message = {"role": "user", "content": str(user_message.get("content", ""))}
-
-        response = web.StreamResponse(
-            status=200,
-            reason="OK",
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
-
-        async with lock:
-            await response.prepare(request)
-            logger.info("Acquired session lock, processing request")
             try:
-                async for chunk in self.run(user_message, extra_params=body):
-                    await response.write(chunk.to_sse().encode())
+                body: dict = await request.json()
+                logger.debug(f"Channel request body: {json.dumps(body, ensure_ascii=False)[:500]}")
+            except Exception as e:
+                logger.error(f"Failed to parse request body: {e}")
+                return web.json_response(
+                    {"error": {"message": str(e), "type": "invalid_request", "code": "400"}},
+                    status=400,
+                )
+
+            messages = body.pop("messages", [])
+            if not messages:
+                return web.json_response(
+                    {"error": {"message": "No messages in request", "type": "invalid_request", "code": "400"}},
+                    status=400,
+                )
+
+            user_message = messages[-1]
+            if user_message.get("role") != "user":
+                user_message = {"role": "user", "content": str(user_message.get("content", ""))}
+
+            response = web.StreamResponse(
+                status=200,
+                reason="OK",
+                headers={
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Trace-ID": trace_id,
+                },
+            )
+
+            async with lock:
+                await response.prepare(request)
+                logger.info("Acquired session lock, processing request")
+                try:
+                    async for chunk in self.run(user_message, extra_params=body, trace_id=trace_id):
+                        await response.write(chunk.to_sse().encode())
                     logger.debug(
                         f"Chunk sent: content={chunk.choices[0].delta.content!r}, "
                         f"reasoning={chunk.choices[0].delta.reasoning_content!r}"
                     )
-            except Exception as e:
-                logger.error(f"Error in agent run: {e}")
-                err_chunk = ChatCompletionChunk(
-                    id="error",
-                    choices=[
-                        StreamChoice(
-                            index=0,
-                            delta=DeltaMessage(content=f"[Session Error: {e}]"),
-                            finish_reason="error",
-                        )
-                    ],
-                )
-                await response.write(err_chunk.to_sse().encode())
+                except Exception as e:
+                    logger.exception(f"Error in agent run: {e}")
+                    err_chunk = ChatCompletionChunk(
+                        id="error",
+                        choices=[
+                            StreamChoice(
+                                index=0,
+                                delta=DeltaMessage(content=f"[Session Error: {e}]"),
+                                finish_reason="error",
+                            )
+                        ],
+                    )
+                    await response.write(err_chunk.to_sse().encode())
 
-        await response.write(b"data: [DONE]\n\n")
-        logger.debug("Session request completed")
-        return response
+            await response.write(b"data: [DONE]\n\n")
+            logger.debug("Session request completed")
+            return response
 
 
 async def _init_history(

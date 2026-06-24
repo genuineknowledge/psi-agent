@@ -13,7 +13,13 @@ from loguru import logger
 from psi_agent._logging import setup_logging
 from psi_agent._socket import create_site
 
-from .server import handle_chat_completions
+from .server import (
+    APP_API_KEY,
+    APP_BASE_URL,
+    APP_MODEL,
+    APP_PROVIDER,
+    handle_chat_completions,
+)
 
 
 async def serve_ai(
@@ -30,10 +36,10 @@ async def serve_ai(
     logger.info(f"Starting AI service on {socket_path} (model={model}, base_url={base_url})")
 
     app = web.Application()
-    app["provider"] = provider
-    app["model"] = model
-    app["api_key"] = api_key
-    app["base_url"] = base_url
+    app[APP_PROVIDER] = provider
+    app[APP_MODEL] = model
+    app[APP_API_KEY] = api_key
+    app[APP_BASE_URL] = base_url
     app.router.add_post("/chat/completions", handler)
 
     runner = web.AppRunner(app)
