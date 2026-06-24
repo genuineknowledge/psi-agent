@@ -15,8 +15,19 @@ const messages = ref([])
 const input = ref('')
 const busy = ref(false)
 const logEl = ref(null)
+// Follow the stream only while the user is parked at the bottom. Once they
+// scroll up to read, stop yanking them back down on every incoming frame.
+let stickToBottom = true
+
+function onLogScroll() {
+  const el = logEl.value
+  if (!el) return
+  // within 60px of the bottom counts as "at bottom"
+  stickToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+}
 
 function scrollDown() {
+  if (!stickToBottom) return
   nextTick(() => {
     if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight
   })
@@ -35,6 +46,7 @@ async function send() {
   busy.value = true
 
   messages.value.push({ role: 'user', text })
+  stickToBottom = true // sending a message means: jump to the latest
   scrollDown()
 
   const compareMode = props.compare
@@ -91,7 +103,7 @@ function onKeydown(e) {
     </div>
 
     <!-- conversation (always single-column; comparison is done via OS split-screen) -->
-    <div ref="logEl" class="log">
+    <div ref="logEl" class="log" @scroll="onLogScroll">
       <div v-if="!messages.length" class="empty">
         发一条消息开始对话。关闭右侧全部模块（或用「模块总开关」）即可切换到 Hermes 原生模式。
       </div>
