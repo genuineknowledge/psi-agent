@@ -10,13 +10,16 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
 from psi_agent.session.agent import SessionAgent
+from psi_agent.session.server import APP_LOCK
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice
 
 
 class _FailingSessionAgent(SessionAgent):
     """SessionAgent that raises an exception mid-stream."""
 
-    async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[ChatCompletionChunk]:
+    async def run(
+        self, user_message: dict, extra_params: dict | None = None, trace_id: str | None = None
+    ) -> AsyncIterator[ChatCompletionChunk]:
         yield ChatCompletionChunk(choices=[StreamChoice(delta=DeltaMessage(content="partial"))])
         raise RuntimeError("boom")
 
@@ -27,7 +30,7 @@ async def test_handle_invalid_json_body(tmp_path: Path) -> None:
     app = web.Application()
     agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={})
     lock = anyio.Lock()
-    app["lock"] = lock
+    app[APP_LOCK] = lock
     app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
     runner = web.AppRunner(app)
@@ -55,7 +58,7 @@ async def test_handle_empty_messages(tmp_path: Path) -> None:
     app = web.Application()
     agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={})
     lock = anyio.Lock()
-    app["lock"] = lock
+    app[APP_LOCK] = lock
     app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
     runner = web.AppRunner(app)
@@ -78,6 +81,10 @@ async def test_handle_empty_messages(tmp_path: Path) -> None:
             assert resp.status == 400
     finally:
         await runner.cleanup()
+
+
+# Use AppKey for type-safe application state access in tests
+APP_AGENT: web.AppKey[SessionAgent] = web.AppKey("agent", SessionAgent)
 
 
 @pytest.mark.anyio
@@ -107,8 +114,8 @@ async def test_handle_non_user_role_coercion(tmp_path: Path) -> None:
         lock = anyio.Lock()
 
         app = web.Application()
-        app["agent"] = agent
-        app["lock"] = lock
+        app[APP_AGENT] = agent
+        app[APP_LOCK] = lock
         app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
         runner = web.AppRunner(app)
@@ -162,8 +169,8 @@ async def test_agent_run_success_flow(tmp_path: Path) -> None:
         lock = anyio.Lock()
 
         app = web.Application()
-        app["agent"] = agent
-        app["lock"] = lock
+        app[APP_AGENT] = agent
+        app[APP_LOCK] = lock
         app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
         runner = web.AppRunner(app)
@@ -197,8 +204,8 @@ async def test_agent_run_raises_produces_error_chunk(tmp_path: Path) -> None:
     lock = anyio.Lock()
 
     app = web.Application()
-    app["agent"] = agent
-    app["lock"] = lock
+    app[APP_AGENT] = agent
+    app[APP_LOCK] = lock
     app.router.add_post("/chat/completions", agent.handle_chat_completions)
 
     runner = web.AppRunner(app)

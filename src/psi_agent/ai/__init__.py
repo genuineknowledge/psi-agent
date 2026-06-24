@@ -10,6 +10,12 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger
 
+# Use AppKey for type-safe application state access
+APP_PROVIDER: web.AppKey[str] = web.AppKey("provider", str)
+APP_MODEL: web.AppKey[str] = web.AppKey("model", str)
+APP_API_KEY: web.AppKey[str] = web.AppKey("api_key", str)
+APP_BASE_URL: web.AppKey[str] = web.AppKey("base_url", str)
+
 from psi_agent._logging import setup_logging
 from psi_agent._socket import create_site
 
@@ -30,10 +36,10 @@ async def serve_ai(
     logger.info(f"Starting AI service on {socket_path} (model={model}, base_url={base_url})")
 
     app = web.Application()
-    app["provider"] = provider
-    app["model"] = model
-    app["api_key"] = api_key
-    app["base_url"] = base_url
+    app[APP_PROVIDER] = provider
+    app[APP_MODEL] = model
+    app[APP_API_KEY] = api_key
+    app[APP_BASE_URL] = base_url
     app.router.add_post("/chat/completions", handler)
 
     runner = web.AppRunner(app)

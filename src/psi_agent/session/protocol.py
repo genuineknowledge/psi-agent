@@ -216,3 +216,17 @@ class ChatCompletionChunk:
 
     def to_sse(self) -> str:
         return f"data: {json.dumps(self.to_dict(), ensure_ascii=False)}\n\n"
+
+    @classmethod
+    def error(cls, message: str, finish_reason: str = "error") -> ChatCompletionChunk:
+        """Helper to create an error chunk."""
+        return cls(
+            id="error",
+            choices=[
+                StreamChoice(
+                    index=0,
+                    delta=DeltaMessage(content=message),
+                    finish_reason=finish_reason,
+                )
+            ],
+        )

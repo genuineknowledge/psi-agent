@@ -29,6 +29,7 @@ Three terminals, three commands:
 uv sync
 
 # Terminal 1: Start AI backend (--api-key optional, reads PSI_AI_API_KEY env if omitted)
+# Also supports PSI_AI_PROVIDER, PSI_AI_MODEL, PSI_AI_BASE_URL env vars
 uv run psi-agent ai \
   --provider openai \
   --session-socket ./ai.sock \
@@ -75,6 +76,7 @@ A workspace is an agent:
 my-workspace/
 ├── tools/                    # One .py file = one or more tools (all non-_ async def)
 │   └── bash.py               # async def bash(command: str) -> str
+├── histories/                # Auto-generated conversation history (JSONL)
 ├── skills/                   # */SKILL.md skill docs (enumerated by system_prompt_builder)
 ├── schedules/                # Cron-triggered tasks
 │   └── daily-report/

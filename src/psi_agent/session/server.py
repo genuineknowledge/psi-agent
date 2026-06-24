@@ -5,6 +5,8 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger
 
+APP_LOCK: web.AppKey[anyio.Lock] = web.AppKey("lock", anyio.Lock)
+
 from psi_agent._socket import create_site
 
 
@@ -17,7 +19,7 @@ async def serve_session(
     logger.info(f"Starting session server on {channel_socket}")
 
     app = web.Application()
-    app["lock"] = lock
+    app[APP_LOCK] = lock
     app.router.add_post("/chat/completions", handler)
 
     runner = web.AppRunner(app)

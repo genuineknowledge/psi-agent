@@ -14,6 +14,8 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from .server import APP_LOCK
+
 from psi_agent._socket import resolve_connector_and_endpoint
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.scheduler import load_schedules_from_workspace
@@ -100,7 +102,9 @@ class SessionAgent:
         """
         self._pending_schedule_chunks = chunks
 
-    async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[ChatCompletionChunk]:
+    async def run(
+        self, user_message: dict, extra_params: dict | None = None, trace_id: str | None = None
+    ) -> AsyncIterator[ChatCompletionChunk]:
         """Run one turn of the ReAct agent loop.
 
         Takes a single user message (channel sends only the latest, never
@@ -131,7 +135,7 @@ class SessionAgent:
                 self.history.append({"role": "system", "content": sp})
                 logger.info(f"System prompt loaded ({len(sp) if sp else 0} chars)")
             except Exception as e:
-                logger.error(f"Failed to build system prompt: {e}")
+                logger.exception(f"Failed to build system prompt: {e}")
 
         # Yield pending schedule response chunks first
         if self._pending_schedule_chunks:
@@ -175,7 +179,7 @@ class SessionAgent:
             accumulated_reasoning: str = ""
 
             # --- SSE stream consumption ---
-            async for chunk in self._stream_ai_request(request_body):
+            async for chunk in self._stream_ai_request(request_body, trace_id=trace_id):
                 yield chunk
 
                 if chunk.choices:
@@ -329,88 +333,99 @@ class SessionAgent:
         """Resolve self.ai_socket to an aiohttp connector and HTTP endpoint."""
         return resolve_connector_and_endpoint(self.ai_socket)
 
-    async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
+    async def _stream_ai_request(
+        self, request_body: dict, trace_id: str | None = None
+    ) -> AsyncIterator[ChatCompletionChunk]:
         """Send a request to the AI backend and yield parsed SSE chunks.
 
         Parses the SSE stream into ``ChatCompletionChunk`` objects — one
         per SSE data line.  Non-200 responses are yielded as a single
         error chunk with ``finish_reason="error"`` and the stream terminates.
+
+        Includes a simple retry mechanism for transient connection errors.
         """
         connector, endpoint = self._build_connector_and_endpoint()
-        async with (
-            aiohttp.ClientSession(
-                connector=connector, timeout=aiohttp.ClientTimeout(total=300, sock_connect=30, sock_read=60)
-            ) as session,
-            session.post(endpoint, json=request_body) as resp,
-        ):
-            logger.info(f"AI response status: {resp.status}")
-            if resp.status != 200:
-                error_text = await resp.text()
-                logger.error(f"AI error: {error_text[:500]}")
-                yield ChatCompletionChunk(
-                    id="error",
-                    choices=[
-                        StreamChoice(
-                            index=0,
-                            delta=DeltaMessage(content=f"[AI Error: {resp.status}]"),
-                            finish_reason="error",
+        max_retries = 3
+        retry_delay = 1.0
+
+        yielded_any = False
+        for attempt in range(max_retries):
+            try:
+                headers = {}
+                if trace_id:
+                    headers["X-Trace-ID"] = trace_id
+                async with (
+                    aiohttp.ClientSession(
+                        connector=connector, timeout=aiohttp.ClientTimeout(total=300, sock_connect=30, sock_read=60)
+                    ) as session,
+                    session.post(endpoint, json=request_body, headers=headers) as resp,
+                ):
+                    logger.info(f"AI response status: {resp.status} (attempt {attempt + 1})")
+                    if resp.status != 200:
+                        error_text = await resp.text()
+                        logger.error(f"AI error: {error_text[:500]}")
+                        yield ChatCompletionChunk.error(f"[AI Error: {resp.status}]")
+                        return
+
+                    async for raw_line in resp.content:
+                        yielded_any = True
+                        line = raw_line.decode().strip()
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            continue
+
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse SSE data: {data_str[:100]}")
+                            continue
+
+                        choices_data = data.get("choices", [])
+                        if len(choices_data) > 1:
+                            logger.warning(f"Expected 1 choice, got {len(choices_data)}, yielding error")
+                            yield ChatCompletionChunk.error(f"[AI Error: expected 1 choice, got {len(choices_data)}]")
+                            return
+                        if not choices_data:
+                            continue
+
+                        c = choices_data[0]
+                        delta_data = c.get("delta")
+                        if not isinstance(delta_data, dict):
+                            delta_data = {}
+                        delta = DeltaMessage(
+                            content=delta_data.get("content"),
+                            role=delta_data.get("role"),
+                            reasoning_content=delta_data.get("reasoning_content"),
+                            tool_calls=delta_data.get("tool_calls"),
                         )
-                    ],
-                )
-                return
-
-            async for raw_line in resp.content:
-                line = raw_line.decode().strip()
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    continue
-
-                try:
-                    data = json.loads(data_str)
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse SSE data: {data_str[:100]}")
-                    continue
-
-                choices_data = data.get("choices", [])
-                if len(choices_data) > 1:
-                    logger.warning(f"Expected 1 choice, got {len(choices_data)}, yielding error")
-                    yield ChatCompletionChunk(
-                        id="error",
-                        choices=[
-                            StreamChoice(
-                                index=0,
-                                delta=DeltaMessage(content=f"[AI Error: expected 1 choice, got {len(choices_data)}]"),
-                                finish_reason="error",
-                            )
-                        ],
-                    )
+                        yield ChatCompletionChunk(
+                            id=data.get("id", "chatcmpl-unknown"),
+                            created=data.get("created", 0),
+                            choices=[
+                                StreamChoice(
+                                    index=c.get("index", 0),
+                                    delta=delta,
+                                    finish_reason=c.get("finish_reason"),
+                                )
+                            ],
+                        )
+                    return  # Success, exit retry loop
+            except (aiohttp.ClientError, anyio.EndOfStream, TimeoutError) as e:
+                if yielded_any:
+                    logger.error(f"Stream interrupted after data was yielded: {e}")
+                    yield ChatCompletionChunk.error(f"[AI Stream Error]: {e}")
                     return
-                if not choices_data:
-                    continue
 
-                c = choices_data[0]
-                delta_data = c.get("delta")
-                if not isinstance(delta_data, dict):
-                    delta_data = {}
-                delta = DeltaMessage(
-                    content=delta_data.get("content"),
-                    role=delta_data.get("role"),
-                    reasoning_content=delta_data.get("reasoning_content"),
-                    tool_calls=delta_data.get("tool_calls"),
-                )
-                yield ChatCompletionChunk(
-                    id=data.get("id", "chatcmpl-unknown"),
-                    created=data.get("created", 0),
-                    choices=[
-                        StreamChoice(
-                            index=c.get("index", 0),
-                            delta=delta,
-                            finish_reason=c.get("finish_reason"),
-                        )
-                    ],
-                )
+                if attempt < max_retries - 1:
+                    logger.warning(f"Transient error connecting to AI (attempt {attempt + 1}): {e}. Retrying...")
+                    await anyio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.exception(f"AI connection failed after {max_retries} attempts")
+                    yield ChatCompletionChunk.error(f"[AI Connection Error]: {e}")
+                    return
 
     async def handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
         """Channel-facing HTTP/SSE handler — one request per channel message.
@@ -419,8 +434,13 @@ class SessionAgent:
         sends only the latest user message (no history); the agent
         maintains its own conversation history internally.
         """
+        trace_id = uuid.uuid4().hex[:8]
+        with logger.contextualize(trace_id=trace_id):
+            return await self._handle_chat_completions(request, trace_id)
+
+    async def _handle_chat_completions(self, request: web.Request, trace_id: str) -> web.StreamResponse:
         logger.info("Received channel request")
-        lock: anyio.Lock = request.app["lock"]
+        lock: anyio.Lock = request.app[APP_LOCK]
 
         try:
             body: dict = await request.json()
@@ -457,24 +477,15 @@ class SessionAgent:
             await response.prepare(request)
             logger.info("Acquired session lock, processing request")
             try:
-                async for chunk in self.run(user_message, extra_params=body):
+                async for chunk in self.run(user_message, extra_params=body, trace_id=trace_id):
                     await response.write(chunk.to_sse().encode())
                     logger.debug(
                         f"Chunk sent: content={chunk.choices[0].delta.content!r}, "
                         f"reasoning={chunk.choices[0].delta.reasoning_content!r}"
                     )
             except Exception as e:
-                logger.error(f"Error in agent run: {e}")
-                err_chunk = ChatCompletionChunk(
-                    id="error",
-                    choices=[
-                        StreamChoice(
-                            index=0,
-                            delta=DeltaMessage(content=f"[Session Error: {e}]"),
-                            finish_reason="error",
-                        )
-                    ],
-                )
+                logger.exception(f"Error in agent run: {e}")
+                err_chunk = ChatCompletionChunk.error(f"[Session Error: {e}]")
                 await response.write(err_chunk.to_sse().encode())
 
         await response.write(b"data: [DONE]\n\n")

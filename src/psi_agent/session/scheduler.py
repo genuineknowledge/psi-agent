@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -98,13 +99,15 @@ async def run_one_schedule(schedule: Schedule, agent: SessionAgent, lock: anyio.
         await anyio.sleep(wait)
 
         try:
-            logger.info(f"Schedule triggered: {schedule.name}")
-            msg = {"role": "user", "content": schedule.task_content}
+            trace_id = uuid.uuid4().hex[:8]
+            with logger.contextualize(trace_id=trace_id):
+                logger.info(f"Schedule triggered: {schedule.name}")
+                msg = {"role": "user", "content": schedule.task_content}
 
-            async with lock:
-                pending_chunks: list = []
-                async for chunk in agent.run(msg):
-                    pending_chunks.append(chunk)
+                async with lock:
+                    pending_chunks: list = []
+                    async for chunk in agent.run(msg, trace_id=trace_id):
+                        pending_chunks.append(chunk)
                 agent.set_pending_schedule_chunks(pending_chunks)
                 logger.info(f"Schedule {schedule.name} response stored ({len(pending_chunks)} chunks)")
         except Exception as e:

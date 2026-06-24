@@ -29,6 +29,7 @@
 uv sync
 
 # 终端 1：启动 AI 后端（--api-key 可选，不传则读 PSI_AI_API_KEY 环境变量）
+# 同时也支持 PSI_AI_PROVIDER, PSI_AI_MODEL, PSI_AI_BASE_URL 环境变量
 uv run psi-agent ai \
   --provider openai \
   --session-socket ./ai.sock \
@@ -75,6 +76,7 @@ psi-agent
 my-workspace/
 ├── tools/                    # 每个 .py 文件定义若干 tool（所有非 _ 的 async def）
 │   └── bash.py               # async def bash(command: str) -> str
+├── histories/                # 自动生成的对话历史 (JSONL)
 ├── skills/                   # */SKILL.md 技能文档（system_prompt_builder 自行遍历）
 ├── schedules/                # 定时任务
 │   └── daily-report/
