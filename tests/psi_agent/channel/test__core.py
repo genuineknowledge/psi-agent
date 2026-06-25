@@ -1,0 +1,385 @@
+from __future__ import annotations
+
+import anyio
+import pytest
+from aiohttp import web
+
+from psi_agent.channel._core import ChannelCore
+from psi_agent.channel._types import FileChunk, TextChunk
+
+
+@pytest.mark.anyio
+async def test_channel_core_connect_unix(tmp_path):
+    """Core can connect to a Unix socket server."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.Response:
+        return web.Response(status=400)
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+    async with ChannelCore(sock_path) as core:
+        assert core._session is not None
+        assert core._endpoint == "http://localhost/chat/completions"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_converts_file_chunk_to_recv_marker(tmp_path):
+    """FileChunk becomes [RECV:path] in the POST body."""
+    sock_path = str(tmp_path / "session.sock")
+    received_body = {}
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        nonlocal received_body
+        received_body = await request.json()
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n')
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+
+    async with ChannelCore(sock_path) as core:
+        chunks = []
+        async for chunk in core.post([FileChunk("/home/user/file.txt"), TextChunk("hello")]):
+            chunks.append(chunk)
+
+    expected_content = "[RECV:/home/user/file.txt]\nhello"
+    assert received_body["messages"][0]["content"] == expected_content
+    assert isinstance(chunks[0], TextChunk)
+    assert chunks[0].text == "ok"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_sse_buffering_merges_within_interval(tmp_path):
+    """SSE chunks within interval are merged into one TextChunk."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"hello "}}]}\n\n')
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"world"}}]}\n\n')
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+
+    async with ChannelCore(sock_path, interval=10.0) as core:
+        chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert isinstance(chunks[0], TextChunk)
+    assert chunks[0].text == "hello world"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_sse_interval_split(tmp_path):
+    """SSE chunks arriving after interval expiry yield separate TextChunks."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"first"}}]}\n\n')
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+
+    async with ChannelCore(sock_path, interval=0.0) as core:
+        chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert isinstance(chunks[0], TextChunk)
+    assert chunks[0].text == "first"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_detects_send_marker(tmp_path):
+    """[SEND:/path] in SSE content yields FileChunk."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        sse_line = (
+            b'data: {"choices":[{"index":0,"delta":{"content":'
+            b'"Here is [SEND:/tmp/output.py] the file. more text"}}]}\n\n'
+        )
+        await resp.write(sse_line)
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+
+    async with ChannelCore(sock_path, interval=0.0) as core:
+        chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            chunks.append(chunk)
+
+    assert len(chunks) == 2
+    assert isinstance(chunks[0], FileChunk)
+    assert chunks[0].path == "/tmp/output.py"
+    assert isinstance(chunks[1], TextChunk)
+    assert "Here is [SEND:/tmp/output.py] the file. more text" in chunks[1].text
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_send_dedup(tmp_path):
+    """Same [SEND] path only yields FileChunk once."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        sse_line = (
+            b'data: {"choices":[{"index":0,"delta":{"content":'
+            b'"[SEND:/a.py] chunk1 [SEND:/a.py] chunk2"}}]}\n\n'
+        )
+        await resp.write(sse_line)
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+
+    async with ChannelCore(sock_path, interval=0.0) as core:
+        file_chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            if isinstance(chunk, FileChunk):
+                file_chunks.append(chunk)
+
+    assert len(file_chunks) == 1
+    assert file_chunks[0].path == "/a.py"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_handles_error_chunk(tmp_path):
+    """SSE chunk with finish_reason='error' raises."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        sse_line = (
+            b'data: {"id":"error","choices":[{"index":0,'
+            b'"delta":{"content":"[Upstream Error 401]: bad key"},'
+            b'"finish_reason":"error"}]}\n\n'
+        )
+        await resp.write(sse_line)
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+
+    async with ChannelCore(sock_path) as core:
+        with pytest.raises(Exception, match="Upstream Error 401"):
+            async for _ in core.post([TextChunk("hi")]):
+                pass
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_non_200_http_error(tmp_path):
+    """Non-200 HTTP response raises with error message."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.Response:
+        return web.json_response({"error": {"message": "server error"}}, status=500)
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+
+    async with ChannelCore(sock_path) as core:
+        with pytest.raises(Exception, match="server error"):
+            async for _ in core.post([TextChunk("hi")]):
+                pass
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_flush_on_stream_end(tmp_path):
+    """Residual chunk_buf is flushed when stream ends."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"leftover"}}]}\n\n')
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+
+    async with ChannelCore(sock_path, interval=10.0) as core:
+        chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert isinstance(chunks[0], TextChunk)
+    assert chunks[0].text == "leftover"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_rejects_multiple_choices(tmp_path):
+    """SSE chunk with >1 choices raises."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(
+            b'data: {"choices":[{"index":0,"delta":{"content":"a"}},{"index":1,"delta":{"content":"b"}}]}\n\n'
+        )
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+    async with ChannelCore(sock_path) as core:
+        with pytest.raises(Exception, match="Expected exactly 1 choice"):
+            async for _ in core.post([TextChunk("hi")]):
+                pass
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_send_cross_chunk(tmp_path):
+    """[SEND:...] split across SSE chunks is detected."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"here is [SEND:/tm"}}]}\n\n')
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"p/out.py] end"}}]}\n\n')
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+    async with ChannelCore(sock_path, interval=10.0) as core:
+        file_chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            if isinstance(chunk, FileChunk):
+                file_chunks.append(chunk)
+
+    assert len(file_chunks) == 1
+    assert file_chunks[0].path == "/tmp/out.py"
+
+    await runner.cleanup()

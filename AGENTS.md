@@ -72,8 +72,11 @@ src/
     │   └── scheduler.py            # cron-based 定时任务（croniter）
     └── channel/
         ├── AGENTS.md                # Channel 层设计文档
-        ├── repl/                   # 交互式 REPL（Rich Console + prompt_toolkit multiline）
-        └── cli/                    # 单次消息 CLI（Rich 格式化输出）
+        ├── __init__.py              # package marker
+        ├── _types.py               # FileChunk, TextChunk, Chunk
+        ├── _core.py                # ChannelCore — 连接管理 + SSE 管道
+        ├── repl/                   # 交互式 REPL thin client
+        └── cli/                    # 单次消息 CLI thin client
 ```
 
 项目使用 **src-layout**（`src/psi_agent/`），由 `uv sync` 安装为 editable package。

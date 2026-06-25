@@ -1,5 +1,31 @@
 # Channel 层设计文档
 
+## Channel 层架构
+
+```
+channel/
+├── _types.py          # FileChunk, TextChunk, Chunk
+├── _core.py           # ChannelCore — 连接管理 + SSE 管道
+├── cli/
+│   ├── __init__.py     # ChannelCli dataclass
+│   └── client.py       # 单次消息 thin client (~18行)
+└── repl/
+    ├── __init__.py     # ChannelRepl dataclass
+    └── client.py       # 交互式 thin client (~41行)
+```
+
+### ChannelCore
+
+`ChannelCore` 是 CLI 和 REPL 共享的公共部件：
+
+- async context manager，管理 aiohttp ClientSession
+- `post(list[Chunk]) -> AsyncIterator[Chunk]`：Chunk → 字符串 → POST → SSE → Chunk
+- 将输入中的 `FileChunk` 转换为 `[RECV:/path]` 标记（session 端负责读文件）
+- 检测输出中的 `[SEND:/path]` 标记并产生 `FileChunk`
+- SSE 内容在 interval 窗口内缓冲合并为单个 `TextChunk`（默认 1s，可配置）
+
+Channel 客户端（CLI/REPL）不再直接处理 HTTP、SSE 解析或错误格式。
+
 ## 概述
 
 Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通过 SSE 流式显示 AI 回复。
@@ -28,5 +54,5 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 ## CLI 约定
 
 - 连接 session socket，发送 `--message`，SSE 流式接收后退出
-- 错误：session socket 不存在时打印友好错误，exit code 1
+- 错误：打印错误信息后 raise（不再 `sys.exit`，以支持非 CLI 上下文）
 - 不发送 history，每次只带一条 user message

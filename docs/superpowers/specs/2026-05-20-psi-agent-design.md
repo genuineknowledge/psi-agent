@@ -62,12 +62,14 @@ psi/
 │   │   └── scheduler.py            # cron 调度器
 │   └── channel/
 │       ├── __init__.py
+│       ├── _types.py               # FileChunk, TextChunk, Chunk
+│       ├── _core.py                # ChannelCore — 连接管理 + SSE 管道
 │       ├── repl/
 │       │   ├── __init__.py         # ChannelRepl dataclass + run()
-│       │   └── client.py           # 连接 session socket，REPL 循环（Rich + prompt_toolkit multiline）
+│       │   └── client.py           # thin client — delegate HTTP/SSE to ChannelCore
 │       └── cli/
 │           ├── __init__.py         # ChannelCli dataclass + run()
-│           └── client.py           # 连接 session socket（Rich 格式化输出）
+│           └── client.py           # thin client — delegate HTTP/SSE to ChannelCore
 ├── tests/
 │   ├── __init__.py
 │   ├── integration/
@@ -320,14 +322,15 @@ class ChannelRepl:
 ```
 
 **行为**：
-- 连接 `session_socket`（aiohttp，支持 Unix/TCP/Named Pipe）
+- 通过 `ChannelCore` 管理到 `session_socket` 的连接（支持 Unix/TCP/Named Pipe）
+- ChannelCore 处理 HTTP/SSE 通信，对外暴露 `post([Chunk]) -> AsyncIterator[Chunk]`
+- 输入中的 `FileChunk` 转换为 `[RECV:path]` 协议标记，输出中的 `[SEND:path]` 标记产生 `FileChunk`
 - 交互式 REPL 循环：
   - 显示 `> ` 提示符，读取用户输入
-  - `POST /chat/completions` 发送消息（不含 history）
-  - SSE 流式接收，实时显示：
-    - `reasoning_content`：dimmed/灰色显示
-    - `content`：正常显示
+  - 通过 `core.post([TextChunk(user_input)])` 发送消息并流式接收
+  - SSE 内容由 ChannelCore 缓冲合并后 yield `TextChunk`（默认 1s 间隔）
   - Ctrl+D 退出
+- 终端通道忽略 FileChunk（落盘由 future Web channel 实现）
 - 历史不传递，每次请求只发一条 user message
 
 ### 7.2 CLI（`channel/cli/`）
@@ -344,9 +347,9 @@ class ChannelCli:
 ```
 
 **行为**：
-- 连接 `session_socket`
-- `POST /chat/completions` 发送 `message`
-- SSE 流式接收，实时显示 reasoning_content + content
+- 通过 `ChannelCore` 管理到 `session_socket` 的连接
+- `core.post([TextChunk(message)])` 发送消息并流式接收
+- ChannelCore 处理 HTTP/SSE 和缓冲合并，客户端仅处理 `TextChunk`
 - 显示完毕后退出
 
 ---
@@ -372,7 +375,6 @@ ChannelGroup = Annotated[
 
 def main() -> None:
     cmd = tyro.cli(Run | Ai | Session | ChannelGroup)
-    anyio.run(cmd.run)
     anyio.run(cmd.run)
 ```
 
