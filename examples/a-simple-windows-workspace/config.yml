@@ -1,0 +1,20 @@
+# psi-agent config for the Windows (PowerShell) workspace: ai + session + repl
+# Run:  PYTHONUTF8=1 uv run psi-agent run examples/a-simple-windows-workspace/config.yml
+# Note: Windows has no Unix socket, so all transports use TCP (http://127.0.0.1:PORT)
+# Set your API key via env and reference it as ${OPENAI_API_KEY} rather than inlining it.
+
+- type: ai
+  provider: openai
+  session_socket: http://127.0.0.1:8781
+  model: gemini-2.5-flash
+  api_key: ${OPENAI_API_KEY}
+  base_url: https://api.penguinsaichat.dpdns.org/v1
+
+- type: session
+  workspace: ./examples/a-simple-windows-workspace
+  channel_socket: http://127.0.0.1:8780
+  ai_socket: http://127.0.0.1:8781
+
+- type: channel
+  name: repl
+  session_socket: http://127.0.0.1:8780
