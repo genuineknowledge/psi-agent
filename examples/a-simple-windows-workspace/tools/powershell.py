@@ -44,7 +44,7 @@ def _decode(raw: bytes) -> str:
     for encoding in ("utf-8", "mbcs"):
         try:
             return raw.decode(encoding)
-        except (UnicodeDecodeError, LookupError):
+        except UnicodeDecodeError, LookupError:
             continue
     return raw.decode("utf-8", errors="replace")
 
