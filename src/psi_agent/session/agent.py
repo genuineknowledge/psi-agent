@@ -338,9 +338,7 @@ class SessionAgent:
         """
         connector, endpoint = self._build_connector_and_endpoint()
         async with (
-            aiohttp.ClientSession(
-                connector=connector, timeout=aiohttp.ClientTimeout(total=None)
-            ) as session,
+            aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
             session.post(endpoint, json=request_body) as resp,
         ):
             logger.info(f"AI response status: {resp.status}")
