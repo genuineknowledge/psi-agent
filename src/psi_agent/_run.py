@@ -41,6 +41,7 @@ from tyro import conf
 
 from psi_agent.ai import Ai
 from psi_agent.channel.cli import ChannelCli
+from psi_agent.channel.feishu import ChannelFeishu
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.telegram import ChannelTelegram
 from psi_agent.session import Session
@@ -82,6 +83,8 @@ async def _run_config(config_path: Path) -> None:
                         components.append(ChannelRepl(**item))
                     case "telegram":
                         components.append(ChannelTelegram(**item))
+                    case "feishu":
+                        components.append(ChannelFeishu(**item))
                     case _:
                         raise ValueError(f"Unknown channel name: {name}")
             case _:

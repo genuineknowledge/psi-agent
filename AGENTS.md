@@ -79,7 +79,8 @@ src/
         ├── _core.py                # ChannelCore — 连接管理 + SSE 管道
         ├── repl/                   # 交互式 REPL thin client
         ├── cli/                    # 单次消息 CLI thin client
-        └── telegram/               # Telegram bot channel
+        ├── telegram/               # Telegram bot channel
+        └── feishu/                 # Feishu bot channel
 ```
 
 项目使用 **src-layout**（`src/psi_agent/`），由 `uv sync` 安装为 editable package。

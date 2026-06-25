@@ -15,6 +15,9 @@ channel/
 └── telegram/
     ├── __init__.py     # ChannelTelegram dataclass
     └── client.py       # Bot handler + 流式 + 文件收发 (~117行)
+└── feishu/
+    ├── __init__.py     # ChannelFeishu dataclass
+    └── client.py       # Bot handler + 卡片流式 + 文件收发 (~100行)
 ```
 
 ### ChannelCore
@@ -34,10 +37,11 @@ Channel 客户端不再直接处理 HTTP、SSE 解析或错误格式。
 
 Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通过 SSE 流式显示 AI 回复。
 
-提供三种交互模式：
+提供四种交互模式：
 - **CLI**（单次消息） — 发送一条消息，显示回复，退出
 - **REPL**（交互式） — 持续对话
 - **Telegram**（bot） — 通过 Telegram Bot 交互，支持文件收发、流式编辑
+- **Feishu**（bot） — 通过 Feishu Bot 交互，支持卡片流式渲染、文件收发
 
 ## 终端输出约定
 
@@ -70,4 +74,13 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 - FileChunk 通过 `reply_photo` / `reply_document` 发送；用户文件下载至 `Downloads/.psi/<date>/`
 - 输入文件（photo/document）自动下载并作为 FileChunk 传给 agent
 - 支持 SOCKS5 proxy（`--proxy` CLI arg > `PSI_TELEGRAM_PROXY` env）
+- 用户白名单：`--allowed-user-ids` 参数或 `None`（不限制）
+
+## Feishu 约定
+
+- 通过 lark-channel-sdk 的 `FeishuChannel.connect()` 进行 WebSocket 长连接
+- 所有消息（text/post/file）均转化为 Chunk：文本→TextChunk，文件→下载→FileChunk
+- 通过 `channel.stream()`  + `stream.append()` 实现卡片流式渲染
+- FileChunk 通过 `channel.send()` 发送文件；用户文件下载至 `Downloads/.psi/<date>/`
+- 认证：`--app-id` + `--app-secret` CLI args > `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` env
 - 用户白名单：`--allowed-user-ids` 参数或 `None`（不限制）
