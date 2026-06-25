@@ -59,6 +59,7 @@ class ChannelTelegram:
     bot_token: str = ""
     interval: float = 1.0
     allowed_user_ids: list[int] | None = None
+    proxy: str = ""
     verbose: bool = False
 
     async def run(self) -> None: ...
@@ -76,8 +77,8 @@ class ChannelTelegram:
 1. setup_logging(verbose)
 2. 解析 bot_token（CLI > env，报错退出）
 3. 创建 ptb Application.builder().token(...).build()
-4. 注册 handler：~filters.COMMAND 匹配所有非命令消息（文本、图片、文件）
-5. Application.run_polling()
+4. 注册 handler：filters.ALL 匹配所有消息（文本、图片、文件，含 slash command）
+5. Application.initialize() + start() + updater.start_polling() + anyio.Event().wait()
 ```
 
 ---
@@ -159,7 +160,7 @@ psi-agent channel telegram \
 
 ```toml
 [project.optional-dependencies]
-telegram = ["python-telegram-bot[job-queue]>=22.0"]
+telegram = ["python-telegram-bot[socks]>=22.0"]
 ```
 
 ---
@@ -178,7 +179,7 @@ telegram = ["python-telegram-bot[job-queue]>=22.0"]
 ## 10. 非目标/范围外
 
 - 多用户并发消息队列：依赖 Session 端 `anyio.Lock` FIFO 排队
-- /start 命令外的其他命令（/help、/stop 等）——未来扩展
+- Bot 命令（/start、/help、/stop 等）——未来扩展（当前所有消息包括命令均传给 agent）
 - Inline keyboard、callback query 等高级交互——未来扩展
 - Webhook 模式——当前仅 long polling
 - 用户 session 隔离——全局单 Session

@@ -15,7 +15,7 @@
 ## 架构
 
 ```
- 用户 ←→ Channel (REPL/CLI) ── TCP/Unix/Named Pipe ── Session ── TCP/Unix/Named Pipe ── AI
+ 用户 ←→ Channel (REPL/CLI/Telegram) ── TCP/Unix/Named Pipe ── Session ── TCP/Unix/Named Pipe ── AI
 ```
 
 ## 快速开始
@@ -64,7 +64,8 @@ psi-agent
 ├── session                    # Session + workspace 管理
 └── channel
     ├── repl                   # 交互式 REPL
-    └── cli                    # 单次消息
+    ├── cli                    # 单次消息
+    └── telegram               # Telegram bot
 ```
 
 ## 定义你自己的 Agent

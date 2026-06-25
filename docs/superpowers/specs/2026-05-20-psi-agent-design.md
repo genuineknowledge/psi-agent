@@ -67,9 +67,12 @@ psi/
 │       ├── repl/
 │       │   ├── __init__.py         # ChannelRepl dataclass + run()
 │       │   └── client.py           # thin client — delegate HTTP/SSE to ChannelCore
-│       └── cli/
-│           ├── __init__.py         # ChannelCli dataclass + run()
-│           └── client.py           # thin client — delegate HTTP/SSE to ChannelCore
+│       ├── cli/
+│       │   ├── __init__.py         # ChannelCli dataclass + run()
+│       │   └── client.py           # thin client — delegate HTTP/SSE to ChannelCore
+│       └── telegram/
+│           ├── __init__.py         # ChannelTelegram dataclass + run()
+│           └── client.py           # bot handler + streaming + file send/recv
 ├── tests/
 │   ├── __init__.py
 │   ├── integration/
@@ -118,7 +121,7 @@ psi/
 ## 4. 架构与数据流
 
 ```
-Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
+Channel (REPL/CLI/Telegram)        Session                     AI (OpenAI/Anthropic)
      │                         │                              │
      │ POST /chat/completions                              │
      │ (不发送 history)         │                              │
@@ -367,9 +370,10 @@ from psi_agent.ai import Ai
 from psi_agent.session import Session
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.cli import ChannelCli
+from psi_agent.channel.telegram import ChannelTelegram
 
 ChannelGroup = Annotated[
-    ChannelRepl | ChannelCli,
+    ChannelRepl | ChannelCli | ChannelTelegram,
     conf.subcommand(name="channel", description="User interface channels"),
 ]
 
@@ -385,6 +389,7 @@ psi-agent ai --provider openai --session-socket ... --model ... --api-key ... --
 psi-agent ai --provider anthropic --session-socket ... --model ... --api-key ... --base-url ...
 psi-agent channel repl --session-socket ...
 psi-agent channel cli --session-socket ... --message ...
+psi-agent channel telegram --session-socket ... --bot-token ...
 psi-agent run config.yml
 ```
 
@@ -544,3 +549,4 @@ cron: "0 12 * * *"
 | 2026-05-24 | v0.2.3 | AI 层抽象：`SSEChunk` dataclass 替代裸 dict 构造 + `serve_ai_backend()` 消除 serve 重复 |
 | 2026-06-17 | v0.3.0 | 统一 AI 后端：采用 any-llm-sdk 替代手写 Anthropic→OpenAI 转换，单一 `Ai` 支持 50+ provider |
 | 2026-06-24 | v0.4.0 | Session 全面重构：协议类型内联、tool 加载通用化、schedule 纯配置化、参数透传、单 choice 强制、history JSONL 持久化、Interleaved CoT 支持、socket 传输统一（Unix/TCP/Named Pipe） |
+| 2026-06-25 | v0.5.0 | Channel 重构 + Telegram：ChannelCore 公共部件提取（Chunk 类型、SSE 缓冲合并、SEND/RECV 协议标记）、CLI/REPL 瘦身、Telegram bot channel（流式 edit_text + 文件收发 + SOCKS5 proxy + 用户白名单） |

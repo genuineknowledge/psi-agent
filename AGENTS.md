@@ -78,7 +78,8 @@ src/
         ├── _types.py               # FileChunk, TextChunk, Chunk
         ├── _core.py                # ChannelCore — 连接管理 + SSE 管道
         ├── repl/                   # 交互式 REPL thin client
-        └── cli/                    # 单次消息 CLI thin client
+        ├── cli/                    # 单次消息 CLI thin client
+        └── telegram/               # Telegram bot channel
 ```
 
 项目使用 **src-layout**（`src/psi_agent/`），由 `uv sync` 安装为 editable package。
@@ -86,7 +87,7 @@ src/
 各层的详细设计文档见：
 - **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理
 - **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化
-- **Channel 层**: `src/psi_agent/channel/AGENTS.md` — 终端输出、REPL/CLI 约定
+- **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram 约定
 
 ## 核心通信协议
 
