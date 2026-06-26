@@ -17,14 +17,14 @@ Included in Dolphin:
 - Immediate JSONL history write after the current `user` message is appended.
 - Documentation of the runtime context contract in the Session layer.
 - Tests proving tools can read the context and that the current `user` message is already on disk before tool execution.
+- A thin `examples/fusion-guard-security-workspace` sample that contains only `tools/` and delegates to an out-of-tree Fusion-Guard adapter.
 
 Excluded from Dolphin:
 
 - `psi_agent.fusion_guard` package code.
 - Fusion-Guard prompt builders, rule parsers, denial message helpers, policy installers, or secure bash runner implementation.
-- A dedicated Fusion-Guard example workspace inside Dolphin.
 
-The Fusion-Guard repository owns its Dolphin workspace. That workspace should follow `examples/a-serper-mcp-workspace`: a workspace with only `tools/`.
+The Fusion-Guard repository owns the real Dolphin workspace and adapter implementation. Dolphin's sample workspace is only a discoverable wiring example; it must follow `examples/a-serper-mcp-workspace` by containing only `tools/`, and its tool must import/delegate to the external Fusion-Guard adapter instead of embedding plugin logic.
 
 ## Runtime Contract
 
@@ -56,3 +56,4 @@ This gives external tools a stable on-disk view of the current user message whil
 
 - `tests/psi_agent/session/test_runtime_context.py` verifies tool-time context and early user-message persistence.
 - `tests/psi_agent/session/test_agent.py` verifies error turns still persist the early user message instead of silently losing the latest request.
+- `tests/psi_agent/session/test_tools.py` verifies the Fusion-Guard sample workspace shape, tool loading, external adapter delegation, and missing-adapter message.
