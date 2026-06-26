@@ -15,7 +15,7 @@ You write Python functions and Markdown. The framework handles socket communicat
 ## Architecture
 
 ```
-User ←→ Channel (REPL/CLI) ── TCP/Unix/Named Pipe ── Session ── TCP/Unix/Named Pipe ── AI
+User ←→ Channel (REPL/CLI/Telegram/Feishu) ── TCP/Unix/Named Pipe ── Session ── TCP/Unix/Named Pipe ── AI
 ```
 
 ## Quick Start
@@ -64,7 +64,9 @@ psi-agent
 ├── session                    # Session + workspace management
 └── channel
     ├── repl                   # Interactive REPL
-    └── cli                    # One-shot message
+    ├── cli                    # One-shot message
+    ├── telegram               # Telegram bot
+    └── feishu                 # Feishu bot
 ```
 
 ## Define Your Own Agent
