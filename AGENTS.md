@@ -13,11 +13,9 @@ psi-agent 是一个**微内核**式的 agent 框架。核心理念是：
 5. **一切异步**: 所有 IO 操作使用 `anyio`，永不使用 `asyncio` 原生 API 或 `pathlib`
 6. **零抑制**: 不堆 `noqa`，不设 `per-file-ignores`。代码本身应符合规则
 7. **显式单 choice 模型**: Session 和 AI 之间每 SSE chunk 保证恰好 1 个 choice。多 choice 作为错误处理，0 choice 静默跳过（心跳）
-8. **zero `sys.exit`**: 所有 `run()` 方法必须可作为协程嵌入任意 event loop 中运行，不仅限于 tyro CLI 上下文。错误用 `raise`，禁止 `sys.exit(1)`
-9. **`setup_logging` 第一行**: 每个组件的 `async def run(self)` 方法中，`setup_logging(verbose=self.verbose)` 必须是第一行可执行语句，先于任何 token 解析或参数校验
-10. **参数透传**: Channel 请求中除 `messages` 外的不认识参数全部穿透到 AI 层，不丢失
-11. **类型精确化**: 避免裸 `tuple`/`dict`。尽量用 `tuple[X, Y]` 或具体类型（如 `aiohttp.BaseConnector`）
-12. **关键字参数风格统一**: `__init__` 参数顺序 ≡ 初始化赋值顺序。所有 connector 使用显式 `path=`/`ssl=` 等关键字
+8. **参数透传**: Channel 请求中除 `messages` 外的不认识参数全部穿透到 AI 层，不丢失
+9. **类型精确化**: 避免裸 `tuple`/`dict`。尽量用 `tuple[X, Y]` 或具体类型（如 `aiohttp.BaseConnector`）
+10. **关键字参数风格统一**: `__init__` 参数顺序 ≡ 初始化赋值顺序。所有 connector 使用显式 `path=`/`ssl=` 等关键字
 
 ## 架构决策记录
 
@@ -74,13 +72,8 @@ src/
     │   └── scheduler.py            # cron-based 定时任务（croniter）
     └── channel/
         ├── AGENTS.md                # Channel 层设计文档
-        ├── __init__.py              # package marker
-        ├── _types.py               # FileChunk, TextChunk, Chunk
-        ├── _core.py                # ChannelCore — 连接管理 + SSE 管道
-        ├── repl/                   # 交互式 REPL thin client
-        ├── cli/                    # 单次消息 CLI thin client
-        ├── telegram/               # Telegram bot channel
-        └── feishu/                 # Feishu bot channel
+        ├── repl/                   # 交互式 REPL（Rich Console + prompt_toolkit multiline）
+        └── cli/                    # 单次消息 CLI（Rich 格式化输出）
 ```
 
 项目使用 **src-layout**（`src/psi_agent/`），由 `uv sync` 安装为 editable package。
@@ -88,7 +81,7 @@ src/
 各层的详细设计文档见：
 - **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理
 - **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化
-- **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram 约定
+- **Channel 层**: `src/psi_agent/channel/AGENTS.md` — 终端输出、REPL/CLI 约定
 
 ## 核心通信协议
 

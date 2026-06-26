@@ -18,6 +18,10 @@ Config format (``run-config.yml``):
       workspace: ./examples/a-simple-bash-only-workspace
       channel_socket: ./channel.sock
       ai_socket: ./ai.sock
+      model_names:
+        - qwen3.6-chat
+        - deepseek-v4-pro
+        - gpt-4o
 
     - type: channel
       name: repl                    # "cli" or "repl"
@@ -41,9 +45,7 @@ from tyro import conf
 
 from psi_agent.ai import Ai
 from psi_agent.channel.cli import ChannelCli
-from psi_agent.channel.feishu import ChannelFeishu
 from psi_agent.channel.repl import ChannelRepl
-from psi_agent.channel.telegram import ChannelTelegram
 from psi_agent.session import Session
 
 
@@ -80,11 +82,8 @@ async def _run_config(config_path: Path) -> None:
                     case "cli":
                         components.append(ChannelCli(**item))
                     case "repl":
+                        item.pop("message", None)
                         components.append(ChannelRepl(**item))
-                    case "telegram":
-                        components.append(ChannelTelegram(**item))
-                    case "feishu":
-                        components.append(ChannelFeishu(**item))
                     case _:
                         raise ValueError(f"Unknown channel name: {name}")
             case _:

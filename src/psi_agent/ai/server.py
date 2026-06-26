@@ -2,11 +2,23 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from typing import cast
+from typing import Any, cast
 
 from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
+
+
+def _resolve_model(body: dict[str, Any], default_model: str) -> tuple[str, str | None]:
+    """Resolve the upstream model for one request.
+
+    The request body can optionally override the startup default.  The
+    caller is responsible for mutating the body before forwarding it to
+    ``any_llm.acompletion()``.
+    """
+    request_model = body.pop("model", None)
+    body.pop("stream", None)
+    return request_model or default_model, request_model
 
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
@@ -22,13 +34,13 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         )
 
     provider = request.app["provider"]
-    model = request.app["model"]
+    default_model = request.app["model"]
     api_key = request.app["api_key"]
     base_url = request.app["base_url"]
 
     messages = body.pop("messages")
-    body.pop("model", None)
-    body.pop("stream", None)
+    model, request_model = _resolve_model(body, default_model)
+    logger.debug(f"Using model {model!r} (request override: {request_model!r})")
 
     response = web.StreamResponse(
         status=200,

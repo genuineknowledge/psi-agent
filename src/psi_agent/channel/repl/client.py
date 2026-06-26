@@ -1,24 +1,32 @@
 from __future__ import annotations
 
-from aiohttp import ClientConnectorError
+import json
+import sys
+
+from aiohttp import ClientConnectorError, ClientSession, ClientTimeout
 from loguru import logger
 from prompt_toolkit.shortcuts import PromptSession
 from rich.console import Console
 from rich.panel import Panel
 
-from psi_agent.channel._core import ChannelCore
-from psi_agent.channel._types import TextChunk
+from psi_agent._socket import resolve_connector_and_endpoint
+from psi_agent.channel.route._routing import select_model_for_message
 
 console = Console(highlight=False)
 
 
-async def run_repl(session_socket: str) -> None:
+async def run_repl(
+    session_socket: str,
+    *,
+    models: list[str] | tuple[str, ...] = (),
+) -> None:
     logger.info(f"Connecting to session at {session_socket}")
 
+    connector, endpoint = resolve_connector_and_endpoint(session_socket)
     prompt_session = PromptSession(multiline=True)
 
     try:
-        async with ChannelCore(session_socket, interval=0.0) as core:
+        async with ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session:
             logger.info("Connected to session. Enter for newline, Alt+Enter to send (Ctrl+D to exit).")
             console.print(Panel.fit("psi-agent REPL — Enter newline, Alt+Enter send"))
             console.print("[dim]Ctrl+D to exit[/dim]\n")
@@ -26,27 +34,74 @@ async def run_repl(session_socket: str) -> None:
             while True:
                 try:
                     user_input = await prompt_session.prompt_async("> ", prompt_continuation=". ")
-                except EOFError, KeyboardInterrupt:
+                except (EOFError, KeyboardInterrupt):
                     console.print("\nGoodbye!")
                     break
 
                 if not user_input.strip():
                     continue
 
-                console.print()
-                try:
-                    async for chunk in core.post([TextChunk(user_input)]):
-                        if isinstance(chunk, TextChunk):
-                            console.print(chunk.text, end="")
-                except Exception as e:
-                    logger.error(f"REPL error: {e}")
-                    console.print(f"\n[red]Error: {e}[/red]")
-                console.print("\n")
+                model = await select_model_for_message(
+                    user_input,
+                    models=models,
+                )
+                req_data = {
+                    "messages": [{"role": "user", "content": user_input}],
+                    "stream": True,
+                }
+                if model:
+                    req_data["model"] = model
+
+                async with session.post(
+                    endpoint,
+                    json=req_data,
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        try:
+                            error = json.loads(body)
+                            console.print(f"\n[red]Error: {error.get('error', {}).get('message', body)}[/red]")
+                        except Exception:
+                            console.print(f"\n[red]Error: {body}[/red]")
+                        continue
+
+                    console.print()
+
+                    async for raw_line in resp.content:
+                        line = raw_line.decode().strip()
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            break
+
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        for choice in data.get("choices", []):
+                            delta = choice.get("delta", {})
+                            reasoning = delta.get("reasoning_content")
+                            content = delta.get("content")
+
+                            if choice.get("finish_reason") == "error":
+                                console.print(f"\n[red]Error: {content}[/red]")
+                                continue
+
+                            if reasoning:
+                                logger.debug(f"Reasoning: {reasoning}")
+                                console.print(reasoning, style="dim", end="")
+
+                            if content:
+                                console.print(content, end="")
+
+                    console.print("\n")
 
     except ClientConnectorError as e:
         console.print(f"[red]Connection error: {e}[/red]")
-        raise
+        sys.exit(1)
     except Exception as e:
         logger.exception("Unexpected REPL error")
         console.print(f"[red]Unexpected error: {e}[/red]")
-        raise
+        sys.exit(1)

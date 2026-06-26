@@ -15,6 +15,7 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent._socket import resolve_connector_and_endpoint
+from psi_agent.session._routing import select_ai_socket_for_model
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.scheduler import load_schedules_from_workspace
 from psi_agent.session.tools import load_tools_from_workspace
@@ -26,6 +27,7 @@ class SessionAgent:
         *,
         ai_socket: str,
         tools: dict[str, ToolFunction],
+        model_ai_sockets: dict[str, str] | None = None,
         tool_funcs: dict[str, Callable[..., Any]] | None = None,
         schedules: list | None = None,
         system_prompt_builder: Callable[..., Any] | None = None,
@@ -47,6 +49,11 @@ class SessionAgent:
         fields default to empty/None.
         """
         self.ai_socket = ai_socket
+        self._model_ai_sockets = {
+            str(model): str(socket)
+            for model, socket in (model_ai_sockets or {}).items()
+            if model and socket
+        }
         self.tools = tools
         self._tool_funcs = tool_funcs if tool_funcs else {}
         self.schedules = schedules if schedules is not None else []
@@ -62,6 +69,7 @@ class SessionAgent:
         *,
         ai_socket: str,
         workspace_path: Path,
+        model_ai_sockets: dict[str, str] | None = None,
         max_tool_rounds: int = 128,
         session_id: str | None = None,
     ) -> SessionAgent:
@@ -81,6 +89,7 @@ class SessionAgent:
 
         return cls(
             ai_socket=ai_socket,
+            model_ai_sockets=model_ai_sockets,
             tools=tools,
             tool_funcs=tool_funcs,
             schedules=schedules,
@@ -166,7 +175,16 @@ class SessionAgent:
             if extra_params:
                 request_body |= extra_params
 
-            logger.info(f"Sending request to AI socket: {self.ai_socket}")
+            request_model = request_body.get("model")
+            request_ai_socket = select_ai_socket_for_model(
+                request_model if isinstance(request_model, str) else None,
+                default_ai_socket=self.ai_socket,
+                model_ai_sockets=self._model_ai_sockets,
+            )
+
+            logger.info(f"Sending request to AI socket: {request_ai_socket}")
+            if request_ai_socket != self.ai_socket:
+                logger.debug(f"Routed model {request_model!r} to AI socket {request_ai_socket}")
             logger.debug(f"Request messages count: {len(self.history)}, tools: {len(tool_defs)}")
 
             finish_reason: str | None = None
@@ -175,7 +193,7 @@ class SessionAgent:
             accumulated_reasoning: str = ""
 
             # --- SSE stream consumption ---
-            async for chunk in self._stream_ai_request(request_body):
+            async for chunk in self._stream_ai_request(request_body, ai_socket=request_ai_socket):
                 yield chunk
 
                 if chunk.choices:
@@ -210,15 +228,11 @@ class SessionAgent:
 
                 if finish_reason == "stop":
                     logger.debug("AI finished with stop")
-                    if accumulated_content or accumulated_reasoning:
-                        assistant_msg: dict = {"role": "assistant"}
-                        if accumulated_content:
-                            assistant_msg["content"] = accumulated_content
-                        if accumulated_reasoning:
-                            assistant_msg["reasoning_content"] = accumulated_reasoning
-                        self.history.append(assistant_msg)
-                        if self._history_path is not None:
-                            await _save_history(self._history_path, self.history)
+                    if self._append_assistant_history(
+                        content=accumulated_content,
+                        reasoning_content=accumulated_reasoning,
+                    ) and self._history_path is not None:
+                        await _save_history(self._history_path, self.history)
                     return
 
                 if finish_reason == "tool_calls":
@@ -228,12 +242,11 @@ class SessionAgent:
                     ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
 
                     # Add assistant message with tool_calls to history
-                    assistant_msg: dict = {"role": "assistant", "tool_calls": ordered_calls}
-                    if accumulated_content:
-                        assistant_msg["content"] = accumulated_content
-                    if accumulated_reasoning:
-                        assistant_msg["reasoning_content"] = accumulated_reasoning
-                    self.history.append(assistant_msg)
+                    self._append_assistant_history(
+                        content=accumulated_content,
+                        reasoning_content=accumulated_reasoning,
+                        tool_calls=ordered_calls,
+                    )
 
                     # Execute each tool call
                     for tc in ordered_calls:
@@ -243,7 +256,7 @@ class SessionAgent:
 
                         try:
                             args = json.loads(func_args_str)
-                        except json.JSONDecodeError, TypeError:
+                        except (json.JSONDecodeError, TypeError):
                             logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
                             args = {}
 
@@ -303,13 +316,10 @@ class SessionAgent:
                     f"Unexpected finish_reason={finish_reason!r}, "
                     f"saving {len(accumulated_content)} chars of content and stopping"
                 )
-                if accumulated_content or accumulated_reasoning:
-                    assistant_msg: dict = {"role": "assistant"}
-                    if accumulated_content:
-                        assistant_msg["content"] = accumulated_content
-                    if accumulated_reasoning:
-                        assistant_msg["reasoning_content"] = accumulated_reasoning
-                    self.history.append(assistant_msg)
+                self._append_assistant_history(
+                    content=accumulated_content,
+                    reasoning_content=accumulated_reasoning,
+                )
                 return
 
         else:
@@ -325,20 +335,62 @@ class SessionAgent:
                 ],
             )
 
-    def _build_connector_and_endpoint(self) -> tuple[aiohttp.BaseConnector, str]:
+    def _build_connector_and_endpoint(self, ai_socket: str | None = None) -> tuple[aiohttp.BaseConnector, str]:
         """Resolve self.ai_socket to an aiohttp connector and HTTP endpoint."""
-        return resolve_connector_and_endpoint(self.ai_socket)
+        return resolve_connector_and_endpoint(ai_socket or self.ai_socket)
 
-    async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
+    def _append_assistant_history(
+        self,
+        *,
+        content: str = "",
+        reasoning_content: str = "",
+        tool_calls: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Append a valid assistant message to history.
+
+        Some reasoning models emit a final assistant chunk that only
+        contains ``reasoning_content``.  That is fine for streaming to
+        the channel, but it is not valid to send back to providers like
+        DeepSeek on the next turn unless ``content`` or ``tool_calls`` is
+        also present.
+        """
+        assistant_msg: dict[str, Any] = {"role": "assistant"}
+        has_payload = False
+
+        if content:
+            assistant_msg["content"] = content
+            has_payload = True
+        if tool_calls:
+            assistant_msg["tool_calls"] = tool_calls
+            has_payload = True
+        if reasoning_content and has_payload:
+            assistant_msg["reasoning_content"] = reasoning_content
+        elif reasoning_content:
+            logger.warning("Skipping reasoning-only assistant message in history")
+
+        if not has_payload:
+            return False
+
+        self.history.append(assistant_msg)
+        return True
+
+    async def _stream_ai_request(
+        self,
+        request_body: dict,
+        *,
+        ai_socket: str | None = None,
+    ) -> AsyncIterator[ChatCompletionChunk]:
         """Send a request to the AI backend and yield parsed SSE chunks.
 
         Parses the SSE stream into ``ChatCompletionChunk`` objects — one
         per SSE data line.  Non-200 responses are yielded as a single
         error chunk with ``finish_reason="error"`` and the stream terminates.
         """
-        connector, endpoint = self._build_connector_and_endpoint()
+        connector, endpoint = self._build_connector_and_endpoint(ai_socket)
         async with (
-            aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
+            aiohttp.ClientSession(
+                connector=connector, timeout=aiohttp.ClientTimeout(total=None)
+            ) as session,
             session.post(endpoint, json=request_body) as resp,
         ):
             logger.info(f"AI response status: {resp.status}")

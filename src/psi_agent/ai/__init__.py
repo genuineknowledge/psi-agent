@@ -61,7 +61,7 @@ class Ai:
     """Provider key (openai, anthropic, gemini, etc.). Falls back to PSI_AI_PROVIDER env var."""
 
     model: str = ""
-    """Model name. Falls back to PSI_AI_MODEL env var."""
+    """Default model name. Falls back to PSI_AI_MODEL env var and can be overridden per request."""
 
     api_key: str = ""
     """API key for the upstream service. Falls back to PSI_AI_API_KEY env var."""

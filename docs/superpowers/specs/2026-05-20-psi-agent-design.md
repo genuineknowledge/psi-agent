@@ -62,17 +62,12 @@ psi/
 │   │   └── scheduler.py            # cron 调度器
 │   └── channel/
 │       ├── __init__.py
-│       ├── _types.py               # FileChunk, TextChunk, Chunk
-│       ├── _core.py                # ChannelCore — 连接管理 + SSE 管道
 │       ├── repl/
 │       │   ├── __init__.py         # ChannelRepl dataclass + run()
-│       │   └── client.py           # thin client — delegate HTTP/SSE to ChannelCore
-│       ├── cli/
-│       │   ├── __init__.py         # ChannelCli dataclass + run()
-│       │   └── client.py           # thin client — delegate HTTP/SSE to ChannelCore
-│       └── telegram/
-│           ├── __init__.py         # ChannelTelegram dataclass + run()
-│           └── client.py           # bot handler + streaming + file send/recv
+│       │   └── client.py           # 连接 session socket，REPL 循环（Rich + prompt_toolkit multiline）
+│       └── cli/
+│           ├── __init__.py         # ChannelCli dataclass + run()
+│           └── client.py           # 连接 session socket（Rich 格式化输出）
 ├── tests/
 │   ├── __init__.py
 │   ├── integration/
@@ -121,7 +116,7 @@ psi/
 ## 4. 架构与数据流
 
 ```
-Channel (REPL/CLI/Telegram/Feishu)        Session                     AI (OpenAI/Anthropic)
+Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
      │                         │                              │
      │ POST /chat/completions                              │
      │ (不发送 history)         │                              │
@@ -325,15 +320,14 @@ class ChannelRepl:
 ```
 
 **行为**：
-- 通过 `ChannelCore` 管理到 `session_socket` 的连接（支持 Unix/TCP/Named Pipe）
-- ChannelCore 处理 HTTP/SSE 通信，对外暴露 `post([Chunk]) -> AsyncIterator[Chunk]`
-- 输入中的 `FileChunk` 转换为 `[RECV:path]` 协议标记，输出中的 `[SEND:path]` 标记产生 `FileChunk`
+- 连接 `session_socket`（aiohttp，支持 Unix/TCP/Named Pipe）
 - 交互式 REPL 循环：
   - 显示 `> ` 提示符，读取用户输入
-  - 通过 `core.post([TextChunk(user_input)])` 发送消息并流式接收
-  - SSE 内容由 ChannelCore 缓冲合并后 yield `TextChunk`（默认 1s 间隔）
+  - `POST /chat/completions` 发送消息（不含 history）
+  - SSE 流式接收，实时显示：
+    - `reasoning_content`：dimmed/灰色显示
+    - `content`：正常显示
   - Ctrl+D 退出
-- 终端通道忽略 FileChunk（落盘由 future Web channel 实现）
 - 历史不传递，每次请求只发一条 user message
 
 ### 7.2 CLI（`channel/cli/`）
@@ -350,9 +344,9 @@ class ChannelCli:
 ```
 
 **行为**：
-- 通过 `ChannelCore` 管理到 `session_socket` 的连接
-- `core.post([TextChunk(message)])` 发送消息并流式接收
-- ChannelCore 处理 HTTP/SSE 和缓冲合并，客户端仅处理 `TextChunk`
+- 连接 `session_socket`
+- `POST /chat/completions` 发送 `message`
+- SSE 流式接收，实时显示 reasoning_content + content
 - 显示完毕后退出
 
 ---
@@ -370,16 +364,15 @@ from psi_agent.ai import Ai
 from psi_agent.session import Session
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.cli import ChannelCli
-from psi_agent.channel.telegram import ChannelTelegram
-from psi_agent.channel.feishu import ChannelFeishu
 
 ChannelGroup = Annotated[
-    ChannelRepl | ChannelCli | ChannelTelegram | ChannelFeishu,
+    ChannelRepl | ChannelCli,
     conf.subcommand(name="channel", description="User interface channels"),
 ]
 
 def main() -> None:
     cmd = tyro.cli(Run | Ai | Session | ChannelGroup)
+    anyio.run(cmd.run)
     anyio.run(cmd.run)
 ```
 
@@ -390,8 +383,6 @@ psi-agent ai --provider openai --session-socket ... --model ... --api-key ... --
 psi-agent ai --provider anthropic --session-socket ... --model ... --api-key ... --base-url ...
 psi-agent channel repl --session-socket ...
 psi-agent channel cli --session-socket ... --message ...
-psi-agent channel telegram --session-socket ... --bot-token ...
-psi-agent channel feishu --session-socket ... --app-id ... --app-secret ...
 psi-agent run config.yml
 ```
 
@@ -551,4 +542,3 @@ cron: "0 12 * * *"
 | 2026-05-24 | v0.2.3 | AI 层抽象：`SSEChunk` dataclass 替代裸 dict 构造 + `serve_ai_backend()` 消除 serve 重复 |
 | 2026-06-17 | v0.3.0 | 统一 AI 后端：采用 any-llm-sdk 替代手写 Anthropic→OpenAI 转换，单一 `Ai` 支持 50+ provider |
 | 2026-06-24 | v0.4.0 | Session 全面重构：协议类型内联、tool 加载通用化、schedule 纯配置化、参数透传、单 choice 强制、history JSONL 持久化、Interleaved CoT 支持、socket 传输统一（Unix/TCP/Named Pipe） |
-| 2026-06-25 | v0.5.0 | Channel 重构 + Telegram + Feishu：ChannelCore 公共部件提取（Chunk 类型、SSE 缓冲合并、SEND/RECV 协议标记）、CLI/REPL 瘦身、Telegram bot channel（流式 edit_text + 文件收发 + SOCKS5 proxy + 用户白名单）、Feishu bot channel（卡片流式渲染 + lark-channel-sdk） |
