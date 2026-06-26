@@ -236,3 +236,49 @@ async def test_unicode_message_handling(tmp_path: Path, mock_ai_server: MockAISe
     chunks = [c async for c in agent.run({"role": "user", "content": msg})]
     content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
     assert len(content) > 0, "Should receive a response for unicode message"
+
+
+@pytest.mark.anyio
+async def test_session_with_empty_workspace_uses_cwd(tmp_path: Path, mock_ai_server: MockAIServer) -> None:
+    """Session started via CLI without --workspace should use CWD."""
+    mock_ai_server.set_responses([_chunk(content="hello from cwd", finish_reason="stop")])
+    base_url = await mock_ai_server.start()
+
+    ai_socket = str(tmp_path / "ai.sock")
+    channel_socket = str(tmp_path / "channel.sock")
+
+    proc = await anyio.open_process(
+        [
+            "uv", "run", "psi-agent", "session",
+            "--channel-socket", channel_socket,
+            "--ai-socket", ai_socket,
+        ]
+    )
+    ai_proc = await anyio.open_process(
+        [
+            "uv", "run", "psi-agent", "ai",
+            "--provider", "openai",
+            "--session-socket", ai_socket,
+            "--model", "test",
+            "--api-key", "k",
+            "--base-url", base_url,
+        ]
+    )
+
+    try:
+        assert await _wait_socket(ai_socket)
+        assert await _wait_socket(channel_socket)
+
+        timeout = ClientTimeout(total=5)
+        connector = UnixConnector(path=channel_socket)
+        async with (
+            ClientSession(connector=connector, timeout=timeout) as session,
+            session.post(
+                "http://localhost/chat/completions",
+                json={"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+            ) as resp,
+        ):
+            assert resp.status == 200, f"Session should start without --workspace: {resp.status}"
+    finally:
+        await _stop_process(proc)
+        await _stop_process(ai_proc)
