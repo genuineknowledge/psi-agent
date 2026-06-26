@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import socket as _s
 import textwrap
 from pathlib import Path
+from typing import Any, ClassVar
 
 import anyio
 import pytest
 from aiohttp import web
+from anyio.lowlevel import checkpoint
 
-from psi_agent.session.agent import SessionAgent, _load_history, _save_history
+from psi_agent.session import Session
+from psi_agent.session.agent import (
+    SessionAgent,
+    _build_memory_client_config,
+    _FusionMemoryClient,
+    _load_history,
+    _MemoryClientConfig,
+    _save_history,
+)
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.tools import load_tools_from_workspace
 
@@ -55,6 +66,70 @@ class MockAIServer:
     async def cleanup(self) -> None:
         if self._runner:
             await self._runner.cleanup()
+
+
+def test_build_memory_client_config_reads_expected_env_keys() -> None:
+    config = _build_memory_client_config(
+        {
+            "PSI_MEMORY_BASE_URL": "http://127.0.0.1:8700",
+            "PSI_MEMORY_TIMEOUT_SECONDS": "3.5",
+            "PSI_MEMORY_WORKSPACE_ID": "ws",
+            "PSI_MEMORY_USER_ID": "u",
+            "PSI_MEMORY_AGENT_ID": "agent",
+            "PSI_MEMORY_SESSION_ID": "session-1",
+        }
+    )
+
+    assert config.base_url == "http://127.0.0.1:8700"
+    assert config.timeout_seconds == 3.5
+    assert config.workspace_id == "ws"
+    assert config.user_id == "u"
+    assert config.agent_id == "agent"
+    assert config.session_id == "session-1"
+
+
+@pytest.mark.anyio
+async def test_fusion_memory_client_posts_messages_scope_and_error_flag() -> None:
+    seen: dict[str, Any] = {}
+
+    async def handler(request: web.Request) -> web.Response:
+        seen.update(await request.json())
+        return web.json_response({"span_ids": ["span-1"]})
+
+    app = web.Application()
+    app.router.add_post("/ingest-turn", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+
+    client = _FusionMemoryClient(
+        _MemoryClientConfig(
+            base_url=f"http://127.0.0.1:{port}",
+            timeout_seconds=2.0,
+            workspace_id="ws",
+            user_id="u",
+            agent_id="agent",
+            session_id="session-1",
+        )
+    )
+
+    try:
+        await client.ingest_turn(
+            [{"role": "user", "content": "remember my aisle seat preference"}],
+            turn_id="turn-1",
+            turn_index=1,
+            ended_with_error=False,
+        )
+        assert seen["messages"] == [{"role": "user", "content": "remember my aisle seat preference"}]
+        assert seen["scope"]["workspace_id"] == "ws"
+        assert seen["scope"]["session_id"] == "session-1"
+        assert seen["metadata"]["ended_with_error"] is False
+    finally:
+        await runner.cleanup()
 
 
 @pytest.mark.anyio
@@ -160,7 +235,9 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
         async for chunk in agent.run(user_msg):
             chunks.append(chunk)
 
-        reasoning = [c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning]
+        reasoning = [
+            c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning
+        ]
         assert len(reasoning) > 0, f"No reasoning chunks, got {len(chunks)} total"
         assert any("get_weather" in (r or "") for r in reasoning)
 
@@ -211,7 +288,9 @@ async def test_agent_pending_schedule_response(tmp_path: Path) -> None:
         async for chunk in agent.run(user_msg):
             chunks.append(chunk)
 
-        reasoning = [c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning]
+        reasoning = [
+            c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning
+        ]
         assert any("Schedule triggered" in (r or "") for r in reasoning)
 
         content = [c.choices[0].delta.content for c in chunks if c.choices and c.choices[0].delta.content]
@@ -471,7 +550,7 @@ async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_turn_delta_is_flushed_on_stop(tmp_path: Path) -> None:
-    seen: dict[str, object] = {}
+    seen: dict[str, Any] = {}
     flushed = anyio.Event()
 
     class FakeMemoryClient:
@@ -505,7 +584,7 @@ async def test_turn_delta_is_flushed_on_stop(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_turn_delta_is_flushed_on_error(tmp_path: Path) -> None:
-    seen: dict[str, object] = {}
+    seen: dict[str, Any] = {}
     flushed = anyio.Event()
 
     class FakeMemoryClient:
@@ -534,8 +613,89 @@ async def test_turn_delta_is_flushed_on_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_turn_delta_is_flushed_once_on_stream_transport_exception() -> None:
+    seen: list[dict[str, Any]] = []
+    flushed = anyio.Event()
+
+    class FakeMemoryClient:
+        async def ingest_turn(self, messages, *, turn_id, turn_index, ended_with_error):
+            seen.append(
+                {
+                    "messages": messages,
+                    "turn_index": turn_index,
+                    "ended_with_error": ended_with_error,
+                }
+            )
+            flushed.set()
+
+    class TransportFailingAgent(SessionAgent):
+        async def _stream_ai_request(self, request_body: dict):
+            if False:
+                yield
+            raise RuntimeError("socket dropped")
+
+    agent = TransportFailingAgent(ai_socket="unused", tools={}, memory_client=FakeMemoryClient())
+
+    with pytest.raises(RuntimeError, match="socket dropped"):
+        async for _ in agent.run({"role": "user", "content": "persist me"}):
+            pass
+
+    await flushed.wait()
+    assert len(seen) == 1
+    assert [item["role"] for item in seen[0]["messages"]] == ["user"]
+    assert seen[0]["turn_index"] == 1
+    assert seen[0]["ended_with_error"] is True
+
+
+@pytest.mark.anyio
+async def test_turn_delta_is_flushed_once_on_run_cancellation() -> None:
+    seen: list[dict[str, Any]] = []
+    flushed = anyio.Event()
+    release_stream = anyio.Event()
+    first_chunk_seen = anyio.Event()
+
+    class FakeMemoryClient:
+        async def ingest_turn(self, messages, *, turn_id, turn_index, ended_with_error):
+            seen.append(
+                {
+                    "messages": messages,
+                    "turn_index": turn_index,
+                    "ended_with_error": ended_with_error,
+                }
+            )
+            flushed.set()
+
+    class CancellableAgent(SessionAgent):
+        async def _stream_ai_request(self, request_body: dict):
+            yield ChatCompletionChunk(
+                id="chunk-1",
+                choices=[StreamChoice(index=0, delta=DeltaMessage(content="partial"))],
+            )
+            await release_stream.wait()
+
+    agent = CancellableAgent(ai_socket="unused", tools={}, memory_client=FakeMemoryClient())
+
+    async def consume() -> None:
+        async for _ in agent.run({"role": "user", "content": "remember cancellation"}):
+            first_chunk_seen.set()
+            await checkpoint()
+
+    task = asyncio.create_task(consume())
+    with pytest.raises(asyncio.CancelledError):
+        await first_chunk_seen.wait()
+        task.cancel()
+        await task
+
+    await flushed.wait()
+    assert len(seen) == 1
+    assert [item["role"] for item in seen[0]["messages"]] == ["user"]
+    assert seen[0]["turn_index"] == 1
+    assert seen[0]["ended_with_error"] is True
+
+
+@pytest.mark.anyio
 async def test_turn_delta_flush_is_non_blocking_on_stop(tmp_path: Path) -> None:
-    seen: dict[str, object] = {}
+    seen: dict[str, Any] = {}
     started = anyio.Event()
     release = anyio.Event()
 
@@ -572,14 +732,61 @@ async def test_turn_delta_flush_is_non_blocking_on_stop(tmp_path: Path) -> None:
         assert seen["ended_with_error"] is False
 
         release.set()
-        await anyio.sleep(0)
+        await checkpoint()
     finally:
         await mock_server.cleanup()
 
 
 @pytest.mark.anyio
+async def test_shutdown_drains_pending_memory_flush_tasks() -> None:
+    started = anyio.Event()
+    release = anyio.Event()
+    completed = anyio.Event()
+
+    class BlockingMemoryClient:
+        async def ingest_turn(self, messages, *, turn_id, turn_index, ended_with_error):
+            started.set()
+            await release.wait()
+            completed.set()
+
+    agent = SessionAgent(ai_socket="unused", tools={}, memory_client=BlockingMemoryClient())
+    agent.history.append({"role": "user", "content": "queued"})
+    agent._schedule_turn_memory_flush(0, turn_index=1, ended_with_error=False)
+
+    await started.wait()
+    release.set()
+    await agent.shutdown()
+
+    assert completed.is_set()
+    assert not agent._memory_flush_tasks
+
+
+@pytest.mark.anyio
+async def test_shutdown_cancels_memory_flush_tasks_after_timeout() -> None:
+    cancelled = anyio.Event()
+
+    class HangingMemoryClient:
+        async def ingest_turn(self, messages, *, turn_id, turn_index, ended_with_error):
+            try:
+                await anyio.sleep_forever()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    agent = SessionAgent(ai_socket="unused", tools={}, memory_client=HangingMemoryClient())
+    agent.history.append({"role": "user", "content": "queued"})
+    agent._schedule_turn_memory_flush(0, turn_index=1, ended_with_error=False)
+
+    await checkpoint()
+    await agent.shutdown(timeout_seconds=0.01)
+
+    assert cancelled.is_set()
+    assert not agent._memory_flush_tasks
+
+
+@pytest.mark.anyio
 async def test_turn_delta_is_flushed_on_max_tool_rounds(tmp_path: Path) -> None:
-    seen: dict[str, object] = {}
+    seen: dict[str, Any] = {}
     flushed = anyio.Event()
 
     class FakeMemoryClient:
@@ -603,7 +810,11 @@ async def test_turn_delta_is_flushed_on_max_tool_rounds(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        tf = ToolFunction(name="noop", description="No-op", parameters={"type": "object", "properties": {}, "required": []})
+        tf = ToolFunction(
+            name="noop",
+            description="No-op",
+            parameters={"type": "object", "properties": {}, "required": []},
+        )
         agent = SessionAgent(
             ai_socket=f"http://127.0.0.1:{port}",
             tools={"noop": tf},
@@ -638,12 +849,12 @@ async def test_delayed_flush_keeps_original_turn_delta_when_next_turn_starts(tmp
                 both_flushed.set()
 
     class DelayedFirstFlushAgent(SessionAgent):
-        async def _flush_turn_memory(self, messages, *, turn_index, ended_with_error):
+        async def _flush_turn_memory(self, delta, *, turn_index, ended_with_error):
             if turn_index == 1:
                 first_flush_started.set()
                 await release_first_flush.wait()
             await super()._flush_turn_memory(
-                messages,
+                delta,
                 turn_index=turn_index,
                 ended_with_error=ended_with_error,
             )
@@ -679,6 +890,43 @@ async def test_delayed_flush_keeps_original_turn_delta_when_next_turn_starts(tmp
         assert [item["content"] for item in seen[2]] == ["second", "reply-2"]
     finally:
         await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_session_run_shuts_down_agent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class FakeAgent:
+        schedules: ClassVar[list[object]] = []
+
+        async def handle_chat_completions(self, request):
+            raise AssertionError("not expected")
+
+        async def shutdown(self, timeout_seconds: float = 5.0) -> None:
+            events.append(f"shutdown:{timeout_seconds}")
+
+    fake_agent = FakeAgent()
+
+    async def fake_create(**kwargs):
+        return fake_agent
+
+    async def fake_serve_session(*, channel_socket, handler, lock):
+        events.append("serve")
+        await anyio.sleep_forever()
+
+    monkeypatch.setattr("psi_agent.session.SessionAgent.create", fake_create)
+    monkeypatch.setattr("psi_agent.session.serve_session", fake_serve_session)
+
+    session = Session(
+        workspace=str(tmp_path),
+        channel_socket=str(tmp_path / "channel.sock"),
+        ai_socket=str(tmp_path / "ai.sock"),
+    )
+    with anyio.move_on_after(0.1) as scope:
+        await session.run()
+
+    assert scope.cancel_called
+    assert events == ["serve", "shutdown:5.0"]
 
 
 @pytest.mark.anyio

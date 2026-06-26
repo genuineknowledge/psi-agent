@@ -215,7 +215,9 @@ async def test_turn_auto_persist_failure_does_not_fail_session(
         assert await _wait_for_socket(ai_socket)
         assert await _wait_for_socket(channel_socket)
         first_chunks = await read_sse(channel_socket, "hello")
-        first_content = "".join(chunk.get("choices", [{}])[0].get("delta", {}).get("content", "") for chunk in first_chunks)
+        first_content = "".join(
+            chunk.get("choices", [{}])[0].get("delta", {}).get("content", "") for chunk in first_chunks
+        )
         assert "still answered" in first_content
         first_payload = await _wait_for_ingest(seen, 1)
         assert first_payload["messages"][0]["content"] == "hello"

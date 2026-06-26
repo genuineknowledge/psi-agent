@@ -50,14 +50,17 @@ class Session:
 
         lock = anyio.Lock()
 
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(
-                partial(
-                    serve_session,
-                    channel_socket=self.channel_socket,
-                    handler=agent.handle_chat_completions,
-                    lock=lock,
+        try:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(
+                    partial(
+                        serve_session,
+                        channel_socket=self.channel_socket,
+                        handler=agent.handle_chat_completions,
+                        lock=lock,
+                    )
                 )
-            )
-            for schedule in agent.schedules:
-                tg.start_soon(partial(run_one_schedule, schedule, agent, lock))
+                for schedule in agent.schedules:
+                    tg.start_soon(partial(run_one_schedule, schedule, agent, lock))
+        finally:
+            await agent.shutdown()

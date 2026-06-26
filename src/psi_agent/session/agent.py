@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib.util
 import inspect
 import json
+import os
 import sys
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import aiohttp
 import anyio
@@ -16,10 +19,75 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent._socket import resolve_connector_and_endpoint
-from psi_agent.session.memory_client import FusionMemoryClient, build_memory_client_config
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.scheduler import load_schedules_from_workspace
 from psi_agent.session.tools import load_tools_from_workspace
+
+
+class RealMemory(Protocol):
+    async def ingest_turn(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        turn_id: str | None,
+        turn_index: int | None,
+        ended_with_error: bool,
+    ) -> None: ...
+
+
+@dataclass(frozen=True)
+class _MemoryClientConfig:
+    base_url: str
+    timeout_seconds: float
+    workspace_id: str
+    user_id: str
+    agent_id: str
+    session_id: str | None
+
+
+def _build_memory_client_config(env: Mapping[str, str] | None = None) -> _MemoryClientConfig:
+    env_map = os.environ if env is None else env
+    return _MemoryClientConfig(
+        base_url=(env_map.get("PSI_MEMORY_BASE_URL") or "http://127.0.0.1:8700").rstrip("/"),
+        timeout_seconds=float(env_map.get("PSI_MEMORY_TIMEOUT_SECONDS") or "2.0"),
+        workspace_id=env_map.get("PSI_MEMORY_WORKSPACE_ID") or "dolphin",
+        user_id=env_map.get("PSI_MEMORY_USER_ID") or env_map.get("USER") or "user",
+        agent_id=env_map.get("PSI_MEMORY_AGENT_ID") or "dolphin",
+        session_id=env_map.get("PSI_MEMORY_SESSION_ID") or None,
+    )
+
+
+class _FusionMemoryClient:
+    def __init__(self, config: _MemoryClientConfig) -> None:
+        self._config = config
+
+    async def ingest_turn(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        turn_id: str | None,
+        turn_index: int | None,
+        ended_with_error: bool,
+    ) -> None:
+        payload = {
+            "messages": messages,
+            "scope": {
+                "workspace_id": self._config.workspace_id,
+                "user_id": self._config.user_id,
+                "agent_id": self._config.agent_id,
+                "session_id": self._config.session_id,
+                "app_id": "dolphin",
+            },
+            "turn_id": turn_id,
+            "turn_index": turn_index,
+            "metadata": {"ended_with_error": ended_with_error},
+        }
+        timeout = aiohttp.ClientTimeout(total=self._config.timeout_seconds)
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.post(f"{self._config.base_url}/ingest-turn", json=payload) as response,
+        ):
+            response.raise_for_status()
 
 
 class SessionAgent:
@@ -34,7 +102,7 @@ class SessionAgent:
         max_tool_rounds: int = 128,
         history: list[dict] | None = None,
         history_path: Path | None = None,
-        memory_client: FusionMemoryClient | None = None,
+        memory_client: RealMemory | None = None,
     ) -> None:
         """Initialize an agent backed by an AI server.
 
@@ -86,7 +154,7 @@ class SessionAgent:
         history, history_path = await _init_history(workspace_path, session_id)
         memory_client = None
         try:
-            memory_client = FusionMemoryClient(build_memory_client_config())
+            memory_client = _FusionMemoryClient(_build_memory_client_config())
         except Exception as exc:
             logger.warning(f"Fusion Memory client disabled during session startup: {exc}")
 
@@ -158,78 +226,182 @@ class SessionAgent:
         self.history.append(user_message)
         logger.debug(f"History now has {len(self.history)} messages")
 
-        for _round in range(self.max_tool_rounds):
-            logger.debug(f"Agent loop round {_round + 1}/{self.max_tool_rounds}")
+        turn_flush_scheduled = False
 
-            tool_defs = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.parameters,
-                    },
+        def schedule_turn_memory_flush_once(*, ended_with_error: bool) -> None:
+            nonlocal turn_flush_scheduled
+            if turn_flush_scheduled:
+                return
+            turn_flush_scheduled = True
+            self._schedule_turn_memory_flush(
+                history_len_before,
+                turn_index=turn_index,
+                ended_with_error=ended_with_error,
+            )
+
+        try:
+            for _round in range(self.max_tool_rounds):
+                logger.debug(f"Agent loop round {_round + 1}/{self.max_tool_rounds}")
+
+                tool_defs = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": t.name,
+                            "description": t.description,
+                            "parameters": t.parameters,
+                        },
+                    }
+                    for t in self.tools.values()
+                ]
+
+                request_body: dict = {
+                    "messages": self.history,
+                    "tools": tool_defs,
+                    "stream": True,
                 }
-                for t in self.tools.values()
-            ]
+                if extra_params:
+                    request_body |= extra_params
 
-            request_body: dict = {
-                "messages": self.history,
-                "tools": tool_defs,
-                "stream": True,
-            }
-            if extra_params:
-                request_body |= extra_params
+                logger.info(f"Sending request to AI socket: {self.ai_socket}")
+                logger.debug(f"Request messages count: {len(self.history)}, tools: {len(tool_defs)}")
 
-            logger.info(f"Sending request to AI socket: {self.ai_socket}")
-            logger.debug(f"Request messages count: {len(self.history)}, tools: {len(tool_defs)}")
+                finish_reason: str | None = None
+                accumulated_tool_calls: dict[int, dict] = {}
+                accumulated_content: str = ""
+                accumulated_reasoning: str = ""
 
-            finish_reason: str | None = None
-            accumulated_tool_calls: dict[int, dict] = {}
-            accumulated_content: str = ""
-            accumulated_reasoning: str = ""
+                # --- SSE stream consumption ---
+                async for chunk in self._stream_ai_request(request_body):
+                    yield chunk
 
-            # --- SSE stream consumption ---
-            async for chunk in self._stream_ai_request(request_body):
-                yield chunk
+                    if chunk.choices:
+                        choice = chunk.choices[0]
+                        if choice.finish_reason and not finish_reason:
+                            finish_reason = choice.finish_reason
+                        if choice.delta.content:
+                            accumulated_content += choice.delta.content
+                        if choice.delta.reasoning:
+                            accumulated_reasoning += choice.delta.reasoning
+                        if choice.delta.tool_calls:
+                            for tc in choice.delta.tool_calls:
+                                idx = tc.get("index", 0)
+                                if idx not in accumulated_tool_calls:
+                                    accumulated_tool_calls[idx] = {
+                                        "id": tc.get("id", ""),
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+                                acc = accumulated_tool_calls[idx]
+                                if tc.get("id"):
+                                    acc["id"] = tc["id"]
+                                func = tc.get("function", {})
+                                if func.get("name"):
+                                    acc["function"]["name"] = func["name"]
+                                if func.get("arguments"):
+                                    acc["function"]["arguments"] += func["arguments"]
 
-                if chunk.choices:
-                    choice = chunk.choices[0]
-                    if choice.finish_reason and not finish_reason:
-                        finish_reason = choice.finish_reason
-                    if choice.delta.content:
-                        accumulated_content += choice.delta.content
-                    if choice.delta.reasoning:
-                        accumulated_reasoning += choice.delta.reasoning
-                    if choice.delta.tool_calls:
-                        for tc in choice.delta.tool_calls:
-                            idx = tc.get("index", 0)
-                            if idx not in accumulated_tool_calls:
-                                accumulated_tool_calls[idx] = {
-                                    "id": tc.get("id", ""),
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""},
+                    if finish_reason == "error":
+                        logger.warning("AI returned error, stopping without saving to history")
+                        schedule_turn_memory_flush_once(ended_with_error=True)
+                        return
+
+                    if finish_reason == "stop":
+                        logger.debug("AI finished with stop")
+                        if accumulated_content or accumulated_reasoning:
+                            assistant_msg: dict = {"role": "assistant"}
+                            if accumulated_content:
+                                assistant_msg["content"] = accumulated_content
+                            if accumulated_reasoning:
+                                assistant_msg["reasoning"] = accumulated_reasoning
+                            self.history.append(assistant_msg)
+                            if self._history_path is not None:
+                                await _save_history(self._history_path, self.history)
+                        schedule_turn_memory_flush_once(ended_with_error=False)
+                        return
+
+                    if finish_reason == "tool_calls":
+                        logger.info("AI requested tool calls, processing...")
+
+                        # Order accumulated tool_calls by index
+                        ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
+
+                        # Add assistant message with tool_calls to history
+                        assistant_msg: dict = {"role": "assistant", "tool_calls": ordered_calls}
+                        if accumulated_content:
+                            assistant_msg["content"] = accumulated_content
+                        if accumulated_reasoning:
+                            assistant_msg["reasoning"] = accumulated_reasoning
+                        self.history.append(assistant_msg)
+
+                        # Execute each tool call
+                        for tc in ordered_calls:
+                            func_info = tc.get("function", {})
+                            func_name = func_info.get("name", "")
+                            func_args_str = func_info.get("arguments", "{}")
+
+                            try:
+                                args = json.loads(func_args_str)
+                            except (json.JSONDecodeError, TypeError):
+                                logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
+                                args = {}
+
+                            logger.info(f"Executing tool: {func_name}({args})")
+
+                            yield ChatCompletionChunk(
+                                id="tool_call",
+                                choices=[
+                                    StreamChoice(
+                                        index=0,
+                                        delta=DeltaMessage(
+                                            reasoning=(
+                                                f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
+                                            ),
+                                        ),
+                                    )
+                                ],
+                            )
+
+                            func = self._tool_funcs.get(func_name)
+                            if func is None:
+                                result = f"Error: Tool '{func_name}' not found"
+                                logger.error(result)
+                            else:
+                                try:
+                                    result = await func(**args)
+                                    logger.info(f"Tool result ({func_name}): {str(result)[:200]}")
+                                except Exception as e:
+                                    result = f"Error executing tool '{func_name}': {e}"
+                                    logger.error(result)
+
+                            yield ChatCompletionChunk(
+                                id="tool_result",
+                                choices=[
+                                    StreamChoice(
+                                        index=0,
+                                        delta=DeltaMessage(reasoning=f"[Tool Result: {str(result)[:500]}]"),
+                                    )
+                                ],
+                            )
+
+                            self.history.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tc.get("id", ""),
+                                    "name": func_name,
+                                    "content": str(result),
                                 }
-                            acc = accumulated_tool_calls[idx]
-                            if tc.get("id"):
-                                acc["id"] = tc["id"]
-                            func = tc.get("function", {})
-                            if func.get("name"):
-                                acc["function"]["name"] = func["name"]
-                            if func.get("arguments"):
-                                acc["function"]["arguments"] += func["arguments"]
+                            )
 
-                if finish_reason == "error":
-                    logger.warning("AI returned error, stopping without saving to history")
-                    self._schedule_turn_memory_flush(
-                        history_len_before,
-                        turn_index=turn_index,
-                        ended_with_error=True,
+                        # Inner for-tc loop done — fall through to next _round
+                        break
+
+                # SSE stream ended without a recognised finish_reason
+                if finish_reason not in ("error", "stop", "tool_calls"):
+                    logger.warning(
+                        f"Unexpected finish_reason={finish_reason!r}, "
+                        f"saving {len(accumulated_content)} chars of content and stopping"
                     )
-                    return
-
-                if finish_reason == "stop":
-                    logger.debug("AI finished with stop")
                     if accumulated_content or accumulated_reasoning:
                         assistant_msg: dict = {"role": "assistant"}
                         if accumulated_content:
@@ -237,126 +409,25 @@ class SessionAgent:
                         if accumulated_reasoning:
                             assistant_msg["reasoning"] = accumulated_reasoning
                         self.history.append(assistant_msg)
-                        if self._history_path is not None:
-                            await _save_history(self._history_path, self.history)
-                    self._schedule_turn_memory_flush(
-                        history_len_before,
-                        turn_index=turn_index,
-                        ended_with_error=False,
-                    )
+                    schedule_turn_memory_flush_once(ended_with_error=False)
                     return
 
-                if finish_reason == "tool_calls":
-                    logger.info("AI requested tool calls, processing...")
-
-                    # Order accumulated tool_calls by index
-                    ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
-
-                    # Add assistant message with tool_calls to history
-                    assistant_msg: dict = {"role": "assistant", "tool_calls": ordered_calls}
-                    if accumulated_content:
-                        assistant_msg["content"] = accumulated_content
-                    if accumulated_reasoning:
-                        assistant_msg["reasoning"] = accumulated_reasoning
-                    self.history.append(assistant_msg)
-
-                    # Execute each tool call
-                    for tc in ordered_calls:
-                        func_info = tc.get("function", {})
-                        func_name = func_info.get("name", "")
-                        func_args_str = func_info.get("arguments", "{}")
-
-                        try:
-                            args = json.loads(func_args_str)
-                        except (json.JSONDecodeError, TypeError):
-                            logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
-                            args = {}
-
-                        logger.info(f"Executing tool: {func_name}({args})")
-
-                        yield ChatCompletionChunk(
-                            id="tool_call",
-                            choices=[
-                                StreamChoice(
-                                    index=0,
-                                    delta=DeltaMessage(
-                                        reasoning=(f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"),
-                                    ),
-                                )
-                            ],
+            else:
+                logger.warning(f"Reached max tool rounds ({self.max_tool_rounds}), stopping")
+                schedule_turn_memory_flush_once(ended_with_error=False)
+                yield ChatCompletionChunk(
+                    id="max_rounds",
+                    choices=[
+                        StreamChoice(
+                            index=0,
+                            delta=DeltaMessage(content="[Max tool rounds reached]"),
+                            finish_reason="stop",
                         )
-
-                        func = self._tool_funcs.get(func_name)
-                        if func is None:
-                            result = f"Error: Tool '{func_name}' not found"
-                            logger.error(result)
-                        else:
-                            try:
-                                result = await func(**args)
-                                logger.info(f"Tool result ({func_name}): {str(result)[:200]}")
-                            except Exception as e:
-                                result = f"Error executing tool '{func_name}': {e}"
-                                logger.error(result)
-
-                        yield ChatCompletionChunk(
-                            id="tool_result",
-                            choices=[
-                                StreamChoice(
-                                    index=0,
-                                    delta=DeltaMessage(reasoning=f"[Tool Result: {str(result)[:500]}]"),
-                                )
-                            ],
-                        )
-
-                        self.history.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tc.get("id", ""),
-                                "name": func_name,
-                                "content": str(result),
-                            }
-                        )
-
-                    # Inner for-tc loop done — fall through to next _round
-                    break
-
-            # SSE stream ended without a recognised finish_reason
-            if finish_reason not in ("error", "stop", "tool_calls"):
-                logger.warning(
-                    f"Unexpected finish_reason={finish_reason!r}, "
-                    f"saving {len(accumulated_content)} chars of content and stopping"
+                    ],
                 )
-                if accumulated_content or accumulated_reasoning:
-                    assistant_msg: dict = {"role": "assistant"}
-                    if accumulated_content:
-                        assistant_msg["content"] = accumulated_content
-                    if accumulated_reasoning:
-                        assistant_msg["reasoning"] = accumulated_reasoning
-                    self.history.append(assistant_msg)
-                self._schedule_turn_memory_flush(
-                    history_len_before,
-                    turn_index=turn_index,
-                    ended_with_error=False,
-                )
-                return
-
-        else:
-            logger.warning(f"Reached max tool rounds ({self.max_tool_rounds}), stopping")
-            self._schedule_turn_memory_flush(
-                history_len_before,
-                turn_index=turn_index,
-                ended_with_error=False,
-            )
-            yield ChatCompletionChunk(
-                id="max_rounds",
-                choices=[
-                    StreamChoice(
-                        index=0,
-                        delta=DeltaMessage(content="[Max tool rounds reached]"),
-                        finish_reason="stop",
-                    )
-                ],
-            )
+        except BaseException:
+            schedule_turn_memory_flush_once(ended_with_error=True)
+            raise
 
     def _schedule_turn_memory_flush(
         self,
@@ -367,7 +438,7 @@ class SessionAgent:
     ) -> None:
         if self._memory_client is None:
             return
-        delta = list(self.history[history_len_before:])
+        delta = copy.deepcopy(self.history[history_len_before:])
         if not delta:
             return
         task = asyncio.create_task(
@@ -379,6 +450,22 @@ class SessionAgent:
         )
         self._memory_flush_tasks.add(task)
         task.add_done_callback(self._memory_flush_tasks.discard)
+
+    async def shutdown(self, timeout_seconds: float = 5.0) -> None:
+        pending = [task for task in list(self._memory_flush_tasks) if not task.done()]
+        if not pending:
+            return
+        done, still_pending = await asyncio.wait(pending, timeout=timeout_seconds)
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+        if not still_pending:
+            return
+        logger.warning(
+            f"Cancelling {len(still_pending)} pending Fusion Memory flush task(s) after {timeout_seconds:.2f}s"
+        )
+        for task in still_pending:
+            task.cancel()
+        await asyncio.gather(*still_pending, return_exceptions=True)
 
     def _build_connector_and_endpoint(self) -> tuple[aiohttp.BaseConnector, str]:
         """Resolve self.ai_socket to an aiohttp connector and HTTP endpoint."""
