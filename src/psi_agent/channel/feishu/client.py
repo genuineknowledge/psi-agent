@@ -44,11 +44,7 @@ async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[Chunk]:
         path = f"{downloads}/{audio_key[-32:]}"
         try:
             req = (
-                GetMessageResourceRequest.builder()
-                .message_id(ctx.message_id)
-                .file_key(audio_key)
-                .type("file")
-                .build()
+                GetMessageResourceRequest.builder().message_id(ctx.message_id).file_key(audio_key).type("file").build()
             )
             resp = await channel.client.im.v1.message_resource.aget(req)
             await anyio.Path(path).write_bytes(resp.file.read())
