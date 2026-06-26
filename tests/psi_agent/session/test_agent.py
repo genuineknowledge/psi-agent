@@ -469,6 +469,64 @@ async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_turn_delta_is_flushed_on_stop(tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeMemoryClient:
+        async def ingest_turn(self, messages, *, turn_id, turn_index, ended_with_error):
+            seen["messages"] = messages
+            seen["turn_index"] = turn_index
+            seen["ended_with_error"] = ended_with_error
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content="stored", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(ai_socket=ai_socket, tools={}, memory_client=FakeMemoryClient())
+        async for _ in agent.run({"role": "user", "content": "remember my seat preference"}):
+            pass
+
+        assert [item["role"] for item in seen["messages"]] == ["user", "assistant"]
+        assert seen["turn_index"] == 1
+        assert seen["ended_with_error"] is False
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_turn_delta_is_flushed_on_error(tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeMemoryClient:
+        async def ingest_turn(self, messages, *, turn_id, turn_index, ended_with_error):
+            seen["messages"] = messages
+            seen["turn_index"] = turn_index
+            seen["ended_with_error"] = ended_with_error
+
+    async def handler(request: web.Request) -> web.Response:
+        return web.Response(status=500)
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(ai_socket=ai_socket, tools={}, memory_client=FakeMemoryClient())
+        async for _ in agent.run({"role": "user", "content": "danger"}):
+            pass
+
+        assert [item["role"] for item in seen["messages"]] == ["user"]
+        assert seen["turn_index"] == 1
+        assert seen["ended_with_error"] is True
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
 async def test_agent_non_data_sse_line(tmp_path: Path) -> None:
     """SSE lines not starting with 'data: ' should be skipped."""
 

@@ -15,6 +15,7 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent._socket import resolve_connector_and_endpoint
+from psi_agent.session.memory_client import FusionMemoryClient, build_memory_client_config
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.scheduler import load_schedules_from_workspace
 from psi_agent.session.tools import load_tools_from_workspace
@@ -32,6 +33,7 @@ class SessionAgent:
         max_tool_rounds: int = 128,
         history: list[dict] | None = None,
         history_path: Path | None = None,
+        memory_client: FusionMemoryClient | None = None,
     ) -> None:
         """Initialize an agent backed by an AI server.
 
@@ -55,6 +57,8 @@ class SessionAgent:
         self.history = history if history is not None else []
         self._history_path = history_path
         self._pending_schedule_chunks: list[ChatCompletionChunk] = []
+        self._memory_client = memory_client
+        self._turn_index = 0
 
     @classmethod
     async def create(
@@ -78,6 +82,11 @@ class SessionAgent:
         schedules = await load_schedules_from_workspace(workspace_path / "schedules")
 
         history, history_path = await _init_history(workspace_path, session_id)
+        memory_client = None
+        try:
+            memory_client = FusionMemoryClient(build_memory_client_config())
+        except Exception as exc:
+            logger.warning(f"Fusion Memory client disabled during session startup: {exc}")
 
         return cls(
             ai_socket=ai_socket,
@@ -88,6 +97,7 @@ class SessionAgent:
             max_tool_rounds=max_tool_rounds,
             history=history,
             history_path=history_path,
+            memory_client=memory_client,
         )
 
     def set_pending_schedule_chunks(self, chunks: list[ChatCompletionChunk]) -> None:
@@ -140,6 +150,9 @@ class SessionAgent:
                 yield chunk
             self._pending_schedule_chunks = []
 
+        self._turn_index += 1
+        turn_index = self._turn_index
+        history_len_before = len(self.history)
         self.history.append(user_message)
         logger.debug(f"History now has {len(self.history)} messages")
 
@@ -206,6 +219,11 @@ class SessionAgent:
 
                 if finish_reason == "error":
                     logger.warning("AI returned error, stopping without saving to history")
+                    await self._flush_turn_memory(
+                        history_len_before,
+                        turn_index=turn_index,
+                        ended_with_error=True,
+                    )
                     return
 
                 if finish_reason == "stop":
@@ -219,6 +237,11 @@ class SessionAgent:
                         self.history.append(assistant_msg)
                         if self._history_path is not None:
                             await _save_history(self._history_path, self.history)
+                    await self._flush_turn_memory(
+                        history_len_before,
+                        turn_index=turn_index,
+                        ended_with_error=False,
+                    )
                     return
 
                 if finish_reason == "tool_calls":
@@ -308,6 +331,11 @@ class SessionAgent:
                     if accumulated_reasoning:
                         assistant_msg["reasoning"] = accumulated_reasoning
                     self.history.append(assistant_msg)
+                await self._flush_turn_memory(
+                    history_len_before,
+                    turn_index=turn_index,
+                    ended_with_error=False,
+                )
                 return
 
         else:
@@ -407,6 +435,28 @@ class SessionAgent:
                         )
                     ],
                 )
+
+    async def _flush_turn_memory(
+        self,
+        history_len_before: int,
+        *,
+        turn_index: int,
+        ended_with_error: bool,
+    ) -> None:
+        if self._memory_client is None:
+            return
+        delta = self.history[history_len_before:]
+        if not delta:
+            return
+        try:
+            await self._memory_client.ingest_turn(
+                delta,
+                turn_id=None,
+                turn_index=turn_index,
+                ended_with_error=ended_with_error,
+            )
+        except Exception as exc:
+            logger.warning(f"Fusion Memory auto-persist skipped: {exc}")
 
     async def handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
         """Channel-facing HTTP/SSE handler — one request per channel message.
