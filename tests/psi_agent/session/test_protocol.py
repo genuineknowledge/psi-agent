@@ -68,11 +68,11 @@ def test_chat_completion_chunk_to_sse() -> None:
 
 def test_chat_completion_chunk_reasoning() -> None:
     chunk = ChatCompletionChunk(
-        choices=[StreamChoice(index=0, delta=DeltaMessage(reasoning_content="Let me think..."))],
+        choices=[StreamChoice(index=0, delta=DeltaMessage(reasoning="Let me think..."))],
     )
     sse = chunk.to_sse()
     parsed = json.loads(sse[6:].strip())
-    assert parsed["choices"][0]["delta"]["reasoning_content"] == "Let me think..."
+    assert parsed["choices"][0]["delta"]["reasoning"] == "Let me think..."
 
 
 def test_chat_completion_chunk_tool_calls_in_delta() -> None:
@@ -152,14 +152,14 @@ def test_chat_completion_chunk_to_dict_direct() -> None:
         choices=[
             StreamChoice(
                 index=0,
-                delta=DeltaMessage(content="ok", reasoning_content="think"),
+                delta=DeltaMessage(content="ok", reasoning="think"),
                 finish_reason="stop",
             )
         ],
     )
     d = chunk.to_dict()
     assert d["id"] == "c1"
-    assert d["choices"][0]["delta"]["reasoning_content"] == "think"
+    assert d["choices"][0]["delta"]["reasoning"] == "think"
 
 
 def test_tool_function_optional_none_type() -> None:
@@ -308,8 +308,8 @@ def test_tool_function_kwargs_raises() -> None:
 
 
 def test_delta_message_reasoning_only() -> None:
-    dm = DeltaMessage(reasoning_content="think")
-    assert dm.to_dict() == {"reasoning_content": "think"}
+    dm = DeltaMessage(reasoning="think")
+    assert dm.to_dict() == {"reasoning": "think"}
 
 
 def test_delta_message_tool_calls_only() -> None:
@@ -318,9 +318,9 @@ def test_delta_message_tool_calls_only() -> None:
 
 
 def test_delta_message_all_fields() -> None:
-    dm = DeltaMessage(content="hi", role="assistant", reasoning_content="think", tool_calls=[{"index": 0}])
+    dm = DeltaMessage(content="hi", role="assistant", reasoning="think", tool_calls=[{"index": 0}])
     d = dm.to_dict()
-    assert d == {"content": "hi", "role": "assistant", "reasoning_content": "think", "tool_calls": [{"index": 0}]}
+    assert d == {"content": "hi", "role": "assistant", "reasoning": "think", "tool_calls": [{"index": 0}]}
 
 
 def test_stream_choice_default() -> None:

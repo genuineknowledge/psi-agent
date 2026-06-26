@@ -170,7 +170,7 @@ class ToolFunction:
 class DeltaMessage:
     content: str | None = None
     role: str | None = None
-    reasoning_content: str | None = None
+    reasoning: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -179,8 +179,8 @@ class DeltaMessage:
             d["content"] = self.content
         if self.role is not None:
             d["role"] = self.role
-        if self.reasoning_content is not None:
-            d["reasoning_content"] = self.reasoning_content
+        if self.reasoning is not None:
+            d["reasoning"] = self.reasoning
         if self.tool_calls is not None:
             d["tool_calls"] = self.tool_calls
         return d

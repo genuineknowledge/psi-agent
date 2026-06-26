@@ -251,7 +251,7 @@ git add psi_agent/_logging.py tests/psi_agent/test__logging.py && git commit -m 
 4. 构建 OpenAI 请求（history + tools），POST ai_socket，流式读取
 5. 积累 tool_calls fragments
 6. 收到 `finish_reason="stop"` → 结束
-7. 收到 `finish_reason="tool_calls"` → 流式累积的 tool_calls 按 index 排序 → 执行 tool → 结果追加到 history → yield reasoning_content chunks → 回到步骤 4
+7. 收到 `finish_reason="tool_calls"` → 流式累积的 tool_calls 按 index 排序 → 执行 tool → 结果追加到 history → yield reasoning chunks → 回到步骤 4
 8. 最多 `max_tool_rounds` 轮 tool call（CLI 可配置，默认 128）
 
 ---
@@ -406,13 +406,13 @@ def main() -> None:
 
 - [x] CLI 发送消息 → stdout 包含回复
 - [x] REPL 多条消息 → history 在 session 端累积
-- [x] SSE 流中 reasoning_content 和 content 交错 → 各自独立显示
+- [x] SSE 流中 reasoning 和 content 交错 → 各自独立显示
 - [x] 收到多个 choices → 迭代所有 choice
 
 #### Sub-task 15h: 端到端全链路 mock（3 tests）
 
 - [x] mock AI → session → CLI → 全链路 SSE 正确
-- [x] mock AI 返回 tool_call + 最终文本 → tool 执行 → reasoning_content + content
+- [x] mock AI 返回 tool_call + 最终文本 → tool 执行 → reasoning + content
 - [x] channel 发 2 条消息 → session history 正确累积
 
 ---

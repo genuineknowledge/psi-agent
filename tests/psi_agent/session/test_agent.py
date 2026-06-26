@@ -23,7 +23,7 @@ def _sse_chunk(content: str = "", reasoning: str = "", finish: str | None = None
     if content:
         delta["content"] = content
     if reasoning:
-        delta["reasoning_content"] = reasoning
+        delta["reasoning"] = reasoning
     chunk = {
         "id": "mock",
         "object": "chat.completion.chunk",
@@ -159,9 +159,7 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
         async for chunk in agent.run(user_msg):
             chunks.append(chunk)
 
-        reasoning = [
-            c.choices[0].delta.reasoning_content for c in chunks if c.choices and c.choices[0].delta.reasoning_content
-        ]
+        reasoning = [c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning]
         assert len(reasoning) > 0, f"No reasoning chunks, got {len(chunks)} total"
         assert any("get_weather" in (r or "") for r in reasoning)
 
@@ -192,7 +190,7 @@ async def test_agent_pending_schedule_response(tmp_path: Path) -> None:
                     choices=[
                         StreamChoice(
                             index=0,
-                            delta=DeltaMessage(reasoning_content="[Schedule triggered: daily report]"),
+                            delta=DeltaMessage(reasoning="[Schedule triggered: daily report]"),
                         )
                     ],
                 ),
@@ -212,9 +210,7 @@ async def test_agent_pending_schedule_response(tmp_path: Path) -> None:
         async for chunk in agent.run(user_msg):
             chunks.append(chunk)
 
-        reasoning = [
-            c.choices[0].delta.reasoning_content for c in chunks if c.choices and c.choices[0].delta.reasoning_content
-        ]
+        reasoning = [c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning]
         assert any("Schedule triggered" in (r or "") for r in reasoning)
 
         content = [c.choices[0].delta.content for c in chunks if c.choices and c.choices[0].delta.content]
@@ -320,7 +316,7 @@ async def test_agent_tool_not_registered(tmp_path: Path) -> None:
         )
         agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={"unknown": tf})
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
-        reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
+        reasoning = "".join(c.choices[0].delta.reasoning or "" for c in chunks if c.choices)
         assert "not found" in reasoning.lower()
     finally:
         await runner.cleanup()
@@ -352,7 +348,7 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
             ai_socket=f"http://127.0.0.1:{port}", tools={"crash": tf}, tool_funcs={"crash": crash_tool}
         )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
-        reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
+        reasoning = "".join(c.choices[0].delta.reasoning or "" for c in chunks if c.choices)
         assert "BOOM" in reasoning or "RuntimeError" in reasoning
     finally:
         await runner.cleanup()
@@ -382,7 +378,7 @@ async def test_agent_tool_returns_int(tmp_path: Path) -> None:
             ai_socket=f"http://127.0.0.1:{port}", tools={"int_tool": tf}, tool_funcs={"int_tool": int_tool}
         )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
-        reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
+        reasoning = "".join(c.choices[0].delta.reasoning or "" for c in chunks if c.choices)
         assert "42" in reasoning
     finally:
         await runner.cleanup()

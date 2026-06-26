@@ -34,7 +34,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 7. 发送 `history + tools + extra_params` 到 AI socket（streaming）
 8. 解析 SSE 流（每 chunk 恰好 1 个 choice，多 choice 报错，0 choice 心跳跳过）：
    - content → yield 给 channel
-   - reasoning_content → yield 给 channel
+   - reasoning → yield 给 channel
    - tool_calls → 累积（按 index 拼接 partial JSON）
    - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 7
    - finish_reason="stop" → 最终 content 追加到 history → 释放锁
@@ -93,7 +93,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 - `function.name`：取第一次非空值
 - `function.arguments`：**拼接**所有 partial JSON 片段
 
-同时累积 `reasoning_content`（AI 的思考过程）——DeepSeek V4 等 reasoning model 要求 tool call 轮次中 `reasoning_content` 必须完整回传到 API。
+同时累积 `reasoning`（AI 的思考过程）——DeepSeek V4 等 reasoning model 要求 tool call 轮次中 `reasoning` 必须完整回传到 API。
 
 收到 `finish_reason="tool_calls"` 后，按 index 排序生成完整 tool_calls 列表，逐一执行。
 
@@ -121,7 +121,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 
 关键点：
 - Schedule 是纯配置数据类（`name, cron, task_content`），cron 状态由 `run_one_schedule` 维护
-- Schedule 响应的 content 和 reasoning_content 各自存在于各自的消息周期，不会交错
+- Schedule 响应的 content 和 reasoning 各自存在于各自的消息周期，不会交错
 - 多个 schedule 可以并发 sleep，但通过 lock 串行触发
 - cron 表达式在加载时验证，非法表达式会导致该 schedule 被跳过
 
