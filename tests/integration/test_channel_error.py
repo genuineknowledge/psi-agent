@@ -6,24 +6,37 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
-from tests.integration.conftest import read_sse
+from tests.integration.conftest import _psi_process_spec, read_sse
+
+
+def test_psi_process_spec_falls_back_without_uv(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tests.integration.conftest.shutil.which", lambda _: None)
+
+    cmd, env, cwd = _psi_process_spec("ai")
+
+    assert Path(cmd[0]) == cwd / ".venv" / "bin" / "python"
+    assert cmd[1:3] == ["-c", "from psi_agent.cli import main; main()"]
+    assert cmd[3:] == ["ai"]
+    assert env is not None
+    assert str(cwd / "src") in env.get("PYTHONPATH", "")
+    assert (cwd / "pyproject.toml").exists()
 
 
 @pytest.mark.anyio
 async def test_cli_session_socket_not_exists(tmp_path: Path) -> None:
     """CLI should print error when session socket doesn't exist."""
+    cmd, env, cwd = _psi_process_spec(
+        "channel",
+        "cli",
+        "--session-socket",
+        str(tmp_path / "nonexistent.sock"),
+        "--message",
+        "hello",
+    )
     result = await anyio.run_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "channel",
-            "cli",
-            "--session-socket",
-            str(tmp_path / "nonexistent.sock"),
-            "--message",
-            "hello",
-        ],
+        cmd,
+        env=env,
+        cwd=str(cwd),
         check=False,
     )
     assert result.returncode != 0
@@ -109,12 +122,22 @@ async def test_cli_handles_session_non_200_error(tmp_path: Path) -> None:
 
     try:
         await anyio.sleep(0.2)
+        cmd, env, cwd = _psi_process_spec(
+            "channel",
+            "cli",
+            "--session-socket",
+            str(channel_socket),
+            "--message",
+            "hello",
+        )
         result = await anyio.run_process(
-            ["uv", "run", "psi-agent", "channel", "cli", "--session-socket", str(channel_socket), "--message", "hello"],
+            cmd,
+            env=env,
+            cwd=str(cwd),
             check=False,
         )
         assert result.returncode != 0, f"Expected non-zero exit, got {result.returncode}"
-        output = result.stdout.decode() if result.stdout else ""
+        output = (result.stdout.decode() if result.stdout else "") + (result.stderr.decode() if result.stderr else "")
         assert "Error" in output or "something went wrong" in output, f"Got: {output[:200]}"
     finally:
         await runner.cleanup()

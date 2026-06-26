@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -147,9 +149,30 @@ def read_sse_sync(socket_path: str, message: str = "hello", *, timeout_sec: floa
 # --- Subprocess helpers ---
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _psi_process_spec(*args: str) -> tuple[list[str], dict[str, str] | None, Path]:
+    repo_root = _repo_root()
+    uv_path = shutil.which("uv")
+    if uv_path:
+        return [uv_path, "run", "psi-agent", *args], None, repo_root
+
+    python_path = repo_root / ".venv" / "bin" / "python"
+    env = os.environ.copy()
+    src_path = str(repo_root / "src")
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = src_path if not existing_pythonpath else f"{src_path}:{existing_pythonpath}"
+    return [str(python_path), "-c", "from psi_agent.cli import main; main()", *args], env, repo_root
+
+
 def _start_psi(*args: str) -> subprocess.Popen:
+    cmd, env, cwd = _psi_process_spec(*args)
     return subprocess.Popen(
-        ["uv", "run", "psi-agent", *args],
+        cmd,
+        cwd=cwd,
+        env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,

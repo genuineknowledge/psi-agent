@@ -43,8 +43,7 @@ def test_parse_intent_analysis_reply_distinguishes_deny_none_and_allow_rules() -
 
 def test_denial_message_and_policy_request_shape() -> None:
     assert (
-        normalize_denial_message("policy denied")
-        == "[Fusion-Guard] Security policy denied this request: policy denied"
+        normalize_denial_message("policy denied") == "[Fusion-Guard] Security policy denied this request: policy denied"
     )
 
     request = build_policy_install_request(

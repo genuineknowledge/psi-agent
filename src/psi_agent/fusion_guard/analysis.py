@@ -20,8 +20,7 @@ def build_intent_analysis_prompt(
     session_id: str | None,
 ) -> str:
     history_lines = "\n".join(
-        f"{msg.get('role', 'unknown')}: {msg.get('content', '')}"
-        for msg in history_messages[-12:]
+        f"{msg.get('role', 'unknown')}: {msg.get('content', '')}" for msg in history_messages[-12:]
     )
     return (
         "You are the Fusion-Guard intent analyzer.\n"

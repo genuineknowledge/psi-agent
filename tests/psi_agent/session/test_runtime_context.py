@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -39,6 +39,13 @@ def _stop_chunk() -> ChatCompletionChunk:
     )
 
 
+class RuntimeContextSessionAgent(SessionAgent):
+    async def _stream_ai_request(self, request_body: dict) -> AsyncIterator[ChatCompletionChunk]:
+        _ = request_body
+        yield _tool_call_chunk()
+        yield _stop_chunk()
+
+
 @pytest.mark.anyio
 async def test_user_message_is_written_before_tool_execution(tmp_path: Path) -> None:
     history_path = tmp_path / "workspace" / "histories" / "session-1.jsonl"
@@ -58,7 +65,7 @@ async def test_user_message_is_written_before_tool_execution(tmp_path: Path) -> 
         description="Echo",
         parameters={"type": "object", "properties": {}, "required": []},
     )
-    agent = SessionAgent(
+    agent = RuntimeContextSessionAgent(
         ai_socket="http://127.0.0.1:1",
         tools={"echo_tool": tf},
         tool_funcs={"echo_tool": echo_tool},
@@ -66,16 +73,9 @@ async def test_user_message_is_written_before_tool_execution(tmp_path: Path) -> 
         history_path=history_path,
     )
 
-    async def fake_stream(_: dict):
-        yield _tool_call_chunk()
-        yield _stop_chunk()
-
-    agent._stream_ai_request = fake_stream  # type: ignore[method-assign]
-
     async for _ in agent.run({"role": "user", "content": "hello"}):
         pass
 
     assert seen["ctx"] is not None
     assert '"role": "user"' in str(seen["history_file"])
     assert '"content": "hello"' in str(seen["history_file"])
-

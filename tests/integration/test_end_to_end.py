@@ -10,7 +10,10 @@ import pytest
 from aiohttp import web
 
 from psi_agent.session.agent import SessionAgent
-from tests.integration.conftest import MockAIServer, read_sse
+from tests.integration.conftest import MockAIServer, _psi_process_spec, read_sse
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WORKSPACE_PATH = "examples/a-simple-schedule-workspace"
 
 
 def _chunk(
@@ -88,10 +91,9 @@ async def test_fusion_guard_workspace_tool_roundtrip(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     base_url = f"http://127.0.0.1:{port}"
-    repo_root = Path(__file__).resolve().parents[2]
     workspace_path = tmp_path / "fusion-guard-security-workspace"
     shutil.copytree(
-        repo_root / "examples" / "fusion-guard-security-workspace",
+        REPO_ROOT / "examples" / "fusion-guard-security-workspace",
         workspace_path,
         ignore=shutil.ignore_patterns("histories", "__pycache__"),
     )
@@ -125,38 +127,30 @@ async def test_full_pipeline_mock_ai(tmp_path: Path, mock_ai_server: MockAIServe
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            base_url,
-        ],
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        base_url,
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            "examples/a-simple-bash-only-workspace",
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ],
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_for_socket(ai_socket)
@@ -215,38 +209,30 @@ async def test_full_pipeline_with_tool(tmp_path: Path) -> None:
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ],
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            "examples/a-simple-bash-only-workspace",
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ],
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_for_socket(ai_socket)
@@ -288,38 +274,30 @@ async def test_multiple_messages_history_accumulates(tmp_path: Path) -> None:
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ],
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            "examples/a-simple-bash-only-workspace",
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ],
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_for_socket(ai_socket)
@@ -364,38 +342,30 @@ async def test_multi_turn_history_accumulates(tmp_path: Path) -> None:
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ]
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            "examples/a-simple-bash-only-workspace",
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ]
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_for_socket(ai_socket)
