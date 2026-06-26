@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from typing import cast
+from contextlib import suppress
+from typing import Any, cast
 
 from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
@@ -12,7 +13,7 @@ from loguru import logger
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.info("Received chat completion request")
     try:
-        body: dict = await request.json()
+        body: dict[str, Any] = await request.json()
         logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:500]}")
     except Exception as e:
         logger.error(f"Failed to parse request body: {e}")
@@ -26,9 +27,12 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     api_key = request.app["api_key"]
     base_url = request.app["base_url"]
 
-    messages = body.pop("messages")
+    messages = body.pop("messages", [])
     body.pop("model", None)
     body.pop("stream", None)
+    body.pop("provider", None)
+    body.pop("api_key", None)
+    body.pop("api_base", None)
 
     response = web.StreamResponse(
         status=200,
@@ -39,7 +43,11 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             "Connection": "keep-alive",
         },
     )
-    await response.prepare(request)
+    try:
+        await response.prepare(request)
+    except Exception:
+        logger.warning("Failed to prepare SSE response, client likely disconnected")
+        return response
 
     try:
         stream = cast(
@@ -63,11 +71,11 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         err_chunk = json.dumps(
             {
                 "id": "error",
-                "model": "",
                 "choices": [{"index": 0, "delta": {"content": f"[Upstream Error]: {e}"}, "finish_reason": "error"}],
             }
         )
-        await response.write(f"data: {err_chunk}\n\n".encode())
+        with suppress(Exception):
+            await response.write(f"data: {err_chunk}\n\n".encode())
 
     logger.info("Request completed")
     return response
