@@ -145,38 +145,30 @@ async def test_third_request_succeeds_after_lock_released(tmp_path: Path) -> Non
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            base_url,
-        ]
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        base_url,
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            WORKSPACE_PATH,
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ]
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_socket(ai_socket)
@@ -206,38 +198,30 @@ async def test_history_accumulation_across_requests(tmp_path: Path, mock_ai_serv
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            base_url,
-        ]
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        base_url,
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            WORKSPACE_PATH,
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ]
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_socket(ai_socket)
@@ -293,38 +277,30 @@ async def test_three_channel_requests_fifo_order(tmp_path: Path) -> None:
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ]
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            WORKSPACE_PATH,
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ]
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_socket(ai_socket)
@@ -378,38 +354,30 @@ async def test_channel_queues_behind_schedule(tmp_path: Path) -> None:
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ]
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            WORKSPACE_PATH,
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ]
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_socket(ai_socket)
@@ -454,38 +422,30 @@ async def test_schedule_queues_behind_channel(tmp_path: Path) -> None:
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ]
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            WORKSPACE_PATH,
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ]
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_socket(ai_socket)
