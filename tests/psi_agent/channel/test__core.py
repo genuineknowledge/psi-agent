@@ -57,7 +57,6 @@ async def test_post_converts_file_chunk_to_recv_marker(tmp_path):
     await site.start()
     await anyio.sleep(0.1)
 
-
     async with ChannelCore(sock_path) as core:
         chunks = []
         async for chunk in core.post([FileChunk("/home/user/file.txt"), TextChunk("hello")]):
@@ -94,7 +93,6 @@ async def test_post_sse_buffering_merges_within_interval(tmp_path):
     await site.start()
     await anyio.sleep(0.1)
 
-
     async with ChannelCore(sock_path, interval=10.0) as core:
         chunks = []
         async for chunk in core.post([TextChunk("hi")]):
@@ -127,7 +125,6 @@ async def test_post_sse_interval_split(tmp_path):
     site = web.UnixSite(runner, sock_path)
     await site.start()
     await anyio.sleep(0.1)
-
 
     async with ChannelCore(sock_path, interval=0.0) as core:
         chunks = []
@@ -167,7 +164,6 @@ async def test_post_detects_send_marker(tmp_path):
     await site.start()
     await anyio.sleep(0.1)
 
-
     async with ChannelCore(sock_path, interval=0.0) as core:
         chunks = []
         async for chunk in core.post([TextChunk("hi")]):
@@ -191,10 +187,7 @@ async def test_post_send_dedup(tmp_path):
         resp = web.StreamResponse()
         resp.headers["Content-Type"] = "text/event-stream"
         await resp.prepare(request)
-        sse_line = (
-            b'data: {"choices":[{"index":0,"delta":{"content":'
-            b'"[SEND:/a.py] chunk1 [SEND:/a.py] chunk2"}}]}\n\n'
-        )
+        sse_line = b'data: {"choices":[{"index":0,"delta":{"content":"[SEND:/a.py] chunk1 [SEND:/a.py] chunk2"}}]}\n\n'
         await resp.write(sse_line)
         await resp.write(b"data: [DONE]\n\n")
         return resp
@@ -207,7 +200,6 @@ async def test_post_send_dedup(tmp_path):
     site = web.UnixSite(runner, sock_path)
     await site.start()
     await anyio.sleep(0.1)
-
 
     async with ChannelCore(sock_path, interval=0.0) as core:
         file_chunks = []
@@ -248,7 +240,6 @@ async def test_post_handles_error_chunk(tmp_path):
     await site.start()
     await anyio.sleep(0.1)
 
-
     async with ChannelCore(sock_path) as core:
         with pytest.raises(Exception, match="Upstream Error 401"):
             async for _ in core.post([TextChunk("hi")]):
@@ -273,7 +264,6 @@ async def test_post_non_200_http_error(tmp_path):
     site = web.UnixSite(runner, sock_path)
     await site.start()
     await anyio.sleep(0.1)
-
 
     async with ChannelCore(sock_path) as core:
         with pytest.raises(Exception, match="server error"):
@@ -304,7 +294,6 @@ async def test_post_flush_on_stream_end(tmp_path):
     site = web.UnixSite(runner, sock_path)
     await site.start()
     await anyio.sleep(0.1)
-
 
     async with ChannelCore(sock_path, interval=10.0) as core:
         chunks = []

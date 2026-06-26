@@ -21,18 +21,18 @@ class ChannelCore:
 
     async def __aenter__(self) -> ChannelCore:
         connector, self._endpoint = resolve_connector_and_endpoint(self.session_socket)
-        self._session = aiohttp.ClientSession(
-            connector=connector, timeout=ClientTimeout(total=None)
-        )
+        self._session = aiohttp.ClientSession(connector=connector, timeout=ClientTimeout(total=None))
         return self
 
     async def __aexit__(self, *args: object) -> None:
         await self._session.close()
 
     async def post(self, chunks: list[Chunk]) -> AsyncIterator[Chunk]:
-        logger.debug(f"post: {len(chunks)} chunk(s) — "
-                     f"FileChunks={sum(1 for c in chunks if isinstance(c, FileChunk))} "
-                     f"TextChunks={sum(1 for c in chunks if isinstance(c, TextChunk))}")
+        logger.debug(
+            f"post: {len(chunks)} chunk(s) — "
+            f"FileChunks={sum(1 for c in chunks if isinstance(c, FileChunk))} "
+            f"TextChunks={sum(1 for c in chunks if isinstance(c, TextChunk))}"
+        )
 
         full_buf = ""
         chunk_buf = ""
