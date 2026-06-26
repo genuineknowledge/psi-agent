@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import inspect
 import json
@@ -58,6 +59,7 @@ class SessionAgent:
         self._history_path = history_path
         self._pending_schedule_chunks: list[ChatCompletionChunk] = []
         self._memory_client = memory_client
+        self._memory_flush_tasks: set[asyncio.Task[None]] = set()
         self._turn_index = 0
 
     @classmethod
@@ -219,7 +221,7 @@ class SessionAgent:
 
                 if finish_reason == "error":
                     logger.warning("AI returned error, stopping without saving to history")
-                    await self._flush_turn_memory(
+                    self._schedule_turn_memory_flush(
                         history_len_before,
                         turn_index=turn_index,
                         ended_with_error=True,
@@ -237,7 +239,7 @@ class SessionAgent:
                         self.history.append(assistant_msg)
                         if self._history_path is not None:
                             await _save_history(self._history_path, self.history)
-                    await self._flush_turn_memory(
+                    self._schedule_turn_memory_flush(
                         history_len_before,
                         turn_index=turn_index,
                         ended_with_error=False,
@@ -331,7 +333,7 @@ class SessionAgent:
                     if accumulated_reasoning:
                         assistant_msg["reasoning"] = accumulated_reasoning
                     self.history.append(assistant_msg)
-                await self._flush_turn_memory(
+                self._schedule_turn_memory_flush(
                     history_len_before,
                     turn_index=turn_index,
                     ended_with_error=False,
@@ -340,6 +342,11 @@ class SessionAgent:
 
         else:
             logger.warning(f"Reached max tool rounds ({self.max_tool_rounds}), stopping")
+            self._schedule_turn_memory_flush(
+                history_len_before,
+                turn_index=turn_index,
+                ended_with_error=False,
+            )
             yield ChatCompletionChunk(
                 id="max_rounds",
                 choices=[
@@ -350,6 +357,25 @@ class SessionAgent:
                     )
                 ],
             )
+
+    def _schedule_turn_memory_flush(
+        self,
+        history_len_before: int,
+        *,
+        turn_index: int,
+        ended_with_error: bool,
+    ) -> None:
+        if self._memory_client is None:
+            return
+        task = asyncio.create_task(
+            self._flush_turn_memory(
+                history_len_before,
+                turn_index=turn_index,
+                ended_with_error=ended_with_error,
+            )
+        )
+        self._memory_flush_tasks.add(task)
+        task.add_done_callback(self._memory_flush_tasks.discard)
 
     def _build_connector_and_endpoint(self) -> tuple[aiohttp.BaseConnector, str]:
         """Resolve self.ai_socket to an aiohttp connector and HTTP endpoint."""
