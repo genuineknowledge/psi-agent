@@ -97,8 +97,6 @@ class ChannelCore:
 
                 delta = choice.get("delta", {})
                 text = delta.get("content") or ""
-                if not text:
-                    continue
 
                 logger.debug(f"  delta.content ({len(text)} chars): {text[:60]}")
 
