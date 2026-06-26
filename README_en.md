@@ -112,6 +112,18 @@ Generate a daily progress report.
 
 See `examples/a-simple-bash-only-workspace/` for a complete example.
 
+## Fusion-Guard Secure Bash Example
+
+`examples/fusion-guard-security-workspace/` provides an optional secure `bash` tool example. It reads the current session history through Dolphin's tool context, sends the current user intent through the Fusion-Guard adapter, then decides whether to execute the command.
+
+Intent analysis result semantics:
+
+- `DENY`: do not execute the command; return `[Fusion-Guard] Security policy denied this request: ...`
+- `NONE`: install no extra allow rules and continue through base policy execution
+- `allow ...;`: install filtered allow rules first, then execute the command
+
+This remains a workspace/tool-level capability and is not registered as Dolphin core middleware.
+
 ## Development
 
 ```bash
