@@ -38,9 +38,7 @@ class ChannelTelegram:
         setup_logging(verbose=self.verbose)
         token = self.bot_token or os.environ.get("PSI_TELEGRAM_BOT_TOKEN", "")
         if not token:
-            raise ValueError(
-                "No Telegram bot token provided. Set --bot-token or PSI_TELEGRAM_BOT_TOKEN."
-            )
+            raise ValueError("No Telegram bot token provided. Set --bot-token or PSI_TELEGRAM_BOT_TOKEN.")
 
         logger.info(f"Starting Telegram bot, connecting to {self.session_socket}")
 
