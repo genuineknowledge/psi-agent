@@ -15,7 +15,7 @@ Config format (``run-config.yml``):
       base_url: https://api.openai.com/v1
 
     - type: session
-      workspace: ./examples/a-simple-bash-only-workspace
+      workspace: ./examples/a-simple-bash-only-workspace  # optional, defaults to .
       channel_socket: ./channel.sock
       ai_socket: ./ai.sock
 
