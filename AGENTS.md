@@ -100,7 +100,7 @@ src/
 
 SSE 流中的特殊字段：
 - `delta.content` — AI 最终文本回复
-- `delta.reasoning_content` — 聚合了 AI thinking + tool_call 意图 + tool_call 结果
+- `delta.reasoning` — 聚合了 AI thinking + tool_call 意图 + tool_call 结果
 - `delta.tool_calls` — 部分 tool call 定义（流式累积）
 
 错误响应有两种形式：

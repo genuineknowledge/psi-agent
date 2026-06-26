@@ -47,7 +47,7 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 
 - Channel 客户端（repl、cli）是终端 UI 程序，需要格式化输出
 - **使用 `rich.console.Console`** 替代 `print()`
-- 思考过程（reasoning_content）：`console.print(..., style="dim")`
+- 思考过程（reasoning）：`console.print(..., style="dim")`
 - 错误信息：`console.print("[red]Error: ...[/red]")`
 - REPL 欢迎页：`console.print(Panel(...))`
 - **`Console(highlight=False)`**：禁用自动语法高亮，避免 Rich 误把 AI 回复当代码着色

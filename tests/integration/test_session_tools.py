@@ -20,7 +20,7 @@ def _chunk(
     if content:
         delta["content"] = content
     if reasoning:
-        delta["reasoning_content"] = reasoning
+        delta["reasoning"] = reasoning
     if tool_calls:
         delta["tool_calls"] = tool_calls
     return json.dumps(
@@ -67,7 +67,7 @@ async def test_tool_throws_exception_caught(tmp_path: Path, mock_ai_server: Mock
     async for c in agent.run({"role": "user", "content": "test"}):
         chunks.append(c)
 
-    all_reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
+    all_reasoning = "".join(c.choices[0].delta.reasoning or "" for c in chunks if c.choices)
     assert "Simulated tool failure" in all_reasoning or "RuntimeError" in all_reasoning
 
 
@@ -91,7 +91,7 @@ async def test_tool_returns_int_converted_to_string(mock_ai_server: MockAIServer
     async for c in agent.run({"role": "user", "content": "test"}):
         chunks.append(c)
 
-    all_reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
+    all_reasoning = "".join(c.choices[0].delta.reasoning or "" for c in chunks if c.choices)
     assert "42" in all_reasoning
 
 
@@ -115,7 +115,7 @@ async def test_tool_returns_none_converted(mock_ai_server: MockAIServer) -> None
     async for c in agent.run({"role": "user", "content": "test"}):
         chunks.append(c)
 
-    all_reasoning = "".join(c.choices[0].delta.reasoning_content or "" for c in chunks if c.choices)
+    all_reasoning = "".join(c.choices[0].delta.reasoning or "" for c in chunks if c.choices)
     assert "None" in all_reasoning
 
 
@@ -172,8 +172,6 @@ async def test_max_tool_rounds_limit(mock_ai_server: MockAIServer) -> None:
     tool_call_count = sum(
         1
         for c in chunks
-        if c.choices
-        and c.choices[0].delta.reasoning_content
-        and "Tool Call" in (c.choices[0].delta.reasoning_content or "")
+        if c.choices and c.choices[0].delta.reasoning and "Tool Call" in (c.choices[0].delta.reasoning or "")
     )
     assert tool_call_count <= agent.max_tool_rounds

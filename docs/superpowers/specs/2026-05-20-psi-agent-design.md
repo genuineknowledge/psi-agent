@@ -134,7 +134,7 @@ Channel (REPL/CLI/Telegram/Feishu)        Session                     AI (OpenAI
      │                         │─────────────────────────────▶│
      │                         │                              │
      │                         │ SSE chunks (content/        │
-     │                         │ reasoning_content/tool_calls)│
+     │                         │ reasoning/tool_calls)│
      │                         │◀─────────────────────────────│
      │                         │                              │
      │                         │ [若 tool_calls]              │
@@ -144,7 +144,7 @@ Channel (REPL/CLI/Telegram/Feishu)        Session                     AI (OpenAI
      │                         │─────────────────────────────▶│
      │                         │          ...                 │
      │                         │                              │
-     │ SSE chunks (reasoning_content + content)               │
+     │ SSE chunks (reasoning + content)               │
      │◀────────────────────────│                              │
      │                         │ 释放锁                       │
 ```
@@ -258,10 +258,10 @@ class Session:
          - tool_calls delta       → 累积（按 index 拼接 partial JSON）
          - finish_reason="tool_calls":
              a. 解析完整 tool_calls
-             b. 追加 assistant_message(tool_calls) + reasoning_content + tool_result 到 history
+             b. 追加 assistant_message(tool_calls) + reasoning + tool_result 到 history
              c. 回到步骤 d（最多 max_tool_rounds 轮，可配置，默认 128）
          - finish_reason="stop":
-            最终 content + reasoning_content 追加到 history，释放锁
+            最终 content + reasoning 追加到 history，释放锁
         - finish_reason="error":
            停止处理，错误不写入 history
   3. 释放锁
@@ -269,7 +269,7 @@ class Session:
 
 **Schedule 响应处理**：
 - 暂存的 schedule 响应和新消息的回复都正常经过 agent loop
-- content 和 reasoning_content 各自存在于各自的消息周期中，不会交错
+- content 和 reasoning 各自存在于各自的消息周期中，不会交错
 
 **关于 history**：
 - Channel 不发送 history；每次请求只带最新一条 user message

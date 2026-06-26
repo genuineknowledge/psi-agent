@@ -127,7 +127,7 @@ on stream end:
 - `resolve_connector_and_endpoint` + `aiohttp.ClientSession` 连接管理
 - `req_data` 构造
 - HTTP 状态码错误处理
-- SSE 逐行解析 + reasoning_content/content 显示
+- SSE 逐行解析 + reasoning/content 显示
 - `finish_reason="error"` 检测
 - 顶级 try/except
 

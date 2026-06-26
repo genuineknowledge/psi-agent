@@ -184,8 +184,8 @@ class SessionAgent:
                         finish_reason = choice.finish_reason
                     if choice.delta.content:
                         accumulated_content += choice.delta.content
-                    if choice.delta.reasoning_content:
-                        accumulated_reasoning += choice.delta.reasoning_content
+                    if choice.delta.reasoning:
+                        accumulated_reasoning += choice.delta.reasoning
                     if choice.delta.tool_calls:
                         for tc in choice.delta.tool_calls:
                             idx = tc.get("index", 0)
@@ -215,7 +215,7 @@ class SessionAgent:
                         if accumulated_content:
                             assistant_msg["content"] = accumulated_content
                         if accumulated_reasoning:
-                            assistant_msg["reasoning_content"] = accumulated_reasoning
+                            assistant_msg["reasoning"] = accumulated_reasoning
                         self.history.append(assistant_msg)
                         if self._history_path is not None:
                             await _save_history(self._history_path, self.history)
@@ -232,7 +232,7 @@ class SessionAgent:
                     if accumulated_content:
                         assistant_msg["content"] = accumulated_content
                     if accumulated_reasoning:
-                        assistant_msg["reasoning_content"] = accumulated_reasoning
+                        assistant_msg["reasoning"] = accumulated_reasoning
                     self.history.append(assistant_msg)
 
                     # Execute each tool call
@@ -255,9 +255,7 @@ class SessionAgent:
                                 StreamChoice(
                                     index=0,
                                     delta=DeltaMessage(
-                                        reasoning_content=(
-                                            f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
-                                        ),
+                                        reasoning=(f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"),
                                     ),
                                 )
                             ],
@@ -280,7 +278,7 @@ class SessionAgent:
                             choices=[
                                 StreamChoice(
                                     index=0,
-                                    delta=DeltaMessage(reasoning_content=f"[Tool Result: {str(result)[:500]}]"),
+                                    delta=DeltaMessage(reasoning=f"[Tool Result: {str(result)[:500]}]"),
                                 )
                             ],
                         )
@@ -308,7 +306,7 @@ class SessionAgent:
                     if accumulated_content:
                         assistant_msg["content"] = accumulated_content
                     if accumulated_reasoning:
-                        assistant_msg["reasoning_content"] = accumulated_reasoning
+                        assistant_msg["reasoning"] = accumulated_reasoning
                     self.history.append(assistant_msg)
                 return
 
@@ -395,7 +393,7 @@ class SessionAgent:
                 delta = DeltaMessage(
                     content=delta_data.get("content"),
                     role=delta_data.get("role"),
-                    reasoning_content=delta_data.get("reasoning_content"),
+                    reasoning=delta_data.get("reasoning"),
                     tool_calls=delta_data.get("tool_calls"),
                 )
                 yield ChatCompletionChunk(
@@ -459,7 +457,7 @@ class SessionAgent:
                     await response.write(chunk.to_sse().encode())
                     logger.debug(
                         f"Chunk sent: content={chunk.choices[0].delta.content!r}, "
-                        f"reasoning={chunk.choices[0].delta.reasoning_content!r}"
+                        f"reasoning={chunk.choices[0].delta.reasoning!r}"
                     )
             except Exception as e:
                 logger.error(f"Error in agent run: {e}")
