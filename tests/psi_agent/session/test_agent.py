@@ -625,6 +625,63 @@ async def test_turn_delta_is_flushed_on_max_tool_rounds(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_delayed_flush_keeps_original_turn_delta_when_next_turn_starts(tmp_path: Path) -> None:
+    seen: dict[int, list[dict[str, object]]] = {}
+    first_flush_started = anyio.Event()
+    release_first_flush = anyio.Event()
+    both_flushed = anyio.Event()
+
+    class FakeMemoryClient:
+        async def ingest_turn(self, messages, *, turn_id, turn_index, ended_with_error):
+            seen[turn_index] = list(messages)
+            if len(seen) == 2:
+                both_flushed.set()
+
+    class DelayedFirstFlushAgent(SessionAgent):
+        async def _flush_turn_memory(self, messages, *, turn_index, ended_with_error):
+            if turn_index == 1:
+                first_flush_started.set()
+                await release_first_flush.wait()
+            await super()._flush_turn_memory(
+                messages,
+                turn_index=turn_index,
+                ended_with_error=ended_with_error,
+            )
+
+    request_count = 0
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        nonlocal request_count
+        request_count += 1
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content=f"reply-{request_count}", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = DelayedFirstFlushAgent(ai_socket=ai_socket, tools={}, memory_client=FakeMemoryClient())
+
+        async for _ in agent.run({"role": "user", "content": "first"}):
+            pass
+
+        await first_flush_started.wait()
+
+        async for _ in agent.run({"role": "user", "content": "second"}):
+            pass
+
+        release_first_flush.set()
+        await both_flushed.wait()
+
+        assert [item["content"] for item in seen[1]] == ["first", "reply-1"]
+        assert [item["content"] for item in seen[2]] == ["second", "reply-2"]
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
 async def test_agent_non_data_sse_line(tmp_path: Path) -> None:
     """SSE lines not starting with 'data: ' should be skipped."""
 

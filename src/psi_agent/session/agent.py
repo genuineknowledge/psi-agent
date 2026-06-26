@@ -367,9 +367,12 @@ class SessionAgent:
     ) -> None:
         if self._memory_client is None:
             return
+        delta = list(self.history[history_len_before:])
+        if not delta:
+            return
         task = asyncio.create_task(
             self._flush_turn_memory(
-                history_len_before,
+                delta,
                 turn_index=turn_index,
                 ended_with_error=ended_with_error,
             )
@@ -464,15 +467,12 @@ class SessionAgent:
 
     async def _flush_turn_memory(
         self,
-        history_len_before: int,
+        delta: list[dict],
         *,
         turn_index: int,
         ended_with_error: bool,
     ) -> None:
         if self._memory_client is None:
-            return
-        delta = self.history[history_len_before:]
-        if not delta:
             return
         try:
             await self._memory_client.ingest_turn(
