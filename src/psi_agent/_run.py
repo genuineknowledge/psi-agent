@@ -60,8 +60,10 @@ class Run:
 
 async def _run_config(config_path: Path) -> None:
     """Launch all components defined in a YAML config file."""
+    logger.info(f"Loading config from {config_path}")
     content = await anyio.Path(str(config_path)).read_text()
     raw = yaml.safe_load(content)
+    logger.debug(f"Raw config: {raw}")
 
     if not isinstance(raw, list):
         raise ValueError("Config must be a list of component definitions")
@@ -91,6 +93,8 @@ async def _run_config(config_path: Path) -> None:
                 raise ValueError(f"Unknown component type: {kind}")
         logger.info(f"Configured: {kind}")
 
+    logger.info(f"Starting {len(components)} component(s)")
     async with anyio.create_task_group() as tg:
         for c in components:
             tg.start_soon(c.run)
+    logger.info("All components stopped")
