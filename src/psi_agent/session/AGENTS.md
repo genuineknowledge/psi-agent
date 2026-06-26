@@ -10,7 +10,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 
 ```
 1. setup_logging(verbose)
-2. 解析 workspace 路径（anyio.Path.resolve()）
+2. 解析 workspace 路径（空字符串时用 Path.cwd()，否则 anyio.Path.resolve()）
 3. SessionAgent.create() → 加载 tools、schedules、system_prompt_builder
 4. 创建 anyio.Lock()
 5. 启动 anyio.task_group：
