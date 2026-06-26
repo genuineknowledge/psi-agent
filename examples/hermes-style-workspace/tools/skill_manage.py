@@ -43,10 +43,7 @@ def _validate_skill_name(skill_name: str) -> str | None:
     if "\x00" in skill_name:
         return f"Invalid skill name {skill_name!r}: must not contain null characters."
     if not re.match(r"^[a-zA-Z0-9_\-]+$", skill_name):
-        return (
-            f"Invalid skill name {skill_name!r}: only letters, digits, hyphens, "
-            "and underscores are allowed."
-        )
+        return f"Invalid skill name {skill_name!r}: only letters, digits, hyphens, and underscores are allowed."
     return None
 
 

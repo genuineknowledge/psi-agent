@@ -200,9 +200,7 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     # --- Group by category and build index ---
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     for entry in skills_list:
-        skills_by_category.setdefault(entry["category"], []).append(
-            (entry["name"], entry["description"])
-        )
+        skills_by_category.setdefault(entry["category"], []).append((entry["name"], entry["description"]))
 
     if not skills_by_category:
         return ""
@@ -630,8 +628,7 @@ async def _build_context(workspace_dir: anyio.Path | None = None) -> str:
 
     return (
         "# Project Context\n\n"
-        "The following project context files have been loaded and should be followed:\n\n"
-        + project_context
+        "The following project context files have been loaded and should be followed:\n\n" + project_context
     )
 
 

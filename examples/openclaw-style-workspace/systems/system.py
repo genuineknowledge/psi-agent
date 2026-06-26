@@ -69,9 +69,7 @@ CompleteFn = Callable[[list[dict[str, Any]]], Awaitable[str]]
 _TOOL_RESULT_MAX_CHARS = 2000
 TOOL_RESULT_REAL_CONVERSATION_LOOKBACK = 20
 
-_NON_CONVERSATION_BLOCK_TYPES = frozenset(
-    ["toolCall", "toolUse", "functionCall", "thinking", "reasoning"]
-)
+_NON_CONVERSATION_BLOCK_TYPES = frozenset(["toolCall", "toolUse", "functionCall", "thinking", "reasoning"])
 
 _SUMMARIZATION_SYSTEM_PROMPT = (
     "You are a context summarization assistant. "
@@ -149,6 +147,7 @@ Summarize the prefix to provide context for the retained suffix:
 
 Be concise. Focus on what's needed to understand the kept suffix.\
 """
+
 
 def strip_heartbeat_token(text: str) -> tuple[str, bool]:
     trimmed = text.strip()
@@ -272,11 +271,7 @@ def _build_summarization_prompt(messages: list[dict[str, Any]]) -> str:
             if isinstance(content, str):
                 parts.append(f"[User]: {content}")
             elif isinstance(content, list):
-                texts = [
-                    b.get("text", "")
-                    for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                ]
+                texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
                 if texts:
                     parts.append(f"[User]: {' '.join(texts)}")
         elif role == "assistant":
@@ -306,11 +301,7 @@ def _build_summarization_prompt(messages: list[dict[str, Any]]) -> str:
                 truncated = _truncate_for_summary(content, _TOOL_RESULT_MAX_CHARS)
                 parts.append(f"[Tool result]: {truncated}")
             elif isinstance(content, list):
-                text = " ".join(
-                    b.get("text", "")
-                    for b in content
-                    if isinstance(b, dict) and b.get("type") == "text"
-                )
+                text = " ".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
                 if text:
                     truncated = _truncate_for_summary(text, _TOOL_RESULT_MAX_CHARS)
                     parts.append(f"[Tool result]: {truncated}")
@@ -579,10 +570,7 @@ def _build_datetime_section() -> str:
     tz = os.environ.get("OPENCLAW_TIMEZONE", "UTC")
     now = datetime.now()
     return (
-        "## Current Date & Time\n"
-        f"Date: {now.strftime('%Y-%m-%d')}\n"
-        f"Time: {now.strftime('%H:%M:%S')}\n"
-        f"Time zone: {tz}"
+        f"## Current Date & Time\nDate: {now.strftime('%Y-%m-%d')}\nTime: {now.strftime('%H:%M:%S')}\nTime zone: {tz}"
     )
 
 
@@ -941,9 +929,7 @@ class System:
                         {"role": "user", "content": prompt + "\n\n" + _TURN_PREFIX_SUMMARY_PROMPT},
                     ]
                 )
-                summary_parts.append(
-                    f"\n\n---\n\n**Turn Context (split turn):**\n\n{prefix_summary}"
-                )
+                summary_parts.append(f"\n\n---\n\n**Turn Context (split turn):**\n\n{prefix_summary}")
             except Exception:
                 pass
 

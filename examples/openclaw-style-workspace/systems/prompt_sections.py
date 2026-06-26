@@ -19,10 +19,7 @@ IDENTITY_LINE = "You are a personal assistant running inside OpenClaw."
 # § Tooling  (system-prompt.ts:1007-1016)
 # ---------------------------------------------------------------------------
 
-TOOLING_HEADER = (
-    "## Tooling\n"
-    "Available tools are policy-filtered. Names are case-sensitive; call exactly as listed."
-)
+TOOLING_HEADER = "## Tooling\nAvailable tools are policy-filtered. Names are case-sensitive; call exactly as listed."
 
 TOOLING_FOOTER = "TOOLS.md is usage guidance, not availability."
 
