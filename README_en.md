@@ -112,18 +112,6 @@ Generate a daily progress report.
 
 See `examples/a-simple-bash-only-workspace/` for a complete example.
 
-## Fusion-Guard Host Adaptation
-
-Dolphin only exposes the host contract needed by out-of-tree workspace tools such as Fusion-Guard. It does not carry the security plugin implementation in this repository.
-
-Current contract:
-
-- Tools can read a read-only `SessionToolContext` through `psi_agent.session.runtime_context` while they execute.
-- `SessionToolContext` includes the current `session_id`, workspace, history path, history snapshot, latest user message, and `ai_socket`.
-- Session writes JSONL history immediately after appending the current user message, then still overwrites the file with the final assistant state when the turn completes.
-
-Fusion-Guard owns and distributes its Dolphin workspace and secure bash tool. That workspace should follow `examples/a-serper-mcp-workspace`: only `tools/`.
-
 ## Development
 
 ```bash

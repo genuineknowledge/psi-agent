@@ -9,6 +9,8 @@ _MISSING_ADAPTER_MESSAGE = (
 
 
 class _SecureBash(Protocol):
+    """Typing-only shape of the out-of-tree Fusion-Guard adapter entrypoint."""
+
     async def __call__(self, command: str, *, cwd: str | None = None) -> str: ...
 
 

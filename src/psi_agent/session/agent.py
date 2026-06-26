@@ -15,8 +15,13 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent._socket import resolve_connector_and_endpoint
-from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
-from psi_agent.session.runtime_context import SessionToolContext, push_session_tool_context
+from psi_agent.session._protocol import (
+    ChatCompletionChunk,
+    DeltaMessage,
+    SessionToolContext,
+    StreamChoice,
+    ToolFunction,
+)
 from psi_agent.session.scheduler import load_schedules_from_workspace
 from psi_agent.session.tools import load_tools_from_workspace
 
@@ -287,7 +292,7 @@ class SessionAgent:
                                     latest_user_message=user_message,
                                     ai_socket=self.ai_socket,
                                 )
-                                with push_session_tool_context(tool_context):
+                                with tool_context.push():
                                     result = await func(**args)
                                 logger.info(f"Tool result ({func_name}): {str(result)[:200]}")
                             except Exception as e:

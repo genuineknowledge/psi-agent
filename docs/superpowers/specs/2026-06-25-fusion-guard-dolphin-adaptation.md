@@ -13,7 +13,7 @@ Dolphin remains responsible for session orchestration, history, tool loading, an
 
 Included in Dolphin:
 
-- A read-only `SessionToolContext` available while workspace tools execute.
+- A read-only `SessionToolContext` available through `psi_agent.session._protocol.SessionToolContext.current()` while workspace tools execute.
 - Immediate JSONL history write after the current `user` message is appended.
 - Documentation of the runtime context contract in the Session layer.
 - Tests proving tools can read the context and that the current `user` message is already on disk before tool execution.
@@ -28,7 +28,7 @@ The Fusion-Guard repository owns the real Dolphin workspace and adapter implemen
 
 ## Runtime Contract
 
-`psi_agent.session.runtime_context.SessionToolContext` is available only during a tool call and contains:
+`psi_agent.session._protocol.SessionToolContext` is available only during a tool call and contains:
 
 - `session_id`
 - `workspace_path`
@@ -37,7 +37,7 @@ The Fusion-Guard repository owns the real Dolphin workspace and adapter implemen
 - `latest_user_message`
 - `ai_socket`
 
-Workspace tools may read this context, but they must not mutate Dolphin session memory directly.
+Workspace tools may read the current context with `SessionToolContext.current()`, but they must not mutate Dolphin session memory directly. Dolphin sets the current context with the `SessionToolContext.push()` member context manager around each tool call.
 
 ## History Ordering
 

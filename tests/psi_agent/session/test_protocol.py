@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from psi_agent.session.protocol import (
+from psi_agent.session._protocol import (
     ChatCompletionChunk,
     DeltaMessage,
     StreamChoice,

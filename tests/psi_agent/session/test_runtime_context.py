@@ -5,9 +5,14 @@ from pathlib import Path
 
 import pytest
 
+from psi_agent.session._protocol import (
+    ChatCompletionChunk,
+    DeltaMessage,
+    SessionToolContext,
+    StreamChoice,
+    ToolFunction,
+)
 from psi_agent.session.agent import SessionAgent
-from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
-from psi_agent.session.runtime_context import get_session_tool_context
 
 
 def _tool_call_chunk() -> ChatCompletionChunk:
@@ -54,7 +59,7 @@ async def test_user_message_is_written_before_tool_execution(tmp_path: Path) -> 
     seen: dict[str, object] = {}
 
     async def echo_tool() -> str:
-        ctx = get_session_tool_context()
+        ctx = SessionToolContext.current()
         assert ctx is not None
         seen["ctx"] = ctx
         seen["history_file"] = history_path.read_text()

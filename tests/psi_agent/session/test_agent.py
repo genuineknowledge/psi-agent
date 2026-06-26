@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
+from psi_agent.session._protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.agent import SessionAgent, _load_history, _save_history
-from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.tools import load_tools_from_workspace
 
 

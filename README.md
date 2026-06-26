@@ -112,18 +112,6 @@ cron: "0 12 * * *"
 
 更多细节见 `examples/a-simple-bash-only-workspace/`。
 
-## Fusion-Guard 宿主适配
-
-Dolphin 只提供 Fusion-Guard 这类 out-of-tree workspace tool 需要的宿主契约，不在本仓放置安全插件源码。
-
-当前契约：
-
-- tool 执行期间可通过 `psi_agent.session.runtime_context` 读取只读 `SessionToolContext`
-- `SessionToolContext` 包含当前 `session_id`、workspace、history path、history 快照、latest user message 和 `ai_socket`
-- Session 会在 append 当前 user message 后立即写入 JSONL history，最终 assistant 完成后仍覆盖保存最终态
-
-`examples/fusion-guard-security-workspace/` 是一个薄示例 workspace，只包含 `tools/`，用于展示 Dolphin 如何接入外部 Fusion-Guard adapter。真实的安全 bash tool、意图分析、规则解析和策略安装仍由 Fusion-Guard 仓库分发；使用该示例前，需要安装 Fusion-Guard 并确保其 `dolphin/` adapter package 位于 `PYTHONPATH`。
-
 ## 开发
 
 ```bash
