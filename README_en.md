@@ -112,17 +112,17 @@ Generate a daily progress report.
 
 See `examples/a-simple-bash-only-workspace/` for a complete example.
 
-## Fusion-Guard Secure Bash Example
+## Fusion-Guard Host Adaptation
 
-`examples/fusion-guard-security-workspace/` provides an optional secure `bash` tool example. It reads the current session history through Dolphin's tool context, sends the current user intent through the Fusion-Guard adapter, then decides whether to execute the command.
+Dolphin only exposes the host contract needed by out-of-tree workspace tools such as Fusion-Guard. It does not carry the security plugin implementation in this repository.
 
-Intent analysis result semantics:
+Current contract:
 
-- `DENY`: do not execute the command; return `[Fusion-Guard] Security policy denied this request: ...`
-- `NONE`: install no extra allow rules and continue through base policy execution
-- `allow ...;`: install filtered allow rules first, then execute the command
+- Tools can read a read-only `SessionToolContext` through `psi_agent.session.runtime_context` while they execute.
+- `SessionToolContext` includes the current `session_id`, workspace, history path, history snapshot, latest user message, and `ai_socket`.
+- Session writes JSONL history immediately after appending the current user message, then still overwrites the file with the final assistant state when the turn completes.
 
-This remains a workspace/tool-level capability and is not registered as Dolphin core middleware.
+Fusion-Guard owns and distributes its Dolphin workspace and secure bash tool. That workspace should follow `examples/a-serper-mcp-workspace`: only `tools/`.
 
 ## Development
 

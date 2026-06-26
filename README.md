@@ -112,17 +112,17 @@ cron: "0 12 * * *"
 
 更多细节见 `examples/a-simple-bash-only-workspace/`。
 
-## Fusion-Guard 安全 bash 示例
+## Fusion-Guard 宿主适配
 
-`examples/fusion-guard-security-workspace/` 提供了一个可选的安全 `bash` tool 示例。它通过 Dolphin 的工具上下文读取当前 session history，把当前用户意图交给 Fusion-Guard 适配层分析，再决定是否执行命令。
+Dolphin 只提供 Fusion-Guard 这类 out-of-tree workspace tool 需要的宿主契约，不在本仓放置安全插件源码。
 
-意图分析结果语义：
+当前契约：
 
-- `DENY`：不执行命令，返回 `[Fusion-Guard] Security policy denied this request: ...`
-- `NONE`：不安装额外 allow 规则，继续走 base policy 执行
-- `allow ...;`：先安装过滤后的 allow 规则，再执行命令
+- tool 执行期间可通过 `psi_agent.session.runtime_context` 读取只读 `SessionToolContext`
+- `SessionToolContext` 包含当前 `session_id`、workspace、history path、history 快照、latest user message 和 `ai_socket`
+- Session 会在 append 当前 user message 后立即写入 JSONL history，最终 assistant 完成后仍覆盖保存最终态
 
-当前示例保留为 workspace/tool 级能力，不会把安全逻辑注册成 Dolphin 核心 middleware。
+Fusion-Guard 的 Dolphin workspace 和安全 bash tool 由 Fusion-Guard 仓库分发；workspace 形态应像 `examples/a-serper-mcp-workspace` 一样只包含 `tools/`。
 
 ## 开发
 
