@@ -225,7 +225,7 @@ async def test_fusion_guard_example_workspace_is_thin_and_delegates(monkeypatch)
         calls.append((command, cwd))
         return "delegated"
 
-    runner.secure_bash = secure_bash
+    runner.__dict__["secure_bash"] = secure_bash
     monkeypatch.setitem(sys.modules, "fusion_guard_security", package)
     monkeypatch.setitem(sys.modules, "fusion_guard_security.runner", runner)
 
