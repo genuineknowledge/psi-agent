@@ -112,6 +112,18 @@ cron: "0 12 * * *"
 
 更多细节见 `examples/a-simple-bash-only-workspace/`。
 
+## Fusion-Guard 安全 bash 示例
+
+`examples/fusion-guard-security-workspace/` 提供了一个可选的安全 `bash` tool 示例。它通过 Dolphin 的工具上下文读取当前 session history，把当前用户意图交给 Fusion-Guard 适配层分析，再决定是否执行命令。
+
+意图分析结果语义：
+
+- `DENY`：不执行命令，返回 `[Fusion-Guard] Security policy denied this request: ...`
+- `NONE`：不安装额外 allow 规则，继续走 base policy 执行
+- `allow ...;`：先安装过滤后的 allow 规则，再执行命令
+
+当前示例保留为 workspace/tool 级能力，不会把安全逻辑注册成 Dolphin 核心 middleware。
+
 ## 开发
 
 ```bash

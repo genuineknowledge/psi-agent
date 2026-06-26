@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import socket
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import anyio
 import pytest
 from aiohttp import web
 
+from psi_agent.session.agent import SessionAgent
 from tests.integration.conftest import MockAIServer, read_sse
 
 
@@ -52,6 +54,66 @@ async def _stop_process(proc) -> None:
         await proc.wait()
     except Exception:
         proc.kill()
+
+
+@pytest.mark.anyio
+async def test_fusion_guard_workspace_tool_roundtrip(tmp_path: Path) -> None:
+    req_count = 0
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        nonlocal req_count
+        req_count += 1
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        if req_count == 1:
+            tool_call = {
+                "index": 0,
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "bash", "arguments": json.dumps({"command": "pwd"})},
+            }
+            await resp.write(f"data: {_chunk(tool_calls=[tool_call], finish_reason='tool_calls')}\n\n".encode())
+        else:
+            await resp.write(f"data: {_chunk(content='Final secure bash reply', finish_reason='stop')}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    base_url = f"http://127.0.0.1:{port}"
+    repo_root = Path(__file__).resolve().parents[2]
+    workspace_path = tmp_path / "fusion-guard-security-workspace"
+    shutil.copytree(
+        repo_root / "examples" / "fusion-guard-security-workspace",
+        workspace_path,
+        ignore=shutil.ignore_patterns("histories", "__pycache__"),
+    )
+
+    try:
+        agent = await SessionAgent.create(
+            ai_socket=base_url,
+            workspace_path=workspace_path,
+            session_id="fusion-guard-e2e",
+        )
+
+        chunks = [chunk async for chunk in agent.run({"role": "user", "content": "use secure bash"})]
+        all_text = json.dumps([chunk.to_dict() for chunk in chunks], ensure_ascii=False)
+
+        assert "bash" in agent.tools
+        assert "Final secure bash reply" in all_text
+        assert any(
+            message.get("role") == "tool" and "fusion-guard-security-workspace" in message.get("content", "")
+            for message in agent.history
+        )
+    finally:
+        await runner.cleanup()
 
 
 @pytest.mark.anyio
