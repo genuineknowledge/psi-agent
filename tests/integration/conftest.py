@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import signal
 import socket
 import subprocess
@@ -154,6 +155,14 @@ def _start_psi(*args: str) -> subprocess.Popen:
         stderr=subprocess.PIPE,
         text=True,
     )
+
+
+def _psi_process_spec(*args: str) -> tuple[list[str], dict[str, str], Path]:
+    repo_root = Path(__file__).resolve().parents[2]
+    venv_bin = repo_root / ".venv" / "bin"
+    env = os.environ.copy()
+    env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
+    return [str(venv_bin / "psi-agent"), *args], env, repo_root
 
 
 async def _wait_for_socket(sock_path: Path, timeout_sec: float = 10.0) -> None:
