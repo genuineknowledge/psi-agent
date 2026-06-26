@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from contextlib import suppress
 from typing import Any, cast
 
 from aiohttp import web
@@ -14,7 +13,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.info("Received chat completion request")
     try:
         body: dict[str, Any] = await request.json()
-        logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:500]}")
+        logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:1000]}")
     except Exception as e:
         logger.error(f"Failed to parse request body: {e}")
         # OpenAI-compatible error response.
@@ -28,12 +27,14 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     api_key = request.app["api_key"]
     base_url = request.app["base_url"]
 
+    logger.debug(f"Body keys before pop: {list(body)}")
     messages = body.pop("messages", [])
     body.pop("stream", None)
     body.pop("provider", None)
     body.pop("model", None)
     body.pop("api_key", None)
     body.pop("api_base", None)
+    logger.debug(f"Body keys to passthrough: {list(body)}")
 
     response = web.StreamResponse(
         status=200,
@@ -67,6 +68,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 **body,
             ),
         )
+        logger.debug("Starting to consume upstream SSE stream")
         async for chunk in stream:
             data = chunk.model_dump_json()
             logger.debug(f"SSE chunk: {data[:1000]}")
@@ -81,8 +83,10 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 "choices": [{"index": 0, "delta": {"content": f"[Upstream Error]: {e}"}, "finish_reason": "error"}],
             }
         )
-        with suppress(Exception):
+        try:
             await response.write(f"data: {err_chunk}\n\n".encode())
+        except Exception:
+            logger.warning("Failed to write error chunk to SSE stream")
 
     logger.info("Request completed")
     return response
