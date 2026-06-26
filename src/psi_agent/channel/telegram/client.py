@@ -158,4 +158,9 @@ async def run_telegram(
             raise RuntimeError("Application has no updater")
         await app.updater.start_polling()
         logger.info(f"Telegram bot polling started (session={session_socket} interval={interval})")
-        await anyio.Event().wait()
+        try:
+            await anyio.Event().wait()
+        finally:
+            await app.updater.stop()
+            await app.stop()
+            await app.shutdown()
