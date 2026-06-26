@@ -61,7 +61,7 @@ class ChannelFeishu:
 2. 解析 app_id / app_secret（CLI > env，缺失则 raise ValueError）
 3. 创建 FeishuChannel(app_id, app_secret)
 4. channel.on("message", handler)
-5. channel.start_background()（后台线程运行 WebSocket）
+5. channel.start_background()（后台线程运行 WebSocket） + anyio.Event().wait()（阻塞，接受外部 cancel）
 ```
 
 ---

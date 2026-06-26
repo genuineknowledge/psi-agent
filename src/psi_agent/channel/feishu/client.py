@@ -41,8 +41,7 @@ async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[Chunk]:
     for m in re.finditer(r'<audio\s+key="([^"]+)"', text):
         audio_key = m.group(1)
         logger.debug(f"_build_chunks: audio key={audio_key}")
-        suffix = f".{ctx.raw_content_type}" if ctx.raw_content_type in ("audio",) else ""
-        path = f"{downloads}/{audio_key[-32:]}{suffix}"
+        path = f"{downloads}/{audio_key[-32:]}"
         try:
             req = (
                 GetMessageResourceRequest.builder()
@@ -149,4 +148,7 @@ async def run_feishu(
         channel.on("message", _on_message)
         logger.info(f"Feishu bot connecting (session={session_socket} interval={interval})")
         await channel.start_background()
-        await anyio.Event().wait()
+        try:
+            await anyio.Event().wait()
+        finally:
+            await channel.stop_background()
