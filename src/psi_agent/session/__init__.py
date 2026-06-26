@@ -17,14 +17,14 @@ from psi_agent.session.server import serve_session
 class Session:
     """Start a session backed by a workspace and AI."""
 
-    workspace: str
-    """Path to the workspace directory."""
-
     channel_socket: str
     """Path for the channel Unix domain socket."""
 
     ai_socket: str
     """Path to the AI Unix domain socket."""
+
+    workspace: str = ""
+    """Path to the workspace directory.  Defaults to current working directory."""
 
     max_tool_rounds: int = 128
     """Maximum number of tool call rounds (prevents infinite loops)."""
@@ -38,7 +38,11 @@ class Session:
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
 
-        workspace_path = Path(str(await anyio.Path(self.workspace).resolve()))
+        workspace_path = (
+            Path.cwd()
+            if self.workspace == ""
+            else Path(str(await anyio.Path(self.workspace).resolve()))
+        )
         logger.info(f"Loading workspace from {workspace_path}")
 
         agent = await SessionAgent.create(
