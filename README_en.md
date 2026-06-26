@@ -36,7 +36,7 @@ uv run psi-agent ai \
   --api-key $OPENAI_API_KEY \
   --base-url https://api.openai.com/v1
 
-# Terminal 2: Start Session
+# Terminal 2: Start Session (--workspace optional, defaults to .)
 uv run psi-agent session \
   --workspace ./examples/a-simple-bash-only-workspace \
   --channel-socket ./channel.sock \
