@@ -43,7 +43,7 @@ def resolve_connector_and_endpoint(
 def create_site(
     runner: web.AppRunner,
     addr: str,
-) -> web.TCPSite | web.UnixSite | web.NamedPipeSite:
+) -> web.BaseSite:
     """Server side: create an aiohttp site for the given address.
 
     ``addr`` can be a Unix socket path, a ``http(s)://host:port`` URL,
