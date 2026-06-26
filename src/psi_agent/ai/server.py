@@ -17,8 +17,9 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:500]}")
     except Exception as e:
         logger.error(f"Failed to parse request body: {e}")
+        # OpenAI-compatible error response.
         return web.json_response(
-            {"error": {"message": str(e), "type": "invalid_request", "code": "400"}},
+            {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
             status=400,
         )
 
@@ -28,9 +29,9 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     base_url = request.app["base_url"]
 
     messages = body.pop("messages", [])
-    body.pop("model", None)
     body.pop("stream", None)
     body.pop("provider", None)
+    body.pop("model", None)
     body.pop("api_key", None)
     body.pop("api_base", None)
 
@@ -38,6 +39,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         status=200,
         reason="OK",
         headers={
+            # SSE standard headers — per MDN / HTML spec
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
@@ -52,6 +54,9 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     try:
         stream = cast(
             AsyncIterator[ChatCompletionChunk],
+            # ``acompletion()`` returns ``ChatCompletion | AsyncIterator[ChatCompletionChunk]``
+            # depending on the ``stream`` flag.  We always pass ``stream=True``, so the
+            # runtime type is always ``AsyncIterator[ChatCompletionChunk]`` — the cast is safe.
             await acompletion(
                 provider=provider,
                 model=model,
@@ -64,10 +69,12 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         )
         async for chunk in stream:
             data = chunk.model_dump_json()
-            logger.debug(f"SSE chunk: {data[:200]}")
+            logger.debug(f"SSE chunk: {data[:1000]}")
             await response.write(f"data: {data}\n\n".encode())
     except Exception as e:
         logger.error(f"Error forwarding to upstream: {e}")
+        # OpenAI ChatCompletionChunk format with ``finish_reason="error"``
+        # — a psi-agent extension for layer-to-layer SSE error signalling.
         err_chunk = json.dumps(
             {
                 "id": "error",

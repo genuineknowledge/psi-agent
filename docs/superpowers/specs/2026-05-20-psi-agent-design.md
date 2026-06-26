@@ -155,7 +155,7 @@ Channel (REPL/CLI/Telegram/Feishu)        Session                     AI (OpenAI
 
 1. **非流式（HTTP 层面）**：请求解析失败等，在 `response.prepare()` 之前返回
    ```json
-   {"error": {"message": "...", "type": "...", "code": "..."}}
+    {"error": {"message": "...", "type": "...", "param": null, "code": 400}}
    ```
 
 2. **流式（SSE 层面）**：已 commit HTTP 200 后发生的错误（上游异常、连接断开等），使用 ChatCompletionChunk 格式

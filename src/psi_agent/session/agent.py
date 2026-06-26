@@ -424,14 +424,21 @@ class SessionAgent:
         except Exception as e:
             logger.error(f"Failed to parse request body: {e}")
             return web.json_response(
-                {"error": {"message": str(e), "type": "invalid_request", "code": "400"}},
+                {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
                 status=400,
             )
 
         messages = body.pop("messages", [])
         if not messages:
             return web.json_response(
-                {"error": {"message": "No messages in request", "type": "invalid_request", "code": "400"}},
+                {
+                    "error": {
+                        "message": "No messages in request",
+                        "type": "invalid_request_error",
+                        "param": None,
+                        "code": 400,
+                    }
+                },
                 status=400,
             )
 

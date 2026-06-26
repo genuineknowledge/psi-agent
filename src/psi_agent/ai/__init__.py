@@ -47,7 +47,8 @@ async def serve_ai(
         await anyio.sleep_forever()
     finally:
         logger.info(f"Shutting down AI on {socket_path}")
-        await runner.cleanup()
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()
 
 
 @dataclass
