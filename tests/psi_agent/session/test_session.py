@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from psi_agent.session import Session
 from psi_agent.session.agent import _load_system_prompt_builder
 
 
@@ -54,7 +55,5 @@ def test_syntax_error_in_system_py(tmp_path: Path) -> None:
 
 
 def test_workspace_empty_string_uses_cwd(tmp_path: Path) -> None:
-    from psi_agent.session import Session
-
     session = Session(workspace="", channel_socket=str(tmp_path / "c.sock"), ai_socket=str(tmp_path / "a.sock"))
     assert session.workspace == ""
