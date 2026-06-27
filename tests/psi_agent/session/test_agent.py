@@ -235,9 +235,7 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
         async for chunk in agent.run(user_msg):
             chunks.append(chunk)
 
-        reasoning = [
-            c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning
-        ]
+        reasoning = [c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning]
         assert len(reasoning) > 0, f"No reasoning chunks, got {len(chunks)} total"
         assert any("get_weather" in (r or "") for r in reasoning)
 
@@ -288,9 +286,7 @@ async def test_agent_pending_schedule_response(tmp_path: Path) -> None:
         async for chunk in agent.run(user_msg):
             chunks.append(chunk)
 
-        reasoning = [
-            c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning
-        ]
+        reasoning = [c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning]
         assert any("Schedule triggered" in (r or "") for r in reasoning)
 
         content = [c.choices[0].delta.content for c in chunks if c.choices and c.choices[0].delta.content]

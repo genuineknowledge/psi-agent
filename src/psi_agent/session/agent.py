@@ -342,7 +342,7 @@ class SessionAgent:
 
                             try:
                                 args = json.loads(func_args_str)
-                            except (json.JSONDecodeError, TypeError):
+                            except json.JSONDecodeError, TypeError:
                                 logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
                                 args = {}
 

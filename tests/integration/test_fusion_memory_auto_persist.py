@@ -115,7 +115,7 @@ async def test_turn_auto_persist_posts_new_messages_without_blocking(
     ses_cmd, ses_env, ses_cwd = _psi_process_spec(
         "session",
         "--workspace",
-        "examples/a-simple-schedule-workspace",
+        "examples/a-simple-bash-only-workspace",
         "--channel-socket",
         channel_socket,
         "--ai-socket",
@@ -193,7 +193,7 @@ async def test_turn_auto_persist_failure_does_not_fail_session(
     ses_cmd, ses_env, ses_cwd = _psi_process_spec(
         "session",
         "--workspace",
-        "examples/a-simple-schedule-workspace",
+        "examples/a-simple-bash-only-workspace",
         "--channel-socket",
         channel_socket,
         "--ai-socket",
