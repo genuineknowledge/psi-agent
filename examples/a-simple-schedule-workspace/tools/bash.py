@@ -46,8 +46,7 @@ async def bash(command: str, *, cwd: str | None = None) -> str:
     bash_exe = _find_bash()
     if not bash_exe:
         return (
-            "Error: bash executable was not found on PATH. "
-            "Install Git Bash, WSL, or bash before using this workspace."
+            "Error: bash executable was not found on PATH. Install Git Bash, WSL, or bash before using this workspace."
         )
 
     logger.info(f"Executing bash command: {command} (cwd={cwd})")
