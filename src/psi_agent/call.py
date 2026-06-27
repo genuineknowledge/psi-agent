@@ -6,12 +6,15 @@ from dataclasses import dataclass
 
 import anyio
 from loguru import logger
+from rich.console import Console
 
 from psi_agent._logging import setup_logging
 from psi_agent._socket import wait_for_socket
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import TextChunk
 from psi_agent.session import Session
+
+console = Console(highlight=False)
 
 
 def _temp_channel_socket() -> str:
@@ -94,7 +97,8 @@ class Call:
                 session_id=self.session_id,
                 verbose=self.verbose,
             )
-            print(text)
+            console.print(text)
         except Exception as e:
             logger.error(f"Call error: {e}")
-            print(f"\n[Error: {e}]")
+            console.print(f"\n[Error: {e}]")
+            raise
