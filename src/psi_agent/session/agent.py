@@ -14,6 +14,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent.session.server import LOCK_KEY
 from psi_agent._socket import resolve_connector_and_endpoint
 from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.scheduler import load_schedules_from_workspace
@@ -131,7 +132,7 @@ class SessionAgent:
                 self.history.append({"role": "system", "content": sp})
                 logger.info(f"System prompt loaded ({len(sp) if sp else 0} chars)")
             except Exception as e:
-                logger.error(f"Failed to build system prompt: {e}")
+                logger.exception(f"Failed to build system prompt: {e}")
 
         # Yield pending schedule response chunks first
         if self._pending_schedule_chunks:
@@ -335,9 +336,13 @@ class SessionAgent:
         error chunk with ``finish_reason="error"`` and the stream terminates.
         """
         connector, endpoint = self._build_connector_and_endpoint()
+        trace_id = uuid.uuid4().hex
+        headers = {"X-Trace-ID": trace_id}
+        # Connection timeout: 30s.  Total timeout: None (streaming).
+        timeout = aiohttp.ClientTimeout(connect=30, total=None)
         async with (
-            aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
-            session.post(endpoint, json=request_body) as resp,
+            aiohttp.ClientSession(connector=connector, timeout=timeout) as session,
+            session.post(endpoint, json=request_body, headers=headers) as resp,
         ):
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:
@@ -415,8 +420,13 @@ class SessionAgent:
         sends only the latest user message (no history); the agent
         maintains its own conversation history internally.
         """
+        trace_id = request.headers.get("X-Trace-ID", uuid.uuid4().hex)
+        with logger.contextualize(trace_id=trace_id):
+            return await self._handle_chat_completions(request)
+
+    async def _handle_chat_completions(self, request: web.Request) -> web.StreamResponse:
         logger.info("Received channel request")
-        lock: anyio.Lock = request.app["lock"]
+        lock: anyio.Lock = request.app[LOCK_KEY]
 
         try:
             body: dict = await request.json()
@@ -467,7 +477,7 @@ class SessionAgent:
                         f"reasoning={chunk.choices[0].delta.reasoning!r}"
                     )
             except Exception as e:
-                logger.error(f"Error in agent run: {e}")
+                logger.exception(f"Error in agent run: {e}")
                 err_chunk = ChatCompletionChunk(
                     id="error",
                     choices=[
@@ -548,7 +558,7 @@ async def _save_history(path: Path, history: list[dict]) -> None:
         await anyio.Path(str(path)).write_text(content)
         logger.debug(f"History saved to {path} ({len(history)} messages)")
     except Exception as e:
-        logger.error(f"Failed to save history: {e}")
+        logger.exception(f"Failed to save history: {e}")
 
 
 def _load_system_prompt_builder(workspace_path: Path) -> Callable[..., Any] | None:
@@ -573,5 +583,5 @@ def _load_system_prompt_builder(workspace_path: Path) -> Callable[..., Any] | No
             return None
         return func
     except Exception as e:
-        logger.error(f"Failed to load system_prompt_builder: {e}")
+        logger.exception(f"Failed to load system_prompt_builder: {e}")
         return None

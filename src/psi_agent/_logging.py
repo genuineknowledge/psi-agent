@@ -7,6 +7,7 @@ from loguru import logger
 
 def setup_logging(*, verbose: bool = False) -> int:
     logger.remove()
+    logger.configure(extra={"trace_id": "none"})
     level = "DEBUG" if verbose else "INFO"
     handler_id = logger.add(
         sys.stderr,
@@ -14,7 +15,8 @@ def setup_logging(*, verbose: bool = False) -> int:
         format=(
             "<green>{time:HH:mm:ss.SSS}</green> | "
             "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+            "<magenta>{extra[trace_id]}</magenta> - "
             "<level>{message}</level>"
         ),
     )

@@ -5,7 +5,10 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger
 
-from psi_agent._socket import create_site
+from psi_agent._socket import serve_app
+
+
+LOCK_KEY: web.AppKey[anyio.Lock] = web.AppKey("psi_agent.session.server.lock")
 
 
 async def serve_session(
@@ -17,18 +20,12 @@ async def serve_session(
     logger.info(f"Starting session server on {channel_socket}")
 
     app = web.Application()
-    app["lock"] = lock
+    app[LOCK_KEY] = lock
     app.router.add_post("/chat/completions", handler)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = create_site(runner, channel_socket)
-    await site.start()
 
     logger.info(f"Session server listening on {channel_socket}")
 
     try:
-        await anyio.sleep_forever()
+        await serve_app(app, channel_socket)
     finally:
         logger.info(f"Shutting down session server on {channel_socket}")
-        await runner.cleanup()

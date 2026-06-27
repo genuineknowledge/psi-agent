@@ -15,6 +15,7 @@ from __future__ import annotations
 import urllib.parse
 
 import aiohttp
+import anyio
 from aiohttp import web
 
 
@@ -38,6 +39,22 @@ def resolve_connector_and_endpoint(
         connector = aiohttp.UnixConnector(path=addr)
         endpoint = f"http://localhost{path_prefix}"
     return connector, endpoint
+
+
+async def serve_app(
+    app: web.Application,
+    addr: str,
+) -> None:
+    """Serve an aiohttp application on the given address and block until cancelled."""
+    runner = web.AppRunner(app)
+    await runner.setup()
+    try:
+        site = create_site(runner, addr)
+        await site.start()
+        await anyio.sleep_forever()
+    finally:
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()
 
 
 def create_site(

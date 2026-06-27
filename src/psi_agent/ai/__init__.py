@@ -11,9 +11,14 @@ from aiohttp.typedefs import Handler
 from loguru import logger
 
 from psi_agent._logging import setup_logging
-from psi_agent._socket import create_site
+from psi_agent._socket import serve_app
 
-from .server import handle_chat_completions
+
+
+PROVIDER_KEY: web.AppKey[str] = web.AppKey("psi_agent.ai.provider")
+MODEL_KEY: web.AppKey[str] = web.AppKey("psi_agent.ai.model")
+API_KEY_KEY: web.AppKey[str] = web.AppKey("psi_agent.ai.api_key")
+BASE_URL_KEY: web.AppKey[str] = web.AppKey("psi_agent.ai.base_url")
 
 
 async def serve_ai(
@@ -23,32 +28,24 @@ async def serve_ai(
     model: str,
     api_key: str,
     base_url: str,
-    handler: Handler,
 ) -> None:
     """Serve an AI backend on a Unix socket."""
 
     logger.info(f"Starting AI service on {socket_path} (model={model}, base_url={base_url})")
 
     app = web.Application()
-    app["provider"] = provider
-    app["model"] = model
-    app["api_key"] = api_key
-    app["base_url"] = base_url
-    app.router.add_post("/chat/completions", handler)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = create_site(runner, socket_path)
-    await site.start()
+    app[PROVIDER_KEY] = provider
+    app[MODEL_KEY] = model
+    app[API_KEY_KEY] = api_key
+    app[BASE_URL_KEY] = base_url
+    from .server import handle_chat_completions
+    app.router.add_post("/chat/completions", handle_chat_completions)
 
     logger.info(f"AI listening on {socket_path}")
-
     try:
-        await anyio.sleep_forever()
+        await serve_app(app, socket_path)
     finally:
         logger.info(f"Shutting down AI on {socket_path}")
-        with anyio.CancelScope(shield=True):
-            await runner.cleanup()
 
 
 @dataclass
@@ -86,5 +83,4 @@ class Ai:
             model=model,
             api_key=api_key,
             base_url=base_url,
-            handler=handle_chat_completions,
         )

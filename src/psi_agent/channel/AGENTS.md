@@ -73,8 +73,15 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 - 文本通过 `edit_text` 增量累积实现流式效果，完成后以 Markdown 格式最终渲染
 - FileChunk 通过 `reply_photo` / `reply_document` 发送；用户文件下载至 `Downloads/.psi/<date>/`
 - 输入文件（photo/document）自动下载并作为 FileChunk 传给 agent
-- 支持 SOCKS5 proxy（`--proxy` CLI arg > `PSI_TELEGRAM_PROXY` env）
 - 用户白名单：`--allowed-user-ids` 参数或 `None`（不限制）
+
+**配置**:
+
+| 参数 | CLI | 环境变量 | 说明 |
+|------|-----|----------|------|
+| `bot_token` | `--bot-token` | `PSI_TELEGRAM_BOT_TOKEN` | Telegram Bot Token |
+| `proxy` | `--proxy` | `PSI_TELEGRAM_PROXY` | HTTP/SOCKS5 代理 |
+| `allowed_user_ids` | `--allowed-user-ids` | - | 用户 ID 白名单 |
 
 ## Feishu 约定
 
@@ -83,5 +90,12 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 - `<audio key="..."/>` inline 标签通过 `message_resource.aget()` API 下载
 - 通过 `channel.stream()`  + `stream.append()` 实现卡片流式渲染
 - FileChunk 通过 `channel.send()` 发送文件；用户文件下载至 `Downloads/.psi/<date>/`
-- 认证：`--app-id` + `--app-secret` CLI args > `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` env
 - 用户白名单：`--allowed-user-ids` 参数或 `None`（不限制）
+
+**配置**:
+
+| 参数 | CLI | 环境变量 | 说明 |
+|------|-----|----------|------|
+| `app_id` | `--app-id` | `PSI_FEISHU_APP_ID` | 飞书应用 App ID |
+| `app_secret` | `--app-secret` | `PSI_FEISHU_APP_SECRET` | 飞书应用 App Secret |
+| `allowed_user_ids` | `--allowed-user-ids` | - | 用户 ID 白名单 |
