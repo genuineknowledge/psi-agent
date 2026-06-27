@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 from pathlib import Path
+
+import anyio
 
 
 def _find_bash() -> str | None:
@@ -46,25 +47,17 @@ async def tool(command: str, timeout_seconds: int = 30) -> str:
             "[Error] bash executable was not found on PATH. Install Git Bash, WSL, or bash before using this workspace."
         )
 
-    process = await asyncio.create_subprocess_exec(
-        bash,
-        "-lc",
-        command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
     try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+        with anyio.fail_after(timeout_seconds):
+            result = await anyio.run_process([bash, "-lc", command], check=False)
     except TimeoutError:
-        process.kill()
-        await process.communicate()
         return f"[Error] Command timed out after {timeout_seconds}s: {command}"
 
-    out = stdout.decode(errors="replace")
-    err = stderr.decode(errors="replace")
+    out = result.stdout.decode(errors="replace")
+    err = result.stderr.decode(errors="replace")
     combined = (out + err).rstrip()
 
-    if process.returncode != 0:
-        combined += f"\n[Exit code: {process.returncode}]"
+    if result.returncode != 0:
+        combined += f"\n[Exit code: {result.returncode}]"
 
     return combined or "(no output)"
