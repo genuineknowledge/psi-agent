@@ -8,6 +8,7 @@ import anyio
 import pytest
 from aiohttp import web
 
+from psi_agent._socket import wait_for_socket
 from tests.integration.conftest import MockAIServer, read_sse
 
 
@@ -33,17 +34,6 @@ def _chunk(
             "choices": [{"index": 0, "delta": d, "finish_reason": finish_reason}],
         }
     )
-
-
-async def _wait_for_socket(sock_path: str, timeout_sec: float = 15.0) -> bool:
-    deadline = anyio.current_time() + timeout_sec
-    sock_anyio = anyio.Path(sock_path)
-    while anyio.current_time() < deadline:
-        if await sock_anyio.exists():
-            await anyio.sleep(0.3)
-            return True
-        await anyio.sleep(0.1)
-    return False
 
 
 async def _stop_process(proc) -> None:
@@ -97,8 +87,8 @@ async def test_full_pipeline_mock_ai(tmp_path: Path, mock_ai_server: MockAIServe
     )
 
     try:
-        assert await _wait_for_socket(ai_socket)
-        assert await _wait_for_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         chunks = await read_sse(channel_socket, "test pipeline")
         content = "".join(c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks)
@@ -187,8 +177,8 @@ async def test_full_pipeline_with_tool(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_for_socket(ai_socket)
-        assert await _wait_for_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
         chunks = await read_sse(channel_socket, "use tool")
         all_text = json.dumps(chunks)
         assert "tool was called" in all_text, f"Got: {all_text[:500]}"
@@ -260,8 +250,8 @@ async def test_multiple_messages_history_accumulates(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_for_socket(ai_socket)
-        assert await _wait_for_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
         chunks1 = await read_sse(channel_socket, "msg1")
         await anyio.sleep(0.3)
         chunks2 = await read_sse(channel_socket, "msg2")
@@ -336,8 +326,8 @@ async def test_multi_turn_history_accumulates(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_for_socket(ai_socket)
-        assert await _wait_for_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
         chunks1 = await read_sse(channel_socket, "msg1")
         await anyio.sleep(0.3)
         chunks2 = await read_sse(channel_socket, "msg2")

@@ -7,6 +7,7 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, web
 
+from psi_agent._socket import wait_for_socket
 from tests.integration.conftest import MockAIServer, read_sse
 
 
@@ -48,17 +49,6 @@ async def _read_tcp_sse(base_url: str, message: str = "hello") -> list[dict]:
             except json.JSONDecodeError:
                 continue
     return chunks
-
-
-async def _wait_for_socket(sock_path: str, timeout_sec: float = 15.0) -> bool:
-    deadline = anyio.current_time() + timeout_sec
-    sock_anyio = anyio.Path(sock_path)
-    while anyio.current_time() < deadline:
-        if await sock_anyio.exists():
-            await anyio.sleep(0.3)
-            return True
-        await anyio.sleep(0.1)
-    return False
 
 
 async def _stop_process(proc) -> None:
@@ -112,8 +102,8 @@ async def test_channel_receives_content_from_session(tmp_path, mock_ai_server: M
     )
 
     try:
-        assert await _wait_for_socket(ai_socket)
-        assert await _wait_for_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         chunks = await read_sse(channel_socket, "hello")
         content = "".join(c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks)

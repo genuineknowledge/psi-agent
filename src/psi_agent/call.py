@@ -102,3 +102,4 @@ class Call:
             logger.error(f"Call error: {e}")
             console.print(f"\n[Error: {e}]")
             raise
+            raise

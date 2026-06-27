@@ -47,8 +47,8 @@ async def _check_ready(transport: str, address: str) -> bool:
             host = parsed.hostname or "127.0.0.1"
             port = parsed.port or (443 if parsed.scheme == "https" else 80)
             try:
-                _, writer = await anyio.connect_tcp(host, port)
-                await writer.aclose()
+                stream = await anyio.connect_tcp(host, port)
+                await stream.aclose()
                 return True
             except (OSError, ConnectionError):
                 return False
