@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 
@@ -11,6 +12,10 @@ from psi_agent._logging import setup_logging
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import TextChunk
 from psi_agent.session import Session
+
+_DEFAULT_SOCKET_TIMEOUT: float = 10.0  # max seconds to wait for socket to appear
+_DEFAULT_POLL_INTERVAL: float = 0.05   # seconds between existence checks
+_SOCKET_ACCEPT_GRACE: float = 0.3      # extra wait after socket detected, for aiohttp accept()
 
 
 async def call_agent(
@@ -62,7 +67,7 @@ class Call:
     """Path to the workspace directory."""
 
     ai_socket: str
-    """Path to the AI Unix domain socket."""
+    """AI backend address: Unix socket path, ``http://host:port``, or Named Pipe."""
 
     message: str
     """Message to send to the agent."""
@@ -85,13 +90,69 @@ class Call:
             print(f"\n[Error: {e}]")
 
 
-async def _wait_for_socket(path: str, timeout: float = 10.0, poll_interval: float = 0.05) -> None:
-    """Wait until a Unix socket file appears at ``path``."""
-    deadline = time.monotonic() + timeout
+async def _wait_for_socket(
+    address: str,
+    *,
+    max_wait: float = _DEFAULT_SOCKET_TIMEOUT,
+    poll_interval: float = _DEFAULT_POLL_INTERVAL,
+) -> None:
+    """Wait until a server socket is ready to accept connections.
+
+    Supports three transport types using the same prefix detection as
+    ``psi_agent._socket``:
+
+    * bare filesystem path → Unix domain socket
+    * ``http(s)://host:port`` → TCP
+    * ``\\\\\\\\.\\\\pipe\\\\\\name`` → Windows Named Pipe
+    """
+    transport = _detect_transport(address)
+
+    deadline = time.monotonic() + max_wait
     while True:
-        if await anyio.Path(path).exists():
-            await anyio.sleep(0.3)
+        ready = await _check_ready(transport, address)
+        if ready:
             return
         if time.monotonic() > deadline:
-            raise TimeoutError(f"Socket {path} did not appear within {timeout}s")
+            raise TimeoutError(f"Server at {address} did not become ready within {max_wait}s")
         await anyio.sleep(poll_interval)
+
+
+def _detect_transport(address: str) -> str:
+    """Classify an address into one of the three supported transport types."""
+    if address.startswith(("http://", "https://")):
+        return "tcp"
+    if address.startswith("\\\\.\\pipe\\"):
+        return "pipe"
+    return "unix"
+
+
+async def _check_ready(transport: str, address: str) -> bool:
+    """Return ``True`` when the server at ``address`` is ready for connections."""
+    match transport:
+        case "unix":
+            if not await anyio.Path(address).exists():
+                return False
+            await anyio.sleep(_SOCKET_ACCEPT_GRACE)
+            return True
+
+        case "tcp":
+            parsed = urllib.parse.urlparse(address)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            try:
+                _, writer = await anyio.connect_tcp(host, port)
+                await writer.aclose()
+                return True
+            except (OSError, ConnectionError):
+                return False
+
+        case "pipe":
+            try:
+                _, writer = await anyio.connect_unix(address)
+                await writer.aclose()
+                return True
+            except Exception:
+                return False
+
+        case _:
+            return False
