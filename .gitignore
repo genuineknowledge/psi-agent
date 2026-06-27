@@ -9,3 +9,5 @@ dist/
 *.sock
 .coverage
 .opencode/session-memory.md
+.opencode/hooks/
+.opencode/scripts/
