@@ -930,3 +930,15 @@ class System:
             return [summary_msg, *recent_messages]
 
         return recent_messages
+
+
+async def system_prompt_builder() -> str:
+    """Module-level entry point used by the psi-agent session loader.
+
+    The loader looks up an async ``system_prompt_builder`` attribute in this
+    module and calls it with no arguments. We resolve the workspace root from
+    this file's location and delegate to the ``System`` class.
+    """
+    workspace_dir = anyio.Path(__file__).parent.parent
+    return await System(workspace_dir).build_system_prompt()
+
