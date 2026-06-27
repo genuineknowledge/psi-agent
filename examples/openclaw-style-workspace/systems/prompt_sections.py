@@ -55,8 +55,6 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "image_generate": "Generate images with the configured image-generation model",
     # psi-agent workspace tools
     "bash": "Execute shell commands",
-    "memory_read": "Read persistent memory",
-    "memory_write": "Write or update persistent memory",
 }
 
 # Display order — mirrors OpenClaw toolOrder (system-prompt.ts:765-794)
@@ -91,8 +89,6 @@ TOOL_ORDER: list[str] = [
     "image_generate",
     # psi-agent extras
     "bash",
-    "memory_read",
-    "memory_write",
 ]
 
 # ---------------------------------------------------------------------------
@@ -158,19 +154,6 @@ Scan <available_skills>. If one clearly applies, read its SKILL.md at exact <loc
 If several apply, choose the most specific. If none clearly apply, read none.
 One skill up front max. Never guess/fabricate skill paths.
 External API writes: batch when safe, avoid tight loops, respect 429/Retry-After.\
-"""
-
-# ---------------------------------------------------------------------------
-# § Memory  (system-prompt.ts:279-292)
-# Actual content delegated to plugin in OpenClaw; we provide a standalone version.
-# ---------------------------------------------------------------------------
-
-MEMORY_SECTION = """\
-## Memory
-memory.md stores durable user preferences and behavior guidance. \
-Keep following it throughout the session unless higher-priority instructions override.
-Use memory_read/memory_write tools to read and update it.
-Cite memory when recalling stored facts: "According to my memory (§<section>): ...".\
 """
 
 # ---------------------------------------------------------------------------
@@ -316,7 +299,7 @@ Your first user-visible reply for a bootstrap-pending workspace must follow BOOT
 # ---------------------------------------------------------------------------
 # § Project Context file ordering  (system-prompt.ts:65-79)
 # agents.md=10, soul.md=20, identity.md=30, user.md=40, tools.md=50,
-# bootstrap.md=60, memory.md=70
+# bootstrap.md=60
 # heartbeat.md → dynamic (below cache boundary)
 # ---------------------------------------------------------------------------
 
@@ -327,7 +310,6 @@ CONTEXT_FILE_ORDER: dict[str, int] = {
     "user.md": 40,
     "tools.md": 50,
     "bootstrap.md": 60,
-    "memory.md": 70,
 }
 
 # Files that go below the cache boundary (dynamic)

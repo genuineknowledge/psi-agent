@@ -32,7 +32,6 @@ from systems.prompt_constants import (
     DEFAULT_AGENT_IDENTITY,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     KANBAN_GUIDANCE,
-    MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PLATFORM_HINTS,
     PSI_AGENT_HELP_GUIDANCE,
@@ -379,8 +378,6 @@ async def _build_stable(
 
     # 4. Tool-specific guidance (injected after task completion, before enforcement)
     tool_guidance: list[str] = []
-    if "memory" in tool_names:
-        tool_guidance.append(MEMORY_GUIDANCE)
     if "session_search" in tool_names:
         tool_guidance.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in tool_names:
@@ -637,37 +634,6 @@ async def _build_context(workspace_dir: anyio.Path | None = None) -> str:
 # ---------------------------------------------------------------------------
 
 
-async def _load_memory_md(workspace_dir: anyio.Path) -> str:
-    """Load workspace/memory.md if it exists, with threat scan.
-
-    Scans content with scope="strict" before injecting into system prompt.
-    A threat hit returns a BLOCKED placeholder; the file is never modified.
-
-    Args:
-        workspace_dir: Path to the workspace root directory.
-
-    Returns:
-        Formatted memory section string, BLOCKED placeholder, or empty string.
-    """
-    memory_path = workspace_dir / "memory.md"
-    if not await memory_path.exists():
-        return ""
-    try:
-        content = (await memory_path.read_text(encoding="utf-8")).strip()
-        if not content:
-            return ""
-        threats = scan_for_threats(content, scope="strict")
-        if threats:
-            return (
-                f"## Memory\n\n[BLOCKED: memory.md contained threat pattern(s): "
-                f"{', '.join(threats)}. Content not loaded into system prompt.]"
-            )
-        content = _truncate_content(content, "memory.md")
-        return f"## Memory\n\n{content}"
-    except Exception:
-        return ""
-
-
 async def _load_user_md() -> str:
     """Load ~/.hermes/USER.md if it exists, with threat scan.
 
@@ -699,25 +665,22 @@ async def _load_user_md() -> str:
 async def _build_volatile(
     workspace_dir: anyio.Path,
     model: str | None = None,
-    memory_snapshot: str | None = None,
     user_snapshot: str | None = None,
 ) -> str:
-    """Build the volatile tier with memory, user profile, date and optional model info.
+    """Build the volatile tier with user profile, date and optional model info.
 
-    Memory and user profile are injected first; date/session/model/provider last.
+    User profile is injected first; date/session/model/provider last.
     Uses date-only precision (not minute) to keep the date line byte-stable
     for the full day, maximizing prefix cache hits on the stable/context tiers.
     Session ID is read from PSI_SESSION_ID env var; provider from PSI_AI_PROVIDER.
 
-    When memory_snapshot / user_snapshot are provided (frozen by the System class),
-    they are used directly instead of reading from disk, ensuring prefix cache
-    stability within a session.
+    When user_snapshot is provided (frozen by the System class), it is used
+    directly instead of reading from disk, ensuring prefix cache stability
+    within a session.
 
     Args:
         workspace_dir: Path to the workspace root directory.
         model: Optional model name to include in the volatile block.
-        memory_snapshot: Pre-built memory section string (frozen snapshot).
-            If None, reads from workspace/memory.md directly.
         user_snapshot: Pre-built user profile section string (frozen snapshot).
             If None, reads from ~/.hermes/USER.md directly.
 
@@ -726,15 +689,7 @@ async def _build_volatile(
     """
     parts: list[str] = []
 
-    # 1. Memory (workspace-local) — use frozen snapshot if provided
-    if memory_snapshot is not None:
-        memory = memory_snapshot
-    else:
-        memory = await _load_memory_md(workspace_dir)
-    if memory:
-        parts.append(memory)
-
-    # 2. User profile (~/.hermes/USER.md) — use frozen snapshot if provided
+    # 1. User profile (~/.hermes/USER.md) — use frozen snapshot if provided
     if user_snapshot is not None:
         user_profile = user_snapshot
     else:
@@ -742,7 +697,7 @@ async def _build_volatile(
     if user_profile:
         parts.append(user_profile)
 
-    # 3. Date + session_id + model + provider (date-only for prefix cache stability)
+    # 2. Date + session_id + model + provider (date-only for prefix cache stability)
     now = datetime.now(tz=UTC)
     date_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
     session_id = os.environ.get("PSI_SESSION_ID")
@@ -797,10 +752,10 @@ class System:
     Implements three-tier system prompt assembly:
     - stable: identity, guidance, skills index, environment hints
     - context: project context files from cwd
-    - volatile: memory snapshot, user profile, current date, model name
+    - volatile: user profile, current date, model name
 
     The assembled prompt is cached for the lifetime of the session.
-    Memory and USER.md are frozen at first build time (frozen snapshot) so
+    USER.md is frozen at first build time (frozen snapshot) so
     mid-session file writes do not disturb the prefix cache.
     Call ``invalidate()`` after context compression to force a rebuild.
     """
@@ -823,30 +778,26 @@ class System:
         self._workspace_dir = workspace_dir
         self._help_skill_name = help_skill_name
         self._cached_prompt: str | None = None
-        self._memory_snapshot: str | None = None
         self._user_snapshot: str | None = None
 
     async def _ensure_snapshots(self) -> None:
-        """Build and freeze memory / USER.md snapshots if not yet done.
+        """Build and freeze the USER.md snapshot if not yet done.
 
-        Called once per session (or after invalidate()). Snapshots are
-        frozen here so mid-session writes to memory.md or USER.md do not
-        change the system prompt, keeping the prefix cache stable.
+        Called once per session (or after invalidate()). The snapshot is
+        frozen here so mid-session writes to USER.md do not change the
+        system prompt, keeping the prefix cache stable.
         """
-        if self._memory_snapshot is None:
-            self._memory_snapshot = await _load_memory_md(self._workspace_dir)
         if self._user_snapshot is None:
             self._user_snapshot = await _load_user_md()
 
     def invalidate(self) -> None:
         """Invalidate the cached system prompt, forcing a rebuild on next call.
 
-        Clears the prompt cache and frozen memory/USER.md snapshots so the
-        next call to ``build_system_prompt()`` re-reads files from disk.
+        Clears the prompt cache and frozen USER.md snapshot so the next call
+        to ``build_system_prompt()`` re-reads files from disk.
         Call this after context compression events.
         """
         self._cached_prompt = None
-        self._memory_snapshot = None
         self._user_snapshot = None
 
     async def build_system_prompt(self, model: str | None = None) -> str:
@@ -879,7 +830,6 @@ class System:
         volatile = await _build_volatile(
             self._workspace_dir,
             model=model,
-            memory_snapshot=self._memory_snapshot,
             user_snapshot=self._user_snapshot,
         )
 

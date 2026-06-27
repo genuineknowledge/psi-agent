@@ -1,9 +1,7 @@
 """Background review — async post-turn learning for hermes-style-workspace.
 
-After each user turn, ``BackgroundReview.maybe_spawn()`` checks two counters:
-- memory review: fires every 10 user turns
+After each user turn, ``BackgroundReview.maybe_spawn()`` checks one counter:
 - skill review: fires when the current turn had >= 10 tool calls
-- combined: fires when both conditions are true simultaneously
 
 Reviews run as isolated asyncio Tasks using a mini-ReAct loop driven by
 ``complete_fn``.  All exceptions are swallowed and logged at DEBUG level so
@@ -42,17 +40,6 @@ logger = logging.getLogger(__name__)
 
 MAX_REVIEW_ITERATIONS = 10
 
-_MEMORY_REVIEW_PROMPT = (
-    "Review the conversation above and consider saving to memory if appropriate.\n\n"
-    "Focus on:\n"
-    "1. Has the user revealed things about themselves — their persona, desires, "
-    "preferences, or personal details worth remembering?\n"
-    "2. Has the user expressed expectations about how you should behave, their work "
-    "style, or ways they want you to operate?\n\n"
-    "If something stands out, save it using the memory tool. "
-    "If nothing is worth saving, just say 'Nothing to save.' and stop."
-)
-
 _SKILL_REVIEW_PROMPT = (
     "Review the conversation above and update the skill library. Be "
     "ACTIVE — most sessions produce at least one skill update, even if "
@@ -81,19 +68,6 @@ _SKILL_REVIEW_PROMPT = (
     "'Nothing to save.' is a real option but should NOT be the default."
 )
 
-_COMBINED_REVIEW_PROMPT = (
-    "Review the conversation above for two purposes:\n\n"
-    "1. MEMORY — save anything the user revealed about themselves, their "
-    "preferences, or how they want you to behave. Use the memory tool.\n\n"
-    "2. SKILLS — update the skill library with techniques, corrections, or "
-    "workflow improvements discovered this session. Use the skill_manage tool.\n\n"
-    "Be ACTIVE on both fronts. A pass that does nothing on either is a missed "
-    "learning opportunity.\n\n"
-    "For skills, prefer patching existing class-level skills over creating new "
-    "narrow ones. Do NOT capture transient or environment-specific failures.\n\n"
-    "'Nothing to save.' is a real option but should NOT be the default for skills."
-)
-
 # ---------------------------------------------------------------------------
 # Type aliases
 # ---------------------------------------------------------------------------
@@ -110,19 +84,17 @@ ToolExecutors = dict[str, Callable[..., Awaitable[str]]]
 class BackgroundReview:
     """Post-turn learning engine for hermes-style-workspace.
 
-    Maintains turn and tool-call counters and spawns isolated async review
-    tasks to write memory and skills without blocking the main session.
+    Maintains a tool-call counter and spawns isolated async review
+    tasks to write skills without blocking the main session.
 
     On initialisation, spawns a ``maybe_run_curator()`` task with
     ``idle_for_seconds=inf`` (startup = fully idle), matching hermes-agent
     behaviour.
 
     Attributes:
-        MEMORY_INTERVAL: Number of user turns between memory reviews.
         SKILL_TOOL_THRESHOLD: Minimum tool calls in a turn to trigger skill review.
     """
 
-    MEMORY_INTERVAL: int = 10
     SKILL_TOOL_THRESHOLD: int = 10
 
     def __init__(
@@ -209,26 +181,16 @@ class BackgroundReview:
                 the current turn's assistant reply. Will be deep-copied.
             tool_call_count: Number of tool calls made during the current turn.
         """
-        do_memory = self._turn_count % self.MEMORY_INTERVAL == 0
         do_skills = tool_call_count >= self.SKILL_TOOL_THRESHOLD
 
-        if not do_memory and not do_skills:
+        if not do_skills:
             return
 
         snapshot = copy.deepcopy(messages_snapshot)
 
-        if do_memory and do_skills:
-            prompt = _COMBINED_REVIEW_PROMPT
-            allowed = {"memory", "skill_manage"}
-            label = "combined"
-        elif do_memory:
-            prompt = _MEMORY_REVIEW_PROMPT
-            allowed = {"memory"}
-            label = "memory"
-        else:
-            prompt = _SKILL_REVIEW_PROMPT
-            allowed = {"skill_manage"}
-            label = "skill"
+        prompt = _SKILL_REVIEW_PROMPT
+        allowed = {"skill_manage"}
+        label = "skill"
 
         logger.debug(
             "BackgroundReview: spawning %s review (turn=%d, tool_calls=%d)",
@@ -353,32 +315,6 @@ def _build_tool_schemas(allowed_tools: set[str]) -> list[dict[str, Any]]:
         List of tool schema dicts in OpenAI function-call format.
     """
     schemas: list[dict[str, Any]] = []
-
-    if "memory" in allowed_tools:
-        schemas.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": "memory",
-                    "description": "Read, write, append, or clear workspace/memory.md.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "action": {
-                                "type": "string",
-                                "enum": ["read", "write", "append", "clear"],
-                                "description": "Operation to perform.",
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "Content to write or append (write/append only).",
-                            },
-                        },
-                        "required": ["action"],
-                    },
-                },
-            }
-        )
 
     if "skill_manage" in allowed_tools:
         schemas.append(

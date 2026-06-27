@@ -29,7 +29,6 @@ from prompt_sections import (
     EXECUTION_BIAS_SECTION,
     HEARTBEATS_SECTION,
     IDENTITY_LINE,
-    MEMORY_SECTION,
     MESSAGING_SECTION_MOCK,
     OPENCLAW_CONTROL_SECTION,
     PSI_AGENT_HELP_GUIDANCE,
@@ -58,7 +57,6 @@ _SOUL_MD_PATH = _OPENCLAW_HOME / "SOUL.md"
 _USER_MD_PATH = _OPENCLAW_HOME / "USER.md"
 
 # Character limits for volatile sections
-_MEMORY_MAX_CHARS = 20_000
 _USER_MD_MAX_CHARS = 10_000
 _CONTEXT_FILE_MAX_CHARS = 40_000
 
@@ -516,8 +514,6 @@ async def _build_bootstrap_files(workspace_dir: anyio.Path) -> str:
             name_lower = entry.name.lower()
             if name_lower in DYNAMIC_CONTEXT_FILE_BASENAMES:
                 continue  # handled in dynamic suffix
-            if name_lower == "memory.md":
-                continue  # memory is volatile, injected in dynamic suffix only
             priority = CONTEXT_FILE_ORDER.get(name_lower)
             if priority is not None:
                 candidates.append((priority, entry.name))
@@ -580,10 +576,9 @@ def _build_datetime_section() -> str:
 
 
 async def _build_volatile(workspace_dir: anyio.Path) -> str:
-    """Build the volatile (dynamic) memory + user profile sections.
+    """Build the volatile (dynamic) user profile section.
 
-    Reads workspace/memory.md and ~/.openclaw/USER.md.
-    Truncated at _MEMORY_MAX_CHARS and _USER_MD_MAX_CHARS respectively.
+    Reads ~/.openclaw/USER.md, truncated at _USER_MD_MAX_CHARS.
 
     Args:
         workspace_dir: Path to the workspace directory.
@@ -592,10 +587,6 @@ async def _build_volatile(workspace_dir: anyio.Path) -> str:
         Combined volatile section string, or empty string.
     """
     parts: list[str] = []
-
-    memory_content = await _read_file_optional(workspace_dir / "memory.md", _MEMORY_MAX_CHARS)
-    if memory_content and memory_content.strip():
-        parts.append(f"## Memory\n\n{memory_content.strip()}")
 
     user_content = await _read_file_optional(_USER_MD_PATH, _USER_MD_MAX_CHARS)
     if user_content and user_content.strip():
@@ -757,10 +748,6 @@ class System:
             if skills_section:
                 stable_parts += ["", skills_section]
 
-        # Memory guidance — skip in minimal
-        if not is_minimal:
-            stable_parts += ["", MEMORY_SECTION]
-
         # Workspace (absolute path, mirrors OpenClaw behaviour)
         workspace_abs = str(await self._workspace_dir.resolve())
         stable_parts += ["", build_workspace_section(workspace_abs)]
@@ -830,7 +817,7 @@ class System:
         if model_identity:
             dynamic_parts += [model_identity, ""]
 
-        # Volatile memory + user profile
+        # Volatile user profile
         volatile = await _build_volatile(self._workspace_dir)
         if volatile:
             dynamic_parts += [volatile, ""]

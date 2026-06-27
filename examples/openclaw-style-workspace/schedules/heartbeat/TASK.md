@@ -1,6 +1,6 @@
 ---
 name: heartbeat
-description: Periodic self-check task. Runs every 30 minutes to verify the agent is alive and optionally compact memory.
+description: Periodic self-check task. Runs every 30 minutes to verify the agent is alive.
 cron: "*/30 * * * *"
 ---
 
@@ -11,14 +11,13 @@ This task runs every 30 minutes.
 ## Instructions
 
 1. Respond with exactly `HEARTBEAT_OK` and nothing else — no explanation, no extra text.
-2. Optionally, before responding, check if `memory.md` needs compaction (if it exceeds 50KB, summarize old entries).
-3. Do not initiate any other action unless explicitly scheduled.
+2. Do not initiate any other action unless explicitly scheduled.
 
 ## Purpose
 
 The heartbeat serves two functions:
 - Proves the agent loop is alive and responding
-- Provides a regular opportunity to run lightweight maintenance (memory compaction, stale file cleanup)
+- Provides a regular opportunity to run lightweight maintenance (stale file cleanup)
 
 ## Expected response
 

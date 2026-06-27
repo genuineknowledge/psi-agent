@@ -11,7 +11,7 @@ The system prompt follows OpenClaw's `buildAgentSystemPrompt()` structure:
   skills, context files, workspace, sandbox info
 - **Cache boundary**: `<!-- OPENCLAW_CACHE_BOUNDARY -->`
 - **Dynamic suffix** (rebuilt each turn): channel guidance, heartbeats, silent
-  replies, memory, user profile, datetime, runtime info
+  replies, user profile, datetime, runtime info
 
 ## Configuration
 
@@ -33,7 +33,6 @@ The following environment variables control the dynamic sections:
 
 | File | Purpose |
 |---|---|
-| `memory.md` | Agent's long-term memory (volatile, injected each turn) |
 | `~/.openclaw/SOUL.md` | Agent identity (replaces default identity line) |
 | `~/.openclaw/USER.md` | User profile (injected into dynamic suffix) |
 
