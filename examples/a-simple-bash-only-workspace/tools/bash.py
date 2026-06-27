@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import shutil
 from pathlib import Path
 
 import anyio
@@ -20,8 +21,9 @@ async def bash(command: str, *, cwd: str | None = None) -> str:
         cwd = str(Path(inspect.getfile(bash)).parent.parent)
 
     logger.info(f"Executing bash command: {command} (cwd={cwd})")
+    bash_exe = shutil.which("bash") or "/bin/bash"
     try:
-        result = await anyio.run_process(["/bin/bash", "-c", command], cwd=cwd)
+        result = await anyio.run_process([bash_exe, "-c", command], cwd=cwd)
         stdout = result.stdout.decode().strip()
         stderr = result.stderr.decode().strip()
         output = stdout
