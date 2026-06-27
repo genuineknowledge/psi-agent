@@ -5,9 +5,10 @@ import json
 import re
 import types
 import typing
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -18,8 +19,8 @@ class SessionToolContext:
     session_id: str | None
     workspace_path: Path | None
     history_path: Path | None
-    history_messages: list[dict[str, Any]]
-    latest_user_message: dict[str, Any]
+    history_messages: tuple[Mapping[str, Any], ...]
+    latest_user_message: Mapping[str, Any]
     ai_socket: str
 
     _current: ClassVar[ContextVar[SessionToolContext | None]] = ContextVar(
@@ -31,6 +32,14 @@ class SessionToolContext:
     def current(cls) -> SessionToolContext | None:
         return cls._current.get()
 
+    @classmethod
+    def freeze_message(cls, message: Mapping[str, Any]) -> Mapping[str, Any]:
+        return cls._freeze(deepcopy(dict(message)))
+
+    @classmethod
+    def freeze_messages(cls, messages: Iterable[Mapping[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+        return tuple(cls.freeze_message(message) for message in messages)
+
     @contextmanager
     def push(self) -> Iterator[None]:
         token = self._current.set(self)
@@ -38,6 +47,14 @@ class SessionToolContext:
             yield
         finally:
             self._current.reset(token)
+
+    @classmethod
+    def _freeze(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return types.MappingProxyType({key: cls._freeze(item) for key, item in value.items()})
+        if isinstance(value, list):
+            return tuple(cls._freeze(item) for item in value)
+        return value
 
 
 @dataclass
@@ -201,7 +218,7 @@ class ToolFunction:
 class DeltaMessage:
     content: str | None = None
     role: str | None = None
-    reasoning_content: str | None = None
+    reasoning: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -210,8 +227,8 @@ class DeltaMessage:
             d["content"] = self.content
         if self.role is not None:
             d["role"] = self.role
-        if self.reasoning_content is not None:
-            d["reasoning_content"] = self.reasoning_content
+        if self.reasoning is not None:
+            d["reasoning"] = self.reasoning
         if self.tool_calls is not None:
             d["tool_calls"] = self.tool_calls
         return d

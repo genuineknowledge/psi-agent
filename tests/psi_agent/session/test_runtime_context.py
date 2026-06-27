@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -84,3 +85,38 @@ async def test_user_message_is_written_before_tool_execution(tmp_path: Path) -> 
     assert seen["ctx"] is not None
     assert '"role": "user"' in str(seen["history_file"])
     assert '"content": "hello"' in str(seen["history_file"])
+
+
+@pytest.mark.anyio
+async def test_tool_context_history_is_isolated_from_session_mutation(tmp_path: Path) -> None:
+    history_path = tmp_path / "workspace" / "histories" / "session-1.jsonl"
+    history_path.parent.mkdir(parents=True)
+    user_message = {"role": "user", "content": "hello"}
+
+    async def mutating_tool() -> str:
+        ctx = SessionToolContext.current()
+        assert ctx is not None
+        with pytest.raises(TypeError):
+            cast(dict[str, Any], ctx.history_messages[0])["content"] = "mutated via history"
+        with pytest.raises(TypeError):
+            cast(dict[str, Any], ctx.latest_user_message)["content"] = "mutated via latest"
+        return "ok"
+
+    tf = ToolFunction(
+        name="echo_tool",
+        description="Echo",
+        parameters={"type": "object", "properties": {}, "required": []},
+    )
+    agent = RuntimeContextSessionAgent(
+        ai_socket="http://127.0.0.1:1",
+        tools={"echo_tool": tf},
+        tool_funcs={"echo_tool": mutating_tool},
+        history=[],
+        history_path=history_path,
+    )
+
+    async for _ in agent.run(user_message):
+        pass
+
+    assert agent.history[0]["content"] == "hello"
+    assert user_message["content"] == "hello"

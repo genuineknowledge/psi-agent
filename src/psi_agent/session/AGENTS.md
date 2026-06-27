@@ -101,7 +101,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 - `arguments` 可能不是合法 JSON → `json.loads` 包在 try/except 中，失败时 fallback 为 `{}`
 - Tool 函数可能抛异常 → 以错误文本作为 tool result 返回，不中断 agent loop
 - Tool 返回非字符串（int, None） → 通过 `str()` 强转
-- Tool 执行期间会通过 `psi_agent.session._protocol.SessionToolContext.current()` 暴露只读上下文，包含当前 `session_id`、workspace、history path、history 快照、latest user message 和 AI socket。Workspace tool 可读取该上下文，但不能直接修改 Session 内存态。
+- Tool 执行期间会通过 `psi_agent.session._protocol.SessionToolContext.current()` 暴露只读上下文，包含当前 `session_id`、workspace、history path、冻结的 history 快照、冻结的 latest user message 和 AI socket。Workspace tool 可读取该上下文，但不能通过该对象修改 Session 内存态。
 
 ## Schedule 机制完整流程
 

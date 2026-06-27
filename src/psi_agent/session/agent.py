@@ -6,6 +6,7 @@ import json
 import sys
 import uuid
 from collections.abc import AsyncIterator, Callable
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -152,7 +153,8 @@ class SessionAgent:
                 yield chunk
             self._pending_schedule_chunks = []
 
-        self.history.append(user_message)
+        turn_user_message = deepcopy(user_message)
+        self.history.append(turn_user_message)
         if self._history_path is not None:
             await _save_history(self._history_path, self.history)
         logger.debug(f"History now has {len(self.history)} messages")
@@ -288,8 +290,8 @@ class SessionAgent:
                                     session_id=self._session_id,
                                     workspace_path=self._workspace_path,
                                     history_path=self._history_path,
-                                    history_messages=list(self.history),
-                                    latest_user_message=user_message,
+                                    history_messages=SessionToolContext.freeze_messages(self.history),
+                                    latest_user_message=SessionToolContext.freeze_message(turn_user_message),
                                     ai_socket=self.ai_socket,
                                 )
                                 with tool_context.push():

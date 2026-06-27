@@ -37,7 +37,7 @@ The Fusion-Guard repository owns the real Dolphin workspace and adapter implemen
 - `latest_user_message`
 - `ai_socket`
 
-Workspace tools may read the current context with `SessionToolContext.current()`, but they must not mutate Dolphin session memory directly. Dolphin sets the current context with the `SessionToolContext.push()` member context manager around each tool call.
+Workspace tools may read the current context with `SessionToolContext.current()`, but they cannot mutate Dolphin session memory through that object. Dolphin exposes frozen snapshots for `history_messages` and `latest_user_message`, and sets the current context with the `SessionToolContext.push()` member context manager around each tool call.
 
 ## History Ordering
 
