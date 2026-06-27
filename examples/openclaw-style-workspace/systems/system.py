@@ -941,4 +941,3 @@ async def system_prompt_builder() -> str:
     """
     workspace_dir = anyio.Path(__file__).parent.parent
     return await System(workspace_dir).build_system_prompt()
-
