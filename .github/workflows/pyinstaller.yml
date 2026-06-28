@@ -35,12 +35,12 @@ jobs:
             --collect-submodules any_llm \
             --collect-submodules mcp \
             src/psi_agent/cli.py
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
           path: pyinstaller-dist/psi-agent
         if: matrix.os != 'windows-latest'
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
           path: pyinstaller-dist/psi-agent.exe
