@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 import anyio
 from aiohttp import web
@@ -8,12 +9,15 @@ from loguru import logger
 
 from psi_agent.session.protocol import AgentChunk, AgentError, ChatCompletionChunk, DeltaMessage, StreamChoice
 
+if TYPE_CHECKING:
+    from psi_agent.session.agent import SessionAgent
+
 
 class ChannelAdapter:
     """Protocol adapter for the Channel side — parse request, convert AgentChunk -> SSE."""
 
     @staticmethod
-    async def handle(request: web.Request, agent: "SessionAgent", lock: anyio.Lock) -> web.StreamResponse:  # type: ignore[name-defined]  # noqa: F821
+    async def handle(request: web.Request, agent: SessionAgent, lock: anyio.Lock) -> web.StreamResponse:
         try:
             user_message, extra_params = await ChannelAdapter.parse_request(request)
         except ChannelAdapter._ParseError as e:
@@ -78,7 +82,7 @@ class ChannelAdapter:
         try:
             body: dict = await request.json()
         except Exception as e:
-            raise ChannelAdapter._ParseError(str(e))
+            raise ChannelAdapter._ParseError(str(e)) from e
 
         messages = body.pop("messages", [])
         if not messages:

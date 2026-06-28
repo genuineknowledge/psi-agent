@@ -5,10 +5,12 @@ from functools import partial
 from pathlib import Path
 
 import anyio
+from aiohttp import web
 from loguru import logger
 
 from psi_agent._logging import setup_logging
 from psi_agent.session.agent import SessionAgent
+from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.scheduler import run_one_schedule
 from psi_agent.session.server import serve_session
 
@@ -18,22 +20,11 @@ class Session:
     """Start a session backed by a workspace and AI."""
 
     channel_socket: str
-    """Path for the channel Unix domain socket."""
-
     ai_socket: str
-    """Path to the AI Unix domain socket."""
-
     workspace: str = ""
-    """Path to the workspace directory.  Defaults to current working directory."""
-
     max_tool_rounds: int = 128
-    """Maximum number of tool call rounds (prevents infinite loops)."""
-
     verbose: bool = False
-    """Enable DEBUG-level logging."""
-
     session_id: str | None = None
-    """Session history identifier.  None → auto-generate UUID."""
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
@@ -50,14 +41,10 @@ class Session:
 
         lock = anyio.Lock()
 
+        async def channel_handler(request: web.Request) -> web.StreamResponse:
+            return await ChannelAdapter.handle(request, agent, lock)
+
         async with anyio.create_task_group() as tg:
-            tg.start_soon(
-                partial(
-                    serve_session,
-                    channel_socket=self.channel_socket,
-                    handler=agent.handle_chat_completions,
-                    lock=lock,
-                )
-            )
+            tg.start_soon(partial(serve_session, channel_socket=self.channel_socket, handler=channel_handler))
             for schedule in agent.schedules:
                 tg.start_soon(partial(run_one_schedule, schedule, agent, lock))

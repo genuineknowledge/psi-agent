@@ -10,6 +10,7 @@ from croniter import croniter
 from loguru import logger
 
 from psi_agent._yaml import parse_yaml_header
+from psi_agent.session.protocol import AgentChunk
 
 if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent
@@ -102,7 +103,7 @@ async def run_one_schedule(schedule: Schedule, agent: SessionAgent, lock: anyio.
             msg = {"role": "user", "content": schedule.task_content}
 
             async with lock:
-                pending_chunks: list = []
+                pending_chunks: list[AgentChunk] = []
                 async for chunk in agent.run(msg):
                     pending_chunks.append(chunk)
                 agent.set_pending_schedule_chunks(pending_chunks)

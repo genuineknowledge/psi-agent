@@ -8,16 +8,10 @@ from loguru import logger
 from psi_agent._sockets import create_site
 
 
-async def serve_session(
-    *,
-    channel_socket: str,
-    handler: Handler,
-    lock: anyio.Lock,
-) -> None:
+async def serve_session(*, channel_socket: str, handler: Handler) -> None:
     logger.info(f"Starting session server on {channel_socket}")
 
     app = web.Application()
-    app["lock"] = lock
     app.router.add_post("/chat/completions", handler)
 
     runner = web.AppRunner(app)
