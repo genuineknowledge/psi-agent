@@ -18,6 +18,7 @@ Gateway 进程
 ├── HistoryManager     — JSONL 历史读取
 ├── aiohttp REST Server  — OpenAPI CRUD + Web UI chat
 ├── spa/               — Vue 3 SPA 前端项目 (Vite + SFC)
+├── GatewayTray        — 系统托盘图标 (pystray)
 └── _openapi.py       — OpenAPI schema 提供
 ```
 
@@ -35,6 +36,7 @@ Gateway 进程
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
 | `_workspace_manager.py` | 目录浏览 |
 | `spa/` | Vue 3 SPA 前端项目（Vite + SFC + Composition API），构建输出 `spa/dist/` |
+| `_tray.py` | 系统托盘图标（pystray + Pillow），左键打开浏览器，右键菜单控制 |
 | `_openapi.py` | `GET /openapi.json` schema 生成 |
 
 ## Gateway 启动流程
@@ -45,9 +47,30 @@ Gateway 进程
 3. 创建 AIManager + SessionManager
 4. create_app(aim, sm)           — 注册 REST 路由
 5. runner.setup() + create_site(runner, listen) + site.start()
-6. await anyio.sleep_forever()
-7. finally: runner.cleanup() + tg.__aexit__()
+6. if self.browser: webbrowser.open(addr)
+7. GatewayTray(addr).start()     — 启动系统托盘
+8. 等待 tray 退出或外部 cancel
+9. finally: tray.stop() + runner.cleanup() + tg.__aexit__()
 ```
+
+## 系统托盘 (GatewayTray)
+
+Gateway 启动后会在系统托盘显示一个图标（pystray + Pillow 程序化生成），提供快速访问 Web Console 的入口。
+
+**交互**：
+| 操作 | 行为 |
+|------|------|
+| 左键点击 | 打开浏览器访问 Gateway 地址 |
+| 右键 → "打开控制台" | 同上 |
+| 右键 → "退出" | 关闭托盘并终止 Gateway 进程 |
+
+**实现细节**：
+- `GatewayTray` 在独立 daemon 线程中运行 pystray event loop
+- `Gateway.run()` 使用 `anyio.to_thread.run_sync(tray._stop_event.wait)` 等待退出信号，替代原有的 `anyio.sleep_forever()`
+- 托盘"退出"设置 `threading.Event`，主循环检测到后进入 `finally` 正常 shutdown
+- 托盘启动失败（无桌面环境等）不阻塞 Gateway 启动，仅记录 warning
+- `self.browser` 参数不变：启动时自动打开一次浏览器，托盘提供后续手动"重新打开"
+- 图标使用 Pillow 程序化生成，无外部 png 依赖，ψ 字符蓝色圆角矩形底
 
 ## Socket 路径约定
 
@@ -390,6 +413,8 @@ psi-agent gateway [--listen http://127.0.0.1:PORT] [--socket-path psi] [--no-bro
 ```
 
 默认 listen 为空，会自动绑定 127.0.0.1 随机高端口并打开浏览器。`--no-browser` 抑制自动打开浏览器。
+
+启动后会自动创建系统托盘图标，左键点击可打开 Web Console，右键可退出 Gateway。托盘可用性与桌面环境有关，缺失时不阻塞启动。
 
 Gateway 不在 `_run.py` 的批量启动中。
 
