@@ -89,8 +89,8 @@ class SessionAgent:
     async def reload_tools(self) -> dict[str, str]:
         return await self._tool_registry.refresh()
 
-    async def reload_schedules(self, task_group: object) -> list:
-        return await self._schedule_registry.refresh(task_group)
+    async def reload_schedules(self) -> dict[str, str]:
+        return await self._schedule_registry.refresh()
 
     # -- channel request lifecycle --------------------------------------------
 

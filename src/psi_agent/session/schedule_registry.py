@@ -1,7 +1,13 @@
-"""Scheduled tasks — data model, runner coroutine, and registry."""
+"""Scheduled tasks — data model, runner coroutine, and registry.
+
+Tools are stored per-file internally via ``ScheduleEntry``, which
+carries the hash and the ``Schedule`` for a single ``TASK.md`` file.
+The public ``schedules`` list remains flat for backward compatibility.
+"""
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,96 +33,177 @@ class Schedule:
     task_content: str
 
 
-class ScheduleRegistry:
-    """Owns the schedule list and its runtime lifecycle."""
+# ── ScheduleEntry — per-file storage unit ─────────────────────────────────────
 
-    def __init__(self, *, schedules: list[Schedule] | None = None, work_dir: Path | None = None):
-        self.schedules: list[Schedule] = list(schedules or [])
+
+@dataclass
+class ScheduleEntry:
+    """Per-file schedule storage — hash, schedule data, and import status.
+
+    ``fresh`` is ``True`` when the file was actually parsed during
+    this refresh round; ``False`` when the entry was copied from a
+    previous state (hash matched, file skipped).
+    """
+
+    file_hash: str
+    schedule: Schedule
+    fresh: bool = False
+
+
+# ── ScheduleRegistry — loading, state, incremental refresh ───────────────────
+
+
+class ScheduleRegistry:
+    """Owns the schedule list and its runtime lifecycle.
+
+    Schedules are stored per-file as ``{file_path: ScheduleEntry}``.
+    Each schedule gets a ``CancelScope`` for per-schedule cancellation
+    on update or removal.
+    """
+
+    def __init__(self, *, files: dict[str, ScheduleEntry] | None = None, work_dir: Path | None = None) -> None:
+        self._files: dict[str, ScheduleEntry] = dict(files or {})
         self._work_dir = work_dir
         self._agent: SessionAgent | None = None
+        self._task_group: Any = None
+        self._runner_scopes: dict[str, anyio.CancelScope] = {}
+
+    @property
+    def schedules(self) -> list[Schedule]:
+        """Flat list of all registered schedules."""
+        return [entry.schedule for entry in self._files.values()]
 
     # -- factory ----------------------------------------------------------------
 
     @classmethod
     async def load(cls, schedules_dir: Path) -> ScheduleRegistry:
         """Full initial load — scan *schedules_dir*."""
-        schedules = await cls._load_from_dir(schedules_dir)
-        return cls(schedules=schedules, work_dir=schedules_dir)
+        files = await cls._load_from_dir(schedules_dir)
+        return cls(files=files, work_dir=schedules_dir)
 
     # -- runner lifecycle -------------------------------------------------------
 
     def start_all(self, task_group: Any, agent: SessionAgent) -> None:
         """Start a runner for every registered schedule in *task_group*.
-        Stores *agent* for use by future ``refresh()`` calls."""
+        Stores *agent* and *task_group* for use by ``refresh()``."""
         self._agent = agent
-        for s in self.schedules:
-            task_group.start_soon(self._run_one, s, agent)
+        self._task_group = task_group
+        for entry in self._files.values():
+            self._start_runner(entry.schedule)
 
-    async def refresh(self, task_group: Any) -> list[Schedule]:
-        """Incremental reload — start runners for new schedules only."""
+    async def refresh(self) -> dict[str, str]:
+        """Incremental reload — adds, updates, removes schedules.
+
+        Returns a dict mapping schedule name to ``'added'``,
+        ``'updated'``, ``'removed'``, or ``'skipped'``.
+        """
         if self._work_dir is None:
             logger.warning("No work_dir set, cannot refresh schedules")
-            return []
-        if self._agent is None:
-            logger.warning("No agent set, cannot start schedule runners")
-            return []
+            return {}
+        if self._task_group is None:
+            logger.warning("No task group set, cannot start/restart runners")
+            return {}
 
         logger.debug("Starting schedule refresh")
-        new_scheds = await self._load_from_dir(self._work_dir)
-        existing = {s.name for s in self.schedules}
-        added: list[Schedule] = []
-        for s in new_scheds:
-            if s.name not in existing:
-                self.schedules.append(s)
-                task_group.start_soon(self._run_one, s, self._agent)
-                added.append(s)
+        new_files = await self._load_from_dir(self._work_dir, self._files)
+        result: dict[str, str] = {}
+
+        # removed — files in old but not on disk any more
+        for path in list(self._files):
+            if path not in new_files:
+                name = self._files[path].schedule.name
+                self._cancel_runner(name)
+                result[name] = "removed"
+                del self._files[path]
+
+        # added / updated / skipped — per file
+        for path, new_entry in new_files.items():
+            old_entry = self._files.get(path)
+            name = new_entry.schedule.name
+            if old_entry is None:
+                self._start_runner(new_entry.schedule)
+                result[name] = "added"
+                self._files[path] = new_entry
+            elif not new_entry.fresh:
+                result[name] = "skipped"
             else:
-                logger.debug(f"Schedule {s.name!r} already registered, skipping")
-        if added:
-            logger.info(f"Schedule refresh: added {[s.name for s in added]!r}")
-        return added
+                self._cancel_runner(name)
+                self._start_runner(new_entry.schedule)
+                result[name] = "updated"
+                self._files[path] = new_entry
+
+        logger.info(f"Schedule refresh complete: {result or 'no changes'}")
+        return result
+
+    # -- runner management ------------------------------------------------------
+
+    def _start_runner(self, schedule: Schedule) -> None:
+        """Start a perpetual runner coroutine for *schedule*."""
+        cancel_scope = anyio.CancelScope()
+        self._runner_scopes[schedule.name] = cancel_scope
+        self._task_group.start_soon(self._run_one, schedule, self._agent, cancel_scope)
+
+    def _cancel_runner(self, name: str) -> None:
+        """Cancel a running schedule by name, removing its scope."""
+        scope = self._runner_scopes.pop(name, None)
+        if scope is not None:
+            scope.cancel()
 
     # -- runner coroutine (perpetual) -------------------------------------------
 
     @staticmethod
-    async def _run_one(schedule: Schedule, agent: SessionAgent) -> None:
+    async def _run_one(schedule: Schedule, agent: SessionAgent, cancel_scope: anyio.CancelScope) -> None:
         """Perpetual coroutine that fires a schedule on its cron interval."""
         logger.info(f"Schedule runner started: {schedule.name!r} ({schedule.cron!r})")
 
         cron_iter = croniter(schedule.cron, time.time())
 
         try:
-            while True:
-                try:
-                    next_run = cron_iter.get_next()
-                    wait = max(0.0, next_run - time.time())
-                    await anyio.sleep(wait)
+            with cancel_scope:
+                while True:
+                    try:
+                        next_run = cron_iter.get_next()
+                        wait = max(0.0, next_run - time.time())
+                        await anyio.sleep(wait)
 
-                    logger.info(f"Schedule triggered: {schedule.name!r}")
-                    msg = {"role": "user", "content": schedule.task_content}
+                        logger.info(f"Schedule triggered: {schedule.name!r}")
+                        msg = {"role": "user", "content": schedule.task_content}
 
-                    async with agent._lock:
-                        pending_chunks: list[AgentChunk] = []
-                        async for chunk in agent.run(msg):
-                            pending_chunks.append(chunk)
-                            logger.debug(f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
-                        agent.set_pending_schedule_chunks(pending_chunks)
-                        logger.info(f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)")
-                except Exception as e:
-                    logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
+                        async with agent._lock:
+                            pending_chunks: list[AgentChunk] = []
+                            async for chunk in agent.run(msg):
+                                pending_chunks.append(chunk)
+                                logger.debug(
+                                    f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}"
+                                )
+                            agent.set_pending_schedule_chunks(pending_chunks)
+                            logger.info(f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)")
+                    except Exception as e:
+                        logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
         finally:
             logger.info(f"Schedule runner stopped: {schedule.name!r}")
 
     # -- disk loading -----------------------------------------------------------
 
     @staticmethod
-    async def _load_from_dir(schedules_dir: Path) -> list[Schedule]:
-        schedules: list[Schedule] = []
+    async def _load_from_dir(
+        schedules_dir: Path,
+        old_files: dict[str, ScheduleEntry] | None = None,
+    ) -> dict[str, ScheduleEntry]:
+        """Scan and parse all schedule ``TASK.md`` files.
+
+        If *old_files* is provided, files whose hash matches the stored
+        value are preserved (copied from *old_files* with ``fresh=False``)
+        instead of re-parsed.
+
+        Returns ``{file_path: ScheduleEntry}`` for all current files.
+        """
+        files: dict[str, ScheduleEntry] = {}
         sched_anyio = anyio.Path(str(schedules_dir))
 
         if not await sched_anyio.is_dir():
             logger.warning(f"Schedules directory not found: {schedules_dir!r}")
-            return schedules
+            return files
 
         async for task_dir in sched_anyio.iterdir():
             task_dir_anyio = anyio.Path(str(task_dir))
@@ -127,6 +214,15 @@ class ScheduleRegistry:
                 continue
 
             content = await task_file.read_text()
+            file_hash = hashlib.sha256(content.encode()).hexdigest()
+            str_path = str(task_file)
+
+            if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
+                logger.debug(f"Skipping unchanged file: {task_file!r}")
+                old = old_files[str_path]
+                files[str_path] = ScheduleEntry(file_hash=old.file_hash, schedule=old.schedule, fresh=False)
+                continue
+
             header, body = parse_yaml_header(content)
             if header is None:
                 logger.warning(f"No valid YAML header in {task_file!r}, skipping")
@@ -145,8 +241,8 @@ class ScheduleRegistry:
                 continue
 
             schedule = Schedule(name=str(name), cron=str(cron), task_content=body.strip())
-            schedules.append(schedule)
+            files[str_path] = ScheduleEntry(file_hash=file_hash, schedule=schedule, fresh=True)
             logger.debug(f"Loaded schedule: {name!r} (cron: {cron!r})")
 
-        logger.info(f"Loaded {len(schedules)} schedule(s) from {schedules_dir!r}")
-        return schedules
+        logger.info(f"Loaded {len(files)} schedule(s) from {schedules_dir!r}")
+        return files
