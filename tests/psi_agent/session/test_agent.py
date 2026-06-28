@@ -604,8 +604,9 @@ async def test_history_saved_after_stop(tmp_path: Path) -> None:
         assert history_path.exists()
         loaded = await Conversation._load(history_path)
         assert len(loaded) == 3
-        assert loaded[0]["role"] == "user"
-        assert loaded[1]["role"] == "assistant"
+        assert loaded[0]["role"] == "system"
+        assert loaded[1]["role"] == "user"
+        assert loaded[2]["role"] == "assistant"
     finally:
         await runner.cleanup()
 
