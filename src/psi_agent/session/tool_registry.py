@@ -252,7 +252,7 @@ class ToolRegistry:
             file_hash = hashlib.sha256(file_bytes).hexdigest()
             file_hashes[file_path_str] = file_hash
 
-            module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash[:12]}"
+            module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
 
             try:
                 spec = importlib.util.spec_from_file_location(module_name, str(py_file))

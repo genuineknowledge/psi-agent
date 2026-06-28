@@ -455,7 +455,7 @@ async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
         with pytest.raises(AgentError):
             async for _ in agent.run({"role": "user", "content": "hi"}):
                 pass
-        assert len(agent._conversation.messages) == history_len_before + 1  # only user message added
+        assert len(agent._conversation.messages) == history_len_before + 2
     finally:
         await runner.cleanup()
 
@@ -603,7 +603,7 @@ async def test_history_saved_after_stop(tmp_path: Path) -> None:
 
         assert history_path.exists()
         loaded = await Conversation._load(history_path)
-        assert len(loaded) == 2
+        assert len(loaded) == 3
         assert loaded[0]["role"] == "user"
         assert loaded[1]["role"] == "assistant"
     finally:

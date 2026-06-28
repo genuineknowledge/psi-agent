@@ -52,9 +52,8 @@ class SystemPrompt:
         if not conversation.messages:
             try:
                 sp = await self._builder()
-                if sp:
-                    conversation.replace_system(sp)
-                    logger.info(f"System prompt loaded ({len(sp)} chars)")
+                conversation.replace_system(sp)
+                logger.info(f"System prompt loaded ({len(sp)} chars)")
             except Exception as e:
                 logger.error(f"Failed to build system prompt: {e}")
         else:
@@ -82,7 +81,7 @@ class SystemPrompt:
             return None, None
 
         file_hash = hashlib.sha256(file_bytes).hexdigest()
-        module_name = f"psi_system_{session_id}_{file_hash[:12]}"
+        module_name = f"psi_system_{session_id}_{file_hash}"
 
         try:
             spec = importlib.util.spec_from_file_location(module_name, str(system_py))
