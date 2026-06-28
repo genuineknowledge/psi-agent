@@ -179,11 +179,12 @@ class ToolRegistry:
         *,
         tools: dict[str, ToolFunction] | None = None,
         funcs: dict[str, Callable[..., Any]] | None = None,
+        file_hashes: dict[str, str] | None = None,
         work_dir: Path | None = None,
     ) -> None:
         self.tools: dict[str, ToolFunction] = dict(tools or {})
         self._funcs: dict[str, Callable[..., Any]] = dict(funcs or {})
-        self._file_hashes: dict[str, str] = {}
+        self._file_hashes: dict[str, str] = dict(file_hashes or {})
         self._work_dir = work_dir
 
     def get(self, name: str) -> Callable[..., Any] | None:
@@ -196,9 +197,7 @@ class ToolRegistry:
     async def load(cls, tools_dir: Path, session_id: str = "") -> ToolRegistry:
         """Full initial load — scan *tools_dir* and import everything."""
         tools, funcs, file_hashes = await cls._load_from_dir(tools_dir, session_id)
-        registry = cls(tools=tools, funcs=funcs, work_dir=tools_dir)
-        registry._file_hashes = file_hashes
-        return registry
+        return cls(tools=tools, funcs=funcs, file_hashes=file_hashes, work_dir=tools_dir)
 
     async def refresh(self, session_id: str) -> dict[str, str]:
         """Incremental reload — adds, updates, removes tools.
