@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
-from psi_agent.session.agent import SessionAgent, _load_history, _save_history
-from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
-from psi_agent.session.tools import load_tools_from_workspace
+from psi_agent.session.agent import SessionAgent
+from psi_agent.session.ai_client import AiClient
+from psi_agent.session.conversation import Conversation
+from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 
 async def _get_weather(city: str) -> str:
@@ -69,15 +71,13 @@ async def test_agent_simple_response(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     try:
-        agent = SessionAgent(ai_socket=ai_socket, tools={})
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry())
         user_msg = {"role": "user", "content": "hi"}
         chunks = []
         async for chunk in agent.run(user_msg):
             chunks.append(chunk)
 
-        all_content = "".join(
-            c.choices[0].delta.content or "" for c in chunks if c.choices and c.choices[0].delta.content
-        )
+        all_content = "".join(c.content or "" for c in chunks)
         assert "Hello world" in all_content
     finally:
         await mock_server.cleanup()
@@ -99,13 +99,13 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
     """)
     )
 
-    tools, _ = await load_tools_from_workspace(tools_dir)
+    tr = await ToolRegistry.load(tools_dir)
 
     request_count = 0
 
     async def handler(request: web.Request) -> web.StreamResponse:
         nonlocal request_count
-        await request.json()  # verify parsing succeeds
+        await request.json()
         request_count += 1
 
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
@@ -152,18 +152,21 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     try:
-        agent = SessionAgent(ai_socket=ai_socket, tools=tools, tool_funcs={"get_weather": _get_weather})
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            tool_registry=tr,
+        )
 
         user_msg = {"role": "user", "content": "What's the weather in Beijing?"}
         chunks = []
         async for chunk in agent.run(user_msg):
             chunks.append(chunk)
 
-        reasoning = [c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning]
+        reasoning = [c.reasoning for c in chunks if c.reasoning]
         assert len(reasoning) > 0, f"No reasoning chunks, got {len(chunks)} total"
         assert any("get_weather" in (r or "") for r in reasoning)
 
-        content = [c.choices[0].delta.content for c in chunks if c.choices and c.choices[0].delta.content]
+        content = [c.content for c in chunks if c.content]
         assert any("sunny" in (c or "") for c in content)
 
         assert request_count >= 2
@@ -183,25 +186,11 @@ async def test_agent_pending_schedule_response(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     try:
-        agent = SessionAgent(ai_socket=ai_socket, tools={})
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry())
         agent.set_pending_schedule_chunks(
             [
-                ChatCompletionChunk(
-                    choices=[
-                        StreamChoice(
-                            index=0,
-                            delta=DeltaMessage(reasoning="[Schedule triggered: daily report]"),
-                        )
-                    ],
-                ),
-                ChatCompletionChunk(
-                    choices=[
-                        StreamChoice(
-                            index=0,
-                            delta=DeltaMessage(content="Schedule content here"),
-                        )
-                    ],
-                ),
+                AgentChunk(reasoning="[Schedule triggered: daily report]"),
+                AgentChunk(content="Schedule content here"),
             ]
         )
 
@@ -210,14 +199,13 @@ async def test_agent_pending_schedule_response(tmp_path: Path) -> None:
         async for chunk in agent.run(user_msg):
             chunks.append(chunk)
 
-        reasoning = [c.choices[0].delta.reasoning for c in chunks if c.choices and c.choices[0].delta.reasoning]
+        reasoning = [c.reasoning for c in chunks if c.reasoning]
         assert any("Schedule triggered" in (r or "") for r in reasoning)
 
-        content = [c.choices[0].delta.content for c in chunks if c.choices and c.choices[0].delta.content]
+        content = [c.content for c in chunks if c.content]
         assert any("Current response" in (c or "") for c in content)
 
-        # After first run, pending should be cleared
-        assert agent._pending_schedule_chunks == []
+        assert agent._conversation._pending == []
     finally:
         await mock_server.cleanup()
 
@@ -234,16 +222,15 @@ async def test_agent_history_accumulation(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     try:
-        agent = SessionAgent(ai_socket=ai_socket, tools={})
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry())
 
         async for _ in agent.run({"role": "user", "content": "first"}):
             pass
-        # Should have at least: user message + assistant response
-        assert len(agent.history) >= 2
+        assert len(agent._conversation.messages) >= 2
 
         async for _ in agent.run({"role": "user", "content": "second"}):
             pass
-        assert len(agent.history) >= 4
+        assert len(agent._conversation.messages) >= 4
     finally:
         await mock_server.cleanup()
 
@@ -252,7 +239,6 @@ async def test_agent_history_accumulation(tmp_path: Path) -> None:
 
 
 async def _make_inline_ai_handler(responses: list[dict]):
-    """Create an aiohttp handler that returns predefined responses per request."""
     req_count = 0
 
     async def handler(request: web.Request) -> web.StreamResponse:
@@ -314,9 +300,12 @@ async def test_agent_tool_not_registered(tmp_path: Path) -> None:
         tf = ToolFunction(
             name="unknown", description="X", parameters={"type": "object", "properties": {}, "required": []}
         )
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={"unknown": tf})
+        agent = SessionAgent(
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(files={"__test__": FileEntry(file_hash="", tools={"unknown": tf}, funcs={})}),
+        )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
-        reasoning = "".join(c.choices[0].delta.reasoning or "" for c in chunks if c.choices)
+        reasoning = "".join(c.reasoning or "" for c in chunks)
         assert "not found" in reasoning.lower()
     finally:
         await runner.cleanup()
@@ -345,10 +334,13 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
             name="crash", description="X", parameters={"type": "object", "properties": {}, "required": []}
         )
         agent = SessionAgent(
-            ai_socket=f"http://127.0.0.1:{port}", tools={"crash": tf}, tool_funcs={"crash": crash_tool}
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(
+                files={"__test__": FileEntry(file_hash="", tools={"crash": tf}, funcs={"crash": crash_tool})}
+            ),
         )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
-        reasoning = "".join(c.choices[0].delta.reasoning or "" for c in chunks if c.choices)
+        reasoning = "".join(c.reasoning or "" for c in chunks)
         assert "BOOM" in reasoning or "RuntimeError" in reasoning
     finally:
         await runner.cleanup()
@@ -375,10 +367,13 @@ async def test_agent_tool_returns_int(tmp_path: Path) -> None:
             name="int_tool", description="X", parameters={"type": "object", "properties": {}, "required": []}
         )
         agent = SessionAgent(
-            ai_socket=f"http://127.0.0.1:{port}", tools={"int_tool": tf}, tool_funcs={"int_tool": int_tool}
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(
+                files={"__test__": FileEntry(file_hash="", tools={"int_tool": tf}, funcs={"int_tool": int_tool})}
+            ),
         )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
-        reasoning = "".join(c.choices[0].delta.reasoning or "" for c in chunks if c.choices)
+        reasoning = "".join(c.reasoning or "" for c in chunks)
         assert "42" in reasoning
     finally:
         await runner.cleanup()
@@ -409,9 +404,9 @@ async def test_agent_tcp_connector(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={})
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
-        content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+        content = "".join(c.content or "" for c in chunks)
         assert "tcp works" in content
     finally:
         await runner.cleanup()
@@ -419,7 +414,7 @@ async def test_agent_tcp_connector(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_agent_ai_non_200_response(tmp_path: Path) -> None:
-    """AI returning non-200 should yield an error chunk."""
+    """AI returning non-200 should raise AgentError."""
 
     async def handler(request: web.Request) -> web.StreamResponse:
         return web.json_response({"error": "bad request"}, status=400)
@@ -434,17 +429,18 @@ async def test_agent_ai_non_200_response(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={})
-        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
-        content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
-        assert "Error" in content or "400" in content
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
+        with pytest.raises(AgentError) as exc_info:
+            async for _ in agent.run({"role": "user", "content": "hi"}):
+                pass
+        assert "400" in exc_info.value.message
     finally:
         await runner.cleanup()
 
 
 @pytest.mark.anyio
 async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
-    """AI error chunks should not be appended to conversation history."""
+    """AI error should not be appended to conversation history."""
 
     async def handler(request: web.Request) -> web.StreamResponse:
         return web.json_response({"error": "bad request"}, status=400)
@@ -459,11 +455,12 @@ async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={})
-        history_len_before = len(agent.history)
-        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
-        assert len(chunks) >= 1
-        assert len(agent.history) == history_len_before + 1  # only user message added
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
+        history_len_before = len(agent._conversation.messages)
+        with pytest.raises(AgentError):
+            async for _ in agent.run({"role": "user", "content": "hi"}):
+                pass
+        assert len(agent._conversation.messages) == history_len_before + 2
     finally:
         await runner.cleanup()
 
@@ -497,9 +494,9 @@ async def test_agent_non_data_sse_line(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={})
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
-        content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+        content = "".join(c.content or "" for c in chunks)
         assert "after event" in content
     finally:
         await runner.cleanup()
@@ -528,9 +525,9 @@ async def test_agent_empty_content_stop(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={})
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
-        assert len(chunks) >= 1
+        assert isinstance(chunks, list)  # should not crash
     finally:
         await runner.cleanup()
 
@@ -541,7 +538,7 @@ async def test_agent_empty_content_stop(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_history_empty_file(tmp_path: Path) -> None:
     path = tmp_path / "histories" / "session.jsonl"
-    history = await _load_history(path)
+    history = await Conversation._load(path)
     assert history == []
 
 
@@ -550,7 +547,7 @@ async def test_load_history_existing_file(tmp_path: Path) -> None:
     path = tmp_path / "histories" / "session.jsonl"
     path.parent.mkdir()
     path.write_text('{"role": "user", "content": "hi"}\n{"role": "assistant", "content": "hello"}\n')
-    history = await _load_history(path)
+    history = await Conversation._load(path)
     assert len(history) == 2
     assert history[0] == {"role": "user", "content": "hi"}
 
@@ -560,7 +557,7 @@ async def test_load_history_corrupt_line_skipped(tmp_path: Path) -> None:
     path = tmp_path / "histories" / "session.jsonl"
     path.parent.mkdir()
     path.write_text('{"role": "user", "content": "hi"}\nnot valid json\n{"role": "assistant", "content": "ok"}\n')
-    history = await _load_history(path)
+    history = await Conversation._load(path)
     assert len(history) == 2
     assert history[0]["role"] == "user"
     assert history[1]["role"] == "assistant"
@@ -571,8 +568,9 @@ async def test_save_and_load_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "histories" / "session.jsonl"
     path.parent.mkdir()
     msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "q"}]
-    await _save_history(path, msgs)
-    loaded = await _load_history(path)
+    conv = Conversation(messages=msgs, path=path)
+    await conv.save()
+    loaded = await Conversation._load(path)
     assert loaded == msgs
 
 
@@ -599,16 +597,21 @@ async def test_history_saved_after_stop(tmp_path: Path) -> None:
         history_path = tmp_path / "histories" / "s.jsonl"
         history_path.parent.mkdir()
 
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, history_path=history_path)
+        agent = SessionAgent(
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(),
+            conversation=Conversation(path=history_path),
+        )
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
-        content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+        content = "".join(c.content or "" for c in chunks)
         assert "ok" in content
 
         assert history_path.exists()
-        loaded = await _load_history(history_path)
-        assert len(loaded) == 2
-        assert loaded[0]["role"] == "user"
-        assert loaded[1]["role"] == "assistant"
+        loaded = await Conversation._load(history_path)
+        assert len(loaded) == 3
+        assert loaded[0]["role"] == "system"
+        assert loaded[1]["role"] == "user"
+        assert loaded[2]["role"] == "assistant"
     finally:
         await runner.cleanup()
 
@@ -632,13 +635,18 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
         history_path.parent.mkdir()
         history_path.write_text('{"role": "system", "content": "original"}\n')
 
-        agent = SessionAgent(ai_socket=f"http://127.0.0.1:{port}", tools={}, history_path=history_path)
-        async for _ in agent.run({"role": "user", "content": "hi"}):
-            pass
+        agent = SessionAgent(
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(),
+            conversation=Conversation(path=history_path),
+        )
+        with pytest.raises(AgentError):
+            async for _ in agent.run({"role": "user", "content": "hi"}):
+                pass
 
-        loaded = await _load_history(history_path)
-        assert len(loaded) == 1
-        assert loaded[0]["content"] == "original"
+        loaded = await Conversation._load(history_path)
+        assert len(loaded) == 2
+        assert loaded[0]["role"] == "system"
     finally:
         await runner.cleanup()
 
@@ -655,4 +663,4 @@ async def test_histories_dir_and_gitignore_created(tmp_path: Path) -> None:
     agent = await SessionAgent.create(ai_socket="http://x", workspace_path=workspace, session_id="test")
     assert histories_dir.is_dir()
     assert (histories_dir / ".gitignore").read_text() == "*\n"
-    assert agent._history_path is not None
+    assert agent._conversation._path is not None

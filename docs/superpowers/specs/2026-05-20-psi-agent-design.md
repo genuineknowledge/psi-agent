@@ -244,18 +244,18 @@ class Session:
 ### 6.3 Agent Loop（`agent.py`）
 
 ```
-收到 channel 请求时（handle_chat_completions handler）：
+收到 channel 请求时（ChannelAdapter.handle()）：
   0. 解析 request body → 取最后一条 user message，其余字段透传到 AI
   1. 获取 `anyio.Lock`（FIFO 排队等待）
   2. agent.run(user_message, extra_params=...) 内部：
      a. 惰性构建 system prompt（首次 run，history 尚无 system 消息）
-     b. 检查暂存 schedule 响应 → 有则先流式返回
+     b. 检查暂存 schedule 响应 → 有则先流式返回（AgentChunk）
      c. 将 user message 追加到 self.history
-     d. 构建请求：history + tools + extra_params → POST ai_socket（streaming）
-      e. SSE 流处理（每 chunk 恰好 1 个 choice，多 choice 报错，0 choice 心跳跳过）：
-         - content delta          → yield 到 channel + 累计
-         - reasoning delta        → yield 到 channel + 累计
-         - tool_calls delta       → 累积（按 index 拼接 partial JSON）
+     d. 通过 AiClient.stream() 发送 history + tools + extra_params → AI backend（streaming）
+      e. 消费 AiDelta 流（AiClient 已做好 SSE 解析、错误检测）：
+         - content          → yield AgentChunk(content=...) 给 ChannelAdapter
+         - reasoning        → yield AgentChunk(reasoning=...) 给 ChannelAdapter
+         - tool_calls       → 累积（按 index 拼接 partial JSON）
          - finish_reason="tool_calls":
              a. 解析完整 tool_calls
              b. 追加 assistant_message(tool_calls) + reasoning + tool_result 到 history
@@ -263,9 +263,10 @@ class Session:
          - finish_reason="stop":
             最终 content + reasoning 追加到 history，释放锁
         - finish_reason="error":
-           停止处理，错误不写入 history
+            raise AgentError(message)，错误不写入 history
   3. 释放锁
 ```
+
 
 **Schedule 响应处理**：
 - 暂存的 schedule 响应和新消息的回复都正常经过 agent loop

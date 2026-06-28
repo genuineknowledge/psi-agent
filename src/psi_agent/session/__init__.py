@@ -9,31 +9,25 @@ from loguru import logger
 
 from psi_agent._logging import setup_logging
 from psi_agent.session.agent import SessionAgent
-from psi_agent.session.scheduler import run_one_schedule
 from psi_agent.session.server import serve_session
 
 
 @dataclass
 class Session:
-    """Start a session backed by a workspace and AI."""
+    """CLI entry point and orchestrator for the Session layer.
 
-    channel_socket: str
-    """Path for the channel Unix domain socket."""
+    Creates a ``SessionAgent`` from a workspace, then starts the
+    ``serve_session`` server and all schedule runners in an anyio task
+    group.  The dataclass form makes it directly usable as a
+    ``tyro.cli`` subcommand.
+    """
 
     ai_socket: str
-    """Path to the AI Unix domain socket."""
-
+    channel_socket: str
     workspace: str = ""
-    """Path to the workspace directory.  Defaults to current working directory."""
-
     max_tool_rounds: int = 128
-    """Maximum number of tool call rounds (prevents infinite loops)."""
-
-    verbose: bool = False
-    """Enable DEBUG-level logging."""
-
     session_id: str | None = None
-    """Session history identifier.  None → auto-generate UUID."""
+    verbose: bool = False
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
@@ -48,16 +42,6 @@ class Session:
             session_id=self.session_id,
         )
 
-        lock = anyio.Lock()
-
-        async with anyio.create_task_group() as tg:
-            tg.start_soon(
-                partial(
-                    serve_session,
-                    channel_socket=self.channel_socket,
-                    handler=agent.handle_chat_completions,
-                    lock=lock,
-                )
-            )
-            for schedule in agent.schedules:
-                tg.start_soon(partial(run_one_schedule, schedule, agent, lock))
+        async with anyio.create_task_group() as task_group:
+            agent.start_all(task_group)
+            task_group.start_soon(partial(serve_session, channel_socket=self.channel_socket, agent=agent))

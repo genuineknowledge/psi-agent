@@ -69,10 +69,14 @@ src/
     │   ├── AGENTS.md                # Session 层设计文档
     │   ├── __init__.py             # Session dataclass + run()，入口编排
     │   ├── server.py               # serve_session — aiohttp HTTP/SSE scaffold
-    │   ├── agent.py                # SessionAgent — history + agent loop + tool exec + handler + persistence
-    │   ├── protocol.py             # Session 层协议类型（ChatCompletionChunk 等）
-    │   ├── tools.py                # workspace tools 加载（async anyio.Path）
-    │   └── scheduler.py            # cron-based 定时任务（croniter）
+    │   ├── channel_adapter.py       # ChannelAdapter — 纯无状态编解码（parse_request + write）
+    │   ├── agent.py                # SessionAgent — agent loop + 编排（委托给 4 个组件）
+    │   ├── tool_registry.py        # ToolRegistry — 工具集（加载/重载/查询）
+    │   ├── conversation.py         # Conversation — 对话历史 + 持久化
+    │   ├── system_prompt.py        # SystemPrompt — 系统 prompt 生命周期
+    │   ├── schedule_registry.py    # ScheduleRegistry — 定时任务集
+    │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
+    │   ├── protocol.py             # Session 层类型
     └── channel/
         ├── AGENTS.md                # Channel 层设计文档
         ├── __init__.py              # package marker
@@ -151,6 +155,26 @@ SSE 流中的特殊字段：
 5. **System prompt 容错**：`system_prompt_builder()` 可能抛异常或返回 None。首次 `run()` 调用时必须 catch 异常，不影响后续对话（此时 history 中没有 system 消息）
 
 6. **Tool 函数必须 awaitable**：`load_tools_from_workspace` 只加载 `async def` 函数。普通函数会被静默跳过
+
+7. **JSON dict/list 必须 guard**：从 `json.loads()` 得到的任意数据访问 `c.get("delta")` 或 `messages[-1]` 前，必须先 `isinstance(c, dict)` / `isinstance(messages, list)` 验证类型。JSON 可以是任意结构，不可信任 key 存在或类型正确。
+
+8. **Default over None**：与其在调用处检查 `if x is None: return`，不如在构造时提供合理默认值（如 `SystemPrompt` 的 default builder 返回 `""`，default checker 返回 `False`）。这样调用处逻辑更简单、更不容易漏判 None。
+
+9. **Hash 的 key 必须和查找时一致**：如果 load 时用 `file_path → hash` 存储，refresh 时就不能用 `tool_name → hash` 查找。key 的语义必须全程一致，否则永远命中不了。
+
+10. **每 chunk 都要有 DEBUG 日志**：无论是 AI 返回的 SSE chunk 还是 Channel 发出的 SSE chunk，每经过协议边界都要记录。这匹配 `ai/server.py` 的 `logger.debug(f"SSE chunk: ...")` 模式。
+
+11. **单个 caller 的 private 方法应内联**：只有一个调用点的私有方法没有存在理由——将其逻辑直接展开到调用处，减少阅读时的跳转。(如 `_build` → inline 到 `ensure`)
+
+12. **模块级函数应尽量放到类上**：如果整个文件的作用就是为一个类服务，工具函数应该作为该类的 `@staticmethod`，而非文件顶级函数。(如 `_extract_async_func` → `SystemPrompt._extract_async_func`)
+
+13. **动态加载 .py 文件用 `compile` + `exec`，禁止 `importlib`**：Python 3.14 的 `importlib.util.exec_module` 生成的 `.pyc` 默认是 timestamp+size 验证（非 hash-based）。热重载场景下源文件修改后 size 常不变，`exec_module` 会复用陈旧 bytecode。正确做法：`source = read_text()` → `compile(source, path, 'exec')` → `exec(compiled, module.__dict__)`。参见 `ToolRegistry._load_from_dir` 和 `SystemPrompt._load_module`。
+
+14. **Startup 失败也需 shield cleanup**：不仅是 shutdown 的 `finally` 需要 `CancelScope(shield=True)` 保护 `runner.cleanup()`，`setup()`/`start()` 失败的 `except` 块同理。参照 `serve_ai` 的模式。
+
+15. **Log 中两处同类操作应格式一致**：如 build prompt 和 rebuild prompt 都应该 log `({len(sp)} chars)`，否则排查时信息不对等。
+
+16. **消费 async generator 必须用 `aclosing()`**：`async for` 在提前退出或被 cancel 时不调用 generator 的 `aclose()`，导致 generator 内 `async with` 持有的资源（aiohttp 连接、文件句柄等）被遗弃给 GC。正确做法：`async with aclosing(gen) as g: async for chunk in g: ...`。对标 `ai/server.py` 的 `finally` + shielded `aclose()` 模式。参见 `agent.py`、`channel_adapter.py`、`schedule_registry.py`。
 
 ## 测试约定
 
