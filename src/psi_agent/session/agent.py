@@ -277,9 +277,7 @@ class SessionAgent:
                         # execute all tools concurrently
                         results: list[str] = [""] * len(ordered_calls)
 
-                        async def _execute_one(
-                            idx: int, fn: str, a: dict[str, Any], r: list[str]
-                        ) -> None:
+                        async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
                             func = self._tool_registry.get(fn)
                             if func is None:
                                 r[idx] = f"Error: Tool '{fn}' not found"
