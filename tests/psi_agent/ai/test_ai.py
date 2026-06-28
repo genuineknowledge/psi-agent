@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 
-from psi_agent.ai import Ai
+import pytest
+from aiohttp import web
+
+from psi_agent.ai import Ai, serve_ai
 
 
 def test_ai_backend_env_fallback(monkeypatch) -> None:
@@ -37,3 +40,36 @@ def test_ai_backend_defaults() -> None:
     assert config.api_key == ""
     assert config.base_url == ""
     assert config.verbose is False
+
+
+@pytest.mark.anyio
+async def test_serve_ai_cleans_up_runner_on_start_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If site.start() fails after runner.setup(), the runner must be cleaned up."""
+    cleanup_calls: list[bool] = []
+    orig_cleanup = web.AppRunner.cleanup
+
+    async def spy_cleanup(self: web.AppRunner) -> None:
+        cleanup_calls.append(True)
+        await orig_cleanup(self)
+
+    monkeypatch.setattr(web.AppRunner, "cleanup", spy_cleanup)
+
+    class _BadSite:
+        async def start(self) -> None:
+            raise RuntimeError("bind failed")
+
+    monkeypatch.setattr("psi_agent.ai.create_site", lambda runner, addr: _BadSite())
+
+    async def _handler(request: web.Request) -> web.StreamResponse:
+        return web.StreamResponse()
+
+    with pytest.raises(RuntimeError, match="bind failed"):
+        await serve_ai(
+            socket_path="/tmp/ignored.sock",
+            provider="openai",
+            model="m",
+            api_key="k",
+            base_url="b",
+            handler=_handler,
+        )
+    assert cleanup_calls == [True]

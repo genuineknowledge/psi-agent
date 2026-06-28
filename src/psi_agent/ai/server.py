@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any, cast
 
+import anyio
 from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
@@ -54,6 +55,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
 
     logger.debug(f"Forwarding to upstream: provider={provider!r}, model={model!r}, base_url={base_url!r}")
     upstream_error = False
+    stream: AsyncIterator[ChatCompletionChunk] | None = None
     try:
         stream = cast(
             AsyncIterator[ChatCompletionChunk],
@@ -91,6 +93,19 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             logger.warning("Failed to send upstream error chunk to client")
     else:
         logger.debug("Upstream stream completed successfully")
+    finally:
+        # Always release the upstream connection, even on cancellation
+        # (client disconnect / shutdown). Shielded so aclose() completes
+        # while a CancelledError is propagating through this finally.
+        if stream is not None:
+            aclose = getattr(stream, "aclose", None)
+            if aclose is not None:
+                logger.debug("Closing upstream stream")
+                with anyio.CancelScope(shield=True):
+                    try:
+                        await aclose()
+                    except Exception as close_err:
+                        logger.warning(f"Failed to close upstream stream: {close_err}")
 
     if upstream_error:
         logger.info("Request completed with upstream error")
