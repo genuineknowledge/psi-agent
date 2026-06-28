@@ -4,11 +4,16 @@ import sys
 
 from loguru import logger
 
+_handler_id: int | None = None
+
 
 def setup_logging(*, verbose: bool = False) -> int:
+    global _handler_id
+    if _handler_id is not None:
+        return _handler_id
     logger.remove()
     level = "DEBUG" if verbose else "INFO"
-    handler_id = logger.add(
+    _handler_id = logger.add(
         sys.stderr,
         level=level,
         format=(
@@ -18,4 +23,4 @@ def setup_logging(*, verbose: bool = False) -> int:
             "<level>{message}</level>"
         ),
     )
-    return handler_id
+    return _handler_id
