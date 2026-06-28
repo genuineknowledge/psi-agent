@@ -29,7 +29,6 @@ jobs:
         run: |
           uv run pyinstaller \
             --onefile \
-            --noconsole \
             --name psi-agent \
             --distpath pyinstaller-dist \
             --add-data "src/psi_agent/gateway/spa/dist:psi_agent/gateway/spa/dist" \
