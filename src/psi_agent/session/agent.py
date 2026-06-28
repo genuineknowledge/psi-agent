@@ -4,76 +4,52 @@ import hashlib
 import importlib.util
 import inspect
 import json
-import re
 import sys
-import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent.session._conversation import Conversation
+from psi_agent.session._schedule_registry import ScheduleRegistry
+from psi_agent.session._system_prompt import SystemPrompt
+from psi_agent.session._tool_registry import ToolRegistry
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
-from psi_agent.session.protocol import AgentChunk, AgentError, ToolFunction
-from psi_agent.session.scheduler import load_schedules_from_workspace, run_one_schedule
-from psi_agent.session.tools import load_tools_from_workspace
-
-if TYPE_CHECKING:
-    from psi_agent.session.scheduler import Schedule
+from psi_agent.session.protocol import AgentChunk, AgentError
 
 
 class SessionAgent:
-    """The session runtime — owns conversation state, tools, schedules, and the
+    """The session runtime — conversation state, tools, schedules, and the
     lock that serialises concurrent channel requests.
 
-    Design principle: ``__init__`` takes already-built components (test-friendly,
-    no IO).  ``create()`` is the async factory that assembles everything from a
-    workspace directory (production path).  Together they avoid the "async
-    __init__" anti-pattern.
+    Design principle: ``__init__`` takes already-built components.
+    ``create()`` is the async factory that assembles everything from a
+    workspace directory.
     """
-
-    # -- constructor ----------------------------------------------------------
 
     def __init__(
         self,
         *,
         ai_client: AiClient,
         channel_adapter: ChannelAdapter | None = None,
-        tools: dict[str, ToolFunction],
-        tool_funcs: dict[str, Callable[..., Any]] | None = None,
-        schedules: list | None = None,
-        system_prompt_builder: Callable[..., Any] | None = None,
-        system_prompt_rebuild_checker: Callable[..., Any] | None = None,
+        tool_registry: ToolRegistry | None = None,
+        schedule_registry: ScheduleRegistry | None = None,
+        system_prompt: SystemPrompt | None = None,
+        conversation: Conversation | None = None,
         max_tool_rounds: int = 128,
-        history: list[dict] | None = None,
-        history_path: Path | None = None,
     ) -> None:
-        """Plain constructor — every parameter has a default so tests can
-        inject only the subset they need.  Use ``create()`` for production.
-        """
         self._ai_client = ai_client
-        self._channel_adapter = channel_adapter if channel_adapter is not None else ChannelAdapter()
-        self.tools = tools
-        self._tool_funcs = tool_funcs if tool_funcs else {}
-        self.schedules = schedules if schedules is not None else []
-        self._system_prompt_builder = system_prompt_builder
-        self._system_prompt_rebuild_checker = system_prompt_rebuild_checker
-        self.max_tool_rounds = max_tool_rounds
-        self.history = history if history is not None else []
-        self._history_path = history_path
-        self._pending_schedule_chunks: list[AgentChunk] = []
+        self._channel_adapter = channel_adapter or ChannelAdapter()
+        self._tool_registry = tool_registry or ToolRegistry()
+        self._schedule_registry = schedule_registry or ScheduleRegistry()
+        self._system_prompt = system_prompt or SystemPrompt()
+        self._conversation = conversation or Conversation()
+        self._max_tool_rounds = max_tool_rounds
         self._lock = anyio.Lock()
-        self._task_group: Any = None
-        self._file_hashes: dict[str, str] = {}
-        self._workspace_path: Path | None = None
-
-    @property
-    def _session_id(self) -> str:
-        """Session identifier derived from the history file path stem."""
-        return self._history_path.stem if self._history_path else ""
 
     # -- factory --------------------------------------------------------------
 
@@ -86,131 +62,41 @@ class SessionAgent:
         max_tool_rounds: int = 128,
         session_id: str | None = None,
     ) -> SessionAgent:
-        """Production entry point.  Loads tools, schedules, system prompt,
-        and persisted history from *workspace_path*.
+        """Production entry point.  Loads everything from *workspace_path*."""
+        conversation = await Conversation.from_workspace(workspace_path, session_id)
+        tool_registry = await ToolRegistry.load(workspace_path / "tools", conversation.session_id)
+        schedule_registry = await ScheduleRegistry.load(workspace_path / "schedules")
+        builder, checker = _load_system_module(workspace_path, conversation.session_id)
 
-        Generates a per-agent UUID used to isolate ``sys.modules`` entries
-        when multiple agents share a process.  ``system_prompt_rebuild_checker``
-        (loaded from ``systems/system.py``) enables runtime prompt refreshing
-        without restarting the session.
-        """
-        history, history_path, session_id = await _init_history(workspace_path, session_id)
-        schedules = await load_schedules_from_workspace(workspace_path / "schedules")
-        builder, checker = _load_system_module(workspace_path, session_id)
-
-        tools, tool_funcs, file_hashes = await load_tools_from_workspace(
-            workspace_path / "tools", session_id
-        )
-
-        agent = cls(
+        return cls(
             ai_client=AiClient(ai_socket),
-            tools=tools,
-            tool_funcs=tool_funcs,
-            schedules=schedules,
-            system_prompt_builder=builder,
-            system_prompt_rebuild_checker=checker,
+            tool_registry=tool_registry,
+            schedule_registry=schedule_registry,
+            system_prompt=SystemPrompt(builder, checker) if builder else None,
+            conversation=conversation,
             max_tool_rounds=max_tool_rounds,
-            history=history,
-            history_path=history_path,
         )
-        agent._file_hashes = file_hashes
-        agent._workspace_path = workspace_path
-        return agent
 
-    # -- dynamic reload -------------------------------------------------------
+    # -- delegation -----------------------------------------------------------
 
-    def set_task_group(self, task_group: Any) -> None:
-        """Register the task group so new schedule runners can be spawned."""
-        self._task_group = task_group
+    @property
+    def schedules(self) -> list:
+        """Schedule list — exposed for ``Session.run()`` iteration."""
+        return self._schedule_registry.schedules
+
+    def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
+        self._conversation.stash(chunks)
 
     async def reload_tools(self) -> dict[str, str]:
-        """Rescan ``workspace/tools/`` and load new or modified tools.
+        return await self._tool_registry.refresh(self._conversation.session_id)
 
-        Tools are matched by SHA-256 file hash — only changed files trigger
-        a reload.  Returns a mapping of tool name to status
-        (``'added'`` / ``'updated'`` / ``'skipped'``).
-        """
-        if self._workspace_path is None:
-            logger.warning("No workspace_path set, cannot reload tools")
-            return {}
-
-        new_tools, new_funcs, new_hashes = await load_tools_from_workspace(
-            self._workspace_path / "tools", self._session_id
-        )
-        result: dict[str, str] = {}
-        for name, tf in new_tools.items():
-            if name not in self.tools:
-                self.tools[name] = tf
-                self._tool_funcs[name] = new_funcs[name]
-                result[name] = "added"
-            elif new_hashes.get(name) != self._file_hashes.get(name):
-                self.tools[name] = tf
-                self._tool_funcs[name] = new_funcs[name]
-                result[name] = "updated"
-            else:
-                result[name] = "skipped"
-        self._file_hashes = new_hashes
-        changed = {k: v for k, v in result.items() if v != "skipped"}
-        logger.info(f"Tool reload complete: {changed or 'no changes'}")
-        return result
-
-    async def reload_schedules(self) -> list[Schedule]:
-        """Rescan ``workspace/schedules/`` and start runners for new schedules.
-
-        Schedules are de-duplicated by name — already-running schedules are
-        not restarted.
-        """
-        if self._workspace_path is None:
-            logger.warning("No workspace_path set, cannot reload schedules")
-            return []
-
-        new_scheds = await load_schedules_from_workspace(self._workspace_path / "schedules")
-        existing = {s.name for s in self.schedules}
-        added = []
-        for s in new_scheds:
-            if s.name not in existing:
-                self.schedules.append(s)
-                if self._task_group is not None:
-                    self._task_group.start_soon(run_one_schedule, s, self)
-                added.append(s)
-        if added:
-            logger.info(f"Schedule reload: added {[s.name for s in added]}")
-        return added
-
-    # -- system prompt --------------------------------------------------------
-
-    async def _build_system_prompt(self) -> None:
-        """Build the system prompt and append it to history.
-
-        Called lazily on the first ``run()``.  The rebuild checker (loaded
-        from ``systems/system.py``) may trigger an in-place replacement on
-        subsequent calls.
-        """
-        assert self._system_prompt_builder is not None
-        try:
-            sp = await self._system_prompt_builder()
-            self.history.append({"role": "system", "content": sp})
-            logger.info(f"System prompt loaded ({len(sp) if sp else 0} chars)")
-        except Exception as e:
-            logger.error(f"Failed to build system prompt: {e}")
+    async def reload_schedules(self, task_group: object) -> list:
+        return await self._schedule_registry.refresh(task_group, self)
 
     # -- channel request lifecycle --------------------------------------------
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
-        """aiohttp handler registered by ``serve_session``.
-
-        Owns the full request lifecycle in one method:
-        1. parse HTTP body → ``user_message`` + ``extra_params``
-        2. create SSE ``StreamResponse``
-        3. acquire the session lock → ``prepare()`` the response (the client
-           sees HTTP 200 only after lock acquisition — status doubles as a
-           fairness signal)
-        4. run the agent loop and stream chunks via ChannelAdapter
-        5. release the lock (``async with``)
-
-        The lock is owned by the agent, not by the transport layer, so the
-        concurrency policy is visible at a glance.
-        """
+        """aiohttp handler registered by ``serve_session``."""
         try:
             user_message, extra_params = await self._channel_adapter.parse_request(request)
         except ChannelAdapter.ParseError as e:
@@ -242,69 +128,25 @@ class SessionAgent:
         logger.info("Session request completed")
         return response
 
-    # -- schedule ↔ channel interleaving --------------------------------------
-
-    def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
-        """Store schedule-produced chunks for the next channel request.
-
-        When a cron schedule fires, its AI response is stored via this method.
-        The very next ``run()`` call will yield these chunks before processing
-        the user's message — giving the illusion of the schedule "talking"
-        through the channel without a push mechanism.
-        """
-        self._pending_schedule_chunks = chunks
-
     # -- agent loop -----------------------------------------------------------
 
     async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[AgentChunk]:
-        """Run one turn of the ReAct agent loop.
+        """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``."""
+        # system prompt (lazy + optional rebuild)
+        await self._system_prompt.ensure(self._conversation)
 
-        Yields ``AgentChunk`` (content + reasoning) to the channel side and
-        consumes ``AiDelta`` from the AI backend.  The loop sends
-        ``history + tools`` to the AI, streams the response, and dispatches on
-        ``finish_reason``:
-
-        ==============  =====================================================
-        finish_reason   dispatch
-        ==============  =====================================================
-        ``stop``        Save assistant reply to history, return.
-        ``tool_calls``  Accumulate partial tool-calls, execute them one by
-                        one, append results to history, loop back.
-        ``error``       Raise ``AgentError`` — no history is saved.  Caught
-                        by ``ChannelAdapter.write()``.
-        unrecognised    Save whatever content we have and return.
-        ``max rounds``  Yield ``"[Max tool rounds reached]"`` and stop.
-        ==============  =====================================================
-
-        Tool execution is fault-tolerant: broken JSON falls back to ``{}``,
-        missing tools produce an error result string, tool exceptions are
-        caught and reported.  Nothing interrupts the loop.
-        """
-        # ── system prompt (lazy + optional rebuild) ─────────────────────────
-        if self._system_prompt_builder is not None:
-            if not self.history:
-                await self._build_system_prompt()
-            elif self._system_prompt_rebuild_checker is not None:
-                try:
-                    if await self._system_prompt_rebuild_checker():
-                        logger.info("Rebuild checker returned True — rebuilding system prompt")
-                        self.history[0] = {"role": "system", "content": await self._system_prompt_builder()}
-                except Exception as e:
-                    logger.error(f"Rebuild check or rebuild failed: {e}")
-
-        # ── flush pending schedule chunks before user message ───────────────
-        if self._pending_schedule_chunks:
-            logger.info(f"Yielding {len(self._pending_schedule_chunks)} pending schedule chunk(s)")
-            for chunk in self._pending_schedule_chunks:
+        # flush pending schedule chunks
+        pending = self._conversation.flush_pending()
+        if pending:
+            logger.info(f"Yielding {len(pending)} pending schedule chunk(s)")
+            for chunk in pending:
                 yield chunk
-            self._pending_schedule_chunks = []
 
-        self.history.append(user_message)
-        logger.debug(f"History now has {len(self.history)} messages")
+        self._conversation.add(user_message)
+        logger.debug(f"History now has {len(self._conversation.messages)} messages")
 
-        # ── ReAct loop ──────────────────────────────────────────────────────
-        for _round in range(self.max_tool_rounds):
-            logger.debug(f"Agent loop round {_round + 1}/{self.max_tool_rounds}")
+        for _round in range(self._max_tool_rounds):
+            logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
 
             tool_defs = [
                 {
@@ -315,11 +157,11 @@ class SessionAgent:
                         "parameters": t.parameters,
                     },
                 }
-                for t in self.tools.values()
+                for t in self._tool_registry.tools.values()
             ]
 
             request_body: dict = {
-                "messages": self.history,
+                "messages": self._conversation.messages,
                 "tools": tool_defs,
                 "stream": True,
             }
@@ -327,18 +169,13 @@ class SessionAgent:
                 request_body |= extra_params
 
             logger.info("Sending request to AI via AiClient")
-            logger.debug(f"Request messages count: {len(self.history)}, tools: {len(tool_defs)}")
+            logger.debug(f"Request messages count: {len(self._conversation.messages)}, tools: {len(tool_defs)}")
 
             finish_reason: str | None = None
             accumulated_tool_calls: dict[int, dict] = {}
             accumulated_content: str = ""
             accumulated_reasoning: str = ""
 
-            # ── consume AiDelta stream ──────────────────────────────────────
-            # ``AiClient.stream()`` already handled HTTP errors and SSE
-            # parse failures.  We aggregate partial tool_call fragments
-            # (the AI streams them over multiple chunks) and forward
-            # content/reasoning as ``AgentChunk``.
             async for delta in self._ai_client.stream(request_body):
                 if delta.content:
                     yield AgentChunk(content=delta.content)
@@ -350,9 +187,6 @@ class SessionAgent:
                 if delta.finish_reason and not finish_reason:
                     finish_reason = delta.finish_reason
 
-                # Partial tool_call fragments — accumulate by index.
-                # The AI may send ``id`` and ``function.name`` in earlier
-                # chunks and ``function.arguments`` spread across many.
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.get("index", 0)
@@ -371,7 +205,6 @@ class SessionAgent:
                         if func.get("arguments"):
                             acc["function"]["arguments"] += func["arguments"]
 
-                # ── dispatch on finish_reason ───────────────────────────────
                 if finish_reason == "error":
                     logger.warning("AI returned error, stopping without saving to history")
                     raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
@@ -384,46 +217,36 @@ class SessionAgent:
                             assistant_msg["content"] = accumulated_content
                         if accumulated_reasoning:
                             assistant_msg["reasoning"] = accumulated_reasoning
-                        self.history.append(assistant_msg)
-                        if self._history_path is not None:
-                            await _save_history(self._history_path, self.history)
+                        self._conversation.add(assistant_msg)
+                        await self._conversation.save()
                     return
 
                 if finish_reason == "tool_calls":
                     logger.info("AI requested tool calls, processing...")
-
-                    # Sort by index to preserve the AI's intended call order.
                     ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
 
-                    # Record the assistant's tool_calls intent in history.
                     assistant_msg: dict = {"role": "assistant", "tool_calls": ordered_calls}
                     if accumulated_content:
                         assistant_msg["content"] = accumulated_content
                     if accumulated_reasoning:
                         assistant_msg["reasoning"] = accumulated_reasoning
-                    self.history.append(assistant_msg)
+                    self._conversation.add(assistant_msg)
 
-                    # ── execute each tool call ──────────────────────────────
                     for tc in ordered_calls:
                         func_info = tc.get("function", {})
                         func_name = func_info.get("name", "")
                         func_args_str = func_info.get("arguments", "{}")
 
-                        # Malformed JSON → fall back to empty args.
                         try:
                             args = json.loads(func_args_str)
-                        except (json.JSONDecodeError, TypeError):
+                        except json.JSONDecodeError, TypeError:
                             logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
                             args = {}
 
                         logger.info(f"Executing tool: {func_name!r}({args!r})")
-
-                        # Notify the channel client which tool is being called.
                         yield AgentChunk(reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]")
 
-                        # Look up and invoke the tool.  Missing tool or
-                        # exception → produce an error result string.
-                        func = self._tool_funcs.get(func_name)
+                        func = self._tool_registry.get(func_name)
                         if func is None:
                             result = f"Error: Tool '{func_name}' not found"
                             logger.error(repr(result))
@@ -435,12 +258,9 @@ class SessionAgent:
                                 result = f"Error executing tool '{func_name}': {e}"
                                 logger.error(repr(result))
 
-                        # Truncate to 500 chars for the channel notification.
                         yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:500]}]")
 
-                        # Append the tool result to history so the AI can
-                        # reference it in the next round.
-                        self.history.append(
+                        self._conversation.add(
                             {
                                 "role": "tool",
                                 "tool_call_id": tc.get("id", ""),
@@ -449,11 +269,8 @@ class SessionAgent:
                             }
                         )
 
-                    # After executing all tools, break to the next round.
                     break
 
-            # The SSE stream ended without one of the expected finish reasons.
-            # Save whatever content we received so the conversation isn't lost.
             if finish_reason not in ("error", "stop", "tool_calls"):
                 logger.warning(
                     f"Unexpected finish_reason={finish_reason!r}, "
@@ -465,93 +282,22 @@ class SessionAgent:
                         assistant_msg["content"] = accumulated_content
                     if accumulated_reasoning:
                         assistant_msg["reasoning"] = accumulated_reasoning
-                    self.history.append(assistant_msg)
+                    self._conversation.add(assistant_msg)
                 return
 
         else:
-            logger.warning(f"Reached max tool rounds ({self.max_tool_rounds}), stopping")
+            logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
             yield AgentChunk(content="[Max tool rounds reached]")
 
 
-# ── History persistence ──────────────────────────────────────────────────────
-
-async def _init_history(
-    workspace_path: Path,
-    session_id: str | None = None,
-) -> tuple[list[dict], Path, str]:
-    """Create the histories directory and load an existing JSONL file.
-
-    ``session_id`` is validated (``[a-zA-Z0-9_-]+``) to prevent path traversal.
-    Returns the loaded message list and the path to the JSONL file.
-    """
-    if session_id is not None and not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
-        raise ValueError(f"Invalid session_id: {session_id!r} (only alphanumeric, dash, underscore allowed)")
-    session_id = session_id or uuid.uuid4().hex
-    logger.info(f"Starting session: {session_id}")
-
-    histories_dir = anyio.Path(str(workspace_path / "histories"))
-    dir_created = False
-    if not await histories_dir.is_dir():
-        await histories_dir.mkdir(parents=True)
-        logger.info(f"Created histories directory: {histories_dir}")
-        dir_created = True
-    if dir_created:
-        await (histories_dir / ".gitignore").write_text("*\n")
-        logger.debug(f"Created .gitignore in {histories_dir}")
-
-    history_path = workspace_path / "histories" / f"{session_id}.jsonl"
-    history = await _load_history(history_path)
-    return history, history_path, session_id
-
-
-async def _load_history(path: Path) -> list[dict]:
-    """Load conversation history from a JSONL file.  Corrupt lines are skipped."""
-    history: list[dict] = []
-    path_anyio = anyio.Path(str(path))
-    if not await path_anyio.exists():
-        logger.info(f"No history file found at {path}")
-        return history
-
-    content = await path_anyio.read_text()
-    for lineno, line in enumerate(content.splitlines(), 1):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        try:
-            history.append(json.loads(stripped))
-        except json.JSONDecodeError:
-            logger.warning(f"Skipping malformed line {lineno} in {path}")
-
-    logger.info(f"History loaded from {path} ({len(history)} messages)")
-    return history
-
-
-async def _save_history(path: Path, history: list[dict]) -> None:
-    """Overwrite a JSONL file with the current conversation history.
-
-    Only called on ``finish_reason="stop"`` — errors and intermediate
-    tool-call states are never persisted.  Errors are caught and logged.
-    """
-    try:
-        content = "\n".join(json.dumps(msg, ensure_ascii=False) for msg in history) + "\n"
-        await anyio.Path(str(path)).write_text(content)
-        logger.debug(f"History saved to {path} ({len(history)} messages)")
-    except Exception as e:
-        logger.error(f"Failed to save history: {e}")
-
-
 # ── System module loading ────────────────────────────────────────────────────
+
 
 def _load_system_module(
     workspace_path: Path, session_id: str
 ) -> tuple[Callable[..., Any] | None, Callable[..., Any] | None]:
     """Import ``system_prompt_builder`` and ``system_prompt_rebuild_checker``
-    from ``workspace/systems/system.py``.
-
-    The module name includes ``session_id`` and ``file_hash[:12]`` so that
-    multiple sessions in the same process receive isolated ``sys.modules``
-    entries.  Without this, two sessions sharing a workspace would collide.
-    """
+    from ``workspace/systems/system.py``."""
     system_py = workspace_path / "systems" / "system.py"
     try:
         file_bytes = system_py.read_bytes()
@@ -581,7 +327,6 @@ def _load_system_module(
 
 
 def _extract_async_func(module: object, name: str) -> Callable[..., Any] | None:
-    """Return *name* from *module* if it is an async function, else None."""
     func = getattr(module, name, None)
     if func is None or not inspect.iscoroutinefunction(func):
         return None

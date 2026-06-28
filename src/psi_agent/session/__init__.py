@@ -9,7 +9,6 @@ from loguru import logger
 
 from psi_agent._logging import setup_logging
 from psi_agent.session.agent import SessionAgent
-from psi_agent.session.scheduler import run_one_schedule
 from psi_agent.session.server import serve_session
 
 
@@ -38,7 +37,5 @@ class Session:
         )
 
         async with anyio.create_task_group() as task_group:
-            agent.set_task_group(task_group)
+            agent._schedule_registry.start_all(task_group, agent)
             task_group.start_soon(partial(serve_session, channel_socket=self.channel_socket, agent=agent))
-            for schedule in agent.schedules:
-                task_group.start_soon(partial(run_one_schedule, schedule, agent))
