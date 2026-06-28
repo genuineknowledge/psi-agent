@@ -10,6 +10,7 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
 from psi_agent.session.agent import SessionAgent
+from psi_agent.session.ai_client import AiClient
 from psi_agent.session.scheduler import load_schedules_from_workspace
 from psi_agent.session.tools import load_tools_from_workspace
 from tests.integration.conftest import MockAIServer
@@ -62,7 +63,7 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
     tools, _ = await load_tools_from_workspace(ws / "tools")
     assert len(tools) == 0
 
-    agent = SessionAgent(ai_socket=base_url, tools=tools)
+    agent = SessionAgent(ai_client=AiClient(base_url), tools=tools)
     agent.history.append({"role": "system", "content": "test"})
     chunks = []
     async for c in agent.run({"role": "user", "content": "hi"}):
@@ -82,7 +83,7 @@ async def test_missing_system_py(mock_ai_server: MockAIServer) -> None:
     mock_ai_server.set_responses([_chunk(content="no system", finish_reason="stop")])
     base_url = await mock_ai_server.start()
 
-    agent = SessionAgent(ai_socket=base_url, tools={})
+    agent = SessionAgent(ai_client=AiClient(base_url), tools={})
     assert len(agent.history) == 0
 
     chunks = []
@@ -205,13 +206,13 @@ async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server
     tools, _ = await load_tools_from_workspace(ws / "tools")
     assert len(tools) == 1
 
-    agent = SessionAgent(ai_socket=base_url, tools=tools)
+    agent = SessionAgent(ai_client=AiClient(base_url), tools=tools)
     agent.history.append({"role": "system", "content": "You are a test assistant."})
     chunks = []
     async for c in agent.run({"role": "user", "content": "hello"}):
         chunks.append(c)
     assert len(chunks) > 0
-    content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+    content = "".join(c.content or "" for c in chunks)
     assert len(content) > 0
 
 
@@ -230,11 +231,11 @@ async def test_unicode_message_handling(tmp_path: Path, mock_ai_server: MockAISe
     )
 
     tools, _ = await load_tools_from_workspace(ws / "tools")
-    agent = SessionAgent(ai_socket=base_url, tools=tools)
+    agent = SessionAgent(ai_client=AiClient(base_url), tools=tools)
 
     msg = "你好世界 🌍 — emoji and unicode test"
     chunks = [c async for c in agent.run({"role": "user", "content": msg})]
-    content = "".join(c.choices[0].delta.content or "" for c in chunks if c.choices)
+    content = "".join(c.content or "" for c in chunks)
     assert len(content) > 0, "Should receive a response for unicode message"
 
 
