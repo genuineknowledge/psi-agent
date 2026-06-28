@@ -68,7 +68,7 @@ src/
     ├── session/
     │   ├── AGENTS.md                # Session 层设计文档
     │   ├── __init__.py             # Session dataclass + run()，入口编排
-    │   ├── server.py               # serve_session — aiohttp HTTP/SSE scaffold（直接绑定 agent）
+    │   ├── server.py               # serve_session(agent=agent) — 从 agent 读取 channel_socket + handler
     │   ├── channel_adapter.py       # ChannelAdapter — Channel 侧协议适配（parse_request / AgentChunk→SSE）
     │   ├── agent.py                # SessionAgent — 纯业务逻辑 + lock + handle_request（agent loop + tool exec + history）
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）

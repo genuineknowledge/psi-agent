@@ -11,14 +11,14 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 ```
 1. setup_logging(verbose)
 2. 解析 workspace 路径（空字符串时用 Path.cwd()，否则 anyio.Path.resolve()）
-3. SessionAgent.create() → 创建 AiClient、anyio.Lock、加载 tools、schedules、system_prompt_builder
+3. SessionAgent.create() → 创建 AiClient、ChannelAdapter、anyio.Lock、加载 tools/schedules/system_prompt_builder
 4. 启动 anyio.task_group：
-   ├── serve_session(agent=agent)  ← 直接使用 agent.handle_request 作为 handler
+   ├── serve_session(agent=agent)  ← 从 agent 读取 channel_socket + handle_request
    └── 每个 schedule 一个 run_one_schedule(schedule, agent) task
-```
 
 **关键点**：
-- Workspace 加载全部由 `SessionAgent.create()` 完成——`__init__.py` 只做入口编排
+- `SessionAgent` 自包含：持有 `_ai_client`、`_channel_adapter`、`_channel_socket`、`_lock`
+- `SessionAgent.create()` 完成所有初始化——`__init__.py` 只做入口编排
 - Tool 加载为单遍 `importlib`：同时产出元数据（ToolFunction）和实际 callable
 - System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）
 
@@ -43,7 +43,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
 - `response.prepare()` 在 lock 内执行——客户端在 lock 释放前不会看到 HTTP 200。
 - Channel 请求的处理由 `ChannelAdapter.handle()` 统一编排：parse → agent loop → AgentChunk→ChatCompletionChunk→SSE。
-- `SessionAgent` 持有 `_lock`，`handle_request()` 调用 `ChannelAdapter.handle(request, self, self._lock)`。
+- `SessionAgent` 持有 `_lock`、`_channel_adapter`、`_channel_socket`；`handle_request()` 调用 `self._channel_adapter.handle(request, self, self._lock)`。
 - Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。
 - AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
 - AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history。

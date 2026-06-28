@@ -25,6 +25,8 @@ class SessionAgent:
         self,
         *,
         ai_client: AiClient,
+        channel_socket: str = "",
+        channel_adapter: ChannelAdapter | None = None,
         tools: dict[str, ToolFunction],
         tool_funcs: dict[str, Callable[..., Any]] | None = None,
         schedules: list | None = None,
@@ -34,6 +36,8 @@ class SessionAgent:
         history_path: Path | None = None,
     ) -> None:
         self._ai_client = ai_client
+        self._channel_socket = channel_socket
+        self._channel_adapter = channel_adapter if channel_adapter is not None else ChannelAdapter()
         self.tools = tools
         self._tool_funcs = tool_funcs if tool_funcs else {}
         self.schedules = schedules if schedules is not None else []
@@ -49,6 +53,7 @@ class SessionAgent:
         cls,
         *,
         ai_socket: str,
+        channel_socket: str = "",
         workspace_path: Path,
         max_tool_rounds: int = 128,
         session_id: str | None = None,
@@ -60,6 +65,7 @@ class SessionAgent:
 
         return cls(
             ai_client=AiClient(ai_socket),
+            channel_socket=channel_socket,
             tools=tools,
             tool_funcs=tool_funcs,
             schedules=schedules,
@@ -71,7 +77,7 @@ class SessionAgent:
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         """aiohttp handler for Channel requests — delegates to ChannelAdapter."""
-        return await ChannelAdapter.handle(request, self, self._lock)
+        return await self._channel_adapter.handle(request, self, self._lock)
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
         self._pending_schedule_chunks = chunks
