@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from aiohttp import ClientTimeout
 from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
+from psi_agent.channel._markers import SendMarkerScanner, encode_input
 from psi_agent.channel._types import Chunk, FileChunk, ReasoningChunk, TextChunk
 
 
@@ -34,24 +34,13 @@ class ChannelCore:
             f"TextChunks={sum(1 for c in chunks if isinstance(c, TextChunk))}"
         )
 
-        parts: list[str] = []
-        for chunk in chunks:
-            if isinstance(chunk, FileChunk):
-                logger.debug(f"  FileChunk → [RECV:{chunk.path}]")
-                parts.append(f"[RECV:{chunk.path}]")
-            elif isinstance(chunk, TextChunk):
-                parts.append(chunk.text)
-        content = "\n".join(parts)
-
+        content = encode_input(chunks)
         body = {"messages": [{"role": "user", "content": content}], "stream": True}
 
         buf = ""
         kind: str | None = None
         timer_target: float | None = None
-
-        full_content = ""
-        scan_ptr = 0
-        emitted: set[str] = set()
+        scanner = SendMarkerScanner()
 
         logger.debug(f"  POST {self._endpoint} content_len={len(content)}")
         async with self._session.post(self._endpoint, json=body) as resp:
@@ -120,16 +109,8 @@ class ChannelCore:
 
                     if incoming_kind == "text":
                         logger.debug(f"  delta.content ({len(text)} chars): {text[:60]}")
-                        orig_len = len(full_content)
-                        full_content += text
-                        new = full_content[scan_ptr:]
-                        for match in re.finditer(r"\[SEND:(.+?)\]", new):
-                            path = match.group(1)
-                            if path not in emitted:
-                                logger.debug(f"  [SEND] detected → FileChunk({path})")
-                                yield FileChunk(path)
-                                emitted.add(path)
-                            scan_ptr = orig_len + match.end()
+                        for file_chunk in scanner.feed(text):
+                            yield file_chunk
                     else:
                         logger.debug(f"  delta.reasoning ({len(text)} chars): {text[:60]}")
 
