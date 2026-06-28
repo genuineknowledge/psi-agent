@@ -123,5 +123,5 @@ class AiDelta:
 
     content: str | None = None
     reasoning: str | None = None
-    tool_calls: list[dict] | None = None
+    tool_calls: list[dict[str, Any]] | None = None
     finish_reason: str | None = None
