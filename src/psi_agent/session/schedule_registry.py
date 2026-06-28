@@ -94,7 +94,6 @@ class ScheduleRegistry:
                     logger.info(f"Schedule {schedule.name} response stored ({len(pending_chunks)} chunks)")
             except Exception as e:
                 logger.error(f"Error processing schedule {schedule.name}: {e}")
-                await anyio.sleep(30)
 
     # -- disk loading -----------------------------------------------------------
 
