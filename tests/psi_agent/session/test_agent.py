@@ -11,8 +11,8 @@ from aiohttp import web
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.protocol import AgentChunk, AgentError, ToolFunction
-from psi_agent.session.tool_registry import ToolRegistry
+from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.tool_registry import ToolFunction, ToolRegistry
 
 
 async def _get_weather(city: str) -> str:

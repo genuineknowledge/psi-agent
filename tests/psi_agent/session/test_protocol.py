@@ -11,8 +11,8 @@ from psi_agent.session.protocol import (
     ChatCompletionChunk,
     DeltaMessage,
     StreamChoice,
-    ToolFunction,
 )
+from psi_agent.session.tool_registry import ToolFunction
 
 
 async def _bash_tool(command: str) -> str:
