@@ -179,12 +179,10 @@ class ToolRegistry:
         *,
         tools: dict[str, ToolFunction] | None = None,
         funcs: dict[str, Callable[..., Any]] | None = None,
-        file_hashes: dict[str, str] | None = None,
         work_dir: Path | None = None,
     ) -> None:
         self.tools: dict[str, ToolFunction] = dict(tools or {})
         self._funcs: dict[str, Callable[..., Any]] = dict(funcs or {})
-        self._tool_hashes: dict[str, str] = dict(file_hashes or {})
         self._file_hashes: dict[str, str] = {}
         self._work_dir = work_dir
 
@@ -197,8 +195,8 @@ class ToolRegistry:
     @classmethod
     async def load(cls, tools_dir: Path, session_id: str = "") -> ToolRegistry:
         """Full initial load — scan *tools_dir* and import everything."""
-        tools, funcs, hashes, _ = await cls._load_from_dir(tools_dir, session_id)
-        return cls(tools=tools, funcs=funcs, file_hashes=hashes, work_dir=tools_dir)
+        tools, funcs, _ = await cls._load_from_dir(tools_dir, session_id)
+        return cls(tools=tools, funcs=funcs, work_dir=tools_dir)
 
     async def refresh(self, session_id: str) -> dict[str, str]:
         """Incremental reload — adds, updates, removes tools.
@@ -210,7 +208,7 @@ class ToolRegistry:
             logger.warning("No work_dir set, cannot refresh tools")
             return {}
 
-        new_tools, new_funcs, new_hashes, new_file_hashes = await self._load_from_dir(
+        new_tools, new_funcs, new_file_hashes = await self._load_from_dir(
             self._work_dir, session_id, self._file_hashes
         )
         result: dict[str, str] = {}
@@ -222,22 +220,18 @@ class ToolRegistry:
                 del self._funcs[name]
                 result[name] = "removed"
 
-        # added / updated / skipped
+        # added / updated — all tools from imported files
         for name, tf in new_tools.items():
             if name not in self.tools:
                 self.tools[name] = tf
                 self._funcs[name] = new_funcs[name]
                 result[name] = "added"
-            elif new_hashes.get(name) != self._tool_hashes.get(name):
+            else:
                 self.tools[name] = tf
                 self._funcs[name] = new_funcs[name]
                 result[name] = "updated"
-            else:
-                result[name] = "skipped"
-        self._tool_hashes = new_hashes
         self._file_hashes = new_file_hashes
-        changed = {k: v for k, v in result.items() if v != "skipped"}
-        logger.info(f"Tool refresh complete: {changed or 'no changes'}")
+        logger.info(f"Tool refresh complete: {result or 'no changes'}")
         return result
 
     # -- internals -------------------------------------------------------------
@@ -245,7 +239,7 @@ class ToolRegistry:
     @staticmethod
     async def _load_from_dir(
         tools_dir: Path, session_id: str, skip_hashes: dict[str, str] | None = None
-    ) -> tuple[dict[str, ToolFunction], dict[str, Callable[..., Any]], dict[str, str], dict[str, str]]:
+    ) -> tuple[dict[str, ToolFunction], dict[str, Callable[..., Any]], dict[str, str]]:
         """Scan and import all tool ``.py`` files.  Returns (tools, funcs, tool_hashes).
 
         If *skip_hashes* is provided, files whose hash matches the stored
@@ -253,13 +247,12 @@ class ToolRegistry:
         """
         tools: dict[str, ToolFunction] = {}
         callables: dict[str, Callable[..., Any]] = {}
-        tool_hashes: dict[str, str] = {}
         file_hashes: dict[str, str] = {}
         tools_anyio = anyio.Path(str(tools_dir))
 
         if not await tools_anyio.is_dir():
             logger.warning(f"Tools directory not found: {tools_dir}")
-            return tools, callables, tool_hashes, file_hashes
+            return tools, callables, file_hashes
 
         async for py_file in tools_anyio.glob("*.py"):
             if py_file.name.startswith("_"):
@@ -306,8 +299,7 @@ class ToolRegistry:
 
                 tools[name] = tool_func
                 callables[name] = func
-                tool_hashes[name] = file_hash
                 logger.info(f"Loaded tool: {name} from {py_file}")
 
         logger.info(f"Loaded {len(tools)} tool(s) from {tools_dir}")
-        return tools, callables, tool_hashes, file_hashes
+        return tools, callables, file_hashes
