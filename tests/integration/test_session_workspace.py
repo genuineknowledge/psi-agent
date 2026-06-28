@@ -60,7 +60,7 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
     (ws / "systems").mkdir()
     (ws / "systems" / "system.py").write_text("async def system_prompt_builder() -> str:\n    return 'test'\n")
 
-    tools, _ = await load_tools_from_workspace(ws / "tools")
+    tools, _, _ = await load_tools_from_workspace(ws / "tools")
     assert len(tools) == 0
 
     agent = SessionAgent(ai_client=AiClient(base_url), tools=tools)
@@ -203,7 +203,7 @@ async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server
     )
     base_url = await mock_ai_server.start()
 
-    tools, _ = await load_tools_from_workspace(ws / "tools")
+    tools, _, _ = await load_tools_from_workspace(ws / "tools")
     assert len(tools) == 1
 
     agent = SessionAgent(ai_client=AiClient(base_url), tools=tools)
@@ -230,7 +230,7 @@ async def test_unicode_message_handling(tmp_path: Path, mock_ai_server: MockAISe
         "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n"
     )
 
-    tools, _ = await load_tools_from_workspace(ws / "tools")
+    tools, _, _ = await load_tools_from_workspace(ws / "tools")
     agent = SessionAgent(ai_client=AiClient(base_url), tools=tools)
 
     msg = "你好世界 🌍 — emoji and unicode test"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import inspect
 import sys
@@ -13,7 +14,9 @@ from loguru import logger
 from psi_agent.session.protocol import ToolFunction
 
 
-async def load_tools_from_workspace(tools_dir: Path) -> tuple[dict[str, ToolFunction], dict[str, Callable[..., Any]]]:
+async def load_tools_from_workspace(
+    tools_dir: Path,
+) -> tuple[dict[str, ToolFunction], dict[str, Callable[..., Any]], dict[str, str]]:
     """Discover and load all tools from a workspace's ``tools/`` directory.
 
     Returns two dicts sharing the same keys:
@@ -44,15 +47,20 @@ async def load_tools_from_workspace(tools_dir: Path) -> tuple[dict[str, ToolFunc
     """
     tools: dict[str, ToolFunction] = {}
     callables: dict[str, Callable[..., Any]] = {}
+    file_hashes: dict[str, str] = {}
     tools_anyio = anyio.Path(str(tools_dir))
 
     if not await tools_anyio.is_dir():
         logger.warning(f"Tools directory not found: {tools_dir}")
-        return tools, callables
+        return tools, callables, file_hashes
 
     async for py_file in tools_anyio.glob("*.py"):
         if py_file.name.startswith("_"):
             continue
+
+        file_path_str = str(py_file)
+        file_bytes = await py_file.read_bytes()
+        file_hashes[file_path_str] = hashlib.sha256(file_bytes).hexdigest()
 
         module_name = f"psi_tool_{py_file.stem}"
 
@@ -90,4 +98,4 @@ async def load_tools_from_workspace(tools_dir: Path) -> tuple[dict[str, ToolFunc
             logger.info(f"Loaded tool: {name} from {py_file}")
 
     logger.info(f"Loaded {len(tools)} tool(s) from {tools_dir}")
-    return tools, callables
+    return tools, callables, file_hashes

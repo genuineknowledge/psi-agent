@@ -39,6 +39,7 @@ class Session:
         )
 
         async with anyio.create_task_group() as tg:
+            agent.set_task_group(tg)
             tg.start_soon(partial(serve_session, agent=agent))
             for schedule in agent.schedules:
                 tg.start_soon(partial(run_one_schedule, schedule, agent))

@@ -8,7 +8,7 @@ import sys
 import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 from aiohttp import web
@@ -17,8 +17,11 @@ from loguru import logger
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.protocol import AgentChunk, AgentError, ToolFunction
-from psi_agent.session.scheduler import load_schedules_from_workspace
+from psi_agent.session.scheduler import load_schedules_from_workspace, run_one_schedule
 from psi_agent.session.tools import load_tools_from_workspace
+
+if TYPE_CHECKING:
+    from psi_agent.session.scheduler import Schedule
 
 
 class SessionAgent:
@@ -48,6 +51,9 @@ class SessionAgent:
         self._history_path = history_path
         self._pending_schedule_chunks: list[AgentChunk] = []
         self._lock = anyio.Lock()
+        self._tg: Any = None
+        self._file_hashes: dict[str, str] = {}
+        self._workspace_path: Path | None = None
 
     @classmethod
     async def create(
@@ -59,12 +65,12 @@ class SessionAgent:
         max_tool_rounds: int = 128,
         session_id: str | None = None,
     ) -> SessionAgent:
-        tools, tool_funcs = await load_tools_from_workspace(workspace_path / "tools")
+        tools, tool_funcs, file_hashes = await load_tools_from_workspace(workspace_path / "tools")
         schedules = await load_schedules_from_workspace(workspace_path / "schedules")
 
         history, history_path = await _init_history(workspace_path, session_id)
 
-        return cls(
+        agent = cls(
             ai_client=AiClient(ai_socket),
             channel_socket=channel_socket,
             tools=tools,
@@ -75,6 +81,64 @@ class SessionAgent:
             history=history,
             history_path=history_path,
         )
+        agent._file_hashes = file_hashes
+        agent._workspace_path = workspace_path
+        return agent
+
+    def set_task_group(self, tg: Any) -> None:
+        """Register the task group for dynamic schedule spawning."""
+        self._tg = tg
+
+    async def reload_tools(self) -> dict[str, str]:
+        """Rescan workspace/tools/ and load new or modified tools.
+
+        Returns a dict mapping tool name to status: 'added', 'updated', or 'skipped'.
+        Tools are detected as modified via SHA256 file hash comparison.
+        """
+        if self._workspace_path is None:
+            logger.warning("No workspace_path set, cannot reload tools")
+            return {}
+
+        new_tools, new_funcs, new_hashes = await load_tools_from_workspace(self._workspace_path / "tools")
+        result: dict[str, str] = {}
+        for name, tf in new_tools.items():
+            if name not in self.tools:
+                self.tools[name] = tf
+                self._tool_funcs[name] = new_funcs[name]
+                result[name] = "added"
+            elif new_hashes.get(name) != self._file_hashes.get(name):
+                self.tools[name] = tf
+                self._tool_funcs[name] = new_funcs[name]
+                result[name] = "updated"
+            else:
+                result[name] = "skipped"
+        self._file_hashes = new_hashes
+        changed = {k: v for k, v in result.items() if v != "skipped"}
+        logger.info(f"Tool reload complete: {changed or 'no changes'}")
+        return result
+
+    async def reload_schedules(self) -> list[Schedule]:
+        """Rescan workspace/schedules/ and load new schedules.
+
+        New schedules are automatically started via the registered task group.
+        Existing schedules (matched by name) are left unchanged.
+        """
+        if self._workspace_path is None:
+            logger.warning("No workspace_path set, cannot reload schedules")
+            return []
+
+        new_scheds = await load_schedules_from_workspace(self._workspace_path / "schedules")
+        existing = {s.name for s in self.schedules}
+        added = []
+        for s in new_scheds:
+            if s.name not in existing:
+                self.schedules.append(s)
+                if self._tg is not None:
+                    self._tg.start_soon(run_one_schedule, s, self)
+                added.append(s)
+        if added:
+            logger.info(f"Schedule reload: added {[s.name for s in added]}")
+        return added
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         """aiohttp handler for Channel requests — delegates to ChannelAdapter."""
