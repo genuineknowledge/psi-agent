@@ -25,7 +25,26 @@ if TYPE_CHECKING:
     from psi_agent.session.scheduler import Schedule
 
 
+# ── SessionAgent ─────────────────────────────────────────────────────────────
+# The session is the heart of the psi-agent runtime.  It owns every piece of
+# state that a conversation needs — conversation history, available tools, cron
+# schedules, the lock that serialises concurrent channel requests, and the two
+# protocol adapters (AiClient for the AI side, ChannelAdapter for the channel
+# side).
+#
+# Design principle: ``__init__`` is a plain constructor that accepts already-
+# built components (test-friendly, no IO).  ``create()`` is the async factory
+# that assembles everything from a workspace directory (production path).
+# Together they avoid the "async __init__" anti-pattern.
+# ──────────────────────────────────────────────────────────────────────────────
+
 class SessionAgent:
+    # -- constructor ----------------------------------------------------------
+    # Takes already-constructed components.  Every parameter has a default
+    # (empty dict/list/None) so that tests can inject only the subset they
+    # care about.  ``create()`` (below) is the full factory.
+    # ------------------------------------------------------------------------
+
     def __init__(
         self,
         *,
@@ -59,6 +78,18 @@ class SessionAgent:
         self._file_hashes: dict[str, str] = {}
         self._workspace_path: Path | None = None
         self._agent_uuid = agent_uuid or uuid.uuid4().hex
+
+    # -- factory --------------------------------------------------------------
+    # Production entry point.  Generates a UUID for this agent instance (used
+    # to isolate ``sys.modules`` entries when multiple agents share a process),
+    # then loads tools, schedules, system prompt, and persisted history from
+    # the workspace.
+    #
+    # ``system_prompt_rebuild_checker`` is an optional async function loaded
+    # from ``systems/system.py``.  If it returns True, the system prompt is
+    # rebuilt on the next ``run()`` call — this supports dynamic prompt
+    # refreshing without restarting the session.
+    # ------------------------------------------------------------------------
 
     @classmethod
     async def create(
@@ -95,16 +126,20 @@ class SessionAgent:
         agent._workspace_path = workspace_path
         return agent
 
+    # -- dynamic reload -------------------------------------------------------
+    # Tools and schedules can be added at runtime without restarting.
+    # ``set_task_group()`` must be called first so that new schedule runners
+    # can be spawned inside the session's task group.
+    #
+    # Tools are matched by SHA-256 file hash — only changed or new files are
+    # reloaded.  Schedules are de-duplicated by name; already-running schedules
+    # are not restarted.
+    # ------------------------------------------------------------------------
+
     def set_task_group(self, tg: Any) -> None:
-        """Register the task group for dynamic schedule spawning."""
         self._tg = tg
 
     async def reload_tools(self) -> dict[str, str]:
-        """Rescan workspace/tools/ and load new or modified tools.
-
-        Returns a dict mapping tool name to status: 'added', 'updated', or 'skipped'.
-        Tools are detected as modified via SHA256 file hash comparison.
-        """
         if self._workspace_path is None:
             logger.warning("No workspace_path set, cannot reload tools")
             return {}
@@ -130,11 +165,6 @@ class SessionAgent:
         return result
 
     async def reload_schedules(self) -> list[Schedule]:
-        """Rescan workspace/schedules/ and load new schedules.
-
-        New schedules are automatically started via the registered task group.
-        Existing schedules (matched by name) are left unchanged.
-        """
         if self._workspace_path is None:
             logger.warning("No workspace_path set, cannot reload schedules")
             return []
@@ -152,8 +182,14 @@ class SessionAgent:
             logger.info(f"Schedule reload: added {[s.name for s in added]}")
         return added
 
+    # -- system prompt --------------------------------------------------------
+    # Built lazily on the first ``run()``.  Later calls consult
+    # ``system_prompt_rebuild_checker`` — if the workspace defines this
+    # function and it returns True, the system prompt is replaced in-place
+    # (``history[0]`` is overwritten).
+    # ------------------------------------------------------------------------
+
     async def _build_system_prompt(self) -> None:
-        """Build and prepend the system prompt to history."""
         assert self._system_prompt_builder is not None
         try:
             sp = await self._system_prompt_builder()
@@ -161,6 +197,22 @@ class SessionAgent:
             logger.info(f"System prompt loaded ({len(sp) if sp else 0} chars)")
         except Exception as e:
             logger.error(f"Failed to build system prompt: {e}")
+
+    # -- channel request lifecycle --------------------------------------------
+    # ``handle_request`` is the aiohttp handler registered by ``serve_session``.
+    #
+    # It owns the full request lifecycle in one place:
+    #   1. parse HTTP body → ``user_message`` + ``extra_params``
+    #   2. create SSE ``StreamResponse``
+    #   3. acquire the session lock, ``prepare()`` the response (client sees
+    #      200 only after the lock is acquired — this is deliberate: the HTTP
+    #      status doubles as a fairness signal)
+    #   4. run the agent loop and stream chunks through ChannelAdapter
+    #   5. release the lock (``async with``)
+    #
+    # The lock is owned by the agent, not by the transport layer.  This keeps
+    # the concurrency policy visible at a glance.
+    # ------------------------------------------------------------------------
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         try:
@@ -194,10 +246,44 @@ class SessionAgent:
         logger.info("Session request completed")
         return response
 
+    # -- schedule ↔ channel interleaving --------------------------------------
+    # When a cron schedule fires, its AI response is stored as a list of
+    # ``AgentChunk`` via ``set_pending_schedule_chunks()``.  The VERY NEXT
+    # channel request that acquires the lock will yield these chunks first,
+    # then process the user's message normally.  This gives the illusion of
+    # the schedule "talking" through the channel without a separate push
+    # mechanism.
+    # ------------------------------------------------------------------------
+
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
         self._pending_schedule_chunks = chunks
 
+    # -- agent loop -----------------------------------------------------------
+    # ``run()`` is an async generator — it yields ``AgentChunk`` (pure semantic
+    # output: content + reasoning) and consumes ``AiDelta`` from the AI backend
+    # via ``AiClient.stream()``.
+    #
+    # The loop is a classic ReAct pattern:
+    #   send (history + tools) → receive SSE stream → dispatch on finish_reason
+    #
+    # finish_reason  dispatch
+    # ─────────────  ────────────────────────────────────────────────────────
+    # stop            Save assistant reply to history, return (loop ends).
+    # tool_calls      Accumulate partial tool-calls, execute them one by one,
+    #                 append results to history, loop back for the next round.
+    # error           Raise ``AgentError`` — no history is saved.  Caught by
+    #                 ``ChannelAdapter.write()`` which turns it into an SSE
+    #                 error chunk for the channel client.
+    # <unrecognised>  Save whatever content we have and return.
+    #
+    # Tool execution is deliberately fault-tolerant: broken JSON in arguments
+    # falls back to ``{}``, missing tools produce an error result, and tool
+    # exceptions are caught and reported as result text.  Nothing interrupts
+    # the loop.
+    # ------------------------------------------------------------------------
+
     async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[AgentChunk]:
+        # ── system prompt (lazy + optional rebuild) ─────────────────────────
         if self._system_prompt_builder is not None:
             if not self.history:
                 await self._build_system_prompt()
@@ -209,6 +295,7 @@ class SessionAgent:
                 except Exception as e:
                     logger.error(f"Rebuild check or rebuild failed: {e}")
 
+        # ── flush pending schedule chunks before user message ───────────────
         if self._pending_schedule_chunks:
             logger.info(f"Yielding {len(self._pending_schedule_chunks)} pending schedule chunk(s)")
             for chunk in self._pending_schedule_chunks:
@@ -218,6 +305,7 @@ class SessionAgent:
         self.history.append(user_message)
         logger.debug(f"History now has {len(self.history)} messages")
 
+        # ── ReAct loop ──────────────────────────────────────────────────────
         for _round in range(self.max_tool_rounds):
             logger.debug(f"Agent loop round {_round + 1}/{self.max_tool_rounds}")
 
@@ -249,6 +337,11 @@ class SessionAgent:
             accumulated_content: str = ""
             accumulated_reasoning: str = ""
 
+            # ── consume AiDelta stream ──────────────────────────────────────
+            # ``AiClient.stream()`` already handled HTTP errors and SSE
+            # parse failures.  We aggregate partial tool_call fragments
+            # (the AI streams them over multiple chunks) and forward
+            # content/reasoning as ``AgentChunk``.
             async for delta in self._ai_client.stream(request_body):
                 if delta.content:
                     yield AgentChunk(content=delta.content)
@@ -260,6 +353,9 @@ class SessionAgent:
                 if delta.finish_reason and not finish_reason:
                     finish_reason = delta.finish_reason
 
+                # Partial tool_call fragments — accumulate by index.
+                # The AI may send ``id`` and ``function.name`` in earlier
+                # chunks and ``function.arguments`` spread across many.
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.get("index", 0)
@@ -278,6 +374,7 @@ class SessionAgent:
                         if func.get("arguments"):
                             acc["function"]["arguments"] += func["arguments"]
 
+                # ── dispatch on finish_reason ───────────────────────────────
                 if finish_reason == "error":
                     logger.warning("AI returned error, stopping without saving to history")
                     raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
@@ -298,8 +395,10 @@ class SessionAgent:
                 if finish_reason == "tool_calls":
                     logger.info("AI requested tool calls, processing...")
 
+                    # Sort by index to preserve the AI's intended call order.
                     ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
 
+                    # Record the assistant's tool_calls intent in history.
                     assistant_msg: dict = {"role": "assistant", "tool_calls": ordered_calls}
                     if accumulated_content:
                         assistant_msg["content"] = accumulated_content
@@ -307,21 +406,26 @@ class SessionAgent:
                         assistant_msg["reasoning"] = accumulated_reasoning
                     self.history.append(assistant_msg)
 
+                    # ── execute each tool call ──────────────────────────────
                     for tc in ordered_calls:
                         func_info = tc.get("function", {})
                         func_name = func_info.get("name", "")
                         func_args_str = func_info.get("arguments", "{}")
 
+                        # Malformed JSON → fall back to empty args.
                         try:
                             args = json.loads(func_args_str)
-                        except json.JSONDecodeError, TypeError:
+                        except (json.JSONDecodeError, TypeError):
                             logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
                             args = {}
 
                         logger.info(f"Executing tool: {func_name!r}({args!r})")
 
+                        # Notify the channel client which tool is being called.
                         yield AgentChunk(reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]")
 
+                        # Look up and invoke the tool.  Missing tool or
+                        # exception → produce an error result string.
                         func = self._tool_funcs.get(func_name)
                         if func is None:
                             result = f"Error: Tool '{func_name}' not found"
@@ -334,8 +438,11 @@ class SessionAgent:
                                 result = f"Error executing tool '{func_name}': {e}"
                                 logger.error(repr(result))
 
+                        # Truncate to 500 chars for the channel notification.
                         yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:500]}]")
 
+                        # Append the tool result to history so the AI can
+                        # reference it in the next round.
                         self.history.append(
                             {
                                 "role": "tool",
@@ -345,9 +452,11 @@ class SessionAgent:
                             }
                         )
 
+                    # After executing all tools, break to the next round.
                     break
 
-            # SSE stream ended without a recognised finish_reason
+            # The SSE stream ended without one of the expected finish reasons.
+            # Save whatever content we received so the conversation isn't lost.
             if finish_reason not in ("error", "stop", "tool_calls"):
                 logger.warning(
                     f"Unexpected finish_reason={finish_reason!r}, "
@@ -366,6 +475,15 @@ class SessionAgent:
             logger.warning(f"Reached max tool rounds ({self.max_tool_rounds}), stopping")
             yield AgentChunk(content="[Max tool rounds reached]")
 
+
+# ── History persistence ──────────────────────────────────────────────────────
+# History is stored as JSONL (one JSON message per line) under
+# ``workspace/histories/{session_id}.jsonl``.
+#
+# Only saved on ``finish_reason="stop"`` — errors and intermediate tool-call
+# states are never persisted.  ``session_id`` is validated against path
+# traversal (only ``[a-zA-Z0-9_-]+`` allowed).
+# ──────────────────────────────────────────────────────────────────────────────
 
 async def _init_history(
     workspace_path: Path,
@@ -421,18 +539,19 @@ async def _save_history(path: Path, history: list[dict]) -> None:
         logger.error(f"Failed to save history: {e}")
 
 
+# ── System module loading ────────────────────────────────────────────────────
+# Imports ``system_prompt_builder`` and ``system_prompt_rebuild_checker`` from
+# ``workspace/systems/system.py`` using ``importlib``.
+#
+# The module name includes ``agent_uuid`` and a ``file_hash[:12]`` so that
+# multiple agents in the same process receive isolated ``sys.modules`` entries.
+# Without this, two agents sharing a workspace would collide on a hard-coded
+# ``psi_workspace_system`` key and see each other's already-imported module.
+# ──────────────────────────────────────────────────────────────────────────────
+
 def _load_system_module(
     workspace_path: Path, agent_uuid: str
 ) -> tuple[Callable[..., Any] | None, Callable[..., Any] | None]:
-    """Import ``system_prompt_builder`` and ``system_prompt_rebuild_checker``
-    from ``workspace/systems/system.py``.
-
-    Uses a unique module name (``psi_system_{uuid}_{file_hash[:12]}``) so
-    multiple agents in the same process get isolated imports.
-
-    Returns ``(builder, rebuild_checker)`` — each is ``None`` if the
-    corresponding function is missing, not async, or the file cannot be loaded.
-    """
     system_py = workspace_path / "systems" / "system.py"
     try:
         file_bytes = system_py.read_bytes()
