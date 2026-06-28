@@ -66,7 +66,7 @@ class SessionAgent:
         self._history_path = history_path
         self._pending_schedule_chunks: list[AgentChunk] = []
         self._lock = anyio.Lock()
-        self._tg: Any = None
+        self._task_group: Any = None
         self._file_hashes: dict[str, str] = {}
         self._workspace_path: Path | None = None
 
@@ -119,9 +119,9 @@ class SessionAgent:
 
     # -- dynamic reload -------------------------------------------------------
 
-    def set_task_group(self, tg: Any) -> None:
+    def set_task_group(self, task_group: Any) -> None:
         """Register the task group so new schedule runners can be spawned."""
-        self._tg = tg
+        self._task_group = task_group
 
     async def reload_tools(self) -> dict[str, str]:
         """Rescan ``workspace/tools/`` and load new or modified tools.
@@ -170,8 +170,8 @@ class SessionAgent:
         for s in new_scheds:
             if s.name not in existing:
                 self.schedules.append(s)
-                if self._tg is not None:
-                    self._tg.start_soon(run_one_schedule, s, self)
+                if self._task_group is not None:
+                    self._task_group.start_soon(run_one_schedule, s, self)
                 added.append(s)
         if added:
             logger.info(f"Schedule reload: added {[s.name for s in added]}")
