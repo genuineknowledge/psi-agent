@@ -27,7 +27,6 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - shell: bash
         run: |
-          ANY_LLM_PROVIDERS=$(uv run python -c "import any_llm.providers; import os; print(os.path.dirname(any_llm.providers.__file__))")
           uv run python -m nuitka \
             --onefile \
             --output-dir=nuitka-dist \
@@ -35,7 +34,6 @@ jobs:
             --assume-yes-for-downloads \
             --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist \
             --include-package=any_llm \
-            --include-plugin-directory="$ANY_LLM_PROVIDERS" \
             --include-package=mcp \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v5
