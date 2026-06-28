@@ -24,7 +24,7 @@ from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._workspace_manager import WorkspaceManager
 
 
-async def _handle_spa(request: web.Request) -> web.Response:
+async def _handle_spa(request: web.Request) -> web.HTTPFound:
     raise web.HTTPFound("/spa/index.html")
 
 
@@ -86,6 +86,7 @@ async def _create_ai(request: web.Request) -> web.Response:
     except (TypeError, ValueError) as e:
         return _error(str(e), status=400)
     except Exception as e:
+        logger.error(f"Unexpected error creating AI: {e}")
         return _error(str(e), status=500)
 
 
@@ -98,6 +99,7 @@ async def _delete_ai(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
+        logger.error(f"Unexpected error deleting AI '{ai_id}': {e}")
         return _error(str(e), status=500)
 
 
@@ -113,9 +115,12 @@ async def _create_session(request: web.Request) -> web.Response:
         req = SessionCreateRequest(**body)
         info = await sm.create(req)
         return _json(asdict(info), status=201)
-    except (TypeError, ValueError, LookupError) as e:
+    except (TypeError, ValueError) as e:
         return _error(str(e), status=400)
+    except LookupError as e:
+        return _error(str(e), status=404)
     except Exception as e:
+        logger.error(f"Unexpected error creating session: {e}")
         return _error(str(e), status=500)
 
 
@@ -128,6 +133,7 @@ async def _delete_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
+        logger.error(f"Unexpected error deleting session '{session_id}': {e}")
         return _error(str(e), status=500)
 
 
@@ -151,6 +157,7 @@ async def _set_title(request: web.Request) -> web.Response:
     except (KeyError, TypeError) as e:
         return _error(str(e), status=400)
     except Exception as e:
+        logger.error(f"Unexpected error setting title: {e}")
         return _error(str(e), status=500)
 
 
@@ -206,13 +213,13 @@ async def _get_history(request: web.Request) -> web.Response:
 
 
 async def _handle_chat(request: web.Request) -> web.StreamResponse:
-    sm = request.app["sm"]
+    sm: SessionManager = request.app["sm"]
     cm: ChatManager = request.app["cm"]
     session_id = request.match_info["session_id"]
     try:
         channel_socket = sm.get_channel_socket(session_id)
     except LookupError:
-        return _json_error(404, f"Session '{session_id}' not found")
+        return _error(f"Session '{session_id}' not found", status=404)
 
     if request.content_type and "multipart" in request.content_type:
         data = await request.post()
@@ -238,7 +245,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
         async for chunk in cm.handle(channel_socket, body):
             await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
     except Exception as e:
-        logger.debug(f"Chat error for session '{session_id}': {e}")
+        logger.warning(f"Chat error for session '{session_id}': {e}")
         await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n".encode())
     await resp.write(b"data: [DONE]\n\n")
     return resp
@@ -248,11 +255,3 @@ def _downloads_path(filename: str) -> str:
     date = datetime.now().strftime("%Y-%m-%d")
     base = os.path.join(str(Path.home()), "Downloads", ".psi", date)
     return os.path.join(base, os.path.basename(filename))
-
-
-def _json_error(status: int, message: str) -> web.Response:
-    return web.Response(
-        text=json.dumps({"error": message}),
-        content_type="application/json",
-        status=status,
-    )

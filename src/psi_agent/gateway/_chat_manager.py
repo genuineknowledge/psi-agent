@@ -46,7 +46,7 @@ class ChatManager:
                     elif isinstance(chunk, FileChunk):
                         yield await self._file_blob(chunk.path)
         finally:
-            self._cleanup(tmp_files)
+            await self._cleanup(tmp_files)
 
     def _temp_path(self, tmp_files: list[str], name: str) -> str:
         suffix = os.path.splitext(name)[1] or ".bin"
@@ -64,10 +64,10 @@ class ChatManager:
                 "data": base64.b64encode(content).decode(),
             }
         except Exception as e:
-            logger.debug(f"Failed to read file blob {path}: {e}")
+            logger.warning(f"Failed to read file blob {path}: {e}")
             return {"type": "error", "error": str(e)}
 
-    def _cleanup(self, paths: list[str]) -> None:
+    async def _cleanup(self, paths: list[str]) -> None:
         for p in paths:
             with contextlib.suppress(OSError):
-                os.unlink(p)
+                await anyio.Path(p).unlink()

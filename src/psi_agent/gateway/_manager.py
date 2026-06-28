@@ -106,6 +106,7 @@ class AIManager:
     async def create(self, req: AiCreateRequest) -> AiInfo:
         ai_id = req.id or _new_uuid()
         async with self._lock:
+            logger.debug(f"AIManager: acquired lock for create '{ai_id}'")
             if ai_id in self._entries:
                 raise ValueError(f"AI '{ai_id}' already exists")
             socket = _socket_path(self._prefix, "ais", ai_id)
@@ -123,14 +124,16 @@ class AIManager:
                 with scope:
                     await ai.run()
 
+            logger.debug(f"AIManager: starting AI '{ai_id}' task")
             self._tg.start_soon(_run_ai)
             self._entries[ai_id] = _AiEntry(scope=scope, socket=socket, provider=req.provider, model=req.model)
-            await _wait_socket(socket)
-            logger.info(f"AI '{ai_id}' created on {socket}")
-            return AiInfo(id=ai_id, socket=socket, provider=req.provider, model=req.model)
+        await _wait_socket(socket)
+        logger.info(f"AI '{ai_id}' created on {socket}")
+        return AiInfo(id=ai_id, socket=socket, provider=req.provider, model=req.model)
 
     async def delete(self, ai_id: str) -> DeleteResponse:
         async with self._lock:
+            logger.debug(f"AIManager: acquired lock for delete '{ai_id}'")
             if ai_id not in self._entries:
                 raise LookupError(f"AI '{ai_id}' not found")
             entry = self._entries.pop(ai_id)
@@ -178,6 +181,7 @@ class SessionManager:
         session_id = req.id or _new_uuid()
         workspace = req.workspace or os.getcwd()
         async with self._lock:
+            logger.debug(f"SessionManager: acquired lock for create '{session_id}'")
             if session_id in self._entries:
                 raise ValueError(f"Session '{session_id}' already exists")
             ai_socket = self._aim.get_socket(req.ai_id)
@@ -195,6 +199,7 @@ class SessionManager:
                 with scope:
                     await sess.run()
 
+            logger.debug(f"SessionManager: starting session '{session_id}' task")
             self._tg.start_soon(_run_session)
             self._entries[session_id] = _SessionEntry(
                 scope=scope,
@@ -202,12 +207,13 @@ class SessionManager:
                 ai_id=req.ai_id,
                 workspace=workspace,
             )
-            await _wait_socket(channel_socket)
-            logger.info(f"Session '{session_id}' created on {channel_socket} -> AI '{req.ai_id}'")
-            return SessionInfo(id=session_id, ai_id=req.ai_id, workspace=workspace, channel_socket=channel_socket)
+        await _wait_socket(channel_socket)
+        logger.info(f"Session '{session_id}' created on {channel_socket} -> AI '{req.ai_id}'")
+        return SessionInfo(id=session_id, ai_id=req.ai_id, workspace=workspace, channel_socket=channel_socket)
 
     async def delete(self, session_id: str) -> DeleteResponse:
         async with self._lock:
+            logger.debug(f"SessionManager: acquired lock for delete '{session_id}'")
             if session_id not in self._entries:
                 raise LookupError(f"Session '{session_id}' not found")
             entry = self._entries.pop(session_id)
