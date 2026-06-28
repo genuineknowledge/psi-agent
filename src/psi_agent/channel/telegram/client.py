@@ -11,7 +11,7 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from psi_agent.channel._core import ChannelCore
-from psi_agent.channel._types import Chunk, FileChunk, TextChunk
+from psi_agent.channel._types import FileChunk, InputChunk, TextChunk
 
 
 def _allowed(user_id: int, allowed_ids: list[int] | None) -> bool:
@@ -32,11 +32,11 @@ async def _send_file(update: Update, path: str) -> None:
         await update.message.reply_document(path)
 
 
-async def _build_chunks(update: Update) -> list[Chunk]:
+async def _build_chunks(update: Update) -> list[InputChunk]:
     if update.message is None:
         return []
 
-    chunks: list[Chunk] = []
+    chunks: list[InputChunk] = []
     downloads = f"{platformdirs.user_downloads_dir()}/.psi/{date.today()}"
     await anyio.Path(downloads).mkdir(parents=True, exist_ok=True)
     logger.debug(f"_build_chunks: downloads_dir={downloads}")

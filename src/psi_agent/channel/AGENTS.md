@@ -4,7 +4,7 @@
 
 ```
 channel/
-├── _types.py          # FileChunk, TextChunk, ReasoningChunk, Chunk
+├── _types.py          # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
 ├── _core.py           # ChannelCore — 连接管理 + SSE 管道
 ├── cli/
 │   ├── __init__.py     # ChannelCli dataclass
@@ -25,7 +25,7 @@ channel/
 ChannelCore 是所有 Channel（CLI、REPL、Telegram）共享的公共部件：
 
 - async context manager，管理 aiohttp ClientSession
-- `post(list[Chunk]) -> AsyncIterator[Chunk]`：Chunk → 字符串 → POST → SSE → Chunk
+- `post(list[InputChunk]) -> AsyncIterator[OutputChunk]`：InputChunk → 字符串 → POST → SSE → OutputChunk
 - 将输入中的 FileChunk 转换为 `[RECV:/path]` 标记（session 端负责读文件）
 - 检测输出中的 `[SEND:/path]` 标记并产生 FileChunk
 - 将 SSE 的 `delta.reasoning` 流切分为 `ReasoningChunk`，与 `content`（`TextChunk`）按到达顺序交错产出（类型切换时先 flush 旧类型）；`[SEND:...]` 仅扫描 content
@@ -80,7 +80,7 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 ## Feishu 约定
 
 - 通过 lark-channel-sdk 的 `FeishuChannel.connect()` 进行 WebSocket 长连接
-- 所有消息（text/post/file/audio）均转化为 Chunk：文本→TextChunk，文件→下载→FileChunk
+- 所有消息（text/post/file/audio）均转化为 InputChunk：文本→TextChunk，文件→下载→FileChunk
 - `<audio key="..."/>` inline 标签通过 `message_resource.aget()` API 下载
 - 通过 `channel.stream()`  + `stream.append()` 实现卡片流式渲染
 - FileChunk 通过 `channel.send()` 发送文件；用户文件下载至 `Downloads/.psi/<date>/`

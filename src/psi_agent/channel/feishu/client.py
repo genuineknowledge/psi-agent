@@ -18,7 +18,7 @@ from lark_channel.api.im.v1.model.get_message_resource_request import GetMessage
 from loguru import logger
 
 from psi_agent.channel._core import ChannelCore
-from psi_agent.channel._types import Chunk, FileChunk, TextChunk
+from psi_agent.channel._types import FileChunk, InputChunk, TextChunk
 
 _EMOJI_PROCESSING = "Typing"
 _EMOJI_FAILED = "CrossMark"
@@ -73,8 +73,8 @@ async def _remove_reaction(channel: Any, message_id: str, reaction_id: str) -> N
         logger.error(f"_remove_reaction failed — {e}")
 
 
-async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[Chunk]:
-    chunks: list[Chunk] = []
+async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[InputChunk]:
+    chunks: list[InputChunk] = []
     logger.debug(f"_build_chunks: downloads_dir={downloads} raw_content_type={ctx.raw_content_type}")
 
     text = ctx.content_text or ""

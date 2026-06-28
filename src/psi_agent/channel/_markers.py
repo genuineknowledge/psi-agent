@@ -12,13 +12,13 @@ import re
 
 from loguru import logger
 
-from psi_agent.channel._types import Chunk, FileChunk, TextChunk
+from psi_agent.channel._types import FileChunk, InputChunk, TextChunk
 
 RECV_MARKER = "[RECV:{path}]"
 SEND_RE = re.compile(r"\[SEND:(.+?)\]")
 
 
-def encode_input(chunks: list[Chunk]) -> str:
+def encode_input(chunks: list[InputChunk]) -> str:
     """Encode input chunks into a single user-message string.
 
     ``FileChunk`` becomes a ``[RECV:/path]`` marker (the Session reads the file);

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
+from typing import get_args
+
+from psi_agent.channel._types import FileChunk, InputChunk, OutputChunk, ReasoningChunk, TextChunk
 
 
 def test_file_chunk_construction():
@@ -38,3 +40,17 @@ def test_reasoning_chunk_union_isinstance():
     assert not isinstance(rc, FileChunk)
     assert not isinstance(tc, ReasoningChunk)
     assert not isinstance(fc, ReasoningChunk)
+
+
+def test_input_chunk_excludes_reasoning():
+    args = get_args(InputChunk)
+    assert FileChunk in args
+    assert TextChunk in args
+    assert ReasoningChunk not in args
+
+
+def test_output_chunk_includes_reasoning():
+    args = get_args(OutputChunk)
+    assert FileChunk in args
+    assert TextChunk in args
+    assert ReasoningChunk in args

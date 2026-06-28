@@ -18,4 +18,5 @@ class ReasoningChunk:
     text: str
 
 
-Chunk = FileChunk | TextChunk | ReasoningChunk
+InputChunk = FileChunk | TextChunk
+OutputChunk = FileChunk | TextChunk | ReasoningChunk

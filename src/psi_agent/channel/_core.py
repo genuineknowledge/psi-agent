@@ -11,7 +11,7 @@ from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.channel._markers import SendMarkerScanner, encode_input
-from psi_agent.channel._types import Chunk, FileChunk, ReasoningChunk, TextChunk
+from psi_agent.channel._types import FileChunk, InputChunk, OutputChunk, ReasoningChunk, TextChunk
 
 
 @dataclass
@@ -27,7 +27,7 @@ class ChannelCore:
     async def __aexit__(self, *args: object) -> None:
         await self._session.close()
 
-    async def post(self, chunks: list[Chunk]) -> AsyncIterator[Chunk]:
+    async def post(self, chunks: list[InputChunk]) -> AsyncIterator[OutputChunk]:
         logger.debug(
             f"post: {len(chunks)} chunk(s) — "
             f"FileChunks={sum(1 for c in chunks if isinstance(c, FileChunk))} "

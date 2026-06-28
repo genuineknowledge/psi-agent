@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from psi_agent.channel._markers import SendMarkerScanner, encode_input
-from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
+from psi_agent.channel._types import FileChunk, TextChunk
 
 
 def test_encode_input_empty():
@@ -19,10 +19,6 @@ def test_encode_input_file_becomes_recv_marker():
 
 def test_encode_input_joins_with_newline():
     assert encode_input([TextChunk("a"), TextChunk("b")]) == "a\nb"
-
-
-def test_encode_input_ignores_reasoning_chunk():
-    assert encode_input([ReasoningChunk("x"), TextChunk("y")]) == "y"
 
 
 def test_scanner_no_marker_returns_empty():
