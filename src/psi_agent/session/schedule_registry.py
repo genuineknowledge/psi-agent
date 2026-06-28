@@ -89,6 +89,7 @@ class ScheduleRegistry:
                     pending_chunks: list[AgentChunk] = []
                     async for chunk in agent.run(msg):
                         pending_chunks.append(chunk)
+                        logger.debug(f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
                     agent.set_pending_schedule_chunks(pending_chunks)
                     logger.info(f"Schedule {schedule.name} response stored ({len(pending_chunks)} chunks)")
             except Exception as e:
