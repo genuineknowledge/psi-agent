@@ -77,7 +77,7 @@ src/
     │   ├── schedule_registry.py    # ScheduleRegistry — 定时任务集
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
     │   ├── protocol.py             # Session 层类型
-    └── channel/
+    ├── channel/
         ├── AGENTS.md                # Channel 层设计文档
         ├── __init__.py              # package marker
         ├── _types.py               # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
