@@ -99,15 +99,14 @@ class _AiEntry:
 3. `_ensure_socket_dir(socket)` 创建 socket 父目录（anyio 异步）
 4. 构造 `Ai(session_socket=socket, provider=..., model=..., api_key=..., base_url=...)`
 5. 创建 `anyio.CancelScope`，`task_group.start_soon(ai.run)`
-6. 存入 `_ais[ai_id]`
+6. 存入 `_entries[ai_id]`
 7. `_wait_socket(socket)` 轮询等待 socket 文件出现 + 额外 0.3s sleep 确保 acceptor 就绪
 8. 返回 `AiInfo(id, socket, provider, model)`
 
 ### 4.2 `delete(ai_id) -> DeleteResponse`
 
 1. 获取 lock，断言存在
-2. `entry.scope.cancel()`
-3. `del _ais[ai_id]`
+2. `del _entries[ai_id]` + `entry.scope.cancel()`
 
 ### 4.3 `list_all() -> list[AiInfo]`
 
@@ -139,15 +138,14 @@ class _SessionEntry:
 4. workspace 为空时默认 `os.getcwd()`
 5. 构造 `Session(workspace=..., channel_socket=..., ai_socket=..., session_id=session_id)`
 6. 创建 `CancelScope`，`task_group.start_soon(session.run)`
-7. 存入 `_sessions[session_id]`
+7. 存入 `_entries[session_id]`
 8. `_wait_socket(channel_socket)` 轮询等待 channel socket 就绪
 9. 返回 `SessionInfo(id, ai_id, workspace, channel_socket)`
 
 ### 5.2 `delete(session_id) -> DeleteResponse`
 
 1. 获取 lock，断言存在
-2. `entry.scope.cancel()`
-3. `del _sessions[session_id]`
+2. `del _entries[session_id]` + `entry.scope.cancel()`
 
 ### 5.3 `list_all() -> list[SessionInfo]`
 
