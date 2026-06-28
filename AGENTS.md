@@ -153,6 +153,22 @@ SSE 流中的特殊字段：
 
 6. **Tool 函数必须 awaitable**：`load_tools_from_workspace` 只加载 `async def` 函数。普通函数会被静默跳过
 
+7. **JSON dict/list 必须 guard**：从 `json.loads()` 得到的任意数据访问 `c.get("delta")` 或 `messages[-1]` 前，必须先 `isinstance(c, dict)` / `isinstance(messages, list)` 验证类型。JSON 可以是任意结构，不可信任 key 存在或类型正确。
+
+8. **Default over None**：与其在调用处检查 `if x is None: return`，不如在构造时提供合理默认值（如 `SystemPrompt` 的 default builder 返回 `""`，default checker 返回 `False`）。这样调用处逻辑更简单、更不容易漏判 None。
+
+9. **Hash 的 key 必须和查找时一致**：如果 load 时用 `file_path → hash` 存储，refresh 时就不能用 `tool_name → hash` 查找。key 的语义必须全程一致，否则永远命中不了。
+
+10. **每 chunk 都要有 DEBUG 日志**：无论是 AI 返回的 SSE chunk 还是 Channel 发出的 SSE chunk，每经过协议边界都要记录。这匹配 `ai/server.py` 的 `logger.debug(f"SSE chunk: ...")` 模式。
+
+11. **单个 caller 的 private 方法应内联**：只有一个调用点的私有方法没有存在理由——将其逻辑直接展开到调用处，减少阅读时的跳转。(如 `_build` → inline 到 `ensure`)
+
+12. **模块级函数应尽量放到类上**：如果整个文件的作用就是为一个类服务，工具函数应该作为该类的 `@staticmethod`，而非文件顶级函数。(如 `_extract_async_func` → `SystemPrompt._extract_async_func`)
+
+13. **Startup 失败也需 shield cleanup**：不仅是 shutdown 的 `finally` 需要 `CancelScope(shield=True)` 保护 `runner.cleanup()`，`setup()`/`start()` 失败的 `except` 块同理。参照 `serve_ai` 的模式。
+
+14. **Log 中两处同类操作应格式一致**：如 build prompt 和 rebuild prompt 都应该 log `({len(sp)} chars)`，否则排查时信息不对等。
+
 ## 测试约定
 
 - **框架**: `pytest` + `pytest-asyncio`（`asyncio_mode = "auto"`，anyio backend）
