@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -35,9 +36,11 @@ class SessionAgent:
         tool_funcs: dict[str, Callable[..., Any]] | None = None,
         schedules: list | None = None,
         system_prompt_builder: Callable[..., Any] | None = None,
+        system_prompt_rebuild_checker: Callable[..., Any] | None = None,
         max_tool_rounds: int = 128,
         history: list[dict] | None = None,
         history_path: Path | None = None,
+        agent_uuid: str = "",
     ) -> None:
         self._ai_client = ai_client
         self._channel_socket = channel_socket
@@ -46,6 +49,7 @@ class SessionAgent:
         self._tool_funcs = tool_funcs if tool_funcs else {}
         self.schedules = schedules if schedules is not None else []
         self._system_prompt_builder = system_prompt_builder
+        self._system_prompt_rebuild_checker = system_prompt_rebuild_checker
         self.max_tool_rounds = max_tool_rounds
         self.history = history if history is not None else []
         self._history_path = history_path
@@ -54,6 +58,7 @@ class SessionAgent:
         self._tg: Any = None
         self._file_hashes: dict[str, str] = {}
         self._workspace_path: Path | None = None
+        self._agent_uuid = agent_uuid or uuid.uuid4().hex
 
     @classmethod
     async def create(
@@ -65,10 +70,13 @@ class SessionAgent:
         max_tool_rounds: int = 128,
         session_id: str | None = None,
     ) -> SessionAgent:
-        tools, tool_funcs, file_hashes = await load_tools_from_workspace(workspace_path / "tools")
+        agent_uuid = uuid.uuid4().hex
+        tools, tool_funcs, file_hashes = await load_tools_from_workspace(
+            workspace_path / "tools", agent_uuid
+        )
         schedules = await load_schedules_from_workspace(workspace_path / "schedules")
-
         history, history_path = await _init_history(workspace_path, session_id)
+        builder, checker = _load_system_module(workspace_path, agent_uuid)
 
         agent = cls(
             ai_client=AiClient(ai_socket),
@@ -76,10 +84,12 @@ class SessionAgent:
             tools=tools,
             tool_funcs=tool_funcs,
             schedules=schedules,
-            system_prompt_builder=_load_system_prompt_builder(workspace_path),
+            system_prompt_builder=builder,
+            system_prompt_rebuild_checker=checker,
             max_tool_rounds=max_tool_rounds,
             history=history,
             history_path=history_path,
+            agent_uuid=agent_uuid,
         )
         agent._file_hashes = file_hashes
         agent._workspace_path = workspace_path
@@ -99,7 +109,9 @@ class SessionAgent:
             logger.warning("No workspace_path set, cannot reload tools")
             return {}
 
-        new_tools, new_funcs, new_hashes = await load_tools_from_workspace(self._workspace_path / "tools")
+        new_tools, new_funcs, new_hashes = await load_tools_from_workspace(
+            self._workspace_path / "tools", self._agent_uuid
+        )
         result: dict[str, str] = {}
         for name, tf in new_tools.items():
             if name not in self.tools:
@@ -140,6 +152,16 @@ class SessionAgent:
             logger.info(f"Schedule reload: added {[s.name for s in added]}")
         return added
 
+    async def _build_system_prompt(self) -> None:
+        """Build and prepend the system prompt to history."""
+        assert self._system_prompt_builder is not None
+        try:
+            sp = await self._system_prompt_builder()
+            self.history.append({"role": "system", "content": sp})
+            logger.info(f"System prompt loaded ({len(sp) if sp else 0} chars)")
+        except Exception as e:
+            logger.error(f"Failed to build system prompt: {e}")
+
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         """aiohttp handler for Channel requests — delegates to ChannelAdapter."""
         return await self._channel_adapter.handle(request, self, self._lock)
@@ -148,13 +170,16 @@ class SessionAgent:
         self._pending_schedule_chunks = chunks
 
     async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[AgentChunk]:
-        if not self.history and self._system_prompt_builder is not None:
-            try:
-                sp = await self._system_prompt_builder()
-                self.history.append({"role": "system", "content": sp})
-                logger.info(f"System prompt loaded ({len(sp) if sp else 0} chars)")
-            except Exception as e:
-                logger.error(f"Failed to build system prompt: {e}")
+        if self._system_prompt_builder is not None:
+            if not self.history:
+                await self._build_system_prompt()
+            elif self._system_prompt_rebuild_checker is not None:
+                try:
+                    if await self._system_prompt_rebuild_checker():
+                        logger.info("Rebuild checker returned True — rebuilding system prompt")
+                        self.history[0] = {"role": "system", "content": await self._system_prompt_builder()}
+                except Exception as e:
+                    logger.error(f"Rebuild check or rebuild failed: {e}")
 
         if self._pending_schedule_chunks:
             logger.info(f"Yielding {len(self._pending_schedule_chunks)} pending schedule chunk(s)")
@@ -368,24 +393,48 @@ async def _save_history(path: Path, history: list[dict]) -> None:
         logger.error(f"Failed to save history: {e}")
 
 
-def _load_system_prompt_builder(workspace_path: Path) -> Callable[..., Any] | None:
+def _load_system_module(
+    workspace_path: Path, agent_uuid: str
+) -> tuple[Callable[..., Any] | None, Callable[..., Any] | None]:
+    """Import ``system_prompt_builder`` and ``system_prompt_rebuild_checker``
+    from ``workspace/systems/system.py``.
+
+    Uses a unique module name (``psi_system_{uuid}_{file_hash[:12]}``) so
+    multiple agents in the same process get isolated imports.
+
+    Returns ``(builder, rebuild_checker)`` — each is ``None`` if the
+    corresponding function is missing, not async, or the file cannot be loaded.
+    """
     system_py = workspace_path / "systems" / "system.py"
-    module_name = "psi_workspace_system"
+    try:
+        file_bytes = system_py.read_bytes()
+    except OSError:
+        logger.warning(f"No system.py found at {system_py}")
+        return None, None
+
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+    module_name = f"psi_system_{agent_uuid}_{file_hash[:12]}"
+
     try:
         spec = importlib.util.spec_from_file_location(module_name, str(system_py))
         if spec is None or spec.loader is None:
-            logger.warning(f"No system.py found at {system_py}")
-            return None
+            logger.warning(f"Could not load spec for {system_py}")
+            return None, None
         module = importlib.util.module_from_spec(spec)
         sys.modules[module_name] = module
         spec.loader.exec_module(module)
-        func = getattr(module, "system_prompt_builder", None)
-        if func is None or not inspect.iscoroutinefunction(func):
-            logger.warning(f"system_prompt_builder not found or not async in {system_py}")
-            sys.modules.pop(module_name, None)
-            return None
-        return func
     except Exception as e:
-        logger.error(f"Failed to load system_prompt_builder: {e}")
+        logger.error(f"Failed to load {system_py}: {e}")
         sys.modules.pop(module_name, None)
+        return None, None
+
+    builder = _extract_async_func(module, "system_prompt_builder")
+    checker = _extract_async_func(module, "system_prompt_rebuild_checker")
+    return builder, checker
+
+
+def _extract_async_func(module: object, name: str) -> Callable[..., Any] | None:
+    func = getattr(module, name, None)
+    if func is None or not inspect.iscoroutinefunction(func):
         return None
+    return func
