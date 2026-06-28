@@ -1,10 +1,4 @@
-"""Scheduled tasks — data model, runner coroutine, and registry.
-
-Contains the ``Schedule`` dataclass, the ``run_one_schedule`` perpetual
-coroutine, and ``ScheduleRegistry`` which owns the schedule list and
-runtime lifecycle — loading from disk, starting runners, and incremental
-refresh.
-"""
+"""Scheduled tasks — data model, runner coroutine, and registry."""
 
 from __future__ import annotations
 
@@ -24,9 +18,6 @@ if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent
 
 
-# ── data model ───────────────────────────────────────────────────────────────
-
-
 @dataclass
 class Schedule:
     """A scheduled task loaded from workspace/schedules/*/TASK.md."""
@@ -36,37 +27,6 @@ class Schedule:
     task_content: str
 
 
-# ── runner coroutine ─────────────────────────────────────────────────────────
-
-
-async def run_one_schedule(schedule: Schedule, agent: SessionAgent) -> None:
-    """Perpetual coroutine that fires a schedule on its cron interval."""
-    logger.info(f"Schedule runner started: {schedule.name} ({schedule.cron})")
-
-    cron_iter = croniter(schedule.cron, time.time())
-
-    while True:
-        next_run = cron_iter.get_next()
-        wait = max(0.0, next_run - time.time())
-        await anyio.sleep(wait)
-
-        try:
-            logger.info(f"Schedule triggered: {schedule.name}")
-            msg = {"role": "user", "content": schedule.task_content}
-
-            async with agent._lock:
-                pending_chunks: list[AgentChunk] = []
-                async for chunk in agent.run(msg):
-                    pending_chunks.append(chunk)
-                agent.set_pending_schedule_chunks(pending_chunks)
-                logger.info(f"Schedule {schedule.name} response stored ({len(pending_chunks)} chunks)")
-        except Exception as e:
-            logger.error(f"Error processing schedule {schedule.name}: {e}")
-
-
-# ── registry ─────────────────────────────────────────────────────────────────
-
-
 class ScheduleRegistry:
     """Owns the schedule list and its runtime lifecycle."""
 
@@ -74,16 +34,20 @@ class ScheduleRegistry:
         self.schedules: list[Schedule] = list(schedules or [])
         self._work_dir = work_dir
 
+    # -- factory ----------------------------------------------------------------
+
     @classmethod
     async def load(cls, schedules_dir: Path) -> ScheduleRegistry:
         """Full initial load — scan *schedules_dir*."""
         schedules = await cls._load_from_dir(schedules_dir)
         return cls(schedules=schedules, work_dir=schedules_dir)
 
+    # -- runner lifecycle -------------------------------------------------------
+
     def start_all(self, task_group: Any, agent: SessionAgent) -> None:
         """Start a runner for every registered schedule in *task_group*."""
         for s in self.schedules:
-            task_group.start_soon(run_one_schedule, s, agent)
+            task_group.start_soon(self._run_one, s, agent)
 
     async def refresh(self, task_group: Any, agent: SessionAgent) -> list[Schedule]:
         """Incremental reload — start runners for new schedules only."""
@@ -97,13 +61,40 @@ class ScheduleRegistry:
         for s in new_scheds:
             if s.name not in existing:
                 self.schedules.append(s)
-                task_group.start_soon(run_one_schedule, s, agent)
+                task_group.start_soon(self._run_one, s, agent)
                 added.append(s)
         if added:
             logger.info(f"Schedule refresh: added {[s.name for s in added]}")
         return added
 
-    # -- internals -------------------------------------------------------------
+    # -- runner coroutine (perpetual) -------------------------------------------
+
+    @staticmethod
+    async def _run_one(schedule: Schedule, agent: SessionAgent) -> None:
+        """Perpetual coroutine that fires a schedule on its cron interval."""
+        logger.info(f"Schedule runner started: {schedule.name} ({schedule.cron})")
+
+        cron_iter = croniter(schedule.cron, time.time())
+
+        while True:
+            next_run = cron_iter.get_next()
+            wait = max(0.0, next_run - time.time())
+            await anyio.sleep(wait)
+
+            try:
+                logger.info(f"Schedule triggered: {schedule.name}")
+                msg = {"role": "user", "content": schedule.task_content}
+
+                async with agent._lock:
+                    pending_chunks: list[AgentChunk] = []
+                    async for chunk in agent.run(msg):
+                        pending_chunks.append(chunk)
+                    agent.set_pending_schedule_chunks(pending_chunks)
+                    logger.info(f"Schedule {schedule.name} response stored ({len(pending_chunks)} chunks)")
+            except Exception as e:
+                logger.error(f"Error processing schedule {schedule.name}: {e}")
+
+    # -- disk loading -----------------------------------------------------------
 
     @staticmethod
     async def _load_from_dir(schedules_dir: Path) -> list[Schedule]:

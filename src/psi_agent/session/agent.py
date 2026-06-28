@@ -79,10 +79,9 @@ class SessionAgent:
 
     # -- delegation -----------------------------------------------------------
 
-    @property
-    def schedules(self) -> list:
-        """Schedule list — exposed for ``Session.run()`` iteration."""
-        return self._schedule_registry.schedules
+    def start_all(self, task_group: object) -> None:
+        """Start schedule runners — called by ``Session.run()``."""
+        self._schedule_registry.start_all(task_group, self)
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
         self._conversation.stash(chunks)

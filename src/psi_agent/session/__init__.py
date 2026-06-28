@@ -43,5 +43,5 @@ class Session:
         )
 
         async with anyio.create_task_group() as task_group:
-            agent._schedule_registry.start_all(task_group, agent)
+            agent.start_all(task_group)
             task_group.start_soon(partial(serve_session, channel_socket=self.channel_socket, agent=agent))
