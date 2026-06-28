@@ -35,6 +35,7 @@ ChannelCore 是所有 Channel（CLI、REPL、Telegram）共享的公共部件：
 - SSE 内容在 interval 窗口内缓冲合并为单个 TextChunk（默认 1s，可配置）
 - 终端通道（CLI/REPL）设置 interval=0 无需缓冲
 - 内部委托：marker 编解码 → `_markers.py`；SSE 解析与 interval 缓冲 → `_stream.py`（均与 HTTP 传输解耦、可独立单测）
+- **（刻意为之）`_session`/`_endpoint` 不在 dataclass 中声明**：二者在 `__aenter__` 赋值、在 `post()` 中无条件使用；若声明为字段则需 `X | None`，会在 `post()` 引入 Optional narrowing（被迫 assert 或 `# ty: ignore`，违反零抑制）。由 async context manager 保证"先 `__aenter__` 再 `post()`"的时机，故保留为动态属性——勿当 bug "修复"
 
 Channel 客户端不再直接处理 HTTP、SSE 解析或错误格式。
 
