@@ -16,14 +16,15 @@ from psi_agent.session.protocol import AgentChunk, AgentError
 from psi_agent.session.tool_registry import ToolRegistry
 
 
-class _MockResponse:
+class _MockResponse(web.StreamResponse):
     """Captures bytes written via ``write()``."""
 
     def __init__(self) -> None:
+        super().__init__(status=200, reason="OK")
         self.written: list[bytes] = []
 
-    async def write(self, data: bytes) -> None:
-        self.written.append(data)
+    async def write(self, data: bytes | bytearray | memoryview) -> None:
+        self.written.append(bytes(data))
 
 
 @pytest.mark.anyio
