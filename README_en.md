@@ -60,7 +60,9 @@ uv run psi-agent channel cli \
 
 ```
 psi-agent
+├── run                       # Batch launch (psi-agent run config.yml)
 ├── ai                        # Unified AI backend (50+ providers)
+├── gateway                   # Lifecycle management + REST API + Web Console
 ├── session                    # Session + workspace management
 └── channel
     ├── repl                   # Interactive REPL

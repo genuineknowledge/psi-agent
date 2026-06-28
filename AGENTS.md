@@ -77,18 +77,31 @@ src/
     │   ├── schedule_registry.py    # ScheduleRegistry — 定时任务集
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
     │   ├── protocol.py             # Session 层类型
-    └── channel/
-        ├── AGENTS.md                # Channel 层设计文档
-        ├── __init__.py              # package marker
-        ├── _types.py               # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
-        ├── _errors.py              # ChannelError 异常基类
-        ├── _markers.py             # [RECV:]/[SEND:] 标记协议（纯函数 encode_input + SendMarkerScanner）
-        ├── _stream.py              # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
-        ├── _core.py                # ChannelCore — 连接管理 + post() 编排
-        ├── repl/                   # 交互式 REPL thin client
-        ├── cli/                    # 单次消息 CLI thin client
-        ├── telegram/               # Telegram bot channel
-        └── feishu/                 # Feishu bot channel
+    ├── channel/
+    │   ├── AGENTS.md                # Channel 层设计文档
+    │   ├── __init__.py              # package marker
+    │   ├── _types.py               # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
+    │   ├── _errors.py              # ChannelError 异常基类
+    │   ├── _markers.py             # [RECV:]/[SEND:] 标记协议（纯函数 encode_input + SendMarkerScanner）
+    │   ├── _stream.py              # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
+    │   ├── _core.py                # ChannelCore — 连接管理 + post() 编排
+    │   ├── repl/                   # 交互式 REPL thin client
+    │   ├── cli/                    # 单次消息 CLI thin client
+    │   ├── telegram/               # Telegram bot channel
+    │   ├── feishu/                 # Feishu bot channel
+    └── gateway/
+        ├── AGENTS.md                # Gateway 层设计文档
+        ├── __init__.py              # Gateway dataclass + run()
+        ├── _manager.py             # 共享类型 + helpers
+        ├── _ai_manager.py         # AIManager
+        ├── _session_manager.py    # SessionManager
+        ├── server.py               # aiohttp REST handlers
+        ├── _chat_manager.py        # SSE 流式对话管理
+        ├── _history_manager.py     # JSONL 历史读取
+        ├── _title_manager.py       # 会话标题 CRUD + AI 生成
+        ├── _workspace_manager.py   # 目录浏览
+        ├── _openapi.py             # OpenAPI schema 生成
+        └── spa/                    # Vue 3 SPA 前端（Vite + SFC）
 ```
 
 项目使用 **src-layout**（`src/psi_agent/`），由 `uv sync` 安装为 editable package。
@@ -97,6 +110,7 @@ src/
 - **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理
 - **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化
 - **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
+- **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包
 
 ## 核心通信协议
 
@@ -213,8 +227,10 @@ async def handler(request):
 - **ruff**: `select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]`
 - **ty**: 全局 `ty check .`
 - **per-file-ignores**: **零条**。所有代码通过自身符合规则，不靠抑制
-- **核心代码（`src/` + `tests/`）仅 1 处 ty:ignore**（无法避免）：
+- **核心代码（`src/` + `tests/`）仅 3 处 ty:ignore**（无法避免）：
   - `tests/integration/conftest.py:109` — pytest async generator fixture 的返回类型局限（`yield` 导致函数被推断为 AsyncGenerator，与标注的 MockAIServer 冲突）
+  - `src/psi_agent/gateway/server.py:235` — `anyio.to_thread.run_sync(file_field.file.read)` 返回类型 Any，ty 无法推断
+  - `src/psi_agent/gateway/__init__.py:74` — `anyio.to_thread.run_sync(webbrowser.open, ...)` 同上
 - **例外**：`examples/` 下的示例 workspace（如 `a-serper-mcp-workspace/tools/_mcp.py`）含若干 `# ty: ignore`（动态 MCP 工具的运行时签名构造），属示例代码，不计入上述核心约定。
 
 `cast` 不能解决 conftest 的问题——`cast` 是表达式级工具，无法修改 async generator 函数的返回类型。`# ty: ignore` 是正确的标准解法。
@@ -254,9 +270,9 @@ uv build                         # 构建
 
 ## 未来扩展方向
 
-- [ ] 单进程中运行多个 session 实例（利用 anyio task group）
+- [x] 单进程中运行多个 session 实例（利用 anyio task group）— 通过 Gateway 实现
 - [ ] workspace.py 统一 workspace 管理
-- [ ] 更多 channel 类型（WebSocket、HTTP API 等）
+- [x] 更多 channel 类型 — Gateway REST API + Web Console SPA
 - [ ] 更多 AI 后端（Gemini、本地模型等）
 - [x] Session history 持久化（已完成）
 - [ ] Channel 广播/多客户端队列

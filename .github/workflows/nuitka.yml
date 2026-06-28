@@ -1,0 +1,48 @@
+name: Nuitka
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  nuitka:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+      - run: uv sync
+      - run: uv pip install nuitka
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - run: npm ci
+        working-directory: src/psi_agent/gateway/spa
+      - run: npm run build
+        working-directory: src/psi_agent/gateway/spa
+      - shell: bash
+        run: |
+          uv run python -m nuitka \
+            --onefile \
+            --output-dir=nuitka-dist \
+            --output-filename=psi-agent \
+            --assume-yes-for-downloads \
+            --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist \
+            --include-package=any_llm \
+            --include-package=mcp \
+            src/psi_agent/cli.py
+      - uses: actions/upload-artifact@v5
+        with:
+          name: psi-agent-${{ matrix.os }}
+          path: nuitka-dist/psi-agent
+        if: matrix.os != 'windows-latest'
+      - uses: actions/upload-artifact@v5
+        with:
+          name: psi-agent-${{ matrix.os }}
+          path: nuitka-dist/psi-agent.exe
+        if: matrix.os == 'windows-latest'

@@ -60,7 +60,9 @@ uv run psi-agent channel cli \
 
 ```
 psi-agent
+├── run                       # 批量启动（psi-agent run config.yml）
 ├── ai                        # 统一 AI 后端（支持 50+ provider）
+├── gateway                   # 生命周期管理 + REST API + Web Console
 ├── session                    # Session + workspace 管理
 └── channel
     ├── repl                   # 交互式 REPL
