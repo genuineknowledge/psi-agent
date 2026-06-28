@@ -200,10 +200,10 @@ class ToolRegistry:
         return cls(tools=tools, funcs=funcs, file_hashes=file_hashes, work_dir=tools_dir)
 
     async def refresh(self, session_id: str) -> dict[str, str]:
-        """Incremental reload — only changed or new files.
+        """Incremental reload — adds, updates, removes tools.
 
         Returns a dict mapping tool name to ``'added'``, ``'updated'``,
-        or ``'skipped'``.
+        ``'removed'``, or ``'skipped'``.
         """
         if self._work_dir is None:
             logger.warning("No work_dir set, cannot refresh tools")
@@ -211,6 +211,15 @@ class ToolRegistry:
 
         new_tools, new_funcs, new_hashes = await self._load_from_dir(self._work_dir, session_id)
         result: dict[str, str] = {}
+
+        # removed — in registry but no longer on disk
+        for name in list(self.tools):
+            if name not in new_tools:
+                del self.tools[name]
+                del self._funcs[name]
+                result[name] = "removed"
+
+        # added / updated / skipped
         for name, tf in new_tools.items():
             if name not in self.tools:
                 self.tools[name] = tf
