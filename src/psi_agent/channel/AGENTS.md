@@ -11,16 +11,16 @@ channel/
 ├── _core.py           # ChannelCore — 连接管理 + post() 编排
 ├── cli/
 │   ├── __init__.py     # ChannelCli dataclass
-│   └── client.py       # 单次消息 thin client (~18行)
+│   └── client.py       # 单次消息 thin client (~27行)
 ├── repl/
 │   ├── __init__.py     # ChannelRepl dataclass
-│   └── client.py       # 交互式 thin client (~41行)
+│   └── client.py       # 交互式 thin client (~54行)
 └── telegram/
     ├── __init__.py     # ChannelTelegram dataclass
-    └── client.py       # Bot handler + 流式 + 文件收发 (~117行)
+    └── client.py       # Bot handler + 流式 + 文件收发 (~166行)
 └── feishu/
     ├── __init__.py     # ChannelFeishu dataclass
-    └── client.py       # Bot handler + 卡片流式 + 文件收发 (~100行)
+    └── client.py       # Bot handler + 卡片流式 + 文件收发 + 处理状态表情 (~200行)
 ```
 
 ### ChannelCore

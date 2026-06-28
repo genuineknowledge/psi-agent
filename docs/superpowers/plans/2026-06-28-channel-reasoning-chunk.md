@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-28-channel-reasoning-chunk.md`
 
+> **Evolution note (as of 2026-06-29):** Point-in-time record. The channel subpackage was later refactored — `Chunk` split into `InputChunk`/`OutputChunk`, and marker / SSE / buffer logic extracted into `_markers.py` / `_stream.py` (errors unified as `ChannelError`). See `src/psi_agent/channel/AGENTS.md` for the current authoritative state.
+
 ---
 
 ## File Structure

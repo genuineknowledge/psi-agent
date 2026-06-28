@@ -1,7 +1,9 @@
 # Channel 层 ReasoningChunk 设计规格
 
 **日期**: 2026-06-28
-**状态**: 待审批
+**状态**: 已实现
+
+> **演进说明（截至 2026-06-29）**：本规格为当时的设计快照。正文中的 `Chunk = FileChunk | TextChunk | ReasoningChunk` 已被后续重构取代——`Chunk` 拆分为 `InputChunk`/`OutputChunk`，marker 编解码、SSE 解析与 interval 缓冲分别抽到 `_markers.py` / `_stream.py`，错误统一为 `ChannelError`。当前权威状态以 `src/psi_agent/channel/AGENTS.md` 为准。
 
 ---
 

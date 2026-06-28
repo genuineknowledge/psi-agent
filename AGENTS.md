@@ -76,8 +76,11 @@ src/
     └── channel/
         ├── AGENTS.md                # Channel 层设计文档
         ├── __init__.py              # package marker
-        ├── _types.py               # FileChunk, TextChunk, Chunk
-        ├── _core.py                # ChannelCore — 连接管理 + SSE 管道
+        ├── _types.py               # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
+        ├── _errors.py              # ChannelError 异常基类
+        ├── _markers.py             # [RECV:]/[SEND:] 标记协议（纯函数 encode_input + SendMarkerScanner）
+        ├── _stream.py              # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
+        ├── _core.py                # ChannelCore — 连接管理 + post() 编排
         ├── repl/                   # 交互式 REPL thin client
         ├── cli/                    # 单次消息 CLI thin client
         ├── telegram/               # Telegram bot channel
@@ -89,7 +92,7 @@ src/
 各层的详细设计文档见：
 - **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理
 - **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化
-- **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram 约定
+- **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
 
 ## 核心通信协议
 
