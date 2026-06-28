@@ -68,14 +68,14 @@ src/
     ├── session/
     │   ├── AGENTS.md                # Session 层设计文档
     │   ├── __init__.py             # Session dataclass + run()，入口编排
-    │   ├── _server.py              # serve_session — aiohttp HTTP/SSE scaffold
-    │   ├── _channel_adapter.py      # ChannelAdapter — 纯无状态编解码（parse_request + write）
+    │   ├── server.py               # serve_session — aiohttp HTTP/SSE scaffold
+    │   ├── channel_adapter.py       # ChannelAdapter — 纯无状态编解码（parse_request + write）
     │   ├── agent.py                # SessionAgent — agent loop + 编排（委托给 4 个组件）
-    │   ├── _tool_registry.py        # ToolRegistry — 工具集（加载/重载/查询）
-    │   ├── _conversation.py        # Conversation — 对话历史 + 持久化
-    │   ├── _system_prompt.py       # SystemPrompt — 系统 prompt 生命周期
-    │   ├── _schedule_registry.py    # ScheduleRegistry — 定时任务集
-    │   ├── _ai_client.py           # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
+    │   ├── tool_registry.py        # ToolRegistry — 工具集（加载/重载/查询）
+    │   ├── conversation.py         # Conversation — 对话历史 + 持久化
+    │   ├── system_prompt.py        # SystemPrompt — 系统 prompt 生命周期
+    │   ├── schedule_registry.py    # ScheduleRegistry — 定时任务集
+    │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
     │   ├── protocol.py             # Session 层类型
     └── channel/
         ├── AGENTS.md                # Channel 层设计文档

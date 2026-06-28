@@ -9,10 +9,10 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
-from psi_agent.session._ai_client import AiClient
-from psi_agent.session._schedule_registry import ScheduleRegistry
-from psi_agent.session._tool_registry import ToolRegistry
 from psi_agent.session.agent import SessionAgent
+from psi_agent.session.ai_client import AiClient
+from psi_agent.session.schedule_registry import ScheduleRegistry
+from psi_agent.session.tool_registry import ToolRegistry
 from tests.integration.conftest import MockAIServer
 
 

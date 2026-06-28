@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from psi_agent._yaml import parse_yaml_header
-from psi_agent.session._schedule_registry import Schedule, ScheduleRegistry
+from psi_agent.session.schedule_registry import Schedule, ScheduleRegistry
 
 
 @pytest.mark.anyio

@@ -8,11 +8,11 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
-from psi_agent.session._ai_client import AiClient
-from psi_agent.session._channel_adapter import ChannelAdapter
-from psi_agent.session._tool_registry import ToolRegistry
 from psi_agent.session.agent import SessionAgent
+from psi_agent.session.ai_client import AiClient
+from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.tool_registry import ToolRegistry
 
 
 class _MockResponse:

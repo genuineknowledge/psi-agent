@@ -6,7 +6,7 @@ import socket as _s
 import pytest
 from aiohttp import web
 
-from psi_agent.session._ai_client import AiClient
+from psi_agent.session.ai_client import AiClient
 
 
 @pytest.mark.anyio

@@ -8,13 +8,13 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
-from psi_agent.session._ai_client import AiClient
-from psi_agent.session._channel_adapter import ChannelAdapter
-from psi_agent.session._conversation import Conversation
-from psi_agent.session._schedule_registry import ScheduleRegistry
-from psi_agent.session._system_prompt import SystemPrompt
-from psi_agent.session._tool_registry import ToolRegistry
+from psi_agent.session.ai_client import AiClient
+from psi_agent.session.channel_adapter import ChannelAdapter
+from psi_agent.session.conversation import Conversation
 from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.schedule_registry import ScheduleRegistry
+from psi_agent.session.system_prompt import SystemPrompt
+from psi_agent.session.tool_registry import ToolRegistry
 
 
 class SessionAgent:

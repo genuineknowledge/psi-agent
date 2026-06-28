@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from psi_agent.session._ai_client import AiClient
-from psi_agent.session._tool_registry import ToolRegistry
 from psi_agent.session.agent import SessionAgent
+from psi_agent.session.ai_client import AiClient
 from psi_agent.session.protocol import ToolFunction
+from psi_agent.session.tool_registry import ToolRegistry
 from tests.integration.conftest import MockAIServer
 
 

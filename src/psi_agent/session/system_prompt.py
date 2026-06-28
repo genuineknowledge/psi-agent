@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 if TYPE_CHECKING:
-    from psi_agent.session._conversation import Conversation
+    from psi_agent.session.conversation import Conversation
 
 
 class SystemPrompt:

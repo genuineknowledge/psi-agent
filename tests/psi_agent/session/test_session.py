@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from psi_agent.session import Session
-from psi_agent.session._system_prompt import SystemPrompt
+from psi_agent.session.system_prompt import SystemPrompt
 
 
 def test_system_py_not_exists(tmp_path: Path) -> None:
