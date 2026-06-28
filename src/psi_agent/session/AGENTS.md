@@ -17,7 +17,8 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
    └── 每个 schedule 一个 run_one_schedule(schedule, agent) task
 
 **关键点**：
-- `SessionAgent` 自包含：持有 `_agent_uuid`、`_ai_client`、`_channel_adapter`、`_channel_socket`、`_lock`
+- `SessionAgent` 自包含：持有 `_agent_uuid`、`_ai_client`、`_channel_adapter`、`_lock`
+- `channel_socket` 由 `Session.run()` 直接传给 `serve_session()`，不进入 agent 内部
 - 所有手动 `importlib` 使用 `原名_agent_uuid_文件hash[:12]` 作为 module name，确保同进程多 agent 隔离
 - `SessionAgent.create()` 完成所有初始化——`__init__.py` 只做入口编排
 - Tool 加载为单遍 `importlib`：同时产出元数据（ToolFunction）和实际 callable

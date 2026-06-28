@@ -32,7 +32,6 @@ class Session:
 
         agent = await SessionAgent.create(
             ai_socket=self.ai_socket,
-            channel_socket=self.channel_socket,
             workspace_path=workspace_path,
             max_tool_rounds=self.max_tool_rounds,
             session_id=self.session_id,
@@ -40,6 +39,6 @@ class Session:
 
         async with anyio.create_task_group() as tg:
             agent.set_task_group(tg)
-            tg.start_soon(partial(serve_session, agent=agent))
+            tg.start_soon(partial(serve_session, channel_socket=self.channel_socket, agent=agent))
             for schedule in agent.schedules:
                 tg.start_soon(partial(run_one_schedule, schedule, agent))

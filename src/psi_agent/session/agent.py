@@ -41,7 +41,6 @@ class SessionAgent:
         self,
         *,
         ai_client: AiClient,
-        channel_socket: str = "",
         channel_adapter: ChannelAdapter | None = None,
         tools: dict[str, ToolFunction],
         tool_funcs: dict[str, Callable[..., Any]] | None = None,
@@ -57,7 +56,6 @@ class SessionAgent:
         inject only the subset they need.  Use ``create()`` for production.
         """
         self._ai_client = ai_client
-        self._channel_socket = channel_socket
         self._channel_adapter = channel_adapter if channel_adapter is not None else ChannelAdapter()
         self.tools = tools
         self._tool_funcs = tool_funcs if tool_funcs else {}
@@ -81,7 +79,6 @@ class SessionAgent:
         cls,
         *,
         ai_socket: str,
-        channel_socket: str = "",
         workspace_path: Path,
         max_tool_rounds: int = 128,
         session_id: str | None = None,
@@ -104,7 +101,6 @@ class SessionAgent:
 
         agent = cls(
             ai_client=AiClient(ai_socket),
-            channel_socket=channel_socket,
             tools=tools,
             tool_funcs=tool_funcs,
             schedules=schedules,

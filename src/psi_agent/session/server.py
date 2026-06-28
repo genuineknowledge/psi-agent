@@ -12,22 +12,22 @@ if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent
 
 
-async def serve_session(*, agent: SessionAgent) -> None:
-    logger.info(f"Starting session server on {agent._channel_socket}")
+async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
+    logger.info(f"Starting session server on {channel_socket}")
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = create_site(runner, agent._channel_socket)
+    site = create_site(runner, channel_socket)
     await site.start()
 
-    logger.info(f"Session server listening on {agent._channel_socket}")
+    logger.info(f"Session server listening on {channel_socket}")
 
     try:
         await anyio.sleep_forever()
     finally:
-        logger.info(f"Shutting down session server on {agent._channel_socket}")
+        logger.info(f"Shutting down session server on {channel_socket}")
         with anyio.CancelScope(shield=True):
             await runner.cleanup()
