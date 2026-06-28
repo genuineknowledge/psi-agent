@@ -9,11 +9,10 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from psi_agent.session._schedule_registry import ScheduleRegistry
 from psi_agent.session._tool_registry import ToolRegistry
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
-from psi_agent.session.scheduler import load_schedules_from_workspace
-from psi_agent.session.tools import load_tools_from_workspace
 from tests.integration.conftest import MockAIServer
 
 
@@ -61,10 +60,10 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
     (ws / "systems").mkdir()
     (ws / "systems" / "system.py").write_text("async def system_prompt_builder() -> str:\n    return 'test'\n")
 
-    tools, _, _ = await load_tools_from_workspace(ws / "tools")
-    assert len(tools) == 0
+    tr = await ToolRegistry.load(ws / "tools")
+    assert len(tr.tools) == 0
 
-    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools=tools))
+    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools=tr.tools))
     agent._conversation.messages.append({"role": "system", "content": "test"})
     chunks = []
     async for c in agent.run({"role": "user", "content": "hi"}):
@@ -75,7 +74,7 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
 @pytest.mark.anyio
 async def test_missing_schedules_dir_graceful(tmp_path: Path) -> None:
 
-    schedules = await load_schedules_from_workspace(tmp_path / "nonexistent")
+    schedules = await ScheduleRegistry._load_from_dir(tmp_path / "nonexistent")
     assert len(schedules) == 0
 
 
@@ -204,10 +203,10 @@ async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server
     )
     base_url = await mock_ai_server.start()
 
-    tools, _, _ = await load_tools_from_workspace(ws / "tools")
-    assert len(tools) == 1
+    tr = await ToolRegistry.load(ws / "tools")
+    assert len(tr.tools) == 1
 
-    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools=tools))
+    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools=tr.tools))
     agent._conversation.messages.append({"role": "system", "content": "You are a test assistant."})
     chunks = []
     async for c in agent.run({"role": "user", "content": "hello"}):
@@ -231,8 +230,8 @@ async def test_unicode_message_handling(tmp_path: Path, mock_ai_server: MockAISe
         "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n"
     )
 
-    tools, _, _ = await load_tools_from_workspace(ws / "tools")
-    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools=tools))
+    tr = await ToolRegistry.load(ws / "tools")
+    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools=tr.tools))
 
     msg = "你好世界 🌍 — emoji and unicode test"
     chunks = [c async for c in agent.run({"role": "user", "content": msg})]

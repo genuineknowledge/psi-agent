@@ -13,7 +13,6 @@ from psi_agent.session._tool_registry import ToolRegistry
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.protocol import AgentChunk, AgentError, ToolFunction
-from psi_agent.session.tools import load_tools_from_workspace
 
 
 async def _get_weather(city: str) -> str:
@@ -100,7 +99,7 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
     """)
     )
 
-    tools, _, _ = await load_tools_from_workspace(tools_dir)
+    tr = await ToolRegistry.load(tools_dir)
 
     request_count = 0
 
@@ -154,7 +153,8 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
     ai_socket = await mock_server.start(handler)
     try:
         agent = SessionAgent(
-            ai_client=AiClient(ai_socket), tool_registry=ToolRegistry(tools=tools, funcs={"get_weather": _get_weather})
+            ai_client=AiClient(ai_socket),
+            tool_registry=ToolRegistry(tools=tr.tools, funcs={"get_weather": _get_weather}),
         )
 
         user_msg = {"role": "user", "content": "What's the weather in Beijing?"}
