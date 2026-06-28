@@ -195,8 +195,10 @@ class ToolRegistry:
     @classmethod
     async def load(cls, tools_dir: Path, session_id: str = "") -> ToolRegistry:
         """Full initial load — scan *tools_dir* and import everything."""
-        tools, funcs, _ = await cls._load_from_dir(tools_dir, session_id)
-        return cls(tools=tools, funcs=funcs, work_dir=tools_dir)
+        tools, funcs, file_hashes = await cls._load_from_dir(tools_dir, session_id)
+        registry = cls(tools=tools, funcs=funcs, work_dir=tools_dir)
+        registry._file_hashes = file_hashes
+        return registry
 
     async def refresh(self, session_id: str) -> dict[str, str]:
         """Incremental reload — adds, updates, removes tools.
