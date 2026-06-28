@@ -165,9 +165,11 @@ SSE 流中的特殊字段：
 
 12. **模块级函数应尽量放到类上**：如果整个文件的作用就是为一个类服务，工具函数应该作为该类的 `@staticmethod`，而非文件顶级函数。(如 `_extract_async_func` → `SystemPrompt._extract_async_func`)
 
-13. **Startup 失败也需 shield cleanup**：不仅是 shutdown 的 `finally` 需要 `CancelScope(shield=True)` 保护 `runner.cleanup()`，`setup()`/`start()` 失败的 `except` 块同理。参照 `serve_ai` 的模式。
+13. **动态加载 .py 文件用 `compile` + `exec`，禁止 `importlib`**：Python 3.14 的 `importlib.util.exec_module` 生成的 `.pyc` 默认是 timestamp+size 验证（非 hash-based）。热重载场景下源文件修改后 size 常不变，`exec_module` 会复用陈旧 bytecode。正确做法：`source = read_text()` → `compile(source, path, 'exec')` → `exec(compiled, module.__dict__)`。参见 `ToolRegistry._load_from_dir` 和 `SystemPrompt._load_module`。
 
-14. **Log 中两处同类操作应格式一致**：如 build prompt 和 rebuild prompt 都应该 log `({len(sp)} chars)`，否则排查时信息不对等。
+14. **Startup 失败也需 shield cleanup**：不仅是 shutdown 的 `finally` 需要 `CancelScope(shield=True)` 保护 `runner.cleanup()`，`setup()`/`start()` 失败的 `except` 块同理。参照 `serve_ai` 的模式。
+
+15. **Log 中两处同类操作应格式一致**：如 build prompt 和 rebuild prompt 都应该 log `({len(sp)} chars)`，否则排查时信息不对等。
 
 ## 测试约定
 

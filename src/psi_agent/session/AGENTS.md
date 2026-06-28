@@ -20,7 +20,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - `SessionAgent` 自包含：持有 `_ai_client`、`_channel_adapter`、`_lock`
 - `_session_id` 从 `_history_path.stem` 派生，同时用于 sys.modules 隔离（tools/system 的 module name）
 - `channel_socket` 由 `Session.run()` 直接传给 `serve_session()`，不进入 agent 内部
-- 所有手动模块加载使用 `原名_session_id_文件hash` 作为 module name（tool 用 `compile` + `exec` 避免 importlib bytecode 缓存，system prompt 用 `importlib`），确保同进程多 session 隔离
+- 所有手动模块加载使用 `原名_session_id_文件hash` 作为 module name（tool 和 system prompt 均用 `compile` + `exec` 避免 importlib bytecode 缓存），确保同进程多 session 隔离
 - `SessionAgent.create()` 完成所有初始化——`__init__.py` 只做入口编排
 - Tool 加载：`compile(source)` + `exec(module.__dict__)` 避免 importlib 的 bytecode 缓存导致刷新时读到旧文件内容
 - System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）

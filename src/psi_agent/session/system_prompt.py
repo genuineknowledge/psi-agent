@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import inspect
 import sys
+import types
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -85,17 +85,24 @@ class SystemPrompt:
         module_name = f"psi_system_{session_id}_{file_hash}"
 
         try:
-            spec = importlib.util.spec_from_file_location(module_name, str(system_py))
-            if spec is None or spec.loader is None:
-                logger.warning(f"Could not load spec for {system_py}")
-                return None, None
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = module
-            spec.loader.exec_module(module)
+            source = file_bytes.decode("utf-8")
+            compiled = compile(source, str(system_py), "exec")
         except Exception as e:
-            logger.error(f"Failed to load {system_py}: {e}")
+            logger.error(f"Failed to read or compile {system_py!r}: {e!r}")
+            return None, None
+
+        module = types.ModuleType(module_name)
+        module.__file__ = str(system_py)
+        sys.modules[module_name] = module
+        try:
+            exec(compiled, module.__dict__)
+        except Exception as e:
+            logger.error(f"Failed to execute system module {system_py!r}: {e!r}")
             sys.modules.pop(module_name, None)
             return None, None
+        except BaseException:
+            sys.modules.pop(module_name, None)
+            raise
 
         builder = SystemPrompt._extract_async_func(module, "system_prompt_builder")
         checker = SystemPrompt._extract_async_func(module, "system_prompt_rebuild_checker")
