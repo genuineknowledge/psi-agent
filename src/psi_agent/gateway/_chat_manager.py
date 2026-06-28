@@ -12,7 +12,7 @@ import anyio
 from loguru import logger
 
 from psi_agent.channel._core import ChannelCore
-from psi_agent.channel._types import Chunk, FileChunk, TextChunk
+from psi_agent.channel._types import FileChunk, InputChunk, ReasoningChunk, TextChunk
 
 
 class ChatManager:
@@ -22,7 +22,7 @@ class ChatManager:
         body: dict[str, Any],
     ) -> AsyncIterator[dict[str, Any]]:
         tmp_files: list[str] = []
-        chunks: list[Chunk] = []
+        chunks: list[InputChunk] = []
 
         raw_chunks: list[dict[str, Any]] = body.get("chunks", [])
         for c in raw_chunks:
@@ -41,7 +41,7 @@ class ChatManager:
         try:
             async with ChannelCore(session_socket=channel_socket, interval=0.0) as core:
                 async for chunk in core.post(chunks):
-                    if isinstance(chunk, TextChunk):
+                    if isinstance(chunk, (TextChunk, ReasoningChunk)):
                         yield {"type": "text", "text": chunk.text}
                     elif isinstance(chunk, FileChunk):
                         yield await self._file_blob(chunk.path)
