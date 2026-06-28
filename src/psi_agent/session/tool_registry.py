@@ -5,6 +5,11 @@ via ``importlib``, converts signatures to JSON Schema via
 ``ToolFunction.from_callable()``, tracks SHA-256 file hashes for
 incremental refresh, and provides ``get(name)`` for tool execution
 lookup.
+
+Tools are stored per-file internally via ``FileEntry``, which carries
+the hash, tool metadata, and callables for a single ``.py`` file.
+The public ``tools`` dict and ``get()`` remain flat for backward
+compatibility.
 """
 
 from __future__ import annotations
@@ -164,40 +169,62 @@ class ToolFunction:
         return result
 
 
+# ── FileEntry — per-file storage unit ─────────────────────────────────────────
+
+
+@dataclass
+class FileEntry:
+    """Per-file tool storage — hash, metadata, callables, and import status.
+
+    ``fresh`` is ``True`` when the file was actually imported during
+    this refresh round; ``False`` when the entry was copied from a
+    previous state (hash matched, file skipped).
+    """
+
+    file_hash: str
+    tools: dict[str, ToolFunction]
+    funcs: dict[str, Callable[..., Any]]
+    fresh: bool = False
+
+
 # ── ToolRegistry — loading, state, incremental refresh ───────────────────────
 
 
 class ToolRegistry:
-    """Owns tool metadata and callables, loaded from ``workspace/tools/``.
+    """Owns tool metadata and callables per file, loaded from ``workspace/tools/``.
 
-    ``tools`` is public so that ``agent.run()`` can iterate it directly;
-    ``get(name)`` returns the callable for tool execution.
+    ``tools`` (property) and ``get(name)`` provide the flat public
+    interface for backward compatibility.  Internally tools are stored
+    as ``{file_path: FileEntry}`` via ``_files``.
     """
 
-    def __init__(
-        self,
-        *,
-        tools: dict[str, ToolFunction] | None = None,
-        funcs: dict[str, Callable[..., Any]] | None = None,
-        file_hashes: dict[str, str] | None = None,
-        work_dir: Path | None = None,
-    ) -> None:
-        self.tools: dict[str, ToolFunction] = dict(tools or {})
-        self._funcs: dict[str, Callable[..., Any]] = dict(funcs or {})
-        self._file_hashes: dict[str, str] = dict(file_hashes or {})
+    def __init__(self, *, files: dict[str, FileEntry] | None = None, work_dir: Path | None = None) -> None:
+        self._files: dict[str, FileEntry] = dict(files or {})
         self._work_dir = work_dir
+
+    @property
+    def tools(self) -> dict[str, ToolFunction]:
+        """Flat dict of all tool metadata (name → ToolFunction)."""
+        result: dict[str, ToolFunction] = {}
+        for entry in self._files.values():
+            result.update(entry.tools)
+        return result
 
     def get(self, name: str) -> Callable[..., Any] | None:
         """Return the callable for *name*, or None if not registered."""
-        return self._funcs.get(name)
+        for entry in self._files.values():
+            func = entry.funcs.get(name)
+            if func is not None:
+                return func
+        return None
 
     # -- loading ---------------------------------------------------------------
 
     @classmethod
     async def load(cls, tools_dir: Path, session_id: str = "") -> ToolRegistry:
         """Full initial load — scan *tools_dir* and import everything."""
-        tools, funcs, file_hashes = await cls._load_from_dir(tools_dir, session_id)
-        return cls(tools=tools, funcs=funcs, file_hashes=file_hashes, work_dir=tools_dir)
+        files = await cls._load_from_dir(tools_dir, session_id)
+        return cls(files=files, work_dir=tools_dir)
 
     async def refresh(self, session_id: str) -> dict[str, str]:
         """Incremental reload — adds, updates, removes tools.
@@ -209,35 +236,37 @@ class ToolRegistry:
             logger.warning("No work_dir set, cannot refresh tools")
             return {}
 
-        new_tools, new_funcs, new_file_hashes = await self._load_from_dir(
-            self._work_dir, session_id, self._file_hashes
-        )
+        new_files = await self._load_from_dir(self._work_dir, session_id, self._files)
         result: dict[str, str] = {}
 
-        # removed — in registry but no longer on disk
-        for name in list(self.tools):
-            if name not in new_tools:
-                del self.tools[name]
-                del self._funcs[name]
-                result[name] = "removed"
+        # removed — files in old but not on disk any more
+        for path in list(self._files):
+            if path not in new_files:
+                for name in self._files[path].tools:
+                    result[name] = "removed"
+                del self._files[path]
 
-        # added / updated — all tools from imported files
-        for name, tf in new_tools.items():
-            if name not in self.tools:
-                self.tools[name] = tf
-                self._funcs[name] = new_funcs[name]
-                result[name] = "added"
+        # added / updated / skipped — per file
+        for path, new_entry in new_files.items():
+            old_entry = self._files.get(path)
+            if old_entry is None:
+                for name in new_entry.tools:
+                    result[name] = "added"
+                self._files[path] = new_entry
+            elif not new_entry.fresh:
+                for name in old_entry.tools:
+                    result[name] = "skipped"
             else:
-                self.tools[name] = tf
-                self._funcs[name] = new_funcs[name]
-                result[name] = "updated"
+                for name in old_entry.tools:
+                    if name not in new_entry.tools:
+                        result[name] = "removed"
+                for name in new_entry.tools:
+                    if name not in old_entry.tools:
+                        result[name] = "added"
+                    else:
+                        result[name] = "updated"
+                self._files[path] = new_entry
 
-        # skipped — in registry and not touched above
-        for name in self.tools:
-            if name not in result:
-                result[name] = "skipped"
-
-        self._file_hashes.update(new_file_hashes)
         logger.info(f"Tool refresh complete: {result or 'no changes'}")
         return result
 
@@ -245,21 +274,24 @@ class ToolRegistry:
 
     @staticmethod
     async def _load_from_dir(
-        tools_dir: Path, session_id: str, skip_hashes: dict[str, str] | None = None
-    ) -> tuple[dict[str, ToolFunction], dict[str, Callable[..., Any]], dict[str, str]]:
-        """Scan and import all tool ``.py`` files.  Returns (tools, funcs, tool_hashes).
+        tools_dir: Path,
+        session_id: str,
+        old_files: dict[str, FileEntry] | None = None,
+    ) -> dict[str, FileEntry]:
+        """Scan and import all tool ``.py`` files.
 
-        If *skip_hashes* is provided, files whose hash matches the stored
-        value are skipped — a fast path for incremental refresh.
+        If *old_files* is provided, files whose hash matches the stored
+        value are preserved (copied from *old_files* with ``fresh=False``)
+        instead of re-imported.
+
+        Returns ``{file_path: FileEntry}`` for all current ``.py`` files.
         """
-        tools: dict[str, ToolFunction] = {}
-        callables: dict[str, Callable[..., Any]] = {}
-        file_hashes: dict[str, str] = {}
+        files: dict[str, FileEntry] = {}
         tools_anyio = anyio.Path(str(tools_dir))
 
         if not await tools_anyio.is_dir():
             logger.warning(f"Tools directory not found: {tools_dir}")
-            return tools, callables, file_hashes
+            return files
 
         async for py_file in tools_anyio.glob("*.py"):
             if py_file.name.startswith("_"):
@@ -267,16 +299,16 @@ class ToolRegistry:
 
             file_bytes = await py_file.read_bytes()
             file_hash = hashlib.sha256(file_bytes).hexdigest()
+            str_path = str(py_file)
 
-            if skip_hashes is not None and skip_hashes.get(str(py_file)) == file_hash:
+            if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
+                files[str_path] = old_files[str_path]
                 continue
-
-            file_hashes[str(py_file)] = file_hash
 
             module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
 
             try:
-                spec = importlib.util.spec_from_file_location(module_name, str(py_file))
+                spec = importlib.util.spec_from_file_location(module_name, str_path)
                 if spec is None or spec.loader is None:
                     logger.warning(f"Could not load module spec for {py_file}")
                     continue
@@ -289,6 +321,9 @@ class ToolRegistry:
                 continue
 
             attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
+            tools: dict[str, ToolFunction] = {}
+            funcs: dict[str, Callable[..., Any]] = {}
+
             for name in attr_names:
                 func = getattr(module, name, None)
                 if not inspect.iscoroutinefunction(func):
@@ -305,8 +340,16 @@ class ToolRegistry:
                     continue
 
                 tools[name] = tool_func
-                callables[name] = func
+                funcs[name] = func
                 logger.info(f"Loaded tool: {name} from {py_file}")
 
-        logger.info(f"Loaded {len(tools)} tool(s) from {tools_dir}")
-        return tools, callables, file_hashes
+            files[str_path] = FileEntry(
+                file_hash=file_hash,
+                tools=tools,
+                funcs=funcs,
+                fresh=True,
+            )
+
+        total_tools = sum(len(entry.tools) for entry in files.values())
+        logger.info(f"Loaded {total_tools} tool(s) from {len(files)} file(s) in {tools_dir}")
+        return files

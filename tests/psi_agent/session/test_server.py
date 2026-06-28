@@ -26,7 +26,7 @@ class _FailingSessionAgent(SessionAgent):
 @pytest.mark.anyio
 async def test_handle_invalid_json_body(tmp_path: Path) -> None:
     """When request body is not valid JSON, return 400."""
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
@@ -53,7 +53,7 @@ async def test_handle_invalid_json_body(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_handle_empty_messages(tmp_path: Path) -> None:
     """When messages list is empty, return 400."""
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
@@ -103,7 +103,7 @@ async def test_handle_non_user_role_coercion(tmp_path: Path) -> None:
     await ai_site.start()
 
     try:
-        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
 
         app = web.Application()
         app.router.add_post("/chat/completions", agent.handle_request)
@@ -155,7 +155,7 @@ async def test_agent_run_success_flow(tmp_path: Path) -> None:
     await ai_site.start()
 
     try:
-        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
 
         app = web.Application()
         app.router.add_post("/chat/completions", agent.handle_request)
@@ -187,7 +187,7 @@ async def test_agent_run_success_flow(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_agent_run_raises_produces_error_chunk(tmp_path: Path) -> None:
     """When agent.run() raises mid-stream, the server catches it and sends error chunk."""
-    agent = _FailingSessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = _FailingSessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)

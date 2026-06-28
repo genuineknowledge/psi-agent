@@ -63,7 +63,7 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
     tr = await ToolRegistry.load(ws / "tools")
     assert len(tr.tools) == 0
 
-    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools=tr.tools))
+    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=tr)
     agent._conversation.messages.append({"role": "system", "content": "test"})
     chunks = []
     async for c in agent.run({"role": "user", "content": "hi"}):
@@ -83,7 +83,7 @@ async def test_missing_system_py(mock_ai_server: MockAIServer) -> None:
     mock_ai_server.set_responses([_chunk(content="no system", finish_reason="stop")])
     base_url = await mock_ai_server.start()
 
-    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry())
     assert len(agent._conversation.messages) == 0
 
     chunks = []
@@ -206,7 +206,7 @@ async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server
     tr = await ToolRegistry.load(ws / "tools")
     assert len(tr.tools) == 1
 
-    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools=tr.tools))
+    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=tr)
     agent._conversation.messages.append({"role": "system", "content": "You are a test assistant."})
     chunks = []
     async for c in agent.run({"role": "user", "content": "hello"}):
@@ -231,7 +231,7 @@ async def test_unicode_message_handling(tmp_path: Path, mock_ai_server: MockAISe
     )
 
     tr = await ToolRegistry.load(ws / "tools")
-    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools=tr.tools))
+    agent = SessionAgent(ai_client=AiClient(base_url), tool_registry=tr)
 
     msg = "你好世界 🌍 — emoji and unicode test"
     chunks = [c async for c in agent.run({"role": "user", "content": msg})]

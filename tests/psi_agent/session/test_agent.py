@@ -12,7 +12,7 @@ from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.protocol import AgentChunk, AgentError
-from psi_agent.session.tool_registry import ToolFunction, ToolRegistry
+from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 
 async def _get_weather(city: str) -> str:
@@ -71,7 +71,7 @@ async def test_agent_simple_response(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     try:
-        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry())
         user_msg = {"role": "user", "content": "hi"}
         chunks = []
         async for chunk in agent.run(user_msg):
@@ -154,7 +154,7 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
     try:
         agent = SessionAgent(
             ai_client=AiClient(ai_socket),
-            tool_registry=ToolRegistry(tools=tr.tools, funcs={"get_weather": _get_weather}),
+            tool_registry=tr,
         )
 
         user_msg = {"role": "user", "content": "What's the weather in Beijing?"}
@@ -186,7 +186,7 @@ async def test_agent_pending_schedule_response(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     try:
-        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry())
         agent.set_pending_schedule_chunks(
             [
                 AgentChunk(reasoning="[Schedule triggered: daily report]"),
@@ -222,7 +222,7 @@ async def test_agent_history_accumulation(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     try:
-        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry())
 
         async for _ in agent.run({"role": "user", "content": "first"}):
             pass
@@ -301,7 +301,8 @@ async def test_agent_tool_not_registered(tmp_path: Path) -> None:
             name="unknown", description="X", parameters={"type": "object", "properties": {}, "required": []}
         )
         agent = SessionAgent(
-            ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry(tools={"unknown": tf})
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(files={"__test__": FileEntry(file_hash="", tools={"unknown": tf}, funcs={})}),
         )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.reasoning or "" for c in chunks)
@@ -334,7 +335,9 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
         )
         agent = SessionAgent(
             ai_client=AiClient(f"http://127.0.0.1:{port}"),
-            tool_registry=ToolRegistry(tools={"crash": tf}, funcs={"crash": crash_tool}),
+            tool_registry=ToolRegistry(
+                files={"__test__": FileEntry(file_hash="", tools={"crash": tf}, funcs={"crash": crash_tool})}
+            ),
         )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.reasoning or "" for c in chunks)
@@ -365,7 +368,9 @@ async def test_agent_tool_returns_int(tmp_path: Path) -> None:
         )
         agent = SessionAgent(
             ai_client=AiClient(f"http://127.0.0.1:{port}"),
-            tool_registry=ToolRegistry(tools={"int_tool": tf}, funcs={"int_tool": int_tool}),
+            tool_registry=ToolRegistry(
+                files={"__test__": FileEntry(file_hash="", tools={"int_tool": tf}, funcs={"int_tool": int_tool})}
+            ),
         )
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.reasoning or "" for c in chunks)
@@ -399,7 +404,7 @@ async def test_agent_tcp_connector(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
         content = "".join(c.content or "" for c in chunks)
         assert "tcp works" in content
@@ -424,7 +429,7 @@ async def test_agent_ai_non_200_response(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
         with pytest.raises(AgentError) as exc_info:
             async for _ in agent.run({"role": "user", "content": "hi"}):
                 pass
@@ -450,7 +455,7 @@ async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
         history_len_before = len(agent._conversation.messages)
         with pytest.raises(AgentError):
             async for _ in agent.run({"role": "user", "content": "hi"}):
@@ -489,7 +494,7 @@ async def test_agent_non_data_sse_line(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
         content = "".join(c.content or "" for c in chunks)
         assert "after event" in content
@@ -520,7 +525,7 @@ async def test_agent_empty_content_stop(tmp_path: Path) -> None:
     site = web.SockSite(runner, sock)
     await site.start()
     try:
-        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry(tools={}))
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
         assert isinstance(chunks, list)  # should not crash
     finally:
@@ -594,7 +599,7 @@ async def test_history_saved_after_stop(tmp_path: Path) -> None:
 
         agent = SessionAgent(
             ai_client=AiClient(f"http://127.0.0.1:{port}"),
-            tool_registry=ToolRegistry(tools={}),
+            tool_registry=ToolRegistry(),
             conversation=Conversation(path=history_path),
         )
         chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
@@ -632,7 +637,7 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
 
         agent = SessionAgent(
             ai_client=AiClient(f"http://127.0.0.1:{port}"),
-            tool_registry=ToolRegistry(tools={}),
+            tool_registry=ToolRegistry(),
             conversation=Conversation(path=history_path),
         )
         with pytest.raises(AgentError):

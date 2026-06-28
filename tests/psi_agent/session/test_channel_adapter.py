@@ -83,7 +83,7 @@ async def test_write_catches_generic_exception():
 
 @pytest.mark.anyio
 async def test_handle_request_integration_valid(tmp_path: Path):
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     async def fake_run(user_message, extra_params=None):
         yield AgentChunk(content="hello")
@@ -124,7 +124,7 @@ async def test_handle_request_integration_valid(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_handle_request_integration_agent_error(tmp_path: Path):
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     async def fake_run(user_message, extra_params=None):
         if False:
@@ -165,7 +165,7 @@ async def test_handle_request_integration_agent_error(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_handle_request_integration_invalid_json(tmp_path: Path):
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
@@ -191,7 +191,7 @@ async def test_handle_request_integration_invalid_json(tmp_path: Path):
 async def test_handle_request_integration_non_dict_body(tmp_path: Path):
     """JSON array as body (not an object) -> 400 response."""
 
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
@@ -218,7 +218,7 @@ async def test_handle_request_integration_non_dict_body(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_handle_request_integration_empty_messages(tmp_path: Path):
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
@@ -245,7 +245,7 @@ async def test_handle_request_integration_empty_messages(tmp_path: Path):
 
 @pytest.mark.anyio
 async def test_handle_request_integration_generic_exception(tmp_path: Path):
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     async def fake_run(user_message, extra_params=None):
         if False:
@@ -288,7 +288,7 @@ async def test_handle_request_integration_generic_exception(tmp_path: Path):
 async def test_handle_request_integration_messages_not_list(tmp_path: Path):
     """messages field is not a list → 400."""
 
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
@@ -317,7 +317,7 @@ async def test_handle_request_integration_messages_not_list(tmp_path: Path):
 async def test_handle_request_integration_message_not_dict(tmp_path: Path):
     """Last message is not a dict → coerced to user message, should not crash."""
 
-    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
     async def fake_run(user_message, extra_params=None):
         # Verify coercion: 42 → {"role": "user", "content": "42"}

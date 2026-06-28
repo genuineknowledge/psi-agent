@@ -32,7 +32,6 @@ def test_system_prompt_builder_not_async(tmp_path: Path) -> None:
     assert asyncio.run(sp._builder()) == ""
 
 
-
 def test_system_prompt_builder_loads(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     systems = ws / "systems"

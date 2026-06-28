@@ -7,7 +7,7 @@ import pytest
 
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
-from psi_agent.session.tool_registry import ToolFunction, ToolRegistry
+from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 from tests.integration.conftest import MockAIServer
 
 
@@ -63,7 +63,10 @@ async def test_tool_throws_exception_caught(tmp_path: Path, mock_ai_server: Mock
 
     tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
     agent = SessionAgent(
-        ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools={"echo": tf}, funcs={"echo": bad_tool})
+        ai_client=AiClient(base_url),
+        tool_registry=ToolRegistry(
+            files={"__test__": FileEntry(file_hash="", tools={"echo": tf}, funcs={"echo": bad_tool})}
+        ),
     )
 
     chunks = []
@@ -89,7 +92,10 @@ async def test_tool_returns_int_converted_to_string(mock_ai_server: MockAIServer
 
     tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
     agent = SessionAgent(
-        ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools={"echo": tf}, funcs={"echo": int_tool})
+        ai_client=AiClient(base_url),
+        tool_registry=ToolRegistry(
+            files={"__test__": FileEntry(file_hash="", tools={"echo": tf}, funcs={"echo": int_tool})}
+        ),
     )
 
     chunks = []
@@ -115,7 +121,10 @@ async def test_tool_returns_none_converted(mock_ai_server: MockAIServer) -> None
 
     tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
     agent = SessionAgent(
-        ai_client=AiClient(base_url), tool_registry=ToolRegistry(tools={"echo": tf}, funcs={"echo": none_tool})
+        ai_client=AiClient(base_url),
+        tool_registry=ToolRegistry(
+            files={"__test__": FileEntry(file_hash="", tools={"echo": tf}, funcs={"echo": none_tool})}
+        ),
     )
 
     chunks = []
@@ -169,7 +178,9 @@ async def test_max_tool_rounds_limit(mock_ai_server: MockAIServer) -> None:
     tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
     agent = SessionAgent(
         ai_client=AiClient(base_url),
-        tool_registry=ToolRegistry(tools={"echo": tf}, funcs={"echo": echo_tool}),
+        tool_registry=ToolRegistry(
+            files={"__test__": FileEntry(file_hash="", tools={"echo": tf}, funcs={"echo": echo_tool})}
+        ),
         max_tool_rounds=10,
     )
 
