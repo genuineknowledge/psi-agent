@@ -9,6 +9,7 @@ from aiohttp import ClientTimeout
 from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
+from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._markers import SendMarkerScanner, encode_input
 from psi_agent.channel._stream import StreamBuffer, iter_sse_events
 from psi_agent.channel._types import FileChunk, InputChunk, OutputChunk, ReasoningChunk, TextChunk
@@ -58,7 +59,7 @@ class ChannelCore:
                 except Exception:
                     pass
                 logger.debug(f"  non-200 error: {msg}")
-                raise Exception(msg)
+                raise ChannelError(msg)
 
             async for delta in iter_sse_events(resp.content):
                 for incoming_kind, text in (

@@ -5,6 +5,7 @@ import pytest
 from aiohttp import web
 
 from psi_agent.channel._core import ChannelCore
+from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
 
 
@@ -241,7 +242,7 @@ async def test_post_handles_error_chunk(tmp_path):
     await anyio.sleep(0.1)
 
     async with ChannelCore(sock_path) as core:
-        with pytest.raises(Exception, match="Upstream Error 401"):
+        with pytest.raises(ChannelError, match="Upstream Error 401"):
             async for _ in core.post([TextChunk("hi")]):
                 pass
 
@@ -266,7 +267,7 @@ async def test_post_non_200_http_error(tmp_path):
     await anyio.sleep(0.1)
 
     async with ChannelCore(sock_path) as core:
-        with pytest.raises(Exception, match="server error"):
+        with pytest.raises(ChannelError, match="server error"):
             async for _ in core.post([TextChunk("hi")]):
                 pass
 
@@ -332,7 +333,7 @@ async def test_post_rejects_multiple_choices(tmp_path):
     await anyio.sleep(0.1)
 
     async with ChannelCore(sock_path) as core:
-        with pytest.raises(Exception, match="Expected exactly 1 choice"):
+        with pytest.raises(ChannelError, match="Expected exactly 1 choice"):
             async for _ in core.post([TextChunk("hi")]):
                 pass
 

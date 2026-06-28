@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._stream import StreamBuffer, iter_sse_events
 
 
@@ -87,12 +88,12 @@ async def test_sse_skips_non_data_lines():
 @pytest.mark.anyio
 async def test_sse_rejects_multiple_choices():
     chunk = {"choices": [{"delta": {"content": "a"}}, {"delta": {"content": "b"}}]}
-    with pytest.raises(Exception, match="Expected exactly 1 choice"):
+    with pytest.raises(ChannelError, match="Expected exactly 1 choice"):
         _ = [d async for d in iter_sse_events(_alines(_sse(chunk)))]
 
 
 @pytest.mark.anyio
 async def test_sse_raises_on_finish_error():
     chunk = {"choices": [{"delta": {"content": "[Upstream Error]: boom"}, "finish_reason": "error"}]}
-    with pytest.raises(Exception, match="Upstream Error"):
+    with pytest.raises(ChannelError, match="Upstream Error"):
         _ = [d async for d in iter_sse_events(_alines(_sse(chunk)))]

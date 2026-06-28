@@ -18,6 +18,8 @@ from typing import Any
 
 from loguru import logger
 
+from psi_agent.channel._errors import ChannelError
+
 
 async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncIterator[dict[str, Any]]:
     """Parse a raw SSE byte-line stream into validated per-choice ``delta`` dicts.
@@ -45,14 +47,14 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncIterator[dict[str
             logger.debug("  skip chunk with 0 choices (heartbeat)")
             continue
         if len(choices) != 1:
-            raise Exception(f"Expected exactly 1 choice, got {len(choices)}")
+            raise ChannelError(f"Expected exactly 1 choice, got {len(choices)}")
         choice = choices[0]
 
         if choice.get("finish_reason") == "error":
             delta = choice.get("delta", {})
             msg = delta.get("content", "Session error")
             logger.debug(f"  finish_reason=error: {msg}")
-            raise Exception(msg)
+            raise ChannelError(msg)
 
         yield choice.get("delta", {})
 
