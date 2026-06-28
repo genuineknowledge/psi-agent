@@ -58,7 +58,7 @@ src/
 └── psi_agent/
     ├── cli.py                  # tyro CLI 入口，定义 top-level Union
     ├── _yaml.py               # 共享 YAML header 解析（scheduler + workspace system.py）
-    ├── _socket.py              # 共享 socket 工具（prefix-based transport 解析）
+    ├── _sockets.py             # 共享 socket 工具（prefix-based transport 解析）
     ├── _run.py                 # YAML 配置批量启动（psi-agent run config.yml）
     ├── _logging.py              # loguru 配置，verbose→DEBUG
     ├── ai/
@@ -93,7 +93,7 @@ src/
 
 ## 核心通信协议
 
-所有组件通过 **aiohttp** 以 **OpenAI Chat Completions HTTP/SSE** 格式通信。传输支持 Unix socket、TCP、Windows Named Pipe，由地址前缀自动检测（`psi_agent._socket`）：
+所有组件通过 **aiohttp** 以 **OpenAI Chat Completions HTTP/SSE** 格式通信。传输支持 Unix socket、TCP、Windows Named Pipe，由地址前缀自动检测（`psi_agent._sockets`）：
 
 - **AI socket**: Session 作为客户端访问，`POST /chat/completions`
 - **Channel socket**: Session 作为服务端，`POST /chat/completions`

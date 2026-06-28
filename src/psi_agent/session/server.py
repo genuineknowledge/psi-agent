@@ -5,7 +5,7 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger
 
-from psi_agent._socket import create_site
+from psi_agent._sockets import create_site
 
 
 async def serve_session(

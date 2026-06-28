@@ -126,7 +126,7 @@ from dataclasses import dataclass
 import aiohttp
 from aiohttp import ClientTimeout
 
-from psi_agent._socket import resolve_connector_and_endpoint
+from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.channel._types import Chunk
 
 
@@ -158,7 +158,7 @@ from __future__ import annotations
 import anyio
 import pytest
 
-from psi_agent._socket import create_site
+from psi_agent._sockets import create_site
 from psi_agent.channel._core import ChannelCore
 
 
@@ -654,7 +654,7 @@ async def run_cli(*, session_socket: str, message: str) -> None:
 
 - [ ] **Step 2: 清理不再需要的 import**
 
-CLI client 不再需要 `aiohttp`、`json`、`psi_agent._socket`。验证：
+CLI client 不再需要 `aiohttp`、`json`、`psi_agent._sockets`。验证：
 
 ```bash
 uv run ruff check src/psi_agent/channel/cli/client.py

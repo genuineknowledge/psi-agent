@@ -47,7 +47,7 @@ psi/
 │   ├── __init__.py
 │   ├── cli.py                      # tyro CLI 入口
 │   ├── _yaml.py                    # 共享 YAML header 解析
-│   ├── _socket.py                  # 共享 socket 工具（prefix-based transport 解析）
+│   ├── _sockets.py                 # 共享 socket 工具（prefix-based transport 解析）
 │   ├── _run.py                     # YAML 批量启动（psi-agent run config.yml）
 │   ├── _logging.py                  # loguru 配置
 │   ├── ai/  (统一多 provider，基于 any-llm-sdk)
@@ -149,7 +149,7 @@ Channel (REPL/CLI/Telegram/Feishu)        Session                     AI (OpenAI
      │                         │ 释放锁                       │
 ```
 
-**通信协议**：所有 socket 端点使用标准 HTTP/SSE（OpenAI Chat Completions 兼容格式），支持 Unix socket、TCP、Windows Named Pipe。传输类型由地址前缀自动检测：`http(s)://` → TCP，`\\\\.\\pipe\\` → Named Pipe，裸路径 → Unix socket。检测逻辑位于 `psi_agent._socket`。
+**通信协议**：所有 socket 端点使用标准 HTTP/SSE（OpenAI Chat Completions 兼容格式），支持 Unix socket、TCP、Windows Named Pipe。传输类型由地址前缀自动检测：`http(s)://` → TCP，`\\\\.\\pipe\\` → Named Pipe，裸路径 → Unix socket。检测逻辑位于 `psi_agent._sockets`。
 
 **错误响应格式**（两种形式）：
 

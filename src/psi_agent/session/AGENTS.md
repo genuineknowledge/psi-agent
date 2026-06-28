@@ -58,7 +58,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 
 ## SessionAgent 支持多种传输
 
-所有组件通过前缀自动检测传输协议（实现位于 `psi_agent._socket`）：
+所有组件通过前缀自动检测传输协议（实现位于 `psi_agent._sockets`）：
 
 客户端（`resolve_connector_and_endpoint`）：
 - `http(s)://host:port` → `TCPConnector`
