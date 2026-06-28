@@ -66,7 +66,7 @@ class Conversation:
 
     # -- mutation --------------------------------------------------------------
 
-    def add(self, msg: dict) -> None:
+    def add(self, msg: dict[str, Any]) -> None:
         """Append a message to history."""
         self.messages.append(msg)
 
