@@ -198,9 +198,16 @@ class ToolRegistry:
     as ``{file_path: FileEntry}`` via ``_files``.
     """
 
-    def __init__(self, *, files: dict[str, FileEntry] | None = None, work_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        files: dict[str, FileEntry] | None = None,
+        work_dir: Path | None = None,
+        session_id: str = "",
+    ) -> None:
         self._files: dict[str, FileEntry] = dict(files or {})
         self._work_dir = work_dir
+        self._session_id = session_id
 
     @property
     def tools(self) -> dict[str, ToolFunction]:
@@ -224,9 +231,9 @@ class ToolRegistry:
     async def load(cls, tools_dir: Path, session_id: str = "") -> ToolRegistry:
         """Full initial load — scan *tools_dir* and import everything."""
         files = await cls._load_from_dir(tools_dir, session_id)
-        return cls(files=files, work_dir=tools_dir)
+        return cls(files=files, work_dir=tools_dir, session_id=session_id)
 
-    async def refresh(self, session_id: str) -> dict[str, str]:
+    async def refresh(self) -> dict[str, str]:
         """Incremental reload — adds, updates, removes tools.
 
         Returns a dict mapping tool name to ``'added'``, ``'updated'``,
@@ -237,7 +244,7 @@ class ToolRegistry:
             return {}
 
         logger.debug("Starting tool refresh")
-        new_files = await self._load_from_dir(self._work_dir, session_id, self._files)
+        new_files = await self._load_from_dir(self._work_dir, self._session_id, self._files)
         result: dict[str, str] = {}
 
         # removed — files in old but not on disk any more

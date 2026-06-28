@@ -233,7 +233,7 @@ async def test_load_from_dir_imports_changed(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_refresh_no_work_dir() -> None:
     tr = ToolRegistry()
-    assert await tr.refresh("test") == {}
+    assert await tr.refresh() == {}
 
 
 @pytest.mark.anyio
@@ -244,7 +244,7 @@ async def test_refresh_adds_new_file(tmp_path: Path) -> None:
     assert tr.tools == {}
 
     (tools_dir / "new.py").write_text("async def bar() -> str:\n    return 'bar'\n")
-    result = await tr.refresh("test")
+    result = await tr.refresh()
     assert result == {"bar": "added"}
     assert set(tr.tools) == {"bar"}
 
@@ -257,7 +257,7 @@ async def test_refresh_updates_modified_file(tmp_path: Path) -> None:
     tr = await ToolRegistry.load(tools_dir)
 
     (tools_dir / "a.py").write_text("async def foo(x: int) -> str:\n    return str(x)\n")
-    result = await tr.refresh("test")
+    result = await tr.refresh()
     assert result == {"foo": "updated"}
 
 
@@ -270,7 +270,7 @@ async def test_refresh_removes_deleted_file(tmp_path: Path) -> None:
     assert set(tr.tools) == {"foo"}
 
     (tools_dir / "a.py").unlink()
-    result = await tr.refresh("test")
+    result = await tr.refresh()
     assert result == {"foo": "removed"}
     assert tr.tools == {}
     assert tr.get("foo") is None
@@ -283,7 +283,7 @@ async def test_refresh_skips_unchanged_file(tmp_path: Path) -> None:
     (tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'foo'\n")
     tr = await ToolRegistry.load(tools_dir)
 
-    result = await tr.refresh("test")
+    result = await tr.refresh()
     assert result == {"foo": "skipped"}
     assert set(tr.tools) == {"foo"}
 
@@ -311,7 +311,7 @@ async def test_refresh_adds_and_removes_tool_within_file(tmp_path: Path) -> None
             return 'baz'
     """)
     )
-    result = await tr.refresh("test")
+    result = await tr.refresh()
     assert result == {"foo": "removed", "bar": "updated", "baz": "added"}
     assert set(tr.tools) == {"bar", "baz"}
 
@@ -330,7 +330,7 @@ async def test_refresh_mixed_changes(tmp_path: Path) -> None:
     (tools_dir / "delete.py").unlink()
     (tools_dir / "new.py").write_text("async def fresh() -> str:\n    return 'fresh'\n")
 
-    result = await tr.refresh("test")
+    result = await tr.refresh()
     assert result["kept"] == "skipped"
     assert result["mod"] == "updated"
     assert result["gone"] == "removed"

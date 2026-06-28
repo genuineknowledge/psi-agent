@@ -87,7 +87,7 @@ class SessionAgent:
         self._conversation.stash(chunks)
 
     async def reload_tools(self) -> dict[str, str]:
-        return await self._tool_registry.refresh(self._conversation.session_id)
+        return await self._tool_registry.refresh()
 
     async def reload_schedules(self, task_group: object) -> list:
         return await self._schedule_registry.refresh(task_group, self)
@@ -132,7 +132,7 @@ class SessionAgent:
     async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[AgentChunk]:
         """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``."""
         # reload tools from workspace (incremental hash-based)
-        await self._tool_registry.refresh(self._conversation.session_id)
+        await self._tool_registry.refresh()
 
         # system prompt (lazy + optional rebuild)
         await self._system_prompt.ensure(self._conversation)
