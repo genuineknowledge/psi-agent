@@ -346,10 +346,6 @@ class ToolRegistry:
                 if not inspect.iscoroutinefunction(func):
                     continue
 
-                if name in tools:
-                    logger.warning(f"Duplicate tool name {name!r} in {py_file!r}, skipping")
-                    continue
-
                 try:
                     tool_func = ToolFunction.from_callable(func)
                 except (TypeError, NameError, AttributeError, SyntaxError, ValueError) as e:
