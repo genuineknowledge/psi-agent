@@ -77,11 +77,11 @@ class ScheduleRegistry:
         cron_iter = croniter(schedule.cron, time.time())
 
         while True:
-            next_run = cron_iter.get_next()
-            wait = max(0.0, next_run - time.time())
-            await anyio.sleep(wait)
-
             try:
+                next_run = cron_iter.get_next()
+                wait = max(0.0, next_run - time.time())
+                await anyio.sleep(wait)
+
                 logger.info(f"Schedule triggered: {schedule.name}")
                 msg = {"role": "user", "content": schedule.task_content}
 
@@ -94,6 +94,7 @@ class ScheduleRegistry:
                     logger.info(f"Schedule {schedule.name} response stored ({len(pending_chunks)} chunks)")
             except Exception as e:
                 logger.error(f"Error processing schedule {schedule.name}: {e}")
+                await anyio.sleep(30)
 
     # -- disk loading -----------------------------------------------------------
 
