@@ -60,7 +60,7 @@ class Gateway:
     listen: str = ""                          # 空 = 127.0.0.1 随机高端口
     socket_path: str = "psi"                 # socket 路径前缀
     verbose: bool = False
-    no_open: bool = False                    # 抑制自动打开浏览器
+    browser: bool = True                    # 启动时打开浏览器
 ```
 
 ### 3.2 `Gateway.run()` 启动流程
@@ -72,7 +72,7 @@ class Gateway:
 5. 构建 `aiohttp.web.Application`，注入 managers + `ChatManager`/`HistoryManager`/`TitleManager`/`WorkspaceManager`
 6. 注册 REST 路由 + Web UI chat 路由 + `/openapi.json` + SPA 静态文件服务
 7. `create_site(runner, addr)` — TCP
-8. 若未 `--no-open`，`webbrowser.open(addr)`
+8. 若 `--browser`（默认），`webbrowser.open(addr)`
 9. `await anyio.sleep_forever()`
 10. `finally` shield cleanup: `runner.cleanup()` + `tg.__aexit__()`
 

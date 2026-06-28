@@ -39,8 +39,8 @@ class Gateway:
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
-    no_open: bool = False
-    """Suppress auto-opening the browser on startup."""
+    browser: bool = True
+    """Open a browser tab on startup."""
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
@@ -70,7 +70,7 @@ class Gateway:
 
         logger.info(f"Gateway listening on {addr}")
 
-        if not self.no_open:
+        if self.browser:
             await anyio.to_thread.run_sync(webbrowser.open, addr)
 
         try:
