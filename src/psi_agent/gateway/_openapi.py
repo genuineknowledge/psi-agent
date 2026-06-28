@@ -131,26 +131,6 @@ OPENAPI_SPEC = {
                 ],
                 "requestBody": {
                     "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "chunks": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "type": {"type": "string"},
-                                                "text": {"type": "string"},
-                                                "path": {"type": "string"},
-                                                "name": {"type": "string"},
-                                                "data": {"type": "string"},
-                                            },
-                                        },
-                                    },
-                                },
-                            },
-                        },
                         "multipart/form-data": {
                             "schema": {
                                 "type": "object",
