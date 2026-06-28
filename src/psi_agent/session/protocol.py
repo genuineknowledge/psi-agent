@@ -216,3 +216,29 @@ class ChatCompletionChunk:
 
     def to_sse(self) -> str:
         return f"data: {json.dumps(self.to_dict(), ensure_ascii=False)}\n\n"
+
+
+class AgentError(Exception):
+    """Raised by run() when the agent encounters an unrecoverable error."""
+
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
+@dataclass
+class AgentChunk:
+    """Semantic output of the agent loop — content and/or reasoning."""
+
+    content: str | None = None
+    reasoning: str | None = None
+
+
+@dataclass
+class AiDelta:
+    """Internal stream element from AiClient, consumed by run() to drive the agent loop."""
+
+    content: str | None = None
+    reasoning: str | None = None
+    tool_calls: list[dict] | None = None
+    finish_reason: str | None = None
