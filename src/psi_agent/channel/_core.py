@@ -11,7 +11,7 @@ from aiohttp import ClientTimeout
 from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
-from psi_agent.channel._types import Chunk, FileChunk, TextChunk
+from psi_agent.channel._types import Chunk, FileChunk, ReasoningChunk, TextChunk
 
 
 @dataclass
@@ -34,11 +34,6 @@ class ChannelCore:
             f"TextChunks={sum(1 for c in chunks if isinstance(c, TextChunk))}"
         )
 
-        full_buf = ""
-        chunk_buf = ""
-        scan_ptr = 0
-        emitted: set[str] = set()
-
         parts: list[str] = []
         for chunk in chunks:
             if isinstance(chunk, FileChunk):
@@ -50,7 +45,13 @@ class ChannelCore:
 
         body = {"messages": [{"role": "user", "content": content}], "stream": True}
 
+        buf = ""
+        kind: str | None = None
         timer_target: float | None = None
+
+        full_content = ""
+        scan_ptr = 0
+        emitted: set[str] = set()
 
         logger.debug(f"  POST {self._endpoint} content_len={len(content)}")
         async with self._session.post(self._endpoint, json=body) as resp:
@@ -96,32 +97,59 @@ class ChannelCore:
                     raise Exception(msg)
 
                 delta = choice.get("delta", {})
-                text = delta.get("content") or ""
 
-                logger.debug(f"  delta.content ({len(text)} chars): {text[:60]}")
+                for incoming_kind, text in (
+                    ("reasoning", delta.get("reasoning") or ""),
+                    ("text", delta.get("content") or ""),
+                ):
+                    if not text:
+                        continue
 
-                orig_len = len(full_buf)
-                full_buf += text
-                chunk_buf += text
+                    if kind is not None and incoming_kind != kind and buf:
+                        if kind == "reasoning":
+                            logger.debug(f"  type switch → flush ReasoningChunk ({len(buf)} chars)")
+                            yield ReasoningChunk(buf)
+                        else:
+                            logger.debug(f"  type switch → flush TextChunk ({len(buf)} chars)")
+                            yield TextChunk(buf)
+                        buf = ""
+                        timer_target = None
 
-                new = full_buf[scan_ptr:]
-                for match in re.finditer(r"\[SEND:(.+?)\]", new):
-                    path = match.group(1)
-                    if path not in emitted:
-                        logger.debug(f"  [SEND] detected → FileChunk({path})")
-                        yield FileChunk(path)
-                        emitted.add(path)
-                    scan_ptr = orig_len + match.end()
+                    kind = incoming_kind
+                    buf += text
 
-                if timer_target is None:
-                    timer_target = time.monotonic() + self.interval
+                    if incoming_kind == "text":
+                        logger.debug(f"  delta.content ({len(text)} chars): {text[:60]}")
+                        orig_len = len(full_content)
+                        full_content += text
+                        new = full_content[scan_ptr:]
+                        for match in re.finditer(r"\[SEND:(.+?)\]", new):
+                            path = match.group(1)
+                            if path not in emitted:
+                                logger.debug(f"  [SEND] detected → FileChunk({path})")
+                                yield FileChunk(path)
+                                emitted.add(path)
+                            scan_ptr = orig_len + match.end()
+                    else:
+                        logger.debug(f"  delta.reasoning ({len(text)} chars): {text[:60]}")
 
-                if time.monotonic() >= timer_target:
-                    logger.debug(f"  timer expired → yield TextChunk ({len(chunk_buf)} chars)")
-                    yield TextChunk(chunk_buf)
-                    chunk_buf = ""
-                    timer_target = None
+                    if timer_target is None:
+                        timer_target = time.monotonic() + self.interval
 
-        if chunk_buf:
-            logger.debug(f"  stream end flush → TextChunk ({len(chunk_buf)} chars)")
-            yield TextChunk(chunk_buf)
+                    if time.monotonic() >= timer_target:
+                        if kind == "reasoning":
+                            logger.debug(f"  timer expired → yield ReasoningChunk ({len(buf)} chars)")
+                            yield ReasoningChunk(buf)
+                        else:
+                            logger.debug(f"  timer expired → yield TextChunk ({len(buf)} chars)")
+                            yield TextChunk(buf)
+                        buf = ""
+                        timer_target = None
+
+        if buf:
+            if kind == "reasoning":
+                logger.debug(f"  stream end flush → ReasoningChunk ({len(buf)} chars)")
+                yield ReasoningChunk(buf)
+            else:
+                logger.debug(f"  stream end flush → TextChunk ({len(buf)} chars)")
+                yield TextChunk(buf)
