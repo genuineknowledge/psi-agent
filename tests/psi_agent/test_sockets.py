@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from aiohttp import TCPConnector, UnixConnector, web
 
-from psi_agent._socket import create_site, resolve_connector_and_endpoint
+from psi_agent._sockets import create_site, resolve_connector_and_endpoint
 
 
 @pytest.mark.anyio

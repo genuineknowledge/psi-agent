@@ -10,7 +10,7 @@ import aiohttp
 from aiohttp import ClientTimeout
 from loguru import logger
 
-from psi_agent._socket import resolve_connector_and_endpoint
+from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.channel._types import Chunk, FileChunk, TextChunk
 
 
