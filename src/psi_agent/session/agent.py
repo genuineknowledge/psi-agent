@@ -6,6 +6,7 @@ import json
 import sys
 import uuid
 from collections.abc import AsyncIterator, Callable
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,13 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent._socket import resolve_connector_and_endpoint
-from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
+from psi_agent.session._protocol import (
+    ChatCompletionChunk,
+    DeltaMessage,
+    SessionToolContext,
+    StreamChoice,
+    ToolFunction,
+)
 from psi_agent.session.scheduler import load_schedules_from_workspace
 from psi_agent.session.tools import load_tools_from_workspace
 
@@ -32,6 +39,8 @@ class SessionAgent:
         max_tool_rounds: int = 128,
         history: list[dict] | None = None,
         history_path: Path | None = None,
+        workspace_path: Path | None = None,
+        session_id: str | None = None,
     ) -> None:
         """Initialize an agent backed by an AI server.
 
@@ -54,6 +63,8 @@ class SessionAgent:
         self.max_tool_rounds = max_tool_rounds
         self.history = history if history is not None else []
         self._history_path = history_path
+        self._workspace_path = workspace_path
+        self._session_id = session_id
         self._pending_schedule_chunks: list[ChatCompletionChunk] = []
 
     @classmethod
@@ -88,6 +99,8 @@ class SessionAgent:
             max_tool_rounds=max_tool_rounds,
             history=history,
             history_path=history_path,
+            workspace_path=workspace_path,
+            session_id=history_path.stem,
         )
 
     def set_pending_schedule_chunks(self, chunks: list[ChatCompletionChunk]) -> None:
@@ -140,7 +153,10 @@ class SessionAgent:
                 yield chunk
             self._pending_schedule_chunks = []
 
-        self.history.append(user_message)
+        turn_user_message = deepcopy(user_message)
+        self.history.append(turn_user_message)
+        if self._history_path is not None:
+            await _save_history(self._history_path, self.history)
         logger.debug(f"History now has {len(self.history)} messages")
 
         for _round in range(self.max_tool_rounds):
@@ -243,7 +259,10 @@ class SessionAgent:
 
                         try:
                             args = json.loads(func_args_str)
-                        except json.JSONDecodeError, TypeError:
+                        except json.JSONDecodeError:
+                            logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
+                            args = {}
+                        except TypeError:
                             logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
                             args = {}
 
@@ -267,7 +286,16 @@ class SessionAgent:
                             logger.error(result)
                         else:
                             try:
-                                result = await func(**args)
+                                tool_context = SessionToolContext(
+                                    session_id=self._session_id,
+                                    workspace_path=self._workspace_path,
+                                    history_path=self._history_path,
+                                    history_messages=SessionToolContext.freeze_messages(self.history),
+                                    latest_user_message=SessionToolContext.freeze_message(turn_user_message),
+                                    ai_socket=self.ai_socket,
+                                )
+                                with tool_context.push():
+                                    result = await func(**args)
                                 logger.info(f"Tool result ({func_name}): {str(result)[:200]}")
                             except Exception as e:
                                 result = f"Error executing tool '{func_name}': {e}"

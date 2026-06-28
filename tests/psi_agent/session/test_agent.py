@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from aiohttp import web
 
+from psi_agent.session._protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.agent import SessionAgent, _load_history, _save_history
-from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice, ToolFunction
 from psi_agent.session.tools import load_tools_from_workspace
 
 
@@ -614,7 +614,7 @@ async def test_history_saved_after_stop(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_history_not_saved_on_error(tmp_path: Path) -> None:
+async def test_only_user_message_is_saved_on_error(tmp_path: Path) -> None:
     async def handler(request: web.Request) -> web.StreamResponse:
         return web.Response(status=500)
 
@@ -638,7 +638,8 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
 
         loaded = await _load_history(history_path)
         assert len(loaded) == 1
-        assert loaded[0]["content"] == "original"
+        assert loaded[0]["role"] == "user"
+        assert loaded[0]["content"] == "hi"
     finally:
         await runner.cleanup()
 

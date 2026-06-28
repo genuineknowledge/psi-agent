@@ -7,7 +7,9 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, web
 
-from tests.integration.conftest import MockAIServer, read_sse
+from tests.integration.conftest import MockAIServer, _psi_process_spec, read_sse
+
+WORKSPACE_PATH = "examples/a-simple-schedule-workspace"
 
 
 def _chunk(content: str = "", reasoning: str = "", finish_reason: str | None = None) -> str:
@@ -78,38 +80,30 @@ async def test_channel_receives_content_from_session(tmp_path, mock_ai_server: M
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            base_url,
-        ],
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        base_url,
     )
-    ses_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            "examples/a-simple-bash-only-workspace",
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ],
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
+    ses_cmd, ses_env, ses_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        WORKSPACE_PATH,
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
+    ses_proc = await anyio.open_process(ses_cmd, env=ses_env, cwd=str(ses_cwd))
 
     try:
         assert await _wait_for_socket(ai_socket)

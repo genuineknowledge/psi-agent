@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 import pytest
 
-from psi_agent.session.protocol import (
+from psi_agent.session._protocol import (
     ChatCompletionChunk,
     DeltaMessage,
     StreamChoice,
@@ -321,6 +322,11 @@ def test_delta_message_all_fields() -> None:
     dm = DeltaMessage(content="hi", role="assistant", reasoning="think", tool_calls=[{"index": 0}])
     d = dm.to_dict()
     assert d == {"content": "hi", "role": "assistant", "reasoning": "think", "tool_calls": [{"index": 0}]}
+
+
+def test_delta_message_rejects_legacy_reasoning_content_field() -> None:
+    with pytest.raises(TypeError):
+        cast(Any, DeltaMessage)(reasoning_content="think")
 
 
 def test_stream_choice_default() -> None:

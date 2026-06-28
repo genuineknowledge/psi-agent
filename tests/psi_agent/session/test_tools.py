@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
+import sys
 import textwrap
+import types
 from pathlib import Path
 
 import pytest
 
 from psi_agent.session.tools import load_tools_from_workspace
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.mark.anyio
@@ -197,3 +202,55 @@ async def test_load_tools_spec_none_caught(tmp_path: Path, monkeypatch) -> None:
 
     tools, _callables = await load_tools_from_workspace(tools_dir)
     assert len(tools) == 0
+
+
+@pytest.mark.anyio
+async def test_fusion_guard_example_workspace_is_thin_and_delegates(monkeypatch) -> None:
+    workspace = REPO_ROOT / "examples" / "fusion-guard-security-workspace"
+
+    assert workspace.is_dir()
+    assert sorted(path.name for path in workspace.iterdir()) == ["tools"]
+
+    tools, callables = await load_tools_from_workspace(workspace / "tools")
+
+    assert set(tools) == {"bash"}
+    assert tools["bash"].parameters["required"] == ["command"]
+    assert set(tools["bash"].parameters["properties"]) == {"command", "cwd"}
+
+    calls: list[tuple[str, str | None]] = []
+    package = types.ModuleType("fusion_guard_security")
+    runner = types.ModuleType("fusion_guard_security.runner")
+
+    async def secure_bash(command: str, cwd: str | None = None) -> str:
+        calls.append((command, cwd))
+        return "delegated"
+
+    runner.__dict__["secure_bash"] = secure_bash
+    monkeypatch.setitem(sys.modules, "fusion_guard_security", package)
+    monkeypatch.setitem(sys.modules, "fusion_guard_security.runner", runner)
+
+    result = await callables["bash"]("pwd", cwd="/tmp")
+
+    assert result == "delegated"
+    assert calls == [("pwd", "/tmp")]
+
+
+@pytest.mark.anyio
+async def test_fusion_guard_example_workspace_reports_missing_external_adapter(monkeypatch) -> None:
+    workspace = REPO_ROOT / "examples" / "fusion-guard-security-workspace"
+    _tools, callables = await load_tools_from_workspace(workspace / "tools")
+    original_import = builtins.__import__
+
+    def block_fusion_guard(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("fusion_guard_security"):
+            raise ModuleNotFoundError(
+                "No module named 'fusion_guard_security.runner'", name="fusion_guard_security.runner"
+            )
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", block_fusion_guard)
+
+    result = await callables["bash"]("pwd")
+
+    assert "Fusion-Guard Dolphin adapter is not installed" in result
+    assert "Fusion-Guard" in result

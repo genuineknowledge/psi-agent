@@ -8,7 +8,7 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
-from tests.integration.conftest import MockAIServer, read_sse
+from tests.integration.conftest import MockAIServer, _psi_process_spec, read_sse
 
 
 def _chunk(content: str = "", finish_reason: str | None = None) -> str:
@@ -51,24 +51,20 @@ async def test_simple_streaming_response(tmp_path: Path, mock_ai_server: MockAIS
     base_url = await mock_ai_server.start()
 
     socket_path = str(tmp_path / "ai.sock")
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            socket_path,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            base_url,
-        ]
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        socket_path,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        base_url,
     )
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
 
     try:
         assert await _wait_socket(socket_path)
@@ -86,24 +82,20 @@ async def test_non_json_body_returns_400(tmp_path: Path, mock_ai_server: MockAIS
     await mock_ai_server.start()
 
     socket_path = str(tmp_path / "ai.sock")
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            socket_path,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            mock_ai_server.base_url,
-        ]
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        socket_path,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        mock_ai_server.base_url,
     )
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
 
     try:
         assert await _wait_socket(socket_path)
@@ -122,24 +114,20 @@ async def test_non_json_body_returns_400(tmp_path: Path, mock_ai_server: MockAIS
 @pytest.mark.anyio
 async def test_upstream_connection_refused(tmp_path: Path) -> None:
     socket_path = str(tmp_path / "ai.sock")
-    proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            socket_path,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            "http://127.0.0.1:19999/v1",
-        ]
+    proc_cmd, proc_env, proc_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        socket_path,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        "http://127.0.0.1:19999/v1",
     )
+    proc = await anyio.open_process(proc_cmd, env=proc_env, cwd=str(proc_cwd))
 
     try:
         assert await _wait_socket(socket_path)
@@ -171,24 +159,20 @@ async def test_upstream_sse_disconnects_mid_stream(tmp_path: Path) -> None:
     await site.start()
 
     socket_path = str(tmp_path / "ai.sock")
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            socket_path,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ]
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        socket_path,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
 
     try:
         assert await _wait_socket(socket_path)
@@ -218,24 +202,20 @@ async def test_upstream_401_tunnelled(tmp_path: Path) -> None:
     await site.start()
 
     socket_path = str(tmp_path / "ai.sock")
-    proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            socket_path,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ]
+    proc_cmd, proc_env, proc_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        socket_path,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
+    proc = await anyio.open_process(proc_cmd, env=proc_env, cwd=str(proc_cwd))
 
     try:
         assert await _wait_socket(socket_path)
@@ -256,24 +236,20 @@ async def test_anthropic_empty_content_blocks(tmp_path: Path, mock_ai_server: Mo
     await mock_ai_server.start()
 
     socket_path = str(tmp_path / "ai_anthro.sock")
-    proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "anthropic",
-            "--session-socket",
-            socket_path,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            mock_ai_server.base_url,
-        ]
+    proc_cmd, proc_env, proc_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "anthropic",
+        "--session-socket",
+        socket_path,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        mock_ai_server.base_url,
     )
+    proc = await anyio.open_process(proc_cmd, env=proc_env, cwd=str(proc_cwd))
 
     try:
         assert await _wait_socket(socket_path)
@@ -321,24 +297,20 @@ async def test_anthropic_multi_tool_use_blocks(tmp_path: Path) -> None:
     await site.start()
 
     socket_path = str(tmp_path / "ai_anthro.sock")
-    proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "anthropic",
-            "--session-socket",
-            socket_path,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ]
+    proc_cmd, proc_env, proc_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "anthropic",
+        "--session-socket",
+        socket_path,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
+    proc = await anyio.open_process(proc_cmd, env=proc_env, cwd=str(proc_cwd))
 
     try:
         assert await _wait_socket(socket_path)

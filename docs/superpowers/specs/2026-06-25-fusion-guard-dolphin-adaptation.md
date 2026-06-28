@@ -1,0 +1,59 @@
+# Fusion-Guard Dolphin Host Adaptation Design
+
+**Date**: 2026-06-25
+**Status**: corrected
+
+## Goal
+
+Expose the minimal Dolphin-Agent host surface that an out-of-tree Fusion-Guard plugin needs, without placing Fusion-Guard plugin code in the Dolphin repository.
+
+Dolphin remains responsible for session orchestration, history, tool loading, and the AI socket. Fusion-Guard remains responsible for its workspace tool, intent analysis prompt/rule parsing, safety decisions, and policy integration.
+
+## Scope
+
+Included in Dolphin:
+
+- A read-only `SessionToolContext` available through `psi_agent.session._protocol.SessionToolContext.current()` while workspace tools execute.
+- Immediate JSONL history write after the current `user` message is appended.
+- Documentation of the runtime context contract in the Session layer.
+- Tests proving tools can read the context and that the current `user` message is already on disk before tool execution.
+- A thin `examples/fusion-guard-security-workspace` sample that contains only `tools/` and delegates to an out-of-tree Fusion-Guard adapter.
+
+Excluded from Dolphin:
+
+- `psi_agent.fusion_guard` package code.
+- Fusion-Guard prompt builders, rule parsers, denial message helpers, policy installers, or secure bash runner implementation.
+
+The Fusion-Guard repository owns the real Dolphin workspace and adapter implementation. Dolphin's sample workspace is only a discoverable wiring example; it must follow `examples/a-serper-mcp-workspace` by containing only `tools/`, and its tool must import/delegate to the external Fusion-Guard adapter instead of embedding plugin logic.
+
+## Runtime Contract
+
+`psi_agent.session._protocol.SessionToolContext` is available only during a tool call and contains:
+
+- `session_id`
+- `workspace_path`
+- `history_path`
+- `history_messages`
+- `latest_user_message`
+- `ai_socket`
+
+Workspace tools may read the current context with `SessionToolContext.current()`, but they cannot mutate Dolphin session memory through that object. Dolphin exposes frozen snapshots for `history_messages` and `latest_user_message`, and sets the current context with the `SessionToolContext.push()` member context manager around each tool call.
+
+## History Ordering
+
+On each `SessionAgent.run()` turn:
+
+1. Dolphin builds the system prompt if needed.
+2. Dolphin yields pending schedule chunks if any.
+3. Dolphin appends the latest `user` message to in-memory history.
+4. Dolphin immediately writes the current history to `workspace/histories/{session_id}.jsonl`.
+5. Dolphin sends the final in-memory history to the AI socket and continues the normal agent loop.
+6. On final assistant completion, Dolphin overwrites the JSONL with the final turn state.
+
+This gives external tools a stable on-disk view of the current user message while preserving Dolphin's final-history semantics.
+
+## Testing
+
+- `tests/psi_agent/session/test_runtime_context.py` verifies tool-time context and early user-message persistence.
+- `tests/psi_agent/session/test_agent.py` verifies error turns still persist the early user message instead of silently losing the latest request.
+- `tests/psi_agent/session/test_tools.py` verifies the Fusion-Guard sample workspace shape, tool loading, external adapter delegation, and missing-adapter message.

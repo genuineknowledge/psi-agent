@@ -9,8 +9,8 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from psi_agent.session._protocol import ChatCompletionChunk, DeltaMessage, StreamChoice
 from psi_agent.session.agent import SessionAgent
-from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice
 
 
 class _FailingSessionAgent(SessionAgent):

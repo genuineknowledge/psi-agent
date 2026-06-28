@@ -12,7 +12,7 @@ from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.scheduler import load_schedules_from_workspace
 from psi_agent.session.tools import load_tools_from_workspace
-from tests.integration.conftest import MockAIServer
+from tests.integration.conftest import MockAIServer, _psi_process_spec
 
 
 def _chunk(content: str = "", finish_reason: str | None = None) -> str:
@@ -122,38 +122,30 @@ async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> 
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--workspace",
-            str(ws),
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ]
+    proc_cmd, proc_env, proc_cwd = _psi_process_spec(
+        "session",
+        "--workspace",
+        str(ws),
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-        ]
+    proc = await anyio.open_process(proc_cmd, env=proc_env, cwd=str(proc_cwd))
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        f"http://127.0.0.1:{port}",
     )
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
 
     try:
         assert await _wait_socket(ai_socket)
@@ -247,36 +239,28 @@ async def test_session_with_empty_workspace_uses_cwd(tmp_path: Path, mock_ai_ser
     ai_socket = str(tmp_path / "ai.sock")
     channel_socket = str(tmp_path / "channel.sock")
 
-    proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "session",
-            "--channel-socket",
-            channel_socket,
-            "--ai-socket",
-            ai_socket,
-        ]
+    proc_cmd, proc_env, proc_cwd = _psi_process_spec(
+        "session",
+        "--channel-socket",
+        channel_socket,
+        "--ai-socket",
+        ai_socket,
     )
-    ai_proc = await anyio.open_process(
-        [
-            "uv",
-            "run",
-            "psi-agent",
-            "ai",
-            "--provider",
-            "openai",
-            "--session-socket",
-            ai_socket,
-            "--model",
-            "test",
-            "--api-key",
-            "k",
-            "--base-url",
-            base_url,
-        ]
+    proc = await anyio.open_process(proc_cmd, env=proc_env, cwd=str(proc_cwd))
+    ai_cmd, ai_env, ai_cwd = _psi_process_spec(
+        "ai",
+        "--provider",
+        "openai",
+        "--session-socket",
+        ai_socket,
+        "--model",
+        "test",
+        "--api-key",
+        "k",
+        "--base-url",
+        base_url,
     )
+    ai_proc = await anyio.open_process(ai_cmd, env=ai_env, cwd=str(ai_cwd))
 
     try:
         assert await _wait_socket(ai_socket)

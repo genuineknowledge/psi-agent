@@ -30,7 +30,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 3. 惰性构建 system prompt（首次 run() 时，如果 history 尚无 system 消息）
 4. 检查暂存的 schedule 响应 → 有则先流式返回
 5. 获取 `anyio.Lock`（忙则 FIFO 排队等待）
-6. User message 追加到 history
+6. User message 追加到 history，并立即写入 `workspace/histories/{session_id}.jsonl`
 7. 发送 `history + tools + extra_params` 到 AI socket（streaming）
 8. 解析 SSE 流（每 chunk 恰好 1 个 choice，多 choice 报错，0 choice 心跳跳过）：
    - content → yield 给 channel
@@ -101,6 +101,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 - `arguments` 可能不是合法 JSON → `json.loads` 包在 try/except 中，失败时 fallback 为 `{}`
 - Tool 函数可能抛异常 → 以错误文本作为 tool result 返回，不中断 agent loop
 - Tool 返回非字符串（int, None） → 通过 `str()` 强转
+- Tool 执行期间会通过 `psi_agent.session._protocol.SessionToolContext.current()` 暴露只读上下文，包含当前 `session_id`、workspace、history path、冻结的 history 快照、冻结的 latest user message 和 AI socket。Workspace tool 可读取该上下文，但不能通过该对象修改 Session 内存态。
 
 ## Schedule 机制完整流程
 
@@ -131,6 +132,8 @@ Session 支持将对话历史持久化到 `workspace/histories/{session_id}.json
 
 - `Session.session_id: str | None = None` — None 时自动生成 UUID，给定字符串时可 resume
 - 加载：`SessionAgent.create()` 中从 jsonl 逐行读取，非法行跳过 + warning
-- 保存：仅在 `finish_reason="stop"` 且 content 成功追加后，覆盖写入整个 history
-- error / tool_calls 中间状态 / 异常 → 不写盘
+- 保存：
+  - 收到当前 `user message` 并 append 到内存 history 后，立即覆盖写入整个 history
+  - `finish_reason="stop"` 且 assistant content / reasoning 成功追加后，再覆盖写入整个 history
+- error / tool_calls 中间状态 / 异常 → 除了已经写入的当前 user message 外，不额外写盘
 - 首次使用时自动创建 `histories/` 目录 + `.gitignore`（忽略全部文件）
