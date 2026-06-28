@@ -1,6 +1,6 @@
 """Conversation history with JSONL persistence and schedule-pending buffer.
 
-``Conversation`` owns the conversation history (``list[dict]``), its
+``Conversation`` owns the conversation history (``list[dict[str, Any]]``), its
 JSONL backing file, and schedule-pending chunks.  ``session_id`` is
 derived from the filename stem — also reused for ``sys.modules``
 isolation.
@@ -12,6 +12,7 @@ import json
 import re
 import uuid
 from pathlib import Path
+from typing import Any
 
 import anyio
 from loguru import logger
@@ -28,8 +29,8 @@ class Conversation:
     as the per-session identifier for ``sys.modules`` isolation.
     """
 
-    def __init__(self, *, messages: list[dict] | None = None, path: Path | None = None):
-        self.messages: list[dict] = list(messages or [])
+    def __init__(self, *, messages: list[dict[str, Any]] | None = None, path: Path | None = None):
+        self.messages: list[dict[str, Any]] = list(messages or [])
         self._path = path
         self._pending: list[AgentChunk] = []
 
@@ -101,8 +102,8 @@ class Conversation:
     # -- internals -------------------------------------------------------------
 
     @staticmethod
-    async def _load(path: Path) -> list[dict]:
-        messages: list[dict] = []
+    async def _load(path: Path) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
         ap = anyio.Path(str(path))
         if not await ap.exists():
             logger.info(f"No history file found at {path}")
