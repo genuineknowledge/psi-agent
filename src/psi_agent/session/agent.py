@@ -303,19 +303,22 @@ async def _save_history(path: Path, history: list[dict]) -> None:
 
 def _load_system_prompt_builder(workspace_path: Path) -> Callable[..., Any] | None:
     system_py = workspace_path / "systems" / "system.py"
+    module_name = "psi_workspace_system"
     try:
-        spec = importlib.util.spec_from_file_location("psi_workspace_system", str(system_py))
+        spec = importlib.util.spec_from_file_location(module_name, str(system_py))
         if spec is None or spec.loader is None:
             logger.warning(f"No system.py found at {system_py}")
             return None
         module = importlib.util.module_from_spec(spec)
-        sys.modules["psi_workspace_system"] = module
+        sys.modules[module_name] = module
         spec.loader.exec_module(module)
         func = getattr(module, "system_prompt_builder", None)
         if func is None or not inspect.iscoroutinefunction(func):
             logger.warning(f"system_prompt_builder not found or not async in {system_py}")
+            sys.modules.pop(module_name, None)
             return None
         return func
     except Exception as e:
         logger.error(f"Failed to load system_prompt_builder: {e}")
+        sys.modules.pop(module_name, None)
         return None

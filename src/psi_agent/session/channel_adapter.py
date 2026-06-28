@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 import anyio
@@ -50,7 +49,7 @@ class ChannelAdapter:
                     choices=[
                         StreamChoice(
                             index=0,
-                            delta=DeltaMessage(content=f"[Session Error: {e.message}]"),
+                            delta=DeltaMessage(content=e.message),
                             finish_reason="error",
                         )
                     ],
@@ -93,12 +92,6 @@ class ChannelAdapter:
             user_message = {"role": "user", "content": str(user_message.get("content", ""))}
 
         return user_message, body
-
-    @staticmethod
-    async def write_stream(chunks: AsyncIterator[AgentChunk], response: web.StreamResponse) -> None:
-        async for chunk in chunks:
-            await response.write(ChannelAdapter.to_chat_completion_chunk(chunk).to_sse().encode())
-        await response.write(b"data: [DONE]\n\n")
 
     @staticmethod
     def to_chat_completion_chunk(chunk: AgentChunk) -> ChatCompletionChunk:
