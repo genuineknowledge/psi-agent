@@ -8,6 +8,16 @@ _handler_id: int | None = None
 
 
 def setup_logging(*, verbose: bool = False) -> int:
+    """Install the loguru stderr handler once and return its id.
+
+    Deliberately one-shot: guarded by the module-global ``_handler_id``, the
+    first call installs the handler and every subsequent call is a no-op that
+    returns the existing id **without** re-applying ``verbose``. Whoever calls
+    first wins the level. In ``psi-agent run`` (batch mode) ``Run.run()`` calls
+    ``setup_logging(verbose=True)`` before any child component, so batch mode is
+    always DEBUG and each component's own ``verbose`` field is intentionally
+    ignored. Running a component standalone lets its own ``verbose`` decide.
+    """
     global _handler_id
     if _handler_id is not None:
         return _handler_id

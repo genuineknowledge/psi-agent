@@ -40,13 +40,15 @@ async def serve_ai(
     app["base_url"] = base_url
     app.router.add_post("/chat/completions", handler)
 
+    runner = web.AppRunner(app)
     try:
-        runner = web.AppRunner(app)
         await runner.setup()
         site = create_site(runner, socket_path)
         await site.start()
     except Exception as e:
         logger.error(f"Failed to start AI service on {socket_path}: {e}")
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()
         raise
 
     logger.info(f"AI listening on {socket_path}")

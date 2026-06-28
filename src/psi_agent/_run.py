@@ -11,7 +11,8 @@ Config format (``run-config.yml``):
       provider: openai
       session_socket: ./ai.sock
       model: gpt-4o-mini
-      api_key: ${OPENAI_API_KEY}
+      api_key: sk-xxxx               # literal value; ${VAR} expansion is NOT performed.
+                                     # Omit to fall back to the PSI_AI_API_KEY env var.
       base_url: https://api.openai.com/v1
 
     - type: session
@@ -20,7 +21,7 @@ Config format (``run-config.yml``):
       ai_socket: ./ai.sock
 
     - type: channel
-      name: repl                    # "cli" or "repl"
+      name: repl                    # "cli", "repl", "telegram", or "feishu"
       session_socket: ./channel.sock
       message: "hello world"       # only for cli
 
@@ -32,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 
 import anyio
 import yaml
@@ -46,6 +47,21 @@ from psi_agent.channel.feishu import ChannelFeishu
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.telegram import ChannelTelegram
 from psi_agent.session import Session
+
+
+class Component(Protocol):
+    """A runnable psi-agent component (Ai, Session, or a Channel)."""
+
+    async def run(self) -> None: ...
+
+
+def _build(cls: type[Any], item: dict[str, Any]) -> Component:
+    """Instantiate a component class from a config dict, logging on failure."""
+    try:
+        return cls(**item)
+    except Exception as e:
+        logger.error(f"Failed to construct {cls.__name__} from config item: {item}, error: {e}")
+        raise
 
 
 @dataclass
@@ -86,7 +102,14 @@ async def _run_config(config_path: Path) -> None:
 
     logger.info(f"Config contains {len(raw)} component definitions")
 
-    components: list[Any] = []
+    channel_classes: dict[str, type[Any]] = {
+        "cli": ChannelCli,
+        "repl": ChannelRepl,
+        "telegram": ChannelTelegram,
+        "feishu": ChannelFeishu,
+    }
+
+    components: list[Component] = []
     for item in raw:
         try:
             kind = item.pop("type")
@@ -95,21 +118,13 @@ async def _run_config(config_path: Path) -> None:
             raise
         match kind:
             case "ai":
-                try:
-                    c = Ai(**item)
-                except Exception as e:
-                    logger.error(f"Failed to construct Ai from config item: {item}, error: {e}")
-                    raise
+                c = _build(Ai, item)
                 logger.info(
                     f"Configured ai: provider={item.get('provider')!r}, "
                     f"model={item.get('model')!r}, socket={item.get('session_socket')!r}"
                 )
             case "session":
-                try:
-                    c = Session(**item)
-                except Exception as e:
-                    logger.error(f"Failed to construct Session from config item: {item}, error: {e}")
-                    raise
+                c = _build(Session, item)
                 logger.info(
                     f"Configured session: workspace={item.get('workspace')!r}, ai_socket={item.get('ai_socket')!r}"
                 )
@@ -119,35 +134,13 @@ async def _run_config(config_path: Path) -> None:
                 except KeyError:
                     logger.error(f"Channel config item missing 'name' key: {item}")
                     raise
-                match name:
-                    case "cli":
-                        try:
-                            c = ChannelCli(**item)
-                        except Exception as e:
-                            logger.error(f"Failed to construct ChannelCli from config item: {item}, error: {e}")
-                            raise
-                    case "repl":
-                        try:
-                            c = ChannelRepl(**item)
-                        except Exception as e:
-                            logger.error(f"Failed to construct ChannelRepl from config item: {item}, error: {e}")
-                            raise
-                    case "telegram":
-                        try:
-                            c = ChannelTelegram(**item)
-                        except Exception as e:
-                            logger.error(f"Failed to construct ChannelTelegram from config item: {item}, error: {e}")
-                            raise
-                    case "feishu":
-                        try:
-                            c = ChannelFeishu(**item)
-                        except Exception as e:
-                            logger.error(f"Failed to construct ChannelFeishu from config item: {item}, error: {e}")
-                            raise
-                    case _:
-                        msg = f"Unknown channel name: {name}"
-                        logger.error(msg)
-                        raise ValueError(msg)
+                try:
+                    channel_cls = channel_classes[name]
+                except KeyError:
+                    msg = f"Unknown channel name: {name}"
+                    logger.error(msg)
+                    raise ValueError(msg) from None
+                c = _build(channel_cls, item)
                 logger.info(f"Configured channel: name={name}, socket={item.get('session_socket')!r}")
             case _:
                 msg = f"Unknown component type: {kind}"

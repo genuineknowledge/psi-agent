@@ -112,7 +112,7 @@ SSE 流中的特殊字段：
 
 2. **流式（SSE 层面）**：已 commit HTTP 200 后发生的错误（上游异常、连接断开等），使用 ChatCompletionChunk 格式
    ```json
-   {"id": "error", "choices": [{"index": 0, "delta": {"content": "[Upstream Error 401]: ..."}, "finish_reason": "error"}]}
+   {"id": "error", "choices": [{"index": 0, "delta": {"content": "[Upstream Error]: ..."}, "finish_reason": "error"}]}
    ```
    所有层统一使用 `finish_reason="error"` 标记流式错误，Session 检测到后不写入 conversation history。
 
@@ -125,6 +125,7 @@ SSE 流中的特殊字段：
 - DEBUG 必须覆盖：每个 SSE chunk、tool 执行、锁获取/释放
 - 格式：`时间 | 级别 | 模块:函数:行号 - 消息`
 - Channel 客户端使用 `rich.console.Console` 做终端输出，**禁止使用 `print()`**
+- **`setup_logging` 一次性生效（刻意设计）**：用全局 `_handler_id` 守卫，首次调用安装 handler，后续调用直接返回旧 handler，**不会**重新应用 `verbose`。因此“谁先调用谁定级别”。在 `psi-agent run`（批量模式）下，`Run.run()` 先于所有子组件调用 `setup_logging(verbose=True)`，故批量模式始终为 DEBUG，各组件配置里的 `verbose` 字段被有意忽略。单独启动某个组件（`psi-agent ai/session/channel ...`）时，则由该组件自己的 `verbose` 决定级别。
 
 ## 关键注意事项（踩坑经验）
 
