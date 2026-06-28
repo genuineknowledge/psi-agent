@@ -1,7 +1,8 @@
 """Tool loading and incremental refresh from ``workspace/tools/``.
 
 ``ToolRegistry`` loads async Python functions from ``workspace/tools/``
-via ``importlib``, converts signatures to JSON Schema via
+via ``compile`` + ``exec`` (not ``importlib``, to avoid bytecode-cache
+staleness on refresh), converts signatures to JSON Schema via
 ``ToolFunction.from_callable()``, tracks SHA-256 file hashes for
 incremental refresh, and provides ``get(name)`` for tool execution
 lookup.
@@ -15,7 +16,6 @@ compatibility.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import inspect
 import re
 import sys
@@ -236,6 +236,7 @@ class ToolRegistry:
             logger.warning("No work_dir set, cannot refresh tools")
             return {}
 
+        logger.debug("Starting tool refresh")
         new_files = await self._load_from_dir(self._work_dir, session_id, self._files)
         result: dict[str, str] = {}
 
@@ -290,7 +291,7 @@ class ToolRegistry:
         tools_anyio = anyio.Path(str(tools_dir))
 
         if not await tools_anyio.is_dir():
-            logger.warning(f"Tools directory not found: {tools_dir}")
+            logger.warning(f"Tools directory not found: {tools_dir!r}")
             return files
 
         async for py_file in tools_anyio.glob("*.py"):
@@ -302,23 +303,32 @@ class ToolRegistry:
             str_path = str(py_file)
 
             if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
-                files[str_path] = old_files[str_path]
+                logger.debug(f"Skipping unchanged file: {py_file!r}")
+                old = old_files[str_path]
+                files[str_path] = FileEntry(file_hash=old.file_hash, tools=old.tools, funcs=old.funcs, fresh=False)
                 continue
 
             module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
 
             try:
-                spec = importlib.util.spec_from_file_location(module_name, str_path)
-                if spec is None or spec.loader is None:
-                    logger.warning(f"Could not load module spec for {py_file}")
-                    continue
-                module = importlib.util.module_from_spec(spec)
-                sys.modules[module_name] = module
-                spec.loader.exec_module(module)
+                source = await py_file.read_text()
+                compiled = compile(source, str_path, "exec")
             except Exception as e:
-                logger.error(f"Failed to load tool module {py_file}: {e}")
+                logger.error(f"Failed to read or compile {py_file!r}: {e!r}")
+                continue
+
+            module = types.ModuleType(module_name)
+            module.__file__ = str_path
+            sys.modules[module_name] = module
+            try:
+                exec(compiled, module.__dict__)
+            except Exception as e:
+                logger.error(f"Failed to execute tool module {py_file!r}: {e!r}")
                 sys.modules.pop(module_name, None)
                 continue
+            except BaseException:
+                sys.modules.pop(module_name, None)
+                raise
 
             attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
             tools: dict[str, ToolFunction] = {}
@@ -330,18 +340,18 @@ class ToolRegistry:
                     continue
 
                 if name in tools:
-                    logger.warning(f"Duplicate tool name '{name}' in {py_file}, skipping")
+                    logger.warning(f"Duplicate tool name {name!r} in {py_file!r}, skipping")
                     continue
 
                 try:
                     tool_func = ToolFunction.from_callable(func)
                 except (TypeError, NameError, AttributeError, SyntaxError, ValueError) as e:
-                    logger.error(f"Skipping tool '{name}' in {py_file}: {e}")
+                    logger.error(f"Skipping tool {name!r} in {py_file!r}: {e!r}")
                     continue
 
                 tools[name] = tool_func
                 funcs[name] = func
-                logger.info(f"Loaded tool: {name} from {py_file}")
+                logger.debug(f"Loaded tool: {name!r} from {py_file!r}")
 
             files[str_path] = FileEntry(
                 file_hash=file_hash,
@@ -351,5 +361,5 @@ class ToolRegistry:
             )
 
         total_tools = sum(len(entry.tools) for entry in files.values())
-        logger.info(f"Loaded {total_tools} tool(s) from {len(files)} file(s) in {tools_dir}")
+        logger.info(f"Loaded {total_tools} tool(s) from {len(files)} file(s) in {tools_dir!r}")
         return files
