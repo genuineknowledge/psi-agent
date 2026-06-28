@@ -184,7 +184,7 @@ class ToolRegistry:
     ) -> None:
         self.tools: dict[str, ToolFunction] = dict(tools or {})
         self._funcs: dict[str, Callable[..., Any]] = dict(funcs or {})
-        self._file_hashes: dict[str, str] = dict(file_hashes or {})
+        self._tool_hashes: dict[str, str] = dict(file_hashes or {})
         self._work_dir = work_dir
 
     def get(self, name: str) -> Callable[..., Any] | None:
@@ -216,13 +216,13 @@ class ToolRegistry:
                 self.tools[name] = tf
                 self._funcs[name] = new_funcs[name]
                 result[name] = "added"
-            elif new_hashes.get(name) != self._file_hashes.get(name):
+            elif new_hashes.get(name) != self._tool_hashes.get(name):
                 self.tools[name] = tf
                 self._funcs[name] = new_funcs[name]
                 result[name] = "updated"
             else:
                 result[name] = "skipped"
-        self._file_hashes = new_hashes
+        self._tool_hashes = new_hashes
         changed = {k: v for k, v in result.items() if v != "skipped"}
         logger.info(f"Tool refresh complete: {changed or 'no changes'}")
         return result
@@ -247,10 +247,8 @@ class ToolRegistry:
             if py_file.name.startswith("_"):
                 continue
 
-            file_path_str = str(py_file)
             file_bytes = await py_file.read_bytes()
             file_hash = hashlib.sha256(file_bytes).hexdigest()
-            file_hashes[file_path_str] = file_hash
 
             module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
 
@@ -285,6 +283,7 @@ class ToolRegistry:
 
                 tools[name] = tool_func
                 callables[name] = func
+                file_hashes[name] = file_hash
                 logger.info(f"Loaded tool: {name} from {py_file}")
 
         logger.info(f"Loaded {len(tools)} tool(s) from {tools_dir}")
