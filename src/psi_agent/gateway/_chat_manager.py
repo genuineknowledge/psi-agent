@@ -41,8 +41,10 @@ class ChatManager:
         try:
             async with ChannelCore(session_socket=channel_socket, interval=0.0) as core:
                 async for chunk in core.post(chunks):
-                    if isinstance(chunk, (TextChunk, ReasoningChunk)):
+                    if isinstance(chunk, TextChunk):
                         yield {"type": "text", "text": chunk.text}
+                    elif isinstance(chunk, ReasoningChunk):
+                        yield {"type": "reasoning", "text": chunk.text}
                     elif isinstance(chunk, FileChunk):
                         yield await self._file_blob(chunk.path)
         finally:
