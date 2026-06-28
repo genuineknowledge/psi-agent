@@ -49,9 +49,11 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     try:
         await response.prepare(request)
     except Exception:
-        logger.warning("Failed to prepare SSE response, client likely disconnected")
+        logger.warning("Client disconnected before SSE response prepared")
         return response
 
+    logger.debug(f"Forwarding to upstream: provider={provider!r}, model={model!r}, base_url={base_url!r}")
+    upstream_error = False
     try:
         stream = cast(
             AsyncIterator[ChatCompletionChunk],
@@ -74,19 +76,24 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             logger.debug(f"SSE chunk: {data[:1000]}")
             await response.write(f"data: {data}\n\n".encode())
     except Exception as e:
-        logger.error(f"Error forwarding to upstream: {e}")
-        # OpenAI ChatCompletionChunk format with ``finish_reason="error"``
-        # — a psi-agent extension for layer-to-layer SSE error signalling.
+        upstream_error = True
+        logger.error(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e}")
         err_chunk = json.dumps(
             {
                 "id": "error",
                 "choices": [{"index": 0, "delta": {"content": f"[Upstream Error]: {e}"}, "finish_reason": "error"}],
             }
         )
+        logger.debug(f"SSE error chunk: {err_chunk[:200]}")
         try:
             await response.write(f"data: {err_chunk}\n\n".encode())
         except Exception:
-            logger.warning("Failed to write error chunk to SSE stream")
+            logger.warning("Failed to send upstream error chunk to client")
+    else:
+        logger.debug("Upstream stream completed successfully")
 
-    logger.info("Request completed")
+    if upstream_error:
+        logger.info("Request completed with upstream error")
+    else:
+        logger.info("Request completed successfully")
     return response

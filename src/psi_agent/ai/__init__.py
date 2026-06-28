@@ -27,7 +27,11 @@ async def serve_ai(
 ) -> None:
     """Serve an AI backend on a Unix socket."""
 
-    logger.info(f"Starting AI service on {socket_path} (model={model}, base_url={base_url})")
+    api_key_status = "set" if api_key else "empty"
+    logger.info(
+        f"Starting AI service on {socket_path} "
+        f"(provider={provider!r}, model={model!r}, base_url={base_url}, api_key={api_key_status})"
+    )
 
     app = web.Application()
     app["provider"] = provider
@@ -36,10 +40,14 @@ async def serve_ai(
     app["base_url"] = base_url
     app.router.add_post("/chat/completions", handler)
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = create_site(runner, socket_path)
-    await site.start()
+    try:
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = create_site(runner, socket_path)
+        await site.start()
+    except Exception as e:
+        logger.error(f"Failed to start AI service on {socket_path}: {e}")
+        raise
 
     logger.info(f"AI listening on {socket_path}")
 
@@ -49,6 +57,7 @@ async def serve_ai(
         logger.info(f"Shutting down AI on {socket_path}")
         with anyio.CancelScope(shield=True):
             await runner.cleanup()
+        logger.info(f"AI shutdown complete on {socket_path}")
 
 
 @dataclass
@@ -80,6 +89,10 @@ class Ai:
         model = self.model or os.environ.get("PSI_AI_MODEL", "")
         api_key = self.api_key or os.environ.get("PSI_AI_API_KEY", "")
         base_url = self.base_url or os.environ.get("PSI_AI_BASE_URL", "")
+        logger.debug(
+            f"AI resolved params: provider={provider!r}, model={model!r}, "
+            f"base_url={base_url!r}, api_key={'*' * 8 if api_key else '(empty)'}"
+        )
         await serve_ai(
             socket_path=self.session_socket,
             provider=provider,

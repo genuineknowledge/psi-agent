@@ -16,6 +16,7 @@ import urllib.parse
 
 import aiohttp
 from aiohttp import web
+from loguru import logger
 
 
 def resolve_connector_and_endpoint(
@@ -31,12 +32,15 @@ def resolve_connector_and_endpoint(
     if addr.startswith(("http://", "https://")):
         connector = aiohttp.TCPConnector(ssl=addr.startswith("https://"))
         endpoint = addr.rstrip("/") + path_prefix
+        logger.debug(f"Resolved transport: addr={addr!r} → TCP endpoint={endpoint!r}")
     elif addr.startswith("\\\\.\\pipe\\"):
         connector = aiohttp.NamedPipeConnector(path=addr)
         endpoint = f"http://localhost{path_prefix}"
+        logger.debug(f"Resolved transport: addr={addr!r} → Named Pipe endpoint={endpoint!r}")
     else:
         connector = aiohttp.UnixConnector(path=addr)
         endpoint = f"http://localhost{path_prefix}"
+        logger.debug(f"Resolved transport: addr={addr!r} → Unix socket endpoint={endpoint!r}")
     return connector, endpoint
 
 
@@ -53,7 +57,10 @@ def create_site(
         parsed = urllib.parse.urlparse(addr)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or 8080
+        logger.debug(f"Creating TCP site: {host}:{port}")
         return web.TCPSite(runner, host, port)
     if addr.startswith("\\\\.\\pipe\\"):
+        logger.debug(f"Creating Named Pipe site: {addr}")
         return web.NamedPipeSite(runner, addr)
+    logger.debug(f"Creating Unix site: {addr}")
     return web.UnixSite(runner, addr)
