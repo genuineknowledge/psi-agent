@@ -231,6 +231,12 @@ class ToolRegistry:
                 self.tools[name] = tf
                 self._funcs[name] = new_funcs[name]
                 result[name] = "updated"
+
+        # skipped — in registry and not touched above
+        for name in self.tools:
+            if name not in result:
+                result[name] = "skipped"
+
         self._file_hashes = new_file_hashes
         logger.info(f"Tool refresh complete: {result or 'no changes'}")
         return result
