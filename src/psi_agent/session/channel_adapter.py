@@ -56,6 +56,7 @@ class ChannelAdapter:
         try:
             async for chunk in chunks:
                 await response.write(ChannelAdapter._to_sse(chunk))
+                logger.debug(f"SSE chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
             await response.write(b"data: [DONE]\n\n")
         except AgentError as e:
             await ChannelAdapter._write_error(response, e.message)
