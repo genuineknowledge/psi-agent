@@ -295,73 +295,82 @@ class ToolRegistry:
         Returns ``{file_path: FileEntry}`` for all current ``.py`` files.
         """
         files: dict[str, FileEntry] = {}
+        registered_modules: list[str] = []
         tools_anyio = anyio.Path(str(tools_dir))
 
         if not await tools_anyio.is_dir():
             logger.warning(f"Tools directory not found: {tools_dir!r}")
             return files
 
-        async for py_file in tools_anyio.glob("*.py"):
-            if py_file.name.startswith("_"):
-                continue
-
-            file_bytes = await py_file.read_bytes()
-            file_hash = hashlib.sha256(file_bytes).hexdigest()
-            str_path = str(py_file)
-
-            if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
-                logger.debug(f"Skipping unchanged file: {py_file!r}")
-                old = old_files[str_path]
-                files[str_path] = FileEntry(file_hash=old.file_hash, tools=old.tools, funcs=old.funcs, fresh=False)
-                continue
-
-            module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
-
-            try:
-                source = await py_file.read_text()
-                compiled = compile(source, str_path, "exec")
-            except Exception as e:
-                logger.error(f"Failed to read or compile {py_file!r}: {e!r}")
-                continue
-
-            module = types.ModuleType(module_name)
-            module.__file__ = str_path
-            sys.modules[module_name] = module
-            try:
-                exec(compiled, module.__dict__)
-            except Exception as e:
-                logger.error(f"Failed to execute tool module {py_file!r}: {e!r}")
-                sys.modules.pop(module_name, None)
-                continue
-            except BaseException:
-                sys.modules.pop(module_name, None)
-                raise
-
-            attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
-            tools: dict[str, ToolFunction] = {}
-            funcs: dict[str, Callable[..., Any]] = {}
-
-            for name in attr_names:
-                func = getattr(module, name, None)
-                if not inspect.iscoroutinefunction(func):
+        try:
+            async for py_file in tools_anyio.glob("*.py"):
+                if py_file.name.startswith("_"):
                     continue
+
+                file_bytes = await py_file.read_bytes()
+                file_hash = hashlib.sha256(file_bytes).hexdigest()
+                str_path = str(py_file)
+
+                if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
+                    logger.debug(f"Skipping unchanged file: {py_file!r}")
+                    old = old_files[str_path]
+                    files[str_path] = FileEntry(file_hash=old.file_hash, tools=old.tools, funcs=old.funcs, fresh=False)
+                    continue
+
+                module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
 
                 try:
-                    tool_func = ToolFunction.from_callable(func)
-                except (TypeError, NameError, AttributeError, SyntaxError, ValueError) as e:
-                    logger.error(f"Skipping tool {name!r} in {py_file!r}: {e!r}")
+                    source = await py_file.read_text()
+                    compiled = compile(source, str_path, "exec")
+                except Exception as e:
+                    logger.error(f"Failed to read or compile {py_file!r}: {e!r}")
                     continue
 
-                tools[name] = tool_func
-                funcs[name] = func
-                logger.debug(f"Loaded tool: {name!r} from {py_file!r}")
+                module = types.ModuleType(module_name)
+                module.__file__ = str_path
+                sys.modules[module_name] = module
+                registered_modules.append(module_name)
+                try:
+                    exec(compiled, module.__dict__)
+                except Exception as e:
+                    logger.error(f"Failed to execute tool module {py_file!r}: {e!r}")
+                    sys.modules.pop(module_name, None)
+                    registered_modules.pop()
+                    continue
+                except BaseException:
+                    sys.modules.pop(module_name, None)
+                    registered_modules.pop()
+                    raise
 
-            files[str_path] = FileEntry(
-                file_hash=file_hash,
-                tools=tools,
-                funcs=funcs,
-                fresh=True,
-            )
+                attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
+                tools: dict[str, ToolFunction] = {}
+                funcs: dict[str, Callable[..., Any]] = {}
+
+                for name in attr_names:
+                    func = getattr(module, name, None)
+                    if not inspect.iscoroutinefunction(func):
+                        continue
+
+                    try:
+                        tool_func = ToolFunction.from_callable(func)
+                    except (TypeError, NameError, AttributeError, SyntaxError, ValueError) as e:
+                        logger.error(f"Skipping tool {name!r} in {py_file!r}: {e!r}")
+                        continue
+
+                    tools[name] = tool_func
+                    funcs[name] = func
+                    logger.debug(f"Loaded tool: {name!r} from {py_file!r}")
+
+                files[str_path] = FileEntry(
+                    file_hash=file_hash,
+                    tools=tools,
+                    funcs=funcs,
+                    fresh=True,
+                )
+        except BaseException:
+            for mn in registered_modules:
+                sys.modules.pop(mn, None)
+            raise
 
         total_tools = sum(len(entry.tools) for entry in files.values())
         logger.info(f"Loaded {total_tools} tool(s) from {len(files)} file(s) in {tools_dir!r}")

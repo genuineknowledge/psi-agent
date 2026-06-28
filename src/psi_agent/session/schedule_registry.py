@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import time
+from contextlib import aclosing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -171,13 +172,16 @@ class ScheduleRegistry:
 
                         async with agent._lock:
                             pending_chunks: list[AgentChunk] = []
-                            async for chunk in agent.run(msg):
-                                pending_chunks.append(chunk)
-                                logger.debug(
-                                    f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}"
+                            async with aclosing(agent.run(msg)) as chunks:
+                                async for chunk in chunks:
+                                    pending_chunks.append(chunk)
+                                    logger.debug(
+                                        f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}"
+                                    )
+                                agent.set_pending_schedule_chunks(pending_chunks)
+                                logger.info(
+                                    f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)"
                                 )
-                            agent.set_pending_schedule_chunks(pending_chunks)
-                            logger.info(f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)")
                     except Exception as e:
                         logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
         finally:

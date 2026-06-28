@@ -6,7 +6,8 @@ agent/lock/``run()`` references.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Any
 
 from aiohttp import web
@@ -48,17 +49,18 @@ class ChannelAdapter:
         return user_message, body
 
     @staticmethod
-    async def write(response: web.StreamResponse, chunks: AsyncIterator[AgentChunk]) -> None:
+    async def write(response: web.StreamResponse, chunks: AsyncGenerator[AgentChunk]) -> None:
         """Consume the agent's ``AgentChunk`` iterator and write SSE to *response*.
 
         Handles ``AgentError`` and unexpected exceptions by writing an error
         ``ChatCompletionChunk`` (with ``finish_reason="error"``) before returning.
         """
         try:
-            async for chunk in chunks:
-                await response.write(ChannelAdapter._to_sse(chunk))
-                logger.debug(f"SSE chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
-            await response.write(b"data: [DONE]\n\n")
+            async with aclosing(chunks):
+                async for chunk in chunks:
+                    await response.write(ChannelAdapter._to_sse(chunk))
+                    logger.debug(f"SSE chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
+                await response.write(b"data: [DONE]\n\n")
         except AgentError as e:
             await ChannelAdapter._write_error(response, e.message)
             logger.warning(f"Agent error: {e.message!r}")

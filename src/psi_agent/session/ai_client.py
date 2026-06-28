@@ -6,7 +6,7 @@ and protocol types.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 import aiohttp
 from loguru import logger
@@ -24,7 +24,7 @@ class AiClient:
     def _build_connector_and_endpoint(self) -> tuple[aiohttp.BaseConnector, str]:
         return resolve_connector_and_endpoint(self.ai_socket)
 
-    async def stream(self, request_body: dict) -> AsyncIterator[AiDelta]:
+    async def stream(self, request_body: dict) -> AsyncGenerator[AiDelta]:
         connector, endpoint = self._build_connector_and_endpoint()
         async with (
             aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,

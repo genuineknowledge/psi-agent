@@ -89,12 +89,15 @@ class Conversation:
 
     async def save(self) -> None:
         """Overwrite the JSONL file with the current ``messages``.  Errors
-        are caught and logged — a failed save does not interrupt the session."""
+        are caught and logged — a failed save does not interrupt the session.
+        Uses a tempfile + rename for atomicity."""
         if self._path is None:
             return
         try:
             content = "\n".join(json.dumps(msg, ensure_ascii=False) for msg in self.messages) + "\n"
-            await anyio.Path(str(self._path)).write_text(content)
+            tmp_path = self._path.with_suffix(".jsonl.tmp")
+            await anyio.Path(str(tmp_path)).write_text(content)
+            await anyio.Path(str(tmp_path)).rename(str(self._path))
             logger.debug(f"History saved to {self._path} ({len(self.messages)} messages)")
         except Exception as e:
             logger.error(f"Failed to save history: {e}")
