@@ -321,3 +321,69 @@ async def test_ai_client_malformed_json_skipped():
         assert deltas[0].content == "good"
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_ai_client_choices_not_a_list():
+    """Malformed choices (not a list) → skipped, stream continues."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices": "not_a_list"}\n\n')
+        await resp.write(
+            b"data: "
+            + json.dumps({"id": "g", "choices": [{"delta": {"content": "good"}, "finish_reason": "stop"}]}).encode()
+            + b"\n\n"
+        )
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [d async for d in client.stream({"messages": [], "stream": True})]
+        assert len(deltas) == 1
+        assert deltas[0].content == "good"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_ai_client_choice_not_a_dict():
+    """Malformed choice (not a dict) → skipped, stream continues."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices": [42]}\n\n')
+        await resp.write(
+            b"data: "
+            + json.dumps({"id": "g", "choices": [{"delta": {"content": "good"}, "finish_reason": "stop"}]}).encode()
+            + b"\n\n"
+        )
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [d async for d in client.stream({"messages": [], "stream": True})]
+        assert len(deltas) == 1
+        assert deltas[0].content == "good"
+    finally:
+        await runner.cleanup()

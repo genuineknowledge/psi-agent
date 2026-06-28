@@ -53,6 +53,9 @@ class AiClient:
                     continue
 
                 choices_data = data.get("choices", [])
+                if not isinstance(choices_data, list):
+                    logger.warning(f"Expected choices as list, got {type(choices_data).__name__}")
+                    continue
                 if len(choices_data) > 1:
                     logger.warning(f"Expected 1 choice, got {len(choices_data)}, yielding error")
                     yield AiDelta(
@@ -63,6 +66,9 @@ class AiClient:
                     continue
 
                 c = choices_data[0]
+                if not isinstance(c, dict):
+                    logger.warning(f"Expected choice as dict, got {type(c).__name__}")
+                    continue
                 delta_data = c.get("delta")
                 if not isinstance(delta_data, dict):
                     delta_data = {}
