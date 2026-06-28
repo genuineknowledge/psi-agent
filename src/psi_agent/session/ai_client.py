@@ -28,7 +28,7 @@ class AiClient:
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:
                 error_text = await resp.text()
-                logger.error(f"AI error: {error_text[:500]}")
+                logger.error(f"AI error: {error_text[:500]!r}")
                 yield AiDelta(finish_reason="error", content=f"[AI Error: {resp.status}]")
                 return
 

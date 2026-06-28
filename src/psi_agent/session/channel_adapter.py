@@ -63,7 +63,7 @@ class ChannelAdapter:
                     await response.write(err_chunk.to_sse().encode())
                 except Exception:
                     logger.warning("Failed to write error chunk to SSE stream")
-                logger.warning(f"Agent error: {e.message}")
+                logger.warning(f"Agent error: {e.message!r}")
             except Exception as e:
                 err_chunk = ChatCompletionChunk(
                     id="error",
@@ -79,7 +79,7 @@ class ChannelAdapter:
                     await response.write(err_chunk.to_sse().encode())
                 except Exception:
                     logger.warning("Failed to write error chunk to SSE stream")
-                logger.error(f"Unexpected error in agent run: {e}")
+                logger.error(f"Unexpected error in agent run: {e!r}")
 
         logger.debug("Session request completed")
         return response

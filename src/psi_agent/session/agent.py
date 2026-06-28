@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import json
+import re
 import sys
 import uuid
 from collections.abc import AsyncIterator, Callable
@@ -200,21 +201,21 @@ class SessionAgent:
                             logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
                             args = {}
 
-                        logger.info(f"Executing tool: {func_name}({args})")
+                        logger.info(f"Executing tool: {func_name!r}({args!r})")
 
                         yield AgentChunk(reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]")
 
                         func = self._tool_funcs.get(func_name)
                         if func is None:
                             result = f"Error: Tool '{func_name}' not found"
-                            logger.error(result)
+                            logger.error(repr(result))
                         else:
                             try:
                                 result = await func(**args)
-                                logger.info(f"Tool result ({func_name}): {str(result)[:200]}")
+                                logger.info(f"Tool result ({func_name!r}): {str(result)[:200]!r}")
                             except Exception as e:
                                 result = f"Error executing tool '{func_name}': {e}"
-                                logger.error(result)
+                                logger.error(repr(result))
 
                         yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:500]}]")
 
@@ -253,6 +254,8 @@ async def _init_history(
     workspace_path: Path,
     session_id: str | None = None,
 ) -> tuple[list[dict], Path]:
+    if session_id is not None and not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
+        raise ValueError(f"Invalid session_id: {session_id!r} (only alphanumeric, dash, underscore allowed)")
     session_id = session_id or uuid.uuid4().hex
     logger.info(f"Starting session: {session_id}")
 
