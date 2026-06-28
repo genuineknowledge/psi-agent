@@ -152,6 +152,7 @@ class SessionAgent:
                 yield chunk
 
         self._conversation.add(user_message)
+        await self._conversation.save()
         logger.debug(f"History now has {len(self._conversation.messages)} messages")
 
         for _round in range(self._max_tool_rounds):
@@ -292,6 +293,7 @@ class SessionAgent:
                                     "content": str(result),
                                 }
                             )
+                            await self._conversation.save()
 
                         break
 
@@ -307,6 +309,7 @@ class SessionAgent:
                     if accumulated_reasoning:
                         assistant_msg["reasoning"] = accumulated_reasoning
                     self._conversation.add(assistant_msg)
+                await self._conversation.save()
                 return
 
         else:

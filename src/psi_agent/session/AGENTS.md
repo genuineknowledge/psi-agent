@@ -175,6 +175,6 @@ Session 支持将对话历史持久化到 `workspace/histories/{session_id}.json
 
 - `Session.session_id: str | None = None` — None 时自动生成 UUID，给定字符串时可 resume
 - 加载：`SessionAgent.create()` 中从 jsonl 逐行读取，非法行跳过 + warning
-- 保存：仅在 `finish_reason="stop"` 且 content 成功追加后，覆盖写入整个 history
-- error / tool_calls 中间状态 / 异常 → 不写盘
+- 保存：用户消息到达后立即持久化；``finish_reason="stop"`` 和 ``"tool_calls"`` 处理完成后也持久化；``finish_reason="error"`` 时不额外写盘（用户消息已写）
+- error 当前轮次不额外写盘（但用户消息已在 entry 时持久化）
 - 首次使用时自动创建 `histories/` 目录 + `.gitignore`（忽略全部文件）

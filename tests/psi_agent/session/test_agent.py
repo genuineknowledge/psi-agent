@@ -645,8 +645,8 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
                 pass
 
         loaded = await Conversation._load(history_path)
-        assert len(loaded) == 1
-        assert loaded[0]["content"] == "original"
+        assert len(loaded) == 2
+        assert loaded[0]["role"] == "system"
     finally:
         await runner.cleanup()
 
