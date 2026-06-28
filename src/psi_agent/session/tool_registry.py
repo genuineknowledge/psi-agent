@@ -185,6 +185,7 @@ class ToolRegistry:
         self.tools: dict[str, ToolFunction] = dict(tools or {})
         self._funcs: dict[str, Callable[..., Any]] = dict(funcs or {})
         self._tool_hashes: dict[str, str] = dict(file_hashes or {})
+        self._file_hashes: dict[str, str] = {}
         self._work_dir = work_dir
 
     def get(self, name: str) -> Callable[..., Any] | None:
@@ -196,8 +197,8 @@ class ToolRegistry:
     @classmethod
     async def load(cls, tools_dir: Path, session_id: str = "") -> ToolRegistry:
         """Full initial load — scan *tools_dir* and import everything."""
-        tools, funcs, file_hashes = await cls._load_from_dir(tools_dir, session_id)
-        return cls(tools=tools, funcs=funcs, file_hashes=file_hashes, work_dir=tools_dir)
+        tools, funcs, hashes, _ = await cls._load_from_dir(tools_dir, session_id)
+        return cls(tools=tools, funcs=funcs, file_hashes=hashes, work_dir=tools_dir)
 
     async def refresh(self, session_id: str) -> dict[str, str]:
         """Incremental reload — adds, updates, removes tools.
@@ -209,7 +210,9 @@ class ToolRegistry:
             logger.warning("No work_dir set, cannot refresh tools")
             return {}
 
-        new_tools, new_funcs, new_hashes = await self._load_from_dir(self._work_dir, session_id)
+        new_tools, new_funcs, new_hashes, new_file_hashes = await self._load_from_dir(
+            self._work_dir, session_id, self._file_hashes
+        )
         result: dict[str, str] = {}
 
         # removed — in registry but no longer on disk
@@ -232,6 +235,7 @@ class ToolRegistry:
             else:
                 result[name] = "skipped"
         self._tool_hashes = new_hashes
+        self._file_hashes = new_file_hashes
         changed = {k: v for k, v in result.items() if v != "skipped"}
         logger.info(f"Tool refresh complete: {changed or 'no changes'}")
         return result
@@ -240,17 +244,22 @@ class ToolRegistry:
 
     @staticmethod
     async def _load_from_dir(
-        tools_dir: Path, session_id: str
-    ) -> tuple[dict[str, ToolFunction], dict[str, Callable[..., Any]], dict[str, str]]:
-        """Scan and import all tool ``.py`` files.  Returns (tools, funcs, file_hashes)."""
+        tools_dir: Path, session_id: str, skip_hashes: dict[str, str] | None = None
+    ) -> tuple[dict[str, ToolFunction], dict[str, Callable[..., Any]], dict[str, str], dict[str, str]]:
+        """Scan and import all tool ``.py`` files.  Returns (tools, funcs, tool_hashes).
+
+        If *skip_hashes* is provided, files whose hash matches the stored
+        value are skipped — a fast path for incremental refresh.
+        """
         tools: dict[str, ToolFunction] = {}
         callables: dict[str, Callable[..., Any]] = {}
+        tool_hashes: dict[str, str] = {}
         file_hashes: dict[str, str] = {}
         tools_anyio = anyio.Path(str(tools_dir))
 
         if not await tools_anyio.is_dir():
             logger.warning(f"Tools directory not found: {tools_dir}")
-            return tools, callables, file_hashes
+            return tools, callables, tool_hashes, file_hashes
 
         async for py_file in tools_anyio.glob("*.py"):
             if py_file.name.startswith("_"):
@@ -258,6 +267,11 @@ class ToolRegistry:
 
             file_bytes = await py_file.read_bytes()
             file_hash = hashlib.sha256(file_bytes).hexdigest()
+
+            if skip_hashes is not None and skip_hashes.get(str(py_file)) == file_hash:
+                continue
+
+            file_hashes[str(py_file)] = file_hash
 
             module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
 
@@ -292,8 +306,8 @@ class ToolRegistry:
 
                 tools[name] = tool_func
                 callables[name] = func
-                file_hashes[name] = file_hash
+                tool_hashes[name] = file_hash
                 logger.info(f"Loaded tool: {name} from {py_file}")
 
         logger.info(f"Loaded {len(tools)} tool(s) from {tools_dir}")
-        return tools, callables, file_hashes
+        return tools, callables, tool_hashes, file_hashes
