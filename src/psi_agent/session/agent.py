@@ -25,25 +25,17 @@ if TYPE_CHECKING:
     from psi_agent.session.scheduler import Schedule
 
 
-# ── SessionAgent ─────────────────────────────────────────────────────────────
-# The session is the heart of the psi-agent runtime.  It owns every piece of
-# state that a conversation needs — conversation history, available tools, cron
-# schedules, the lock that serialises concurrent channel requests, and the two
-# protocol adapters (AiClient for the AI side, ChannelAdapter for the channel
-# side).
-#
-# Design principle: ``__init__`` is a plain constructor that accepts already-
-# built components (test-friendly, no IO).  ``create()`` is the async factory
-# that assembles everything from a workspace directory (production path).
-# Together they avoid the "async __init__" anti-pattern.
-# ──────────────────────────────────────────────────────────────────────────────
-
 class SessionAgent:
+    """The session runtime — owns conversation state, tools, schedules, and the
+    lock that serialises concurrent channel requests.
+
+    Design principle: ``__init__`` takes already-built components (test-friendly,
+    no IO).  ``create()`` is the async factory that assembles everything from a
+    workspace directory (production path).  Together they avoid the "async
+    __init__" anti-pattern.
+    """
+
     # -- constructor ----------------------------------------------------------
-    # Takes already-constructed components.  Every parameter has a default
-    # (empty dict/list/None) so that tests can inject only the subset they
-    # care about.  ``create()`` (below) is the full factory.
-    # ------------------------------------------------------------------------
 
     def __init__(
         self,
@@ -61,6 +53,9 @@ class SessionAgent:
         history_path: Path | None = None,
         agent_uuid: str = "",
     ) -> None:
+        """Plain constructor — every parameter has a default so tests can
+        inject only the subset they need.  Use ``create()`` for production.
+        """
         self._ai_client = ai_client
         self._channel_socket = channel_socket
         self._channel_adapter = channel_adapter if channel_adapter is not None else ChannelAdapter()
@@ -80,16 +75,6 @@ class SessionAgent:
         self._agent_uuid = agent_uuid or uuid.uuid4().hex
 
     # -- factory --------------------------------------------------------------
-    # Production entry point.  Generates a UUID for this agent instance (used
-    # to isolate ``sys.modules`` entries when multiple agents share a process),
-    # then loads tools, schedules, system prompt, and persisted history from
-    # the workspace.
-    #
-    # ``system_prompt_rebuild_checker`` is an optional async function loaded
-    # from ``systems/system.py``.  If it returns True, the system prompt is
-    # rebuilt on the next ``run()`` call — this supports dynamic prompt
-    # refreshing without restarting the session.
-    # ------------------------------------------------------------------------
 
     @classmethod
     async def create(
@@ -101,6 +86,14 @@ class SessionAgent:
         max_tool_rounds: int = 128,
         session_id: str | None = None,
     ) -> SessionAgent:
+        """Production entry point.  Loads tools, schedules, system prompt,
+        and persisted history from *workspace_path*.
+
+        Generates a per-agent UUID used to isolate ``sys.modules`` entries
+        when multiple agents share a process.  ``system_prompt_rebuild_checker``
+        (loaded from ``systems/system.py``) enables runtime prompt refreshing
+        without restarting the session.
+        """
         agent_uuid = uuid.uuid4().hex
         tools, tool_funcs, file_hashes = await load_tools_from_workspace(
             workspace_path / "tools", agent_uuid
@@ -127,19 +120,18 @@ class SessionAgent:
         return agent
 
     # -- dynamic reload -------------------------------------------------------
-    # Tools and schedules can be added at runtime without restarting.
-    # ``set_task_group()`` must be called first so that new schedule runners
-    # can be spawned inside the session's task group.
-    #
-    # Tools are matched by SHA-256 file hash — only changed or new files are
-    # reloaded.  Schedules are de-duplicated by name; already-running schedules
-    # are not restarted.
-    # ------------------------------------------------------------------------
 
     def set_task_group(self, tg: Any) -> None:
+        """Register the task group so new schedule runners can be spawned."""
         self._tg = tg
 
     async def reload_tools(self) -> dict[str, str]:
+        """Rescan ``workspace/tools/`` and load new or modified tools.
+
+        Tools are matched by SHA-256 file hash — only changed files trigger
+        a reload.  Returns a mapping of tool name to status
+        (``'added'`` / ``'updated'`` / ``'skipped'``).
+        """
         if self._workspace_path is None:
             logger.warning("No workspace_path set, cannot reload tools")
             return {}
@@ -165,6 +157,11 @@ class SessionAgent:
         return result
 
     async def reload_schedules(self) -> list[Schedule]:
+        """Rescan ``workspace/schedules/`` and start runners for new schedules.
+
+        Schedules are de-duplicated by name — already-running schedules are
+        not restarted.
+        """
         if self._workspace_path is None:
             logger.warning("No workspace_path set, cannot reload schedules")
             return []
@@ -183,13 +180,14 @@ class SessionAgent:
         return added
 
     # -- system prompt --------------------------------------------------------
-    # Built lazily on the first ``run()``.  Later calls consult
-    # ``system_prompt_rebuild_checker`` — if the workspace defines this
-    # function and it returns True, the system prompt is replaced in-place
-    # (``history[0]`` is overwritten).
-    # ------------------------------------------------------------------------
 
     async def _build_system_prompt(self) -> None:
+        """Build the system prompt and append it to history.
+
+        Called lazily on the first ``run()``.  The rebuild checker (loaded
+        from ``systems/system.py``) may trigger an in-place replacement on
+        subsequent calls.
+        """
         assert self._system_prompt_builder is not None
         try:
             sp = await self._system_prompt_builder()
@@ -199,22 +197,22 @@ class SessionAgent:
             logger.error(f"Failed to build system prompt: {e}")
 
     # -- channel request lifecycle --------------------------------------------
-    # ``handle_request`` is the aiohttp handler registered by ``serve_session``.
-    #
-    # It owns the full request lifecycle in one place:
-    #   1. parse HTTP body → ``user_message`` + ``extra_params``
-    #   2. create SSE ``StreamResponse``
-    #   3. acquire the session lock, ``prepare()`` the response (client sees
-    #      200 only after the lock is acquired — this is deliberate: the HTTP
-    #      status doubles as a fairness signal)
-    #   4. run the agent loop and stream chunks through ChannelAdapter
-    #   5. release the lock (``async with``)
-    #
-    # The lock is owned by the agent, not by the transport layer.  This keeps
-    # the concurrency policy visible at a glance.
-    # ------------------------------------------------------------------------
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
+        """aiohttp handler registered by ``serve_session``.
+
+        Owns the full request lifecycle in one method:
+        1. parse HTTP body → ``user_message`` + ``extra_params``
+        2. create SSE ``StreamResponse``
+        3. acquire the session lock → ``prepare()`` the response (the client
+           sees HTTP 200 only after lock acquisition — status doubles as a
+           fairness signal)
+        4. run the agent loop and stream chunks via ChannelAdapter
+        5. release the lock (``async with``)
+
+        The lock is owned by the agent, not by the transport layer, so the
+        concurrency policy is visible at a glance.
+        """
         try:
             user_message, extra_params = await self._channel_adapter.parse_request(request)
         except ChannelAdapter.ParseError as e:
@@ -247,42 +245,43 @@ class SessionAgent:
         return response
 
     # -- schedule ↔ channel interleaving --------------------------------------
-    # When a cron schedule fires, its AI response is stored as a list of
-    # ``AgentChunk`` via ``set_pending_schedule_chunks()``.  The VERY NEXT
-    # channel request that acquires the lock will yield these chunks first,
-    # then process the user's message normally.  This gives the illusion of
-    # the schedule "talking" through the channel without a separate push
-    # mechanism.
-    # ------------------------------------------------------------------------
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
+        """Store schedule-produced chunks for the next channel request.
+
+        When a cron schedule fires, its AI response is stored via this method.
+        The very next ``run()`` call will yield these chunks before processing
+        the user's message — giving the illusion of the schedule "talking"
+        through the channel without a push mechanism.
+        """
         self._pending_schedule_chunks = chunks
 
     # -- agent loop -----------------------------------------------------------
-    # ``run()`` is an async generator — it yields ``AgentChunk`` (pure semantic
-    # output: content + reasoning) and consumes ``AiDelta`` from the AI backend
-    # via ``AiClient.stream()``.
-    #
-    # The loop is a classic ReAct pattern:
-    #   send (history + tools) → receive SSE stream → dispatch on finish_reason
-    #
-    # finish_reason  dispatch
-    # ─────────────  ────────────────────────────────────────────────────────
-    # stop            Save assistant reply to history, return (loop ends).
-    # tool_calls      Accumulate partial tool-calls, execute them one by one,
-    #                 append results to history, loop back for the next round.
-    # error           Raise ``AgentError`` — no history is saved.  Caught by
-    #                 ``ChannelAdapter.write()`` which turns it into an SSE
-    #                 error chunk for the channel client.
-    # <unrecognised>  Save whatever content we have and return.
-    #
-    # Tool execution is deliberately fault-tolerant: broken JSON in arguments
-    # falls back to ``{}``, missing tools produce an error result, and tool
-    # exceptions are caught and reported as result text.  Nothing interrupts
-    # the loop.
-    # ------------------------------------------------------------------------
 
     async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[AgentChunk]:
+        """Run one turn of the ReAct agent loop.
+
+        Yields ``AgentChunk`` (content + reasoning) to the channel side and
+        consumes ``AiDelta`` from the AI backend.  The loop sends
+        ``history + tools`` to the AI, streams the response, and dispatches on
+        ``finish_reason``:
+
+        ==============  =====================================================
+        finish_reason   dispatch
+        ==============  =====================================================
+        ``stop``        Save assistant reply to history, return.
+        ``tool_calls``  Accumulate partial tool-calls, execute them one by
+                        one, append results to history, loop back.
+        ``error``       Raise ``AgentError`` — no history is saved.  Caught
+                        by ``ChannelAdapter.write()``.
+        unrecognised    Save whatever content we have and return.
+        ``max rounds``  Yield ``"[Max tool rounds reached]"`` and stop.
+        ==============  =====================================================
+
+        Tool execution is fault-tolerant: broken JSON falls back to ``{}``,
+        missing tools produce an error result string, tool exceptions are
+        caught and reported.  Nothing interrupts the loop.
+        """
         # ── system prompt (lazy + optional rebuild) ─────────────────────────
         if self._system_prompt_builder is not None:
             if not self.history:
@@ -477,18 +476,16 @@ class SessionAgent:
 
 
 # ── History persistence ──────────────────────────────────────────────────────
-# History is stored as JSONL (one JSON message per line) under
-# ``workspace/histories/{session_id}.jsonl``.
-#
-# Only saved on ``finish_reason="stop"`` — errors and intermediate tool-call
-# states are never persisted.  ``session_id`` is validated against path
-# traversal (only ``[a-zA-Z0-9_-]+`` allowed).
-# ──────────────────────────────────────────────────────────────────────────────
 
 async def _init_history(
     workspace_path: Path,
     session_id: str | None = None,
 ) -> tuple[list[dict], Path]:
+    """Create the histories directory and load an existing JSONL file.
+
+    ``session_id`` is validated (``[a-zA-Z0-9_-]+``) to prevent path traversal.
+    Returns the loaded message list and the path to the JSONL file.
+    """
     if session_id is not None and not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
         raise ValueError(f"Invalid session_id: {session_id!r} (only alphanumeric, dash, underscore allowed)")
     session_id = session_id or uuid.uuid4().hex
@@ -510,6 +507,7 @@ async def _init_history(
 
 
 async def _load_history(path: Path) -> list[dict]:
+    """Load conversation history from a JSONL file.  Corrupt lines are skipped."""
     history: list[dict] = []
     path_anyio = anyio.Path(str(path))
     if not await path_anyio.exists():
@@ -531,6 +529,11 @@ async def _load_history(path: Path) -> list[dict]:
 
 
 async def _save_history(path: Path, history: list[dict]) -> None:
+    """Overwrite a JSONL file with the current conversation history.
+
+    Only called on ``finish_reason="stop"`` — errors and intermediate
+    tool-call states are never persisted.  Errors are caught and logged.
+    """
     try:
         content = "\n".join(json.dumps(msg, ensure_ascii=False) for msg in history) + "\n"
         await anyio.Path(str(path)).write_text(content)
@@ -540,18 +543,17 @@ async def _save_history(path: Path, history: list[dict]) -> None:
 
 
 # ── System module loading ────────────────────────────────────────────────────
-# Imports ``system_prompt_builder`` and ``system_prompt_rebuild_checker`` from
-# ``workspace/systems/system.py`` using ``importlib``.
-#
-# The module name includes ``agent_uuid`` and a ``file_hash[:12]`` so that
-# multiple agents in the same process receive isolated ``sys.modules`` entries.
-# Without this, two agents sharing a workspace would collide on a hard-coded
-# ``psi_workspace_system`` key and see each other's already-imported module.
-# ──────────────────────────────────────────────────────────────────────────────
 
 def _load_system_module(
     workspace_path: Path, agent_uuid: str
 ) -> tuple[Callable[..., Any] | None, Callable[..., Any] | None]:
+    """Import ``system_prompt_builder`` and ``system_prompt_rebuild_checker``
+    from ``workspace/systems/system.py``.
+
+    The module name includes ``agent_uuid`` and ``file_hash[:12]`` so that
+    multiple agents in the same process receive isolated ``sys.modules``
+    entries.  Without this, two agents sharing a workspace would collide.
+    """
     system_py = workspace_path / "systems" / "system.py"
     try:
         file_bytes = system_py.read_bytes()
@@ -581,6 +583,7 @@ def _load_system_module(
 
 
 def _extract_async_func(module: object, name: str) -> Callable[..., Any] | None:
+    """Return *name* from *module* if it is an async function, else None."""
     func = getattr(module, name, None)
     if func is None or not inspect.iscoroutinefunction(func):
         return None
