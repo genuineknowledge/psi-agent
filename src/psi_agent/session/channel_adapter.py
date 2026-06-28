@@ -21,9 +21,12 @@ class ChannelAdapter:
     @staticmethod
     async def parse_request(request: web.Request) -> tuple[dict, dict]:
         try:
-            body: dict = await request.json()
+            body = await request.json()
         except Exception as e:
             raise ChannelAdapter.ParseError(str(e)) from e
+
+        if not isinstance(body, dict):
+            raise ChannelAdapter.ParseError("Request body must be a JSON object")
 
         messages = body.pop("messages", [])
         if not messages:

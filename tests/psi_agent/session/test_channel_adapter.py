@@ -187,6 +187,35 @@ async def test_handle_request_integration_invalid_json(tmp_path: Path):
 
 
 @pytest.mark.anyio
+async def test_handle_request_integration_non_dict_body(tmp_path: Path):
+    """JSON array as body (not an object) -> 400 response."""
+
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", agent.handle_request)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    socket_path = str(tmp_path / "s.sock")
+    site = web.UnixSite(runner, socket_path)
+    await site.start()
+    try:
+        await anyio.sleep(0.1)
+        connector = UnixConnector(path=socket_path)
+        timeout = ClientTimeout(total=5)
+        async with (
+            ClientSession(connector=connector, timeout=timeout) as s,
+            s.post(
+                "http://localhost/chat/completions",
+                json=[1, 2, 3],
+            ) as resp,
+        ):
+            assert resp.status == 400
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_handle_request_integration_empty_messages(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
 
