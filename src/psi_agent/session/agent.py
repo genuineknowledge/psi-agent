@@ -39,18 +39,18 @@ class SessionAgent:
         *,
         ai_client: AiClient,
         channel_adapter: ChannelAdapter | None = None,
+        conversation: Conversation | None = None,
         tool_registry: ToolRegistry | None = None,
         schedule_registry: ScheduleRegistry | None = None,
         system_prompt: SystemPrompt | None = None,
-        conversation: Conversation | None = None,
         max_tool_rounds: int = 128,
     ) -> None:
         self._ai_client = ai_client
         self._channel_adapter = channel_adapter or ChannelAdapter()
+        self._conversation = conversation or Conversation()
         self._tool_registry = tool_registry or ToolRegistry()
         self._schedule_registry = schedule_registry or ScheduleRegistry()
         self._system_prompt = system_prompt or SystemPrompt()
-        self._conversation = conversation or Conversation()
         self._max_tool_rounds = max_tool_rounds
         self._lock = anyio.Lock()
 
@@ -66,18 +66,18 @@ class SessionAgent:
         session_id: str | None = None,
     ) -> SessionAgent:
         """Production entry point.  Loads everything from *workspace_path*."""
+        ai_client = AiClient(ai_socket)
         conversation = await Conversation.from_workspace(workspace_path, session_id)
         tool_registry = await ToolRegistry.load(workspace_path / "tools", conversation.session_id)
         schedule_registry = await ScheduleRegistry.load(workspace_path / "schedules")
         system_prompt = await SystemPrompt.from_workspace(workspace_path, conversation.session_id)
-        ai_client = AiClient(ai_socket)
 
         return cls(
             ai_client=ai_client,
+            conversation=conversation,
             tool_registry=tool_registry,
             schedule_registry=schedule_registry,
             system_prompt=system_prompt,
-            conversation=conversation,
             max_tool_rounds=max_tool_rounds,
         )
 
