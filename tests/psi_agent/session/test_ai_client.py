@@ -76,9 +76,7 @@ async def test_ai_client_tool_calls():
             "choices": [
                 {
                     "index": 0,
-                    "delta": {
-                        "tool_calls": [{"index": 0, "function": {"arguments": '"Beijing"}'}}]
-                    },
+                    "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"Beijing"}'}}]},
                     "finish_reason": "tool_calls",
                 }
             ],

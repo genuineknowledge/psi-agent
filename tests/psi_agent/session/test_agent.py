@@ -151,9 +151,7 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
     mock_server = MockAIServer(tmp_path)
     ai_socket = await mock_server.start(handler)
     try:
-        agent = SessionAgent(
-            ai_client=AiClient(ai_socket), tools=tools, tool_funcs={"get_weather": _get_weather}
-        )
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tools=tools, tool_funcs={"get_weather": _get_weather})
 
         user_msg = {"role": "user", "content": "What's the weather in Beijing?"}
         chunks = []

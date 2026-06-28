@@ -8,8 +8,9 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
 from psi_agent.session.agent import SessionAgent
+from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
-from psi_agent.session.protocol import AgentChunk
+from psi_agent.session.protocol import AgentChunk, AgentError
 
 
 def test_to_chat_completion_chunk_content_only():
@@ -39,7 +40,7 @@ def test_to_chat_completion_chunk_both():
 async def test_channel_adapter_integration_valid_request(tmp_path: Path):
     """Full flow: valid request -> agent yields chunks -> SSE response."""
 
-    agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={})
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
 
     async def fake_run(user_message, extra_params=None):
         yield AgentChunk(content="hello")
@@ -87,9 +88,7 @@ async def test_channel_adapter_integration_valid_request(tmp_path: Path):
 async def test_channel_adapter_agent_error(tmp_path: Path):
     """Agent raises AgentError -> ChannelAdapter writes error SSE chunk."""
 
-    from psi_agent.session.protocol import AgentError
-
-    agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={})
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
 
     async def fake_run(user_message, extra_params=None):
         if False:
@@ -137,7 +136,7 @@ async def test_channel_adapter_agent_error(tmp_path: Path):
 async def test_channel_adapter_invalid_json_body(tmp_path: Path):
     """Non-JSON body -> 400 response."""
 
-    agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={})
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
     lock = anyio.Lock()
 
     app = web.Application()
@@ -168,7 +167,7 @@ async def test_channel_adapter_invalid_json_body(tmp_path: Path):
 async def test_channel_adapter_empty_messages(tmp_path: Path):
     """Empty messages list -> 400 response."""
 
-    agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={})
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
     lock = anyio.Lock()
 
     app = web.Application()
@@ -202,7 +201,7 @@ async def test_channel_adapter_empty_messages(tmp_path: Path):
 async def test_channel_adapter_non_agent_exception(tmp_path: Path):
     """Unexpected exception -> error SSE chunk with Session Error."""
 
-    agent = SessionAgent(ai_socket="http://nonexistent/v1", tools={})
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
 
     async def fake_run(user_message, extra_params=None):
         if False:

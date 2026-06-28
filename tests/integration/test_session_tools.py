@@ -161,7 +161,9 @@ async def test_max_tool_rounds_limit(mock_ai_server: MockAIServer) -> None:
         return "echo"
 
     tf = ToolFunction(name="echo", description="Echo", parameters={"type": "object", "properties": {}, "required": []})
-    agent = SessionAgent(ai_client=AiClient(base_url), tools={"echo": tf}, max_tool_rounds=10, tool_funcs={"echo": echo_tool})
+    agent = SessionAgent(
+        ai_client=AiClient(base_url), tools={"echo": tf}, max_tool_rounds=10, tool_funcs={"echo": echo_tool}
+    )
 
     chunks = []
     async for c in agent.run({"role": "user", "content": "loop"}):
