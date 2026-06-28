@@ -38,7 +38,7 @@ class ChannelCore:
 
     async def post(self, chunks: list[InputChunk]) -> AsyncIterator[OutputChunk]:
         logger.debug(
-            f"post: {len(chunks)} chunk(s) — "
+            f"{len(chunks)} chunk(s) — "
             f"FileChunks={sum(1 for c in chunks if isinstance(c, FileChunk))} "
             f"TextChunks={sum(1 for c in chunks if isinstance(c, TextChunk))}"
         )
@@ -49,9 +49,9 @@ class ChannelCore:
         buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()
 
-        logger.debug(f"  POST {self._endpoint} content_len={len(content)}")
+        logger.debug(f"POST {self._endpoint} content_len={len(content)}")
         async with self._session.post(self._endpoint, json=body) as resp:
-            logger.debug(f"  HTTP {resp.status}")
+            logger.debug(f"HTTP {resp.status}")
 
             if resp.status != 200:
                 msg = await resp.text()
@@ -60,7 +60,7 @@ class ChannelCore:
                     msg = error.get("error", {}).get("message", msg)
                 except Exception:
                     pass
-                logger.debug(f"  non-200 error: {msg}")
+                logger.debug(f"non-200 error: {msg}")
                 raise ChannelError(msg)
 
             async for delta in iter_sse_events(resp.content):
@@ -75,11 +75,11 @@ class ChannelCore:
                         yield _to_chunk(k, t)
 
                     if incoming_kind == "text":
-                        logger.debug(f"  delta.content ({len(text)} chars): {text[:60]}")
+                        logger.debug(f"delta.content ({len(text)} chars): {text[:60]}")
                         for file_chunk in scanner.feed(text):
                             yield file_chunk
                     else:
-                        logger.debug(f"  delta.reasoning ({len(text)} chars): {text[:60]}")
+                        logger.debug(f"delta.reasoning ({len(text)} chars): {text[:60]}")
 
                     for k, t in buffer.append(text):
                         yield _to_chunk(k, t)

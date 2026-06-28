@@ -33,18 +33,18 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncIterator[dict[str
             continue
         data_str = line[6:]
         if data_str == "[DONE]":
-            logger.debug("  SSE stream ended [DONE]")
+            logger.debug("SSE stream ended [DONE]")
             return
 
         try:
             data = json.loads(data_str)
         except json.JSONDecodeError:
-            logger.debug(f"  skip malformed SSE: {line[:80]}")
+            logger.debug(f"skip malformed SSE: {line[:80]}")
             continue
 
         choices = data.get("choices", [])
         if not choices:
-            logger.debug("  skip chunk with 0 choices (heartbeat)")
+            logger.debug("skip chunk with 0 choices (heartbeat)")
             continue
         if len(choices) != 1:
             raise ChannelError(f"Expected exactly 1 choice, got {len(choices)}")
@@ -53,7 +53,7 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncIterator[dict[str
         if choice.get("finish_reason") == "error":
             delta = choice.get("delta", {})
             msg = delta.get("content", "Session error")
-            logger.debug(f"  finish_reason=error: {msg}")
+            logger.debug(f"finish_reason=error: {msg}")
             raise ChannelError(msg)
 
         yield choice.get("delta", {})
@@ -79,7 +79,7 @@ class StreamBuffer:
     def switch(self, incoming_kind: str) -> list[tuple[str | None, str]]:
         out: list[tuple[str | None, str]] = []
         if self._kind is not None and incoming_kind != self._kind and self._buf:
-            logger.debug(f"  type switch → flush {self._label()} ({len(self._buf)} chars)")
+            logger.debug(f"type switch → flush {self._label()} ({len(self._buf)} chars)")
             out.append((self._kind, self._buf))
             self._buf = ""
             self._timer_target = None
@@ -91,7 +91,7 @@ class StreamBuffer:
         if self._timer_target is None:
             self._timer_target = time.monotonic() + self._interval
         if time.monotonic() >= self._timer_target:
-            logger.debug(f"  timer expired → yield {self._label()} ({len(self._buf)} chars)")
+            logger.debug(f"timer expired → yield {self._label()} ({len(self._buf)} chars)")
             out: list[tuple[str | None, str]] = [(self._kind, self._buf)]
             self._buf = ""
             self._timer_target = None
@@ -100,7 +100,7 @@ class StreamBuffer:
 
     def flush(self) -> list[tuple[str | None, str]]:
         if self._buf:
-            logger.debug(f"  stream end flush → {self._label()} ({len(self._buf)} chars)")
+            logger.debug(f"stream end flush → {self._label()} ({len(self._buf)} chars)")
             out: list[tuple[str | None, str]] = [(self._kind, self._buf)]
             self._buf = ""
             return out

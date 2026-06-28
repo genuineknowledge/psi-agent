@@ -28,7 +28,7 @@ def encode_input(chunks: list[InputChunk]) -> str:
     for chunk in chunks:
         if isinstance(chunk, FileChunk):
             marker = RECV_MARKER.format(path=chunk.path)
-            logger.debug(f"  FileChunk → {marker}")
+            logger.debug(f"FileChunk → {marker}")
             parts.append(marker)
         elif isinstance(chunk, TextChunk):
             parts.append(chunk.text)
@@ -56,7 +56,7 @@ class SendMarkerScanner:
         for match in SEND_RE.finditer(new):
             path = match.group(1)
             if path not in self._emitted:
-                logger.debug(f"  [SEND] detected → FileChunk({path})")
+                logger.debug(f"[SEND] detected → FileChunk({path})")
                 out.append(FileChunk(path))
                 self._emitted.add(path)
             self._scan_ptr = base + match.end()
