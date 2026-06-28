@@ -282,3 +282,68 @@ async def test_handle_request_integration_generic_exception(tmp_path: Path):
         assert "boom" in all_text
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_handle_request_integration_messages_not_list(tmp_path: Path):
+    """messages field is not a list → 400."""
+
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", agent.handle_request)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    socket_path = str(tmp_path / "s.sock")
+    site = web.UnixSite(runner, socket_path)
+    await site.start()
+    try:
+        await anyio.sleep(0.1)
+        connector = UnixConnector(path=socket_path)
+        timeout = ClientTimeout(total=5)
+        async with (
+            ClientSession(connector=connector, timeout=timeout) as s,
+            s.post(
+                "http://localhost/chat/completions",
+                json={"messages": "not_a_list", "stream": True},
+            ) as resp,
+        ):
+            assert resp.status == 400
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_handle_request_integration_message_not_dict(tmp_path: Path):
+    """Last message is not a dict → coerced to user message, should not crash."""
+
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry(tools={}))
+
+    async def fake_run(user_message, extra_params=None):
+        # Verify coercion: 42 → {"role": "user", "content": "42"}
+        assert user_message == {"role": "user", "content": "42"}
+        yield AgentChunk(content="ok")
+
+    agent.run = fake_run
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", agent.handle_request)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    socket_path = str(tmp_path / "s.sock")
+    site = web.UnixSite(runner, socket_path)
+    await site.start()
+    try:
+        await anyio.sleep(0.1)
+        connector = UnixConnector(path=socket_path)
+        timeout = ClientTimeout(total=5)
+        async with (
+            ClientSession(connector=connector, timeout=timeout) as s,
+            s.post(
+                "http://localhost/chat/completions",
+                json={"messages": [42], "stream": True},
+            ) as resp,
+        ):
+            assert resp.status == 200
+    finally:
+        await runner.cleanup()

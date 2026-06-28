@@ -35,11 +35,13 @@ class ChannelAdapter:
             raise ChannelAdapter.ParseError("Request body must be a JSON object")
 
         messages = body.pop("messages", [])
-        if not messages:
+        if not isinstance(messages, list) or not messages:
             raise ChannelAdapter.ParseError("No messages in request")
 
         user_message = messages[-1]
-        if user_message.get("role") != "user":
+        if not isinstance(user_message, dict):
+            user_message = {"role": "user", "content": str(user_message)}
+        elif user_message.get("role") != "user":
             user_message = {"role": "user", "content": str(user_message.get("content", ""))}
 
         return user_message, body
