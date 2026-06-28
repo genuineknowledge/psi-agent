@@ -14,6 +14,7 @@ from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.gateway._tray import GatewayTray
 from psi_agent.gateway.server import create_app
 
 
@@ -73,9 +74,16 @@ class Gateway:
         if self.browser:
             await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
 
+        tray = GatewayTray(addr)
         try:
-            await anyio.sleep_forever()
+            tray.start()
+        except Exception as e:
+            logger.warning(f"Failed to start system tray: {e}")
+
+        try:
+            await anyio.to_thread.run_sync(tray._stop_event.wait)  # ty: ignore
         finally:
+            tray.stop()
             logger.info("Shutting down Gateway")
             with anyio.CancelScope(shield=True):
                 await runner.cleanup()
