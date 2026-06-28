@@ -79,7 +79,7 @@ async def load_schedules_from_workspace(schedules_dir: Path) -> list[Schedule]:
     return schedules
 
 
-async def run_one_schedule(schedule: Schedule, agent: SessionAgent, lock: anyio.Lock) -> None:
+async def run_one_schedule(schedule: Schedule, agent: SessionAgent) -> None:
     """Perpetual coroutine that fires a schedule on its cron interval.
 
     Maintains its own croniter — Schedule is pure configuration.
@@ -102,7 +102,7 @@ async def run_one_schedule(schedule: Schedule, agent: SessionAgent, lock: anyio.
             logger.info(f"Schedule triggered: {schedule.name}")
             msg = {"role": "user", "content": schedule.task_content}
 
-            async with lock:
+            async with agent._lock:
                 pending_chunks: list[AgentChunk] = []
                 async for chunk in agent.run(msg):
                     pending_chunks.append(chunk)

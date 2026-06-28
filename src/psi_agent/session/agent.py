@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+from aiohttp import web
 from loguru import logger
 
 from psi_agent.session.ai_client import AiClient
+from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.protocol import AgentChunk, AgentError, ToolFunction
 from psi_agent.session.scheduler import load_schedules_from_workspace
 from psi_agent.session.tools import load_tools_from_workspace
@@ -40,6 +42,7 @@ class SessionAgent:
         self.history = history if history is not None else []
         self._history_path = history_path
         self._pending_schedule_chunks: list[AgentChunk] = []
+        self._lock = anyio.Lock()
 
     @classmethod
     async def create(
@@ -65,6 +68,10 @@ class SessionAgent:
             history=history,
             history_path=history_path,
         )
+
+    async def handle_request(self, request: web.Request) -> web.StreamResponse:
+        """aiohttp handler for Channel requests — delegates to ChannelAdapter."""
+        return await ChannelAdapter.handle(request, self, self._lock)
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
         self._pending_schedule_chunks = chunks

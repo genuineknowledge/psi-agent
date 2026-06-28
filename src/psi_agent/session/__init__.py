@@ -5,12 +5,10 @@ from functools import partial
 from pathlib import Path
 
 import anyio
-from aiohttp import web
 from loguru import logger
 
 from psi_agent._logging import setup_logging
 from psi_agent.session.agent import SessionAgent
-from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.scheduler import run_one_schedule
 from psi_agent.session.server import serve_session
 
@@ -39,12 +37,7 @@ class Session:
             session_id=self.session_id,
         )
 
-        lock = anyio.Lock()
-
-        async def channel_handler(request: web.Request) -> web.StreamResponse:
-            return await ChannelAdapter.handle(request, agent, lock)
-
         async with anyio.create_task_group() as tg:
-            tg.start_soon(partial(serve_session, channel_socket=self.channel_socket, handler=channel_handler))
+            tg.start_soon(partial(serve_session, channel_socket=self.channel_socket, agent=agent))
             for schedule in agent.schedules:
-                tg.start_soon(partial(run_one_schedule, schedule, agent, lock))
+                tg.start_soon(partial(run_one_schedule, schedule, agent))

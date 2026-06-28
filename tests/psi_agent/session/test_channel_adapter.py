@@ -49,10 +49,9 @@ async def test_channel_adapter_integration_valid_request(tmp_path: Path):
     agent.run = fake_run
 
     app = web.Application()
-    lock = anyio.Lock()
 
     async def handler(request: web.Request) -> web.StreamResponse:
-        return await ChannelAdapter.handle(request, agent, lock)
+        return await ChannelAdapter.handle(request, agent, agent._lock)
 
     app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
@@ -98,10 +97,9 @@ async def test_channel_adapter_agent_error(tmp_path: Path):
     agent.run = fake_run
 
     app = web.Application()
-    lock = anyio.Lock()
 
     async def handler(request: web.Request) -> web.StreamResponse:
-        return await ChannelAdapter.handle(request, agent, lock)
+        return await ChannelAdapter.handle(request, agent, agent._lock)
 
     app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
@@ -211,10 +209,9 @@ async def test_channel_adapter_non_agent_exception(tmp_path: Path):
     agent.run = fake_run
 
     app = web.Application()
-    lock = anyio.Lock()
 
     async def handler(request: web.Request) -> web.StreamResponse:
-        return await ChannelAdapter.handle(request, agent, lock)
+        return await ChannelAdapter.handle(request, agent, agent._lock)
 
     app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
