@@ -7,7 +7,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from psi_agent.channel._core import ChannelCore
-from psi_agent.channel._types import TextChunk
+from psi_agent.channel._types import ReasoningChunk, TextChunk
 
 console = Console(highlight=False)
 
@@ -36,7 +36,9 @@ async def run_repl(session_socket: str) -> None:
                 console.print()
                 try:
                     async for chunk in core.post([TextChunk(user_input)]):
-                        if isinstance(chunk, TextChunk):
+                        if isinstance(chunk, ReasoningChunk):
+                            console.print(chunk.text, end="", style="dim")
+                        elif isinstance(chunk, TextChunk):
                             console.print(chunk.text, end="")
                 except Exception as e:
                     logger.error(f"REPL error: {e}")
