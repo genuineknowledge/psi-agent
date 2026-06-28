@@ -8,8 +8,8 @@ import anyio
 from loguru import logger
 
 from psi_agent._logging import setup_logging
+from psi_agent.session._server import serve_session
 from psi_agent.session.agent import SessionAgent
-from psi_agent.session.server import serve_session
 
 
 @dataclass
