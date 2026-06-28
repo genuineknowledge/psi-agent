@@ -179,6 +179,10 @@ class SessionAgent:
             accumulated_reasoning: str = ""
 
             async for delta in self._ai_client.stream(request_body):
+                logger.debug(
+                    f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
+                    f"finish_reason={delta.finish_reason!r}, tools={len(delta.tool_calls) if delta.tool_calls else 0}"
+                )
                 if delta.content:
                     yield AgentChunk(content=delta.content)
                     accumulated_content += delta.content
@@ -213,6 +217,10 @@ class SessionAgent:
 
                 if finish_reason == "stop":
                     logger.debug("AI finished with stop")
+                    logger.debug(
+                        f"Stop: content={len(accumulated_content)} chars, "
+                        f"reasoning={len(accumulated_reasoning)} chars"
+                    )
                     if accumulated_content or accumulated_reasoning:
                         assistant_msg: dict = {"role": "assistant"}
                         if accumulated_content:
@@ -251,14 +259,14 @@ class SessionAgent:
                         func = self._tool_registry.get(func_name)
                         if func is None:
                             result = f"Error: Tool '{func_name}' not found"
-                            logger.error(repr(result))
+                            logger.error(f"Tool not found: {func_name!r}")
                         else:
                             try:
                                 result = await func(**args)
                                 logger.info(f"Tool result ({func_name!r}): {str(result)[:200]!r}")
                             except Exception as e:
                                 result = f"Error executing tool '{func_name}': {e}"
-                                logger.error(repr(result))
+                                logger.error(f"Tool execution error ({func_name!r}): {e!r}")
 
                         yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:500]}]")
 
