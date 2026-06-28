@@ -153,8 +153,9 @@ SSE 流中的特殊字段：
 
 - **框架**: `pytest` + `pytest-asyncio`（`asyncio_mode = "auto"`，anyio backend）
 - **异步测试**: `@pytest.mark.anyio`
-- **测试目录结构**: 镜像 `src/psi_agent/`
-- **集成测试**: 独立目录 `tests/integration/`，用 `tests/__init__.py` 和 `tests/integration/__init__.py` 使 test 目录成为 package
+- **测试目录结构**: 镜像 `src/psi_agent/`（如 `ai/server.py` → `tests/psi_agent/ai/test_server.py`）
+- **整个 `tests/` 树是 package**: 每层目录都放 `__init__.py`（`tests/__init__.py`、`tests/psi_agent/__init__.py`、`tests/psi_agent/ai/__init__.py`……）。这样 pytest 以**全限定模块名**导入测试，不同目录下允许同名文件并存（如 `ai/test_server.py` 与 `session/test_server.py`）。**漏掉某层 `__init__.py`**会让同名 test 文件在默认 prepend import 模式下被当成顶层同名模块，触发 `import file mismatch` 冲突
+- **集成测试**: 放在独立目录 `tests/integration/`（同样含 `__init__.py`）
 - **无需 conftest path hack**: `uv sync` 将 psi-agent 安装为 editable package，`import psi_agent` 直接可用
 - **Mock AI socket**: `aiohttp.web.Application` + `UnixSite`/`SockSite`（获取随机端口用预绑定 socket）
 - **`@pytest.mark.schedule`**：标记需要 >30s 的 schedule 相关测试，`pytest -m "not schedule"` 跳过
@@ -185,8 +186,9 @@ async def handler(request):
 - **ruff**: `select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]`
 - **ty**: 全局 `ty check .`
 - **per-file-ignores**: **零条**。所有代码通过自身符合规则，不靠抑制
-- **仅 1 处 ty:ignore**（无法避免）：
-  - `conftest.py:109` — pytest async generator fixture 的返回类型局限（`yield` 导致函数被推断为 AsyncGenerator，与标注的 MockAIServer 冲突）
+- **核心代码（`src/` + `tests/`）仅 1 处 ty:ignore**（无法避免）：
+  - `tests/integration/conftest.py:109` — pytest async generator fixture 的返回类型局限（`yield` 导致函数被推断为 AsyncGenerator，与标注的 MockAIServer 冲突）
+- **例外**：`examples/` 下的示例 workspace（如 `a-serper-mcp-workspace/tools/_mcp.py`）含若干 `# ty: ignore`（动态 MCP 工具的运行时签名构造），属示例代码，不计入上述核心约定。
 
 `cast` 不能解决 conftest 的问题——`cast` 是表达式级工具，无法修改 async generator 函数的返回类型。`# ty: ignore` 是正确的标准解法。
 
