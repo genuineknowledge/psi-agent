@@ -1,3 +1,8 @@
+"""Left-side protocol adapter.  ``AiClient.stream()`` does HTTP→SSE
+parsing→``AiDelta``.  Self-contained — depends only on the socket resolver
+and protocol types.
+"""
+
 from __future__ import annotations
 
 import json

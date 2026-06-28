@@ -1,3 +1,5 @@
+"""Types shared across the session layer — data models and serialisation."""
+
 from __future__ import annotations
 
 import inspect

@@ -21,9 +21,15 @@ class SessionAgent:
     """The session runtime — conversation state, tools, schedules, and the
     lock that serialises concurrent channel requests.
 
+    **Delegation pattern**: all state lives in four registries
+    (``ToolRegistry``, ``ScheduleRegistry``, ``SystemPrompt``,
+    ``Conversation``) while the agent holds only the ``AiClient``,
+    ``ChannelAdapter``, ``Lock``, and ``max_tool_rounds``.
+
     Design principle: ``__init__`` takes already-built components.
     ``create()`` is the async factory that assembles everything from a
-    workspace directory.
+    workspace directory.  ``handle_request()`` owns the full request
+    lifecycle: parse → lock+prepare → run → write.
     """
 
     def __init__(

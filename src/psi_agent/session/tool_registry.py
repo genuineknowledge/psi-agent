@@ -1,3 +1,12 @@
+"""Tool loading and incremental refresh from ``workspace/tools/``.
+
+``ToolRegistry`` loads async Python functions from ``workspace/tools/``
+via ``importlib``, converts signatures to JSON Schema via
+``ToolFunction.from_callable()``, tracks SHA-256 file hashes for
+incremental refresh, and provides ``get(name)`` for tool execution
+lookup.
+"""
+
 from __future__ import annotations
 
 import hashlib

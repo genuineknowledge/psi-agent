@@ -1,3 +1,11 @@
+"""Scheduled tasks — data model, runner coroutine, and registry.
+
+Contains the ``Schedule`` dataclass, the ``run_one_schedule`` perpetual
+coroutine, and ``ScheduleRegistry`` which owns the schedule list and
+runtime lifecycle — loading from disk, starting runners, and incremental
+refresh.
+"""
+
 from __future__ import annotations
 
 import time

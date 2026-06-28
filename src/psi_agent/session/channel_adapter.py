@@ -1,3 +1,9 @@
+"""Right-side protocol adapter.  ``ChannelAdapter.parse_request()`` decodes
+HTTP JSON into ``(user_message, extra_params)``.  ``ChannelAdapter.write()``
+consumes an ``AgentChunk`` iterator and produces SSE.  Stateless — no
+agent/lock/``run()`` references.
+"""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator

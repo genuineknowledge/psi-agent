@@ -14,7 +14,13 @@ from psi_agent.session.server import serve_session
 
 @dataclass
 class Session:
-    """Start a session backed by a workspace and AI."""
+    """CLI entry point and orchestrator for the Session layer.
+
+    Creates a ``SessionAgent`` from a workspace, then starts the
+    ``serve_session`` server and all schedule runners in an anyio task
+    group.  The dataclass form makes it directly usable as a
+    ``tyro.cli`` subcommand.
+    """
 
     ai_socket: str
     channel_socket: str

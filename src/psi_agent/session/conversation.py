@@ -1,3 +1,11 @@
+"""Conversation history with JSONL persistence and schedule-pending buffer.
+
+``Conversation`` owns the conversation history (``list[dict]``), its
+JSONL backing file, and schedule-pending chunks.  ``session_id`` is
+derived from the filename stem — also reused for ``sys.modules``
+isolation.
+"""
+
 from __future__ import annotations
 
 import json

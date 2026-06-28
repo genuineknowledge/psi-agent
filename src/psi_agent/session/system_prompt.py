@@ -1,3 +1,12 @@
+"""System prompt lifecycle — lazy build from workspace, optional rebuild.
+
+The ``SystemPrompt`` factory is called ``from_workspace`` because it
+loads the user's ``system_prompt_builder`` function from
+``workspace/systems/system.py``.  Module names include a UUID-based
+``session_id`` plus a SHA-256 hash of the source file, ensuring
+``sys.modules`` isolation when multiple sessions share a process.
+"""
+
 from __future__ import annotations
 
 import hashlib

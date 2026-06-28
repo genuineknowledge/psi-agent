@@ -1,3 +1,5 @@
+"""aiohttp server that binds ``agent.handle_request`` to the channel socket."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -13,6 +15,13 @@ if TYPE_CHECKING:
 
 
 async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
+    """Create an aiohttp server that routes ``POST /chat/completions`` to
+    ``agent.handle_request``.
+
+    Cleanup in the ``finally`` block is wrapped in a shielded cancel
+    scope so that cancellation (e.g. from ``Session.__init__``'s task
+    group) cannot interrupt resource shutdown.
+    """
     logger.info(f"Starting session server on {channel_socket}")
 
     app = web.Application()
