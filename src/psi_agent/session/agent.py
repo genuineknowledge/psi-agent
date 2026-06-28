@@ -191,7 +191,7 @@ class SessionAgent:
             logger.info("Acquired session lock, processing request")
             await self._channel_adapter.write(response, self.run(user_message, extra_params))
 
-        logger.debug("Session request completed")
+        logger.info("Session request completed")
         return response
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
