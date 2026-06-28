@@ -256,7 +256,7 @@ class SessionAgent:
                         self._conversation.add(assistant_msg)
 
                         # pre-compute args + yield tool-call intent
-                        tool_args: list[tuple[int, dict, str, dict]] = []
+                        tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
                         for i, tc in enumerate(ordered_calls):
                             func_info = tc.get("function", {})
                             func_name = func_info.get("name", "")
@@ -278,7 +278,7 @@ class SessionAgent:
                         results: list[str] = [""] * len(ordered_calls)
 
                         async def _execute_one(
-                            idx: int, fn: str, a: dict, r: list[str]
+                            idx: int, fn: str, a: dict[str, Any], r: list[str]
                         ) -> None:
                             func = self._tool_registry.get(fn)
                             if func is None:
