@@ -78,17 +78,17 @@ src/
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
     │   ├── protocol.py             # Session 层类型
     ├── channel/
-        ├── AGENTS.md                # Channel 层设计文档
-        ├── __init__.py              # package marker
-        ├── _types.py               # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
-        ├── _errors.py              # ChannelError 异常基类
-        ├── _markers.py             # [RECV:]/[SEND:] 标记协议（纯函数 encode_input + SendMarkerScanner）
-        ├── _stream.py              # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
-        ├── _core.py                # ChannelCore — 连接管理 + post() 编排
-        ├── repl/                   # 交互式 REPL thin client
-        ├── cli/                    # 单次消息 CLI thin client
-        ├── telegram/               # Telegram bot channel
-        ├── feishu/                 # Feishu bot channel
+    │   ├── AGENTS.md                # Channel 层设计文档
+    │   ├── __init__.py              # package marker
+    │   ├── _types.py               # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
+    │   ├── _errors.py              # ChannelError 异常基类
+    │   ├── _markers.py             # [RECV:]/[SEND:] 标记协议（纯函数 encode_input + SendMarkerScanner）
+    │   ├── _stream.py              # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
+    │   ├── _core.py                # ChannelCore — 连接管理 + post() 编排
+    │   ├── repl/                   # 交互式 REPL thin client
+    │   ├── cli/                    # 单次消息 CLI thin client
+    │   ├── telegram/               # Telegram bot channel
+    │   ├── feishu/                 # Feishu bot channel
     └── gateway/
         ├── AGENTS.md                # Gateway 层设计文档
         ├── __init__.py              # Gateway dataclass + run()
