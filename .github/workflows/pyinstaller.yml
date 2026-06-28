@@ -32,8 +32,8 @@ jobs:
             --name psi-agent \
             --distpath pyinstaller-dist \
             --add-data "src/psi_agent/gateway/spa/dist:psi_agent/gateway/spa/dist" \
-            --hidden-import any_llm \
-            --hidden-import mcp \
+            --collect-submodules any_llm \
+            --collect-submodules mcp \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v5
         with:
