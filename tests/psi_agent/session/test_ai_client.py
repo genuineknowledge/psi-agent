@@ -228,6 +228,39 @@ async def test_ai_client_non_data_sse_skipped():
 
 
 @pytest.mark.anyio
+async def test_ai_client_reasoning_field():
+    """AiClient yields AiDelta with reasoning from SSE."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        data = {
+            "id": "r",
+            "choices": [{"delta": {"reasoning": "Let me think..."}, "finish_reason": "stop"}],
+        }
+        await resp.write(f"data: {json.dumps(data)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [d async for d in client.stream({"messages": [], "stream": True})]
+        assert len(deltas) == 1
+        assert deltas[0].reasoning == "Let me think..."
+        assert deltas[0].finish_reason == "stop"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_ai_client_null_delta_converted():
     """When delta is null (not a dict), it's treated as empty dict."""
 

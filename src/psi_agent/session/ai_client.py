@@ -28,10 +28,11 @@ class AiClient:
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:
                 error_text = await resp.text()
-                logger.error(f"AI error: {error_text[:500]!r}")
+                logger.error(f"AI error from {self.ai_socket!r}: {error_text[:500]!r}")
                 yield AiDelta(finish_reason="error", content=f"[AI Error: {resp.status}]")
                 return
 
+            logger.debug("Starting to consume SSE stream")
             async for raw_line in resp.content:
                 line = raw_line.decode().strip()
                 if not line or not line.startswith("data: "):
@@ -66,3 +67,4 @@ class AiClient:
                     tool_calls=delta_data.get("tool_calls"),
                     finish_reason=c.get("finish_reason"),
                 )
+            logger.debug("SSE stream consumed successfully")
