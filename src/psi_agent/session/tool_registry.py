@@ -237,7 +237,7 @@ class ToolRegistry:
             if name not in result:
                 result[name] = "skipped"
 
-        self._file_hashes = new_file_hashes
+        self._file_hashes.update(new_file_hashes)
         logger.info(f"Tool refresh complete: {result or 'no changes'}")
         return result
 
