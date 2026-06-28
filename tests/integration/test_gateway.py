@@ -11,12 +11,12 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, FormData, web
 
+from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._manager import (
     AiCreateRequest,
-    AIManager,
     SessionCreateRequest,
-    SessionManager,
 )
+from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway.server import create_app
 from tests.integration.conftest import MockAIServer
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 import anyio
 import pytest
 
-from psi_agent.gateway._manager import AiCreateRequest, AIManager, SessionCreateRequest, SessionManager
+from psi_agent.gateway._ai_manager import AIManager
+from psi_agent.gateway._manager import AiCreateRequest, SessionCreateRequest
+from psi_agent.gateway._session_manager import SessionManager
 
 
 @pytest.mark.anyio

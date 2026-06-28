@@ -12,7 +12,8 @@ from loguru import logger
 
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
-from psi_agent.gateway._manager import AIManager, SessionManager
+from psi_agent.gateway._ai_manager import AIManager
+from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway.server import create_app
 
 

@@ -11,15 +11,15 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._chat_manager import ChatManager
 from psi_agent.gateway._history_manager import HistoryManager
 from psi_agent.gateway._manager import (
     AiCreateRequest,
-    AIManager,
     SessionCreateRequest,
-    SessionManager,
 )
 from psi_agent.gateway._openapi import render_openapi
+from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._workspace_manager import WorkspaceManager
 
