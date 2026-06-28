@@ -13,4 +13,9 @@ class TextChunk:
     text: str
 
 
-Chunk = FileChunk | TextChunk
+@dataclass
+class ReasoningChunk:
+    text: str
+
+
+Chunk = FileChunk | TextChunk | ReasoningChunk

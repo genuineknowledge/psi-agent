@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from psi_agent.channel._types import FileChunk, TextChunk
+from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
 
 
 def test_file_chunk_construction():
@@ -21,3 +21,20 @@ def test_chunk_union_isinstance():
     assert isinstance(tc, TextChunk)
     assert not isinstance(fc, TextChunk)
     assert not isinstance(tc, FileChunk)
+
+
+def test_reasoning_chunk_construction():
+    rc = ReasoningChunk("thinking...")
+    assert rc.text == "thinking..."
+
+
+def test_reasoning_chunk_union_isinstance():
+    rc = ReasoningChunk("hmm")
+    tc = TextChunk("hi")
+    fc = FileChunk("/a.txt")
+
+    assert isinstance(rc, ReasoningChunk)
+    assert not isinstance(rc, TextChunk)
+    assert not isinstance(rc, FileChunk)
+    assert not isinstance(tc, ReasoningChunk)
+    assert not isinstance(fc, ReasoningChunk)
