@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator
 import aiohttp
 from loguru import logger
 
-from psi_agent._socket import resolve_connector_and_endpoint
+from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.session.protocol import AiDelta
 
 
