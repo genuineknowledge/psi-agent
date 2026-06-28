@@ -17,12 +17,12 @@ from psi_agent.session.server import serve_session
 class Session:
     """Start a session backed by a workspace and AI."""
 
-    channel_socket: str
     ai_socket: str
+    channel_socket: str
     workspace: str = ""
     max_tool_rounds: int = 128
-    verbose: bool = False
     session_id: str | None = None
+    verbose: bool = False
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
