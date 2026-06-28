@@ -168,6 +168,16 @@ class ToolFunction:
 
 @dataclass
 class DeltaMessage:
+    """One SSE delta fragment — OpenAI Chat Completion Chunk format.
+
+    Channel-side only.  ``ChannelAdapter.to_chat_completion_chunk()`` maps an
+    ``AgentChunk`` into a ``DeltaMessage``, then wraps it in a
+    ``ChatCompletionChunk`` for SSE serialisation.
+
+    The AI side uses ``AiDelta`` instead — ``DeltaMessage`` never appears in the
+    agent loop.
+    """
+
     content: str | None = None
     role: str | None = None
     reasoning: str | None = None
@@ -188,6 +198,12 @@ class DeltaMessage:
 
 @dataclass
 class StreamChoice:
+    """A single choice in a streaming Chat Completion Chunk.
+
+    Channel-side only.  Holds one ``DeltaMessage`` and an optional
+    ``finish_reason``.
+    """
+
     index: int = 0
     delta: DeltaMessage = field(default_factory=DeltaMessage)
     finish_reason: str | None = None
@@ -201,6 +217,12 @@ class StreamChoice:
 
 @dataclass
 class ChatCompletionChunk:
+    """OpenAI-compatible streaming Chat Completion Chunk.
+
+    Channel-side only.  ``ChannelAdapter`` constructs these from ``AgentChunk``
+    and serialises them as SSE ``data:`` lines via ``to_sse()``.
+    """
+
     id: str = "chatcmpl-unknown"
     object: str = "chat.completion.chunk"
     created: int = 0
@@ -219,7 +241,15 @@ class ChatCompletionChunk:
 
 
 class AgentError(Exception):
-    """Raised by run() when the agent encounters an unrecoverable error."""
+    """Unrecoverable error from the agent loop.
+
+    Raised by ``SessionAgent.run()`` when the AI backend returns a non-200
+    status or a stream with ``finish_reason="error"``.
+
+    Caught by ``ChannelAdapter.handle()``, which serialises it as a
+    ``ChatCompletionChunk`` with ``finish_reason="error"`` for the channel
+    client.
+    """
 
     def __init__(self, message: str):
         self.message = message
@@ -228,7 +258,12 @@ class AgentError(Exception):
 
 @dataclass
 class AgentChunk:
-    """Semantic output of the agent loop — content and/or reasoning."""
+    """Semantic output of ``SessionAgent.run()`` — content and/or reasoning.
+
+    The agent loop yields these to ``ChannelAdapter``, which converts them to
+    ``ChatCompletionChunk`` for SSE output.  Contains no protocol fields
+    (no ``id``, ``choices``, ``finish_reason``, etc.).
+    """
 
     content: str | None = None
     reasoning: str | None = None
@@ -236,7 +271,14 @@ class AgentChunk:
 
 @dataclass
 class AiDelta:
-    """Internal stream element from AiClient, consumed by run() to drive the agent loop."""
+    """Internal stream element from ``AiClient.stream()``.
+
+    Consumed by ``SessionAgent.run()`` to drive the agent loop.  Contains
+    SSE-level fields (``tool_calls`` as partial dicts, ``finish_reason``)
+    that the agent loop accumulates and acts on.
+
+    Never exposed to the Channel side.
+    """
 
     content: str | None = None
     reasoning: str | None = None
