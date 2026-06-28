@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -11,7 +10,14 @@ from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.channel._markers import SendMarkerScanner, encode_input
+from psi_agent.channel._stream import StreamBuffer, iter_sse_events
 from psi_agent.channel._types import FileChunk, InputChunk, OutputChunk, ReasoningChunk, TextChunk
+
+
+def _to_chunk(kind: str | None, text: str) -> OutputChunk:
+    if kind == "reasoning":
+        return ReasoningChunk(text)
+    return TextChunk(text)
 
 
 @dataclass
@@ -37,9 +43,7 @@ class ChannelCore:
         content = encode_input(chunks)
         body = {"messages": [{"role": "user", "content": content}], "stream": True}
 
-        buf = ""
-        kind: str | None = None
-        timer_target: float | None = None
+        buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()
 
         logger.debug(f"  POST {self._endpoint} content_len={len(content)}")
@@ -56,37 +60,7 @@ class ChannelCore:
                 logger.debug(f"  non-200 error: {msg}")
                 raise Exception(msg)
 
-            async for raw_line in resp.content:
-                line = raw_line.decode().strip()
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    logger.debug("  SSE stream ended [DONE]")
-                    break
-
-                try:
-                    data = json.loads(data_str)
-                except json.JSONDecodeError:
-                    logger.debug(f"  skip malformed SSE: {line[:80]}")
-                    continue
-
-                choices = data.get("choices", [])
-                if not choices:
-                    logger.debug("  skip chunk with 0 choices (heartbeat)")
-                    continue
-                if len(choices) != 1:
-                    raise Exception(f"Expected exactly 1 choice, got {len(choices)}")
-                choice = choices[0]
-
-                if choice.get("finish_reason") == "error":
-                    delta = choice.get("delta", {})
-                    msg = delta.get("content", "Session error")
-                    logger.debug(f"  finish_reason=error: {msg}")
-                    raise Exception(msg)
-
-                delta = choice.get("delta", {})
-
+            async for delta in iter_sse_events(resp.content):
                 for incoming_kind, text in (
                     ("reasoning", delta.get("reasoning") or ""),
                     ("text", delta.get("content") or ""),
@@ -94,18 +68,8 @@ class ChannelCore:
                     if not text:
                         continue
 
-                    if kind is not None and incoming_kind != kind and buf:
-                        if kind == "reasoning":
-                            logger.debug(f"  type switch → flush ReasoningChunk ({len(buf)} chars)")
-                            yield ReasoningChunk(buf)
-                        else:
-                            logger.debug(f"  type switch → flush TextChunk ({len(buf)} chars)")
-                            yield TextChunk(buf)
-                        buf = ""
-                        timer_target = None
-
-                    kind = incoming_kind
-                    buf += text
+                    for k, t in buffer.switch(incoming_kind):
+                        yield _to_chunk(k, t)
 
                     if incoming_kind == "text":
                         logger.debug(f"  delta.content ({len(text)} chars): {text[:60]}")
@@ -114,23 +78,8 @@ class ChannelCore:
                     else:
                         logger.debug(f"  delta.reasoning ({len(text)} chars): {text[:60]}")
 
-                    if timer_target is None:
-                        timer_target = time.monotonic() + self.interval
+                    for k, t in buffer.append(text):
+                        yield _to_chunk(k, t)
 
-                    if time.monotonic() >= timer_target:
-                        if kind == "reasoning":
-                            logger.debug(f"  timer expired → yield ReasoningChunk ({len(buf)} chars)")
-                            yield ReasoningChunk(buf)
-                        else:
-                            logger.debug(f"  timer expired → yield TextChunk ({len(buf)} chars)")
-                            yield TextChunk(buf)
-                        buf = ""
-                        timer_target = None
-
-        if buf:
-            if kind == "reasoning":
-                logger.debug(f"  stream end flush → ReasoningChunk ({len(buf)} chars)")
-                yield ReasoningChunk(buf)
-            else:
-                logger.debug(f"  stream end flush → TextChunk ({len(buf)} chars)")
-                yield TextChunk(buf)
+        for k, t in buffer.flush():
+            yield _to_chunk(k, t)

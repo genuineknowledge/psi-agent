@@ -5,7 +5,9 @@
 ```
 channel/
 ├── _types.py          # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
-├── _core.py           # ChannelCore — 连接管理 + SSE 管道
+├── _markers.py        # [RECV:]/[SEND:] 标记协议（encode_input + SendMarkerScanner，纯函数）
+├── _stream.py         # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
+├── _core.py           # ChannelCore — 连接管理 + post() 编排
 ├── cli/
 │   ├── __init__.py     # ChannelCli dataclass
 │   └── client.py       # 单次消息 thin client (~18行)
@@ -31,6 +33,7 @@ ChannelCore 是所有 Channel（CLI、REPL、Telegram）共享的公共部件：
 - 将 SSE 的 `delta.reasoning` 流切分为 `ReasoningChunk`，与 `content`（`TextChunk`）按到达顺序交错产出（类型切换时先 flush 旧类型）；`[SEND:...]` 仅扫描 content
 - SSE 内容在 interval 窗口内缓冲合并为单个 TextChunk（默认 1s，可配置）
 - 终端通道（CLI/REPL）设置 interval=0 无需缓冲
+- 内部委托：marker 编解码 → `_markers.py`；SSE 解析与 interval 缓冲 → `_stream.py`（均与 HTTP 传输解耦、可独立单测）
 
 Channel 客户端不再直接处理 HTTP、SSE 解析或错误格式。
 
