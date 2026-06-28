@@ -29,4 +29,5 @@ async def serve_session(*, agent: SessionAgent) -> None:
         await anyio.sleep_forever()
     finally:
         logger.info(f"Shutting down session server on {agent._channel_socket}")
-        await runner.cleanup()
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()

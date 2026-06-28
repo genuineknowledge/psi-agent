@@ -36,7 +36,12 @@ class ChannelAdapter:
         )
 
         async with lock:
-            await response.prepare(request)
+            try:
+                await response.prepare(request)
+            except Exception:
+                logger.warning("Failed to prepare SSE response, client likely disconnected")
+                return response
+
             logger.info("Acquired session lock, processing request")
             try:
                 async for chunk in agent.run(user_message, extra_params=extra_params):
@@ -54,7 +59,10 @@ class ChannelAdapter:
                         )
                     ],
                 )
-                await response.write(err_chunk.to_sse().encode())
+                try:
+                    await response.write(err_chunk.to_sse().encode())
+                except Exception:
+                    logger.warning("Failed to write error chunk to SSE stream")
                 logger.warning(f"Agent error: {e.message}")
             except Exception as e:
                 err_chunk = ChatCompletionChunk(
@@ -67,7 +75,10 @@ class ChannelAdapter:
                         )
                     ],
                 )
-                await response.write(err_chunk.to_sse().encode())
+                try:
+                    await response.write(err_chunk.to_sse().encode())
+                except Exception:
+                    logger.warning("Failed to write error chunk to SSE stream")
                 logger.error(f"Unexpected error in agent run: {e}")
 
         logger.debug("Session request completed")
