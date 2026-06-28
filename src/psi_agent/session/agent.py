@@ -69,12 +69,14 @@ class SessionAgent:
         conversation = await Conversation.from_workspace(workspace_path, session_id)
         tool_registry = await ToolRegistry.load(workspace_path / "tools", conversation.session_id)
         schedule_registry = await ScheduleRegistry.load(workspace_path / "schedules")
+        system_prompt = await SystemPrompt.from_workspace(workspace_path, conversation.session_id)
+        ai_client = AiClient(ai_socket)
 
         return cls(
-            ai_client=AiClient(ai_socket),
+            ai_client=ai_client,
             tool_registry=tool_registry,
             schedule_registry=schedule_registry,
-            system_prompt=await SystemPrompt.from_workspace(workspace_path, conversation.session_id),
+            system_prompt=system_prompt,
             conversation=conversation,
             max_tool_rounds=max_tool_rounds,
         )
