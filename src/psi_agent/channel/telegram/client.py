@@ -161,6 +161,7 @@ async def run_telegram(
         try:
             await anyio.Event().wait()
         finally:
-            await app.updater.stop()
-            await app.stop()
-            await app.shutdown()
+            with anyio.CancelScope(shield=True):
+                await app.updater.stop()
+                await app.stop()
+                await app.shutdown()

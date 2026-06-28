@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 import aiohttp
+import anyio
 from aiohttp import ClientTimeout
 from loguru import logger
 
@@ -32,7 +33,8 @@ class ChannelCore:
         return self
 
     async def __aexit__(self, *args: object) -> None:
-        await self._session.close()
+        with anyio.CancelScope(shield=True):
+            await self._session.close()
 
     async def post(self, chunks: list[InputChunk]) -> AsyncIterator[OutputChunk]:
         logger.debug(

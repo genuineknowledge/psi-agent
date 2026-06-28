@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import anyio
+import anyio.lowlevel
 import pytest
 from aiohttp import web
 
@@ -373,6 +374,36 @@ async def test_post_send_cross_chunk(tmp_path):
     assert file_chunks[0].path == "/tmp/out.py"
 
     await runner.cleanup()
+
+
+class _FakeSession:
+    def __init__(self) -> None:
+        self.close_called = False
+        self.closed = False
+
+    async def close(self) -> None:
+        self.close_called = True
+        await anyio.lowlevel.checkpoint()
+        self.closed = True
+
+
+@pytest.mark.anyio
+async def test_aexit_closes_session_even_when_cancelled(monkeypatch):
+    """__aexit__ must finish closing the session even while a cancel propagates."""
+    core = ChannelCore(session_socket="/tmp/x.sock")
+    fake = _FakeSession()
+    monkeypatch.setattr(core, "_session", fake, raising=False)
+
+    with anyio.CancelScope(shield=True):
+        with anyio.CancelScope() as scope:
+            scope.cancel()
+            try:
+                await core.__aexit__(None, None, None)
+            except anyio.get_cancelled_exc_class():
+                pass
+
+    assert fake.close_called
+    assert fake.closed
 
 
 @pytest.mark.anyio

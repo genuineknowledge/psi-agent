@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 from datetime import date
 from typing import Any
 
 import anyio
 import platformdirs
+from anyio.from_thread import BlockingPortal
 from lark_channel import FeishuChannel
 from lark_channel.api.im.v1.model.create_message_reaction_request import CreateMessageReactionRequest
 from lark_channel.api.im.v1.model.create_message_reaction_request_body import CreateMessageReactionRequestBody
@@ -185,11 +185,10 @@ async def run_feishu(
     channel = FeishuChannel(app_id=app_id, app_secret=app_secret)
     logger.debug(f"run_feishu: FeishuChannel created (app_id={app_id})")
 
-    async with ChannelCore(session_socket, interval=interval) as core:
-        main_loop = asyncio.get_running_loop()
+    async with ChannelCore(session_socket, interval=interval) as core, BlockingPortal() as portal:
 
         async def _on_message(ctx: Any) -> None:
-            asyncio.run_coroutine_threadsafe(_handle_and_stream(channel, core, allowed_user_ids, ctx), main_loop)
+            portal.start_task_soon(_handle_and_stream, channel, core, allowed_user_ids, ctx)
 
         channel.on("message", _on_message)
         logger.info(f"Feishu bot connecting (session={session_socket} interval={interval})")
@@ -197,4 +196,5 @@ async def run_feishu(
         try:
             await anyio.Event().wait()
         finally:
-            await channel.stop_background()
+            with anyio.CancelScope(shield=True):
+                await channel.stop_background()
