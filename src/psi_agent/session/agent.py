@@ -163,8 +163,36 @@ class SessionAgent:
             logger.error(f"Failed to build system prompt: {e}")
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
-        """aiohttp handler for Channel requests — delegates to ChannelAdapter."""
-        return await self._channel_adapter.handle(request, self, self._lock)
+        try:
+            user_message, extra_params = await self._channel_adapter.parse_request(request)
+        except ChannelAdapter.ParseError as e:
+            return web.json_response(
+                {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
+                status=400,
+            )
+
+        response = web.StreamResponse(
+            status=200,
+            reason="OK",
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+
+        async with self._lock:
+            try:
+                await response.prepare(request)
+            except Exception:
+                logger.warning("Failed to prepare SSE response, client likely disconnected")
+                return response
+
+            logger.info("Acquired session lock, processing request")
+            await self._channel_adapter.write(response, self.run(user_message, extra_params))
+
+        logger.debug("Session request completed")
+        return response
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
         self._pending_schedule_chunks = chunks

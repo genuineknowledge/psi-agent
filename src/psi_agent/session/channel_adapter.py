@@ -1,102 +1,33 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import AsyncIterator
 
-import anyio
 from aiohttp import web
 from loguru import logger
 
 from psi_agent.session.protocol import AgentChunk, AgentError, ChatCompletionChunk, DeltaMessage, StreamChoice
 
-if TYPE_CHECKING:
-    from psi_agent.session.agent import SessionAgent
-
 
 class ChannelAdapter:
-    """Protocol adapter for the Channel side — parse request, convert AgentChunk -> SSE."""
+    """Protocol adapter for the Channel side — stateless encode/decode.
 
-    @staticmethod
-    async def handle(request: web.Request, agent: SessionAgent, lock: anyio.Lock) -> web.StreamResponse:
-        try:
-            user_message, extra_params = await ChannelAdapter.parse_request(request)
-        except ChannelAdapter._ParseError as e:
-            return web.json_response(
-                {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
-                status=400,
-            )
+    ``parse_request``: HTTP JSON body → ``(user_message, extra_params)``.
+    ``write``: consumes an ``AgentChunk`` iterator and writes SSE to the response.
+    """
 
-        response = web.StreamResponse(
-            status=200,
-            reason="OK",
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-            },
-        )
-
-        async with lock:
-            try:
-                await response.prepare(request)
-            except Exception:
-                logger.warning("Failed to prepare SSE response, client likely disconnected")
-                return response
-
-            logger.info("Acquired session lock, processing request")
-            try:
-                async for chunk in agent.run(user_message, extra_params=extra_params):
-                    await response.write(ChannelAdapter.to_chat_completion_chunk(chunk).to_sse().encode())
-                    logger.debug(f"Chunk sent: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
-                await response.write(b"data: [DONE]\n\n")
-            except AgentError as e:
-                err_chunk = ChatCompletionChunk(
-                    id="error",
-                    choices=[
-                        StreamChoice(
-                            index=0,
-                            delta=DeltaMessage(content=e.message),
-                            finish_reason="error",
-                        )
-                    ],
-                )
-                try:
-                    await response.write(err_chunk.to_sse().encode())
-                except Exception:
-                    logger.warning("Failed to write error chunk to SSE stream")
-                logger.warning(f"Agent error: {e.message!r}")
-            except Exception as e:
-                err_chunk = ChatCompletionChunk(
-                    id="error",
-                    choices=[
-                        StreamChoice(
-                            index=0,
-                            delta=DeltaMessage(content=f"[Session Error: {e}]"),
-                            finish_reason="error",
-                        )
-                    ],
-                )
-                try:
-                    await response.write(err_chunk.to_sse().encode())
-                except Exception:
-                    logger.warning("Failed to write error chunk to SSE stream")
-                logger.error(f"Unexpected error in agent run: {e!r}")
-
-        logger.debug("Session request completed")
-        return response
-
-    class _ParseError(Exception):
-        pass
+    class ParseError(Exception):
+        """Raised by ``parse_request()`` for malformed or empty requests."""
 
     @staticmethod
     async def parse_request(request: web.Request) -> tuple[dict, dict]:
         try:
             body: dict = await request.json()
         except Exception as e:
-            raise ChannelAdapter._ParseError(str(e)) from e
+            raise ChannelAdapter.ParseError(str(e)) from e
 
         messages = body.pop("messages", [])
         if not messages:
-            raise ChannelAdapter._ParseError("No messages in request")
+            raise ChannelAdapter.ParseError("No messages in request")
 
         user_message = messages[-1]
         if user_message.get("role") != "user":
@@ -105,6 +36,42 @@ class ChannelAdapter:
         return user_message, body
 
     @staticmethod
-    def to_chat_completion_chunk(chunk: AgentChunk) -> ChatCompletionChunk:
+    async def write(response: web.StreamResponse, chunks: AsyncIterator[AgentChunk]) -> None:
+        """Consume the agent's ``AgentChunk`` iterator and write SSE to *response*.
+
+        Handles ``AgentError`` and unexpected exceptions by writing an error
+        ``ChatCompletionChunk`` (with ``finish_reason="error"``) before returning.
+        """
+        try:
+            async for chunk in chunks:
+                await response.write(ChannelAdapter._to_sse(chunk))
+            await response.write(b"data: [DONE]\n\n")
+        except AgentError as e:
+            await ChannelAdapter._write_error(response, e.message)
+            logger.warning(f"Agent error: {e.message!r}")
+        except Exception as e:
+            await ChannelAdapter._write_error(response, f"[Session Error: {e}]")
+            logger.error(f"Unexpected error in agent run: {e!r}")
+
+    @staticmethod
+    def _to_sse(chunk: AgentChunk) -> bytes:
         delta = DeltaMessage(content=chunk.content, reasoning=chunk.reasoning)
-        return ChatCompletionChunk(choices=[StreamChoice(index=0, delta=delta)])
+        cc = ChatCompletionChunk(choices=[StreamChoice(index=0, delta=delta)])
+        return cc.to_sse().encode()
+
+    @staticmethod
+    async def _write_error(response: web.StreamResponse, message: str) -> None:
+        err_chunk = ChatCompletionChunk(
+            id="error",
+            choices=[
+                StreamChoice(
+                    index=0,
+                    delta=DeltaMessage(content=message),
+                    finish_reason="error",
+                )
+            ],
+        )
+        try:
+            await response.write(err_chunk.to_sse().encode())
+        except Exception:
+            logger.warning("Failed to write error chunk to SSE stream")

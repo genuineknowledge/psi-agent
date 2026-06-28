@@ -69,7 +69,7 @@ src/
     │   ├── AGENTS.md                # Session 层设计文档
     │   ├── __init__.py             # Session dataclass + run()，入口编排
     │   ├── server.py               # serve_session(agent=agent) — 从 agent 读取 channel_socket + handler
-    │   ├── channel_adapter.py       # ChannelAdapter — Channel 侧协议适配（parse_request / AgentChunk→SSE）
+    │   ├── channel_adapter.py       # ChannelAdapter — 纯无状态编解码（parse_request + write）
     │   ├── agent.py                # SessionAgent — agent loop + tool exec + history + 动态重载
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
     │   ├── protocol.py             # Session 层类型（ChatCompletionChunk / AgentChunk / AiDelta / AgentError 等）

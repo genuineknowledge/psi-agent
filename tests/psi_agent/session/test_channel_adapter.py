@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import anyio
@@ -13,33 +14,74 @@ from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.protocol import AgentChunk, AgentError
 
 
-def test_to_chat_completion_chunk_content_only():
-    agent_chunk = AgentChunk(content="hello")
-    cc_chunk = ChannelAdapter.to_chat_completion_chunk(agent_chunk)
-    assert cc_chunk.choices[0].delta.content == "hello"
-    assert cc_chunk.choices[0].delta.reasoning is None
-    assert cc_chunk.choices[0].finish_reason is None
+class _MockResponse:
+    """Captures bytes written via ``write()``."""
 
+    def __init__(self) -> None:
+        self.written: list[bytes] = []
 
-def test_to_chat_completion_chunk_reasoning_only():
-    agent_chunk = AgentChunk(reasoning="thinking...")
-    cc_chunk = ChannelAdapter.to_chat_completion_chunk(agent_chunk)
-    assert cc_chunk.choices[0].delta.content is None
-    assert cc_chunk.choices[0].delta.reasoning == "thinking..."
-    assert cc_chunk.choices[0].finish_reason is None
-
-
-def test_to_chat_completion_chunk_both():
-    agent_chunk = AgentChunk(content="world", reasoning="thinking...")
-    cc_chunk = ChannelAdapter.to_chat_completion_chunk(agent_chunk)
-    assert cc_chunk.choices[0].delta.content == "world"
-    assert cc_chunk.choices[0].delta.reasoning == "thinking..."
+    async def write(self, data: bytes) -> None:
+        self.written.append(data)
 
 
 @pytest.mark.anyio
-async def test_channel_adapter_integration_valid_request(tmp_path: Path):
-    """Full flow: valid request -> agent yields chunks -> SSE response."""
+async def test_write_streams_agent_chunks():
+    """write() consumes AgentChunk iterator and produces SSE."""
 
+    async def chunks() -> AsyncIterator[AgentChunk]:
+        yield AgentChunk(content="hello")
+        yield AgentChunk(reasoning="think")
+        yield AgentChunk(content="world")
+
+    response = _MockResponse()
+    await ChannelAdapter.write(response, chunks())
+
+    all_bytes = b"".join(response.written)
+    text = all_bytes.decode()
+    assert "hello" in text
+    assert "think" in text
+    assert "world" in text
+    assert text.endswith("data: [DONE]\n\n")
+
+
+@pytest.mark.anyio
+async def test_write_catches_agent_error():
+    """write() catches AgentError and writes error chunk."""
+
+    async def chunks() -> AsyncIterator[AgentChunk]:
+        yield AgentChunk(content="partial")
+        raise AgentError("something failed")
+
+    response = _MockResponse()
+    await ChannelAdapter.write(response, chunks())
+
+    all_bytes = b"".join(response.written)
+    text = all_bytes.decode()
+    assert "partial" in text
+    assert '"finish_reason": "error"' in text
+    assert "something failed" in text
+
+
+@pytest.mark.anyio
+async def test_write_catches_generic_exception():
+    """write() catches unexpected exceptions and writes error chunk."""
+
+    async def chunks() -> AsyncIterator[AgentChunk]:
+        yield AgentChunk(content="partial")
+        raise RuntimeError("boom")
+
+    response = _MockResponse()
+    await ChannelAdapter.write(response, chunks())
+
+    all_bytes = b"".join(response.written)
+    text = all_bytes.decode()
+    assert "partial" in text
+    assert '"finish_reason": "error"' in text
+    assert "boom" in text
+
+
+@pytest.mark.anyio
+async def test_handle_request_integration_valid(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
 
     async def fake_run(user_message, extra_params=None):
@@ -49,11 +91,7 @@ async def test_channel_adapter_integration_valid_request(tmp_path: Path):
     agent.run = fake_run
 
     app = web.Application()
-
-    async def handler(request: web.Request) -> web.StreamResponse:
-        return await ChannelAdapter.handle(request, agent, agent._lock)
-
-    app.router.add_post("/chat/completions", handler)
+    app.router.add_post("/chat/completions", agent.handle_request)
     runner = web.AppRunner(app)
     await runner.setup()
     socket_path = str(tmp_path / "s.sock")
@@ -84,9 +122,7 @@ async def test_channel_adapter_integration_valid_request(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_channel_adapter_agent_error(tmp_path: Path):
-    """Agent raises AgentError -> ChannelAdapter writes error SSE chunk."""
-
+async def test_handle_request_integration_agent_error(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
 
     async def fake_run(user_message, extra_params=None):
@@ -97,11 +133,7 @@ async def test_channel_adapter_agent_error(tmp_path: Path):
     agent.run = fake_run
 
     app = web.Application()
-
-    async def handler(request: web.Request) -> web.StreamResponse:
-        return await ChannelAdapter.handle(request, agent, agent._lock)
-
-    app.router.add_post("/chat/completions", handler)
+    app.router.add_post("/chat/completions", agent.handle_request)
     runner = web.AppRunner(app)
     await runner.setup()
     socket_path = str(tmp_path / "s.sock")
@@ -131,18 +163,11 @@ async def test_channel_adapter_agent_error(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_channel_adapter_invalid_json_body(tmp_path: Path):
-    """Non-JSON body -> 400 response."""
-
+async def test_handle_request_integration_invalid_json(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
-    lock = anyio.Lock()
 
     app = web.Application()
-
-    async def handler(request: web.Request) -> web.StreamResponse:
-        return await ChannelAdapter.handle(request, agent, lock)
-
-    app.router.add_post("/chat/completions", handler)
+    app.router.add_post("/chat/completions", agent.handle_request)
     runner = web.AppRunner(app)
     await runner.setup()
     socket_path = str(tmp_path / "s.sock")
@@ -162,18 +187,11 @@ async def test_channel_adapter_invalid_json_body(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_channel_adapter_empty_messages(tmp_path: Path):
-    """Empty messages list -> 400 response."""
-
+async def test_handle_request_integration_empty_messages(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
-    lock = anyio.Lock()
 
     app = web.Application()
-
-    async def handler(request: web.Request) -> web.StreamResponse:
-        return await ChannelAdapter.handle(request, agent, lock)
-
-    app.router.add_post("/chat/completions", handler)
+    app.router.add_post("/chat/completions", agent.handle_request)
     runner = web.AppRunner(app)
     await runner.setup()
     socket_path = str(tmp_path / "s.sock")
@@ -196,9 +214,7 @@ async def test_channel_adapter_empty_messages(tmp_path: Path):
 
 
 @pytest.mark.anyio
-async def test_channel_adapter_non_agent_exception(tmp_path: Path):
-    """Unexpected exception -> error SSE chunk with Session Error."""
-
+async def test_handle_request_integration_generic_exception(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tools={})
 
     async def fake_run(user_message, extra_params=None):
@@ -209,11 +225,7 @@ async def test_channel_adapter_non_agent_exception(tmp_path: Path):
     agent.run = fake_run
 
     app = web.Application()
-
-    async def handler(request: web.Request) -> web.StreamResponse:
-        return await ChannelAdapter.handle(request, agent, agent._lock)
-
-    app.router.add_post("/chat/completions", handler)
+    app.router.add_post("/chat/completions", agent.handle_request)
     runner = web.AppRunner(app)
     await runner.setup()
     socket_path = str(tmp_path / "s.sock")
