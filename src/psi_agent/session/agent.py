@@ -137,8 +137,9 @@ class SessionAgent:
         self, user_message: dict[str, Any], extra_params: dict[str, Any] | None = None
     ) -> AsyncGenerator[AgentChunk]:
         """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``."""
-        # reload tools from workspace (incremental hash-based)
+        # reload tools and schedules from workspace (incremental hash-based)
         await self._tool_registry.refresh()
+        await self._schedule_registry.refresh()
 
         # system prompt (lazy + optional rebuild)
         await self._system_prompt.ensure(self._conversation)
