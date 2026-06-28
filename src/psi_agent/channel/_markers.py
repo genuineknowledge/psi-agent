@@ -50,14 +50,14 @@ class SendMarkerScanner:
     def feed(self, text: str) -> list[FileChunk]:
         """Append a new content fragment, return newly-detected ``FileChunk``s."""
         out: list[FileChunk] = []
-        orig_len = len(self._full)
         self._full += text
-        new = self._full[self._scan_ptr :]
+        base = self._scan_ptr
+        new = self._full[base:]
         for match in SEND_RE.finditer(new):
             path = match.group(1)
             if path not in self._emitted:
                 logger.debug(f"  [SEND] detected → FileChunk({path})")
                 out.append(FileChunk(path))
                 self._emitted.add(path)
-            self._scan_ptr = orig_len + match.end()
+            self._scan_ptr = base + match.end()
         return out

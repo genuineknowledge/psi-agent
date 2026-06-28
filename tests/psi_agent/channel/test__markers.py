@@ -46,3 +46,16 @@ def test_scanner_marker_split_across_feeds():
     scanner = SendMarkerScanner()
     assert scanner.feed("here is [SEND:/tm") == []
     assert scanner.feed("p/out.py] end") == [FileChunk("/tmp/out.py")]
+
+
+def test_scanner_third_marker_after_trailing_text_regression():
+    """A later marker must still be detected after an earlier feed left trailing text.
+
+    The scan pointer must advance by ``base + match.end()`` (base = scan start),
+    not ``orig_len + match.end()``; otherwise it overshoots by the trailing-text
+    length and slices a subsequent marker mid-token, missing it.
+    """
+    scanner = SendMarkerScanner()
+    assert scanner.feed("[SEND:/a.py]TAIL") == [FileChunk("/a.py")]
+    assert scanner.feed("[SEND:/b.py]") == [FileChunk("/b.py")]
+    assert scanner.feed("[SEND:/c.py]") == [FileChunk("/c.py")]
