@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import socket as _s
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any
 
 import anyio
 import pytest
@@ -18,7 +19,9 @@ from psi_agent.session.tool_registry import ToolRegistry
 class _FailingSessionAgent(SessionAgent):
     """SessionAgent that raises an exception mid-stream."""
 
-    async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncIterator[AgentChunk]:
+    async def run(
+        self, user_message: dict[str, Any], extra_params: dict[str, Any] | None = None
+    ) -> AsyncGenerator[AgentChunk]:
         yield AgentChunk(content="partial")
         raise RuntimeError("boom")
 

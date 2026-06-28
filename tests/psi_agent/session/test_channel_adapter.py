@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
+from typing import Any, cast
 
 import anyio
 import pytest
@@ -29,7 +30,7 @@ class _MockResponse:
 async def test_write_streams_agent_chunks():
     """write() consumes AgentChunk iterator and produces SSE."""
 
-    async def chunks() -> AsyncIterator[AgentChunk]:
+    async def chunks() -> AsyncGenerator[AgentChunk]:
         yield AgentChunk(content="hello")
         yield AgentChunk(reasoning="think")
         yield AgentChunk(content="world")
@@ -49,7 +50,7 @@ async def test_write_streams_agent_chunks():
 async def test_write_catches_agent_error():
     """write() catches AgentError and writes error chunk."""
 
-    async def chunks() -> AsyncIterator[AgentChunk]:
+    async def chunks() -> AsyncGenerator[AgentChunk]:
         yield AgentChunk(content="partial")
         raise AgentError("something failed")
 
@@ -67,7 +68,7 @@ async def test_write_catches_agent_error():
 async def test_write_catches_generic_exception():
     """write() catches unexpected exceptions and writes error chunk."""
 
-    async def chunks() -> AsyncIterator[AgentChunk]:
+    async def chunks() -> AsyncGenerator[AgentChunk]:
         yield AgentChunk(content="partial")
         raise RuntimeError("boom")
 
@@ -89,7 +90,7 @@ async def test_handle_request_integration_valid(tmp_path: Path):
         yield AgentChunk(content="hello")
         yield AgentChunk(content=" world")
 
-    agent.run = fake_run
+    agent.run = cast(Any, fake_run)
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
@@ -131,7 +132,7 @@ async def test_handle_request_integration_agent_error(tmp_path: Path):
             yield
         raise AgentError("test error message")
 
-    agent.run = fake_run
+    agent.run = cast(Any, fake_run)
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
@@ -252,7 +253,7 @@ async def test_handle_request_integration_generic_exception(tmp_path: Path):
             yield
         raise RuntimeError("boom")
 
-    agent.run = fake_run
+    agent.run = cast(Any, fake_run)
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
@@ -324,7 +325,7 @@ async def test_handle_request_integration_message_not_dict(tmp_path: Path):
         assert user_message == {"role": "user", "content": "42"}
         yield AgentChunk(content="ok")
 
-    agent.run = fake_run
+    agent.run = cast(Any, fake_run)
 
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)

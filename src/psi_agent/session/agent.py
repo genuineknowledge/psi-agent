@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from pathlib import Path
+from typing import Any
 
 import anyio
 from aiohttp import web
@@ -130,7 +131,9 @@ class SessionAgent:
 
     # -- agent loop -----------------------------------------------------------
 
-    async def run(self, user_message: dict, extra_params: dict | None = None) -> AsyncGenerator[AgentChunk]:
+    async def run(
+        self, user_message: dict[str, Any], extra_params: dict[str, Any] | None = None
+    ) -> AsyncGenerator[AgentChunk]:
         """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``."""
         # reload tools from workspace (incremental hash-based)
         await self._tool_registry.refresh()
@@ -163,7 +166,7 @@ class SessionAgent:
                 for t in self._tool_registry.tools.values()
             ]
 
-            request_body: dict = {
+            request_body: dict[str, Any] = {
                 "messages": self._conversation.messages,
                 "tools": tool_defs,
                 "stream": True,
@@ -175,7 +178,7 @@ class SessionAgent:
             logger.debug(f"Request messages count: {len(self._conversation.messages)}, tools: {len(tool_defs)}")
 
             finish_reason: str | None = None
-            accumulated_tool_calls: dict[int, dict] = {}
+            accumulated_tool_calls: dict[int, dict[str, Any]] = {}
             accumulated_content: str = ""
             accumulated_reasoning: str = ""
 
@@ -225,7 +228,7 @@ class SessionAgent:
                             f"reasoning={len(accumulated_reasoning)} chars"
                         )
                         if accumulated_content or accumulated_reasoning:
-                            assistant_msg: dict = {"role": "assistant"}
+                            assistant_msg: dict[str, Any] = {"role": "assistant"}
                             if accumulated_content:
                                 assistant_msg["content"] = accumulated_content
                             if accumulated_reasoning:
@@ -238,7 +241,7 @@ class SessionAgent:
                         logger.info("AI requested tool calls, processing...")
                         ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
 
-                        assistant_msg: dict = {"role": "assistant", "tool_calls": ordered_calls}
+                        assistant_msg: dict[str, Any] = {"role": "assistant", "tool_calls": ordered_calls}
                         if accumulated_content:
                             assistant_msg["content"] = accumulated_content
                         if accumulated_reasoning:
@@ -292,7 +295,7 @@ class SessionAgent:
                     f"saving {len(accumulated_content)} chars of content and stopping"
                 )
                 if accumulated_content or accumulated_reasoning:
-                    assistant_msg: dict = {"role": "assistant"}
+                    assistant_msg: dict[str, Any] = {"role": "assistant"}
                     if accumulated_content:
                         assistant_msg["content"] = accumulated_content
                     if accumulated_reasoning:
