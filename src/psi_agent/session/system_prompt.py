@@ -53,7 +53,7 @@ class SystemPrompt:
             try:
                 sp = await self._builder()
                 if sp:
-                    conversation.add({"role": "system", "content": sp})
+                    conversation.replace_system(sp)
                     logger.info(f"System prompt loaded ({len(sp)} chars)")
             except Exception as e:
                 logger.error(f"Failed to build system prompt: {e}")

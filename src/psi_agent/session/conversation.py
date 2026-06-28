@@ -68,9 +68,12 @@ class Conversation:
         self.messages.append(msg)
 
     def replace_system(self, content: str) -> None:
-        """Replace the system message (``messages[0]``) in-place."""
+        """Replace the system message (``messages[0]``) in-place,
+        or add it if the conversation is empty."""
         if self.messages:
             self.messages[0] = {"role": "system", "content": content}
+        else:
+            self.add({"role": "system", "content": content})
 
     def stash(self, chunks: list[AgentChunk]) -> None:
         """Store schedule-produced chunks for the next channel request."""
