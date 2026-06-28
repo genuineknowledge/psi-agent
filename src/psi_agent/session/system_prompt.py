@@ -59,8 +59,9 @@ class SystemPrompt:
         else:
             try:
                 if await self._checker():
-                    logger.info("Rebuild checker returned True — rebuilding system prompt")
-                    conversation.replace_system(await self._builder())
+                    sp = await self._builder()
+                    conversation.replace_system(sp)
+                    logger.info(f"System prompt rebuilt ({len(sp)} chars)")
             except Exception as e:
                 logger.error(f"Rebuild check or rebuild failed: {e}")
 
