@@ -50,7 +50,13 @@ class SystemPrompt:
     async def ensure(self, conversation: Conversation) -> None:
         """Build or rebuild the system prompt if needed."""
         if not conversation.messages:
-            await self._build(conversation)
+            try:
+                sp = await self._builder()
+                if sp:
+                    conversation.add({"role": "system", "content": sp})
+                    logger.info(f"System prompt loaded ({len(sp)} chars)")
+            except Exception as e:
+                logger.error(f"Failed to build system prompt: {e}")
         else:
             try:
                 if await self._checker():
@@ -58,16 +64,6 @@ class SystemPrompt:
                     conversation.replace_system(await self._builder())
             except Exception as e:
                 logger.error(f"Rebuild check or rebuild failed: {e}")
-
-    async def _build(self, conversation: Conversation) -> None:
-        try:
-            sp = await self._builder()
-            if not sp:
-                return
-            conversation.add({"role": "system", "content": sp})
-            logger.info(f"System prompt loaded ({len(sp)} chars)")
-        except Exception as e:
-            logger.error(f"Failed to build system prompt: {e}")
 
     # -- module loading --------------------------------------------------------
 
