@@ -72,7 +72,7 @@ class SessionAgent:
             ai_client=AiClient(ai_socket),
             tool_registry=tool_registry,
             schedule_registry=schedule_registry,
-            system_prompt=await SystemPrompt.from_workspace(workspace_path, conversation.session_id) or SystemPrompt(),
+            system_prompt=await SystemPrompt.from_workspace(workspace_path, conversation.session_id),
             conversation=conversation,
             max_tool_rounds=max_tool_rounds,
         )

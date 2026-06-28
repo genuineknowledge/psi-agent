@@ -20,45 +20,52 @@ if TYPE_CHECKING:
 class SystemPrompt:
     """Manages the system prompt lifecycle — lazy build and optional rebuild.
 
-    *First call*: build the prompt and append it to the conversation.
-    *Subsequent calls*: if a rebuild checker exists and returns True,
-    replace the existing system message in-place.
+    ``builder() → str`` is called to construct the system prompt.
+    ``checker() → bool`` is called before every agent turn; returning
+    ``True`` triggers an in-place rebuild.
+
+    Defaults: if no builder is provided, an empty prompt is used.  If
+    no checker is provided, the prompt is never rebuilt.
     """
 
+    @staticmethod
+    async def _default_builder() -> str:
+        return ""
+
+    @staticmethod
+    async def _default_checker() -> bool:
+        return False
+
     def __init__(self, builder: Callable[..., Any] | None = None, checker: Callable[..., Any] | None = None):
-        self._builder = builder
-        self._checker = checker
+        self._builder = builder if builder is not None else self._default_builder
+        self._checker = checker if checker is not None else self._default_checker
 
     @classmethod
-    async def from_workspace(cls, workspace_path: Path, session_id: str) -> SystemPrompt | None:
-        """Try to load the system module.  Returns None if no builder is found."""
+    async def from_workspace(cls, workspace_path: Path, session_id: str) -> SystemPrompt:
+        """Load the system module.  Defaults are used when builder or checker
+        are not found in the workspace."""
         builder, checker = await cls._load_module(workspace_path, session_id)
-        if builder is None:
-            return None
         return cls(builder=builder, checker=checker)
 
     async def ensure(self, conversation: Conversation) -> None:
         """Build or rebuild the system prompt if needed."""
-        if self._builder is None:
-            return
-
         if not conversation.messages:
             await self._build(conversation)
-        elif self._checker is not None:
+        else:
             try:
                 if await self._checker():
                     logger.info("Rebuild checker returned True — rebuilding system prompt")
-                    assert self._builder is not None
                     conversation.replace_system(await self._builder())
             except Exception as e:
                 logger.error(f"Rebuild check or rebuild failed: {e}")
 
     async def _build(self, conversation: Conversation) -> None:
-        assert self._builder is not None
         try:
             sp = await self._builder()
+            if not sp:
+                return
             conversation.add({"role": "system", "content": sp})
-            logger.info(f"System prompt loaded ({len(sp) if sp else 0} chars)")
+            logger.info(f"System prompt loaded ({len(sp)} chars)")
         except Exception as e:
             logger.error(f"Failed to build system prompt: {e}")
 
@@ -94,13 +101,13 @@ class SystemPrompt:
             sys.modules.pop(module_name, None)
             return None, None
 
-        builder = _extract_async_func(module, "system_prompt_builder")
-        checker = _extract_async_func(module, "system_prompt_rebuild_checker")
+        builder = SystemPrompt._extract_async_func(module, "system_prompt_builder")
+        checker = SystemPrompt._extract_async_func(module, "system_prompt_rebuild_checker")
         return builder, checker
 
-
-def _extract_async_func(module: object, name: str) -> Callable[..., Any] | None:
-    func = getattr(module, name, None)
-    if func is None or not inspect.iscoroutinefunction(func):
-        return None
-    return func
+    @staticmethod
+    def _extract_async_func(module: object, name: str) -> Callable[..., Any] | None:
+        func = getattr(module, name, None)
+        if func is None or not inspect.iscoroutinefunction(func):
+            return None
+        return func
