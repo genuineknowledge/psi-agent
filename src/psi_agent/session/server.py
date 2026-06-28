@@ -18,9 +18,9 @@ async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
     """Create an aiohttp server that routes ``POST /chat/completions`` to
     ``agent.handle_request``.
 
-    Cleanup in the ``finally`` block is wrapped in a shielded cancel
-    scope so that cancellation (e.g. from ``Session.__init__``'s task
-    group) cannot interrupt resource shutdown.
+    Startup failures are caught, the runner is cleaned up under a shielded
+    cancel scope, then the exception is re-raised.  Normal shutdown in
+    the ``finally`` block is likewise shielded.
     """
     logger.info(f"Starting session server on {channel_socket}")
 
@@ -28,9 +28,15 @@ async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
     app.router.add_post("/chat/completions", agent.handle_request)
 
     runner = web.AppRunner(app)
-    await runner.setup()
-    site = create_site(runner, channel_socket)
-    await site.start()
+    try:
+        await runner.setup()
+        site = create_site(runner, channel_socket)
+        await site.start()
+    except Exception as e:
+        logger.error(f"Failed to start session server on {channel_socket}: {e}")
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()
+        raise
 
     logger.info(f"Session server listening on {channel_socket}")
 
