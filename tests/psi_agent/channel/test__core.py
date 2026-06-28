@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import anyio
+import anyio.lowlevel
 import pytest
 from aiohttp import web
 
 from psi_agent.channel._core import ChannelCore
-from psi_agent.channel._types import FileChunk, TextChunk
+from psi_agent.channel._errors import ChannelError
+from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
 
 
 @pytest.mark.anyio
@@ -241,7 +243,7 @@ async def test_post_handles_error_chunk(tmp_path):
     await anyio.sleep(0.1)
 
     async with ChannelCore(sock_path) as core:
-        with pytest.raises(Exception, match="Upstream Error 401"):
+        with pytest.raises(ChannelError, match="Upstream Error 401"):
             async for _ in core.post([TextChunk("hi")]):
                 pass
 
@@ -266,7 +268,7 @@ async def test_post_non_200_http_error(tmp_path):
     await anyio.sleep(0.1)
 
     async with ChannelCore(sock_path) as core:
-        with pytest.raises(Exception, match="server error"):
+        with pytest.raises(ChannelError, match="server error"):
             async for _ in core.post([TextChunk("hi")]):
                 pass
 
@@ -332,7 +334,7 @@ async def test_post_rejects_multiple_choices(tmp_path):
     await anyio.sleep(0.1)
 
     async with ChannelCore(sock_path) as core:
-        with pytest.raises(Exception, match="Expected exactly 1 choice"):
+        with pytest.raises(ChannelError, match="Expected exactly 1 choice"):
             async for _ in core.post([TextChunk("hi")]):
                 pass
 
@@ -370,5 +372,170 @@ async def test_post_send_cross_chunk(tmp_path):
 
     assert len(file_chunks) == 1
     assert file_chunks[0].path == "/tmp/out.py"
+
+    await runner.cleanup()
+
+
+class _FakeSession:
+    def __init__(self) -> None:
+        self.close_called = False
+        self.closed = False
+
+    async def close(self) -> None:
+        self.close_called = True
+        await anyio.lowlevel.checkpoint()
+        self.closed = True
+
+
+@pytest.mark.anyio
+async def test_aexit_closes_session_even_when_cancelled(monkeypatch):
+    """__aexit__ must finish closing the session even while a cancel propagates."""
+    core = ChannelCore(session_socket="/tmp/x.sock")
+    fake = _FakeSession()
+    monkeypatch.setattr(core, "_session", fake, raising=False)
+
+    with anyio.CancelScope(shield=True):
+        with anyio.CancelScope() as scope:
+            scope.cancel()
+            try:
+                await core.__aexit__(None, None, None)
+            except anyio.get_cancelled_exc_class():
+                pass
+
+    assert fake.close_called
+    assert fake.closed
+
+
+@pytest.mark.anyio
+async def test_post_reasoning_only(tmp_path):
+    """A reasoning-only delta yields a ReasoningChunk."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"reasoning":"thinking"}}]}\n\n')
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+    async with ChannelCore(sock_path, interval=0.0) as core:
+        chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert isinstance(chunks[0], ReasoningChunk)
+    assert chunks[0].text == "thinking"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_reasoning_then_content_ordered(tmp_path):
+    """Type switch flushes reasoning before content, preserving order."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"reasoning":"think"}}]}\n\n')
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"answer"}}]}\n\n')
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+    async with ChannelCore(sock_path, interval=10.0) as core:
+        chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            chunks.append(chunk)
+
+    assert len(chunks) == 2
+    assert isinstance(chunks[0], ReasoningChunk)
+    assert chunks[0].text == "think"
+    assert isinstance(chunks[1], TextChunk)
+    assert chunks[1].text == "answer"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_reasoning_merges_within_interval(tmp_path):
+    """Consecutive reasoning deltas within interval merge into one ReasoningChunk."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"reasoning":"a"}}]}\n\n')
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"reasoning":"b"}}]}\n\n')
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+    async with ChannelCore(sock_path, interval=10.0) as core:
+        chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert isinstance(chunks[0], ReasoningChunk)
+    assert chunks[0].text == "ab"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_post_send_marker_ignored_in_reasoning(tmp_path):
+    """[SEND:...] inside reasoning text does NOT yield a FileChunk."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"reasoning":"[SEND:/a.py] noted"}}]}\n\n')
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+    async with ChannelCore(sock_path, interval=0.0) as core:
+        chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            chunks.append(chunk)
+
+    assert not any(isinstance(c, FileChunk) for c in chunks)
+    assert any(isinstance(c, ReasoningChunk) for c in chunks)
 
     await runner.cleanup()

@@ -4,20 +4,23 @@
 
 ```
 channel/
-├── _types.py          # FileChunk, TextChunk, Chunk
-├── _core.py           # ChannelCore — 连接管理 + SSE 管道
+├── _types.py          # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
+├── _errors.py         # ChannelError 基类（传输/协议/session 错误统一抛出）
+├── _markers.py        # [RECV:]/[SEND:] 标记协议（encode_input + SendMarkerScanner，纯函数）
+├── _stream.py         # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
+├── _core.py           # ChannelCore — 连接管理 + post() 编排
 ├── cli/
 │   ├── __init__.py     # ChannelCli dataclass
-│   └── client.py       # 单次消息 thin client (~18行)
+│   └── client.py       # 单次消息 thin client (~27行)
 ├── repl/
 │   ├── __init__.py     # ChannelRepl dataclass
-│   └── client.py       # 交互式 thin client (~41行)
+│   └── client.py       # 交互式 thin client (~54行)
 └── telegram/
     ├── __init__.py     # ChannelTelegram dataclass
-    └── client.py       # Bot handler + 流式 + 文件收发 (~117行)
+    └── client.py       # Bot handler + 流式 + 文件收发 (~166行)
 └── feishu/
     ├── __init__.py     # ChannelFeishu dataclass
-    └── client.py       # Bot handler + 卡片流式 + 文件收发 (~100行)
+    └── client.py       # Bot handler + 卡片流式 + 文件收发 + 处理状态表情 (~200行)
 ```
 
 ### ChannelCore
@@ -25,11 +28,15 @@ channel/
 ChannelCore 是所有 Channel（CLI、REPL、Telegram）共享的公共部件：
 
 - async context manager，管理 aiohttp ClientSession
-- `post(list[Chunk]) -> AsyncIterator[Chunk]`：Chunk → 字符串 → POST → SSE → Chunk
+- `post(list[InputChunk]) -> AsyncIterator[OutputChunk]`：InputChunk → 字符串 → POST → SSE → OutputChunk
 - 将输入中的 FileChunk 转换为 `[RECV:/path]` 标记（session 端负责读文件）
 - 检测输出中的 `[SEND:/path]` 标记并产生 FileChunk
+- 将 SSE 的 `delta.reasoning` 流切分为 `ReasoningChunk`，与 `content`（`TextChunk`）按到达顺序交错产出（类型切换时先 flush 旧类型）；`[SEND:...]` 仅扫描 content
 - SSE 内容在 interval 窗口内缓冲合并为单个 TextChunk（默认 1s，可配置）
 - 终端通道（CLI/REPL）设置 interval=0 无需缓冲
+- 内部委托：marker 编解码 → `_markers.py`；SSE 解析与 interval 缓冲 → `_stream.py`（均与 HTTP 传输解耦、可独立单测）
+- 取消安全：`__aexit__` 关闭 aiohttp `ClientSession` 用 `anyio.CancelScope(shield=True)` 保护（与 AI 层一致），cancel 时不泄露连接
+- **（刻意为之）`_session`/`_endpoint` 不在 dataclass 中声明**：二者在 `__aenter__` 赋值、在 `post()` 中无条件使用；若声明为字段则需 `X | None`，会在 `post()` 引入 Optional narrowing（被迫 assert 或 `# ty: ignore`，违反零抑制）。由 async context manager 保证"先 `__aenter__` 再 `post()`"的时机，故保留为动态属性——勿当 bug "修复"
 
 Channel 客户端不再直接处理 HTTP、SSE 解析或错误格式。
 
@@ -47,7 +54,7 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 
 - Channel 客户端（repl、cli）是终端 UI 程序，需要格式化输出
 - **使用 `rich.console.Console`** 替代 `print()`
-- 思考过程（reasoning）：`console.print(..., style="dim")`
+- 思考过程（reasoning）：`ChannelCore` 产出 `ReasoningChunk`，CLI/REPL 以 `console.print(..., end="", style="dim")` inline 渲染（Telegram/Feishu 忽略）
 - 错误信息：`console.print("[red]Error: ...[/red]")`
 - REPL 欢迎页：`console.print(Panel(...))`
 - **`Console(highlight=False)`**：禁用自动语法高亮，避免 Rich 误把 AI 回复当代码着色
@@ -79,9 +86,11 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 ## Feishu 约定
 
 - 通过 lark-channel-sdk 的 `FeishuChannel.connect()` 进行 WebSocket 长连接
-- 所有消息（text/post/file/audio）均转化为 Chunk：文本→TextChunk，文件→下载→FileChunk
+- **并发模型（刻意为之）**：lark SDK 在自己的后台线程/event loop 上派发消息回调；`_on_message` 通过 `anyio.from_thread.BlockingPortal.start_task_soon` 把处理协程桥接回主 anyio loop（取代 asyncio `run_coroutine_threadsafe`，遵守「一切异步用 anyio」原则）。`run_feishu` / `run_telegram` 的 finally 关停均用 `anyio.CancelScope(shield=True)` 保护，cancel 时不泄露 bot 连接
+- 所有消息（text/post/file/audio）均转化为 InputChunk：文本→TextChunk，文件→下载→FileChunk
 - `<audio key="..."/>` inline 标签通过 `message_resource.aget()` API 下载
 - 通过 `channel.stream()`  + `stream.append()` 实现卡片流式渲染
 - FileChunk 通过 `channel.send()` 发送文件；用户文件下载至 `Downloads/.psi/<date>/`
 - 认证：`--app-id` + `--app-secret` CLI args > `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` env
 - 用户白名单：`--allowed-user-ids` 参数或 `None`（不限制）
+- 处理状态表情（参考 Hermes）：收到白名单消息后立即在该消息上加 `Typing` 表情（`message_reaction.acreate`），回复完成后移除；处理失败则替换为 `CrossMark`。表情操作失败安全，不影响回复

@@ -11,7 +11,7 @@ from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 from psi_agent.channel._core import ChannelCore
-from psi_agent.channel._types import Chunk, FileChunk, TextChunk
+from psi_agent.channel._types import FileChunk, InputChunk, TextChunk
 
 
 def _allowed(user_id: int, allowed_ids: list[int] | None) -> bool:
@@ -23,57 +23,57 @@ def _allowed(user_id: int, allowed_ids: list[int] | None) -> bool:
 async def _send_file(update: Update, path: str) -> None:
     if update.message is None:
         return
-    logger.debug(f"_send_file: path={path}")
+    logger.debug(f"path={path}")
     try:
         await update.message.reply_photo(path)
-        logger.debug("_send_file: reply_photo OK")
+        logger.debug("reply_photo OK")
     except Exception as e:
-        logger.debug(f"_send_file: reply_photo failed ({e}), fallback to reply_document")
+        logger.debug(f"reply_photo failed ({e}), fallback to reply_document")
         await update.message.reply_document(path)
 
 
-async def _build_chunks(update: Update) -> list[Chunk]:
+async def _build_chunks(update: Update) -> list[InputChunk]:
     if update.message is None:
         return []
 
-    chunks: list[Chunk] = []
+    chunks: list[InputChunk] = []
     downloads = f"{platformdirs.user_downloads_dir()}/.psi/{date.today()}"
     await anyio.Path(downloads).mkdir(parents=True, exist_ok=True)
-    logger.debug(f"_build_chunks: downloads_dir={downloads}")
+    logger.debug(f"downloads_dir={downloads}")
 
     if update.message.text:
-        logger.debug(f"_build_chunks: text ({len(update.message.text)} chars)")
+        logger.debug(f"text ({len(update.message.text)} chars)")
         chunks.append(TextChunk(update.message.text))
     elif update.message.caption:
-        logger.debug(f"_build_chunks: caption ({len(update.message.caption)} chars)")
+        logger.debug(f"caption ({len(update.message.caption)} chars)")
         chunks.append(TextChunk(update.message.caption))
 
     if update.message.photo:
         photo = update.message.photo[-1]
-        logger.debug(f"_build_chunks: photo file_unique_id={photo.file_unique_id} size={photo.width}x{photo.height}")
+        logger.debug(f"photo file_unique_id={photo.file_unique_id} size={photo.width}x{photo.height}")
         try:
             tfile = await photo.get_file()
             path = f"{downloads}/{photo.file_unique_id}"
             await tfile.download_to_drive(path)
-            logger.debug(f"_build_chunks: photo downloaded to {path}")
+            logger.debug(f"photo downloaded to {path}")
             chunks.append(FileChunk(path))
         except Exception as e:
-            logger.error(f"_build_chunks: photo download failed — {e}")
+            logger.error(f"photo download failed — {e}")
 
     if update.message.document:
         doc = update.message.document
-        logger.debug(f"_build_chunks: document file_name={doc.file_name} file_size={doc.file_size}")
+        logger.debug(f"document file_name={doc.file_name} file_size={doc.file_size}")
         try:
             tfile = await doc.get_file()
             suffix = anyio.Path(doc.file_name or "").suffix
             path = f"{downloads}/{doc.file_unique_id}{suffix}"
             await tfile.download_to_drive(path)
-            logger.debug(f"_build_chunks: document downloaded to {path}")
+            logger.debug(f"document downloaded to {path}")
             chunks.append(FileChunk(path))
         except Exception as e:
-            logger.error(f"_build_chunks: document download failed — {e}")
+            logger.error(f"document download failed — {e}")
 
-    logger.debug(f"_build_chunks: total {len(chunks)} chunk(s)")
+    logger.debug(f"total {len(chunks)} chunk(s)")
     return chunks
 
 
@@ -86,27 +86,27 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     allowed_ids: list[int] | None = context.bot_data["allowed_ids"]
 
     if not _allowed(user_id, allowed_ids):
-        logger.debug(f"_handle_message: user {user_id} blocked by whitelist")
+        logger.debug(f"user {user_id} blocked by whitelist")
         return
 
-    logger.debug(f"_handle_message: user_id={user_id}")
+    logger.debug(f"user_id={user_id}")
 
     sent = await update.message.reply_text("...")
-    logger.debug("_handle_message: placeholder sent")
+    logger.debug("placeholder sent")
 
     try:
         chunks = await _build_chunks(update)
     except Exception as e:
-        logger.error(f"_handle_message: _build_chunks failed — {e}")
+        logger.error(f"_build_chunks failed — {e}")
         await sent.edit_text(f"Error: {e}")
         return
 
     if not chunks:
-        logger.debug("_handle_message: no chunks, unsupported type")
+        logger.debug("no chunks, unsupported type")
         await sent.edit_text("Unsupported message type")
         return
 
-    logger.debug(f"_handle_message: posting {len(chunks)} chunk(s) to ChannelCore")
+    logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
     accumulated = ""
     try:
         async for chunk in core.post(chunks):
@@ -114,19 +114,19 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 accumulated += chunk.text
                 if accumulated.strip():
                     await sent.edit_text(accumulated)
-                    logger.debug(f"_handle_message: edit_text ({len(accumulated)} chars)")
+                    logger.debug(f"edit_text ({len(accumulated)} chars)")
             elif isinstance(chunk, FileChunk):
-                logger.debug(f"_handle_message: received FileChunk ({chunk.path})")
+                logger.debug(f"received FileChunk ({chunk.path})")
                 await _send_file(update, chunk.path)
     except Exception as e:
-        logger.error(f"_handle_message: ChannelCore error — {e}")
+        logger.error(f"ChannelCore error — {e}")
         await sent.edit_text(f"Error: {e}")
         return
 
     try:
         await sent.edit_text(accumulated, parse_mode="Markdown")
     except Exception as e:
-        logger.debug(f"_handle_message: Markdown edit failed — {e}")
+        logger.debug(f"Markdown edit failed — {e}")
 
 
 async def run_telegram(
@@ -139,7 +139,7 @@ async def run_telegram(
 ) -> None:
     builder = Application.builder().token(bot_token)
     if proxy:
-        logger.debug(f"run_telegram: proxy={proxy}")
+        logger.debug(f"proxy={proxy}")
         builder = builder.proxy(proxy).get_updates_proxy(proxy)
     app = builder.build()
     if not isinstance(app, Application):
@@ -150,7 +150,7 @@ async def run_telegram(
         app.bot_data["allowed_ids"] = allowed_user_ids
 
         app.add_handler(MessageHandler(filters.ALL, _handle_message))
-        logger.debug("run_telegram: handler registered (all messages)")
+        logger.debug("handler registered (all messages)")
 
         await app.initialize()
         await app.start()
@@ -161,6 +161,7 @@ async def run_telegram(
         try:
             await anyio.Event().wait()
         finally:
-            await app.updater.stop()
-            await app.stop()
-            await app.shutdown()
+            with anyio.CancelScope(shield=True):
+                await app.updater.stop()
+                await app.stop()
+                await app.shutdown()
