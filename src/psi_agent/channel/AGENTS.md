@@ -4,7 +4,7 @@
 
 ```
 channel/
-├── _types.py          # FileChunk, TextChunk, Chunk
+├── _types.py          # FileChunk, TextChunk, ReasoningChunk, Chunk
 ├── _core.py           # ChannelCore — 连接管理 + SSE 管道
 ├── cli/
 │   ├── __init__.py     # ChannelCli dataclass
@@ -28,6 +28,7 @@ ChannelCore 是所有 Channel（CLI、REPL、Telegram）共享的公共部件：
 - `post(list[Chunk]) -> AsyncIterator[Chunk]`：Chunk → 字符串 → POST → SSE → Chunk
 - 将输入中的 FileChunk 转换为 `[RECV:/path]` 标记（session 端负责读文件）
 - 检测输出中的 `[SEND:/path]` 标记并产生 FileChunk
+- 将 SSE 的 `delta.reasoning` 流切分为 `ReasoningChunk`，与 `content`（`TextChunk`）按到达顺序交错产出（类型切换时先 flush 旧类型）；`[SEND:...]` 仅扫描 content
 - SSE 内容在 interval 窗口内缓冲合并为单个 TextChunk（默认 1s，可配置）
 - 终端通道（CLI/REPL）设置 interval=0 无需缓冲
 
@@ -47,7 +48,7 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 
 - Channel 客户端（repl、cli）是终端 UI 程序，需要格式化输出
 - **使用 `rich.console.Console`** 替代 `print()`
-- 思考过程（reasoning）：`console.print(..., style="dim")`
+- 思考过程（reasoning）：`ChannelCore` 产出 `ReasoningChunk`，CLI/REPL 以 `console.print(..., end="", style="dim")` inline 渲染（Telegram/Feishu 忽略）
 - 错误信息：`console.print("[red]Error: ...[/red]")`
 - REPL 欢迎页：`console.print(Panel(...))`
 - **`Console(highlight=False)`**：禁用自动语法高亮，避免 Rich 误把 AI 回复当代码着色
