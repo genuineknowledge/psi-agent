@@ -18,7 +18,7 @@ Gateway 进程
 ├── HistoryManager     — JSONL 历史读取
 ├── aiohttp REST Server  — OpenAPI CRUD + Web UI chat
 ├── spa/               — Vue 3 SPA 前端项目 (Vite + SFC)
-└── _openapi.py       — OpenAPI schema 自动生成
+└── _openapi.py       — OpenAPI schema 提供
 ```
 
 ## 模块
@@ -83,8 +83,7 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 
 **delete(ai_id) 流程**：
 1. 获取 lock，断言存在
-2. `entry.scope.cancel()`
-3. `del _entries[ai_id]`
+2. `del _entries[ai_id]` + `entry.scope.cancel()`
 
 ## SessionManager
 
@@ -108,7 +107,7 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 
 **delete(session_id)**：
 1. 获取 lock，断言存在
-2. `entry.scope.cancel()` + `del _entries[session_id]`
+2. `del _entries[session_id]` + `entry.scope.cancel()`
 
 workspace 中的 history JSONL 不受影响。
 

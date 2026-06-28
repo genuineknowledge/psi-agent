@@ -81,14 +81,15 @@ class Gateway:
 ```python
 @dataclass
 class AIManager:
-    _ais: dict[str, AiEntry]
+    _entries: dict[str, _AiEntry]
     _lock: anyio.Lock
 
 @dataclass
-class AiEntry:
-    ai: Ai
+class _AiEntry:
     scope: anyio.CancelScope
-    socket: str              # /tmp/{socket_path}/ais/{ai_id}.sock
+    socket: str             # /tmp/{socket_path}/ais/{ai_id}.sock
+    provider: str
+    model: str
 ```
 
 ### 4.1 `create(ai_id, provider, model, api_key, base_url) -> AiInfo`
@@ -96,7 +97,7 @@ class AiEntry:
 1. 获取 lock，断言 `ai_id` 不重复
 2. 自动生成 socket 路径：`_socket_path(prefix, "ais", ai_id)`（Linux 返回 `/tmp/{prefix}/ais/{id}.sock`，Windows 返回 `\\.\pipe\{prefix}\ais\{id}`）
 3. `_ensure_socket_dir(socket)` 创建 socket 父目录（anyio 异步）
-4. 构造 `Ai(provider=..., model=..., api_key=..., base_url=..., socket=socket_path, verbose=...)`
+4. 构造 `Ai(session_socket=socket, provider=..., model=..., api_key=..., base_url=...)`
 5. 创建 `anyio.CancelScope`，`task_group.start_soon(ai.run)`
 6. 存入 `_ais[ai_id]`
 7. `_wait_socket(socket)` 轮询等待 socket 文件出现 + 额外 0.3s sleep 确保 acceptor 就绪
@@ -119,15 +120,15 @@ class AiEntry:
 ```python
 @dataclass
 class SessionManager:
-    _sessions: dict[str, SessionEntry]
+    _entries: dict[str, _SessionEntry]
     _lock: anyio.Lock
 
 @dataclass
-class SessionEntry:
-    session: Session
+class _SessionEntry:
     scope: anyio.CancelScope
     channel_socket: str
     ai_id: str
+    workspace: str
 ```
 
 ### 5.1 `create(session_id, ai_id, workspace) -> SessionInfo`
@@ -210,7 +211,7 @@ class SessionEntry:
   "id": "my-session",
   "ai_id": "gpt-4o",
   "workspace": "./my-workspace",
-  "channel_socket": "/tmp/psi/sessions/my-session.sock"
+  "channel_socket": "/tmp/psi/channels/my-session.sock"
 }
 ```
 
