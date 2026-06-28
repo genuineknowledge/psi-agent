@@ -11,10 +11,10 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 ```
 1. setup_logging(verbose)
 2. 解析 workspace 路径（空字符串时用 Path.cwd()，否则 anyio.Path.resolve()）
-3. SessionAgent.create() → 加载 tools、schedules、system_prompt_builder
+3. SessionAgent.create() → 创建 AiClient、加载 tools、schedules、system_prompt_builder
 4. 创建 anyio.Lock()
 5. 启动 anyio.task_group：
-   ├── serve_session(handler=agent.handle_chat_completions, ...)
+   ├── serve_session(handler=channel_handler)  ← 闭包调用 ChannelAdapter.handle(agent, lock)
    └── 每个 schedule 一个 run_one_schedule() task
 ```
 
@@ -25,42 +25,65 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 
 ## Agent Loop 逻辑
 
-1. 收到 channel 请求 → `handle_chat_completions`（SessionAgent 方法）
-2. 提取 messages[-1] 作为 user_message，其余字段透传为 extra_params
-3. 惰性构建 system prompt（首次 run() 时，如果 history 尚无 system 消息）
-4. 检查暂存的 schedule 响应 → 有则先流式返回
-5. 获取 `anyio.Lock`（忙则 FIFO 排队等待）
-6. User message 追加到 history
-7. 发送 `history + tools + extra_params` 到 AI socket（streaming）
-8. 解析 SSE 流（每 chunk 恰好 1 个 choice，多 choice 报错，0 choice 心跳跳过）：
-   - content → yield 给 channel
-   - reasoning → yield 给 channel
+1. 收到 channel 请求 → `ChannelAdapter.handle()` 解析请求，提取 user_message + extra_params
+2. 惰性构建 system prompt（首次 run() 时，如果 history 尚无 system 消息）
+3. 检查暂存的 schedule 响应 → 有则先流式返回（AgentChunk）
+4. 获取 `anyio.Lock`（忙则 FIFO 排队等待）
+5. User message 追加到 history
+6. 通过 `AiClient.stream()` 发送 `history + tools + extra_params` 到 AI backend（streaming）
+7. 消费 `AiDelta` 流（AiClient 已做好 SSE 解析、错误检测）：
+   - content → `yield AgentChunk(content=...)` 给 ChannelAdapter
+   - reasoning → `yield AgentChunk(reasoning=...)` 给 ChannelAdapter
    - tool_calls → 累积（按 index 拼接 partial JSON）
-   - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 7
+   - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 6
    - finish_reason="stop" → 最终 content 追加到 history → 释放锁
-   - finish_reason="error" → 不写入 history，直接返回
+   - finish_reason="error" → `raise AgentError(message)`，不写入 history
 8. 最多 `max_tool_rounds` 轮 tool call
 
 **注意**：
 - Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
 - `response.prepare()` 在 lock 内执行——客户端在 lock 释放前不会看到 HTTP 200。
-- `handle_chat_completions` 是 SessionAgent 的成员方法，以 bound method 传给 `serve_session`。
+- Channel 请求的处理由 `ChannelAdapter.handle()` 统一编排：parse → agent loop → AgentChunk→ChatCompletionChunk→SSE。
+- `ChannelAdapter.handle()` 由 `Session.run()` 中的闭包调用，lock 由闭包捕获后传入。
 - Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。
 - AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
 - AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history。
 
 ## 其他约定
 
-- AI 连接超时：`ClientTimeout(total=None)` — 语义：不超时，与 channel 一致
-- 流式 `delta` 字段可能为 `null`（非缺失 key），agent 用 `isinstance(delta_data, dict)` 校验
+- AI 连接超时：`ClientTimeout(total=None)` — 语义：不超时，与 channel 一致（由 `AiClient.stream()` 管理）
+- 流式 `delta` 字段可能为 `null`（非缺失 key），`AiClient` 用 `isinstance(delta_data, dict)` 校验后产出 `AiDelta`
 - Tool 模块在 `sys.modules` 中以 `psi_tool_` 前缀注册，避免与 stdlib 同名冲突
 - Schedule 加载时捕获坏 cron 表达式（不会导致整个 session 启动崩溃）
+
+## 协议适配层
+
+Session 层使用两个对称的协议适配器，将 `SessionAgent.run()` 包裹为纯业务逻辑：
+
+### AiClient（`ai_client.py`）
+- 封装 HTTP/SSE 连接管理与原始解析
+- `stream(request_body) → AsyncIterator[AiDelta]`
+- 处理：非 200、多 choice 错误检测、心跳跳过、`[DONE]` 终止
+
+### ChannelAdapter（`channel_adapter.py`）
+- 封装 Channel 请求解析与 SSE 响应写入
+- `handle(request, agent, lock) → StreamResponse`
+- `parse_request()` 提取 user_message + extra_params
+- `to_chat_completion_chunk(AgentChunk) → ChatCompletionChunk`
+- 错误信号通过 `AgentError` 异常传递
+
+### 核心类型
+| 类型 | 方向 | 职责 |
+|------|------|------|
+| `AiDelta` | AI→SessionAgent | SSE 解析后的内部流元素 |
+| `AgentChunk` | SessionAgent→Channel | 纯语义输出（仅 content / reasoning） |
+| `AgentError` | SessionAgent→Channel | 不可恢复错误信号 |
 
 ## SessionAgent 支持多种传输
 
 所有组件通过前缀自动检测传输协议（实现位于 `psi_agent._sockets`）：
 
-客户端（`resolve_connector_and_endpoint`）：
+`AiClient` 端（`resolve_connector_and_endpoint`）：
 - `http(s)://host:port` → `TCPConnector`
 - `\\\\.\\pipe\\name` → `NamedPipeConnector`（Windows only）
 - 裸文件系统路径 → `UnixConnector`
@@ -111,7 +134,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
     await anyio.sleep(触发时间 - now) ← 睡到触发
     async with lock:            ← 等当前请求完成
       调用 agent.run(msg)       ← AI 处理
-      流式结果追加到 pending_chunks
+      流式结果追加到 pending_chunks (list[AgentChunk])
       agent.set_pending_schedule_chunks(chunks)
       ↓
     下次 channel 请求到达时：

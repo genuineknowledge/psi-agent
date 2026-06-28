@@ -69,8 +69,10 @@ src/
     │   ├── AGENTS.md                # Session 层设计文档
     │   ├── __init__.py             # Session dataclass + run()，入口编排
     │   ├── server.py               # serve_session — aiohttp HTTP/SSE scaffold
-    │   ├── agent.py                # SessionAgent — history + agent loop + tool exec + handler + persistence
-    │   ├── protocol.py             # Session 层协议类型（ChatCompletionChunk 等）
+    │   ├── channel_adapter.py       # ChannelAdapter — Channel 侧协议适配（parse_request / AgentChunk→SSE）
+    │   ├── agent.py                # SessionAgent — 纯业务逻辑（agent loop + tool exec + history）
+    │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
+    │   ├── protocol.py             # Session 层类型（ChatCompletionChunk / AgentChunk / AiDelta / AgentError 等）
     │   ├── tools.py                # workspace tools 加载（async anyio.Path）
     │   └── scheduler.py            # cron-based 定时任务（croniter）
     └── channel/
