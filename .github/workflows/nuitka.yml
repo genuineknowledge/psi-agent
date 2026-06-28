@@ -32,7 +32,7 @@ jobs:
             --output-dir=nuitka-dist \
             --output-filename=psi-agent \
             --assume-yes-for-downloads \
-            --include-data-dir=src/psi_agent/gateway/spa/dist=spa/dist \
+            --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist \
             --include-package=any_llm \
             --include-package=mcp \
             src/psi_agent/cli.py
