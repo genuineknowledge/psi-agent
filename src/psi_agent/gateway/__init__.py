@@ -71,7 +71,7 @@ class Gateway:
         logger.info(f"Gateway listening on {addr}")
 
         if self.browser:
-            await anyio.to_thread.run_sync(webbrowser.open, addr)
+            await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
 
         try:
             await anyio.sleep_forever()
