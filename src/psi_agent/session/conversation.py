@@ -51,12 +51,9 @@ class Conversation:
         logger.info(f"Starting session: {session_id}")
 
         histories_dir = anyio.Path(str(workspace_path / "histories"))
-        dir_created = False
         if not await histories_dir.is_dir():
             await histories_dir.mkdir(parents=True)
             logger.info(f"Created histories directory: {histories_dir}")
-            dir_created = True
-        if dir_created:
             await (histories_dir / ".gitignore").write_text("*\n")
             logger.debug(f"Created .gitignore in {histories_dir}")
 
