@@ -7,6 +7,7 @@ agent/lock/``run()`` references.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
 from aiohttp import web
 from loguru import logger
@@ -25,7 +26,7 @@ class ChannelAdapter:
         """Raised by ``parse_request()`` for malformed or empty requests."""
 
     @staticmethod
-    async def parse_request(request: web.Request) -> tuple[dict, dict]:
+    async def parse_request(request: web.Request) -> tuple[dict[str, Any], dict[str, Any]]:
         try:
             body = await request.json()
         except Exception as e:

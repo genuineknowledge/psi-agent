@@ -1,11 +1,4 @@
-"""System prompt lifecycle — lazy build from workspace, optional rebuild.
-
-The ``SystemPrompt`` factory is called ``from_workspace`` because it
-loads the user's ``system_prompt_builder`` function from
-``workspace/systems/system.py``.  Module names include a UUID-based
-``session_id`` plus a SHA-256 hash of the source file, ensuring
-``sys.modules`` isolation when multiple sessions share a process.
-"""
+"""System prompt lifecycle — lazy build from workspace, optional rebuild."""
 
 from __future__ import annotations
 
@@ -17,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import anyio
 from loguru import logger
 
 if TYPE_CHECKING:
@@ -36,9 +30,9 @@ class SystemPrompt:
         self._checker = checker
 
     @classmethod
-    def from_workspace(cls, workspace_path: Path, session_id: str) -> SystemPrompt | None:
+    async def from_workspace(cls, workspace_path: Path, session_id: str) -> SystemPrompt | None:
         """Try to load the system module.  Returns None if no builder is found."""
-        builder, checker = cls._load_module(workspace_path, session_id)
+        builder, checker = await cls._load_module(workspace_path, session_id)
         if builder is None:
             return None
         return cls(builder=builder, checker=checker)
@@ -71,14 +65,15 @@ class SystemPrompt:
     # -- module loading --------------------------------------------------------
 
     @staticmethod
-    def _load_module(
+    async def _load_module(
         workspace_path: Path, session_id: str
     ) -> tuple[Callable[..., Any] | None, Callable[..., Any] | None]:
         """Import ``system_prompt_builder`` and ``system_prompt_rebuild_checker``
         from ``workspace/systems/system.py``."""
         system_py = workspace_path / "systems" / "system.py"
+        ap = anyio.Path(str(system_py))
         try:
-            file_bytes = system_py.read_bytes()
+            file_bytes = await ap.read_bytes()
         except OSError:
             logger.warning(f"No system.py found at {system_py}")
             return None, None
