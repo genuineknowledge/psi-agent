@@ -55,6 +55,7 @@ class ScheduleRegistry:
             logger.warning("No work_dir set, cannot refresh schedules")
             return []
 
+        logger.debug("Starting schedule refresh")
         new_scheds = await self._load_from_dir(self._work_dir)
         existing = {s.name for s in self.schedules}
         added: list[Schedule] = []
@@ -63,8 +64,10 @@ class ScheduleRegistry:
                 self.schedules.append(s)
                 task_group.start_soon(self._run_one, s, agent)
                 added.append(s)
+            else:
+                logger.debug(f"Schedule {s.name!r} already registered, skipping")
         if added:
-            logger.info(f"Schedule refresh: added {[s.name for s in added]}")
+            logger.info(f"Schedule refresh: added {[s.name for s in added]!r}")
         return added
 
     # -- runner coroutine (perpetual) -------------------------------------------
@@ -72,7 +75,7 @@ class ScheduleRegistry:
     @staticmethod
     async def _run_one(schedule: Schedule, agent: SessionAgent) -> None:
         """Perpetual coroutine that fires a schedule on its cron interval."""
-        logger.info(f"Schedule runner started: {schedule.name} ({schedule.cron})")
+        logger.info(f"Schedule runner started: {schedule.name!r} ({schedule.cron!r})")
 
         cron_iter = croniter(schedule.cron, time.time())
 
@@ -82,7 +85,7 @@ class ScheduleRegistry:
                 wait = max(0.0, next_run - time.time())
                 await anyio.sleep(wait)
 
-                logger.info(f"Schedule triggered: {schedule.name}")
+                logger.info(f"Schedule triggered: {schedule.name!r}")
                 msg = {"role": "user", "content": schedule.task_content}
 
                 async with agent._lock:
@@ -91,9 +94,9 @@ class ScheduleRegistry:
                         pending_chunks.append(chunk)
                         logger.debug(f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
                     agent.set_pending_schedule_chunks(pending_chunks)
-                    logger.info(f"Schedule {schedule.name} response stored ({len(pending_chunks)} chunks)")
+                    logger.info(f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)")
             except Exception as e:
-                logger.error(f"Error processing schedule {schedule.name}: {e}")
+                logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
 
     # -- disk loading -----------------------------------------------------------
 
@@ -103,7 +106,7 @@ class ScheduleRegistry:
         sched_anyio = anyio.Path(str(schedules_dir))
 
         if not await sched_anyio.is_dir():
-            logger.warning(f"Schedules directory not found: {schedules_dir}")
+            logger.warning(f"Schedules directory not found: {schedules_dir!r}")
             return schedules
 
         async for task_dir in sched_anyio.iterdir():
@@ -117,24 +120,24 @@ class ScheduleRegistry:
             content = await task_file.read_text()
             header, body = parse_yaml_header(content)
             if header is None:
-                logger.warning(f"No valid YAML header in {task_file}, skipping")
+                logger.warning(f"No valid YAML header in {task_file!r}, skipping")
                 continue
 
             name = header.get("name")
             cron = header.get("cron")
             if not name or not cron:
-                logger.warning(f"Missing 'name' or 'cron' in {task_file} header, skipping")
+                logger.warning(f"Missing 'name' or 'cron' in {task_file!r} header, skipping")
                 continue
 
             try:
                 croniter(cron)
             except (ValueError, Exception) as e:
-                logger.error(f"Invalid cron expression for schedule {name}: {e}")
+                logger.error(f"Invalid cron expression for schedule {name!r}: {e!r}")
                 continue
 
             schedule = Schedule(name=str(name), cron=str(cron), task_content=body.strip())
             schedules.append(schedule)
-            logger.info(f"Loaded schedule: {name} (cron: {cron})")
+            logger.debug(f"Loaded schedule: {name!r} (cron: {cron!r})")
 
-        logger.info(f"Loaded {len(schedules)} schedule(s) from {schedules_dir}")
+        logger.info(f"Loaded {len(schedules)} schedule(s) from {schedules_dir!r}")
         return schedules
