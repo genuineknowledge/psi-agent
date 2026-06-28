@@ -11,6 +11,7 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, FormData, web
 
+from psi_agent.gateway import Gateway
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._manager import (
     AiCreateRequest,
@@ -313,3 +314,8 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) ->
         await sm.delete("gw-sess")
         await aim.delete("gw-ai")
         await tg.__aexit__(None, None, None)
+
+
+def test_gateway_tray_field_defaults() -> None:
+    assert Gateway().tray is True
+    assert Gateway(tray=False).tray is False
