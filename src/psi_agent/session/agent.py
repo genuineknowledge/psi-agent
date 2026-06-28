@@ -175,6 +175,9 @@ class SessionAgent:
                 "stream": True,
             }
             if extra_params:
+                extra_params.pop("messages", None)
+                extra_params.pop("tools", None)
+                extra_params.pop("stream", None)
                 request_body |= extra_params
 
             logger.info("Sending request to AI via AiClient")
