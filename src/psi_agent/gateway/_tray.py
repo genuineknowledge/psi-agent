@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
 import webbrowser
 
@@ -18,9 +19,19 @@ except Exception:
 
 
 _DEFAULT_WIDTH = 64
+_ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dolphin.jpg")
 
 
 def _create_icon_image() -> Image.Image:
+    try:
+        img = Image.open(_ICON_PATH).convert("RGBA")
+        return img.resize((_DEFAULT_WIDTH, _DEFAULT_WIDTH), Image.Resampling.LANCZOS)
+    except Exception as e:
+        logger.warning(f"Failed to load tray icon {_ICON_PATH}, using fallback: {e}")
+        return _create_fallback_icon_image()
+
+
+def _create_fallback_icon_image() -> Image.Image:
     img = Image.new("RGBA", (_DEFAULT_WIDTH, _DEFAULT_WIDTH), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     margin = 4

@@ -27,7 +27,9 @@ Web 控制台是一个**零 CDN 依赖**的 Vue 3 单页应用（SPA），由 Vi
 spa/
 ├── package.json                     # 依赖声明
 ├── vite.config.js                   # base=/spa/, @ alias
-├── index.html                       # #app mount + interactive-widget=resizes-visual
+├── index.html                       # #app mount + favicon + <title>haitun agent</title>
+├── public/
+│   └── dolphin.jpg                  # favicon 海豚图标（Vite 复制到 dist/ 根，引用 /dolphin.jpg）
 ├── src/
 │   ├── main.js                      # createApp + import CSS + v-focus directive
 │   ├── App.vue                      # 根组件：layout + 弹窗 + 遮罩 + 业务逻辑
@@ -66,6 +68,8 @@ spa/
 - 输出目录 `dist/`，assets 放 `dist/assets/`
 
 `index.html`:
+- `<title>haitun agent</title>` — 页面标题
+- `<link rel="icon" href="/dolphin.jpg">` — favicon 来自 `public/dolphin.jpg`，Vite 构建时按 `base` 重写为 `/spa/dolphin.jpg`
 - `<meta viewport interactive-widget=resizes-visual>` — iOS 键盘弹出时缩小 visual viewport 而非 overlay
 - 初始 `#app` 内含加载 spinner，Vue mount 后被替换
 

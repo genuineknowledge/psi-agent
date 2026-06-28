@@ -29,9 +29,11 @@ jobs:
         run: |
           uv run pyinstaller \
             --onefile \
+            --noconsole \
             --name psi-agent \
             --distpath pyinstaller-dist \
             --add-data "src/psi_agent/gateway/spa/dist:psi_agent/gateway/spa/dist" \
+            --add-data "src/psi_agent/gateway/dolphin.jpg:psi_agent/gateway" \
             --collect-submodules any_llm \
             --collect-submodules mcp \
             src/psi_agent/cli.py
