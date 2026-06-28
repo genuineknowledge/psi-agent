@@ -255,7 +255,9 @@ class SessionAgent:
                             assistant_msg["reasoning"] = accumulated_reasoning
                         self._conversation.add(assistant_msg)
 
-                        for tc in ordered_calls:
+                        # pre-compute args + yield tool-call intent
+                        tool_args: list[tuple[int, dict, str, dict]] = []
+                        for i, tc in enumerate(ordered_calls):
                             func_info = tc.get("function", {})
                             func_name = func_info.get("name", "")
                             func_args_str = func_info.get("arguments", "{}")
@@ -270,21 +272,38 @@ class SessionAgent:
                             yield AgentChunk(
                                 reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
                             )
+                            tool_args.append((i, tc, func_name, args))
 
-                            func = self._tool_registry.get(func_name)
+                        # execute all tools concurrently
+                        results: list[str] = [""] * len(ordered_calls)
+
+                        async def _execute_one(
+                            idx: int, fn: str, a: dict, r: list[str]
+                        ) -> None:
+                            func = self._tool_registry.get(fn)
                             if func is None:
-                                result = f"Error: Tool '{func_name}' not found"
-                                logger.error(f"Tool not found: {func_name!r}")
+                                r[idx] = f"Error: Tool '{fn}' not found"
+                                logger.error(f"Tool not found: {fn!r}")
                             else:
                                 try:
-                                    result = await func(**args)
-                                    logger.info(f"Tool result ({func_name!r}): {str(result)[:200]!r}")
+                                    raw = await func(**a)
+                                    r[idx] = str(raw)
+                                    logger.info(f"Tool result ({fn!r}): {str(raw)[:200]!r}")
                                 except Exception as e:
-                                    result = f"Error executing tool '{func_name}': {e}"
-                                    logger.error(f"Tool execution error ({func_name!r}): {e!r}")
+                                    r[idx] = f"Error executing tool '{fn}': {e}"
+                                    logger.error(f"Tool execution error ({fn!r}): {e!r}")
 
+                        async with anyio.create_task_group() as tg:
+                            for i, _tc, func_name, args in tool_args:
+                                if func_name:
+                                    tg.start_soon(_execute_one, i, func_name, args, results)
+                                else:
+                                    results[i] = "Error: empty tool call name"
+
+                        # yield results in order, save
+                        for i, tc, func_name, _args in tool_args:
+                            result = results[i]
                             yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:500]}]")
-
                             self._conversation.add(
                                 {
                                     "role": "tool",
@@ -293,7 +312,7 @@ class SessionAgent:
                                     "content": str(result),
                                 }
                             )
-                            await self._conversation.save()
+                        await self._conversation.save()
 
                         break
 
