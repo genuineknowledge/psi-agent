@@ -44,7 +44,6 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 **注意**：
 - Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
 - `response.prepare()` 在 lock 内执行——客户端在 lock 释放前不会看到 HTTP 200。
-- Channel 请求的处理由 `ChannelAdapter.handle()` 统一编排：parse → agent loop → AgentChunk→ChatCompletionChunk→SSE。
 - `SessionAgent.handle_request()` 编排完整请求生命周期：parse → lock+prepare → run → write。
 - `ChannelAdapter` 是纯无状态工具——不持有 agent/lock 引用。
 - Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。

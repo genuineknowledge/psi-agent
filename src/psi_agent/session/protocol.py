@@ -246,7 +246,7 @@ class AgentError(Exception):
     Raised by ``SessionAgent.run()`` when the AI backend returns a non-200
     status or a stream with ``finish_reason="error"``.
 
-    Caught by ``ChannelAdapter.handle()``, which serialises it as a
+    Caught by ``ChannelAdapter.write()``, which serialises it as a
     ``ChatCompletionChunk`` with ``finish_reason="error"`` for the channel
     client.
     """
