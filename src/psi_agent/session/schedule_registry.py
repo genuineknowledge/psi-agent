@@ -33,6 +33,7 @@ class ScheduleRegistry:
     def __init__(self, *, schedules: list[Schedule] | None = None, work_dir: Path | None = None):
         self.schedules: list[Schedule] = list(schedules or [])
         self._work_dir = work_dir
+        self._agent: SessionAgent | None = None
 
     # -- factory ----------------------------------------------------------------
 
@@ -45,14 +46,19 @@ class ScheduleRegistry:
     # -- runner lifecycle -------------------------------------------------------
 
     def start_all(self, task_group: Any, agent: SessionAgent) -> None:
-        """Start a runner for every registered schedule in *task_group*."""
+        """Start a runner for every registered schedule in *task_group*.
+        Stores *agent* for use by future ``refresh()`` calls."""
+        self._agent = agent
         for s in self.schedules:
             task_group.start_soon(self._run_one, s, agent)
 
-    async def refresh(self, task_group: Any, agent: SessionAgent) -> list[Schedule]:
+    async def refresh(self, task_group: Any) -> list[Schedule]:
         """Incremental reload — start runners for new schedules only."""
         if self._work_dir is None:
             logger.warning("No work_dir set, cannot refresh schedules")
+            return []
+        if self._agent is None:
+            logger.warning("No agent set, cannot start schedule runners")
             return []
 
         logger.debug("Starting schedule refresh")
@@ -62,7 +68,7 @@ class ScheduleRegistry:
         for s in new_scheds:
             if s.name not in existing:
                 self.schedules.append(s)
-                task_group.start_soon(self._run_one, s, agent)
+                task_group.start_soon(self._run_one, s, self._agent)
                 added.append(s)
             else:
                 logger.debug(f"Schedule {s.name!r} already registered, skipping")
@@ -79,24 +85,27 @@ class ScheduleRegistry:
 
         cron_iter = croniter(schedule.cron, time.time())
 
-        while True:
-            try:
-                next_run = cron_iter.get_next()
-                wait = max(0.0, next_run - time.time())
-                await anyio.sleep(wait)
+        try:
+            while True:
+                try:
+                    next_run = cron_iter.get_next()
+                    wait = max(0.0, next_run - time.time())
+                    await anyio.sleep(wait)
 
-                logger.info(f"Schedule triggered: {schedule.name!r}")
-                msg = {"role": "user", "content": schedule.task_content}
+                    logger.info(f"Schedule triggered: {schedule.name!r}")
+                    msg = {"role": "user", "content": schedule.task_content}
 
-                async with agent._lock:
-                    pending_chunks: list[AgentChunk] = []
-                    async for chunk in agent.run(msg):
-                        pending_chunks.append(chunk)
-                        logger.debug(f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
-                    agent.set_pending_schedule_chunks(pending_chunks)
-                    logger.info(f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)")
-            except Exception as e:
-                logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
+                    async with agent._lock:
+                        pending_chunks: list[AgentChunk] = []
+                        async for chunk in agent.run(msg):
+                            pending_chunks.append(chunk)
+                            logger.debug(f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
+                        agent.set_pending_schedule_chunks(pending_chunks)
+                        logger.info(f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)")
+                except Exception as e:
+                    logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
+        finally:
+            logger.info(f"Schedule runner stopped: {schedule.name!r}")
 
     # -- disk loading -----------------------------------------------------------
 
