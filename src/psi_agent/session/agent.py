@@ -50,7 +50,6 @@ class SessionAgent:
         max_tool_rounds: int = 128,
         history: list[dict] | None = None,
         history_path: Path | None = None,
-        agent_uuid: str = "",
     ) -> None:
         """Plain constructor — every parameter has a default so tests can
         inject only the subset they need.  Use ``create()`` for production.
@@ -70,7 +69,11 @@ class SessionAgent:
         self._tg: Any = None
         self._file_hashes: dict[str, str] = {}
         self._workspace_path: Path | None = None
-        self._agent_uuid = agent_uuid or uuid.uuid4().hex
+
+    @property
+    def _session_id(self) -> str:
+        """Session identifier derived from the history file path stem."""
+        return self._history_path.stem if self._history_path else ""
 
     # -- factory --------------------------------------------------------------
 
@@ -91,13 +94,13 @@ class SessionAgent:
         (loaded from ``systems/system.py``) enables runtime prompt refreshing
         without restarting the session.
         """
-        agent_uuid = uuid.uuid4().hex
-        tools, tool_funcs, file_hashes = await load_tools_from_workspace(
-            workspace_path / "tools", agent_uuid
-        )
+        history, history_path, session_id = await _init_history(workspace_path, session_id)
         schedules = await load_schedules_from_workspace(workspace_path / "schedules")
-        history, history_path = await _init_history(workspace_path, session_id)
-        builder, checker = _load_system_module(workspace_path, agent_uuid)
+        builder, checker = _load_system_module(workspace_path, session_id)
+
+        tools, tool_funcs, file_hashes = await load_tools_from_workspace(
+            workspace_path / "tools", session_id
+        )
 
         agent = cls(
             ai_client=AiClient(ai_socket),
@@ -109,7 +112,6 @@ class SessionAgent:
             max_tool_rounds=max_tool_rounds,
             history=history,
             history_path=history_path,
-            agent_uuid=agent_uuid,
         )
         agent._file_hashes = file_hashes
         agent._workspace_path = workspace_path
@@ -133,7 +135,7 @@ class SessionAgent:
             return {}
 
         new_tools, new_funcs, new_hashes = await load_tools_from_workspace(
-            self._workspace_path / "tools", self._agent_uuid
+            self._workspace_path / "tools", self._session_id
         )
         result: dict[str, str] = {}
         for name, tf in new_tools.items():
@@ -476,7 +478,7 @@ class SessionAgent:
 async def _init_history(
     workspace_path: Path,
     session_id: str | None = None,
-) -> tuple[list[dict], Path]:
+) -> tuple[list[dict], Path, str]:
     """Create the histories directory and load an existing JSONL file.
 
     ``session_id`` is validated (``[a-zA-Z0-9_-]+``) to prevent path traversal.
@@ -499,7 +501,7 @@ async def _init_history(
 
     history_path = workspace_path / "histories" / f"{session_id}.jsonl"
     history = await _load_history(history_path)
-    return history, history_path
+    return history, history_path, session_id
 
 
 async def _load_history(path: Path) -> list[dict]:
@@ -541,14 +543,14 @@ async def _save_history(path: Path, history: list[dict]) -> None:
 # ── System module loading ────────────────────────────────────────────────────
 
 def _load_system_module(
-    workspace_path: Path, agent_uuid: str
+    workspace_path: Path, session_id: str
 ) -> tuple[Callable[..., Any] | None, Callable[..., Any] | None]:
     """Import ``system_prompt_builder`` and ``system_prompt_rebuild_checker``
     from ``workspace/systems/system.py``.
 
-    The module name includes ``agent_uuid`` and ``file_hash[:12]`` so that
-    multiple agents in the same process receive isolated ``sys.modules``
-    entries.  Without this, two agents sharing a workspace would collide.
+    The module name includes ``session_id`` and ``file_hash[:12]`` so that
+    multiple sessions in the same process receive isolated ``sys.modules``
+    entries.  Without this, two sessions sharing a workspace would collide.
     """
     system_py = workspace_path / "systems" / "system.py"
     try:
@@ -558,7 +560,7 @@ def _load_system_module(
         return None, None
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()
-    module_name = f"psi_system_{agent_uuid}_{file_hash[:12]}"
+    module_name = f"psi_system_{session_id}_{file_hash[:12]}"
 
     try:
         spec = importlib.util.spec_from_file_location(module_name, str(system_py))

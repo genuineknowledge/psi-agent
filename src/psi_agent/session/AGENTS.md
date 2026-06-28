@@ -11,15 +11,16 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 ```
 1. setup_logging(verbose)
 2. 解析 workspace 路径（空字符串时用 Path.cwd()，否则 anyio.Path.resolve()）
-3. SessionAgent.create() → 生成 agent_uuid、创建 AiClient/ChannelAdapter/anyio.Lock、加载 tools/schedules/system 模块
+3. SessionAgent.create() → 生成 session_id、创建 AiClient/ChannelAdapter/anyio.Lock、加载 tools/schedules/system 模块
 4. 启动 anyio.task_group：
    ├── serve_session(agent=agent)  ← 从 agent 读取 channel_socket + handle_request
    └── 每个 schedule 一个 run_one_schedule(schedule, agent) task
 
 **关键点**：
-- `SessionAgent` 自包含：持有 `_agent_uuid`、`_ai_client`、`_channel_adapter`、`_lock`
+- `SessionAgent` 自包含：持有 `_ai_client`、`_channel_adapter`、`_lock`
+- `_session_id` 从 `_history_path.stem` 派生，同时用于 sys.modules 隔离（tools/system 的 module name）
 - `channel_socket` 由 `Session.run()` 直接传给 `serve_session()`，不进入 agent 内部
-- 所有手动 `importlib` 使用 `原名_agent_uuid_文件hash[:12]` 作为 module name，确保同进程多 agent 隔离
+- 所有手动 `importlib` 使用 `原名_session_id_文件hash[:12]` 作为 module name，确保同进程多 session 隔离
 - `SessionAgent.create()` 完成所有初始化——`__init__.py` 只做入口编排
 - Tool 加载为单遍 `importlib`：同时产出元数据（ToolFunction）和实际 callable
 - System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）
@@ -55,7 +56,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 
 - AI 连接超时：`ClientTimeout(total=None)` — 语义：不超时，与 channel 一致（由 `AiClient.stream()` 管理）
 - 流式 `delta` 字段可能为 `null`（非缺失 key），`AiClient` 用 `isinstance(delta_data, dict)` 校验后产出 `AiDelta`
-- Tool 模块在 `sys.modules` 中以 `psi_tool_{name}_{agent_uuid}_{file_hash[:12]}` 注册，同进程多 agent 互不冲突
+- Tool 模块在 `sys.modules` 中以 `psi_tool_{name}_{session_id}_{file_hash[:12]}` 注册，同进程多 session 互不冲突
 - Schedule 加载时捕获坏 cron 表达式（不会导致整个 session 启动崩溃）
 
 ## 协议适配层

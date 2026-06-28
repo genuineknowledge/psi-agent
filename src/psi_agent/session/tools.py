@@ -16,11 +16,11 @@ from psi_agent.session.protocol import ToolFunction
 
 async def load_tools_from_workspace(
     tools_dir: Path,
-    agent_uuid: str = "",
+    session_id: str = "",
 ) -> tuple[dict[str, ToolFunction], dict[str, Callable[..., Any]], dict[str, str]]:
     """Discover and load all tools from a workspace's ``tools/`` directory.
 
-    ``agent_uuid`` disambiguates modules when multiple agents share a
+    ``session_id`` disambiguates modules when multiple sessions share a
     process — each gets a unique ``sys.modules`` key.
 
     Returns ``(tools, callables, file_hashes)``.
@@ -43,7 +43,7 @@ async def load_tools_from_workspace(
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         file_hashes[file_path_str] = file_hash
 
-        module_name = f"psi_tool_{py_file.stem}_{agent_uuid}_{file_hash[:12]}"
+        module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash[:12]}"
 
         try:
             spec = importlib.util.spec_from_file_location(module_name, str(py_file))
