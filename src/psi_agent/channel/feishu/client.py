@@ -10,11 +10,18 @@ from typing import Any
 import anyio
 import platformdirs
 from lark_channel import FeishuChannel
+from lark_channel.api.im.v1.model.create_message_reaction_request import CreateMessageReactionRequest
+from lark_channel.api.im.v1.model.create_message_reaction_request_body import CreateMessageReactionRequestBody
+from lark_channel.api.im.v1.model.delete_message_reaction_request import DeleteMessageReactionRequest
+from lark_channel.api.im.v1.model.emoji import Emoji
 from lark_channel.api.im.v1.model.get_message_resource_request import GetMessageResourceRequest
 from loguru import logger
 
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import Chunk, FileChunk, TextChunk
+
+_EMOJI_PROCESSING = "Typing"
+_EMOJI_FAILED = "CrossMark"
 
 
 def _allowed(sender_id: str, allowed_ids: list[str] | None) -> bool:
@@ -31,6 +38,39 @@ async def _send_file(channel: Any, chat_id: str, path: str) -> None:
         return
     logger.debug("_send_file: image rejected, trying file")
     await channel.send(chat_id, {"file": {"source": path}})
+
+
+async def _add_reaction(channel: Any, message_id: str, emoji_type: str) -> str | None:
+    logger.debug(f"_add_reaction: message_id={message_id} emoji={emoji_type}")
+    try:
+        req = (
+            CreateMessageReactionRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                CreateMessageReactionRequestBody.builder()
+                .reaction_type(Emoji.builder().emoji_type(emoji_type).build())
+                .build()
+            )
+            .build()
+        )
+        resp = await channel.client.im.v1.message_reaction.acreate(req)
+        if resp.data and resp.data.reaction_id:
+            logger.debug(f"_add_reaction: OK reaction_id={resp.data.reaction_id}")
+            return resp.data.reaction_id
+        logger.error(f"_add_reaction: no reaction_id in response ({emoji_type})")
+    except Exception as e:
+        logger.error(f"_add_reaction failed ({emoji_type}) — {e}")
+    return None
+
+
+async def _remove_reaction(channel: Any, message_id: str, reaction_id: str) -> None:
+    logger.debug(f"_remove_reaction: message_id={message_id} reaction_id={reaction_id}")
+    try:
+        req = DeleteMessageReactionRequest.builder().message_id(message_id).reaction_id(reaction_id).build()
+        await channel.client.im.v1.message_reaction.adelete(req)
+        logger.debug("_remove_reaction: OK")
+    except Exception as e:
+        logger.error(f"_remove_reaction failed — {e}")
 
 
 async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[Chunk]:
@@ -87,41 +127,51 @@ async def _handle_and_stream(
 
     logger.debug(f"_handle_message: sender={ctx.sender_id} chat={ctx.chat_id}")
 
-    downloads = f"{platformdirs.user_downloads_dir()}/.psi/{date.today()}"
-    await anyio.Path(downloads).mkdir(parents=True, exist_ok=True)
-
+    reaction_id = await _add_reaction(channel, ctx.message_id, _EMOJI_PROCESSING)
+    failed = False
     try:
-        chunks = await _build_chunks(channel, ctx, downloads)
-    except Exception as e:
-        logger.error(f"_handle_message: _build_chunks failed — {e}")
-        await channel.send(ctx.chat_id, {"text": f"Error processing message: {e}"})
-        return
+        downloads = f"{platformdirs.user_downloads_dir()}/.psi/{date.today()}"
+        await anyio.Path(downloads).mkdir(parents=True, exist_ok=True)
 
-    if not chunks:
-        logger.debug("_handle_message: no chunks, unsupported type")
-        return
+        try:
+            chunks = await _build_chunks(channel, ctx, downloads)
+        except Exception as e:
+            logger.error(f"_handle_message: _build_chunks failed — {e}")
+            await channel.send(ctx.chat_id, {"text": f"Error processing message: {e}"})
+            failed = True
+            return
 
-    logger.debug(f"_handle_message: posting {len(chunks)} chunk(s) to ChannelCore")
+        if not chunks:
+            logger.debug("_handle_message: no chunks, unsupported type")
+            return
 
-    async def _produce(stream: Any) -> None:
-        async for chunk in core.post(chunks):
-            if isinstance(chunk, TextChunk):
-                await stream.append(chunk.text)
-                logger.debug(f"_handle_message: stream.append ({len(chunk.text)} chars)")
-            elif isinstance(chunk, FileChunk):
-                logger.debug(f"_handle_message: received FileChunk ({chunk.path})")
-                await _send_file(channel, ctx.chat_id, chunk.path)
+        logger.debug(f"_handle_message: posting {len(chunks)} chunk(s) to ChannelCore")
 
-    try:
-        await channel.stream(
-            ctx.chat_id,
-            {"markdown": _produce},
-            {"reply_to": ctx.message_id},
-        )
-        logger.debug("_handle_message: stream completed")
-    except Exception as e:
-        logger.error(f"_handle_message: ChannelCore error — {e}")
-        await channel.send(ctx.chat_id, {"text": f"Error: {e}"})
+        async def _produce(stream: Any) -> None:
+            async for chunk in core.post(chunks):
+                if isinstance(chunk, TextChunk):
+                    await stream.append(chunk.text)
+                    logger.debug(f"_handle_message: stream.append ({len(chunk.text)} chars)")
+                elif isinstance(chunk, FileChunk):
+                    logger.debug(f"_handle_message: received FileChunk ({chunk.path})")
+                    await _send_file(channel, ctx.chat_id, chunk.path)
+
+        try:
+            await channel.stream(
+                ctx.chat_id,
+                {"markdown": _produce},
+                {"reply_to": ctx.message_id},
+            )
+            logger.debug("_handle_message: stream completed")
+        except Exception as e:
+            logger.error(f"_handle_message: ChannelCore error — {e}")
+            await channel.send(ctx.chat_id, {"text": f"Error: {e}"})
+            failed = True
+    finally:
+        if reaction_id:
+            await _remove_reaction(channel, ctx.message_id, reaction_id)
+        if failed:
+            await _add_reaction(channel, ctx.message_id, _EMOJI_FAILED)
 
 
 async def run_feishu(
