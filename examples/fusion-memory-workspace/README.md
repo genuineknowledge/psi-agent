@@ -76,12 +76,15 @@ uv run psi-agent session \
 
 The workspace tools do not automatically write every conversation turn by
 themselves. By default, memory is written only when the agent calls
-`memory_add`.
+`memory_add`. Explicit tool writes are marked with
+`metadata.write_mode="explicit_tool"` and `metadata.auto_persisted=false`.
 
 For continuous persistence without changing psi-agent core, run the Fusion
 Memory history sync process beside the agent session. It reads psi-agent history
 and posts new user/assistant turns to Fusion Memory `/add`. Re-running it is
-safe because it stores a local deduplication state file.
+safe because it stores a local deduplication state file. Synced writes are
+marked with `metadata.write_mode="history_sync"` and
+`metadata.auto_persisted=true`.
 
 If you use the psi-agent gateway, start the sync against the gateway history API:
 

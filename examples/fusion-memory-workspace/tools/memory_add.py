@@ -35,7 +35,11 @@ async def memory_add(content: str, source: str = "dolphin-tool") -> str:
             {
                 "input": {"role": "user", "content": content},
                 "scope": CONFIG.scope,
-                "metadata": {"source": source or "dolphin-tool"},
+                "metadata": {
+                    "source": source or "dolphin-tool",
+                    "write_mode": "explicit_tool",
+                    "auto_persisted": False,
+                },
             },
             CONFIG.timeout_seconds,
         )

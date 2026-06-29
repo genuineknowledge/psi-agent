@@ -143,3 +143,23 @@ def test_fusion_memory_workspace_readme_uses_public_repository() -> None:
     assert "git clone https://github.com/genuineknowledge/fusion-memory.git" in readme
     assert "wey-bo" not in readme
     assert "git@" not in readme
+
+
+@pytest.mark.anyio
+async def test_fusion_memory_workspace_memory_add_marks_explicit_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict] = []
+    module = _load_tool_module("memory_add")
+
+    async def fake_post_json(base_url: str, path: str, payload: dict, timeout_seconds: float) -> dict:
+        seen.append(payload)
+        return {"ok": True, "saved": True}
+
+    monkeypatch.setattr(module, "_post_json", fake_post_json)
+
+    result = await module.memory_add("remember this")
+
+    assert "saved" in result
+    assert seen[0]["metadata"]["write_mode"] == "explicit_tool"
+    assert seen[0]["metadata"]["auto_persisted"] is False
