@@ -33,15 +33,20 @@ models/Qwen3-Embedding-0.6B
 models/Qwen3-Reranker-0.6B
 ```
 
-The installer checks Python 3.11+, installs Fusion Memory in editable mode, and
-checks only those repository-local model paths. It does not download model
-weights from other locations.
+The installer checks Python 3.11+, installs Fusion Memory in editable mode with
+the full runtime extras (`.[postgres,qwen]`), and checks only those
+repository-local model paths. It installs the Python runtime dependencies for
+Postgres, local Qwen models, PyTorch, and Transformers, but it does not download
+model weights from other locations.
 
-If bundled models or local ML dependencies are not ready, installation falls
-back to compromised local mode. In compromised mode Fusion Memory still runs with
-SQLite plus built-in lightweight embedding/reranker, but memory quality is
-compromised. After install, provide an API key before configuring API-backed
-providers. Recommended provider: Aliyun DashScope.
+If bundled model files are missing or dependency installation failed, installation
+reports not ready and asks you to rerun `pip install -e ".[postgres,qwen]"`.
+Only when model files and dependencies are present but this hardware/runtime
+cannot load or run both bundled vector models does installation fall back to
+compromised local mode. In compromised mode Fusion Memory still runs with SQLite
+plus built-in lightweight embedding/reranker, but memory quality is compromised.
+After install, provide an API key before configuring API-backed providers.
+Recommended provider: Aliyun DashScope.
 
 ```bash
 export DASHSCOPE_API_KEY=<your-api-key>
