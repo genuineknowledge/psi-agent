@@ -8,7 +8,6 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 import anyio
-
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
