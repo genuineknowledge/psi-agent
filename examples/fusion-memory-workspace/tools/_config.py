@@ -41,7 +41,7 @@ def _clamp_timeout(raw: str | None) -> float:
         return DEFAULT_TIMEOUT_SECONDS
     try:
         value = float(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return DEFAULT_TIMEOUT_SECONDS
     if value <= 0:
         return DEFAULT_TIMEOUT_SECONDS
