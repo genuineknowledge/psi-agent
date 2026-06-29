@@ -217,7 +217,7 @@ class ScheduleRegistry:
             if not await task_file.exists():
                 continue
 
-            content = await task_file.read_text()
+            content = await task_file.read_text(encoding="utf-8")
             file_hash = hashlib.sha256(content.encode()).hexdigest()
             str_path = str(task_file)
 

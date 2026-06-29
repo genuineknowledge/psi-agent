@@ -111,7 +111,7 @@ class Conversation:
         if not await ap.exists():
             logger.info(f"No history file found at {path}")
             return messages
-        content = await ap.read_text()
+        content = await ap.read_text(encoding="utf-8")
         for lineno, line in enumerate(content.splitlines(), 1):
             stripped = line.strip()
             if not stripped:

@@ -320,7 +320,7 @@ class ToolRegistry:
                 module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
 
                 try:
-                    source = await py_file.read_text()
+                    source = await py_file.read_text(encoding="utf-8")
                     compiled = compile(source, str_path, "exec")
                 except Exception as e:
                     logger.error(f"Failed to read or compile {py_file!r}: {e!r}")

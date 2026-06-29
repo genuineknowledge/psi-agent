@@ -80,7 +80,7 @@ async def _run_config(config_path: Path) -> None:
     """Launch all components defined in a YAML config file."""
     logger.info(f"Loading config from {config_path}")
     try:
-        content = await anyio.Path(str(config_path)).read_text()
+        content = await anyio.Path(str(config_path)).read_text(encoding="utf-8")
     except OSError as e:
         logger.error(f"Failed to read config file {config_path}: {e}")
         raise
