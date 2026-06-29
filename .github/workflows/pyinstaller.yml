@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync
-      - run: uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]" pystray
+      - run: uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]"
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
@@ -34,6 +34,7 @@ jobs:
             --add-data "src/psi_agent/gateway/spa/dist:psi_agent/gateway/spa/dist" \
             --collect-submodules any_llm \
             --collect-submodules mcp \
+            --collect-submodules pystray \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7
         with:
