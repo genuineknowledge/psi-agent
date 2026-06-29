@@ -50,6 +50,7 @@ from prompt_sections import (
     HEARTBEATS_SECTION,
     IDENTITY_LINE,
     PSI_AGENT_HELP_GUIDANCE,
+    FUSION_MEMORY_SECTION,
     SAFETY_SECTION,
     SILENT_REPLIES_SECTION,
     SILENT_TOKEN,
@@ -878,6 +879,8 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
             EXECUTION_BIAS_SECTION,
             "",
             SAFETY_SECTION,
+            "",
+            FUSION_MEMORY_SECTION,
         ]
 
         skills_section = build_skills_section(skills_xml)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -12,8 +13,10 @@ finally:
 
 @mcp
 def serper() -> dict[str, object]:
-    return {
+    config: dict[str, object] = {
         "type": "local",
         "command": ["uvx", "serper-mcp-server"],
-        "env": {"SERPER_API_KEY": "6807655101160dad0d00311d01ee1a1471517ba7"},
     }
+    if api_key := os.environ.get("SERPER_API_KEY"):
+        config["env"] = {"SERPER_API_KEY": api_key}
+    return config

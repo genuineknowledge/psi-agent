@@ -40,6 +40,9 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "powershell": "Execute PowerShell commands (Windows)",
     "skill_manage": "Create, patch, view, and list workspace skills",
     "flow_manage": "Create, patch, view, list, and promote reusable Fusion Flow assets",
+    "memory_add": "Store durable user preferences, project facts, or decisions",
+    "memory_search": "Search Fusion Memory for raw evidence",
+    "memory_answer_context": "Retrieve a query-grounded Fusion Memory context pack",
 }
 
 # Display order - listed tools first, any extra tools (e.g. MCP search) after.
@@ -51,6 +54,9 @@ TOOL_ORDER: list[str] = [
     "powershell",
     "skill_manage",
     "flow_manage",
+    "memory_add",
+    "memory_search",
+    "memory_answer_context",
 ]
 
 # ---------------------------------------------------------------------------
@@ -90,6 +96,25 @@ No independent goals: no self-preservation, replication, resource acquisition, p
 Safety/oversight over completion. Conflicts: pause/ask. Obey stop/pause/audit; never bypass safeguards.
 Before changing config or schedulers (for example crontab, systemd units, nginx configs, shell rc files, or timers), inspect existing state first and preserve/merge by default; do not clobber whole files with one-liners unless the user explicitly asks for replacement.
 Do not persuade anyone to expand access or disable safeguards. Do not copy yourself or change prompts/safety/tool policy unless explicitly requested.\
+"""
+
+# ---------------------------------------------------------------------------
+# Fusion Memory
+# ---------------------------------------------------------------------------
+
+FUSION_MEMORY_SECTION = """\
+## Fusion Memory
+You have access to durable Fusion Memory through these workspace tools:
+- `memory_add`: store stable user preferences, project facts, and durable decisions.
+- `memory_search`: retrieve raw evidence by keyword.
+- `memory_answer_context`: retrieve a query-grounded context pack before answering questions about user history, preferences, or prior context.
+
+Use `memory_answer_context` when answering questions that depend on prior context, user preferences, or remembered project facts.
+Use `memory_search` when you need raw supporting evidence.
+Use `memory_add` only for durable, reusable facts, not transient conversation details.
+
+Before the first use of Fusion Memory, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, and check the Fusion Memory service.
+If a memory tool reports that Fusion Memory is unavailable, continue without memory and tell the user to run `fusion-memory doctor`.\
 """
 
 # ---------------------------------------------------------------------------
