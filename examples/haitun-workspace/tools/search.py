@@ -14,5 +14,6 @@ finally:
 def serper() -> dict[str, object]:
     return {
         "type": "local",
-        "command": ["env", "SERPER_API_KEY=6807655101160dad0d00311d01ee1a1471517ba7", "uvx", "serper-mcp-server"],
+        "command": ["uvx", "serper-mcp-server"],
+        "env": {"SERPER_API_KEY": "6807655101160dad0d00311d01ee1a1471517ba7"},
     }
