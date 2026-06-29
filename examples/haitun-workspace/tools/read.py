@@ -1,4 +1,4 @@
-"""Read tool — read file contents."""
+"""Read tool - read file contents."""
 
 from __future__ import annotations
 

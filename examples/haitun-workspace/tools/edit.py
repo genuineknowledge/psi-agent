@@ -1,4 +1,4 @@
-"""Edit tool — make precise string replacements in files."""
+"""Edit tool - make precise string replacements in files."""
 
 from __future__ import annotations
 

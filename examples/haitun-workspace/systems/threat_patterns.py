@@ -6,14 +6,14 @@ system.py.
 
 Pattern scopes
 --------------
-- ``"all"``     — classic prompt injection + exfiltration; applied everywhere.
-- ``"context"`` — adds promptware / C2 / role-play hijack; used for context
+- ``"all"``     - classic prompt injection + exfiltration; applied everywhere.
+- ``"context"`` - adds promptware / C2 / role-play hijack; used for context
   files (AGENTS.md, .hermes.md, etc.).
-- ``"strict"``  — adds persistence / SSH backdoor patterns; used for
+- ``"strict"``  - adds persistence / SSH backdoor patterns; used for
   user-mediated writes (memory, skill installs).
 
 Patterns anchor on C2-specific vocabulary or unambiguous attack behavior,
-NOT on generic bossy English — "you must" alone is too common in legitimate
+NOT on generic bossy English - "you must" alone is too common in legitimate
 instruction files to flag.
 """
 
@@ -22,9 +22,9 @@ from __future__ import annotations
 import re
 
 # Each entry: (regex, pattern_id, scope)
-# scope ∈ {"all", "context", "strict"}
+# scope in {"all", "context", "strict"}
 _PATTERNS: list[tuple[str, str, str]] = [
-    # ── Classic prompt injection ─────────────────────────────────────────
+    # -- Classic prompt injection -----------------------------------------
     (
         r"ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+(?:\w+\s+)*instructions",
         "prompt_injection",
@@ -45,7 +45,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
     (r"<\s*div\s+style\s*=\s*[\"'][\s\S]*?display\s*:\s*none", "hidden_div", "all"),
     (r"translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)", "translate_execute", "all"),
     (r"do\s+not\s+(?:\w+\s+)*tell\s+(?:\w+\s+)*the\s+user", "deception_hide", "all"),
-    # ── Role-play / identity hijack ──────────────────────────────────────
+    # -- Role-play / identity hijack --------------------------------------
     (r"you\s+are\s+(?:\w+\s+)*now\s+(?:a|an|the)\s+", "role_hijack", "context"),
     (r"pretend\s+(?:\w+\s+)*(you\s+are|to\s+be)\s+", "role_pretend", "context"),
     (r"output\s+(?:\w+\s+)*(system|initial)\s+prompt", "leak_system_prompt", "context"),
@@ -56,7 +56,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
     ),
     (r"you\s+have\s+been\s+(?:\w+\s+)*(updated|upgraded|patched)\s+to", "fake_update", "context"),
     (r"\bname\s+yourself\s+\w+", "identity_override", "context"),
-    # ── C2 / promptware ──────────────────────────────────────────────────
+    # -- C2 / promptware --------------------------------------------------
     (r"register\s+(as\s+)?a?\s*node", "c2_node_registration", "context"),
     (r"(heartbeat|beacon|check[\s\-]?in)\s+(to|with)\s+", "c2_heartbeat", "context"),
     (r"pull\s+(down\s+)?(?:new\s+)?task(?:ing|s)?\b", "c2_task_pull", "context"),
@@ -73,7 +73,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
         "env_var_unset_agent",
         "context",
     ),
-    # ── Known C2 framework names ─────────────────────────────────────────
+    # -- Known C2 framework names -----------------------------------------
     (
         r"\b(?:praxis|cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b",
         "known_c2_framework",
@@ -81,7 +81,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
     ),
     (r"\bc2\s+(?:server|channel|infrastructure|beacon)\b", "c2_explicit", "context"),
     (r"\bcommand\s+and\s+control\b", "c2_explicit_long", "context"),
-    # ── Exfiltration via curl/wget/cat ───────────────────────────────────
+    # -- Exfiltration via curl/wget/cat -----------------------------------
     (r"curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_curl", "all"),
     (r"wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)", "exfil_wget", "all"),
     (r"cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)", "read_secrets", "all"),
@@ -91,7 +91,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
         "context_exfil",
         "strict",
     ),
-    # ── Persistence / SSH backdoor ───────────────────────────────────────
+    # -- Persistence / SSH backdoor ---------------------------------------
     (r"authorized_keys", "ssh_backdoor", "strict"),
     (r"\$HOME/\.ssh|\~/\.ssh", "ssh_access", "strict"),
     (r"\$HOME/\.hermes/\.env|\~/\.hermes/\.env", "hermes_env", "strict"),
@@ -105,7 +105,7 @@ _PATTERNS: list[tuple[str, str, str]] = [
         "hermes_config_mod",
         "strict",
     ),
-    # ── Hardcoded secrets ────────────────────────────────────────────────
+    # -- Hardcoded secrets ------------------------------------------------
     (
         r"(?:api[_-]?key|token|secret|password)\s*[=:]\s*[\"'][A-Za-z0-9+/=_-]{20,}",
         "hardcoded_secret",
@@ -178,7 +178,7 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
 
     Args:
         content: Text to scan.
-        scope: Pattern set to apply — "all", "context", or "strict".
+        scope: Pattern set to apply - "all", "context", or "strict".
 
     Returns:
         List of matched pattern IDs. Empty list means clean.
@@ -188,7 +188,7 @@ def scan_for_threats(content: str, scope: str = "context") -> list[str]:
 
     findings: list[str] = []
 
-    # Invisible unicode — single pass through the character set.
+    # Invisible unicode - single pass through the character set.
     char_set = set(content)
     for ch in char_set & INVISIBLE_CHARS:
         findings.append(f"invisible_unicode_U+{ord(ch):04X}")

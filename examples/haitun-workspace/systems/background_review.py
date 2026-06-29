@@ -1,4 +1,4 @@
-"""Background review — async post-turn learning for hermes-style-workspace.
+"""Background review - async post-turn learning for hermes-style-workspace.
 
 After each user turn, ``BackgroundReview.maybe_spawn()`` checks one counter:
 - skill review: fires when the current turn had >= 10 tool calls
@@ -42,26 +42,26 @@ MAX_REVIEW_ITERATIONS = 10
 
 _SKILL_REVIEW_PROMPT = (
     "Review the conversation above and update the skill library. Be "
-    "ACTIVE — most sessions produce at least one skill update, even if "
+    "ACTIVE - most sessions produce at least one skill update, even if "
     "small. A pass that does nothing is a missed learning opportunity, "
     "not a neutral outcome.\n\n"
     "Target shape of the library: CLASS-LEVEL skills, each with a rich "
     "SKILL.md. Not a long flat list of narrow one-session-one-skill entries.\n\n"
     "Signals to look for (any one of these warrants action):\n"
-    "  • User corrected your style, tone, format, legibility, or verbosity. "
+    "  - User corrected your style, tone, format, legibility, or verbosity. "
     "Frustration signals like 'stop doing X', 'this is too verbose', "
     "'don't format like this', or 'just give me the answer' are FIRST-CLASS "
     "skill signals. Update the relevant skill(s) to embed the preference.\n"
-    "  • User corrected your workflow, approach, or sequence of steps.\n"
-    "  • Non-trivial technique, fix, workaround, debugging path, or "
+    "  - User corrected your workflow, approach, or sequence of steps.\n"
+    "  - Non-trivial technique, fix, workaround, debugging path, or "
     "tool-usage pattern emerged that a future session would benefit from.\n"
-    "  • A skill consulted this session turned out to be wrong, missing a "
+    "  - A skill consulted this session turned out to be wrong, missing a "
     "step, or outdated. Patch it NOW.\n\n"
     "Preference order:\n"
     "  1. PATCH a currently-loaded skill if it covers the new learning.\n"
     "  2. PATCH an existing umbrella skill (use skill_manage action=list + view).\n"
     "  3. CREATE a new class-level umbrella skill when nothing exists.\n"
-    "     Name at the class level — NOT a PR number, error string, or "
+    "     Name at the class level - NOT a PR number, error string, or "
     "'fix-X / debug-Y' session artifact.\n\n"
     "Do NOT capture environment-dependent failures, missing binaries, or "
     "transient errors that resolved before the conversation ended.\n\n"
@@ -109,7 +109,7 @@ class BackgroundReview:
             complete_fn: Async function that calls the LLM.
                 Signature: ``async (messages, tools) -> response_dict``
                 where response_dict follows OpenAI chat completion format.
-            tool_executors: Mapping of tool name → async callable.
+            tool_executors: Mapping of tool name -> async callable.
                 Only tools in this map AND in the per-review whitelist will
                 be executed. Defaults to empty dict (no tools available).
             workspace_dir: Workspace root path. When provided, a curator check
@@ -120,7 +120,7 @@ class BackgroundReview:
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._turn_count: int = 0
         self._workspace_dir: anyio.Path | None = anyio.Path(str(workspace_dir)) if workspace_dir is not None else None
-        # Startup curator check — runs after event loop is available
+        # Startup curator check - runs after event loop is available
         if self._workspace_dir is not None:
             task = asyncio.create_task(
                 self._startup_curator_check(),
@@ -260,7 +260,7 @@ class BackgroundReview:
             # Check for tool calls
             tool_calls = assistant_msg.get("tool_calls") or []
             if not tool_calls:
-                # No tool call → review complete
+                # No tool call -> review complete
                 logger.debug("BackgroundReview: review finished at iteration %d (no tool call)", iteration)
                 return
 

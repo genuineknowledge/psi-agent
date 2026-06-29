@@ -1,4 +1,4 @@
-"""Curator — periodic skill library maintenance for hermes-style-workspace.
+"""Curator - periodic skill library maintenance for hermes-style-workspace.
 
 ``run_curator(workspace_dir, complete_fn)`` scans agent-created skills,
 applies time-based status labels, then calls the LLM once for semantic
@@ -36,10 +36,10 @@ You are a skill library curator. Below is a list of agent-created skills \
 with their metadata and current status labels.
 
 For each skill, decide one of:
-  keep    — skill is healthy, no action needed
-  patch   — skill needs content improvements (provide updated body)
-  merge   — skill overlaps with another (provide target skill name)
-  archive — skill is stale, low-quality, or superseded
+  keep    - skill is healthy, no action needed
+  patch   - skill needs content improvements (provide updated body)
+  merge   - skill overlaps with another (provide target skill name)
+  archive - skill is stale, low-quality, or superseded
 
 Respond with a JSON array. Each element must have:
   {{
@@ -333,7 +333,7 @@ async def should_run_now(
     """Return True if the curator is due for a run.
 
     On first call (no ``last_run_at``), seeds the state with the current time
-    and returns False — deferring the first real pass by one full interval,
+    and returns False - deferring the first real pass by one full interval,
     matching hermes-agent behaviour.
 
     Args:
@@ -351,7 +351,7 @@ async def should_run_now(
     if last is None:
         # First run: seed and defer
         state["last_run_at"] = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-        state["last_run_summary"] = "deferred first run — will run after one interval"
+        state["last_run_summary"] = "deferred first run - will run after one interval"
         await _save_curator_state(skills_dir, state)
         return False
 
@@ -373,8 +373,8 @@ async def maybe_run_curator(
     """Run curator if all gates pass. Returns summary or None if skipped.
 
     Gates (both must pass, matching hermes-agent behaviour):
-    1. ``should_run_now()`` — enough time has elapsed since last run
-    2. ``idle_for_seconds >= min_idle_hours * 3600`` — agent is idle
+    1. ``should_run_now()`` - enough time has elapsed since last run
+    2. ``idle_for_seconds >= min_idle_hours * 3600`` - agent is idle
 
     The idle gate is only enforced when ``idle_for_seconds`` is provided.
     Pass ``float('inf')`` to signal "fully idle" (e.g. on startup).
@@ -403,7 +403,7 @@ async def maybe_run_curator(
             min_idle_s = min_idle_hours * 3600.0
             if idle_for_seconds < min_idle_s:
                 logger.debug(
-                    "Curator: skipped — idle_for_seconds=%.0f < %.0f",
+                    "Curator: skipped - idle_for_seconds=%.0f < %.0f",
                     idle_for_seconds,
                     min_idle_s,
                 )
@@ -534,7 +534,7 @@ async def run_curator(
     # Build summary
     now_str = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     lines = [
-        f"# Curator Report — {now_str}",
+        f"# Curator Report - {now_str}",
         "",
         f"Skills scanned: {len(skills)}",
         f"keep: {counts['keep']}  patch: {counts['patch']}  "

@@ -1,11 +1,11 @@
 # ruff: noqa: E402, I001, T201
 
-"""System prompt builder for the haitun (dolphin 🐬) agent workspace.
+"""System prompt builder for the haitun (dolphin) agent workspace.
 
 This merges three ideas into one workspace:
 
 * An OpenClaw-style prompt engine (stable prefix + cache boundary + dynamic
-  suffix, skills index, bootstrap context files) — **de-branded**, with **all
+  suffix, skills index, bootstrap context files) - **de-branded**, with **all
   configuration kept inside the workspace** (there is no global config dir).
 * The Fusion Flow authoring capability (flows index + authoring guidance),
   fully merged from the fusion-flow workspace.
@@ -14,7 +14,7 @@ This merges three ideas into one workspace:
 Only ``system_prompt_builder()`` (and optionally ``system_prompt_rebuild_checker``)
 is invoked by psi-agent's session loader.  ``compact_history`` / ``after_turn`` /
 the self-evolution helpers below are **intentionally kept but currently un-wired**
-— they are future-extension hooks (see AGENTS.md).  Do not delete them as "dead
+- they are future-extension hooks (see AGENTS.md).  Do not delete them as "dead
 code"; they exist on purpose.
 """
 
@@ -353,7 +353,7 @@ def _build_summarization_prompt(messages: list[dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# File / context helpers (all workspace-relative — no global config)
+# File / context helpers (all workspace-relative - no global config)
 # ---------------------------------------------------------------------------
 
 
@@ -656,7 +656,7 @@ async def _build_dynamic_context_files(workspace_dir: anyio.Path) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Self-evolution helpers (future extension — not invoked by the framework)
+# Self-evolution helpers (future extension - not invoked by the framework)
 # ---------------------------------------------------------------------------
 
 
@@ -796,9 +796,9 @@ This workspace can author and run Fusion Flow workflows from natural language.
 {flows_index}
 
 ### When to activate
-When the user describes a workflow-shaped task — multi-agent collaboration, parallel review,
+When the user describes a workflow-shaped task - multi-agent collaboration, parallel review,
 fan-out/fan-in, pipelines, multi-step research or scoring, or running/inspecting `.flow.ts`
-results — activate the Fusion Flow skill.
+results - activate the Fusion Flow skill.
 
 To activate:
 1. Read the full skill instructions at:
@@ -830,11 +830,11 @@ Use them only when the task produces reusable knowledge or the user asks to main
 workspace. Never silently rewrite user-authored assets.
 
 Rules:
-1. Keep `skills/fusion-flow/` immutable — it is the runtime bundle, not a generated skill.
+1. Keep `skills/fusion-flow/` immutable - it is the runtime bundle, not a generated skill.
 2. Treat skills without `created_by: agent` as read-only.
-3. New learned procedures → `skills/<skill-name>/SKILL.md` via `skill_manage(action="create")`.
-4. Reusable workflow templates → `flows/curated/<flow-name>/FLOW.md` via `flow_manage`.
-5. One-off task executions → `flows/<task-slug>/`.
+3. New learned procedures -> `skills/<skill-name>/SKILL.md` via `skill_manage(action="create")`.
+4. Reusable workflow templates -> `flows/curated/<flow-name>/FLOW.md` via `flow_manage`.
+5. One-off task executions -> `flows/<task-slug>/`.
 
 ### Engine defaults
 Fusion Flow may call external agent CLI engines. Prefer the psi engine; do not call this same
@@ -856,7 +856,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
         ws = self._workspace_dir
         tools = tool_names or await _scan_tool_names(ws)
 
-        # ── Stable prefix ────────────────────────────────────────────────
+        # -- Stable prefix ------------------------------------------------
         identity = await _load_soul_md(ws)
         skills_xml = await _build_skills_index(ws)
         fusion_section = await self._build_fusion_section()
@@ -903,7 +903,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
 
         stable_prefix = "\n".join(stable_parts)
 
-        # ── Dynamic suffix ────────────────────────────────────────────────
+        # -- Dynamic suffix ------------------------------------------------
         dynamic_parts: list[str] = [HEARTBEATS_SECTION, ""]
 
         model_identity = build_model_identity_line(model)

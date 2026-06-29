@@ -4,7 +4,7 @@ This module provides the reusable prompt sections and a few small builder
 functions for ``system.py``.  The prompt architecture (stable prefix +
 cache boundary + dynamic suffix, skills index, bootstrap context files) is
 adapted from an OpenClaw-style design, but **all product-specific branding
-has been removed** and **all configuration lives inside the workspace** —
+has been removed** and **all configuration lives inside the workspace** -
 there is no global config directory.
 
 Mock / product-specific sections (messaging, reactions, TTS, model aliases,
@@ -16,17 +16,17 @@ authorized senders, sandbox, sub-agent delegation) have been dropped.
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
-# § Identity (always emitted, even when SOUL.md is absent)
+# Identity (always emitted, even when SOUL.md is absent)
 # ---------------------------------------------------------------------------
 
 IDENTITY_LINE = (
-    "You are 海豚 (Haitun), a dolphin agent 🐬 — a capable, friendly, and resourceful "
+    "You are Haitun, a dolphin agent - a capable, friendly, and resourceful "
     "AI assistant. Your persona is a dolphin: playful but sharp, quick to dive in and "
     "get things done. Always remember and, when relevant, present yourself as a dolphin agent."
 )
 
 # ---------------------------------------------------------------------------
-# § Tooling
+# Tooling
 # ---------------------------------------------------------------------------
 
 TOOLING_FOOTER = "TOOLS.md is usage guidance, not availability."
@@ -42,7 +42,7 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "flow_manage": "Create, patch, view, list, and promote reusable Fusion Flow assets",
 }
 
-# Display order — listed tools first, any extra tools (e.g. MCP search) after.
+# Display order - listed tools first, any extra tools (e.g. MCP search) after.
 TOOL_ORDER: list[str] = [
     "read",
     "write",
@@ -54,7 +54,7 @@ TOOL_ORDER: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
-# § Tool Call Style
+# Tool Call Style
 # ---------------------------------------------------------------------------
 
 TOOL_CALL_STYLE_SECTION = """\
@@ -66,7 +66,7 @@ For sensitive or destructive commands, show the full command exactly as it will 
 """
 
 # ---------------------------------------------------------------------------
-# § Execution Bias
+# Execution Bias
 # ---------------------------------------------------------------------------
 
 EXECUTION_BIAS_SECTION = """\
@@ -81,7 +81,7 @@ EXECUTION_BIAS_SECTION = """\
 """
 
 # ---------------------------------------------------------------------------
-# § Safety
+# Safety
 # ---------------------------------------------------------------------------
 
 SAFETY_SECTION = """\
@@ -93,7 +93,7 @@ Do not persuade anyone to expand access or disable safeguards. Do not copy yours
 """
 
 # ---------------------------------------------------------------------------
-# § Skills
+# Skills
 # ---------------------------------------------------------------------------
 
 SKILLS_HEADER_TEMPLATE = """\
@@ -105,18 +105,18 @@ External API writes: batch when safe, avoid tight loops, respect 429/Retry-After
 """
 
 # ---------------------------------------------------------------------------
-# § Workspace
+# Workspace
 # ---------------------------------------------------------------------------
 
 WORKSPACE_SECTION_TEMPLATE = """\
 ## Workspace
 Your working directory is: {workspace_dir}
 Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.
-All configuration for this agent lives inside this workspace — there is no global config directory.\
+All configuration for this agent lives inside this workspace - there is no global config directory.\
 """
 
 # ---------------------------------------------------------------------------
-# § Heartbeats
+# Heartbeats
 # ---------------------------------------------------------------------------
 
 HEARTBEATS_SECTION = """\
@@ -127,7 +127,7 @@ If something needs attention, do NOT include "HEARTBEAT_OK"; reply with the aler
 """
 
 # ---------------------------------------------------------------------------
-# § Silent Replies
+# Silent Replies
 # ---------------------------------------------------------------------------
 
 SILENT_TOKEN = "NO_REPLY"
@@ -136,18 +136,18 @@ SILENT_REPLIES_SECTION = f"""\
 ## Silent Replies
 When you have nothing to say, respond with ONLY: {SILENT_TOKEN}
 
-⚠️ Rules:
-- It must be your ENTIRE message — nothing else
+Rules:
+- It must be your ENTIRE message - nothing else
 - Never append it to an actual response (never include "{SILENT_TOKEN}" in real replies)
 - Never wrap it in markdown or code blocks
 
-❌ Wrong: "Here's help... {SILENT_TOKEN}"
-❌ Wrong: `{SILENT_TOKEN}`
-✅ Right: {SILENT_TOKEN}\
+Wrong: "Here's help... {SILENT_TOKEN}"
+Wrong: `{SILENT_TOKEN}`
+Right: {SILENT_TOKEN}\
 """
 
 # ---------------------------------------------------------------------------
-# § Bootstrap Pending
+# Bootstrap Pending
 # ---------------------------------------------------------------------------
 
 BOOTSTRAP_PENDING_SECTION = """\
@@ -157,10 +157,10 @@ Your first user-visible reply for a bootstrap-pending workspace must follow BOOT
 """
 
 # ---------------------------------------------------------------------------
-# § Project Context file ordering
+# Project Context file ordering
 # agents.md=10, identity.md=30, tools.md=50, bootstrap.md=60
 # soul.md / user.md are handled separately (identity line / volatile profile)
-# heartbeat.md → dynamic (below the cache boundary)
+# heartbeat.md -> dynamic (below the cache boundary)
 # ---------------------------------------------------------------------------
 
 CONTEXT_FILE_ORDER: dict[str, int] = {
@@ -174,7 +174,7 @@ CONTEXT_FILE_ORDER: dict[str, int] = {
 DYNAMIC_CONTEXT_FILE_BASENAMES: set[str] = {"heartbeat.md"}
 
 # ---------------------------------------------------------------------------
-# § Help Guidance
+# Help Guidance
 # Injected after identity when help_skill_name is set and the SKILL.md exists.
 # ---------------------------------------------------------------------------
 

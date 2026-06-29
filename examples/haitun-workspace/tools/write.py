@@ -1,4 +1,4 @@
-"""Write tool — create or overwrite files."""
+"""Write tool - create or overwrite files."""
 
 from __future__ import annotations
 
