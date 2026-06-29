@@ -71,6 +71,8 @@ spa/
 - `<title>haitun agent</title>` — 页面标题
 - `<link rel="icon" href="/dolphin.jpg">` — favicon 来自 `public/dolphin.jpg`，Vite 构建时按 `base` 重写为 `/spa/dolphin.jpg`
 - `<meta viewport interactive-widget=resizes-visual>` — iOS 键盘弹出时缩小 visual viewport 而非 overlay
+- `<link rel="icon" href="/favicon.ico">` — favicon 由 Gateway 在 `--tray` 设置时服务（即托盘图标）；未设置时该请求 404
+- `<title>控制台</title>`
 - 初始 `#app` 内含加载 spinner，Vue mount 后被替换
 
 ## 根组件 `App.vue` 架构
