@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import inspect
 import json
 import sys
 from collections.abc import Callable, Mapping
 from typing import Any
+
+import anyio
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
@@ -43,7 +44,7 @@ def _discover(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         return s
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, _go()).result()  # ty: ignore
+        return pool.submit(anyio.run, _go).result()  # ty: ignore
 
 
 def _build(name: str, schema: dict[str, Any], config: dict[str, Any]) -> Any:

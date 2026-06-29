@@ -6,7 +6,9 @@ import sys
 import uuid
 from dataclasses import dataclass
 
+import aiohttp
 import anyio
+from loguru import logger
 
 
 @dataclass
@@ -62,11 +64,24 @@ async def _ensure_socket_dir(socket: str) -> None:
         await anyio.Path(socket).parent.mkdir(parents=True, exist_ok=True)
 
 
-async def _wait_socket(path: str, timeout_sec: float = 10.0) -> None:
-    if sys.platform == "win32":
-        await anyio.sleep(0.3)
-        return
+async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
     deadline = anyio.current_time() + timeout_sec
+    if sys.platform == "win32":
+        while anyio.current_time() < deadline:
+            try:
+                connector = aiohttp.NamedPipeConnector(path=path)
+                async with (
+                    aiohttp.ClientSession(connector=connector) as session,
+                    session.get("http://localhost/") as _resp,
+                ):
+                    pass
+                logger.debug(f"Named Pipe ready: {path!r}")
+                await anyio.sleep(0.1)
+                return
+            except Exception:
+                await anyio.sleep(0.1)
+        raise TimeoutError(f"Named pipe '{path}' not ready within {timeout_sec}s")
+
     sock = anyio.Path(path)
     while anyio.current_time() < deadline:
         if await sock.exists():

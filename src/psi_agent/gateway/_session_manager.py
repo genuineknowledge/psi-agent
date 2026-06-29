@@ -58,7 +58,10 @@ class SessionManager:
 
             async def _run_session() -> None:
                 with scope:
-                    await sess.run()
+                    try:
+                        await sess.run()
+                    except Exception:
+                        logger.exception(f"Session '{session_id}' task crashed")
 
             logger.debug(f"SessionManager: starting session '{session_id}' task")
             self._tg.start_soon(_run_session)
