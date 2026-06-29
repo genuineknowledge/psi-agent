@@ -54,7 +54,7 @@ class Conversation:
         if not await histories_dir.is_dir():
             await histories_dir.mkdir(parents=True)
             logger.info(f"Created histories directory: {histories_dir}")
-            await (histories_dir / ".gitignore").write_text("*\n")
+            await (histories_dir / ".gitignore").write_text("*\n", encoding="utf-8")
             logger.debug(f"Created .gitignore in {histories_dir}")
 
         path = workspace_path / "histories" / f"{session_id}.jsonl"
@@ -96,7 +96,7 @@ class Conversation:
         try:
             content = "\n".join(json.dumps(msg, ensure_ascii=False) for msg in self.messages) + "\n"
             tmp_path = self._path.with_suffix(".jsonl.tmp")
-            await anyio.Path(str(tmp_path)).write_text(content)
+            await anyio.Path(str(tmp_path)).write_text(content, encoding="utf-8")
             await anyio.Path(str(tmp_path)).replace(str(self._path))
             logger.debug(f"History saved to {self._path} ({len(self.messages)} messages)")
         except Exception as e:
