@@ -32,6 +32,12 @@ async def _handle_openapi(request: web.Request) -> web.Response:
     return web.Response(text=render_openapi(), content_type="application/json")
 
 
+async def _handle_favicon(request: web.Request) -> web.FileResponse:
+    favicon_path: str = request.app["favicon_path"]
+    logger.debug(f"Serving favicon from {favicon_path}")
+    return web.FileResponse(favicon_path)
+
+
 def _json(data: object, status: int = 200) -> web.Response:
     return web.Response(
         text=json.dumps(data),
@@ -44,7 +50,7 @@ def _error(message: str, status: int) -> web.Response:
     return _json({"error": message}, status=status)
 
 
-def create_app(aim: AIManager, sm: SessionManager) -> web.Application:
+def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | None = None) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
     app["sm"] = sm
@@ -52,6 +58,7 @@ def create_app(aim: AIManager, sm: SessionManager) -> web.Application:
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
     app["hm"] = HistoryManager()
+    app["favicon_path"] = favicon_path
 
     spa_dist = Path(__file__).parent / "spa" / "dist"
     if spa_dist.exists():
@@ -59,6 +66,9 @@ def create_app(aim: AIManager, sm: SessionManager) -> web.Application:
     app.router.add_get("/", _handle_spa)
     app.router.add_get("/spa", _handle_spa)
     app.router.add_get("/spa/", _handle_spa)
+    if favicon_path is not None:
+        logger.info(f"Favicon enabled, serving {favicon_path} at /favicon.ico")
+        app.router.add_get("/favicon.ico", _handle_favicon)
     app.router.add_get("/openapi.json", _handle_openapi)
     app.router.add_post("/ais", _create_ai)
     app.router.add_delete("/ais/{ai_id}", _delete_ai)

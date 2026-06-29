@@ -313,3 +313,37 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) ->
         await sm.delete("gw-sess")
         await aim.delete("gw-ai")
         await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_gateway_favicon(tmp_path: str) -> None:
+    icon_dir = tempfile.mkdtemp(dir="/tmp", prefix="gwfav")
+    icon_path = icon_dir + "/icon.png"
+    icon_bytes = b"\x89PNG\r\n\x1a\n-fake-favicon-bytes"
+    await anyio.Path(icon_path).write_bytes(icon_bytes)
+
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+
+    aim = AIManager(_prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+
+    app_with = create_app(aim, sm, favicon_path=icon_path)
+    base_with, runner_with = await _start_app_on_free_port(app_with)
+
+    app_without = create_app(aim, sm)
+    base_without, runner_without = await _start_app_on_free_port(app_without)
+
+    try:
+        timeout = ClientTimeout(total=10)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(f"{base_with}/favicon.ico") as resp:
+                assert resp.status == 200
+                assert resp.headers["Content-Type"].startswith("image/")
+                assert await resp.read() == icon_bytes
+            async with session.get(f"{base_without}/favicon.ico") as resp:
+                assert resp.status == 404
+    finally:
+        await runner_with.cleanup()
+        await runner_without.cleanup()
+        await tg.__aexit__(None, None, None)
