@@ -101,3 +101,38 @@ fusion-memory start
 
 Check for a port mismatch. The workspace and beginner Fusion Memory CLI both
 default to `PSI_MEMORY_BASE_URL=http://127.0.0.1:8700`.
+
+## 6. Optional Automatic History Persistence
+
+The workspace memory tools do not automatically write every conversation turn.
+They write only when the agent calls `memory_add`. To persist Dolphin/psi-agent
+history continuously without changing agent core, run the Fusion Memory history
+sync process beside the agent session.
+
+If using psi-agent gateway:
+
+```bash
+fusion-memory sync-dolphin-history \
+  --gateway-url http://127.0.0.1:8080 \
+  --session-id <session-id>
+```
+
+If using a plain workspace session:
+
+```bash
+fusion-memory sync-dolphin-history \
+  --workspace /path/to/fusion-memory-workspace \
+  --session-id <session-id>
+```
+
+For a one-time backfill:
+
+```bash
+fusion-memory sync-dolphin-history \
+  --workspace /path/to/fusion-memory-workspace \
+  --session-id <session-id> \
+  --once --json
+```
+
+The sync command reads only user/assistant turns, writes them to Fusion Memory
+`/add`, and records a local state file so repeated runs do not duplicate writes.

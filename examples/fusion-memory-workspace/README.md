@@ -21,6 +21,10 @@ Fusion Memory model, service, or database code in the agent process.
   cross-session retrieval.
 - `PSI_MEMORY_TIMEOUT_SECONDS`: request timeout in seconds. Defaults to `2.0` and is
   clamped to `0.1..5.0`.
+- `PSI_AGENT_GATEWAY_URL`: optional psi-agent gateway URL used by automatic
+  history persistence. Example: `http://127.0.0.1:8080`.
+- `PSI_AGENT_WORKSPACE`: optional workspace path used by automatic history
+  persistence when no gateway URL is configured.
 
 ## First Use Setup
 
@@ -67,6 +71,39 @@ uv run psi-agent session \
   --channel-socket ./channel.sock \
   --ai-socket ./ai.sock
 ```
+
+## Automatic History Persistence
+
+The workspace tools do not automatically write every conversation turn by
+themselves. By default, memory is written only when the agent calls
+`memory_add`.
+
+For continuous persistence without changing psi-agent core, run the Fusion
+Memory history sync process beside the agent session. It reads psi-agent history
+and posts new user/assistant turns to Fusion Memory `/add`. Re-running it is
+safe because it stores a local deduplication state file.
+
+If you use the psi-agent gateway, start the sync against the gateway history API:
+
+```bash
+fusion-memory sync-dolphin-history \
+  --gateway-url http://127.0.0.1:8080 \
+  --session-id <session-id>
+```
+
+If you run a plain workspace session, sync directly from the workspace history
+file:
+
+```bash
+fusion-memory sync-dolphin-history \
+  --workspace /path/to/fusion-memory-workspace \
+  --session-id <session-id>
+```
+
+For a one-time backfill, add `--once --json`. The gateway mode requires the
+gateway process to be running and the session to be registered in that gateway.
+The workspace-file mode reads `histories/<session-id>.jsonl` and works after the
+session has saved history to disk.
 
 ## Copy Into Another Workspace
 
