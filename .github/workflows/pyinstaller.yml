@@ -35,6 +35,7 @@ jobs:
             --add-data "src/psi_agent/gateway/dolphin.jpg:psi_agent/gateway" \
             --collect-submodules any_llm \
             --collect-submodules mcp \
+            --collect-submodules pystray \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7
         with:
