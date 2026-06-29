@@ -1,6 +1,6 @@
 ---
 name: flow
-description: For authoring and running `@agent-flow/core` (Fuclaw) TypeScript multi-agent workflows. Use when the task involves `.flow.ts` files, an explicit mention of "agent-flow"/"Fuclaw"/"@agent-flow/core", or a request to coordinate multiple agents, run sub-tasks in parallel, build a multi-step pipeline, or inspect a prior workflow run. Not for `.prose` files. Activated by task intent, not by slash commands.
+description: Author and run multi-agent TypeScript workflows (`@agent-flow/core` / Fuclaw). LOAD THIS SKILL PROACTIVELY whenever a task is workflow-shaped — i.e. it would take two or more coordinated LLM steps — even if the user never says "flow". Triggers include: a debate or multi-perspective discussion (e.g. "组织一场三方辩论 / 多个角度分析"), multi-reviewer or judge-then-pick, fan-out/parallel sub-tasks then merge ("让几个 agent 分别做 X 再汇总 / 并行调研"), a multi-step pipeline (先 A 再 B 再 C), a loop over many items, any longer task naturally decomposed into sub-agents, OR explicit mention of "agent-flow"/"Fuclaw"/`.flow.ts`/running or inspecting a prior workflow run. When such a task appears, BUILD A FLOW instead of role-playing the sub-agents yourself. Not for `.prose` files. Activated by task intent, not by slash commands.
 metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fuclaw" } }
 ---
 
