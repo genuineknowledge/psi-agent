@@ -43,8 +43,8 @@ class Gateway:
     browser: bool = True
     """Open a browser tab on startup."""
 
-    tray: bool = True
-    """Show a system tray icon (left-click opens the Web Console). Use --no-tray to skip it."""
+    tray: str | None = None
+    """Path to tray icon image file. If set, a system tray icon is shown."""
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
@@ -77,18 +77,17 @@ class Gateway:
         if self.browser:
             await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
 
-        tray: GatewayTray | None = None
         if self.tray:
-            tray = GatewayTray(addr)
+            tray = GatewayTray(addr, self.tray)
             try:
                 tray.start()
             except Exception as e:
                 logger.warning(f"Failed to start system tray: {e}")
         else:
-            logger.info("System tray disabled (--no-tray); running until cancelled")
+            tray = None
 
         try:
-            if tray is not None:
+            if tray is not None and tray._thread is not None:
                 await anyio.to_thread.run_sync(tray._stop_event.wait)  # ty: ignore
             else:
                 await anyio.sleep_forever()

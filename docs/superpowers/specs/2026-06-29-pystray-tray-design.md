@@ -2,13 +2,13 @@
 
 ## 目标
 
-Gateway 启动后显示系统托盘图标，用户左键点击可打开浏览器访问 Gateway Web Console，右键显示中文菜单（"打开控制台"、"退出"），托盘退出时关闭整个 Gateway 进程。
+Gateway 启动时可通过 `--tray` 参数指定图标文件，在系统托盘显示图标。左键点击打开浏览器，右键菜单可退出 Gateway。`--tray` 未设置时不创建托盘。
 
 ## 依赖
 
-新增 `pystray` + `Pillow`：
+`pystray` + `Pillow`：
 - `pystray`：跨平台系统托盘库（Windows / macOS / Linux）
-- `Pillow`：程序化生成 psi 图标（无外部 png 依赖），自动适配系统要求尺寸
+- `Pillow`：加载用户指定的图标文件
 
 ## 架构
 
@@ -17,8 +17,9 @@ Gateway 进程
 ├── anyio event loop (主线程)
 │   ├── AIManager + SessionManager
 │   ├── aiohttp REST Server
-│   └── await anyio.sleep_forever()  ← 主循环
-└── gateway-tray thread (daemon)
+│   └── if stray: tray._stop_event.wait()  ← 托盘退出时 shutdown
+│       else:     await anyio.sleep_forever()  ← 通过 cancel 退出
+└── gateway-tray thread (daemon) [仅当 --tray 设置时]
     └── pystray.Icon.run()
         ├── 左键点击 → webbrowser.open(url)
         └── 右键菜单
@@ -26,46 +27,49 @@ Gateway 进程
             └── "退出"       → 设置 stop_event
 ```
 
-pystray 在独立线程中运行（其内部 `Icon.run()` 阻塞主线程），与 anyio 事件循环并行。
-
-## 新增模块：`src/psi_agent/gateway/_tray.py`
+## 模块：`src/psi_agent/gateway/_tray.py`
 
 ```python
 class GatewayTray:
-    def __init__(self, url: str):
+    def __init__(self, url: str, icon_path: str):
         self._url = url
+        self._icon_path = icon_path
         self._stop_event = threading.Event()
         self._icon = None
         self._thread = None
 
     def start(self) -> None:
         """在独立线程中启动 pystray"""
-        icon = _create_psi_icon()  # Pillow 程序化生成
+        image = Image.open(self._icon_path)  # 用户指定图标
         menu = pystray.Menu(
             pystray.MenuItem("打开控制台", self._open_browser, default=True),
             pystray.MenuItem("退出", self._quit),
         )
-        self._icon = pystray.Icon("psi-agent", icon, "psi-agent", menu)
+        self._icon = pystray.Icon("psi-agent", image, "psi-agent", menu)
         self._thread = threading.Thread(target=self._icon.run, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
-        """停止托盘（从 anyio 主线程调用）"""
-        self._stop_event.set()
         if self._icon:
-            self._icon.stop()
-        if self._thread:
+            with contextlib.suppress(Exception):
+                self._icon.stop()
+        if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2)
+
+    def is_stop_requested(self) -> bool:
+        return self._stop_event.is_set()
 
     def _open_browser(self) -> None:
         webbrowser.open(self._url)
 
     def _quit(self) -> None:
-        self._icon.stop()
         self._stop_event.set()
+        if self._icon:
+            with contextlib.suppress(Exception):
+                self._icon.stop()
 ```
 
-图标通过 Pillow 纯程序生成 —— 一个 64x64 的 psi 文字图标，按需 resize 到系统托盘所需尺寸。
+删除 `_create_icon_image()` 函数（不再使用 Pillow 程序化生成图标）。
 
 ## 修改 `Gateway.run()` 生命周期
 
@@ -75,37 +79,45 @@ class GatewayTray:
 3. AIManager + SessionManager
 4. create_app + runner.setup() + site.start()
 5. logger.info("Gateway listening on {addr}")
-6. if self.browser: webbrowser.open(addr)   ← 保留原自动打开
-7. tray = GatewayTray(addr); tray.start()    ← 新增托盘
+6. if self.browser: webbrowser.open(addr)
+7. if self.tray:
+       tray = GatewayTray(addr, self.tray)
+       try: tray.start()
+       except Exception: logger.warning(...)
+   else: tray = None
 8. try:
-       await anyio.sleep_forever()
+       if tray is not None and tray._thread is not None:
+           await anyio.to_thread.run_sync(tray._stop_event.wait)
+       else:
+           await anyio.sleep_forever()
    finally:
-       tray.stop()                           ← 先停托盘
-       runner.cleanup()
-       tg.__aexit__()
+       if tray is not None: tray.stop()
+       runner.cleanup()  (shielded)
+       tg.__aexit__()    (shielded)
 ```
 
-- `self.browser` 参数不变，仅控制启动时是否自动打开浏览器
-- 托盘始终启用（无论 browser 是真还是假）
-- `finally` 中先 `tray.stop()` 确保托盘退出后再清理 runner 和 task group
-- `tray.stop()` 不需要 shield 保护（跨线程通信，无 cancel 风险）
-
-## CLI 不变
+## CLI
 
 ```
-psi-agent gateway [--listen ...] [--socket-path ...] [--verbose] [--no-browser]
+psi-agent gateway --tray /path/to/icon.png  # 启用托盘
+psi-agent gateway --tray ~/icon.png          # 同上
+psi-agent gateway                              # 不启用托盘
+psi-agent gateway --no-browser --tray icon.png  # 组合使用
 ```
 
-`--browser` / `--no-browser` 含义不变。
+`--tray` 接受图片文件路径（png/jpg/ico 等 Pillow 支持的格式）。不设置时无托盘。
 
 ## 异常安全
 
-- `tray.stop()` 放在 `finally` 中，确保无论 Gateway 如何退出（正常 / cancel / 异常），托盘都会被清理
-- 如果 `tray.start()` 抛异常（如系统不支持托盘），Gateway 继续正常运行（不阻塞启动）
-- pystray 在无桌面环境的 Linux 服务器上可能失败 —— 应 catch 并 log warning，不阻止 Gateway 启动
+- `tray.stop()` 放在 `finally` 中，确保无论 Gateway 如何退出，托盘都会被清理
+- 如果 `tray.start()` 抛异常（如系统不支持托盘、图标文件无效），Gateway 继续正常运行（不阻塞启动）
+- pystray 在无桌面环境上可能失败 —— catch 并 log warning，不阻止 Gateway 启动
+- 无 `--tray` 时 `anyio.sleep_forever()` 通过 cancel 退出，`finally` 正常清理
 
 ## 测试策略
 
-- **单元测试**：`GatewayTray` 的公开方法签名、图标生成尺寸
+- **单元测试**：`GatewayTray` 构造方法、`is_stop_requested`、`stop()`、`_quit()` 回调
+- 删除 `_create_icon_image` 相关测试
+- `GatewayTray` 构造需要传入 `icon_path`，测试用临时图片文件
 - **集成测试**：暂无（pystray 需要真实桌面环境，CI 中不执行）
-- **手动验证**：启动 Gateway，确认托盘图标出现、左键打开浏览器、右键菜单功能正常
+- **手动验证**：`psi-agent gateway --tray icon.png`，确认托盘图标出现、功能正常

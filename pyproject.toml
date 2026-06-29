@@ -23,16 +23,13 @@ dependencies = [
     "platformdirs>=4.10.0",
     "lark-channel-sdk>=1.1.0",
     "python-telegram-bot[socks]>=22.8",
+    "mcp>=1.28.1",
     "pystray>=0.19.5",
     "pillow>=12.2.0",
 ]
 
-[project.optional-dependencies]
-all = ["mcp>=1.28.1"]
-
 [dependency-groups]
 dev = [
-    "mcp>=1.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
