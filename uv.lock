@@ -786,6 +786,7 @@ dependencies = [
     { name = "croniter" },
     { name = "lark-channel-sdk" },
     { name = "loguru" },
+    { name = "mcp" },
     { name = "platformdirs" },
     { name = "prompt-toolkit" },
     { name = "python-telegram-bot", extra = ["socks"] },
@@ -794,14 +795,8 @@ dependencies = [
     { name = "tyro" },
 ]
 
-[package.optional-dependencies]
-all = [
-    { name = "mcp" },
-]
-
 [package.dev-dependencies]
 dev = [
-    { name = "mcp" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
@@ -817,7 +812,7 @@ requires-dist = [
     { name = "croniter", specifier = ">=6.2.2" },
     { name = "lark-channel-sdk", specifier = ">=1.1.0" },
     { name = "loguru", specifier = ">=0.7.3" },
-    { name = "mcp", marker = "extra == 'all'", specifier = ">=1.28.1" },
+    { name = "mcp", specifier = ">=1.28.1" },
     { name = "platformdirs", specifier = ">=4.10.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "python-telegram-bot", extras = ["socks"], specifier = ">=22.8" },
@@ -825,11 +820,9 @@ requires-dist = [
     { name = "rich", specifier = ">=15.0.0" },
     { name = "tyro", specifier = ">=1.0.15" },
 ]
-provides-extras = ["all"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mcp", specifier = ">=1.28.1" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
