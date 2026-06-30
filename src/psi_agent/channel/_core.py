@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import dataclass
 
 import aiohttp
@@ -22,7 +23,7 @@ class ChannelCore:
     interval: float = 1.0
 
     @staticmethod
-    def _to_chunk(kind: str | None, text: str) -> OutputChunk:
+    def _to_chunk(kind: str, text: str) -> OutputChunk:
         if kind == "reasoning":
             return ReasoningChunk(text)
         return TextChunk(text)
@@ -63,26 +64,27 @@ class ChannelCore:
                 logger.debug(f"non-200 error: {msg}")
                 raise ChannelError(msg)
 
-            async for delta in iter_sse_events(resp.content):
-                for incoming_kind, text in (
-                    ("reasoning", delta.get("reasoning") or ""),
-                    ("text", delta.get("content") or ""),
-                ):
-                    if not text:
-                        continue
+            async with aclosing(iter_sse_events(resp.content)) as events:
+                async for delta in events:
+                    for incoming_kind, text in (
+                        ("reasoning", delta.get("reasoning") or ""),
+                        ("text", delta.get("content") or ""),
+                    ):
+                        if not text:
+                            continue
 
-                    for k, t in buffer.switch(incoming_kind):
-                        yield self._to_chunk(k, t)
+                        for k, t in buffer.switch(incoming_kind):
+                            yield self._to_chunk(k, t)
 
-                    if incoming_kind == "text":
-                        logger.debug(f"delta.content ({len(text)} chars): {text[:60]}")
-                        for file_chunk in scanner.feed(text):
-                            yield file_chunk
-                    else:
-                        logger.debug(f"delta.reasoning ({len(text)} chars): {text[:60]}")
+                        if incoming_kind == "text":
+                            logger.debug(f"delta.content ({len(text)} chars): {text[:60]}")
+                            for file_chunk in scanner.feed(text):
+                                yield file_chunk
+                        else:
+                            logger.debug(f"delta.reasoning ({len(text)} chars): {text[:60]}")
 
-                    for k, t in buffer.append(text):
-                        yield self._to_chunk(k, t)
+                        for k, t in buffer.append(text):
+                            yield self._to_chunk(k, t)
 
         for k, t in buffer.flush():
             yield self._to_chunk(k, t)

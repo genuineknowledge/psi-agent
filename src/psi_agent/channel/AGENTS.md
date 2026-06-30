@@ -37,7 +37,7 @@ ChannelCore 是所有 Channel（CLI、REPL、Telegram）共享的公共部件：
 - 内部委托：marker 编解码 → `_markers.py`；SSE 解析与 interval 缓冲 → `_stream.py`（均与 HTTP 传输解耦、可独立单测）
 - 取消安全：`__aexit__` 关闭 aiohttp `ClientSession` 用 `anyio.CancelScope(shield=True)` 保护（与 AI 层一致），cancel 时不泄露连接
 - `post()` 是 async generator（返回 `AsyncGenerator[OutputChunk]`，与 `AiClient.stream` 对齐而非 `AsyncIterator`，使 `aclosing` 可类型检查）；所有 channel 客户端（cli/repl/telegram/feishu）消费时一律用 `async with aclosing(core.post(...))` 包裹（对标 `agent.py`/`channel_adapter.py`/`schedule_registry.py` 的统一约定），确保提前退出 / 被 cancel 时 `post()` 内的 `session.post()` 响应被释放
-- `_stream.iter_sse_events` 与 `AiClient` 同款 JSON 守卫与日志级别：坏 JSON、非 list `choices`、非 dict `choice` 跳过并以 **WARNING** 记录（与 `ai_client.py` 一致；`[DONE]` 与 0-choice 心跳属正常流，仍记 DEBUG），缺失或 `null` 的 `delta` 归一为 `{}`，故 `post()` 中 `delta.get(...)` 永不触 None
+- `_stream.iter_sse_events` 与 `AiClient` 同款 JSON 守卫与日志级别：坏 JSON、非 list `choices`、非 dict `choice` 跳过并以 **WARNING** 记录（与 `ai_client.py` 一致；`[DONE]` 与 0-choice 心跳属正常流，仍记 DEBUG），缺失或 `null` 的 `delta` 归一为 `{}`，故 `post()` 中 `delta.get(...)` 永不触 None。`iter_sse_events` 返回 `AsyncGenerator` 且在 `post()` 中以 `async with aclosing(...)` 消费——aclosing 约定贯穿 client→`post`→`iter_sse_events` 全链
 - **（刻意为之）`_session`/`_endpoint` 不在 dataclass 中声明**：二者在 `__aenter__` 赋值、在 `post()` 中无条件使用；若声明为字段则需 `X | None`，会在 `post()` 引入 Optional narrowing（被迫 assert 或 `# ty: ignore`，违反零抑制）。由 async context manager 保证"先 `__aenter__` 再 `post()`"的时机，故保留为动态属性——勿当 bug "修复"
 
 Channel 客户端不再直接处理 HTTP、SSE 解析或错误格式。
