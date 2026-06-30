@@ -25,9 +25,7 @@ async def test_aimanager_create_list_delete(tmp_path: str) -> None:
         assert len(items) == 1
         assert items[0].id == info.id
 
-        resp = await mgr.delete(info.id)
-        assert resp.id == info.id
-        assert resp.status == "stopped"
+        await mgr.delete(info.id)
 
         items = await mgr.list_all()
         assert len(items) == 0

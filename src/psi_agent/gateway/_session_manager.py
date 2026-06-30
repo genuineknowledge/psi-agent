@@ -27,12 +27,6 @@ class SessionInfo:
 
 
 @dataclass
-class SessionDeleteResponse:
-    id: str
-    status: str = "stopped"
-
-
-@dataclass
 class _SessionEntry:
     scope: anyio.CancelScope
     channel_socket: str
@@ -104,7 +98,7 @@ class SessionManager:
         logger.info(f"Session '{session_id}' created on {channel_socket} -> AI '{ai_id}'")
         return SessionInfo(id=session_id, ai_id=ai_id, workspace=workspace, channel_socket=channel_socket)
 
-    async def delete(self, session_id: str) -> SessionDeleteResponse:
+    async def delete(self, session_id: str) -> None:
         async with self._lock:
             logger.debug(f"SessionManager: acquired lock for delete '{session_id}'")
             if session_id not in self._entries:
@@ -113,7 +107,6 @@ class SessionManager:
             entry.scope.cancel()
             await _remove_socket(entry.channel_socket)
             logger.info(f"Session '{session_id}' deleted")
-            return SessionDeleteResponse(id=session_id)
 
     async def list_all(self) -> list[SessionInfo]:
         return [

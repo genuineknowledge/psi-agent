@@ -104,8 +104,8 @@ async def _delete_ai(request: web.Request) -> web.Response:
     aim: AIManager = request.app["aim"]
     ai_id = request.match_info["ai_id"]
     try:
-        info = await aim.delete(ai_id)
-        return _json(asdict(info))
+        await aim.delete(ai_id)
+        return _json({"id": ai_id, "status": "stopped"})
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
@@ -141,8 +141,8 @@ async def _delete_session(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
     session_id = request.match_info["session_id"]
     try:
-        info = await sm.delete(session_id)
-        return _json(asdict(info))
+        await sm.delete(session_id)
+        return _json({"id": session_id, "status": "stopped"})
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:

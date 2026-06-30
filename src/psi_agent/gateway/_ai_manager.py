@@ -25,12 +25,6 @@ class AiInfo:
 
 
 @dataclass
-class AiDeleteResponse:
-    id: str
-    status: str = "stopped"
-
-
-@dataclass
 class _AiEntry:
     scope: anyio.CancelScope
     socket: str
@@ -95,7 +89,7 @@ class AIManager:
         logger.info(f"AI '{ai_id}' created on {socket}")
         return AiInfo(id=ai_id, socket=socket, provider=provider, model=model)
 
-    async def delete(self, ai_id: str) -> AiDeleteResponse:
+    async def delete(self, ai_id: str) -> None:
         async with self._lock:
             logger.debug(f"AIManager: acquired lock for delete '{ai_id}'")
             if ai_id not in self._entries:
@@ -104,7 +98,6 @@ class AIManager:
             entry.scope.cancel()
             await _remove_socket(entry.socket)
             logger.info(f"AI '{ai_id}' deleted")
-            return AiDeleteResponse(id=ai_id)
 
     async def list_all(self) -> list[AiInfo]:
         return [
