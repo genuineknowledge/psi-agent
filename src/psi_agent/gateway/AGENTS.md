@@ -27,14 +27,14 @@ Gateway 进程
 | 文件 | 职责 |
 |------|------|
 | `__init__.py` | `Gateway` dataclass + `run()` 入口 |
-| `_manager.py` | 共享类型（AiCreateRequest 等） + helpers（_socket_path 等） |
-| `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 |
-| `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 |
+| `_manager.py` | 共享 socket helpers（_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
+| `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + AiInfo |
+| `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo |
 | `server.py` | aiohttp Application + REST handlers |
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取 |
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
-| `_workspace_manager.py` | 目录浏览 |
+| `_workspace_manager.py` | 目录浏览 + cwd 查询 |
 | `spa/` | Vue 3 SPA 前端项目（Vite + SFC + Composition API），构建输出 `spa/dist/` |
 | `_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数指定图标文件，左键打开浏览器，右键菜单控制 |
 | `_openapi.py` | `GET /openapi.json` schema 生成 |
@@ -138,6 +138,8 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 
 workspace 中的 history JSONL 不受影响。
 
+**注意（有意为之）**：删除 AI **不会**级联删除依赖它的 Session。被删 AI 的 socket 失效后，挂在其上的 Session 仍存活但不可用——由前端负责不再访问这类失效 Session，后端不做级联清理。
+
 ## REST API
 
 | Method | Endpoint | Description |
@@ -154,12 +156,15 @@ workspace 中的 history JSONL 不受影响。
 | POST | `/titles` | 设置 session 标题 `{id, title}` |
 | POST | `/titles/generate` | AI 自动生成标题 `{id, user_text, assistant_text}` |
 | GET | `/workspace/browse` | 浏览目录 `?path=...` |
+| GET | `/workspace/cwd` | 获取服务端当前工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--tray` 设置时注册，返回该图标文件） |
 
 AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
 
 错误响应格式：`{"error": "message"}` + HTTP 状态码（404/400/500）。
+
+**安全提示**：`GET /workspace/browse` 对 `path` 不加限制，可列举本机任意目录——这是 FileBrowser 选 workspace 的预期功能。Gateway 默认仅 listen `127.0.0.1`，**请勿用 `--listen 0.0.0.0` 对外暴露**，否则等于开放任意目录列举。
 
 ## Web UI Chat 协议
 
@@ -169,8 +174,7 @@ AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
 ```json
 {
   "chunks": [
-    {"type": "text", "text": "Hello, what's in this image?"},
-    {"type": "file", "path": "/tmp/uploaded-image.png"}
+    {"type": "text", "text": "Hello, what's in this image?"}
   ]
 }
 ```
@@ -183,11 +187,10 @@ data: [DONE]
 ```
 
 **内部实现**：
-- 查 `SessionManager.get_channel_socket(session_id)` 获取 channel socket
+- 查 `SessionManager.get_socket(session_id)` 获取 channel socket
 - 复用 `channel._core.ChannelCore` 构造连接
-- 输入：`FileChunk(path)`、`TextChunk(text)`、blob（base64 解码后写临时文件再转为 `FileChunk`）
+- 输入：`TextChunk(text)`、blob（base64 解码后由 `_save_upload()` 落至 `~/Downloads/.psi/<date>/`，持久保留，转为 `FileChunk`）；multipart 文件上传通过 blob 通道走相同路径
 - 输出：`TextChunk` → yield `{"type": "text"}`，`FileChunk` → 读取文件内容 base64 编码后 yield `{"type": "blob"}`
-- `finish_reason="error"` → SSE error event 透传
 
 ## Web Console (SPA)
 

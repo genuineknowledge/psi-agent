@@ -4,7 +4,7 @@ import json
 
 OPENAPI_SPEC = {
     "openapi": "3.0.3",
-    "info": {"title": "psi-agent Gateway", "version": "0.1.0"},
+    "info": {"title": "psi-agent Gateway", "version": "1.0.0"},
     "servers": [{"url": "/"}],
     "paths": {
         "/ais": {
@@ -21,6 +21,7 @@ OPENAPI_SPEC = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AiInfo"}}},
                     },
                     "400": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
             "get": {
@@ -59,6 +60,7 @@ OPENAPI_SPEC = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteResponse"}}},
                     },
                     "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
         },
@@ -76,6 +78,8 @@ OPENAPI_SPEC = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SessionInfo"}}},
                     },
                     "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
             "get": {
@@ -114,6 +118,7 @@ OPENAPI_SPEC = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteResponse"}}},
                     },
                     "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
         },
@@ -137,7 +142,7 @@ OPENAPI_SPEC = {
                                 "properties": {
                                     "chunks": {
                                         "type": "string",
-                                        "description": "JSON array of text chunks",
+                                        "description": "JSON array of text and blob chunks",
                                     },
                                     "file": {
                                         "type": "string",
@@ -146,10 +151,30 @@ OPENAPI_SPEC = {
                                 },
                             },
                         },
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "chunks": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "type": {"type": "string"},
+                                                "text": {"type": "string"},
+                                                "name": {"type": "string"},
+                                                "data": {"type": "string"},
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
                     },
                 },
                 "responses": {
                     "200": {"description": "SSE stream of Chunk objects"},
+                    "400": {"$ref": "#/components/responses/Error"},
                     "404": {"$ref": "#/components/responses/Error"},
                 },
             },
@@ -201,6 +226,7 @@ OPENAPI_SPEC = {
                 "responses": {
                     "200": {"description": "Title set"},
                     "400": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
         },
@@ -226,6 +252,8 @@ OPENAPI_SPEC = {
                 },
                 "responses": {
                     "200": {"description": "Generated title"},
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
                     "500": {"$ref": "#/components/responses/Error"},
                 },
             },
@@ -244,6 +272,15 @@ OPENAPI_SPEC = {
                 "responses": {
                     "200": {"description": "Directory listing"},
                     "400": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/workspace/cwd": {
+            "get": {
+                "summary": "Get the server's current working directory",
+                "operationId": "getCwd",
+                "responses": {
+                    "200": {"description": 'CWD string (e.g. {"cwd": "/home/user"})'},
                 },
             },
         },

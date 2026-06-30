@@ -12,7 +12,7 @@ export const store = reactive({
   sessionInputs: {},
   inputText: '',
   streaming: false,
-  selectedFile: null,
+  selectedFiles: [],
   dlgAI: false,
   dlgSess: false,
   browser: { path: undefined, parent: '', entries: [] },

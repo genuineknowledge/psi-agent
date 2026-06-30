@@ -8,14 +8,20 @@ from loguru import logger
 
 from psi_agent.ai import Ai
 from psi_agent.gateway._manager import (
-    AiCreateRequest,
-    AiInfo,
-    DeleteResponse,
     _ensure_socket_dir,
     _new_uuid,
+    _remove_socket,
     _socket_path,
     _wait_socket,
 )
+
+
+@dataclass
+class AiInfo:
+    id: str
+    socket: str
+    provider: str
+    model: str
 
 
 @dataclass
@@ -33,20 +39,28 @@ class AIManager:
     _entries: dict[str, _AiEntry] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
 
-    async def create(self, req: AiCreateRequest) -> AiInfo:
-        ai_id = req.id or _new_uuid()
+    async def create(
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+        base_url: str,
+        *,
+        id: str = "",
+    ) -> AiInfo:
+        ai_id = id or _new_uuid()
         async with self._lock:
-            logger.debug(f"AIManager: acquired lock for create '{ai_id}'")
+            logger.debug(f"AIManager: acquired lock for create {ai_id!r}")
             if ai_id in self._entries:
-                raise ValueError(f"AI '{ai_id}' already exists")
+                raise ValueError(f"AI {ai_id!r} already exists")
             socket = _socket_path(self._prefix, "ais", ai_id)
             await _ensure_socket_dir(socket)
             ai = Ai(
                 session_socket=socket,
-                provider=req.provider,
-                model=req.model,
-                api_key=req.api_key,
-                base_url=req.base_url,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
             )
             scope = anyio.CancelScope()
 
@@ -55,26 +69,35 @@ class AIManager:
                     with scope:
                         await ai.run()
                 except Exception as e:
-                    logger.error(f"AI '{ai_id}' crashed: {e}")
+                    logger.error(f"AI {ai_id!r} crashed: {e!r}")
                     async with self._lock:
                         self._entries.pop(ai_id, None)
 
-            logger.debug(f"AIManager: starting AI '{ai_id}' task")
+            logger.debug(f"AIManager: starting AI {ai_id!r} task")
             self._tg.start_soon(_run_ai)
-            self._entries[ai_id] = _AiEntry(scope=scope, socket=socket, provider=req.provider, model=req.model)
-        await _wait_socket(socket)
-        logger.info(f"AI '{ai_id}' created on {socket}")
-        return AiInfo(id=ai_id, socket=socket, provider=req.provider, model=req.model)
+            self._entries[ai_id] = _AiEntry(scope=scope, socket=socket, provider=provider, model=model)
+        try:
+            await _wait_socket(socket)
+        except Exception:
+            logger.warning(f"AI {ai_id!r} did not become ready, rolling back")
+            with anyio.CancelScope(shield=True):
+                async with self._lock:
+                    self._entries.pop(ai_id, None)
+                    scope.cancel()
+                    await _remove_socket(socket)
+            raise
+        logger.info(f"AI {ai_id!r} created on {socket}")
+        return AiInfo(id=ai_id, socket=socket, provider=provider, model=model)
 
-    async def delete(self, ai_id: str) -> DeleteResponse:
+    async def delete(self, ai_id: str) -> None:
         async with self._lock:
-            logger.debug(f"AIManager: acquired lock for delete '{ai_id}'")
+            logger.debug(f"AIManager: acquired lock for delete {ai_id!r}")
             if ai_id not in self._entries:
-                raise LookupError(f"AI '{ai_id}' not found")
+                raise LookupError(f"AI {ai_id!r} not found")
             entry = self._entries.pop(ai_id)
             entry.scope.cancel()
-            logger.info(f"AI '{ai_id}' deleted")
-            return DeleteResponse(id=ai_id)
+            await _remove_socket(entry.socket)
+            logger.info(f"AI {ai_id!r} deleted")
 
     async def list_all(self) -> list[AiInfo]:
         return [
@@ -84,7 +107,7 @@ class AIManager:
 
     def get_socket(self, ai_id: str) -> str:
         if ai_id not in self._entries:
-            raise LookupError(f"AI '{ai_id}' not found")
+            raise LookupError(f"AI {ai_id!r} not found")
         return self._entries[ai_id].socket
 
     def has(self, ai_id: str) -> bool:

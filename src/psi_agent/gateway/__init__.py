@@ -52,51 +52,45 @@ class Gateway:
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
 
-        tg = anyio.create_task_group()
-        await tg.__aenter__()
+        async with anyio.create_task_group() as tg:
+            aim = AIManager(_prefix=self.socket_path, _tg=tg)
+            sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
 
-        aim = AIManager(_prefix=self.socket_path, _tg=tg)
-        sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
-
-        app = await create_app(aim, sm, favicon_path=self.tray)
-        runner = web.AppRunner(app)
-        try:
-            await runner.setup()
-            site = create_site(runner, addr)
-            await site.start()
-        except Exception as e:
-            logger.error(f"Failed to start Gateway on {addr}: {e}")
-            with anyio.CancelScope(shield=True):
-                await runner.cleanup()
-            with anyio.CancelScope(shield=True):
-                await tg.__aexit__(None, None, None)
-            raise
-
-        logger.info(f"Gateway listening on {addr}")
-
-        if self.browser:
-            await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
-
-        if self.tray:
-            tray = GatewayTray(addr, self.tray)
+            app = await create_app(aim, sm, favicon_path=self.tray)
+            runner = web.AppRunner(app)
             try:
-                tray.start()
-            except Exception as e:
-                logger.warning(f"Failed to start system tray: {e}")
-        else:
-            tray = None
+                try:
+                    await runner.setup()
+                    site = create_site(runner, addr)
+                    await site.start()
+                except Exception as e:
+                    logger.error(f"Failed to start Gateway on {addr}: {e!r}")
+                    raise
 
-        try:
-            if tray is not None and tray._thread is not None:
-                await anyio.to_thread.run_sync(tray._stop_event.wait)  # ty: ignore
-            else:
-                await anyio.sleep_forever()
-        finally:
-            if tray is not None:
-                tray.stop()
-            logger.info("Shutting down Gateway")
-            with anyio.CancelScope(shield=True):
-                await runner.cleanup()
-            with anyio.CancelScope(shield=True):
-                await tg.__aexit__(None, None, None)
-            logger.info("Gateway shutdown complete")
+                logger.info(f"Gateway listening on {addr}")
+
+                if self.browser:
+                    await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
+
+                tray = None
+                if self.tray:
+                    tray = GatewayTray(addr, self.tray)
+                    try:
+                        tray.start()
+                    except Exception as e:
+                        logger.warning(f"Failed to start system tray: {e!r}")
+
+                try:
+                    if tray is not None and tray.is_running():
+                        await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
+                    else:
+                        await anyio.sleep_forever()
+                finally:
+                    if tray is not None:
+                        tray.stop()
+            finally:
+                logger.info("Shutting down Gateway")
+                with anyio.CancelScope(shield=True):
+                    await runner.cleanup()
+                tg.cancel_scope.cancel()
+        logger.info("Gateway shutdown complete")

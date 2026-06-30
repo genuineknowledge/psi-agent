@@ -22,17 +22,16 @@ class TitleManager:
         prompt = (
             f"Generate a short title (3-5 words, in the same language as the user) for this conversation:\n\n"
             f"User: {user_text}\n\n"
-            f"Assistant: {assistant_text[:1000]}\n\n"
+            f"Assistant: {assistant_text}\n\n"
             f"Reply with ONLY the title, no quotes or extra text."
         )
         body = {
-            "model": "ignore",
             "messages": [{"role": "user", "content": prompt}],
             "stream": True,
         }
         try:
             connector, endpoint = resolve_connector_and_endpoint(ai_socket)
-            timeout = ClientTimeout(total=30)
+            timeout = ClientTimeout(total=None)
             async with (
                 ClientSession(connector=connector, timeout=timeout) as session,
                 session.post(endpoint, json=body) as resp,
@@ -50,22 +49,27 @@ class TitleManager:
                         break
                     try:
                         chunk = json.loads(data_str)
-                        choices = chunk.get("choices", [])
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta", {})
-                        content = delta.get("content") or ""
-                        if content:
-                            title += content
                     except json.JSONDecodeError:
                         continue
+                    choices = chunk.get("choices", [])
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    first = choices[0]
+                    if not isinstance(first, dict):
+                        continue
+                    delta = first.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    content = delta.get("content") or ""
+                    if content:
+                        title += content
                 title = title.strip().strip("'\"")
                 logger.info(f"Title generation result: {title!r}")
                 if title:
                     self._titles[session_id] = title
                     return title
-                logger.warning(f"Title generation empty for session {session_id}")
+                logger.warning(f"Title generation empty for session {session_id!r}")
                 return None
         except Exception as e:
-            logger.warning(f"Title generation failed for session {session_id}: {e}")
+            logger.warning(f"Title generation failed for session {session_id!r}: {e!r}")
         return None

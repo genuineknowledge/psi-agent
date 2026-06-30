@@ -75,11 +75,11 @@
       <ChatArea />
 
       <div id="input-wrapper" v-show="store.selectedSessionId">
-        <div id="file-preview-bar" v-if="store.selectedFile">
-          <div class="preview-chip">
+        <div id="file-preview-bar" v-if="store.selectedFiles.length">
+          <div class="preview-chip" v-for="(f, i) in store.selectedFiles" :key="i">
             <span class="material-symbols-outlined" style="font-size:16px;">attach_file</span>
-            <span>{{ store.selectedFile.name }}</span>
-            <button class="close-btn" @click="clearSelectedFile" title="移除附件">
+            <span>{{ f.name }}</span>
+            <button class="close-btn" @click="store.selectedFiles.splice(i, 1)" title="移除附件">
               <span class="material-symbols-outlined" style="font-size:16px;">close</span>
             </button>
           </div>
@@ -390,13 +390,13 @@ async function selectSession(id) {
   const oldId = store.selectedSessionId
   if (oldId) {
     store.sessionMessages[oldId] = [...store.messages]
-    store.sessionInputs[oldId] = { text: store.inputText, file: store.selectedFile }
+    store.sessionInputs[oldId] = { text: store.inputText, files: [...store.selectedFiles] }
   }
   store.selectedSessionId = id
 
   const saved = store.sessionInputs[id]
   store.inputText = saved ? saved.text : ''
-  store.selectedFile = saved ? saved.file : null
+  store.selectedFiles = saved?.files || []
 
   if (store.sessionMessages[id]) {
     store.messages.splice(0, store.messages.length, ...store.sessionMessages[id])
@@ -476,12 +476,27 @@ async function createSession() {
 }
 
 function onFileSelected(e) {
-  store.selectedFile = e.target.files[0] || null
+  const files = Array.from(e.target.files || [])
+  store.selectedFiles.push(...files)
 }
 
 function clearSelectedFile() {
-  store.selectedFile = null
+  store.selectedFiles = []
   document.getElementById('file-upload').value = ''
+}
+
+async function encodeFiles(files, um) {
+  for (const f of files) {
+    try {
+      const b64 = await new Promise((resolve, reject) => {
+        const r = new FileReader()
+        r.onload = () => resolve(r.result.split(',')[1])
+        r.onerror = e => reject(e)
+        r.readAsDataURL(f)
+      })
+      if (um) um.files.push({ name: f.name, data: b64 })
+    } catch {}
+  }
 }
 
 function addMessage(role, id) {
@@ -507,44 +522,33 @@ function scrollChatAreaIfLocked() {
 async function sendMessage() {
   if (store.streaming || !store.selectedSessionId) return
   const text = store.inputText.trim()
-  const file = store.selectedFile
-  if (!text && !file) return
+  const files = [...store.selectedFiles]
+  if (!text && !files.length) return
 
   store.streaming = true
   store.inputText = ''
-  store.selectedFile = null
+  store.selectedFiles = []
   document.getElementById('file-upload').value = ''
   store.userHasScrolledUp = false
 
-  let clientBase64 = ''
-  if (file) {
-    try {
-      clientBase64 = await new Promise((resolve, reject) => {
-        const r = new FileReader()
-        r.onload = () => resolve(r.result.split(',')[1])
-        r.onerror = e => reject(e)
-        r.readAsDataURL(file)
-      })
-    } catch (fe) {}
-  }
-
+  let um = null
   if (text) {
-    const um = addMessage('user', `u-${Date.now()}`)
+    um = addMessage('user', `u-${Date.now()}`)
     um.text = text
     um.html = htmlEscape(text)
-    if (file && clientBase64) um.files.push({ name: file.name, data: clientBase64 })
-  } else if (file && clientBase64) {
-    const um = addMessage('user', `u-${Date.now()}`)
-    um.text = `[Uploaded File: ${file.name}]`
-    um.html = htmlEscape(`[Uploaded File: ${file.name}]`)
-    um.files.push({ name: file.name, data: clientBase64 })
+    await encodeFiles(files, um)
+  } else if (files.length) {
+    um = addMessage('user', `u-${Date.now()}`)
+    um.text = `[Uploaded File${files.length > 1 ? 's' : ''}: ${files.map(f => f.name).join(', ')}]`
+    um.html = htmlEscape(um.text)
+    await encodeFiles(files, um)
   }
 
   const fd = new FormData()
   const chunks = []
   if (text) chunks.push({ type: 'text', text })
   fd.append('chunks', JSON.stringify(chunks))
-  if (file) fd.append('file', file)
+  for (const f of files) fd.append('file', f)
 
   const asst = addMessage('assistant', `a-${Date.now()}`)
 

@@ -28,7 +28,7 @@ class GatewayTray:
         try:
             image = Image.open(self._icon_path)
         except Exception as e:
-            logger.warning(f"Failed to load tray icon from {self._icon_path}: {e}")
+            logger.warning(f"Failed to load tray icon from {self._icon_path!r}: {e!r}")
             return
 
         try:
@@ -38,7 +38,7 @@ class GatewayTray:
             )
             self._icon = pystray.Icon("psi-agent", image, "psi-agent", menu)
         except Exception as e:
-            logger.warning(f"Failed to create tray icon: {e}")
+            logger.warning(f"Failed to create tray icon: {e!r}")
             self._icon = None
             return
 
@@ -52,18 +52,19 @@ class GatewayTray:
             with contextlib.suppress(Exception):
                 self._icon.stop()
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
+            self._thread.join()
         logger.info("Gateway system tray icon stopped")
 
-    def is_stop_requested(self) -> bool:
-        """Returns True when user selected "退出" from the tray menu."""
-        return self._stop_event.is_set()
+    def is_running(self) -> bool:
+        """True if the tray icon thread is alive."""
+        return self._thread is not None and self._thread.is_alive()
+
+    def wait_stop(self) -> None:
+        """Block (in a worker thread) until the user requests quit via the tray menu."""
+        self._stop_event.wait()
 
     def _open_browser(self, icon: Any = None) -> None:
         webbrowser.open(self._url)
 
     def _quit(self, icon: Any = None) -> None:
         self._stop_event.set()
-        if self._icon is not None:
-            with contextlib.suppress(Exception):
-                self._icon.stop()

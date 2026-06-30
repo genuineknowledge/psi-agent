@@ -32,15 +32,7 @@ def test_gateway_tray_init(icon_file: str) -> None:
     tray = GatewayTray("http://127.0.0.1:8888", icon_file)
     assert tray._url == "http://127.0.0.1:8888"
     assert tray._icon_path == icon_file
-    assert not tray.is_stop_requested()
     assert tray._stop_event is not None
-
-
-def test_gateway_tray_is_stop_requested(icon_file: str) -> None:
-    tray = GatewayTray("http://127.0.0.1:8888", icon_file)
-    assert not tray.is_stop_requested()
-    tray._stop_event.set()
-    assert tray.is_stop_requested()
 
 
 def test_gateway_tray_stop_when_not_started(icon_file: str) -> None:
@@ -51,7 +43,7 @@ def test_gateway_tray_stop_when_not_started(icon_file: str) -> None:
 def test_gateway_tray_quit_callback_sets_stop_event(icon_file: str) -> None:
     tray = GatewayTray("http://127.0.0.1:8888", icon_file)
     tray._quit()
-    assert tray.is_stop_requested()
+    assert tray._stop_event.is_set()
 
 
 def test_gateway_tray_start_no_display(icon_file: str) -> None:

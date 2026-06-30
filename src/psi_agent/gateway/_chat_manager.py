@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import base64
-import contextlib
 import os
-import tempfile
-import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -20,41 +19,83 @@ class ChatManager:
         self,
         channel_socket: str,
         body: dict[str, Any],
-    ) -> AsyncIterator[dict[str, Any]]:
-        tmp_files: list[str] = []
+    ) -> AsyncGenerator[dict[str, Any]]:
+        """Send chat chunks to a Session and yield SSE-ready dicts.
+
+        Args:
+            channel_socket: The Session channel socket path.
+            body: A dict with key ``"chunks"`` mapping to a list of chunk
+                objects. Each chunk has a ``"type"`` field:
+
+                - ``{"type": "text", "text": "..."}`` — a text message
+                - ``{"type": "blob", "name": "...", "data": "<base64>"}``
+                  — an inline binary (decoded and persisted to
+                  ``~/Downloads/.psi/<date>/``)
+
+        Yields:
+            Dicts suitable for SSE output:
+
+            - ``{"type": "text", "text": "..."}``
+            - ``{"type": "reasoning", "text": "..."}``
+            - ``{"type": "blob", "name": "...", "data": "<base64>"}``
+            - ``{"type": "error", "error": "..."}`` — on blob read failure
+        """
         chunks: list[InputChunk] = []
 
-        raw_chunks: list[dict[str, Any]] = body.get("chunks", [])
+        raw_chunks = body.get("chunks", [])
+        if not isinstance(raw_chunks, list):
+            raw_chunks = []
         for c in raw_chunks:
+            if not isinstance(c, dict):
+                continue
             t = c.get("type")
-            if t == "text":
-                chunks.append(TextChunk(text=c["text"]))
-            elif t == "file":
-                chunks.append(FileChunk(path=c["path"]))
-            elif t == "blob":
-                name = c.get("name", "file.bin")
-                data = base64.b64decode(c["data"])
-                path = self._temp_path(tmp_files, name)
-                await anyio.Path(path).write_bytes(data)
-                chunks.append(FileChunk(path=path))
+            match t:
+                case "text":
+                    text = c.get("text")
+                    if isinstance(text, str):
+                        chunks.append(TextChunk(text=text))
+                case "blob":
+                    data_b64 = c.get("data")
+                    if not isinstance(data_b64, str):
+                        continue
+                    try:
+                        data = base64.b64decode(data_b64)
+                    except ValueError as e:
+                        logger.warning(f"Skipping invalid base64 blob: {e!r}")
+                        continue
+                    path = await self._save_upload(c.get("name", "file.bin"), data)
+                    chunks.append(FileChunk(path=path))
+                case _:
+                    raise ValueError(f"Unknown chunk type: {t!r}")
+            logger.debug(f"Inbound chunk type={t!r} (total {len(chunks)})")
 
-        try:
-            async with ChannelCore(session_socket=channel_socket, interval=0.0) as core:
-                async for chunk in core.post(chunks):
-                    if isinstance(chunk, TextChunk):
-                        yield {"type": "text", "text": chunk.text}
-                    elif isinstance(chunk, ReasoningChunk):
-                        yield {"type": "reasoning", "text": chunk.text}
-                    elif isinstance(chunk, FileChunk):
-                        yield await self._file_blob(chunk.path)
-        finally:
-            await self._cleanup(tmp_files)
+        logger.info(f"Chat: posting {len(chunks)} chunk(s) to {channel_socket!r}")
+        async with ChannelCore(session_socket=channel_socket, interval=0.0) as core:
+            async for chunk in core.post(chunks):
+                if isinstance(chunk, TextChunk):
+                    yield {"type": "text", "text": chunk.text}
+                elif isinstance(chunk, ReasoningChunk):
+                    yield {"type": "reasoning", "text": chunk.text}
+                elif isinstance(chunk, FileChunk):
+                    yield await self._file_blob(chunk.path)
 
-    def _temp_path(self, tmp_files: list[str], name: str) -> str:
-        suffix = os.path.splitext(name)[1] or ".bin"
-        p = os.path.join(tempfile.gettempdir(), f"gw-blob-{uuid.uuid4().hex}{suffix}")
-        tmp_files.append(p)
-        return p
+    async def _save_upload(self, name: str, data: bytes) -> str:
+        """Persist an inbound file to ~/Downloads/.psi/{date}/ and return its path.
+
+        Used for both multipart uploads (via the chat handler) and inline base64
+        blobs. Files are kept (no cleanup) so the user can find them in Downloads.
+        """
+        path = self._downloads_path(name)
+        await anyio.Path(path).parent.mkdir(parents=True, exist_ok=True)
+        await anyio.Path(path).write_bytes(data)
+        logger.debug(f"Saved inbound file to {path} ({len(data)} bytes)")
+        return path
+
+    @staticmethod
+    def _downloads_path(name: str) -> str:
+        date = datetime.now().strftime("%Y-%m-%d")
+        base = os.path.join(str(Path.home()), "Downloads", ".psi", date)
+        return os.path.join(base, os.path.basename(name))
 
     async def _file_blob(self, path: str) -> dict[str, str]:
         try:
@@ -66,10 +107,5 @@ class ChatManager:
                 "data": base64.b64encode(content).decode(),
             }
         except Exception as e:
-            logger.warning(f"Failed to read file blob {path}: {e}")
+            logger.warning(f"Failed to read file blob {path!r}: {e!r}")
             return {"type": "error", "error": str(e)}
-
-    async def _cleanup(self, paths: list[str]) -> None:
-        for p in paths:
-            with contextlib.suppress(OSError):
-                await anyio.Path(p).unlink()

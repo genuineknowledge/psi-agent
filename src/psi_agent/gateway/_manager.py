@@ -1,51 +1,13 @@
-"""Shared types and helpers for AIManager and SessionManager."""
+"""Shared socket helpers for AIManager and SessionManager."""
 
 from __future__ import annotations
 
 import sys
 import uuid
-from dataclasses import dataclass
 
 import aiohttp
 import anyio
-
-
-@dataclass
-class AiCreateRequest:
-    provider: str
-    model: str
-    api_key: str
-    base_url: str
-    id: str = ""
-
-
-@dataclass
-class AiInfo:
-    id: str
-    socket: str
-    provider: str
-    model: str
-
-
-@dataclass
-class SessionCreateRequest:
-    ai_id: str
-    workspace: str = ""
-    id: str = ""
-
-
-@dataclass
-class SessionInfo:
-    id: str
-    ai_id: str
-    workspace: str
-    channel_socket: str
-
-
-@dataclass
-class DeleteResponse:
-    id: str
-    status: str = "stopped"
+from loguru import logger
 
 
 def _new_uuid() -> str:
@@ -63,6 +25,17 @@ async def _ensure_socket_dir(socket: str) -> None:
         await anyio.Path(socket).parent.mkdir(parents=True, exist_ok=True)
 
 
+async def _remove_socket(path: str) -> None:
+    """Best-effort removal of a leftover socket file (no-op on Windows / if absent)."""
+    if sys.platform == "win32":
+        return
+    try:
+        await anyio.Path(path).unlink(missing_ok=True)
+        logger.debug(f"Removed socket file {path!r}")
+    except OSError as e:
+        logger.warning(f"Failed to remove socket file {path!r}: {e!r}")
+
+
 async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
     if sys.platform == "win32":
         connector: aiohttp.BaseConnector = aiohttp.NamedPipeConnector(path=path)
@@ -70,13 +43,19 @@ async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
     else:
         connector = aiohttp.UnixConnector(path=path)
         kind = "Unix socket"
+    logger.debug(f"Waiting for {kind} {path!r} to become ready (timeout={timeout_sec}s)")
     deadline = anyio.current_time() + timeout_sec
-    async with aiohttp.ClientSession(connector=connector) as session:
+    session = aiohttp.ClientSession(connector=connector)
+    try:
         while anyio.current_time() < deadline:
             try:
                 async with session.get("http://localhost/") as _resp:
                     pass
+                logger.debug(f"{kind} {path!r} is ready")
                 return
             except Exception:
                 await anyio.sleep(0.1)
-    raise TimeoutError(f"{kind} '{path}' not ready within {timeout_sec}s")
+        raise TimeoutError(f"{kind} {path!r} not ready within {timeout_sec}s")
+    finally:
+        with anyio.CancelScope(shield=True):
+            await session.close()
