@@ -260,7 +260,15 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
     except (ValueError, TypeError) as e:
         return _error(f"Invalid request: {e}", status=400)
 
-    resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+    resp = web.StreamResponse(
+        status=200,
+        reason="OK",
+        headers={
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
     try:
         await resp.prepare(request)
     except Exception:
