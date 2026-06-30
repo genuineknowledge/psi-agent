@@ -23,11 +23,16 @@ def _transport():
         c2s_recv, c2s_send = anyio.create_memory_object_stream()
         s2c_recv, s2c_send = anyio.create_memory_object_stream()
         async with anyio.create_task_group() as tg:
-            tg.start_soon(server.run, c2s_recv, s2c_send, server.create_initialization_options())
-            yield c2s_send, s2c_recv
-            tg.cancel_scope.cancel()
-
-    return connect
+            tg.start_soon(
+                server.run,
+                c2s_recv,
+                s2c_send,
+                server.create_initialization_options(),
+            )
+            try:
+                yield s2c_recv, c2s_send
+            finally:
+                tg.cancel_scope.cancel()
 
 
 @mcp
