@@ -20,8 +20,8 @@ def _transport():
 
     @contextlib.asynccontextmanager
     async def connect():
-        c2s_recv, c2s_send = anyio.create_memory_object_stream()
-        s2c_recv, s2c_send = anyio.create_memory_object_stream()
+        c2s_send, c2s_recv = anyio.create_memory_object_stream()
+        s2c_send, s2c_recv = anyio.create_memory_object_stream()
         async with anyio.create_task_group() as tg:
             tg.start_soon(
                 server.run,
@@ -33,6 +33,8 @@ def _transport():
                 yield s2c_recv, c2s_send
             finally:
                 tg.cancel_scope.cancel()
+
+    return connect
 
 
 @mcp
