@@ -12,18 +12,46 @@
 | `examples/haitun-workspace/haitun agent.vbs` | 新建 | VBS 启动器，负责 launch `psi-agent gateway --tray haitun.ico` |
 | `examples/haitun-workspace/haitun.iss` | 新建 | Inno Setup 安装脚本 |
 | `examples/haitun-workspace/.gitignore` | 修改 | 移除 `haitun agent.vbs`、`dolphin.ico` 行（现已提交） |
-| `.github/workflows/pyinstaller.yml` | 修改 | 新增 `inno-setup` job，在 PyInstaller 之后运行 |
+| `.github/workflows/pyinstaller.yml` | 修改 | 新增 `haitun-inno-setup` job，在 PyInstaller 之后运行 |
 
 ## haitun agent.vbs
 
 ```vbs
 Set objFSO = CreateObject("Scripting.FileSystemObject")
 Set objShell = CreateObject("WScript.Shell")
-objShell.CurrentDirectory = objFSO.GetParentFolderName(WScript.ScriptFullName)
+
+' Run from the script's own directory so psi-agent.exe / haitun.ico / .env resolve.
+strDir = objFSO.GetParentFolderName(WScript.ScriptFullName)
+objShell.CurrentDirectory = strDir
+
+' Load .env (if present) into this process environment; the child inherits it.
+strEnvPath = objFSO.BuildPath(strDir, ".env")
+If objFSO.FileExists(strEnvPath) Then
+    Set objEnv = objShell.Environment("Process")
+    Set objFile = objFSO.OpenTextFile(strEnvPath, 1, False)
+    Do Until objFile.AtEndOfStream
+        strLine = Trim(objFile.ReadLine)
+        If Len(strLine) > 0 And Left(strLine, 1) <> "#" Then
+            intPos = InStr(strLine, "=")
+            If intPos > 1 Then
+                strKey = Trim(Left(strLine, intPos - 1))
+                strVal = Trim(Mid(strLine, intPos + 1))
+                strFirst = Left(strVal, 1)
+                If Len(strVal) >= 2 And (strFirst = """" Or strFirst = "'") And Right(strVal, 1) = strFirst Then
+                    strVal = Mid(strVal, 2, Len(strVal) - 2)
+                End If
+                If Len(strKey) > 0 Then objEnv(strKey) = strVal
+            End If
+        End If
+    Loop
+    objFile.Close
+End If
+
 objShell.Run "psi-agent.exe gateway --tray haitun.ico", 0, False
 ```
 
-- 设置工作目录到脚本所在目录，确保 `psi-agent.exe`、`haitun.ico` 及 workspace 文件可被找到
+- 设置工作目录到脚本所在目录，确保 `psi-agent.exe`、`haitun.ico`、`.env` 及 workspace 文件可被找到
+- 若同目录存在 `.env`，按行解析 `KEY=VALUE`（跳过空行和 `#` 注释，剥离值两端成对引号），写入 `Environment("Process")`，子进程 `psi-agent.exe` 继承之。**不**做 `${VAR}` 插值 / `export` 前缀 / UTF-8（按 ANSI 读取）
 - `0` = 隐藏窗口运行；`False` = 不等进程结束立即返回
 
 ## haitun.iss
@@ -74,10 +102,10 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 ## GitHub Actions: pyinstaller.yml 变更
 
-新增独立 job `inno-setup`：
+新增独立 job `haitun-inno-setup`：
 
 ```yaml
-  inno-setup:
+  haitun-inno-setup:
     needs: pyinstaller
     runs-on: windows-latest
     steps:
@@ -114,7 +142,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 pyinstaller (matrix: ubuntu/windows/macOS)
   └── upload-artifact: psi-agent-pyinstaller-{os} (per OS)
   
-inno-setup (windows-latest)
+haitun-inno-setup (windows-latest)
   └── needs: pyinstaller (all matrix)
   └── download-artifact: psi-agent-pyinstaller-windows-latest
   └── upload-artifact: haitun-agent-installer

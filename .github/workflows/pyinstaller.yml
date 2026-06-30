@@ -47,7 +47,7 @@ jobs:
           path: pyinstaller-dist/psi-agent.exe
         if: matrix.os == 'windows-latest'
 
-  inno-setup:
+  haitun-inno-setup:
     needs: pyinstaller
     runs-on: windows-latest
     steps:
