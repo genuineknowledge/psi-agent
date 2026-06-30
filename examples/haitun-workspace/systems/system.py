@@ -1,6 +1,6 @@
 # ruff: noqa: E402, I001, T201
 
-"""System prompt builder for the haitun (haitun) agent workspace.
+"""System prompt builder for the Haitun agent workspace.
 
 This merges three ideas into one workspace:
 
@@ -9,7 +9,7 @@ This merges three ideas into one workspace:
   configuration kept inside the workspace** (there is no global config dir).
 * The Fusion Flow authoring capability (flows index + authoring guidance),
   fully merged from the fusion-flow workspace.
-* A fixed haitun persona, always stated in the system prompt.
+* A fixed Haitun agent persona, always stated in the system prompt.
 
 Only ``system_prompt_builder()`` (and optionally ``system_prompt_rebuild_checker``)
 is invoked by psi-agent's session loader.  ``compact_history`` / ``after_turn`` /
@@ -387,7 +387,7 @@ async def _read_bootstrap_file(path: anyio.Path, max_chars: int = 0) -> str | No
 
 
 async def _load_soul_md(workspace_dir: anyio.Path) -> str:
-    """Identity line is always the haitun persona; workspace SOUL.md augments it."""
+    """Identity line is always the Haitun agent persona; workspace SOUL.md augments it."""
     soul = await _read_bootstrap_file(workspace_dir / "SOUL.md")
     if soul and soul.strip():
         return IDENTITY_LINE + "\n\n" + soul.strip()

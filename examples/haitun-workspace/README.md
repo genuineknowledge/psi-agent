@@ -1,6 +1,6 @@
 # haitun-workspace 🐬
 
-A consolidated psi-agent workspace whose agent is a **haitun (海豚)**. It combines:
+A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combines:
 
 - a de-branded OpenClaw-style system-prompt engine (all config kept **inside** the workspace),
 - full **Fusion Flow** workflow authoring (node runtime + `flow_manage` + `flows/`),
