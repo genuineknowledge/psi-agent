@@ -17,10 +17,10 @@ channel/
 │   └── client.py       # 交互式 thin client (~57行)
 └── telegram/
     ├── __init__.py     # ChannelTelegram dataclass
-    └── client.py       # Bot handler + 流式 + 文件收发 (~169行)
+    └── client.py       # Bot handler + 流式 + 文件收发 (~179行)
 └── feishu/
     ├── __init__.py     # ChannelFeishu dataclass
-    └── client.py       # Bot handler + 卡片流式 + 文件收发 + 处理状态表情 (~202行)
+    └── client.py       # Bot handler + 卡片流式 + 文件收发 + 处理状态表情 (~208行)
 ```
 
 ### ChannelCore

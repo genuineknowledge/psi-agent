@@ -58,9 +58,9 @@ async def _add_reaction(channel: Any, message_id: str, emoji_type: str) -> str |
         if resp.data and resp.data.reaction_id:
             logger.debug(f"OK reaction_id={resp.data.reaction_id}")
             return resp.data.reaction_id
-        logger.error(f"no reaction_id in response ({emoji_type})")
+        logger.warning(f"no reaction_id in response ({emoji_type})")
     except Exception as e:
-        logger.error(f"failed ({emoji_type}) — {e}")
+        logger.warning(f"failed ({emoji_type}) — {e}")
     return None
 
 
@@ -71,7 +71,7 @@ async def _remove_reaction(channel: Any, message_id: str, reaction_id: str) -> N
         await channel.client.im.v1.message_reaction.adelete(req)
         logger.debug("OK")
     except Exception as e:
-        logger.error(f"failed — {e}")
+        logger.warning(f"failed — {e}")
 
 
 async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[InputChunk]:
@@ -82,7 +82,7 @@ async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[InputChu
     for m in re.finditer(r'<audio\s+key="([^"]+)"', text):
         audio_key = m.group(1)
         logger.debug(f"audio key={audio_key}")
-        path = f"{downloads}/{audio_key[-32:]}"
+        path = str(anyio.Path(downloads) / audio_key[-32:])
         try:
             req = (
                 GetMessageResourceRequest.builder().message_id(ctx.message_id).file_key(audio_key).type("file").build()
@@ -131,49 +131,54 @@ async def _handle_and_stream(
     reaction_id = await _add_reaction(channel, ctx.message_id, _EMOJI_PROCESSING)
     failed = False
     try:
-        downloads = f"{platformdirs.user_downloads_dir()}/.psi/{date.today()}"
-        await anyio.Path(downloads).mkdir(parents=True, exist_ok=True)
-
         try:
-            chunks = await _build_chunks(channel, ctx, downloads)
-        except Exception as e:
-            logger.error(f"_build_chunks failed — {e}")
-            await channel.send(ctx.chat_id, {"text": f"Error processing message: {e}"})
-            failed = True
-            return
+            downloads_dir = anyio.Path(platformdirs.user_downloads_dir()) / ".psi" / str(date.today())
+            await downloads_dir.mkdir(parents=True, exist_ok=True)
+            downloads = str(downloads_dir)
 
-        if not chunks:
-            logger.debug("no chunks, unsupported type")
-            return
+            try:
+                chunks = await _build_chunks(channel, ctx, downloads)
+            except Exception as e:
+                logger.error(f"_build_chunks failed — {e}")
+                failed = True
+                await channel.send(ctx.chat_id, {"text": f"Error processing message: {e}"})
+                return
 
-        logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
+            if not chunks:
+                logger.debug("no chunks, unsupported type")
+                await channel.send(ctx.chat_id, {"text": "Unsupported message type"})
+                return
 
-        async def _produce(stream: Any) -> None:
-            async with aclosing(core.post(chunks)) as gen:
-                async for chunk in gen:
-                    if isinstance(chunk, TextChunk):
-                        await stream.append(chunk.text)
-                        logger.debug(f"stream.append ({len(chunk.text)} chars)")
-                    elif isinstance(chunk, FileChunk):
-                        logger.debug(f"received FileChunk ({chunk.path})")
-                        await _send_file(channel, ctx.chat_id, chunk.path)
+            logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
 
-        try:
-            await channel.stream(
-                ctx.chat_id,
-                {"markdown": _produce},
-                {"reply_to": ctx.message_id},
-            )
-            logger.debug("stream completed")
-        except Exception as e:
-            logger.error(f"ChannelCore error — {e}")
-            await channel.send(ctx.chat_id, {"text": f"Error: {e}"})
-            failed = True
-    finally:
-        if reaction_id:
-            await _remove_reaction(channel, ctx.message_id, reaction_id)
-        if failed:
-            await _add_reaction(channel, ctx.message_id, _EMOJI_FAILED)
+            async def _produce(stream: Any) -> None:
+                async with aclosing(core.post(chunks)) as gen:
+                    async for chunk in gen:
+                        if isinstance(chunk, TextChunk):
+                            await stream.append(chunk.text)
+                            logger.debug(f"stream.append ({len(chunk.text)} chars)")
+                        elif isinstance(chunk, FileChunk):
+                            logger.debug(f"received FileChunk ({chunk.path})")
+                            await _send_file(channel, ctx.chat_id, chunk.path)
+
+            try:
+                await channel.stream(
+                    ctx.chat_id,
+                    {"markdown": _produce},
+                    {"reply_to": ctx.message_id},
+                )
+                logger.debug("stream completed")
+            except Exception as e:
+                logger.error(f"Message handling error — {e}")
+                failed = True
+                await channel.send(ctx.chat_id, {"text": f"Error: {e}"})
+        finally:
+            if reaction_id:
+                await _remove_reaction(channel, ctx.message_id, reaction_id)
+            if failed:
+                await _add_reaction(channel, ctx.message_id, _EMOJI_FAILED)
+    except Exception as e:
+        logger.error(f"Unhandled error in _handle_and_stream: {e!r}")
 
 
 async def run_feishu(
@@ -198,8 +203,10 @@ async def run_feishu(
             await channel.start_background()
             await anyio.Event().wait()
         finally:
+            logger.info("Shutting down Feishu bot")
             with anyio.CancelScope(shield=True):
                 try:
                     await channel.stop_background()
                 except Exception as e:
                     logger.warning(f"Feishu stop_background failed: {e}")
+            logger.info("Feishu bot shutdown complete")

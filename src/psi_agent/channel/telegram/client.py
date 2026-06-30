@@ -38,8 +38,8 @@ async def _build_chunks(update: Update) -> list[InputChunk]:
         return []
 
     chunks: list[InputChunk] = []
-    downloads = f"{platformdirs.user_downloads_dir()}/.psi/{date.today()}"
-    await anyio.Path(downloads).mkdir(parents=True, exist_ok=True)
+    downloads = anyio.Path(platformdirs.user_downloads_dir()) / ".psi" / str(date.today())
+    await downloads.mkdir(parents=True, exist_ok=True)
     logger.debug(f"downloads_dir={downloads}")
 
     if update.message.text:
@@ -54,7 +54,7 @@ async def _build_chunks(update: Update) -> list[InputChunk]:
         logger.debug(f"photo file_unique_id={photo.file_unique_id} size={photo.width}x{photo.height}")
         try:
             tfile = await photo.get_file()
-            path = f"{downloads}/{photo.file_unique_id}"
+            path = str(downloads / photo.file_unique_id)
             await tfile.download_to_drive(path)
             logger.debug(f"photo downloaded to {path}")
             chunks.append(FileChunk(path))
@@ -67,7 +67,7 @@ async def _build_chunks(update: Update) -> list[InputChunk]:
         try:
             tfile = await doc.get_file()
             suffix = anyio.Path(doc.file_name or "").suffix
-            path = f"{downloads}/{doc.file_unique_id}{suffix}"
+            path = str(downloads / f"{doc.file_unique_id}{suffix}")
             await tfile.download_to_drive(path)
             logger.debug(f"document downloaded to {path}")
             chunks.append(FileChunk(path))
@@ -121,7 +121,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.debug(f"received FileChunk ({chunk.path})")
                     await _send_file(update, chunk.path)
     except Exception as e:
-        logger.error(f"ChannelCore error — {e}")
+        logger.error(f"Message handling error — {e}")
         await sent.edit_text(f"Error: {e}")
         return
 
@@ -163,6 +163,7 @@ async def run_telegram(
             logger.info(f"Telegram bot polling started (session={session_socket} interval={interval})")
             await anyio.Event().wait()
         finally:
+            logger.info("Shutting down Telegram bot")
             with anyio.CancelScope(shield=True):
                 if app.updater is not None:
                     try:
@@ -177,3 +178,4 @@ async def run_telegram(
                     await app.shutdown()
                 except Exception as e:
                     logger.warning(f"Telegram app.shutdown failed: {e}")
+            logger.info("Telegram bot shutdown complete")

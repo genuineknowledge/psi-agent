@@ -8,7 +8,7 @@ import anyio
 import pytest
 
 from psi_agent.channel._core import ChannelCore
-from psi_agent.channel._types import TextChunk
+from psi_agent.channel._types import FileChunk, TextChunk
 from psi_agent.channel.feishu import ChannelFeishu, client
 from psi_agent.channel.feishu.client import (
     _EMOJI_FAILED,
@@ -144,6 +144,26 @@ async def test_handle_failure_replaces_with_crossmark(monkeypatch, tmp_path):
     channel.send.assert_awaited()
 
 
+@pytest.mark.anyio
+async def test_handle_swallows_error_when_notification_also_fails(monkeypatch, tmp_path):
+    """_handle_and_stream runs as a start_task_soon task, so it must never propagate —
+    even if the error-notification send itself fails — while still flagging CrossMark."""
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(client, "_build_chunks", AsyncMock(side_effect=RuntimeError("build boom")))
+
+    channel = _fake_channel()
+    channel.send = AsyncMock(side_effect=RuntimeError("send boom"))
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+    ctx = SimpleNamespace(sender_id="ou_1", chat_id="oc_1", message_id="om_1")
+
+    await _handle_and_stream(channel, core, None, ctx)
+
+    acreate = channel.client.im.v1.message_reaction.acreate
+    emojis = [c.args[0].request_body.reaction_type.emoji_type for c in acreate.call_args_list]
+    assert emojis == [_EMOJI_PROCESSING, _EMOJI_FAILED]
+    assert channel.client.im.v1.message_reaction.adelete.call_count == 1
+
+
 class _FakePortal:
     """Stand-in for anyio BlockingPortal so run_feishu lifecycle tests stay deterministic."""
 
@@ -192,3 +212,22 @@ async def test_run_feishu_cleans_up_on_cancel(monkeypatch):
         tg.cancel_scope.cancel()
 
     channel.stop_background.assert_awaited()
+
+
+@pytest.mark.anyio
+async def test_build_chunks_text_only(tmp_path):
+    channel = _fake_channel()
+    ctx = SimpleNamespace(content_text="hello world", message_id="om_1", resources=[], raw_content_type="text")
+    chunks = await client._build_chunks(channel, ctx, str(tmp_path))
+    assert chunks == [TextChunk("hello world")]
+
+
+@pytest.mark.anyio
+async def test_build_chunks_with_resource(tmp_path):
+    channel = _fake_channel()
+    channel.download_resource_to_file = AsyncMock(return_value=str(tmp_path / "file.bin"))
+    resource = SimpleNamespace(type="file", file_key="fk_1", file_name="file.bin")
+    ctx = SimpleNamespace(content_text="", message_id="om_1", resources=[resource], raw_content_type="file")
+    chunks = await client._build_chunks(channel, ctx, str(tmp_path))
+    assert any(isinstance(c, FileChunk) for c in chunks)
+    channel.download_resource_to_file.assert_awaited_once()
