@@ -83,8 +83,8 @@ class AIManager:
             with anyio.CancelScope(shield=True):
                 async with self._lock:
                     self._entries.pop(ai_id, None)
-                scope.cancel()
-                await _remove_socket(socket)
+                    scope.cancel()
+                    await _remove_socket(socket)
             raise
         logger.info(f"AI '{ai_id}' created on {socket}")
         return AiInfo(id=ai_id, socket=socket, provider=provider, model=model)

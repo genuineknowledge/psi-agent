@@ -92,8 +92,8 @@ class SessionManager:
             with anyio.CancelScope(shield=True):
                 async with self._lock:
                     self._entries.pop(session_id, None)
-                scope.cancel()
-                await _remove_socket(channel_socket)
+                    scope.cancel()
+                    await _remove_socket(channel_socket)
             raise
         logger.info(f"Session '{session_id}' created on {channel_socket} -> AI '{ai_id}'")
         return SessionInfo(id=session_id, ai_id=ai_id, workspace=workspace, channel_socket=channel_socket)
