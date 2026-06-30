@@ -52,14 +52,12 @@ static void replace_env(const WCHAR *name, const WCHAR *val)
 {
     WCHAR *pos = find_env_var(name);
     if (pos) {
-        WCHAR *end = pos + lstrlenW(pos) + 1;
-        WCHAR *tail = end + lstrlenW(end);
-        int tail_len = (int)(g_env + g_env_len - tail);
-        int old_len = (int)(end - pos);
-        int new_len = lstrlenW(name) + 1 + lstrlenW(val);
-        int diff = new_len - old_len;
-        if (g_env_len + diff + 1 > (int)(sizeof(g_env) / sizeof(WCHAR)))
+        int old_size = lstrlenW(pos) + 1;   /* name=value + NUL */
+        int new_size = lstrlenW(name) + 1 + lstrlenW(val) + 1; /* name=value + NUL */
+        int diff = new_size - old_size;
+        if (g_env_len + diff > (int)(sizeof(g_env) / sizeof(WCHAR)))
             return;
+        WCHAR *end = pos + old_size;
         if (diff) {
             MoveMemory(end + diff, end, (g_env + g_env_len - end) * sizeof(WCHAR));
         }
@@ -82,6 +80,7 @@ static void load_env_file(const WCHAR *path)
     if (size == INVALID_FILE_SIZE || size > 65536) { CloseHandle(h); return; }
 
     char *buf = HeapAlloc(GetProcessHeap(), 0, size + 1);
+    if (!buf) { CloseHandle(h); return; }
     DWORD read;
     ReadFile(h, buf, size, &read, NULL);
     buf[read] = '\0';
@@ -206,6 +205,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
         lstrcatW(err_path, stamp);
         lstrcatW(err_path, L".err.log");
 
+        HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
+        if (!hIn || hIn == INVALID_HANDLE_VALUE)
+            hIn = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ,
+                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         HANDLE hOut = CreateFileW(out_path, GENERIC_WRITE, FILE_SHARE_READ,
                                   NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         HANDLE hErr = CreateFileW(err_path, GENERIC_WRITE, FILE_SHARE_READ,
@@ -218,9 +221,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
         STARTUPINFOW si = {sizeof(si)};
         si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
+        si.hStdInput  = hIn;
         si.hStdOutput = hOut;
         si.hStdError  = hErr;
-        si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
 
         CreateProcessW(NULL, cmd, NULL, NULL, TRUE,
                        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
@@ -229,6 +232,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
         CloseHandle(pi.hProcess);
         CloseHandle(hOut);
         CloseHandle(hErr);
+        if (hIn != GetStdHandle(STD_INPUT_HANDLE))
+            CloseHandle(hIn);
     }
 
     return 0;
