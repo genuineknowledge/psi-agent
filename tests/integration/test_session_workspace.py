@@ -59,7 +59,7 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
     await anyio.Path(ws).mkdir()
     await anyio.Path(ws / "systems").mkdir()
     await anyio.Path(ws / "systems" / "system.py").write_text(
-        "async def system_prompt_builder() -> str:\n    return 'test'\n"
+        "async def system_prompt_builder() -> str:\n    return 'test'\n", encoding="utf-8"
     )
 
     tr = await ToolRegistry.load(ws / "tools")
@@ -99,10 +99,12 @@ async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> 
 
     ws = tmp_path / "ws"
     await anyio.Path(ws / "tools").mkdir(parents=True)
-    await anyio.Path(ws / "tools" / "echo.py").write_text("async def echo(message: str) -> str:\n    return 'ECHO'\n")
+    await anyio.Path(ws / "tools" / "echo.py").write_text(
+        "async def echo(message: str) -> str:\n    return 'ECHO'\n", encoding="utf-8"
+    )
     await anyio.Path(ws / "systems").mkdir()
     await anyio.Path(ws / "systems" / "system.py").write_text(
-        "async def system_prompt_builder() -> str:\n    raise RuntimeError('bad')\n"
+        "async def system_prompt_builder() -> str:\n    raise RuntimeError('bad')\n", encoding="utf-8"
     )
 
     async def handler(request: web.Request) -> web.StreamResponse:
@@ -191,11 +193,12 @@ async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server
                 message: The message.
             \"\"\"
             return f"ECHO: {message}"
-    """)
+    """),
+        encoding="utf-8",
     )
     await anyio.Path(ws / "systems").mkdir()
     await anyio.Path(ws / "systems" / "system.py").write_text(
-        "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n"
+        "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n", encoding="utf-8"
     )
 
     mock_ai_server.set_responses(
@@ -227,11 +230,11 @@ async def test_unicode_message_handling(tmp_path: Path, mock_ai_server: MockAISe
     ws = tmp_path / "ws"
     await anyio.Path(ws / "tools").mkdir(parents=True)
     await anyio.Path(ws / "tools" / "echo.py").write_text(
-        'async def echo(message: str) -> str:\n    return f"ECHO: {message}"\n'
+        'async def echo(message: str) -> str:\n    return f"ECHO: {message}"\n', encoding="utf-8"
     )
     await anyio.Path(ws / "systems").mkdir()
     await anyio.Path(ws / "systems" / "system.py").write_text(
-        "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n"
+        "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n", encoding="utf-8"
     )
 
     tr = await ToolRegistry.load(ws / "tools")

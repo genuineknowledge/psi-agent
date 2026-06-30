@@ -69,7 +69,8 @@ async def _make_workspace(base: str) -> str:
                 message: The message to echo.
             \"\"\"
             return f"ECHO: {message}"
-    """)
+    """),
+        encoding="utf-8",
     )
     systems_dir = os.path.join(ws, "systems")
     await anyio.Path(systems_dir).mkdir(parents=True)
@@ -77,7 +78,8 @@ async def _make_workspace(base: str) -> str:
         textwrap.dedent("""\
         async def system_prompt_builder() -> str:
             return "You are a helpful test assistant."
-    """)
+    """),
+        encoding="utf-8",
     )
     return ws
 
@@ -236,7 +238,7 @@ async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> 
 async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) -> None:
     data_dir = tempfile.mkdtemp(dir="/tmp", prefix="gwb")
     test_file = data_dir + "/test-out.txt"
-    await anyio.Path(test_file).write_text("blob response content")
+    await anyio.Path(test_file).write_text("blob response content", encoding="utf-8")
 
     resp_text = f"Here you go: [SEND:{test_file}]"
     mock_ai_server.set_responses(

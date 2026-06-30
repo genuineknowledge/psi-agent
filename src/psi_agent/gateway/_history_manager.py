@@ -10,7 +10,7 @@ class HistoryManager:
         jsonl_path = workspace + "/histories/" + session_id + ".jsonl"
         messages: list[dict[str, str]] = []
         try:
-            content = await anyio.Path(str(jsonl_path)).read_text()
+            content = await anyio.Path(str(jsonl_path)).read_text(encoding="utf-8")
             for line in content.strip().split("\n"):
                 if not line.strip():
                     continue
