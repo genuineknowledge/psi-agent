@@ -256,7 +256,7 @@ OPENAPI_SPEC = {
                 "summary": "Get the server's current working directory",
                 "operationId": "getCwd",
                 "responses": {
-                    "200": {"description": "CWD string (e.g. {\"cwd\": \"/home/user\"})"},
+                    "200": {"description": 'CWD string (e.g. {"cwd": "/home/user"})'},
                 },
             },
         },
