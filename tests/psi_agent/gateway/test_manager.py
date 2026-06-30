@@ -229,3 +229,25 @@ async def test_sessionmanager_delete_removes_socket_file(tmp_path: str) -> None:
         await am.delete("ai1")
     finally:
         await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_aimanager_rollback_when_wait_socket_fails(tmp_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    # G: if the service never becomes ready, create() must roll back the entry
+    # and cancel the task instead of leaving a zombie registration.
+    async def _never_ready(*args: object, **kwargs: object) -> None:
+        raise TimeoutError("not ready")
+
+    monkeypatch.setattr("psi_agent.gateway._ai_manager._wait_socket", _never_ready)
+
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    try:
+        mgr = AIManager(_prefix="gw-test", _tg=tg)
+        req = AiCreateRequest(provider="o", model="m", api_key="k", base_url="b", id="rollback")
+        with pytest.raises(TimeoutError):
+            await mgr.create(req)
+        assert not mgr.has("rollback")
+        assert await mgr.list_all() == []
+    finally:
+        await tg.__aexit__(None, None, None)

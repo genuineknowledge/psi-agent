@@ -74,7 +74,16 @@ class SessionManager:
                 ai_id=req.ai_id,
                 workspace=workspace,
             )
-        await _wait_socket(channel_socket)
+        try:
+            await _wait_socket(channel_socket)
+        except Exception:
+            logger.error(f"Session '{session_id}' did not become ready, rolling back")
+            with anyio.CancelScope(shield=True):
+                async with self._lock:
+                    self._entries.pop(session_id, None)
+                scope.cancel()
+                await _remove_socket(channel_socket)
+            raise
         logger.info(f"Session '{session_id}' created on {channel_socket} -> AI '{req.ai_id}'")
         return SessionInfo(id=session_id, ai_id=req.ai_id, workspace=workspace, channel_socket=channel_socket)
 

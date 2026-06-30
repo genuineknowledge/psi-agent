@@ -251,7 +251,11 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
         return _error(f"Invalid request: {e}", status=400)
 
     resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
-    await resp.prepare(request)
+    try:
+        await resp.prepare(request)
+    except Exception:
+        logger.warning(f"Failed to prepare SSE response for session '{session_id}', client likely disconnected")
+        return resp
 
     try:
         async with aclosing(cm.handle(channel_socket, body)) as stream:

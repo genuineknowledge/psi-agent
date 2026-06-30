@@ -84,7 +84,8 @@ async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
         kind = "Unix socket"
     logger.debug(f"Waiting for {kind} '{path}' to become ready (timeout={timeout_sec}s)")
     deadline = anyio.current_time() + timeout_sec
-    async with aiohttp.ClientSession(connector=connector) as session:
+    session = aiohttp.ClientSession(connector=connector)
+    try:
         while anyio.current_time() < deadline:
             try:
                 async with session.get("http://localhost/") as _resp:
@@ -93,4 +94,7 @@ async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
                 return
             except Exception:
                 await anyio.sleep(0.1)
-    raise TimeoutError(f"{kind} '{path}' not ready within {timeout_sec}s")
+        raise TimeoutError(f"{kind} '{path}' not ready within {timeout_sec}s")
+    finally:
+        with anyio.CancelScope(shield=True):
+            await session.close()

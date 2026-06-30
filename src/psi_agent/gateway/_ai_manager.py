@@ -63,7 +63,16 @@ class AIManager:
             logger.debug(f"AIManager: starting AI '{ai_id}' task")
             self._tg.start_soon(_run_ai)
             self._entries[ai_id] = _AiEntry(scope=scope, socket=socket, provider=req.provider, model=req.model)
-        await _wait_socket(socket)
+        try:
+            await _wait_socket(socket)
+        except Exception:
+            logger.error(f"AI '{ai_id}' did not become ready, rolling back")
+            with anyio.CancelScope(shield=True):
+                async with self._lock:
+                    self._entries.pop(ai_id, None)
+                scope.cancel()
+                await _remove_socket(socket)
+            raise
         logger.info(f"AI '{ai_id}' created on {socket}")
         return AiInfo(id=ai_id, socket=socket, provider=req.provider, model=req.model)
 
