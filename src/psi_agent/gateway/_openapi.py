@@ -60,6 +60,7 @@ OPENAPI_SPEC = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteResponse"}}},
                     },
                     "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
         },
@@ -78,6 +79,7 @@ OPENAPI_SPEC = {
                     },
                     "400": {"$ref": "#/components/responses/Error"},
                     "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
             "get": {
@@ -116,6 +118,7 @@ OPENAPI_SPEC = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteResponse"}}},
                     },
                     "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
         },
@@ -139,11 +142,30 @@ OPENAPI_SPEC = {
                                 "properties": {
                                     "chunks": {
                                         "type": "string",
-                                            "description": "JSON array of text and blob chunks",
+                                        "description": "JSON array of text and blob chunks",
                                     },
                                     "file": {
                                         "type": "string",
                                         "format": "binary",
+                                    },
+                                },
+                            },
+                        },
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "chunks": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "type": {"type": "string"},
+                                                "text": {"type": "string"},
+                                                "name": {"type": "string"},
+                                                "data": {"type": "string"},
+                                            },
+                                        },
                                     },
                                 },
                             },
@@ -204,6 +226,7 @@ OPENAPI_SPEC = {
                 "responses": {
                     "200": {"description": "Title set"},
                     "400": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
         },
