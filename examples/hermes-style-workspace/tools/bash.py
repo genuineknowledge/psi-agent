@@ -4,28 +4,27 @@ from __future__ import annotations
 
 import os
 import shutil
-from pathlib import Path
 
 import anyio
 
 
-def _find_bash() -> str | None:
+async def _find_bash() -> str | None:
     if os.name == "nt":
-        candidates: list[Path] = []
+        candidates: list[anyio.Path] = []
         git = shutil.which("git")
         if git:
-            git_root = Path(git).resolve().parents[1]
+            git_root = (await anyio.Path(git).resolve()).parents[1]
             candidates.extend([git_root / "bin" / "bash.exe", git_root / "usr" / "bin" / "bash.exe"])
         candidates.extend(
             [
-                Path("C:/Program Files/Git/bin/bash.exe"),
-                Path("C:/Program Files/Git/usr/bin/bash.exe"),
-                Path("D:/Program Files/Git/bin/bash.exe"),
-                Path("D:/Program Files/Git/usr/bin/bash.exe"),
+                anyio.Path("C:/Program Files/Git/bin/bash.exe"),
+                anyio.Path("C:/Program Files/Git/usr/bin/bash.exe"),
+                anyio.Path("D:/Program Files/Git/bin/bash.exe"),
+                anyio.Path("D:/Program Files/Git/usr/bin/bash.exe"),
             ]
         )
         for candidate in candidates:
-            if candidate.is_file():
+            if await candidate.is_file():
                 return str(candidate)
 
     return shutil.which("bash")
@@ -41,7 +40,7 @@ async def tool(command: str, timeout_seconds: int = 30) -> str:
     Returns:
         Combined stdout and stderr output as a string.
     """
-    bash = _find_bash()
+    bash = await _find_bash()
     if not bash:
         return (
             "Error: bash executable was not found on PATH. Install Git Bash, WSL, or bash before using this workspace."

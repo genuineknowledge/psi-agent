@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import anyio
 import pytest
 
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
@@ -132,7 +133,7 @@ def test_registry_with_files() -> None:
 @pytest.mark.anyio
 async def test_load_empty_dir(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
+    await anyio.Path(tools_dir).mkdir()
     tr = await ToolRegistry.load(tools_dir)
     assert tr.tools == {}
     assert tr._work_dir == tools_dir
@@ -148,8 +149,8 @@ async def test_load_missing_dir(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_single_tool(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "echo.py").write_text(
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "echo.py").write_text(
         textwrap.dedent("""\
         async def echo(message: str) -> str:
             \"\"\"Echo a message.
@@ -169,8 +170,8 @@ async def test_load_single_tool(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_skips_underscore_files(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "_internal.py").write_text("async def hidden() -> str:\n    return 'hidden'\n")
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "_internal.py").write_text("async def hidden() -> str:\n    return 'hidden'\n")
     tr = await ToolRegistry.load(tools_dir)
     assert tr.tools == {}
 
@@ -178,8 +179,8 @@ async def test_load_skips_underscore_files(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_skips_non_async(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "misc.py").write_text(
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "misc.py").write_text(
         textwrap.dedent("""\
         def sync_func() -> str:
             return "sync"
@@ -198,8 +199,8 @@ async def test_load_skips_non_async(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_from_dir_skip_unchanged(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'foo'\n")
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'foo'\n")
 
     tr = await ToolRegistry.load(tools_dir)
     old_files = tr._files
@@ -214,13 +215,13 @@ async def test_load_from_dir_skip_unchanged(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_from_dir_imports_changed(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'foo'\n")
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'foo'\n")
 
     tr = await ToolRegistry.load(tools_dir)
     old_files = tr._files
 
-    (tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'modified'\n")
+    await anyio.Path(tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'modified'\n")
 
     result = await ToolRegistry._load_from_dir(tools_dir, "test", old_files)
     entry = next(iter(result.values()))
@@ -239,11 +240,11 @@ async def test_refresh_no_work_dir() -> None:
 @pytest.mark.anyio
 async def test_refresh_adds_new_file(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
+    await anyio.Path(tools_dir).mkdir()
     tr = await ToolRegistry.load(tools_dir)
     assert tr.tools == {}
 
-    (tools_dir / "new.py").write_text("async def bar() -> str:\n    return 'bar'\n")
+    await anyio.Path(tools_dir / "new.py").write_text("async def bar() -> str:\n    return 'bar'\n")
     result = await tr.refresh()
     assert result == {"bar": "added"}
     assert set(tr.tools) == {"bar"}
@@ -252,11 +253,11 @@ async def test_refresh_adds_new_file(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_refresh_updates_modified_file(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'v1'\n")
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'v1'\n")
     tr = await ToolRegistry.load(tools_dir)
 
-    (tools_dir / "a.py").write_text("async def foo(x: int) -> str:\n    return str(x)\n")
+    await anyio.Path(tools_dir / "a.py").write_text("async def foo(x: int) -> str:\n    return str(x)\n")
     result = await tr.refresh()
     assert result == {"foo": "updated"}
 
@@ -264,12 +265,12 @@ async def test_refresh_updates_modified_file(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_refresh_removes_deleted_file(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'foo'\n")
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'foo'\n")
     tr = await ToolRegistry.load(tools_dir)
     assert set(tr.tools) == {"foo"}
 
-    (tools_dir / "a.py").unlink()
+    await anyio.Path(tools_dir / "a.py").unlink()
     result = await tr.refresh()
     assert result == {"foo": "removed"}
     assert tr.tools == {}
@@ -279,8 +280,8 @@ async def test_refresh_removes_deleted_file(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_refresh_skips_unchanged_file(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'foo'\n")
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a.py").write_text("async def foo() -> str:\n    return 'foo'\n")
     tr = await ToolRegistry.load(tools_dir)
 
     result = await tr.refresh()
@@ -291,8 +292,8 @@ async def test_refresh_skips_unchanged_file(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_refresh_adds_and_removes_tool_within_file(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "a.py").write_text(
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a.py").write_text(
         textwrap.dedent("""\
         async def foo() -> str:
             return 'foo'
@@ -303,7 +304,7 @@ async def test_refresh_adds_and_removes_tool_within_file(tmp_path: Path) -> None
     tr = await ToolRegistry.load(tools_dir)
     assert set(tr.tools) == {"foo", "bar"}
 
-    (tools_dir / "a.py").write_text(
+    await anyio.Path(tools_dir / "a.py").write_text(
         textwrap.dedent("""\
         async def bar() -> str:
             return 'bar'
@@ -320,15 +321,15 @@ async def test_refresh_adds_and_removes_tool_within_file(tmp_path: Path) -> None
 async def test_refresh_mixed_changes(tmp_path: Path) -> None:
     """Add, modify, delete, and skip all in one refresh."""
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "keep.py").write_text("async def kept() -> str:\n    return 'kept'\n")
-    (tools_dir / "modify.py").write_text("async def mod() -> str:\n    return 'v1'\n")
-    (tools_dir / "delete.py").write_text("async def gone() -> str:\n    return 'gone'\n")
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "keep.py").write_text("async def kept() -> str:\n    return 'kept'\n")
+    await anyio.Path(tools_dir / "modify.py").write_text("async def mod() -> str:\n    return 'v1'\n")
+    await anyio.Path(tools_dir / "delete.py").write_text("async def gone() -> str:\n    return 'gone'\n")
     tr = await ToolRegistry.load(tools_dir)
 
-    (tools_dir / "modify.py").write_text("async def mod(x: int) -> str:\n    return str(x)\n")
-    (tools_dir / "delete.py").unlink()
-    (tools_dir / "new.py").write_text("async def fresh() -> str:\n    return 'fresh'\n")
+    await anyio.Path(tools_dir / "modify.py").write_text("async def mod(x: int) -> str:\n    return str(x)\n")
+    await anyio.Path(tools_dir / "delete.py").unlink()
+    await anyio.Path(tools_dir / "new.py").write_text("async def fresh() -> str:\n    return 'fresh'\n")
 
     result = await tr.refresh()
     assert result["kept"] == "skipped"
@@ -345,9 +346,9 @@ async def test_refresh_mixed_changes(tmp_path: Path) -> None:
 async def test_get_last_file_wins(tmp_path: Path) -> None:
     """get() searches files in insertion order, returns first match."""
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "a.py").write_text("async def echo() -> str:\n    return 'a'\n")
-    (tools_dir / "b.py").write_text("async def echo() -> str:\n    return 'b'\n")
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "a.py").write_text("async def echo() -> str:\n    return 'a'\n")
+    await anyio.Path(tools_dir / "b.py").write_text("async def echo() -> str:\n    return 'b'\n")
     tr = await ToolRegistry.load(tools_dir)
     func = tr.get("echo")
     assert func is not None

@@ -5,6 +5,7 @@ import socket as _s
 import textwrap
 from pathlib import Path
 
+import anyio
 import pytest
 from aiohttp import web
 
@@ -86,8 +87,8 @@ async def test_agent_simple_response(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_agent_with_tool_call(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    (tools_dir / "get_weather.py").write_text(
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "get_weather.py").write_text(
         textwrap.dedent("""\
         async def get_weather(city: str) -> str:
             \"\"\"Get weather for a city.
@@ -545,8 +546,8 @@ async def test_load_history_empty_file(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_history_existing_file(tmp_path: Path) -> None:
     path = tmp_path / "histories" / "session.jsonl"
-    path.parent.mkdir()
-    path.write_text('{"role": "user", "content": "hi"}\n{"role": "assistant", "content": "hello"}\n')
+    await anyio.Path(path.parent).mkdir()
+    await anyio.Path(path).write_text('{"role": "user", "content": "hi"}\n{"role": "assistant", "content": "hello"}\n')
     history = await Conversation._load(path)
     assert len(history) == 2
     assert history[0] == {"role": "user", "content": "hi"}
@@ -555,8 +556,10 @@ async def test_load_history_existing_file(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_history_corrupt_line_skipped(tmp_path: Path) -> None:
     path = tmp_path / "histories" / "session.jsonl"
-    path.parent.mkdir()
-    path.write_text('{"role": "user", "content": "hi"}\nnot valid json\n{"role": "assistant", "content": "ok"}\n')
+    await anyio.Path(path.parent).mkdir()
+    await anyio.Path(path).write_text(
+        '{"role": "user", "content": "hi"}\nnot valid json\n{"role": "assistant", "content": "ok"}\n'
+    )
     history = await Conversation._load(path)
     assert len(history) == 2
     assert history[0]["role"] == "user"
@@ -566,7 +569,7 @@ async def test_load_history_corrupt_line_skipped(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_save_and_load_roundtrip(tmp_path: Path) -> None:
     path = tmp_path / "histories" / "session.jsonl"
-    path.parent.mkdir()
+    await anyio.Path(path.parent).mkdir()
     msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "q"}]
     conv = Conversation(messages=msgs, path=path)
     await conv.save()
@@ -595,7 +598,7 @@ async def test_history_saved_after_stop(tmp_path: Path) -> None:
     await site.start()
     try:
         history_path = tmp_path / "histories" / "s.jsonl"
-        history_path.parent.mkdir()
+        await anyio.Path(history_path.parent).mkdir()
 
         agent = SessionAgent(
             ai_client=AiClient(f"http://127.0.0.1:{port}"),
@@ -606,7 +609,7 @@ async def test_history_saved_after_stop(tmp_path: Path) -> None:
         content = "".join(c.content or "" for c in chunks)
         assert "ok" in content
 
-        assert history_path.exists()
+        assert await anyio.Path(history_path).exists()
         loaded = await Conversation._load(history_path)
         assert len(loaded) == 3
         assert loaded[0]["role"] == "system"
@@ -632,8 +635,8 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
     await site.start()
     try:
         history_path = tmp_path / "histories" / "s.jsonl"
-        history_path.parent.mkdir()
-        history_path.write_text('{"role": "system", "content": "original"}\n')
+        await anyio.Path(history_path.parent).mkdir()
+        await anyio.Path(history_path).write_text('{"role": "system", "content": "original"}\n')
 
         agent = SessionAgent(
             ai_client=AiClient(f"http://127.0.0.1:{port}"),
@@ -654,13 +657,13 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_histories_dir_and_gitignore_created(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "tools").mkdir()
-    (workspace / "schedules").mkdir()
+    await anyio.Path(workspace).mkdir()
+    await anyio.Path(workspace / "tools").mkdir()
+    await anyio.Path(workspace / "schedules").mkdir()
 
     histories_dir = workspace / "histories"
 
     agent = await SessionAgent.create(ai_socket="http://x", workspace_path=workspace, session_id="test")
-    assert histories_dir.is_dir()
-    assert (histories_dir / ".gitignore").read_text() == "*\n"
+    assert await anyio.Path(histories_dir).is_dir()
+    assert await anyio.Path(histories_dir / ".gitignore").read_text() == "*\n"
     assert agent._conversation._path is not None

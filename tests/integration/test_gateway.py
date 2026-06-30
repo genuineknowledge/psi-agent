@@ -56,31 +56,29 @@ async def _start_app_on_free_port(app: web.Application) -> tuple[str, web.AppRun
     return f"http://127.0.0.1:{port}", runner
 
 
-def _make_workspace(base: str) -> str:
+async def _make_workspace(base: str) -> str:
     ws = os.path.join(base, "workspace")
     tools_dir = os.path.join(ws, "tools")
-    os.makedirs(tools_dir)
-    with open(os.path.join(tools_dir, "echo.py"), "w") as f:
-        f.write(
-            textwrap.dedent("""\
-            async def echo(message: str) -> str:
-                \"\"\"Echo back the message.
+    await anyio.Path(tools_dir).mkdir(parents=True)
+    await anyio.Path(tools_dir, "echo.py").write_text(
+        textwrap.dedent("""\
+        async def echo(message: str) -> str:
+            \"\"\"Echo back the message.
 
-                Args:
-                    message: The message to echo.
-                \"\"\"
-                return f"ECHO: {message}"
-        """)
-        )
+            Args:
+                message: The message to echo.
+            \"\"\"
+            return f"ECHO: {message}"
+    """)
+    )
     systems_dir = os.path.join(ws, "systems")
-    os.makedirs(systems_dir)
-    with open(os.path.join(systems_dir, "system.py"), "w") as f:
-        f.write(
-            textwrap.dedent("""\
-            async def system_prompt_builder() -> str:
-                return "You are a helpful test assistant."
-        """)
-        )
+    await anyio.Path(systems_dir).mkdir(parents=True)
+    await anyio.Path(systems_dir, "system.py").write_text(
+        textwrap.dedent("""\
+        async def system_prompt_builder() -> str:
+            return "You are a helpful test assistant."
+    """)
+    )
     return ws
 
 
@@ -91,7 +89,7 @@ async def test_gateway_rest_crud(tmp_path: str) -> None:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = create_app(aim, sm)
+    app = await create_app(aim, sm)
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -116,7 +114,7 @@ async def test_gateway_rest_crud(tmp_path: str) -> None:
                 items = await resp.json()
                 assert len(items) == 1
 
-            workspace = _make_workspace(str(tmp_path))
+            workspace = await _make_workspace(str(tmp_path))
             async with session.post(
                 f"{base_url}/sessions",
                 json={
@@ -152,7 +150,7 @@ async def test_gateway_rest_errors(tmp_path: str) -> None:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = create_app(aim, sm)
+    app = await create_app(aim, sm)
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -196,11 +194,11 @@ async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> 
     )
     await aim.create(ai_req)
 
-    workspace = _make_workspace(str(tmp_path))
+    workspace = await _make_workspace(str(tmp_path))
     sess_req = SessionCreateRequest(ai_id="gw-ai", workspace=workspace, id="gw-sess")
     await sm.create(sess_req)
 
-    app = create_app(aim, sm)
+    app = await create_app(aim, sm)
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -263,11 +261,11 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) ->
     )
     await aim.create(ai_req)
 
-    workspace = _make_workspace(str(tmp_path))
+    workspace = await _make_workspace(str(tmp_path))
     sess_req = SessionCreateRequest(ai_id="gw-ai", workspace=workspace, id="gw-sess")
     await sm.create(sess_req)
 
-    app = create_app(aim, sm)
+    app = await create_app(aim, sm)
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -328,10 +326,10 @@ async def test_gateway_favicon(tmp_path: str) -> None:
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
 
-    app_with = create_app(aim, sm, favicon_path=icon_path)
+    app_with = await create_app(aim, sm, favicon_path=icon_path)
     base_with, runner_with = await _start_app_on_free_port(app_with)
 
-    app_without = create_app(aim, sm)
+    app_without = await create_app(aim, sm)
     base_without, runner_without = await _start_app_on_free_port(app_without)
 
     try:

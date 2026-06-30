@@ -69,8 +69,8 @@ def test_schedule_entry_fresh_flag() -> None:
 @pytest.mark.anyio
 async def test_load_schedule_with_yaml_header(tmp_path: Path) -> None:
     schedules_dir = tmp_path / "schedules" / "daily-report"
-    schedules_dir.mkdir(parents=True)
-    (schedules_dir / "TASK.md").write_text(
+    await anyio.Path(schedules_dir).mkdir(parents=True)
+    await anyio.Path(schedules_dir / "TASK.md").write_text(
         textwrap.dedent("""\
         ---
         name: daily-report
@@ -92,8 +92,8 @@ async def test_load_schedule_with_yaml_header(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_schedule_missing_yaml_header(tmp_path: Path) -> None:
     schedules_dir = tmp_path / "schedules" / "no-header"
-    schedules_dir.mkdir(parents=True)
-    (schedules_dir / "TASK.md").write_text("Just a task without header.")
+    await anyio.Path(schedules_dir).mkdir(parents=True)
+    await anyio.Path(schedules_dir / "TASK.md").write_text("Just a task without header.")
 
     files = await ScheduleRegistry._load_from_dir(tmp_path / "schedules")
     assert len(files) == 0
@@ -103,8 +103,8 @@ async def test_load_schedule_missing_yaml_header(tmp_path: Path) -> None:
 async def test_load_multiple_schedules(tmp_path: Path) -> None:
     for name in ["daily", "weekly"]:
         d = tmp_path / "schedules" / name
-        d.mkdir(parents=True)
-        (d / "TASK.md").write_text(f'---\nname: {name}\ncron: "0 12 * * *"\n---\nTask: {name}')
+        await anyio.Path(d).mkdir(parents=True)
+        await anyio.Path(d / "TASK.md").write_text(f'---\nname: {name}\ncron: "0 12 * * *"\n---\nTask: {name}')
 
     files = await ScheduleRegistry._load_from_dir(tmp_path / "schedules")
     assert len(files) == 2
@@ -121,8 +121,8 @@ async def test_load_schedules_missing_dir(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_schedule_missing_name(tmp_path: Path) -> None:
     schedules_dir = tmp_path / "schedules" / "bad"
-    schedules_dir.mkdir(parents=True)
-    (schedules_dir / "TASK.md").write_text('---\ncron: "0 12 * * *"\n---\nTask')
+    await anyio.Path(schedules_dir).mkdir(parents=True)
+    await anyio.Path(schedules_dir / "TASK.md").write_text('---\ncron: "0 12 * * *"\n---\nTask')
 
     files = await ScheduleRegistry._load_from_dir(tmp_path / "schedules")
     assert len(files) == 0
@@ -131,8 +131,8 @@ async def test_load_schedule_missing_name(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_schedule_invalid_cron_skipped(tmp_path: Path) -> None:
     schedules_dir = tmp_path / "schedules" / "bad"
-    schedules_dir.mkdir(parents=True)
-    (schedules_dir / "TASK.md").write_text('---\nname: bad\ncron: "not a cron"\n---\nTask')
+    await anyio.Path(schedules_dir).mkdir(parents=True)
+    await anyio.Path(schedules_dir / "TASK.md").write_text('---\nname: bad\ncron: "not a cron"\n---\nTask')
 
     files = await ScheduleRegistry._load_from_dir(tmp_path / "schedules")
     assert len(files) == 0
@@ -141,8 +141,8 @@ async def test_load_schedule_invalid_cron_skipped(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_from_dir_skip_unchanged(tmp_path: Path) -> None:
     schedules_dir = tmp_path / "schedules" / "daily"
-    schedules_dir.mkdir(parents=True)
-    (schedules_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
+    await anyio.Path(schedules_dir).mkdir(parents=True)
+    await anyio.Path(schedules_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
 
     files = await ScheduleRegistry._load_from_dir(tmp_path / "schedules")
     old_files = files
@@ -157,13 +157,13 @@ async def test_load_from_dir_skip_unchanged(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_load_from_dir_imports_changed(tmp_path: Path) -> None:
     schedules_dir = tmp_path / "schedules" / "daily"
-    schedules_dir.mkdir(parents=True)
-    (schedules_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
+    await anyio.Path(schedules_dir).mkdir(parents=True)
+    await anyio.Path(schedules_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
 
     files = await ScheduleRegistry._load_from_dir(tmp_path / "schedules")
     old_files = files
 
-    (schedules_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 6 * * *"\n---\nUpdated task')
+    await anyio.Path(schedules_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 6 * * *"\n---\nUpdated task')
 
     result = await ScheduleRegistry._load_from_dir(tmp_path / "schedules", old_files)
     entry = next(iter(result.values()))
@@ -177,8 +177,8 @@ async def test_load_from_dir_imports_changed(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_registry_load(tmp_path: Path) -> None:
     sched_dir = tmp_path / "schedules" / "daily"
-    sched_dir.mkdir(parents=True)
-    (sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
+    await anyio.Path(sched_dir).mkdir(parents=True)
+    await anyio.Path(sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
 
     sr = await ScheduleRegistry.load(tmp_path / "schedules")
     assert len(sr.schedules) == 1
@@ -213,8 +213,8 @@ async def test_refresh_no_task_group() -> None:
 async def test_refresh_adds_new_schedule(tmp_path: Path) -> None:
     sr = await ScheduleRegistry.load(tmp_path / "nonexistent")
     sched_dir = tmp_path / "schedules" / "extra"
-    sched_dir.mkdir(parents=True)
-    (sched_dir / "TASK.md").write_text('---\nname: extra\ncron: "0 12 * * *"\n---\nTask')
+    await anyio.Path(sched_dir).mkdir(parents=True)
+    await anyio.Path(sched_dir / "TASK.md").write_text('---\nname: extra\ncron: "0 12 * * *"\n---\nTask')
     sr._work_dir = tmp_path / "schedules"
 
     agent = _MockAgent()
@@ -231,8 +231,8 @@ async def test_refresh_adds_new_schedule(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_refresh_skips_existing(tmp_path: Path) -> None:
     sched_dir = tmp_path / "schedules" / "daily"
-    sched_dir.mkdir(parents=True)
-    (sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
+    await anyio.Path(sched_dir).mkdir(parents=True)
+    await anyio.Path(sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
 
     sr = await ScheduleRegistry.load(tmp_path / "schedules")
     sr._agent = cast(Any, _MockAgent())
@@ -247,8 +247,8 @@ async def test_refresh_skips_existing(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_refresh_updates_modified_schedule(tmp_path: Path) -> None:
     sched_dir = tmp_path / "schedules" / "daily"
-    sched_dir.mkdir(parents=True)
-    (sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
+    await anyio.Path(sched_dir).mkdir(parents=True)
+    await anyio.Path(sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
 
     sr = await ScheduleRegistry.load(tmp_path / "schedules")
     sr._agent = cast(Any, _MockAgent())
@@ -259,7 +259,7 @@ async def test_refresh_updates_modified_schedule(tmp_path: Path) -> None:
         assert result == {"daily": "skipped"}
 
         # modify
-        (sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 6 * * *"\n---\nUpdated')
+        await anyio.Path(sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 6 * * *"\n---\nUpdated')
 
         result = await sr.refresh()
         assert result == {"daily": "updated"}
@@ -270,16 +270,16 @@ async def test_refresh_updates_modified_schedule(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_refresh_removes_deleted_schedule(tmp_path: Path) -> None:
     sched_dir = tmp_path / "schedules" / "daily"
-    sched_dir.mkdir(parents=True)
-    (sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
+    await anyio.Path(sched_dir).mkdir(parents=True)
+    await anyio.Path(sched_dir / "TASK.md").write_text('---\nname: daily\ncron: "0 12 * * *"\n---\nTask')
 
     sr = await ScheduleRegistry.load(tmp_path / "schedules")
     sr._agent = cast(Any, _MockAgent())
     async with anyio.create_task_group() as tg:
         sr._task_group = tg
         # delete the schedule dir
-        (sched_dir / "TASK.md").unlink()
-        sched_dir.rmdir()
+        await anyio.Path(sched_dir / "TASK.md").unlink()
+        await anyio.Path(sched_dir).rmdir()
 
         result = await sr.refresh()
         assert result == {"daily": "removed"}
@@ -291,12 +291,12 @@ async def test_refresh_removes_deleted_schedule(tmp_path: Path) -> None:
 async def test_refresh_mixed_changes(tmp_path: Path) -> None:
     """Add, modify, delete, and skip all in one refresh."""
     sched_dir = tmp_path / "schedules"
-    sched_dir.mkdir()
+    await anyio.Path(sched_dir).mkdir()
 
     for name in ["keep", "modify", "delete"]:
         d = sched_dir / name
-        d.mkdir()
-        (d / "TASK.md").write_text(f'---\nname: {name}\ncron: "0 12 * * *"\n---\nTask: {name}')
+        await anyio.Path(d).mkdir()
+        await anyio.Path(d / "TASK.md").write_text(f'---\nname: {name}\ncron: "0 12 * * *"\n---\nTask: {name}')
 
     sr = await ScheduleRegistry.load(tmp_path / "schedules")
     sr._agent = cast(Any, _MockAgent())
@@ -304,14 +304,16 @@ async def test_refresh_mixed_changes(tmp_path: Path) -> None:
         sr._task_group = tg
 
         # modify
-        (sched_dir / "modify" / "TASK.md").write_text('---\nname: modify\ncron: "0 6 * * *"\n---\nChanged')
+        await anyio.Path(sched_dir / "modify" / "TASK.md").write_text(
+            '---\nname: modify\ncron: "0 6 * * *"\n---\nChanged'
+        )
         # delete
-        (sched_dir / "delete" / "TASK.md").unlink()
-        (sched_dir / "delete").rmdir()
+        await anyio.Path(sched_dir / "delete" / "TASK.md").unlink()
+        await anyio.Path(sched_dir / "delete").rmdir()
         # add
         d = sched_dir / "newone"
-        d.mkdir()
-        (d / "TASK.md").write_text('---\nname: newone\ncron: "0 12 * * *"\n---\nFresh')
+        await anyio.Path(d).mkdir()
+        await anyio.Path(d / "TASK.md").write_text('---\nname: newone\ncron: "0 12 * * *"\n---\nFresh')
 
         result = await sr.refresh()
         assert result == {"keep": "skipped", "modify": "updated", "delete": "removed", "newone": "added"}

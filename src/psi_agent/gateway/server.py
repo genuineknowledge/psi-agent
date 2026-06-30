@@ -50,7 +50,7 @@ def _error(message: str, status: int) -> web.Response:
     return _json({"error": message}, status=status)
 
 
-def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | None = None) -> web.Application:
+async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | None = None) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
     app["sm"] = sm
@@ -60,8 +60,8 @@ def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | None = No
     app["hm"] = HistoryManager()
     app["favicon_path"] = favicon_path
 
-    spa_dist = Path(__file__).parent / "spa" / "dist"
-    if spa_dist.exists():
+    spa_dist = anyio.Path(__file__).parent / "spa" / "dist"
+    if await spa_dist.exists():
         app.router.add_static("/spa/", str(spa_dist), show_index=False)
     app.router.add_get("/", _handle_spa)
     app.router.add_get("/spa", _handle_spa)

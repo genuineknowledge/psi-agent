@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import inspect
-from pathlib import Path
+
+import anyio
 
 from psi_agent._yaml import parse_yaml_header
 
 
 async def system_prompt_builder() -> str:
     """Build the system prompt for Fusion Memory tools."""
-    current_file = Path(inspect.getfile(system_prompt_builder))
+    current_file = anyio.Path(inspect.getfile(system_prompt_builder))
     workspace_root = current_file.parent.parent
     skills_dir = workspace_root / "skills"
-    skills = _load_workspace_skills(skills_dir)
+    skills = await _load_workspace_skills(skills_dir)
     skills_text = "\n".join(skills) if skills else "(None)"
 
     return (
@@ -28,17 +29,18 @@ async def system_prompt_builder() -> str:
     )
 
 
-def _load_workspace_skills(skills_dir: Path) -> list[str]:
+async def _load_workspace_skills(skills_dir: anyio.Path) -> list[str]:
     skills: list[str] = []
-    if not skills_dir.is_dir():
+    if not await skills_dir.is_dir():
         return skills
-    for skill_dir in sorted(skills_dir.iterdir()):
-        if not skill_dir.is_dir():
+    skill_dirs = sorted([p async for p in skills_dir.iterdir()], key=lambda p: p.name)
+    for skill_dir in skill_dirs:
+        if not await skill_dir.is_dir():
             continue
         skill_md = skill_dir / "SKILL.md"
-        if not skill_md.exists():
+        if not await skill_md.exists():
             continue
-        header, _ = parse_yaml_header(skill_md.read_text())
+        header, _ = parse_yaml_header(await skill_md.read_text())
         if header and header.get("name") and header.get("description"):
             skills.append(f"- {header['name']}: {header['description']}")
     return skills

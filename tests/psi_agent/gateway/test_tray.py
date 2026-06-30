@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import contextlib
-import os
-import tempfile
 import time
+from pathlib import Path
 
 import pytest
 from PIL import Image as PILImage
@@ -22,13 +21,11 @@ except DisplayNameError:
 
 
 @pytest.fixture
-def icon_file():
+def icon_file(tmp_path: Path) -> str:
     img = PILImage.new("RGBA", (64, 64), (41, 98, 255, 255))
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-        img.save(f, "PNG")
-        path = f.name
-    yield path
-    os.unlink(path)
+    path = str(tmp_path / "icon.png")
+    img.save(path, "PNG")
+    return path
 
 
 def test_gateway_tray_init(icon_file: str) -> None:

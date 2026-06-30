@@ -10,7 +10,7 @@ import anyio
 from loguru import logger
 
 
-def _find_powershell() -> str:
+async def _find_powershell() -> str:
     """Locate a PowerShell executable.
 
     Prefers PowerShell 7+ (``pwsh.exe``) when present, otherwise falls back
@@ -27,7 +27,7 @@ def _find_powershell() -> str:
         r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
     ]
     for path in candidates:
-        if Path(path).is_file():
+        if await anyio.Path(path).is_file():
             return path
 
     # Last resort: hope it is resolvable on PATH at runtime.
@@ -59,7 +59,7 @@ async def powershell(command: str, *, cwd: str | None = None) -> str:
     if cwd is None:
         cwd = str(Path(inspect.getfile(powershell)).parent.parent)
 
-    pwsh = _find_powershell()
+    pwsh = await _find_powershell()
     # -NoProfile: skip user profile for predictable, fast startup.
     # -NonInteractive: never block waiting on a prompt.
     # -OutputFormat Text: plain text rather than CLIXML serialization.
