@@ -22,7 +22,7 @@ class TitleManager:
         prompt = (
             f"Generate a short title (3-5 words, in the same language as the user) for this conversation:\n\n"
             f"User: {user_text}\n\n"
-            f"Assistant: {assistant_text[:300]}\n\n"
+            f"Assistant: {assistant_text[:1000]}\n\n"
             f"Reply with ONLY the title, no quotes or extra text."
         )
         body = {
@@ -60,7 +60,7 @@ class TitleManager:
                     except json.JSONDecodeError:
                         continue
                 title = title.strip().strip("'\"")
-                logger.info(f"Title generation result: '{title}'")
+                logger.info(f"Title generation result: {title!r}")
                 if title:
                     self._titles[session_id] = title
                     return title

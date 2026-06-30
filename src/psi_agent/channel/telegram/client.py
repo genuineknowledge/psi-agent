@@ -126,7 +126,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     logger.debug(f"received FileChunk ({chunk.path})")
                     await _send_file(update, chunk.path)
     except Exception as e:
-        logger.error(f"Message handling error — {e}")
+        logger.error(f"Message handling error — {e!r}")
         await sent.edit_text(f"Error: {e}")
         return
 

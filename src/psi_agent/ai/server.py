@@ -16,7 +16,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         body: dict[str, Any] = await request.json()
         logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:1000]}")
     except Exception as e:
-        logger.error(f"Failed to parse request body: {e}")
+        logger.error(f"Failed to parse request body: {e!r}")
         # OpenAI-compatible error response.
         return web.json_response(
             {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
@@ -79,14 +79,14 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             await response.write(f"data: {data}\n\n".encode())
     except Exception as e:
         upstream_error = True
-        logger.error(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e}")
+        logger.error(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e!r}")
         err_chunk = json.dumps(
             {
                 "id": "error",
                 "choices": [{"index": 0, "delta": {"content": f"[Upstream Error]: {e}"}, "finish_reason": "error"}],
             }
         )
-        logger.debug(f"SSE error chunk: {err_chunk[:200]}")
+        logger.debug(f"SSE error chunk: {err_chunk[:1000]}")
         try:
             await response.write(f"data: {err_chunk}\n\n".encode())
         except Exception:

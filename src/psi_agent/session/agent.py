@@ -265,7 +265,7 @@ class SessionAgent:
                             try:
                                 args = json.loads(func_args_str)
                             except json.JSONDecodeError, TypeError:
-                                logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
+                                logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
                                 args = {}
 
                             logger.info(f"Executing tool: {func_name!r}({args!r})")
@@ -286,7 +286,7 @@ class SessionAgent:
                                 try:
                                     raw = await func(**a)
                                     r[idx] = str(raw)
-                                    logger.info(f"Tool result ({fn!r}): {str(raw)[:200]!r}")
+                                    logger.info(f"Tool result ({fn!r}): {str(raw)[:1000]!r}")
                                 except Exception as e:
                                     r[idx] = f"Error executing tool '{fn}': {e}"
                                     logger.error(f"Tool execution error ({fn!r}): {e!r}")
@@ -301,7 +301,7 @@ class SessionAgent:
                         # yield results in order, save
                         for i, tc, func_name, _args in tool_args:
                             result = results[i]
-                            yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:500]}]")
+                            yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:1000]}]")
                             self._conversation.add(
                                 {
                                     "role": "tool",

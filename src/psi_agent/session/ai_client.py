@@ -33,7 +33,7 @@ class AiClient:
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:
                 error_text = await resp.text()
-                logger.error(f"AI error from {self.ai_socket!r}: {error_text[:500]!r}")
+                logger.error(f"AI error from {self.ai_socket!r}: {error_text[:1000]!r}")
                 yield AiDelta(finish_reason="error", content=f"[AI Error: {resp.status}]")
                 return
 
@@ -49,7 +49,7 @@ class AiClient:
                 try:
                     data = json.loads(data_str)
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse SSE data: {data_str[:100]}")
+                    logger.warning(f"Failed to parse SSE data: {data_str[:1000]!r}")
                     continue
 
                 choices_data = data.get("choices", [])
