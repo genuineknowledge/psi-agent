@@ -201,7 +201,7 @@ async def run_feishu(
         logger.info(f"Feishu bot connecting (session={session_socket} interval={interval})")
         try:
             await channel.start_background()
-            await anyio.Event().wait()
+            await anyio.sleep_forever()
         finally:
             logger.info("Shutting down Feishu bot")
             with anyio.CancelScope(shield=True):

@@ -54,7 +54,7 @@ async def _build_chunks(update: Update) -> list[InputChunk]:
         logger.debug(f"photo file_unique_id={photo.file_unique_id} size={photo.width}x{photo.height}")
         try:
             tfile = await photo.get_file()
-            path = str(downloads / photo.file_unique_id)
+            path = str(downloads / f"{photo.file_unique_id}.jpg")
             await tfile.download_to_drive(path)
             logger.debug(f"photo downloaded to {path}")
             chunks.append(FileChunk(path))
@@ -66,8 +66,13 @@ async def _build_chunks(update: Update) -> list[InputChunk]:
         logger.debug(f"document file_name={doc.file_name} file_size={doc.file_size}")
         try:
             tfile = await doc.get_file()
-            suffix = anyio.Path(doc.file_name or "").suffix
-            path = str(downloads / f"{doc.file_unique_id}{suffix}")
+            if doc.file_name:
+                stem = anyio.Path(doc.file_name).stem
+                ext = anyio.Path(doc.file_name).suffix
+                name = f"{stem}-{doc.file_unique_id}{ext}"
+            else:
+                name = doc.file_unique_id
+            path = str(downloads / name)
             await tfile.download_to_drive(path)
             logger.debug(f"document downloaded to {path}")
             chunks.append(FileChunk(path))
@@ -161,7 +166,7 @@ async def run_telegram(
                 raise RuntimeError("Application has no updater")
             await app.updater.start_polling()
             logger.info(f"Telegram bot polling started (session={session_socket} interval={interval})")
-            await anyio.Event().wait()
+            await anyio.sleep_forever()
         finally:
             logger.info("Shutting down Telegram bot")
             with anyio.CancelScope(shield=True):
