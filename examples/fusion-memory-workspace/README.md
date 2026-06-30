@@ -14,9 +14,9 @@ Fusion Memory model, service, or database code in the agent process.
 
 - `PSI_MEMORY_BASE_URL`: Fusion Memory HTTP server URL. Defaults to
   `http://127.0.0.1:8700`.
-- `PSI_MEMORY_WORKSPACE_ID`: memory workspace scope. Defaults to `dolphin`.
+- `PSI_MEMORY_WORKSPACE_ID`: memory workspace scope. Defaults to `haitun`.
 - `PSI_MEMORY_USER_ID`: user scope. Defaults to the current OS user or `user`.
-- `PSI_MEMORY_AGENT_ID`: agent scope. Defaults to `dolphin`.
+- `PSI_MEMORY_AGENT_ID`: agent scope. Defaults to `haitun`.
 - `PSI_MEMORY_SESSION_ID`: optional session scope. When unset, reads allow
   cross-session retrieval.
 - `PSI_MEMORY_TIMEOUT_SECONDS`: request timeout in seconds. Defaults to `2.0` and is
@@ -94,7 +94,7 @@ marked with `metadata.write_mode="history_sync"` and
 If you use the psi-agent gateway, start the sync against the gateway history API:
 
 ```bash
-fusion-memory sync-dolphin-history \
+fusion-memory sync-haitun-history \
   --gateway-url http://127.0.0.1:8080 \
   --session-id <session-id>
 ```
@@ -103,7 +103,7 @@ If you run a plain workspace session, sync directly from the workspace history
 file:
 
 ```bash
-fusion-memory sync-dolphin-history \
+fusion-memory sync-haitun-history \
   --workspace /path/to/fusion-memory-workspace \
   --session-id <session-id>
 ```

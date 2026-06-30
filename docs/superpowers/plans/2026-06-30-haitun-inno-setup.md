@@ -139,13 +139,13 @@ git commit -m "feat: add Inno Setup script for Haitun Agent installer"
 ### Task 4: Update the workspace .gitignore
 
 **Files:**
-- Modify: `examples/haitun-workspace/.gitignore` (lines 29, 31 — remove `dolphin.ico` and `haitun agent.vbs`)
+- Modify: `examples/haitun-workspace/.gitignore` (lines 29, 31 — remove `haitun.ico` and `haitun agent.vbs`)
 
-Context: `dolphin.ico` is no longer used (we use the committed `haitun.ico`), and `haitun agent.vbs` is now a committed source file, so neither should be ignored. `psi-agent.exe` and `psi-agent` stay ignored (build artifacts).
+Context: `haitun.ico` is no longer used (we use the committed `haitun.ico`), and `haitun agent.vbs` is now a committed source file, so neither should be ignored. `psi-agent.exe` and `psi-agent` stay ignored (build artifacts).
 
-- [ ] **Step 1: Remove the `dolphin.ico` line**
+- [ ] **Step 1: Remove the `haitun.ico` line**
 
-Delete the line containing exactly `dolphin.ico` from `examples/haitun-workspace/.gitignore`.
+Delete the line containing exactly `haitun.ico` from `examples/haitun-workspace/.gitignore`.
 
 - [ ] **Step 2: Remove the `haitun agent.vbs` line**
 
@@ -153,7 +153,7 @@ Delete the line containing exactly `haitun agent.vbs` from `examples/haitun-work
 
 - [ ] **Step 3: Verify**
 
-Run: `grep -nE "dolphin.ico|haitun agent.vbs|psi-agent.exe" examples/haitun-workspace/.gitignore`
+Run: `grep -nE "haitun.ico|haitun agent.vbs|psi-agent.exe" examples/haitun-workspace/.gitignore`
 Expected: only `psi-agent.exe` remains; the other two are gone.
 
 - [ ] **Step 4: Commit**
@@ -268,7 +268,7 @@ git commit -m "docs: document Haitun Agent Windows installer build"
 ## Definition of Done
 
 - [ ] `examples/haitun-workspace/` contains `haitun.ico`, `haitun agent.vbs`, `haitun.iss`
-- [ ] `.gitignore` no longer ignores `dolphin.ico` / `haitun agent.vbs`; still ignores `psi-agent.exe`
+- [ ] `.gitignore` no longer ignores `haitun.ico` / `haitun agent.vbs`; still ignores `psi-agent.exe`
 - [ ] `pyinstaller.yml` has a second job `inno-setup` (`needs: pyinstaller`, windows-latest) that parses as valid YAML
 - [ ] README documents the installer build
 - [ ] (CI, not local) On the next push, the `inno-setup` job produces the `haitun-agent-installer` artifact
