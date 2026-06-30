@@ -205,9 +205,9 @@ async def run_feishu(
             portal.start_task_soon(_handle_and_stream, channel, core, allowed_user_ids, ctx)
 
         channel.on("message", _on_message)
-        logger.info(f"Feishu bot connecting (session={session_socket} interval={interval})")
         try:
             await channel.start_background()
+            logger.info(f"Feishu bot started (session={session_socket} interval={interval})")
             await anyio.sleep_forever()
         finally:
             logger.info("Shutting down Feishu bot")

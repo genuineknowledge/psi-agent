@@ -52,7 +52,7 @@ class ChannelCore:
 
         logger.debug(f"POST {self._endpoint} content_len={len(content)}")
         async with self._session.post(self._endpoint, json=body) as resp:
-            logger.debug(f"HTTP {resp.status}")
+            logger.info(f"HTTP {resp.status}")
 
             if resp.status != 200:
                 msg = await resp.text()
@@ -65,6 +65,7 @@ class ChannelCore:
                 raise ChannelError(msg)
 
             async with aclosing(iter_sse_events(resp.content)) as events:
+                logger.debug("Starting to consume SSE stream")
                 async for delta in events:
                     for incoming_kind, text in (
                         ("reasoning", delta.get("reasoning") or ""),
@@ -86,5 +87,6 @@ class ChannelCore:
                         for k, t in buffer.append(text):
                             yield self._to_chunk(k, t)
 
+        logger.debug("SSE stream consumed successfully")
         for k, t in buffer.flush():
             yield self._to_chunk(k, t)
