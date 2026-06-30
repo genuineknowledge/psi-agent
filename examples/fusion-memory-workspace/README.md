@@ -91,27 +91,17 @@ safe because it stores a local deduplication state file. Synced writes are
 marked with `metadata.write_mode="history_sync"` and
 `metadata.auto_persisted=true`.
 
-If you use the psi-agent gateway, start the sync against the gateway history API:
+Sync directly from the workspace history file:
 
 ```bash
 fusion-memory sync-haitun-history \
-  --gateway-url http://127.0.0.1:8080 \
+  --workspace /path/to/haitun-workspace \
   --session-id <session-id>
 ```
 
-If you run a plain workspace session, sync directly from the workspace history
-file:
-
-```bash
-fusion-memory sync-haitun-history \
-  --workspace /path/to/fusion-memory-workspace \
-  --session-id <session-id>
-```
-
-For a one-time backfill, add `--once --json`. The gateway mode requires the
-gateway process to be running and the session to be registered in that gateway.
-The workspace-file mode reads `histories/<session-id>.jsonl` and works after the
-session has saved history to disk.
+For a one-time backfill, add `--once --json`. The workspace-file mode reads
+`histories/<session-id>.jsonl` and works after the session has saved history to
+disk.
 
 ## Copy Into Another Workspace
 
