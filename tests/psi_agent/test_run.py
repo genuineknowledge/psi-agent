@@ -28,7 +28,7 @@ def test_build_failure_reraises() -> None:
 @pytest.mark.anyio
 async def test_config_not_a_list_raises(tmp_path: Path) -> None:
     cfg = tmp_path / "c.yml"
-    await anyio.Path(cfg).write_text("foo: bar\n")
+    await anyio.Path(cfg).write_text("foo: bar\n", encoding="utf-8")
     with pytest.raises(ValueError, match="must be a list"):
         await _run_config(cfg)
 
@@ -36,14 +36,14 @@ async def test_config_not_a_list_raises(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_empty_config_returns(tmp_path: Path) -> None:
     cfg = tmp_path / "c.yml"
-    await anyio.Path(cfg).write_text("[]\n")
+    await anyio.Path(cfg).write_text("[]\n", encoding="utf-8")
     await _run_config(cfg)
 
 
 @pytest.mark.anyio
 async def test_missing_type_raises(tmp_path: Path) -> None:
     cfg = tmp_path / "c.yml"
-    await anyio.Path(cfg).write_text("- session_socket: ./x.sock\n")
+    await anyio.Path(cfg).write_text("- session_socket: ./x.sock\n", encoding="utf-8")
     with pytest.raises(KeyError):
         await _run_config(cfg)
 
@@ -51,7 +51,7 @@ async def test_missing_type_raises(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_unknown_type_raises(tmp_path: Path) -> None:
     cfg = tmp_path / "c.yml"
-    await anyio.Path(cfg).write_text("- type: bogus\n")
+    await anyio.Path(cfg).write_text("- type: bogus\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Unknown component type"):
         await _run_config(cfg)
 
@@ -59,7 +59,7 @@ async def test_unknown_type_raises(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_channel_missing_name_raises(tmp_path: Path) -> None:
     cfg = tmp_path / "c.yml"
-    await anyio.Path(cfg).write_text("- type: channel\n  session_socket: ./x.sock\n")
+    await anyio.Path(cfg).write_text("- type: channel\n  session_socket: ./x.sock\n", encoding="utf-8")
     with pytest.raises(KeyError):
         await _run_config(cfg)
 
@@ -67,7 +67,7 @@ async def test_channel_missing_name_raises(tmp_path: Path) -> None:
 @pytest.mark.anyio
 async def test_unknown_channel_name_raises(tmp_path: Path) -> None:
     cfg = tmp_path / "c.yml"
-    await anyio.Path(cfg).write_text("- type: channel\n  name: bogus\n")
+    await anyio.Path(cfg).write_text("- type: channel\n  name: bogus\n", encoding="utf-8")
     with pytest.raises(ValueError, match="Unknown channel name"):
         await _run_config(cfg)
 
@@ -97,7 +97,8 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
         "  ai_socket: ./ai.sock\n"
         "- type: channel\n"
         "  name: repl\n"
-        "  session_socket: ./ch.sock\n"
+        "  session_socket: ./ch.sock\n",
+        encoding="utf-8",
     )
     await _run_config(cfg)
     assert len(instances) == 3

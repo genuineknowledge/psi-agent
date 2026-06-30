@@ -30,7 +30,8 @@ async def temp_workspace(tmp_path: Path) -> Path:
                 message: The message to echo.
             \"\"\"
             return f"ECHO: {message}"
-    """)
+    """),
+        encoding="utf-8",
     )
 
     systems_dir = ws / "systems"
@@ -39,12 +40,15 @@ async def temp_workspace(tmp_path: Path) -> Path:
         textwrap.dedent("""\
         async def system_prompt_builder() -> str:
             return "You are a helpful test assistant."
-    """)
+    """),
+        encoding="utf-8",
     )
 
     schedules_dir = ws / "schedules" / "test-sched"
     await anyio.Path(schedules_dir).mkdir(parents=True)
-    await anyio.Path(schedules_dir / "TASK.md").write_text('---\nname: test-sched\ncron: "0 0 1 1 *"\n---\nTest task.')
+    await anyio.Path(schedules_dir / "TASK.md").write_text(
+        '---\nname: test-sched\ncron: "0 0 1 1 *"\n---\nTest task.', encoding="utf-8"
+    )
 
     return ws
 

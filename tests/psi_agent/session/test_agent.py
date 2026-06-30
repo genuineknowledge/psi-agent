@@ -97,7 +97,8 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
                 city: The city name.
             \"\"\"
             return f"Weather in {city}: sunny, 22 C"
-    """)
+    """),
+        encoding="utf-8",
     )
 
     tr = await ToolRegistry.load(tools_dir)
@@ -547,7 +548,9 @@ async def test_load_history_empty_file(tmp_path: Path) -> None:
 async def test_load_history_existing_file(tmp_path: Path) -> None:
     path = tmp_path / "histories" / "session.jsonl"
     await anyio.Path(path.parent).mkdir()
-    await anyio.Path(path).write_text('{"role": "user", "content": "hi"}\n{"role": "assistant", "content": "hello"}\n')
+    await anyio.Path(path).write_text(
+        '{"role": "user", "content": "hi"}\n{"role": "assistant", "content": "hello"}\n', encoding="utf-8"
+    )
     history = await Conversation._load(path)
     assert len(history) == 2
     assert history[0] == {"role": "user", "content": "hi"}
@@ -558,7 +561,7 @@ async def test_load_history_corrupt_line_skipped(tmp_path: Path) -> None:
     path = tmp_path / "histories" / "session.jsonl"
     await anyio.Path(path.parent).mkdir()
     await anyio.Path(path).write_text(
-        '{"role": "user", "content": "hi"}\nnot valid json\n{"role": "assistant", "content": "ok"}\n'
+        '{"role": "user", "content": "hi"}\nnot valid json\n{"role": "assistant", "content": "ok"}\n', encoding="utf-8"
     )
     history = await Conversation._load(path)
     assert len(history) == 2
@@ -636,7 +639,7 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
     try:
         history_path = tmp_path / "histories" / "s.jsonl"
         await anyio.Path(history_path.parent).mkdir()
-        await anyio.Path(history_path).write_text('{"role": "system", "content": "original"}\n')
+        await anyio.Path(history_path).write_text('{"role": "system", "content": "original"}\n', encoding="utf-8")
 
         agent = SessionAgent(
             ai_client=AiClient(f"http://127.0.0.1:{port}"),
@@ -665,5 +668,5 @@ async def test_histories_dir_and_gitignore_created(tmp_path: Path) -> None:
 
     agent = await SessionAgent.create(ai_socket="http://x", workspace_path=workspace, session_id="test")
     assert await anyio.Path(histories_dir).is_dir()
-    assert await anyio.Path(histories_dir / ".gitignore").read_text() == "*\n"
+    assert await anyio.Path(histories_dir / ".gitignore").read_text(encoding="utf-8") == "*\n"
     assert agent._conversation._path is not None
