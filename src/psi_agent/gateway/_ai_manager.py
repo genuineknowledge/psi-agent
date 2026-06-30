@@ -79,7 +79,7 @@ class AIManager:
         try:
             await _wait_socket(socket)
         except Exception:
-            logger.error(f"AI {ai_id!r} did not become ready, rolling back")
+            logger.warning(f"AI {ai_id!r} did not become ready, rolling back")
             with anyio.CancelScope(shield=True):
                 async with self._lock:
                     self._entries.pop(ai_id, None)

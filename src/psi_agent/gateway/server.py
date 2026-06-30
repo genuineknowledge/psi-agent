@@ -200,7 +200,7 @@ async def _generate_title(request: web.Request) -> web.Response:
     title = await tm.generate(sid, ai_socket, user_text, assistant_text)
     if title:
         return _json({"id": sid, "title": title})
-        logger.warning(f"Title generation returned no result for session {sid!r}")
+    logger.warning(f"Title generation returned no result for session {sid!r}")
     return _error("Failed to generate title", status=500)
 
 

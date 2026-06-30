@@ -88,7 +88,7 @@ class SessionManager:
         try:
             await _wait_socket(channel_socket)
         except Exception:
-            logger.error(f"Session {session_id!r} did not become ready, rolling back")
+            logger.warning(f"Session {session_id!r} did not become ready, rolling back")
             with anyio.CancelScope(shield=True):
                 async with self._lock:
                     self._entries.pop(session_id, None)
