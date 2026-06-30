@@ -49,7 +49,7 @@ class AiClient:
                 try:
                     data = json.loads(data_str)
                 except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse SSE data: {data_str[:1000]}")
+                    logger.warning(f"Failed to parse SSE data: {data_str[:1000]!r}")
                     continue
 
                 choices_data = data.get("choices", [])
