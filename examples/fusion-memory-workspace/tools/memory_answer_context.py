@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-# ruff: noqa: E402
-import sys
 from pathlib import Path
+import sys
 
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from _client import format_context_pack as _format_context_pack
-from _client import post_json as _post_json
+from _client import format_context_pack as _format_context_pack, format_error_result as _format_error_result, post_json as _post_json
 from _config import CONFIG
-
-UNAVAILABLE_MESSAGE = (
-    '{"ok": false, "message": "Fusion Memory is not available. '
-    'Continue without memory, then run fusion-memory doctor."}'
-)
 
 
 async def memory_answer_context(query: str) -> str:
@@ -39,5 +32,5 @@ async def memory_answer_context(query: str) -> str:
             CONFIG.timeout_seconds,
         )
         return _format_context_pack(data)
-    except Exception:
-        return UNAVAILABLE_MESSAGE
+    except Exception as exc:
+        return _format_error_result(exc)
