@@ -8,10 +8,9 @@ from rich.console import Console
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import ReasoningChunk, TextChunk
 
-console = Console(highlight=False)
-
 
 async def run_cli(*, session_socket: str, message: str) -> None:
+    console = Console(highlight=False)
     logger.info(f"Connecting to session at {session_socket}")
 
     try:

@@ -11,10 +11,9 @@ from rich.panel import Panel
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import ReasoningChunk, TextChunk
 
-console = Console(highlight=False)
 
-
-async def run_repl(session_socket: str) -> None:
+async def run_repl(*, session_socket: str) -> None:
+    console = Console(highlight=False)
     logger.info(f"Connecting to session at {session_socket}")
 
     prompt_session = PromptSession(multiline=True)

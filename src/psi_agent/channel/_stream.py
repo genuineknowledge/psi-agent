@@ -6,7 +6,8 @@ unit-tested without HTTP/sockets:
 - ``iter_sse_events`` — turns a raw byte-line stream into validated ``delta``
   dicts (handles ``data:`` framing, ``[DONE]``, heartbeats, error chunks).
 - ``StreamBuffer`` — merges a ``(kind, text)`` event stream into interval-sized
-  blocks, flushing on type switch / timer expiry / stream end.
+  blocks (flushed on kind switch, on the next ``append`` after the interval, or at
+  stream end).
 """
 
 from __future__ import annotations
