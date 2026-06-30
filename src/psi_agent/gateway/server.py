@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from base64 import b64encode
 from contextlib import aclosing, suppress
 from dataclasses import asdict
 from pathlib import Path
@@ -245,8 +246,8 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
                 fname = getattr(file_field, "filename", None)
                 if fname:
                     content = await anyio.to_thread.run_sync(file_field.file.read)  # ty: ignore
-                    path = await cm.save_upload(fname, content)
-                    body["chunks"].append({"type": "file", "path": path})
+                    data_b64 = b64encode(content).decode()
+                    body["chunks"].append({"type": "blob", "name": fname, "data": data_b64})
         else:
             body = await request.json()
             if not isinstance(body, dict):

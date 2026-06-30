@@ -28,7 +28,6 @@ class ChatManager:
                 objects. Each chunk has a ``"type"`` field:
 
                 - ``{"type": "text", "text": "..."}`` — a text message
-                - ``{"type": "file", "path": "/..."}`` — a pre-existing file
                 - ``{"type": "blob", "name": "...", "data": "<base64>"}``
                   — an inline binary (decoded and persisted to
                   ``~/Downloads/.psi/<date>/``)
@@ -51,14 +50,6 @@ class ChatManager:
                 continue
             t = c.get("type")
             if t == "text":
-                text = c.get("text")
-                if isinstance(text, str):
-                    chunks.append(TextChunk(text=text))
-            elif t == "file":
-                path = c.get("path")
-                if isinstance(path, str):
-                    chunks.append(FileChunk(path=path))
-            elif t == "blob":
                 data_b64 = c.get("data")
                 if not isinstance(data_b64, str):
                     continue

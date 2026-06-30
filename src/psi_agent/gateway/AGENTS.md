@@ -173,8 +173,7 @@ AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
 ```json
 {
   "chunks": [
-    {"type": "text", "text": "Hello, what's in this image?"},
-    {"type": "file", "path": "/tmp/uploaded-image.png"}
+    {"type": "text", "text": "Hello, what's in this image?"}
   ]
 }
 ```
@@ -189,7 +188,7 @@ data: [DONE]
 **内部实现**：
 - 查 `SessionManager.get_socket(session_id)` 获取 channel socket
 - 复用 `channel._core.ChannelCore` 构造连接
-- 输入：`FileChunk(path)`、`TextChunk(text)`、blob（base64 解码后由 `save_upload()` 落至 `~/Downloads/.psi/<date>/`，持久保留，转为 `FileChunk`）；multipart 文件上传同路径
+- 输入：`TextChunk(text)`、blob（base64 解码后由 `save_upload()` 落至 `~/Downloads/.psi/<date>/`，持久保留，转为 `FileChunk`）；multipart 文件上传通过 blob 通道走相同路径
 - 输出：`TextChunk` → yield `{"type": "text"}`，`FileChunk` → 读取文件内容 base64 编码后 yield `{"type": "blob"}`
 
 ## Web Console (SPA)
