@@ -12,10 +12,6 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, FormData, web
 
 from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._manager import (
-    AiCreateRequest,
-    SessionCreateRequest,
-)
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway.server import create_app
 from tests.integration.conftest import MockAIServer
@@ -187,18 +183,16 @@ async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
 
-    ai_req = AiCreateRequest(
+    await aim.create(
         provider="openai",
         model="test",
         api_key="k",
         base_url=mock_base_url,
         id="gw-ai",
     )
-    await aim.create(ai_req)
 
     workspace = await _make_workspace(str(tmp_path))
-    sess_req = SessionCreateRequest(ai_id="gw-ai", workspace=workspace, id="gw-sess")
-    await sm.create(sess_req)
+    await sm.create(ai_id="gw-ai", workspace=workspace, id="gw-sess")
 
     app = await create_app(aim, sm)
     base_url, runner = await _start_app_on_free_port(app)
@@ -264,18 +258,16 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) ->
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
 
-    ai_req = AiCreateRequest(
+    await aim.create(
         provider="openai",
         model="test",
         api_key="k",
         base_url=mock_base_url,
         id="gw-ai",
     )
-    await aim.create(ai_req)
 
     workspace = await _make_workspace(str(tmp_path))
-    sess_req = SessionCreateRequest(ai_id="gw-ai", workspace=workspace, id="gw-sess")
-    await sm.create(sess_req)
+    await sm.create(ai_id="gw-ai", workspace=workspace, id="gw-sess")
 
     app = await create_app(aim, sm)
     base_url, runner = await _start_app_on_free_port(app)

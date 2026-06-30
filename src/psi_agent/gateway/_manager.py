@@ -1,52 +1,13 @@
-"""Shared types and helpers for AIManager and SessionManager."""
+"""Shared socket helpers for AIManager and SessionManager."""
 
 from __future__ import annotations
 
 import sys
 import uuid
-from dataclasses import dataclass
 
 import aiohttp
 import anyio
 from loguru import logger
-
-
-@dataclass
-class AiCreateRequest:
-    provider: str
-    model: str
-    api_key: str
-    base_url: str
-    id: str = ""
-
-
-@dataclass
-class AiInfo:
-    id: str
-    socket: str
-    provider: str
-    model: str
-
-
-@dataclass
-class SessionCreateRequest:
-    ai_id: str
-    workspace: str = ""
-    id: str = ""
-
-
-@dataclass
-class SessionInfo:
-    id: str
-    ai_id: str
-    workspace: str
-    channel_socket: str
-
-
-@dataclass
-class DeleteResponse:
-    id: str
-    status: str = "stopped"
 
 
 def _new_uuid() -> str:

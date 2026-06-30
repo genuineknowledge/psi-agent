@@ -13,10 +13,6 @@ from loguru import logger
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._chat_manager import ChatManager
 from psi_agent.gateway._history_manager import HistoryManager
-from psi_agent.gateway._manager import (
-    AiCreateRequest,
-    SessionCreateRequest,
-)
 from psi_agent.gateway._openapi import render_openapi
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._title_manager import TitleManager
@@ -89,10 +85,15 @@ async def _create_ai(request: web.Request) -> web.Response:
     aim: AIManager = request.app["aim"]
     try:
         body = await request.json()
-        req = AiCreateRequest(**body)
-        info = await aim.create(req)
+        info = await aim.create(
+            provider=body["provider"],
+            model=body["model"],
+            api_key=body["api_key"],
+            base_url=body["base_url"],
+            id=body.get("id", ""),
+        )
         return _json(asdict(info), status=201)
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError, KeyError) as e:
         return _error(str(e), status=400)
     except Exception as e:
         logger.error(f"Unexpected error creating AI: {e}")
@@ -121,10 +122,13 @@ async def _create_session(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
     try:
         body = await request.json()
-        req = SessionCreateRequest(**body)
-        info = await sm.create(req)
+        info = await sm.create(
+            ai_id=body["ai_id"],
+            id=body.get("id", ""),
+            workspace=body.get("workspace", ""),
+        )
         return _json(asdict(info), status=201)
-    except (TypeError, ValueError) as e:
+    except (TypeError, ValueError, KeyError) as e:
         return _error(str(e), status=400)
     except LookupError as e:
         return _error(str(e), status=404)

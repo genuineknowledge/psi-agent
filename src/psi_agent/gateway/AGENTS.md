@@ -27,9 +27,9 @@ Gateway 进程
 | 文件 | 职责 |
 |------|------|
 | `__init__.py` | `Gateway` dataclass + `run()` 入口 |
-| `_manager.py` | 共享类型（AiCreateRequest 等） + helpers（_socket_path 等） |
-| `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 |
-| `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 |
+| `_manager.py` | 共享 socket helpers（_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
+| `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + Ai* DTO |
+| `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + Session* DTO |
 | `server.py` | aiohttp Application + REST handlers |
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取 |

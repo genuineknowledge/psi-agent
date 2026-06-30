@@ -8,15 +8,26 @@ from loguru import logger
 
 from psi_agent.ai import Ai
 from psi_agent.gateway._manager import (
-    AiCreateRequest,
-    AiInfo,
-    DeleteResponse,
     _ensure_socket_dir,
     _new_uuid,
     _remove_socket,
     _socket_path,
     _wait_socket,
 )
+
+
+@dataclass
+class AiInfo:
+    id: str
+    socket: str
+    provider: str
+    model: str
+
+
+@dataclass
+class AiDeleteResponse:
+    id: str
+    status: str = "stopped"
 
 
 @dataclass
@@ -34,8 +45,16 @@ class AIManager:
     _entries: dict[str, _AiEntry] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
 
-    async def create(self, req: AiCreateRequest) -> AiInfo:
-        ai_id = req.id or _new_uuid()
+    async def create(
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+        base_url: str,
+        *,
+        id: str = "",
+    ) -> AiInfo:
+        ai_id = id or _new_uuid()
         async with self._lock:
             logger.debug(f"AIManager: acquired lock for create '{ai_id}'")
             if ai_id in self._entries:
@@ -44,10 +63,10 @@ class AIManager:
             await _ensure_socket_dir(socket)
             ai = Ai(
                 session_socket=socket,
-                provider=req.provider,
-                model=req.model,
-                api_key=req.api_key,
-                base_url=req.base_url,
+                provider=provider,
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
             )
             scope = anyio.CancelScope()
 
@@ -62,7 +81,7 @@ class AIManager:
 
             logger.debug(f"AIManager: starting AI '{ai_id}' task")
             self._tg.start_soon(_run_ai)
-            self._entries[ai_id] = _AiEntry(scope=scope, socket=socket, provider=req.provider, model=req.model)
+            self._entries[ai_id] = _AiEntry(scope=scope, socket=socket, provider=provider, model=model)
         try:
             await _wait_socket(socket)
         except Exception:
@@ -74,9 +93,9 @@ class AIManager:
                 await _remove_socket(socket)
             raise
         logger.info(f"AI '{ai_id}' created on {socket}")
-        return AiInfo(id=ai_id, socket=socket, provider=req.provider, model=req.model)
+        return AiInfo(id=ai_id, socket=socket, provider=provider, model=model)
 
-    async def delete(self, ai_id: str) -> DeleteResponse:
+    async def delete(self, ai_id: str) -> AiDeleteResponse:
         async with self._lock:
             logger.debug(f"AIManager: acquired lock for delete '{ai_id}'")
             if ai_id not in self._entries:
@@ -85,7 +104,7 @@ class AIManager:
             entry.scope.cancel()
             await _remove_socket(entry.socket)
             logger.info(f"AI '{ai_id}' deleted")
-            return DeleteResponse(id=ai_id)
+            return AiDeleteResponse(id=ai_id)
 
     async def list_all(self) -> list[AiInfo]:
         return [
