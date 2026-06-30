@@ -72,13 +72,13 @@ async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | Non
     app.router.add_post("/sessions", _create_session)
     app.router.add_delete("/sessions/{session_id}", _delete_session)
     app.router.add_get("/sessions", _list_sessions)
-    app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
-    app.router.add_get("/sessions/{session_id}/history", _get_history)
     app.router.add_get("/titles", _list_titles)
     app.router.add_post("/titles", _set_title)
     app.router.add_post("/titles/generate", _generate_title)
     app.router.add_get("/workspace/cwd", _get_cwd)
     app.router.add_get("/workspace/browse", _browse_workspace)
+    app.router.add_get("/sessions/{session_id}/history", _get_history)
+    app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
 
     return app
 
@@ -247,8 +247,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
             raw = data.get("chunks")
             raw_chunks = json.loads(str(raw)) if raw else []
             body: dict[str, Any] = {"chunks": raw_chunks}
-            file_field = data.get("file")
-            if file_field is not None:
+            for file_field in data.getall("file"):
                 fname = getattr(file_field, "filename", None)
                 if fname:
                     content = await anyio.to_thread.run_sync(file_field.file.read)  # ty: ignore
