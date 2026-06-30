@@ -110,14 +110,14 @@ default to `PSI_MEMORY_BASE_URL=http://127.0.0.1:8700`.
 ## 6. Optional Automatic History Persistence
 
 The workspace memory tools do not automatically write every conversation turn.
-They write only when the agent calls `memory_add`. To persist Haitun/psi-agent
+They write only when the agent calls `memory_add`. To persist Dolphin/psi-agent
 history continuously without changing agent core, run the Fusion Memory history
 sync process beside the agent session.
 
 If using psi-agent gateway:
 
 ```bash
-fusion-memory sync-haitun-history \
+fusion-memory sync-dolphin-history \
   --gateway-url http://127.0.0.1:8080 \
   --session-id <session-id>
 ```
@@ -125,7 +125,7 @@ fusion-memory sync-haitun-history \
 If using a plain workspace session:
 
 ```bash
-fusion-memory sync-haitun-history \
+fusion-memory sync-dolphin-history \
   --workspace /path/to/fusion-memory-workspace \
   --session-id <session-id>
 ```
@@ -133,7 +133,7 @@ fusion-memory sync-haitun-history \
 For a one-time backfill:
 
 ```bash
-fusion-memory sync-haitun-history \
+fusion-memory sync-dolphin-history \
   --workspace /path/to/fusion-memory-workspace \
   --session-id <session-id> \
   --once --json

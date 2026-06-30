@@ -1,6 +1,6 @@
-# haitun-workspace (海豚 / Haitun agent 🐬)
+# haitun-workspace (海豚 / dolphin agent 🐬)
 
-A consolidated psi-agent workspace. Its persona is fixed: a **Haitun agent** (always stated
+A consolidated psi-agent workspace. Its persona is fixed: a **dolphin agent** (always stated
 in the system prompt). It merges the most useful parts of the other example workspaces:
 
 - **Prompt engine** — a layered builder (stable prefix + cache boundary + dynamic
@@ -19,9 +19,9 @@ user profile, and bootstrap files all live at the workspace root:
 
 | File | Role |
 |---|---|
-| `SOUL.md` | Personality/values; augments the built-in Haitun agent identity (top of prompt). |
+| `SOUL.md` | Personality/values; augments the built-in dolphin identity (top of prompt). |
 | `USER.md` | User profile; injected into the dynamic suffix (below the cache boundary). |
-| `IDENTITY.md` | Haitun agent identity details; loaded as a bootstrap context file. |
+| `IDENTITY.md` | Dolphin identity details; loaded as a bootstrap context file. |
 | `TOOLS.md` | Local, environment-specific notes; bootstrap context file. |
 | `BOOTSTRAP.md` | First-run onboarding. **Delete it** to skip onboarding. Triggers the "Bootstrap Pending" section while present. |
 | `HEARTBEAT.md` | Dynamic context, re-read every turn (below the cache boundary). |

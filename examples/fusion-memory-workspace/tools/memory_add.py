@@ -18,7 +18,7 @@ UNAVAILABLE_MESSAGE = (
 )
 
 
-async def memory_add(content: str, source: str = "haitun-tool") -> str:
+async def memory_add(content: str, source: str = "dolphin-tool") -> str:
     """Store durable information in Fusion Memory.
 
     Args:
@@ -36,7 +36,7 @@ async def memory_add(content: str, source: str = "haitun-tool") -> str:
                 "input": {"role": "user", "content": content},
                 "scope": CONFIG.scope,
                 "metadata": {
-                    "source": source or "haitun-tool",
+                    "source": source or "dolphin-tool",
                     "write_mode": "explicit_tool",
                     "auto_persisted": False,
                 },

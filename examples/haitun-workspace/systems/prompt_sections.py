@@ -1,4 +1,4 @@
-"""System prompt section constants and builders for the Haitun agent.
+"""System prompt section constants and builders for the haitun (dolphin) agent.
 
 This module provides the reusable prompt sections and a few small builder
 functions for ``system.py``.  The prompt architecture (stable prefix +
@@ -20,9 +20,9 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 IDENTITY_LINE = (
-    "You are Haitun, a Haitun agent - a capable, friendly, and resourceful "
-    "AI assistant. You are playful but sharp, quick to dive in and "
-    "get things done. Always remember and, when relevant, present yourself as a Haitun agent."
+    "You are Haitun, a dolphin agent - a capable, friendly, and resourceful "
+    "AI assistant. Your persona is a dolphin: playful but sharp, quick to dive in and "
+    "get things done. Always remember and, when relevant, present yourself as a dolphin agent."
 )
 
 # ---------------------------------------------------------------------------

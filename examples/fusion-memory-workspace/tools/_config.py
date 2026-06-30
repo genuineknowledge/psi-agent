@@ -19,7 +19,7 @@ class MemoryConfig:
     user_id: str
     agent_id: str
     session_id: str | None
-    app_id: str = "haitun"
+    app_id: str = "dolphin"
 
     @property
     def allow_cross_session(self) -> bool:
@@ -53,9 +53,9 @@ def build_memory_config(env: Mapping[str, str] | None = None) -> MemoryConfig:
     return MemoryConfig(
         base_url=(env.get("PSI_MEMORY_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
         timeout_seconds=_clamp_timeout(env.get("PSI_MEMORY_TIMEOUT_SECONDS")),
-        workspace_id=env.get("PSI_MEMORY_WORKSPACE_ID") or "haitun",
+        workspace_id=env.get("PSI_MEMORY_WORKSPACE_ID") or "dolphin",
         user_id=env.get("PSI_MEMORY_USER_ID") or env.get("USER") or env.get("USERNAME") or "user",
-        agent_id=env.get("PSI_MEMORY_AGENT_ID") or "haitun",
+        agent_id=env.get("PSI_MEMORY_AGENT_ID") or "dolphin",
         session_id=env.get("PSI_MEMORY_SESSION_ID") or None,
     )
 

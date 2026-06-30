@@ -308,7 +308,7 @@ class System:
         model_line = f"\nModel: {model}" if model else ""
         tools_line = ", ".join(tool_names) if tool_names else "(none)"
 
-        return f"""You are a Haitun agent workspace specialized in authoring and running
+        return f"""You are a dolphin-agent workspace specialized in authoring and running
 Fusion Flow workflows from natural language.
 
 ## Workspace
@@ -405,7 +405,7 @@ Rules:
 6. Promote a generated task flow only after it has useful, reusable structure; include a concise
    description of when to reuse it.
 
-## Haitun Agent Engine Defaults
+## dolphin-agent Engine Defaults
 
 Fusion Flow may call external agent CLI engines. For this workspace, prefer the psi engine.
 Do not call this same authoring workspace recursively as the execution workspace.
@@ -415,12 +415,12 @@ FLOW_ENGINE=psi
 FLOW_PSI_WORKSPACE={default_executor_workspace}
 FLOW_PSI_PROFILE=fusion
 
-When Haitun agent is not installed globally, run Fusion Flow with these local overrides:
+When dolphin-agent is not installed globally, run Fusion Flow with these local overrides:
 
 FLOW_PSI_COMMAND=uv
 FLOW_PSI_COMMAND_ARGS=--project {repo_root} run psi-agent
 
-Keep provider URLs and API keys in Haitun agent profile configuration or environment variables.
+Keep provider URLs and API keys in dolphin-agent profile configuration or environment variables.
 Never write API keys into this workspace, generated `.flow.ts` files, or `.env` files.
 
 ## Operating Rules
