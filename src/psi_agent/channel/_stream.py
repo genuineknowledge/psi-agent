@@ -53,6 +53,7 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
             logger.debug("skip chunk with 0 choices (heartbeat)")
             continue
         if len(choices) != 1:
+            logger.warning(f"Expected 1 choice, got {len(choices)}, raising error")
             raise ChannelError(f"Expected exactly 1 choice, got {len(choices)}")
 
         choice = choices[0]
@@ -66,7 +67,7 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
 
         if choice.get("finish_reason") == "error":
             msg = delta.get("content", "Session error")
-            logger.debug(f"finish_reason=error: {msg!r}")
+            logger.warning(f"finish_reason=error: {msg!r}")
             raise ChannelError(msg)
 
         yield delta
