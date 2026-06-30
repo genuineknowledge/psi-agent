@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import aclosing
+
 from aiohttp import ClientConnectorError
 from loguru import logger
 from prompt_toolkit.shortcuts import PromptSession
@@ -9,10 +11,9 @@ from rich.panel import Panel
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import ReasoningChunk, TextChunk
 
-console = Console(highlight=False)
 
-
-async def run_repl(session_socket: str) -> None:
+async def run_repl(*, session_socket: str) -> None:
+    console = Console(highlight=False)
     logger.info(f"Connecting to session at {session_socket}")
 
     prompt_session = PromptSession(multiline=True)
@@ -35,11 +36,12 @@ async def run_repl(session_socket: str) -> None:
 
                 console.print()
                 try:
-                    async for chunk in core.post([TextChunk(user_input)]):
-                        if isinstance(chunk, ReasoningChunk):
-                            console.print(chunk.text, end="", style="dim")
-                        elif isinstance(chunk, TextChunk):
-                            console.print(chunk.text, end="")
+                    async with aclosing(core.post([TextChunk(user_input)])) as stream:
+                        async for chunk in stream:
+                            if isinstance(chunk, ReasoningChunk):
+                                console.print(chunk.text, end="", style="dim")
+                            elif isinstance(chunk, TextChunk):
+                                console.print(chunk.text, end="")
                 except Exception as e:
                     logger.error(f"REPL error: {e}")
                     console.print(f"\n[red]Error: {e}[/red]")

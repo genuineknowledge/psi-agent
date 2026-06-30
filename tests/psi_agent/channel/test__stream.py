@@ -97,3 +97,33 @@ async def test_sse_raises_on_finish_error():
     chunk = {"choices": [{"delta": {"content": "[Upstream Error]: boom"}, "finish_reason": "error"}]}
     with pytest.raises(ChannelError, match="Upstream Error"):
         _ = [d async for d in iter_sse_events(_alines(_sse(chunk)))]
+
+
+@pytest.mark.anyio
+async def test_sse_null_delta_coerced_to_empty_dict():
+    chunk = {"choices": [{"index": 0, "delta": None}]}
+    events = [d async for d in iter_sse_events(_alines(_sse(chunk)))]
+    assert events == [{}]
+
+
+@pytest.mark.anyio
+async def test_sse_missing_delta_coerced_to_empty_dict():
+    chunk = {"choices": [{"index": 0}]}
+    events = [d async for d in iter_sse_events(_alines(_sse(chunk)))]
+    assert events == [{}]
+
+
+@pytest.mark.anyio
+async def test_sse_skips_non_dict_choice():
+    bad = {"choices": ["not-a-dict"]}
+    good = {"choices": [{"delta": {"content": "ok"}}]}
+    events = [d async for d in iter_sse_events(_alines(_sse(bad), _sse(good)))]
+    assert events == [{"content": "ok"}]
+
+
+@pytest.mark.anyio
+async def test_sse_skips_non_list_choices():
+    bad = {"choices": {"unexpected": "shape"}}
+    good = {"choices": [{"delta": {"content": "ok"}}]}
+    events = [d async for d in iter_sse_events(_alines(_sse(bad), _sse(good)))]
+    assert events == [{"content": "ok"}]

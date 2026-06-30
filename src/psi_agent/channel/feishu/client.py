@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import aclosing
 from datetime import date
 from typing import Any
 
@@ -57,9 +58,9 @@ async def _add_reaction(channel: Any, message_id: str, emoji_type: str) -> str |
         if resp.data and resp.data.reaction_id:
             logger.debug(f"OK reaction_id={resp.data.reaction_id}")
             return resp.data.reaction_id
-        logger.error(f"no reaction_id in response ({emoji_type})")
+        logger.warning(f"no reaction_id in response ({emoji_type})")
     except Exception as e:
-        logger.error(f"failed ({emoji_type}) — {e}")
+        logger.warning(f"failed ({emoji_type}) — {e}")
     return None
 
 
@@ -70,23 +71,27 @@ async def _remove_reaction(channel: Any, message_id: str, reaction_id: str) -> N
         await channel.client.im.v1.message_reaction.adelete(req)
         logger.debug("OK")
     except Exception as e:
-        logger.error(f"failed — {e}")
+        logger.warning(f"failed — {e}")
 
 
-async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[InputChunk]:
+async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
     chunks: list[InputChunk] = []
+    downloads_dir = anyio.Path(platformdirs.user_downloads_dir()) / ".psi" / str(date.today())
+    await downloads_dir.mkdir(parents=True, exist_ok=True)
+    downloads = str(downloads_dir)
     logger.debug(f"downloads_dir={downloads} raw_content_type={ctx.raw_content_type}")
 
     text = ctx.content_text or ""
     for m in re.finditer(r'<audio\s+key="([^"]+)"', text):
         audio_key = m.group(1)
         logger.debug(f"audio key={audio_key}")
-        path = f"{downloads}/{audio_key[-32:]}"
         try:
             req = (
                 GetMessageResourceRequest.builder().message_id(ctx.message_id).file_key(audio_key).type("file").build()
             )
             resp = await channel.client.im.v1.message_resource.aget(req)
+            suffix = anyio.Path(resp.file_name or "").suffix
+            path = str(anyio.Path(downloads) / f"{audio_key[-32:]}{suffix}")
             await anyio.Path(path).write_bytes(resp.file.read())
             logger.debug(f"audio saved to {path}")
             chunks.append(FileChunk(path))
@@ -100,11 +105,18 @@ async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[InputChu
     for r in ctx.resources:
         logger.debug(f"resource type={r.type} file_key={r.file_key} file_name={r.file_name}")
         try:
+            if r.file_name:
+                stem = anyio.Path(r.file_name).stem
+                ext = anyio.Path(r.file_name).suffix
+                name = f"{stem}-{r.file_key}{ext}"
+            else:
+                name = None
             saved = await channel.download_resource_to_file(
                 r.file_key,
                 resource_type=r.type,
                 message_id=ctx.message_id,
                 dest_dir=downloads,
+                file_name=name,
             )
             logger.debug(f"resource downloaded to {saved}")
             chunks.append(FileChunk(str(saved)))
@@ -130,48 +142,50 @@ async def _handle_and_stream(
     reaction_id = await _add_reaction(channel, ctx.message_id, _EMOJI_PROCESSING)
     failed = False
     try:
-        downloads = f"{platformdirs.user_downloads_dir()}/.psi/{date.today()}"
-        await anyio.Path(downloads).mkdir(parents=True, exist_ok=True)
-
         try:
-            chunks = await _build_chunks(channel, ctx, downloads)
-        except Exception as e:
-            logger.error(f"_build_chunks failed — {e}")
-            await channel.send(ctx.chat_id, {"text": f"Error processing message: {e}"})
-            failed = True
-            return
+            try:
+                chunks = await _build_chunks(channel, ctx)
+            except Exception as e:
+                logger.error(f"_build_chunks failed — {e}")
+                failed = True
+                await channel.send(ctx.chat_id, {"text": f"Error processing message: {e}"})
+                return
 
-        if not chunks:
-            logger.debug("no chunks, unsupported type")
-            return
+            if not chunks:
+                logger.debug("no chunks, unsupported type")
+                await channel.send(ctx.chat_id, {"text": "Unsupported message type"})
+                return
 
-        logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
+            logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
 
-        async def _produce(stream: Any) -> None:
-            async for chunk in core.post(chunks):
-                if isinstance(chunk, TextChunk):
-                    await stream.append(chunk.text)
-                    logger.debug(f"stream.append ({len(chunk.text)} chars)")
-                elif isinstance(chunk, FileChunk):
-                    logger.debug(f"received FileChunk ({chunk.path})")
-                    await _send_file(channel, ctx.chat_id, chunk.path)
+            async def _produce(stream: Any) -> None:
+                async with aclosing(core.post(chunks)) as gen:
+                    async for chunk in gen:
+                        if isinstance(chunk, TextChunk):
+                            await stream.append(chunk.text)
+                            logger.debug(f"stream.append ({len(chunk.text)} chars)")
+                        elif isinstance(chunk, FileChunk):
+                            logger.debug(f"received FileChunk ({chunk.path})")
+                            await _send_file(channel, ctx.chat_id, chunk.path)
 
-        try:
-            await channel.stream(
-                ctx.chat_id,
-                {"markdown": _produce},
-                {"reply_to": ctx.message_id},
-            )
-            logger.debug("stream completed")
-        except Exception as e:
-            logger.error(f"ChannelCore error — {e}")
-            await channel.send(ctx.chat_id, {"text": f"Error: {e}"})
-            failed = True
-    finally:
-        if reaction_id:
-            await _remove_reaction(channel, ctx.message_id, reaction_id)
-        if failed:
-            await _add_reaction(channel, ctx.message_id, _EMOJI_FAILED)
+            try:
+                await channel.stream(
+                    ctx.chat_id,
+                    {"markdown": _produce},
+                    {"reply_to": ctx.message_id},
+                )
+                logger.debug("stream completed")
+            except Exception as e:
+                logger.error(f"Message handling error — {e}")
+                failed = True
+                await channel.send(ctx.chat_id, {"text": f"Error: {e}"})
+        finally:
+            if reaction_id:
+                await _remove_reaction(channel, ctx.message_id, reaction_id)
+            if failed:
+                await _add_reaction(channel, ctx.message_id, _EMOJI_FAILED)
+    except Exception as e:
+        logger.error(f"Unhandled error in _handle_and_stream: {e!r}")
 
 
 async def run_feishu(
@@ -192,9 +206,14 @@ async def run_feishu(
 
         channel.on("message", _on_message)
         logger.info(f"Feishu bot connecting (session={session_socket} interval={interval})")
-        await channel.start_background()
         try:
-            await anyio.Event().wait()
+            await channel.start_background()
+            await anyio.sleep_forever()
         finally:
+            logger.info("Shutting down Feishu bot")
             with anyio.CancelScope(shield=True):
-                await channel.stop_background()
+                try:
+                    await channel.stop_background()
+                except Exception as e:
+                    logger.warning(f"Feishu stop_background failed: {e}")
+            logger.info("Feishu bot shutdown complete")
