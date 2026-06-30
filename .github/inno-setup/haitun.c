@@ -188,24 +188,47 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
     /* 6. set working directory */
     SetCurrentDirectoryW(g_dir);
 
-    /* 7. launch psi-agent.exe */
+    /* 7. launch psi-agent.exe with --verbose and log files */
     {
         WCHAR cmd[1024];
+        WCHAR out_path[MAX_PATH], err_path[MAX_PATH];
+        WCHAR stamp[32];
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        wsprintfW(stamp, L"\\%04d%02d%02d-%02d%02d%02d",
+                  st.wYear, st.wMonth, st.wDay,
+                  st.wHour, st.wMinute, st.wSecond);
+
+        lstrcpyW(out_path, g_dir);
+        lstrcatW(out_path, stamp);
+        lstrcatW(out_path, L".out.log");
+        lstrcpyW(err_path, g_dir);
+        lstrcatW(err_path, stamp);
+        lstrcatW(err_path, L".err.log");
+
+        HANDLE hOut = CreateFileW(out_path, GENERIC_WRITE, FILE_SHARE_READ,
+                                  NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        HANDLE hErr = CreateFileW(err_path, GENERIC_WRITE, FILE_SHARE_READ,
+                                  NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
         lstrcpyW(cmd, g_dir);
-        lstrcatW(cmd, L"\\psi-agent.exe gateway --tray haitun.ico");
+        lstrcatW(cmd, L"\\psi-agent.exe gateway --tray haitun.ico --verbose");
 
         PROCESS_INFORMATION pi = {0};
         STARTUPINFOW si = {sizeof(si)};
-        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
         si.wShowWindow = SW_HIDE;
+        si.hStdOutput = hOut;
+        si.hStdError  = hErr;
+        si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
 
-        if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE,
-                           CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
-                           g_env, g_dir, &si, &pi))
-        {
-            CloseHandle(pi.hThread);
-            CloseHandle(pi.hProcess);
-        }
+        CreateProcessW(NULL, cmd, NULL, NULL, TRUE,
+                       CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                       g_env, g_dir, &si, &pi);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        CloseHandle(hOut);
+        CloseHandle(hErr);
     }
 
     return 0;
