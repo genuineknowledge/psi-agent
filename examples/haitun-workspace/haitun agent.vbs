@@ -28,4 +28,10 @@ If objFSO.FileExists(strEnvPath) Then
     objFile.Close
 End If
 
+' Prepend the bundled MSYS2 so psi-agent.exe (and its bash tool) finds bash/git/curl/ssh.
+strMsysBin = objFSO.BuildPath(strDir, "msys64\usr\bin")
+objShell.Environment("Process")("PATH") = strMsysBin & ";" & objShell.Environment("Process")("PATH")
+' Keep bash -lc in the current working directory instead of cd-ing to $HOME.
+objShell.Environment("Process")("CHERE_INVOKING") = "1"
+
 objShell.Run "psi-agent.exe gateway --tray haitun.ico", 0, False
