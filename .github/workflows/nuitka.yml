@@ -80,9 +80,16 @@ jobs:
       - run: choco install innosetup --no-progress
       - shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile "examples\haitun-workspace\ChineseSimplified.isl"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=amd64"
+          rc /nologo ".github\inno-setup\haitun.rc"
+          cl /nologo /O2 ".github\inno-setup\haitun.c" ".github\inno-setup\haitun.res" /Fe:".github\inno-setup\haitun.exe" /link /SUBSYSTEM:WINDOWS user32.lib
       - shell: pwsh
-        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /O"installer-output" "examples\haitun-workspace\haitun.iss"'
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"
+      - shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp /O"installer-output" ".github\inno-setup\haitun.iss"'
       - uses: actions/upload-artifact@v7
         with:
           name: haitun-agent-installer-nuitka
