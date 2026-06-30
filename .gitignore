@@ -8,3 +8,10 @@ dist/
 .pytest_cache/
 *.sock
 .coverage
+
+# haitun Inno Setup build artifacts
+.github/inno-setup/haitun.exe
+.github/inno-setup/haitun.res
+.github/inno-setup/haitun.obj
+.github/inno-setup/ChineseSimplified.isl
+installer-output/

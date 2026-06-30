@@ -84,7 +84,7 @@ jobs:
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=amd64"
           rc /nologo ".github\inno-setup\haitun.rc"
-          cl /nologo /O2 /DUNICODE /D_UNICODE ".github\inno-setup\haitun.c" ".github\inno-setup\haitun.res" /Fe:".github\inno-setup\haitun.exe" /link /SUBSYSTEM:WINDOWS
+          cl /nologo /O2 ".github\inno-setup\haitun.c" ".github\inno-setup\haitun.res" /Fe:".github\inno-setup\haitun.exe" /link /SUBSYSTEM:WINDOWS
       - shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"

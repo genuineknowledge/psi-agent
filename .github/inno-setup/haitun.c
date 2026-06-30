@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #define MAX_ENV 32767
+#define PATH_BUF 32768
 
 static WCHAR g_dir[MAX_PATH];
 static WCHAR g_env[MAX_ENV * 2];  /* double size: wide-char bytes */
@@ -13,7 +14,7 @@ static void set_env(const WCHAR *name, const WCHAR *val)
 {
     int n = lstrlenW(name);
     int v = lstrlenW(val);
-    if (g_env_len + n + 1 + v + 1 > sizeof(g_env) / sizeof(WCHAR))
+    if (g_env_len + n + 1 + v + 1 >= sizeof(g_env) / sizeof(WCHAR))
         return;
     lstrcpyW(g_env + g_env_len, name);
     g_env_len += n;
@@ -26,7 +27,7 @@ static void set_env(const WCHAR *name, const WCHAR *val)
 static void append_env(const WCHAR *s)
 {
     int len = lstrlenW(s);
-    if (g_env_len + len + 2 > sizeof(g_env) / sizeof(WCHAR))
+    if (g_env_len + len + 1 >= sizeof(g_env) / sizeof(WCHAR))
         return;
     lstrcpyW(g_env + g_env_len, s);
     g_env_len += len;
@@ -55,7 +56,7 @@ static void replace_env(const WCHAR *name, const WCHAR *val)
         int old_size = lstrlenW(pos) + 1;   /* name=value + NUL */
         int new_size = lstrlenW(name) + 1 + lstrlenW(val) + 1; /* name=value + NUL */
         int diff = new_size - old_size;
-        if (g_env_len + diff > (int)(sizeof(g_env) / sizeof(WCHAR)))
+        if (g_env_len + diff >= (int)(sizeof(g_env) / sizeof(WCHAR)))
             return;
         WCHAR *end = pos + old_size;
         if (diff) {
@@ -101,6 +102,10 @@ static void load_env_file(const WCHAR *path)
             if (*eq == '=' && eq > p) {
                 *eq = '\0';
                 char *key = p;
+                /* strip trailing spaces from key (VBS Trim) */
+                int klen = (int)strlen(key);
+                while (klen > 0 && (key[klen - 1] == ' ' || key[klen - 1] == '\t'))
+                    key[--klen] = '\0';
                 char *val = eq + 1;
                 while (*val == ' ' || *val == '\t') val++;
                 int vlen = (int)strlen(val);
@@ -112,16 +117,16 @@ static void load_env_file(const WCHAR *path)
                     val++;
                 }
                 if (*key) {
-                    WCHAR wkey[256], wval[4096];
-                    MultiByteToWideChar(CP_UTF8, 0, key, -1, wkey, 256);
-                    MultiByteToWideChar(CP_UTF8, 0, val, -1, wval, 4096);
-                    replace_env(wkey, wval);
+                    WCHAR wkey[256], wval[8192];
+                    if (MultiByteToWideChar(CP_UTF8, 0, key, -1, wkey, 256) &&
+                        MultiByteToWideChar(CP_UTF8, 0, val, -1, wval, 8192))
+                        replace_env(wkey, wval);
                 }
             }
         }
 
         *nl = saved;
-        line = saved ? nl + (*nl == '\r' ? (*nl + 1 == '\n' ? 2 : 1) : 1) : nl;
+        line = saved ? nl + (saved == '\r' ? (*(nl + 1) == '\n' ? 2 : 1) : 1) : nl;
     }
     HeapFree(GetProcessHeap(), 0, buf);
 }
@@ -131,8 +136,9 @@ static void load_env_file(const WCHAR *path)
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
 {
     /* 1. get our own directory */
-    GetModuleFileNameW(NULL, g_dir, MAX_PATH);
-    WCHAR *bs = g_dir + lstrlenW(g_dir);
+    DWORD dlen = GetModuleFileNameW(NULL, g_dir, MAX_PATH);
+    if (!dlen || dlen >= MAX_PATH) return 1;
+    WCHAR *bs = g_dir + dlen;
     while (bs > g_dir && *bs != L'\\' && *bs != L'/') bs--;
     *bs = L'\0';
 
@@ -149,7 +155,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
 
     /* 3. load .env from app dir */
     {
-        WCHAR env_path[MAX_PATH];
+        WCHAR env_path[512];
         lstrcpyW(env_path, g_dir);
         lstrcatW(env_path, L"\\.env");
         load_env_file(env_path);
@@ -157,7 +163,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
 
     /* 4. prepend MSYS2 to PATH */
     {
-        WCHAR usr[MAX_PATH], ucrt[MAX_PATH], old_path[8192];
+        WCHAR usr[512], ucrt[512], old_path[PATH_BUF];
         lstrcpyW(usr, g_dir);
         lstrcatW(usr, L"\\msys64\\usr\\bin");
         lstrcpyW(ucrt, g_dir);
@@ -170,7 +176,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
             old_path[0] = L'\0';
         }
 
-        WCHAR new_path[16384];
+        WCHAR new_path[PATH_BUF];
         lstrcpyW(new_path, usr);
         lstrcatW(new_path, L";");
         lstrcatW(new_path, ucrt);
@@ -190,7 +196,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
     /* 7. launch psi-agent.exe with --verbose and log files */
     {
         WCHAR cmd[1024];
-        WCHAR out_path[MAX_PATH], err_path[MAX_PATH];
+        WCHAR out_path[512], err_path[512];
         WCHAR stamp[32];
         SYSTEMTIME st;
         GetLocalTime(&st);
@@ -205,14 +211,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
         lstrcatW(err_path, stamp);
         lstrcatW(err_path, L".err.log");
 
+        SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
         HANDLE hIn = GetStdHandle(STD_INPUT_HANDLE);
         if (!hIn || hIn == INVALID_HANDLE_VALUE)
             hIn = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ,
-                              NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                              &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
         HANDLE hOut = CreateFileW(out_path, GENERIC_WRITE, FILE_SHARE_READ,
-                                  NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                                  &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         HANDLE hErr = CreateFileW(err_path, GENERIC_WRITE, FILE_SHARE_READ,
-                                  NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                                  &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
         lstrcpyW(cmd, g_dir);
         lstrcatW(cmd, L"\\psi-agent.exe gateway --tray haitun.ico --verbose");
@@ -228,11 +235,11 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
         CreateProcessW(NULL, cmd, NULL, NULL, TRUE,
                        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
                        g_env, g_dir, &si, &pi);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        CloseHandle(hOut);
-        CloseHandle(hErr);
-        if (hIn != GetStdHandle(STD_INPUT_HANDLE))
+        if (pi.hThread) CloseHandle(pi.hThread);
+        if (pi.hProcess) CloseHandle(pi.hProcess);
+        if (hOut != INVALID_HANDLE_VALUE) CloseHandle(hOut);
+        if (hErr != INVALID_HANDLE_VALUE) CloseHandle(hErr);
+        if (hIn != INVALID_HANDLE_VALUE && hIn != GetStdHandle(STD_INPUT_HANDLE))
             CloseHandle(hIn);
     }
 
