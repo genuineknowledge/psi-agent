@@ -1,6 +1,12 @@
 import { marked } from 'marked'
 import katex from 'katex'
 
+// GFM tables + single-newline -> <br>. With breaks on, in-paragraph line
+// breaks become semantic <br>, so the chat bubble no longer needs
+// `white-space: pre-wrap` (which used to render marked's inter-tag
+// newlines as stray blank lines).
+marked.setOptions({ gfm: true, breaks: true })
+
 export function renderMd(text) {
   if (!marked || !marked.parse) return htmlEscape(text)
   const macros = []
