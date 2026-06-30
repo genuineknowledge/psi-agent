@@ -35,7 +35,7 @@ jobs:
             --collect-submodules any_llm \
             --collect-submodules mcp \
             --collect-submodules pystray \
-            --collect-all serper_mcp_server \
+            --collect-submodules serper_mcp_server \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7
         with:
