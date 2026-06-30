@@ -41,7 +41,7 @@ export function loadActiveState() {
 }
 
 export function saveHistory(id, msgs) {
-  localStorage.setItem('gw-hist-' + id, JSON.stringify(msgs.map(m => ({ role: m.role, text: m.text, files: m.files }))))
+  localStorage.setItem('gw-hist-' + id, JSON.stringify(msgs.map(m => ({ role: m.role, text: m.text, files: m.files, stopped: m.stopped }))))
 }
 
 export function loadHistory(id) {

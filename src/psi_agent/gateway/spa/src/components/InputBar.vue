@@ -20,7 +20,8 @@
         <ModelPanel />
       </div>
 
-      <button class="send" :disabled="store.streaming" @click="$emit('send')"><span class="material-symbols-outlined">send</span></button>
+      <button v-if="store.streaming" class="send stop" @click="$emit('stop')" title="停止生成"><span class="material-symbols-outlined">stop</span></button>
+      <button v-else class="send" @click="$emit('send')" title="发送消息"><span class="material-symbols-outlined">send</span></button>
     </div>
   </div>
 </template>
@@ -29,7 +30,7 @@
 import { store } from '../store.js'
 import ModelPanel from './ModelPanel.vue'
 
-defineEmits(['send'])
+defineEmits(['send', 'stop'])
 
 function onFileSelected(e) {
   store.selectedFile = e.target.files[0] || null

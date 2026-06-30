@@ -55,6 +55,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
 
     logger.debug(f"Forwarding to upstream: provider={provider!r}, model={model!r}, base_url={base_url!r}")
     upstream_error = False
+    client_gone = False
     stream: AsyncIterator[ChatCompletionChunk] | None = None
     try:
         stream = cast(
@@ -77,6 +78,11 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             data = chunk.model_dump_json()
             logger.debug(f"SSE chunk: {data[:1000]}")
             await response.write(f"data: {data}\n\n".encode())
+    except ConnectionResetError:
+        # Downstream client (session/channel) disconnected — e.g. user pressed
+        # "stop". The finally block closes the upstream provider stream.
+        client_gone = True
+        logger.info("Client disconnected; cancelling upstream stream")
     except Exception as e:
         upstream_error = True
         logger.error(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e}")
@@ -107,7 +113,9 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                     except Exception as close_err:
                         logger.warning(f"Failed to close upstream stream: {close_err}")
 
-    if upstream_error:
+    if client_gone:
+        logger.info("Request cancelled by client disconnect")
+    elif upstream_error:
         logger.info("Request completed with upstream error")
     else:
         logger.info("Request completed successfully")

@@ -275,6 +275,8 @@
 }
 #input-area button.send:hover:not(:disabled) { filter: brightness(1.1); transform: scale(1.05); }
 #input-area button.send:disabled { opacity: .4; cursor: default; box-shadow: none; }
+#input-area button.send.stop { background: var(--md-error-container); color: var(--md-text-error); }
+#input-area button.send.stop:hover { filter: brightness(1.1); transform: scale(1.05); }
 
 /* 弹窗材质 */
 .dialog-overlay {

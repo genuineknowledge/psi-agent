@@ -64,6 +64,10 @@ class ChannelAdapter:
         except AgentError as e:
             await ChannelAdapter._write_error(response, e.message)
             logger.warning(f"Agent error: {e.message!r}")
+        except ConnectionResetError:
+            # Downstream client (channel) disconnected — e.g. user pressed "stop".
+            # aclosing() above already cancelled the agent run; nothing to report.
+            logger.info("Channel client disconnected; agent run cancelled")
         except Exception as e:
             await ChannelAdapter._write_error(response, f"[Session Error: {e}]")
             logger.error(f"Unexpected error in agent run: {e!r}")

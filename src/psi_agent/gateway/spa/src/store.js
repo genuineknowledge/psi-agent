@@ -12,6 +12,7 @@ export const store = reactive({
   sessionInputs: {},
   inputText: '',
   streaming: false,
+  abortController: null,
   selectedFile: null,
   dlgAI: false,
   dlgSess: false,
