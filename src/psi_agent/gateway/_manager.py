@@ -6,6 +6,7 @@ import sys
 import uuid
 from dataclasses import dataclass
 
+import aiohttp
 import anyio
 
 
@@ -62,15 +63,22 @@ async def _ensure_socket_dir(socket: str) -> None:
         await anyio.Path(socket).parent.mkdir(parents=True, exist_ok=True)
 
 
-async def _wait_socket(path: str, timeout_sec: float = 10.0) -> None:
+async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
     if sys.platform == "win32":
-        await anyio.sleep(0.3)
-        return
+        connector: aiohttp.BaseConnector = aiohttp.NamedPipeConnector(path=path)
+        kind = "Named Pipe"
+    else:
+        connector = aiohttp.UnixConnector(path=path)
+        kind = "Unix socket"
     deadline = anyio.current_time() + timeout_sec
-    sock = anyio.Path(path)
     while anyio.current_time() < deadline:
-        if await sock.exists():
-            await anyio.sleep(0.3)
+        try:
+            async with (
+                aiohttp.ClientSession(connector=connector) as session,
+                session.get("http://localhost/") as _resp,
+            ):
+                pass
             return
-        await anyio.sleep(0.1)
-    raise TimeoutError(f"Socket '{path}' not created within {timeout_sec}s")
+        except Exception:
+            await anyio.sleep(0.1)
+    raise TimeoutError(f"{kind} '{path}' not ready within {timeout_sec}s")
