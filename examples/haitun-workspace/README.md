@@ -44,3 +44,15 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 ```bash
 uv run python examples/haitun-workspace/systems/system.py
 ```
+
+## Windows 安装包
+
+`.github/workflows/pyinstaller.yml` 的 `haitun-inno-setup` job 会自动构建 Windows 安装程序：
+
+1. PyInstaller 生成的 `psi-agent.exe` 被拷贝进本目录
+2. `haitun.iss`（Inno Setup 脚本）将整个 workspace 打包为安装程序
+3. 安装后通过 `haitun agent.vbs` 启动 `psi-agent gateway --tray haitun.ico`
+
+产物为 GitHub artifact `haitun-agent-installer`（`Haitun Agent Setup.exe`）。
+
+> `haitun agent.vbs` 启动前会读取本目录下的 `.env`（若存在），把其中的 `KEY=VALUE` 注入 `psi-agent.exe` 的运行环境（跳过空行 / `#` 注释，剥离值两端成对引号）。

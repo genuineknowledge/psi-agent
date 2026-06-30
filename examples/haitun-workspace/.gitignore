@@ -26,8 +26,6 @@ flows/*
 !flows/curated/**/FLOW.md
 flows/curated/**/runs/
 
-dolphin.ico
 haitun agent.lnk
-haitun agent.vbs
 psi-agent.exe
 psi-agent
