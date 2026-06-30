@@ -86,7 +86,7 @@ jobs:
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"
       - shell: pwsh
-        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /O"installer-output" ".github\inno-setup\haitun.iss"'
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp /O"installer-output" ".github\inno-setup\haitun.iss"'
       - uses: actions/upload-artifact@v7
         with:
           name: haitun-agent-installer
