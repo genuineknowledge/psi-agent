@@ -77,6 +77,7 @@ async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | Non
     app.router.add_get("/titles", _list_titles)
     app.router.add_post("/titles", _set_title)
     app.router.add_post("/titles/generate", _generate_title)
+    app.router.add_get("/workspace/cwd", _get_cwd)
     app.router.add_get("/workspace/browse", _browse_workspace)
 
     return app
@@ -201,6 +202,11 @@ async def _generate_title(request: web.Request) -> web.Response:
         return _json({"id": sid, "title": title})
     logger.warning(f"Title generation returned no result for session {sid}")
     return _error("Failed to generate title", status=500)
+
+
+async def _get_cwd(request: web.Request) -> web.Response:
+    wm: WorkspaceManager = request.app["wm"]
+    return _json({"cwd": wm.get_cwd()})
 
 
 async def _browse_workspace(request: web.Request) -> web.Response:

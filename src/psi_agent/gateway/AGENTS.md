@@ -34,7 +34,7 @@ Gateway 进程
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取 |
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
-| `_workspace_manager.py` | 目录浏览 |
+| `_workspace_manager.py` | 目录浏览 + cwd 查询 |
 | `spa/` | Vue 3 SPA 前端项目（Vite + SFC + Composition API），构建输出 `spa/dist/` |
 | `_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数指定图标文件，左键打开浏览器，右键菜单控制 |
 | `_openapi.py` | `GET /openapi.json` schema 生成 |
@@ -156,6 +156,7 @@ workspace 中的 history JSONL 不受影响。
 | POST | `/titles` | 设置 session 标题 `{id, title}` |
 | POST | `/titles/generate` | AI 自动生成标题 `{id, user_text, assistant_text}` |
 | GET | `/workspace/browse` | 浏览目录 `?path=...` |
+| GET | `/workspace/cwd` | 获取服务端当前工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--tray` 设置时注册，返回该图标文件） |
 

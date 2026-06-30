@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import anyio
 
 
 class WorkspaceManager:
+    def get_cwd(self) -> str:
+        """Return the current working directory."""
+        return str(Path.cwd())
+
     async def browse(self, path: str) -> dict[str, Any]:
         entries: list[dict[str, str]] = []
         dir_path = anyio.Path(path)
