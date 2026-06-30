@@ -463,11 +463,19 @@ async function createSession() {
   }
   try {
     const info = await api('POST', '/sessions', { ai_id: store.selectedAiId, workspace: store.sessForm.workspace })
+    // Optimistically insert the new session and switch to it immediately so the
+    // dialog closes without waiting on the two extra GETs in refreshAll(). The
+    // backend only returns once the session socket is ready, so `info` is usable.
+    if (!store.sessions.some(s => s.id === info.id)) {
+      store.sessions.push(info)
+    }
+    store.selectedAiId = info.ai_id
     store.selectedSessionId = info.id
     store.dlgSess = false
     store.messages.splice(0)
     saveActiveState(store.selectedAiId, store.selectedSessionId)
-    await refreshAll()
+    // Reconcile with the server in the background; don't block the UI on it.
+    refreshAll()
   } catch (e) {
     showAlert(e.message)
   }
