@@ -28,7 +28,7 @@ class GatewayTray:
         try:
             image = Image.open(self._icon_path)
         except Exception as e:
-            logger.warning(f"Failed to load tray icon from {self._icon_path}: {e}")
+            logger.warning(f"Failed to load tray icon from {self._icon_path!r}: {e!r}")
             return
 
         try:
@@ -38,7 +38,7 @@ class GatewayTray:
             )
             self._icon = pystray.Icon("psi-agent", image, "psi-agent", menu)
         except Exception as e:
-            logger.warning(f"Failed to create tray icon: {e}")
+            logger.warning(f"Failed to create tray icon: {e!r}")
             self._icon = None
             return
 

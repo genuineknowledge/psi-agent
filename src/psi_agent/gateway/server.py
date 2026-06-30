@@ -30,7 +30,7 @@ async def _handle_openapi(request: web.Request) -> web.Response:
 
 async def _handle_favicon(request: web.Request) -> web.FileResponse:
     favicon_path: str = request.app["favicon_path"]
-    logger.debug(f"Serving favicon from {favicon_path}")
+    logger.debug(f"Serving favicon from {favicon_path!r}")
     return web.FileResponse(favicon_path)
 
 
@@ -63,7 +63,7 @@ async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | Non
     app.router.add_get("/spa", _handle_spa)
     app.router.add_get("/spa/", _handle_spa)
     if favicon_path is not None:
-        logger.info(f"Favicon enabled, serving {favicon_path} at /favicon.ico")
+        logger.info(f"Favicon enabled, serving {favicon_path!r} at /favicon.ico")
         app.router.add_get("/favicon.ico", _handle_favicon)
     app.router.add_get("/openapi.json", _handle_openapi)
     app.router.add_post("/ais", _create_ai)
@@ -98,7 +98,7 @@ async def _create_ai(request: web.Request) -> web.Response:
     except (TypeError, ValueError, KeyError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error creating AI: {e}")
+        logger.error(f"Unexpected error creating AI: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -111,7 +111,7 @@ async def _delete_ai(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting AI '{ai_id}': {e}")
+        logger.error(f"Unexpected error deleting AI {ai_id!r}: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -135,7 +135,7 @@ async def _create_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error creating session: {e}")
+        logger.error(f"Unexpected error creating session: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -148,7 +148,7 @@ async def _delete_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting session '{session_id}': {e}")
+        logger.error(f"Unexpected error deleting session {session_id!r}: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -172,7 +172,7 @@ async def _set_title(request: web.Request) -> web.Response:
     except (KeyError, TypeError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error setting title: {e}")
+        logger.error(f"Unexpected error setting title: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -200,7 +200,7 @@ async def _generate_title(request: web.Request) -> web.Response:
     title = await tm.generate(sid, ai_socket, user_text, assistant_text)
     if title:
         return _json({"id": sid, "title": title})
-    logger.warning(f"Title generation returned no result for session {sid}")
+        logger.warning(f"Title generation returned no result for session {sid!r}")
     return _error("Failed to generate title", status=500)
 
 
@@ -272,7 +272,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
     try:
         await resp.prepare(request)
     except Exception:
-        logger.warning(f"Failed to prepare SSE response for session '{session_id}', client likely disconnected")
+        logger.warning(f"Failed to prepare SSE response for session {session_id!r}, client likely disconnected")
         return resp
 
     try:

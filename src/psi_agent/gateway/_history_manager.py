@@ -13,10 +13,10 @@ class HistoryManager:
         try:
             content = await path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            logger.debug(f"No history file for session '{session_id}' at {path}")
+            logger.debug(f"No history file for session {session_id!r} at {path!r}")
             return messages
         except OSError as e:
-            logger.warning(f"Failed to read history for session '{session_id}': {e}")
+            logger.warning(f"Failed to read history for session {session_id!r}: {e!r}")
             return messages
         for line in content.strip().split("\n"):
             if not line.strip():
@@ -33,5 +33,5 @@ class HistoryManager:
             text = msg.get("content", "")
             if isinstance(text, str) and text:
                 messages.append({"role": role, "text": text})
-        logger.debug(f"History for session '{session_id}': {len(messages)} displayable message(s)")
+        logger.debug(f"History for session {session_id!r}: {len(messages)} displayable message(s)")
         return messages

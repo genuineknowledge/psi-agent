@@ -64,7 +64,7 @@ class Gateway:
                     site = create_site(runner, addr)
                     await site.start()
                 except Exception as e:
-                    logger.error(f"Failed to start Gateway on {addr}: {e}")
+                    logger.error(f"Failed to start Gateway on {addr}: {e!r}")
                     raise
 
                 logger.info(f"Gateway listening on {addr}")
@@ -78,7 +78,7 @@ class Gateway:
                     try:
                         tray.start()
                     except Exception as e:
-                        logger.warning(f"Failed to start system tray: {e}")
+                        logger.warning(f"Failed to start system tray: {e!r}")
 
                 try:
                     if tray is not None and tray.is_running():

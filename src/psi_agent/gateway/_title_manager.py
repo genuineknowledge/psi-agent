@@ -68,8 +68,8 @@ class TitleManager:
                 if title:
                     self._titles[session_id] = title
                     return title
-                logger.warning(f"Title generation empty for session {session_id}")
+                logger.warning(f"Title generation empty for session {session_id!r}")
                 return None
         except Exception as e:
-            logger.warning(f"Title generation failed for session {session_id}: {e}")
+            logger.warning(f"Title generation failed for session {session_id!r}: {e!r}")
         return None

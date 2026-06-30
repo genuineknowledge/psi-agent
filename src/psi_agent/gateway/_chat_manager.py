@@ -61,7 +61,7 @@ class ChatManager:
                     try:
                         data = base64.b64decode(data_b64)
                     except ValueError as e:
-                        logger.warning(f"Skipping invalid base64 blob: {e}")
+                        logger.warning(f"Skipping invalid base64 blob: {e!r}")
                         continue
                     path = await self._save_upload(c.get("name", "file.bin"), data)
                     chunks.append(FileChunk(path=path))
@@ -69,7 +69,7 @@ class ChatManager:
                     raise ValueError(f"Unknown chunk type: {t!r}")
             logger.debug(f"Inbound chunk type={t!r} (total {len(chunks)})")
 
-        logger.info(f"Chat: posting {len(chunks)} chunk(s) to {channel_socket}")
+        logger.info(f"Chat: posting {len(chunks)} chunk(s) to {channel_socket!r}")
         async with ChannelCore(session_socket=channel_socket, interval=0.0) as core:
             async for chunk in core.post(chunks):
                 if isinstance(chunk, TextChunk):
@@ -107,5 +107,5 @@ class ChatManager:
                 "data": base64.b64encode(content).decode(),
             }
         except Exception as e:
-            logger.warning(f"Failed to read file blob {path}: {e}")
+            logger.warning(f"Failed to read file blob {path!r}: {e!r}")
             return {"type": "error", "error": str(e)}

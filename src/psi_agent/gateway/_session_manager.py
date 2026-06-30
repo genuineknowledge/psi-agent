@@ -54,9 +54,9 @@ class SessionManager:
         session_id = id or _new_uuid()
         workspace = workspace or str(Path.cwd())
         async with self._lock:
-            logger.debug(f"SessionManager: acquired lock for create '{session_id}'")
+            logger.debug(f"SessionManager: acquired lock for create {session_id!r}")
             if session_id in self._entries:
-                raise ValueError(f"Session '{session_id}' already exists")
+                raise ValueError(f"Session {session_id!r} already exists")
             ai_socket = self._aim.get_socket(ai_id)
             channel_socket = _socket_path(self._prefix, "channels", session_id)
             await _ensure_socket_dir(channel_socket)
@@ -73,11 +73,11 @@ class SessionManager:
                     with scope:
                         await sess.run()
                 except Exception as e:
-                    logger.error(f"Session '{session_id}' crashed: {e}")
+                    logger.error(f"Session {session_id!r} crashed: {e!r}")
                     async with self._lock:
                         self._entries.pop(session_id, None)
 
-            logger.debug(f"SessionManager: starting session '{session_id}' task")
+            logger.debug(f"SessionManager: starting session {session_id!r} task")
             self._tg.start_soon(_run_session)
             self._entries[session_id] = _SessionEntry(
                 scope=scope,
@@ -88,25 +88,25 @@ class SessionManager:
         try:
             await _wait_socket(channel_socket)
         except Exception:
-            logger.error(f"Session '{session_id}' did not become ready, rolling back")
+            logger.error(f"Session {session_id!r} did not become ready, rolling back")
             with anyio.CancelScope(shield=True):
                 async with self._lock:
                     self._entries.pop(session_id, None)
                     scope.cancel()
                     await _remove_socket(channel_socket)
             raise
-        logger.info(f"Session '{session_id}' created on {channel_socket} -> AI '{ai_id}'")
+        logger.info(f"Session {session_id!r} created on {channel_socket} -> AI '{ai_id}'")
         return SessionInfo(id=session_id, ai_id=ai_id, workspace=workspace, channel_socket=channel_socket)
 
     async def delete(self, session_id: str) -> None:
         async with self._lock:
-            logger.debug(f"SessionManager: acquired lock for delete '{session_id}'")
+            logger.debug(f"SessionManager: acquired lock for delete {session_id!r}")
             if session_id not in self._entries:
-                raise LookupError(f"Session '{session_id}' not found")
+                raise LookupError(f"Session {session_id!r} not found")
             entry = self._entries.pop(session_id)
             entry.scope.cancel()
             await _remove_socket(entry.channel_socket)
-            logger.info(f"Session '{session_id}' deleted")
+            logger.info(f"Session {session_id!r} deleted")
 
     async def list_all(self) -> list[SessionInfo]:
         return [
@@ -116,7 +116,7 @@ class SessionManager:
 
     def get_socket(self, session_id: str) -> str:
         if session_id not in self._entries:
-            raise LookupError(f"Session '{session_id}' not found")
+            raise LookupError(f"Session {session_id!r} not found")
         return self._entries[session_id].channel_socket
 
     def has(self, session_id: str) -> bool:
@@ -124,5 +124,5 @@ class SessionManager:
 
     def get_workspace(self, session_id: str) -> str:
         if session_id not in self._entries:
-            raise LookupError(f"Session '{session_id}' not found")
+            raise LookupError(f"Session {session_id!r} not found")
         return self._entries[session_id].workspace

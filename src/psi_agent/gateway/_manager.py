@@ -31,9 +31,9 @@ async def _remove_socket(path: str) -> None:
         return
     try:
         await anyio.Path(path).unlink(missing_ok=True)
-        logger.debug(f"Removed socket file '{path}'")
+        logger.debug(f"Removed socket file {path!r}")
     except OSError as e:
-        logger.warning(f"Failed to remove socket file '{path}': {e}")
+        logger.warning(f"Failed to remove socket file {path!r}: {e!r}")
 
 
 async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
@@ -43,7 +43,7 @@ async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
     else:
         connector = aiohttp.UnixConnector(path=path)
         kind = "Unix socket"
-    logger.debug(f"Waiting for {kind} '{path}' to become ready (timeout={timeout_sec}s)")
+    logger.debug(f"Waiting for {kind} {path!r} to become ready (timeout={timeout_sec}s)")
     deadline = anyio.current_time() + timeout_sec
     session = aiohttp.ClientSession(connector=connector)
     try:
@@ -51,11 +51,11 @@ async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
             try:
                 async with session.get("http://localhost/") as _resp:
                     pass
-                logger.debug(f"{kind} '{path}' is ready")
+                logger.debug(f"{kind} {path!r} is ready")
                 return
             except Exception:
                 await anyio.sleep(0.1)
-        raise TimeoutError(f"{kind} '{path}' not ready within {timeout_sec}s")
+        raise TimeoutError(f"{kind} {path!r} not ready within {timeout_sec}s")
     finally:
         with anyio.CancelScope(shield=True):
             await session.close()
