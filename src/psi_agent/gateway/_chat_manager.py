@@ -63,7 +63,7 @@ class ChatManager:
                     except ValueError as e:
                         logger.warning(f"Skipping invalid base64 blob: {e}")
                         continue
-                    path = await self.save_upload(c.get("name", "file.bin"), data)
+                    path = await self._save_upload(c.get("name", "file.bin"), data)
                     chunks.append(FileChunk(path=path))
                 case _:
                     raise ValueError(f"Unknown chunk type: {t!r}")
@@ -79,7 +79,7 @@ class ChatManager:
                 elif isinstance(chunk, FileChunk):
                     yield await self._file_blob(chunk.path)
 
-    async def save_upload(self, name: str, data: bytes) -> str:
+    async def _save_upload(self, name: str, data: bytes) -> str:
         """Persist an inbound file to ~/Downloads/.psi/{date}/ and return its path.
 
         Used for both multipart uploads (via the chat handler) and inline base64
