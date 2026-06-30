@@ -56,3 +56,5 @@ uv run python examples/haitun-workspace/systems/system.py
 产物为 GitHub artifact `haitun-agent-installer`（`Haitun Agent Setup.exe`）。
 
 > `haitun agent.vbs` 启动前会读取本目录下的 `.env`（若存在），把其中的 `KEY=VALUE` 注入 `psi-agent.exe` 的运行环境（跳过空行 / `#` 注释，剥离值两端成对引号）。
+
+> 安装包自带一份 MSYS2（位于 `{app}\msys64`，含 bash/git/curl/ssh 等，保留 pacman）。`haitun agent.vbs` 会把 `msys64\usr\bin` 加到 `PATH` 最前，因此 `bash` 工具在 Windows 上开箱即用，无需另装 Git Bash。
