@@ -1,21 +1,47 @@
 from __future__ import annotations
 
-# ruff: noqa: E402
+import hashlib
 import sys
+import types
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import Any, Protocol, cast
 
 TOOLS_DIR = Path(__file__).resolve().parent
-if str(TOOLS_DIR) not in sys.path:
-    sys.path.insert(0, str(TOOLS_DIR))
 
-from _client import format_context_pack as _format_context_pack
-from _client import post_json as _post_json
-from _config import CONFIG
 
-UNAVAILABLE_MESSAGE = (
-    '{"ok": false, "message": "Fusion Memory is not available. '
-    'Continue without memory, then run fusion-memory doctor."}'
-)
+class MemoryConfig(Protocol):
+    allow_cross_session: bool
+    base_url: str
+    scope: dict[str, Any]
+    timeout_seconds: float
+
+
+class FormatContextPack(Protocol):
+    def __call__(self, pack: dict[str, Any], limit: int = 8) -> str: ...
+
+
+PostJson = Callable[[str, str, dict[str, Any], float], Awaitable[dict[str, Any]]]
+FormatErrorResult = Callable[[Exception], str]
+
+
+def _load_sibling_module(name: str) -> dict[str, Any]:
+    path = TOOLS_DIR / f"{name}.py"
+    module_name = f"fusion_memory_tool_{name}_{hashlib.sha256(str(path).encode()).hexdigest()[:12]}"
+    module = types.ModuleType(module_name)
+    module.__file__ = str(path)
+    source = path.read_text(encoding="utf-8")
+    sys.modules[module_name] = module
+    exec(compile(source, str(path), "exec"), module.__dict__)
+    return module.__dict__
+
+
+_client = _load_sibling_module("_client")
+_config = _load_sibling_module("_config")
+_format_context_pack = cast(FormatContextPack, _client["format_context_pack"])
+_format_error_result = cast(FormatErrorResult, _client["format_error_result"])
+_post_json = cast(PostJson, _client["post_json"])
+CONFIG = cast(MemoryConfig, _config["CONFIG"])
 
 
 async def memory_answer_context(query: str) -> str:
@@ -39,5 +65,5 @@ async def memory_answer_context(query: str) -> str:
             CONFIG.timeout_seconds,
         )
         return _format_context_pack(data)
-    except Exception:
-        return UNAVAILABLE_MESSAGE
+    except Exception as exc:
+        return _format_error_result(exc)
