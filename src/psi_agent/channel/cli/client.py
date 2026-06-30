@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import aclosing
+
 from loguru import logger
 from rich.console import Console
 
@@ -13,8 +15,11 @@ async def run_cli(*, session_socket: str, message: str) -> None:
     logger.info(f"Connecting to session at {session_socket}")
 
     try:
-        async with ChannelCore(session_socket, interval=0.0) as core:
-            async for chunk in core.post([TextChunk(message)]):
+        async with (
+            ChannelCore(session_socket, interval=0.0) as core,
+            aclosing(core.post([TextChunk(message)])) as stream,
+        ):
+            async for chunk in stream:
                 if isinstance(chunk, ReasoningChunk):
                     console.print(chunk.text, end="", style="dim")
                 elif isinstance(chunk, TextChunk):

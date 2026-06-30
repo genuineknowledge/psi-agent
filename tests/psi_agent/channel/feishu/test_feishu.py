@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 
 from psi_agent.channel._core import ChannelCore
@@ -14,6 +16,7 @@ from psi_agent.channel.feishu.client import (
     _add_reaction,
     _handle_and_stream,
     _remove_reaction,
+    run_feishu,
 )
 
 
@@ -139,3 +142,53 @@ async def test_handle_failure_replaces_with_crossmark(monkeypatch, tmp_path):
     assert emojis == [_EMOJI_PROCESSING, _EMOJI_FAILED]
     assert adelete.call_count == 1
     channel.send.assert_awaited()
+
+
+class _FakePortal:
+    """Stand-in for anyio BlockingPortal so run_feishu lifecycle tests stay deterministic."""
+
+    async def __aenter__(self) -> _FakePortal:
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+    def start_task_soon(self, *args: object, **kwargs: object) -> None:
+        pass
+
+
+def _patch_feishu(monkeypatch, channel: MagicMock) -> None:
+    monkeypatch.setattr(client, "FeishuChannel", lambda app_id, app_secret: channel)
+    monkeypatch.setattr(client, "BlockingPortal", lambda: _FakePortal())
+
+
+@pytest.mark.anyio
+async def test_run_feishu_cleans_up_on_startup_failure(monkeypatch):
+    """start_background failure must trigger shielded stop_background and re-raise."""
+    channel = MagicMock()
+    channel.on = MagicMock()
+    channel.start_background = AsyncMock(side_effect=RuntimeError("connect boom"))
+    channel.stop_background = AsyncMock()
+    _patch_feishu(monkeypatch, channel)
+
+    with pytest.raises(RuntimeError, match="connect boom"):
+        await run_feishu(session_socket="/tmp/nonexistent.sock", app_id="a", app_secret="s")
+
+    channel.stop_background.assert_awaited()
+
+
+@pytest.mark.anyio
+async def test_run_feishu_cleans_up_on_cancel(monkeypatch):
+    """On cancel, stop_background must run under a shielded scope."""
+    channel = MagicMock()
+    channel.on = MagicMock()
+    channel.start_background = AsyncMock()
+    channel.stop_background = AsyncMock()
+    _patch_feishu(monkeypatch, channel)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(partial(run_feishu, session_socket="/tmp/nonexistent.sock", app_id="a", app_secret="s"))
+        await anyio.sleep(0.1)
+        tg.cancel_scope.cancel()
+
+    channel.stop_background.assert_awaited()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import aclosing
 from datetime import date
 from typing import Any
 
@@ -148,13 +149,14 @@ async def _handle_and_stream(
         logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
 
         async def _produce(stream: Any) -> None:
-            async for chunk in core.post(chunks):
-                if isinstance(chunk, TextChunk):
-                    await stream.append(chunk.text)
-                    logger.debug(f"stream.append ({len(chunk.text)} chars)")
-                elif isinstance(chunk, FileChunk):
-                    logger.debug(f"received FileChunk ({chunk.path})")
-                    await _send_file(channel, ctx.chat_id, chunk.path)
+            async with aclosing(core.post(chunks)) as gen:
+                async for chunk in gen:
+                    if isinstance(chunk, TextChunk):
+                        await stream.append(chunk.text)
+                        logger.debug(f"stream.append ({len(chunk.text)} chars)")
+                    elif isinstance(chunk, FileChunk):
+                        logger.debug(f"received FileChunk ({chunk.path})")
+                        await _send_file(channel, ctx.chat_id, chunk.path)
 
         try:
             await channel.stream(
@@ -192,9 +194,12 @@ async def run_feishu(
 
         channel.on("message", _on_message)
         logger.info(f"Feishu bot connecting (session={session_socket} interval={interval})")
-        await channel.start_background()
         try:
+            await channel.start_background()
             await anyio.Event().wait()
         finally:
             with anyio.CancelScope(shield=True):
-                await channel.stop_background()
+                try:
+                    await channel.stop_background()
+                except Exception as e:
+                    logger.warning(f"Feishu stop_background failed: {e}")

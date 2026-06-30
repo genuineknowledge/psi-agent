@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import aclosing
 from datetime import date
 
 import anyio
@@ -109,15 +110,16 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
     accumulated = ""
     try:
-        async for chunk in core.post(chunks):
-            if isinstance(chunk, TextChunk):
-                accumulated += chunk.text
-                if accumulated.strip():
-                    await sent.edit_text(accumulated)
-                    logger.debug(f"edit_text ({len(accumulated)} chars)")
-            elif isinstance(chunk, FileChunk):
-                logger.debug(f"received FileChunk ({chunk.path})")
-                await _send_file(update, chunk.path)
+        async with aclosing(core.post(chunks)) as stream:
+            async for chunk in stream:
+                if isinstance(chunk, TextChunk):
+                    accumulated += chunk.text
+                    if accumulated.strip():
+                        await sent.edit_text(accumulated)
+                        logger.debug(f"edit_text ({len(accumulated)} chars)")
+                elif isinstance(chunk, FileChunk):
+                    logger.debug(f"received FileChunk ({chunk.path})")
+                    await _send_file(update, chunk.path)
     except Exception as e:
         logger.error(f"ChannelCore error — {e}")
         await sent.edit_text(f"Error: {e}")
@@ -152,16 +154,26 @@ async def run_telegram(
         app.add_handler(MessageHandler(filters.ALL, _handle_message))
         logger.debug("handler registered (all messages)")
 
-        await app.initialize()
-        await app.start()
-        if app.updater is None:
-            raise RuntimeError("Application has no updater")
-        await app.updater.start_polling()
-        logger.info(f"Telegram bot polling started (session={session_socket} interval={interval})")
         try:
+            await app.initialize()
+            await app.start()
+            if app.updater is None:
+                raise RuntimeError("Application has no updater")
+            await app.updater.start_polling()
+            logger.info(f"Telegram bot polling started (session={session_socket} interval={interval})")
             await anyio.Event().wait()
         finally:
             with anyio.CancelScope(shield=True):
-                await app.updater.stop()
-                await app.stop()
-                await app.shutdown()
+                if app.updater is not None:
+                    try:
+                        await app.updater.stop()
+                    except Exception as e:
+                        logger.warning(f"Telegram updater.stop failed: {e}")
+                try:
+                    await app.stop()
+                except Exception as e:
+                    logger.warning(f"Telegram app.stop failed: {e}")
+                try:
+                    await app.shutdown()
+                except Exception as e:
+                    logger.warning(f"Telegram app.shutdown failed: {e}")

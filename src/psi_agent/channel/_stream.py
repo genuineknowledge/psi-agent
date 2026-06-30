@@ -26,6 +26,8 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncIterator[dict[str
 
     Skips blank/non-``data:`` lines, malformed JSON and zero-choice heartbeats;
     stops at ``[DONE]``; raises on multi-choice chunks and ``finish_reason=error``.
+    Non-list ``choices`` and non-dict ``choice`` are skipped; a missing or ``null``
+    ``delta`` is coerced to ``{}`` so the caller always receives a dict.
     """
     async for raw_line in lines:
         line = raw_line.decode().strip()
@@ -39,24 +41,34 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncIterator[dict[str
         try:
             data = json.loads(data_str)
         except json.JSONDecodeError:
-            logger.debug(f"skip malformed SSE: {line[:80]}")
+            logger.warning(f"skip malformed SSE: {line[:80]}")
             continue
 
         choices = data.get("choices", [])
+        if not isinstance(choices, list):
+            logger.warning(f"skip chunk with non-list choices: {type(choices).__name__}")
+            continue
         if not choices:
             logger.debug("skip chunk with 0 choices (heartbeat)")
             continue
         if len(choices) != 1:
             raise ChannelError(f"Expected exactly 1 choice, got {len(choices)}")
+
         choice = choices[0]
+        if not isinstance(choice, dict):
+            logger.warning(f"skip non-dict choice: {type(choice).__name__}")
+            continue
+
+        delta = choice.get("delta")
+        if not isinstance(delta, dict):
+            delta = {}
 
         if choice.get("finish_reason") == "error":
-            delta = choice.get("delta", {})
             msg = delta.get("content", "Session error")
             logger.debug(f"finish_reason=error: {msg}")
             raise ChannelError(msg)
 
-        yield choice.get("delta", {})
+        yield delta
 
 
 class StreamBuffer:
