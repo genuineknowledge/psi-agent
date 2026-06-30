@@ -1,8 +1,11 @@
 name: Nuitka
 
 on:
+  workflow_dispatch:
   push:
-  pull_request:
+    tags:
+      - "v*"
+      - "!v*-alpha*"
 
 jobs:
   nuitka:
@@ -76,6 +79,9 @@ jobs:
       - shell: pwsh
         run: Remove-Item -Recurse -Force "examples\haitun-workspace\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
       - run: choco install innosetup --no-progress
+      - shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile "examples\haitun-workspace\ChineseSimplified.isl"
       - shell: pwsh
         run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /O"installer-output" "examples\haitun-workspace\haitun.iss"'
       - uses: actions/upload-artifact@v7
