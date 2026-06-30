@@ -50,6 +50,10 @@ class ChatManager:
                 continue
             t = c.get("type")
             if t == "text":
+                text = c.get("text")
+                if isinstance(text, str):
+                    chunks.append(TextChunk(text=text))
+            elif t == "blob":
                 data_b64 = c.get("data")
                 if not isinstance(data_b64, str):
                     continue
