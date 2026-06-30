@@ -68,6 +68,3 @@ class GatewayTray:
 
     def _quit(self, icon: Any = None) -> None:
         self._stop_event.set()
-        if self._icon is not None:
-            with contextlib.suppress(Exception):
-                self._icon.stop()
