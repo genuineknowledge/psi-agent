@@ -20,27 +20,26 @@ async def post_json(base_url: str, path: str, payload: dict[str, Any], timeout_s
     timeout = aiohttp.ClientTimeout(total=_normalize_timeout_seconds(timeout_seconds))
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(url, json=payload) as response:
-                try:
-                    data = await response.json()
-                except (aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError):
-                    data = {}
-                if response.status >= 400:
-                    raise MemoryToolError(
-                        error=_extract_error(data) or "request_failed",
-                        cause=_extract_cause(data) or f"http_{response.status}",
-                        message=_extract_message(data) or UNAVAILABLE_MESSAGE,
-                    )
-                return data if isinstance(data, dict) else {}
+        async with aiohttp.ClientSession(timeout=timeout) as session, session.post(url, json=payload) as response:
+            try:
+                data = await response.json()
+            except aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError:
+                data = {}
+            if response.status >= 400:
+                raise MemoryToolError(
+                    error=_extract_error(data) or "request_failed",
+                    cause=_extract_cause(data) or f"http_{response.status}",
+                    message=_extract_message(data) or UNAVAILABLE_MESSAGE,
+                )
+            return data if isinstance(data, dict) else {}
     except MemoryToolError:
         raise
-    except (aiohttp.ClientError, TimeoutError):
+    except (aiohttp.ClientError, TimeoutError) as exc:
         raise MemoryToolError(
             error="service_unavailable",
             cause="connection_failed",
             message="Fusion Memory service is not reachable. Run fusion-memory status or fusion-memory start.",
-        )
+        ) from exc
 
 
 def format_context_pack(pack: dict[str, Any], limit: int = 8) -> str:
