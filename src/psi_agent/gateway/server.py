@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import json
-import os
+from contextlib import aclosing, suppress
 from dataclasses import asdict
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +39,7 @@ async def _handle_favicon(request: web.Request) -> web.FileResponse:
 
 def _json(data: object, status: int = 200) -> web.Response:
     return web.Response(
-        text=json.dumps(data),
+        text=json.dumps(data, ensure_ascii=False),
         content_type="application/json",
         status=status,
     )
@@ -231,37 +230,36 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
     except LookupError:
         return _error(f"Session '{session_id}' not found", status=404)
 
-    if request.content_type and "multipart" in request.content_type:
-        data = await request.post()
-        raw = data.get("chunks")
-        raw_chunks = json.loads(str(raw)) if raw else []
-        file_field = data.get("file")
-        body: dict[str, Any] = {"chunks": raw_chunks}
-        if file_field is not None:
-            fname = getattr(file_field, "filename", None)
-            if fname:
-                path = _downloads_path(fname)
-                await anyio.Path(path).parent.mkdir(parents=True, exist_ok=True)
-                content = await anyio.to_thread.run_sync(file_field.file.read)  # ty: ignore
-                await anyio.Path(path).write_bytes(content)
-                body["chunks"].append({"type": "file", "path": path})
-    else:
-        body = await request.json()
+    try:
+        if request.content_type and "multipart" in request.content_type:
+            data = await request.post()
+            raw = data.get("chunks")
+            raw_chunks = json.loads(str(raw)) if raw else []
+            body: dict[str, Any] = {"chunks": raw_chunks}
+            file_field = data.get("file")
+            if file_field is not None:
+                fname = getattr(file_field, "filename", None)
+                if fname:
+                    content = await anyio.to_thread.run_sync(file_field.file.read)  # ty: ignore
+                    path = await cm.save_upload(fname, content)
+                    body["chunks"].append({"type": "file", "path": path})
+        else:
+            body = await request.json()
+    except (ValueError, TypeError) as e:
+        return _error(f"Invalid request: {e}", status=400)
 
     resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
     await resp.prepare(request)
 
     try:
-        async for chunk in cm.handle(channel_socket, body):
-            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        async with aclosing(cm.handle(channel_socket, body)) as stream:
+            async for chunk in stream:
+                await resp.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
     except Exception as e:
-        logger.warning(f"Chat error for session {session_id!r}: {e!r}")
-        await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n".encode())
-    await resp.write(b"data: [DONE]\n\n")
+        logger.warning(f"Chat error for session '{session_id}': {e}")
+        with suppress(Exception):
+            await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n".encode())
+    finally:
+        with suppress(Exception):
+            await resp.write(b"data: [DONE]\n\n")
     return resp
-
-
-def _downloads_path(filename: str) -> str:
-    date = datetime.now().strftime("%Y-%m-%d")
-    base = os.path.join(str(Path.home()), "Downloads", ".psi", date)
-    return os.path.join(base, os.path.basename(filename))

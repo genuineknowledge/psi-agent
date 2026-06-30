@@ -32,7 +32,7 @@ class TitleManager:
         }
         try:
             connector, endpoint = resolve_connector_and_endpoint(ai_socket)
-            timeout = ClientTimeout(total=30)
+            timeout = ClientTimeout(total=None)
             async with (
                 ClientSession(connector=connector, timeout=timeout) as session,
                 session.post(endpoint, json=body) as resp,
@@ -50,15 +50,20 @@ class TitleManager:
                         break
                     try:
                         chunk = json.loads(data_str)
-                        choices = chunk.get("choices", [])
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta", {})
-                        content = delta.get("content") or ""
-                        if content:
-                            title += content
                     except json.JSONDecodeError:
                         continue
+                    choices = chunk.get("choices", [])
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    first = choices[0]
+                    if not isinstance(first, dict):
+                        continue
+                    delta = first.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    content = delta.get("content") or ""
+                    if content:
+                        title += content
                 title = title.strip().strip("'\"")
                 logger.info(f"Title generation result: {title!r}")
                 if title:

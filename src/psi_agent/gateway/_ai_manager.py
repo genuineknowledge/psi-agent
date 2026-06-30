@@ -13,6 +13,7 @@ from psi_agent.gateway._manager import (
     DeleteResponse,
     _ensure_socket_dir,
     _new_uuid,
+    _remove_socket,
     _socket_path,
     _wait_socket,
 )
@@ -73,6 +74,7 @@ class AIManager:
                 raise LookupError(f"AI '{ai_id}' not found")
             entry = self._entries.pop(ai_id)
             entry.scope.cancel()
+            await _remove_socket(entry.socket)
             logger.info(f"AI '{ai_id}' deleted")
             return DeleteResponse(id=ai_id)
 

@@ -76,6 +76,7 @@ OPENAPI_SPEC = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SessionInfo"}}},
                     },
                     "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
                 },
             },
             "get": {
@@ -150,6 +151,7 @@ OPENAPI_SPEC = {
                 },
                 "responses": {
                     "200": {"description": "SSE stream of Chunk objects"},
+                    "400": {"$ref": "#/components/responses/Error"},
                     "404": {"$ref": "#/components/responses/Error"},
                 },
             },
@@ -226,6 +228,8 @@ OPENAPI_SPEC = {
                 },
                 "responses": {
                     "200": {"description": "Generated title"},
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
                     "500": {"$ref": "#/components/responses/Error"},
                 },
             },

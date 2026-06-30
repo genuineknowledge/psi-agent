@@ -179,3 +179,53 @@ async def test_sessionmanager_has_and_get_channel_socket(tmp_path: str) -> None:
         await am.delete("ai1")
     finally:
         await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_aimanager_delete_removes_socket_file(tmp_path: str) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    try:
+        mgr = AIManager(_prefix="gw-test", _tg=tg)
+        req = AiCreateRequest(provider="o", model="m", api_key="k", base_url="b")
+        info = await mgr.create(req)
+        assert await anyio.Path(info.socket).exists()
+        await mgr.delete(info.id)
+        assert not await anyio.Path(info.socket).exists()
+    finally:
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_aimanager_recreate_same_id_after_delete(tmp_path: str) -> None:
+    # Regression (A1): delete must remove the socket file so the same id can
+    # be recreated without hitting EADDRINUSE on the leftover socket.
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    try:
+        mgr = AIManager(_prefix="gw-test", _tg=tg)
+        req = AiCreateRequest(provider="o", model="m", api_key="k", base_url="b", id="reuse")
+        await mgr.create(req)
+        await mgr.delete("reuse")
+        info = await mgr.create(req)
+        assert info.id == "reuse"
+        await mgr.delete("reuse")
+    finally:
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_sessionmanager_delete_removes_socket_file(tmp_path: str) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    try:
+        am = AIManager(_prefix="gw-test", _tg=tg)
+        sm = SessionManager(_aim=am, _prefix="gw-test", _tg=tg)
+        await am.create(AiCreateRequest(provider="o", model="m", api_key="k", base_url="b", id="ai1"))
+        info = await sm.create(SessionCreateRequest(ai_id="ai1", workspace=str(tmp_path)))
+        assert await anyio.Path(info.channel_socket).exists()
+        await sm.delete(info.id)
+        assert not await anyio.Path(info.channel_socket).exists()
+        await am.delete("ai1")
+    finally:
+        await tg.__aexit__(None, None, None)

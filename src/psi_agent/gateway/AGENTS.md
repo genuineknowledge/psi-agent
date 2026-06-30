@@ -138,6 +138,8 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 
 workspace 中的 history JSONL 不受影响。
 
+**注意（有意为之）**：删除 AI **不会**级联删除依赖它的 Session。被删 AI 的 socket 失效后，挂在其上的 Session 仍存活但不可用——由前端负责不再访问这类失效 Session，后端不做级联清理。
+
 ## REST API
 
 | Method | Endpoint | Description |
@@ -160,6 +162,8 @@ workspace 中的 history JSONL 不受影响。
 AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
 
 错误响应格式：`{"error": "message"}` + HTTP 状态码（404/400/500）。
+
+**安全提示**：`GET /workspace/browse` 对 `path` 不加限制，可列举本机任意目录——这是 FileBrowser 选 workspace 的预期功能。Gateway 默认仅 listen `127.0.0.1`，**请勿用 `--listen 0.0.0.0` 对外暴露**，否则等于开放任意目录列举。
 
 ## Web UI Chat 协议
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -14,6 +14,7 @@ from psi_agent.gateway._manager import (
     SessionInfo,
     _ensure_socket_dir,
     _new_uuid,
+    _remove_socket,
     _socket_path,
     _wait_socket,
 )
@@ -40,7 +41,7 @@ class SessionManager:
         if not self._aim.has(req.ai_id):
             raise LookupError(f"AI '{req.ai_id}' not found")
         session_id = req.id or _new_uuid()
-        workspace = req.workspace or os.getcwd()
+        workspace = req.workspace or str(Path.cwd())
         async with self._lock:
             logger.debug(f"SessionManager: acquired lock for create '{session_id}'")
             if session_id in self._entries:
@@ -84,6 +85,7 @@ class SessionManager:
                 raise LookupError(f"Session '{session_id}' not found")
             entry = self._entries.pop(session_id)
             entry.scope.cancel()
+            await _remove_socket(entry.channel_socket)
             logger.info(f"Session '{session_id}' deleted")
             return DeleteResponse(id=session_id)
 
