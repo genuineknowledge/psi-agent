@@ -29,3 +29,4 @@ flows/curated/**/runs/
 haitun agent.lnk
 psi-agent.exe
 psi-agent
+msys64/
