@@ -49,21 +49,24 @@ class ChatManager:
             if not isinstance(c, dict):
                 continue
             t = c.get("type")
-            if t == "text":
-                text = c.get("text")
-                if isinstance(text, str):
-                    chunks.append(TextChunk(text=text))
-            elif t == "blob":
-                data_b64 = c.get("data")
-                if not isinstance(data_b64, str):
-                    continue
-                try:
-                    data = base64.b64decode(data_b64)
-                except ValueError as e:
-                    logger.warning(f"Skipping invalid base64 blob: {e}")
-                    continue
-                path = await self.save_upload(c.get("name", "file.bin"), data)
-                chunks.append(FileChunk(path=path))
+            match t:
+                case "text":
+                    text = c.get("text")
+                    if isinstance(text, str):
+                        chunks.append(TextChunk(text=text))
+                case "blob":
+                    data_b64 = c.get("data")
+                    if not isinstance(data_b64, str):
+                        continue
+                    try:
+                        data = base64.b64decode(data_b64)
+                    except ValueError as e:
+                        logger.warning(f"Skipping invalid base64 blob: {e}")
+                        continue
+                    path = await self.save_upload(c.get("name", "file.bin"), data)
+                    chunks.append(FileChunk(path=path))
+                case _:
+                    raise ValueError(f"Unknown chunk type: {t!r}")
             logger.debug(f"Inbound chunk type={t!r} (total {len(chunks)})")
 
         logger.info(f"Chat: posting {len(chunks)} chunk(s) to {channel_socket}")
