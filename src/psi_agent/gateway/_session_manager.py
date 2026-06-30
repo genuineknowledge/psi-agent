@@ -114,7 +114,7 @@ class SessionManager:
             for sid, e in list(self._entries.items())
         ]
 
-    def get_channel_socket(self, session_id: str) -> str:
+    def get_socket(self, session_id: str) -> str:
         if session_id not in self._entries:
             raise LookupError(f"Session '{session_id}' not found")
         return self._entries[session_id].channel_socket

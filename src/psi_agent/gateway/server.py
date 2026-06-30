@@ -230,7 +230,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
     cm: ChatManager = request.app["cm"]
     session_id = request.match_info["session_id"]
     try:
-        channel_socket = sm.get_channel_socket(session_id)
+        channel_socket = sm.get_socket(session_id)
     except LookupError:
         return _error(f"Session '{session_id}' not found", status=404)
 

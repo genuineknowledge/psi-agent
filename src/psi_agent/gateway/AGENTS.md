@@ -187,7 +187,7 @@ data: [DONE]
 ```
 
 **内部实现**：
-- 查 `SessionManager.get_channel_socket(session_id)` 获取 channel socket
+- 查 `SessionManager.get_socket(session_id)` 获取 channel socket
 - 复用 `channel._core.ChannelCore` 构造连接
 - 输入：`FileChunk(path)`、`TextChunk(text)`、blob（base64 解码后由 `save_upload()` 落至 `~/Downloads/.psi/<date>/`，持久保留，转为 `FileChunk`）；multipart 文件上传同路径
 - 输出：`TextChunk` → yield `{"type": "text"}`，`FileChunk` → 读取文件内容 base64 编码后 yield `{"type": "blob"}`

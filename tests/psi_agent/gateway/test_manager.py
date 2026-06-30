@@ -148,7 +148,7 @@ async def test_sessionmanager_duplicate_id(tmp_path: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_sessionmanager_has_and_get_channel_socket(tmp_path: str) -> None:
+async def test_sessionmanager_has_and_get_socket(tmp_path: str) -> None:
     tg = anyio.create_task_group()
     await tg.__aenter__()
     try:
@@ -160,9 +160,9 @@ async def test_sessionmanager_has_and_get_channel_socket(tmp_path: str) -> None:
         info = await sm.create(ai_id="ai1", workspace=str(tmp_path))
         assert sm.has(info.id)
         assert not sm.has("nonexistent")
-        assert sm.get_channel_socket(info.id) == info.channel_socket
+        assert sm.get_socket(info.id) == info.channel_socket
         with pytest.raises(LookupError):
-            sm.get_channel_socket("nonexistent")
+            sm.get_socket("nonexistent")
         await sm.delete(info.id)
         await am.delete("ai1")
     finally:
