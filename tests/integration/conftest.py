@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import signal
 import socket
@@ -141,7 +140,7 @@ async def read_sse(socket_path: str, message: str = "hello", *, timeout_sec: flo
 
 def read_sse_sync(socket_path: str, message: str = "hello", *, timeout_sec: float = 10.0) -> list[dict]:
     """Synchronous wrapper for read_sse."""
-    return asyncio.run(read_sse(socket_path, message, timeout_sec=timeout_sec))
+    return anyio.run(lambda: read_sse(socket_path, message, timeout_sec=timeout_sec))
 
 
 # --- Subprocess helpers ---
