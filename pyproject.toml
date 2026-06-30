@@ -24,6 +24,7 @@ dependencies = [
     "lark-channel-sdk>=1.1.0",
     "python-telegram-bot[socks]>=22.8",
     "mcp>=1.28.1",
+    "serper-mcp-server>=0.0.10",
     "pystray>=0.19.5",
     "pillow>=12.2.0",
 ]

@@ -125,6 +125,8 @@ class _Session:
 
 def _connect(config: dict[str, Any]):
     t = config["transport"]
+    if t == "coroutine":
+        return _Session(config["fn"])
     if t == "stdio":
         p = StdioServerParameters(command=config["command"], args=config.get("args", []), env=config.get("env") or None)
         return _Session(lambda: stdio_client(p))
@@ -159,6 +161,11 @@ def _resolve(raw: Any) -> dict[str, Any]:
     if transport is None:
         transport = "http" if url else "stdio"
     transport = transport.lower().replace("-", "_").replace("local", "stdio")
+    if transport == "coroutine":
+        fn = d.get("fn")
+        if not callable(fn):
+            raise MCPError("coroutine transport requires a callable 'fn'")
+        return {"transport": "coroutine", "fn": fn}
     if transport not in {"stdio", "http", "sse"}:
         raise MCPError(f"Unsupported transport: {transport!r}")
     if transport == "stdio" and not cmd:
