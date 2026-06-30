@@ -52,7 +52,7 @@ class GatewayTray:
             with contextlib.suppress(Exception):
                 self._icon.stop()
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
+            self._thread.join()
         logger.info("Gateway system tray icon stopped")
 
     def is_running(self) -> bool:
