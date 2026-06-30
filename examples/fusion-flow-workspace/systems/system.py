@@ -415,7 +415,7 @@ FLOW_ENGINE=psi
 FLOW_PSI_WORKSPACE={default_executor_workspace}
 FLOW_PSI_PROFILE=fusion
 
-When Haitun agent is not installed globally, run Fusion Flow with these local overrides:
+When the Haitun agent CLI is not installed globally, run Fusion Flow with these local overrides:
 
 FLOW_PSI_COMMAND=uv
 FLOW_PSI_COMMAND_ARGS=--project {repo_root} run psi-agent

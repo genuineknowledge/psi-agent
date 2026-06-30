@@ -11,7 +11,7 @@
 | `haitun.ico` → `examples/haitun-workspace/haitun.ico` | 移动 | 图标文件，用于 tray icon、installer icon、shortcut icon |
 | `examples/haitun-workspace/haitun agent.vbs` | 新建 | VBS 启动器，负责 launch `psi-agent gateway --tray haitun.ico` |
 | `examples/haitun-workspace/haitun.iss` | 新建 | Inno Setup 安装脚本 |
-| `examples/haitun-workspace/.gitignore` | 修改 | 移除 `haitun agent.vbs`、`dolphin.ico` 行（现已提交） |
+| `examples/haitun-workspace/.gitignore` | 修改 | 移除 `haitun agent.vbs`、`haitun.ico` 行（现已提交） |
 | `.github/workflows/pyinstaller.yml` | 修改 | 新增 `haitun-inno-setup` job，在 PyInstaller 之后运行 |
 
 ## haitun agent.vbs

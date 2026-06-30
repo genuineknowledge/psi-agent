@@ -33,4 +33,4 @@ Delete this file. You don't need a bootstrap script anymore — you and your hum
 
 ---
 
-_Good luck out there._
+_Good luck out there. Make a splash._

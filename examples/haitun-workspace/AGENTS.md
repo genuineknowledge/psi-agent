@@ -21,7 +21,7 @@ user profile, and bootstrap files all live at the workspace root:
 |---|---|
 | `SOUL.md` | Personality/values; augments the built-in Haitun agent identity (top of prompt). |
 | `USER.md` | User profile; injected into the dynamic suffix (below the cache boundary). |
-| `IDENTITY.md` | Haitun agent identity details; loaded as a bootstrap context file. |
+| `IDENTITY.md` | Haitun identity details; loaded as a bootstrap context file. |
 | `TOOLS.md` | Local, environment-specific notes; bootstrap context file. |
 | `BOOTSTRAP.md` | First-run onboarding. **Delete it** to skip onboarding. Triggers the "Bootstrap Pending" section while present. |
 | `HEARTBEAT.md` | Dynamic context, re-read every turn (below the cache boundary). |
