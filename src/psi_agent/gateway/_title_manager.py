@@ -22,11 +22,10 @@ class TitleManager:
         prompt = (
             f"Generate a short title (3-5 words, in the same language as the user) for this conversation:\n\n"
             f"User: {user_text}\n\n"
-            f"Assistant: {assistant_text[:1000]}\n\n"
+            f"Assistant: {assistant_text}\n\n"
             f"Reply with ONLY the title, no quotes or extra text."
         )
         body = {
-            "model": "ignore",
             "messages": [{"role": "user", "content": prompt}],
             "stream": True,
         }
