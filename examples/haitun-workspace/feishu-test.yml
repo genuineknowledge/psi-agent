@@ -1,0 +1,31 @@
+# psi-agent run config — Feishu (飞书) 渠道测试
+#
+# 启动三个组件 concurrently：
+#   ai       → LLM 后端（监听 Unix socket，转发给 OpenAI 等）
+#   session  → 会话层（连接 AI 和渠道，加载工作区）
+#   channel  → 飞书机器人（连接飞书 API 和 session）
+#
+# 用法：psi-agent run feishu-test.yml
+
+- type: ai
+  provider: deepseek              # 或 azure / anthropic / gemini ...
+  model: deepseek-v4-pro
+  base_url: https://api.openai.com/v1
+  session_socket: https://127.0.0.1:8865  # AI 监听的 socket
+  api_key: sk-63a075c8f1474664aa59c3f37fb7bc9e  # 不填则从 PSI_AI_API_KEY 环境变量读取
+
+- type: channel
+  name: feishu
+  session_socket: https://127.0.0.1:8866   # 连接 session（必须和上面一致）
+  app_id: cli_aac9c6f098389bb6
+  app_secret: otLpy8zrDUnmXmMjncKWodDLbYRWuEba
+  interval: 1.0                       # SSE 合并窗口（秒）
+  # allowed_user_ids:                # 白名单（不填则允许所有人）
+  #   - ou_xxxxxxxxxxxxxxxxx
+
+- type: session
+  workspace: .  # 加载哪个工作区（默认当前目录）
+  ai_socket: https://127.0.0.1:8865             # 连接 AI（必须和上面一致）
+  channel_socket: https://127.0.0.1:8866   # 供渠道连接的 socket
+
+

@@ -68,8 +68,38 @@ psi-agent
     ├── repl                   # Interactive REPL
     ├── cli                    # One-shot message
     ├── telegram               # Telegram bot
-    └── feishu                 # Feishu bot
+    ├── feishu                 # Feishu bot
+    └── feishu-setup           # Feishu scope-manifest setup helper
 ```
+
+## Feishu Bot Setup
+
+If you already have a Feishu/Lark scope manifest JSON like:
+
+```json
+{
+  "scopes": {
+    "tenant": ["im:message", "im:message:send_as_bot"],
+    "user": ["im:chat.access_event.bot_p2p_chat:read"]
+  }
+}
+```
+
+you can generate a local setup bundle with:
+
+```bash
+uv run psi-agent channel feishu-setup ./scopes.json \
+  --app-id cli_xxx \
+  --output-dir ./feishu-setup
+```
+
+This command does not pretend to fully configure the Feishu Open Platform for you. Instead it:
+
+- normalizes and classifies the scopes for the current `channel feishu` runtime
+- optionally probes `app_access_token` and `tenant_access_token`
+- writes `report.json`, `NEXT_STEPS.md`, and `start-feishu.ps1.example`
+
+The generated `NEXT_STEPS.md` tells you which remaining steps still need to be done manually in the Feishu developer console.
 
 ## Define Your Own Agent
 

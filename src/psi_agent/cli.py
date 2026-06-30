@@ -10,6 +10,7 @@ from psi_agent._run import Run
 from psi_agent.ai import Ai
 from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.feishu import ChannelFeishu
+from psi_agent.channel.feishu_setup import ChannelFeishuSetup
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.telegram import ChannelTelegram
 from psi_agent.gateway import Gateway
@@ -19,7 +20,8 @@ ChannelGroup = Annotated[
     Annotated[ChannelRepl, conf.subcommand(name="repl")]
     | Annotated[ChannelCli, conf.subcommand(name="cli")]
     | Annotated[ChannelTelegram, conf.subcommand(name="telegram")]
-    | Annotated[ChannelFeishu, conf.subcommand(name="feishu")],
+    | Annotated[ChannelFeishu, conf.subcommand(name="feishu")]
+    | Annotated[ChannelFeishuSetup, conf.subcommand(name="feishu-setup")],
     conf.subcommand(name="channel", description="User interface channels"),
 ]
 

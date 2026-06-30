@@ -68,8 +68,38 @@ psi-agent
     ├── repl                   # 交互式 REPL
     ├── cli                    # 单次消息
     ├── telegram               # Telegram bot
-    └── feishu                 # 飞书 bot
+    ├── feishu                 # 飞书 bot
+    └── feishu-setup           # 飞书 scopes 清单配置助手
 ```
+
+## 飞书 Bot 配置助手
+
+如果你已经有一份飞书 / Lark 的 scopes JSON，例如：
+
+```json
+{
+  "scopes": {
+    "tenant": ["im:message", "im:message:send_as_bot"],
+    "user": ["im:chat.access_event.bot_p2p_chat:read"]
+  }
+}
+```
+
+可以用下面的命令生成本地配置包：
+
+```bash
+uv run psi-agent channel feishu-setup ./scopes.json \
+  --app-id cli_xxx \
+  --output-dir ./feishu-setup
+```
+
+这个命令不会假装替你把飞书开放平台后台全部自动配好。它会：
+
+- 规范化并分类当前 `channel feishu` 运行时真正关心的 scopes
+- 可选探测 `app_access_token` 和 `tenant_access_token`
+- 生成 `report.json`、`NEXT_STEPS.md`、`start-feishu.ps1.example`
+
+生成出的 `NEXT_STEPS.md` 会明确告诉你还需要在飞书开发者后台手动完成哪些步骤。
 
 ## 定义你自己的 Agent
 

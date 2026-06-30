@@ -94,3 +94,12 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 - 认证：`--app-id` + `--app-secret` CLI args > `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` env
 - 用户白名单：`--allowed-user-ids` 参数或 `None`（不限制）
 - 处理状态表情（参考 Hermes）：收到白名单消息后立即在该消息上加 `Typing` 表情（`message_reaction.acreate`），回复完成后移除；处理失败则替换为 `CrossMark`。表情操作失败安全，不影响回复
+
+## Feishu Setup Helper
+
+- `psi-agent channel feishu-setup <scopes.json>` 读取一个包含 `{"scopes": {"tenant": [...], "user": [...]}}` 的 JSON 文件
+- 该命令不会直接替你修改飞书开放平台后台权限；它只自动完成本地可验证、可生成的步骤
+- 它会解析并去重 scopes，按当前 `ChannelFeishu` 运行时需求分类为 required / recommended / extra
+- 可选探测 `app_access_token` 与 `tenant_access_token`，帮助快速判断 `app_id/app_secret` 是否可用、应用是否已发布到租户
+- 它会生成 `report.json`、`NEXT_STEPS.md`、`start-feishu.ps1.example` 等产物，把“开放平台后台设置”和“本地 psi-agent 启动命令”对齐
+- 这是刻意设计的半自动配置器：飞书权限申请、版本发布、租户安装等动作仍可能需要人工在开放平台完成；命令必须把剩余人工步骤明确写出来
