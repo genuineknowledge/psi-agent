@@ -22,7 +22,7 @@ async def test_system_py_missing_system_prompt_builder(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     systems = ws / "systems"
     await anyio.Path(systems).mkdir(parents=True)
-    await anyio.Path(systems / "system.py").write_text("def unrelated():\n    pass")
+    await anyio.Path(systems / "system.py").write_text("def unrelated():\n    pass", encoding="utf-8")
     sp = await SystemPrompt.from_workspace(ws, "test")
     assert await sp._builder() == ""
 
@@ -32,7 +32,9 @@ async def test_system_prompt_builder_not_async(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     systems = ws / "systems"
     await anyio.Path(systems).mkdir(parents=True)
-    await anyio.Path(systems / "system.py").write_text("def system_prompt_builder():\n    return 'hello'")
+    await anyio.Path(systems / "system.py").write_text(
+        "def system_prompt_builder():\n    return 'hello'", encoding="utf-8"
+    )
     sp = await SystemPrompt.from_workspace(ws, "test")
     assert await sp._builder() == ""
 
@@ -43,7 +45,7 @@ async def test_system_prompt_builder_loads(tmp_path: Path) -> None:
     systems = ws / "systems"
     await anyio.Path(systems).mkdir(parents=True)
     await anyio.Path(systems / "system.py").write_text(
-        "async def system_prompt_builder() -> str:\n    return 'test prompt'"
+        "async def system_prompt_builder() -> str:\n    return 'test prompt'", encoding="utf-8"
     )
     sp = await SystemPrompt.from_workspace(ws, "test")
     assert sp is not None
@@ -57,7 +59,7 @@ async def test_syntax_error_in_system_py(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     systems = ws / "systems"
     await anyio.Path(systems).mkdir(parents=True)
-    await anyio.Path(systems / "system.py").write_text("this is not valid python {{{")
+    await anyio.Path(systems / "system.py").write_text("this is not valid python {{{", encoding="utf-8")
     sp = await SystemPrompt.from_workspace(ws, "test")
     assert await sp._builder() == ""
 
@@ -69,7 +71,8 @@ async def test_rebuild_checker_loads(tmp_path: Path) -> None:
     await anyio.Path(systems).mkdir(parents=True)
     await anyio.Path(systems / "system.py").write_text(
         "async def system_prompt_builder() -> str:\n    return 'p'\n\n"
-        "async def system_prompt_rebuild_checker() -> bool:\n    return True\n"
+        "async def system_prompt_rebuild_checker() -> bool:\n    return True\n",
+        encoding="utf-8",
     )
     sp = await SystemPrompt.from_workspace(ws, "test")
     assert sp is not None

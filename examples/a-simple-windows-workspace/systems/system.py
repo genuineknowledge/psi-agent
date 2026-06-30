@@ -23,7 +23,7 @@ async def system_prompt_builder() -> str:
             skill_md = skill_dir / "SKILL.md"
             if not await skill_md.exists():
                 continue
-            header, _ = parse_yaml_header(await skill_md.read_text())
+            header, _ = parse_yaml_header(await skill_md.read_text(encoding="utf-8"))
             if header and header.get("name") and header.get("description"):
                 skills.append(f"- {header['name']}: {header['description']}")
 

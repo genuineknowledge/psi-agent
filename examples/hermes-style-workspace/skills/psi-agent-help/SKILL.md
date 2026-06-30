@@ -73,7 +73,7 @@ async def tool(file_path: str) -> str:
     Returns:
         File content as string.
     """
-    return await anyio.Path(file_path).read_text()
+    return await anyio.Path(file_path).read_text(encoding="utf-8")
 ```
 
 Tools are hot-reloaded — changes take effect on the next user message, no restart needed.
