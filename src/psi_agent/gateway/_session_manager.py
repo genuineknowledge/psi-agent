@@ -87,6 +87,18 @@ class SessionManager:
             logger.info(f"Session '{session_id}' deleted")
             return DeleteResponse(id=session_id)
 
+    async def reset(self, session_id: str) -> SessionInfo:
+        async with self._lock:
+            if session_id not in self._entries:
+                raise LookupError(f"Session '{session_id}' not found")
+            entry = self._entries[session_id]
+            ai_id = entry.ai_id
+            workspace = entry.workspace
+        await self.delete(session_id)
+        return await self.create(
+            SessionCreateRequest(ai_id=ai_id, workspace=workspace, id=session_id)
+        )
+
     async def list_all(self) -> list[SessionInfo]:
         return [
             SessionInfo(id=sid, ai_id=e.ai_id, workspace=e.workspace, channel_socket=e.channel_socket)

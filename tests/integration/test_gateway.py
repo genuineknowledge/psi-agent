@@ -347,3 +347,38 @@ async def test_gateway_favicon(tmp_path: str) -> None:
         await runner_with.cleanup()
         await runner_without.cleanup()
         await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_session_manager_reset_keeps_session(tmp_path: str) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+
+    aim = AIManager(_prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    try:
+        ai = await aim.create(
+            AiCreateRequest(
+                provider="openai",
+                model="gpt-4o",
+                api_key="sk-test",
+                base_url="https://api.example.com",
+            )
+        )
+        workspace = await _make_workspace(str(tmp_path))
+        created = await sm.create(
+            SessionCreateRequest(ai_id=ai.id, workspace=workspace, id="reset-sess")
+        )
+        assert created.id == "reset-sess"
+
+        info = await sm.reset("reset-sess")
+
+        assert info.id == "reset-sess"
+        assert info.ai_id == ai.id
+        assert info.workspace == workspace
+        sessions = await sm.list_all()
+        assert any(s.id == "reset-sess" for s in sessions)
+    finally:
+        await sm.delete("reset-sess")
+        await aim.delete(ai.id)
+        await tg.__aexit__(None, None, None)
