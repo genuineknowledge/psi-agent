@@ -4,7 +4,7 @@
 #define MyAppName "Haitun Agent"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Zhenzhi Company, Inc."
-#define MyAppExeName "haitun agent.vbs"
+#define MyAppExeName "haitun.vbs"
 
 [Setup]
 AppId={{234DFAA2-39F9-4E4C-92C7-680728ADDA4A}
@@ -29,7 +29,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "..\..\examples\haitun-workspace\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "haitun.ico"; DestDir: "{app}"
-Source: "haitun agent.vbs"; DestDir: "{app}"
+Source: "haitun.vbs"; DestDir: "{app}"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\haitun.ico"
