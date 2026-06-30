@@ -71,14 +71,12 @@ async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
         connector = aiohttp.UnixConnector(path=path)
         kind = "Unix socket"
     deadline = anyio.current_time() + timeout_sec
-    while anyio.current_time() < deadline:
-        try:
-            async with (
-                aiohttp.ClientSession(connector=connector) as session,
-                session.get("http://localhost/") as _resp,
-            ):
-                pass
-            return
-        except Exception:
-            await anyio.sleep(0.1)
+    async with aiohttp.ClientSession(connector=connector) as session:
+        while anyio.current_time() < deadline:
+            try:
+                async with session.get("http://localhost/") as _resp:
+                    pass
+                return
+            except Exception:
+                await anyio.sleep(0.1)
     raise TimeoutError(f"{kind} '{path}' not ready within {timeout_sec}s")
