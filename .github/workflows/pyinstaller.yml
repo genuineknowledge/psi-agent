@@ -27,8 +27,13 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - shell: bash
         run: |
+          WINDOWED=""
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            WINDOWED="--windowed"
+          fi
           uv run pyinstaller \
             --onefile \
+            $WINDOWED \
             --name psi-agent \
             --distpath pyinstaller-dist \
             --add-data "src/psi_agent/gateway/spa/dist:psi_agent/gateway/spa/dist" \
@@ -40,7 +45,12 @@ jobs:
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
           path: pyinstaller-dist/psi-agent
-        if: matrix.os != 'windows-latest'
+        if: matrix.os == 'ubuntu-latest'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: psi-agent-pyinstaller-${{ matrix.os }}
+          path: pyinstaller-dist/psi-agent.app
+        if: matrix.os == 'macos-latest'
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
