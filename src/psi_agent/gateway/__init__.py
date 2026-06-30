@@ -82,7 +82,7 @@ class Gateway:
 
                 try:
                     if tray is not None and tray.is_running():
-                        await anyio.to_thread.run_sync(tray.wait_stop)  # ty: ignore
+                        await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
                     else:
                         await anyio.sleep_forever()
                 finally:

@@ -245,6 +245,8 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
                     body["chunks"].append({"type": "file", "path": path})
         else:
             body = await request.json()
+            if not isinstance(body, dict):
+                return _error("Request body must be a JSON object", status=400)
     except (ValueError, TypeError) as e:
         return _error(f"Invalid request: {e}", status=400)
 
@@ -254,7 +256,9 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
     try:
         async with aclosing(cm.handle(channel_socket, body)) as stream:
             async for chunk in stream:
-                await resp.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
+                data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                await resp.write(data.encode())
+                logger.debug(f"Chat SSE chunk: {data[:200]}")
     except Exception as e:
         logger.warning(f"Chat error for session '{session_id}': {e}")
         with suppress(Exception):

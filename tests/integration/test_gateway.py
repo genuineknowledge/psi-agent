@@ -204,7 +204,17 @@ async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> 
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
+        # regression: non-dict JSON body → 400 (R2)
         timeout = ClientTimeout(total=10)
+        async with (
+            ClientSession(timeout=timeout) as session,
+            session.post(
+                f"{base_url}/sessions/gw-sess/chat",
+                json=[],
+            ) as resp,
+        ):
+            assert resp.status == 400
+
         async with (
             ClientSession(timeout=timeout) as session,
             session.post(
