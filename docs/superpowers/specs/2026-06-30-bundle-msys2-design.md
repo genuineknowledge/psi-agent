@@ -11,7 +11,7 @@ MSYS2 是 Windows 上的类 Unix 环境，提供 `bash`、`coreutils`、`git`、
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `.github/workflows/pyinstaller.yml` | 修改 | 在 `haitun-inno-setup` job 内新增：装 MSYS2 → 复制进工作区 → 瘦身 |
-| `examples/haitun-workspace/haitun agent.vbs` | 修改 | 启动前把 `msys64\usr\bin` 加到 PATH 最前，并设 `CHERE_INVOKING=1` |
+| `examples/haitun-workspace/haitun agent.vbs` | 修改 | 启动前把 `msys64\usr\bin` 与 `msys64\ucrt64\bin` 加到 PATH 最前，并设 `CHERE_INVOKING=1` |
 | `examples/haitun-workspace/.gitignore` | 修改 | 新增 `msys64/`（CI 生成，不提交） |
 | `examples/haitun-workspace/haitun.iss` | **不改** | 现有递归 glob 自动打包 `msys64` |
 | `examples/haitun-workspace/tools/bash.py` | **不改** | 复用现有 `which` 查找逻辑（见下方说明） |
@@ -33,6 +33,7 @@ MSYS2 是 Windows 上的类 Unix 环境，提供 `bash`、`coreutils`、`git`、
           install: >-
             bash coreutils grep sed gawk findutils diffutils which
             git openssh curl rsync tar gzip less nano
+            mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
       - shell: pwsh
         run: |
           robocopy "${{ steps.msys2.outputs.msys2-location }}" "examples\haitun-workspace\msys64" /E /NFL /NDL /NJH /NJS /NP
@@ -42,7 +43,7 @@ MSYS2 是 Windows 上的类 Unix 环境，提供 `bash`、`coreutils`、`git`、
 ```
 
 要点：
-- `msys2/setup-msys2@v2` 全新装一份 MSYS2，装上指定的包，**保留 pacman**；其 step output `msys2-location` 是 MSYS2 根目录（内含 `usr/`、`etc/`、`var/` 等）。
+- `msys2/setup-msys2@v2` 全新装一份 MSYS2，装上指定的包（含 ucrt64 的 nodejs/uv），**保留 pacman**；其 step output `msys2-location` 是 MSYS2 根目录（内含 `usr/`、`ucrt64/`、`etc/`、`var/` 等）。
 - **robocopy 退出码 0~7 都算成功**，`>=8` 才是真失败，所以必须做 `if ($LASTEXITCODE -ge 8) { exit 1 } else { exit 0 }` 归一化，否则 pwsh 会把成功当失败。
 - 瘦身只删 `var/cache/pacman/pkg/*`（已下载的安装包缓存，纯占地方，约 100MB+），pacman 本体与包数据库保留。
 - MSYS2 这份树有上万个文件、几百 MB，所以放在同一个 job 内处理，不跨 job 传 artifact。
@@ -52,14 +53,15 @@ MSYS2 是 Windows 上的类 Unix 环境，提供 `bash`、`coreutils`、`git`、
 在 `haitun agent.vbs` 中，**在 .env 加载之后、`objShell.Run` 之前**插入：
 
 ```vbs
-' 把打包进来的 MSYS2 加到 PATH 最前面（git/curl/ssh/bash 等都在 usr\bin）。
-strMsysBin = objFSO.BuildPath(strDir, "msys64\usr\bin")
-objShell.Environment("Process")("PATH") = strMsysBin & ";" & objShell.Environment("Process")("PATH")
+' 把打包进来的 MSYS2 加到 PATH 最前面：usr\bin（bash/git 等 POSIX 工具）+ ucrt64\bin（node/uv 等原生工具）。
+strUsrBin = objFSO.BuildPath(strDir, "msys64\usr\bin")
+strUcrtBin = objFSO.BuildPath(strDir, "msys64\ucrt64\bin")
+objShell.Environment("Process")("PATH") = strUsrBin & ";" & strUcrtBin & ";" & objShell.Environment("Process")("PATH")
 ' 让 bash -lc 留在当前工作目录，而不是跳到 $HOME。
 objShell.Environment("Process")("CHERE_INVOKING") = "1"
 ```
 
-- 放在 .env 加载之后：即便用户在 `.env` 里覆盖了 `PATH`，我们仍把 `msys64\usr\bin` prepend 到最前，保证打包的 MSYS2 优先。
+- 放在 .env 加载之后：即便用户在 `.env` 里覆盖了 `PATH`，我们仍把 `msys64\usr\bin` 与 `msys64\ucrt64\bin` prepend 到最前，保证打包的 MSYS2 优先。
 - `CHERE_INVOKING=1`：MSYS2 的 `/etc/profile` 在未设此变量时会 `cd` 到 `$HOME`；设上后 bash 留在被调用时的目录，命令对当前目录生效（符合 `bash` 工具的预期用法）。
 
 ## ③ `.iss` 不改（刻意）
@@ -90,7 +92,7 @@ objShell.Environment("Process")("CHERE_INVOKING") = "1"
 
 - **可重定位**：MSYS2 运行时按 `msys-2.0.dll` 的位置推断根目录，故装到任意 `{app}\msys64` 都能用；base + 工具集不含会写死绝对路径的工具链。
 - **PATH 污染（为简单付出的代价）**：`msys64\usr\bin` 进入 `psi-agent.exe` 的全局 PATH，意味着 `powershell` 工具及其它子进程也会看到 MSYS 版命令（如 MSYS 的 `find.exe` 可能盖过 Windows 的 `find.exe`）。这是"不改 bash.py、只改 VBS"方案的固有取舍，用户已确认接受。
-- **体积**：安装包从 ~84MB 增至约 **200~350MB**；ISCC 编译变慢（msys64 上万文件）。
+- **体积**：安装包从 ~84MB 增至约 **300~500MB**（含 ucrt64 的 nodejs + uv，比纯 base 再 +100~150MB）；ISCC 编译变慢（msys64 上万文件）。
 - **卸载残留**：Inno 卸载删除它安装的文件；用户后续用 pacman 新装的文件可能残留在 `{app}\msys64`，属次要问题。
 
 ## 非目标

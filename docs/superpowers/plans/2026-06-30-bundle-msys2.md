@@ -4,7 +4,7 @@
 
 **Goal:** 在 `haitun-inno-setup` CI job 里装一份 MSYS2（base + 常用工具，保留 pacman），打包进安装程序，并让 VBS 把它加到 PATH，使工作区 `bash` 工具在 Windows 上开箱即用。
 
-**Architecture:** CI 用 `msys2/setup-msys2` 装 MSYS2 → robocopy 复制进 `examples/haitun-workspace/msys64` → 删包缓存瘦身 → 现有 ISCC 递归 glob 自动打包到 `{app}\msys64`。VBS 启动前把 `msys64\usr\bin` prepend 到 PATH 并设 `CHERE_INVOKING=1`；`bash.py` 与 `.iss` 均不改。
+**Architecture:** CI 用 `msys2/setup-msys2` 装 MSYS2 → robocopy 复制进 `examples/haitun-workspace/msys64` → 删包缓存瘦身 → 现有 ISCC 递归 glob 自动打包到 `{app}\msys64`。VBS 启动前把 `msys64\usr\bin` 与 `msys64\ucrt64\bin` prepend 到 PATH 并设 `CHERE_INVOKING=1`；`bash.py` 与 `.iss` 均不改。
 
 **Tech Stack:** GitHub Actions、`msys2/setup-msys2`、Inno Setup、VBScript、robocopy/pwsh。
 
@@ -34,21 +34,22 @@ objShell.Run "psi-agent.exe gateway --tray haitun.ico", 0, False
 ```vbs
 End If
 
-' Prepend the bundled MSYS2 so psi-agent.exe (and its bash tool) finds bash/git/curl/ssh.
-strMsysBin = objFSO.BuildPath(strDir, "msys64\usr\bin")
-objShell.Environment("Process")("PATH") = strMsysBin & ";" & objShell.Environment("Process")("PATH")
+' Prepend the bundled MSYS2 to PATH: usr\bin (bash/git POSIX tools) + ucrt64\bin (node/uv native tools).
+strUsrBin = objFSO.BuildPath(strDir, "msys64\usr\bin")
+strUcrtBin = objFSO.BuildPath(strDir, "msys64\ucrt64\bin")
+objShell.Environment("Process")("PATH") = strUsrBin & ";" & strUcrtBin & ";" & objShell.Environment("Process")("PATH")
 ' Keep bash -lc in the current working directory instead of cd-ing to $HOME.
 objShell.Environment("Process")("CHERE_INVOKING") = "1"
 
 objShell.Run "psi-agent.exe gateway --tray haitun.ico", 0, False
 ```
 
-说明：放在 .env 加载之后，保证即使 `.env` 覆盖了 `PATH`，`msys64\usr\bin` 仍在最前。`Environment("Process")` 修改的是当前进程环境，`objShell.Run` 启动的子进程继承之。
+说明：放在 .env 加载之后，保证即使 `.env` 覆盖了 `PATH`，`msys64\usr\bin` 与 `msys64\ucrt64\bin` 仍在最前。`Environment("Process")` 修改的是当前进程环境，`objShell.Run` 启动的子进程继承之。
 
 - [ ] **Step 2: 验证内容**
 
 Run: `cat "examples/haitun-workspace/haitun agent.vbs"`
-Expected: 末尾出现 `strMsysBin`、`PATH` prepend、`CHERE_INVOKING` 三处新增，且 `objShell.Run` 仍是最后一行。
+Expected: 末尾出现 `strUsrBin`、`strUcrtBin`、`PATH` prepend、`CHERE_INVOKING` 四处新增，且 `objShell.Run` 仍是最后一行。
 
 - [ ] **Step 3: 验证 If/Do/Loop 结构未被破坏**
 
@@ -93,6 +94,7 @@ git commit -m "feat: prepend bundled MSYS2 to PATH in launcher VBS"
           install: >-
             bash coreutils grep sed gawk findutils diffutils which
             git openssh curl rsync tar gzip less nano
+            mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
       - shell: pwsh
         run: |
           robocopy "${{ steps.msys2.outputs.msys2-location }}" "examples\haitun-workspace\msys64" /E /NFL /NDL /NJH /NJS /NP
@@ -222,7 +224,7 @@ git commit -m "docs: document bundled MSYS2 in haitun-workspace"
 
 ## Definition of Done
 
-- [ ] VBS 在启动前 prepend `msys64\usr\bin` 到 PATH 并设 `CHERE_INVOKING=1`
+- [ ] VBS 在启动前 prepend `msys64\usr\bin` 与 `msys64\ucrt64\bin` 到 PATH 并设 `CHERE_INVOKING=1`
 - [ ] `pyinstaller.yml` 的 `haitun-inno-setup` job 内：`setup-msys2` 装包 → robocopy 进 `examples/haitun-workspace/msys64` → 删 pacman 缓存；YAML 可解析
 - [ ] `.gitignore` 忽略 `msys64/`
 - [ ] README + AGENTS.md 记录自带 MSYS2

@@ -67,6 +67,7 @@ jobs:
           install: >-
             bash coreutils grep sed gawk findutils diffutils which
             git openssh curl rsync tar gzip less nano
+            mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
       - shell: pwsh
         run: |
           robocopy "${{ steps.msys2.outputs.msys2-location }}" "examples\haitun-workspace\msys64" /E /NFL /NDL /NJH /NJS /NP
