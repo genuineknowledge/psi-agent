@@ -8,6 +8,7 @@ from tyro import conf
 
 from psi_agent._run import Run
 from psi_agent.ai import Ai
+from psi_agent.call import Call
 from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.feishu import ChannelFeishu
 from psi_agent.channel.repl import ChannelRepl
@@ -25,7 +26,7 @@ ChannelGroup = Annotated[
 
 
 def main() -> None:
-    cmd = tyro.cli(Run | Ai | Session | ChannelGroup | Gateway)
+    cmd = tyro.cli(Run | Ai | Session | ChannelGroup | Gateway | Call)
     anyio.run(cmd.run)
 
 

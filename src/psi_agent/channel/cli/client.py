@@ -3,6 +3,7 @@ from __future__ import annotations
 from loguru import logger
 from rich.console import Console
 
+from psi_agent._sockets import wait_for_socket
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import ReasoningChunk, TextChunk
 
@@ -11,6 +12,7 @@ console = Console(highlight=False)
 
 async def run_cli(*, session_socket: str, message: str) -> None:
     logger.info(f"Connecting to session at {session_socket}")
+    await wait_for_socket(session_socket)
 
     try:
         async with ChannelCore(session_socket, interval=0.0) as core:

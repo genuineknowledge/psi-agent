@@ -8,6 +8,7 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from psi_agent._sockets import wait_for_socket
 from tests.integration.conftest import MockAIServer, read_sse
 
 
@@ -24,17 +25,6 @@ def _chunk(content: str = "", finish_reason: str | None = None) -> str:
             "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
         }
     )
-
-
-async def _wait_socket(sock_path: str, timeout_sec: float = 10.0) -> bool:
-    deadline = anyio.current_time() + timeout_sec
-    ap = anyio.Path(sock_path)
-    while anyio.current_time() < deadline:
-        if await ap.exists():
-            await anyio.sleep(0.3)
-            return True
-        await anyio.sleep(0.1)
-    return False
 
 
 async def _stop_process(proc) -> None:
@@ -71,7 +61,7 @@ async def test_simple_streaming_response(tmp_path: Path, mock_ai_server: MockAIS
     )
 
     try:
-        assert await _wait_socket(socket_path)
+        await wait_for_socket(socket_path, max_wait=10.0)
         chunks = await read_sse(socket_path, "hello")
         assert len(chunks) > 0
         content = "".join(c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks)
@@ -106,7 +96,7 @@ async def test_non_json_body_returns_400(tmp_path: Path, mock_ai_server: MockAIS
     )
 
     try:
-        assert await _wait_socket(socket_path)
+        await wait_for_socket(socket_path, max_wait=10.0)
         connector = UnixConnector(path=socket_path)
         timeout = ClientTimeout(total=5)
         async with (
@@ -142,7 +132,7 @@ async def test_upstream_connection_refused(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_socket(socket_path)
+        await wait_for_socket(socket_path, max_wait=10.0)
         chunks = await read_sse(socket_path, "hello")
         all_text = "".join(json.dumps(c) for c in chunks)
         assert "error" in all_text.lower()
@@ -191,7 +181,7 @@ async def test_upstream_sse_disconnects_mid_stream(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_socket(socket_path)
+        await wait_for_socket(socket_path, max_wait=10.0)
         chunks = await read_sse(socket_path, "hello")
         assert len(chunks) >= 1
         content = "".join(c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks)
@@ -238,7 +228,7 @@ async def test_upstream_401_tunnelled(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_socket(socket_path)
+        await wait_for_socket(socket_path, max_wait=10.0)
         chunks = await read_sse(socket_path, "hello")
         assert len(chunks) >= 1, "Expected at least 1 error chunk"
         content = chunks[0].get("choices", [{}])[0].get("delta", {}).get("content", "")
@@ -276,7 +266,7 @@ async def test_anthropic_empty_content_blocks(tmp_path: Path, mock_ai_server: Mo
     )
 
     try:
-        assert await _wait_socket(socket_path)
+        await wait_for_socket(socket_path, max_wait=10.0)
         chunks = await read_sse(socket_path, "hello")
         assert len(chunks) >= 1
     finally:
@@ -341,7 +331,7 @@ async def test_anthropic_multi_tool_use_blocks(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_socket(socket_path)
+        await wait_for_socket(socket_path, max_wait=10.0)
         chunks = await read_sse(socket_path, "run tools")
         assert len(chunks) > 0
     finally:

@@ -8,6 +8,7 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from psi_agent._sockets import wait_for_socket
 from tests.integration.conftest import MockAIServer, read_sse
 
 
@@ -35,17 +36,6 @@ def _chunk(content: str = "", finish_reason: str | None = None) -> str:
             "choices": [{"index": 0, "delta": d, "finish_reason": finish_reason}],
         }
     )
-
-
-async def _wait_socket(sock_path: str, timeout_sec: float = 15.0) -> bool:
-    deadline = anyio.current_time() + timeout_sec
-    ap = anyio.Path(sock_path)
-    while anyio.current_time() < deadline:
-        if await ap.exists():
-            await anyio.sleep(0.3)
-            return True
-        await anyio.sleep(0.1)
-    return False
 
 
 async def _stop_process(proc) -> None:
@@ -114,8 +104,8 @@ async def test_concurrent_requests_queue_and_succeed(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_socket(ai_socket)
-        assert await _wait_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         first_status = 0
         second_status = 0
@@ -185,8 +175,8 @@ async def test_third_request_succeeds_after_lock_released(tmp_path: Path) -> Non
     )
 
     try:
-        assert await _wait_socket(ai_socket)
-        assert await _wait_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         s1 = await _send_async(channel_socket, "first")
         await anyio.sleep(0.3)
@@ -246,8 +236,8 @@ async def test_history_accumulation_across_requests(tmp_path: Path, mock_ai_serv
     )
 
     try:
-        assert await _wait_socket(ai_socket)
-        assert await _wait_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         s1 = await _send_async(channel_socket, "first message")
         await anyio.sleep(0.5)
@@ -333,8 +323,8 @@ async def test_three_channel_requests_fifo_order(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_socket(ai_socket)
-        assert await _wait_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         async def read1() -> None:
             await read_sse(channel_socket, "first")
@@ -418,8 +408,8 @@ async def test_channel_queues_behind_schedule(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_socket(ai_socket)
-        assert await _wait_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         # Wait for schedule to fire (~31s for first sleep + check)
         await anyio.sleep(32)
@@ -494,8 +484,8 @@ async def test_schedule_queues_behind_channel(tmp_path: Path) -> None:
     )
 
     try:
-        assert await _wait_socket(ai_socket)
-        assert await _wait_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         # Wait just under 30s, then send channel request
         await anyio.sleep(29)

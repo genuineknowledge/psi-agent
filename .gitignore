@@ -8,3 +8,6 @@ dist/
 .pytest_cache/
 *.sock
 .coverage
+.opencode/session-memory.md
+.opencode/hooks/
+.opencode/scripts/

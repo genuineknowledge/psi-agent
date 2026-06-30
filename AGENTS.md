@@ -61,6 +61,7 @@ src/
     ├── _sockets.py             # 共享 socket 工具（prefix-based transport 解析）
     ├── _run.py                 # YAML 配置批量启动（psi-agent run config.yml）
     ├── _logging.py              # loguru 配置，verbose→DEBUG
+    ├── call.py                  # 单次调用子命令（psi-agent call）+ call_agent() 函数
     ├── ai/
     │   ├── AGENTS.md                # AI 层设计文档
     │   ├── __init__.py               # Ai + serve_ai

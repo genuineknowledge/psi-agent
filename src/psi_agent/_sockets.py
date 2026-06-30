@@ -1,4 +1,4 @@
-"""Shared socket utilities for resolving transport addresses.
+"""Shared socket utilities for resolving transport addresses and readiness checks.
 
 All components (AI, Session, Channel) use the same prefix-based
 detection convention:
@@ -12,11 +12,84 @@ event loop (Windows only).
 
 from __future__ import annotations
 
+import time
 import urllib.parse
 
 import aiohttp
+import anyio
 from aiohttp import web
-from loguru import logger
+
+_DEFAULT_SOCKET_TIMEOUT: float = 10.0  # max seconds to wait for socket to appear
+_DEFAULT_POLL_INTERVAL: float = 0.05   # seconds between existence checks
+_SOCKET_ACCEPT_GRACE: float = 0.3      # extra wait after socket detected, for aiohttp accept()
+
+
+def _detect_transport(address: str) -> str:
+    """Classify an address into one of the three supported transport types."""
+    if address.startswith(("http://", "https://")):
+        return "tcp"
+    if address.startswith("\\\\.\\pipe\\"):
+        return "pipe"
+    return "unix"
+
+
+async def _check_ready(transport: str, address: str) -> bool:
+    """Return ``True`` when the server at ``address`` is ready for connections."""
+    match transport:
+        case "unix":
+            if not await anyio.Path(address).exists():
+                return False
+            await anyio.sleep(_SOCKET_ACCEPT_GRACE)
+            return True
+
+        case "tcp":
+            parsed = urllib.parse.urlparse(address)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            try:
+                stream = await anyio.connect_tcp(host, port)
+                await stream.aclose()
+                return True
+            except (OSError, ConnectionError):
+                return False
+
+        case "pipe":
+            try:
+                if not await anyio.Path(address).exists():
+                    return False
+                await anyio.sleep(_SOCKET_ACCEPT_GRACE)
+                return True
+            except Exception:
+                return False
+
+        case _:
+            return False
+
+
+async def wait_for_socket(
+    address: str,
+    *,
+    max_wait: float = _DEFAULT_SOCKET_TIMEOUT,
+    poll_interval: float = _DEFAULT_POLL_INTERVAL,
+) -> None:
+    """Wait until a server socket is ready to accept connections.
+
+    Supports three transport types using the same prefix detection:
+
+    * bare filesystem path → Unix domain socket
+    * ``http(s)://host:port`` → TCP
+    * ``\\\\\\\\.\\\\pipe\\\\\\name`` → Windows Named Pipe
+    """
+    transport = _detect_transport(address)
+
+    deadline = time.monotonic() + max_wait
+    while True:
+        ready = await _check_ready(transport, address)
+        if ready:
+            return
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"Server at {address} did not become ready within {max_wait}s")
+        await anyio.sleep(poll_interval)
 
 
 def resolve_connector_and_endpoint(
@@ -32,15 +105,12 @@ def resolve_connector_and_endpoint(
     if addr.startswith(("http://", "https://")):
         connector = aiohttp.TCPConnector(ssl=addr.startswith("https://"))
         endpoint = addr.rstrip("/") + path_prefix
-        logger.debug(f"Resolved transport: addr={addr!r} → TCP endpoint={endpoint!r}")
     elif addr.startswith("\\\\.\\pipe\\"):
         connector = aiohttp.NamedPipeConnector(path=addr)
         endpoint = f"http://localhost{path_prefix}"
-        logger.debug(f"Resolved transport: addr={addr!r} → Named Pipe endpoint={endpoint!r}")
     else:
         connector = aiohttp.UnixConnector(path=addr)
         endpoint = f"http://localhost{path_prefix}"
-        logger.debug(f"Resolved transport: addr={addr!r} → Unix socket endpoint={endpoint!r}")
     return connector, endpoint
 
 
@@ -57,10 +127,7 @@ def create_site(
         parsed = urllib.parse.urlparse(addr)
         host = parsed.hostname or "127.0.0.1"
         port = parsed.port or 8080
-        logger.debug(f"Creating TCP site: {host}:{port}")
         return web.TCPSite(runner, host, port)
     if addr.startswith("\\\\.\\pipe\\"):
-        logger.debug(f"Creating Named Pipe site: {addr}")
         return web.NamedPipeSite(runner, addr)
-    logger.debug(f"Creating Unix site: {addr}")
     return web.UnixSite(runner, addr)

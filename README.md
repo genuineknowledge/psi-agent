@@ -64,6 +64,7 @@ psi-agent
 ├── ai                        # 统一 AI 后端（支持 50+ provider）
 ├── gateway                   # 生命周期管理 + REST API + Web Console
 ├── session                    # Session + workspace 管理
+├── call                       # 启动 session → 发消息 → 打印回复到 stdout
 └── channel
     ├── repl                   # 交互式 REPL
     ├── cli                    # 单次消息

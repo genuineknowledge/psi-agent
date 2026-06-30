@@ -8,9 +8,10 @@ import subprocess
 import textwrap
 from pathlib import Path
 
-import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
+
+from psi_agent._sockets import wait_for_socket
 
 # --- Workspace fixture ---
 
@@ -157,14 +158,7 @@ def _start_psi(*args: str) -> subprocess.Popen:
 
 
 async def _wait_for_socket(sock_path: Path, timeout_sec: float = 10.0) -> None:
-    deadline = anyio.current_time() + timeout_sec
-    sock_anyio = anyio.Path(str(sock_path))
-    while anyio.current_time() < deadline:
-        if await sock_anyio.exists():
-            await anyio.sleep(0.3)
-            return
-        await anyio.sleep(0.1)
-    pytest.fail(f"Socket {sock_path} not created within {timeout_sec}s")
+    await wait_for_socket(str(sock_path), max_wait=timeout_sec, poll_interval=0.1)
 
 
 def _kill(proc: subprocess.Popen) -> None:

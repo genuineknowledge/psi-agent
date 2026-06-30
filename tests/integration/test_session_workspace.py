@@ -9,6 +9,7 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from psi_agent._sockets import wait_for_socket
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.schedule_registry import ScheduleRegistry
@@ -29,17 +30,6 @@ def _chunk(content: str = "", finish_reason: str | None = None) -> str:
             "choices": [{"index": 0, "delta": d, "finish_reason": finish_reason}],
         }
     )
-
-
-async def _wait_socket(sock_path: str, timeout_sec: float = 15.0) -> bool:
-    deadline = anyio.current_time() + timeout_sec
-    ap = anyio.Path(sock_path)
-    while anyio.current_time() < deadline:
-        if await ap.exists():
-            await anyio.sleep(0.3)
-            return True
-        await anyio.sleep(0.1)
-    return False
 
 
 async def _stop_process(proc) -> None:
@@ -157,8 +147,8 @@ async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> 
     )
 
     try:
-        assert await _wait_socket(ai_socket)
-        assert await _wait_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         timeout = ClientTimeout(total=5)
         connector = UnixConnector(path=channel_socket)
@@ -280,8 +270,8 @@ async def test_session_with_empty_workspace_uses_cwd(tmp_path: Path, mock_ai_ser
     )
 
     try:
-        assert await _wait_socket(ai_socket)
-        assert await _wait_socket(channel_socket)
+        await wait_for_socket(ai_socket, max_wait=15.0)
+        await wait_for_socket(channel_socket, max_wait=15.0)
 
         timeout = ClientTimeout(total=5)
         connector = UnixConnector(path=channel_socket)
