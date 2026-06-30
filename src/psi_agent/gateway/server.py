@@ -280,7 +280,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
             async for chunk in stream:
                 data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 await resp.write(data.encode())
-                logger.debug(f"Chat SSE chunk: {data[:200]}")
+                logger.debug(f"Chat SSE chunk: {data[:1000]}")
     except Exception as e:
         logger.warning(f"Chat error for session '{session_id}': {e}")
         with suppress(Exception):
