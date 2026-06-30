@@ -450,7 +450,7 @@ PLATFORM_HINTS: dict[str, str] = {
         "brief and natural."
     ),
     "web": (
-        "You are in the dolphin-agent web chat. Markdown formatting is supported. "
+        "You are in the Haitun agent web chat. Markdown formatting is supported. "
         "You CAN send files to the user: to deliver a file, include "
         "MEDIA:/absolute/path/to/file in your response on its own line. The web UI "
         "will render it as a downloadable attachment card and hide the MEDIA tag. "
