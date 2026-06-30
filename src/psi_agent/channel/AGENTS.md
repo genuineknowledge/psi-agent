@@ -17,10 +17,10 @@ channel/
 │   └── client.py       # 交互式 thin client (~57行)
 └── telegram/
     ├── __init__.py     # ChannelTelegram dataclass
-    └── client.py       # Bot handler + 流式 + 文件收发 (~179行)
+    └── client.py       # Bot handler + 流式 + 文件收发 (~186行)
 └── feishu/
     ├── __init__.py     # ChannelFeishu dataclass
-    └── client.py       # Bot handler + 卡片流式 + 文件收发 + 处理状态表情 (~208行)
+    └── client.py       # Bot handler + 卡片流式 + 文件收发 + 处理状态表情 (~219行)
 ```
 
 ### ChannelCore
@@ -89,6 +89,7 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 
 - 通过 lark-channel-sdk 的 `FeishuChannel.start_background()` 建立 WebSocket 长连接（SDK 推荐的 async 启动：后台拉起、握手就绪即返回；`connect()` 是旧的前台阻塞式），关停用 `stop_background()`
 - **并发模型（刻意为之）**：lark SDK 在自己的后台线程/event loop 上派发消息回调；`_on_message` 通过 `anyio.from_thread.BlockingPortal.start_task_soon` 把处理协程桥接回主 anyio loop（取代 asyncio `run_coroutine_threadsafe`，遵守「一切异步用 anyio」原则）。`run_feishu` / `run_telegram` 把**启动调用**（telegram: initialize/start/start_polling；feishu: start_background）一并纳入 `try`，`finally` 用 `anyio.CancelScope(shield=True)` 保护——**启动中途失败与正常 cancel 两条路径都会执行关停**，不泄露 bot 连接。**（刻意为之）关停按步骤 best-effort：逐个 `try/except Exception` 吞掉清理异常并 WARNING**——partial-startup 下库会抛 "not running" 之类错误，吞掉以免遮蔽原始异常或中断后续 teardown；`except Exception` 不吞 `CancelledError`，勿把这层 swallow 当 bug "修掉"
+- **（刻意为之）`_handle_and_stream` 外层防御 try/except**：它是 `start_task_soon` 投递的任务，内部任何未捕获异常（包括错误通知 `channel.send` 失败）都会逃逸到 portal。外层 `except Exception` 兜底并记录 ERROR，确保单条消息处理崩溃不拖垮整个 bot；不吞 `CancelledError`，勿把这层 try 当 bug "修掉"
 - 所有消息（text/post/file/audio）均转化为 InputChunk：文本→TextChunk，文件→下载→FileChunk
 - `<audio key="..."/>` inline 标签通过 `message_resource.aget()` API 下载
 - 通过 `channel.stream()`  + `stream.append()` 实现卡片流式渲染
