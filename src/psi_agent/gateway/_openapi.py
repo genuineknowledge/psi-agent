@@ -4,7 +4,7 @@ import json
 
 OPENAPI_SPEC = {
     "openapi": "3.0.3",
-    "info": {"title": "psi-agent Gateway", "version": "0.1.0"},
+    "info": {"title": "psi-agent Gateway", "version": "1.0.0"},
     "servers": [{"url": "/"}],
     "paths": {
         "/ais": {
@@ -21,6 +21,7 @@ OPENAPI_SPEC = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AiInfo"}}},
                     },
                     "400": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
             "get": {
@@ -138,7 +139,7 @@ OPENAPI_SPEC = {
                                 "properties": {
                                     "chunks": {
                                         "type": "string",
-                                        "description": "JSON array of text chunks",
+                                            "description": "JSON array of text and blob chunks",
                                     },
                                     "file": {
                                         "type": "string",
