@@ -51,8 +51,13 @@ class AIManager:
             scope = anyio.CancelScope()
 
             async def _run_ai() -> None:
-                with scope:
-                    await ai.run()
+                try:
+                    with scope:
+                        await ai.run()
+                except Exception as e:
+                    logger.error(f"AI '{ai_id}' crashed: {e}")
+                    async with self._lock:
+                        self._entries.pop(ai_id, None)
 
             logger.debug(f"AIManager: starting AI '{ai_id}' task")
             self._tg.start_soon(_run_ai)

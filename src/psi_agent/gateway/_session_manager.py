@@ -57,8 +57,13 @@ class SessionManager:
             scope = anyio.CancelScope()
 
             async def _run_session() -> None:
-                with scope:
-                    await sess.run()
+                try:
+                    with scope:
+                        await sess.run()
+                except Exception as e:
+                    logger.error(f"Session '{session_id}' crashed: {e}")
+                    async with self._lock:
+                        self._entries.pop(session_id, None)
 
             logger.debug(f"SessionManager: starting session '{session_id}' task")
             self._tg.start_soon(_run_session)
