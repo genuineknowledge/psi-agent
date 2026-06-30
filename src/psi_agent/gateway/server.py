@@ -255,7 +255,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
         async for chunk in cm.handle(channel_socket, body):
             await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
     except Exception as e:
-        logger.warning(f"Chat error for session '{session_id}': {e}")
+        logger.warning(f"Chat error for session {session_id!r}: {e!r}")
         await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n".encode())
     await resp.write(b"data: [DONE]\n\n")
     return resp

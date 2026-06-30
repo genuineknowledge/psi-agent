@@ -24,7 +24,7 @@ async def run_cli(*, session_socket: str, message: str) -> None:
                 elif isinstance(chunk, TextChunk):
                     console.print(chunk.text, end="")
     except Exception as e:
-        logger.error(f"CLI error: {e}")
+        logger.error(f"CLI error: {e!r}")
         console.print(f"[red]Error: {e}[/red]")
         raise
 

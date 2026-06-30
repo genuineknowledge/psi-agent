@@ -60,7 +60,7 @@ class TitleManager:
                     except json.JSONDecodeError:
                         continue
                 title = title.strip().strip("'\"")
-                logger.info(f"Title generation result: '{title}'")
+                logger.info(f"Title generation result: {title!r}")
                 if title:
                     self._titles[session_id] = title
                     return title

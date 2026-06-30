@@ -176,7 +176,7 @@ async def _handle_and_stream(
                 )
                 logger.debug("stream completed")
             except Exception as e:
-                logger.error(f"Message handling error — {e}")
+                logger.error(f"Message handling error — {e!r}")
                 failed = True
                 await channel.send(ctx.chat_id, {"text": f"Error: {e}"})
         finally:
