@@ -215,19 +215,21 @@ async def test_run_feishu_cleans_up_on_cancel(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_build_chunks_text_only(tmp_path):
+async def test_build_chunks_text_only(monkeypatch, tmp_path):
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
     channel = _fake_channel()
     ctx = SimpleNamespace(content_text="hello world", message_id="om_1", resources=[], raw_content_type="text")
-    chunks = await client._build_chunks(channel, ctx, str(tmp_path))
+    chunks = await client._build_chunks(channel, ctx)
     assert chunks == [TextChunk("hello world")]
 
 
 @pytest.mark.anyio
-async def test_build_chunks_with_resource(tmp_path):
+async def test_build_chunks_with_resource(monkeypatch, tmp_path):
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
     channel = _fake_channel()
     channel.download_resource_to_file = AsyncMock(return_value=str(tmp_path / "file.bin"))
     resource = SimpleNamespace(type="file", file_key="fk_1", file_name="file.bin")
     ctx = SimpleNamespace(content_text="", message_id="om_1", resources=[resource], raw_content_type="file")
-    chunks = await client._build_chunks(channel, ctx, str(tmp_path))
+    chunks = await client._build_chunks(channel, ctx)
     assert any(isinstance(c, FileChunk) for c in chunks)
     channel.download_resource_to_file.assert_awaited_once()

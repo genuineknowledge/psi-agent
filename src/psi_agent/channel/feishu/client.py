@@ -74,20 +74,24 @@ async def _remove_reaction(channel: Any, message_id: str, reaction_id: str) -> N
         logger.warning(f"failed — {e}")
 
 
-async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[InputChunk]:
+async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
     chunks: list[InputChunk] = []
+    downloads_dir = anyio.Path(platformdirs.user_downloads_dir()) / ".psi" / str(date.today())
+    await downloads_dir.mkdir(parents=True, exist_ok=True)
+    downloads = str(downloads_dir)
     logger.debug(f"downloads_dir={downloads} raw_content_type={ctx.raw_content_type}")
 
     text = ctx.content_text or ""
     for m in re.finditer(r'<audio\s+key="([^"]+)"', text):
         audio_key = m.group(1)
         logger.debug(f"audio key={audio_key}")
-        path = str(anyio.Path(downloads) / audio_key[-32:])
         try:
             req = (
                 GetMessageResourceRequest.builder().message_id(ctx.message_id).file_key(audio_key).type("file").build()
             )
             resp = await channel.client.im.v1.message_resource.aget(req)
+            suffix = anyio.Path(resp.file_name or "").suffix
+            path = str(anyio.Path(downloads) / f"{audio_key[-32:]}{suffix}")
             await anyio.Path(path).write_bytes(resp.file.read())
             logger.debug(f"audio saved to {path}")
             chunks.append(FileChunk(path))
@@ -101,11 +105,18 @@ async def _build_chunks(channel: Any, ctx: Any, downloads: str) -> list[InputChu
     for r in ctx.resources:
         logger.debug(f"resource type={r.type} file_key={r.file_key} file_name={r.file_name}")
         try:
+            if r.file_name:
+                stem = anyio.Path(r.file_name).stem
+                ext = anyio.Path(r.file_name).suffix
+                name = f"{stem}-{r.file_key}{ext}"
+            else:
+                name = None
             saved = await channel.download_resource_to_file(
                 r.file_key,
                 resource_type=r.type,
                 message_id=ctx.message_id,
                 dest_dir=downloads,
+                file_name=name,
             )
             logger.debug(f"resource downloaded to {saved}")
             chunks.append(FileChunk(str(saved)))
@@ -132,12 +143,8 @@ async def _handle_and_stream(
     failed = False
     try:
         try:
-            downloads_dir = anyio.Path(platformdirs.user_downloads_dir()) / ".psi" / str(date.today())
-            await downloads_dir.mkdir(parents=True, exist_ok=True)
-            downloads = str(downloads_dir)
-
             try:
-                chunks = await _build_chunks(channel, ctx, downloads)
+                chunks = await _build_chunks(channel, ctx)
             except Exception as e:
                 logger.error(f"_build_chunks failed — {e}")
                 failed = True
