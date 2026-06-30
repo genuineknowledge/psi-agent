@@ -46,3 +46,22 @@ jobs:
           name: psi-agent-pyinstaller-${{ matrix.os }}
           path: pyinstaller-dist/psi-agent.exe
         if: matrix.os == 'windows-latest'
+
+  inno-setup:
+    needs: pyinstaller
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          name: psi-agent-pyinstaller-windows-latest
+          path: dist-exe
+      - shell: cmd
+        run: copy dist-exe\psi-agent.exe "examples\haitun-workspace\psi-agent.exe"
+      - run: choco install innosetup --no-progress
+      - shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /O"installer-output" "examples\haitun-workspace\haitun.iss"'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: haitun-agent-installer
+          path: installer-output/Haitun Agent Setup.exe
