@@ -56,9 +56,11 @@ async def test_missing_tools_dir_graceful(tmp_path: Path, mock_ai_server: MockAI
     base_url = await mock_ai_server.start()
 
     ws = tmp_path / "ws"
-    ws.mkdir()
-    (ws / "systems").mkdir()
-    (ws / "systems" / "system.py").write_text("async def system_prompt_builder() -> str:\n    return 'test'\n")
+    await anyio.Path(ws).mkdir()
+    await anyio.Path(ws / "systems").mkdir()
+    await anyio.Path(ws / "systems" / "system.py").write_text(
+        "async def system_prompt_builder() -> str:\n    return 'test'\n"
+    )
 
     tr = await ToolRegistry.load(ws / "tools")
     assert len(tr.tools) == 0
@@ -96,10 +98,10 @@ async def test_missing_system_py(mock_ai_server: MockAIServer) -> None:
 async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> None:
 
     ws = tmp_path / "ws"
-    (ws / "tools").mkdir(parents=True)
-    (ws / "tools" / "echo.py").write_text("async def echo(message: str) -> str:\n    return 'ECHO'\n")
-    (ws / "systems").mkdir()
-    (ws / "systems" / "system.py").write_text(
+    await anyio.Path(ws / "tools").mkdir(parents=True)
+    await anyio.Path(ws / "tools" / "echo.py").write_text("async def echo(message: str) -> str:\n    return 'ECHO'\n")
+    await anyio.Path(ws / "systems").mkdir()
+    await anyio.Path(ws / "systems" / "system.py").write_text(
         "async def system_prompt_builder() -> str:\n    raise RuntimeError('bad')\n"
     )
 
@@ -179,8 +181,8 @@ async def test_system_prompt_builder_raises_exception_caught(tmp_path: Path) -> 
 @pytest.mark.anyio
 async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server: MockAIServer) -> None:
     ws = tmp_path / "ws"
-    (ws / "tools").mkdir(parents=True)
-    (ws / "tools" / "echo.py").write_text(
+    await anyio.Path(ws / "tools").mkdir(parents=True)
+    await anyio.Path(ws / "tools" / "echo.py").write_text(
         textwrap.dedent("""\
         async def echo(message: str) -> str:
             \"\"\"Echo back.
@@ -191,8 +193,8 @@ async def test_full_workspace_normal_conversation(tmp_path: Path, mock_ai_server
             return f"ECHO: {message}"
     """)
     )
-    (ws / "systems").mkdir()
-    (ws / "systems" / "system.py").write_text(
+    await anyio.Path(ws / "systems").mkdir()
+    await anyio.Path(ws / "systems" / "system.py").write_text(
         "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n"
     )
 
@@ -223,10 +225,12 @@ async def test_unicode_message_handling(tmp_path: Path, mock_ai_server: MockAISe
     base_url = await mock_ai_server.start()
 
     ws = tmp_path / "ws"
-    (ws / "tools").mkdir(parents=True)
-    (ws / "tools" / "echo.py").write_text('async def echo(message: str) -> str:\n    return f"ECHO: {message}"\n')
-    (ws / "systems").mkdir()
-    (ws / "systems" / "system.py").write_text(
+    await anyio.Path(ws / "tools").mkdir(parents=True)
+    await anyio.Path(ws / "tools" / "echo.py").write_text(
+        'async def echo(message: str) -> str:\n    return f"ECHO: {message}"\n'
+    )
+    await anyio.Path(ws / "systems").mkdir()
+    await anyio.Path(ws / "systems" / "system.py").write_text(
         "async def system_prompt_builder() -> str:\n    return 'You are a test assistant.'\n"
     )
 

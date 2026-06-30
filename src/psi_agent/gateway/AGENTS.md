@@ -45,7 +45,7 @@ Gateway 进程
 1. setup_logging(verbose)        — 第一行
 2. anyio.create_task_group()     — 手动管理 task group
 3. 创建 AIManager + SessionManager
-4. create_app(aim, sm)           — 注册 REST 路由
+4. await create_app(aim, sm)     — 注册 REST 路由（async：内部 anyio 探测 spa/dist）
 5. runner.setup() + create_site(runner, listen) + site.start()
 6. if self.browser: webbrowser.open(addr)
 7. if self.tray: GatewayTray(addr, self.tray).start()  ← 可选托盘（需 --tray）

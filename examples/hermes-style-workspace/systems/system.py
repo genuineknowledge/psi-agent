@@ -50,11 +50,11 @@ from systems.threat_patterns import scan_for_threats
 CompleteFn = Callable[[list[dict[str, Any]]], Awaitable[str]]
 
 
-def _find_git_root(start: anyio.Path) -> anyio.Path | None:
-    current = pathlib.Path(str(start)).resolve()
+async def _find_git_root(start: anyio.Path) -> anyio.Path | None:
+    current = await anyio.Path(str(start)).resolve()
     for directory in [current, *current.parents]:
-        if (directory / ".git").exists():
-            return anyio.Path(str(directory))
+        if await (directory / ".git").exists():
+            return directory
     return None
 
 
@@ -437,8 +437,8 @@ async def _load_hermes_md(cwd: anyio.Path) -> str:
     Returns:
         Formatted content string, or empty string if not found.
     """
-    stop_at = _find_git_root(cwd)
-    current = pathlib.Path(str(cwd)).resolve()
+    stop_at = await _find_git_root(cwd)
+    current = await anyio.Path(str(cwd)).resolve()
 
     for directory in [current, *current.parents]:
         dir_path = anyio.Path(str(directory))
@@ -477,8 +477,8 @@ async def _load_agents_md(cwd: anyio.Path) -> str:
     Returns:
         Formatted content string, or empty string if not found.
     """
-    stop_at = _find_git_root(cwd)
-    current = pathlib.Path(str(cwd)).resolve()
+    stop_at = await _find_git_root(cwd)
+    current = await anyio.Path(str(cwd)).resolve()
 
     for directory in [current, *current.parents]:
         dir_path = anyio.Path(str(directory))
@@ -515,8 +515,8 @@ async def _load_claude_md(cwd: anyio.Path) -> str:
     Returns:
         Formatted content string, or empty string if not found.
     """
-    stop_at = _find_git_root(cwd)
-    current = pathlib.Path(str(cwd)).resolve()
+    stop_at = await _find_git_root(cwd)
+    current = await anyio.Path(str(cwd)).resolve()
 
     for directory in [current, *current.parents]:
         dir_path = anyio.Path(str(directory))

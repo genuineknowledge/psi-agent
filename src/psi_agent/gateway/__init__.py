@@ -58,7 +58,7 @@ class Gateway:
         aim = AIManager(_prefix=self.socket_path, _tg=tg)
         sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
 
-        app = create_app(aim, sm, favicon_path=self.tray)
+        app = await create_app(aim, sm, favicon_path=self.tray)
         runner = web.AppRunner(app)
         try:
             await runner.setup()

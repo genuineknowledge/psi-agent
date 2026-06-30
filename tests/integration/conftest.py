@@ -16,13 +16,13 @@ from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
 
 @pytest.fixture
-def temp_workspace(tmp_path: Path) -> Path:
+async def temp_workspace(tmp_path: Path) -> Path:
     """Create a minimal temporary workspace with tool, system, and schedule."""
     ws = tmp_path / "workspace"
 
     tools_dir = ws / "tools"
-    tools_dir.mkdir(parents=True)
-    (tools_dir / "echo.py").write_text(
+    await anyio.Path(tools_dir).mkdir(parents=True)
+    await anyio.Path(tools_dir / "echo.py").write_text(
         textwrap.dedent("""\
         async def echo(message: str) -> str:
             \"\"\"Echo back the message.
@@ -35,8 +35,8 @@ def temp_workspace(tmp_path: Path) -> Path:
     )
 
     systems_dir = ws / "systems"
-    systems_dir.mkdir(parents=True)
-    (systems_dir / "system.py").write_text(
+    await anyio.Path(systems_dir).mkdir(parents=True)
+    await anyio.Path(systems_dir / "system.py").write_text(
         textwrap.dedent("""\
         async def system_prompt_builder() -> str:
             return "You are a helpful test assistant."
@@ -44,8 +44,8 @@ def temp_workspace(tmp_path: Path) -> Path:
     )
 
     schedules_dir = ws / "schedules" / "test-sched"
-    schedules_dir.mkdir(parents=True)
-    (schedules_dir / "TASK.md").write_text('---\nname: test-sched\ncron: "0 0 1 1 *"\n---\nTest task.')
+    await anyio.Path(schedules_dir).mkdir(parents=True)
+    await anyio.Path(schedules_dir / "TASK.md").write_text('---\nname: test-sched\ncron: "0 0 1 1 *"\n---\nTest task.')
 
     return ws
 
