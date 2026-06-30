@@ -43,7 +43,7 @@ async def run_repl(*, session_socket: str) -> None:
                             elif isinstance(chunk, TextChunk):
                                 console.print(chunk.text, end="")
                 except Exception as e:
-                    logger.error(f"REPL error: {e}")
+                    logger.error(f"REPL error: {e!r}")
                     console.print(f"\n[red]Error: {e}[/red]")
                 console.print("\n")
 

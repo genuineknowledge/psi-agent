@@ -42,7 +42,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 
 | Tool | Notes |
 |---|---|
-| `bash` | Shell commands (anyio, Windows-aware bash detection). |
+| `bash` | Shell commands (anyio, Windows-aware bash detection). On Windows the installer bundles MSYS2 at `{app}\msys64`, added to PATH by the launcher, so bash works out-of-the-box. |
 | `powershell` | Windows-native shell. |
 | `read` / `write` / `edit` | Async file ops. |
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |

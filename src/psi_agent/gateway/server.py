@@ -267,7 +267,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
         client_gone = True
         logger.info(f"Client disconnected during chat for session '{session_id}'; cancelling stream")
     except Exception as e:
-        logger.warning(f"Chat error for session '{session_id}': {e}")
+        logger.warning(f"Chat error for session {session_id!r}: {e!r}")
         if not client_gone:
             with contextlib.suppress(ConnectionResetError):
                 await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n".encode())

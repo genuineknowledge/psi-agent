@@ -90,10 +90,12 @@
           <input type="file" id="file-upload" @change="onFileSelected">
 
           <textarea
+            id="chat-input"
             v-model="store.inputText"
             rows="1"
             placeholder="发送消息..."
             @keydown.enter.exact.prevent="sendMessage"
+            @input="autoResizeInput"
           ></textarea>
 
           <div class="model-zone">
@@ -624,6 +626,22 @@ watch(
   (v) => {
     localStorage.setItem(LS_SIDEBAR, v ? 'collapsed' : 'expanded')
   }
+)
+
+// 让输入框高度随内容自动增长（CSS 已限制 max-height，超过出现滚动条）
+function autoResizeInput() {
+  const el = document.getElementById('chat-input')
+  if (!el) return
+  el.style.height = 'auto'
+  // border-box 下 scrollHeight 不含边框，需补上上下边框避免持续出现滚动条
+  const borders = el.offsetHeight - el.clientHeight
+  el.style.height = el.scrollHeight + borders + 'px'
+}
+
+// inputText 被代码改动时（发送清空、切换会话恢复草稿）也要重新计算高度
+watch(
+  () => store.inputText,
+  () => nextTick(autoResizeInput)
 )
 
 onMounted(async () => {

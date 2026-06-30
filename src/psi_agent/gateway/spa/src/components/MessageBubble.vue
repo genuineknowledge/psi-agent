@@ -110,15 +110,24 @@ function fileUrl(f) {
   padding: 12px 16px;
   font-size: 14px;
   line-height: 1.6;
-  white-space: pre-wrap;
   word-break: break-word;
   max-width: 100%;
+}
+
+/* Rendered markdown: collapse inter-tag whitespace (the bubble used to be
+   pre-wrap, which surfaced marked's HTML newlines as blank lines). Code
+   blocks still preserve their own whitespace via <pre>/<code>. */
+.bubble :deep(pre),
+.bubble :deep(code) {
+  white-space: pre-wrap;
 }
 
 .msg.user .bubble {
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
   border-radius: 16px 16px 4px 16px;
+  /* User text is html-escaped (not markdown), so keep literal newlines. */
+  white-space: pre-wrap;
 }
 
 .msg.assistant .bubble {

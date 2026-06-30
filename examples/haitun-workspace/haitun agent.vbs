@@ -28,4 +28,11 @@ If objFSO.FileExists(strEnvPath) Then
     objFile.Close
 End If
 
+' Prepend the bundled MSYS2 to PATH: usr\bin (bash/git POSIX tools) + ucrt64\bin (node/uv native tools).
+strUsrBin = objFSO.BuildPath(strDir, "msys64\usr\bin")
+strUcrtBin = objFSO.BuildPath(strDir, "msys64\ucrt64\bin")
+objShell.Environment("Process")("PATH") = strUsrBin & ";" & strUcrtBin & ";" & objShell.Environment("Process")("PATH")
+' Keep bash -lc in the current working directory instead of cd-ing to $HOME.
+objShell.Environment("Process")("CHERE_INVOKING") = "1"
+
 objShell.Run "psi-agent.exe gateway --tray haitun.ico", 0, False

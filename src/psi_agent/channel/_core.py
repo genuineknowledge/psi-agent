@@ -61,7 +61,7 @@ class ChannelCore:
                     msg = error.get("error", {}).get("message", msg)
                 except Exception:
                     pass
-                logger.debug(f"non-200 error: {msg}")
+                logger.debug(f"non-200 error: {msg!r}")
                 raise ChannelError(msg)
 
             async with aclosing(iter_sse_events(resp.content)) as events:
@@ -77,11 +77,11 @@ class ChannelCore:
                             yield self._to_chunk(k, t)
 
                         if incoming_kind == "text":
-                            logger.debug(f"delta.content ({len(text)} chars): {text[:60]}")
+                            logger.debug(f"delta.content ({len(text)} chars): {text[:1000]!r}")
                             for file_chunk in scanner.feed(text):
                                 yield file_chunk
                         else:
-                            logger.debug(f"delta.reasoning ({len(text)} chars): {text[:60]}")
+                            logger.debug(f"delta.reasoning ({len(text)} chars): {text[:1000]!r}")
 
                         for k, t in buffer.append(text):
                             yield self._to_chunk(k, t)

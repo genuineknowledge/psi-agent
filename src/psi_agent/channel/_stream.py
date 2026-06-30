@@ -42,7 +42,7 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
         try:
             data = json.loads(data_str)
         except json.JSONDecodeError:
-            logger.warning(f"skip malformed SSE: {line[:80]}")
+            logger.warning(f"skip malformed SSE: {line[:1000]!r}")
             continue
 
         choices = data.get("choices", [])
@@ -66,7 +66,7 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
 
         if choice.get("finish_reason") == "error":
             msg = delta.get("content", "Session error")
-            logger.debug(f"finish_reason=error: {msg}")
+            logger.debug(f"finish_reason=error: {msg!r}")
             raise ChannelError(msg)
 
         yield delta
