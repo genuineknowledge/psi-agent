@@ -30,7 +30,7 @@ jobs:
       - shell: bash
         run: |
           uv run python -m nuitka \
-            --onefile \
+            --mode=app \
             --output-dir=nuitka-dist \
             --output-filename=psi-agent \
             --assume-yes-for-downloads \
@@ -43,7 +43,12 @@ jobs:
         with:
           name: psi-agent-nuitka-${{ matrix.os }}
           path: nuitka-dist/psi-agent
-        if: matrix.os != 'windows-latest'
+        if: matrix.os == 'ubuntu-latest'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: psi-agent-nuitka-${{ matrix.os }}
+          path: nuitka-dist/psi-agent.app
+        if: matrix.os == 'macos-latest'
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-nuitka-${{ matrix.os }}
