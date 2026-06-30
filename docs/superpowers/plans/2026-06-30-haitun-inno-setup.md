@@ -139,22 +139,22 @@ git commit -m "feat: add Inno Setup script for Haitun Agent installer"
 ### Task 4: Update the workspace .gitignore
 
 **Files:**
-- Modify: `examples/haitun-workspace/.gitignore` (lines 29, 31 — remove `dolphin.ico` and `haitun agent.vbs`)
+- Modify: `examples/haitun-workspace/.gitignore` (lines 29, 31 — remove the `haitun agent.vbs` ignore line)
 
-Context: `dolphin.ico` is no longer used (we use the committed `haitun.ico`), and `haitun agent.vbs` is now a committed source file, so neither should be ignored. `psi-agent.exe` and `psi-agent` stay ignored (build artifacts).
+Context: `haitun.ico` stays ignored (build/local copy); `haitun agent.vbs` is now a committed source file, so it should not be ignored. `psi-agent.exe` and `psi-agent` stay ignored (build artifacts).
 
-- [ ] **Step 1: Remove the `dolphin.ico` line**
-
-Delete the line containing exactly `dolphin.ico` from `examples/haitun-workspace/.gitignore`.
-
-- [ ] **Step 2: Remove the `haitun agent.vbs` line**
+- [ ] **Step 1: Remove the `haitun agent.vbs` ignore line**
 
 Delete the line containing exactly `haitun agent.vbs` from `examples/haitun-workspace/.gitignore`.
 
+- [ ] **Step 2: Verify `haitun.ico` remains ignored**
+
+Confirm `examples/haitun-workspace/.gitignore` still contains `haitun.ico`.
+
 - [ ] **Step 3: Verify**
 
-Run: `grep -nE "dolphin.ico|haitun agent.vbs|psi-agent.exe" examples/haitun-workspace/.gitignore`
-Expected: only `psi-agent.exe` remains; the other two are gone.
+Run: `grep -nE "haitun.ico|haitun agent.vbs|psi-agent.exe" examples/haitun-workspace/.gitignore`
+Expected: `haitun.ico` and `psi-agent.exe` remain; `haitun agent.vbs` is gone.
 
 - [ ] **Step 4: Commit**
 
@@ -268,7 +268,7 @@ git commit -m "docs: document Haitun Agent Windows installer build"
 ## Definition of Done
 
 - [ ] `examples/haitun-workspace/` contains `haitun.ico`, `haitun agent.vbs`, `haitun.iss`
-- [ ] `.gitignore` no longer ignores `dolphin.ico` / `haitun agent.vbs`; still ignores `psi-agent.exe`
+- [ ] `.gitignore` no longer ignores `haitun agent.vbs`; still ignores `haitun.ico` and `psi-agent.exe`
 - [ ] `pyinstaller.yml` has a second job `inno-setup` (`needs: pyinstaller`, windows-latest) that parses as valid YAML
 - [ ] README documents the installer build
 - [ ] (CI, not local) On the next push, the `inno-setup` job produces the `haitun-agent-installer` artifact
