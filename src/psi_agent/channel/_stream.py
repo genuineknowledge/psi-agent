@@ -42,7 +42,7 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
         try:
             data = json.loads(data_str)
         except json.JSONDecodeError:
-            logger.warning(f"skip malformed SSE: {line[:80]}")
+            logger.warning(f"skip malformed SSE: {line[:1000]}")
             continue
 
         choices = data.get("choices", [])

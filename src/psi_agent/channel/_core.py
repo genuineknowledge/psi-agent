@@ -77,11 +77,11 @@ class ChannelCore:
                             yield self._to_chunk(k, t)
 
                         if incoming_kind == "text":
-                            logger.debug(f"delta.content ({len(text)} chars): {text[:60]}")
+                            logger.debug(f"delta.content ({len(text)} chars): {text[:1000]}")
                             for file_chunk in scanner.feed(text):
                                 yield file_chunk
                         else:
-                            logger.debug(f"delta.reasoning ({len(text)} chars): {text[:60]}")
+                            logger.debug(f"delta.reasoning ({len(text)} chars): {text[:1000]}")
 
                         for k, t in buffer.append(text):
                             yield self._to_chunk(k, t)

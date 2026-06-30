@@ -91,7 +91,7 @@ async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
             )
             resp = await channel.client.im.v1.message_resource.aget(req)
             suffix = anyio.Path(resp.file_name or "").suffix
-            path = str(anyio.Path(downloads) / f"{audio_key[-32:]}{suffix}")
+            path = str(anyio.Path(downloads) / f"{audio_key}{suffix}")
             await anyio.Path(path).write_bytes(resp.file.read())
             logger.debug(f"audio saved to {path}")
             chunks.append(FileChunk(path))

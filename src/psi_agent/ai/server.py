@@ -86,7 +86,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 "choices": [{"index": 0, "delta": {"content": f"[Upstream Error]: {e}"}, "finish_reason": "error"}],
             }
         )
-        logger.debug(f"SSE error chunk: {err_chunk[:200]}")
+        logger.debug(f"SSE error chunk: {err_chunk[:1000]}")
         try:
             await response.write(f"data: {err_chunk}\n\n".encode())
         except Exception:
