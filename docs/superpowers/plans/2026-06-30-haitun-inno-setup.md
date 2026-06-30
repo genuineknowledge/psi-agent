@@ -141,7 +141,7 @@ git commit -m "feat: add Inno Setup script for Haitun Agent installer"
 **Files:**
 - Modify: `examples/haitun-workspace/.gitignore` (lines 29, 31 — remove `haitun.ico` and `haitun agent.vbs`)
 
-Context: committed launcher assets (`haitun.ico`, `haitun agent.vbs`) should not be gitignored. `psi-agent.exe` and `psi-agent` stay ignored (build artifacts).
+Context: `dolphin.ico` is no longer used (we use the committed `haitun.ico`), and `haitun agent.vbs` is now a committed source file, so neither should be ignored. `psi-agent.exe` and `psi-agent` stay ignored (build artifacts).
 
 - [ ] **Step 1: Remove the `haitun.ico` line**
 
