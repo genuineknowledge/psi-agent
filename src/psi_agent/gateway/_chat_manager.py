@@ -20,6 +20,27 @@ class ChatManager:
         channel_socket: str,
         body: dict[str, Any],
     ) -> AsyncGenerator[dict[str, Any]]:
+        """Send chat chunks to a Session and yield SSE-ready dicts.
+
+        Args:
+            channel_socket: The Session channel socket path.
+            body: A dict with key ``"chunks"`` mapping to a list of chunk
+                objects. Each chunk has a ``"type"`` field:
+
+                - ``{"type": "text", "text": "..."}`` — a text message
+                - ``{"type": "file", "path": "/..."}`` — a pre-existing file
+                - ``{"type": "blob", "name": "...", "data": "<base64>"}``
+                  — an inline binary (decoded and persisted to
+                  ``~/Downloads/.psi/<date>/``)
+
+        Yields:
+            Dicts suitable for SSE output:
+
+            - ``{"type": "text", "text": "..."}``
+            - ``{"type": "reasoning", "text": "..."}``
+            - ``{"type": "blob", "name": "...", "data": "<base64>"}``
+            - ``{"type": "error", "error": "..."}`` — on blob read failure
+        """
         chunks: list[InputChunk] = []
 
         raw_chunks = body.get("chunks", [])
