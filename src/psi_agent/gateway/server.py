@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import re
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +77,7 @@ async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | Non
     app.router.add_get("/ais", _list_ais)
     app.router.add_post("/sessions", _create_session)
     app.router.add_delete("/sessions/{session_id}", _delete_session)
+    app.router.add_post("/sessions/{session_id}/reset", _reset_session)
     app.router.add_get("/sessions", _list_sessions)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
     app.router.add_get("/sessions/{session_id}/history", _get_history)
@@ -144,6 +147,35 @@ async def _delete_session(request: web.Request) -> web.Response:
         return _error(str(e), status=404)
     except Exception as e:
         logger.error(f"Unexpected error deleting session '{session_id}': {e}")
+        return _error(str(e), status=500)
+
+
+async def _reset_session(request: web.Request) -> web.Response:
+    sm: SessionManager = request.app["sm"]
+    session_id = request.match_info["session_id"]
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
+        return _error(f"Invalid session_id: {session_id!r}", status=400)
+    try:
+        workspace = sm.get_workspace(session_id)
+    except LookupError as e:
+        return _error(str(e), status=404)
+    try:
+        hist_file = anyio.Path(workspace) / "histories" / f"{session_id}.jsonl"
+        tmp_file = anyio.Path(workspace) / "histories" / f"{session_id}.jsonl.tmp"
+        try:
+            await hist_file.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            await tmp_file.unlink()
+        except FileNotFoundError:
+            pass
+        info = await sm.reset(session_id)
+        return _json(asdict(info))
+    except LookupError as e:
+        return _error(str(e), status=404)
+    except Exception as e:
+        logger.error(f"Unexpected error resetting session '{session_id}': {e}")
         return _error(str(e), status=500)
 
 
@@ -251,9 +283,20 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
     resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
     await resp.prepare(request)
 
+    client_gone = False
     try:
         async for chunk in cm.handle(channel_socket, body):
-            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            try:
+                await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+            except ConnectionResetError:
+                # Client disconnected (e.g. pressed "stop") — normal, stop streaming.
+                # cm.handle's close propagates cancellation to the upstream agent/LLM.
+                client_gone = True
+                logger.info(f"Client disconnected during chat for session '{session_id}'; cancelling stream")
+                break
+    except ConnectionResetError:
+        client_gone = True
+        logger.info(f"Client disconnected during chat for session '{session_id}'; cancelling stream")
     except Exception as e:
         logger.warning(f"Chat error for session {session_id!r}: {e!r}")
         await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n".encode())

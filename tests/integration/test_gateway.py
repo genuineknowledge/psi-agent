@@ -382,3 +382,58 @@ async def test_session_manager_reset_keeps_session(tmp_path: str) -> None:
         await sm.delete("reset-sess")
         await aim.delete(ai.id)
         await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_gateway_reset_deletes_history(tmp_path: str) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+
+    aim = AIManager(_prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    app = await create_app(aim, sm)
+    base_url, runner = await _start_app_on_free_port(app)
+    try:
+        timeout = ClientTimeout(total=10)
+        async with ClientSession(timeout=timeout) as session:
+            ai = await aim.create(
+                AiCreateRequest(
+                    provider="openai",
+                    model="gpt-4o",
+                    api_key="sk-test",
+                    base_url="https://api.example.com",
+                )
+            )
+            workspace = await _make_workspace(str(tmp_path))
+            async with session.post(
+                f"{base_url}/sessions",
+                json={"ai_id": ai.id, "workspace": workspace, "id": "reset-http"},
+            ) as resp:
+                assert resp.status == 201
+
+            hist_dir = os.path.join(workspace, "histories")
+            await anyio.Path(hist_dir).mkdir(parents=True, exist_ok=True)
+            hist_file = os.path.join(hist_dir, "reset-http.jsonl")
+            await anyio.Path(hist_file).write_text(
+                '{"role": "user", "content": "hi"}\n', encoding="utf-8"
+            )
+            assert await anyio.Path(hist_file).exists()
+
+            async with session.post(
+                f"{base_url}/sessions/reset-http/reset"
+            ) as resp:
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["id"] == "reset-http"
+
+            assert not await anyio.Path(hist_file).exists()
+
+            async with session.post(
+                f"{base_url}/sessions/nonexistent/reset"
+            ) as resp:
+                assert resp.status == 404
+    finally:
+        await runner.cleanup()
+        await sm.delete("reset-http")
+        await aim.delete(ai.id)
+        await tg.__aexit__(None, None, None)
