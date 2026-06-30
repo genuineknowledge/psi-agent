@@ -247,7 +247,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
             raw = data.get("chunks")
             raw_chunks = json.loads(str(raw)) if raw else []
             body: dict[str, Any] = {"chunks": raw_chunks}
-            for file_field in data.getall("file"):
+            for file_field in data.getall("file", []):
                 fname = getattr(file_field, "filename", None)
                 if fname:
                     content = await anyio.to_thread.run_sync(file_field.file.read)  # ty: ignore
