@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
@@ -283,20 +282,9 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
     resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
     await resp.prepare(request)
 
-    client_gone = False
     try:
         async for chunk in cm.handle(channel_socket, body):
-            try:
-                await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
-            except ConnectionResetError:
-                # Client disconnected (e.g. pressed "stop") — normal, stop streaming.
-                # cm.handle's close propagates cancellation to the upstream agent/LLM.
-                client_gone = True
-                logger.info(f"Client disconnected during chat for session '{session_id}'; cancelling stream")
-                break
-    except ConnectionResetError:
-        client_gone = True
-        logger.info(f"Client disconnected during chat for session '{session_id}'; cancelling stream")
+            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
     except Exception as e:
         logger.warning(f"Chat error for session {session_id!r}: {e!r}")
         await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n".encode())
