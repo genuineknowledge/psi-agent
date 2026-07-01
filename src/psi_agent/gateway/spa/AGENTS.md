@@ -52,7 +52,8 @@ spa/
 │   │   ├── useKeyboard.js           # visualViewport 键盘适配 + 手动上滚检测
 │   │   ├── useTheme.js              # 暗色/亮色切换 + localStorage + <html> class
 │   │   ├── useSession.js            # selectSession：会话切换 + 草稿/消息缓存（App.vue + Sidebar 共用）
-│   │   └── useChat.js               # sendMessage 及其内部辅助（addMessage, encodeFiles, scrollChatAreaIfLocked, generateTitle）
+│   │   ├── useScroll.js             # 消息容器滚动控制（注册容器 + 未锁定则滚底 + 上滚检测）
+│   │   └── useChat.js               # sendMessage 及其内部辅助（addMessage, encodeFiles, generateTitle）；不含 DOM 操作，滚动委托 useScroll、清空 file input 经 store.uploadResetToken 信号
 │   └── styles/
 │       ├── tokens.css               # MD3 颜色/elevation/shape token（双主题）
 │       ├── components.css           # MD3 组件基类（button, dialog, field, spinner）
@@ -114,6 +115,7 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 | `isDragging` | `bool` | 拖放文件至 #chat 时的遮罩状态 |
 | `inputText` | `string` | textarea v-model |
 | `userHasScrolledUp` | `bool` | 手动上滚时暂停自动滚动 |
+| `uploadResetToken` | `number` | 递增以通知 InputBar 清空 file input |
 | `isLightMode` | `bool` | 主题（默认亮色） |
 | `isSidebarCollapsed`, `isMobileSidebarOpen` | `bool` | 侧栏状态 |
 | `modelPanelOpen` | `bool` | 模型浮层开关 |

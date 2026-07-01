@@ -1,5 +1,5 @@
 <template>
-  <div id="messages" ref="messagesRef">
+  <div id="messages" ref="messagesRef" @scroll="onContainerScroll">
     <div v-if="store.messages.length === 0" class="empty">选择一个会话开始聊天</div>
     <MessageBubble
       v-for="m in store.messages"
@@ -10,25 +10,21 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { store } from '../store.js'
 import MessageBubble from './MessageBubble.vue'
+import { registerScrollContainer, scrollToBottomIfLocked, onContainerScroll } from '../composables/useScroll.js'
 
 const messagesRef = ref(null)
 
-function scrollToBottom() {
-  const el = messagesRef.value
-  if (!el) return
-  el.scrollTop = el.scrollHeight
-}
+onMounted(() => registerScrollContainer(messagesRef.value))
 
 watch(
   () => store.messages.length,
-  () => {
-    if (store.userHasScrolledUp) return
-    nextTick(() => scrollToBottom())
-  }
+  () => scrollToBottomIfLocked()
 )
+
+defineExpose({ onContainerScroll })
 </script>
 
 <style scoped>
