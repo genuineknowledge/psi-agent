@@ -1,55 +1,54 @@
 <template>
-  <div v-if="store.dlgAI" class="dialog-overlay" @click.self="handleCancel">
-    <div class="dialog">
-      <h3>链接大模型</h3>
-      <div class="field"><label>供应商</label>
-        <select v-model="store.aiForm.provider" @change="handleProviderChange">
-          <option v-for="p in PROVIDERS" :key="p.v" :value="p.v">{{ p.l }}</option>
-        </select>
-      </div>
-      <div class="field"><label>接口地址</label>
-        <input v-model="store.aiForm.base_url" placeholder="https://..." @change="emit('fetchModels')">
-      </div>
-      <div class="field"><label>API 密钥</label>
-        <input v-model="store.aiForm.api_key" type="password" placeholder="sk-..." @change="emit('fetchModels')">
-      </div>
-      <div class="field" style="position:relative">
-        <label>模型名称</label>
-        <input
-          ref="modelInput"
-          v-model="modelText"
-          placeholder="选择或输入模型名称"
-          @focus="dropdownOpen = store.fetchedModels.length > 0"
-          @blur="onBlur"
-          @keydown.down.prevent="moveDown"
-          @keydown.up.prevent="moveUp"
-          @keydown.enter.prevent="selectCurrent"
-          @keydown.escape="dropdownOpen = false"
-          @input="onInput"
-        >
-        <div v-if="dropdownOpen && filteredModels.length" class="model-dropdown">
-          <div
-            v-for="(m, i) in filteredModels"
-            :key="m"
-            class="model-dropdown-item"
-            :class="{ active: i === activeIdx }"
-            @mousedown.prevent="selectModel(m)"
-          >{{ m }}</div>
-        </div>
-        <span v-if="store.loadingModels" class="loading-indicator">获取中...</span>
-      </div>
-      <div class="actions">
-        <button class="cancel" @click="handleCancel">取消</button>
-        <button class="ok" @click="emit('create')">链接</button>
-      </div>
+  <BaseDialog :show="store.dlgAI" @close="handleCancel">
+    <template #title>链接大模型</template>
+    <div class="field"><label>供应商</label>
+      <select v-model="store.aiForm.provider" @change="handleProviderChange">
+        <option v-for="p in PROVIDERS" :key="p.v" :value="p.v">{{ p.l }}</option>
+      </select>
     </div>
-  </div>
+    <div class="field"><label>接口地址</label>
+      <input v-model="store.aiForm.base_url" placeholder="https://..." @change="emit('fetchModels')">
+    </div>
+    <div class="field"><label>API 密钥</label>
+      <input v-model="store.aiForm.api_key" type="password" placeholder="sk-..." @change="emit('fetchModels')">
+    </div>
+    <div class="field" style="position:relative">
+      <label>模型名称</label>
+      <input
+        ref="modelInput"
+        v-model="modelText"
+        placeholder="选择或输入模型名称"
+        @focus="dropdownOpen = store.fetchedModels.length > 0"
+        @blur="onBlur"
+        @keydown.down.prevent="moveDown"
+        @keydown.up.prevent="moveUp"
+        @keydown.enter.prevent="selectCurrent"
+        @keydown.escape="dropdownOpen = false"
+        @input="onInput"
+      >
+      <div v-if="dropdownOpen && filteredModels.length" class="model-dropdown">
+        <div
+          v-for="(m, i) in filteredModels"
+          :key="m"
+          class="model-dropdown-item"
+          :class="{ active: i === activeIdx }"
+          @mousedown.prevent="selectModel(m)"
+        >{{ m }}</div>
+      </div>
+      <span v-if="store.loadingModels" class="loading-indicator">获取中...</span>
+    </div>
+    <template #actions>
+      <button class="cancel" @click="handleCancel">取消</button>
+      <button class="ok" @click="emit('create')">链接</button>
+    </template>
+  </BaseDialog>
 </template>
 
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { store } from '../store.js'
 import { PROVIDERS } from '../providers.js'
+import BaseDialog from './BaseDialog.vue'
 
 const emit = defineEmits(['create', 'fetchModels'])
 
@@ -117,6 +116,16 @@ function handleCancel() {
 </script>
 
 <style scoped>
+.field { margin-bottom: 16px; position: relative; }
+.field label { display: block; font-size: 12px; font-weight: 500; color: var(--md-primary); margin-bottom: 6px; }
+.field input, .field select {
+  width: 100%; background: var(--md-bg); color: var(--md-text-primary);
+  border: 1px solid var(--md-outline-variant); border-radius: 8px;
+  padding: 10px 12px; font-size: 14px; outline: none;
+}
+.field input:focus, .field select:focus { border-color: var(--md-primary); }
+.field .loading-indicator { position: absolute; right: 12px; bottom: 10px; font-size: 12px; color: var(--md-primary); }
+
 .model-dropdown {
   position: absolute;
   top: 100%;

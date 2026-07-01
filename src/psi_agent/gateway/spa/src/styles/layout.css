@@ -49,36 +49,6 @@
   background: var(--md-surface-variant);
   transform: scale(1.02);
 }
-/* 弹窗材质 */
-.dialog-overlay {
-  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.4); display: flex; align-items: center; justify-content: center;
-  z-index: 100; backdrop-filter: blur(2px);
-}
-.dialog {
-  background: var(--md-surface-container-high); border: 1px solid var(--md-outline-variant);
-  border-radius: 28px; padding: 24px; width: 400px; max-width: 90vw;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.15);
-}
-.dialog h3 { font-size: 20px; font-weight: 400; margin-bottom: 20px; color: var(--md-text-primary); }
-.dialog p.alert-desc { font-size: 14px; color: var(--md-text-secondary); line-height: 1.5; margin-bottom: 12px; }
-.dialog .field { margin-bottom: 16px; position: relative; }
-.dialog .field label { display: block; font-size: 12px; font-weight: 500; color: var(--md-primary); margin-bottom: 6px; }
-.dialog .field input, .dialog .field select {
-  width: 100%; background: var(--md-bg); color: var(--md-text-primary);
-  border: 1px solid var(--md-outline-variant); border-radius: 8px;
-  padding: 10px 12px; font-size: 14px; outline: none;
-}
-.dialog .field input:focus, .dialog .field select:focus { border-color: var(--md-primary); }
-.dialog .field .loading-indicator {
-  position: absolute; right: 12px; bottom: 10px; font-size: 12px; color: var(--md-primary);
-}
-.dialog .actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 24px; }
-.dialog .actions button { padding: 10px 24px; border-radius: var(--md-shape-full); font-size: 14px; font-weight: 500; cursor: pointer; border: none; transition: all .2s; }
-.dialog .actions button.ok { background: var(--md-primary); color: var(--md-on-primary); box-shadow: var(--md-elevation-1); }
-.dialog .actions button.ok:hover { box-shadow: var(--md-elevation-2); filter: brightness(1.08); }
-.dialog .actions button.cancel { background: transparent; color: var(--md-primary); border: 1px solid var(--md-outline); }
-.dialog .actions button.cancel:hover { background: rgba(128,128,128,var(--md-state-hover)); }
 .page-loader {
   position: fixed; top:0; left:0; right:0; bottom:0; z-index: 999;
   background: var(--md-bg); display: flex; flex-direction: column;
@@ -159,8 +129,7 @@
     top: 0; left: 0; right: 0; bottom: 0;
   }
 
-  .dialog { width: 94vw; border-radius: 20px; padding: 20px; }
-  .dialog h3 { font-size: 18px; }
+
 }
 
 .mobile-overlay {
