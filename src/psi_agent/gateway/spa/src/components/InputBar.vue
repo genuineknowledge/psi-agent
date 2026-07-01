@@ -33,6 +33,7 @@
         <span class="material-symbols-outlined">send</span>
       </button>
     </div>
+    <div class="input-hint">Enter 发送 · Shift+Enter 换行</div>
   </div>
 </template>
 
@@ -231,4 +232,15 @@ async function generateTitle() {
 }
 #input-area button.send:hover:not(:disabled) { filter: brightness(1.1); transform: scale(1.05); }
 #input-area button.send:disabled { opacity: .4; cursor: default; box-shadow: none; }
+
+.input-hint {
+  padding: 0 24px 10px;
+  font-size: 11px;
+  color: var(--md-text-secondary);
+  opacity: 0.7;
+  user-select: none;
+}
+@media (max-width: 768px) {
+  .input-hint { padding: 0 12px 6px; }
+}
 </style>
