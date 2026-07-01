@@ -70,7 +70,7 @@ async def write_excel(file_path: str, rows_json: str, sheet_name: str = "Sheet1"
         await parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        count = await anyio.to_thread.run_sync(_build_workbook, file_path, rows, sheet_name, header)
+        count = await anyio.to_thread.run_sync(_build_workbook, file_path, rows, sheet_name, header)  # ty: ignore
     except Exception as e:  # openpyxl raises assorted errors on bad values
         return f"[Error] Failed to write Excel file: {e!r}"
 
