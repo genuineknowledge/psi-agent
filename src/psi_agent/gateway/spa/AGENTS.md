@@ -42,10 +42,11 @@ spa/
 │   │   ├── ThinkingBubble.vue       # 等待首 token 的三个脉冲圆点
 │   │   ├── InputBar.vue             # 输入 UI：textarea 自适应高度 + 文件选择 + 发送按钮；发送逻辑委托给 useChat.js；内嵌 ModelPanel
 │   │   ├── ModelPanel.vue           # 模型管理浮层（自定义下拉替代原生 datalist）；由 InputBar 嵌入
-│   │   ├── AiDialog.vue             # 链接大模型弹窗
-│   │   ├── SessDialog.vue           # 创建会话弹窗 + FileBrowser
+│   │   ├── BaseDialog.vue           # 弹窗外壳(overlay + dialog + actions，插槽:title/默认/actions)
+│   │   ├── AiDialog.vue             # 链接大模型弹窗（基于 BaseDialog）
+│   │   ├── SessDialog.vue           # 创建会话弹窗 + FileBrowser（基于 BaseDialog）
 │   │   ├── FileBrowser.vue          # 目录浏览
-│   │   ├── ConfirmDialog.vue        # 通用确认弹窗
+│   │   ├── ConfirmDialog.vue        # 通用确认弹窗（基于 BaseDialog）
 │   │   └── Snackbar.vue             # MD3 toast 提示
 │   ├── composables/
 │   │   ├── useSSE.js                # ReadableStream SSE 逐行解析 async generator
@@ -57,7 +58,7 @@ spa/
 │   └── styles/
 │       ├── tokens.css               # MD3 颜色/elevation/shape token（双主题）
 │       ├── components.css           # MD3 组件基类（button, dialog, field, spinner）
-│       └── layout.css               # 仅 app-shell：#app, #root-layout, #chat, mobile-topbar, .mobile-overlay, .drop-overlay, .dialog 共享外壳（含各自的移动端 @media）。组件专属样式（含其移动端 @media 规则）均在各组件 <style scoped>
+│       └── layout.css               # 仅 app-shell：#app, #root-layout, #chat, mobile-topbar, .mobile-overlay, .drop-overlay（含各自的移动端 @media）。dialog 外壳已移入 BaseDialog.vue scoped。组件专属样式（含其移动端 @media 规则）均在各组件 <style scoped>
 └── dist/                            # `vite build` 输出 (gitignore)
 ```
 
