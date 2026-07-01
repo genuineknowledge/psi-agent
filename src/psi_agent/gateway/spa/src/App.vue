@@ -284,7 +284,7 @@ async function executeConfirmedAction() {
     try {
       await api('POST', '/sessions/' + id + '/reset')
       clearHistory(id)
-      delete store.sessionTitles[id]
+      store.sessionTitles = await api('GET', '/titles').catch(() => ({}))
       if (id === store.selectedSessionId) store.messages.splice(0)
     } catch (e) {
       showAlert('重置会话失败: ' + e.message)
