@@ -26,14 +26,13 @@
     <FilePreview
       v-if="openPreviewFile"
       :file="openPreviewFile"
-      :download-url="fileUrl(openPreviewFile)"
       @close="closePreview"
     />
   </div>
 </template>
 
 <script setup>
-import { onBeforeUnmount, ref } from 'vue'
+import { ref } from 'vue'
 import { store } from '../store.js'
 import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
@@ -49,14 +48,6 @@ const props = defineProps({
 const copied = ref(false)
 const openPreviewKey = ref('')
 const openPreviewFile = ref(null)
-const urlCache = new WeakMap()
-const createdUrls = new Set()
-
-onBeforeUnmount(() => {
-  for (const url of createdUrls) URL.revokeObjectURL(url)
-  createdUrls.clear()
-})
-
 async function copyMessage() {
   await navigator.clipboard.writeText(props.msg.text)
   copied.value = true
@@ -80,30 +71,6 @@ function closePreview() {
   openPreviewFile.value = null
 }
 
-function mimeType(name) {
-  const ext = (name || '').split('.').pop().toLowerCase()
-  const map = {
-    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-    gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
-    pdf: 'application/pdf', txt: 'text/plain', json: 'application/json',
-    html: 'text/html', css: 'text/css', js: 'text/javascript',
-    py: 'text/x-python', zip: 'application/zip', gz: 'application/gzip',
-    tar: 'application/x-tar', mp3: 'audio/mpeg', wav: 'audio/wav',
-    mp4: 'video/mp4', mov: 'video/quicktime',
-  }
-  return map[ext] || 'application/octet-stream'
-}
-
-function fileUrl(f) {
-  if (urlCache.has(f)) return urlCache.get(f)
-  const bin = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0))
-  const mime = mimeType(f.name)
-  const blob = new Blob([bin], { type: mime })
-  const url = URL.createObjectURL(blob)
-  urlCache.set(f, url)
-  createdUrls.add(url)
-  return url
-}
 </script>
 
 <style scoped>

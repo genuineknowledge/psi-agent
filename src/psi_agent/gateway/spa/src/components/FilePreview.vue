@@ -10,11 +10,10 @@
           </div>
           <div class="preview-actions">
             <a
-              v-if="downloadUrl"
               class="preview-icon-btn"
-              :href="downloadUrl"
-              :download="file.name"
+              href="#"
               title="下载"
+              @click.prevent="downloadFile"
             >
               <span class="material-symbols-outlined">download</span>
             </a>
@@ -36,17 +35,13 @@
 
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { renderMd } from '../utils.js'
+import { mimeType, renderMd } from '../utils.js'
 
 const props = defineProps({
   file: {
     type: Object,
     required: true,
     validator: (f) => f && typeof f.name === 'string' && typeof f.data === 'string',
-  },
-  downloadUrl: {
-    type: String,
-    default: '',
   },
 })
 
@@ -62,6 +57,7 @@ const TABLE_ROW_LIMIT = 1000
 const TABLE_COL_LIMIT = 80
 const SHEET_LIMIT = 5
 const PDF_PAGE_LIMIT = 10
+const MAX_PREVIEW_DECODED_BYTES = 50 * 1024 * 1024
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
 const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac'])
@@ -109,8 +105,11 @@ async function renderPreview() {
 
   try {
     const ext = extension(props.file.name)
+    if (estimatedDecodedBytes(props.file.data) > MAX_PREVIEW_DECODED_BYTES) {
+      showFallback()
+      return
+    }
     const bytes = base64ToBytes(props.file.data)
-    const arrayBuffer = bytesToArrayBuffer(bytes)
 
     if (ext === 'svg') renderSvg(decodeText(bytes), bytes)
     else if (IMAGE_EXTS.has(ext)) renderImage(bytes, ext)
@@ -121,10 +120,10 @@ async function renderPreview() {
     else if (MARKDOWN_EXTS.has(ext)) renderMarkdown(decodeText(bytes))
     else if (TEXT_EXTS.has(ext)) await renderCode(decodeText(bytes), false)
     else if (ext === 'csv') await renderCsv(decodeText(bytes))
-    else if (ext === 'pdf') await renderPdf(arrayBuffer, run)
-    else if (ext === 'docx') await renderDocx(arrayBuffer)
-    else if (ext === 'xls' || ext === 'xlsx') await renderWorkbook(arrayBuffer)
-    else if (ext === 'pptx') await renderPptx(arrayBuffer)
+    else if (ext === 'pdf') await renderPdf(bytesToArrayBuffer(bytes), run)
+    else if (ext === 'docx') await renderDocx(bytesToArrayBuffer(bytes))
+    else if (ext === 'xls' || ext === 'xlsx') await renderWorkbook(bytesToArrayBuffer(bytes))
+    else if (ext === 'pptx') await renderPptx(bytesToArrayBuffer(bytes))
     else showFallback()
   } catch (e) {
     showFallback()
@@ -161,6 +160,13 @@ function base64ToBytes(data) {
   return Uint8Array.from(atob(data), (c) => c.charCodeAt(0))
 }
 
+function estimatedDecodedBytes(data) {
+  if (!data) return 0
+  const normalized = data.replace(/\s/g, '')
+  const padding = normalized.endsWith('==') ? 2 : normalized.endsWith('=') ? 1 : 0
+  return Math.floor((normalized.length * 3) / 4) - padding
+}
+
 function bytesToArrayBuffer(bytes) {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
 }
@@ -169,30 +175,22 @@ function base64ToBlob(bytes, ext) {
   return new Blob([bytes], { type: mimeType(ext) })
 }
 
-function decodeText(bytes) {
-  return new TextDecoder('utf-8', { fatal: false }).decode(bytes)
+function downloadFile() {
+  let url = ''
+  try {
+    const bytes = base64ToBytes(props.file.data)
+    url = URL.createObjectURL(new Blob([bytes], { type: mimeType(props.file.name) }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = props.file.name
+    link.click()
+  } finally {
+    if (url) URL.revokeObjectURL(url)
+  }
 }
 
-function mimeType(ext) {
-  const map = {
-    png: 'image/png',
-    jpg: 'image/jpeg',
-    jpeg: 'image/jpeg',
-    gif: 'image/gif',
-    webp: 'image/webp',
-    svg: 'image/svg+xml',
-    mp3: 'audio/mpeg',
-    wav: 'audio/wav',
-    ogg: 'audio/ogg',
-    m4a: 'audio/mp4',
-    flac: 'audio/flac',
-    mp4: 'video/mp4',
-    webm: 'video/webm',
-    mov: 'video/quicktime',
-    m4v: 'video/x-m4v',
-    pdf: 'application/pdf',
-  }
-  return map[ext] || 'application/octet-stream'
+function decodeText(bytes) {
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes)
 }
 
 function renderImage(bytes, ext) {
