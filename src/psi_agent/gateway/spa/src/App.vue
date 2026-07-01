@@ -7,47 +7,7 @@
 
     <div class="mobile-overlay" :class="{ active: store.isMobileSidebarOpen }" @click="closeMobileSidebar"></div>
 
-    <div id="sidebar" :class="{ collapsed: store.isSidebarCollapsed, 'mobile-open': store.isMobileSidebarOpen }">
-      <div class="col">
-        <div class="col-header">
-          会话
-          <button @click="openSessDialog()">
-            <span class="material-symbols-outlined">add</span>
-            新建
-          </button>
-        </div>
-        <div
-          v-for="s in store.sessions"
-          :key="s.id"
-          class="item"
-          :class="{ selected: s.id === store.selectedSessionId }"
-          @click="selectSession(s.id)"
-        >
-          <span class="info">
-            <input
-              v-if="store.editingSessionId === s.id"
-              v-model="store.editingWorkspaceText"
-              class="edit-input"
-              v-focus
-              @blur="saveSessionWorkspace(s)"
-              @keydown.enter="saveSessionWorkspace(s)"
-              @click.stop
-            >
-            <div
-              v-else
-              class="name"
-              :title="getSessionDisplayName(s)"
-              @dblclick.stop="startEditWorkspace(s)"
-            >
-              {{ getSessionDisplayName(s) }}
-            </div>
-          </span>
-          <button class="del" @click.stop="confirmDeleteSession(s.id)">
-            <span class="material-symbols-outlined">delete</span>
-          </button>
-        </div>
-      </div>
-    </div>
+    <Sidebar @new-session="openSessDialog" />
 
     <div id="chat">
       <div id="mobile-topbar">
@@ -168,6 +128,7 @@ import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
 import { useKeyboard } from './composables/useKeyboard.js'
 import { readSSE } from './composables/useSSE.js'
+import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import AiDialog from './components/AiDialog.vue'
 import SessDialog from './components/SessDialog.vue'
@@ -243,12 +204,6 @@ async function deleteAI(id) {
   await refreshAll()
 }
 
-function confirmDeleteSession(id) {
-  store.dlgConfirm.message = `确认删除会话 ${id}? 删除后将无法恢复。`
-  store.dlgConfirm.actionType = 'session'
-  store.dlgConfirm.actionArgs = id
-  store.dlgConfirm.show = true
-}
 
 async function executeConfirmedAction() {
   store.dlgConfirm.show = false
@@ -288,41 +243,6 @@ const currentSessionTitle = computed(() => {
   return store.sessionTitles[store.selectedSessionId] || sess.workspace || '新会话'
 })
 
-function getSessionDisplayName(session) {
-  if (store.sessionTitles && store.sessionTitles[session.id]) {
-    return store.sessionTitles[session.id]
-  }
-  return session.workspace || '新会话'
-}
-
-function startEditWorkspace(session) {
-  store.editingSessionId = session.id
-  store.editingWorkspaceText = getSessionDisplayName(session)
-}
-
-async function saveSessionWorkspace(session) {
-  if (store.editingSessionId === null) return
-  const targetText = store.editingWorkspaceText.trim()
-  const oldText = getSessionDisplayName(session)
-  store.editingSessionId = null
-
-  if (!targetText || targetText === oldText) {
-    return
-  }
-  try {
-    await api('DELETE', '/sessions/' + session.id).catch(() => {})
-    await api('POST', '/sessions', {
-      id: session.id,
-      ai_id: session.ai_id,
-      workspace: session.workspace,
-    })
-    store.sessionTitles[session.id] = targetText
-    api('POST', '/titles', { id: session.id, title: targetText }).catch(() => {})
-    await refreshSessions()
-  } catch (e) {
-    showAlert('更新会话名称失败: ' + e.message)
-  }
-}
 
 async function fetchAvailableModels() {
   if (!store.aiForm.api_key || !store.aiForm.base_url) {
