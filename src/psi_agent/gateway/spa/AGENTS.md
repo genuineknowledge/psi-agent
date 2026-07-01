@@ -30,7 +30,7 @@ spa/
 ├── index.html                       # #app mount + interactive-widget=resizes-visual
 ├── src/
 │   ├── main.js                      # createApp + import CSS + v-focus directive
-│   ├── App.vue                      # 根组件：layout + 弹窗 + 遮罩 + 业务逻辑
+│   ├── App.vue                      # 根组件：编排层 — 跨组件 handler + 弹窗 + drag-drop；sidebar/input 业务逻辑已移入各组件
 │   ├── store.js                     # reactive() 单一 store，provide/inject
 │   ├── utils.js                     # renderMd, htmlEscape, mimeType, localStorage
 │   ├── api.js                       # fetch 封装, streamChat, parseSSELine
@@ -40,8 +40,8 @@ spa/
 │   │   ├── ChatArea.vue             # 消息列表容器 + 自动滚动 + 空状态
 │   │   ├── MessageBubble.vue        # 单条消息：Markdown + 复制 + 文件附件
 │   │   ├── ThinkingBubble.vue       # 等待首 token 的三个脉冲圆点
-│   │   ├── InputBar.vue             # textarea + 文件上传 + 发送
-│   │   ├── ModelPanel.vue           # 模型管理浮层（自定义下拉替代原生 datalist）
+│   │   ├── InputBar.vue             # textarea + 多文件上传 + 发送 + 换行提示；内嵌 ModelPanel
+│   │   ├── ModelPanel.vue           # 模型管理浮层（自定义下拉替代原生 datalist）；由 InputBar 嵌入
 │   │   ├── AiDialog.vue             # 链接大模型弹窗
 │   │   ├── SessDialog.vue           # 创建会话弹窗 + FileBrowser
 │   │   ├── FileBrowser.vue          # 目录浏览
@@ -50,11 +50,12 @@ spa/
 │   ├── composables/
 │   │   ├── useSSE.js                # ReadableStream SSE 逐行解析 async generator
 │   │   ├── useKeyboard.js           # visualViewport 键盘适配 + 手动上滚检测
-│   │   └── useTheme.js              # 暗色/亮色切换 + localStorage + <html> class
+│   │   ├── useTheme.js              # 暗色/亮色切换 + localStorage + <html> class
+│   │   └── useSession.js            # selectSession：会话切换 + 草稿/消息缓存（App.vue + Sidebar 共用）
 │   └── styles/
 │       ├── tokens.css               # MD3 颜色/elevation/shape token（双主题）
 │       ├── components.css           # MD3 组件基类（button, dialog, field, spinner）
-│       └── layout.css               # 页面布局 + 响应式 + 消息气泡 + 动画
+│       └── layout.css               # app-shell 布局（#app, #root-layout, #chat, mobile-topbar, .mobile-overlay, 移动端 @media 定位）+ .drop-overlay；组件专属样式已移入各组件 <style scoped>
 └── dist/                            # `vite build` 输出 (gitignore)
 ```
 
@@ -73,21 +74,23 @@ spa/
 
 ## 根组件 `App.vue` 架构
 
+App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-drop 上传、主题/侧栏切换，以及 `onMounted` 启动流程。sidebar 会话列表业务逻辑在 `Sidebar.vue`，输入/发送业务逻辑在 `InputBar.vue`。
+
 ```
 #root-layout
 ├── .page-loader          (v-if loadingEnv — 全屏 spinner)
 ├── .mobile-overlay       (v-if 移动端抽屉打开 — 半透明遮罩)
-├── #sidebar              (collapsed / mobile-open)
-│   └── .col > .col-header + item (v-for sessions)
-├── #chat
+├── <Sidebar>             (@new-session → openSessDialog)
+├── #chat                 (drag-drop 事件：dragenter/over/leave/drop → store.isDragging + store.selectedFiles)
+│   ├── .drop-overlay     (v-if store.isDragging — 拖放提示遮罩)
 │   ├── #mobile-topbar    (≤768px: 汉堡菜单 + 标题 + 主题切换)
 │   ├── .sidebar-toggle-btn / .theme-toggle-btn  (>768px 悬浮按钮)
-│   ├── ChatArea          (#messages → MessageBubble v-for)
-│   └── #input-wrapper    (文件预览 + textarea + ModelPanel + 发送按钮)
-├── AiDialog      (@create, @fetchModels)
-├── SessDialog    (@create, @browse)
-├── ConfirmDialog (@confirm)
-└── Snackbar
+│   ├── <ChatArea>        (#messages → MessageBubble v-for)
+│   └── <InputBar>        (@select-ai, @delete-ai, @new-ai；内嵌 <ModelPanel>)
+├── <AiDialog>    (@create, @fetchModels)
+├── <SessDialog>  (@create, @browse)
+├── <ConfirmDialog> (@confirm)
+└── <Snackbar>
 ```
 
 **注意**：`#app` 在 `index.html` 中已经存在，`App.vue` 模板使用 `#root-layout` 作为内部根元素，避免 duplicate `#app`。
@@ -104,9 +107,10 @@ spa/
 | `sessionTitles` | `object` | sessionId → AI 生成的标题 |
 | `messages` | `array` | 当前会话消息列表 |
 | `sessionMessages` | `object` | sessionId → messages（切换时保留状态） |
-| `sessionInputs` | `object` | sessionId → {text, file}（切换时保留输入框） |
+| `sessionInputs` | `object` | sessionId → {text, files}（切换时保留输入框及已选文件，`files` 为数组） |
 | `streaming` | `bool` | 是否正在 SSE 接收中 |
-| `selectedFile` | `File/null` | 已选中的上传文件 |
+| `selectedFiles` | `File[]` | 已选中的上传文件列表（多文件；拖放也追加至此） |
+| `isDragging` | `bool` | 拖放文件至 #chat 时的遮罩状态 |
 | `inputText` | `string` | textarea v-model |
 | `userHasScrolledUp` | `bool` | 手动上滚时暂停自动滚动 |
 | `isLightMode` | `bool` | 主题（默认亮色） |
@@ -144,7 +148,7 @@ ReadableStream reader
   → 非 JSON 非 {}[] 开头 → yield {type:'text', text: p} 纯文本降级
 ```
 
-**注意**：这是一个 `async function*` generator，App.vue 中通过 `for await (const chunk of readSSE(reader))` 消费。
+**注意**：这是一个 `async function*` generator，InputBar.vue 中通过 `for await (const chunk of readSSE(reader))` 消费。
 
 ## localhost 持久化策略
 
@@ -161,23 +165,23 @@ Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 
 ## App.vue 核心业务流程
 
-### 启动流程 (`onMounted`)
+### 启动流程 (`onMounted` — `App.vue`)
 ```
 1. GET /titles → store.sessionTitles
 2. GET /ais + GET /sessions → store.ais/sessions
 3. 无 AI → 弹窗 AiDialog（不可关闭，至少需要 1 个）
 4. loadActiveState → 恢复选中 AI/Session ID
-5. selectSession → 从 /history + localStorage 加载消息
+5. selectSession (useSession.js) → 从 /history + localStorage 加载消息
 6. loadingEnv = false
 ```
 
-### 发送消息 (`sendMessage`)
+### 发送消息 (`sendMessage` — `InputBar.vue`)
 ```
-1. 提取 inputText + selectedFile
-2. File → FileReader.readAsDataURL → base64
+1. 提取 inputText + selectedFiles（数组，含拖放文件）
+2. Files → FileReader.readAsDataURL → base64（encodeFiles）
 3. 用户消息立即显示 (addMessage + htmlEscape)
 4. AI 消息气泡出现 (addMessage, streaming=true)
-5. FormData + fetch POST /sessions/{id}/chat（multipart）
+5. FormData + fetch POST /sessions/{id}/chat（multipart，多文件 append）
 6. for await (readSSE(reader)):
    - text chunk → asst.text += chunk.text → renderMd → 更新 v-html
    - blob chunk → asst.files.push({name, data})
@@ -187,16 +191,30 @@ Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 9. 无标题 → generateTitle → POST /titles/generate
 ```
 
-### 切换 AI (`selectAI`)
+**新特性**：
+- `<input type="file" multiple>` 支持一次选多文件，`onFileSelected` 追加至 `store.selectedFiles`
+- 拖放文件至 `#chat` 区域（由 `App.vue` 处理 drag 事件）→ 追加到 `store.selectedFiles`，`InputBar` 统一处理上传
+- `#input-wrapper` 底部显示 `Enter 发送 · Shift+Enter 换行` 提示（`.input-hint`）
+
+### 切换 AI (`selectAI` — `InputBar.vue` → 事件冒泡至 `App.vue`)
 ```
 DELETE /sessions/{oldId} → POST /sessions {id:oldId, ai_id:newId, ...}
 → 同 ID 新 AI，消息清空
 ```
 
-### 编辑标题 (`saveSessionWorkspace`)
+### 编辑标题 (`saveSessionWorkspace` — `Sidebar.vue`)
 ```
 DELETE + POST /sessions (同 id, 原 workspace) → POST /titles
 → sidebar 刷新
+```
+
+### 会话切换 (`selectSession` — `composables/useSession.js`)
+```
+保存旧会话 sessionMessages + sessionInputs（含 files 数组）
+→ 切换 selectedSessionId
+→ 恢复新会话 inputText + selectedFiles
+→ 从 /history 或 localStorage 加载消息
+→ 滚底 + 关闭移动端侧栏
 ```
 
 ## 移动端适配 (`useKeyboard.js`)
