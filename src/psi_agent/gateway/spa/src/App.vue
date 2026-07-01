@@ -43,7 +43,7 @@
             </div>
           </span>
           <button
-            v-if="store.sessions.length > 1"
+            v-if="store.sessions.length > 1 || store.pinnedIds.includes(s.id)"
             class="del pin-btn"
             :title="store.pinnedIds.includes(s.id) ? '取消置顶' : '置顶'"
             @click.stop="togglePin(s.id)"
