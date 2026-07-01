@@ -40,7 +40,7 @@ spa/
 │   │   ├── ChatArea.vue             # 消息列表容器 + 自动滚动 + 空状态
 │   │   ├── MessageBubble.vue        # 单条消息：Markdown + 复制 + 文件附件
 │   │   ├── ThinkingBubble.vue       # 等待首 token 的三个脉冲圆点
-│   │   ├── InputBar.vue             # textarea + 多文件上传 + 发送 + 换行提示；内嵌 ModelPanel
+│   │   ├── InputBar.vue             # 输入 UI：textarea 自适应高度 + 文件选择 + 发送按钮；发送逻辑委托给 useChat.js；内嵌 ModelPanel
 │   │   ├── ModelPanel.vue           # 模型管理浮层（自定义下拉替代原生 datalist）；由 InputBar 嵌入
 │   │   ├── AiDialog.vue             # 链接大模型弹窗
 │   │   ├── SessDialog.vue           # 创建会话弹窗 + FileBrowser
@@ -51,7 +51,8 @@ spa/
 │   │   ├── useSSE.js                # ReadableStream SSE 逐行解析 async generator
 │   │   ├── useKeyboard.js           # visualViewport 键盘适配 + 手动上滚检测
 │   │   ├── useTheme.js              # 暗色/亮色切换 + localStorage + <html> class
-│   │   └── useSession.js            # selectSession：会话切换 + 草稿/消息缓存（App.vue + Sidebar 共用）
+│   │   ├── useSession.js            # selectSession：会话切换 + 草稿/消息缓存（App.vue + Sidebar 共用）
+│   │   └── useChat.js               # sendMessage 及其内部辅助（addMessage, encodeFiles, scrollChatAreaIfLocked, generateTitle）
 │   └── styles/
 │       ├── tokens.css               # MD3 颜色/elevation/shape token（双主题）
 │       ├── components.css           # MD3 组件基类（button, dialog, field, spinner）
@@ -148,7 +149,7 @@ ReadableStream reader
   → 非 JSON 非 {}[] 开头 → yield {type:'text', text: p} 纯文本降级
 ```
 
-**注意**：这是一个 `async function*` generator，InputBar.vue 中通过 `for await (const chunk of readSSE(reader))` 消费。
+**注意**：这是一个 `async function*` generator，`useChat.js` 中通过 `for await (const chunk of readSSE(reader))` 消费。
 
 ## localhost 持久化策略
 
@@ -175,7 +176,7 @@ Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 6. loadingEnv = false
 ```
 
-### 发送消息 (`sendMessage` — `InputBar.vue`)
+### 发送消息 (`sendMessage` — `composables/useChat.js`)
 ```
 1. 提取 inputText + selectedFiles（数组，含拖放文件）
 2. Files → FileReader.readAsDataURL → base64（encodeFiles）
