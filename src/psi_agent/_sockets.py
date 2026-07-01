@@ -13,8 +13,11 @@ event loop (Windows only).
 from __future__ import annotations
 
 import urllib.parse
+import uuid
+from collections.abc import Awaitable, Callable
 
 import aiohttp
+import anyio
 from aiohttp import web
 from loguru import logger
 
@@ -64,3 +67,35 @@ def create_site(
         return web.NamedPipeSite(runner, addr)
     logger.debug(f"Creating Unix site: {addr}")
     return web.UnixSite(runner, addr)
+
+
+@web.middleware
+async def trace_id_middleware(
+    request: web.Request,
+    handler: Callable[[web.Request], Awaitable[web.StreamResponse]],
+) -> web.StreamResponse:
+    """Aiohttp middleware that extracts or generates a trace ID and sets it in the logger context."""
+    trace_id = request.headers.get("X-Trace-ID") or uuid.uuid4().hex[:8]
+    with logger.contextualize(trace_id=trace_id):
+        return await handler(request)
+
+
+async def serve_app(app: web.Application, addr: str, *, name: str = "Service") -> None:
+    """Start an aiohttp application on the given address with shielded cleanup."""
+    logger.info(f"Starting {name} on {addr}")
+    runner = web.AppRunner(app)
+    try:
+        await runner.setup()
+        site = create_site(runner, addr)
+        await site.start()
+        logger.info(f"{name} listening on {addr}")
+        await anyio.sleep_forever()
+    except Exception as e:
+        if not isinstance(e, anyio.get_cancelled_exc_class()):
+            logger.error(f"Failed to start {name} on {addr}: {e}")
+        raise
+    finally:
+        logger.info(f"Shutting down {name} on {addr}")
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()
+        logger.info(f"{name} shutdown complete on {addr}")

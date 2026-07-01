@@ -11,6 +11,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._sockets import trace_id_middleware
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._chat_manager import ChatManager
 from psi_agent.gateway._history_manager import HistoryManager
@@ -47,7 +48,7 @@ def _error(message: str, status: int) -> web.Response:
 
 
 async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | None = None) -> web.Application:
-    app = web.Application(client_max_size=100 * 1024 * 1024)
+    app = web.Application(client_max_size=100 * 1024 * 1024, middlewares=[trace_id_middleware])
     app["aim"] = aim
     app["sm"] = sm
     app["tm"] = TitleManager()

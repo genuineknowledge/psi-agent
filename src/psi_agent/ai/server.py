@@ -57,22 +57,37 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     upstream_error = False
     stream: AsyncIterator[ChatCompletionChunk] | None = None
     try:
-        stream = cast(
-            AsyncIterator[ChatCompletionChunk],
-            # ``acompletion()`` returns ``ChatCompletion | AsyncIterator[ChatCompletionChunk]``
-            # depending on the ``stream`` flag.  We always pass ``stream=True``, so the
-            # runtime type is always ``AsyncIterator[ChatCompletionChunk]`` — the cast is safe.
-            await acompletion(
-                provider=provider,
-                model=model,
-                messages=messages,
-                stream=True,
-                api_key=api_key,
-                api_base=base_url,
-                **body,
-            ),
-        )
+        # Retry logic: only before the stream starts (prepare() is called but no data written yet)
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                stream = cast(
+                    AsyncIterator[ChatCompletionChunk],
+                    # ``acompletion()`` returns ``ChatCompletion | AsyncIterator[ChatCompletionChunk]``
+                    # depending on the ``stream`` flag.  We always pass ``stream=True``, so the
+                    # runtime type is always ``AsyncIterator[ChatCompletionChunk]`` — the cast is safe.
+                    await acompletion(
+                        provider=provider,
+                        model=model,
+                        messages=messages,
+                        stream=True,
+                        api_key=api_key,
+                        api_base=base_url,
+                        **body,
+                    ),
+                )
+                break
+            except Exception as e:
+                if attempt < max_attempts - 1:
+                    wait = 2**attempt
+                    logger.warning(f"Upstream request failed (attempt {attempt + 1}), retrying in {wait}s: {e!r}")
+                    await anyio.sleep(wait)
+                else:
+                    logger.exception(f"Upstream request failed after {max_attempts} attempts")
+                    raise
+
         logger.debug("Starting to consume upstream SSE stream")
+        assert stream is not None
         async for chunk in stream:
             data = chunk.model_dump_json()
             logger.debug(f"SSE chunk: {data[:1000]}")
