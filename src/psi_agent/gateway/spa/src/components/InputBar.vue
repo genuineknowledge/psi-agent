@@ -12,7 +12,7 @@
 
     <div id="input-area">
       <label class="btn" for="file-upload"><span class="material-symbols-outlined">attach_file</span></label>
-      <input type="file" id="file-upload" @change="onFileSelected">
+      <input type="file" id="file-upload" multiple @change="onFileSelected">
 
       <textarea
         id="chat-input"
