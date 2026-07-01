@@ -6,14 +6,13 @@ import json
 from typing import Any
 
 import anyio
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
 
 def _build_workbook(file_path: str, rows: list[list[Any]], sheet_name: str, header: bool) -> int:
     """Build and save an .xlsx workbook synchronously. Returns the row count written."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font
-    from openpyxl.utils import get_column_letter
-
     wb = Workbook()
     ws = wb.active
     ws.title = sheet_name[:31] or "Sheet1"  # Excel caps sheet titles at 31 chars
