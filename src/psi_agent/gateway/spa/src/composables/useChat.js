@@ -1,8 +1,7 @@
+import { nextTick } from 'vue'
 import { store } from '../store.js'
 import { htmlEscape, renderMd, saveHistory, loadHistory } from '../utils.js'
 import { readSSE } from './useSSE.js'
-import { streamChat } from '../api.js'
-import { scrollToBottomIfLocked } from './useScroll.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -11,8 +10,21 @@ function origin() {
 function addMessage(role, id) {
   const m = { id, role, text: '', html: '', files: [] }
   store.messages.push(m)
-  scrollToBottomIfLocked()
+  scrollChatAreaIfLocked()
   return store.messages[store.messages.length - 1]
+}
+
+function scrollChatAreaIfLocked() {
+  nextTick(() => {
+    const el = document.getElementById('messages')
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop
+    if (store.streaming) {
+      if (store.userHasScrolledUp && distanceFromBottom > 60) return
+      if (distanceFromBottom <= 60) store.userHasScrolledUp = false
+    }
+    el.scrollTop = el.scrollHeight
+  })
 }
 
 async function encodeFiles(files, um) {
@@ -38,7 +50,7 @@ export async function sendMessage() {
   store.streaming = true
   store.inputText = ''
   store.selectedFiles = []
-  store.uploadResetToken++
+  document.getElementById('file-upload').value = ''
   store.userHasScrolledUp = false
 
   let um = null
@@ -60,24 +72,47 @@ export async function sendMessage() {
   fd.append('chunks', JSON.stringify(chunks))
   for (const f of files) fd.append('file', f)
 
-  const asst = addMessage('assistant', `a-${Date.now()}`)
+  let asst = addMessage('assistant', `a-${Date.now()}`)
 
   try {
-    const reader = await streamChat(store.selectedSessionId, fd)
+    const r = await fetch(origin() + '/sessions/' + store.selectedSessionId + '/chat', { method: 'POST', body: fd })
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({ error: r.statusText }))
+      throw new Error(e.error || 'HTTP ' + r.status)
+    }
+    const reader = r.body.getReader()
     for await (const chunkData of readSSE(reader)) {
       if (chunkData.type === 'text' && chunkData.text !== undefined) {
+        if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
         asst.text += chunkData.text
         asst.html = renderMd(asst.text)
       } else if (chunkData.type === 'blob') {
+        if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
         asst.files.push({ name: chunkData.name, data: chunkData.data })
       } else if (chunkData.type === 'error') {
+        if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
         asst.text += '\n[Error: ' + chunkData.error + ']'
+        asst.html = renderMd(asst.text)
+      } else if (chunkData.type === 'reasoning') {
+        // reasoning marks a non-text step (tool call/result or model thinking);
+        // close the current text bubble so the next text starts a new one.
+        // Only split when the current bubble actually has content — avoids
+        // stranding the pre-created empty bubble or splitting on a leading think.
+        if (asst && (asst.text || asst.files.length)) asst = null
       }
-      scrollToBottomIfLocked()
+      scrollChatAreaIfLocked()
     }
   } catch (e) {
+    if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
     asst.text += '\n[Error: ' + e.message + ']'
     asst.html = renderMd(asst.text)
+  }
+
+  // Drop a trailing empty assistant bubble (e.g. a reasoning-only turn, or the
+  // pre-created bubble that never received text before the stream ended).
+  const last = store.messages[store.messages.length - 1]
+  if (last && last.role === 'assistant' && !last.text && !last.files.length) {
+    store.messages.pop()
   }
 
   store.streaming = false
