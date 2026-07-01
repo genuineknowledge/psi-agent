@@ -9,10 +9,10 @@
         </button>
       </div>
       <div
-        v-for="s in store.sessions"
+        v-for="s in sortedSessions"
         :key="s.id"
         class="item"
-        :class="{ selected: s.id === store.selectedSessionId }"
+        :class="{ selected: s.id === store.selectedSessionId, pinned: store.pinnedIds.includes(s.id) }"
         @click="selectSession(s.id)"
       >
         <span class="info">
@@ -34,7 +34,18 @@
             {{ getSessionDisplayName(s) }}
           </div>
         </span>
-        <button class="del" @click.stop="confirmDeleteSession(s.id)">
+        <button
+          v-if="store.sessions.length > 1 || store.pinnedIds.includes(s.id)"
+          class="del pin-btn"
+          :title="store.pinnedIds.includes(s.id) ? '取消置顶' : '置顶'"
+          @click.stop="togglePin(s.id)"
+        >
+          <span class="material-symbols-outlined">push_pin</span>
+        </button>
+        <button class="del" title="重置对话" @click.stop="confirmResetSession(s.id)">
+          <span class="material-symbols-outlined">restart_alt</span>
+        </button>
+        <button class="del" title="删除会话" @click.stop="confirmDeleteSession(s.id)">
           <span class="material-symbols-outlined">delete</span>
         </button>
       </div>
@@ -43,11 +54,30 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { store } from '../store.js'
 import { api } from '../api.js'
 import { selectSession } from '../composables/useSession.js'
+import { loadPinnedIds, savePinnedIds } from '../utils.js'
 
 defineEmits(['new-session'])
+
+const sortedSessions = computed(() => {
+  const pinned = []
+  const rest = []
+  for (const s of store.sessions) {
+    if (store.pinnedIds.includes(s.id)) pinned.push(s)
+    else rest.push(s)
+  }
+  return [...pinned, ...rest]
+})
+
+function togglePin(id) {
+  const i = store.pinnedIds.indexOf(id)
+  if (i >= 0) store.pinnedIds.splice(i, 1)
+  else store.pinnedIds.push(id)
+  savePinnedIds(store.pinnedIds)
+}
 
 function getSessionDisplayName(session) {
   if (store.sessionTitles && store.sessionTitles[session.id]) {
@@ -87,6 +117,13 @@ async function saveSessionWorkspace(session) {
 function confirmDeleteSession(id) {
   store.dlgConfirm.message = `确认删除会话 ${id}? 删除后将无法恢复。`
   store.dlgConfirm.actionType = 'session'
+  store.dlgConfirm.actionArgs = id
+  store.dlgConfirm.show = true
+}
+
+function confirmResetSession(id) {
+  store.dlgConfirm.message = `确认重置会话 ${id}? 将清空该对话的全部历史与上下文，且无法恢复。`
+  store.dlgConfirm.actionType = 'reset'
   store.dlgConfirm.actionArgs = id
   store.dlgConfirm.show = true
 }
@@ -188,6 +225,13 @@ function confirmDeleteSession(id) {
   color: var(--md-text-error);
 }
 .item .del .material-symbols-outlined { font-size: 18px; }
+
+/* Pinned session: keep pin button visible and highlight the icon */
+.item.pinned .pin-btn { visibility: visible; }
+.item.pinned .pin-btn .material-symbols-outlined {
+  font-variation-settings: 'FILL' 1;
+  color: var(--md-primary);
+}
 
 @media (hover: none) {
   .item .del { visibility: visible; }

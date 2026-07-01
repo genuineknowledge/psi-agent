@@ -58,3 +58,14 @@ export function loadHistory(id) {
 export function clearHistory(id) {
   localStorage.removeItem('gw-hist-' + id)
 }
+
+const LS_PINNED = 'gw-pinned-ids'
+
+export function loadPinnedIds() {
+  try { return JSON.parse(localStorage.getItem(LS_PINNED)) || [] }
+  catch (_) { return [] }
+}
+
+export function savePinnedIds(ids) {
+  localStorage.setItem(LS_PINNED, JSON.stringify(ids))
+}

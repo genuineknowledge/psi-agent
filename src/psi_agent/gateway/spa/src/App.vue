@@ -123,6 +123,7 @@ import {
   loadHistory,
   saveHistory,
   clearHistory,
+  loadPinnedIds,
 } from './utils.js'
 import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
@@ -213,6 +214,26 @@ async function executeConfirmedAction() {
 
   if (store.dlgConfirm.actionType === 'ai') {
     await deleteAI(id)
+    return
+  }
+
+  if (store.dlgConfirm.actionType === 'reset') {
+    const sess = store.sessions.find(s => s.id === id)
+    if (!sess) return
+    try {
+      await api('DELETE', '/sessions/' + id).catch(() => {})
+      clearHistory(id)
+      delete store.sessionTitles[id]
+      const info = await api('POST', '/sessions', { ai_id: sess.ai_id, workspace: sess.workspace })
+      if (id === store.selectedSessionId) {
+        store.selectedSessionId = info.id
+        store.messages.splice(0)
+        saveActiveState(store.selectedAiId, store.selectedSessionId)
+      }
+      await refreshAll()
+    } catch (e) {
+      showAlert('重置会话失败: ' + e.message)
+    }
     return
   }
 
@@ -502,6 +523,7 @@ watch(
 
 onMounted(async () => {
   store.sessionTitles = await api('GET', '/titles').catch(() => ({}))
+  store.pinnedIds = loadPinnedIds()
   const savedSidebar = localStorage.getItem(LS_SIDEBAR)
   if (savedSidebar === 'collapsed') store.isSidebarCollapsed = true
 
