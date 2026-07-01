@@ -95,9 +95,7 @@ class SessionManager:
             ai_id = entry.ai_id
             workspace = entry.workspace
         await self.delete(session_id)
-        return await self.create(
-            SessionCreateRequest(ai_id=ai_id, workspace=workspace, id=session_id)
-        )
+        return await self.create(SessionCreateRequest(ai_id=ai_id, workspace=workspace, id=session_id))
 
     async def list_all(self) -> list[SessionInfo]:
         return [

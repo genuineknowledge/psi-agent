@@ -366,9 +366,7 @@ async def test_session_manager_reset_keeps_session(tmp_path: str) -> None:
             )
         )
         workspace = await _make_workspace(str(tmp_path))
-        created = await sm.create(
-            SessionCreateRequest(ai_id=ai.id, workspace=workspace, id="reset-sess")
-        )
+        created = await sm.create(SessionCreateRequest(ai_id=ai.id, workspace=workspace, id="reset-sess"))
         assert created.id == "reset-sess"
 
         info = await sm.reset("reset-sess")
@@ -414,19 +412,13 @@ async def test_gateway_reset_deletes_history(tmp_path: str) -> None:
             hist_dir = os.path.join(workspace, "histories")
             await anyio.Path(hist_dir).mkdir(parents=True, exist_ok=True)
             hist_file = os.path.join(hist_dir, "reset-http.jsonl")
-            await anyio.Path(hist_file).write_text(
-                '{"role": "user", "content": "hi"}\n', encoding="utf-8"
-            )
+            await anyio.Path(hist_file).write_text('{"role": "user", "content": "hi"}\n', encoding="utf-8")
             assert await anyio.Path(hist_file).exists()
 
-            async with session.post(
-                f"{base_url}/titles", json={"id": "reset-http", "title": "旧标题"}
-            ) as resp:
+            async with session.post(f"{base_url}/titles", json={"id": "reset-http", "title": "旧标题"}) as resp:
                 assert resp.status == 200
 
-            async with session.post(
-                f"{base_url}/sessions/reset-http/reset"
-            ) as resp:
+            async with session.post(f"{base_url}/sessions/reset-http/reset") as resp:
                 assert resp.status == 200
                 data = await resp.json()
                 assert data["id"] == "reset-http"
@@ -438,9 +430,7 @@ async def test_gateway_reset_deletes_history(tmp_path: str) -> None:
                 titles = await resp.json()
                 assert "reset-http" not in titles
 
-            async with session.post(
-                f"{base_url}/sessions/nonexistent/reset"
-            ) as resp:
+            async with session.post(f"{base_url}/sessions/nonexistent/reset") as resp:
                 assert resp.status == 404
     finally:
         await runner.cleanup()
