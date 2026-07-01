@@ -31,7 +31,33 @@ export function htmlEscape(s) {
 
 export function mimeType(name) {
   const ext = (name || '').split('.').pop().toLowerCase()
-  const map = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', pdf: 'application/pdf', txt: 'text/plain', json: 'application/json', html: 'text/html', css: 'text/css', js: 'text/javascript', py: 'text/x-python', zip: 'application/zip', gz: 'application/gzip', tar: 'application/x-tar', mp3: 'audio/mpeg', wav: 'audio/wav', mp4: 'video/mp4', mov: 'video/quicktime' }
+  const map = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    pdf: 'application/pdf',
+    txt: 'text/plain',
+    json: 'application/json',
+    html: 'text/html',
+    css: 'text/css',
+    js: 'text/javascript',
+    py: 'text/x-python',
+    zip: 'application/zip',
+    gz: 'application/gzip',
+    tar: 'application/x-tar',
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    m4a: 'audio/mp4',
+    flac: 'audio/flac',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    m4v: 'video/x-m4v',
+  }
   return map[ext] || 'application/octet-stream'
 }
 
@@ -47,7 +73,11 @@ export function loadActiveState() {
 }
 
 export function saveHistory(id, msgs) {
-  localStorage.setItem('gw-hist-' + id, JSON.stringify(msgs.map(m => ({ role: m.role, text: m.text, files: m.files }))))
+  localStorage.setItem('gw-hist-' + id, JSON.stringify(msgs.map(m => ({
+    role: m.role,
+    text: m.text,
+    files: (m.files || []).map(f => ({ name: f.name, data: f.data })),
+  }))))
 }
 
 export function loadHistory(id) {

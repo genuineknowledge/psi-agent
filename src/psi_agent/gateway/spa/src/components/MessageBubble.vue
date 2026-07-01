@@ -11,18 +11,30 @@
         <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
       </button>
     </div>
-    <template v-for="f in msg.files" :key="f.name">
-      <div class="blob">
+    <template v-for="(f, i) in msg.files" :key="previewKey(f, i)">
+      <button
+        class="blob"
+        :class="{ active: openPreviewKey === previewKey(f, i) }"
+        type="button"
+        @click="openPreview(f, i)"
+        :aria-label="`预览文件 ${f.name}`"
+      >
         <span class="material-symbols-outlined blob-icon">description</span>
-        <a :href="fileUrl(f)" :download="f.name" target="_blank">{{ f.name }}</a>
-      </div>
+        <span class="blob-name">{{ f.name }}</span>
+      </button>
     </template>
+    <FilePreview
+      v-if="openPreviewFile"
+      :file="openPreviewFile"
+      @close="closePreview"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref } from 'vue'
 import { store } from '../store.js'
+import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
 
 const props = defineProps({
@@ -34,7 +46,8 @@ const props = defineProps({
 })
 
 const copied = ref(false)
-
+const openPreviewKey = ref('')
+const openPreviewFile = ref(null)
 async function copyMessage() {
   await navigator.clipboard.writeText(props.msg.text)
   copied.value = true
@@ -43,28 +56,21 @@ async function copyMessage() {
   }, 1500)
 }
 
-function mimeType(name) {
-  const ext = (name || '').split('.').pop().toLowerCase()
-  const map = {
-    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-    gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
-    pdf: 'application/pdf', txt: 'text/plain', json: 'application/json',
-    html: 'text/html', css: 'text/css', js: 'text/javascript',
-    py: 'text/x-python', zip: 'application/zip', gz: 'application/gzip',
-    tar: 'application/x-tar', mp3: 'audio/mpeg', wav: 'audio/wav',
-    mp4: 'video/mp4', mov: 'video/quicktime',
-  }
-  return map[ext] || 'application/octet-stream'
+function previewKey(f, i) {
+  return `${i}:${f.name || ''}`
 }
 
-function fileUrl(f) {
-  if (f._url) return f._url
-  const bin = Uint8Array.from(atob(f.data), (c) => c.charCodeAt(0))
-  const mime = mimeType(f.name)
-  const blob = new Blob([bin], { type: mime })
-  f._url = URL.createObjectURL(blob)
-  return f._url
+function openPreview(f, i) {
+  const key = previewKey(f, i)
+  openPreviewKey.value = key
+  openPreviewFile.value = f
 }
+
+function closePreview() {
+  openPreviewKey.value = ''
+  openPreviewFile.value = null
+}
+
 </script>
 
 <style scoped>
@@ -179,7 +185,11 @@ function fileUrl(f) {
   background: var(--md-surface-container-high);
   border: 1px solid var(--md-outline-variant);
   border-radius: 12px;
+  color: var(--md-text-primary);
+  cursor: pointer;
+  font-family: inherit;
   font-size: 13px;
+  line-height: 1.2;
   max-width: 100%;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
   transition: border-color 0.2s;
@@ -189,16 +199,23 @@ function fileUrl(f) {
   border-color: var(--md-primary);
 }
 
-.blob a {
+.blob.active {
+  background: var(--md-secondary-container);
+  color: var(--md-on-secondary-container);
+  border-color: color-mix(in srgb, var(--md-primary) 45%, var(--md-outline-variant));
+}
+
+.blob-name {
   color: var(--md-primary);
   text-decoration: none;
   font-weight: 500;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.blob a:hover {
+.blob:hover .blob-name {
   text-decoration: underline;
 }
 
