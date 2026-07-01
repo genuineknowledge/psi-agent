@@ -82,6 +82,11 @@ _SKILLS_SNAPSHOT_FILE = ".skills_prompt_snapshot.json"
 # name conflict.
 _GLOBAL_AGENT_SKILLS_DIR = anyio.Path(os.path.expanduser("~/.agent/skills"))
 
+# Global AGENTS.md, shared across workspaces (AGENTS.md ecosystem convention).
+# Loaded as its own bootstrap section, in addition to the workspace-root
+# AGENTS.md that ``_build_bootstrap_files`` already handles.
+_GLOBAL_AGENT_HOME = anyio.Path(os.path.expanduser("~/.agent"))
+
 CompleteFn = Callable[[list[dict[str, Any]]], Awaitable[str]]
 ReviewCompleteFn = Callable[
     [list[dict[str, Any]], list[dict[str, Any]] | None],
@@ -621,6 +626,21 @@ async def _build_bootstrap_files(workspace_dir: anyio.Path) -> str:
     return "# Bootstrap Files\n\n" + "\n\n".join(sections)
 
 
+async def _build_global_agents_md() -> str:
+    """Load the global ~/.agent/AGENTS.md (AGENTS.md ecosystem convention).
+
+    This augments the workspace-root AGENTS.md (loaded by
+    ``_build_bootstrap_files``) with cross-workspace instructions. The source
+    is labelled so its global scope is explicit in the prompt. Accepts either
+    ``AGENTS.md`` or ``agents.md``; returns an empty string when absent.
+    """
+    for name in ("AGENTS.md", "agents.md"):
+        content = await _read_bootstrap_file(_GLOBAL_AGENT_HOME / name, _CONTEXT_FILE_MAX_CHARS)
+        if content and content.strip():
+            return f"# Global AGENTS.md (~/.agent/{name})\n\n{content.strip()}"
+    return ""
+
+
 def _build_runtime_info(model: str | None) -> str:
     """Build the Runtime: line. Reads HAITUN_CHANNEL / HAITUN_AGENT_ID / HAITUN_MODEL."""
     effective_model = os.environ.get("HAITUN_MODEL") or model or None
@@ -889,6 +909,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
         fusion_section = await self._build_fusion_section()
         context_file = await _build_context_file(ws)
         bootstrap = await _build_bootstrap_files(ws)
+        global_agents_md = await _build_global_agents_md()
 
         stable_parts: list[str] = [identity]
 
@@ -918,6 +939,9 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
 
         workspace_abs = str(await ws.resolve())
         stable_parts += ["", build_workspace_section(workspace_abs)]
+
+        if global_agents_md:
+            stable_parts += ["", global_agents_md]
 
         if bootstrap:
             stable_parts += ["", bootstrap]
