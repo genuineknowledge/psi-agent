@@ -21,12 +21,3 @@ export async function streamChat(sessionId, formData) {
   }
   return r.body.getReader()
 }
-
-export function parseSSELine(line) {
-  const s = line.trim()
-  if (!s.startsWith('data:')) return null
-  const p = s.slice(5).trim()
-  if (p === '[DONE]' || !p) return null
-  try { return JSON.parse(p) }
-  catch (_) { return p.startsWith('{') || p.startsWith('[') ? null : { type: 'text', text: p } }
-}

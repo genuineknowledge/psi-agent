@@ -2,6 +2,7 @@ import { nextTick } from 'vue'
 import { store } from '../store.js'
 import { htmlEscape, renderMd, saveHistory, loadHistory } from '../utils.js'
 import { readSSE } from './useSSE.js'
+import { streamChat } from '../api.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -75,12 +76,7 @@ export async function sendMessage() {
   const asst = addMessage('assistant', `a-${Date.now()}`)
 
   try {
-    const r = await fetch(origin() + '/sessions/' + store.selectedSessionId + '/chat', { method: 'POST', body: fd })
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({ error: r.statusText }))
-      throw new Error(e.error || 'HTTP ' + r.status)
-    }
-    const reader = r.body.getReader()
+    const reader = await streamChat(store.selectedSessionId, fd)
     for await (const chunkData of readSSE(reader)) {
       if (chunkData.type === 'text' && chunkData.text !== undefined) {
         asst.text += chunkData.text
