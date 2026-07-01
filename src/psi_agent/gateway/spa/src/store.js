@@ -1,5 +1,7 @@
 import { reactive } from 'vue'
 
+import { loadPinnedSessionIds } from './sessionList.js'
+
 export const store = reactive({
   loadingEnv: true,
   ais: [],
@@ -28,6 +30,8 @@ export const store = reactive({
   modelPanelOpen: false,
   editingSessionId: null,
   editingWorkspaceText: '',
+  sessionSearchText: '',
+  pinnedSessionIds: loadPinnedSessionIds(window.localStorage),
   userHasScrolledUp: false,
   isDragging: false,
 })
