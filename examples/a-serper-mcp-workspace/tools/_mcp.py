@@ -28,8 +28,9 @@ def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
     schemas = _discover(config)
     prefix = getattr(func, "__name__", "mcp") + "_"
     g = sys._getframe(1).f_globals
+    prepend = func.__doc__
     for name, schema in schemas.items():
-        g[prefix + name] = _build(prefix + name, schema, config)
+        g[prefix + name] = _build(prefix + name, schema, config, prepend)
     return func
 
 
@@ -46,7 +47,7 @@ def _discover(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         return pool.submit(anyio.run, _go).result()  # ty: ignore
 
 
-def _build(name: str, schema: dict[str, Any], config: dict[str, Any]) -> Any:
+def _build(name: str, schema: dict[str, Any], config: dict[str, Any], prepend_doc: str | None = None) -> Any:
     props = schema.get("inputSchema", {}).get("properties", {})
     req: list[str] = schema.get("inputSchema", {}).get("required", [])
     params: list[inspect.Parameter] = []
@@ -66,7 +67,8 @@ def _build(name: str, schema: dict[str, Any], config: dict[str, Any]) -> Any:
     ann["return"] = str
     desc = schema.get("description", "")
     doc = (
-        desc
+        (prepend_doc.strip() + "\n\n" if prepend_doc else "")
+        + desc
         + "\n\nArgs:\n"
         + "\n".join(
             f"    {p}: {ps.get('description', '')}{'' if p in req else ' (optional)'}" for p, ps in props.items()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -37,8 +38,25 @@ def _transport():
     return connect
 
 
+def _load_env(path: Path) -> None:
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        if key in os.environ:
+            continue
+        value = value.strip().strip("\"'")
+        os.environ[key] = value
+
+
 @mcp
 def serper() -> dict[str, object]:
+    """Requires ``SERPER_API_KEY`` in workspace ``.env``."""
+    _load_env(Path(__file__).parent.parent / ".env")
     return {
         "type": "coroutine",
         "fn": _transport(),
