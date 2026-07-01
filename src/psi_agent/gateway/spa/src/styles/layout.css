@@ -159,64 +159,8 @@
     top: 0; left: 0; right: 0; bottom: 0;
   }
 
-  #messages {
-    position: absolute;
-    top: 52px;
-    left: 0; right: 0; bottom: 0;
-    padding: 12px 12px 80px;
-    overflow-y: auto;
-  }
-
-  #input-wrapper {
-    position: fixed;
-    left: 0; right: 0;
-    bottom: 0;
-    z-index: 25;
-    background: var(--md-surface-container);
-    border-top: 1px solid var(--md-outline-variant);
-  }
-
-  #sidebar {
-    position: fixed;
-    left: 0; top: 52px; bottom: 0;
-    z-index: 28;
-    width: 280px !important;
-    transform: translateX(-100%);
-    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s;
-    border-right: 1px solid var(--md-outline-variant);
-    box-shadow: none;
-  }
-  #sidebar.mobile-open {
-    transform: translateX(0);
-    box-shadow: 4px 0 24px rgba(0,0,0,0.3);
-  }
-  #sidebar.collapsed {
-    transform: translateX(-100%);
-    width: 280px !important;
-  }
-
-  .msg { max-width: 90%; }
-
-  #input-area {
-    padding: 8px 12px;
-    padding-bottom: calc(8px + env(safe-area-inset-bottom));
-    gap: 8px;
-  }
-  #file-preview-bar { padding: 6px 12px 0; }
-
   .dialog { width: 94vw; border-radius: 20px; padding: 20px; }
   .dialog h3 { font-size: 18px; }
-
-  .md-snackbar {
-    bottom: calc(16px + env(safe-area-inset-bottom));
-    width: 90vw;
-    max-width: 360px;
-  }
-}
-
-@media (max-width: 400px) {
-  .msg { max-width: 95%; }
-  #input-area { gap: 6px; }
 }
 
 .mobile-overlay {
