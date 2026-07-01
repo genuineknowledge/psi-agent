@@ -62,6 +62,8 @@ from prompt_sections import (
     build_workspace_section,
 )
 
+from psi_agent.session.tool_registry import ToolRegistry
+
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_OK = "HEARTBEAT_OK"
@@ -629,6 +631,36 @@ async def _build_volatile(workspace_dir: anyio.Path) -> str:
     return "\n\n".join(parts)
 
 
+async def _load_tools(workspace_dir: anyio.Path) -> dict[str, str]:
+    """Return ``{tool_name: description}`` for the tools actually registered.
+
+    Loads ``workspace/tools/`` through the same ``ToolRegistry`` the session
+    uses at runtime, so the prompt reflects the real tool set the model is
+    given - including MCP-expanded tools (e.g. ``serper_*``) whose names never
+    match a ``.py`` filename. This is what lets the agent introspect and
+    describe its own capabilities accurately.
+
+    Falls back to bare filenames if the registry cannot load (import error,
+    missing dependency), so the section is never empty when tools exist.
+    """
+    tools_dir = workspace_dir / "tools"
+    if not await tools_dir.exists():
+        return {}
+    try:
+        registry = await ToolRegistry.load(Path(str(tools_dir)))
+        tools = {tf.name: (tf.description or "") for tf in registry.tools.values()}
+        if tools:
+            return tools
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        logger.warning("ToolRegistry load failed, falling back to filename scan: %r", exc)
+
+    names: list[str] = []
+    async for entry in tools_dir.iterdir():
+        if await entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
+            names.append(entry.stem)
+    return dict.fromkeys(sorted(names), "")
+
+
 async def _scan_tool_names(workspace_dir: anyio.Path) -> list[str]:
     """Derive tool names from ``workspace/tools/*.py`` filenames (fallback)."""
     tools_dir = workspace_dir / "tools"
@@ -855,7 +887,11 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
 
     async def build_system_prompt(self, model: str | None = None, tool_names: list[str] | None = None) -> str:
         ws = self._workspace_dir
-        tools = tool_names or await _scan_tool_names(ws)
+        if tool_names is not None:
+            tool_summaries = dict.fromkeys(tool_names, "")
+        else:
+            tool_summaries = await _load_tools(ws)
+        tools = list(tool_summaries)
 
         # -- Stable prefix ------------------------------------------------
         identity = await _load_soul_md(ws)
@@ -872,7 +908,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
 
         stable_parts += [
             "",
-            build_tooling_section(tools),
+            build_tooling_section(tools, tool_summaries),
             "",
             TOOL_CALL_STYLE_SECTION,
             "",

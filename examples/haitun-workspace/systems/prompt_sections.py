@@ -214,11 +214,14 @@ file at {path} and follow it before replying.\
 # ---------------------------------------------------------------------------
 
 
-def build_tooling_section(tool_names: list[str]) -> str:
+def build_tooling_section(tool_names: list[str], summaries: dict[str, str] | None = None) -> str:
     """Build the ## Tooling section listing available tools in display order.
 
     Args:
         tool_names: Tool names available in the current session.
+        summaries: Optional ``{name: description}`` from the live tool
+            registry. Real descriptions take precedence; ``CORE_TOOL_SUMMARIES``
+            is only a fallback for names without one.
 
     Returns:
         Formatted tooling section string.
@@ -226,6 +229,7 @@ def build_tooling_section(tool_names: list[str]) -> str:
     if not tool_names:
         return "## Tooling\nNo tools are available in this session."
 
+    summaries = summaries or {}
     name_set = {n.lower() for n in tool_names}
 
     ordered: list[str] = []
@@ -244,7 +248,8 @@ def build_tooling_section(tool_names: list[str]) -> str:
         "Names are case-sensitive; call exactly as listed.",
     ]
     for name in ordered:
-        summary = CORE_TOOL_SUMMARIES.get(name.lower(), "")
+        summary = summaries.get(name) or CORE_TOOL_SUMMARIES.get(name.lower(), "")
+        summary = " ".join(summary.split())  # collapse newlines/whitespace to one line
         lines.append(f"- {name}: {summary}" if summary else f"- {name}")
     lines.append(TOOLING_FOOTER)
     return "\n".join(lines)
