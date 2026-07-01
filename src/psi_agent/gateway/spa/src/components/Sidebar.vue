@@ -192,4 +192,25 @@ function confirmDeleteSession(id) {
 @media (hover: none) {
   .item .del { visibility: visible; }
 }
+
+@media (max-width: 768px) {
+  #sidebar {
+    position: fixed;
+    left: 0; top: 52px; bottom: 0;
+    z-index: 28;
+    width: 280px !important;
+    transform: translateX(-100%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s;
+    border-right: 1px solid var(--md-outline-variant);
+    box-shadow: none;
+  }
+  #sidebar.mobile-open {
+    transform: translateX(0);
+    box-shadow: 4px 0 24px rgba(0,0,0,0.3);
+  }
+  #sidebar.collapsed {
+    transform: translateX(-100%);
+    width: 280px !important;
+  }
+}
 </style>

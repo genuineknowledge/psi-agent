@@ -231,4 +231,25 @@ async function generateTitle() {
 }
 #input-area button.send:hover:not(:disabled) { filter: brightness(1.1); transform: scale(1.05); }
 #input-area button.send:disabled { opacity: .4; cursor: default; box-shadow: none; }
+
+@media (max-width: 768px) {
+  #input-wrapper {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: 0;
+    z-index: 25;
+    background: var(--md-surface-container);
+    border-top: 1px solid var(--md-outline-variant);
+  }
+  #input-area {
+    padding: 8px 12px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+    gap: 8px;
+  }
+  #file-preview-bar { padding: 6px 12px 0; }
+}
+
+@media (max-width: 400px) {
+  #input-area { gap: 6px; }
+}
 </style>
