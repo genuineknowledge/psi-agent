@@ -34,74 +34,11 @@
 
       <ChatArea />
 
-      <div id="input-wrapper" v-show="store.selectedSessionId">
-        <div id="file-preview-bar" v-if="store.selectedFiles.length">
-          <div class="preview-chip" v-for="(f, i) in store.selectedFiles" :key="i">
-            <span class="material-symbols-outlined" style="font-size:16px;">attach_file</span>
-            <span>{{ f.name }}</span>
-            <button class="close-btn" @click="store.selectedFiles.splice(i, 1)" title="移除附件">
-              <span class="material-symbols-outlined" style="font-size:16px;">close</span>
-            </button>
-          </div>
-        </div>
-
-        <div id="input-area">
-          <label class="btn" for="file-upload"><span class="material-symbols-outlined">attach_file</span></label>
-          <input type="file" id="file-upload" @change="onFileSelected">
-
-          <textarea
-            id="chat-input"
-            v-model="store.inputText"
-            rows="1"
-            placeholder="发送消息..."
-            @keydown.enter.exact.prevent="sendMessage"
-            @input="autoResizeInput"
-          ></textarea>
-
-          <div class="model-zone">
-            <div v-if="store.modelPanelOpen" class="model-panel-backdrop" @click="store.modelPanelOpen = false"></div>
-
-            <div class="model-chip" :class="{ open: store.modelPanelOpen }" @click="store.modelPanelOpen = !store.modelPanelOpen" :title="currentModelLabel">
-              <span class="material-symbols-outlined chip-icon">smart_toy</span>
-              <span class="chip-label">{{ currentModelLabel }}</span>
-              <span class="material-symbols-outlined chip-arrow">expand_more</span>
-            </div>
-
-            <div v-if="store.modelPanelOpen" class="model-panel">
-              <div class="model-panel-header">
-                <span>大模型</span>
-                <button @click="store.modelPanelOpen = false; openAiDialog()">
-                  <span class="material-symbols-outlined">add</span>链接新模型
-                </button>
-              </div>
-              <div class="model-panel-list">
-                <div v-if="store.ais.length === 0" class="model-panel-empty">暂无模型，请点击「链接新模型」</div>
-                <div
-                  v-for="a in store.ais"
-                  :key="a.id"
-                  class="model-panel-item"
-                  :class="{ active: a.id === store.selectedAiId }"
-                  @click="selectAI(a.id); store.modelPanelOpen = false"
-                >
-                  <span class="material-symbols-outlined mpi-icon">smart_toy</span>
-                  <div class="mpi-info">
-                    <div class="mpi-name" :title="a.model || a.id">{{ a.model || a.id }}</div>
-                    <div class="mpi-provider">{{ a.provider }}</div>
-                  </div>
-                  <span v-if="a.id === store.selectedAiId" class="material-symbols-outlined mpi-check">check_circle</span>
-                  <button class="mpi-del" @click.stop="store.modelPanelOpen = false; confirmDeleteAI(a.id)" title="删除此模型">
-                    <span class="material-symbols-outlined">delete</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <button class="send" :disabled="store.streaming" @click="sendMessage">
-            <span class="material-symbols-outlined">send</span>
-          </button>
-        </div>
-      </div>
+      <InputBar
+        @select-ai="selectAI"
+        @delete-ai="confirmDeleteAI"
+        @new-ai="openAiDialog"
+      />
     </div>
 
     <AiDialog @create="createAI" @fetchModels="fetchAvailableModels" />
@@ -112,25 +49,21 @@
 </template>
 
 <script setup>
-import { computed, onMounted, watch, nextTick } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { store } from './store.js'
 import { api } from './api.js'
 import {
-  renderMd,
-  htmlEscape,
   saveActiveState,
   loadActiveState,
-  loadHistory,
-  saveHistory,
   clearHistory,
 } from './utils.js'
 import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
 import { useKeyboard } from './composables/useKeyboard.js'
-import { readSSE } from './composables/useSSE.js'
 import { selectSession } from './composables/useSession.js'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
+import InputBar from './components/InputBar.vue'
 import AiDialog from './components/AiDialog.vue'
 import SessDialog from './components/SessDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
@@ -230,12 +163,6 @@ function handleProviderChange() {
   const match = PROVIDERS.find(p => p.v === store.aiForm.provider)
   if (match) store.aiForm.base_url = match.base
 }
-
-const currentModelLabel = computed(() => {
-  if (!store.selectedAiId) return '选择模型'
-  const ai = store.ais.find(a => a.id === store.selectedAiId)
-  return ai ? (ai.model || ai.id) : '选择模型'
-})
 
 const currentSessionTitle = computed(() => {
   if (!store.selectedSessionId) return 'psi-agent'
@@ -346,158 +273,11 @@ async function createSession() {
   }
 }
 
-function onFileSelected(e) {
-  const files = Array.from(e.target.files || [])
-  store.selectedFiles.push(...files)
-}
-
-function clearSelectedFile() {
-  store.selectedFiles = []
-  document.getElementById('file-upload').value = ''
-}
-
-async function encodeFiles(files, um) {
-  for (const f of files) {
-    try {
-      const b64 = await new Promise((resolve, reject) => {
-        const r = new FileReader()
-        r.onload = () => resolve(r.result.split(',')[1])
-        r.onerror = e => reject(e)
-        r.readAsDataURL(f)
-      })
-      if (um) um.files.push({ name: f.name, data: b64 })
-    } catch {}
-  }
-}
-
-function addMessage(role, id) {
-  const m = { id, role, text: '', html: '', files: [] }
-  store.messages.push(m)
-  scrollChatAreaIfLocked()
-  return store.messages[store.messages.length - 1]
-}
-
-function scrollChatAreaIfLocked() {
-  nextTick(() => {
-    const el = document.getElementById('messages')
-    if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop
-    if (store.streaming) {
-      if (store.userHasScrolledUp && distanceFromBottom > 60) return
-      if (distanceFromBottom <= 60) store.userHasScrolledUp = false
-    }
-    el.scrollTop = el.scrollHeight
-  })
-}
-
-async function sendMessage() {
-  if (store.streaming || !store.selectedSessionId) return
-  const text = store.inputText.trim()
-  const files = [...store.selectedFiles]
-  if (!text && !files.length) return
-
-  store.streaming = true
-  store.inputText = ''
-  store.selectedFiles = []
-  document.getElementById('file-upload').value = ''
-  store.userHasScrolledUp = false
-
-  let um = null
-  if (text) {
-    um = addMessage('user', `u-${Date.now()}`)
-    um.text = text
-    um.html = htmlEscape(text)
-    await encodeFiles(files, um)
-  } else if (files.length) {
-    um = addMessage('user', `u-${Date.now()}`)
-    um.text = `[Uploaded File${files.length > 1 ? 's' : ''}: ${files.map(f => f.name).join(', ')}]`
-    um.html = htmlEscape(um.text)
-    await encodeFiles(files, um)
-  }
-
-  const fd = new FormData()
-  const chunks = []
-  if (text) chunks.push({ type: 'text', text })
-  fd.append('chunks', JSON.stringify(chunks))
-  for (const f of files) fd.append('file', f)
-
-  const asst = addMessage('assistant', `a-${Date.now()}`)
-
-  try {
-    const r = await fetch(origin() + '/sessions/' + store.selectedSessionId + '/chat', { method: 'POST', body: fd })
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({ error: r.statusText }))
-      throw new Error(e.error || 'HTTP ' + r.status)
-    }
-
-    const reader = r.body.getReader()
-    for await (const chunkData of readSSE(reader)) {
-      if (chunkData.type === 'text' && chunkData.text !== undefined) {
-        asst.text += chunkData.text
-        asst.html = renderMd(asst.text)
-      } else if (chunkData.type === 'blob') {
-        asst.files.push({ name: chunkData.name, data: chunkData.data })
-      } else if (chunkData.type === 'error') {
-        asst.text += '\n[Error: ' + chunkData.error + ']'
-      }
-      scrollChatAreaIfLocked()
-    }
-  } catch (e) {
-    asst.text += '\n[Error: ' + e.message + ']'
-    asst.html = renderMd(asst.text)
-  }
-
-  store.streaming = false
-  saveHistory(store.selectedSessionId, store.messages)
-
-  const currentTitle = store.sessionTitles[store.selectedSessionId]
-  if (!currentTitle || currentTitle === '新会话' || currentTitle.trim() === '') generateTitle()
-}
-
-async function generateTitle() {
-  const sid = store.selectedSessionId
-  if (!sid) return
-  const msgs = loadHistory(sid)
-  if (!msgs.length) return
-  const userMsg = msgs.find(m => m.role === 'user')
-  const asstMsg = msgs.find(m => m.role === 'assistant')
-  if (!userMsg || !asstMsg) return
-
-  try {
-    const r = await fetch(origin() + '/titles/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: sid, user_text: userMsg.text, assistant_text: asstMsg.text }),
-    })
-    if (!r.ok) return
-    const data = await r.json()
-    if (data.title) {
-      store.sessionTitles[sid] = data.title
-    }
-  } catch (e) {}
-}
-
 watch(
   () => store.isSidebarCollapsed,
   (v) => {
     localStorage.setItem(LS_SIDEBAR, v ? 'collapsed' : 'expanded')
   }
-)
-
-// 让输入框高度随内容自动增长（CSS 已限制 max-height，超过出现滚动条）
-function autoResizeInput() {
-  const el = document.getElementById('chat-input')
-  if (!el) return
-  el.style.height = 'auto'
-  // border-box 下 scrollHeight 不含边框，需补上上下边框避免持续出现滚动条
-  const borders = el.offsetHeight - el.clientHeight
-  el.style.height = el.scrollHeight + borders + 'px'
-}
-
-// inputText 被代码改动时（发送清空、切换会话恢复草稿）也要重新计算高度
-watch(
-  () => store.inputText,
-  () => nextTick(autoResizeInput)
 )
 
 onMounted(async () => {
