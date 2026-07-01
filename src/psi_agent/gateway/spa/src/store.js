@@ -29,6 +29,7 @@ export const store = reactive({
   editingSessionId: null,
   editingWorkspaceText: '',
   userHasScrolledUp: false,
+  pinnedIds: [],
 })
 
 export function useStore() { return store }
