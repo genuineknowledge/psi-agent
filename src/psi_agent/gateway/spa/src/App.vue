@@ -17,10 +17,10 @@
           </button>
         </div>
         <div
-          v-for="s in store.sessions"
+          v-for="s in sortedSessions"
           :key="s.id"
           class="item"
-          :class="{ selected: s.id === store.selectedSessionId }"
+          :class="{ selected: s.id === store.selectedSessionId, pinned: store.pinnedIds.includes(s.id) }"
           @click="selectSession(s.id)"
         >
           <span class="info">
@@ -42,7 +42,18 @@
               {{ getSessionDisplayName(s) }}
             </div>
           </span>
-          <button class="del" @click.stop="confirmDeleteSession(s.id)">
+          <button
+            v-if="store.sessions.length > 1"
+            class="del pin-btn"
+            :title="store.pinnedIds.includes(s.id) ? '取消置顶' : '置顶'"
+            @click.stop="togglePin(s.id)"
+          >
+            <span class="material-symbols-outlined">push_pin</span>
+          </button>
+          <button class="del" title="重置对话" @click.stop="confirmResetSession(s.id)">
+            <span class="material-symbols-outlined">restart_alt</span>
+          </button>
+          <button class="del" title="删除会话" @click.stop="confirmDeleteSession(s.id)">
             <span class="material-symbols-outlined">delete</span>
           </button>
         </div>
