@@ -10,7 +10,7 @@ on:
 
 concurrency:
   group: nuitka-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   nuitka:
