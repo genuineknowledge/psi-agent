@@ -60,7 +60,7 @@ async def write_excel(file_path: str, rows_json: str, sheet_name: str = "Sheet1"
         return f"[Error] rows_json is not valid JSON: {e}"
 
     if not isinstance(rows, list) or not all(isinstance(r, list) for r in rows):
-        return "[Error] rows_json must be a 2D array, e.g. [[\"A\", \"B\"], [1, 2]]"
+        return '[Error] rows_json must be a 2D array, e.g. [["A", "B"], [1, 2]]'
     if not rows:
         return "[Error] rows_json is empty; provide at least one row"
 
