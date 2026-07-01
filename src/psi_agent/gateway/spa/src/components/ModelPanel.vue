@@ -167,4 +167,12 @@ function openNewAi() {
 @media (hover: none) {
   .model-panel-item .mpi-del { opacity: 1; }
 }
+
+@media (max-width: 768px) {
+  .model-chip { max-width: 100px; font-size: 12px; padding: 0 8px; }
+  .model-panel { width: 260px; right: 0; }
+}
+@media (max-width: 400px) {
+  .model-chip { max-width: 80px; font-size: 11px; }
+}
 </style>
