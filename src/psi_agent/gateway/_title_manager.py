@@ -18,6 +18,9 @@ class TitleManager:
     def set(self, session_id: str, title: str) -> None:
         self._titles[session_id] = title
 
+    def remove(self, session_id: str) -> None:
+        self._titles.pop(session_id, None)
+
     async def generate(self, session_id: str, ai_socket: str, user_text: str, assistant_text: str) -> str | None:
         prompt = (
             f"Generate a short title (3-5 words, in the same language as the user) for this conversation:\n\n"

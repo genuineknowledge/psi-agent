@@ -349,3 +349,74 @@ async def test_gateway_favicon(tmp_path: str) -> None:
         await runner_with.cleanup()
         await runner_without.cleanup()
         await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_session_manager_reset_keeps_session(tmp_path: str) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+
+    aim = AIManager(_prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    try:
+        await aim.create(provider="openai", model="test", api_key="k", base_url="https://api.example.com", id="gw-ai")
+        workspace = await _make_workspace(str(tmp_path))
+        created = await sm.create(ai_id="gw-ai", workspace=workspace, id="reset-sess")
+        assert created.id == "reset-sess"
+
+        info = await sm.reset("reset-sess")
+
+        assert info.id == "reset-sess"
+        assert info.ai_id == "gw-ai"
+        assert info.workspace == workspace
+        sessions = await sm.list_all()
+        assert any(s.id == "reset-sess" for s in sessions)
+    finally:
+        await sm.delete("reset-sess")
+        await aim.delete("gw-ai")
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_gateway_reset_deletes_history(tmp_path: str) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+
+    aim = AIManager(_prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    app = await create_app(aim, sm)
+    base_url, runner = await _start_app_on_free_port(app)
+    try:
+        await aim.create(provider="openai", model="test", api_key="k", base_url="https://api.example.com", id="gw-ai")
+        workspace = await _make_workspace(str(tmp_path))
+        await sm.create(ai_id="gw-ai", workspace=workspace, id="reset-http")
+
+        hist_dir = os.path.join(workspace, "histories")
+        await anyio.Path(hist_dir).mkdir(parents=True, exist_ok=True)
+        hist_file = os.path.join(hist_dir, "reset-http.jsonl")
+        await anyio.Path(hist_file).write_text('{"role": "user", "content": "hi"}\n', encoding="utf-8")
+        assert await anyio.Path(hist_file).exists()
+
+        timeout = ClientTimeout(total=10)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.post(f"{base_url}/titles", json={"id": "reset-http", "title": "旧标题"}) as resp:
+                assert resp.status == 200
+
+            async with session.post(f"{base_url}/sessions/reset-http/reset") as resp:
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["id"] == "reset-http"
+
+            assert not await anyio.Path(hist_file).exists()
+
+            async with session.get(f"{base_url}/titles") as resp:
+                assert resp.status == 200
+                assert "reset-http" not in await resp.json()
+
+            async with session.post(f"{base_url}/sessions/nonexistent/reset") as resp:
+                assert resp.status == 404
+    finally:
+        await runner.cleanup()
+        await sm.delete("reset-http")
+        await aim.delete("gw-ai")
+        await tg.__aexit__(None, None, None)

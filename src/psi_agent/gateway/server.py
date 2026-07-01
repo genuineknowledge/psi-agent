@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from base64 import b64encode
 from contextlib import aclosing, suppress
 from dataclasses import asdict
@@ -71,6 +72,7 @@ async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | Non
     app.router.add_get("/ais", _list_ais)
     app.router.add_post("/sessions", _create_session)
     app.router.add_delete("/sessions/{session_id}", _delete_session)
+    app.router.add_post("/sessions/{session_id}/reset", _reset_session)
     app.router.add_get("/sessions", _list_sessions)
     app.router.add_get("/titles", _list_titles)
     app.router.add_post("/titles", _set_title)
@@ -155,6 +157,33 @@ async def _delete_session(request: web.Request) -> web.Response:
 async def _list_sessions(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
     return _json([asdict(i) for i in await sm.list_all()])
+
+
+async def _reset_session(request: web.Request) -> web.Response:
+    sm: SessionManager = request.app["sm"]
+    tm: TitleManager = request.app["tm"]
+    session_id = request.match_info["session_id"]
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
+        return _error(f"Invalid session_id: {session_id!r}", status=400)
+    try:
+        workspace = sm.get_workspace(session_id)
+    except LookupError as e:
+        return _error(str(e), status=404)
+    try:
+        hist_file = anyio.Path(workspace) / "histories" / f"{session_id}.jsonl"
+        tmp_file = anyio.Path(workspace) / "histories" / f"{session_id}.jsonl.tmp"
+        with suppress(FileNotFoundError):
+            await hist_file.unlink()
+        with suppress(FileNotFoundError):
+            await tmp_file.unlink()
+        tm.remove(session_id)
+        info = await sm.reset(session_id)
+        return _json(asdict(info))
+    except LookupError as e:
+        return _error(str(e), status=404)
+    except Exception as e:
+        logger.error(f"Unexpected error resetting session {session_id!r}: {e!r}")
+        return _error(str(e), status=500)
 
 
 async def _list_titles(request: web.Request) -> web.Response:

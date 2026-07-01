@@ -17,10 +17,10 @@
           </button>
         </div>
         <div
-          v-for="s in store.sessions"
+          v-for="s in sortedSessions"
           :key="s.id"
           class="item"
-          :class="{ selected: s.id === store.selectedSessionId }"
+          :class="{ selected: s.id === store.selectedSessionId, pinned: store.pinnedIds.includes(s.id) }"
           @click="selectSession(s.id)"
         >
           <span class="info">
@@ -42,7 +42,18 @@
               {{ getSessionDisplayName(s) }}
             </div>
           </span>
-          <button class="del" @click.stop="confirmDeleteSession(s.id)">
+          <button
+            v-if="store.sessions.length > 1 || store.pinnedIds.includes(s.id)"
+            class="del pin-btn"
+            :title="store.pinnedIds.includes(s.id) ? '取消置顶' : '置顶'"
+            @click.stop="togglePin(s.id)"
+          >
+            <span class="material-symbols-outlined">push_pin</span>
+          </button>
+          <button class="del" title="重置对话" @click.stop="confirmResetSession(s.id)">
+            <span class="material-symbols-outlined">restart_alt</span>
+          </button>
+          <button class="del" title="删除会话" @click.stop="confirmDeleteSession(s.id)">
             <span class="material-symbols-outlined">delete</span>
           </button>
         </div>
@@ -163,6 +174,8 @@ import {
   loadHistory,
   saveHistory,
   clearHistory,
+  loadPinnedIds,
+  savePinnedIds,
 } from './utils.js'
 import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
@@ -250,6 +263,13 @@ function confirmDeleteSession(id) {
   store.dlgConfirm.show = true
 }
 
+function confirmResetSession(id) {
+  store.dlgConfirm.message = `确认重置会话 ${id}? 将清空该对话的全部历史与上下文，且无法恢复。`
+  store.dlgConfirm.actionType = 'reset'
+  store.dlgConfirm.actionArgs = id
+  store.dlgConfirm.show = true
+}
+
 async function executeConfirmedAction() {
   store.dlgConfirm.show = false
   const id = store.dlgConfirm.actionArgs
@@ -260,8 +280,25 @@ async function executeConfirmedAction() {
     return
   }
 
+  if (store.dlgConfirm.actionType === 'reset') {
+    try {
+      await api('POST', '/sessions/' + id + '/reset')
+      clearHistory(id)
+      store.sessionTitles = await api('GET', '/titles').catch(() => ({}))
+      if (id === store.selectedSessionId) store.messages.splice(0)
+    } catch (e) {
+      showAlert('重置会话失败: ' + e.message)
+    }
+    return
+  }
+
   await api('DELETE', '/sessions/' + id).catch(() => {})
   clearHistory(id)
+  const pi = store.pinnedIds.indexOf(id)
+  if (pi >= 0) {
+    store.pinnedIds.splice(pi, 1)
+    savePinnedIds(store.pinnedIds)
+  }
   if (id === store.selectedSessionId) {
     store.selectedSessionId = null
     store.messages.splice(0)
@@ -287,6 +324,23 @@ const currentSessionTitle = computed(() => {
   if (!sess) return 'psi-agent'
   return store.sessionTitles[store.selectedSessionId] || sess.workspace || '新会话'
 })
+
+const sortedSessions = computed(() => {
+  const pinned = []
+  const rest = []
+  for (const s of store.sessions) {
+    if (store.pinnedIds.includes(s.id)) pinned.push(s)
+    else rest.push(s)
+  }
+  return [...pinned, ...rest]
+})
+
+function togglePin(id) {
+  const i = store.pinnedIds.indexOf(id)
+  if (i >= 0) store.pinnedIds.splice(i, 1)
+  else store.pinnedIds.push(id)
+  savePinnedIds(store.pinnedIds)
+}
 
 function getSessionDisplayName(session) {
   if (store.sessionTitles && store.sessionTitles[session.id]) {
@@ -631,6 +685,7 @@ watch(
 
 onMounted(async () => {
   store.sessionTitles = await api('GET', '/titles').catch(() => ({}))
+  store.pinnedIds = loadPinnedIds()
   const savedSidebar = localStorage.getItem(LS_SIDEBAR)
   if (savedSidebar === 'collapsed') store.isSidebarCollapsed = true
 

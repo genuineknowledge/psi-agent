@@ -116,3 +116,14 @@ body {
   line-height: 1;
   user-select: none;
 }
+
+/* Pinned session marker */
+.item.pinned .pin-btn .material-symbols-outlined {
+  font-variation-settings: 'FILL' 1;
+  color: var(--md-primary, #a8c7fa);
+}
+
+/* A pinned session keeps its pin button visible without hover */
+.item.pinned .pin-btn {
+  visibility: visible;
+}

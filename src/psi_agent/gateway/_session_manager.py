@@ -126,3 +126,13 @@ class SessionManager:
         if session_id not in self._entries:
             raise LookupError(f"Session {session_id!r} not found")
         return self._entries[session_id].workspace
+
+    async def reset(self, session_id: str) -> SessionInfo:
+        async with self._lock:
+            if session_id not in self._entries:
+                raise LookupError(f"Session {session_id!r} not found")
+            entry = self._entries[session_id]
+            ai_id = entry.ai_id
+            workspace = entry.workspace
+        await self.delete(session_id)
+        return await self.create(ai_id, id=session_id, workspace=workspace)

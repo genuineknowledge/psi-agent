@@ -6,17 +6,20 @@ from pathlib import Path
 
 import pytest
 from PIL import Image as PILImage
-from Xlib.error import DisplayNameError
 
 from psi_agent.gateway._tray import GatewayTray
 
 _HAS_X11 = False
+DisplayNameError = Exception  # Fallback for when Xlib is not available
 try:
     from Xlib import display as _xdisplay
+    from Xlib.error import DisplayNameError
 
     _xdisplay.Display()
     _HAS_X11 = True
 except DisplayNameError:
+    pass
+except ImportError:
     pass
 
 
