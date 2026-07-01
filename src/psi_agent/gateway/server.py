@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -162,14 +163,10 @@ async def _reset_session(request: web.Request) -> web.Response:
     try:
         hist_file = anyio.Path(workspace) / "histories" / f"{session_id}.jsonl"
         tmp_file = anyio.Path(workspace) / "histories" / f"{session_id}.jsonl.tmp"
-        try:
+        with contextlib.suppress(FileNotFoundError):
             await hist_file.unlink()
-        except FileNotFoundError:
-            pass
-        try:
+        with contextlib.suppress(FileNotFoundError):
             await tmp_file.unlink()
-        except FileNotFoundError:
-            pass
         tm.remove(session_id)
         info = await sm.reset(session_id)
         return _json(asdict(info))
