@@ -76,6 +76,12 @@ _CONTEXT_FILE_MAX_CHARS = 40_000
 
 _SKILLS_SNAPSHOT_FILE = ".skills_prompt_snapshot.json"
 
+# Global skills directory, shared across workspaces (AGENTS.md ecosystem
+# convention). Each skill lives at ~/.agent/skills/<name>/SKILL.md, mirroring
+# the per-workspace skills/ layout. Workspace skills override global ones on
+# name conflict.
+_GLOBAL_AGENT_SKILLS_DIR = anyio.Path(os.path.expanduser("~/.agent/skills"))
+
 CompleteFn = Callable[[list[dict[str, Any]]], Awaitable[str]]
 ReviewCompleteFn = Callable[
     [list[dict[str, Any]], list[dict[str, Any]] | None],
@@ -394,17 +400,37 @@ async def _load_soul_md(workspace_dir: anyio.Path) -> str:
     return IDENTITY_LINE
 
 
+async def _collect_skill_dirs(skills_dir: anyio.Path) -> list[tuple[str, anyio.Path]]:
+    """Return (name, SKILL.md) pairs for every skill dir under ``skills_dir``.
+
+    Returns an empty list if the directory is missing or unreadable.
+    """
+    entries: list[tuple[str, anyio.Path]] = []
+    if not await skills_dir.exists():
+        return entries
+    with contextlib.suppress(OSError):
+        async for entry in skills_dir.iterdir():
+            if await entry.is_dir():
+                skill_md = entry / "SKILL.md"
+                if await skill_md.exists():
+                    entries.append((entry.name, skill_md))
+    return entries
+
+
 async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     skills_dir = workspace_dir / "skills"
-    if not await skills_dir.exists():
-        return ""
 
-    skill_entries: list[tuple[str, anyio.Path]] = []
-    async for entry in skills_dir.iterdir():
-        if await entry.is_dir():
-            skill_md = entry / "SKILL.md"
-            if await skill_md.exists():
-                skill_entries.append((entry.name, skill_md))
+    # Merge global (~/.agent/skills) with workspace skills. Workspace skills
+    # override globals on name conflict, so collect globals first and let the
+    # workspace pass replace them. This keeps the "nearest wins" convention
+    # consistent with AGENTS.md/CLAUDE.md context lookup.
+    skill_md_by_name: dict[str, anyio.Path] = {}
+    for name, skill_md in await _collect_skill_dirs(_GLOBAL_AGENT_SKILLS_DIR):
+        skill_md_by_name[name] = skill_md
+    for name, skill_md in await _collect_skill_dirs(skills_dir):
+        skill_md_by_name[name] = skill_md
+
+    skill_entries: list[tuple[str, anyio.Path]] = sorted(skill_md_by_name.items())
 
     if not skill_entries:
         return ""
