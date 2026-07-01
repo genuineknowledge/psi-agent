@@ -55,7 +55,7 @@ spa/
 │   └── styles/
 │       ├── tokens.css               # MD3 颜色/elevation/shape token（双主题）
 │       ├── components.css           # MD3 组件基类（button, dialog, field, spinner）
-│       └── layout.css               # app-shell 布局（#app, #root-layout, #chat, mobile-topbar, .mobile-overlay, 移动端 @media 定位）+ .drop-overlay；组件专属样式已移入各组件 <style scoped>
+│       └── layout.css               # 仅 app-shell：#app, #root-layout, #chat, mobile-topbar, .mobile-overlay, .drop-overlay, .dialog 共享外壳（含各自的移动端 @media）。组件专属样式（含其移动端 @media 规则）均在各组件 <style scoped>
 └── dist/                            # `vite build` 输出 (gitignore)
 ```
 
