@@ -233,23 +233,6 @@
 .dialog .actions button.ok:hover { box-shadow: var(--md-elevation-2); filter: brightness(1.08); }
 .dialog .actions button.cancel { background: transparent; color: var(--md-primary); border: 1px solid var(--md-outline); }
 .dialog .actions button.cancel:hover { background: rgba(128,128,128,var(--md-state-hover)); }
-
-/* ==========================================================================
-   🔔 Material Design 3 Snackbar 提示组件
-   ========================================================================== */
-.md-snackbar {
-  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(40px);
-  background: var(--md-surface-variant); border: 1px solid var(--md-outline);
-  color: var(--md-text-primary); padding: 14px 24px; border-radius: 16px;
-  display: flex; align-items: center; gap: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-  z-index: 1000; opacity: 0; pointer-events: none;
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease;
-}
-.md-snackbar.active { transform: translateX(-50%) translateY(0); opacity: 1; pointer-events: auto; }
-.md-snackbar .sb-msg { font-size: 14px; flex: 1; }
-.md-snackbar .sb-btn { background: none; border: none; color: var(--md-primary); font-weight: 600; font-size: 13px; cursor: pointer; padding: 4px 8px; border-radius: 8px; }
-.md-snackbar .sb-btn:hover { background: rgba(255,255,255,0.05); }
-
 .page-loader {
   position: fixed; top:0; left:0; right:0; bottom:0; z-index: 999;
   background: var(--md-bg); display: flex; flex-direction: column;
@@ -266,53 +249,6 @@
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--md-outline-variant); border-radius: 10px; }
-
-/* ==========================================================================
-   🤔 MD3 Thinking / Skeleton Bubble
-   ========================================================================== */
-.thinking-bubble {
-  background: var(--md-surface-container-high);
-  border: 1px solid var(--md-outline-variant);
-  border-radius: 16px 16px 16px 4px;
-  padding: 14px 18px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 72px;
-}
-.thinking-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--md-primary);
-  opacity: 0.4;
-  animation: thinking-pulse 1.4s ease-in-out infinite;
-}
-.thinking-dot:nth-child(2) { animation-delay: 0.2s; }
-.thinking-dot:nth-child(3) { animation-delay: 0.4s; }
-
-/* MD3 Copy button on message bubbles */
-.bubble-wrap { position: relative; display: flex; align-items: flex-start; gap: 4px; }
-.bubble-wrap .bubble { flex: 1; }
-.bubble-wrap .thinking-bubble { flex: 1; }
-.copy-btn {
-  background: none; border: none; border-radius: var(--md-shape-full);
-  width: 32px; height: 32px; cursor: pointer; flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center;
-  color: var(--md-text-secondary); opacity: 0;
-  transition: opacity .15s, background .15s;
-  margin-top: 2px;
-}
-.bubble-wrap:hover .copy-btn,
-.copy-btn:focus-visible { opacity: 1; }
-.copy-btn:hover { background: rgba(128,128,128,var(--md-state-hover)); }
-.copy-btn .material-symbols-outlined { font-size: 16px; }
-@media (hover: none) { .copy-btn { opacity: 1; } }
-@keyframes thinking-pulse {
-  0%, 80%, 100% { transform: scale(0.7); opacity: 0.3; }
-  40%            { transform: scale(1);   opacity: 1;   }
-}
-
 /* ==========================================================================
    🤖 模型选择器 & 管理面板 (输入栏右侧)
    ========================================================================== */
