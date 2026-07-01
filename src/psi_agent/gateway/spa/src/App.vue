@@ -9,7 +9,19 @@
 
     <Sidebar @new-session="openSessDialog" />
 
-    <div id="chat">
+    <div
+      id="chat"
+      @dragenter.prevent="onChatDragOver"
+      @dragover.prevent="onChatDragOver"
+      @dragleave="onChatDragLeave"
+      @drop="onChatDrop"
+    >
+      <div v-if="store.isDragging" class="drop-overlay">
+        <div class="drop-overlay-inner">
+          <span class="material-symbols-outlined">upload_file</span>
+          <span>拖放文件以上传</span>
+        </div>
+      </div>
       <div id="mobile-topbar">
         <div class="topbar-left">
           <button class="topbar-btn" @click="toggleSidebar" title="打开会话列表">
@@ -97,6 +109,28 @@ function toggleSidebar() {
 
 function closeMobileSidebar() {
   store.isMobileSidebarOpen = false
+}
+
+function onChatDragOver(e) {
+  if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
+  e.preventDefault()
+  if (store.selectedSessionId) store.isDragging = true
+}
+
+function onChatDragLeave(e) {
+  // Only clear when the pointer actually leaves the #chat element,
+  // not when moving between its children.
+  if (e.currentTarget.contains(e.relatedTarget)) return
+  store.isDragging = false
+}
+
+function onChatDrop(e) {
+  if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
+  e.preventDefault()
+  store.isDragging = false
+  if (!store.selectedSessionId) return
+  const files = Array.from(e.dataTransfer.files || [])
+  if (files.length) store.selectedFiles.push(...files)
 }
 
 async function refreshAIs() {

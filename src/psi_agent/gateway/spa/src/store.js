@@ -29,6 +29,7 @@ export const store = reactive({
   editingSessionId: null,
   editingWorkspaceText: '',
   userHasScrolledUp: false,
+  isDragging: false,
 })
 
 export function useStore() { return store }
