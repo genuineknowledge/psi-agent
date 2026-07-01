@@ -33,7 +33,7 @@ spa/
 │   ├── App.vue                      # 根组件：编排层 — 跨组件 handler + 弹窗 + drag-drop；sidebar/input 业务逻辑已移入各组件
 │   ├── store.js                     # reactive() 单一 store，provide/inject
 │   ├── utils.js                     # renderMd, htmlEscape, mimeType, localStorage
-│   ├── api.js                       # fetch 封装, streamChat, parseSSELine
+│   ├── api.js                       # fetch 封装(api) + chat 流请求(streamChat)
 │   ├── providers.js                 # 预置 provider 配置 (deepseek/openai/anthropic/gemini)
 │   ├── components/
 │   │   ├── Sidebar.vue              # 会话列表：新建/双击改名/删除
@@ -182,7 +182,7 @@ Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 2. Files → FileReader.readAsDataURL → base64（encodeFiles）
 3. 用户消息立即显示 (addMessage + htmlEscape)
 4. AI 消息气泡出现 (addMessage, streaming=true)
-5. FormData + fetch POST /sessions/{id}/chat（multipart，多文件 append）
+5. FormData + streamChat() POST /sessions/{id}/chat（multipart，多文件 append）
 6. for await (readSSE(reader)):
    - text chunk → asst.text += chunk.text → renderMd → 更新 v-html
    - blob chunk → asst.files.push({name, data})
