@@ -3,8 +3,14 @@ name: Nuitka
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - "v*"
+
+concurrency:
+  group: nuitka-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   nuitka:
