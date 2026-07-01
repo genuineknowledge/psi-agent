@@ -151,6 +151,7 @@ async def _delete_session(request: web.Request) -> web.Response:
 
 async def _reset_session(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
+    tm: TitleManager = request.app["tm"]
     session_id = request.match_info["session_id"]
     if not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
         return _error(f"Invalid session_id: {session_id!r}", status=400)
@@ -169,6 +170,7 @@ async def _reset_session(request: web.Request) -> web.Response:
             await tmp_file.unlink()
         except FileNotFoundError:
             pass
+        tm.remove(session_id)
         info = await sm.reset(session_id)
         return _json(asdict(info))
     except LookupError as e:

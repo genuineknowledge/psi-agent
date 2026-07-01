@@ -420,6 +420,11 @@ async def test_gateway_reset_deletes_history(tmp_path: str) -> None:
             assert await anyio.Path(hist_file).exists()
 
             async with session.post(
+                f"{base_url}/titles", json={"id": "reset-http", "title": "旧标题"}
+            ) as resp:
+                assert resp.status == 200
+
+            async with session.post(
                 f"{base_url}/sessions/reset-http/reset"
             ) as resp:
                 assert resp.status == 200
@@ -427,6 +432,11 @@ async def test_gateway_reset_deletes_history(tmp_path: str) -> None:
                 assert data["id"] == "reset-http"
 
             assert not await anyio.Path(hist_file).exists()
+
+            async with session.get(f"{base_url}/titles") as resp:
+                assert resp.status == 200
+                titles = await resp.json()
+                assert "reset-http" not in titles
 
             async with session.post(
                 f"{base_url}/sessions/nonexistent/reset"
