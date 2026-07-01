@@ -1,8 +1,8 @@
-import { nextTick } from 'vue'
 import { store } from '../store.js'
 import { htmlEscape, renderMd, saveHistory, loadHistory } from '../utils.js'
 import { readSSE } from './useSSE.js'
 import { streamChat } from '../api.js'
+import { scrollToBottomIfLocked } from './useScroll.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -11,21 +11,8 @@ function origin() {
 function addMessage(role, id) {
   const m = { id, role, text: '', html: '', files: [] }
   store.messages.push(m)
-  scrollChatAreaIfLocked()
+  scrollToBottomIfLocked()
   return store.messages[store.messages.length - 1]
-}
-
-function scrollChatAreaIfLocked() {
-  nextTick(() => {
-    const el = document.getElementById('messages')
-    if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop
-    if (store.streaming) {
-      if (store.userHasScrolledUp && distanceFromBottom > 60) return
-      if (distanceFromBottom <= 60) store.userHasScrolledUp = false
-    }
-    el.scrollTop = el.scrollHeight
-  })
 }
 
 async function encodeFiles(files, um) {
@@ -51,7 +38,7 @@ export async function sendMessage() {
   store.streaming = true
   store.inputText = ''
   store.selectedFiles = []
-  document.getElementById('file-upload').value = ''
+  store.uploadResetToken++
   store.userHasScrolledUp = false
 
   let um = null
@@ -86,7 +73,7 @@ export async function sendMessage() {
       } else if (chunkData.type === 'error') {
         asst.text += '\n[Error: ' + chunkData.error + ']'
       }
-      scrollChatAreaIfLocked()
+      scrollToBottomIfLocked()
     }
   } catch (e) {
     asst.text += '\n[Error: ' + e.message + ']'

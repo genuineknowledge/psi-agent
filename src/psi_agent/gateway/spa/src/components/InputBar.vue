@@ -58,6 +58,11 @@ function autoResizeInput() {
 }
 
 watch(() => store.inputText, () => nextTick(autoResizeInput))
+
+watch(() => store.uploadResetToken, () => {
+  const el = document.getElementById('file-upload')
+  if (el) el.value = ''
+})
 </script>
 
 <style scoped>

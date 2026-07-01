@@ -33,6 +33,7 @@ export const store = reactive({
   sessionSearchText: '',
   pinnedSessionIds: loadPinnedSessionIds(window.localStorage),
   userHasScrolledUp: false,
+  uploadResetToken: 0,
   isDragging: false,
 })
 
