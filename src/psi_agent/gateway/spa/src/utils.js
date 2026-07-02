@@ -88,3 +88,14 @@ export function loadHistory(id) {
 export function clearHistory(id) {
   localStorage.removeItem('gw-hist-' + id)
 }
+
+const LS_UNDO_SKIP = 'gw-undo-skip-confirm'
+
+export function loadUndoSkipConfirm() {
+  return localStorage.getItem(LS_UNDO_SKIP) === '1'
+}
+
+export function saveUndoSkipConfirm(skip) {
+  if (skip) localStorage.setItem(LS_UNDO_SKIP, '1')
+  else localStorage.removeItem(LS_UNDO_SKIP)
+}
