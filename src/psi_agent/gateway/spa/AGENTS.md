@@ -167,6 +167,8 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 | `browser` | `object` | 目录浏览 {path, parent, entries} |
 | `fetchedModels`, `loadingModels` | `array/bool` | 从 provider API 获取的模型列表 |
 | `editingSessionId`, `editingWorkspaceText` | `string` | 会话标题编辑状态 |
+| `pinnedSessionIds` | `string[]` | 置顶会话 id 列表（启动时从 `gw-pinned-session-ids` 读入，见 `sessionList.js`） |
+| `sessionSearchText` | `string` | 侧栏会话搜索框文本（`sessionList.js` 的 `buildVisibleSessions` 据此过滤） |
 
 ## Markdown 渲染流程 (`utils.js:renderMd`)
 
