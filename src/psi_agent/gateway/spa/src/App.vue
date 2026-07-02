@@ -73,6 +73,7 @@ import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
 import { useKeyboard } from './composables/useKeyboard.js'
 import { selectSession } from './composables/useSession.js'
+import { undoFrom } from './composables/useChat.js'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBar from './components/InputBar.vue'
@@ -175,6 +176,13 @@ async function deleteAI(id) {
 
 async function executeConfirmedAction() {
   store.dlgConfirm.show = false
+
+  // 撤回：actionArgs 是消息索引（可能为 0），需在 !id 判空之前处理
+  if (store.dlgConfirm.actionType === 'undo') {
+    undoFrom(store.dlgConfirm.actionArgs)
+    return
+  }
+
   const id = store.dlgConfirm.actionArgs
   if (!id) return
 

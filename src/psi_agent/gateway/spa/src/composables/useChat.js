@@ -102,6 +102,14 @@ export function stopMessage() {
   if (store.abortController) store.abortController.abort()
 }
 
+export function undoFrom(index) {
+  // 撤回：删除索引 index 处的消息及其之后的所有消息，仅影响前端显示与本地历史。
+  if (index < 0 || index >= store.messages.length) return
+  if (store.streaming) return
+  store.messages.splice(index)
+  if (store.selectedSessionId) saveHistory(store.selectedSessionId, store.messages)
+}
+
 async function generateTitle() {
   const sid = store.selectedSessionId
   if (!sid) return

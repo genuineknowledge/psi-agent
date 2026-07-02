@@ -2,9 +2,10 @@
   <div id="messages" ref="messagesRef" @scroll="onContainerScroll">
     <div v-if="store.messages.length === 0" class="empty">选择一个会话开始聊天</div>
     <MessageBubble
-      v-for="m in store.messages"
-      :key="m.id"
+      v-for="(m, i) in store.messages"
+      :key="m.id || i"
       :msg="m"
+      :index="i"
     />
   </div>
 </template>
