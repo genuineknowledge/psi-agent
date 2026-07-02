@@ -2,23 +2,34 @@
 
 ## 概述
 
-Web 控制台是一个**零 CDN 依赖**的 Vue 3 单页应用（SPA），由 Vite 构建为静态文件，通过 Gateway 的 `/spa/` 路由服务。
+Web 控制台是一个本地打包、无外部 CDN 依赖的 Vue 3 单页应用（SPA），由 Vite 构建为静态文件，通过 Gateway 的 `/spa/` 路由服务。支持多格式文件预览（代码/PDF/Word/PPT/Excel/CSV），依赖已显著增加，不再是轻量前端。
 
 ## 技术栈
 
 | 领域 | 技术 | 版本 | 选择理由 |
 |------|------|------|----------|
 | 框架 | Vue 3 Composition API `<script setup>` | `^3.4.21` | SFC 组织清晰，`reactive()` 替代 Pinia |
-| 构建 | Vite | `^6.0.0` | 快 HMR + 静态打包 |
-| Markdown | marked | `^11.1.1` | 体积最小（22KB），AI 回复非用户输入无需安全 sanitize |
-| LaTeX | KaTeX | `^0.16.9` | 同步 `renderToString()` 比 MathJax 快 5-10x，SSE 逐帧重渲染关键 |
-| 图标 | Material Symbols | `^0.14.0` | Google MD3 官方当前图标集，CSS `font-variation-settings` 支持 weight/fill 可调 |
-| Vue 插件 | `@vitejs/plugin-vue` | `^5.0.0` | Vite SFC 编译 |
+| 构建 | Vite | `^8.1.0` | 快 HMR + 静态打包 |
+| Markdown | marked | `^18.0.5` | AI 回复非用户输入无需安全 sanitize |
+| LaTeX | KaTeX | `^0.17.0` | 同步 `renderToString()` 比 MathJax 快 5-10x，SSE 逐帧重渲染关键 |
+| 图标 | Material Symbols | `^0.45.4` | Google MD3 官方当前图标集，CSS `font-variation-settings` 支持 weight/fill 可调 |
+| Vue 插件 | `@vitejs/plugin-vue` | `^6.0.7` | Vite SFC 编译 |
+
+**文件预览依赖**（按需动态 import，懒加载，不进主 bundle）：
+
+| 库 | 版本 | 用途 |
+|----|------|------|
+| `codemirror` | `^6.0.2` | 代码文件语法高亮预览 |
+| `pdfjs-dist` | `^5.6.205` | PDF 预览 |
+| `docx-preview` | `^0.3.7` | Word（.docx）预览 |
+| `pptx-preview` | `^1.0.7` | PowerPoint（.pptx）预览 |
+| `xlsx` | `^0.18.5` | Excel 表格预览 |
+| `papaparse` | `^5.5.4` | CSV 解析预览 |
 
 **未引入**：
 - **Vue Router** — 单页无路由
 - **Pinia** — `reactive()` 单一 store 足够
-- **TypeScript** — 保持轻量
+- **TypeScript** — 未引入
 - **CSS 预处理器** — 手写 CSS variables（MD3 token 系统）
 
 ## 目录结构
@@ -35,8 +46,9 @@ spa/
 │   ├── utils.js                     # renderMd, htmlEscape, mimeType, localStorage
 │   ├── api.js                       # fetch 封装(api) + chat 流请求(streamChat)
 │   ├── providers.js                 # 预置 provider 配置 (deepseek/openai/anthropic/gemini)
+│   ├── sessionList.js               # 会话列表纯逻辑工具：置顶(pin)持久化、搜索过滤、显示名、标题 payload 构造。导出：PINNED_SESSIONS_KEY、getSessionDisplayName、loadPinnedSessionIds、savePinnedSessionIds、togglePinnedSessionId、buildSessionTitlePayload、buildVisibleSessions
 │   ├── components/
-│   │   ├── Sidebar.vue              # 会话列表：新建/双击改名/删除
+│   │   ├── Sidebar.vue              # 会话列表：新建/双击改名/删除/置顶(pin)/搜索过滤（置顶与搜索逻辑在 sessionList.js）
 │   │   ├── ChatArea.vue             # 消息列表容器 + 自动滚动 + 空状态
 │   │   ├── MessageBubble.vue        # 单条消息：Markdown + 复制 + 文件附件
 │   │   ├── ThinkingBubble.vue       # 等待首 token 的三个脉冲圆点
@@ -47,6 +59,7 @@ spa/
 │   │   ├── SessDialog.vue           # 创建会话弹窗 + FileBrowser（基于 BaseDialog）
 │   │   ├── FileBrowser.vue          # 目录浏览
 │   │   ├── ConfirmDialog.vue        # 通用确认弹窗（基于 BaseDialog）
+│   │   ├── FilePreview.vue          # Teleport 到 body 的抽屉式文件预览组件，按扩展名动态分派到 codemirror/pdfjs/docx-preview/pptx-preview/xlsx/papaparse；被 MessageBubble.vue 使用；props 含预览目标，emit close
 │   │   └── Snackbar.vue             # MD3 toast 提示
 │   ├── composables/
 │   │   ├── useSSE.js                # ReadableStream SSE 逐行解析 async generator
@@ -154,6 +167,21 @@ ReadableStream reader
 
 **注意**：这是一个 `async function*` generator，`useChat.js` 中通过 `for await (const chunk of readSSE(reader))` 消费。
 
+## 文件预览 (`FilePreview.vue`)
+
+MessageBubble 中点击附件 → 触发 `FilePreview` 组件（Teleport 到 `body` 的抽屉式面板）。组件按文件扩展名动态 import 对应预览库（懒加载，不进主 bundle）：
+
+| 扩展名 | 预览库 |
+|--------|--------|
+| `.js/.ts/.py/.java` 等代码文件 | `codemirror ^6.0.2` |
+| `.pdf` | `pdfjs-dist ^5.6.205` |
+| `.docx` | `docx-preview ^0.3.7` |
+| `.pptx` | `pptx-preview ^1.0.7` |
+| `.xlsx/.xls` | `xlsx ^0.18.5` |
+| `.csv` | `papaparse ^5.5.4` |
+
+props 含预览目标（文件名 + 数据），emit `close` 关闭抽屉。
+
 ## localhost 持久化策略
 
 **原则**：服务端是唯一数据源（AI/Session 列表从远端 GET），localStorage 仅存 UI 状态和对话缓存。
@@ -164,6 +192,7 @@ ReadableStream reader
 | `gw-hist-<id>` | `[{role, text, files}]` | 对话历史（文件 blob 合并服务端文本） |
 | `gw-sidebar-state` | `'expanded'/'collapsed'` | 侧栏折叠状态 |
 | `gw-theme` | `'light'/'dark'` | 主题偏好 |
+| `gw-pinned-session-ids` | `string[]` | 置顶会话 id 列表（由 `sessionList.js` 的 `loadPinnedSessionIds`/`savePinnedSessionIds` 读写） |
 
 Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 
