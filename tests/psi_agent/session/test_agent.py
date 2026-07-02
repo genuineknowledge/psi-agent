@@ -462,7 +462,7 @@ async def test_agent_ai_error_not_in_history(tmp_path: Path) -> None:
         with pytest.raises(AgentError):
             async for _ in agent.run({"role": "user", "content": "hi"}):
                 pass
-        assert len(agent._conversation.messages) == history_len_before + 2
+        assert len(agent._conversation.messages) == history_len_before
     finally:
         await runner.cleanup()
 
@@ -651,7 +651,7 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
                 pass
 
         loaded = await Conversation._load(history_path)
-        assert len(loaded) == 2
+        assert len(loaded) == 1
         assert loaded[0]["role"] == "system"
     finally:
         await runner.cleanup()
@@ -670,3 +670,206 @@ async def test_histories_dir_and_gitignore_created(tmp_path: Path) -> None:
     assert await anyio.Path(histories_dir).is_dir()
     assert await anyio.Path(histories_dir / ".gitignore").read_text(encoding="utf-8") == "*\n"
     assert agent._conversation._path is not None
+
+
+# --- Snapshot / rollback tests ---
+
+
+class TestConversationSnapshot:
+    @pytest.mark.anyio
+    async def test_begin_turn_rollback_restores_messages(self) -> None:
+        conv = Conversation(messages=[{"role": "system", "content": "sys"}])
+        conv.begin_turn()
+        conv.add({"role": "user", "content": "hi"})
+        assert len(conv.messages) == 2
+        conv.rollback()
+        assert len(conv.messages) == 1
+        assert conv.messages[0] == {"role": "system", "content": "sys"}
+
+    @pytest.mark.anyio
+    async def test_begin_turn_rollback_restores_pending(self) -> None:
+        conv = Conversation()
+        conv.stash([AgentChunk(content="hello")])
+        conv.begin_turn()
+        conv.add({"role": "user", "content": "hi"})
+        conv.clear_pending()
+        assert conv._pending == []
+        conv.rollback()
+        assert conv._pending == [AgentChunk(content="hello")]
+        assert conv.messages == []
+
+    @pytest.mark.anyio
+    async def test_rollback_idempotent_without_begin_turn(self) -> None:
+        conv = Conversation(messages=[{"role": "user", "content": "q"}])
+        conv.rollback()
+        assert len(conv.messages) == 1
+
+    @pytest.mark.anyio
+    async def test_begin_turn_overwrites_previous_snapshot(self) -> None:
+        conv = Conversation(messages=[{"role": "system", "content": "s1"}])
+        conv.begin_turn()
+        conv.add({"role": "user", "content": "u1"})
+        conv.begin_turn()
+        conv.add({"role": "user", "content": "u2"})
+        conv.rollback()
+        assert len(conv.messages) == 2
+        assert conv.messages[1] == {"role": "user", "content": "u1"}
+
+
+class TestFlushPendingSafety:
+    @pytest.mark.anyio
+    async def test_flush_pending_does_not_clear(self) -> None:
+        conv = Conversation()
+        conv.stash([AgentChunk(content="a"), AgentChunk(content="b")])
+        result = conv.flush_pending()
+        assert len(result) == 2
+        assert len(conv._pending) == 2
+        assert conv._pending == [AgentChunk(content="a"), AgentChunk(content="b")]
+
+    @pytest.mark.anyio
+    async def test_clear_pending_drops_all(self) -> None:
+        conv = Conversation()
+        conv.stash([AgentChunk(content="x")])
+        conv.clear_pending()
+        assert conv._pending == []
+
+
+# --- Agent snapshot / rollback integration tests ---
+
+
+@pytest.mark.anyio
+async def test_agent_rollback_restores_history_on_error(tmp_path: Path) -> None:
+    """AI error should rollback the conversation to before the turn."""
+    history_path = tmp_path / "histories" / "s.jsonl"
+    await anyio.Path(history_path.parent).mkdir()
+
+    conv = Conversation(
+        messages=[{"role": "system", "content": "original"}],
+        path=history_path,
+    )
+    await conv.save()
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return web.Response(status=500)
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(),
+            conversation=conv,
+        )
+        with pytest.raises(AgentError):
+            async for _ in agent.run({"role": "user", "content": "hi"}):
+                pass
+
+        assert len(agent._conversation.messages) == 1
+        assert agent._conversation.messages[0] == {"role": "system", "content": "original"}
+
+        loaded = await Conversation._load(history_path)
+        assert len(loaded) == 1
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_rollback_restores_pending_on_error(tmp_path: Path) -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return web.Response(status=500)
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=ToolRegistry())
+        agent.set_pending_schedule_chunks([AgentChunk(reasoning="schedule output")])
+
+        with pytest.raises(AgentError):
+            async for _ in agent.run({"role": "user", "content": "hi"}):
+                pass
+
+        assert len(agent._conversation._pending) == 1
+        assert agent._conversation._pending[0].reasoning == "schedule output"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_saves_on_max_tool_rounds(tmp_path: Path) -> None:
+    history_path = tmp_path / "histories" / "s.jsonl"
+    await anyio.Path(history_path.parent).mkdir()
+
+    def _tc_factory(name: str) -> dict:
+        return {
+            "id": "mock",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "test",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "type": "function",
+                                "function": {"name": name, "arguments": "{}"},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+        }
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        tc = _tc_factory("unknown")
+        await resp.write(f"data: {json.dumps(tc)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        tf = ToolFunction(
+            name="unknown", description="X", parameters={"type": "object", "properties": {}, "required": []}
+        )
+        agent = SessionAgent(
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(files={"__test__": FileEntry(file_hash="", tools={"unknown": tf}, funcs={})}),
+            conversation=Conversation(path=history_path),
+            max_tool_rounds=1,
+        )
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+
+        content = "".join(c.content or "" for c in chunks)
+        assert "Max tool rounds reached" in content
+
+        loaded = await Conversation._load(history_path)
+        assert any(m.get("content") == "[Max tool rounds reached]" for m in loaded)
+    finally:
+        await runner.cleanup()

@@ -1,7 +1,24 @@
 # Session History 持久化设计规格
 
+> [!NOTE]
+> **This spec is a historical design document.**  The implementation has
+> evolved significantly since 2026-06-24.  For the **current** behaviour
+> see ``src/psi_agent/session/AGENTS.md`` § History 持久化 and
+> ``AGENTS.md`` § 为什么 Session history 持久化为 JSONL？.
+>
+> Key divergences from this spec:
+> - Turn-level atomicity via ``Conversation.begin_turn() / rollback()``
+>   replaces the original "save-on-stop-only" model.  ``save()`` is now
+>   called at every consistency checkpoint (stop, tool_calls complete,
+>   unexpected finish, max rounds).
+> - ``flush_pending()`` no longer clears the buffer — callers must call
+>   ``clear_pending()`` after successful yield to prevent data loss on
+>   channel disconnect.
+> - The user message is no longer persisted early; a failed turn is
+>   rolled back in both memory and disk.
+
 **日期**: 2026-06-24
-**状态**: 已审批
+**状态**: 已审批（历史档案）
 
 ---
 

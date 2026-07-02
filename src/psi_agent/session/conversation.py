@@ -27,12 +27,18 @@ class Conversation:
     ``messages`` is public so that ``agent.run()`` can read it directly.
     ``session_id`` is the filename stem of the backing file — also reused
     as the per-session identifier for ``sys.modules`` isolation.
+
+    Turn-level snapshot (``begin_turn`` / ``rollback``) ensures memory
+    and disk are synchronised — on failure the conversation is restored
+    to its last consistent checkpoint.
     """
 
     def __init__(self, *, messages: list[dict[str, Any]] | None = None, path: Path | None = None):
         self.messages: list[dict[str, Any]] = list(messages or [])
         self._path = path
         self._pending: list[AgentChunk] = []
+        self._snapshot_messages: list[dict[str, Any]] | None = None
+        self._snapshot_pending: list[AgentChunk] | None = None
 
     @property
     def session_id(self) -> str:
@@ -80,10 +86,34 @@ class Conversation:
         self._pending = chunks
 
     def flush_pending(self) -> list[AgentChunk]:
-        """Pop and return pending schedule chunks, clearing the buffer."""
-        chunks = self._pending
-        self._pending = []
-        return chunks
+        """Return a copy of pending schedule chunks without clearing.
+        The caller MUST call ``clear_pending()`` after successfully yielding
+        all chunks, so that a yield failure (e.g. client disconnect) does not
+        permanently lose the pending chunk data."""
+        return list(self._pending)
+
+    def clear_pending(self) -> None:
+        """Drop all pending schedule chunks (call after successful yield)."""
+        self._pending.clear()
+
+    # -- turn-level snapshot ----------------------------------------------------
+
+    def begin_turn(self) -> None:
+        """Snapshot the current conversation state so that ``rollback()``
+        can restore it on failure.  Called at the start of each
+        ``SessionAgent.run()`` invocation."""
+        self._snapshot_messages = list(self.messages)
+        self._snapshot_pending = list(self._pending)
+
+    def rollback(self) -> None:
+        """Restore messages and pending chunks to the state captured
+        by the most recent ``begin_turn()``.  Idempotent — safe to call
+        when no snapshot exists."""
+        if self._snapshot_messages is not None:
+            self.messages = self._snapshot_messages
+            self._pending = self._snapshot_pending or []
+            self._snapshot_messages = None
+            self._snapshot_pending = None
 
     # -- persistence -----------------------------------------------------------
 

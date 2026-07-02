@@ -1,5 +1,11 @@
 # Session 协议分离重构
 
+> [!NOTE]
+> **Historical spec.**  The protocol separation described here was
+> implemented but the history persistence invariant listed in § Non‑Goals
+> has since been revised: the system now uses turn-level snapshot/rollback
+> with multiple save checkpoints.  See ``src/psi_agent/session/AGENTS.md``.
+
 ## 动机
 
 当前 `session/agent.py`（577 行）混合了三种职责：AI 侧的 HTTP/SSE 协议解析、Channel 侧的 HTTP/SSE 响应写入、核心 agent loop 业务逻辑。需要将协议层从业务逻辑中剥离，使 `SessionAgent.run()` 成为纯语义驱动的方法，由两个对等的协议适配器（`AiClient` 和 `ChannelAdapter`）包裹。
