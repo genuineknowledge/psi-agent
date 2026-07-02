@@ -57,7 +57,7 @@ spa/
 │   │   └── useChat.js               # sendMessage 及其内部辅助（addMessage, encodeFiles, generateTitle）；不含 DOM 操作，滚动委托 useScroll、清空 file input 经 store.uploadResetToken 信号
 │   └── styles/
 │       ├── tokens.css               # MD3 颜色/elevation/shape token（双主题）
-│       ├── components.css           # MD3 组件基类（button, field, spinner 等；dialog 外壳已由 BaseDialog.vue 承担）
+│       ├── components.css           # MD3 组件基类（button, spinner 等 + 弹窗共用的 .field 表单字段；dialog 外壳已由 BaseDialog.vue 承担）
 │       └── layout.css               # 仅 app-shell：#app, #root-layout, #chat, mobile-topbar, .mobile-overlay, .drop-overlay（含各自的移动端 @media）。dialog 外壳已移入 BaseDialog.vue scoped。组件专属样式（含其移动端 @media 规则）均在各组件 <style scoped>
 └── dist/                            # `vite build` 输出 (gitignore)
 ```
