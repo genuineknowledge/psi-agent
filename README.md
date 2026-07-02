@@ -8,7 +8,7 @@
 
 ## 为什么选它
 
-- **简单组合**：ai、session、channel 三个独立进程，socket 对插即用。没有中心配置，不依赖数据库
+- **简单组合**：ai、session、channel 三个独立进程，socket 对插即用。没有中心配置，sqlite 仅用于 Gateway 状态持久化
 - **Workspace 即 Agent**：在 `workspace/` 下丢几个 Python 函数就是 tools，写个 system prompt 就是 agent 人格，加个 cron 就是定时任务
 - **流式交互**：REPL 实时显示 AI 思考过程（dim 样式）和最终回复，所见即所得
 

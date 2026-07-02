@@ -51,7 +51,7 @@ class GatewayStore:
         )
         logger.info(f"Gateway store initialized at {self._db_path!r}")
 
-    async def _execute(self, sql: str, params: tuple = ()) -> None:
+    async def _execute(self, sql: str, params: tuple[object, ...] = ()) -> None:
         def _run() -> None:
             with sqlite3.connect(self._db_path) as conn:
                 conn.execute(sql, params)
@@ -59,7 +59,7 @@ class GatewayStore:
 
         await anyio.to_thread.run_sync(_run)  # ty: ignore
 
-    async def _fetchall(self, sql: str, params: tuple = ()) -> list[dict[str, object]]:
+    async def _fetchall(self, sql: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
         def _run() -> list[dict[str, object]]:
             with sqlite3.connect(self._db_path) as conn:
                 conn.row_factory = sqlite3.Row

@@ -56,6 +56,7 @@ async def create_app(
     tm = TitleManager(store)
     await tm.load()
     app["tm"] = tm
+    app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
     app["hm"] = HistoryManager()
     app["favicon_path"] = favicon_path
