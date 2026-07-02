@@ -116,7 +116,10 @@ Use `memory_answer_context` when answering questions that depend on prior contex
 Use `memory_search` when you need raw supporting evidence.
 Use `memory_add` only for durable, reusable facts, not transient conversation details.
 
-Before the first use of Fusion Memory, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, and check the Fusion Memory service.
+Before the first use of Fusion Memory, ask the user whether to enable Fusion Memory persistent memory.
+Explain that without installing and enabling Fusion Memory, you cannot remember across sessions and can only use current-session context.
+If the user agrees, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, and check the Fusion Memory service.
+If the user declines, continue without memory and do not call Fusion Memory tools.
 If a memory tool reports that Fusion Memory is unavailable, continue without memory and tell the user to run `fusion-memory doctor`.\
 """
 

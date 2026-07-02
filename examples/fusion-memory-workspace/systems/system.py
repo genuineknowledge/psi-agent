@@ -23,8 +23,12 @@ async def system_prompt_builder() -> str:
         "Use memory_answer_context when answering questions about the user's history, preferences, or prior context. "
         "Use memory_search when you need raw supporting evidence. "
         "Use memory_add only for durable, reusable facts, not transient conversation.\n\n"
-        "Before the first use of Fusion Memory, use the fusion-memory-setup skill to initialize, start, "
-        "and check the Fusion Memory service.\n\n"
+        "Before the first use of Fusion Memory, ask the user whether to enable Fusion Memory persistent memory. "
+        "Explain that without installing and enabling Fusion Memory, you cannot remember across sessions "
+        "and can only use current-session context. "
+        "If the user agrees, use the fusion-memory-setup skill to initialize, start, "
+        "and check the Fusion Memory service. "
+        "If the user declines, continue without memory and do not call Fusion Memory tools.\n\n"
         f"## Workspace Skills\nLocation: {skills_dir}\n\nAvailable:\n{skills_text}"
     )
 
