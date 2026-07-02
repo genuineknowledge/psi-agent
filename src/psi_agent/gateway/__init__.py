@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import webbrowser
 from dataclasses import dataclass
-from pathlib import Path
 
 import anyio
 from aiohttp import web
@@ -57,7 +57,7 @@ class Gateway:
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
 
-        db_path = self.db or str(Path.cwd() / "gateway.db")
+        db_path = self.db or os.path.join(os.getcwd(), "gateway.db")
         store = GatewayStore(db_path)
         await store.init()
 
