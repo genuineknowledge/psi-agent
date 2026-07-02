@@ -69,14 +69,6 @@ body {
 .md-surface { background: var(--md-surface); border-radius: var(--md-shape-medium); }
 .md-surface-variant { background: var(--md-surface-variant); border-radius: var(--md-shape-medium); }
 
-/* MD3 Dialog */
-.md-dialog {
-  background: var(--md-surface-container-high); border-radius: var(--md-shape-extra-large);
-  padding: 24px; width: 400px; max-width: 90vw;
-  box-shadow: var(--md-elevation-3);
-}
-.md-dialog h3 { font-size: 24px; font-weight: 400; margin-bottom: 16px; color: var(--md-text-primary); }
-
 /* MD3 Text Field */
 .md-text-field {
   width: 100%; background: var(--md-bg); color: var(--md-text-primary);
