@@ -36,6 +36,7 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "read": "Read file contents",
     "write": "Create or overwrite files",
     "edit": "Make precise string replacements in files",
+    "write_excel": "Create a real .xlsx spreadsheet from tabular data (use this for tables/spreadsheets instead of a markdown table)",
     "bash": "Execute shell commands",
     "powershell": "Execute PowerShell commands (Windows)",
     "skill_manage": "Create, patch, view, and list workspace skills",
@@ -50,6 +51,7 @@ TOOL_ORDER: list[str] = [
     "read",
     "write",
     "edit",
+    "write_excel",
     "bash",
     "powershell",
     "skill_manage",
@@ -68,6 +70,7 @@ TOOL_CALL_STYLE_SECTION = """\
 Routine low-risk calls: no narration.
 Narrate only for complex, sensitive/destructive, or explicitly requested steps.
 If a first-class tool exists, use it directly; do not ask the user to run an equivalent CLI command.
+When the user asks for a table, spreadsheet, or Excel file, call `write_excel` to produce a real .xlsx file; do not answer with a markdown table or HTML unless the user explicitly asks for that format.
 For sensitive or destructive commands, show the full command exactly as it will run (including chained operators like &&, ||, |, ;, or multiline scripts) before executing it.\
 """
 
