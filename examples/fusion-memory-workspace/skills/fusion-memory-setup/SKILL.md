@@ -69,6 +69,11 @@ does installation fall back to compromised local mode. In compromised mode
 Fusion Memory still runs with SQLite plus built-in lightweight
 embedding/reranker, but memory quality is compromised.
 
+If readiness reports a Git LFS pointer instead of a real model file, install Git
+LFS if needed, run `git lfs pull` in the Fusion Memory checkout, and rerun
+`fusion-memory install-check --force`. Do not treat pointer files as usable model
+weights.
+
 Recommended API provider for API-backed models: Aliyun DashScope.
 
 ```bash
