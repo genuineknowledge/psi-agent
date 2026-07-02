@@ -43,6 +43,9 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "memory_add": "Store durable user preferences, project facts, or decisions",
     "memory_search": "Search Fusion Memory for raw evidence",
     "memory_answer_context": "Retrieve a query-grounded Fusion Memory context pack",
+    "subagent_run": "Delegate a task to a background subagent Session (independent processes)",
+    "subagent_stop": "Stop a background subagent and release its processes",
+    "subagent_list": "List active background subagents in the workspace registry",
 }
 
 # Display order - listed tools first, any extra tools (e.g. MCP search) after.
@@ -57,6 +60,9 @@ TOOL_ORDER: list[str] = [
     "memory_add",
     "memory_search",
     "memory_answer_context",
+    "subagent_run",
+    "subagent_stop",
+    "subagent_list",
 ]
 
 # ---------------------------------------------------------------------------
@@ -84,6 +90,48 @@ EXECUTION_BIAS_SECTION = """\
 - Mutable facts need live checks: files, git, clocks, versions, services, processes, package state.
 - Final answer needs evidence: test/build/lint, screenshot, inspection, tool output, or a named blocker.
 - Longer work: brief progress update, then keep going.\
+"""
+
+# ---------------------------------------------------------------------------
+# Structured tables (C1 — always in stable prefix; skill has full detail)
+# ---------------------------------------------------------------------------
+
+STRUCTURED_TABLES_SECTION = """\
+## Structured replies (tables)
+Apply these rules in **every** reply. The user does not need to say "compare" or "use a table".
+
+**3+ parallel items (required table):** When you present **three or more** options that share the same shape — products, brands, models, tools, steps, apps, dishes, configs — output **one Markdown pipe table first** (header + separator + one row per item). Typical columns: `Option` | `Price (approx.)` | `Strengths` | `Best for` (adapt labels to context). Then add **1–3 sentences** with your recommendation. Emoji/playful tone is fine in the intro and closing, **not** as a substitute for the table.
+
+**Forbidden for 3+ options:** Do **not** use a separate `###` section per item each repeating 价格 / 关键词 / 适合 in prose, with only a tiny summary table at the end. That format is wrong — merge all rows into **one table up front**.
+
+**Exactly 2 items:** Use a table only for a true dichotomy (do/don't, before/after, two main modes). Two independent tips → short bullets or prose, no forced 2×2 table.
+
+**Opt out:** User explicitly asks for no tables → obey.
+
+Full rules and examples: `skills/structured-output-tables/SKILL.md` (read with `read` when unsure).\
+"""
+
+# ---------------------------------------------------------------------------
+# Task self-check (C2 — always in stable prefix; skill has full detail)
+# ---------------------------------------------------------------------------
+
+TASK_SELF_CHECK_SECTION = """\
+## Task self-check (before you stop)
+Before every **task-completing** user reply, silently verify (do **not** show this checklist in output):
+1. **Tool calls** — right tools/args; nothing required was skipped or faked inline.
+2. **Tool results** — failures, empties, contradictions; retry or acknowledge before claiming done.
+3. **Final output** — answers the request, format/count correct, claims match evidence (apply C1 tables when 3+ parallel items).
+
+If something is wrong, fix it (another tool round if needed) **before** sending. Full rules: `skills/task-self-check/SKILL.md`.\
+"""
+
+# ---------------------------------------------------------------------------
+# Subagent delegation (C3 — stable reminder; skill has full lifecycle rules)
+# ---------------------------------------------------------------------------
+
+SUBAGENT_DELEGATION_SECTION = """\
+## Subagent delegation
+Use `subagent_run` / `subagent_stop` / `subagent_list` for background child Sessions (independent processes — not Gateway). After you deliver a subagent result and will not follow up on that `session_id`, call `subagent_stop`. Unstopped subagents are reclaimed after idle timeout (`PSI_SUBAGENT_IDLE_SECONDS`). Full rules: `skills/subagent-orchestration/SKILL.md`.\
 """
 
 # ---------------------------------------------------------------------------
@@ -124,6 +172,7 @@ If a memory tool reports that Fusion Memory is unavailable, continue without mem
 SKILLS_HEADER_TEMPLATE = """\
 ## Skills
 Scan <available_skills>. If one clearly applies, read its SKILL.md with `{read_tool}`, then follow it.
+**Before recommending 3+ products, brands, or parallel options, read `skills/structured-output-tables/SKILL.md`.**
 If several apply, choose the most specific. If none clearly apply, read none.
 One skill up front max. Never guess/fabricate skill paths.
 External API writes: batch when safe, avoid tight loops, respect 429/Retry-After.\

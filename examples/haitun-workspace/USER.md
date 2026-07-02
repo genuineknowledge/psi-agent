@@ -2,11 +2,11 @@
 
 _Learn about the person you're helping. Update this as you go._
 
-- **Name:**
-- **What to call them:**
-- **Pronouns:** _(optional)_
-- **Timezone:**
-- **Notes:**
+- **Name:** 小区
+- **What to call them:** 小区（直接叫名字，不用"你"）
+- **Pronouns:** —
+- **Timezone:** UTC+8（武汉）
+- **Notes:** 跑道跑步（田径场），正在挑跑鞋
 
 ## Context
 

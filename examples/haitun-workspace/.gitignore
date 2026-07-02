@@ -1,6 +1,9 @@
 # psi-agent session history
 histories/
 
+# subagent runtime registry (spawned PIDs; not source)
+.psi/
+
 # system-prompt skills cache
 .skills_prompt_snapshot.json
 
