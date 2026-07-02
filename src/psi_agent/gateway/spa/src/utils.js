@@ -77,6 +77,7 @@ export function saveHistory(id, msgs) {
     role: m.role,
     text: m.text,
     files: (m.files || []).map(f => ({ name: f.name, data: f.data })),
+    stopped: m.stopped || false,
   }))))
 }
 

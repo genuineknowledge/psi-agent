@@ -29,7 +29,10 @@
         @new-ai="$emit('new-ai')"
       />
 
-      <button class="send" :disabled="store.streaming" @click="sendMessage">
+      <button v-if="store.streaming" class="send stop" @click="stopMessage" title="停止生成">
+        <span class="material-symbols-outlined">stop</span>
+      </button>
+      <button v-else class="send" :disabled="!store.selectedSessionId" @click="sendMessage" title="发送消息">
         <span class="material-symbols-outlined">send</span>
       </button>
     </div>
@@ -39,7 +42,7 @@
 <script setup>
 import { watch, nextTick } from 'vue'
 import { store } from '../store.js'
-import { sendMessage } from '../composables/useChat.js'
+import { sendMessage, stopMessage } from '../composables/useChat.js'
 import ModelPanel from './ModelPanel.vue'
 
 defineEmits(['select-ai', 'delete-ai', 'new-ai'])
@@ -114,6 +117,7 @@ watch(() => store.uploadResetToken, () => {
 }
 #input-area button.send:hover:not(:disabled) { filter: brightness(1.1); transform: scale(1.05); }
 #input-area button.send:disabled { opacity: .4; cursor: default; box-shadow: none; }
+#input-area button.send.stop { background: var(--md-text-error, #d32f2f); color: #fff; }
 
 @media (max-width: 768px) {
   #input-wrapper {

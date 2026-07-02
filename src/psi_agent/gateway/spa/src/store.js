@@ -14,6 +14,7 @@ export const store = reactive({
   sessionInputs: {},
   inputText: '',
   streaming: false,
+  abortController: null,
   selectedFiles: [],
   dlgAI: false,
   dlgSess: false,
