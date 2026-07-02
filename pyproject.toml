@@ -45,6 +45,12 @@ psi-agent = "psi_agent.cli:main"
 [tool.hatch.version]
 source = "vcs"
 
+[tool.hatch.build.targets.sdist]
+artifacts = ["src/psi_agent/gateway/spa/dist/**/*"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/psi_agent"]
+
 [tool.ruff]
 target-version = "py314"
 line-length = 120
