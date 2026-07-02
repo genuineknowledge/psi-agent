@@ -30,7 +30,8 @@
         ref="modelInput"
         v-model="modelText"
         placeholder="选择或输入模型名称"
-        @focus="dropdownOpen = availableModels.length > 0"
+        @focus="openModelDropdown"
+        @click="openModelDropdown"
         @blur="onBlur"
         @keydown.down.prevent="moveDown"
         @keydown.up.prevent="moveUp"
@@ -103,9 +104,17 @@ const availableModels = computed(() => {
 
 const filteredModels = computed(() => {
   const q = modelText.value.toLowerCase()
-  if (!q) return availableModels.value
+  // When the text exactly matches an available model (i.e. one was just
+  // selected/filled), show the full list so the user can pick another,
+  // instead of filtering down to that single entry.
+  if (!q || availableModels.value.some(m => m.toLowerCase() === q)) return availableModels.value
   return availableModels.value.filter(m => m.toLowerCase().includes(q))
 })
+
+function openModelDropdown() {
+  dropdownOpen.value = filteredModels.value.length > 0
+  activeIdx.value = -1
+}
 
 function onInput() {
   dropdownOpen.value = filteredModels.value.length > 0
