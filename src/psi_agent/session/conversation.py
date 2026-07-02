@@ -120,5 +120,41 @@ class Conversation:
                 messages.append(json.loads(stripped))
             except json.JSONDecodeError:
                 logger.warning(f"Skipping malformed line {lineno} in {path}")
+        messages = Conversation._heal_dangling_tool_calls(messages)
         logger.info(f"History loaded from {path} ({len(messages)} messages)")
         return messages
+
+    @staticmethod
+    def _heal_dangling_tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop assistant ``tool_calls`` messages whose tool results are
+        missing from history.
+
+        A crash/interruption between emitting an assistant ``tool_calls``
+        message and persisting every matching ``tool`` reply leaves the
+        history in a state the OpenAI-compatible API rejects with HTTP 400
+        ("An assistant message with 'tool_calls' must be followed by tool
+        messages responding to each 'tool_call_id'"). On reload we repair
+        this so the session can continue instead of being wedged forever:
+        for each assistant ``tool_calls`` message, if any required
+        ``tool_call_id`` has no following ``tool`` reply, drop that
+        assistant message (and any partial ``tool`` replies that referenced
+        it)."""
+        # Collect every tool_call_id that actually got a tool reply.
+        replied: set[str] = {m["tool_call_id"] for m in messages if m.get("role") == "tool" and m.get("tool_call_id")}
+        healed: list[dict[str, Any]] = []
+        dropped_ids: set[str] = set()
+        for m in messages:
+            if m.get("role") == "assistant" and m.get("tool_calls"):
+                required = {tc.get("id") for tc in m["tool_calls"] if tc.get("id")}
+                if not required.issubset(replied):
+                    dropped_ids |= required
+                    logger.warning(
+                        f"Dropping dangling assistant tool_calls (missing results for "
+                        f"{sorted(required - replied)}) to keep session usable"
+                    )
+                    continue
+            # Drop orphaned tool replies belonging to a dropped assistant message.
+            if m.get("role") == "tool" and m.get("tool_call_id") in dropped_ids:
+                continue
+            healed.append(m)
+        return healed
