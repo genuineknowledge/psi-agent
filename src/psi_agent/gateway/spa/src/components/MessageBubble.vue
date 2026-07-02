@@ -117,12 +117,20 @@ function closePreview() {
   max-width: 100%;
 }
 
-/* Rendered markdown: collapse inter-tag whitespace (the bubble used to be
-   pre-wrap, which surfaced marked's HTML newlines as blank lines). Code
-   blocks still preserve their own whitespace via <pre>/<code>. */
+/* Rendered markdown: block code (<pre>) preserves whitespace without
+   wrapping so ASCII diagrams / wide code keep their layout — the box
+   scrolls horizontally on narrow windows instead of collapsing. */
 .bubble :deep(pre),
+.bubble :deep(pre code) {
+  white-space: pre;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* Inline code (not inside a <pre>) still wraps so a long token can't
+   overflow the bubble. */
 .bubble :deep(code) {
-  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .msg.user .bubble {
