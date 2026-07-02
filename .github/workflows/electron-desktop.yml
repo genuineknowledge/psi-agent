@@ -1,0 +1,60 @@
+name: Electron Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    paths:
+      - ".github/workflows/electron-desktop.yml"
+      - "desktop/**"
+      - "examples/haitun-workspace/**"
+      - "packaging/windows/**"
+      - "src/psi_agent/**"
+      - "pyproject.toml"
+      - "uv.lock"
+
+jobs:
+  electron-installer:
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MSYS
+          release: true
+          update: true
+          install: >-
+            bash coreutils grep sed gawk findutils diffutils which
+            git openssh curl rsync tar gzip less nano
+            mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
+
+      - name: Build Electron installer
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File packaging/windows/build-electron-installer.ps1 `
+            -UseMirror `
+            -BundleMsys2 `
+            -Msys2Root "${{ steps.msys2.outputs.msys2-location }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: psi-agent-electron-installer
+          path: |
+            desktop/dist/*.exe
+            desktop/dist/*.blockmap
+          if-no-files-found: error

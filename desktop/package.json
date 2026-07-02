@@ -1,0 +1,72 @@
+{
+  "name": "psi-agent-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "author": "Hao Zhang <hzhangxyz@outlook.com>",
+  "description": "Electron desktop shell for psi-agent Gateway + SPA",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "prepare:resources": "powershell -ExecutionPolicy Bypass -File ../packaging/windows/prepare-electron-resources.ps1",
+    "pack:win": "npm run prepare:resources && electron-builder --win dir",
+    "dist:win": "npm run prepare:resources && electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^28.3.3",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.psiagent.desktop",
+    "productName": "psi-agent Desktop",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".build/resources/backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": ".build/resources/workspace-template",
+        "to": "workspace-template",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "../.github/inno-setup/haitun.ico",
+        "to": "app-icon.ico"
+      },
+      {
+        "from": ".build/resources/msys64",
+        "to": "msys64",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "../.github/inno-setup/haitun.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "installer.nsh",
+      "installerIcon": "../.github/inno-setup/haitun.ico",
+      "uninstallerIcon": "../.github/inno-setup/haitun.ico"
+    }
+  }
+}

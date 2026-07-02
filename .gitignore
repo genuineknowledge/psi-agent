@@ -4,6 +4,13 @@ __pycache__/
 .venv/
 *.egg-info/
 dist/
+build/
+desktop/.build/
+desktop/dist/
+desktop/node_modules/
+pyinstaller-dist/
+nuitka-dist/
+installer-output/
 .ruff_cache/
 .pytest_cache/
 *.sock

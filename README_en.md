@@ -123,6 +123,44 @@ uv run ty check              # types
 uv run pytest -v             # tests
 ```
 
+## Windows Integrated Packaging
+
+The repo now includes a local Windows packaging entry point that bundles:
+
+- a frozen `psi-agent.exe`
+- the built Gateway SPA frontend
+- `examples/haitun-workspace`
+
+into a portable bundle or installer, so the target machine does not need Python preinstalled.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging/windows/build-haitun-integrated.ps1
+```
+
+See [docs/windows-integrated-packaging.md](docs/windows-integrated-packaging.md) for the full workflow.
+
+## Electron Desktop App
+
+If you want a desktop window instead of launching the system browser, the repo now also includes an Electron shell under `desktop/`.
+
+Build a Windows installer in one step:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging/windows/build-electron-installer.ps1 -UseMirror
+```
+
+If you prefer the manual two-step flow:
+
+```powershell
+cd desktop
+npm.cmd install
+npm.cmd run dist:win
+```
+
+See [docs/electron-desktop-packaging.md](docs/electron-desktop-packaging.md) for the complete workflow.
+
+The repo also includes a matching GitHub Actions workflow at `.github/workflows/electron-desktop.yml` to build the Windows installer in CI.
+
 ## Author
 
 Hao Zhang <hzhangxyz@outlook.com>
