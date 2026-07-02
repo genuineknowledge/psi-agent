@@ -123,6 +123,44 @@ uv run ty check              # 类型
 uv run pytest -v             # 测试
 ```
 
+## Windows 一体打包
+
+仓库现在带了一套本地 Windows 一体化打包入口，目标是把：
+
+- 冻结后的 `psi-agent.exe`
+- 已构建的 Gateway SPA 前端
+- `examples/haitun-workspace`
+
+一起打成可分发的便携包 / 安装包，目标机器无需预装 Python。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging/windows/build-haitun-integrated.ps1
+```
+
+更多说明见 [docs/windows-integrated-packaging.md](docs/windows-integrated-packaging.md)。
+
+## Electron 桌面版
+
+如果你想把当前 Gateway + SPA 封装成 Electron 桌面应用，而不是启动系统浏览器，仓库现在也带了一个 `desktop/` 壳层项目。
+
+一键生成 Windows 安装包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging/windows/build-electron-installer.ps1 -UseMirror
+```
+
+分步执行时：
+
+```powershell
+cd desktop
+npm.cmd install
+npm.cmd run dist:win
+```
+
+更多说明见 [docs/electron-desktop-packaging.md](docs/electron-desktop-packaging.md)。
+
+仓库也提供了对应的 GitHub Actions 工作流：`.github/workflows/electron-desktop.yml`，可以在 CI 中自动生成 Windows 安装包。
+
 ## 作者
 
 Hao Zhang <hzhangxyz@outlook.com>
