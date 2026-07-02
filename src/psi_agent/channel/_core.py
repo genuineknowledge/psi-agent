@@ -38,6 +38,7 @@ class ChannelCore:
             await self._session.close()
 
     async def post(self, chunks: list[InputChunk]) -> AsyncGenerator[OutputChunk]:
+        """Send input chunks to the session and yield output chunks from the SSE stream."""
         logger.debug(
             f"{len(chunks)} chunk(s) — "
             f"FileChunks={sum(1 for c in chunks if isinstance(c, FileChunk))} "
@@ -46,12 +47,22 @@ class ChannelCore:
 
         content = encode_input(chunks)
         body = {"messages": [{"role": "user", "content": content}], "stream": True}
+        headers = {}
+        current_trace_id = "-"
+
+        def _capture(record):
+            nonlocal current_trace_id
+            current_trace_id = record["extra"].get("trace_id", "-")
+
+        logger.patch(_capture).debug("Capturing trace_id for propagation")
+        if current_trace_id and current_trace_id != "-":
+            headers["X-Trace-ID"] = current_trace_id
 
         buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()
 
         logger.debug(f"POST {self._endpoint} content_len={len(content)}")
-        async with self._session.post(self._endpoint, json=body) as resp:
+        async with self._session.post(self._endpoint, json=body, headers=headers) as resp:
             logger.info(f"HTTP {resp.status}")
 
             if resp.status != 200:
@@ -87,6 +98,6 @@ class ChannelCore:
                         for k, t in buffer.append(text):
                             yield self._to_chunk(k, t)
 
-        logger.debug("SSE stream consumed successfully")
-        for k, t in buffer.flush():
-            yield self._to_chunk(k, t)
+            logger.debug("SSE stream consumed successfully")
+            for k, t in buffer.flush():
+                yield self._to_chunk(k, t)

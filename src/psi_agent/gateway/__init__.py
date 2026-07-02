@@ -7,11 +7,10 @@ import webbrowser
 from dataclasses import dataclass
 
 import anyio
-from aiohttp import web
 from loguru import logger
 
 from psi_agent._logging import setup_logging
-from psi_agent._sockets import create_site
+from psi_agent._sockets import serve_app
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._tray import GatewayTray
@@ -57,18 +56,8 @@ class Gateway:
             sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
 
             app = await create_app(aim, sm, favicon_path=self.tray)
-            runner = web.AppRunner(app)
-            try:
-                try:
-                    await runner.setup()
-                    site = create_site(runner, addr)
-                    await site.start()
-                except Exception as e:
-                    logger.error(f"Failed to start Gateway on {addr}: {e!r}")
-                    raise
 
-                logger.info(f"Gateway listening on {addr}")
-
+            async def _run_extra() -> None:
                 if self.browser:
                     await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
 
@@ -88,9 +77,10 @@ class Gateway:
                 finally:
                     if tray is not None:
                         tray.stop()
+
+            tg.start_soon(_run_extra)
+            try:
+                await serve_app(app, addr, name="Gateway")
             finally:
-                logger.info("Shutting down Gateway")
-                with anyio.CancelScope(shield=True):
-                    await runner.cleanup()
                 tg.cancel_scope.cancel()
         logger.info("Gateway shutdown complete")

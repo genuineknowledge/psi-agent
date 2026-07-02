@@ -15,6 +15,7 @@ psi-agent 是一个**微内核**式的 agent 框架。核心理念是：
 7. **显式单 choice 模型**: Session 和 AI 之间每 SSE chunk 保证恰好 1 个 choice。多 choice 作为错误处理，0 choice 静默跳过（心跳）
 8. **zero `sys.exit`**: 所有 `run()` 方法必须可作为协程嵌入任意 event loop 中运行，不仅限于 tyro CLI 上下文。错误用 `raise`，禁止 `sys.exit(1)`
 9. **`setup_logging` 第一行**: 每个组件的 `async def run(self)` 方法中，`setup_logging(verbose=self.verbose)` 必须是第一行可执行语句，先于任何 token 解析或参数校验
+- **Trace ID 传播**: 通过 `X-Trace-ID` 头部透传，日志必须包含 `{extra[trace_id]}` 字段。使用 `trace_id_middleware` 自动注入。
 10. **参数透传**: Channel 请求中除 `messages` 外的不认识参数全部穿透到 AI 层，不丢失
 11. **类型精确化**: 避免裸 `tuple`/`dict`。尽量用 `tuple[X, Y]` 或具体类型（如 `aiohttp.BaseConnector`）
 12. **关键字参数风格统一**: `__init__` 参数顺序 ≡ 初始化赋值顺序。所有 connector 使用显式 `path=`/`ssl=` 等关键字
@@ -144,7 +145,7 @@ SSE 流中的特殊字段：
 - 所有模块使用 `from loguru import logger`
 - 默认 INFO 级别，`--verbose` 开启 DEBUG
 - DEBUG 必须覆盖：每个 SSE chunk、tool 执行、锁获取/释放
-- 格式：`时间 | 级别 | 模块:函数:行号 - 消息`
+- 格式：`时间 | 级别 | TraceID | 模块:函数:行号 - 消息`
 - Channel 客户端使用 `rich.console.Console` 做终端输出，**禁止使用 `print()`**
 - **`setup_logging` 一次性生效（刻意设计）**：用全局 `_handler_id` 守卫，首次调用安装 handler，后续调用直接返回旧 handler，**不会**重新应用 `verbose`。因此“谁先调用谁定级别”。在 `psi-agent run`（批量模式）下，`Run.run()` 先于所有子组件调用 `setup_logging(verbose=True)`，故批量模式始终为 DEBUG，各组件配置里的 `verbose` 字段被有意忽略。单独启动某个组件（`psi-agent ai/session/channel ...`）时，则由该组件自己的 `verbose` 决定级别。
 
@@ -276,3 +277,10 @@ uv build                         # 构建
 - [ ] 更多 AI 后端（Gemini、本地模型等）
 - [x] Session history 持久化（已完成）
 - [ ] Channel 广播/多客户端队列
+
+## 质量与稳定性 (Auto-Check)
+
+- **Trace ID 追踪**: 所有 aiohttp 组件 (AI, Session, Gateway) 已集成 `trace_id_middleware`。日志包含 `{extra[trace_id]}`，请求通过 `X-Trace-ID` 传播追踪 ID。
+- **重试机制**: AI 层在 SSE 流开始前具备指数退避重试 (3 次)。
+- **超时控制**: 向上游 AI 的连接超时统一设为 30s。
+- **服务生命周期**: 使用 `serve_app` 统一管理 `AppRunner`，确保异常和取消时的 `shielded` 资源清理。

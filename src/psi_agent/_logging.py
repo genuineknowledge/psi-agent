@@ -23,12 +23,14 @@ def setup_logging(*, verbose: bool = False) -> int:
         return _handler_id
     logger.remove()
     level = "DEBUG" if verbose else "INFO"
+    logger.configure(extra={"trace_id": "-"})
     _handler_id = logger.add(
         sys.stderr,
         level=level,
         format=(
             "<green>{time:HH:mm:ss.SSS}</green> | "
             "<level>{level: <8}</level> | "
+            "<magenta>{extra[trace_id]}</magenta> | "
             "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
             "<level>{message}</level>"
         ),

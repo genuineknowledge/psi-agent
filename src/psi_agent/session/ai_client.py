@@ -26,9 +26,27 @@ class AiClient:
 
     async def stream(self, request_body: dict) -> AsyncGenerator[AiDelta]:
         connector, endpoint = self._build_connector_and_endpoint()
+        headers = {}
+
+        # Loguru context is stored in contextvars, but we can't easily peek into it
+        # without patching the logger to capture a dummy record's extra.
+        # This is a safe way to 'leak' the current trace_id into the request headers.
+        current_trace_id = "-"
+
+        def _capture(record):
+            nonlocal current_trace_id
+            current_trace_id = record["extra"].get("trace_id", "-")
+
+        logger.patch(_capture).debug("Capturing trace_id for propagation")
+        if current_trace_id and current_trace_id != "-":
+            headers["X-Trace-ID"] = current_trace_id
+
         async with (
-            aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
-            session.post(endpoint, json=request_body) as resp,
+            aiohttp.ClientSession(
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(total=None, connect=30),
+            ) as session,
+            session.post(endpoint, json=request_body, headers=headers) as resp,
         ):
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:
