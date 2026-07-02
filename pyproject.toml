@@ -56,9 +56,7 @@ exclude = [
     "src/psi_agent/**/.gitignore",
     "src/psi_agent/gateway/spa",
 ]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/psi_agent/gateway/spa/dist" = "psi_agent/gateway/spa/dist"
+artifacts = ["src/psi_agent/gateway/spa/dist/**/*"]
 
 [tool.ruff]
 target-version = "py314"
