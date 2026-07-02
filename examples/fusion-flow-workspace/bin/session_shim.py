@@ -35,6 +35,7 @@ Environment variables (reuse the flow's existing FLOW_PSI_*):
 
 from __future__ import annotations
 
+import fcntl  # POSIX-only; the shim already targets POSIX (unix sockets, /tmp)
 import hashlib
 import json
 import os
@@ -42,11 +43,32 @@ import shlex
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 
 def _psi_cmd() -> list[str]:
     return shlex.split(os.environ.get("PSI_CMD", "uv run --no-sync psi-agent"))
+
+
+@contextmanager
+def _resource_lock(state: Path, name: str):
+    """Cross-process exclusive lock around a check->spawn critical section.
+
+    Serializes concurrent shim processes (parallel flow branches) so only one
+    of them wins the check->spawn race for a shared resource (the shared AI
+    backend, or a per-key long-lived session). Each resource gets its own lock
+    file under state/locks/, so unrelated resources never block each other.
+    """
+    lock_dir = state / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{name}.lock"
+    with lock_path.open("w") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
 def _state_dir() -> Path:
@@ -114,37 +136,49 @@ def _ensure_ai_backend(state: Path) -> str:
         if Path(sock).is_socket():
             return sock
 
-    sock = state / "sockets" / "shared-ai.sock"
-    # main architecture: the AI backend is `ai --provider <name>` (any-llm-sdk),
-    # no longer the old `ai openai-completions` subcommand.
-    cmd = [
-        *_psi_cmd(),
-        "ai",
-        "--provider",
-        os.environ.get("FLOW_PSI_AI", "openai"),
-        "--session-socket",
-        str(sock),
-    ]
-    if os.environ.get("FLOW_PSI_MODEL"):
-        cmd += ["--model", os.environ["FLOW_PSI_MODEL"]]
-    if os.environ.get("FLOW_PSI_API_KEY"):
-        cmd += ["--api-key", os.environ["FLOW_PSI_API_KEY"]]
-    if os.environ.get("FLOW_PSI_BASE_URL"):
-        cmd += ["--base-url", os.environ["FLOW_PSI_BASE_URL"]]
+    # Serialize concurrent first-calls so only one shared AI backend is started.
+    with _resource_lock(state, "ai"):
+        # Double-check under the lock: another shim may have started it already.
+        if marker.exists():
+            sock = marker.read_text(encoding="utf-8").strip()
+            if Path(sock).is_socket():
+                return sock
 
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True
-    )
-    _record_pid(state, "ai", proc.pid, sock)
-    if not _wait_socket(sock):
-        sys.stderr.write(f"[shim] AI backend socket not up: {sock}\n")
-        sys.exit(1)
-    marker.write_text(str(sock), encoding="utf-8")
-    return str(sock)
+        sock = state / "sockets" / "shared-ai.sock"
+        # main architecture: the AI backend is `ai --provider <name>` (any-llm-sdk),
+        # no longer the old `ai openai-completions` subcommand.
+        cmd = [
+            *_psi_cmd(),
+            "ai",
+            "--provider",
+            os.environ.get("FLOW_PSI_AI", "openai"),
+            "--session-socket",
+            str(sock),
+        ]
+        if os.environ.get("FLOW_PSI_MODEL"):
+            cmd += ["--model", os.environ["FLOW_PSI_MODEL"]]
+        if os.environ.get("FLOW_PSI_API_KEY"):
+            cmd += ["--api-key", os.environ["FLOW_PSI_API_KEY"]]
+        if os.environ.get("FLOW_PSI_BASE_URL"):
+            cmd += ["--base-url", os.environ["FLOW_PSI_BASE_URL"]]
+
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True
+        )
+        _record_pid(state, "ai", proc.pid, sock)
+        if not _wait_socket(sock):
+            sys.stderr.write(f"[shim] AI backend socket not up: {sock}\n")
+            sys.exit(1)
+        marker.write_text(str(sock), encoding="utf-8")
+        return str(sock)
 
 
 def _ensure_session(state: Path, key: str, workspace: str, ai_socket: str) -> str:
-    """Return the channel-socket of the long-lived session for this key; start one if absent."""
+    """Return the channel-socket of the long-lived session for this key; start one if absent.
+
+    The caller MUST hold _resource_lock(state, f"sess-{key}"); the socket check
+    below is the double-check of the double-checked-locking pattern.
+    """
     sock = state / "sockets" / f"sess-{key}.sock"
     if sock.is_socket():
         return str(sock)
@@ -195,15 +229,19 @@ def main(argv: list[str]) -> int:
 
     state = _state_dir()
     ai_socket = _ensure_ai_backend(state)
-    channel_socket = _ensure_session(state, key, workspace, ai_socket)
-    # The first message must carry system (so the long-lived session gets the role);
-    # later calls with the same key reuse it and send only the prompt.
-    first_marker = state / "sockets" / f"sess-{key}.primed"
-    if not first_marker.exists():
-        payload = f"{system}\n\n---\n\n{prompt}" if system else prompt
-        first_marker.write_text("1", encoding="utf-8")
-    else:
-        payload = prompt
+    # Hold one per-key lock across ensure-session AND the primed decision so that
+    # concurrent branches for the same role can't both spawn a session on the
+    # same socket, and can't both decide they are the priming (first) call.
+    with _resource_lock(state, f"sess-{key}"):
+        channel_socket = _ensure_session(state, key, workspace, ai_socket)
+        # The first message must carry system (so the long-lived session gets the role);
+        # later calls with the same key reuse it and send only the prompt.
+        first_marker = state / "sockets" / f"sess-{key}.primed"
+        if not first_marker.exists():
+            payload = f"{system}\n\n---\n\n{prompt}" if system else prompt
+            first_marker.write_text("1", encoding="utf-8")
+        else:
+            payload = prompt
     return _send(channel_socket, payload)
 
 
