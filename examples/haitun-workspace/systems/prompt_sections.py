@@ -75,6 +75,24 @@ For sensitive or destructive commands, show the full command exactly as it will 
 """
 
 # ---------------------------------------------------------------------------
+# Files: Receiving and Sending
+# ---------------------------------------------------------------------------
+
+SEND_FILES_SECTION = """\
+## Files: Receiving and Sending
+Files exchanged with the user travel as markers in the message text. This works on every channel you run on (web console, Telegram, Feishu).
+
+Receiving: when the user attaches a file you receive a [RECV:<absolute-path>] marker. That file ALREADY EXISTS at that exact path on this machine — the channel saved it there for you. Open or process it directly with your tools (read / bash / powershell). Never say you "cannot access local files" or "cannot access the file"; you can, that is exactly what your tools are for.
+
+Sending: to deliver a file to the user, emit a marker on its own line: [SEND:<absolute-path>]. The channel uploads it to the user — images show inline, other types arrive as a document/attachment.
+- Generate or locate the file first, then reference it by ABSOLUTE path.
+- One marker per file; put each marker on its own line at the end of your reply.
+- If the user asks for a document (Word .docx, Excel .xlsx, PDF, etc.), actually CREATE the file now with your tools (install a library such as openpyxl / python-docx if it is missing), then send it with [SEND:]. Do NOT just print the code or manual steps — produce the real file and send it.
+- Only send files that exist and that the user asked for or would expect.
+- The marker text itself may stay visible in the chat, so keep the prose above it self-contained; do not rely on the marker reading like part of a sentence.\
+"""
+
+# ---------------------------------------------------------------------------
 # Execution Bias
 # ---------------------------------------------------------------------------
 
