@@ -204,10 +204,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
                   st.wYear, st.wMonth, st.wDay,
                   st.wHour, st.wMinute, st.wSecond);
 
-        lstrcpyW(out_path, g_dir);
+        WCHAR log_dir[512];
+        lstrcpyW(log_dir, g_dir);
+        lstrcatW(log_dir, L"\\logs");
+        CreateDirectoryW(log_dir, NULL);
+
+        lstrcpyW(out_path, log_dir);
         lstrcatW(out_path, stamp);
         lstrcatW(out_path, L".out.log");
-        lstrcpyW(err_path, g_dir);
+        lstrcpyW(err_path, log_dir);
         lstrcatW(err_path, stamp);
         lstrcatW(err_path, L".err.log");
 
