@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync
-      - run: uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]"
+      - run: uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]" pymupdf python-docx python-pptx openpyxl
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
@@ -36,6 +36,10 @@ jobs:
             --collect-submodules mcp \
             --collect-submodules pystray \
             --collect-submodules serper_mcp_server \
+            --collect-submodules fitz \
+            --collect-submodules docx \
+            --collect-submodules pptx \
+            --collect-submodules openpyxl \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7
         with:
