@@ -3,9 +3,8 @@ __pycache__/
 *.pyo
 .venv/
 *.egg-info/
-/dist/
+dist/
 .ruff_cache/
 .pytest_cache/
 *.sock
 .coverage
-node_modules/

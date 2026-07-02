@@ -47,6 +47,7 @@ source = "vcs"
 
 [tool.hatch.build.targets.sdist]
 artifacts = ["src/psi_agent/gateway/spa/dist/**/*"]
+exclude = ["src/psi_agent/gateway/spa/node_modules/**"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/psi_agent"]
@@ -58,6 +59,9 @@ exclude = [
     "src/psi_agent/gateway/spa/vite.config.js",
     "src/psi_agent/gateway/spa/src",
 ]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/psi_agent/gateway/spa/dist" = "psi_agent/gateway/spa/dist"
 
 [tool.ruff]
 target-version = "py314"
