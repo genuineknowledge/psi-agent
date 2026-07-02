@@ -103,6 +103,72 @@ spa/
 └── dist/                            # `vite build` 输出 (gitignore)
 ```
 
+## 文件职责清单
+
+逐文件说明每个文件负责哪个组件 / 承担什么逻辑。改动前先在此定位，避免把逻辑落错层（对照「前端设计约束」7–8：`App.vue` 只编排、composable 不碰 DOM）。
+
+### 入口与配置
+
+| 文件 | 负责 | 关键逻辑 |
+|------|------|----------|
+| `index.html` | HTML 外壳 | 定义 `#app` 挂载点（内含初始 loading spinner，Vue mount 后被替换）；`viewport` 带 `interactive-widget=resizes-visual`（iOS 键盘缩小 visual viewport）；`<link rel=icon>` 由 Gateway 在 `--tray` 时服务 |
+| `vite.config.js` | 构建配置 | `base:'/spa/'` 匹配 Gateway 静态路由；`@`→`/src` alias；输出 `dist/`，assets 进 `dist/assets/` |
+| `package.json` | 依赖声明 | `dev/build/preview` 脚本；Vue + 文件预览大库（懒加载，不进主 bundle）|
+| `src/main.js` | 应用引导 | `createApp(App)`；顶层 `import` 全局 CSS（material-symbols、katex、tokens/components/layout）；注册全局 `v-focus` 指令（mounted 时 `el.focus()`，供 Sidebar 改名 input 使用）；`mount('#app')` |
+
+### 状态与数据层（无组件，纯逻辑）
+
+| 文件 | 负责 | 关键逻辑 / 导出 |
+|------|------|-----------------|
+| `src/store.js` | 单一数据源 | 导出 `reactive()` 单例 `store`（详见「状态管理」表）+ `useStore()`；启动时从 localStorage 读入 `pinnedSessionIds`；组件经直接 import 或 provide/inject 使用 |
+| `src/api.js` | HTTP 封装 | `api(method,path,body)` — JSON fetch，非 2xx 抛错；`streamChat(sessionId,formData)` — POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
+| `src/utils.js` | 纯工具 + 持久化 | `renderMd`（marked+KaTeX，见「Markdown 渲染流程」）；`htmlEscape`（用户输入转义）；`mimeType`（扩展名→MIME）；localStorage 读写：`saveActiveState/loadActiveState`（`gw-active-ids`）、`saveHistory/loadHistory/clearHistory`（`gw-hist-<id>`，仅存 role/text/files） |
+| `src/providers.js` | 预置 provider 表 | 导出 `PROVIDERS` 数组：13 家供应商的 `v`(值)/`l`(标签)/`base`(默认 base_url)/`models`(预置模型名)，供 AiDialog 下拉 |
+| `src/sessionList.js` | 会话列表纯逻辑 | 无副作用工具（可单测）：`PINNED_SESSIONS_KEY`、`getSessionDisplayName`(标题优先、回退 workspace/'新会话')、`loadPinnedSessionIds/savePinnedSessionIds/togglePinnedSessionId`(置顶持久化 + 去重规范化)、`buildSessionTitlePayload`、`buildVisibleSessions`(搜索过滤 + 置顶排在前) |
+
+### 根组件
+
+| 文件 | 负责 | 关键逻辑 |
+|------|------|----------|
+| `src/App.vue` | 编排层 | 组装 `#root-layout` 布局（Sidebar / #chat / 各弹窗）；持有跨组件 handler：`createAI/deleteAI/selectAI`、`createSession/executeConfirmedAction`（confirm 弹窗按 `actionType` 分派 ai/session 删除）、`browseWorkspace`、`fetchAvailableModels`（兼容 OpenAI `data[]` 与 Anthropic `models[]` 两种响应）；`#chat` 上的 drag-drop 事件（追加到 `store.selectedFiles`）；`toggleSidebar`（按 768px 分桌面折叠/移动抽屉）；`onMounted` 启动流程（GET titles/ais/sessions → 恢复选中 → `selectSession`）。**不写会话/发送业务逻辑**（已下沉到 Sidebar/InputBar/composable） |
+
+### 组件 `src/components/`
+
+| 文件 | 组件职责 | 关键逻辑 |
+|------|----------|----------|
+| `Sidebar.vue` | 会话列表侧栏 | 新建（emit `new-session`）/双击改名（`v-focus` input + POST `/titles`）/删除（走 confirm 弹窗）/置顶（`togglePinnedSessionId` + 持久化）/搜索；`visibleSessions` = `buildVisibleSessions(...)`；`watch` sessions 变化时清理失效的置顶 id |
+| `ChatArea.vue` | 消息列表容器 | `v-for store.messages` 渲染 `MessageBubble`；空状态提示；`onMounted` 向 `useScroll` 注册滚动容器；`watch messages.length` → `scrollToBottomIfLocked` |
+| `MessageBubble.vue` | 单条消息气泡 | 按 `role` 左右分栏；`v-html="msg.html"`（AI）/等待首 token 时显示 `ThinkingBubble`；复制按钮（`navigator.clipboard`）；附件 chip 点击打开 `FilePreview`（`openPreviewKey` 追踪当前打开项） |
+| `ThinkingBubble.vue` | 加载指示 | 纯展示：三个脉冲圆点动画，等待首 token 时由 MessageBubble 显示 |
+| `InputBar.vue` | 输入区 UI | `v-show selectedSessionId`；已选文件 chip 条；`<input multiple>` 追加文件；textarea 自适应高度（`autoResizeInput`）；Enter 发送（委托 `useChat.sendMessage`）；内嵌 `ModelPanel`；`watch uploadResetToken` 清空 file input。**不含发送业务逻辑** |
+| `ModelPanel.vue` | 模型切换浮层 | 由 InputBar 内嵌；chip 显示当前模型；浮层列出 `store.ais`，点击 emit `select-ai`/`delete-ai`/`new-ai`（均冒泡到 App.vue） |
+| `BaseDialog.vue` | 弹窗外壳 | 所有弹窗的基类：overlay + dialog + `title`/默认/`actions` 三插槽；`show` prop 控制，overlay 点击 emit `close`；`.ok`/`.cancel` 按钮样式在此 scoped |
+| `AiDialog.vue` | 链接大模型弹窗 | 基于 BaseDialog；provider 自定义下拉（选中回填 base_url）；模型名自定义下拉（替代原生 datalist：↑↓/Enter/Esc 键盘导航 + 输入过滤 + `@mousedown.prevent` 防 blur）；base_url/api_key `@change` 触发 `fetchModels`；无 AI 时 `handleCancel` 拒绝关闭 |
+| `SessDialog.vue` | 创建会话弹窗 | 基于 BaseDialog；工作区路径输入 + 「浏览」按钮切换内嵌 `FileBrowser`；emit `create`/`browse` |
+| `FileBrowser.vue` | 目录浏览器 | 渲染 `store.browser`（当前目录/上级/子目录列表）；点条目 emit `browse`（进目录）或 `set-path`（选定）；实际 fetch `/workspace/browse` 在 App.vue |
+| `FilePreview.vue` | 文件预览抽屉 | `Teleport` 到 `body` 的抽屉面板；按扩展名分派渲染：图片/音视频/SVG 用 Blob URL，代码/JSON/文本用 codemirror，Markdown 用 renderMd，csv 用 papaparse，pdf 用 pdfjs，docx 用 docx-preview，xlsx 用 xlsx，pptx 用 pptx-preview（全部动态 `import()` 懒加载）；含大小/行数/页数上限与 fallback；`renderRun` 计数防竞态，`cleanup` 释放 editor/objectUrl；emit `close` |
+| `ConfirmDialog.vue` | 通用确认弹窗 | 基于 BaseDialog；渲染 `store.dlgConfirm.message`，「删除」emit `confirm`（App.vue 按 `actionType` 分派） |
+| `Snackbar.vue` | Toast 提示 | 渲染 `store.snackbar`（message + 显隐），「知道了」关闭 |
+
+### Composables `src/composables/`（纯逻辑，DOM 操作受约束 8 限制）
+
+| 文件 | 负责 | 关键逻辑 / 导出 |
+|------|------|-----------------|
+| `useChat.js` | 发送消息 | `sendMessage()`：取 inputText+files → 立即显示用户消息（`encodeFiles` base64）→ 预建 assistant 气泡 → `streamChat` + `for await readSSE`：text 累加渲染 / blob 附件 / error 追加 / reasoning 关闭当前气泡分段 → 丢弃尾部空气泡 → `saveHistory` → 无标题则 `generateTitle`（POST `/titles/generate`）。滚动委托 `useScroll`、清空 input 经 `uploadResetToken` 信号，**不直接操作 DOM** |
+| `useSSE.js` | SSE 解析 | `async function* readSSE(reader)`：TextDecoder 累积 → `\r\n`→`\n` → 逐行取 `data:` → `[DONE]` 结束 / `JSON.parse` / 非 JSON 降级为 `{type:'text'}` |
+| `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → 恢复输入 → 从 `/history` 或 localStorage 加载消息 → 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
+| `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |
+| `useKeyboard.js` | 移动端视口适配 | `onMounted` 挂 `visualViewport` resize/scroll + window.resize 监听，同步 `#input-wrapper`/`#mobile-topbar`/`#messages`/`#sidebar`/`.mobile-overlay` 的键盘偏移内联样式；>768px 清空所有内联样式；textarea focus 时延迟滚底。移动端视口逻辑的唯一归属地（约束 11） |
+| `useTheme.js` | 主题切换 | 初始化时读 `gw-theme` 应用 `light-mode` class；`toggleTheme()` 切换 `store.isLightMode` + `<html>` class + localStorage |
+
+### 样式 `src/styles/`（分层不越界，见约束 10）
+
+| 文件 | 负责 | 内容 |
+|------|------|------|
+| `tokens.css` | MD3 设计 token | `:root`(暗)/`:root.light-mode`(亮) 双主题 CSS variables：`--md-*` 颜色、`--md-elevation-1/2/3`、`--md-shape-*`、`--md-state-*`；全局 box-sizing reset |
+| `components.css` | MD3 组件基类 | `body` 基础样式；`.md-icon-btn`/`.md-filled-btn` 等按钮基类 + 弹窗共用的 `.field` 表单字段。dialog 外壳已由 BaseDialog 承担 |
+| `layout.css` | app-shell 布局 | 仅 `#app`/`#root-layout`/`#chat`、`.sidebar-toggle-btn`/`.theme-toggle-btn`、`#mobile-topbar`、`.mobile-overlay`、`.drop-overlay`（含各自移动端 `@media`）。组件专属样式一律在各组件 `<style scoped>` |
+
 ## 构建配置
 
 `vite.config.js`:
