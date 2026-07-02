@@ -38,14 +38,17 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "edit": "Make precise string replacements in files",
     "bash": "Execute shell commands",
     "powershell": "Execute PowerShell commands (Windows)",
+    "background_start": "Start a detached shell command; returns process_id",
+    "background_stop": "Stop a background process by process_id",
+    "background_list": "List registered background processes",
+    "subagent_plan": "Plan subagent sockets and spawn commands (does not start processes)",
+    "subagent_wait": "Wait until subagent AI or Session socket is ready",
+    "subagent_chat": "Send one message to a subagent; returns final text only",
     "skill_manage": "Create, patch, view, and list workspace skills",
     "flow_manage": "Create, patch, view, list, and promote reusable Fusion Flow assets",
     "memory_add": "Store durable user preferences, project facts, or decisions",
     "memory_search": "Search Fusion Memory for raw evidence",
     "memory_answer_context": "Retrieve a query-grounded Fusion Memory context pack",
-    "subagent_run": "Delegate a task to a background subagent Session (independent processes)",
-    "subagent_stop": "Stop a background subagent and release its processes",
-    "subagent_list": "List active background subagents in the workspace registry",
 }
 
 # Display order - listed tools first, any extra tools (e.g. MCP search) after.
@@ -55,14 +58,17 @@ TOOL_ORDER: list[str] = [
     "edit",
     "bash",
     "powershell",
+    "background_start",
+    "background_stop",
+    "background_list",
+    "subagent_plan",
+    "subagent_wait",
+    "subagent_chat",
     "skill_manage",
     "flow_manage",
     "memory_add",
     "memory_search",
     "memory_answer_context",
-    "subagent_run",
-    "subagent_stop",
-    "subagent_list",
 ]
 
 # ---------------------------------------------------------------------------
@@ -89,7 +95,7 @@ EXECUTION_BIAS_SECTION = """\
 - Weak/empty tool result: vary query, path, command, or source before concluding.
 - Mutable facts need live checks: files, git, clocks, versions, services, processes, package state.
 - Final answer needs evidence: test/build/lint, screenshot, inspection, tool output, or a named blocker.
-- Longer work: brief progress update, then keep going.\
+- Longer work: brief progress update, then keep going — **except** subagent spawn (Steps 1–7): run silently, no per-step narration.\
 """
 
 # ---------------------------------------------------------------------------
@@ -131,7 +137,7 @@ If something is wrong, fix it (another tool round if needed) **before** sending.
 
 SUBAGENT_DELEGATION_SECTION = """\
 ## Subagent delegation
-Use `subagent_run` / `subagent_stop` / `subagent_list` for background child Sessions (independent processes — not Gateway). After you deliver a subagent result and will not follow up on that `session_id`, call `subagent_stop`. Unstopped subagents are reclaimed after idle timeout (`PSI_SUBAGENT_IDLE_SECONDS`). Full rules: `skills/subagent-orchestration/SKILL.md`.\
+Subagent = **new background Agent** (not `subagent_run`). Use `subagent_plan` → `background_start` / `subagent_wait` → `subagent_chat` → `background_stop`. **Silent:** do not narrate each internal step to the user. Windows uses TCP sockets from `subagent_plan`. Full recipe: `skills/subagent-orchestration/SKILL.md`.\
 """
 
 # ---------------------------------------------------------------------------

@@ -87,10 +87,18 @@ class Ai:
     async def run(self) -> None:
         """Start the server and block until cancelled."""
         setup_logging(verbose=self.verbose)
-        provider = self.provider or os.environ.get("PSI_AI_PROVIDER", "")
-        model = self.model or os.environ.get("PSI_AI_MODEL", "")
-        api_key = self.api_key or os.environ.get("PSI_AI_API_KEY", "")
-        base_url = self.base_url or os.environ.get("PSI_AI_BASE_URL", "")
+        provider = self.provider or os.environ.get("PSI_AI_PROVIDER") or os.environ.get("FLOW_PSI_AI") or "openai"
+        model = self.model or os.environ.get("PSI_AI_MODEL") or os.environ.get("FLOW_PSI_MODEL") or ""
+        api_key = (
+            self.api_key
+            or os.environ.get("PSI_AI_API_KEY")
+            or os.environ.get("FLOW_PSI_API_KEY")
+            or os.environ.get("OPENAI_API_KEY")
+            or ""
+        )
+        base_url = (
+            self.base_url or os.environ.get("PSI_AI_BASE_URL") or os.environ.get("FLOW_PSI_BASE_URL") or ""
+        )
         logger.debug(
             f"AI resolved params: provider={provider!r}, model={model!r}, "
             f"base_url={base_url!r}, api_key={'*' * 8 if api_key else '(empty)'}"

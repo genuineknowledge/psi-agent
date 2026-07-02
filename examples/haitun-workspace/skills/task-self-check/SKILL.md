@@ -26,7 +26,7 @@ If the check finds a fixable problem, **fix it first** (another tool round if ne
 - Any `ok: false`, empty, timeout, or error strings?
 - Results contradict each other or the user's facts?
 - Weak results: retry with a varied query/path before concluding?
-- Subagent / long chains: did you stop background sessions you will not reuse (`subagent_stop`)?
+- Subagent / long chains: did you `background_stop` child process ids you will not reuse?
 
 ### 3. Final output
 

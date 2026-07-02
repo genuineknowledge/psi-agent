@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,6 +25,8 @@ class _AiEntry:
     socket: str
     provider: str
     model: str
+    api_key: str
+    base_url: str
 
 
 @dataclass
@@ -61,7 +64,15 @@ class AIManager:
 
             logger.debug(f"AIManager: starting AI '{ai_id}' task")
             self._tg.start_soon(_run_ai)
-            self._entries[ai_id] = _AiEntry(scope=scope, socket=socket, provider=req.provider, model=req.model)
+            self._entries[ai_id] = _AiEntry(
+                scope=scope,
+                socket=socket,
+                provider=req.provider,
+                model=req.model,
+                api_key=req.api_key,
+                base_url=req.base_url,
+            )
+            _sync_spawn_env(req)
         await _wait_socket(socket)
         logger.info(f"AI '{ai_id}' created on {socket}")
         return AiInfo(id=ai_id, socket=socket, provider=req.provider, model=req.model)
@@ -89,3 +100,29 @@ class AIManager:
 
     def has(self, ai_id: str) -> bool:
         return ai_id in self._entries
+
+    def get_spawn_config(self, ai_id: str) -> dict[str, str]:
+        if ai_id not in self._entries:
+            raise LookupError(f"AI '{ai_id}' not found")
+        entry = self._entries[ai_id]
+        return {
+            "provider": entry.provider,
+            "model": entry.model,
+            "api_key": entry.api_key,
+            "base_url": entry.base_url,
+        }
+
+
+def _sync_spawn_env(req: AiCreateRequest) -> None:
+    """Mirror linked-model credentials into process env for workspace subagent tools."""
+    os.environ["PSI_AI_PROVIDER"] = req.provider
+    os.environ["FLOW_PSI_AI"] = req.provider
+    os.environ["PSI_AI_MODEL"] = req.model
+    os.environ["FLOW_PSI_MODEL"] = req.model
+    if req.api_key:
+        os.environ["PSI_AI_API_KEY"] = req.api_key
+        os.environ["FLOW_PSI_API_KEY"] = req.api_key
+        os.environ["OPENAI_API_KEY"] = req.api_key
+    if req.base_url:
+        os.environ["PSI_AI_BASE_URL"] = req.base_url
+        os.environ["FLOW_PSI_BASE_URL"] = req.base_url

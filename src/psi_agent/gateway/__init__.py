@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import webbrowser
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ class Gateway:
             raise
 
         logger.info(f"Gateway listening on {addr}")
+        os.environ["PSI_GATEWAY_URL"] = addr
 
         if self.browser:
             await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore

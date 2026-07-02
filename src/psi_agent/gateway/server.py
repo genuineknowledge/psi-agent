@@ -73,6 +73,7 @@ async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | Non
     app.router.add_post("/ais", _create_ai)
     app.router.add_delete("/ais/{ai_id}", _delete_ai)
     app.router.add_get("/ais", _list_ais)
+    app.router.add_get("/ais/{ai_id}/spawn-config", _get_ai_spawn_config)
     app.router.add_post("/sessions", _create_session)
     app.router.add_delete("/sessions/{session_id}", _delete_session)
     app.router.add_get("/sessions", _list_sessions)
@@ -116,6 +117,19 @@ async def _delete_ai(request: web.Request) -> web.Response:
 async def _list_ais(request: web.Request) -> web.Response:
     aim: AIManager = request.app["aim"]
     return _json([asdict(i) for i in await aim.list_all()])
+
+
+async def _get_ai_spawn_config(request: web.Request) -> web.Response:
+    aim: AIManager = request.app["aim"]
+    ai_id = request.match_info["ai_id"]
+    try:
+        cfg = aim.get_spawn_config(ai_id)
+        return _json(cfg)
+    except LookupError as e:
+        return _error(str(e), status=404)
+    except Exception as e:
+        logger.error(f"Unexpected error reading spawn config for AI '{ai_id}': {e}")
+        return _error(str(e), status=500)
 
 
 async def _create_session(request: web.Request) -> web.Response:
