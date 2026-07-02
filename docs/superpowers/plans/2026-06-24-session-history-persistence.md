@@ -1,5 +1,13 @@
 # Session History 持久化实施计划
 
+> [!NOTE]
+> **Historical plan — implementation has evolved.**  The original plan
+> described a ``_save_history()`` / ``_load_history()`` approach with a
+> single save-on-stop trigger.  The current implementation uses
+> ``Conversation`` with turn-level snapshot/rollback and multiple save
+> checkpoints.  See ``src/psi_agent/session/AGENTS.md`` for the
+> authoritative design.
+
 > **Goal:** 实现 SessionAgent 历史消息 JSONL 持久化
 
 **Design Spec:** `docs/superpowers/specs/2026-06-24-session-history-persistence.md`
