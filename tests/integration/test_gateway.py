@@ -6,6 +6,7 @@ import os
 import socket
 import tempfile
 import textwrap
+from pathlib import Path
 
 import anyio
 import pytest
@@ -82,7 +83,7 @@ async def _make_workspace(base: str) -> str:
 
 
 @pytest.mark.anyio
-async def test_gateway_rest_crud(tmp_path: str) -> None:
+async def test_gateway_rest_crud(tmp_path: Path) -> None:
     tg = anyio.create_task_group()
     await tg.__aenter__()
 
@@ -145,7 +146,7 @@ async def test_gateway_rest_crud(tmp_path: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_gateway_rest_errors(tmp_path: str) -> None:
+async def test_gateway_rest_errors(tmp_path: Path) -> None:
     tg = anyio.create_task_group()
     await tg.__aenter__()
 
@@ -174,7 +175,7 @@ async def test_gateway_rest_errors(tmp_path: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> None:
+async def test_gateway_chat_sse(tmp_path: Path, mock_ai_server: MockAIServer) -> None:
     mock_ai_server.set_responses(
         [
             _chunk(content="Hello from Gateway!", finish_reason="stop"),
@@ -247,7 +248,7 @@ async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> 
 
 
 @pytest.mark.anyio
-async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) -> None:
+async def test_gateway_blob_send(tmp_path: Path, mock_ai_server: MockAIServer) -> None:
     data_dir = tempfile.mkdtemp(dir="/tmp", prefix="gwb")
     test_file = data_dir + "/test-out.txt"
     await anyio.Path(test_file).write_text("blob response content", encoding="utf-8")
@@ -329,7 +330,7 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) ->
 
 
 @pytest.mark.anyio
-async def test_gateway_favicon(tmp_path: str) -> None:
+async def test_gateway_favicon(tmp_path: Path) -> None:
     icon_dir = tempfile.mkdtemp(dir="/tmp", prefix="gwfav")
     icon_path = icon_dir + "/icon.png"
     icon_bytes = b"\x89PNG\r\n\x1a\n-fake-favicon-bytes"
