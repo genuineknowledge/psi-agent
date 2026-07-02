@@ -13,6 +13,7 @@ from aiohttp import ClientSession, ClientTimeout, FormData, web
 
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.gateway._store import GatewayStore
 from psi_agent.gateway.server import create_app
 from tests.integration.conftest import MockAIServer
 
@@ -87,7 +88,9 @@ async def test_gateway_rest_crud(tmp_path: str) -> None:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm)
+    store = GatewayStore(str(tmp_path / "gateway.db"))
+    await store.init()
+    app = await create_app(aim, sm, store)
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -148,7 +151,9 @@ async def test_gateway_rest_errors(tmp_path: str) -> None:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm)
+    store = GatewayStore(str(tmp_path / "gateway.db"))
+    await store.init()
+    app = await create_app(aim, sm, store)
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -182,6 +187,8 @@ async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> 
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    store = GatewayStore(str(tmp_path / "gateway.db"))
+    await store.init()
 
     await aim.create(
         provider="openai",
@@ -194,7 +201,8 @@ async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> 
     workspace = await _make_workspace(str(tmp_path))
     await sm.create(ai_id="gw-ai", workspace=workspace, id="gw-sess")
 
-    app = await create_app(aim, sm)
+    app = await create_app(aim, sm, store)
+
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -258,6 +266,9 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) ->
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
 
+    store = GatewayStore(str(tmp_path / "gateway.db"))
+    await store.init()
+
     await aim.create(
         provider="openai",
         model="test",
@@ -269,7 +280,7 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) ->
     workspace = await _make_workspace(str(tmp_path))
     await sm.create(ai_id="gw-ai", workspace=workspace, id="gw-sess")
 
-    app = await create_app(aim, sm)
+    app = await create_app(aim, sm, store)
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -329,11 +340,13 @@ async def test_gateway_favicon(tmp_path: str) -> None:
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    store = GatewayStore(str(tmp_path / "gateway.db"))
+    await store.init()
 
-    app_with = await create_app(aim, sm, favicon_path=icon_path)
+    app_with = await create_app(aim, sm, store, favicon_path=icon_path)
     base_with, runner_with = await _start_app_on_free_port(app_with)
 
-    app_without = await create_app(aim, sm)
+    app_without = await create_app(aim, sm, store)
     base_without, runner_without = await _start_app_on_free_port(app_without)
 
     try:

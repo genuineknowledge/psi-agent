@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import webbrowser
 from dataclasses import dataclass
+from pathlib import Path
 
 import anyio
 from aiohttp import web
@@ -14,6 +15,7 @@ from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.gateway._store import GatewayStore
 from psi_agent.gateway._tray import GatewayTray
 from psi_agent.gateway.server import create_app
 
@@ -46,17 +48,24 @@ class Gateway:
     tray: str | None = None
     """Path to tray icon image file. If set, a system tray icon is shown."""
 
+    db: str = ""
+    """Path to SQLite state file. Default: ./gateway.db in cwd."""
+
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
 
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
 
-        async with anyio.create_task_group() as tg:
-            aim = AIManager(_prefix=self.socket_path, _tg=tg)
-            sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
+        db_path = self.db or str(Path.cwd() / "gateway.db")
+        store = GatewayStore(db_path)
+        await store.init()
 
-            app = await create_app(aim, sm, favicon_path=self.tray)
+        async with anyio.create_task_group() as tg:
+            aim = AIManager(_prefix=self.socket_path, _tg=tg, _store=store)
+            sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg, _store=store)
+
+            app = await create_app(aim, sm, store, favicon_path=self.tray)
             runner = web.AppRunner(app)
             try:
                 try:
@@ -68,6 +77,9 @@ class Gateway:
                     raise
 
                 logger.info(f"Gateway listening on {addr}")
+
+                await aim.restore_persisted()
+                await sm.restore_persisted()
 
                 if self.browser:
                     await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
