@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync
-      - run: uv pip install nuitka
+      - run: uv pip install nuitka pymupdf python-docx python-pptx openpyxl
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
@@ -39,6 +39,10 @@ jobs:
             --include-package=mcp \
             --include-package=pystray \
             --include-package=serper_mcp_server \
+            --include-package=fitz \
+            --include-package=docx \
+            --include-package=pptx \
+            --include-package=openpyxl \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7
         with:
