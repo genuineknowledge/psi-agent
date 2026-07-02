@@ -1,22 +1,35 @@
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from aiohttp import ClientSession, ClientTimeout
 from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
 
+if TYPE_CHECKING:
+    from psi_agent.gateway._store import GatewayStore
+
 
 class TitleManager:
-    def __init__(self) -> None:
+    def __init__(self, store: GatewayStore | None = None) -> None:
         self._titles: dict[str, str] = {}
+        self._store = store
+
+    async def load(self) -> None:
+        if self._store is None:
+            return
+        self._titles = await self._store.list_titles()
+        logger.debug(f"Loaded {len(self._titles)} title(s) from store")
 
     def get_all(self) -> dict[str, str]:
         return dict(self._titles)
 
-    def set(self, session_id: str, title: str) -> None:
+    async def set(self, session_id: str, title: str) -> None:
         self._titles[session_id] = title
+        if self._store is not None:
+            await self._store.save_title(session_id, title)
 
     async def generate(self, session_id: str, ai_socket: str, user_text: str, assistant_text: str) -> str | None:
         prompt = (
@@ -67,6 +80,8 @@ class TitleManager:
                 logger.info(f"Title generation result: {title!r}")
                 if title:
                     self._titles[session_id] = title
+                    if self._store is not None:
+                        await self._store.save_title(session_id, title)
                     return title
                 logger.warning(f"Title generation empty for session {session_id!r}")
                 return None

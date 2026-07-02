@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 from loguru import logger
@@ -16,6 +16,9 @@ from psi_agent.gateway._manager import (
     _wait_socket,
 )
 from psi_agent.session import Session
+
+if TYPE_CHECKING:
+    from psi_agent.gateway._store import GatewayStore
 
 
 @dataclass
@@ -39,6 +42,7 @@ class SessionManager:
     _aim: AIManager
     _prefix: str
     _tg: Any  # anyio.TaskGroup (ty不识别的第三方类型)
+    _store: GatewayStore | None = None
     _entries: dict[str, _SessionEntry] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
 
@@ -96,6 +100,9 @@ class SessionManager:
                     await _remove_socket(channel_socket)
             raise
         logger.info(f"Session {session_id!r} created on {channel_socket} -> AI '{ai_id}'")
+        if self._store is not None:
+            await self._store.save_session(session_id, ai_id, workspace)
+            logger.debug(f"Session {session_id!r} persisted to store")
         return SessionInfo(id=session_id, ai_id=ai_id, workspace=workspace, channel_socket=channel_socket)
 
     async def delete(self, session_id: str) -> None:
@@ -106,6 +113,9 @@ class SessionManager:
             entry = self._entries.pop(session_id)
             entry.scope.cancel()
             await _remove_socket(entry.channel_socket)
+            if self._store is not None:
+                await self._store.delete_session(session_id)
+                logger.debug(f"Session {session_id!r} removed from store")
             logger.info(f"Session {session_id!r} deleted")
 
     async def list_all(self) -> list[SessionInfo]:
@@ -126,3 +136,25 @@ class SessionManager:
         if session_id not in self._entries:
             raise LookupError(f"Session {session_id!r} not found")
         return self._entries[session_id].workspace
+
+    async def restore_persisted(self) -> None:
+        """Recreate all Sessions that were persisted in the store."""
+        if self._store is None:
+            return
+        rows = await self._store.list_sessions()
+        if not rows:
+            return
+        logger.info(f"Restoring {len(rows)} persisted session(s)")
+        for row in rows:
+            session_id = str(row["id"])
+            ai_id = str(row["ai_id"])
+            workspace = str(row["workspace"])
+            if not self._aim.has(ai_id):
+                logger.warning(f"AI {ai_id!r} not running, skipping session {session_id!r} restore")
+                await self._store.delete_session(session_id)
+                continue
+            try:
+                await self.create(ai_id=ai_id, id=session_id, workspace=workspace)
+            except Exception as e:
+                logger.warning(f"Failed to restore session {session_id!r}, removing from store: {e!r}")
+                await self._store.delete_session(session_id)

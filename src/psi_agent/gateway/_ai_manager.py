@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 from loguru import logger
@@ -14,6 +14,9 @@ from psi_agent.gateway._manager import (
     _socket_path,
     _wait_socket,
 )
+
+if TYPE_CHECKING:
+    from psi_agent.gateway._store import GatewayStore
 
 
 @dataclass
@@ -36,6 +39,7 @@ class _AiEntry:
 class AIManager:
     _prefix: str
     _tg: Any  # anyio.TaskGroup (ty不识别的第三方类型)
+    _store: GatewayStore | None = None
     _entries: dict[str, _AiEntry] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
 
@@ -87,6 +91,9 @@ class AIManager:
                     await _remove_socket(socket)
             raise
         logger.info(f"AI {ai_id!r} created on {socket}")
+        if self._store is not None:
+            await self._store.save_ai(ai_id, provider, model, api_key, base_url)
+            logger.debug(f"AI {ai_id!r} persisted to store")
         return AiInfo(id=ai_id, socket=socket, provider=provider, model=model)
 
     async def delete(self, ai_id: str) -> None:
@@ -97,6 +104,9 @@ class AIManager:
             entry = self._entries.pop(ai_id)
             entry.scope.cancel()
             await _remove_socket(entry.socket)
+            if self._store is not None:
+                await self._store.delete_ai(ai_id)
+                logger.debug(f"AI {ai_id!r} removed from store")
             logger.info(f"AI {ai_id!r} deleted")
 
     async def list_all(self) -> list[AiInfo]:
@@ -112,3 +122,25 @@ class AIManager:
 
     def has(self, ai_id: str) -> bool:
         return ai_id in self._entries
+
+    async def restore_persisted(self) -> None:
+        """Recreate all AIs that were persisted in the store."""
+        if self._store is None:
+            return
+        rows = await self._store.list_ais()
+        if not rows:
+            return
+        logger.info(f"Restoring {len(rows)} persisted AI(s)")
+        for row in rows:
+            ai_id = str(row["id"])
+            try:
+                await self.create(
+                    provider=str(row["provider"]),
+                    model=str(row["model"]),
+                    api_key=str(row["api_key"]),
+                    base_url=str(row["base_url"]),
+                    id=ai_id,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to restore AI {ai_id!r}, removing from store: {e!r}")
+                await self._store.delete_ai(ai_id)

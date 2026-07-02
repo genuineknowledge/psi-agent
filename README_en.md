@@ -8,7 +8,7 @@ You write Python functions and Markdown. The framework handles socket communicat
 
 ## Why
 
-- **Simple composition**: ai, session, channel — three standalone processes connected through sockets. No central config, no database
+- **Simple composition**: ai, session, channel — three standalone processes connected through sockets. No central config, SQLite used only for Gateway state persistence
 - **Workspace is the agent**: Drop Python functions in `workspace/` for tools, write a system prompt for personality, add a cron for scheduled tasks
 - **Streaming interactions**: REPL shows AI reasoning (dimmed) and final response in real time
 
