@@ -1,14 +1,14 @@
 <template>
   <BaseDialog :show="store.dlgSess" width="480px" @close="store.dlgSess = false">
     <template #title>创建新会话</template>
-    <p v-if="currentAiLabel" style="font-size:13px;color:var(--md-text-secondary);margin-bottom:16px">
+    <p v-if="currentAiLabel" class="ai-label">
       大模型: {{ currentAiLabel }}
     </p>
     <div class="field"><label>工作区路径 (可选，默认当前目录)</label>
-      <div style="display:flex;gap:8px">
-        <input class="md-text-field" v-model="store.sessForm.workspace" placeholder="/path/to/workspace" style="flex:1">
-        <button class="md-outlined-btn" style="padding:6px 14px;font-size:12px" @click="toggleBrowser">
-          <span class="material-symbols-outlined" style="font-size:16px">folder_open</span>
+      <div class="ws-row">
+        <input class="md-text-field ws-input" v-model="store.sessForm.workspace" placeholder="/path/to/workspace">
+        <button class="md-outlined-btn browse-btn" @click="toggleBrowser">
+          <span class="material-symbols-outlined browse-icon">folder_open</span>
         </button>
       </div>
     </div>
@@ -48,6 +48,12 @@ function toggleBrowser() {
 </script>
 
 <style scoped>
+.ai-label { font-size: 13px; color: var(--md-text-secondary); margin-bottom: 16px; }
+.ws-row { display: flex; gap: 8px; }
+.ws-input { flex: 1; }
+.browse-btn { padding: 6px 14px; font-size: 12px; }
+.browse-icon { font-size: 16px; }
+
 .field { margin-bottom: 16px; position: relative; }
 .field label { display: block; font-size: 12px; font-weight: 500; color: var(--md-primary); margin-bottom: 6px; }
 .field input, .field select {
