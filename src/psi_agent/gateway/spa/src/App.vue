@@ -37,7 +37,7 @@
       </div>
 
       <button class="sidebar-toggle-btn" @click="toggleSidebar" :title="store.isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
-        <span class="material-symbols-outlined">{{ (store.isSidebarCollapsed && !store.isMobileSidebarOpen) ? 'menu_open' : 'menu' }}</span>
+        <span class="material-symbols-outlined">{{ (store.isSidebarCollapsed && !store.isMobileSidebarOpen) ? 'menu' : 'menu_open' }}</span>
       </button>
 
       <button class="theme-toggle-btn" @click="toggleTheme" :title="store.isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
