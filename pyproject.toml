@@ -54,10 +54,7 @@ packages = ["src/psi_agent"]
 exclude = [
     "src/psi_agent/**/AGENTS.md",
     "src/psi_agent/**/.gitignore",
-    "src/psi_agent/gateway/spa/index.html",
-    "src/psi_agent/gateway/spa/package*.json",
-    "src/psi_agent/gateway/spa/vite.config.js",
-    "src/psi_agent/gateway/spa/src",
+    "src/psi_agent/gateway/spa",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]
