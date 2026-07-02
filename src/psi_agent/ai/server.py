@@ -45,6 +45,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         },
     )
     try:
