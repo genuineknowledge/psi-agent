@@ -54,15 +54,6 @@ function toggleBrowser() {
 .browse-btn { padding: 6px 14px; font-size: 12px; }
 .browse-icon { font-size: 16px; }
 
-.field { margin-bottom: 16px; position: relative; }
-.field label { display: block; font-size: 12px; font-weight: 500; color: var(--md-primary); margin-bottom: 6px; }
-.field input, .field select {
-  width: 100%; background: var(--md-bg); color: var(--md-text-primary);
-  border: 1px solid var(--md-outline-variant); border-radius: 8px;
-  padding: 10px 12px; font-size: 14px; outline: none;
-}
-.field input:focus, .field select:focus { border-color: var(--md-primary); }
-
 .md-text-field {
   width: 100%;
   padding: 10px 14px;

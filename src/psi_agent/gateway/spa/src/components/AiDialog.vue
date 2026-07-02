@@ -155,14 +155,6 @@ function handleCancel() {
 </script>
 
 <style scoped>
-.field { margin-bottom: 16px; position: relative; }
-.field label { display: block; font-size: 12px; font-weight: 500; color: var(--md-primary); margin-bottom: 6px; }
-.field input, .field select {
-  width: 100%; background: var(--md-bg); color: var(--md-text-primary);
-  border: 1px solid var(--md-outline-variant); border-radius: 8px;
-  padding: 10px 12px; font-size: 14px; outline: none;
-}
-.field input:focus, .field select:focus { border-color: var(--md-primary); }
 .field .loading-indicator { position: absolute; right: 12px; bottom: 10px; font-size: 12px; color: var(--md-primary); }
 
 .select-trigger {
