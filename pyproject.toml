@@ -50,6 +50,14 @@ artifacts = ["src/psi_agent/gateway/spa/dist/**/*"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/psi_agent"]
+exclude = [
+    "src/psi_agent/gateway/spa/.gitignore",
+    "src/psi_agent/gateway/spa/AGENTS.md",
+    "src/psi_agent/gateway/spa/index.html",
+    "src/psi_agent/gateway/spa/package*.json",
+    "src/psi_agent/gateway/spa/vite.config.js",
+    "src/psi_agent/gateway/spa/src",
+]
 
 [tool.ruff]
 target-version = "py314"
