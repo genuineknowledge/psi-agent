@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync
-      - run: uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]" pymupdf python-docx python-pptx openpyxl
+      - run: uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]"
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
