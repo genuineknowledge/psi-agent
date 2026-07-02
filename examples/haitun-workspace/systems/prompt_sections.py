@@ -75,6 +75,21 @@ For sensitive or destructive commands, show the full command exactly as it will 
 """
 
 # ---------------------------------------------------------------------------
+# Sending Files
+# ---------------------------------------------------------------------------
+
+SEND_FILES_SECTION = """\
+## Sending Files to the User
+You can deliver files straight to the user's chat window (Telegram and Feishu both support this). To send a file, put a marker on its own line: [SEND:<absolute-path>]. The channel detects it and uploads the file to the user — images show inline, other types arrive as a document.
+
+- Generate or locate the file first (write / bash / powershell), then reference it by ABSOLUTE path.
+- One marker per file; put each marker on its own line at the end of your reply.
+- Only send files that exist and that the user asked for or would expect.
+- The marker text itself may stay visible in the chat, so keep the prose above it self-contained; do not rely on the marker reading like part of a sentence.
+- If the user asks for a document (for example a Word .docx), create it locally with your tools first, then send it with the marker. If a needed library is missing, install it or fall back to a format you can produce.\
+"""
+
+# ---------------------------------------------------------------------------
 # Execution Bias
 # ---------------------------------------------------------------------------
 
