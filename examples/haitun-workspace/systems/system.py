@@ -47,7 +47,6 @@ from prompt_sections import (
     CONTEXT_FILE_ORDER,
     DYNAMIC_CONTEXT_FILE_BASENAMES,
     EXECUTION_BIAS_SECTION,
-    HEARTBEATS_SECTION,
     IDENTITY_LINE,
     PSI_AGENT_HELP_GUIDANCE,
     FUSION_MEMORY_SECTION,
@@ -907,7 +906,11 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
         stable_prefix = "\n".join(stable_parts)
 
         # -- Dynamic suffix ------------------------------------------------
-        dynamic_parts: list[str] = [HEARTBEATS_SECTION, ""]
+        # NOTE: the heartbeat instruction is intentionally NOT injected here.
+        # The heartbeat schedule (schedules/heartbeat/TASK.md) already tells the
+        # agent to reply HEARTBEAT_OK on its poll; injecting it into every turn's
+        # system prompt caused HEARTBEAT_OK to leak into normal chat replies.
+        dynamic_parts: list[str] = []
 
         model_identity = build_model_identity_line(model)
         if model_identity:
