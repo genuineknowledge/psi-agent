@@ -6,7 +6,10 @@
         <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
       </button>
       <ThinkingBubble v-if="msg.role === 'assistant' && store.streaming && !msg.text" />
-      <div v-else class="bubble" v-html="msg.html"></div>
+      <div v-else class="bubble">
+        <span v-if="msg.text" v-html="msg.html"></span>
+        <span v-if="msg.stopped" class="stopped-tag">（已停止）</span>
+      </div>
       <button v-if="msg.role !== 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
         <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
       </button>
@@ -146,6 +149,20 @@ function closePreview() {
   color: var(--md-text-primary);
   border: 1px solid var(--md-outline-variant);
   border-radius: 16px 16px 16px 4px;
+}
+
+/* 固定字体的「已停止」标记：字号/字重/颜色不随回复内容(markdown)变化 */
+.stopped-tag {
+  display: inline-block;
+  margin-left: 6px;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  font-style: normal;
+  line-height: 1.6;
+  color: var(--md-text-secondary);
+  white-space: nowrap;
+  vertical-align: baseline;
 }
 
 .copy-btn {
