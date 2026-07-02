@@ -14,10 +14,12 @@ if str(WORKSPACE_TOOLS) not in sys.path:
     sys.path.insert(0, str(WORKSPACE_TOOLS))
 
 from _subagent_registry import (  # noqa: E402
+    _is_safe_registry_pid,
     _psi_cmd,
     _read_registry,
     _registry_critical,
     _resolve_project_root,
+    _sync_taskkill_pid,
     _write_registry,
     ai_pool_missing_message,
     ai_pool_owns_process,
@@ -126,6 +128,28 @@ def test_other_active_subagent_session_ids(monkeypatch) -> None:
     monkeypatch.setattr("_subagent_registry._pid_alive", lambda pid: pid == 11)
     active = other_active_subagent_session_ids(registry, ws, exclude_session_id="sub-new")
     assert active == ["sub-live"]
+
+
+def test_is_safe_registry_pid_rejects_self_and_parent(monkeypatch) -> None:
+    monkeypatch.setattr("_subagent_registry.os.getpid", lambda: 100)
+    monkeypatch.setattr("_subagent_registry.os.getppid", lambda: 200)
+    assert _is_safe_registry_pid(100) is False
+    assert _is_safe_registry_pid(200) is False
+    assert _is_safe_registry_pid(999) is True
+
+
+def test_sync_taskkill_pid_uses_single_pid_only(monkeypatch) -> None:
+    if sys.platform != "win32":
+        pytest.skip("Windows taskkill semantics")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> None:
+        calls.append(cmd)
+
+    monkeypatch.setattr("_subagent_registry.subprocess.run", fake_run)
+    _sync_taskkill_pid(4242)
+    assert calls == [["taskkill", "/F", "/PID", "4242"]]
+    assert "/T" not in calls[0]
 
 
 @pytest.mark.anyio

@@ -224,13 +224,18 @@ def _ai_env() -> tuple[str, str, str, str]:
 
 async def _spawn_psi_process(cmd: list[str], *, cwd: str) -> anyio.abc.Process:
     logger.debug(f"subagent spawning process cwd={cwd!r} cmd={cmd!r}")
-    return await anyio.open_process(
-        cmd,
-        cwd=cwd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    kwargs: dict[str, object] = {
+        "cwd": cwd,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.PIPE,
+        "start_new_session": True,
+    }
+    if sys.platform == "win32":
+        # Detach from Gateway/uv job + console so stop never propagates to parent.
+        kwargs["creationflags"] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_BREAKAWAY_FROM_JOB
+        )
+    return await anyio.open_process(cmd, **kwargs)
 
 
 async def _wait_socket_or_raise(process: anyio.abc.Process, socket: str, *, timeout_sec: float = 30.0) -> None:
@@ -321,37 +326,49 @@ async def _wait_socket(socket: str, timeout_sec: float = 30.0) -> None:
     raise RuntimeError(msg)
 
 
-def _sync_taskkill_tree(pid: int) -> None:
+def _is_safe_registry_pid(pid: int) -> bool:
+    """Refuse to kill our own process or direct parent (registry must only stop subagent PIDs)."""
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        logger.error(f"subagent refuse to terminate own pid={pid}")
+        return False
+    try:
+        parent = os.getppid()
+    except OSError:
+        parent = 0
+    if parent > 0 and pid == parent:
+        logger.error(f"subagent refuse to terminate parent pid={pid}")
+        return False
+    return True
+
+
+def _sync_taskkill_pid(pid: int) -> None:
+    """Terminate exactly one Windows process (no ``/T`` — never kill the process tree)."""
     subprocess.run(
-        ["taskkill", "/F", "/T", "/PID", str(pid)],
+        ["taskkill", "/F", "/PID", str(pid)],
         check=False,
         capture_output=True,
     )
 
 
 async def _terminate_pid(pid: int) -> None:
-    if pid <= 0 or not _pid_alive(pid):
+    if not _is_safe_registry_pid(pid) or not _pid_alive(pid):
         return
-    logger.info(f"subagent registry terminating pid={pid}")
+    logger.info(f"subagent registry terminating pid={pid} (single process only)")
     if sys.platform == "win32":
-        await anyio.to_thread.run_sync(_sync_taskkill_tree, pid)
+        await anyio.to_thread.run_sync(_sync_taskkill_pid, pid)
         return
     try:
-        os.killpg(os.getpgid(pid), signal.SIGTERM)
+        os.kill(pid, signal.SIGTERM)
     except OSError:
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError:
-            return
+        return
     await anyio.sleep(0.4)
     if _pid_alive(pid):
         try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            os.kill(pid, signal.SIGKILL)
         except OSError:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                return
+            return
 
 
 async def _read_registry(path: anyio.Path) -> dict[str, Any]:
