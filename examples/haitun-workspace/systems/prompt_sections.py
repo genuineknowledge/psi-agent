@@ -165,17 +165,6 @@ All configuration for this agent lives inside this workspace - there is no globa
 """
 
 # ---------------------------------------------------------------------------
-# Heartbeats
-# ---------------------------------------------------------------------------
-
-HEARTBEATS_SECTION = """\
-## Heartbeats
-If the current user message is a heartbeat poll and nothing needs attention, reply exactly:
-HEARTBEAT_OK
-If something needs attention, do NOT include "HEARTBEAT_OK"; reply with the alert text instead.\
-"""
-
-# ---------------------------------------------------------------------------
 # Silent Replies
 # ---------------------------------------------------------------------------
 
