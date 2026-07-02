@@ -1,7 +1,8 @@
-import { nextTick } from 'vue'
 import { store } from '../store.js'
 import { htmlEscape, renderMd, saveHistory, loadHistory } from '../utils.js'
 import { readSSE } from './useSSE.js'
+import { streamChat } from '../api.js'
+import { scrollToBottomIfLocked } from './useScroll.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -10,21 +11,8 @@ function origin() {
 function addMessage(role, id) {
   const m = { id, role, text: '', html: '', files: [] }
   store.messages.push(m)
-  scrollChatAreaIfLocked()
+  scrollToBottomIfLocked()
   return store.messages[store.messages.length - 1]
-}
-
-function scrollChatAreaIfLocked() {
-  nextTick(() => {
-    const el = document.getElementById('messages')
-    if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.clientHeight - el.scrollTop
-    if (store.streaming) {
-      if (store.userHasScrolledUp && distanceFromBottom > 60) return
-      if (distanceFromBottom <= 60) store.userHasScrolledUp = false
-    }
-    el.scrollTop = el.scrollHeight
-  })
 }
 
 async function encodeFiles(files, um) {
@@ -50,7 +38,7 @@ export async function sendMessage() {
   store.streaming = true
   store.inputText = ''
   store.selectedFiles = []
-  document.getElementById('file-upload').value = ''
+  store.uploadResetToken++
   store.userHasScrolledUp = false
 
   let um = null
@@ -75,12 +63,7 @@ export async function sendMessage() {
   let asst = addMessage('assistant', `a-${Date.now()}`)
 
   try {
-    const r = await fetch(origin() + '/sessions/' + store.selectedSessionId + '/chat', { method: 'POST', body: fd })
-    if (!r.ok) {
-      const e = await r.json().catch(() => ({ error: r.statusText }))
-      throw new Error(e.error || 'HTTP ' + r.status)
-    }
-    const reader = r.body.getReader()
+    const reader = await streamChat(store.selectedSessionId, fd)
     for await (const chunkData of readSSE(reader)) {
       if (chunkData.type === 'text' && chunkData.text !== undefined) {
         if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
@@ -100,7 +83,7 @@ export async function sendMessage() {
         // stranding the pre-created empty bubble or splitting on a leading think.
         if (asst && (asst.text || asst.files.length)) asst = null
       }
-      scrollChatAreaIfLocked()
+      scrollToBottomIfLocked()
     }
   } catch (e) {
     if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
