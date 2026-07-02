@@ -4,6 +4,34 @@
 
 Web 控制台是一个本地打包、无外部 CDN 依赖的 Vue 3 单页应用（SPA），由 Vite 构建为静态文件，通过 Gateway 的 `/spa/` 路由服务。支持多格式文件预览（代码/PDF/Word/PPT/Excel/CSV），依赖已显著增加，不再是轻量前端。
 
+## 前端设计约束
+
+以下是开发本 SPA 时必须遵守的约定，与根 `AGENTS.md` 的「设计理念」同级——凡新增/改动组件、样式、状态，先对照本节：
+
+1. **本地打包 / 无外链**：所有依赖经 npm 安装、由 Vite 打进 `dist/`。禁止在 `index.html` 或组件里引 `<script src="https://...">` / `<link href="https://...">` 外链——离线与二进制打包环境下外链会失效。字体、图标、CSS 一律走本地包（如 `material-symbols`）。
+
+2. **重依赖必须懒加载**：文件预览类大库（codemirror / pdfjs-dist / docx-preview / pptx-preview / xlsx / papaparse）一律用动态 `import()` 按需加载，禁止顶层静态 import 拖进主 bundle。新增同类大库照此办理，并在「技术栈」的文件预览依赖表补一行「用途」。
+
+3. **技术栈封闭**：默认不再引入 **Vue Router**（单页无路由）、**Pinia**（单一 `reactive()` store 足够）、**TypeScript**、**CSS 预处理器**。确需新增第三方库时，先评估体积与是否可 tree-shake，并在「技术栈」表补一行「选择理由」。
+
+4. **单一数据源 store**：全局/跨组件状态一律进 `store.js` 的单个 `reactive()` 对象，经 `provide/inject` 下发。组件内 `ref` 只用于纯本地 UI 状态（如某个 input 的临时值）。跨组件副作用用 store 信号传递（如 `uploadResetToken` 递增通知 InputBar 清空 file input），不要组件间直接互相调方法。
+
+5. **服务端是唯一数据源**：AI / Session 列表、标题从 Gateway REST GET 获取，`localStorage` 只存 UI 偏好与对话缓存（见「localhost 持久化策略」）。新增持久化项必须用 `gw-` 前缀 key，并同步更新持久化表。
+
+6. **纯逻辑抽到无副作用模块**：会话过滤/置顶/排序等纯计算放 `sessionList.js` 这类无状态工具模块（纯函数、可单测、不碰 DOM 与全局 store），组件只负责调用与渲染。
+
+7. **App.vue 只做编排**：`App.vue` 负责跨组件事件、弹窗控制、drag-drop、主题/侧栏切换与启动流程，**不写具体业务逻辑**。会话逻辑放 `Sidebar.vue` / `useSession.js`，输入发送逻辑放 `InputBar.vue` / `useChat.js`。新业务优先落到对应组件或 composable。
+
+8. **composable 不碰 DOM**：`composables/` 里是纯逻辑（`useChat` 等），不直接操作 DOM。滚动委托 `useScroll`，需要 DOM 的行为通过 store 信号或回调交给组件层。DOM 操作前若依赖渲染结果，必须 `await nextTick()`。
+
+9. **弹窗统一走 BaseDialog**：所有弹窗基于 `BaseDialog.vue`（overlay + dialog + actions 插槽），不各自手写遮罩/定位。新弹窗 = 新建一个基于 BaseDialog 的组件。
+
+10. **样式分层不越界**：全局 MD3 token 在 `styles/tokens.css`，组件基类在 `styles/components.css`，app-shell 布局在 `styles/layout.css`；**组件专属样式（含其移动端 `@media`）一律写在该组件的 `<style scoped>`**。颜色/圆角/阴影/间距用 `--md-*` CSS variable，禁止硬编码色值，保证双主题一致。
+
+11. **响应式与移动端**：断点统一用 `768px`。移动端键盘/视口适配集中在 `useKeyboard.js`，桌面端需清空其注入的内联样式，不要在别处再写第二套 viewport 逻辑。
+
+12. **AI 回复渲染的边界**：`renderMd` 的输出来自可信 AI 后端、非用户输入，故未做 sanitize；若将来渲染用户可控内容，必须先引入 sanitize。用户输入一律经 `htmlEscape` 后显示。
+
 ## 技术栈
 
 | 领域 | 技术 | 版本 | 选择理由 |
