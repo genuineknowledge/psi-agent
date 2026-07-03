@@ -45,7 +45,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
    - 任何未捕获异常 → 回滚到快照 → 向上传播
 6. 最多 `max_tool_rounds` 轮 tool call，达到上限时追加关闭 assistant 消息 + commit
-7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``finally`` 块无条件 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
+7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
 
 **注意**：
 - Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
@@ -179,7 +179,7 @@ Session 支持将对话历史持久化到 `workspace/histories/{session_id}.json
 
 - `Session.session_id: str | None = None` — None 时自动生成 UUID，给定字符串时可 resume
 - 加载：`SessionAgent.create()` 中从 jsonl 逐行读取，非法行跳过 + warning
-- **Turn 级别原子性**：`SessionAgent.run()` 每次调用中，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；任何异常（AI error、连接断开、cancellation）都会触发 `Conversation.rollback()` 恢复到快照，保证内存和磁盘始终同步于最近一个成功阶段。
+- **Turn 级别原子性**：`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；任何异常（AI error、连接断开、cancellation）都会通过 ``__aexit__`` 自动触发 `Conversation.rollback()` 恢复到快照，保证内存和磁盘始终同步于最近一个成功阶段。
 - 保存时机（一致性检查点）：
   - `finish_reason="stop"` — assistant 响应追加后立即 `commit()`（完整回合）
   - `finish_reason="tool_calls"` — 所有 tool 结果追加后立即 `commit()`（子回合）

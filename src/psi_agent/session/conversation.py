@@ -12,6 +12,7 @@ import json
 import re
 import uuid
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 import anyio
@@ -33,6 +34,10 @@ class Conversation:
     ``commit`` persists to disk and clears the snapshot; ``rollback``
     restores to the snapshot.  This ensures memory and disk are always
     synchronised at the last consistent checkpoint.
+
+    Usable as an async context manager — on exit with an exception,
+    ``rollback()`` is called automatically, restoring state to the most
+    recent snapshot.
     """
 
     def __init__(self, *, messages: list[dict[str, Any]] | None = None, path: Path | None = None):
@@ -126,6 +131,21 @@ class Conversation:
             self._pending = self._snapshot_pending or []
             self._snapshot_messages = None
             self._snapshot_pending = None
+
+    # -- async context manager -------------------------------------------------
+
+    async def __aenter__(self) -> Conversation:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
+        if exc_type is not None:
+            self.rollback()
+        return False
 
     # -- persistence -----------------------------------------------------------
 
