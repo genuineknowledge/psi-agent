@@ -15,7 +15,13 @@ async def test_gateway_state_persistence_roundtrip(tmp_path: str) -> None:
     state = GatewayState(_path=state_path)
 
     ais_data = {
-        "a1": {"id": "a1", "provider": "openai", "model": "gpt-4o", "api_key": "sk-abc", "base_url": "https://api.oai.com"},
+        "a1": {
+            "id": "a1",
+            "provider": "openai",
+            "model": "gpt-4o",
+            "api_key": "sk-abc",
+            "base_url": "https://api.oai.com",
+        },
     }
     sessions_data = {
         "s1": {"id": "s1", "ai_id": "a1", "workspace": str(tmp_path)},

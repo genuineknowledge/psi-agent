@@ -12,7 +12,13 @@ async def test_state_save_and_load_roundtrip(tmp_path: str) -> None:
 
     await state.save(
         ais=[
-            {"id": "a1", "provider": "openai", "model": "gpt-4o", "api_key": "sk-abc", "base_url": "https://api.oai.com"},
+            {
+                "id": "a1",
+                "provider": "openai",
+                "model": "gpt-4o",
+                "api_key": "sk-abc",
+                "base_url": "https://api.oai.com",
+            },
             {"id": "a2", "provider": "anthropic", "model": "claude-3", "api_key": "sk-xyz", "base_url": ""},
         ],
         sessions=[
