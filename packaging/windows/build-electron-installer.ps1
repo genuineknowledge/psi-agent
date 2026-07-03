@@ -27,7 +27,7 @@ function Assert-Command {
 }
 
 $repoRoot = Get-RepoRoot
-$desktopRoot = Join-Path $repoRoot "desktop"
+$desktopRoot = Join-Path $repoRoot "src\psi_agent\gateway\electron"
 $prepareScript = Join-Path $repoRoot "packaging\windows\prepare-electron-resources.ps1"
 $builderCmd = Join-Path $desktopRoot "node_modules\.bin\electron-builder.cmd"
 $distDir = Join-Path $desktopRoot "dist"

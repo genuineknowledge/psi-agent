@@ -141,7 +141,7 @@ powershell -ExecutionPolicy Bypass -File packaging/windows/build-haitun-integrat
 
 ## Electron 桌面版
 
-如果你想把当前 Gateway + SPA 封装成 Electron 桌面应用，而不是启动系统浏览器，仓库现在也带了一个 `desktop/` 壳层项目。
+如果你想把当前 Gateway + SPA 封装成 Electron 桌面应用，而不是启动系统浏览器，现在可以直接用 `psi-agent gateway --desktop`，对应的 Electron 壳源码也已经收拢到 `src/psi_agent/gateway/electron/`。
 
 一键生成 Windows 安装包：
 
@@ -149,10 +149,18 @@ powershell -ExecutionPolicy Bypass -File packaging/windows/build-haitun-integrat
 powershell -ExecutionPolicy Bypass -File packaging/windows/build-electron-installer.ps1 -UseMirror
 ```
 
-分步执行时：
+开发时直接用 Electron 打开 Gateway：
 
 ```powershell
-cd desktop
+uv run psi-agent gateway --desktop
+```
+
+如果本地还没有安装该目录下的 Electron 依赖，首次执行会自动在 `src/psi_agent/gateway/electron/` 中运行一次 `npm.cmd install`。这里仍然要求机器上已安装 `Node.js/npm`。
+
+分步骤执行时：
+
+```powershell
+cd src/psi_agent/gateway/electron
 npm.cmd install
 npm.cmd run dist:win
 ```

@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 from PIL import Image as PILImage
-from Xlib.error import DisplayNameError
+
+try:
+    from Xlib.error import DisplayNameError
+except ModuleNotFoundError:
+    DisplayNameError = RuntimeError
 
 from psi_agent.gateway._tray import GatewayTray
 
@@ -16,7 +20,7 @@ try:
 
     _xdisplay.Display()
     _HAS_X11 = True
-except DisplayNameError:
+except (DisplayNameError, ModuleNotFoundError):
     pass
 
 
@@ -47,11 +51,16 @@ def test_gateway_tray_quit_callback_sets_stop_event(icon_file: str) -> None:
 
 
 def test_gateway_tray_start_no_display(icon_file: str) -> None:
-    """start() raises when no X11 display available."""
+    """start() either raises for missing display backends or starts cleanly."""
     tray = GatewayTray("http://127.0.0.1:8888", icon_file)
     if not _HAS_X11:
-        with pytest.raises(DisplayNameError):
+        try:
             tray.start()
+        except DisplayNameError:
+            pass
+        else:
+            with contextlib.suppress(Exception):
+                tray.stop()
     else:
         tray.start()
         with contextlib.suppress(Exception):

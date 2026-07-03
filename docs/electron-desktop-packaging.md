@@ -1,6 +1,6 @@
 # Electron Desktop Packaging
 
-This repo now includes a dedicated Electron shell that loads the current Gateway-hosted SPA in a desktop window.
+This repo now includes a dedicated Electron shell that loads the current Gateway-hosted SPA in a desktop window. The shell source now lives under `src/psi_agent/gateway/electron/`, and `psi-agent gateway --desktop` can launch it directly against a live Gateway instance.
 
 ## Architecture
 
@@ -14,15 +14,15 @@ This matches the current frontend design, because the SPA resolves API calls fro
 
 ## Files
 
-- Electron shell: `desktop/`
+- Electron shell: `src/psi_agent/gateway/electron/`
 - Resource preparation script: `packaging/windows/prepare-electron-resources.ps1`
 
 Key files:
 
-- `desktop/package.json`
-- `desktop/main.js`
-- `desktop/installer.nsh`
-- `desktop/preload.js`
+- `src/psi_agent/gateway/electron/package.json`
+- `src/psi_agent/gateway/electron/main.js`
+- `src/psi_agent/gateway/electron/installer.nsh`
+- `src/psi_agent/gateway/electron/preload.js`
 - `packaging/windows/prepare-electron-resources.ps1`
 
 ## What gets bundled
@@ -47,9 +47,17 @@ and then starts Gateway from there. This keeps `workspace/histories/*.jsonl` wri
 Install Electron-side dependencies:
 
 ```powershell
-cd desktop
+cd src/psi_agent/gateway/electron
 npm.cmd install
 ```
+
+If you already have Electron dependencies installed and just want the current Gateway process to open inside Electron, you can also run:
+
+```powershell
+uv run psi-agent gateway --desktop
+```
+
+On the first run, if the local Electron runtime is missing, `psi-agent gateway --desktop` will automatically bootstrap it by running `npm.cmd install` inside `src/psi_agent/gateway/electron/`. This convenience path still assumes `Node.js/npm` is already installed on the machine.
 
 ## One-step installer build
 
@@ -61,7 +69,7 @@ powershell -ExecutionPolicy Bypass -File packaging/windows/build-electron-instal
 
 This wrapper:
 
-1. installs Electron dependencies in `desktop/`
+1. installs Electron dependencies in `src/psi_agent/gateway/electron/`
 2. runs `prepare-electron-resources.ps1`
 3. invokes Electron Builder for the NSIS installer
 
@@ -79,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File packaging/windows/build-electron-instal
 Run the Electron shell against the current source checkout:
 
 ```powershell
-cd desktop
+cd src/psi_agent/gateway/electron
 npm.cmd start
 ```
 
@@ -93,7 +101,7 @@ It still runs Gateway from Electron's own runtime workspace under the app user-d
 
 ## Prepare packaged resources
 
-From the repo root or from `desktop/`, generate the backend/resources Electron will embed:
+From the repo root or from `src/psi_agent/gateway/electron/`, generate the backend/resources Electron will embed:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File packaging/windows/prepare-electron-resources.ps1
@@ -110,12 +118,12 @@ powershell -ExecutionPolicy Bypass -File packaging/windows/prepare-electron-reso
 This stages resources under:
 
 ```text
-desktop/.build/resources/
+src/psi_agent/gateway/electron/.build/resources/
 ```
 
 ## Build a Windows desktop app
 
-From `desktop/`:
+From `src/psi_agent/gateway/electron/`:
 
 ```powershell
 npm.cmd run dist:win
@@ -143,7 +151,7 @@ The workflow:
 2. sets up Node.js
 3. installs an MSYS2 runtime on the runner
 4. calls `packaging/windows/build-electron-installer.ps1`
-5. uploads the generated installer from `desktop/dist/`
+5. uploads the generated installer from `src/psi_agent/gateway/electron/dist/`
 
 The uploaded artifact name is:
 
@@ -162,7 +170,7 @@ npm.cmd run pack:win
 The packaged app is emitted under:
 
 ```text
-desktop/dist/
+src/psi_agent/gateway/electron/dist/
 ```
 
 ## Notes

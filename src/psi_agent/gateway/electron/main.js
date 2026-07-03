@@ -7,12 +7,18 @@ const net = require("node:net")
 const path = require("node:path")
 const { spawn } = require("node:child_process")
 
-const repoRoot = path.resolve(__dirname, "..")
+const repoRoot = path.resolve(__dirname, "..", "..", "..", "..")
 const isWindows = process.platform === "win32"
 
 let backendProcess = null
 let backendLogStream = null
 let backendErrStream = null
+
+function getArgValue(name) {
+  const prefix = `--${name}=`
+  const arg = process.argv.find((entry) => entry.startsWith(prefix))
+  return arg ? arg.slice(prefix.length) : null
+}
 
 function timestamp() {
   const now = new Date()
@@ -272,6 +278,11 @@ async function createMainWindow(uiUrl) {
 
 async function bootstrap() {
   try {
+    const externalUiUrl = getArgValue("url")
+    if (externalUiUrl) {
+      await createMainWindow(externalUiUrl)
+      return
+    }
     const urls = await startBackend()
     await createMainWindow(urls.uiUrl)
   } catch (error) {

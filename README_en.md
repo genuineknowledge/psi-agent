@@ -141,7 +141,7 @@ See [docs/windows-integrated-packaging.md](docs/windows-integrated-packaging.md)
 
 ## Electron Desktop App
 
-If you want a desktop window instead of launching the system browser, the repo now also includes an Electron shell under `desktop/`.
+If you want a desktop window instead of launching the system browser, `psi-agent gateway` now supports `--desktop`, and the Electron shell source lives under `src/psi_agent/gateway/electron/`.
 
 Build a Windows installer in one step:
 
@@ -149,10 +149,18 @@ Build a Windows installer in one step:
 powershell -ExecutionPolicy Bypass -File packaging/windows/build-electron-installer.ps1 -UseMirror
 ```
 
+To launch the Gateway UI directly in Electron during development:
+
+```powershell
+uv run psi-agent gateway --desktop
+```
+
+If the local Electron runtime has not been installed yet, the first run will automatically execute `npm.cmd install` inside `src/psi_agent/gateway/electron/`. This still requires `Node.js/npm` to be available on PATH.
+
 If you prefer the manual two-step flow:
 
 ```powershell
-cd desktop
+cd src/psi_agent/gateway/electron
 npm.cmd install
 npm.cmd run dist:win
 ```

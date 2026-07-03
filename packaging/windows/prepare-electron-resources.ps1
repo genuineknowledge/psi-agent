@@ -156,7 +156,7 @@ function Assert-Msys2Payload {
 $repoRoot = Get-RepoRoot
 $workspaceSource = Resolve-AbsolutePath -Path $WorkspacePath -BasePath $repoRoot
 $spaDir = Join-Path $repoRoot "src\psi_agent\gateway\spa"
-$desktopRoot = Join-Path $repoRoot "desktop"
+$desktopRoot = Join-Path $repoRoot "src\psi_agent\gateway\electron"
 $resourcesRoot = Join-Path $desktopRoot ".build\resources"
 $backendDir = Join-Path $resourcesRoot "backend"
 $workspaceTemplateDir = Join-Path $resourcesRoot "workspace-template"

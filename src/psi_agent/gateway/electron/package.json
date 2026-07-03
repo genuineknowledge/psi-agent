@@ -7,7 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "prepare:resources": "powershell -ExecutionPolicy Bypass -File ../packaging/windows/prepare-electron-resources.ps1",
+    "prepare:resources": "powershell -ExecutionPolicy Bypass -File ../../../../packaging/windows/prepare-electron-resources.ps1",
     "pack:win": "npm run prepare:resources && electron-builder --win dir",
     "dist:win": "npm run prepare:resources && electron-builder --win nsis"
   },
@@ -42,7 +42,7 @@
         ]
       },
       {
-        "from": "../.github/inno-setup/haitun.ico",
+        "from": "../../../../.github/inno-setup/haitun.ico",
         "to": "app-icon.ico"
       },
       {
@@ -54,7 +54,7 @@
       }
     ],
     "win": {
-      "icon": "../.github/inno-setup/haitun.ico",
+      "icon": "../../../../.github/inno-setup/haitun.ico",
       "signAndEditExecutable": false,
       "target": [
         "nsis"
@@ -65,8 +65,8 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "include": "installer.nsh",
-      "installerIcon": "../.github/inno-setup/haitun.ico",
-      "uninstallerIcon": "../.github/inno-setup/haitun.ico"
+      "installerIcon": "../../../../.github/inno-setup/haitun.ico",
+      "uninstallerIcon": "../../../../.github/inno-setup/haitun.ico"
     }
   }
 }

@@ -15,6 +15,7 @@ from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._tray import GatewayTray
+from psi_agent.gateway.electron import run_desktop
 from psi_agent.gateway.server import create_app
 
 
@@ -43,6 +44,9 @@ class Gateway:
     browser: bool = True
     """Open a browser tab on startup."""
 
+    desktop: bool = False
+    """Open the Gateway UI in Electron instead of a browser tab."""
+
     tray: str | None = None
     """Path to tray icon image file. If set, a system tray icon is shown."""
 
@@ -69,25 +73,28 @@ class Gateway:
 
                 logger.info(f"Gateway listening on {addr}")
 
-                if self.browser:
-                    await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
+                if self.desktop:
+                    await run_desktop(addr)
+                else:
+                    if self.browser:
+                        await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
 
-                tray = None
-                if self.tray:
-                    tray = GatewayTray(addr, self.tray)
+                    tray = None
+                    if self.tray:
+                        tray = GatewayTray(addr, self.tray)
+                        try:
+                            tray.start()
+                        except Exception as e:
+                            logger.warning(f"Failed to start system tray: {e!r}")
+
                     try:
-                        tray.start()
-                    except Exception as e:
-                        logger.warning(f"Failed to start system tray: {e!r}")
-
-                try:
-                    if tray is not None and tray.is_running():
-                        await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
-                    else:
-                        await anyio.sleep_forever()
-                finally:
-                    if tray is not None:
-                        tray.stop()
+                        if tray is not None and tray.is_running():
+                            await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
+                        else:
+                            await anyio.sleep_forever()
+                    finally:
+                        if tray is not None:
+                            tray.stop()
             finally:
                 logger.info("Shutting down Gateway")
                 with anyio.CancelScope(shield=True):

@@ -9,7 +9,7 @@ on:
       - "v*"
     paths:
       - ".github/workflows/electron-desktop.yml"
-      - "desktop/**"
+      - "src/psi_agent/gateway/electron/**"
       - "examples/haitun-workspace/**"
       - "packaging/windows/**"
       - "src/psi_agent/**"
@@ -55,6 +55,6 @@ jobs:
         with:
           name: psi-agent-electron-installer
           path: |
-            desktop/dist/*.exe
-            desktop/dist/*.blockmap
+            src/psi_agent/gateway/electron/dist/*.exe
+            src/psi_agent/gateway/electron/dist/*.blockmap
           if-no-files-found: error
