@@ -1,4 +1,5 @@
 import { onMounted } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import { useChatStore } from '../stores/chat.js'
 
 export function useKeyboard() {
@@ -8,7 +9,7 @@ export function useKeyboard() {
     const messagesEl = document.getElementById('messages')
 
     if (messagesEl) {
-      messagesEl.addEventListener('scroll', () => {
+      useEventListener(messagesEl, 'scroll', () => {
         if (!chat.streaming) return
         const diff = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop
         if (diff > 60) {
@@ -65,15 +66,15 @@ export function useKeyboard() {
         if (overlay) overlay.style.top = (topbarH + viewportTop) + 'px'
       }
 
-      window.visualViewport.addEventListener('resize', syncInputPosition)
-      window.visualViewport.addEventListener('scroll', syncInputPosition)
-      window.addEventListener('resize', syncInputPosition)
+      useEventListener(window.visualViewport, 'resize', syncInputPosition)
+      useEventListener(window.visualViewport, 'scroll', syncInputPosition)
+      useEventListener(window, 'resize', syncInputPosition)
       syncInputPosition()
     }
 
     const ta = document.querySelector('#input-area textarea')
     if (ta) {
-      ta.addEventListener('focus', () => {
+      useEventListener(ta, 'focus', () => {
         if (window.innerWidth > 768) return
         setTimeout(() => {
           if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight
