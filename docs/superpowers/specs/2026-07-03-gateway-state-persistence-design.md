@@ -95,20 +95,24 @@ setup_logging(verbose)
 → snapshot = await state.load()
 → async with anyio.create_task_group() as tg:
     → aim = AIManager(...) + sm = SessionManager(...)
-    → 创建 save_snapshot 闭包:
+    → 恢复（_on_change 未设置，不触发 save）:
+        for ai in snapshot.ais → aim.create(..., id=ai_id)
+        for sess in snapshot.sessions → sm.create(..., id=sess_id)
+    → app = await create_app(aim, sm, ...)
+        ← server.py 内部: tm = TitleManager(...)
+    → 创建 save_snapshot 闭包（tm 已存在，闭包捕获引用）:
         async def save_snapshot():
             await state.save(
                 ais=await aim.list_all(),
                 sessions=await sm.list_all(),
                 titles=tm.get_all(),
             )
-    → aim._on_change = save_snapshot
-    → sm._on_change = save_snapshot
-    → 恢复: for ai in snapshot.ais → aim.create(..., id=ai_id)
-              for sess in snapshot.sessions → sm.create(..., id=sess_id)
-    → tm._on_change = save_snapshot
-    → for title in snapshot.titles → tm.set(...)
-    → create_app(aim, sm, ...)  ← TitleManager 在 server.py 中创建，需要注入 _on_change
+    → 注入 _on_change:
+        aim._on_change = sm._on_change = tm._on_change = save_snapshot
+    → 恢复标题:
+        for sid, title in snapshot.titles.items():
+            await tm.set(sid, title)
+    → 调用一次 save_snapshot() 持久化恢复后的初始状态
     → ... 后续不变
 ```
 
@@ -116,8 +120,9 @@ setup_logging(verbose)
 
 ### `server.py`
 
-- `create_app()` 接受新的 `on_change` 参数，传给 `TitleManager(on_change=on_change)`
 - `_set_title`: `await tm.set(...)` （原来是同步调用）
+- `_generate_title`: `tm.generate()` 成功后内部已调用 `_on_change`，无需额外处理
+- `create_app()` 签名不变 —— `tm._on_change` 由 `Gateway.run()` 在 `create_app()` 返回后外部注入
 
 ## Edge Cases
 
