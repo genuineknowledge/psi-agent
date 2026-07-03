@@ -1,22 +1,23 @@
 """Run a Fusion Flow (.flow.ts) in the background and poll node-level progress.
 
-一个 flow 运行是长任务：每个 flow.session 是外部 CLI 子进程（10-20s 冷启动），
+一个 flow 运行是长任务: 每个 flow.session 是外部 CLI 子进程 (10-20s 冷启动) ,
 flow.parallel 辩论 / 多步 pipeline 串起来一次跑几分钟。用同步 bash 跑会被超时
-SIGKILL 掉、误报"引擎超时"。本工具改为后台运行 + 阻塞式进度轮询：
+SIGKILL 掉, 误报"引擎超时"。本工具改为后台运行 + 阻塞式进度轮询:
 
-  start  -> 后台起 `npx tsx <flow>`，stdout 重定向到日志，解析 [run] <runId>/dir，
-            登记状态文件，立即返回 run_token（=runId）。
-  status -> 阻塞到"下个节点完成 / flow 结束 / 窗口超时"三者之一，返回进度快照。
+  start  -> 后台起 `npx tsx <flow>`, stdout 重定向到日志, 解析 [run] <runId>/dir,
+            登记状态文件, 立即返回 run_token (=runId) 。
+  status -> 阻塞到"下个节点完成 / flow 结束 / 窗口超时"三者之一, 返回进度快照。
             进度来自运行时增量写的 runs/<runId>/progress.jsonl。
   result -> flow 结束后读 meta.json / bindings / execution-graph 返回最终产物。
 """
 
 from __future__ import annotations
 
-# ruff: noqa: E402
+import contextlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -28,7 +29,7 @@ TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-# 运行时启动即打印的两行： "[run] <runId>" 和 "[run] dir: <runDir>"
+# 运行时启动即打印的两行:  "[run] <runId>" 和 "[run] dir: <runDir>"
 _RUN_ID_RE = re.compile(r"^\[run\]\s+(\S+)\s*$")
 _RUN_DIR_RE = re.compile(r"^\[run\]\s+dir:\s+(.+?)\s*$")
 
@@ -45,8 +46,6 @@ def _state_file(token: str) -> Path:
 
 
 def _find_bash() -> str | None:
-    import shutil
-
     if os.name == "nt":
         for c in (
             "C:/Program Files/Git/bin/bash.exe",
@@ -70,7 +69,7 @@ def _parse_run_header(log_path: Path, deadline: float) -> tuple[str, str]:
         for line in text.splitlines():
             if not run_id:
                 m = _RUN_ID_RE.match(line)
-                # 跳过 "[run] dir:" / "[run] resuming" 之类，仅纯 runId 行
+                # 跳过 "[run] dir:" / "[run] resuming" 之类, 仅纯 runId 行
                 if m and ":" not in m.group(1) and m.group(1) != "dir":
                     run_id = m.group(1)
             md = _RUN_DIR_RE.match(line)
@@ -82,21 +81,18 @@ def _parse_run_header(log_path: Path, deadline: float) -> tuple[str, str]:
     return run_id, run_dir
 
 
-async def _start(flow_path: str, cwd: str) -> dict:
-    flow = Path(flow_path)
-    if not flow.is_file():
-        return {"ok": False, "message": f"flow file not found: {flow_path}"}
-    workdir = cwd.strip() or str(flow.parent)
+def _spawn_flow(flow: Path, workdir: str, log_path: Path) -> tuple[int, str, str]:
+    """Blocking: spawn the detached `npx tsx <flow>` and parse its runId/runDir.
 
-    log_path = _state_dir() / f"flow-{int(time.time() * 1000)}.log"
-    log_fh = open(log_path, "w", encoding="utf-8")
-
+    Runs in a worker thread (see _start) so the async tool never blocks. Returns
+    (pid, run_id, run_dir); run_id/run_dir are "" if the runtime never printed
+    its start header within the timeout (start likely failed).
+    """
     argv = ["npx", "tsx", str(flow)]
     bash = _find_bash()
     if os.name == "nt" and bash:
-        # 经 git-bash -lc，保证 npx/tsx 的解析与运行时既有约定一致
-        cmd = " ".join(argv)
-        popen_args: list[str] = [bash, "-lc", cmd]
+        # 经 git-bash -lc, 保证 npx/tsx 的解析与运行时既有约定一致
+        popen_args: list[str] = [bash, "-lc", " ".join(argv)]
         use_shell = False
     else:
         popen_args = argv
@@ -104,7 +100,6 @@ async def _start(flow_path: str, cwd: str) -> dict:
 
     kwargs: dict = {
         "cwd": workdir,
-        "stdout": log_fh,
         "stderr": subprocess.STDOUT,
         "stdin": subprocess.DEVNULL,
     }
@@ -113,24 +108,30 @@ async def _start(flow_path: str, cwd: str) -> dict:
     else:
         kwargs["start_new_session"] = True
 
-    proc = subprocess.Popen(popen_args, shell=use_shell, **kwargs)
+    with open(log_path, "w", encoding="utf-8") as log_fh:
+        proc = subprocess.Popen(popen_args, shell=use_shell, stdout=log_fh, **kwargs)
+    run_id, run_dir = _parse_run_header(log_path, time.time() + 30.0)
+    return proc.pid, run_id, run_dir
 
-    # 等运行时打印 runId/runDir（最多 30s；启动失败则日志里没有该行）
-    run_id, run_dir = await anyio.to_thread.run_sync(
-        _parse_run_header, log_path, time.time() + 30.0
-    )
+
+async def _start(flow_path: str, cwd: str) -> dict:
+    flow = Path(flow_path)
+    if not await anyio.to_thread.run_sync(flow.is_file):
+        return {"ok": False, "message": f"flow file not found: {flow_path}"}
+    workdir = cwd.strip() or str(flow.parent)
+
+    log_path = _state_dir() / f"flow-{int(time.time() * 1000)}.log"
+    pid, run_id, run_dir = await anyio.to_thread.run_sync(_spawn_flow, flow, workdir, log_path)
+
     if not run_id or not run_dir:
-        alive = proc.poll() is None
         tail = ""
-        try:
+        with contextlib.suppress(OSError):
             tail = log_path.read_text(encoding="utf-8", errors="replace")[-800:]
-        except OSError:
-            pass
         return {
             "ok": False,
             "message": "flow did not report a runId within 30s (start likely failed)",
-            "alive": alive,
-            "pid": proc.pid,
+            "alive": _pid_alive(pid),
+            "pid": pid,
             "log_tail": tail,
         }
 
@@ -139,7 +140,7 @@ async def _start(flow_path: str, cwd: str) -> dict:
         "run_token": token,
         "run_id": run_id,
         "run_dir": run_dir,
-        "pid": proc.pid,
+        "pid": pid,
         "log_path": str(log_path),
         "cwd": workdir,
         "flow_path": str(flow),
@@ -152,7 +153,7 @@ async def _start(flow_path: str, cwd: str) -> dict:
         "run_token": token,
         "run_id": run_id,
         "run_dir": run_dir,
-        "pid": proc.pid,
+        "pid": pid,
         "message": "flow started in background",
     }
 
@@ -163,8 +164,16 @@ def _load_state(token: str) -> dict | None:
         return None
     try:
         return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except OSError, ValueError:
         return None
+
+
+def _tail(path: str, n: int = 800) -> str:
+    """Blocking: read the last n chars of a file (run via to_thread)."""
+    try:
+        return Path(path).read_text(encoding="utf-8", errors="replace")[-n:]
+    except OSError:
+        return ""
 
 
 def _pid_alive(pid: int) -> bool:
@@ -196,7 +205,7 @@ def _read_progress(run_dir: str) -> list[dict]:
         try:
             events.append(json.loads(line))
         except ValueError:
-            continue  # 末尾未写完的残行，忽略
+            continue  # 末尾未写完的残行, 忽略
     return events
 
 
@@ -229,7 +238,7 @@ async def _status(token: str, window_seconds: float) -> dict:
     pid = int(state.get("pid", 0))
     cursor = int(state.get("cursor", 0))
 
-    # 阻塞到：出现新的 node_end / flow 结束(meta.json) / 进程死 / 窗口超时
+    # 阻塞到: 出现新的 node_end / flow 结束(meta.json) / 进程死 / 窗口超时
     deadline = time.time() + max(1.0, window_seconds)
     while True:
         events = await anyio.to_thread.run_sync(_read_progress, run_dir)
@@ -252,12 +261,7 @@ async def _status(token: str, window_seconds: float) -> dict:
             }
             if crashed:
                 resp["crashed"] = True
-                try:
-                    resp["log_tail"] = Path(state["log_path"]).read_text(
-                        encoding="utf-8", errors="replace"
-                    )[-800:]
-                except OSError:
-                    pass
+                resp["log_tail"] = await anyio.to_thread.run_sync(_tail, state["log_path"])
             return resp
         await anyio.sleep(0.5)
 
