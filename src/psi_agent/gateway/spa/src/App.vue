@@ -114,14 +114,14 @@ function origin() {
 }
 
 const chatDropRef = ref(null)
-useDropZone(chatDropRef, {
-  dataTypes: ['Files'],
+const { isOverDropZone } = useDropZone(chatDropRef, {
   onDrop: (files) => {
     if (!selectedSessionId.value) return
     if (files && files.length) selectedFiles.value.push(...files)
   },
-  onEnter: () => { if (selectedSessionId.value) isDragging.value = true },
-  onLeave: () => { isDragging.value = false },
+})
+watch(isOverDropZone, (over) => {
+  isDragging.value = over && !!selectedSessionId.value
 })
 
 async function refreshAIs() {
