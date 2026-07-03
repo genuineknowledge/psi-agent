@@ -68,10 +68,10 @@ spa/
 ├── vite.config.js                   # base=/spa/, @ alias
 ├── index.html                       # #app mount + interactive-widget=resizes-visual
 ├── src/
-│   ├── main.js                      # createApp + import CSS + v-focus directive
+│   ├── main.js                      # 应用启动入口（开机键）：createApp + 加载全局 CSS + 注册 v-focus 指令 + mount('#app')
 │   ├── App.vue                      # 根组件：编排层 — 跨组件 handler + 弹窗 + drag-drop；sidebar/input 业务逻辑已移入各组件
 │   ├── store.js                     # reactive() 单一 store，provide/inject
-│   ├── utils.js                     # renderMd, htmlEscape, mimeType, localStorage
+│   ├── utils.js                     # 通用工具箱 + 本地缓存：renderMd(Markdown→HTML), htmlEscape(转义用户输入), mimeType(扩展名→MIME), localStorage 读写
 │   ├── api.js                       # fetch 封装(api) + chat 流请求(streamChat)
 │   ├── providers.js                 # 预置 provider 配置 (deepseek/openai/anthropic/gemini)
 │   ├── sessionList.js               # 会话列表纯逻辑工具：置顶(pin)持久化、搜索过滤、显示名、标题 payload 构造。导出：PINNED_SESSIONS_KEY、getSessionDisplayName、loadPinnedSessionIds、savePinnedSessionIds、togglePinnedSessionId、buildSessionTitlePayload、buildVisibleSessions
@@ -88,10 +88,10 @@ spa/
 │   │   ├── FileBrowser.vue          # 目录浏览
 │   │   ├── ConfirmDialog.vue        # 通用确认弹窗（基于 BaseDialog）
 │   │   ├── FilePreview.vue          # Teleport 到 body 的抽屉式文件预览组件，按扩展名动态分派到 codemirror/pdfjs/docx-preview/pptx-preview/xlsx/papaparse；被 MessageBubble.vue 使用；props 含预览目标，emit close
-│   │   └── Snackbar.vue             # MD3 toast 提示
+│   │   └── Snackbar.vue             # 底部临时提示条（一句话+「知道了」，几秒自动消失，MD3 toast），内容来自 store.snackbar
 │   ├── composables/
 │   │   ├── useSSE.js                # ReadableStream SSE 逐行解析 async generator
-│   │   ├── useKeyboard.js           # visualViewport 键盘适配 + 手动上滚检测
+│   │   ├── useKeyboard.js           # visualViewport 键盘适配 + 主动滚底（手动上滚检测归 useScroll）
 │   │   ├── useTheme.js              # 暗色/亮色切换 + localStorage + <html> class
 │   │   ├── useSession.js            # selectSession：会话切换 + 草稿/消息缓存（App.vue + Sidebar 共用）
 │   │   ├── useScroll.js             # 消息容器滚动控制（注册容器 + 未锁定则滚底 + 上滚检测）
@@ -114,7 +114,7 @@ spa/
 | `index.html` | HTML 外壳 | 定义 `#app` 挂载点（内含初始 loading spinner，Vue mount 后被替换）；`viewport` 带 `interactive-widget=resizes-visual`（iOS 键盘缩小 visual viewport）；`<link rel=icon>` 由 Gateway 在 `--tray` 时服务 |
 | `vite.config.js` | 构建配置 | `base:'/spa/'` 匹配 Gateway 静态路由；`@`→`/src` alias；输出 `dist/`，assets 进 `dist/assets/` |
 | `package.json` | 依赖声明 | `dev/build/preview` 脚本；Vue + 文件预览大库（懒加载，不进主 bundle）|
-| `src/main.js` | 应用引导 | `createApp(App)`；顶层 `import` 全局 CSS（material-symbols、katex、tokens/components/layout）；注册全局 `v-focus` 指令（mounted 时 `el.focus()`，供 Sidebar 改名 input 使用）；`mount('#app')` |
+| `src/main.js` | 应用启动入口 | 整个前端第一个执行的文件，只做「把 Vue 应用挂到页面」这一件事：① `createApp(App)` 用 App.vue 创建应用；② 顶层 `import` 一次性加载全局 CSS（图标字体 material-symbols、公式样式 katex、自写的 tokens/components/layout）；③ 注册全局 `v-focus` 指令（元素一出现即 `el.focus()`，供 Sidebar 双击改名的输入框自动聚焦）；④ `mount('#app')` 挂到 index.html 的 `#app`。相当于「开机键」 |
 
 ### 状态与数据层（无组件，纯逻辑）
 
@@ -122,7 +122,7 @@ spa/
 |------|------|-----------------|
 | `src/store.js` | 单一数据源 | 导出 `reactive()` 单例 `store`（详见「状态管理」表）+ `useStore()`；启动时从 localStorage 读入 `pinnedSessionIds`；组件经直接 import 或 provide/inject 使用 |
 | `src/api.js` | HTTP 封装 | `api(method,path,body)` — JSON fetch，非 2xx 抛错；`streamChat(sessionId,formData)` — POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
-| `src/utils.js` | 纯工具 + 持久化 | `renderMd`（marked+KaTeX，见「Markdown 渲染流程」）；`htmlEscape`（用户输入转义）；`mimeType`（扩展名→MIME）；localStorage 读写：`saveActiveState/loadActiveState`（`gw-active-ids`）、`saveHistory/loadHistory/clearHistory`（`gw-hist-<id>`，仅存 role/text/files） |
+| `src/utils.js` | 通用工具箱 + 本地缓存 | 放「哪儿都可能用到、但不属于任何组件」的纯函数，两类：**文本渲染** — `renderMd`（把 AI 回复的 Markdown+`$...$`公式转成 HTML，marked+KaTeX，见「Markdown 渲染流程」）、`htmlEscape`（转义用户输入的 `<>&`，防当 HTML 执行）、`mimeType`（扩展名→MIME，预览/下载用）；**localStorage 读写** — `saveActiveState/loadActiveState`（记住上次选中的模型/会话，`gw-active-ids`）、`saveHistory/loadHistory/clearHistory`（本地缓存各会话对话记录，`gw-hist-<id>`，仅存 role/text/files） |
 | `src/providers.js` | 预置 provider 表 | 导出 `PROVIDERS` 数组：13 家供应商的 `v`(值)/`l`(标签)/`base`(默认 base_url)/`models`(预置模型名)，供 AiDialog 下拉 |
 | `src/sessionList.js` | 会话列表纯逻辑 | 无副作用工具（可单测）：`PINNED_SESSIONS_KEY`、`getSessionDisplayName`(标题优先、回退 workspace/'新会话')、`loadPinnedSessionIds/savePinnedSessionIds/togglePinnedSessionId`(置顶持久化 + 去重规范化)、`buildSessionTitlePayload`、`buildVisibleSessions`(搜索过滤 + 置顶排在前) |
 
@@ -158,7 +158,7 @@ spa/
 | `useSSE.js` | SSE 解析 | `async function* readSSE(reader)`：TextDecoder 累积 → `\r\n`→`\n` → 逐行取 `data:` → `[DONE]` 结束 / `JSON.parse` / 非 JSON 降级为 `{type:'text'}` |
 | `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → 恢复输入 → 从 `/history` 或 localStorage 加载消息 → 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
 | `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |
-| `useKeyboard.js` | 移动端视口适配 | `onMounted` 挂 `visualViewport` resize/scroll + window.resize 监听，同步 `#input-wrapper`/`#mobile-topbar`/`#messages`/`#sidebar`/`.mobile-overlay` 的键盘偏移内联样式；>768px 清空所有内联样式；textarea focus 时延迟滚底。移动端视口逻辑的唯一归属地（约束 11） |
+| `useKeyboard.js` | 移动端视口适配 | `onMounted` 挂 `visualViewport` resize/scroll + window.resize 监听，同步 `#input-wrapper`/`#mobile-topbar`/`#messages`/`#sidebar`/`.mobile-overlay` 的键盘偏移内联样式；>768px 清空所有内联样式；键盘弹出 / textarea focus 时主动滚底。移动端视口逻辑的唯一归属地（约束 11）。手动上滚检测不在此，统一归 `useScroll`（避免同一容器挂两个 scroll 监听） |
 | `useTheme.js` | 主题切换 | 初始化时读 `gw-theme` 应用 `light-mode` class；`toggleTheme()` 切换 `store.isLightMode` + `<html>` class + localStorage |
 
 ### 样式 `src/styles/`（分层不越界，见约束 10）

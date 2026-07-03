@@ -1,21 +1,10 @@
 import { onMounted } from 'vue'
-import { store } from '../store.js'
 
 export function useKeyboard() {
   onMounted(() => {
+    // 手动上滚检测在 useScroll.js（ChatArea 的 @scroll → onContainerScroll）统一处理，
+    // 此处只保留移动端键盘/视口适配与主动滚底。messagesEl 供下方视口同步使用。
     const messagesEl = document.getElementById('messages')
-
-    if (messagesEl) {
-      messagesEl.addEventListener('scroll', () => {
-        if (!store.streaming) return
-        const diff = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop
-        if (diff > 60) {
-          if (!store.userHasScrolledUp) store.userHasScrolledUp = true
-        } else {
-          store.userHasScrolledUp = false
-        }
-      })
-    }
 
     if (window.visualViewport) {
       const syncInputPosition = () => {
