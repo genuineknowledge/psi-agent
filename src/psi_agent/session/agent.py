@@ -10,6 +10,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent.session.after_turn import AfterTurnFn, load_after_turn_fn
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
@@ -44,6 +45,7 @@ class SessionAgent:
         schedule_registry: ScheduleRegistry | None = None,
         system_prompt: SystemPrompt | None = None,
         max_tool_rounds: int = 128,
+        after_turn_fn: AfterTurnFn | None = None,
     ) -> None:
         self._ai_client = ai_client
         self._channel_adapter = channel_adapter or ChannelAdapter()
@@ -53,6 +55,14 @@ class SessionAgent:
         self._system_prompt = system_prompt or SystemPrompt()
         self._max_tool_rounds = max_tool_rounds
         self._lock = anyio.Lock()
+
+        # -- after-turn self-evolution hook (best-effort, optional) --
+        self._after_turn_fn = after_turn_fn
+        self._after_turn_task_group: Any | None = None
+        # Tool usage of the most recently completed turn, consumed by
+        # ``spawn_after_turn_task``.
+        self._last_turn_tool_count = 0
+        self._last_turn_tools: list[str] = []
 
     # -- factory --------------------------------------------------------------
 
@@ -72,6 +82,16 @@ class SessionAgent:
         schedule_registry = await ScheduleRegistry.load(workspace_path / "schedules")
         system_prompt = await SystemPrompt.from_workspace(workspace_path, conversation.session_id)
 
+        # Build the optional after-turn hook from the workspace's System class.
+        # ``tool_executors`` exposes every loaded tool to the self-evolution
+        # review loop by name.
+        tool_executors = {name: tool_registry.get(name) for name in tool_registry.tools}
+        after_turn_fn = load_after_turn_fn(
+            workspace_path,
+            ai_client=ai_client,
+            tool_executors={n: fn for n, fn in tool_executors.items() if fn is not None},
+        )
+
         return cls(
             ai_client=ai_client,
             conversation=conversation,
@@ -79,6 +99,7 @@ class SessionAgent:
             schedule_registry=schedule_registry,
             system_prompt=system_prompt,
             max_tool_rounds=max_tool_rounds,
+            after_turn_fn=after_turn_fn,
         )
 
     # -- delegation -----------------------------------------------------------
@@ -89,6 +110,40 @@ class SessionAgent:
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
         self._conversation.stash(chunks)
+
+    # -- after-turn hook ------------------------------------------------------
+
+    def set_after_turn_task_group(self, task_group: Any) -> None:
+        """Provide the task group used to run after-turn hooks in the
+        background — called by ``Session.run()``."""
+        self._after_turn_task_group = task_group
+
+    def spawn_after_turn_task(self) -> None:
+        """Schedule the workspace after-turn hook for the turn that just
+        completed.
+
+        Best-effort: does nothing if no hook is configured or no task group is
+        available.  The hook runs in the background and never affects the main
+        response stream — all errors are swallowed and logged.
+        """
+        after_turn_fn = self._after_turn_fn
+        if after_turn_fn is None or self._after_turn_task_group is None:
+            return
+
+        messages = list(self._conversation.messages)
+        tool_count = self._last_turn_tool_count
+        called_tools = list(self._last_turn_tools)
+
+        async def _run() -> None:
+            try:
+                await after_turn_fn(messages, tool_count, called_tools)
+            except Exception as e:
+                logger.error(f"after-turn hook failed: {e!r}")
+
+        try:
+            self._after_turn_task_group.start_soon(_run)
+        except Exception as e:
+            logger.error(f"Failed to spawn after-turn task: {e!r}")
 
     async def reload_tools(self) -> dict[str, str]:
         return await self._tool_registry.refresh()
@@ -129,6 +184,9 @@ class SessionAgent:
             logger.info("Acquired session lock, processing request")
             await self._channel_adapter.write(response, self.run(user_message, extra_params))
 
+        # Fire the after-turn self-evolution hook (background, best-effort).
+        self.spawn_after_turn_task()
+
         logger.info("Session request completed")
         return response
 
@@ -163,6 +221,10 @@ class SessionAgent:
             self._conversation.add(user_message)
             await self._conversation.commit()
             logger.debug(f"History now has {len(self._conversation.messages)} messages")
+
+            # Reset per-turn tool stats consumed by the after-turn hook.
+            self._last_turn_tool_count = 0
+            self._last_turn_tools = []
 
             for _round in range(self._max_tool_rounds):
                 logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
@@ -285,6 +347,10 @@ class SessionAgent:
                                     reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
                                 )
                                 tool_args.append((i, tc, func_name, args))
+
+                            # accumulate per-turn tool stats for the after-turn hook
+                            self._last_turn_tool_count += len(tool_args)
+                            self._last_turn_tools.extend(fn for _i, _tc, fn, _a in tool_args if fn)
 
                             # execute all tools concurrently
                             results: list[str] = [""] * len(ordered_calls)

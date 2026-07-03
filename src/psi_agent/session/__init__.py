@@ -43,5 +43,6 @@ class Session:
         )
 
         async with anyio.create_task_group() as task_group:
+            agent.set_after_turn_task_group(task_group)
             agent.start_all(task_group)
             task_group.start_soon(partial(serve_session, channel_socket=self.channel_socket, agent=agent))
