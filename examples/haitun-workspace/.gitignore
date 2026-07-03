@@ -1,0 +1,39 @@
+# psi-agent session history
+histories/
+
+# subagent runtime registry (spawned PIDs; not source)
+.psi/
+
+# system-prompt skills cache
+.skills_prompt_snapshot.json
+
+# curator (future-extension) state
+skills/.curator_state.json
+skills/.curator_report.md
+
+# python
+__pycache__/
+*.pyc
+
+# Fusion Flow node runtime + generated artifacts
+skills/fusion-flow/node_modules/
+skills/fusion-flow/runs/
+skills/fusion-flow/.env
+skills/fusion-flow/examples/*.flow.ts
+skills/fusion-flow/examples/*.flow.mts
+!skills/fusion-flow/examples/_placeholder.ts
+flows/*
+!flows/.gitkeep
+!flows/curated/
+!flows/curated/**/
+!flows/curated/**/FLOW.md
+flows/curated/**/runs/
+
+haitun agent.lnk
+psi-agent.exe
+psi-agent
+
+# local test notes (not source)
+subagent-bug-report.md
+tmp_*.py
+haitun.ico
