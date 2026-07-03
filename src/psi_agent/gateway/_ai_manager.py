@@ -31,11 +31,7 @@ class AiInfo:
 @dataclass
 class _AiEntry:
     scope: anyio.CancelScope
-    socket: str
-    provider: str
-    model: str
-    api_key: str
-    base_url: str
+    info: AiInfo
 
 
 @dataclass
@@ -83,23 +79,22 @@ class AIManager:
 
             logger.debug(f"AIManager: starting AI {ai_id!r} task")
             self._tg.start_soon(_run_ai)
-            self._entries[ai_id] = _AiEntry(
-                scope=scope, socket=socket, provider=provider, model=model, api_key=api_key, base_url=base_url
-            )
+            info = AiInfo(id=ai_id, socket=socket, provider=provider, model=model, api_key=api_key, base_url=base_url)
+            self._entries[ai_id] = _AiEntry(scope=scope, info=info)
         try:
-            await _wait_socket(socket)
+            await _wait_socket(info.socket)
         except Exception:
             logger.warning(f"AI {ai_id!r} did not become ready, rolling back")
             with anyio.CancelScope(shield=True):
                 async with self._lock:
                     self._entries.pop(ai_id, None)
                     scope.cancel()
-                    await _remove_socket(socket)
+                    await _remove_socket(info.socket)
                     await self._persist()
             raise
         await self._persist()
-        logger.info(f"AI {ai_id!r} created on {socket}")
-        return AiInfo(id=ai_id, socket=socket, provider=provider, model=model, api_key=api_key, base_url=base_url)
+        logger.info(f"AI {ai_id!r} created on {info.socket}")
+        return info
 
     async def delete(self, ai_id: str) -> None:
         async with self._lock:
@@ -108,19 +103,16 @@ class AIManager:
                 raise LookupError(f"AI {ai_id!r} not found")
             entry = self._entries.pop(ai_id)
             entry.scope.cancel()
-            await _remove_socket(entry.socket)
+            await _remove_socket(entry.info.socket)
             await self._persist()
             logger.info(f"AI {ai_id!r} deleted")
 
     async def list_all(self) -> list[AiInfo]:
-        return [
-            AiInfo(id=aid, socket=e.socket, provider=e.provider, model=e.model, api_key=e.api_key, base_url=e.base_url)
-            for aid, e in list(self._entries.items())
-        ]
+        return [e.info for e in list(self._entries.values())]
 
     def get_socket(self, ai_id: str) -> str:
         if ai_id in self._entries:
-            return self._entries[ai_id].socket
+            return self._entries[ai_id].info.socket
         return _socket_path(self._prefix, "ais", ai_id)
 
     def has(self, ai_id: str) -> bool:

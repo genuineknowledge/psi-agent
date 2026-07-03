@@ -105,9 +105,7 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 
 每个 `_AiEntry` 包含：
 - `scope: anyio.CancelScope` — 独立取消
-- `socket: str` — AI socket 路径
-- `provider: str`, `model: str` — 元信息
-- `api_key: str`, `base_url: str` — 用于状态恢复时重建 AI
+- `info: AiInfo` — 包含 `id`、`socket`、`provider`、`model`、`api_key`、`base_url`
 
 **`_persist` 回调**：构造函数参数，默认 no-op。Gateway.run() 在恢复完成后注入 persist 闭包（快照所有 manager → state.save），每次 create/delete/crash 后调用。
 
@@ -136,9 +134,7 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 
 每个 `_SessionEntry` 包含：
 - `scope: anyio.CancelScope` — 独立取消
-- `channel_socket: str` — Session channel socket 路径
-- `ai_id: str` — 关联的 AI ID
-- `workspace: str` — workspace 路径
+- `info: SessionInfo` — 包含 `id`、`ai_id`、`workspace`、`channel_socket`
 
 **`_persist` 回调**：同 AIManager，默认 no-op，Gateway.run() 注入。
 

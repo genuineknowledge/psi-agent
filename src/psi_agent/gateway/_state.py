@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import anyio
@@ -10,9 +11,9 @@ from loguru import logger
 
 @dataclass
 class GatewayState:
-    _path: anyio.Path
+    _path: anyio.Path = field(default_factory=lambda: anyio.Path("state/latest.json"))
     _history_dir: anyio.Path = field(default_factory=lambda: anyio.Path("state"))
-    _startup_ts: str = ""
+    _startup_ts: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S"))
 
     async def load(self) -> dict[str, dict[str, Any]]:
         try:
@@ -28,10 +29,17 @@ class GatewayState:
         if not isinstance(data, dict):
             logger.warning(f"State file {self._path} is not a dict, starting fresh")
             return {"ais": {}, "sessions": {}, "titles": {}}
+        raw_titles = data.get("titles", {})
+        if isinstance(raw_titles, list):
+            titles = {t["id"]: t["title"] for t in raw_titles if isinstance(t, dict)}
+        elif isinstance(raw_titles, dict):
+            titles = raw_titles
+        else:
+            titles = {}
         return {
             "ais": data.get("ais", {}),
             "sessions": data.get("sessions", {}),
-            "titles": data.get("titles", {}),
+            "titles": titles,
         }
 
     async def save(
@@ -51,7 +59,7 @@ class GatewayState:
                 for a in ais
             },
             "sessions": {s["id"]: {"ai_id": s["ai_id"], "workspace": s["workspace"]} for s in sessions},
-            "titles": dict(titles),
+            "titles": [{"id": sid, "title": title} for sid, title in titles.items()],
         }
         json_str = json.dumps(data, ensure_ascii=False, indent=2)
         try:

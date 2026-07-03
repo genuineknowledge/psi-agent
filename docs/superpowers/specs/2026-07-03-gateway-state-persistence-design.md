@@ -38,9 +38,9 @@ Gateway.run():
   "sessions": {
     "<session_id>": {"ai_id": "<ai_id>", "workspace": "/home/..."}
   },
-  "titles": {
-    "<session_id>": "My Chat"
-  }
+  "titles": [
+    {"id": "<session_id>", "title": "My Chat"}
+  ]
 }
 ```
 

@@ -86,7 +86,7 @@ async def test_state_save_writes_history_file(tmp_path: str) -> None:
 
 @pytest.mark.anyio
 async def test_state_no_history_file_without_startup_ts(tmp_path: str) -> None:
-    state = GatewayState(_path=anyio.Path(tmp_path) / "state" / "latest.json")
+    state = GatewayState(_path=anyio.Path(tmp_path) / "state" / "latest.json", _startup_ts="")
 
     await state.save(
         ais=[{"id": "a1", "provider": "o", "model": "m", "api_key": "k", "base_url": ""}],
