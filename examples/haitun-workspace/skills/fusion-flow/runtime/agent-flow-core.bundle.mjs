@@ -1,36 +1,841 @@
-import{config as ye}from"dotenv";import{AsyncLocalStorage as Fe}from"node:async_hooks";import{mkdir as G,writeFile as R,copyFile as Ee,readdir as K,readFile as Y,stat as z,rm as Ce}from"node:fs/promises";import $ from"node:path";import{existsSync as Q}from"node:fs";import{delimiter as Ae,join as X}from"node:path";function be(e){let n;try{n=JSON.parse(e)}catch{return null}if(!n||typeof n!="object")return null;const a=n;let c;"structured_output"in a&&a.structured_output!=null?c=JSON.stringify(a.structured_output):c=typeof a.result=="string"?a.result:"";const t={};typeof a.session_id=="string"&&(t.sessionId=a.session_id),typeof a.total_cost_usd=="number"&&(t.costUSD=a.total_cost_usd),typeof a.duration_api_ms=="number"&&(t.durationApiMs=a.duration_api_ms),typeof a.model=="string"&&(t.model=a.model);const u=a.modelUsage;if(u&&typeof u=="object"){const s=Object.keys(u);if(s.length>0){const i=s[0];t.model||(t.model=i.replace(/\[[^\]]*\]$/,""));const o=u[i];o&&typeof o=="object"&&typeof o.contextWindow=="number"&&(t.contextWindow=o.contextWindow)}}const r=a.usage;if(r&&typeof r=="object"){const s={input:typeof r.input_tokens=="number"?r.input_tokens:0,output:typeof r.output_tokens=="number"?r.output_tokens:0};typeof r.cache_read_input_tokens=="number"&&(s.cacheRead=r.cache_read_input_tokens),typeof r.cache_creation_input_tokens=="number"&&(s.cacheWrite=r.cache_creation_input_tokens),s.total=s.input+s.output+(s.cacheRead??0)+(s.cacheWrite??0),t.tokenUsage=s}return{text:c,meta:t}}function ke(){if(process.platform!=="win32")return;const e=process.env.CLAUDE_CODE_GIT_BASH_PATH;return e||["C:\\Program Files\\Git\\bin\\bash.exe","C:\\Program Files\\Git\\usr\\bin\\bash.exe","C:\\Program Files (x86)\\Git\\bin\\bash.exe","D:\\Program Files\\Git\\bin\\bash.exe","D:\\Program Files\\Git\\usr\\bin\\bash.exe"].find(a=>Q(a))}function ve(){return!!(process.env.ANTHROPIC_API_KEY||process.env.ANTHROPIC_AUTH_TOKEN)}function H(e,n){const a=(process.env.PATH??"").split(Ae).filter(Boolean);for(const c of a)for(const t of n){const u=X(c,e+t);if(Q(u))return u}}function $e(e){if(!(!Number.isFinite(e)||e<=0))return e<=4e3?"low":e<=1e4?"medium":e<=32e3?"high":"max"}var Se={name:"claude",capabilities:{tokenUsage:!0,jsonSchema:!0,tools:!0},buildArgs(e){const n=["-p","--output-format","json"],a=!!(e.tools&&e.tools.length>0);if(ve()&&!a&&n.push("--bare"),e.model&&e.model.length>0&&n.push("--model",e.model),e.jsonSchema&&n.push("--json-schema",JSON.stringify(e.jsonSchema)),a?n.push("--allowedTools",e.tools.join(",")):n.push("--tools",""),typeof e.maxTurns=="number"&&n.push("--max-turns",String(e.maxTurns)),e.thinking){const t=$e(e.thinking.budgetTokens);t&&n.push("--effort",t)}const c=e.system&&e.system.length>0?`${e.system}
+// @agent-flow/core - bundled runtime. Source: https://git.kclab.cloud/industry-academia-research/FuClaw-OpenProse
+
+// src/index.ts
+import { config as dotenvConfig } from "dotenv";
+
+// src/run.ts
+import { AsyncLocalStorage as AsyncLocalStorage2 } from "node:async_hooks";
+import { mkdir, writeFile as writeFile2, copyFile, readdir, readFile, stat, rm } from "node:fs/promises";
+import path2 from "node:path";
+
+// src/cli-engine.ts
+import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
+function parseClaudeJson(raw) {
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const o = parsed;
+  let text;
+  if ("structured_output" in o && o.structured_output != null) {
+    text = JSON.stringify(o.structured_output);
+  } else {
+    text = typeof o.result === "string" ? o.result : "";
+  }
+  const meta = {};
+  if (typeof o.session_id === "string") meta.sessionId = o.session_id;
+  if (typeof o.total_cost_usd === "number") meta.costUSD = o.total_cost_usd;
+  if (typeof o.duration_api_ms === "number") {
+    meta.durationApiMs = o.duration_api_ms;
+  }
+  if (typeof o.model === "string") meta.model = o.model;
+  const modelUsage = o.modelUsage;
+  if (modelUsage && typeof modelUsage === "object") {
+    const keys = Object.keys(modelUsage);
+    if (keys.length > 0) {
+      const firstKey = keys[0];
+      if (!meta.model) meta.model = firstKey.replace(/\[[^\]]*\]$/, "");
+      const entry = modelUsage[firstKey];
+      if (entry && typeof entry === "object") {
+        if (typeof entry.contextWindow === "number") {
+          meta.contextWindow = entry.contextWindow;
+        }
+      }
+    }
+  }
+  const usage = o.usage;
+  if (usage && typeof usage === "object") {
+    const tokenUsage = {
+      input: typeof usage.input_tokens === "number" ? usage.input_tokens : 0,
+      output: typeof usage.output_tokens === "number" ? usage.output_tokens : 0
+    };
+    if (typeof usage.cache_read_input_tokens === "number") {
+      tokenUsage.cacheRead = usage.cache_read_input_tokens;
+    }
+    if (typeof usage.cache_creation_input_tokens === "number") {
+      tokenUsage.cacheWrite = usage.cache_creation_input_tokens;
+    }
+    tokenUsage.total = tokenUsage.input + tokenUsage.output + (tokenUsage.cacheRead ?? 0) + (tokenUsage.cacheWrite ?? 0);
+    meta.tokenUsage = tokenUsage;
+  }
+  return { text, meta };
+}
+function resolveGitBashPath() {
+  if (process.platform !== "win32") return void 0;
+  const fromParent = process.env.CLAUDE_CODE_GIT_BASH_PATH;
+  if (fromParent) return fromParent;
+  const candidates = [
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+    "D:\\Program Files\\Git\\bin\\bash.exe",
+    "D:\\Program Files\\Git\\usr\\bin\\bash.exe"
+  ];
+  return candidates.find((p) => existsSync(p));
+}
+function hasAnthropicAuth() {
+  return !!(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+}
+function findOnPath(name, exts) {
+  const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const full = join(dir, name + ext);
+      if (existsSync(full)) return full;
+    }
+  }
+  return void 0;
+}
+function effortFromBudget(budgetTokens) {
+  if (!Number.isFinite(budgetTokens) || budgetTokens <= 0) return void 0;
+  if (budgetTokens <= 4e3) return "low";
+  if (budgetTokens <= 1e4) return "medium";
+  if (budgetTokens <= 32e3) return "high";
+  return "max";
+}
+var claudeEngine = {
+  name: "claude",
+  capabilities: { tokenUsage: true, jsonSchema: true, tools: true },
+  buildArgs(req) {
+    const args = ["-p", "--output-format", "json"];
+    const wantsTools = !!(req.tools && req.tools.length > 0);
+    if (hasAnthropicAuth() && !wantsTools) args.push("--bare");
+    if (req.model && req.model.length > 0) args.push("--model", req.model);
+    if (req.jsonSchema) {
+      args.push("--json-schema", JSON.stringify(req.jsonSchema));
+    }
+    if (wantsTools) {
+      args.push("--allowedTools", req.tools.join(","));
+    } else {
+      args.push("--tools", "");
+    }
+    if (typeof req.maxTurns === "number") {
+      args.push("--max-turns", String(req.maxTurns));
+    }
+    if (req.thinking) {
+      const effort = effortFromBudget(req.thinking.budgetTokens);
+      if (effort) args.push("--effort", effort);
+    }
+    const stdin = req.system && req.system.length > 0 ? `${req.system}
 
 ---
 
-${e.prompt}`:e.prompt;return{command:"claude",args:n,stdin:c,useShell:process.platform==="win32"}},buildEnv(e){const n={...e.env??{}},a=ke();return a&&n.CLAUDE_CODE_GIT_BASH_PATH===void 0&&(n.CLAUDE_CODE_GIT_BASH_PATH=a),n},parse(e,n){const a=be(e);return a||{text:e.replace(/\n+$/,""),meta:void 0}}},_e={name:"openclaw",capabilities:{tokenUsage:!0,jsonSchema:!1,tools:!0},buildArgs(e){const n=e.system&&e.system.length>0?`${e.system}
+${req.prompt}` : req.prompt;
+    return {
+      command: "claude",
+      args,
+      stdin,
+      // Windows 上 claude 是 claude.cmd shim，Node spawn 不追 .cmd，走 cmd.exe。
+      useShell: process.platform === "win32"
+    };
+  },
+  buildEnv(req) {
+    const env = { ...req.env ?? {} };
+    const gitBash = resolveGitBashPath();
+    if (gitBash && env.CLAUDE_CODE_GIT_BASH_PATH === void 0) {
+      env.CLAUDE_CODE_GIT_BASH_PATH = gitBash;
+    }
+    return env;
+  },
+  parse(stdout, exitCode) {
+    const parsed = parseClaudeJson(stdout);
+    if (parsed) return parsed;
+    return { text: stdout.replace(/\n+$/, ""), meta: void 0 };
+  }
+};
+var openclawEngine = {
+  name: "openclaw",
+  capabilities: { tokenUsage: true, jsonSchema: false, tools: true },
+  buildArgs(req) {
+    const message = req.system && req.system.length > 0 ? `${req.system}
 
 ---
 
-${e.prompt}`:e.prompt,a=process.env.FLOW_OPENCLAW_AGENT??"main",t=["agent","--local","--session-id",`flow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,8)}`,"--message",n,"--json","--agent",a];if(e.model&&e.model.length>0&&t.push("--model",e.model),process.platform==="win32"){const u=H("openclaw",[".cmd"]);if(u){const r=X(u,"..","node_modules","openclaw","openclaw.mjs");if(Q(r))return{command:"node",args:[r,...t],useShell:!1}}}return{command:"openclaw",args:t,useShell:process.platform==="win32"}},buildEnv(e){return e.env},parse(e,n){let a;try{a=JSON.parse(e)}catch{if(/EMBEDDED FALLBACK|Gateway .*failed|GatewayTransportError/i.test(e))throw new Error(`openclaw gateway \u4E0D\u53EF\u7528\uFF0C\u5DF2\u964D\u7EA7 embedded\uFF08\u65E0\u6CD5\u591A subagent\uFF09\u3002\u8BF7\u786E\u8BA4 \`openclaw gateway\` \u5728\u8FD0\u884C\u4E14\u5065\u5EB7\u3002stdout \u5934\u90E8\uFF1A
-${e.slice(0,400)}`);return{text:e.replace(/\n+$/,""),meta:void 0}}if(!a||typeof a!="object")return{text:e.replace(/\n+$/,""),meta:void 0};const c=a,t=c.result&&typeof c.result=="object"?c.result:c;let u="";const r=t.payloads;Array.isArray(r)&&(u=r.map(l=>l&&typeof l=="object"&&typeof l.text=="string"?l.text:"").join("").trim()),u||(u=typeof t.result=="string"&&t.result||typeof t.text=="string"&&t.text||"");const s={},i=t.meta,o=i&&typeof i=="object"?i.agentMeta:void 0;if(o&&typeof o=="object"){typeof o.sessionId=="string"&&(s.sessionId=o.sessionId),typeof o.sessionFile=="string"&&(s.sessionFile=o.sessionFile),typeof o.provider=="string"&&(s.provider=o.provider),typeof o.model=="string"&&(s.model=o.model),typeof o.contextTokens=="number"&&(s.contextWindow=o.contextTokens);const l=o.lastCallUsage??o.usage;if(l&&typeof l=="object"){const d=typeof l.input=="number"?l.input:0,f=typeof l.output=="number"?l.output:0,m={input:d,output:f,total:d+f};typeof l.cacheRead=="number"&&(m.cacheRead=l.cacheRead),typeof l.cacheWrite=="number"&&(m.cacheWrite=l.cacheWrite),s.tokenUsage=m}}return{text:u,meta:s}}},Be={name:"hermes",capabilities:{tokenUsage:!1,jsonSchema:!1,tools:!0},buildArgs(e){const a=["-z",e.system&&e.system.length>0?`${e.system}
+${req.prompt}` : req.prompt;
+    const agentId = process.env.FLOW_OPENCLAW_AGENT ?? "main";
+    const sessionId = `flow-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const args = ["agent", "--local", "--session-id", sessionId, "--message", message, "--json", "--agent", agentId];
+    if (req.model && req.model.length > 0) args.push("--model", req.model);
+    if (process.platform === "win32") {
+      const shim = findOnPath("openclaw", [".cmd"]);
+      if (shim) {
+        const mjs = join(shim, "..", "node_modules", "openclaw", "openclaw.mjs");
+        if (existsSync(mjs)) {
+          return { command: "node", args: [mjs, ...args], useShell: false };
+        }
+      }
+    }
+    return {
+      command: "openclaw",
+      args,
+      useShell: process.platform === "win32"
+    };
+  },
+  buildEnv(req) {
+    return req.env;
+  },
+  parse(stdout, exitCode) {
+    let parsed;
+    try {
+      parsed = JSON.parse(stdout);
+    } catch {
+      if (/EMBEDDED FALLBACK|Gateway .*failed|GatewayTransportError/i.test(stdout)) {
+        throw new Error(
+          `openclaw gateway \u4E0D\u53EF\u7528\uFF0C\u5DF2\u964D\u7EA7 embedded\uFF08\u65E0\u6CD5\u591A subagent\uFF09\u3002\u8BF7\u786E\u8BA4 \`openclaw gateway\` \u5728\u8FD0\u884C\u4E14\u5065\u5EB7\u3002stdout \u5934\u90E8\uFF1A
+${stdout.slice(0, 400)}`
+        );
+      }
+      return { text: stdout.replace(/\n+$/, ""), meta: void 0 };
+    }
+    if (!parsed || typeof parsed !== "object") {
+      return { text: stdout.replace(/\n+$/, ""), meta: void 0 };
+    }
+    const top = parsed;
+    const body = top.result && typeof top.result === "object" ? top.result : top;
+    let text = "";
+    const payloads = body.payloads;
+    if (Array.isArray(payloads)) {
+      text = payloads.map(
+        (p) => p && typeof p === "object" && typeof p.text === "string" ? p.text : ""
+      ).join("").trim();
+    }
+    if (!text) {
+      text = typeof body.result === "string" && body.result || typeof body.text === "string" && body.text || "";
+    }
+    const meta = {};
+    const metaObj = body.meta;
+    const agentMeta = metaObj && typeof metaObj === "object" ? metaObj.agentMeta : void 0;
+    if (agentMeta && typeof agentMeta === "object") {
+      if (typeof agentMeta.sessionId === "string") {
+        meta.sessionId = agentMeta.sessionId;
+      }
+      if (typeof agentMeta.sessionFile === "string") {
+        meta.sessionFile = agentMeta.sessionFile;
+      }
+      if (typeof agentMeta.provider === "string") {
+        meta.provider = agentMeta.provider;
+      }
+      if (typeof agentMeta.model === "string") meta.model = agentMeta.model;
+      if (typeof agentMeta.contextTokens === "number") {
+        meta.contextWindow = agentMeta.contextTokens;
+      }
+      const usage = agentMeta.lastCallUsage ?? agentMeta.usage;
+      if (usage && typeof usage === "object") {
+        const input = typeof usage.input === "number" ? usage.input : 0;
+        const output = typeof usage.output === "number" ? usage.output : 0;
+        const tu = { input, output, total: input + output };
+        if (typeof usage.cacheRead === "number") tu.cacheRead = usage.cacheRead;
+        if (typeof usage.cacheWrite === "number") {
+          tu.cacheWrite = usage.cacheWrite;
+        }
+        meta.tokenUsage = tu;
+      }
+    }
+    return { text, meta };
+  }
+};
+var hermesEngine = {
+  name: "hermes",
+  capabilities: { tokenUsage: false, jsonSchema: false, tools: true },
+  buildArgs(req) {
+    const prompt = req.system && req.system.length > 0 ? `${req.system}
 
 ---
 
-${e.prompt}`:e.prompt];e.model&&e.model.length>0&&a.push("-m",e.model);const c=process.platform==="win32"?H("hermes",[".exe"]):void 0;return c?{command:c,args:a,useShell:!1}:{command:"hermes",args:a,useShell:process.platform==="win32"}},buildEnv(e){return e.env},parse(e,n){return{text:e.replace(/\n+$/,""),meta:void 0}}};function De(e){return e?e.split(/\s+/).filter(Boolean):[]}function Ne(e){if(process.platform!=="win32")return{command:e,useShell:!1};const n=e.includes("\\")||e.includes("/"),a=/\.[a-z0-9]+$/i.test(e);if(!n&&!a){const c=H(e,[".exe"]);if(c)return{command:c,useShell:!1}}return{command:e,useShell:!0}}function Te(){return(process.env.FLOW_PSI_AI??"openai-completions").toLowerCase()}var Oe={name:"psi",capabilities:{tokenUsage:!1,jsonSchema:!1,tools:!0},buildArgs(e){const n=process.env.FLOW_PSI_WORKSPACE;if(!n)throw new Error("FLOW_ENGINE=psi requires FLOW_PSI_WORKSPACE to point at a psi-agent workspace.");const a=e.system&&e.system.length>0?`${e.system}
+${req.prompt}` : req.prompt;
+    const args = ["-z", prompt];
+    if (req.model && req.model.length > 0) args.push("-m", req.model);
+    const realExe = process.platform === "win32" ? findOnPath("hermes", [".exe"]) : void 0;
+    if (realExe) {
+      return { command: realExe, args, useShell: false };
+    }
+    return {
+      command: "hermes",
+      args,
+      useShell: process.platform === "win32"
+    };
+  },
+  buildEnv(req) {
+    return req.env;
+  },
+  parse(stdout, exitCode) {
+    return { text: stdout.replace(/\n+$/, ""), meta: void 0 };
+  }
+};
+function splitEnvArgs(raw) {
+  return raw ? raw.split(/\s+/).filter(Boolean) : [];
+}
+function resolveCommand(command) {
+  if (process.platform !== "win32") return { command, useShell: false };
+  const hasPathSep = command.includes("\\") || command.includes("/");
+  const hasExt = /\.[a-z0-9]+$/i.test(command);
+  if (!hasPathSep && !hasExt) {
+    const exe = findOnPath(command, [".exe"]);
+    if (exe) return { command: exe, useShell: false };
+  }
+  return { command, useShell: true };
+}
+function psiAiKind() {
+  return (process.env.FLOW_PSI_AI ?? "openai-completions").toLowerCase();
+}
+var psiEngine = {
+  name: "psi",
+  capabilities: { tokenUsage: false, jsonSchema: false, tools: true },
+  buildArgs(req) {
+    const workspace = process.env.FLOW_PSI_WORKSPACE;
+    if (!workspace) {
+      throw new Error(
+        `FLOW_ENGINE=psi requires FLOW_PSI_WORKSPACE to point at a psi-agent workspace.`
+      );
+    }
+    const message = req.system && req.system.length > 0 ? `${req.system}
 
 ---
 
-${e.prompt}`:e.prompt,c=process.env.FLOW_PSI_COMMAND??"psi-agent",t=Ne(c),u=[...De(process.env.FLOW_PSI_COMMAND_ARGS),"run","--workspace",n,"--message",a,"--output-format","text"],r=process.env.FLOW_PSI_AI_SOCKET;r&&u.push("--ai-socket",r);const s=process.env.FLOW_PSI_AI;s&&u.push("--ai",s);const i=e.model||process.env.FLOW_PSI_MODEL;i&&u.push("--model",i);const o=process.env.FLOW_PSI_PROFILE;o&&u.push("--profile",o);const l=process.env.FLOW_PSI_CONFIG;return l&&u.push("--config",l),/^(1|true|yes)$/i.test(process.env.FLOW_PSI_SHOW_REASONING??"")&&u.push("--show-reasoning"),{command:t.command,args:u,useShell:t.useShell}},buildEnv(e){const n={...e.env??{}},a=process.env.FLOW_PSI_API_KEY,c=process.env.FLOW_PSI_BASE_URL,t=Te();return a&&(t==="anthropic-messages"?n.ANTHROPIC_API_KEY=a:n.OPENAI_API_KEY=a),c&&(t==="anthropic-messages"?n.ANTHROPIC_BASE_URL=c:n.OPENAI_BASE_URL=c),n},parse(e,n){return{text:e.replace(/\n+$/,""),meta:void 0}}},Ie={claude:Se,openclaw:_e,hermes:Be,psi:Oe};function Z(e){const n=(e??process.env.FLOW_ENGINE??"claude").toLowerCase(),c=Ie[n==="psi-agent"?"psi":n];if(!c)throw new Error(`\u672A\u77E5 CLI \u5F15\u64CE "${n}"\u3002\u652F\u6301\uFF1Aclaude / openclaw / hermes / psi\u3002\u7528 FLOW_ENGINE \u6216 flow.agent({engine}) \u6307\u5B9A\u3002`);return c}import{spawn as q}from"node:child_process";function Le(e){let n=String(e);return n=n.replace(/(\\*)"/g,'$1$1\\"'),n=n.replace(/(\\*)$/,"$1$1"),n=`"${n}"`,n=n.replace(/[()%!^"<>&|]/g,"^$&"),n}async function ee(e){const n={};for(const[c,t]of Object.entries(process.env))typeof t=="string"&&(n[c]=t);const a={...n,...e.env??{}};if(e.signal?.aborted)throw new Error("runSubprocess: signal already aborted before start, subprocess not spawned.");return await new Promise((c,t)=>{let u;try{if(e.useShell&&process.platform==="win32"){const C=[e.command,...e.args].map(Le).join(" ");u=q("cmd.exe",["/d","/s","/c",C],{cwd:e.cwd,env:a,windowsVerbatimArguments:!0,stdio:["pipe","pipe","pipe"]})}else u=q(e.command,e.args,{cwd:e.cwd,env:a,shell:e.useShell,stdio:["pipe","pipe","pipe"]})}catch(C){t(C);return}const r=[],s=[];let i=!1,o=!1,l=!1;const d=e.maxStdoutBytes&&Number.isFinite(e.maxStdoutBytes)&&e.maxStdoutBytes>0?e.maxStdoutBytes:1/0;let f=0,m=!1;const p=setTimeout(()=>{i=!0;try{u.kill("SIGKILL")}catch{}},e.timeoutMs),h=()=>{o=!0;try{u.kill("SIGKILL")}catch{}};e.signal&&e.signal.addEventListener("abort",h);const w=()=>{clearTimeout(p),e.signal&&e.signal.removeEventListener("abort",h)},y=C=>{l||(l=!0,w(),c(C))},S=C=>{if(!l){l=!0,w();try{u.kill("SIGKILL")}catch{}t(C)}};u.stdout.on("data",C=>{if(m)return;const v=d-f;if(C.length<=v){r.push(C),f+=C.length;return}v>0&&(r.push(C.subarray(0,v)),f+=v),m=!0;try{u.kill("SIGKILL")}catch{}}),u.stderr.on("data",C=>s.push(C)),u.on("error",C=>S(C)),u.on("close",C=>{const v=Buffer.concat(r).toString("utf8"),A=Buffer.concat(s).toString("utf8");if(m){y({stdout:v,stderr:A,exitCode:C??-1,truncated:!0});return}if(o){S(new Error("runSubprocess: received abort signal, subprocess SIGKILLed."));return}if(i){S(new Error(`runSubprocess: subprocess timed out after ${e.timeoutMs}ms, SIGKILLed. command="${e.command} ${e.args.join(" ")}"
-stderr tail: ${A.slice(-300)}`));return}y({stdout:v,stderr:A,exitCode:C??-1})}),typeof e.stdin=="string"&&u.stdin.write(e.stdin),u.stdin.end()})}import{rmSync as Pe,readdirSync as je}from"node:fs";import{join as Me}from"node:path";function Re(){const e=process.env.FLOW_CLI_TIMEOUT_MS;if(e){const n=Number(e);if(Number.isFinite(n)&&n>0)return n}return 3e5}function We(){const e=process.env.FLOW_MAX_CONCURRENCY;if(e){const n=Number(e);if(Number.isInteger(n)&&n>0)return n}return 4}var W=0,U=[];async function Ue(e){if(e?.aborted)throw new Error("acquire aborted before acquiring concurrency slot");const n=We();if(W<n){W++;return}await new Promise((a,c)=>{const t={resolve:a,reject:c};U.push(t),e&&e.addEventListener("abort",()=>{const u=U.indexOf(t);u>=0&&U.splice(u,1),c(new Error("acquire aborted while waiting for concurrency slot"))},{once:!0})}),W++}function xe(){W--;const e=U.shift();e&&e.resolve()}var te=new Set,ne=async e=>{const n=Z(e.engine);e.jsonSchema&&!n.capabilities.jsonSchema&&(te.has(n.name)||(te.add(n.name),console.warn(`  [warn] CLI engine "${n.name}" does not support --json-schema strict structured output; flow.evaluate / choice will fall back to text parsing (may be flaky). Prefer the claude engine for evaluators.`)));const a={system:e.system,prompt:e.userPrompt,model:e.model,jsonSchema:n.capabilities.jsonSchema?e.jsonSchema:void 0,tools:e.tools,maxTurns:e.maxTurns,thinking:e.thinking},c=n.buildArgs(a),t=n.buildEnv?n.buildEnv(a):void 0;await Ue(e.signal);let u;try{u=await ee({command:c.command,args:c.args,stdin:c.stdin,useShell:c.useShell,env:t,timeoutMs:Re(),signal:e.signal})}finally{xe()}if(u.exitCode!==0){const l=u.stderr.replace(/\[[0-9;]*m/g,"");throw new Error(`CLI engine "${n.name}" subprocess exited abnormally exit=${u.exitCode}.
-command: ${c.command}
-args: ${JSON.stringify(c.args).slice(0,600)}
-model=${e.model||"(default)"} tools=${(e.tools??[]).join(",")||"(none)"} maxTurns=${e.maxTurns??"(default)"}
-stderr tail: ${l.slice(-300)}`)}const r=n.parse(u.stdout,u.exitCode),s=r.meta?.sessionFile,i=s?/^(.*[\\/])(flow-[a-z0-9-]+)\.jsonl$/i.exec(s):null;if(i){const l=i[1],d=i[2];try{for(const f of je(l))if(f===d||f.startsWith(`${d}.`))try{Pe(Me(l,f),{force:!0})}catch{}}catch{}}const o=r.meta?.tokenUsage;return{text:r.text,inputTokens:o?.input??0,outputTokens:o?.output??0,cacheReadTokens:o?.cacheRead??0,cacheWriteTokens:o?.cacheWrite??0,costUSD:r.meta?.costUSD,engine:n.name}};import{AsyncLocalStorage as ue}from"node:async_hooks";import{createHash as Ge}from"node:crypto";import{writeFile as O}from"node:fs/promises";import I from"node:path";var re=new ue,oe=new ue;function se(){return oe.getStore()}function Ke(){const e=process.env.FLOW_PARALLEL_GRACE_MS;if(e){const n=Number(e);if(Number.isFinite(n)&&n>=0)return n}return 5e3}async function ae(e){const n=Promise.allSettled(e),a=Ke();let c;const t=new Promise(u=>{c=setTimeout(u,a)});await Promise.race([n.then(()=>{}),t]),c&&clearTimeout(c)}function ie(e){return re.getStore()??e}function Qe(e,n){return re.run(e,n)}function g(){return new Date().toISOString()}function ce(){return{provider:`cli:${(process.env.FLOW_ENGINE??"claude").toLowerCase()}`,call:ne,defaultModel:process.env.FLOW_MODEL??""}}function He(e,n){return!n||Object.keys(n).length===0?e:`${Object.entries(n).map(([c,t])=>`## context.${c}
+${req.prompt}` : req.prompt;
+    const baseCommand = process.env.FLOW_PSI_COMMAND ?? "psi-agent";
+    const resolved = resolveCommand(baseCommand);
+    const args = [
+      ...splitEnvArgs(process.env.FLOW_PSI_COMMAND_ARGS),
+      "run",
+      "--workspace",
+      workspace,
+      "--message",
+      message,
+      "--output-format",
+      "text"
+    ];
+    const aiSocket = process.env.FLOW_PSI_AI_SOCKET;
+    if (aiSocket) args.push("--ai-socket", aiSocket);
+    const ai = process.env.FLOW_PSI_AI;
+    if (ai) args.push("--ai", ai);
+    const model = req.model || process.env.FLOW_PSI_MODEL;
+    if (model) args.push("--model", model);
+    const profile = process.env.FLOW_PSI_PROFILE;
+    if (profile) args.push("--profile", profile);
+    const config = process.env.FLOW_PSI_CONFIG;
+    if (config) args.push("--config", config);
+    if (/^(1|true|yes)$/i.test(process.env.FLOW_PSI_SHOW_REASONING ?? "")) {
+      args.push("--show-reasoning");
+    }
+    return { command: resolved.command, args, useShell: resolved.useShell };
+  },
+  buildEnv(req) {
+    const env = { ...req.env ?? {} };
+    const apiKey = process.env.FLOW_PSI_API_KEY;
+    const baseUrl = process.env.FLOW_PSI_BASE_URL;
+    const ai = psiAiKind();
+    if (apiKey) {
+      if (ai === "anthropic-messages") env.ANTHROPIC_API_KEY = apiKey;
+      else env.OPENAI_API_KEY = apiKey;
+    }
+    if (baseUrl) {
+      if (ai === "anthropic-messages") env.ANTHROPIC_BASE_URL = baseUrl;
+      else env.OPENAI_BASE_URL = baseUrl;
+    }
+    return env;
+  },
+  parse(stdout, exitCode) {
+    return { text: stdout.replace(/\n+$/, ""), meta: void 0 };
+  }
+};
+var ENGINES = {
+  claude: claudeEngine,
+  openclaw: openclawEngine,
+  hermes: hermesEngine,
+  psi: psiEngine
+};
+function pickEngine(name) {
+  const raw = (name ?? process.env.FLOW_ENGINE ?? "claude").toLowerCase();
+  const key = raw === "psi-agent" ? "psi" : raw;
+  const engine = ENGINES[key];
+  if (!engine) {
+    throw new Error(
+      `\u672A\u77E5 CLI \u5F15\u64CE "${raw}"\u3002\u652F\u6301\uFF1Aclaude / openclaw / hermes / psi\u3002\u7528 FLOW_ENGINE \u6216 flow.agent({engine}) \u6307\u5B9A\u3002`
+    );
+  }
+  return engine;
+}
 
-${t}`).join(`
+// src/subprocess.ts
+import { spawn as childSpawn } from "node:child_process";
+function escapeForCmd(arg) {
+  let s = String(arg);
+  s = s.replace(/(\\*)"/g, '$1$1\\"');
+  s = s.replace(/(\\*)$/, "$1$1");
+  s = `"${s}"`;
+  s = s.replace(/[()%!^"<>&|]/g, "^$&");
+  return s;
+}
+async function runSubprocess(opts) {
+  const baselineEnv = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v === "string") baselineEnv[k] = v;
+  }
+  const finalEnv = { ...baselineEnv, ...opts.env ?? {} };
+  if (opts.signal?.aborted) {
+    throw new Error(
+      `runSubprocess: signal already aborted before start, subprocess not spawned.`
+    );
+  }
+  return await new Promise((resolve, reject) => {
+    let child;
+    try {
+      if (opts.useShell && process.platform === "win32") {
+        const line = [opts.command, ...opts.args].map(escapeForCmd).join(" ");
+        child = childSpawn("cmd.exe", ["/d", "/s", "/c", line], {
+          cwd: opts.cwd,
+          env: finalEnv,
+          windowsVerbatimArguments: true,
+          stdio: ["pipe", "pipe", "pipe"]
+        });
+      } else {
+        child = childSpawn(opts.command, opts.args, {
+          cwd: opts.cwd,
+          env: finalEnv,
+          shell: opts.useShell,
+          stdio: ["pipe", "pipe", "pipe"]
+        });
+      }
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let timedOut = false;
+    let aborted = false;
+    let settled = false;
+    const maxStdout = opts.maxStdoutBytes && Number.isFinite(opts.maxStdoutBytes) && opts.maxStdoutBytes > 0 ? opts.maxStdoutBytes : Infinity;
+    let stdoutBytes = 0;
+    let stdoutTruncated = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+      }
+    }, opts.timeoutMs);
+    const onAbort = () => {
+      aborted = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+      }
+    };
+    if (opts.signal) opts.signal.addEventListener("abort", onAbort);
+    const cleanup = () => {
+      clearTimeout(timer);
+      if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
+    };
+    const finalize = (resolveValue) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(resolveValue);
+    };
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      try {
+        child.kill("SIGKILL");
+      } catch {
+      }
+      reject(err);
+    };
+    child.stdout.on("data", (chunk) => {
+      if (stdoutTruncated) return;
+      const remaining = maxStdout - stdoutBytes;
+      if (chunk.length <= remaining) {
+        stdoutChunks.push(chunk);
+        stdoutBytes += chunk.length;
+        return;
+      }
+      if (remaining > 0) {
+        stdoutChunks.push(chunk.subarray(0, remaining));
+        stdoutBytes += remaining;
+      }
+      stdoutTruncated = true;
+      try {
+        child.kill("SIGKILL");
+      } catch {
+      }
+    });
+    child.stderr.on("data", (chunk) => stderrChunks.push(chunk));
+    child.on("error", (err) => fail(err));
+    child.on("close", (code) => {
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
+      if (stdoutTruncated) {
+        finalize({ stdout, stderr, exitCode: code ?? -1, truncated: true });
+        return;
+      }
+      if (aborted) {
+        fail(new Error(`runSubprocess: received abort signal, subprocess SIGKILLed.`));
+        return;
+      }
+      if (timedOut) {
+        fail(
+          new Error(
+            `runSubprocess: subprocess timed out after ${opts.timeoutMs}ms, SIGKILLed. command="${opts.command} ${opts.args.join(" ")}"
+stderr tail: ${stderr.slice(-300)}`
+          )
+        );
+        return;
+      }
+      finalize({ stdout, stderr, exitCode: code ?? -1 });
+    });
+    if (typeof opts.stdin === "string") {
+      child.stdin.write(opts.stdin);
+      child.stdin.end();
+    } else {
+      child.stdin.end();
+    }
+  });
+}
+
+// src/cli.ts
+import { rmSync, readdirSync } from "node:fs";
+import { join as join2 } from "node:path";
+function resolveTimeoutMs() {
+  const raw = process.env.FLOW_CLI_TIMEOUT_MS;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 3e5;
+}
+function resolveMaxConcurrency() {
+  const raw = process.env.FLOW_MAX_CONCURRENCY;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n > 0) return n;
+  }
+  return 4;
+}
+var active = 0;
+var waiters = [];
+async function acquire(signal) {
+  if (signal?.aborted) {
+    throw new Error("acquire aborted before acquiring concurrency slot");
+  }
+  const max = resolveMaxConcurrency();
+  if (active < max) {
+    active++;
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const node = { resolve, reject };
+    waiters.push(node);
+    if (signal) {
+      signal.addEventListener(
+        "abort",
+        () => {
+          const i = waiters.indexOf(node);
+          if (i >= 0) waiters.splice(i, 1);
+          reject(new Error("acquire aborted while waiting for concurrency slot"));
+        },
+        { once: true }
+      );
+    }
+  });
+  active++;
+}
+function release() {
+  active--;
+  const next = waiters.shift();
+  if (next) next.resolve();
+}
+var warnedNoSchema = /* @__PURE__ */ new Set();
+var callViaCli = async (opts) => {
+  const engine = pickEngine(opts.engine);
+  if (opts.jsonSchema && !engine.capabilities.jsonSchema) {
+    if (!warnedNoSchema.has(engine.name)) {
+      warnedNoSchema.add(engine.name);
+      console.warn(
+        `  [warn] CLI engine "${engine.name}" does not support --json-schema strict structured output; flow.evaluate / choice will fall back to text parsing (may be flaky). Prefer the claude engine for evaluators.`
+      );
+    }
+  }
+  const req = {
+    system: opts.system,
+    prompt: opts.userPrompt,
+    model: opts.model,
+    jsonSchema: engine.capabilities.jsonSchema ? opts.jsonSchema : void 0,
+    tools: opts.tools,
+    maxTurns: opts.maxTurns,
+    // #17: thinking 透到 CliRequest，claude 引擎据此映射 --effort（真生效，不再 no-op）。
+    thinking: opts.thinking
+  };
+  const built = engine.buildArgs(req);
+  const env = engine.buildEnv ? engine.buildEnv(req) : void 0;
+  await acquire(opts.signal);
+  let out;
+  try {
+    out = await runSubprocess({
+      command: built.command,
+      args: built.args,
+      stdin: built.stdin,
+      useShell: built.useShell,
+      env,
+      timeoutMs: resolveTimeoutMs(),
+      signal: opts.signal
+    });
+  } finally {
+    release();
+  }
+  if (out.exitCode !== 0) {
+    const cleanStderr = out.stderr.replace(/\[[0-9;]*m/g, "");
+    throw new Error(
+      `CLI engine "${engine.name}" subprocess exited abnormally exit=${out.exitCode}.
+command: ${built.command}
+args: ${JSON.stringify(built.args).slice(0, 600)}
+model=${opts.model || "(default)"} tools=${(opts.tools ?? []).join(",") || "(none)"} maxTurns=${opts.maxTurns ?? "(default)"}
+stderr tail: ${cleanStderr.slice(-300)}`
+    );
+  }
+  const parsed = engine.parse(out.stdout, out.exitCode);
+  const sf = parsed.meta?.sessionFile;
+  const m = sf ? /^(.*[\\/])(flow-[a-z0-9-]+)\.jsonl$/i.exec(sf) : null;
+  if (m) {
+    const dir = m[1];
+    const baseName = m[2];
+    try {
+      for (const entry of readdirSync(dir)) {
+        if (entry === baseName || entry.startsWith(`${baseName}.`)) {
+          try {
+            rmSync(join2(dir, entry), { force: true });
+          } catch {
+          }
+        }
+      }
+    } catch {
+    }
+  }
+  const tu = parsed.meta?.tokenUsage;
+  return {
+    text: parsed.text,
+    inputTokens: tu?.input ?? 0,
+    outputTokens: tu?.output ?? 0,
+    cacheReadTokens: tu?.cacheRead ?? 0,
+    cacheWriteTokens: tu?.cacheWrite ?? 0,
+    costUSD: parsed.meta?.costUSD,
+    engine: engine.name
+  };
+};
+
+// src/flow.ts
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
+import { appendFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+var nodeStorage = new AsyncLocalStorage();
+var cancelStorage = new AsyncLocalStorage();
+function currentCancelSignal() {
+  return cancelStorage.getStore();
+}
+function resolveParallelGraceMs() {
+  const raw = process.env.FLOW_PARALLEL_GRACE_MS;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return 5e3;
+}
+async function settleLaggards(promises) {
+  const all = Promise.allSettled(promises);
+  const graceMs = resolveParallelGraceMs();
+  let timer;
+  const grace = new Promise((resolve) => {
+    timer = setTimeout(resolve, graceMs);
+  });
+  await Promise.race([all.then(() => void 0), grace]);
+  if (timer) clearTimeout(timer);
+}
+function currentParent(rootFallback) {
+  return nodeStorage.getStore() ?? rootFallback;
+}
+function runUnderNode(node, fn) {
+  return nodeStorage.run(node, fn);
+}
+function nowIso() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function nodeLabel(node) {
+  const n = node;
+  return n.agent ?? n.name ?? n.label ?? n.service ?? n.branch ?? void 0;
+}
+function appendProgress(ctx, event, node, extra) {
+  if (ctx.sealed) return;
+  const label = nodeLabel(node);
+  const record = {
+    ts: nowIso(),
+    event,
+    id: node.id,
+    type: node.type
+  };
+  if (label !== void 0) record.label = label;
+  if (extra?.status !== void 0) record.status = extra.status;
+  if (extra?.durationMs !== void 0) record.durationMs = extra.durationMs;
+  const line = JSON.stringify(record) + "\n";
+  const progressPath = path.join(ctx.runDir, "progress.jsonl");
+  ctx.writeQueue = ctx.writeQueue.then(() => appendFile(progressPath, line, "utf8")).catch(() => {
+  });
+}
+function pickProvider() {
+  const engine = (process.env.FLOW_ENGINE ?? "claude").toLowerCase();
+  return {
+    provider: `cli:${engine}`,
+    call: callViaCli,
+    // 空串 = 用 CLI 自身默认模型；FLOW_MODEL 可指定（claude 接受 "opus"/"sonnet" 或全名）。
+    defaultModel: process.env.FLOW_MODEL ?? ""
+  };
+}
+function buildUserMessage(prompt, context) {
+  if (!context || Object.keys(context).length === 0) return prompt;
+  const ctxBlock = Object.entries(context).map(([key, value]) => `## context.${key}
+
+${value}`).join("\n\n---\n\n");
+  return `${ctxBlock}
 
 ---
 
-`)}
-
----
-
-${e}`}function F(e,n){return e.nodeIdSeq+=1,`${n}-${e.nodeIdSeq.toString().padStart(4,"0")}`}function L(e,n,a){const c=a??(n===1?e:`${e}.${n}`);return D("flow binding",c)}function le(e){const n=Ge("sha256");for(const a of e)n.update(a),n.update(" ");return n.digest("hex").slice(0,16)}function de(e,n,a){if(!e.isResumed)return;const c=e.resumeCache.get(n);if(c&&!(c.inputHash&&c.inputHash!==a))return{content:c.content}}var Je=new RegExp("[/\\\\]|\\p{C}|\\p{Z}","u"),Ve=/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i;function D(e,n){if(typeof n!="string"||n.length===0)throw new Error(`${e}: name must not be empty`);if(n==="."||n===".."||n.includes(".."))throw new Error(`${e}: name "${n}" must not be "." / ".." or contain ".." (path traversal).`);if(Je.test(n))throw new Error(`${e}: name "${n}" contains an illegal character. Path separators (/ \\), whitespace and control chars are not allowed (letters/digits/_/-/. and non-ASCII like \u4E2D\u6587 are fine).`);if(Ve.test(n))throw new Error(`${e}: name "${n}" is a Windows reserved device name (CON/PRN/AUX/NUL/COMn/LPTn). Pick another name for cross-platform safety.`);if(/[. ]$/.test(n))throw new Error(`${e}: name "${n}" must not end with '.' or space (Windows fs strips them).`);return n.normalize("NFC")}function Ye(e,n,a){if(!n||n.length===0)return;const c=new Set(Object.keys(a??{})),t=n.filter(i=>!c.has(i)),u=new Set(n),r=[...c].filter(i=>!u.has(i));if(t.length===0&&r.length===0)return;const s=[];throw t.length>0&&s.push(`\u7F3A\u5C11\u5B57\u6BB5 [${t.join(", ")}]`),r.length>0&&s.push(`\u591A\u51FA\u672A\u58F0\u660E\u5B57\u6BB5 [${r.join(", ")}]\uFF08\u62FC\u9519\uFF1F\uFF09`),new Error(`flow.session("${e}"): context \u4E0D\u5339\u914D contextSchema\u3002${s.join("\uFF1B")}\u3002\u58F0\u660E\u7684\u5B57\u6BB5\u662F [${n.join(", ")}]\u3002`)}function fe(e,n,a,c){if(e.writtenBindings.has(a)){if(c)throw new Error(`${n}: bindingName "${a}" \u5DF2\u88AB\u5360\u7528\u3002\u4E24\u6B21\u663E\u5F0F\u7528\u540C\u540D\u4F1A\u8BA9\u7B2C\u4E00\u6B21\u7684\u5185\u5BB9\u88AB\u9759\u9ED8\u8986\u76D6\u3001\u5F7B\u5E95\u4E22\u5931\u3002\u8BF7\u6362\u4E00\u4E2A bindingName\uFF0C\u6216\u53BB\u6389\u663E\u5F0F\u547D\u540D\u8BA9\u6846\u67B6\u81EA\u52A8\u7F16\u53F7\u3002`);return}e.writtenBindings.add(a)}async function T(e,n,a,c){const t=I.join(e,"bindings",`${n}.md`),u=I.join(e,"bindings",`${n}.meta.json`);await O(t,a,"utf8"),await O(u,JSON.stringify(c,null,2),"utf8")}function N(e,n){if(e.sealed)throw new Error(`${n}: run() \u5DF2\u7ED3\u675F\uFF0C\u4E0D\u80FD\u518D\u5199\u76D8\u3002\u8FD9\u901A\u5E38\u662F detached promise\uFF08\u88F8 .then / setTimeout \u91CC\u8C03 flow.*\uFF09\u5BFC\u81F4\u2014\u2014\u5B83\u8131\u79BB\u4E86\u6267\u884C\u56FE\uFF0C\u4EA7\u7269\u56DE\u653E\u4E0D\u5230\u3002\u8BF7\u5728 run() \u7684 fn \u5185 await \u6BCF\u4E2A flow.* \u8C03\u7528\u3002`)}function ze(e){const n=typeof e=="string"?e:(()=>{try{return JSON.stringify(e)}catch{return String(e)}})();return n.length>60?`${n.slice(0,57)}...`:n}async function E(e,n,a){ie(e.rootGraphNode).children.push(n);const t=Date.now();try{const u=await Qe(n,a);return n.status="ok",n.endedAt=g(),n.durationMs=Date.now()-t,u}catch(u){throw n.status="error",n.endedAt=g(),n.durationMs=Date.now()-t,n.errorMessage=u.message,u}}var me=`\u4F60\u662F\u4E00\u4E2A\u4E25\u8C28\u7684\u7ED3\u6784\u5316\u5224\u65AD\u5668\u3002
+${prompt}`;
+}
+function nextNodeId(ctx, prefix) {
+  ctx.nodeIdSeq += 1;
+  return `${prefix}-${ctx.nodeIdSeq.toString().padStart(4, "0")}`;
+}
+function pickBindingName(base, count, override) {
+  const name = override ?? (count === 1 ? base : `${base}.${count}`);
+  return assertSafeName("flow binding", name);
+}
+function makeInputHash(parts) {
+  const h = createHash("sha256");
+  for (const p of parts) {
+    h.update(p);
+    h.update(" ");
+  }
+  return h.digest("hex").slice(0, 16);
+}
+function tryResumeHit(ctx, bindingName, inputHash) {
+  if (!ctx.isResumed) return void 0;
+  const entry = ctx.resumeCache.get(bindingName);
+  if (!entry) return void 0;
+  if (entry.inputHash && entry.inputHash !== inputHash) return void 0;
+  return { content: entry.content };
+}
+var UNSAFE_NAME_RE = new RegExp("[/\\\\]|\\p{C}|\\p{Z}", "u");
+var WIN_RESERVED_RE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i;
+function assertSafeName(kind, name) {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new Error(`${kind}: name must not be empty`);
+  }
+  if (name === "." || name === ".." || name.includes("..")) {
+    throw new Error(
+      `${kind}: name "${name}" must not be "." / ".." or contain ".." (path traversal).`
+    );
+  }
+  if (UNSAFE_NAME_RE.test(name)) {
+    throw new Error(
+      `${kind}: name "${name}" contains an illegal character. Path separators (/ \\), whitespace and control chars are not allowed (letters/digits/_/-/. and non-ASCII like \u4E2D\u6587 are fine).`
+    );
+  }
+  if (WIN_RESERVED_RE.test(name)) {
+    throw new Error(
+      `${kind}: name "${name}" is a Windows reserved device name (CON/PRN/AUX/NUL/COMn/LPTn). Pick another name for cross-platform safety.`
+    );
+  }
+  if (/[. ]$/.test(name)) {
+    throw new Error(
+      `${kind}: name "${name}" must not end with '.' or space (Windows fs strips them).`
+    );
+  }
+  return name.normalize("NFC");
+}
+function assertContextSchema(agentName, schema, context) {
+  if (!schema || schema.length === 0) return;
+  const got = new Set(Object.keys(context ?? {}));
+  const missing = schema.filter((k) => !got.has(k));
+  const allowed = new Set(schema);
+  const extra = [...got].filter((k) => !allowed.has(k));
+  if (missing.length === 0 && extra.length === 0) return;
+  const parts = [];
+  if (missing.length > 0) parts.push(`\u7F3A\u5C11\u5B57\u6BB5 [${missing.join(", ")}]`);
+  if (extra.length > 0) {
+    parts.push(`\u591A\u51FA\u672A\u58F0\u660E\u5B57\u6BB5 [${extra.join(", ")}]\uFF08\u62FC\u9519\uFF1F\uFF09`);
+  }
+  throw new Error(
+    `flow.session("${agentName}"): context \u4E0D\u5339\u914D contextSchema\u3002${parts.join("\uFF1B")}\u3002\u58F0\u660E\u7684\u5B57\u6BB5\u662F [${schema.join(", ")}]\u3002`
+  );
+}
+function registerBindingName(ctx, kind, name, hadExplicitOverride) {
+  if (ctx.writtenBindings.has(name)) {
+    if (hadExplicitOverride) {
+      throw new Error(
+        `${kind}: bindingName "${name}" \u5DF2\u88AB\u5360\u7528\u3002\u4E24\u6B21\u663E\u5F0F\u7528\u540C\u540D\u4F1A\u8BA9\u7B2C\u4E00\u6B21\u7684\u5185\u5BB9\u88AB\u9759\u9ED8\u8986\u76D6\u3001\u5F7B\u5E95\u4E22\u5931\u3002\u8BF7\u6362\u4E00\u4E2A bindingName\uFF0C\u6216\u53BB\u6389\u663E\u5F0F\u547D\u540D\u8BA9\u6846\u67B6\u81EA\u52A8\u7F16\u53F7\u3002`
+      );
+    }
+    return;
+  }
+  ctx.writtenBindings.add(name);
+}
+async function writeBinding(runDir, name, value, meta) {
+  const bindingPath = path.join(runDir, "bindings", `${name}.md`);
+  const metaPath = path.join(runDir, "bindings", `${name}.meta.json`);
+  await writeFile(bindingPath, value, "utf8");
+  await writeFile(metaPath, JSON.stringify(meta, null, 2), "utf8");
+}
+function assertNotSealed(ctx, kind) {
+  if (ctx.sealed) {
+    throw new Error(
+      `${kind}: run() \u5DF2\u7ED3\u675F\uFF0C\u4E0D\u80FD\u518D\u5199\u76D8\u3002\u8FD9\u901A\u5E38\u662F detached promise\uFF08\u88F8 .then / setTimeout \u91CC\u8C03 flow.*\uFF09\u5BFC\u81F4\u2014\u2014\u5B83\u8131\u79BB\u4E86\u6267\u884C\u56FE\uFF0C\u4EA7\u7269\u56DE\u653E\u4E0D\u5230\u3002\u8BF7\u5728 run() \u7684 fn \u5185 await \u6BCF\u4E2A flow.* \u8C03\u7528\u3002`
+    );
+  }
+}
+function previewItem(x) {
+  const s = typeof x === "string" ? x : (() => {
+    try {
+      return JSON.stringify(x);
+    } catch {
+      return String(x);
+    }
+  })();
+  return s.length > 60 ? `${s.slice(0, 57)}...` : s;
+}
+async function withGraphNode(ctx, node, fn) {
+  const parent = currentParent(ctx.rootGraphNode);
+  parent.children.push(node);
+  const startTs = Date.now();
+  appendProgress(ctx, "node_start", node);
+  try {
+    const result = await runUnderNode(node, fn);
+    node.status = "ok";
+    node.endedAt = nowIso();
+    node.durationMs = Date.now() - startTs;
+    appendProgress(ctx, "node_end", node, {
+      status: "ok",
+      durationMs: node.durationMs
+    });
+    return result;
+  } catch (err) {
+    node.status = "error";
+    node.endedAt = nowIso();
+    node.durationMs = Date.now() - startTs;
+    node.errorMessage = err.message;
+    appendProgress(ctx, "node_end", node, {
+      status: "error",
+      durationMs: node.durationMs
+    });
+    throw err;
+  }
+}
+var EVALUATOR_SYSTEM_PROMPT = `\u4F60\u662F\u4E00\u4E2A\u4E25\u8C28\u7684\u7ED3\u6784\u5316\u5224\u65AD\u5668\u3002
 
 \u4F60\u53EA\u8F93\u51FA JSON\uFF0C\u4E0D\u8981\u4EFB\u4F55\u89E3\u91CA\u3001\u524D\u540E\u7F00\u3001Markdown \u4EE3\u7801\u5757\u3002
 
@@ -41,18 +846,1618 @@ ${e}`}function F(e,n){return e.nodeIdSeq+=1,`${n}-${e.nodeIdSeq.toString().padSt
 - kind = "choice"\uFF1A\u8F93\u51FA {"value": "<\u5019\u9009\u9879\u539F\u6587>"}\uFF0Cvalue \u5FC5\u987B\u4E25\u683C\u7B49\u4E8E options \u4E2D\u7684\u67D0\u4E00\u9879
 
 \u5982\u679C\u4FE1\u606F\u4E0D\u8DB3\u4EE5\u5224\u65AD\uFF0C\u6309\u4F60\u7684\u6700\u4F73\u63A8\u6D4B\u7ED9\u51FA value\uFF0C\u4F46\u4FDD\u6301 JSON \u683C\u5F0F\u3002
-\u7EDD\u5BF9\u4E0D\u8981\u8F93\u51FA\u989D\u5916\u5B57\u6BB5\u3002`,J="__evaluator__";function Xe(e){const n=[];if(n.push("# \u4EFB\u52A1"),n.push(e.question),n.push(""),e.context&&Object.keys(e.context).length>0){n.push("# \u4E0A\u4E0B\u6587");for(const[a,c]of Object.entries(e.context))n.push(`## context.${a}`),n.push(c),n.push("")}if(n.push("# \u8F93\u51FA\u683C\u5F0F"),e.kind==="boolean")n.push('kind = "boolean"\uFF0C\u8F93\u51FA {"value": true} \u6216 {"value": false}\u3002');else if(e.kind==="number"){const a=[];typeof e.min=="number"&&a.push(`min=${e.min}`),typeof e.max=="number"&&a.push(`max=${e.max}`),e.integer&&a.push("\u5FC5\u987B\u4E3A\u6574\u6570");const c=a.length?`\uFF08${a.join("\uFF0C")}\uFF09`:"";n.push(`kind = "number"\uFF0C\u8F93\u51FA {"value": <number>}${c}\u3002`)}else{n.push('kind = "choice"\uFF0C\u5FC5\u987B\u4ECE\u4E0B\u5217\u5019\u9009\u9879\u4E2D\u9009\u4E00\u4E2A\uFF1A');for(const a of e.options)n.push(`- ${a}`);n.push('\u8F93\u51FA {"value": "<\u5019\u9009\u9879\u539F\u6587>"}\u3002')}return n.join(`
-`)}function Ze(e){let n;return e.kind==="boolean"?n={type:"boolean"}:e.kind==="number"?n={type:e.integer?"integer":"number"}:n={type:"string",enum:[...e.options]},{type:"object",properties:{value:n},required:["value"],additionalProperties:!1}}function qe(e,n){const a=e.trim().replace(/^```(?:json)?\s*/i,"").replace(/\s*```$/,"").trim();if(a.length===0)throw new Error("flow.evaluate: LLM \u6CA1\u6709\u8FD4\u56DE\u4EFB\u4F55\u6587\u672C\uFF08content \u548C reasoning_content \u90FD\u4E3A\u7A7A\uFF09\u3002\u5982\u679C\u4F60\u7528\u7684\u662F thinking \u6A21\u578B\uFF08DeepSeek-R1 / \u8C46\u5305 thinking \u7B49\uFF09\uFF0C\u8BF7\u68C0\u67E5 max_tokens \u662F\u5426\u591F\uFF08thinking \u4F1A\u5148\u5403 token\uFF09\uFF0C\u6216\u6362\u6210\u975E thinking \u7248\u672C\uFF08deepseek-chat / doubao-seed-1.6-250615\uFF09\u3002");let c;try{c=JSON.parse(a)}catch{throw new Error(`flow.evaluate: \u65E0\u6CD5\u628A LLM \u8F93\u51FA\u89E3\u6790\u4E3A JSON\u3002\u539F\u6587\uFF1A${e.slice(0,200)}`)}if(typeof c!="object"||c===null||!("value"in c))throw new Error(`flow.evaluate: LLM \u8F93\u51FA\u7F3A\u5C11 value \u5B57\u6BB5\u3002\u539F\u6587\uFF1A${e.slice(0,200)}`);const t=c.value;if(n.kind==="boolean"){if(typeof t=="boolean")return t;if(t==="true")return!0;if(t==="false")return!1;throw new Error(`flow.evaluate(boolean): value \u4E0D\u662F\u5E03\u5C14\uFF1A"${String(t)}"`)}if(n.kind==="number"){const i=typeof t=="number"?t:Number(t);if(!Number.isFinite(i))throw new Error(`flow.evaluate(number): value \u4E0D\u662F\u6570\u5B57\uFF1A"${String(t)}"`);let o=i;return n.integer&&(o=Math.round(o)),typeof n.min=="number"&&o<n.min&&(o=n.min),typeof n.max=="number"&&o>n.max&&(o=n.max),o}const u=String(t).trim();if(n.options.includes(u))return u;const r=u.toLowerCase(),s=n.options.find(i=>i.toLowerCase()===r);if(s)return s;throw new Error(`flow.evaluate(choice): value "${u}" \u4E0D\u5728\u5019\u9009\u9879\u4E2D\uFF1A${JSON.stringify(n.options)}`)}function et(e){const n={__kind:"agent",name:J,config:{name:J,system:me,maxTokens:256,temperature:0}};async function a(t,u){const{provider:r,call:s,defaultModel:i}=ce(),l=(u??n).config,d=l.model??i,f=l.maxTokens??256,m=l.temperature??0,p=Xe(t),h=l.system??me,w=await s({model:d,system:h,userPrompt:p,maxTokens:f,temperature:m,engine:l.engine,jsonSchema:Ze(t)});return{raw:w.text,inputTokens:w.inputTokens,outputTokens:w.outputTokens,cacheReadTokens:w.cacheReadTokens,cacheWriteTokens:w.cacheWriteTokens,provider:r,model:d,system:h,userPrompt:p}}const c={agent(t){const u=D("flow.agent",t.name),r=t.system??t.prompt;if(!r)throw new Error(`flow.agent({name: "${t.name}"}) \u7F3A\u5C11 system / prompt \u5B57\u6BB5`);return{__kind:"agent",name:u,config:{...t,name:u,system:r}}},async session(t,u,r,s){N(e,"flow.session");const{provider:i,call:o,defaultModel:l}=ce(),d=t.config;Ye(t.name,d.contextSchema,r);const f=d.model??l,m=d.maxTokens??8192,p=d.temperature??1,h=He(u,r),w=(e.sessionCallCount.get(t.name)??0)+1,y=L(t.name,w,s?.bindingName),S=()=>{fe(e,"flow.session",y,s?.bindingName!==void 0),e.sessionCallCount.set(t.name,w)},C=`trace/${y}.json`,v={id:F(e,"session"),type:"session",agent:t.name,bindingName:y,traceFile:C,startedAt:g(),status:"running",children:[]};return E(e,v,async()=>{const A=le([i,f,d.system??"",h,String(p),String(m),d.thinking?`think:${d.thinking.budgetTokens}`:"think:off",`tools:${(d.tools??[]).slice().sort().join(",")}`,`maxTurns:${d.maxTurns??""}`]),P=de(e,y,A);if(P)return v.cached=!0,S(),console.log(`  [resume] ${t.name} -> bindings/${y}.md (cached)`),P.content;const j=d.engine??process.env.FLOW_ENGINE??"claude";console.log(`  [session] ${t.name} -> spawning ${j} CLI...`);const b=await o({model:f,system:d.system,userPrompt:h,maxTokens:m,temperature:p,thinking:d.thinking,signal:se(),engine:d.engine,tools:d.tools,maxTurns:d.maxTurns}),M=g();v.tokens={input:b.inputTokens,output:b.outputTokens},b.engine&&(v.engine=b.engine),typeof b.costUSD=="number"&&(v.costUSD=b.costUSD);const k={agent:t.name,provider:i,model:f,startedAt:v.startedAt,endedAt:M,durationMs:0,system:d.system,userPrompt:h,context:r,output:b.text,inputTokens:b.inputTokens,outputTokens:b.outputTokens,cacheReadTokens:b.cacheReadTokens,cacheWriteTokens:b.cacheWriteTokens},_=I.join(e.runDir,C),we={name:y,producedBy:t.name,producedAt:M,tokens:{input:b.inputTokens,output:b.outputTokens},sourceNode:v.id,inputHash:A};return e.writeQueue=e.writeQueue.then(async()=>{k.durationMs=v.durationMs??0,await O(_,JSON.stringify(k,null,2),"utf8"),await T(e.runDir,y,b.text,we),e.resumeCache.set(y,{content:b.text,inputHash:A})}),await e.writeQueue,S(),console.log(`  [session] ${t.name} -> bindings/${y}.md (in=${b.inputTokens} out=${b.outputTokens})`),b.text})},service(t){const u=D("flow.service",t.name);if(e.services.has(u))throw new Error(`flow.service: \u91CD\u590D\u6CE8\u518C\u670D\u52A1 "${u}"`);return e.services.set(u,{...t,name:u}),{__kind:"service",name:u,signature:t.signature}},async call(t,u={},r){N(e,"flow.call");const s=e.services.get(t.name);if(!s)throw new Error(`flow.call: \u670D\u52A1 "${t.name}" \u672A\u6CE8\u518C`);const i=s.signature?.params??[],o=new Set(i.map(p=>p.name));for(const p of i.filter(h=>h.required!==!1))if(!(p.name in u))throw new Error(`flow.call("${t.name}"): \u7F3A\u5C11\u5FC5\u586B\u53C2\u6570 "${p.name}"`);for(const p of Object.keys(u))if(i.length>0&&!o.has(p))throw new Error(`flow.call("${t.name}"): \u672A\u58F0\u660E\u7684\u53C2\u6570 "${p}"`);const l=(e.serviceCallCount.get(t.name)??0)+1,d=L(t.name,l,r?.bindingName),f=()=>{fe(e,"flow.call",d,r?.bindingName!==void 0),e.serviceCallCount.set(t.name,l)},m={id:F(e,"call"),type:"call",service:t.name,args:u,bindingName:d,startedAt:g(),status:"running",children:[]};return E(e,m,async()=>{const p=le([t.name,JSON.stringify(u)]),h=de(e,d,p);if(h)return m.cached=!0,f(),console.log(`  [resume] call ${t.name} -> bindings/${d}.md (cached)`),h.content;const w=await s.body(u),y={name:d,producedBy:t.name,producedAt:g(),sourceNode:m.id,inputHash:p};return e.writeQueue=e.writeQueue.then(()=>T(e.runDir,d,w,y)),await e.writeQueue,f(),e.resumeCache.set(d,{content:w,inputHash:p}),console.log(`  [call] ${t.name} -> bindings/${d}.md`),w})},async parallel(t,u){const r=u?.join??"all",s={id:F(e,"parallel"),type:"parallel",joinStrategy:r,taskCount:t.length,startedAt:g(),status:"running",children:[]};return E(e,s,async()=>{if(console.log(`  [parallel] launching ${t.length} branches (join=${typeof r=="string"?r:JSON.stringify(r)})...`),r==="all")return Promise.all(t.map(f=>f()));const i=new AbortController,o=t.map(f=>oe.run(i.signal,()=>f()));if(r==="first")try{return[await Promise.race(o)]}finally{i.abort(),await ae(o)}const l=r.any;if(typeof l!="number"||l<=0)throw new Error(`flow.parallel: \u975E\u6CD5 join \u914D\u7F6E ${JSON.stringify(r)}`);const d=[];try{return await new Promise((f,m)=>{let p=l,h=!1;for(const w of o)w.then(y=>{h||(d.push(y),p-=1,p<=0&&(h=!0,f()))},y=>{h||(h=!0,m(y))})}),d}finally{i.abort(),await ae(o)}})},async if(t,u,r){if(typeof t!="boolean")throw new Error(`flow.if: cond must be a boolean (got ${typeof t}). For LLM-judged conditions use flow.evaluate({kind:"boolean"}).`);const s=t?"then":r?"else":"none",i={id:F(e,"if"),type:"if",conditionKind:"boolean",conditionValue:t,takenBranch:s,startedAt:g(),status:"running",children:[]};return E(e,i,async()=>{if(s==="none")return;const o={id:F(e,"ifBranch"),type:"ifBranch",branch:s,startedAt:g(),status:"running",children:[]};return E(e,o,async()=>s==="then"?u():r())})},async ifElse(t,u){t.forEach((o,l)=>{if(typeof o.cond!="boolean")throw new Error(`flow.ifElse: branch[${l}].cond must be a boolean (got ${typeof o.cond}). For LLM-judged conditions use flow.evaluate({kind:"boolean"}).`)});const r=t.findIndex(o=>o.cond),s=r>=0?"then":u?"else":"none",i={id:F(e,"if"),type:"if",conditionKind:"boolean",conditionValue:r>=0,takenBranch:s,startedAt:g(),status:"running",children:[]};return E(e,i,async()=>{if(s==="none")return;const o={id:F(e,"ifBranch"),type:"ifBranch",branch:s,startedAt:g(),status:"running",children:[]};return E(e,o,async()=>r>=0?t[r].fn():u())})},async forEach(t,u){const r={id:F(e,"forEach"),type:"forEach",parallel:!1,itemCount:t.length,startedAt:g(),status:"running",children:[]};await E(e,r,async()=>{for(let s=0;s<t.length;s++)await B(e,t[s],s,u)})},async parallelForEach(t,u){const r={id:F(e,"forEach"),type:"forEach",parallel:!0,itemCount:t.length,startedAt:g(),status:"running",children:[]};await E(e,r,async()=>{await Promise.all(t.map((s,i)=>B(e,s,i,u)))})},evaluate(t){N(e,"flow.evaluate");const u=t.evaluator,r=u?.name??J,s=(e.sessionCallCount.get(r)??0)+1,i=L(`evaluate.${r}`,s,t.bindingName),o=()=>e.sessionCallCount.set(r,s),l=`trace/${i}.json`,d={id:F(e,"evaluate"),type:"evaluate",kind:t.kind,question:t.question,options:t.kind==="choice"?[...t.options]:void 0,bindingName:i,traceFile:l,evaluatorAgent:r,startedAt:g(),status:"running",children:[]};return E(e,d,async()=>{const f=d.startedAt,m=await a(t,u),p=g();d.rawAnswer=m.raw,d.tokens={input:m.inputTokens??0,output:m.outputTokens??0};const h=qe(m.raw,t);d.parsedValue=h;const w={agent:r,provider:m.provider,model:m.model,startedAt:f,endedAt:p,durationMs:0,system:m.system,userPrompt:m.userPrompt,context:t.context,output:m.raw,inputTokens:m.inputTokens,outputTokens:m.outputTokens,cacheReadTokens:m.cacheReadTokens,cacheWriteTokens:m.cacheWriteTokens},y=I.join(e.runDir,l),S={name:i,producedBy:r,producedAt:p,tokens:{input:m.inputTokens??0,output:m.outputTokens??0},sourceNode:d.id};return e.writeQueue=e.writeQueue.then(async()=>{w.durationMs=d.durationMs??0,await O(y,JSON.stringify(w,null,2),"utf8"),await T(e.runDir,i,JSON.stringify({value:h},null,2),S)}),await e.writeQueue,o(),console.log(`  [evaluate.${t.kind}] -> ${JSON.stringify(h)} (in=${m.inputTokens} out=${m.outputTokens})`),h})},async loopUntil(t,u,r){const s=r?.maxIterations??8,i={id:F(e,"loop"),type:"loop",loopKind:"until",iterations:0,maxIterations:s,hitMaxIterations:!1,startedAt:g(),status:"running",children:[]};await E(e,i,async()=>{for(let o=0;o<s;o++)if(await B(e,`round-${o}`,o,async(d,f)=>{await u(f)}),i.iterations=o+1,await t())return;i.hitMaxIterations=!0,console.warn(`  [loopUntil] hit max ${s} iterations without satisfying condition, forcing exit`)})},async loopWhile(t,u,r){const s=r?.maxIterations??8,i={id:F(e,"loop"),type:"loop",loopKind:"while",iterations:0,maxIterations:s,hitMaxIterations:!1,startedAt:g(),status:"running",children:[]};await E(e,i,async()=>{for(let o=0;o<s;o++){if(!await t())return;await B(e,`round-${o}`,o,async(d,f)=>{await u(f)}),i.iterations=o+1}i.hitMaxIterations=!0,console.warn(`  [loopWhile] hit max ${s} iterations without stopping, forcing exit`)})},async choice(t){if(t.branches.length===0)throw new Error("flow.choice: branches \u4E0D\u80FD\u4E3A\u7A7A");const u=t.branches.map(s=>s.label),r={id:F(e,"choice"),type:"choice",question:t.question,options:u,startedAt:g(),status:"running",children:[]};return E(e,r,async()=>{let s;try{s=await c.evaluate({kind:"choice",question:t.question,context:t.context,options:u,evaluator:t.evaluator,bindingName:t.bindingName})}catch(l){if(t.defaultLabel&&u.includes(t.defaultLabel))console.warn(`  [choice] evaluate failed, falling back to default branch "${t.defaultLabel}": ${l.message}`),s=t.defaultLabel;else throw l}const i=u.indexOf(s);r.chosen=s,r.chosenIndex=i;const o={id:F(e,"choiceBranch"),type:"choiceBranch",branch:s,index:i,startedAt:g(),status:"running",children:[]};return E(e,o,()=>t.branches[i].fn())})},async map(t,u){const r={id:F(e,"forEach"),type:"forEach",parallel:!1,itemCount:t.length,startedAt:g(),status:"running",children:[]},s=new Array(t.length);return await E(e,r,async()=>{for(let i=0;i<t.length;i++)await B(e,t[i],i,async(o,l)=>{s[l]=await u(o,l)})}),s},async pmap(t,u){const r={id:F(e,"forEach"),type:"forEach",parallel:!0,itemCount:t.length,startedAt:g(),status:"running",children:[]},s=new Array(t.length);return await E(e,r,async()=>{await Promise.all(t.map((i,o)=>B(e,i,o,async(l,d)=>{s[d]=await u(l,d)})))}),s},async filter(t,u){const r={id:F(e,"forEach"),type:"forEach",parallel:!1,itemCount:t.length,startedAt:g(),status:"running",children:[]},s=new Array(t.length);return await E(e,r,async()=>{for(let i=0;i<t.length;i++)await B(e,t[i],i,async(o,l)=>{s[l]=await u(o,l)})}),t.filter((i,o)=>s[o])},async pfilter(t,u){const r={id:F(e,"forEach"),type:"forEach",parallel:!0,itemCount:t.length,startedAt:g(),status:"running",children:[]},s=new Array(t.length);return await E(e,r,async()=>{await Promise.all(t.map((i,o)=>B(e,i,o,async(l,d)=>{s[d]=await u(l,d)})))}),t.filter((i,o)=>s[o])},async reduce(t,u,r){const s={id:F(e,"forEach"),type:"forEach",parallel:!1,itemCount:t.length,startedAt:g(),status:"running",children:[]};let i=r;return await E(e,s,async()=>{for(let o=0;o<t.length;o++)await B(e,t[o],o,async(l,d)=>{i=await u(i,l,d)})}),i},async pipeline(t,u){const r={id:F(e,"pipeline"),type:"pipeline",stepCount:u.length,startedAt:g(),status:"running",children:[]};let s=t;return await E(e,r,async()=>{for(let i=0;i<u.length;i++){const o=u[i],l={id:F(e,"pipelineStep"),type:"pipelineStep",index:i,label:o.label,startedAt:g(),status:"running",children:[]};s=await E(e,l,()=>o.fn(s))}}),s},async retry(t,u){const r=u?.maxAttempts??3,s=u?.initialDelayMs??200,i=u?.backoff??2,o=u?.maxDelayMs??8e3,l=u?.shouldRetry??(()=>!0),d={id:F(e,"retry"),type:"retry",maxAttempts:r,attempts:0,succeeded:!1,errorTrail:[],startedAt:g(),status:"running",children:[]};return E(e,d,async()=>{let f;for(let m=1;m<=r;m++){d.attempts=m;try{const p=await t();return d.succeeded=!0,p}catch(p){const h=p;if(f=h,d.errorTrail.push(`attempt ${m}: ${h.message}`),console.warn(`  [retry] attempt ${m}/${r} failed: ${h.message}`),!l(h,m))throw h;if(m>=r)break;const w=Math.min(s*Math.pow(i,m-1),o);await new Promise(y=>setTimeout(y,w))}}throw f??new Error(`flow.retry: exceeded max attempts ${r}`)})},async evaluateStatic(t){N(e,"flow.evaluateStatic");const u=(e.sessionCallCount.get("__static__")??0)+1,r=L("evaluate.static",u,t.bindingName),s=()=>e.sessionCallCount.set("__static__",u),i={id:F(e,"evaluate"),type:"evaluate",kind:"static",question:t.question,staticRule:t.rule.kind,bindingName:r,evaluatorAgent:"__static__",startedAt:g(),status:"running",children:[]};return E(e,i,async()=>{const o=t.rule;let l;o.kind==="regex"?l=o.pattern.test(o.on):o.kind==="contains"?l=o.on.includes(o.needle):o.kind==="equals"?l=o.on===o.expected:o.kind==="range"?l=(typeof o.min!="number"||o.value>=o.min)&&(typeof o.max!="number"||o.value<=o.max):l=await o.fn(),i.parsedValue=l;const d={name:r,producedBy:"__static__",producedAt:g(),sourceNode:i.id};return e.writeQueue=e.writeQueue.then(()=>T(e.runDir,r,JSON.stringify({value:l,rule:o.kind},null,2),d)),await e.writeQueue,s(),console.log(`  [evaluate.static] ${o.kind} -> ${l}`),l})},async use(t,u={},r){const s=e.services.get(t);if(!s)throw new Error(`flow.use: \u670D\u52A1 "${t}" \u672A\u6CE8\u518C`);return c.call({__kind:"service",name:t,signature:s.signature},u,r)},async block(t,u){const r={id:F(e,"block"),type:"block",label:t,isDefined:!1,startedAt:g(),status:"running",children:[]};return E(e,r,()=>u())},defineBlock(t){const u=D("flow.defineBlock",t.name);if(e.blocks.has(u))throw new Error(`flow.defineBlock: \u91CD\u590D\u6CE8\u518C block "${u}"`);return e.blocks.set(u,t.body),{__kind:"block",name:u,description:t.description}},async runBlock(t,u={}){const r=e.blocks.get(t.name);if(!r)throw new Error(`flow.runBlock: block "${t.name}" \u672A\u6CE8\u518C`);const s=(e.blockCallCount.get(t.name)??0)+1,i={id:F(e,"block"),type:"block",label:t.name,isDefined:!0,args:u,startedAt:g(),status:"running",children:[]};return E(e,i,async()=>{const o=await r(u);return e.blockCallCount.set(t.name,s),o})},async repeat(t,u){const r={id:F(e,"forEach"),type:"forEach",parallel:!1,itemCount:t,startedAt:g(),status:"running",children:[]};await E(e,r,async()=>{for(let s=0;s<t;s++)await B(e,s,s,async(i,o)=>{await u(o)})})},async input(t,u){N(e,"flow.input");const r=D("flow.input",t);if(e.inputRegistered.has(r))throw new Error(`flow.input: input "${r}" \u5DF2\u6CE8\u518C\u3002\u4E24\u6B21\u540C\u540D\u4F1A\u8BA9\u7B2C\u4E00\u6B21\u7684\u503C\u88AB\u9759\u9ED8\u8986\u76D6\u3002\u8BF7\u6362\u4E00\u4E2A\u540D\u5B57\uFF0C\u6216\u53EA\u8C03\u4E00\u6B21\u3002`);e.inputRegistered.add(r);const s=`--input.${r}=`;let i=u,o=!1;for(const d of process.argv.slice(2))if(d.startsWith(s)){i=d.slice(s.length),o=!0;break}const l={id:F(e,"input"),type:"input",name:r,fromCli:o,startedAt:g(),status:"running",children:[]};return E(e,l,async()=>{const d=I.join(e.runDir,"input",`${r}.md`);return e.writeQueue=e.writeQueue.then(()=>O(d,i,"utf8")),await e.writeQueue,i})},async output(t,u){N(e,"flow.output");const r={name:t,producedBy:"flow.output",producedAt:g(),sourceNode:ie(e.rootGraphNode).id};e.writeQueue=e.writeQueue.then(()=>T(e.runDir,t,u,r)),await e.writeQueue},async exec(t){N(e,"flow.exec");const u=D("flow.exec",t.name),r=(e.execCallCount.get(u)??0)+1,s=L(u,r,t.bindingName),i=()=>e.execCallCount.set(u,r),o=t.maxStdoutBytes!==void 0?t.maxStdoutBytes:4*1024*1024,l={id:F(e,"exec"),type:"exec",name:u,command:[t.command,...t.args??[]].join(" ").slice(0,200),bindingName:s,startedAt:g(),status:"running",children:[]};return E(e,l,async()=>{const d=Date.now(),f=await ee({command:t.command,args:t.args??[],stdin:t.stdin,cwd:t.cwd,env:t.env,timeoutMs:t.timeout??3e5,useShell:!1,signal:se(),maxStdoutBytes:o}),m=Date.now()-d;l.exitCode=f.exitCode,f.truncated&&(l.truncated=!0);const p=f.truncated?`
+\u7EDD\u5BF9\u4E0D\u8981\u8F93\u51FA\u989D\u5916\u5B57\u6BB5\u3002`;
+var EVALUATOR_AGENT_NAME = "__evaluator__";
+function buildEvaluatePrompt(options) {
+  const lines = [];
+  lines.push(`# \u4EFB\u52A1`);
+  lines.push(options.question);
+  lines.push("");
+  if (options.context && Object.keys(options.context).length > 0) {
+    lines.push(`# \u4E0A\u4E0B\u6587`);
+    for (const [k, v] of Object.entries(options.context)) {
+      lines.push(`## context.${k}`);
+      lines.push(v);
+      lines.push("");
+    }
+  }
+  lines.push(`# \u8F93\u51FA\u683C\u5F0F`);
+  if (options.kind === "boolean") {
+    lines.push(`kind = "boolean"\uFF0C\u8F93\u51FA {"value": true} \u6216 {"value": false}\u3002`);
+  } else if (options.kind === "number") {
+    const range = [];
+    if (typeof options.min === "number") range.push(`min=${options.min}`);
+    if (typeof options.max === "number") range.push(`max=${options.max}`);
+    if (options.integer) range.push(`\u5FC5\u987B\u4E3A\u6574\u6570`);
+    const tail = range.length ? `\uFF08${range.join("\uFF0C")}\uFF09` : "";
+    lines.push(`kind = "number"\uFF0C\u8F93\u51FA {"value": <number>}${tail}\u3002`);
+  } else {
+    lines.push(`kind = "choice"\uFF0C\u5FC5\u987B\u4ECE\u4E0B\u5217\u5019\u9009\u9879\u4E2D\u9009\u4E00\u4E2A\uFF1A`);
+    for (const opt of options.options) lines.push(`- ${opt}`);
+    lines.push(`\u8F93\u51FA {"value": "<\u5019\u9009\u9879\u539F\u6587>"}\u3002`);
+  }
+  return lines.join("\n");
+}
+function buildEvaluateSchema(options) {
+  let valueSchema;
+  if (options.kind === "boolean") {
+    valueSchema = { type: "boolean" };
+  } else if (options.kind === "number") {
+    valueSchema = { type: options.integer ? "integer" : "number" };
+  } else {
+    valueSchema = { type: "string", enum: [...options.options] };
+  }
+  return {
+    type: "object",
+    properties: { value: valueSchema },
+    required: ["value"],
+    additionalProperties: false
+  };
+}
+function parseEvaluateAnswer(raw, options) {
+  const stripped = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  if (stripped.length === 0) {
+    throw new Error(
+      `flow.evaluate: LLM \u6CA1\u6709\u8FD4\u56DE\u4EFB\u4F55\u6587\u672C\uFF08content \u548C reasoning_content \u90FD\u4E3A\u7A7A\uFF09\u3002\u5982\u679C\u4F60\u7528\u7684\u662F thinking \u6A21\u578B\uFF08DeepSeek-R1 / \u8C46\u5305 thinking \u7B49\uFF09\uFF0C\u8BF7\u68C0\u67E5 max_tokens \u662F\u5426\u591F\uFF08thinking \u4F1A\u5148\u5403 token\uFF09\uFF0C\u6216\u6362\u6210\u975E thinking \u7248\u672C\uFF08deepseek-chat / doubao-seed-1.6-250615\uFF09\u3002`
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch {
+    throw new Error(
+      `flow.evaluate: \u65E0\u6CD5\u628A LLM \u8F93\u51FA\u89E3\u6790\u4E3A JSON\u3002\u539F\u6587\uFF1A${raw.slice(0, 200)}`
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || !("value" in parsed)) {
+    throw new Error(
+      `flow.evaluate: LLM \u8F93\u51FA\u7F3A\u5C11 value \u5B57\u6BB5\u3002\u539F\u6587\uFF1A${raw.slice(0, 200)}`
+    );
+  }
+  const value = parsed.value;
+  if (options.kind === "boolean") {
+    if (typeof value === "boolean") return value;
+    if (value === "true") return true;
+    if (value === "false") return false;
+    throw new Error(`flow.evaluate(boolean): value \u4E0D\u662F\u5E03\u5C14\uFF1A"${String(value)}"`);
+  }
+  if (options.kind === "number") {
+    const num = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(num)) {
+      throw new Error(`flow.evaluate(number): value \u4E0D\u662F\u6570\u5B57\uFF1A"${String(value)}"`);
+    }
+    let n = num;
+    if (options.integer) n = Math.round(n);
+    if (typeof options.min === "number" && n < options.min) n = options.min;
+    if (typeof options.max === "number" && n > options.max) n = options.max;
+    return n;
+  }
+  const text = String(value).trim();
+  if (options.options.includes(text)) return text;
+  const lowered = text.toLowerCase();
+  const hit = options.options.find((o) => o.toLowerCase() === lowered);
+  if (hit) return hit;
+  throw new Error(
+    `flow.evaluate(choice): value "${text}" \u4E0D\u5728\u5019\u9009\u9879\u4E2D\uFF1A${JSON.stringify(options.options)}`
+  );
+}
+function createFlowAPI(ctx) {
+  const evaluatorAgent = {
+    __kind: "agent",
+    name: EVALUATOR_AGENT_NAME,
+    config: {
+      name: EVALUATOR_AGENT_NAME,
+      system: EVALUATOR_SYSTEM_PROMPT,
+      maxTokens: 256,
+      temperature: 0
+    }
+  };
+  async function runEvaluator(options, overrideEvaluator) {
+    const { provider, call, defaultModel } = pickProvider();
+    const agent = overrideEvaluator ?? evaluatorAgent;
+    const cfg = agent.config;
+    const model = cfg.model ?? defaultModel;
+    const maxTokens = cfg.maxTokens ?? 256;
+    const temperature = cfg.temperature ?? 0;
+    const userPrompt = buildEvaluatePrompt(options);
+    const system = cfg.system ?? EVALUATOR_SYSTEM_PROMPT;
+    const result = await call({
+      model,
+      system,
+      userPrompt,
+      maxTokens,
+      temperature,
+      engine: cfg.engine,
+      // jsonSchema：支持的引擎（claude）走原生强校验拿 structured_output；
+      // 不支持的引擎 cli.ts 会忽略并 warn，退回 parseEvaluateAnswer 文本解析。
+      jsonSchema: buildEvaluateSchema(options)
+    });
+    return {
+      raw: result.text,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      cacheReadTokens: result.cacheReadTokens,
+      cacheWriteTokens: result.cacheWriteTokens,
+      provider,
+      model,
+      system,
+      userPrompt
+    };
+  }
+  const flow = {
+    agent(config) {
+      const name = assertSafeName("flow.agent", config.name);
+      const systemPrompt = config.system ?? config.prompt;
+      if (!systemPrompt) {
+        throw new Error(
+          `flow.agent({name: "${config.name}"}) \u7F3A\u5C11 system / prompt \u5B57\u6BB5`
+        );
+      }
+      return {
+        __kind: "agent",
+        name,
+        config: { ...config, name, system: systemPrompt }
+      };
+    },
+    async session(agent, prompt, context, options) {
+      assertNotSealed(ctx, "flow.session");
+      const { provider, call, defaultModel } = pickProvider();
+      const cfg = agent.config;
+      assertContextSchema(agent.name, cfg.contextSchema, context);
+      const model = cfg.model ?? defaultModel;
+      const maxTokens = cfg.maxTokens ?? 8192;
+      const temperature = cfg.temperature ?? 1;
+      const userPrompt = buildUserMessage(prompt, context);
+      const callCount = (ctx.sessionCallCount.get(agent.name) ?? 0) + 1;
+      const bindingName = pickBindingName(
+        agent.name,
+        callCount,
+        options?.bindingName
+      );
+      const commitCount = () => {
+        registerBindingName(
+          ctx,
+          "flow.session",
+          bindingName,
+          options?.bindingName !== void 0
+        );
+        ctx.sessionCallCount.set(agent.name, callCount);
+      };
+      const traceFile = `trace/${bindingName}.json`;
+      const node = {
+        id: nextNodeId(ctx, "session"),
+        type: "session",
+        agent: agent.name,
+        bindingName,
+        traceFile,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        const inputHash = makeInputHash([
+          provider,
+          model,
+          cfg.system ?? "",
+          userPrompt,
+          String(temperature),
+          String(maxTokens),
+          cfg.thinking ? `think:${cfg.thinking.budgetTokens}` : "think:off",
+          // #18: tools / maxTurns 变更会改变 agent 行为（纯文本 ↔ agentic），
+          //      必须进 hash，否则加了 tools 后 --resume 会假命中、拿回旧的纯文本结果。
+          //      engine 已隐含在 provider（cli:<engine>）里，无需重复。
+          `tools:${(cfg.tools ?? []).slice().sort().join(",")}`,
+          `maxTurns:${cfg.maxTurns ?? ""}`
+        ]);
+        const hit = tryResumeHit(ctx, bindingName, inputHash);
+        if (hit) {
+          node.cached = true;
+          commitCount();
+          console.log(
+            `  [resume] ${agent.name} -> bindings/${bindingName}.md (cached)`
+          );
+          return hit.content;
+        }
+        const engineLabel = cfg.engine ?? process.env.FLOW_ENGINE ?? "claude";
+        console.log(
+          `  [session] ${agent.name} -> spawning ${engineLabel} CLI...`
+        );
+        const result = await call({
+          model,
+          system: cfg.system,
+          userPrompt,
+          maxTokens,
+          temperature,
+          thinking: cfg.thinking,
+          signal: currentCancelSignal(),
+          engine: cfg.engine,
+          tools: cfg.tools,
+          maxTurns: cfg.maxTurns
+        });
+        const endedAt = nowIso();
+        node.tokens = {
+          input: result.inputTokens,
+          output: result.outputTokens
+        };
+        if (result.engine) node.engine = result.engine;
+        if (typeof result.costUSD === "number") node.costUSD = result.costUSD;
+        const trace = {
+          agent: agent.name,
+          provider,
+          model,
+          startedAt: node.startedAt,
+          endedAt,
+          durationMs: 0,
+          // 真值在外层 withGraphNode 回填到 node.durationMs；trace 这里随便给
+          system: cfg.system,
+          userPrompt,
+          context,
+          output: result.text,
+          inputTokens: result.inputTokens,
+          outputTokens: result.outputTokens,
+          cacheReadTokens: result.cacheReadTokens,
+          cacheWriteTokens: result.cacheWriteTokens
+        };
+        const tracePath = path.join(ctx.runDir, traceFile);
+        const bindingMeta = {
+          name: bindingName,
+          producedBy: agent.name,
+          producedAt: endedAt,
+          tokens: { input: result.inputTokens, output: result.outputTokens },
+          sourceNode: node.id,
+          inputHash
+        };
+        ctx.writeQueue = ctx.writeQueue.then(async () => {
+          trace.durationMs = node.durationMs ?? 0;
+          await writeFile(tracePath, JSON.stringify(trace, null, 2), "utf8");
+          await writeBinding(
+            ctx.runDir,
+            bindingName,
+            result.text,
+            bindingMeta
+          );
+          ctx.resumeCache.set(bindingName, {
+            content: result.text,
+            inputHash
+          });
+        });
+        await ctx.writeQueue;
+        commitCount();
+        console.log(
+          `  [session] ${agent.name} -> bindings/${bindingName}.md (in=${result.inputTokens} out=${result.outputTokens})`
+        );
+        return result.text;
+      });
+    },
+    service(def) {
+      const name = assertSafeName("flow.service", def.name);
+      if (ctx.services.has(name)) {
+        throw new Error(`flow.service: \u91CD\u590D\u6CE8\u518C\u670D\u52A1 "${name}"`);
+      }
+      ctx.services.set(name, { ...def, name });
+      return { __kind: "service", name, signature: def.signature };
+    },
+    async call(service, args = {}, options) {
+      assertNotSealed(ctx, "flow.call");
+      const def = ctx.services.get(service.name);
+      if (!def) {
+        throw new Error(`flow.call: \u670D\u52A1 "${service.name}" \u672A\u6CE8\u518C`);
+      }
+      const params = def.signature?.params ?? [];
+      const knownParams = new Set(params.map((p) => p.name));
+      for (const required of params.filter((p) => p.required !== false)) {
+        if (!(required.name in args)) {
+          throw new Error(
+            `flow.call("${service.name}"): \u7F3A\u5C11\u5FC5\u586B\u53C2\u6570 "${required.name}"`
+          );
+        }
+      }
+      for (const passed of Object.keys(args)) {
+        if (params.length > 0 && !knownParams.has(passed)) {
+          throw new Error(
+            `flow.call("${service.name}"): \u672A\u58F0\u660E\u7684\u53C2\u6570 "${passed}"`
+          );
+        }
+      }
+      const callCount = (ctx.serviceCallCount.get(service.name) ?? 0) + 1;
+      const bindingName = pickBindingName(
+        service.name,
+        callCount,
+        options?.bindingName
+      );
+      const commitCount = () => {
+        registerBindingName(
+          ctx,
+          "flow.call",
+          bindingName,
+          options?.bindingName !== void 0
+        );
+        ctx.serviceCallCount.set(service.name, callCount);
+      };
+      const node = {
+        id: nextNodeId(ctx, "call"),
+        type: "call",
+        service: service.name,
+        args,
+        bindingName,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        const inputHash = makeInputHash([service.name, JSON.stringify(args)]);
+        const hit = tryResumeHit(ctx, bindingName, inputHash);
+        if (hit) {
+          node.cached = true;
+          commitCount();
+          console.log(
+            `  [resume] call ${service.name} -> bindings/${bindingName}.md (cached)`
+          );
+          return hit.content;
+        }
+        const result = await def.body(args);
+        const meta = {
+          name: bindingName,
+          producedBy: service.name,
+          producedAt: nowIso(),
+          sourceNode: node.id,
+          inputHash
+        };
+        ctx.writeQueue = ctx.writeQueue.then(
+          () => writeBinding(ctx.runDir, bindingName, result, meta)
+        );
+        await ctx.writeQueue;
+        commitCount();
+        ctx.resumeCache.set(bindingName, { content: result, inputHash });
+        console.log(`  [call] ${service.name} -> bindings/${bindingName}.md`);
+        return result;
+      });
+    },
+    // ============================================================
+    // 第二批：控制流
+    // ============================================================
+    async parallel(tasks, options) {
+      const join3 = options?.join ?? "all";
+      const node = {
+        id: nextNodeId(ctx, "parallel"),
+        type: "parallel",
+        joinStrategy: join3,
+        taskCount: tasks.length,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        console.log(
+          `  [parallel] launching ${tasks.length} branches (join=${typeof join3 === "string" ? join3 : JSON.stringify(join3)})...`
+        );
+        if (join3 === "all") {
+          return Promise.all(tasks.map((task) => task()));
+        }
+        const controller = new AbortController();
+        const promises = tasks.map(
+          (task) => cancelStorage.run(controller.signal, () => task())
+        );
+        if (join3 === "first") {
+          try {
+            const first = await Promise.race(promises);
+            return [first];
+          } finally {
+            controller.abort();
+            await settleLaggards(promises);
+          }
+        }
+        const n = join3.any;
+        if (typeof n !== "number" || n <= 0) {
+          throw new Error(`flow.parallel: \u975E\u6CD5 join \u914D\u7F6E ${JSON.stringify(join3)}`);
+        }
+        const results = [];
+        try {
+          await new Promise((resolve, reject) => {
+            let remaining = n;
+            let settled = false;
+            for (const p of promises) {
+              p.then(
+                (v) => {
+                  if (settled) return;
+                  results.push(v);
+                  remaining -= 1;
+                  if (remaining <= 0) {
+                    settled = true;
+                    resolve();
+                  }
+                },
+                (err) => {
+                  if (settled) return;
+                  settled = true;
+                  reject(err);
+                }
+              );
+            }
+          });
+          return results;
+        } finally {
+          controller.abort();
+          await settleLaggards(promises);
+        }
+      });
+    },
+    async if(cond, thenFn, elseFn) {
+      if (typeof cond !== "boolean") {
+        throw new Error(
+          `flow.if: cond must be a boolean (got ${typeof cond}). For LLM-judged conditions use flow.evaluate({kind:"boolean"}).`
+        );
+      }
+      const taken = cond ? "then" : elseFn ? "else" : "none";
+      const node = {
+        id: nextNodeId(ctx, "if"),
+        type: "if",
+        conditionKind: "boolean",
+        conditionValue: cond,
+        takenBranch: taken,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        if (taken === "none") return void 0;
+        const branch = {
+          id: nextNodeId(ctx, "ifBranch"),
+          type: "ifBranch",
+          branch: taken,
+          startedAt: nowIso(),
+          status: "running",
+          children: []
+        };
+        return withGraphNode(ctx, branch, async () => {
+          return taken === "then" ? thenFn() : elseFn();
+        });
+      });
+    },
+    async ifElse(branches, elseFn) {
+      branches.forEach((b, i) => {
+        if (typeof b.cond !== "boolean") {
+          throw new Error(
+            `flow.ifElse: branch[${i}].cond must be a boolean (got ${typeof b.cond}). For LLM-judged conditions use flow.evaluate({kind:"boolean"}).`
+          );
+        }
+      });
+      const hitIdx = branches.findIndex((b) => b.cond);
+      const taken = hitIdx >= 0 ? "then" : elseFn ? "else" : "none";
+      const node = {
+        id: nextNodeId(ctx, "if"),
+        type: "if",
+        conditionKind: "boolean",
+        conditionValue: hitIdx >= 0,
+        takenBranch: taken,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        if (taken === "none") return void 0;
+        const branch = {
+          id: nextNodeId(ctx, "ifBranch"),
+          type: "ifBranch",
+          branch: taken,
+          startedAt: nowIso(),
+          status: "running",
+          children: []
+        };
+        return withGraphNode(
+          ctx,
+          branch,
+          async () => hitIdx >= 0 ? branches[hitIdx].fn() : elseFn()
+        );
+      });
+    },
+    async forEach(items, fn) {
+      const node = {
+        id: nextNodeId(ctx, "forEach"),
+        type: "forEach",
+        parallel: false,
+        itemCount: items.length,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      await withGraphNode(ctx, node, async () => {
+        for (let i = 0; i < items.length; i++) {
+          await runIteration(ctx, items[i], i, fn);
+        }
+      });
+    },
+    async parallelForEach(items, fn) {
+      const node = {
+        id: nextNodeId(ctx, "forEach"),
+        type: "forEach",
+        parallel: true,
+        itemCount: items.length,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      await withGraphNode(ctx, node, async () => {
+        await Promise.all(
+          items.map((item, i) => runIteration(ctx, item, i, fn))
+        );
+      });
+    },
+    // ============================================================
+    // 第三批：带 LLM 判断的高级控制流
+    // ============================================================
+    evaluate(options) {
+      assertNotSealed(ctx, "flow.evaluate");
+      const evaluator = options.evaluator;
+      const evaluatorName = evaluator?.name ?? EVALUATOR_AGENT_NAME;
+      const callCount = (ctx.sessionCallCount.get(evaluatorName) ?? 0) + 1;
+      const bindingName = pickBindingName(
+        `evaluate.${evaluatorName}`,
+        callCount,
+        options.bindingName
+      );
+      const commitCount = () => ctx.sessionCallCount.set(evaluatorName, callCount);
+      const traceFile = `trace/${bindingName}.json`;
+      const node = {
+        id: nextNodeId(ctx, "evaluate"),
+        type: "evaluate",
+        kind: options.kind,
+        question: options.question,
+        options: options.kind === "choice" ? [...options.options] : void 0,
+        bindingName,
+        traceFile,
+        evaluatorAgent: evaluatorName,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        const startedAt = node.startedAt;
+        const evalResult = await runEvaluator(options, evaluator);
+        const endedAt = nowIso();
+        node.rawAnswer = evalResult.raw;
+        node.tokens = {
+          input: evalResult.inputTokens ?? 0,
+          output: evalResult.outputTokens ?? 0
+        };
+        const parsed = parseEvaluateAnswer(evalResult.raw, options);
+        node.parsedValue = parsed;
+        const trace = {
+          agent: evaluatorName,
+          provider: evalResult.provider,
+          model: evalResult.model,
+          startedAt,
+          endedAt,
+          durationMs: 0,
+          system: evalResult.system,
+          userPrompt: evalResult.userPrompt,
+          context: options.context,
+          output: evalResult.raw,
+          inputTokens: evalResult.inputTokens,
+          outputTokens: evalResult.outputTokens,
+          cacheReadTokens: evalResult.cacheReadTokens,
+          cacheWriteTokens: evalResult.cacheWriteTokens
+        };
+        const tracePath = path.join(ctx.runDir, traceFile);
+        const bindingMeta = {
+          name: bindingName,
+          producedBy: evaluatorName,
+          producedAt: endedAt,
+          tokens: {
+            input: evalResult.inputTokens ?? 0,
+            output: evalResult.outputTokens ?? 0
+          },
+          sourceNode: node.id
+        };
+        ctx.writeQueue = ctx.writeQueue.then(async () => {
+          trace.durationMs = node.durationMs ?? 0;
+          await writeFile(tracePath, JSON.stringify(trace, null, 2), "utf8");
+          await writeBinding(
+            ctx.runDir,
+            bindingName,
+            JSON.stringify({ value: parsed }, null, 2),
+            bindingMeta
+          );
+        });
+        await ctx.writeQueue;
+        commitCount();
+        console.log(
+          `  [evaluate.${options.kind}] -> ${JSON.stringify(parsed)} (in=${evalResult.inputTokens} out=${evalResult.outputTokens})`
+        );
+        return parsed;
+      });
+    },
+    async loopUntil(condFn, fn, options) {
+      const maxIterations = options?.maxIterations ?? 8;
+      const node = {
+        id: nextNodeId(ctx, "loop"),
+        type: "loop",
+        loopKind: "until",
+        iterations: 0,
+        maxIterations,
+        hitMaxIterations: false,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      await withGraphNode(ctx, node, async () => {
+        for (let round = 0; round < maxIterations; round++) {
+          await runIteration(ctx, `round-${round}`, round, async (_, idx) => {
+            await fn(idx);
+          });
+          node.iterations = round + 1;
+          const done = await condFn();
+          if (done) return;
+        }
+        node.hitMaxIterations = true;
+        console.warn(
+          `  [loopUntil] hit max ${maxIterations} iterations without satisfying condition, forcing exit`
+        );
+      });
+    },
+    async loopWhile(condFn, fn, options) {
+      const maxIterations = options?.maxIterations ?? 8;
+      const node = {
+        id: nextNodeId(ctx, "loop"),
+        type: "loop",
+        loopKind: "while",
+        iterations: 0,
+        maxIterations,
+        hitMaxIterations: false,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      await withGraphNode(ctx, node, async () => {
+        for (let round = 0; round < maxIterations; round++) {
+          const should = await condFn();
+          if (!should) return;
+          await runIteration(ctx, `round-${round}`, round, async (_, idx) => {
+            await fn(idx);
+          });
+          node.iterations = round + 1;
+        }
+        node.hitMaxIterations = true;
+        console.warn(
+          `  [loopWhile] hit max ${maxIterations} iterations without stopping, forcing exit`
+        );
+      });
+    },
+    async choice(options) {
+      if (options.branches.length === 0) {
+        throw new Error("flow.choice: branches \u4E0D\u80FD\u4E3A\u7A7A");
+      }
+      const labels = options.branches.map((b) => b.label);
+      const node = {
+        id: nextNodeId(ctx, "choice"),
+        type: "choice",
+        question: options.question,
+        options: labels,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        let chosenLabel;
+        try {
+          chosenLabel = await flow.evaluate({
+            kind: "choice",
+            question: options.question,
+            context: options.context,
+            options: labels,
+            evaluator: options.evaluator,
+            bindingName: options.bindingName
+          });
+        } catch (err) {
+          if (options.defaultLabel && labels.includes(options.defaultLabel)) {
+            console.warn(
+              `  [choice] evaluate failed, falling back to default branch "${options.defaultLabel}": ${err.message}`
+            );
+            chosenLabel = options.defaultLabel;
+          } else {
+            throw err;
+          }
+        }
+        const idx = labels.indexOf(chosenLabel);
+        node.chosen = chosenLabel;
+        node.chosenIndex = idx;
+        const branchNode = {
+          id: nextNodeId(ctx, "choiceBranch"),
+          type: "choiceBranch",
+          branch: chosenLabel,
+          index: idx,
+          startedAt: nowIso(),
+          status: "running",
+          children: []
+        };
+        return withGraphNode(
+          ctx,
+          branchNode,
+          () => options.branches[idx].fn()
+        );
+      });
+    },
+    // ============================================================
+    // 第四批：数据流原语
+    // ============================================================
+    async map(items, fn) {
+      const node = {
+        id: nextNodeId(ctx, "forEach"),
+        type: "forEach",
+        parallel: false,
+        itemCount: items.length,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      const results = new Array(items.length);
+      await withGraphNode(ctx, node, async () => {
+        for (let i = 0; i < items.length; i++) {
+          await runIteration(ctx, items[i], i, async (it, idx) => {
+            results[idx] = await fn(it, idx);
+          });
+        }
+      });
+      return results;
+    },
+    async pmap(items, fn) {
+      const node = {
+        id: nextNodeId(ctx, "forEach"),
+        type: "forEach",
+        parallel: true,
+        itemCount: items.length,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      const results = new Array(items.length);
+      await withGraphNode(ctx, node, async () => {
+        await Promise.all(
+          items.map(
+            (it, i) => runIteration(ctx, it, i, async (item, idx) => {
+              results[idx] = await fn(item, idx);
+            })
+          )
+        );
+      });
+      return results;
+    },
+    async filter(items, predicate) {
+      const node = {
+        id: nextNodeId(ctx, "forEach"),
+        type: "forEach",
+        parallel: false,
+        itemCount: items.length,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      const keep = new Array(items.length);
+      await withGraphNode(ctx, node, async () => {
+        for (let i = 0; i < items.length; i++) {
+          await runIteration(ctx, items[i], i, async (it, idx) => {
+            keep[idx] = await predicate(it, idx);
+          });
+        }
+      });
+      return items.filter((_, i) => keep[i]);
+    },
+    async pfilter(items, predicate) {
+      const node = {
+        id: nextNodeId(ctx, "forEach"),
+        type: "forEach",
+        parallel: true,
+        itemCount: items.length,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      const keep = new Array(items.length);
+      await withGraphNode(ctx, node, async () => {
+        await Promise.all(
+          items.map(
+            (it, i) => runIteration(ctx, it, i, async (item, idx) => {
+              keep[idx] = await predicate(item, idx);
+            })
+          )
+        );
+      });
+      return items.filter((_, i) => keep[i]);
+    },
+    async reduce(items, fn, init) {
+      const node = {
+        id: nextNodeId(ctx, "forEach"),
+        type: "forEach",
+        parallel: false,
+        itemCount: items.length,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      let acc = init;
+      await withGraphNode(ctx, node, async () => {
+        for (let i = 0; i < items.length; i++) {
+          await runIteration(ctx, items[i], i, async (it, idx) => {
+            acc = await fn(acc, it, idx);
+          });
+        }
+      });
+      return acc;
+    },
+    async pipeline(input, steps) {
+      const node = {
+        id: nextNodeId(ctx, "pipeline"),
+        type: "pipeline",
+        stepCount: steps.length,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      let value = input;
+      await withGraphNode(ctx, node, async () => {
+        for (let i = 0; i < steps.length; i++) {
+          const step = steps[i];
+          const stepNode = {
+            id: nextNodeId(ctx, "pipelineStep"),
+            type: "pipelineStep",
+            index: i,
+            label: step.label,
+            startedAt: nowIso(),
+            status: "running",
+            children: []
+          };
+          value = await withGraphNode(ctx, stepNode, () => step.fn(value));
+        }
+      });
+      return value;
+    },
+    // ============================================================
+    // 第五批：工程化（retry / evaluateStatic / use）
+    // ============================================================
+    async retry(fn, options) {
+      const maxAttempts = options?.maxAttempts ?? 3;
+      const initialDelayMs = options?.initialDelayMs ?? 200;
+      const backoff = options?.backoff ?? 2;
+      const maxDelayMs = options?.maxDelayMs ?? 8e3;
+      const shouldRetry = options?.shouldRetry ?? (() => true);
+      const node = {
+        id: nextNodeId(ctx, "retry"),
+        type: "retry",
+        maxAttempts,
+        attempts: 0,
+        succeeded: false,
+        errorTrail: [],
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        let lastErr;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          node.attempts = attempt;
+          try {
+            const result = await fn();
+            node.succeeded = true;
+            return result;
+          } catch (err) {
+            const e = err;
+            lastErr = e;
+            node.errorTrail.push(`attempt ${attempt}: ${e.message}`);
+            console.warn(
+              `  [retry] attempt ${attempt}/${maxAttempts} failed: ${e.message}`
+            );
+            if (!shouldRetry(e, attempt)) {
+              throw e;
+            }
+            if (attempt >= maxAttempts) break;
+            const delay = Math.min(
+              initialDelayMs * Math.pow(backoff, attempt - 1),
+              maxDelayMs
+            );
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+        }
+        throw lastErr ?? new Error(`flow.retry: exceeded max attempts ${maxAttempts}`);
+      });
+    },
+    async evaluateStatic(options) {
+      assertNotSealed(ctx, "flow.evaluateStatic");
+      const callCount = (ctx.sessionCallCount.get("__static__") ?? 0) + 1;
+      const bindingName = pickBindingName(
+        "evaluate.static",
+        callCount,
+        options.bindingName
+      );
+      const commitCount = () => ctx.sessionCallCount.set("__static__", callCount);
+      const node = {
+        id: nextNodeId(ctx, "evaluate"),
+        type: "evaluate",
+        kind: "static",
+        question: options.question,
+        staticRule: options.rule.kind,
+        bindingName,
+        evaluatorAgent: "__static__",
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        const r = options.rule;
+        let value;
+        if (r.kind === "regex") value = r.pattern.test(r.on);
+        else if (r.kind === "contains") value = r.on.includes(r.needle);
+        else if (r.kind === "equals") value = r.on === r.expected;
+        else if (r.kind === "range") {
+          value = (typeof r.min !== "number" || r.value >= r.min) && (typeof r.max !== "number" || r.value <= r.max);
+        } else {
+          value = await r.fn();
+        }
+        node.parsedValue = value;
+        const meta = {
+          name: bindingName,
+          producedBy: "__static__",
+          producedAt: nowIso(),
+          sourceNode: node.id
+        };
+        ctx.writeQueue = ctx.writeQueue.then(
+          () => writeBinding(
+            ctx.runDir,
+            bindingName,
+            JSON.stringify({ value, rule: r.kind }, null, 2),
+            meta
+          )
+        );
+        await ctx.writeQueue;
+        commitCount();
+        console.log(
+          `  [evaluate.static] ${r.kind} -> ${value}`
+        );
+        return value;
+      });
+    },
+    async use(serviceName, args = {}, options) {
+      const def = ctx.services.get(serviceName);
+      if (!def) {
+        throw new Error(`flow.use: \u670D\u52A1 "${serviceName}" \u672A\u6CE8\u518C`);
+      }
+      return flow.call(
+        { __kind: "service", name: serviceName, signature: def.signature },
+        args,
+        options
+      );
+    },
+    // ============================================================
+    // 第六批：顶层结构（block / defineBlock / runBlock / repeat / input / output）
+    // ============================================================
+    async block(label, fn) {
+      const node = {
+        id: nextNodeId(ctx, "block"),
+        type: "block",
+        label,
+        isDefined: false,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, () => fn());
+    },
+    defineBlock(def) {
+      const name = assertSafeName("flow.defineBlock", def.name);
+      if (ctx.blocks.has(name)) {
+        throw new Error(`flow.defineBlock: \u91CD\u590D\u6CE8\u518C block "${name}"`);
+      }
+      ctx.blocks.set(name, def.body);
+      return { __kind: "block", name, description: def.description };
+    },
+    async runBlock(handle, args = {}) {
+      const body = ctx.blocks.get(handle.name);
+      if (!body) {
+        throw new Error(`flow.runBlock: block "${handle.name}" \u672A\u6CE8\u518C`);
+      }
+      const callCount = (ctx.blockCallCount.get(handle.name) ?? 0) + 1;
+      const node = {
+        id: nextNodeId(ctx, "block"),
+        type: "block",
+        label: handle.name,
+        isDefined: true,
+        args,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        const result = await body(args);
+        ctx.blockCallCount.set(handle.name, callCount);
+        return result;
+      });
+    },
+    async repeat(times, fn) {
+      const node = {
+        id: nextNodeId(ctx, "forEach"),
+        type: "forEach",
+        parallel: false,
+        itemCount: times,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      await withGraphNode(ctx, node, async () => {
+        for (let i = 0; i < times; i++) {
+          await runIteration(ctx, i, i, async (_, idx) => {
+            await fn(idx);
+          });
+        }
+      });
+    },
+    async input(name, defaultValue) {
+      assertNotSealed(ctx, "flow.input");
+      const inputName = assertSafeName("flow.input", name);
+      if (ctx.inputRegistered.has(inputName)) {
+        throw new Error(
+          `flow.input: input "${inputName}" \u5DF2\u6CE8\u518C\u3002\u4E24\u6B21\u540C\u540D\u4F1A\u8BA9\u7B2C\u4E00\u6B21\u7684\u503C\u88AB\u9759\u9ED8\u8986\u76D6\u3002\u8BF7\u6362\u4E00\u4E2A\u540D\u5B57\uFF0C\u6216\u53EA\u8C03\u4E00\u6B21\u3002`
+        );
+      }
+      ctx.inputRegistered.add(inputName);
+      const prefix = `--input.${inputName}=`;
+      let value = defaultValue;
+      let fromCli = false;
+      for (const arg of process.argv.slice(2)) {
+        if (arg.startsWith(prefix)) {
+          value = arg.slice(prefix.length);
+          fromCli = true;
+          break;
+        }
+      }
+      const node = {
+        id: nextNodeId(ctx, "input"),
+        type: "input",
+        name: inputName,
+        fromCli,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        const inputPath = path.join(ctx.runDir, "input", `${inputName}.md`);
+        ctx.writeQueue = ctx.writeQueue.then(
+          () => writeFile(inputPath, value, "utf8")
+        );
+        await ctx.writeQueue;
+        return value;
+      });
+    },
+    async output(name, value) {
+      assertNotSealed(ctx, "flow.output");
+      const meta = {
+        name,
+        producedBy: "flow.output",
+        producedAt: nowIso(),
+        sourceNode: currentParent(ctx.rootGraphNode).id
+      };
+      ctx.writeQueue = ctx.writeQueue.then(
+        () => writeBinding(ctx.runDir, name, value, meta)
+      );
+      await ctx.writeQueue;
+    },
+    async exec(opts) {
+      assertNotSealed(ctx, "flow.exec");
+      const execName = assertSafeName("flow.exec", opts.name);
+      const callCount = (ctx.execCallCount.get(execName) ?? 0) + 1;
+      const bindingName = pickBindingName(
+        execName,
+        callCount,
+        opts.bindingName
+      );
+      const commitCount = () => ctx.execCallCount.set(execName, callCount);
+      const maxStdoutBytes = opts.maxStdoutBytes !== void 0 ? opts.maxStdoutBytes : 4 * 1024 * 1024;
+      const node = {
+        id: nextNodeId(ctx, "exec"),
+        type: "exec",
+        name: execName,
+        command: [opts.command, ...opts.args ?? []].join(" ").slice(0, 200),
+        bindingName,
+        startedAt: nowIso(),
+        status: "running",
+        children: []
+      };
+      return withGraphNode(ctx, node, async () => {
+        const startTs = Date.now();
+        const out = await runSubprocess({
+          command: opts.command,
+          args: opts.args ?? [],
+          stdin: opts.stdin,
+          cwd: opts.cwd,
+          env: opts.env,
+          timeoutMs: opts.timeout ?? 3e5,
+          // 用户显式 command/args，不走 cmd.exe（否则括号/引号被吃）。
+          // .cmd / .bat shim 用户自己加扩展名。
+          useShell: false,
+          signal: currentCancelSignal(),
+          maxStdoutBytes
+        });
+        const durationMs = Date.now() - startTs;
+        node.exitCode = out.exitCode;
+        if (out.truncated) node.truncated = true;
+        const truncationNote = out.truncated ? `
 
-... [truncated at ${o} bytes by flow.exec maxStdoutBytes; subprocess SIGKILLed. raise maxStdoutBytes or narrow the command's output.]`:"",h=f.stdout.replace(/\n+$/,""),w={stdout:h,raw:f.stdout,exitCode:f.exitCode,durationMs:m,truncated:f.truncated===!0},y={name:s,producedBy:`exec:${u}`,producedAt:g(),sourceNode:l.id};if(e.writeQueue=e.writeQueue.then(()=>T(e.runDir,s,h+p,y)),await e.writeQueue,i(),console.log(`  [exec] ${u} -> bindings/${s}.md (exit=${f.exitCode} ${m}ms${f.truncated?" TRUNCATED":""})`),!f.truncated&&f.exitCode!==0)throw new Error(`flow.exec: subprocess exited abnormally exit=${f.exitCode}. name=${u} command="${t.command}"
-stderr tail: ${f.stderr.slice(-300)}`);return w})}};return c}async function B(e,n,a,c){const t={id:F(e,"iteration"),type:"iteration",index:a,itemPreview:ze(n),startedAt:g(),status:"running",children:[]};await E(e,t,()=>c(n,a))}var pe=new Fe;function tt(){return{provider:`cli:${(process.env.FLOW_ENGINE??"claude").toLowerCase()}`,call:ne,defaultModel:process.env.FLOW_MODEL??""}}function x(){return new Date().toISOString()}function he(e){const n={calls:0,input:0,output:0},a={calls:0,input:0,output:0},c=t=>{const u=t;if(u.tokens&&u.cached!==!0){const s=(u.evaluatorAgent??u.agent??"").startsWith("__")?a:n;s.calls+=1,s.input+=u.tokens.input??0,s.output+=u.tokens.output??0}if(Array.isArray(u.children))for(const r of u.children)c(r)};return c(e),{user:n,internal:a,calls:n.calls+a.calls,input:n.input+a.input,output:n.output+a.output}}function V(e){return e<1e3?String(e):e<1e6?`${(e/1e3).toFixed(1)}k`:`${(e/1e6).toFixed(2)}M`}function nt(){const e=new Date,n=t=>t.toString().padStart(2,"0"),a=`${e.getFullYear()}${n(e.getMonth()+1)}${n(e.getDate())}-${n(e.getHours())}${n(e.getMinutes())}${n(e.getSeconds())}`,c=Math.random().toString(36).slice(2,8);return`${a}-${c}`}function ut(e){return!e.context||Object.keys(e.context).length===0?e.prompt:`${Object.entries(e.context).map(([a,c])=>`## context.${a}
+... [truncated at ${maxStdoutBytes} bytes by flow.exec maxStdoutBytes; subprocess SIGKILLed. raise maxStdoutBytes or narrow the command's output.]` : "";
+        const stdout = out.stdout.replace(/\n+$/, "");
+        const result = {
+          stdout,
+          raw: out.stdout,
+          exitCode: out.exitCode,
+          durationMs,
+          truncated: out.truncated === true
+        };
+        const bindingMeta = {
+          name: bindingName,
+          producedBy: `exec:${execName}`,
+          producedAt: nowIso(),
+          sourceNode: node.id
+        };
+        ctx.writeQueue = ctx.writeQueue.then(
+          () => writeBinding(ctx.runDir, bindingName, stdout + truncationNote, bindingMeta)
+        );
+        await ctx.writeQueue;
+        commitCount();
+        console.log(
+          `  [exec] ${execName} -> bindings/${bindingName}.md (exit=${out.exitCode} ${durationMs}ms${out.truncated ? " TRUNCATED" : ""})`
+        );
+        if (!out.truncated && out.exitCode !== 0) {
+          throw new Error(
+            `flow.exec: subprocess exited abnormally exit=${out.exitCode}. name=${execName} command="${opts.command}"
+stderr tail: ${out.stderr.slice(-300)}`
+          );
+        }
+        return result;
+      });
+    }
+  };
+  return flow;
+}
+async function runIteration(ctx, item, index, fn) {
+  const node = {
+    id: nextNodeId(ctx, "iteration"),
+    type: "iteration",
+    index,
+    itemPreview: previewItem(item),
+    startedAt: nowIso(),
+    status: "running",
+    children: []
+  };
+  await withGraphNode(ctx, node, () => fn(item, index));
+}
 
-${c}`).join(`
+// src/run.ts
+var ctxStorage = new AsyncLocalStorage2();
+function pickProvider2() {
+  const engine = (process.env.FLOW_ENGINE ?? "claude").toLowerCase();
+  return {
+    provider: `cli:${engine}`,
+    call: callViaCli,
+    defaultModel: process.env.FLOW_MODEL ?? ""
+  };
+}
+function nowIso2() {
+  return (/* @__PURE__ */ new Date()).toISOString();
+}
+function aggregateTokens(root) {
+  const user = { calls: 0, input: 0, output: 0 };
+  const internal = { calls: 0, input: 0, output: 0 };
+  const visit = (node) => {
+    const n = node;
+    if (n.tokens && n.cached !== true) {
+      const owner = n.evaluatorAgent ?? n.agent ?? "";
+      const bucket = owner.startsWith("__") ? internal : user;
+      bucket.calls += 1;
+      bucket.input += n.tokens.input ?? 0;
+      bucket.output += n.tokens.output ?? 0;
+    }
+    if (Array.isArray(n.children)) {
+      for (const child of n.children) visit(child);
+    }
+  };
+  visit(root);
+  return {
+    user,
+    internal,
+    calls: user.calls + internal.calls,
+    input: user.input + internal.input,
+    output: user.output + internal.output
+  };
+}
+function formatTokenCount(n) {
+  if (n < 1e3) return String(n);
+  if (n < 1e6) return `${(n / 1e3).toFixed(1)}k`;
+  return `${(n / 1e6).toFixed(2)}M`;
+}
+function makeRunId() {
+  const d = /* @__PURE__ */ new Date();
+  const pad = (n) => n.toString().padStart(2, "0");
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `${stamp}-${rand}`;
+}
+function buildUserMessage2(invocation) {
+  if (!invocation.context || Object.keys(invocation.context).length === 0) {
+    return invocation.prompt;
+  }
+  const ctxBlock = Object.entries(invocation.context).map(([key, value]) => `## context.${key}
+
+${value}`).join("\n\n---\n\n");
+  return `${ctxBlock}
 
 ---
 
-`)}
+${invocation.prompt}`;
+}
+function readCliResumeId() {
+  for (const arg of process.argv.slice(2)) {
+    if (arg.startsWith("--resume=")) return arg.slice("--resume=".length);
+    if (arg === "--resume") {
+      throw new Error(
+        `--resume \u9700\u8981\u5E26 runId\uFF1A--resume=<runId> \u6216 --resume=last`
+      );
+    }
+  }
+  return void 0;
+}
+async function loadResumeCache(oldRunDir) {
+  const cache = /* @__PURE__ */ new Map();
+  const bindingsDir = path2.join(oldRunDir, "bindings");
+  let entries;
+  try {
+    entries = await readdir(bindingsDir);
+  } catch {
+    return cache;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".md")) continue;
+    const name = entry.slice(0, -".md".length);
+    const mdPath = path2.join(bindingsDir, entry);
+    const metaPath = path2.join(bindingsDir, `${name}.meta.json`);
+    let content;
+    try {
+      content = await readFile(mdPath, "utf8");
+    } catch {
+      continue;
+    }
+    let inputHash;
+    try {
+      const metaRaw = await readFile(metaPath, "utf8");
+      const meta = JSON.parse(metaRaw);
+      inputHash = meta.inputHash;
+    } catch {
+    }
+    cache.set(name, { content, inputHash });
+  }
+  return cache;
+}
+async function pickLatestRunId(runsDir) {
+  let entries;
+  try {
+    entries = await readdir(runsDir);
+  } catch {
+    throw new Error(`--resume=last \u5931\u8D25\uFF1A${runsDir} \u4E0D\u5B58\u5728\u6216\u4E0D\u53EF\u8BFB`);
+  }
+  const dirs = [];
+  for (const e of entries) {
+    const full = path2.join(runsDir, e);
+    try {
+      const s = await stat(full);
+      if (s.isDirectory()) dirs.push(e);
+    } catch {
+    }
+  }
+  if (dirs.length === 0) {
+    throw new Error(`--resume=last \u5931\u8D25\uFF1A${runsDir} \u4E0B\u6CA1\u6709\u4EFB\u4F55 run \u76EE\u5F55`);
+  }
+  dirs.sort();
+  return dirs[dirs.length - 1];
+}
+async function gcRuns(runsDir, opts = {
+  keepCount: 50,
+  keepDays: 7
+}) {
+  const { keepCount, keepDays, excludeRunId } = opts;
+  if (keepCount <= 0 && keepDays <= 0) return [];
+  let entries;
+  try {
+    entries = await readdir(runsDir);
+  } catch {
+    return [];
+  }
+  const runs = [];
+  for (const e of entries) {
+    if (e === excludeRunId) continue;
+    const full = path2.join(runsDir, e);
+    try {
+      const s = await stat(full);
+      if (s.isDirectory()) runs.push({ id: e, mtimeMs: s.mtimeMs });
+    } catch {
+    }
+  }
+  if (runs.length === 0) return [];
+  runs.sort((a, b) => a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+  const keepIds = /* @__PURE__ */ new Set();
+  if (keepCount > 0) {
+    for (const r of runs.slice(0, keepCount)) keepIds.add(r.id);
+  }
+  if (keepDays > 0) {
+    const cutoff = Date.now() - keepDays * 24 * 60 * 60 * 1e3;
+    for (const r of runs) if (r.mtimeMs >= cutoff) keepIds.add(r.id);
+  }
+  const deleted = [];
+  for (const r of runs) {
+    if (keepIds.has(r.id)) continue;
+    try {
+      await rm(path2.join(runsDir, r.id), { recursive: true, force: true });
+      deleted.push(r.id);
+    } catch {
+    }
+  }
+  return deleted;
+}
+function resolveRunsGcConfig() {
+  const parse = (raw, dflt) => {
+    if (raw === void 0) return dflt;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : dflt;
+  };
+  return {
+    keepCount: parse(process.env.FLOW_RUNS_KEEP_COUNT, 50),
+    keepDays: parse(process.env.FLOW_RUNS_KEEP_DAYS, 7)
+  };
+}
+function Agent(config) {
+  const systemPrompt = config.system ?? config.prompt;
+  if (!systemPrompt) {
+    throw new Error(`Agent({name: "${config.name}"}) \u7F3A\u5C11 system / prompt \u5B57\u6BB5`);
+  }
+  const callable = async (invocation) => {
+    const ctx = ctxStorage.getStore();
+    const { provider, call, defaultModel } = pickProvider2();
+    const model = config.model ?? defaultModel;
+    const maxTokens = config.maxTokens ?? 8192;
+    const temperature = config.temperature ?? 1;
+    const userPrompt = buildUserMessage2(invocation);
+    const startedAt = nowIso2();
+    const startTs = Date.now();
+    const result = await call({
+      model,
+      system: systemPrompt,
+      userPrompt,
+      maxTokens,
+      temperature,
+      thinking: config.thinking
+    });
+    const endedAt = nowIso2();
+    const durationMs = Date.now() - startTs;
+    const trace = {
+      agent: config.name,
+      provider,
+      model,
+      startedAt,
+      endedAt,
+      durationMs,
+      system: systemPrompt,
+      userPrompt,
+      context: invocation.context,
+      output: result.text,
+      inputTokens: result.inputTokens,
+      outputTokens: result.outputTokens,
+      cacheReadTokens: result.cacheReadTokens,
+      cacheWriteTokens: result.cacheWriteTokens
+    };
+    if (ctx) {
+      const count = (ctx.sessionCallCount.get(config.name) ?? 0) + 1;
+      ctx.sessionCallCount.set(config.name, count);
+      const traceName = count === 1 ? `${config.name}.json` : `${config.name}.${count}.json`;
+      const tracePath = path2.join(ctx.runDir, "trace", traceName);
+      ctx.writeQueue = ctx.writeQueue.then(
+        () => writeFile2(tracePath, JSON.stringify(trace, null, 2), "utf8")
+      );
+      await ctx.writeQueue;
+      console.log(
+        `  [agent] ${config.name} done in ${durationMs}ms (provider=${provider} model=${model} in=${result.inputTokens} out=${result.outputTokens} cacheR=${result.cacheReadTokens} cacheW=${result.cacheWriteTokens})`
+      );
+    }
+    return result.text;
+  };
+  return Object.assign(callable, {
+    __agentName: config.name,
+    __config: { ...config, system: systemPrompt }
+  });
+}
+async function run(fn, options = {}) {
+  const runsDir = options.runsDir ?? path2.resolve("runs");
+  let resumeId = options.resumeFromRunId ?? readCliResumeId();
+  if (resumeId === "last") {
+    resumeId = await pickLatestRunId(runsDir);
+  }
+  const isResumed = !!resumeId;
+  const runId = resumeId ?? makeRunId();
+  const runDir = path2.join(runsDir, runId);
+  await mkdir(path2.join(runDir, "input"), { recursive: true });
+  await mkdir(path2.join(runDir, "bindings"), { recursive: true });
+  await mkdir(path2.join(runDir, "trace"), { recursive: true });
+  if (!isResumed) {
+    const gc = resolveRunsGcConfig();
+    try {
+      const deleted = await gcRuns(runsDir, { ...gc, excludeRunId: runId });
+      if (deleted.length > 0) {
+        console.log(
+          `[run] runs GC: removed ${deleted.length} old run dir${deleted.length > 1 ? "s" : ""} (keep latest ${gc.keepCount} + ${gc.keepDays}d; tune via FLOW_RUNS_KEEP_COUNT/DAYS)`
+        );
+      }
+    } catch {
+    }
+  }
+  const resumeCache = isResumed ? await loadResumeCache(runDir) : /* @__PURE__ */ new Map();
+  if (isResumed) {
+    console.log(
+      `[run] resuming ${runId} (${resumeCache.size} cached bindings)`
+    );
+  }
+  const programSnapshotPath = options.programPath ?? process.argv[1];
+  if (programSnapshotPath) {
+    try {
+      await copyFile(programSnapshotPath, path2.join(runDir, "program.ts"));
+    } catch (err) {
+      console.warn(
+        `[warn] failed to snapshot program: ${err.message}`
+      );
+    }
+  }
+  console.log(`[run] ${runId}`);
+  console.log(`[run] dir: ${runDir}`);
+  const startedAt = nowIso2();
+  const startTs = Date.now();
+  const rootGraphNode = {
+    id: "run-root",
+    type: "run",
+    startedAt,
+    status: "running",
+    children: []
+  };
+  const internal = {
+    runId,
+    runDir,
+    rootGraphNode,
+    services: /* @__PURE__ */ new Map(),
+    blocks: /* @__PURE__ */ new Map(),
+    sessionCallCount: /* @__PURE__ */ new Map(),
+    serviceCallCount: /* @__PURE__ */ new Map(),
+    blockCallCount: /* @__PURE__ */ new Map(),
+    execCallCount: /* @__PURE__ */ new Map(),
+    writeQueue: Promise.resolve(),
+    resumeCache,
+    isResumed,
+    nodeIdSeq: 0,
+    writtenBindings: /* @__PURE__ */ new Set(),
+    inputRegistered: /* @__PURE__ */ new Set(),
+    sealed: false
+  };
+  const flowApi = createFlowAPI(internal);
+  const ctx = {
+    runId,
+    runDir,
+    flow: flowApi,
+    // #19: ctx.input 委托给 flow.input，复用同名去重 + 入图逻辑，行为一致。
+    input(name, defaultValue) {
+      return flowApi.input(name, defaultValue);
+    },
+    async save(name, value) {
+      await writeFile2(
+        path2.join(runDir, "bindings", `${name}.md`),
+        value,
+        "utf8"
+      );
+    }
+  };
+  let status = "ok";
+  let errorMessage;
+  let caughtError;
+  try {
+    await ctxStorage.run(internal, () => fn(ctx));
+  } catch (err) {
+    status = "error";
+    errorMessage = err.message;
+    caughtError = err;
+    console.error(`[run] \u{1F61F} \u6CA1\u8DD1\u6210\u529F\uFF0C\u6211\u770B\u4E86\u4E0B\uFF0C\u8FD9\u6B21\u6CA1\u80FD\u5B8C\u6210\u3002`);
+    console.error(`[run] \u6280\u672F\u7EC6\u8282\u90FD\u8BB0\u5728\u4E86 meta.json \u91CC\uFF08\u4E0B\u9762\u90A3\u4E2A\u76EE\u5F55\uFF09\uFF0C\u9700\u8981\u6392\u67E5\u53EF\u4EE5\u770B\u5B83\u3002`);
+  } finally {
+    await internal.writeQueue;
+    internal.sealed = true;
+  }
+  const endedAt = nowIso2();
+  const durationMs = Date.now() - startTs;
+  rootGraphNode.status = status;
+  rootGraphNode.endedAt = endedAt;
+  rootGraphNode.durationMs = durationMs;
+  if (errorMessage) rootGraphNode.errorMessage = errorMessage;
+  const graph = { runId, root: rootGraphNode };
+  await writeFile2(
+    path2.join(runDir, "execution-graph.json"),
+    JSON.stringify(graph, null, 2),
+    "utf8"
+  );
+  const totals = aggregateTokens(rootGraphNode);
+  const allSessionCalls = Object.fromEntries(internal.sessionCallCount);
+  const sessionCalls = {};
+  const evaluatorCalls = {};
+  for (const [k, v] of Object.entries(allSessionCalls)) {
+    if (k.startsWith("__")) evaluatorCalls[k] = v;
+    else sessionCalls[k] = v;
+  }
+  const meta = {
+    runId,
+    startedAt,
+    endedAt,
+    durationMs,
+    status,
+    errorMessage,
+    sessionCalls,
+    // #22：内部 evaluator 调用单列，不混进 sessionCalls。
+    evaluatorCalls,
+    serviceCalls: Object.fromEntries(internal.serviceCallCount),
+    // #15：totalTokens / llmCalls 保留为 user+internal 合计（账单维度诚实总额），
+    //      另拆 userTokens / evaluatorTokens 让用户能区分自己的花费 vs 框架内部评估。
+    totalTokens: { input: totals.input, output: totals.output },
+    llmCalls: totals.calls,
+    userTokens: { input: totals.user.input, output: totals.user.output },
+    userLlmCalls: totals.user.calls,
+    evaluatorTokens: { input: totals.internal.input, output: totals.internal.output },
+    evaluatorLlmCalls: totals.internal.calls,
+    resumed: isResumed,
+    resumeFromRunId: isResumed ? runId : void 0
+  };
+  await writeFile2(
+    path2.join(runDir, "meta.json"),
+    JSON.stringify(meta, null, 2),
+    "utf8"
+  );
+  console.log(`[run] ${status} in ${durationMs}ms`);
+  if (totals.calls > 0) {
+    const split = totals.internal.calls > 0 ? ` (${totals.user.calls} user + ${totals.internal.calls} evaluator)` : "";
+    const usagePart = totals.input === 0 && totals.output === 0 ? `\u7528\u91CF\u672A\u56DE\u4F20\uFF08\u8BE5\u5F15\u64CE CLI \u4E0D\u4E0A\u62A5 token\uFF09` : `~${formatTokenCount(totals.input)} in / ${formatTokenCount(totals.output)} out tokens`;
+    console.log(
+      `[run] total: ${totals.calls} LLM call${totals.calls > 1 ? "s" : ""}${split}, ${usagePart}`
+    );
+  }
+  console.log(`[run] artifacts at ${runDir}`);
+  if (status === "error") {
+    process.exitCode = 1;
+  }
+  if (status === "error" && options.throwOnError) {
+    throw caughtError instanceof Error ? caughtError : new Error(errorMessage ?? "run() failed");
+  }
+  return { runId, runDir, status };
+}
 
----
-
-${e.prompt}`}function rt(){for(const e of process.argv.slice(2)){if(e.startsWith("--resume="))return e.slice(9);if(e==="--resume")throw new Error("--resume \u9700\u8981\u5E26 runId\uFF1A--resume=<runId> \u6216 --resume=last")}}async function ot(e){const n=new Map,a=$.join(e,"bindings");let c;try{c=await K(a)}catch{return n}for(const t of c){if(!t.endsWith(".md"))continue;const u=t.slice(0,-3),r=$.join(a,t),s=$.join(a,`${u}.meta.json`);let i;try{i=await Y(r,"utf8")}catch{continue}let o;try{const l=await Y(s,"utf8");o=JSON.parse(l).inputHash}catch{}n.set(u,{content:i,inputHash:o})}return n}async function st(e){let n;try{n=await K(e)}catch{throw new Error(`--resume=last \u5931\u8D25\uFF1A${e} \u4E0D\u5B58\u5728\u6216\u4E0D\u53EF\u8BFB`)}const a=[];for(const c of n){const t=$.join(e,c);try{(await z(t)).isDirectory()&&a.push(c)}catch{}}if(a.length===0)throw new Error(`--resume=last \u5931\u8D25\uFF1A${e} \u4E0B\u6CA1\u6709\u4EFB\u4F55 run \u76EE\u5F55`);return a.sort(),a[a.length-1]}async function ge(e,n={keepCount:50,keepDays:7}){const{keepCount:a,keepDays:c,excludeRunId:t}=n;if(a<=0&&c<=0)return[];let u;try{u=await K(e)}catch{return[]}const r=[];for(const o of u){if(o===t)continue;const l=$.join(e,o);try{const d=await z(l);d.isDirectory()&&r.push({id:o,mtimeMs:d.mtimeMs})}catch{}}if(r.length===0)return[];r.sort((o,l)=>o.id<l.id?1:o.id>l.id?-1:0);const s=new Set;if(a>0)for(const o of r.slice(0,a))s.add(o.id);if(c>0){const o=Date.now()-c*24*60*60*1e3;for(const l of r)l.mtimeMs>=o&&s.add(l.id)}const i=[];for(const o of r)if(!s.has(o.id))try{await Ce($.join(e,o.id),{recursive:!0,force:!0}),i.push(o.id)}catch{}return i}function at(){const e=(n,a)=>{if(n===void 0)return a;const c=Number(n);return Number.isFinite(c)?c:a};return{keepCount:e(process.env.FLOW_RUNS_KEEP_COUNT,50),keepDays:e(process.env.FLOW_RUNS_KEEP_DAYS,7)}}function it(e){const n=e.system??e.prompt;if(!n)throw new Error(`Agent({name: "${e.name}"}) \u7F3A\u5C11 system / prompt \u5B57\u6BB5`);return Object.assign(async c=>{const t=pe.getStore(),{provider:u,call:r,defaultModel:s}=tt(),i=e.model??s,o=e.maxTokens??8192,l=e.temperature??1,d=ut(c),f=x(),m=Date.now(),p=await r({model:i,system:n,userPrompt:d,maxTokens:o,temperature:l,thinking:e.thinking}),h=x(),w=Date.now()-m,y={agent:e.name,provider:u,model:i,startedAt:f,endedAt:h,durationMs:w,system:n,userPrompt:d,context:c.context,output:p.text,inputTokens:p.inputTokens,outputTokens:p.outputTokens,cacheReadTokens:p.cacheReadTokens,cacheWriteTokens:p.cacheWriteTokens};if(t){const S=(t.sessionCallCount.get(e.name)??0)+1;t.sessionCallCount.set(e.name,S);const C=S===1?`${e.name}.json`:`${e.name}.${S}.json`,v=$.join(t.runDir,"trace",C);t.writeQueue=t.writeQueue.then(()=>R(v,JSON.stringify(y,null,2),"utf8")),await t.writeQueue,console.log(`  [agent] ${e.name} done in ${w}ms (provider=${u} model=${i} in=${p.inputTokens} out=${p.outputTokens} cacheR=${p.cacheReadTokens} cacheW=${p.cacheWriteTokens})`)}return p.text},{__agentName:e.name,__config:{...e,system:n}})}async function ct(e,n={}){const a=n.runsDir??$.resolve("runs");let c=n.resumeFromRunId??rt();c==="last"&&(c=await st(a));const t=!!c,u=c??nt(),r=$.join(a,u);if(await G($.join(r,"input"),{recursive:!0}),await G($.join(r,"bindings"),{recursive:!0}),await G($.join(r,"trace"),{recursive:!0}),!t){const k=at();try{const _=await ge(a,{...k,excludeRunId:u});_.length>0&&console.log(`[run] runs GC: removed ${_.length} old run dir${_.length>1?"s":""} (keep latest ${k.keepCount} + ${k.keepDays}d; tune via FLOW_RUNS_KEEP_COUNT/DAYS)`)}catch{}}const s=t?await ot(r):new Map;t&&console.log(`[run] resuming ${u} (${s.size} cached bindings)`);const i=n.programPath??process.argv[1];if(i)try{await Ee(i,$.join(r,"program.ts"))}catch(k){console.warn(`[warn] failed to snapshot program: ${k.message}`)}console.log(`[run] ${u}`),console.log(`[run] dir: ${r}`);const o=x(),l=Date.now(),d={id:"run-root",type:"run",startedAt:o,status:"running",children:[]},f={runId:u,runDir:r,rootGraphNode:d,services:new Map,blocks:new Map,sessionCallCount:new Map,serviceCallCount:new Map,blockCallCount:new Map,execCallCount:new Map,writeQueue:Promise.resolve(),resumeCache:s,isResumed:t,nodeIdSeq:0,writtenBindings:new Set,inputRegistered:new Set,sealed:!1},m=et(f),p={runId:u,runDir:r,flow:m,input(k,_){return m.input(k,_)},async save(k,_){await R($.join(r,"bindings",`${k}.md`),_,"utf8")}};let h="ok",w,y;try{await pe.run(f,()=>e(p))}catch(k){h="error",w=k.message,y=k,console.error("[run] \u{1F61F} \u6CA1\u8DD1\u6210\u529F\uFF0C\u6211\u770B\u4E86\u4E0B\uFF0C\u8FD9\u6B21\u6CA1\u80FD\u5B8C\u6210\u3002"),console.error("[run] \u6280\u672F\u7EC6\u8282\u90FD\u8BB0\u5728\u4E86 meta.json \u91CC\uFF08\u4E0B\u9762\u90A3\u4E2A\u76EE\u5F55\uFF09\uFF0C\u9700\u8981\u6392\u67E5\u53EF\u4EE5\u770B\u5B83\u3002")}finally{await f.writeQueue,f.sealed=!0}const S=x(),C=Date.now()-l;d.status=h,d.endedAt=S,d.durationMs=C,w&&(d.errorMessage=w);const v={runId:u,root:d};await R($.join(r,"execution-graph.json"),JSON.stringify(v,null,2),"utf8");const A=he(d),P=Object.fromEntries(f.sessionCallCount),j={},b={};for(const[k,_]of Object.entries(P))k.startsWith("__")?b[k]=_:j[k]=_;const M={runId:u,startedAt:o,endedAt:S,durationMs:C,status:h,errorMessage:w,sessionCalls:j,evaluatorCalls:b,serviceCalls:Object.fromEntries(f.serviceCallCount),totalTokens:{input:A.input,output:A.output},llmCalls:A.calls,userTokens:{input:A.user.input,output:A.user.output},userLlmCalls:A.user.calls,evaluatorTokens:{input:A.internal.input,output:A.internal.output},evaluatorLlmCalls:A.internal.calls,resumed:t,resumeFromRunId:t?u:void 0};if(await R($.join(r,"meta.json"),JSON.stringify(M,null,2),"utf8"),console.log(`[run] ${h} in ${C}ms`),A.calls>0){const k=A.internal.calls>0?` (${A.user.calls} user + ${A.internal.calls} evaluator)`:"",_=A.input===0&&A.output===0?"\u7528\u91CF\u672A\u56DE\u4F20\uFF08\u8BE5\u5F15\u64CE CLI \u4E0D\u4E0A\u62A5 token\uFF09":`~${V(A.input)} in / ${V(A.output)} out tokens`;console.log(`[run] total: ${A.calls} LLM call${A.calls>1?"s":""}${k}, ${_}`)}if(console.log(`[run] artifacts at ${r}`),h==="error"&&(process.exitCode=1),h==="error"&&n.throwOnError)throw y instanceof Error?y:new Error(w??"run() failed");return{runId:u,runDir:r,status:h}}ye({override:!0}),(()=>{const e=["LLM_PROVIDER","ANTHROPIC_MODEL","ANTHROPIC_BETA","OPENAI_BASE_URL","OPENAI_API_KEY","OPENAI_MODEL"].filter(n=>process.env[n]!==void 0&&process.env[n]!=="");e.length>0&&console.warn(`[warn] \u68C0\u6D4B\u5230 v0.7 \u5DF2\u5E9F\u5F03\u7684 env \u5B57\u6BB5\uFF1A${e.join(", ")}\u3002v0.7 \u8D77\u8C03 LLM \u5168\u8D70 CLI \u5F15\u64CE\uFF08FLOW_ENGINE / FLOW_MODEL\uFF09\uFF0C\u8FD9\u4E9B\u5B57\u6BB5\u5DF2\u65E0\u6548\u3002\u8BF7\u5BF9\u7167 .env.example \u6E05\u7406 core/.env\uFF0C\u907F\u514D\u88AB\u5B50\u8FDB\u7A0B\u91CC\u7684\u65E7\u7248 CLI \u8BEF\u8BFB\u3002`)})();export{it as Agent,he as aggregateTokens,D as assertSafeName,V as formatTokenCount,ge as gcRuns,Z as pickEngine,ct as run};
+// src/index.ts
+dotenvConfig({ override: true });
+(() => {
+  const stale = [
+    "LLM_PROVIDER",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_BETA",
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_MODEL"
+  ].filter((k) => process.env[k] !== void 0 && process.env[k] !== "");
+  if (stale.length > 0) {
+    console.warn(
+      `[warn] \u68C0\u6D4B\u5230 v0.7 \u5DF2\u5E9F\u5F03\u7684 env \u5B57\u6BB5\uFF1A${stale.join(", ")}\u3002v0.7 \u8D77\u8C03 LLM \u5168\u8D70 CLI \u5F15\u64CE\uFF08FLOW_ENGINE / FLOW_MODEL\uFF09\uFF0C\u8FD9\u4E9B\u5B57\u6BB5\u5DF2\u65E0\u6548\u3002\u8BF7\u5BF9\u7167 .env.example \u6E05\u7406 core/.env\uFF0C\u907F\u514D\u88AB\u5B50\u8FDB\u7A0B\u91CC\u7684\u65E7\u7248 CLI \u8BEF\u8BFB\u3002`
+    );
+  }
+})();
+export {
+  Agent,
+  aggregateTokens,
+  assertSafeName,
+  formatTokenCount,
+  gcRuns,
+  pickEngine,
+  run
+};
