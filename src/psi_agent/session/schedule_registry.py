@@ -205,7 +205,12 @@ class ScheduleRegistry:
         files: dict[str, ScheduleEntry] = {}
         sched_anyio = anyio.Path(str(schedules_dir))
 
-        if not await sched_anyio.is_dir():
+        try:
+            sched_dir_exists = await sched_anyio.is_dir()
+        except Exception as e:
+            logger.warning(f"Cannot access schedules directory {schedules_dir!r}: {e!r}")
+            return files
+        if not sched_dir_exists:
             logger.warning(f"Schedules directory not found: {schedules_dir!r}")
             return files
 

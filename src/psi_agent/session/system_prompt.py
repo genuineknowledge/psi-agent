@@ -52,16 +52,16 @@ class SystemPrompt:
         if not conversation.messages:
             try:
                 sp = await self._builder()
-                conversation.replace_system(sp)
                 logger.info(f"System prompt loaded ({len(sp)} chars)")
+                conversation.replace_system(sp)
             except Exception as e:
                 logger.error(f"Failed to build system prompt: {e}")
         else:
             try:
                 if await self._checker():
                     sp = await self._builder()
-                    conversation.replace_system(sp)
                     logger.info(f"System prompt rebuilt ({len(sp)} chars)")
+                    conversation.replace_system(sp)
             except Exception as e:
                 logger.error(f"Rebuild check or rebuild failed: {e}")
 
@@ -104,8 +104,13 @@ class SystemPrompt:
             sys.modules.pop(module_name, None)
             raise
 
-        builder = SystemPrompt._extract_async_func(module, "system_prompt_builder")
-        checker = SystemPrompt._extract_async_func(module, "system_prompt_rebuild_checker")
+        try:
+            builder = SystemPrompt._extract_async_func(module, "system_prompt_builder")
+            checker = SystemPrompt._extract_async_func(module, "system_prompt_rebuild_checker")
+        except Exception as e:
+            logger.error(f"Failed to extract functions from {system_py!r}: {e!r}")
+            sys.modules.pop(module_name, None)
+            return None, None
         return builder, checker
 
     @staticmethod

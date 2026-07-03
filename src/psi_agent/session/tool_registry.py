@@ -299,7 +299,12 @@ class ToolRegistry:
         registered_modules: list[str] = []
         tools_anyio = anyio.Path(str(tools_dir))
 
-        if not await tools_anyio.is_dir():
+        try:
+            tools_dir_exists = await tools_anyio.is_dir()
+        except Exception as e:
+            logger.warning(f"Cannot access tools directory {tools_dir!r}: {e!r}")
+            return files
+        if not tools_dir_exists:
             logger.warning(f"Tools directory not found: {tools_dir!r}")
             return files
 
