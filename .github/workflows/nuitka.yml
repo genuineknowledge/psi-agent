@@ -43,12 +43,12 @@ jobs:
             --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist \
             --include-package=any_llm \
             --include-package=mcp \
+            --include-package=serper_mcp_server \
+            --include-package=pystray \
             --include-package=fitz \
             --include-package=docx \
             --include-package=pptx \
             --include-package=openpyxl \
-            --include-package=pystray \
-            --include-package=serper_mcp_server \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7
         with:

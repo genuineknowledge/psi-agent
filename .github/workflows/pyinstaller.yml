@@ -34,12 +34,12 @@ jobs:
             --add-data "src/psi_agent/gateway/spa/dist:psi_agent/gateway/spa/dist" \
             --collect-submodules any_llm \
             --collect-submodules mcp \
+            --collect-submodules serper_mcp_server \
+            --collect-submodules pystray \
             --collect-submodules fitz \
             --collect-submodules docx \
             --collect-submodules pptx \
             --collect-submodules openpyxl \
-            --collect-submodules pystray \
-            --collect-submodules serper_mcp_server \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7
         with:
