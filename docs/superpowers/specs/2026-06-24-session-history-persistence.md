@@ -1,7 +1,24 @@
 # Session History 持久化设计规格
 
+> [!NOTE]
+> **This spec is a historical design document.**  The implementation has
+> evolved significantly since 2026-06-24.  For the **current** behaviour
+> see ``src/psi_agent/session/AGENTS.md`` § History 持久化 and
+> ``AGENTS.md`` § 为什么 Session history 持久化为 JSONL？.
+>
+> Key divergences from this spec:
+> - Turn-level atomicity via ``add`` / ``commit`` / ``rollback`` —
+>   the first ``add()`` auto-snapshots; ``commit()`` persists + clears;
+>   ``rollback()`` restores.  ``save()`` is a low-level primitive; the
+>   agent loop calls ``commit()`` at every consistency checkpoint.
+> - ``peek_pending()`` / ``clear_pending()``: the old ``flush_pending()``
+>   was split so that a yield failure (e.g. client disconnect) does not
+>   permanently lose pending schedule chunks.
+> - The user message is no longer persisted early; a failed turn is
+>   rolled back in both memory and disk.
+
 **日期**: 2026-06-24
-**状态**: 已审批
+**状态**: 已审批（历史档案）
 
 ---
 
