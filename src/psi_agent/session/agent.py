@@ -251,10 +251,7 @@ class SessionAgent:
                                     assistant_msg["reasoning"] = accumulated_reasoning
                                 self._conversation.add(assistant_msg)
                             await self._conversation.commit()
-                            try:
-                                await self._schedule_registry.refresh()
-                            except Exception:
-                                logger.warning("Failed to refresh schedules after turn", exc_info=True)
+                            await self._schedule_registry.refresh()
                             return
 
                         if finish_reason == "tool_calls":
