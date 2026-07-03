@@ -72,6 +72,9 @@ select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20"
 quote-style = "double"
 indent-style = "space"
 
+[tool.ty.environment]
+extra-paths = ["examples/haitun-workspace/tools"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
