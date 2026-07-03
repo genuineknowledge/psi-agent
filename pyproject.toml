@@ -82,21 +82,3 @@ markers = ["schedule: schedule-based tests (> 30s)"]
 [tool.coverage.run]
 source = ["src/psi_agent"]
 
-[tool.nuitka]
-mode = "app"
-output-dir = "nuitka-dist"
-output-filename = "psi-agent"
-assume-yes-for-downloads = true
-include-data-dir = [
-    "src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist",
-]
-include-package = [
-    "any_llm",
-    "mcp",
-    "serper_mcp_server",
-    "pystray",
-    "fitz",
-    "docx",
-    "pptx",
-    "openpyxl",
-]
