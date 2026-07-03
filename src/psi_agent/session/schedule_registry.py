@@ -182,6 +182,10 @@ class ScheduleRegistry:
                                 logger.info(
                                     f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)"
                                 )
+
+                        # Fire the after-turn self-evolution hook for the
+                        # scheduled turn (background, best-effort).
+                        agent.spawn_after_turn_task()
                     except Exception as e:
                         logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
         finally:

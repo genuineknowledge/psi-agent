@@ -16,12 +16,18 @@ from psi_agent.session.schedule_registry import Schedule, ScheduleEntry, Schedul
 class _MockAgent:
     _lock = anyio.Lock()
 
+    def __init__(self) -> None:
+        self.after_turn_spawned = 0
+
     async def run(self, msg: object) -> Any:  # type: ignore[return]
         if False:
             yield
 
     def set_pending_schedule_chunks(self, chunks: object) -> None:
         pass
+
+    def spawn_after_turn_task(self) -> None:
+        self.after_turn_spawned += 1
 
 
 class _RaisingAgent:
@@ -33,6 +39,9 @@ class _RaisingAgent:
         raise RuntimeError("test error")
 
     def set_pending_schedule_chunks(self, chunks: object) -> None:
+        pass
+
+    def spawn_after_turn_task(self) -> None:
         pass
 
 
@@ -359,6 +368,18 @@ async def test_run_one_handles_agent_error() -> None:
     cancel_scope = anyio.CancelScope()
     with anyio.move_on_after(3):
         await ScheduleRegistry._run_one(s, cast(Any, agent), cancel_scope)
+
+
+@pytest.mark.anyio
+async def test_run_one_fires_after_turn_hook() -> None:
+    # A scheduled turn that completes should spawn the after-turn hook.
+    s = Schedule(name="test", cron="* * * * * *", task_content="ping")
+    agent = _MockAgent()
+    cancel_scope = anyio.CancelScope()
+    with anyio.move_on_after(3):
+        await ScheduleRegistry._run_one(s, cast(Any, agent), cancel_scope)
+
+    assert agent.after_turn_spawned >= 1
 
 
 # ── YAML parse helper ─────────────────────────────────────────────────────────
