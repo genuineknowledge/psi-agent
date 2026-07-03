@@ -1,4 +1,3 @@
-import { watch } from 'vue'
 import { useUiStore } from '../stores/ui.js'
 
 const LS_THEME = 'gw-theme'

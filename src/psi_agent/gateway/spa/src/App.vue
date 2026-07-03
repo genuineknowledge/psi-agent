@@ -24,7 +24,7 @@
       </div>
       <div id="mobile-topbar">
         <div class="topbar-left">
-          <button class="topbar-btn" @click="ui.toggleSidebar(window.innerWidth <= 768)" title="打开会话列表">
+          <button class="topbar-btn" @click="toggleSidebar" title="打开会话列表">
             <span class="material-symbols-outlined">menu</span>
           </button>
         </div>
@@ -36,7 +36,7 @@
         </div>
       </div>
 
-      <button class="sidebar-toggle-btn" @click="ui.toggleSidebar(window.innerWidth <= 768)" :title="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
+      <button class="sidebar-toggle-btn" @click="toggleSidebar" :title="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
         <span class="material-symbols-outlined">{{ (isSidebarCollapsed && !isMobileSidebarOpen) ? 'menu' : 'menu_open' }}</span>
       </button>
 
@@ -102,6 +102,10 @@ const { loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, dlgConfirm, isSideb
 
 const { toggleTheme } = useTheme()
 useKeyboard()
+
+function toggleSidebar() {
+  ui.toggleSidebar(window.innerWidth <= 768)
+}
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
