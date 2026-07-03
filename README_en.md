@@ -137,7 +137,7 @@ into a portable bundle or installer, so the target machine does not need Python 
 powershell -ExecutionPolicy Bypass -File packaging/windows/build-haitun-integrated.ps1
 ```
 
-See [docs/windows-integrated-packaging.md](docs/windows-integrated-packaging.md) for the full workflow.
+For the full local flow, refer directly to `packaging/windows/build-haitun-integrated.ps1`.
 
 ## Electron Desktop App
 
@@ -165,9 +165,9 @@ npm.cmd install
 npm.cmd run dist:win
 ```
 
-See [docs/electron-desktop-packaging.md](docs/electron-desktop-packaging.md) for the complete workflow.
+For the full local packaging flow, refer directly to `packaging/windows/build-electron-installer.ps1` and `packaging/windows/prepare-electron-resources.ps1`.
 
-The repo also includes a matching GitHub Actions workflow at `.github/workflows/electron-desktop.yml` to build the Windows installer in CI.
+The repo also includes a matching GitHub Actions flow: the Electron packaging job is defined in `.github/workflows/electron-desktop.yml` and invoked from `.github/workflows/nuitka.yml` after the Windows Nuitka artifact is ready.
 
 ## Author
 

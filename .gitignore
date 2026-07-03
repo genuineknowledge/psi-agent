@@ -5,9 +5,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-desktop/.build/
-desktop/dist/
-desktop/node_modules/
 src/psi_agent/gateway/electron/.build/
 src/psi_agent/gateway/electron/dist/
 src/psi_agent/gateway/electron/node_modules/

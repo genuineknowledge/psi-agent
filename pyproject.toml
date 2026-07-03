@@ -62,5 +62,8 @@ testpaths = ["tests"]
 addopts = ["--strict-markers", "-ra", "--cov"]
 markers = ["schedule: schedule-based tests (> 30s)"]
 
+[tool.ty.src]
+exclude = ["examples/**"]
+
 [tool.coverage.run]
 source = ["src/psi_agent"]

@@ -1,20 +1,7 @@
 name: Electron Desktop
 
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-    tags:
-      - "v*"
-    paths:
-      - ".github/workflows/electron-desktop.yml"
-      - "src/psi_agent/gateway/electron/**"
-      - "examples/haitun-workspace/**"
-      - "packaging/windows/**"
-      - "src/psi_agent/**"
-      - "pyproject.toml"
-      - "uv.lock"
+  workflow_call:
 
 jobs:
   electron-installer:
@@ -24,9 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/download-artifact@v7
         with:
-          python-version: "3.14"
+          name: psi-agent-nuitka-windows-latest
+          path: dist-exe
 
       - uses: actions/setup-node@v6
         with:
@@ -49,7 +37,8 @@ jobs:
           powershell -ExecutionPolicy Bypass -File packaging/windows/build-electron-installer.ps1 `
             -UseMirror `
             -BundleMsys2 `
-            -Msys2Root "${{ steps.msys2.outputs.msys2-location }}"
+            -Msys2Root "${{ steps.msys2.outputs.msys2-location }}" `
+            -BackendExecutablePath "dist-exe\\psi-agent.exe"
 
       - uses: actions/upload-artifact@v7
         with:

@@ -225,13 +225,13 @@ async def handler(request):
 ## Lint / Type Check 约定
 
 - **ruff**: `select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]`
-- **ty**: 全局 `ty check .`
+- **ty**: 全局 `ty check .`（通过 `pyproject.toml` 的 `[tool.ty.src].exclude = ["examples/**"]` 跳过示例 workspace）
 - **per-file-ignores**: **零条**。所有代码通过自身符合规则，不靠抑制
 - **核心代码（`src/` + `tests/`）仅 4 处 ty:ignore**（无法避免）：
   - `tests/integration/conftest.py:109` — pytest async generator fixture 的返回类型局限（`yield` 导致函数被推断为 AsyncGenerator，与标注的 MockAIServer 冲突）
   - `src/psi_agent/gateway/server.py` — `anyio.to_thread.run_sync(file_field.file.read)` 返回类型 Any，ty 无法推断
   - `src/psi_agent/gateway/__init__.py`（2 处）— `anyio.to_thread.run_sync(webbrowser.open, ...)` 与 `anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)` 同上
-- **例外**：`examples/` 下的示例 workspace（如 `a-serper-mcp-workspace/tools/_mcp.py`）含若干 `# ty: ignore`（动态 MCP 工具的运行时签名构造），属示例代码，不计入上述核心约定。
+- **例外**：`examples/` 下的示例 workspace 目前整体排除在 `ty check .` 之外；它们属于示例代码，不计入上述核心约定。
 
 `cast` 不能解决 conftest 的问题——`cast` 是表达式级工具，无法修改 async generator 函数的返回类型。`# ty: ignore` 是正确的标准解法。
 

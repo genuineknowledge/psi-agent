@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$WorkspacePath = "examples/haitun-workspace",
+    [string]$BackendExecutablePath = "",
     [switch]$BundleMsys2,
     [string]$Msys2Root = "",
     [switch]$SkipSpaInstall,
@@ -67,6 +68,9 @@ $prepareArgs = @(
     "-WorkspacePath",
     $WorkspacePath
 )
+if ($BackendExecutablePath) {
+    $prepareArgs += @("-BackendExecutablePath", $BackendExecutablePath)
+}
 if ($BundleMsys2) {
     $prepareArgs += "-BundleMsys2"
     if ($Msys2Root) {

@@ -137,7 +137,7 @@ uv run pytest -v             # 测试
 powershell -ExecutionPolicy Bypass -File packaging/windows/build-haitun-integrated.ps1
 ```
 
-更多说明见 [docs/windows-integrated-packaging.md](docs/windows-integrated-packaging.md)。
+完整本地流程可直接参考 `packaging/windows/build-haitun-integrated.ps1`。
 
 ## Electron 桌面版
 
@@ -165,9 +165,9 @@ npm.cmd install
 npm.cmd run dist:win
 ```
 
-更多说明见 [docs/electron-desktop-packaging.md](docs/electron-desktop-packaging.md)。
+完整本地打包流程可直接参考 `packaging/windows/build-electron-installer.ps1` 和 `packaging/windows/prepare-electron-resources.ps1`。
 
-仓库也提供了对应的 GitHub Actions 工作流：`.github/workflows/electron-desktop.yml`，可以在 CI 中自动生成 Windows 安装包。
+仓库也提供了对应的 GitHub Actions 流程：Electron 安装包步骤定义在 `.github/workflows/electron-desktop.yml`，并由 `.github/workflows/nuitka.yml` 在 Windows Nuitka 产物完成后继续调用，在 CI 中自动生成 Windows 安装包。
 
 ## 作者
 

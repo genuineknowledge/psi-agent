@@ -106,3 +106,7 @@ jobs:
         with:
           name: haitun-agent-installer-nuitka
           path: installer-output/Haitun Agent Setup.exe
+
+  electron-desktop-installer:
+    needs: nuitka
+    uses: ./.github/workflows/electron-desktop.yml

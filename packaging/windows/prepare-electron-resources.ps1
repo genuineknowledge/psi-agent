@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$WorkspacePath = "examples/haitun-workspace",
+    [string]$BackendExecutablePath = "",
     [switch]$BundleMsys2,
     [string]$Msys2Root = "",
     [switch]$SkipSpaInstall,
@@ -155,6 +156,11 @@ function Assert-Msys2Payload {
 
 $repoRoot = Get-RepoRoot
 $workspaceSource = Resolve-AbsolutePath -Path $WorkspacePath -BasePath $repoRoot
+$backendSource = if ($BackendExecutablePath) {
+    Resolve-AbsolutePath -Path $BackendExecutablePath -BasePath $repoRoot
+} else {
+    ""
+}
 $spaDir = Join-Path $repoRoot "src\psi_agent\gateway\spa"
 $desktopRoot = Join-Path $repoRoot "src\psi_agent\gateway\electron"
 $resourcesRoot = Join-Path $desktopRoot ".build\resources"
@@ -162,11 +168,13 @@ $backendDir = Join-Path $resourcesRoot "backend"
 $workspaceTemplateDir = Join-Path $resourcesRoot "workspace-template"
 $msysDir = Join-Path $resourcesRoot "msys64"
 
-Assert-Command -Name "uv"
 Assert-Command -Name "npm"
 
 if (-not (Test-Path -LiteralPath $workspaceSource)) {
     throw "Workspace path does not exist: $workspaceSource"
+}
+if ($backendSource -and -not (Test-Path -LiteralPath $backendSource)) {
+    throw "Backend executable path does not exist: $backendSource"
 }
 
 Write-Host "[1/4] Building SPA dist..."
@@ -180,40 +188,45 @@ try {
     Pop-Location
 }
 
-Write-Host "[2/4] Freezing backend with PyInstaller..."
+Write-Host "[2/4] Preparing backend executable..."
 Push-Location $repoRoot
 try {
-    if (-not $SkipPythonSync) {
-        & uv sync
-    }
-    if (-not $SkipPyInstallerInstall) {
-        & uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]"
-    }
-
     New-RebuildDirectory -Path $resourcesRoot -RepoRoot $repoRoot
     New-RebuildDirectory -Path $backendDir -RepoRoot $repoRoot
 
-    $pyinstallerArgs = @(
-        "run",
-        "pyinstaller",
-        "--onefile",
-        "--name",
-        "psi-agent",
-        "--distpath",
-        $backendDir,
-        "--add-data",
-        "src\psi_agent\gateway\spa\dist;psi_agent\gateway\spa\dist",
-        "--collect-submodules",
-        "any_llm",
-        "--collect-submodules",
-        "mcp",
-        "--collect-submodules",
-        "pystray",
-        "--collect-submodules",
-        "serper_mcp_server",
-        "src\psi_agent\cli.py"
-    )
-    & uv @pyinstallerArgs
+    if ($backendSource) {
+        Copy-Item -LiteralPath $backendSource -Destination (Join-Path $backendDir "psi-agent.exe")
+    } else {
+        Assert-Command -Name "uv"
+        if (-not $SkipPythonSync) {
+            & uv sync
+        }
+        if (-not $SkipPyInstallerInstall) {
+            & uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]"
+        }
+
+        $pyinstallerArgs = @(
+            "run",
+            "pyinstaller",
+            "--onefile",
+            "--name",
+            "psi-agent",
+            "--distpath",
+            $backendDir,
+            "--add-data",
+            "src\psi_agent\gateway\spa\dist;psi_agent\gateway\spa\dist",
+            "--collect-submodules",
+            "any_llm",
+            "--collect-submodules",
+            "mcp",
+            "--collect-submodules",
+            "pystray",
+            "--collect-submodules",
+            "serper_mcp_server",
+            "src\psi_agent\cli.py"
+        )
+        & uv @pyinstallerArgs
+    }
 } finally {
     Pop-Location
 }
