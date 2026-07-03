@@ -11,10 +11,7 @@
 
     <div
       id="chat"
-      @dragenter.prevent="onChatDragOver"
-      @dragover.prevent="onChatDragOver"
-      @dragleave="onChatDragLeave"
-      @drop="onChatDrop"
+      ref="chatDropRef"
     >
       <div v-if="isDragging" class="drop-overlay">
         <div class="drop-overlay-inner">
@@ -61,9 +58,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useBreakpoints, useStorage } from '@vueuse/core'
+import { useBreakpoints, useDropZone, useStorage } from '@vueuse/core'
 import { useAiStore } from './stores/ai.js'
 import { useSessionStore } from './stores/session.js'
 import { useChatStore } from './stores/chat.js'
@@ -116,27 +113,16 @@ function origin() {
   return window.location.origin.replace(/\/+$/, '')
 }
 
-function onChatDragOver(e) {
-  if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
-  e.preventDefault()
-  if (selectedSessionId.value) isDragging.value = true
-}
-
-function onChatDragLeave(e) {
-  // Only clear when the pointer actually leaves the #chat element,
-  // not when moving between its children.
-  if (e.currentTarget.contains(e.relatedTarget)) return
-  isDragging.value = false
-}
-
-function onChatDrop(e) {
-  if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
-  e.preventDefault()
-  isDragging.value = false
-  if (!selectedSessionId.value) return
-  const files = Array.from(e.dataTransfer.files || [])
-  if (files.length) selectedFiles.value.push(...files)
-}
+const chatDropRef = ref(null)
+useDropZone(chatDropRef, {
+  dataTypes: ['Files'],
+  onDrop: (files) => {
+    if (!selectedSessionId.value) return
+    if (files && files.length) selectedFiles.value.push(...files)
+  },
+  onEnter: () => { if (selectedSessionId.value) isDragging.value = true },
+  onLeave: () => { isDragging.value = false },
+})
 
 async function refreshAIs() {
   try {
