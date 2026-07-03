@@ -64,3 +64,35 @@ async def test_state_overwrite_on_save(tmp_path: str) -> None:
     assert len(snapshot["ais"]) == 1
     assert "a2" in snapshot["ais"]
     assert "a1" not in snapshot["ais"]
+
+
+@pytest.mark.anyio
+async def test_state_save_writes_history_file(tmp_path: str) -> None:
+    state = GatewayState(
+        _path=anyio.Path(tmp_path) / "state" / "latest.json",
+        _history_dir=anyio.Path(tmp_path) / "state",
+        _startup_ts="20260703-120000",
+    )
+
+    await state.save(
+        ais=[{"id": "a1", "provider": "o", "model": "m", "api_key": "k", "base_url": ""}],
+        sessions=[],
+        titles={},
+    )
+
+    assert await (anyio.Path(tmp_path) / "state" / "latest.json").exists()
+    assert await (anyio.Path(tmp_path) / "state" / "20260703-120000.json").exists()
+
+
+@pytest.mark.anyio
+async def test_state_no_history_file_without_startup_ts(tmp_path: str) -> None:
+    state = GatewayState(_path=anyio.Path(tmp_path) / "state" / "latest.json")
+
+    await state.save(
+        ais=[{"id": "a1", "provider": "o", "model": "m", "api_key": "k", "base_url": ""}],
+        sessions=[],
+        titles={},
+    )
+
+    assert await (anyio.Path(tmp_path) / "state" / "latest.json").exists()
+    assert not await (anyio.Path(tmp_path) / "state" / "20260703-120000.json").exists()

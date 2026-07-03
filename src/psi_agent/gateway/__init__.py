@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime
 
 import anyio
 from aiohttp import web
@@ -54,7 +55,10 @@ class Gateway:
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
 
-        state = GatewayState(_path=anyio.Path("state/latest.json"))
+        state = GatewayState(
+            _path=anyio.Path("state/latest.json"),
+            _startup_ts=datetime.now().strftime("%Y%m%d-%H%M%S"),
+        )
         snapshot = await state.load()
 
         async with anyio.create_task_group() as tg:

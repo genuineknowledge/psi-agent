@@ -32,7 +32,7 @@ Gateway 进程
 | `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + AiInfo |
 | `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo |
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
-| `_state.py` | `GatewayState` dataclass — `state/latest.json` 的 load/save（启动恢复 + 变更持久化） |
+| `_state.py` | `GatewayState` dataclass — `state/latest.json` 的 load/save + 历史快照 `state/YYYYMMDD-HHMMSS.json` |
 | `server.py` | aiohttp Application + REST handlers |
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取 |
