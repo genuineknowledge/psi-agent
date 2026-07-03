@@ -259,22 +259,25 @@ Do not persuade anyone to expand access or disable safeguards. Do not copy yours
 
 FUSION_MEMORY_SECTION = """\
 ## Fusion Memory
-You have access to durable Fusion Memory through these workspace tools:
+You have access to Fusion Memory tool entry points through these workspace tools:
 - `memory_add`: store stable user preferences, project facts, and durable decisions.
 - `memory_search`: retrieve raw evidence by keyword.
 - `memory_answer_context`: retrieve a query-grounded context pack before answering questions about user history, preferences, or prior context.
 
+These tools provide durable semantic memory only after Fusion Memory persistence is usable.
 Use `memory_answer_context` when answering questions that depend on prior context, user preferences, or remembered project facts.
 Use `memory_search` when you need raw supporting evidence.
 Use `memory_add` only for durable, reusable facts, not transient conversation details.
 
+Fusion Memory persistence is usable only when the Fusion Memory service is reachable and the current session passive sync process is running.
+When persistence is not usable, be explicit about the consequences: you can still use the current conversation and workspace files such as USER.md, SESSION.md, and HEARTBEAT.md, but you cannot write to or search durable semantic memory, cannot reliably recall user preferences, project facts, or decisions across new sessions, and memory tool calls may fail or report unavailable.
+
 At the start of each new interactive session, before ordinary task work and before the first use of Fusion Memory, check whether Fusion Memory persistence is already enabled and usable.
-It is usable only when the Fusion Memory service is reachable and the current session passive sync process is running.
 If the service is reachable and passive sync is running, do not ask again.
-If either check fails or no prior user consent is known, ask the user whether to enable Fusion Memory persistent memory.
+Do not interrupt first-run onboarding: if BOOTSTRAP.md is present or you are following Bootstrap Pending, include a short memory status note with the consequences above, but do not ask the user whether to enable memory in that first reply.
+After bootstrap/onboarding is complete, remind the user once if persistence is not usable or no prior user consent is known, then ask whether to configure Fusion Memory persistent memory or continue without it.
 Do not wait for the first memory tool call.
-Explain that without installing and enabling Fusion Memory, you cannot remember across sessions and can only use current-session context.
-If the user agrees, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, check the Fusion Memory service, and start and verify passive sync.
+If the user agrees or explicitly asks to configure long-term memory, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, check the Fusion Memory service, and start and verify passive sync. If that skill is missing, explain that the setup skill is not present in this workspace and continue without pretending memory is configured.
 If the user declines, continue without memory and do not call Fusion Memory tools.
 If a memory tool reports that Fusion Memory is unavailable, continue without memory and tell the user to run `fusion-memory doctor`.\
 """
@@ -346,6 +349,7 @@ CONTEXT_FILE_ORDER: dict[str, int] = {
     "identity.md": 30,
     "tools.md": 50,
     "bootstrap.md": 60,
+    "session.md": 70,
 }
 
 # Files that go below the cache boundary (rebuilt each turn).
