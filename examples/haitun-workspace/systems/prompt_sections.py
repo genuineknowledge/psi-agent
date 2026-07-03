@@ -39,6 +39,12 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "write_excel": "Create a real .xlsx spreadsheet from tabular data (use this for tables/spreadsheets instead of a markdown table)",
     "bash": "Execute shell commands",
     "powershell": "Execute PowerShell commands (Windows)",
+    "background_start": "Start a detached shell command; returns process_id",
+    "background_stop": "Stop a background process by process_id",
+    "background_list": "List registered background processes",
+    "subagent_plan": "Plan subagent sockets and spawn commands (does not start processes)",
+    "subagent_wait": "Wait until subagent AI or Session socket is ready",
+    "subagent_chat": "Send one message to a subagent; returns final text only",
     "skill_manage": "Create, patch, view, and list workspace skills",
     "flow_manage": "Create, patch, view, list, and promote reusable Fusion Flow assets",
     "memory_add": "Store durable user preferences, project facts, or decisions",
@@ -54,6 +60,12 @@ TOOL_ORDER: list[str] = [
     "write_excel",
     "bash",
     "powershell",
+    "background_start",
+    "background_stop",
+    "background_list",
+    "subagent_plan",
+    "subagent_wait",
+    "subagent_chat",
     "skill_manage",
     "flow_manage",
     "memory_add",
@@ -135,8 +147,7 @@ EXECUTION_BIAS_SECTION = """\
 - Weak/empty tool result: vary query, path, command, or source before concluding.
 - Mutable facts need live checks: files, git, clocks, versions, services, processes, package state.
 - Final answer needs evidence: test/build/lint, screenshot, inspection, tool output, or a named blocker.
-- Longer work: br
-ief progress update, then keep going.\
+- Longer work: brief progress update, then keep going - **except** subagent spawn (Steps 1-7): run silently, no per-step narration.\
 """
 
 # ---------------------------------------------------------------------------
@@ -151,6 +162,48 @@ Only ask a follow-up question when it is genuinely needed to make progress:
 - There is a real fork in the task and the user must choose the direction.
 Never ask filler or social questions that do not advance the task, e.g. "how should I address you?", "what's your name?", "is there anything else?", "do you have other questions?", "would you like to know more?". If the user has more to ask, they will ask.
 If offering an optional next step genuinely adds value, state it as an offer, not a question ("I can also do X if useful."), and keep it to one line.\
+"""
+
+# ---------------------------------------------------------------------------
+# Structured tables (C1 — stable prefix; skill has full detail)
+# ---------------------------------------------------------------------------
+
+STRUCTURED_TABLES_SECTION = """\
+## Structured replies (tables)
+Apply these rules in **every** reply. The user does not need to say "compare" or "use a table".
+
+**3+ parallel items (required table):** When you present **three or more** options that share the same shape — products, brands, models, tools, steps, apps, dishes, configs — output **one Markdown pipe table first** (header + separator + one row per item). Typical columns: `Option` | `Price (approx.)` | `Strengths` | `Best for` (adapt labels to context). Then add **1-2 sentences** with your recommendation. Emoji/playful tone is fine in the intro and closing, **not** as a substitute for the table.
+
+**Forbidden for 3+ options:** Do **not** use a separate `###` section per item each repeating 价格 / 关键点 / 适合 in prose, with only a tiny summary table at the end. That format is wrong — merge all rows into **one table up front**.
+
+**Exactly 2 items:** Use a table only for a true dichotomy (do/don't, before/after, two main modes). Two independent tips → short bullets or prose, no forced 2x2 table.
+
+**Opt out:** User explicitly asks for no tables → obey.
+
+Full rules and examples: `skills/structured-output-tables/SKILL.md` (read with `read` when unsure).\
+"""
+
+# ---------------------------------------------------------------------------
+# Task self-check (C2 — stable prefix; skill has full detail)
+# ---------------------------------------------------------------------------
+
+TASK_SELF_CHECK_SECTION = """\
+## Task self-check (before you stop)
+Before every **task-completing** user reply, silently verify (do **not** show this checklist in output):
+1. **Tool calls** — right tools/args; nothing required was skipped or faked inline.
+2. **Tool results** — failures, empties, contradictions; retry or acknowledge before claiming done.
+3. **Final output** — answers the request, format/count correct, claims match evidence (apply C1 tables when 3+ parallel items).
+
+If something is wrong, fix it (another tool round if needed) **before** sending. Full rules: `skills/task-self-check/SKILL.md`.\
+"""
+
+# ---------------------------------------------------------------------------
+# Subagent delegation (C3 — stable reminder; skill has full lifecycle rules)
+# ---------------------------------------------------------------------------
+
+SUBAGENT_DELEGATION_SECTION = """\
+## Subagent delegation
+Subagent = **new background Session** (Gateway: reuse parent AI via `subagent_plan`; standalone: spawn ai+session). Use `subagent_plan` → `background_start` / `subagent_wait` → `subagent_chat` → `background_stop`. **Silent:** do not narrate each internal step to the user. When `reuse_parent_ai` is true, skip child AI spawn. Full recipe: `skills/subagent-orchestration/SKILL.md`.\
 """
 
 # ---------------------------------------------------------------------------
@@ -194,6 +247,7 @@ If a memory tool reports that Fusion Memory is unavailable, continue without mem
 SKILLS_HEADER_TEMPLATE = """\
 ## Skills
 Scan <available_skills>. If one clearly applies, read its SKILL.md with `{read_tool}`, then follow it.
+**Before recommending 3+ products, brands, or parallel options, read `skills/structured-output-tables/SKILL.md`.**
 If several apply, choose the most specific. If none clearly apply, read none.
 One skill up front max. Never guess/fabricate skill paths.
 External API writes: batch when safe, avoid tight loops, respect 429/Retry-After.\
