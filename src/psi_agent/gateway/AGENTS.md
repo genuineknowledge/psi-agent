@@ -36,7 +36,6 @@ Gateway 进程
 | `server.py` | aiohttp Application + REST handlers |
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取 |
-| `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
 | `_workspace_manager.py` | 目录浏览 + cwd 查询 |
 | `spa/` | Vue 3 SPA 前端项目（Vite + SFC + Composition API），构建输出 `spa/dist/` |
 | `_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数指定图标文件，左键打开浏览器，右键菜单控制 |
