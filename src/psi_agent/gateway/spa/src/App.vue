@@ -63,7 +63,7 @@
 <script setup>
 import { computed, onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useBreakpoints } from '@vueuse/core'
+import { useBreakpoints, useStorage } from '@vueuse/core'
 import { useAiStore } from './stores/ai.js'
 import { useSessionStore } from './stores/session.js'
 import { useChatStore } from './stores/chat.js'
@@ -88,6 +88,7 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import Snackbar from './components/Snackbar.vue'
 
 const LS_SIDEBAR = 'gw-sidebar-state'
+const sidebarState = useStorage(LS_SIDEBAR, 'expanded')
 
 const ai = useAiStore()
 const { ais, selectedAiId, aiForm, fetchedModels, loadingModels } = storeToRefs(ai)
@@ -318,17 +319,17 @@ async function createSession() {
   }
 }
 
+if (sidebarState.value === 'collapsed') isSidebarCollapsed.value = true
+
 watch(
   isSidebarCollapsed,
   (v) => {
-    localStorage.setItem(LS_SIDEBAR, v ? 'collapsed' : 'expanded')
+    sidebarState.value = v ? 'collapsed' : 'expanded'
   }
 )
 
 onMounted(async () => {
   sessionTitles.value = await api('GET', '/titles').catch(() => ({}))
-  const savedSidebar = localStorage.getItem(LS_SIDEBAR)
-  if (savedSidebar === 'collapsed') isSidebarCollapsed.value = true
 
   try {
     await refreshAll()
