@@ -34,11 +34,6 @@ class GatewayState:
             "titles": data.get("titles", {}),
         }
 
-    def _history_path(self) -> anyio.Path | None:
-        if not self._startup_ts:
-            return None
-        return self._history_dir / f"{self._startup_ts}.json"
-
     async def save(
         self,
         ais: list[dict[str, str]],
@@ -65,8 +60,8 @@ class GatewayState:
             logger.debug(f"State saved to {self._path}")
         except Exception as e:
             logger.warning(f"Failed to save state to {self._path}: {e!r}")
-        history_path = self._history_path()
-        if history_path is not None:
+        if self._startup_ts:
+            history_path = self._history_dir / f"{self._startup_ts}.json"
             try:
                 await history_path.write_text(json_str, encoding="utf-8")
                 logger.debug(f"State saved to {history_path}")
