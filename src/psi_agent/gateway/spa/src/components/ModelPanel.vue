@@ -1,14 +1,14 @@
 <template>
   <div class="model-zone">
-    <div v-if="store.modelPanelOpen" class="model-panel-backdrop" @click="store.modelPanelOpen = false"></div>
+    <div v-if="modelPanelOpen" class="model-panel-backdrop" @click="modelPanelOpen = false"></div>
 
-    <div class="model-chip" :class="{ open: store.modelPanelOpen }" @click="store.modelPanelOpen = !store.modelPanelOpen" :title="currentModelLabel">
+    <div class="model-chip" :class="{ open: modelPanelOpen }" @click="modelPanelOpen = !modelPanelOpen" :title="currentModelLabel">
       <span class="material-symbols-outlined chip-icon">smart_toy</span>
       <span class="chip-label">{{ currentModelLabel }}</span>
       <span class="material-symbols-outlined chip-arrow">expand_more</span>
     </div>
 
-    <div v-if="store.modelPanelOpen" class="model-panel">
+    <div v-if="modelPanelOpen" class="model-panel">
       <div class="model-panel-header">
         <span>大模型</span>
         <button @click="openNewAi">
@@ -16,17 +16,17 @@
         </button>
       </div>
       <div class="model-panel-list">
-        <div v-if="store.ais.length === 0" class="model-panel-empty">暂无模型，请点击「链接新模型」</div>
-        <div v-for="a in store.ais" :key="a.id"
+        <div v-if="ais.length === 0" class="model-panel-empty">暂无模型，请点击「链接新模型」</div>
+        <div v-for="a in ais" :key="a.id"
              class="model-panel-item"
-             :class="{ active: a.id === store.selectedAiId }"
+             :class="{ active: a.id === selectedAiId }"
              @click="selectAi(a.id)">
           <span class="material-symbols-outlined mpi-icon">smart_toy</span>
           <div class="mpi-info">
             <div class="mpi-name" :title="a.model || a.id">{{ a.model || a.id }}</div>
             <div class="mpi-provider">{{ a.provider }}</div>
           </div>
-          <span v-if="a.id === store.selectedAiId" class="material-symbols-outlined mpi-check">check_circle</span>
+          <span v-if="a.id === selectedAiId" class="material-symbols-outlined mpi-check">check_circle</span>
           <button class="mpi-del" @click.stop="requestDelete(a.id)" title="删除此模型">
             <span class="material-symbols-outlined">delete</span>
           </button>
@@ -38,27 +38,31 @@
 
 <script setup>
 import { computed } from 'vue'
-import { store } from '../store.js'
+import { storeToRefs } from 'pinia'
+import { useAiStore } from '../stores/ai.js'
+
+const ai = useAiStore()
+const { modelPanelOpen, ais, selectedAiId } = storeToRefs(ai)
 
 const emit = defineEmits(['select-ai', 'delete-ai', 'new-ai'])
 
 const currentModelLabel = computed(() => {
-  const ai = store.ais.find(a => a.id === store.selectedAiId)
-  return ai ? (ai.model || ai.id) : '选择模型'
+  const found = ais.value.find(a => a.id === selectedAiId.value)
+  return found ? (found.model || found.id) : '选择模型'
 })
 
 function selectAi(id) {
   emit('select-ai', id)
-  store.modelPanelOpen = false
+  modelPanelOpen.value = false
 }
 
 function requestDelete(id) {
-  store.modelPanelOpen = false
+  modelPanelOpen.value = false
   emit('delete-ai', id)
 }
 
 function openNewAi() {
-  store.modelPanelOpen = false
+  modelPanelOpen.value = false
   emit('new-ai')
 }
 </script>

@@ -1,5 +1,5 @@
 <template>
-  <div id="sidebar" :class="{ collapsed: store.isSidebarCollapsed, 'mobile-open': store.isMobileSidebarOpen }">
+  <div id="sidebar" :class="{ collapsed: isSidebarCollapsed, 'mobile-open': isMobileSidebarOpen }">
     <div class="col">
       <div class="col-header">
         会话
@@ -11,17 +11,17 @@
       <div class="session-search">
         <span class="material-symbols-outlined">search</span>
         <input
-          v-model="store.sessionSearchText"
+          v-model="sessionSearchText"
           type="search"
           placeholder="搜索会话"
           aria-label="搜索会话"
         >
         <button
-          v-if="store.sessionSearchText"
+          v-if="sessionSearchText"
           class="clear-search"
           type="button"
           title="清空搜索"
-          @click="store.sessionSearchText = ''"
+          @click="sessionSearchText = ''"
         >
           <span class="material-symbols-outlined">close</span>
         </button>
@@ -30,7 +30,7 @@
         v-for="s in visibleSessions"
         :key="s.id"
         class="item"
-        :class="{ selected: s.id === store.selectedSessionId }"
+        :class="{ selected: s.id === selectedSessionId }"
         @click="selectSession(s.id)"
       >
         <button
@@ -43,8 +43,8 @@
         </button>
         <span class="info">
           <input
-            v-if="store.editingSessionId === s.id"
-            v-model="store.editingWorkspaceText"
+            v-if="editingSessionId === s.id"
+            v-model="editingWorkspaceText"
             class="edit-input"
             v-focus
             @blur="saveSessionWorkspace(s)"
@@ -64,7 +64,7 @@
           <span class="material-symbols-outlined">delete</span>
         </button>
       </div>
-      <div v-if="store.sessions.length && visibleSessions.length === 0" class="session-empty">
+      <div v-if="sessions.length && visibleSessions.length === 0" class="session-empty">
         没有匹配的会话
       </div>
     </div>
@@ -73,7 +73,9 @@
 
 <script setup>
 import { computed, watch } from 'vue'
-import { store } from '../store.js'
+import { storeToRefs } from 'pinia'
+import { useSessionStore } from '../stores/session.js'
+import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
 import { selectSession } from '../composables/useSession.js'
 import {
@@ -84,64 +86,76 @@ import {
   togglePinnedSessionId,
 } from '../sessionList.js'
 
+const session = useSessionStore()
+const {
+  sessions,
+  selectedSessionId,
+  sessionTitles,
+  editingSessionId,
+  editingWorkspaceText,
+  sessionSearchText,
+  pinnedSessionIds,
+} = storeToRefs(session)
+
+const ui = useUiStore()
+const { isSidebarCollapsed, isMobileSidebarOpen, dlgConfirm } = storeToRefs(ui)
+
 defineEmits(['new-session'])
 
-const visibleSessions = computed(() => buildVisibleSessions(store.sessions, {
-  titles: store.sessionTitles,
-  query: store.sessionSearchText,
-  pinnedIds: store.pinnedSessionIds,
+const visibleSessions = computed(() => buildVisibleSessions(sessions.value, {
+  titles: sessionTitles.value,
+  query: sessionSearchText.value,
+  pinnedIds: pinnedSessionIds.value,
 }))
 
-function displaySessionName(session) {
-  return getSessionDisplayName(session, store.sessionTitles)
+function displaySessionName(sess) {
+  return getSessionDisplayName(sess, sessionTitles.value)
 }
 
 function isSessionPinned(id) {
-  return store.pinnedSessionIds.includes(id)
+  return pinnedSessionIds.value.includes(id)
 }
 
 function toggleSessionPin(id) {
-  store.pinnedSessionIds = togglePinnedSessionId(store.pinnedSessionIds, id)
-  savePinnedSessionIds(window.localStorage, store.pinnedSessionIds)
+  pinnedSessionIds.value = togglePinnedSessionId(pinnedSessionIds.value, id)
+  savePinnedSessionIds(window.localStorage, pinnedSessionIds.value)
 }
 
-function startEditWorkspace(session) {
-  store.editingSessionId = session.id
-  store.editingWorkspaceText = displaySessionName(session)
+function startEditWorkspace(sess) {
+  editingSessionId.value = sess.id
+  editingWorkspaceText.value = displaySessionName(sess)
 }
 
-async function saveSessionWorkspace(session) {
-  if (store.editingSessionId === null) return
-  const targetText = store.editingWorkspaceText.trim()
-  const oldText = displaySessionName(session)
-  store.editingSessionId = null
+async function saveSessionWorkspace(sess) {
+  if (editingSessionId.value === null) return
+  const targetText = editingWorkspaceText.value.trim()
+  const oldText = displaySessionName(sess)
+  editingSessionId.value = null
 
   if (!targetText || targetText === oldText) return
   try {
-    await api('POST', '/titles', buildSessionTitlePayload(session, targetText))
-    store.sessionTitles[session.id] = targetText
+    await api('POST', '/titles', buildSessionTitlePayload(sess, targetText))
+    sessionTitles.value[sess.id] = targetText
   } catch (e) {
-    store.snackbar.message = '更新会话名称失败: ' + e.message
-    store.snackbar.show = true
-    setTimeout(() => { if (store.snackbar.message.includes('更新会话名称失败')) store.snackbar.show = false }, 4000)
+    ui.showAlert('更新会话名称失败: ' + e.message)
   }
 }
 
 function confirmDeleteSession(id) {
-  store.dlgConfirm.message = `确认删除会话 ${id}? 删除后将无法恢复。`
-  store.dlgConfirm.actionType = 'session'
-  store.dlgConfirm.actionArgs = id
-  store.dlgConfirm.show = true
+  dlgConfirm.value.message = `确认删除会话 ${id}? 删除后将无法恢复。`
+  dlgConfirm.value.actionType = 'session'
+  dlgConfirm.value.actionArgs = id
+  dlgConfirm.value.show = true
 }
 
 watch(
-  () => store.sessions.map(session => session.id),
+  () => sessions.value.map(sess => sess.id),
   (sessionIds) => {
     if (!sessionIds.length) return
     const activeIds = new Set(sessionIds)
-    const prunedPinnedIds = store.pinnedSessionIds.filter(id => activeIds.has(id))
-    if (prunedPinnedIds.length === store.pinnedSessionIds.length) return
-    store.pinnedSessionIds = prunedPinnedIds
+    const prunedPinnedIds = pinnedSessionIds.value.filter(id => activeIds.has(id))
+    if (prunedPinnedIds.length === pinnedSessionIds.value.length) return
+    pinnedSessionIds.value = prunedPinnedIds
     savePinnedSessionIds(window.localStorage, prunedPinnedIds)
   },
   { immediate: true },

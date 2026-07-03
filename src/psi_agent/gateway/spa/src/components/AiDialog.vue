@@ -1,5 +1,5 @@
 <template>
-  <BaseDialog :show="store.dlgAI" @close="handleCancel">
+  <BaseDialog :show="dlgAI" @close="handleCancel">
     <template #title>链接大模型</template>
     <div class="field" style="position:relative">
       <label>供应商</label>
@@ -19,7 +19,7 @@
           v-for="p in PROVIDERS"
           :key="p.v"
           class="custom-dropdown-item"
-          :class="{ active: p.v === store.aiForm.provider }"
+          :class="{ active: p.v === aiForm.provider }"
           @mousedown.prevent="selectProvider(p.v)"
         >{{ p.l }}</div>
       </div>
@@ -48,13 +48,13 @@
           @mousedown.prevent="selectModel(m)"
         >{{ m }}</div>
       </div>
-      <span v-if="store.loadingModels" class="loading-indicator">获取中...</span>
+      <span v-if="loadingModels" class="loading-indicator">获取中...</span>
     </div>
     <div class="field"><label>接口地址</label>
-      <input v-model="store.aiForm.base_url" placeholder="https://..." @change="emit('fetchModels')">
+      <input v-model="aiForm.base_url" placeholder="https://..." @change="emit('fetchModels')">
     </div>
     <div class="field"><label>API 密钥</label>
-      <input v-model="store.aiForm.api_key" type="password" placeholder="sk-..." @change="emit('fetchModels')">
+      <input v-model="aiForm.api_key" type="password" placeholder="sk-..." @change="emit('fetchModels')">
     </div>
     <template #actions>
       <button class="cancel" @click="handleCancel">取消</button>
@@ -65,30 +65,37 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { store } from '../store.js'
+import { storeToRefs } from 'pinia'
+import { useAiStore } from '../stores/ai.js'
+import { useUiStore } from '../stores/ui.js'
 import { PROVIDERS } from '../providers.js'
 import BaseDialog from './BaseDialog.vue'
 
+const ai = useAiStore()
+const { aiForm, fetchedModels, loadingModels, ais } = storeToRefs(ai)
+const ui = useUiStore()
+const { snackbar, dlgAI } = storeToRefs(ui)
+
 const emit = defineEmits(['create', 'fetchModels'])
 
-const modelText = ref(store.aiForm.model)
+const modelText = ref(aiForm.value.model)
 const dropdownOpen = ref(false)
 const activeIdx = ref(-1)
 const modelInput = ref(null)
 const providerOpen = ref(false)
 
-watch(() => store.dlgAI, (v) => {
-  if (v) { modelText.value = store.aiForm.model; dropdownOpen.value = false; activeIdx.value = -1; providerOpen.value = false }
+watch(dlgAI, (v) => {
+  if (v) { modelText.value = aiForm.value.model; dropdownOpen.value = false; activeIdx.value = -1; providerOpen.value = false }
 })
 
-watch(modelText, (v) => { store.aiForm.model = v })
+watch(modelText, (v) => { aiForm.value.model = v })
 
 const currentProviderLabel = computed(() => {
-  return PROVIDERS.find(p => p.v === store.aiForm.provider)?.l || store.aiForm.provider
+  return PROVIDERS.find(p => p.v === aiForm.value.provider)?.l || aiForm.value.provider
 })
 
 function selectProvider(v) {
-  store.aiForm.provider = v
+  aiForm.value.provider = v
   providerOpen.value = false
   handleProviderChange()
 }
@@ -98,8 +105,8 @@ function onProviderBlur() {
 }
 
 const availableModels = computed(() => {
-  const preset = (PROVIDERS.find(p => p.v === store.aiForm.provider)?.models) || []
-  return [...new Set([...preset, ...store.fetchedModels])]
+  const preset = (PROVIDERS.find(p => p.v === aiForm.value.provider)?.models) || []
+  return [...new Set([...preset, ...fetchedModels.value])]
 })
 
 const filteredModels = computed(() => {
@@ -142,23 +149,23 @@ function selectCurrent() {
 
 function selectModel(m) {
   modelText.value = m
-  store.aiForm.model = m
+  aiForm.value.model = m
   dropdownOpen.value = false
 }
 
 function handleProviderChange() {
-  const match = PROVIDERS.find(p => p.v === store.aiForm.provider)
-  if (match) store.aiForm.base_url = match.base
-  store.fetchedModels = []
+  const match = PROVIDERS.find(p => p.v === aiForm.value.provider)
+  if (match) aiForm.value.base_url = match.base
+  fetchedModels.value = []
 }
 
 function handleCancel() {
-  if (store.ais.length === 0) {
-    store.snackbar.show = true
-    store.snackbar.message = '至少需要链接一个大模型'
-    setTimeout(() => { store.snackbar.show = false }, 2000)
+  if (ais.value.length === 0) {
+    snackbar.value.show = true
+    snackbar.value.message = '至少需要链接一个大模型'
+    setTimeout(() => { snackbar.value.show = false }, 2000)
   } else {
-    store.dlgAI = false
+    dlgAI.value = false
   }
 }
 </script>

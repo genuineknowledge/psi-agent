@@ -1,10 +1,10 @@
 <template>
-  <div id="input-wrapper" v-show="store.selectedSessionId">
-    <div id="file-preview-bar" v-if="store.selectedFiles.length">
-      <div class="preview-chip" v-for="(f, i) in store.selectedFiles" :key="i">
+  <div id="input-wrapper" v-show="selectedSessionId">
+    <div id="file-preview-bar" v-if="selectedFiles.length">
+      <div class="preview-chip" v-for="(f, i) in selectedFiles" :key="i">
         <span class="material-symbols-outlined" style="font-size:16px;">attach_file</span>
         <span>{{ f.name }}</span>
-        <button class="close-btn" @click="store.selectedFiles.splice(i, 1)" title="移除附件">
+        <button class="close-btn" @click="selectedFiles.splice(i, 1)" title="移除附件">
           <span class="material-symbols-outlined" style="font-size:16px;">close</span>
         </button>
       </div>
@@ -16,7 +16,7 @@
 
       <textarea
         id="chat-input"
-        v-model="store.inputText"
+        v-model="inputText"
         rows="1"
         placeholder="发送消息..."
         @keydown.enter.exact.prevent="sendMessage"
@@ -29,10 +29,10 @@
         @new-ai="$emit('new-ai')"
       />
 
-      <button v-if="store.streaming" class="send stop" @click="stopMessage" title="停止生成">
+      <button v-if="streaming" class="send stop" @click="stopMessage" title="停止生成">
         <span class="material-symbols-outlined">stop</span>
       </button>
-      <button v-else class="send" :disabled="!store.selectedSessionId" @click="sendMessage" title="发送消息">
+      <button v-else class="send" :disabled="!selectedSessionId" @click="sendMessage" title="发送消息">
         <span class="material-symbols-outlined">send</span>
       </button>
     </div>
@@ -41,15 +41,22 @@
 
 <script setup>
 import { watch, nextTick } from 'vue'
-import { store } from '../store.js'
+import { storeToRefs } from 'pinia'
+import { useChatStore } from '../stores/chat.js'
+import { useSessionStore } from '../stores/session.js'
 import { sendMessage, stopMessage } from '../composables/useChat.js'
 import ModelPanel from './ModelPanel.vue'
+
+const chat = useChatStore()
+const { selectedFiles, inputText, uploadResetToken, streaming } = storeToRefs(chat)
+const session = useSessionStore()
+const { selectedSessionId } = storeToRefs(session)
 
 defineEmits(['select-ai', 'delete-ai', 'new-ai'])
 
 function onFileSelected(e) {
   const files = Array.from(e.target.files || [])
-  store.selectedFiles.push(...files)
+  selectedFiles.value.push(...files)
 }
 
 function autoResizeInput() {
@@ -60,9 +67,9 @@ function autoResizeInput() {
   el.style.height = el.scrollHeight + borders + 'px'
 }
 
-watch(() => store.inputText, () => nextTick(autoResizeInput))
+watch(inputText, () => nextTick(autoResizeInput))
 
-watch(() => store.uploadResetToken, () => {
+watch(uploadResetToken, () => {
   const el = document.getElementById('file-upload')
   if (el) el.value = ''
 })

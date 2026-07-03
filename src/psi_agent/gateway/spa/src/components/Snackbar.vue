@@ -1,12 +1,16 @@
 <template>
-  <div class="md-snackbar" :class="{ active: store.snackbar.show }">
-    <div class="sb-msg">{{ store.snackbar.message }}</div>
-    <button class="sb-btn" @click="store.snackbar.show = false">知道了</button>
+  <div class="md-snackbar" :class="{ active: snackbar.show }">
+    <div class="sb-msg">{{ snackbar.message }}</div>
+    <button class="sb-btn" @click="snackbar.show = false">知道了</button>
   </div>
 </template>
 
 <script setup>
-import { store } from '../store.js'
+import { storeToRefs } from 'pinia'
+import { useUiStore } from '../stores/ui.js'
+
+const ui = useUiStore()
+const { snackbar } = storeToRefs(ui)
 </script>
 
 <style scoped>
