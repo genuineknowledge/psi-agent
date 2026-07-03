@@ -19,7 +19,8 @@ what this workspace can do.
 
 ## Required First Reply Shape
 
-Reply in Chinese unless the user clearly uses another language.
+Reply in the same language the user wrote in (per the Language & Localization rules): if their
+first message is in English, give this orientation in English; if in Chinese, in Chinese.
 
 Keep the reply concise, practical, and friendly. Use this structure:
 
