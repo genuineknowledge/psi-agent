@@ -34,12 +34,13 @@ export async function selectSession(id) {
             id: '', role: h.role, text: h.text,
             html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text),
             files: local ? local.files || [] : [],
+            stopped: local ? local.stopped || false : false,
           })
         })
       } else { throw new Error() }
     } catch (e) {
       localHist.forEach(h => {
-        store.messages.push({ id: '', role: h.role, text: h.text, html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text), files: h.files || [] })
+        store.messages.push({ id: '', role: h.role, text: h.text, html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text), files: h.files || [], stopped: h.stopped || false })
       })
     }
   }

@@ -13,8 +13,8 @@ export async function api(method, path, body) {
   return await r.json()
 }
 
-export async function streamChat(sessionId, formData) {
-  const r = await fetch(G() + '/sessions/' + sessionId + '/chat', { method: 'POST', body: formData })
+export async function streamChat(sessionId, formData, signal) {
+  const r = await fetch(G() + '/sessions/' + sessionId + '/chat', { method: 'POST', body: formData, signal })
   if (!r.ok) {
     const e = await r.json().catch(() => ({ error: r.statusText }))
     throw new Error(e.error || 'HTTP ' + r.status)

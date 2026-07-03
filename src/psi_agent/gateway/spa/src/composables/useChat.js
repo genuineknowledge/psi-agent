@@ -9,7 +9,7 @@ function origin() {
 }
 
 function addMessage(role, id) {
-  const m = { id, role, text: '', html: '', files: [] }
+  const m = { id, role, text: '', html: '', files: [], stopped: false }
   store.messages.push(m)
   scrollToBottomIfLocked()
   return store.messages[store.messages.length - 1]
@@ -62,8 +62,11 @@ export async function sendMessage() {
 
   let asst = addMessage('assistant', `a-${Date.now()}`)
 
+  const controller = new AbortController()
+  store.abortController = controller
+
   try {
-    const reader = await streamChat(store.selectedSessionId, fd)
+    const reader = await streamChat(store.selectedSessionId, fd, controller.signal)
     for await (const chunkData of readSSE(reader)) {
       if (chunkData.type === 'text' && chunkData.text !== undefined) {
         if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
@@ -87,8 +90,13 @@ export async function sendMessage() {
     }
   } catch (e) {
     if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
-    asst.text += '\n[Error: ' + e.message + ']'
-    asst.html = renderMd(asst.text)
+    if (e.name === 'AbortError') {
+      // 用户主动停止：保留已生成内容，用独立标记展示（样式固定，不走 markdown）
+      asst.stopped = true
+    } else {
+      asst.text += '\n[Error: ' + e.message + ']'
+      asst.html = renderMd(asst.text)
+    }
   }
 
   // Drop a trailing empty assistant bubble (e.g. a reasoning-only turn, or the
@@ -99,10 +107,17 @@ export async function sendMessage() {
   }
 
   store.streaming = false
+  store.abortController = null
   saveHistory(store.selectedSessionId, store.messages)
 
   const currentTitle = store.sessionTitles[store.selectedSessionId]
   if (!currentTitle || currentTitle === '新会话' || currentTitle.trim() === '') generateTitle()
+}
+
+export function stopMessage() {
+  // 中止当前 fetch；取消信号会一路传导到后端，agent 停止生成。
+  // sendMessage 的 catch(AbortError) 负责保留已生成内容并重置 streaming 状态。
+  if (store.abortController) store.abortController.abort()
 }
 
 async function generateTitle() {
