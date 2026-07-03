@@ -144,7 +144,7 @@ class SessionAgent:
         remain synchronised — the caller can safely retry the same
         user message.
         """
-        try:
+        async with self._conversation:
             # reload tools and schedules from workspace (incremental hash-based)
             await self._tool_registry.refresh()
             await self._schedule_registry.refresh()
@@ -346,5 +346,3 @@ class SessionAgent:
                 self._conversation.add({"role": "assistant", "content": "[Max tool rounds reached]"})
                 await self._conversation.commit()
                 yield AgentChunk(content="[Max tool rounds reached]")
-        finally:
-            self._conversation.rollback()
