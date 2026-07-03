@@ -57,7 +57,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@v8
         with:
           name: psi-agent-pyinstaller-windows-latest
           path: dist-exe
