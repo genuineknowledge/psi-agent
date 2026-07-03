@@ -116,12 +116,12 @@ def _spawn_flow(flow: Path, workdir: str, log_path: Path) -> tuple[int, str, str
 
 async def _start(flow_path: str, cwd: str) -> dict:
     flow = Path(flow_path)
-    if not await anyio.to_thread.run_sync(flow.is_file):
+    if not await anyio.to_thread.run_sync(flow.is_file):  # ty: ignore
         return {"ok": False, "message": f"flow file not found: {flow_path}"}
     workdir = cwd.strip() or str(flow.parent)
 
     log_path = _state_dir() / f"flow-{int(time.time() * 1000)}.log"
-    pid, run_id, run_dir = await anyio.to_thread.run_sync(_spawn_flow, flow, workdir, log_path)
+    pid, run_id, run_dir = await anyio.to_thread.run_sync(_spawn_flow, flow, workdir, log_path)  # ty: ignore
 
     if not run_id or not run_dir:
         tail = ""
@@ -241,9 +241,9 @@ async def _status(token: str, window_seconds: float) -> dict:
     # 阻塞到: 出现新的 node_end / flow 结束(meta.json) / 进程死 / 窗口超时
     deadline = time.time() + max(1.0, window_seconds)
     while True:
-        events = await anyio.to_thread.run_sync(_read_progress, run_dir)
+        events = await anyio.to_thread.run_sync(_read_progress, run_dir)  # ty: ignore
         ended = sum(1 for e in events if e.get("event") == "node_end")
-        done = await anyio.to_thread.run_sync(_done, run_dir)
+        done = await anyio.to_thread.run_sync(_done, run_dir)  # ty: ignore
         alive = _pid_alive(pid)
         crashed = (not alive) and (not done)
         if ended > cursor or done or crashed or time.time() >= deadline:
@@ -261,7 +261,7 @@ async def _status(token: str, window_seconds: float) -> dict:
             }
             if crashed:
                 resp["crashed"] = True
-                resp["log_tail"] = await anyio.to_thread.run_sync(_tail, state["log_path"])
+                resp["log_tail"] = await anyio.to_thread.run_sync(_tail, state["log_path"])  # ty: ignore
             return resp
         await anyio.sleep(0.5)
 
