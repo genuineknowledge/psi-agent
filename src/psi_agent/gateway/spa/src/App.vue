@@ -1,11 +1,11 @@
 <template>
   <div id="root-layout">
-    <div v-if="store.loadingEnv" class="page-loader">
+    <div v-if="loadingEnv" class="page-loader">
       <div class="spinner"></div>
       <p>Initializing System Environment...</p>
     </div>
 
-    <div class="mobile-overlay" :class="{ active: store.isMobileSidebarOpen }" @click="closeMobileSidebar"></div>
+    <div class="mobile-overlay" :class="{ active: isMobileSidebarOpen }" @click="ui.closeMobileSidebar"></div>
 
     <Sidebar @new-session="openSessDialog" />
 
@@ -16,7 +16,7 @@
       @dragleave="onChatDragLeave"
       @drop="onChatDrop"
     >
-      <div v-if="store.isDragging" class="drop-overlay">
+      <div v-if="isDragging" class="drop-overlay">
         <div class="drop-overlay-inner">
           <span class="material-symbols-outlined">upload_file</span>
           <span>拖放文件以上传</span>
@@ -24,24 +24,24 @@
       </div>
       <div id="mobile-topbar">
         <div class="topbar-left">
-          <button class="topbar-btn" @click="toggleSidebar" title="打开会话列表">
+          <button class="topbar-btn" @click="ui.toggleSidebar(window.innerWidth <= 768)" title="打开会话列表">
             <span class="material-symbols-outlined">menu</span>
           </button>
         </div>
         <div class="topbar-title">{{ currentSessionTitle }}</div>
         <div class="topbar-right">
-          <button class="topbar-btn" @click="toggleTheme" :title="store.isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
-            <span class="material-symbols-outlined">{{ store.isLightMode ? 'dark_mode' : 'light_mode' }}</span>
+          <button class="topbar-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
+            <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
           </button>
         </div>
       </div>
 
-      <button class="sidebar-toggle-btn" @click="toggleSidebar" :title="store.isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
-        <span class="material-symbols-outlined">{{ (store.isSidebarCollapsed && !store.isMobileSidebarOpen) ? 'menu' : 'menu_open' }}</span>
+      <button class="sidebar-toggle-btn" @click="ui.toggleSidebar(window.innerWidth <= 768)" :title="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
+        <span class="material-symbols-outlined">{{ (isSidebarCollapsed && !isMobileSidebarOpen) ? 'menu' : 'menu_open' }}</span>
       </button>
 
-      <button class="theme-toggle-btn" @click="toggleTheme" :title="store.isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
-        <span class="material-symbols-outlined">{{ store.isLightMode ? 'dark_mode' : 'light_mode' }}</span>
+      <button class="theme-toggle-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
+        <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
       </button>
 
       <ChatArea />
@@ -62,7 +62,11 @@
 
 <script setup>
 import { computed, onMounted, watch } from 'vue'
-import { store } from './store.js'
+import { storeToRefs } from 'pinia'
+import { useAiStore } from './stores/ai.js'
+import { useSessionStore } from './stores/session.js'
+import { useChatStore } from './stores/chat.js'
+import { useUiStore } from './stores/ui.js'
 import { api } from './api.js'
 import {
   saveActiveState,
@@ -84,6 +88,18 @@ import Snackbar from './components/Snackbar.vue'
 
 const LS_SIDEBAR = 'gw-sidebar-state'
 
+const ai = useAiStore()
+const { ais, selectedAiId, aiForm, fetchedModels, loadingModels } = storeToRefs(ai)
+
+const session = useSessionStore()
+const { sessions, selectedSessionId, sessionTitles, sessForm, browser } = storeToRefs(session)
+
+const chat = useChatStore()
+const { messages, selectedFiles } = storeToRefs(chat)
+
+const ui = useUiStore()
+const { loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen } = storeToRefs(ui)
+
 const { toggleTheme } = useTheme()
 useKeyboard()
 
@@ -91,62 +107,41 @@ function origin() {
   return window.location.origin.replace(/\/+$/, '')
 }
 
-function showAlert(msg) {
-  store.snackbar.message = msg
-  store.snackbar.show = true
-  setTimeout(() => {
-    if (store.snackbar.message === msg) store.snackbar.show = false
-  }, 4000)
-}
-
-function toggleSidebar() {
-  const isMobile = window.innerWidth <= 768
-  if (isMobile) {
-    store.isMobileSidebarOpen = !store.isMobileSidebarOpen
-  } else {
-    store.isSidebarCollapsed = !store.isSidebarCollapsed
-  }
-}
-
-function closeMobileSidebar() {
-  store.isMobileSidebarOpen = false
-}
-
 function onChatDragOver(e) {
   if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
   e.preventDefault()
-  if (store.selectedSessionId) store.isDragging = true
+  if (selectedSessionId.value) isDragging.value = true
 }
 
 function onChatDragLeave(e) {
   // Only clear when the pointer actually leaves the #chat element,
   // not when moving between its children.
   if (e.currentTarget.contains(e.relatedTarget)) return
-  store.isDragging = false
+  isDragging.value = false
 }
 
 function onChatDrop(e) {
   if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
   e.preventDefault()
-  store.isDragging = false
-  if (!store.selectedSessionId) return
+  isDragging.value = false
+  if (!selectedSessionId.value) return
   const files = Array.from(e.dataTransfer.files || [])
-  if (files.length) store.selectedFiles.push(...files)
+  if (files.length) selectedFiles.value.push(...files)
 }
 
 async function refreshAIs() {
   try {
-    store.ais = await api('GET', '/ais')
+    ais.value = await api('GET', '/ais')
   } catch (e) {
-    store.ais = []
+    ais.value = []
   }
 }
 
 async function refreshSessions() {
   try {
-    store.sessions = await api('GET', '/sessions')
+    sessions.value = await api('GET', '/sessions')
   } catch (e) {
-    store.sessions = []
+    sessions.value = []
   }
 }
 
@@ -156,196 +151,196 @@ async function refreshAll() {
 }
 
 function confirmDeleteAI(id) {
-  const ai = store.ais.find(a => a.id === id)
-  const name = ai ? (ai.model || ai.id) : id
-  store.dlgConfirm.message = `确认删除大模型「${name}」? 相关会话数据将保留，但该模型链接将无法使用。`
-  store.dlgConfirm.actionType = 'ai'
-  store.dlgConfirm.actionArgs = id
-  store.dlgConfirm.show = true
+  const a = ais.value.find(a => a.id === id)
+  const name = a ? (a.model || a.id) : id
+  dlgConfirm.value.message = `确认删除大模型「${name}」? 相关会话数据将保留，但该模型链接将无法使用。`
+  dlgConfirm.value.actionType = 'ai'
+  dlgConfirm.value.actionArgs = id
+  dlgConfirm.value.show = true
 }
 
 async function deleteAI(id) {
   await api('DELETE', '/ais/' + id).catch(() => {})
-  if (store.selectedAiId === id) {
-    store.selectedAiId = null
-    saveActiveState(null, store.selectedSessionId)
+  if (selectedAiId.value === id) {
+    selectedAiId.value = null
+    saveActiveState(null, selectedSessionId.value)
   }
   await refreshAll()
 }
 
 
 async function executeConfirmedAction() {
-  store.dlgConfirm.show = false
+  dlgConfirm.value.show = false
 
   // 撤回：actionArgs 是消息索引（可能为 0），需在 !id 判空之前处理
-  if (store.dlgConfirm.actionType === 'undo') {
-    undoFrom(store.dlgConfirm.actionArgs)
+  if (dlgConfirm.value.actionType === 'undo') {
+    undoFrom(dlgConfirm.value.actionArgs)
     return
   }
 
-  const id = store.dlgConfirm.actionArgs
+  const id = dlgConfirm.value.actionArgs
   if (!id) return
 
-  if (store.dlgConfirm.actionType === 'ai') {
+  if (dlgConfirm.value.actionType === 'ai') {
     await deleteAI(id)
     return
   }
 
   await api('DELETE', '/sessions/' + id).catch(() => {})
   clearHistory(id)
-  if (id === store.selectedSessionId) {
-    store.selectedSessionId = null
-    store.messages.splice(0)
+  if (id === selectedSessionId.value) {
+    selectedSessionId.value = null
+    messages.value.splice(0)
   }
-  saveActiveState(store.selectedAiId, store.selectedSessionId)
+  saveActiveState(selectedAiId.value, selectedSessionId.value)
   await refreshAll()
 }
 
 function handleProviderChange() {
-  const match = PROVIDERS.find(p => p.v === store.aiForm.provider)
-  if (match) store.aiForm.base_url = match.base
+  const match = PROVIDERS.find(p => p.v === aiForm.value.provider)
+  if (match) aiForm.value.base_url = match.base
 }
 
 const currentSessionTitle = computed(() => {
-  if (!store.selectedSessionId) return 'psi-agent'
-  const sess = store.sessions.find(s => s.id === store.selectedSessionId)
+  if (!selectedSessionId.value) return 'psi-agent'
+  const sess = sessions.value.find(s => s.id === selectedSessionId.value)
   if (!sess) return 'psi-agent'
-  return store.sessionTitles[store.selectedSessionId] || sess.workspace || '新会话'
+  return sessionTitles.value[selectedSessionId.value] || sess.workspace || '新会话'
 })
 
 
 async function fetchAvailableModels() {
-  if (!store.aiForm.api_key || !store.aiForm.base_url) {
-    store.fetchedModels = []
+  if (!aiForm.value.api_key || !aiForm.value.base_url) {
+    fetchedModels.value = []
     return
   }
-  store.loadingModels = true
+  loadingModels.value = true
   try {
-    const headers = { Authorization: `Bearer ${store.aiForm.api_key}` }
-    if (store.aiForm.provider === 'anthropic') headers['x-api-key'] = store.aiForm.api_key
-    const url = `${store.aiForm.base_url.replace(/\/+$/, '')}/models`
+    const headers = { Authorization: `Bearer ${aiForm.value.api_key}` }
+    if (aiForm.value.provider === 'anthropic') headers['x-api-key'] = aiForm.value.api_key
+    const url = `${aiForm.value.base_url.replace(/\/+$/, '')}/models`
     const res = await fetch(url, { method: 'GET', headers }).then(r => r.json())
-    if (res && Array.isArray(res.data)) store.fetchedModels = res.data.map(m => m.id)
-    else if (res && Array.isArray(res.models)) store.fetchedModels = res.models.map(m => m.name || m.id)
-    else store.fetchedModels = []
+    if (res && Array.isArray(res.data)) fetchedModels.value = res.data.map(m => m.id)
+    else if (res && Array.isArray(res.models)) fetchedModels.value = res.models.map(m => m.name || m.id)
+    else fetchedModels.value = []
   } catch (e) {
-    store.fetchedModels = []
+    fetchedModels.value = []
   } finally {
-    store.loadingModels = false
+    loadingModels.value = false
   }
 }
 
 function openAiDialog() {
-  store.aiForm = { provider: 'deepseek', base_url: 'https://api.deepseek.com/v1', api_key: '', model: '' }
-  store.fetchedModels = []
-  store.dlgAI = true
+  aiForm.value = { provider: 'deepseek', base_url: 'https://api.deepseek.com/v1', api_key: '', model: '' }
+  fetchedModels.value = []
+  dlgAI.value = true
 }
 
 function openSessDialog() {
-  if (!store.ais.length) {
-    showAlert('请先配置大模型')
+  if (!ais.value.length) {
+    ui.showAlert('请先配置大模型')
     openAiDialog()
     return
   }
-  store.sessForm = { workspace: '' }
-  store.browser = { path: undefined, parent: '', entries: [] }
-  store.dlgSess = true
+  sessForm.value = { workspace: '' }
+  browser.value = { path: undefined, parent: '', entries: [] }
+  dlgSess.value = true
 }
 
 async function browseWorkspace(p) {
-  if (p === undefined && store.browser.path !== undefined) {
-    store.browser = { path: undefined, parent: '', entries: [] }
+  if (p === undefined && browser.value.path !== undefined) {
+    browser.value = { path: undefined, parent: '', entries: [] }
     return
   }
-  const r = await fetch(origin() + '/workspace/browse?path=' + encodeURIComponent(p || store.sessForm.workspace || ''))
-  if (r.ok) store.browser = await r.json()
+  const r = await fetch(origin() + '/workspace/browse?path=' + encodeURIComponent(p || sessForm.value.workspace || ''))
+  if (r.ok) browser.value = await r.json()
 }
 
 async function selectAI(id) {
-  if (id === store.selectedAiId) return
-  store.selectedAiId = id
-  if (store.selectedSessionId && store.sessions.find(s => s.id === store.selectedSessionId)) {
-    const s = store.sessions.find(s => s.id === store.selectedSessionId)
-    await api('DELETE', '/sessions/' + store.selectedSessionId).catch(() => {})
-    await api('POST', '/sessions', { id: store.selectedSessionId, ai_id: id, workspace: s.workspace })
+  if (id === selectedAiId.value) return
+  selectedAiId.value = id
+  if (selectedSessionId.value && sessions.value.find(s => s.id === selectedSessionId.value)) {
+    const s = sessions.value.find(s => s.id === selectedSessionId.value)
+    await api('DELETE', '/sessions/' + selectedSessionId.value).catch(() => {})
+    await api('POST', '/sessions', { id: selectedSessionId.value, ai_id: id, workspace: s.workspace })
   } else {
-    store.selectedSessionId = null
+    selectedSessionId.value = null
   }
-  saveActiveState(store.selectedAiId, store.selectedSessionId)
+  saveActiveState(selectedAiId.value, selectedSessionId.value)
   await refreshAll()
 }
 
 async function createAI() {
-  if (!store.aiForm.model) {
-    showAlert('请选择或输入模型名称')
+  if (!aiForm.value.model) {
+    ui.showAlert('请选择或输入模型名称')
     return
   }
   try {
     const info = await api('POST', '/ais', {
-      provider: store.aiForm.provider,
-      model: store.aiForm.model,
-      api_key: store.aiForm.api_key,
-      base_url: store.aiForm.base_url,
+      provider: aiForm.value.provider,
+      model: aiForm.value.model,
+      api_key: aiForm.value.api_key,
+      base_url: aiForm.value.base_url,
     })
-    store.selectedAiId = info.id
-    store.dlgAI = false
+    selectedAiId.value = info.id
+    dlgAI.value = false
     await refreshAll()
-    store.loadingEnv = false
-    saveActiveState(store.selectedAiId, store.selectedSessionId)
-    if (store.sessions.length === 0) openSessDialog()
+    loadingEnv.value = false
+    saveActiveState(selectedAiId.value, selectedSessionId.value)
+    if (sessions.value.length === 0) openSessDialog()
   } catch (e) {
-    showAlert(e.message)
+    ui.showAlert(e.message)
   }
 }
 
 async function createSession() {
-  if (!store.selectedAiId) {
-    showAlert('请先选择一个大模型代理')
+  if (!selectedAiId.value) {
+    ui.showAlert('请先选择一个大模型代理')
     return
   }
   try {
-    const info = await api('POST', '/sessions', { ai_id: store.selectedAiId, workspace: store.sessForm.workspace })
-    store.selectedSessionId = info.id
-    store.dlgSess = false
-    store.messages.splice(0)
-    saveActiveState(store.selectedAiId, store.selectedSessionId)
+    const info = await api('POST', '/sessions', { ai_id: selectedAiId.value, workspace: sessForm.value.workspace })
+    selectedSessionId.value = info.id
+    dlgSess.value = false
+    messages.value.splice(0)
+    saveActiveState(selectedAiId.value, selectedSessionId.value)
     await refreshAll()
   } catch (e) {
-    showAlert(e.message)
+    ui.showAlert(e.message)
   }
 }
 
 watch(
-  () => store.isSidebarCollapsed,
+  isSidebarCollapsed,
   (v) => {
     localStorage.setItem(LS_SIDEBAR, v ? 'collapsed' : 'expanded')
   }
 )
 
 onMounted(async () => {
-  store.sessionTitles = await api('GET', '/titles').catch(() => ({}))
+  sessionTitles.value = await api('GET', '/titles').catch(() => ({}))
   const savedSidebar = localStorage.getItem(LS_SIDEBAR)
-  if (savedSidebar === 'collapsed') store.isSidebarCollapsed = true
+  if (savedSidebar === 'collapsed') isSidebarCollapsed.value = true
 
   try {
     await refreshAll()
 
-    if (store.ais.length === 0) {
+    if (ais.value.length === 0) {
       openAiDialog()
-      store.loadingEnv = false
+      loadingEnv.value = false
       return
     }
 
     const activeState = loadActiveState()
-    if (activeState.aiId && store.ais.some(a => a.id === activeState.aiId))
-      store.selectedAiId = activeState.aiId
-    if (activeState.sessId && store.sessions.some(s => s.id === activeState.sessId))
+    if (activeState.aiId && ais.value.some(a => a.id === activeState.aiId))
+      selectedAiId.value = activeState.aiId
+    if (activeState.sessId && sessions.value.some(s => s.id === activeState.sessId))
       selectSession(activeState.sessId)
-    if (!store.selectedAiId && store.ais.length) store.selectedAiId = store.ais[0].id
-    if (!store.selectedSessionId && store.sessions.length) selectSession(store.sessions[0].id)
-    store.loadingEnv = false
+    if (!selectedAiId.value && ais.value.length) selectedAiId.value = ais.value[0].id
+    if (!selectedSessionId.value && sessions.value.length) selectSession(sessions.value[0].id)
+    loadingEnv.value = false
   } catch (err) {
-    store.loadingEnv = false
+    loadingEnv.value = false
   }
 })
 </script>
