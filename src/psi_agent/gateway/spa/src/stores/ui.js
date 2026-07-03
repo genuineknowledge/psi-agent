@@ -8,6 +8,9 @@ export const useUiStore = defineStore('ui', () => {
   const isLightMode = ref(true)
   const isSidebarCollapsed = ref(false)
   const isMobileSidebarOpen = ref(false)
+  const isDragging = ref(false)
+  const dlgAI = ref(false)
+  const dlgSess = ref(false)
 
   let snackbarTimer = null
 
@@ -39,6 +42,9 @@ export const useUiStore = defineStore('ui', () => {
     isLightMode,
     isSidebarCollapsed,
     isMobileSidebarOpen,
+    isDragging,
+    dlgAI,
+    dlgSess,
     showAlert,
     toggleSidebar,
     closeMobileSidebar,
