@@ -251,6 +251,7 @@ class SessionAgent:
                                     assistant_msg["reasoning"] = accumulated_reasoning
                                 self._conversation.add(assistant_msg)
                             await self._conversation.commit()
+                            await self._schedule_registry.refresh()
                             return
 
                         if finish_reason == "tool_calls":

@@ -237,8 +237,16 @@ class ToolRegistry:
         """Incremental reload — adds, updates, removes tools.
 
         Returns a dict mapping tool name to ``'added'``, ``'updated'``,
-        ``'removed'``, or ``'skipped'``.
+        ``'removed'``, or ``'skipped'``.  Errors are caught and logged;
+        the caller always gets a dict back (empty on failure).
         """
+        try:
+            return await self._do_refresh()
+        except Exception:
+            logger.warning("Failed to refresh tools")
+            return {}
+
+    async def _do_refresh(self) -> dict[str, str]:
         if self._work_dir is None:
             logger.warning("No work_dir set, cannot refresh tools")
             return {}
