@@ -167,7 +167,7 @@ async def _set_title(request: web.Request) -> web.Response:
     try:
         body = await request.json()
         sid = body["id"]
-        tm.set(sid, body["title"])
+        await tm.set(sid, body["title"])
         return _json({"id": sid, "title": body["title"]})
     except (KeyError, TypeError) as e:
         return _error(str(e), status=400)
