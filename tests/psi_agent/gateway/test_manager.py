@@ -116,14 +116,15 @@ async def test_sessionmanager_create_delete(tmp_path: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_sessionmanager_missing_ai(tmp_path: str) -> None:
+async def test_sessionmanager_create_without_ai(tmp_path: str) -> None:
     tg = anyio.create_task_group()
     await tg.__aenter__()
     try:
         am = AIManager(_prefix="gw-test", _tg=tg)
         sm = SessionManager(_aim=am, _prefix="gw-test", _tg=tg)
-        with pytest.raises(LookupError, match="not found"):
-            await sm.create(ai_id="no-such-ai", workspace=str(tmp_path))
+        info = await sm.create(ai_id="no-such-ai", workspace=str(tmp_path), id="s1")
+        assert info.ai_id == "no-such-ai"
+        await sm.delete("s1")
     finally:
         await tg.__aexit__(None, None, None)
 
@@ -253,6 +254,27 @@ async def test_aimanager_persist_called_on_create_delete(tmp_path: str) -> None:
         info = await mgr.create(provider="o", model="m", api_key="k", base_url="b")
         assert call_count == 1
         await mgr.delete(info.id)
+        assert call_count == 2
+    finally:
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_sessionmanager_persist_called_on_create_delete(tmp_path: str) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    call_count = 0
+
+    async def fake_persist() -> None:
+        nonlocal call_count
+        call_count += 1
+
+    try:
+        am = AIManager(_prefix="gw-test", _tg=tg)
+        sm = SessionManager(_aim=am, _prefix="gw-test", _tg=tg, _persist=fake_persist)
+        info = await sm.create(ai_id="ai1", workspace=str(tmp_path))
+        assert call_count == 1
+        await sm.delete(info.id)
         assert call_count == 2
     finally:
         await tg.__aexit__(None, None, None)
