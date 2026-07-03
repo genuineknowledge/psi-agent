@@ -35,6 +35,15 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - shell: bash
         run: |
+          # MSVC (cl.exe) runs out of heap compiling pymupdf's ~2.3M-line
+          # generated module.pymupdf.mupdf.c (fatal error C1002). clang is
+          # 64-bit and has no such fixed limit, so it compiles that huge file
+          # fine while piggy-backing on the installed MSVC toolchain. gcc/clang
+          # already succeed on Linux/macOS, so only switch the compiler there.
+          EXTRA_ARGS=()
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            EXTRA_ARGS+=(--clang)
+          fi
           uv run python -m nuitka \
             --mode=app \
             --output-dir=nuitka-dist \
@@ -49,6 +58,7 @@ jobs:
             --include-package=docx \
             --include-package=pptx \
             --include-package=openpyxl \
+            "${EXTRA_ARGS[@]}" \
             src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7
         with:
