@@ -7,21 +7,37 @@ from pathlib import Path
 import pytest
 from PIL import Image as PILImage
 
-try:
-    from Xlib.error import DisplayNameError
-except ModuleNotFoundError:
-    DisplayNameError = RuntimeError
-
 from psi_agent.gateway._tray import GatewayTray
 
-_HAS_X11 = False
-try:
-    from Xlib import display as _xdisplay
 
-    _xdisplay.Display()
-    _HAS_X11 = True
-except DisplayNameError, ModuleNotFoundError:
-    pass
+def _load_display_name_error() -> type[BaseException]:
+    try:
+        xlib_error = __import__("Xlib.error", fromlist=["DisplayNameError"])
+    except ModuleNotFoundError:
+        return RuntimeError
+    display_name_error = getattr(xlib_error, "DisplayNameError", RuntimeError)
+    if isinstance(display_name_error, type) and issubclass(display_name_error, BaseException):
+        return display_name_error
+    return RuntimeError
+
+
+DisplayNameError = _load_display_name_error()
+
+
+def _has_x11_display() -> bool:
+    try:
+        xlib_display = __import__("Xlib", fromlist=["display"])
+        display_module = getattr(xlib_display, "display", None)
+        display_ctor = getattr(display_module, "Display", None)
+        if not callable(display_ctor):
+            return False
+        display_ctor()
+        return True
+    except DisplayNameError, ModuleNotFoundError:
+        return False
+
+
+_HAS_X11 = _has_x11_display()
 
 
 @pytest.fixture

@@ -37,11 +37,22 @@ def _alive(pid: int) -> bool:
 
 
 def _kill(pid: int) -> None:
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    signals_to_send = [int(signal.SIGTERM)]
+    sigkill = getattr(signal, "SIGKILL", None)
+    if isinstance(sigkill, int):
+        signals_to_send.append(sigkill)
+
+    killpg = getattr(os, "killpg", None)
+    getpgid = getattr(os, "getpgid", None)
+
+    for sig in signals_to_send:
         if not _alive(pid):
             return
         try:
-            os.killpg(os.getpgid(pid), sig)
+            if callable(killpg) and callable(getpgid):
+                killpg(getpgid(pid), sig)
+            else:
+                os.kill(pid, sig)
         except OSError:
             try:
                 os.kill(pid, sig)
