@@ -47,29 +47,36 @@ class TitleManager:
                     logger.debug(f"Title AI returned {resp.status}")
                     return None
                 title = ""
+                buf = b""
                 async for raw in resp.content:
-                    line = raw.decode().strip()
-                    if not line or not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-                    choices = chunk.get("choices", [])
-                    if not isinstance(choices, list) or not choices:
-                        continue
-                    first = choices[0]
-                    if not isinstance(first, dict):
-                        continue
-                    delta = first.get("delta")
-                    if not isinstance(delta, dict):
-                        continue
-                    content = delta.get("content") or ""
-                    if content:
-                        title += content
+                    buf += raw
+                    while b"\n" in buf:
+                        line_bytes, buf = buf.split(b"\n", 1)
+                        line = line_bytes.decode().strip()
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        if not isinstance(chunk, dict):
+                            continue
+                        logger.debug(f"Title SSE chunk: {data_str[:200]}")
+                        choices = chunk.get("choices", [])
+                        if not isinstance(choices, list) or not choices:
+                            continue
+                        first = choices[0]
+                        if not isinstance(first, dict):
+                            continue
+                        delta = first.get("delta")
+                        if not isinstance(delta, dict):
+                            continue
+                        content = delta.get("content") or ""
+                        if content:
+                            title += content
                 title = title.strip().strip("'\"")
                 logger.info(f"Title generation result: {title!r}")
                 if title:

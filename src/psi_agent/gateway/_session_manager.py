@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import anyio
@@ -56,7 +56,7 @@ class SessionManager:
         workspace: str = "",
     ) -> SessionInfo:
         session_id = id or _new_uuid()
-        workspace = workspace or str(Path.cwd())
+        workspace = workspace or os.getcwd()
         async with self._lock:
             logger.debug(f"SessionManager: acquired lock for create {session_id!r}")
             if session_id in self._entries:

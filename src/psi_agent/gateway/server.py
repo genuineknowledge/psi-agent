@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from base64 import b64encode
 from contextlib import aclosing, suppress
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 import anyio
@@ -211,10 +211,10 @@ async def _get_cwd(request: web.Request) -> web.Response:
 
 async def _browse_workspace(request: web.Request) -> web.Response:
     wm: WorkspaceManager = request.app["wm"]
-    path = request.query.get("path") or str(Path.cwd())
+    path = request.query.get("path") or os.getcwd()
     try:
         result = await wm.browse(path)
-        parent = str(Path(path).parent)
+        parent = os.path.dirname(path)
         return _json({"path": path, "parent": parent, **result})
     except (OSError, PermissionError) as e:
         return _error(str(e), status=400)
