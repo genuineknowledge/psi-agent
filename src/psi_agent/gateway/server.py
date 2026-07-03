@@ -246,6 +246,8 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
             data = await request.post()
             raw = data.get("chunks")
             raw_chunks = json.loads(str(raw)) if raw else []
+            if not isinstance(raw_chunks, list):
+                return _error("chunks must be a JSON array", status=400)
             body: dict[str, Any] = {"chunks": raw_chunks}
             for file_field in data.getall("file", []):
                 fname = getattr(file_field, "filename", None)
