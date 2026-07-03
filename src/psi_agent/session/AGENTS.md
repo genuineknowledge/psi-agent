@@ -29,19 +29,23 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 ## Agent Loop 逻辑
 
 1. 收到 channel 请求 → `ChannelAdapter.handle()` 解析请求，提取 user_message + extra_params
-2. 惰性构建或重建 system prompt（首次 run 或 rebuild checker 返回 True 时）
-3. 检查暂存的 schedule 响应 → 有则先流式返回（AgentChunk）
-4. 获取 `anyio.Lock`（忙则 FIFO 排队等待）
-5. User message 追加到 history
-6. 通过 `AiClient.stream()` 发送 `history + tools + extra_params` 到 AI backend（streaming）
-7. 消费 `AiDelta` 流（AiClient 已做好 SSE 解析、错误检测）：
+2. `SessionAgent.run()` 入口：
+   - add() / replace_system() 在首次变更时自动建立快照（implicit snapshot）
+   - 惰性构建或重建 system prompt（首次 run 或 rebuild checker 返回 True 时）
+   - 检查暂存的 schedule 响应 → peek + yield → yield 全部成功后 `clear_pending()`
+   - User message 追加到 history 后立即 ``commit()`` 落盘
+3. 获取 `anyio.Lock`（忙则 FIFO 排队等待）—— `handle_request()` 在调用 `run()` 前持有
+4. 通过 `AiClient.stream()` 发送 `history + tools + extra_params` 到 AI backend（streaming）
+5. 消费 `AiDelta` 流（AiClient 已做好 SSE 解析、错误检测）：
    - content → `yield AgentChunk(content=...)` 给 ChannelAdapter
    - reasoning → `yield AgentChunk(reasoning=...)` 给 ChannelAdapter
    - tool_calls → 累积（按 index 拼接 partial JSON）
-   - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 6
-   - finish_reason="stop" → 最终 content 追加到 history → 释放锁
-   - finish_reason="error" → `raise AgentError(message)`，不写入 history
-8. 最多 `max_tool_rounds` 轮 tool call
+   - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 4
+   - finish_reason="stop" → 最终 content 追加到 history + `commit()` → 释放锁
+   - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
+   - 任何未捕获异常 → 回滚到快照 → 向上传播
+6. 最多 `max_tool_rounds` 轮 tool call，达到上限时追加关闭 assistant 消息 + commit
+7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``finally`` 块无条件 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
 
 **注意**：
 - Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
@@ -50,7 +54,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - `ChannelAdapter` 是纯无状态工具——不持有 agent/lock 引用。
 - Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。
 - AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
-- AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history。
+- AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history，且通过 turn 快照回滚机制保证本轮用户消息也不落盘。
 
 ## 其他约定
 
@@ -175,6 +179,16 @@ Session 支持将对话历史持久化到 `workspace/histories/{session_id}.json
 
 - `Session.session_id: str | None = None` — None 时自动生成 UUID，给定字符串时可 resume
 - 加载：`SessionAgent.create()` 中从 jsonl 逐行读取，非法行跳过 + warning
-- 保存：用户消息到达后立即持久化；``finish_reason="stop"`` 和 ``"tool_calls"`` 处理完成后也持久化；``finish_reason="error"`` 时不额外写盘（用户消息已写）
-- error 当前轮次不额外写盘（但用户消息已在 entry 时持久化）
+- **Turn 级别原子性**：`SessionAgent.run()` 每次调用中，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；任何异常（AI error、连接断开、cancellation）都会触发 `Conversation.rollback()` 恢复到快照，保证内存和磁盘始终同步于最近一个成功阶段。
+- 保存时机（一致性检查点）：
+  - `finish_reason="stop"` — assistant 响应追加后立即 `commit()`（完整回合）
+  - `finish_reason="tool_calls"` — 所有 tool 结果追加后立即 `commit()`（子回合）
+  - unexpected `finish_reason` — 累积 content 追加后 `commit()`
+  - 达到 `max_tool_rounds` — 追加 `[Max tool rounds reached]` assistant 消息后 `commit()`
+- `Conversation.save()` 使用 tempfile + `os.replace()` 实现原子写入；`commit()` 封装 save + 清除快照
+- **部分保存**的场景：`finish_reason="error"`、AI 连接断开、channel 断开、schedule runner 异常——user message 已通过早期 `commit()` 落盘，AI 响应部分通过 `rollback()` 回滚，不写入磁盘
 - 首次使用时自动创建 `histories/` 目录 + `.gitignore`（忽略全部文件）
+
+### peek_pending / clear_pending 安全机制
+
+`Conversation.peek_pending()` 返回 pending chunks 的副本但**不清空** buffer——调用方在 yield 全部成功后显式调用 `clear_pending()`。这保证 channel 断开时 pending schedule chunks 不会永久丢失，下次请求会重新 push。

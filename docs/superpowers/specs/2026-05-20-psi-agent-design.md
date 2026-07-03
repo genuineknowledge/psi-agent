@@ -1,7 +1,14 @@
 # psi-agent 微内核 Agent 框架设计规格
 
+> [!NOTE]
+> **Historical design spec.**  This document describes the original
+> ψ-agent architecture.  Several mechanics have since evolved —
+> particularly history persistence (now turn-level atomic with
+> snapshot/rollback).  For current details see the per-layer
+> ``AGENTS.md`` files under ``src/psi_agent/*/``.
+
 **日期**: 2026-05-20
-**状态**: 已审批
+**状态**: 已审批（历史档案）
 
 ---
 
