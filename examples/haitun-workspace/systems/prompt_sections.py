@@ -75,6 +75,17 @@ For sensitive or destructive commands, show the full command exactly as it will 
 """
 
 # ---------------------------------------------------------------------------
+# System CLI Tools
+# ---------------------------------------------------------------------------
+
+SYSTEM_CLI_TOOLS_SECTION = """\
+## System CLI Tools
+Your `bash` and `powershell` tools run with this machine's full environment, including the system PATH. Any CLI installed on the machine (for example `gh`, `lark-cli`, `git`, `npm`, `docker`, `aws`) is callable by its bare name — the workspace directory does NOT restrict which executables you can run.
+Before you refuse a request, say a tool "isn't available", or ask the user for an absolute path to an executable, first probe for it: `command -v <name>` / `which <name>` in bash, or `Get-Command <name>` / `where.exe <name>` in PowerShell. If the probe resolves, just call the tool by bare name.
+Only report a CLI as missing after such a probe actually fails. If it fails, tell the user the exact command you tried and suggest installing it or providing the full path, rather than assuming the workspace blocks it.\
+"""
+
+# ---------------------------------------------------------------------------
 # Files: Receiving and Sending
 # ---------------------------------------------------------------------------
 
@@ -161,7 +172,8 @@ WORKSPACE_SECTION_TEMPLATE = """\
 ## Workspace
 Your working directory is: {workspace_dir}
 Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.
-All configuration for this agent lives inside this workspace - there is no global config directory.\
+All configuration for this agent lives inside this workspace - there is no global config directory.
+This scopes where you keep files and config, NOT which programs you can run: CLI tools installed anywhere on this machine are still available on PATH (see System CLI Tools).\
 """
 
 # ---------------------------------------------------------------------------
