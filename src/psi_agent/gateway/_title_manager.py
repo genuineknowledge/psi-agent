@@ -7,10 +7,7 @@ from aiohttp import ClientSession, ClientTimeout
 from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
-
-
-async def _noop() -> None:
-    pass
+from psi_agent.gateway._manager import _noop
 
 
 class TitleManager:

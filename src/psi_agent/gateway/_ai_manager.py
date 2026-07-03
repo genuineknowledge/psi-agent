@@ -11,14 +11,11 @@ from psi_agent.ai import Ai
 from psi_agent.gateway._manager import (
     _ensure_socket_dir,
     _new_uuid,
+    _noop,
     _remove_socket,
     _socket_path,
     _wait_socket,
 )
-
-
-async def _noop() -> None:
-    pass
 
 
 @dataclass
