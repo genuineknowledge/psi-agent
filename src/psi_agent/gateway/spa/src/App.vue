@@ -63,6 +63,7 @@
 <script setup>
 import { computed, onMounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useBreakpoints } from '@vueuse/core'
 import { useAiStore } from './stores/ai.js'
 import { useSessionStore } from './stores/session.js'
 import { useChatStore } from './stores/chat.js'
@@ -103,8 +104,11 @@ const { loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, dlgConfirm, isSideb
 const { toggleTheme } = useTheme()
 useKeyboard()
 
+const breakpoints = useBreakpoints({ mobile: 768 })
+const isMobile = breakpoints.smallerOrEqual('mobile')
+
 function toggleSidebar() {
-  ui.toggleSidebar(window.innerWidth <= 768)
+  ui.toggleSidebar(isMobile.value)
 }
 
 function origin() {

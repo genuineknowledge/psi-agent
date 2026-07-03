@@ -1,9 +1,11 @@
 import { onMounted } from 'vue'
-import { useEventListener } from '@vueuse/core'
+import { useEventListener, useBreakpoints } from '@vueuse/core'
 import { useChatStore } from '../stores/chat.js'
 
 export function useKeyboard() {
   const chat = useChatStore()
+  const breakpoints = useBreakpoints({ mobile: 768 })
+  const isMobile = breakpoints.smallerOrEqual('mobile')
 
   onMounted(() => {
     const messagesEl = document.getElementById('messages')
@@ -28,7 +30,7 @@ export function useKeyboard() {
         const sidebar = document.getElementById('sidebar')
         const overlay = document.querySelector('.mobile-overlay')
 
-        if (window.innerWidth > 768) {
+        if (!isMobile.value) {
           if (inputWrapper) inputWrapper.style.bottom = ''
           if (topbar) topbar.style.top = ''
           if (messagesEl) {
@@ -75,7 +77,7 @@ export function useKeyboard() {
     const ta = document.querySelector('#input-area textarea')
     if (ta) {
       useEventListener(ta, 'focus', () => {
-        if (window.innerWidth > 768) return
+        if (!isMobile.value) return
         setTimeout(() => {
           if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight
         }, 350)
