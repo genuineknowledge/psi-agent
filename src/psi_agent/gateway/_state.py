@@ -29,11 +29,9 @@ class GatewayState:
         if not isinstance(data, dict):
             logger.warning(f"State file {self._path} is not a dict, starting fresh")
             return {"ais": {}, "sessions": {}, "titles": {}}
-        raw_titles = data.get("titles", {})
+        raw_titles = data.get("titles", [])
         if isinstance(raw_titles, list):
             titles = {t["id"]: t["title"] for t in raw_titles if isinstance(t, dict)}
-        elif isinstance(raw_titles, dict):
-            titles = raw_titles
         else:
             titles = {}
         return {
