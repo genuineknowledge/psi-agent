@@ -39,7 +39,15 @@ class GatewayState:
         titles: dict[str, str],
     ) -> None:
         data = {
-            "ais": {a["id"]: {"provider": a["provider"], "model": a["model"], "api_key": a["api_key"], "base_url": a["base_url"]} for a in ais},
+            "ais": {
+                a["id"]: {
+                    "provider": a["provider"],
+                    "model": a["model"],
+                    "api_key": a["api_key"],
+                    "base_url": a["base_url"],
+                }
+                for a in ais
+            },
             "sessions": {s["id"]: {"ai_id": s["ai_id"], "workspace": s["workspace"]} for s in sessions},
             "titles": dict(titles),
         }
