@@ -1,4 +1,5 @@
-import { store } from '../store.js'
+import { useChatStore } from '../stores/chat.js'
+import { useSessionStore } from '../stores/session.js'
 import { htmlEscape, renderMd, saveHistory, loadHistory } from '../utils.js'
 import { readSSE } from './useSSE.js'
 import { streamChat } from '../api.js'
@@ -9,10 +10,11 @@ function origin() {
 }
 
 function addMessage(role, id) {
+  const chat = useChatStore()
   const m = { id, role, text: '', html: '', files: [], stopped: false }
-  store.messages.push(m)
+  chat.messages.push(m)
   scrollToBottomIfLocked()
-  return store.messages[store.messages.length - 1]
+  return chat.messages[chat.messages.length - 1]
 }
 
 async function encodeFiles(files, um) {
@@ -30,16 +32,19 @@ async function encodeFiles(files, um) {
 }
 
 export async function sendMessage() {
-  if (store.streaming || !store.selectedSessionId) return
-  const text = store.inputText.trim()
-  const files = [...store.selectedFiles]
+  const chat = useChatStore()
+  const session = useSessionStore()
+
+  if (chat.streaming || !session.selectedSessionId) return
+  const text = chat.inputText.trim()
+  const files = [...chat.selectedFiles]
   if (!text && !files.length) return
 
-  store.streaming = true
-  store.inputText = ''
-  store.selectedFiles = []
-  store.uploadResetToken++
-  store.userHasScrolledUp = false
+  chat.streaming = true
+  chat.inputText = ''
+  chat.selectedFiles = []
+  chat.uploadResetToken++
+  chat.userHasScrolledUp = false
 
   let um = null
   if (text) {
@@ -63,10 +68,10 @@ export async function sendMessage() {
   let asst = addMessage('assistant', `a-${Date.now()}`)
 
   const controller = new AbortController()
-  store.abortController = controller
+  chat.abortController = controller
 
   try {
-    const reader = await streamChat(store.selectedSessionId, fd, controller.signal)
+    const reader = await streamChat(session.selectedSessionId, fd, controller.signal)
     for await (const chunkData of readSSE(reader)) {
       if (chunkData.type === 'text' && chunkData.text !== undefined) {
         if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
@@ -101,23 +106,24 @@ export async function sendMessage() {
 
   // Drop a trailing empty assistant bubble (e.g. a reasoning-only turn, or the
   // pre-created bubble that never received text before the stream ended).
-  const last = store.messages[store.messages.length - 1]
+  const last = chat.messages[chat.messages.length - 1]
   if (last && last.role === 'assistant' && !last.text && !last.files.length) {
-    store.messages.pop()
+    chat.messages.pop()
   }
 
-  store.streaming = false
-  store.abortController = null
-  saveHistory(store.selectedSessionId, store.messages)
+  chat.streaming = false
+  chat.abortController = null
+  saveHistory(session.selectedSessionId, chat.messages)
 
-  const currentTitle = store.sessionTitles[store.selectedSessionId]
+  const currentTitle = session.sessionTitles[session.selectedSessionId]
   if (!currentTitle || currentTitle === '新会话' || currentTitle.trim() === '') generateTitle()
 }
 
 export function stopMessage() {
+  const chat = useChatStore()
   // 中止当前 fetch；取消信号会一路传导到后端，agent 停止生成。
   // sendMessage 的 catch(AbortError) 负责保留已生成内容并重置 streaming 状态。
-  if (store.abortController) store.abortController.abort()
+  if (chat.abortController) chat.abortController.abort()
 }
 
 export function undoFrom(index) {
@@ -129,7 +135,8 @@ export function undoFrom(index) {
 }
 
 async function generateTitle() {
-  const sid = store.selectedSessionId
+  const session = useSessionStore()
+  const sid = session.selectedSessionId
   if (!sid) return
   const msgs = loadHistory(sid)
   if (!msgs.length) return
@@ -144,6 +151,6 @@ async function generateTitle() {
     })
     if (!r.ok) return
     const data = await r.json()
-    if (data.title) store.sessionTitles[sid] = data.title
+    if (data.title) session.sessionTitles[sid] = data.title
   } catch (e) {}
 }
