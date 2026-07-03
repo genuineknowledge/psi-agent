@@ -37,3 +37,7 @@ psi-agent
 subagent-bug-report.md
 tmp_*.py
 haitun.ico
+
+# iFLYTEK speech credentials and generated audio
+.env.xfyun
+generated/audio/
