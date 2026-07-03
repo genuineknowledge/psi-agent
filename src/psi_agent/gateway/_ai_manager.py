@@ -17,6 +17,10 @@ from psi_agent.gateway._manager import (
 )
 
 
+async def _noop() -> None:
+    pass
+
+
 @dataclass
 class AiInfo:
     id: str
@@ -43,7 +47,7 @@ class AIManager:
     _tg: Any  # anyio.TaskGroup (ty不识别的第三方类型)
     _entries: dict[str, _AiEntry] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
-    _persist: Callable[[], Awaitable[None]] | None = None
+    _persist: Callable[[], Awaitable[None]] = _noop
 
     async def create(
         self,
@@ -78,8 +82,7 @@ class AIManager:
                     logger.error(f"AI {ai_id!r} crashed: {e!r}")
                     async with self._lock:
                         self._entries.pop(ai_id, None)
-                    if self._persist is not None:
-                        await self._persist()
+                    await self._persist()
 
             logger.debug(f"AIManager: starting AI {ai_id!r} task")
             self._tg.start_soon(_run_ai)
@@ -95,11 +98,9 @@ class AIManager:
                     self._entries.pop(ai_id, None)
                     scope.cancel()
                     await _remove_socket(socket)
-                    if self._persist is not None:
-                        await self._persist()
+                    await self._persist()
             raise
-        if self._persist is not None:
-            await self._persist()
+        await self._persist()
         logger.info(f"AI {ai_id!r} created on {socket}")
         return AiInfo(id=ai_id, socket=socket, provider=provider, model=model, api_key=api_key, base_url=base_url)
 
@@ -111,8 +112,7 @@ class AIManager:
             entry = self._entries.pop(ai_id)
             entry.scope.cancel()
             await _remove_socket(entry.socket)
-            if self._persist is not None:
-                await self._persist()
+            await self._persist()
             logger.info(f"AI {ai_id!r} deleted")
 
     async def list_all(self) -> list[AiInfo]:

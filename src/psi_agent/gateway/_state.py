@@ -16,15 +16,15 @@ class GatewayState:
         try:
             raw = await self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            logger.debug(f"State file {self._path!s} not found, starting fresh")
+            logger.debug(f"State file {self._path} not found, starting fresh")
             return {"ais": {}, "sessions": {}, "titles": {}}
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning(f"State file {self._path!s} is corrupt, starting fresh")
+            logger.warning(f"State file {self._path} is corrupt, starting fresh")
             return {"ais": {}, "sessions": {}, "titles": {}}
         if not isinstance(data, dict):
-            logger.warning(f"State file {self._path!s} is not a dict, starting fresh")
+            logger.warning(f"State file {self._path} is not a dict, starting fresh")
             return {"ais": {}, "sessions": {}, "titles": {}}
         return {
             "ais": data.get("ais", {}),
@@ -54,6 +54,6 @@ class GatewayState:
         try:
             await self._path.parent.mkdir(parents=True, exist_ok=True)
             await self._path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            logger.debug(f"State saved to {self._path!s}")
+            logger.debug(f"State saved to {self._path}")
         except Exception as e:
-            logger.warning(f"Failed to save state to {self._path!s}: {e!r}")
+            logger.warning(f"Failed to save state to {self._path}: {e!r}")

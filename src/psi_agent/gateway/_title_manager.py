@@ -9,18 +9,21 @@ from loguru import logger
 from psi_agent._sockets import resolve_connector_and_endpoint
 
 
+async def _noop() -> None:
+    pass
+
+
 class TitleManager:
     def __init__(self, _persist: Callable[[], Awaitable[None]] | None = None) -> None:
         self._titles: dict[str, str] = {}
-        self._persist = _persist
+        self._persist = _persist or _noop
 
     def get_all(self) -> dict[str, str]:
         return dict(self._titles)
 
     async def set(self, session_id: str, title: str) -> None:
         self._titles[session_id] = title
-        if self._persist is not None:
-            await self._persist()
+        await self._persist()
 
     async def generate(self, session_id: str, ai_socket: str, user_text: str, assistant_text: str) -> str | None:
         prompt = (
@@ -71,8 +74,7 @@ class TitleManager:
                 logger.info(f"Title generation result: {title!r}")
                 if title:
                     self._titles[session_id] = title
-                    if self._persist is not None:
-                        await self._persist()
+                    await self._persist()
                     return title
                 logger.warning(f"Title generation empty for session {session_id!r}")
                 return None
