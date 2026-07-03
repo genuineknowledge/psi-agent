@@ -1,5 +1,8 @@
 import { nextTick } from 'vue'
-import { store } from '../store.js'
+import { useSessionStore } from '../stores/session.js'
+import { useChatStore } from '../stores/chat.js'
+import { useAiStore } from '../stores/ai.js'
+import { useUiStore } from '../stores/ui.js'
 import { loadHistory, htmlEscape, renderMd, saveActiveState } from '../utils.js'
 
 function origin() {
@@ -7,22 +10,27 @@ function origin() {
 }
 
 export async function selectSession(id) {
-  if (store.editingSessionId === id) return
-  const oldId = store.selectedSessionId
+  const session = useSessionStore()
+  const chat = useChatStore()
+  const ai = useAiStore()
+  const ui = useUiStore()
+
+  if (session.editingSessionId === id) return
+  const oldId = session.selectedSessionId
   if (oldId) {
-    store.sessionMessages[oldId] = [...store.messages]
-    store.sessionInputs[oldId] = { text: store.inputText, files: [...store.selectedFiles] }
+    session.sessionMessages[oldId] = [...chat.messages]
+    session.sessionInputs[oldId] = { text: chat.inputText, files: [...chat.selectedFiles] }
   }
-  store.selectedSessionId = id
+  session.selectedSessionId = id
 
-  const saved = store.sessionInputs[id]
-  store.inputText = saved ? saved.text : ''
-  store.selectedFiles = saved?.files || []
+  const saved = session.sessionInputs[id]
+  chat.inputText = saved ? saved.text : ''
+  chat.selectedFiles = saved?.files || []
 
-  if (store.sessionMessages[id]) {
-    store.messages.splice(0, store.messages.length, ...store.sessionMessages[id])
+  if (session.sessionMessages[id]) {
+    chat.messages.splice(0, chat.messages.length, ...session.sessionMessages[id])
   } else {
-    store.messages.splice(0)
+    chat.messages.splice(0)
     const localHist = loadHistory(id)
     try {
       const r = await fetch(origin() + '/sessions/' + id + '/history')
@@ -30,7 +38,7 @@ export async function selectSession(id) {
         const serverMsgs = await r.json()
         serverMsgs.forEach((h, i) => {
           const local = i < localHist.length ? localHist[i] : null
-          store.messages.push({
+          chat.messages.push({
             id: '', role: h.role, text: h.text,
             html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text),
             files: local ? local.files || [] : [],
@@ -40,17 +48,17 @@ export async function selectSession(id) {
       } else { throw new Error() }
     } catch (e) {
       localHist.forEach(h => {
-        store.messages.push({ id: '', role: h.role, text: h.text, html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text), files: h.files || [], stopped: h.stopped || false })
+        chat.messages.push({ id: '', role: h.role, text: h.text, html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text), files: h.files || [], stopped: h.stopped || false })
       })
     }
   }
 
-  const currentSess = store.sessions.find(s => s.id === id)
-  if (currentSess) store.selectedAiId = currentSess.ai_id
-  saveActiveState(store.selectedAiId, store.selectedSessionId)
+  const currentSess = session.sessions.find(s => s.id === id)
+  if (currentSess) ai.selectedAiId = currentSess.ai_id
+  saveActiveState(ai.selectedAiId, session.selectedSessionId)
 
-  store.userHasScrolledUp = false
-  store.isMobileSidebarOpen = false
+  chat.userHasScrolledUp = false
+  ui.isMobileSidebarOpen = false
   nextTick(() => {
     const el = document.getElementById('messages')
     if (el) el.scrollTop = el.scrollHeight

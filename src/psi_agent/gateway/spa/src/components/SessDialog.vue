@@ -1,12 +1,12 @@
 <template>
-  <BaseDialog :show="store.dlgSess" width="480px" @close="store.dlgSess = false">
+  <BaseDialog :show="dlgSess" width="480px" @close="dlgSess = false">
     <template #title>创建新会话</template>
     <p v-if="currentAiLabel" class="ai-label">
       大模型: {{ currentAiLabel }}
     </p>
     <div class="field"><label>工作区路径 (可选，默认当前目录)</label>
       <div class="ws-row">
-        <input class="md-text-field ws-input" v-model="store.sessForm.workspace" placeholder="/path/to/workspace">
+        <input class="md-text-field ws-input" v-model="sessForm.workspace" placeholder="/path/to/workspace">
         <button class="md-outlined-btn browse-btn" @click="toggleBrowser">
           <span class="material-symbols-outlined browse-icon">folder_open</span>
         </button>
@@ -15,10 +15,10 @@
     <FileBrowser
       v-if="browserVisible"
       @browse="emit('browse', $event)"
-      @set-path="store.sessForm.workspace = $event"
+      @set-path="sessForm.workspace = $event"
     />
     <template #actions>
-      <button class="cancel" @click="store.dlgSess = false">取消</button>
+      <button class="cancel" @click="dlgSess = false">取消</button>
       <button class="ok" @click="emit('create')">创建</button>
     </template>
   </BaseDialog>
@@ -26,23 +26,33 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { store } from '../store.js'
+import { storeToRefs } from 'pinia'
+import { useSessionStore } from '../stores/session.js'
+import { useUiStore } from '../stores/ui.js'
+import { useAiStore } from '../stores/ai.js'
 import FileBrowser from './FileBrowser.vue'
 import BaseDialog from './BaseDialog.vue'
+
+const session = useSessionStore()
+const { sessForm } = storeToRefs(session)
+const ui = useUiStore()
+const { dlgSess } = storeToRefs(ui)
+const ai = useAiStore()
+const { selectedAiId, ais } = storeToRefs(ai)
 
 const emit = defineEmits(['create', 'browse'])
 
 const browserVisible = ref(false)
 
 const currentAiLabel = computed(() => {
-  const ai = store.ais.find(a => a.id === store.selectedAiId)
-  return ai ? (ai.model || ai.id) : ''
+  const found = ais.value.find(a => a.id === selectedAiId.value)
+  return found ? (found.model || found.id) : ''
 })
 
 function toggleBrowser() {
   browserVisible.value = !browserVisible.value
   if (browserVisible.value) {
-    emit('browse', store.sessForm.workspace || '.')
+    emit('browse', sessForm.value.workspace || '.')
   }
 }
 </script>
