@@ -95,12 +95,14 @@ src/
         ├── _manager.py             # 共享类型 + helpers
         ├── _ai_manager.py         # AIManager
         ├── _session_manager.py    # SessionManager
+        ├── _title_manager.py       # 会话标题 CRUD + AI 生成
+        ├── _state.py               # GatewayState — 状态持久化 (state/latest.json)
         ├── server.py               # aiohttp REST handlers
         ├── _chat_manager.py        # SSE 流式对话管理
         ├── _history_manager.py     # JSONL 历史读取
-        ├── _title_manager.py       # 会话标题 CRUD + AI 生成
         ├── _workspace_manager.py   # 目录浏览
         ├── _openapi.py             # OpenAPI schema 生成
+        ├── _tray.py                # 系统托盘图标 (pystray)
         └── spa/                    # Vue 3 SPA 前端（Vite + SFC）
 ```
 

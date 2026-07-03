@@ -16,6 +16,7 @@ Gateway 进程
 ├── WorkspaceManager   — 目录浏览
 ├── ChatManager        — SSE 流式对话管理
 ├── HistoryManager     — JSONL 历史读取
+├── GatewayState       — 状态持久化到 state/latest.json
 ├── aiohttp REST Server  — OpenAPI CRUD + Web UI chat
 ├── spa/               — Vue 3 SPA 前端项目 (Vite + SFC)
 ├── GatewayTray        — 系统托盘图标 (pystray)
@@ -30,6 +31,8 @@ Gateway 进程
 | `_manager.py` | 共享 socket helpers（_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
 | `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + AiInfo |
 | `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo |
+| `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
+| `_state.py` | `GatewayState` dataclass — `state/latest.json` 的 load/save（启动恢复 + 变更持久化） |
 | `server.py` | aiohttp Application + REST handlers |
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取 |
@@ -42,15 +45,22 @@ Gateway 进程
 ## Gateway 启动流程
 
 ```
-1. setup_logging(verbose)        — 第一行
-2. anyio.create_task_group()     — 手动管理 task group
-3. 创建 AIManager + SessionManager
-4. await create_app(aim, sm)     — 注册 REST 路由（async：内部 anyio 探测 spa/dist）
-5. runner.setup() + create_site(runner, listen) + site.start()
-6. if self.browser: webbrowser.open(addr)
-7. if self.tray: GatewayTray(addr, self.tray).start()  ← 可选托盘（需 --tray）
-8. try: wait (if tray started) / sleep_forever (if no tray or tray failed)
-9. finally: tray.stop()（如有）+ runner.cleanup() + tg.__aexit__()
+1. setup_logging(verbose)                             — 第一行
+2. state = GatewayState(...) + snapshot = await state.load()  — 加载持久化状态
+3. anyio.create_task_group()                          — 手动管理 task group
+4. 创建 AIManager + SessionManager
+5. 恢复 AI（遍历 snapshot.ais → aim.create，失败 skip）
+6. 恢复 Session（遍历 snapshot.sessions → sm.create，失败 skip）
+7. await create_app(aim, sm)                          — 注册 REST 路由（获取 tm）
+8. 创建 _do_persist 闭包（快照三个 manager → state.save）
+9. 注入 _persist（aim._persist = sm._persist = tm._persist = _do_persist）
+10. 恢复标题（遍历 snapshot.titles → tm.set）
+11. await _do_persist()                                — 初始全量持久化
+12. runner.setup() + create_site(runner, listen) + site.start()
+13. if self.browser: webbrowser.open(addr)
+14. if self.tray: GatewayTray(addr, self.tray).start()
+15. try: wait (if tray started) / sleep_forever (if no tray or tray failed)
+16. finally: tray.stop()（如有）+ runner.cleanup() + tg.__aexit__()
 ```
 
 ## 系统托盘 (GatewayTray)
@@ -98,19 +108,28 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 - `scope: anyio.CancelScope` — 独立取消
 - `socket: str` — AI socket 路径
 - `provider: str`, `model: str` — 元信息
+- `api_key: str`, `base_url: str` — 用于状态恢复时重建 AI
 
-**create(ai_id, ...) 流程**：
+**`_persist` 回调**：构造函数参数，默认 no-op。Gateway.run() 在恢复完成后注入 persist 闭包（快照所有 manager → state.save），每次 create/delete/crash 后调用。
+
+**create(provider, model, api_key, base_url, *, id="") 流程**：
 1. 获取 lock，断言不重复
 2. `_socket_path(prefix, "ais", ai_id)` 生成 socket 路径
 3. `_ensure_socket_dir(socket)` 创建父目录（anyio 异步）
-4. 构造 `Ai(...)`，创建 `CancelScope`，`task_group.start_soon`
+4. 构造 `Ai(...)`（传入 api_key + base_url），创建 `CancelScope`，`task_group.start_soon`
 5. 存入 `_entries`
-6. `_wait_socket(socket)` 轮询等待 socket 出现 + 0.3s sleep 确保 acceptor 就绪
-7. 返回 `AiInfo`
+6. `_wait_socket(socket)` 轮询等待 socket 出现
+7. 成功后调用 `_persist`，返回 `AiInfo`
+   失败则 rollback：pop entry + cancel scope + remove socket + 调用 `_persist`
 
 **delete(ai_id) 流程**：
 1. 获取 lock，断言存在
 2. `del _entries[ai_id]` + `entry.scope.cancel()`
+3. `_remove_socket(entry.socket)` + 调用 `_persist`
+
+**get_socket(ai_id)**：AI 在 `_entries` 中则返回其 socket 路径；不在则通过 `_socket_path()` 计算路径返回（不抛 LookupError）。这使 Session 创建可以在 AI 尚未启动时预计算 socket 路径，支持启动恢复场景。
+
+AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 entry 并调用 `_persist`，确保持久化状态与内存一致。
 
 ## SessionManager
 
@@ -122,23 +141,41 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 - `ai_id: str` — 关联的 AI ID
 - `workspace: str` — workspace 路径
 
-**create(session_id, ai_id, workspace) 流程**：
+**`_persist` 回调**：同 AIManager，默认 no-op，Gateway.run() 注入。
+
+**create(ai_id, *, id="", workspace="") 流程**：
 1. 获取 lock，断言不重复
-2. `aimanager.get_socket(ai_id)` 查 AI socket
+2. `aimanager.get_socket(ai_id)` 查 AI socket（AI 不存在时计算路径返回，不抛异常——支持启动恢复时 AI 尚未就绪）
 3. `_socket_path(prefix, "channels", session_id)` 生成 channel socket
 4. `_ensure_socket_dir(socket)` 创建父目录
 5. 构造 `Session(...)`，创建 `CancelScope`，`task_group.start_soon`
 6. 存入 `_entries`
 7. `_wait_socket()` 轮询等待 channel socket 就绪
-8. 返回 `SessionInfo`
+8. 成功后调用 `_persist`，返回 `SessionInfo`
+   失败则 rollback：pop entry + cancel scope + remove socket + 调用 `_persist`
 
 **delete(session_id)**：
 1. 获取 lock，断言存在
 2. `del _entries[session_id]` + `entry.scope.cancel()`
+3. `_remove_socket(entry.channel_socket)` + 调用 `_persist`
+
+Session 运行时 crash 时，`_run_session` 的 except 块从 `_entries` 中移除该 entry 并调用 `_persist`。
 
 workspace 中的 history JSONL 不受影响。
 
 **注意（有意为之）**：删除 AI **不会**级联删除依赖它的 Session。被删 AI 的 socket 失效后，挂在其上的 Session 仍存活但不可用——由前端负责不再访问这类失效 Session，后端不做级联清理。
+
+## TitleManager
+
+内存存储 `dict[str, str]`（session_id → title），维护会话标题映射。
+
+**字段**：
+- `_titles: dict[str, str]` — 标题映射
+- `_persist: Callable[[], Awaitable[None]]` — 状态持久化回调，默认 no-op，Gateway.run() 注入
+
+**set(session_id, title)** — **async**，设置标题后调用 `_persist`。
+
+**generate(session_id, ai_socket, user_text, assistant_text)** — 通过 AI 自动生成标题，成功后写入 `_titles` 并调用 `_persist`。返回生成的 title 字符串，失败返回 None。
 
 ## REST API
 
@@ -302,10 +339,10 @@ Session 标题由服务端 `/titles` 端点维护，不在浏览器 localStorage
 
 **启动加载流程**：
 ```
-GET /ais + GET /sessions → 远端无 AIs → 弹窗「链接大模型」
-→ 恢复 active IDs → 恢复 titles → 恢复 sidebar/theme 状态
+GET /ais + GET /sessions → 恢复上次 AI/Session → 无则弹窗「链接大模型」
+→ 恢复 titles → 恢复 sidebar/theme 状态 → 恢复 active IDs
 ```
-不再从 localStorage 重建 AI/Session。服务端重启后历史 AI/Session 丢失，用户需重新创建。对话历史和标题保留在浏览器中。
+服务端通过 `state/latest.json` 自动持久化 AI、Session、Title 状态，重启后自动恢复。对话历史仍通过 JSONL 文件独立持久化。浏览器 localStorage 仅保留 UI 状态（active ids、sidebar 折叠、主题偏好）和对话历史缓存。
 
 ### 移动端键盘适配（visualViewport）
 
