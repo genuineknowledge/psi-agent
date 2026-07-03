@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,6 +23,8 @@ class AiInfo:
     socket: str
     provider: str
     model: str
+    api_key: str
+    base_url: str
 
 
 @dataclass
@@ -30,6 +33,8 @@ class _AiEntry:
     socket: str
     provider: str
     model: str
+    api_key: str
+    base_url: str
 
 
 @dataclass
@@ -38,6 +43,7 @@ class AIManager:
     _tg: Any  # anyio.TaskGroup (ty不识别的第三方类型)
     _entries: dict[str, _AiEntry] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
+    _persist: Callable[[], Awaitable[None]] | None = None
 
     async def create(
         self,
@@ -72,10 +78,14 @@ class AIManager:
                     logger.error(f"AI {ai_id!r} crashed: {e!r}")
                     async with self._lock:
                         self._entries.pop(ai_id, None)
+                    if self._persist is not None:
+                        await self._persist()
 
             logger.debug(f"AIManager: starting AI {ai_id!r} task")
             self._tg.start_soon(_run_ai)
-            self._entries[ai_id] = _AiEntry(scope=scope, socket=socket, provider=provider, model=model)
+            self._entries[ai_id] = _AiEntry(
+                scope=scope, socket=socket, provider=provider, model=model, api_key=api_key, base_url=base_url
+            )
         try:
             await _wait_socket(socket)
         except Exception:
@@ -85,9 +95,13 @@ class AIManager:
                     self._entries.pop(ai_id, None)
                     scope.cancel()
                     await _remove_socket(socket)
+                    if self._persist is not None:
+                        await self._persist()
             raise
+        if self._persist is not None:
+            await self._persist()
         logger.info(f"AI {ai_id!r} created on {socket}")
-        return AiInfo(id=ai_id, socket=socket, provider=provider, model=model)
+        return AiInfo(id=ai_id, socket=socket, provider=provider, model=model, api_key=api_key, base_url=base_url)
 
     async def delete(self, ai_id: str) -> None:
         async with self._lock:
@@ -97,18 +111,20 @@ class AIManager:
             entry = self._entries.pop(ai_id)
             entry.scope.cancel()
             await _remove_socket(entry.socket)
+            if self._persist is not None:
+                await self._persist()
             logger.info(f"AI {ai_id!r} deleted")
 
     async def list_all(self) -> list[AiInfo]:
         return [
-            AiInfo(id=aid, socket=e.socket, provider=e.provider, model=e.model)
+            AiInfo(id=aid, socket=e.socket, provider=e.provider, model=e.model, api_key=e.api_key, base_url=e.base_url)
             for aid, e in list(self._entries.items())
         ]
 
     def get_socket(self, ai_id: str) -> str:
-        if ai_id not in self._entries:
-            raise LookupError(f"AI {ai_id!r} not found")
-        return self._entries[ai_id].socket
+        if ai_id in self._entries:
+            return self._entries[ai_id].socket
+        return _socket_path(self._prefix, "ais", ai_id)
 
     def has(self, ai_id: str) -> bool:
         return ai_id in self._entries

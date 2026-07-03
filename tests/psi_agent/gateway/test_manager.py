@@ -69,8 +69,8 @@ async def test_aimanager_has_and_get_socket(tmp_path: str) -> None:
         assert mgr.has(info.id)
         assert not mgr.has("nonexistent")
         assert mgr.get_socket(info.id) == info.socket
-        with pytest.raises(LookupError):
-            mgr.get_socket("nonexistent")
+        socket = mgr.get_socket("nonexistent")
+        assert socket.endswith(".sock")
         await mgr.delete(info.id)
     finally:
         await tg.__aexit__(None, None, None)
@@ -234,5 +234,25 @@ async def test_aimanager_rollback_when_wait_socket_fails(tmp_path: str, monkeypa
             await mgr.create(provider="o", model="m", api_key="k", base_url="b", id="rollback")
         assert not mgr.has("rollback")
         assert await mgr.list_all() == []
+    finally:
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_aimanager_persist_called_on_create_delete(tmp_path: str) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    call_count = 0
+
+    async def fake_persist() -> None:
+        nonlocal call_count
+        call_count += 1
+
+    try:
+        mgr = AIManager(_prefix="gw-test", _tg=tg, _persist=fake_persist)
+        info = await mgr.create(provider="o", model="m", api_key="k", base_url="b")
+        assert call_count == 1
+        await mgr.delete(info.id)
+        assert call_count == 2
     finally:
         await tg.__aexit__(None, None, None)
