@@ -353,7 +353,7 @@ class ToolRegistry:
 
                     try:
                         tool_func = ToolFunction.from_callable(func)
-                    except (TypeError, NameError, AttributeError, SyntaxError, ValueError) as e:
+                    except Exception as e:
                         logger.error(f"Skipping tool {name!r} in {py_file!r}: {e!r}")
                         continue
 
