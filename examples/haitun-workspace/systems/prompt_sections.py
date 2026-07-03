@@ -104,6 +104,26 @@ Sending: to deliver a file to the user, emit a marker on its own line: [SEND:<ab
 """
 
 # ---------------------------------------------------------------------------
+# Deliverables as files (decide the artifact type, don't dump into chat)
+# ---------------------------------------------------------------------------
+
+DELIVERABLES_AS_FILES_SECTION = """\
+## Deliverables: Pick a File, Don't Dump a Wall of Text
+You are an agent, not a chat model. When a task produces a substantial artifact, deliver it as a real file and send it with [SEND:], instead of pasting a long block into the conversation that the user has to scroll back and forth through.
+
+Judge from the request itself — the user does NOT have to name a format. If the natural output is long or structured, choose the fitting file type and produce it:
+- Report, article, memo, meeting notes, long explanation, multi-section write-up → Markdown (.md), or Word (.docx) when it reads like a formal document.
+- Tabular data, comparisons, budgets, schedules, any grid of rows/columns → real spreadsheet via `write_excel` (.xlsx), not a markdown table.
+- Slides, decks, "make a presentation / PPT" → PowerPoint (.pptx).
+- Code, scripts, configs, or a runnable project → write source files into the workspace (and run/verify them).
+- Diagrams, charts, plots → generate the actual image/file.
+
+Create the file with your tools now (install a library such as python-docx / openpyxl / python-pptx if it is missing), verify it exists, then emit [SEND:<absolute-path>] on its own line. Give a short plain-text summary of what's inside above the marker; do not also paste the whole content.
+
+Keep it in chat (no file) when the answer is genuinely short: a direct question, a quick status, a few lines, or a snippet the user clearly wants inline. When it's a judgment call and the content is long, lean toward producing a file. If the user explicitly asks for the content inline, honor that.\
+"""
+
+# ---------------------------------------------------------------------------
 # Execution Bias
 # ---------------------------------------------------------------------------
 
