@@ -34,32 +34,14 @@ jobs:
       - run: npm run build
         working-directory: src/psi_agent/gateway/spa
       - shell: bash
-        run: |
-          # MSVC (cl.exe) runs out of heap compiling pymupdf's ~2.3M-line
-          # generated module.pymupdf.mupdf.c (fatal error C1002). clang is
-          # 64-bit and has no such fixed limit, so it compiles that huge file
-          # fine while piggy-backing on the installed MSVC toolchain. gcc/clang
-          # already succeed on Linux/macOS, so only switch the compiler there.
-          EXTRA_ARGS=()
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            EXTRA_ARGS+=(--clang)
-          fi
-          uv run python -m nuitka \
-            --mode=app \
-            --output-dir=nuitka-dist \
-            --output-filename=psi-agent \
-            --assume-yes-for-downloads \
-            --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist \
-            --include-package=any_llm \
-            --include-package=mcp \
-            --include-package=serper_mcp_server \
-            --include-package=pystray \
-            --include-package=fitz \
-            --include-package=docx \
-            --include-package=pptx \
-            --include-package=openpyxl \
-            "${EXTRA_ARGS[@]}" \
-            src/psi_agent/cli.py
+        run: uv run python -m nuitka src/psi_agent/cli.py
+        if: matrix.os == 'ubuntu-latest'
+      - shell: bash
+        run: uv run python -m nuitka --macos-app-name=psi-agent src/psi_agent/cli.py
+        if: matrix.os == 'macos-latest'
+      - shell: bash
+        run: uv run python -m nuitka --clang src/psi_agent/cli.py
+        if: matrix.os == 'windows-latest'
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-nuitka-${{ matrix.os }}
