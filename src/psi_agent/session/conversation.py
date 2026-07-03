@@ -104,7 +104,9 @@ class Conversation:
         return list(self._pending)
 
     def clear_pending(self) -> None:
-        """Drop all pending schedule chunks (call after successful yield)."""
+        """Drop all pending schedule chunks (call after successful yield).
+        Auto-snapshots to preserve pending chunks in case of rollback."""
+        self._begin_if_needed()
         self._pending.clear()
 
     # -- turn-level snapshot ----------------------------------------------------
