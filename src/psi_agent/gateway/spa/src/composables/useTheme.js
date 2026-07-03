@@ -1,21 +1,23 @@
 import { watch } from 'vue'
-import { store } from '../store.js'
+import { useUiStore } from '../stores/ui.js'
 
 const LS_THEME = 'gw-theme'
 
 export function useTheme() {
+  const ui = useUiStore()
+
   const saved = localStorage.getItem(LS_THEME)
   if (saved !== 'dark') {
-    store.isLightMode = true
+    ui.isLightMode = true
     document.documentElement.classList.add('light-mode')
   } else {
-    store.isLightMode = false
+    ui.isLightMode = false
     document.documentElement.classList.remove('light-mode')
   }
 
   function toggleTheme() {
-    store.isLightMode = !store.isLightMode
-    if (store.isLightMode) {
+    ui.isLightMode = !ui.isLightMode
+    if (ui.isLightMode) {
       document.documentElement.classList.add('light-mode')
       localStorage.setItem(LS_THEME, 'light')
     } else {
