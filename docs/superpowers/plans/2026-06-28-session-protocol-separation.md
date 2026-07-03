@@ -1,5 +1,11 @@
 # Session 协议分离重构 实施计划
 
+> [!NOTE]
+> **Historical plan — implementation has evolved.**  The original plan
+> used ``_save_history()`` / ``_load_history()`` module-level functions.
+> The current ``Conversation`` class uses turn-level snapshot/rollback.
+> See ``src/psi_agent/session/AGENTS.md`` for the authoritative design.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将 `SessionAgent.run()` 重构为纯业务逻辑，把 AI 侧和 Channel 侧的协议编解码分别抽到 `AiClient` 和 `ChannelAdapter` 中。

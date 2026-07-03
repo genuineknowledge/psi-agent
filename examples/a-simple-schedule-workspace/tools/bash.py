@@ -30,7 +30,12 @@ def _find_bash() -> str | None:
             if candidate.is_file():
                 return str(candidate)
 
-    return shutil.which("bash")
+    found = shutil.which("bash")
+    if found:
+        return found
+    if os.name != "nt":
+        return "/bin/bash"
+    return None
 
 
 async def bash(command: str, *, cwd: str | None = None) -> str:
@@ -50,7 +55,6 @@ async def bash(command: str, *, cwd: str | None = None) -> str:
         )
 
     logger.info(f"Executing bash command: {command} (cwd={cwd})")
-    bash_exe = shutil.which("bash") or "/bin/bash"
     try:
         result = await anyio.run_process([bash_exe, "-c", command], cwd=cwd)
         stdout = result.stdout.decode().strip()

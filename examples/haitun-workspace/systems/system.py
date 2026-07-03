@@ -45,15 +45,23 @@ import anyio
 from prompt_sections import (
     BOOTSTRAP_PENDING_SECTION,
     CONTEXT_FILE_ORDER,
+    CLOSING_QUESTIONS_SECTION,
+    CLARIFY_ASSUMPTIONS_SECTION,
+    DELIVERABLES_AS_FILES_SECTION,
     DYNAMIC_CONTEXT_FILE_BASENAMES,
     EXECUTION_BIAS_SECTION,
-    HEARTBEATS_SECTION,
     IDENTITY_LINE,
+    LANGUAGE_LOCALIZATION_SECTION,
     PSI_AGENT_HELP_GUIDANCE,
     FUSION_MEMORY_SECTION,
     SAFETY_SECTION,
+    SEND_FILES_SECTION,
     SILENT_REPLIES_SECTION,
     SILENT_TOKEN,
+    SYSTEM_CLI_TOOLS_SECTION,
+    STRUCTURED_TABLES_SECTION,
+    TASK_SELF_CHECK_SECTION,
+    SUBAGENT_DELEGATION_SECTION,
     TOOL_CALL_STYLE_SECTION,
     build_model_identity_line,
     build_runtime_line,
@@ -75,6 +83,17 @@ _USER_MD_MAX_CHARS = 10_000
 _CONTEXT_FILE_MAX_CHARS = 40_000
 
 _SKILLS_SNAPSHOT_FILE = ".skills_prompt_snapshot.json"
+
+# Global skills directory, shared across workspaces (AGENTS.md ecosystem
+# convention). Each skill lives at ~/.agent/skills/<name>/SKILL.md, mirroring
+# the per-workspace skills/ layout. Workspace skills override global ones on
+# name conflict.
+_GLOBAL_AGENT_SKILLS_DIR = anyio.Path(os.path.expanduser("~/.agent/skills"))
+
+# Global AGENTS.md, shared across workspaces (AGENTS.md ecosystem convention).
+# Loaded as its own bootstrap section, in addition to the workspace-root
+# AGENTS.md that ``_build_bootstrap_files`` already handles.
+_GLOBAL_AGENT_HOME = anyio.Path(os.path.expanduser("~/.agent"))
 
 CompleteFn = Callable[[list[dict[str, Any]]], Awaitable[str]]
 ReviewCompleteFn = Callable[
@@ -394,17 +413,37 @@ async def _load_soul_md(workspace_dir: anyio.Path) -> str:
     return IDENTITY_LINE
 
 
+async def _collect_skill_dirs(skills_dir: anyio.Path) -> list[tuple[str, anyio.Path]]:
+    """Return (name, SKILL.md) pairs for every skill dir under ``skills_dir``.
+
+    Returns an empty list if the directory is missing or unreadable.
+    """
+    entries: list[tuple[str, anyio.Path]] = []
+    if not await skills_dir.exists():
+        return entries
+    with contextlib.suppress(OSError):
+        async for entry in skills_dir.iterdir():
+            if await entry.is_dir():
+                skill_md = entry / "SKILL.md"
+                if await skill_md.exists():
+                    entries.append((entry.name, skill_md))
+    return entries
+
+
 async def _build_skills_index(workspace_dir: anyio.Path) -> str:
     skills_dir = workspace_dir / "skills"
-    if not await skills_dir.exists():
-        return ""
 
-    skill_entries: list[tuple[str, anyio.Path]] = []
-    async for entry in skills_dir.iterdir():
-        if await entry.is_dir():
-            skill_md = entry / "SKILL.md"
-            if await skill_md.exists():
-                skill_entries.append((entry.name, skill_md))
+    # Merge global (~/.agent/skills) with workspace skills. Workspace skills
+    # override globals on name conflict, so collect globals first and let the
+    # workspace pass replace them. This keeps the "nearest wins" convention
+    # consistent with AGENTS.md/CLAUDE.md context lookup.
+    skill_md_by_name: dict[str, anyio.Path] = {}
+    for name, skill_md in await _collect_skill_dirs(_GLOBAL_AGENT_SKILLS_DIR):
+        skill_md_by_name[name] = skill_md
+    for name, skill_md in await _collect_skill_dirs(skills_dir):
+        skill_md_by_name[name] = skill_md
+
+    skill_entries: list[tuple[str, anyio.Path]] = sorted(skill_md_by_name.items())
 
     if not skill_entries:
         return ""
@@ -593,6 +632,21 @@ async def _build_bootstrap_files(workspace_dir: anyio.Path) -> str:
     if not sections:
         return ""
     return "# Bootstrap Files\n\n" + "\n\n".join(sections)
+
+
+async def _build_global_agents_md() -> str:
+    """Load the global ~/.agent/AGENTS.md (AGENTS.md ecosystem convention).
+
+    This augments the workspace-root AGENTS.md (loaded by
+    ``_build_bootstrap_files``) with cross-workspace instructions. The source
+    is labelled so its global scope is explicit in the prompt. Accepts either
+    ``AGENTS.md`` or ``agents.md``; returns an empty string when absent.
+    """
+    for name in ("AGENTS.md", "agents.md"):
+        content = await _read_bootstrap_file(_GLOBAL_AGENT_HOME / name, _CONTEXT_FILE_MAX_CHARS)
+        if content and content.strip():
+            return f"# Global AGENTS.md (~/.agent/{name})\n\n{content.strip()}"
+    return ""
 
 
 def _build_runtime_info(model: str | None) -> str:
@@ -863,8 +917,9 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
         fusion_section = await self._build_fusion_section()
         context_file = await _build_context_file(ws)
         bootstrap = await _build_bootstrap_files(ws)
+        global_agents_md = await _build_global_agents_md()
 
-        stable_parts: list[str] = [identity]
+        stable_parts: list[str] = [identity, "", LANGUAGE_LOCALIZATION_SECTION]
 
         help_skill_md = ws / "skills" / HELP_SKILL_NAME / "SKILL.md"
         if await help_skill_md.exists():
@@ -876,7 +931,23 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
             "",
             TOOL_CALL_STYLE_SECTION,
             "",
+            SYSTEM_CLI_TOOLS_SECTION,
+            "",
+            SEND_FILES_SECTION,
+            "",
+            DELIVERABLES_AS_FILES_SECTION,
+            "",
             EXECUTION_BIAS_SECTION,
+            "",
+            CLARIFY_ASSUMPTIONS_SECTION,
+            "",
+            CLOSING_QUESTIONS_SECTION,
+            "",
+            STRUCTURED_TABLES_SECTION,
+            "",
+            TASK_SELF_CHECK_SECTION,
+            "",
+            SUBAGENT_DELEGATION_SECTION,
             "",
             SAFETY_SECTION,
             "",
@@ -893,6 +964,9 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
         workspace_abs = str(await ws.resolve())
         stable_parts += ["", build_workspace_section(workspace_abs)]
 
+        if global_agents_md:
+            stable_parts += ["", global_agents_md]
+
         if bootstrap:
             stable_parts += ["", bootstrap]
 
@@ -907,7 +981,11 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
         stable_prefix = "\n".join(stable_parts)
 
         # -- Dynamic suffix ------------------------------------------------
-        dynamic_parts: list[str] = [HEARTBEATS_SECTION, ""]
+        # NOTE: the heartbeat instruction is intentionally NOT injected here.
+        # The heartbeat schedule (schedules/heartbeat/TASK.md) already tells the
+        # agent to reply HEARTBEAT_OK on its poll; injecting it into every turn's
+        # system prompt caused HEARTBEAT_OK to leak into normal chat replies.
+        dynamic_parts: list[str] = []
 
         model_identity = build_model_identity_line(model)
         if model_identity:

@@ -27,6 +27,10 @@ dependencies = [
     "serper-mcp-server>=0.0.10",
     "pystray>=0.19.5",
     "pillow>=12.2.0",
+    "pymupdf>=1.28.0",
+    "python-docx>=1.2.0",
+    "python-pptx>=1.0.2",
+    "openpyxl>=3.1.5",
 ]
 
 [dependency-groups]
@@ -43,6 +47,19 @@ psi-agent = "psi_agent.cli:main"
 
 [tool.hatch.version]
 source = "vcs"
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["src/psi_agent/gateway/spa/dist/**/*"]
+exclude = ["src/psi_agent/gateway/spa/node_modules/**"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/psi_agent"]
+exclude = [
+    "src/psi_agent/**/AGENTS.md",
+    "src/psi_agent/**/.gitignore",
+    "src/psi_agent/gateway/spa",
+]
+artifacts = ["src/psi_agent/gateway/spa/dist/**/*"]
 
 [tool.ruff]
 target-version = "py314"
@@ -67,3 +84,22 @@ exclude = ["examples/**"]
 
 [tool.coverage.run]
 source = ["src/psi_agent"]
+
+[tool.nuitka]
+mode = "app"
+output-dir = "nuitka-dist"
+output-filename = "psi-agent"
+assume-yes-for-downloads = true
+include-data-dir = [
+    "src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist",
+]
+include-package = [
+    "any_llm",
+    "mcp",
+    "serper_mcp_server",
+    "pystray",
+    "fitz",
+    "docx",
+    "pptx",
+    "openpyxl",
+]

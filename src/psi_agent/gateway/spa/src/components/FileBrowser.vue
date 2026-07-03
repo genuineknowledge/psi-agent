@@ -1,15 +1,15 @@
 <template>
-  <div v-if="store.browser.path !== undefined" class="browser-container">
-    <div class="md-list-item" @click="$emit('set-path', store.browser.path)">
+  <div v-if="browser.path !== undefined" class="browser-container">
+    <div class="md-list-item" @click="$emit('set-path', browser.path)">
       <span class="material-symbols-outlined folder-icon">folder</span>
       <span class="item-label">使用当前目录</span>
     </div>
-    <div class="md-list-item" @click="$emit('browse', store.browser.parent)">
+    <div class="md-list-item" @click="$emit('browse', browser.parent)">
       <span class="material-symbols-outlined parent-icon">arrow_upward</span>
       <span class="item-label">.. 上级目录</span>
     </div>
     <div
-      v-for="e in store.browser.entries"
+      v-for="e in browser.entries"
       :key="e.path"
       class="md-list-item"
       @click="enterDir(e.path)"
@@ -17,19 +17,23 @@
       <span class="material-symbols-outlined entry-folder-icon">folder</span>
       <span class="item-label entry-name">{{ e.name }}</span>
     </div>
-    <div v-if="store.browser.entries.length === 0" class="browser-empty">
+    <div v-if="browser.entries.length === 0" class="browser-empty">
       此目录下没有子文件夹
     </div>
   </div>
 </template>
 
 <script setup>
-import { store } from '../store.js'
+import { storeToRefs } from 'pinia'
+import { useSessionStore } from '../stores/session.js'
+
+const session = useSessionStore()
+const { browser, sessForm } = storeToRefs(session)
 
 const emit = defineEmits(['browse', 'set-path'])
 
 function enterDir(path) {
-  store.sessForm.workspace = path
+  sessForm.value.workspace = path
   emit('browse', path)
 }
 </script>

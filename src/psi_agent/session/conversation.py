@@ -12,6 +12,7 @@ import json
 import re
 import uuid
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 import anyio
@@ -27,12 +28,24 @@ class Conversation:
     ``messages`` is public so that ``agent.run()`` can read it directly.
     ``session_id`` is the filename stem of the backing file — also reused
     as the per-session identifier for ``sys.modules`` isolation.
+
+    Turn-level atomicity: the first mutation after creation (or after
+    ``commit`` / ``rollback``) automatically snapshots the current state.
+    ``commit`` persists to disk and clears the snapshot; ``rollback``
+    restores to the snapshot.  This ensures memory and disk are always
+    synchronised at the last consistent checkpoint.
+
+    Usable as an async context manager — on exit with an exception,
+    ``rollback()`` is called automatically, restoring state to the most
+    recent snapshot.
     """
 
     def __init__(self, *, messages: list[dict[str, Any]] | None = None, path: Path | None = None):
         self.messages: list[dict[str, Any]] = list(messages or [])
-        self._path = path
         self._pending: list[AgentChunk] = []
+        self._snapshot_messages: list[dict[str, Any]] | None = None
+        self._snapshot_pending: list[AgentChunk] | None = None
+        self._path: Path | None = path
 
     @property
     def session_id(self) -> str:
@@ -64,26 +77,77 @@ class Conversation:
     # -- mutation --------------------------------------------------------------
 
     def add(self, msg: dict[str, Any]) -> None:
-        """Append a message to history."""
+        """Append a message to history.  Automatically snapshots on the
+        first mutation after creation / ``commit`` / ``rollback``."""
+        self._begin_if_needed()
         self.messages.append(msg)
 
     def replace_system(self, content: str) -> None:
         """Replace the system message (``messages[0]``) in-place,
-        or add it if the conversation is empty."""
+        or add it if the conversation is empty.  Automatically
+        snapshots on the first mutation."""
+        self._begin_if_needed()
         if self.messages:
             self.messages[0] = {"role": "system", "content": content}
         else:
-            self.add({"role": "system", "content": content})
+            self.messages.append({"role": "system", "content": content})
 
     def stash(self, chunks: list[AgentChunk]) -> None:
         """Store schedule-produced chunks for the next channel request."""
         self._pending = chunks
 
-    def flush_pending(self) -> list[AgentChunk]:
-        """Pop and return pending schedule chunks, clearing the buffer."""
-        chunks = self._pending
-        self._pending = []
-        return chunks
+    def peek_pending(self) -> list[AgentChunk]:
+        """Return a copy of pending schedule chunks without clearing.
+        The caller MUST call ``clear_pending()`` after successfully yielding
+        all chunks, so that a yield failure (e.g. client disconnect) does not
+        permanently lose the pending chunk data."""
+        return list(self._pending)
+
+    def clear_pending(self) -> None:
+        """Drop all pending schedule chunks (call after successful yield).
+        Auto-snapshots to preserve pending chunks in case of rollback."""
+        self._begin_if_needed()
+        self._pending.clear()
+
+    # -- turn-level snapshot ----------------------------------------------------
+
+    def _begin_if_needed(self) -> None:
+        """Lazily snapshot the current state on the first mutation."""
+        if self._snapshot_messages is None:
+            self._snapshot_messages = list(self.messages)
+            self._snapshot_pending = list(self._pending)
+
+    async def commit(self) -> None:
+        """Persist the current messages to disk and clear the snapshot.
+        The next mutation will automatically create a new snapshot."""
+        await self.save()
+        self._snapshot_messages = None
+        self._snapshot_pending = None
+
+    def rollback(self) -> None:
+        """Restore messages and pending chunks to the most recent
+        snapshot.  Idempotent — safe to call when no snapshot exists.
+        Clears the snapshot so the next mutation starts fresh."""
+        if self._snapshot_messages is not None:
+            self.messages = self._snapshot_messages
+            self._pending = self._snapshot_pending or []
+            self._snapshot_messages = None
+            self._snapshot_pending = None
+
+    # -- async context manager -------------------------------------------------
+
+    async def __aenter__(self) -> Conversation:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool:
+        if exc_type is not None:
+            self.rollback()
+        return False
 
     # -- persistence -----------------------------------------------------------
 

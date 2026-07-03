@@ -1,34 +1,35 @@
 <template>
-  <div id="messages" ref="messagesRef">
-    <div v-if="store.messages.length === 0" class="empty">选择一个会话开始聊天</div>
+  <div id="messages" ref="messagesRef" @scroll="onContainerScroll">
+    <div v-if="messages.length === 0" class="empty">选择一个会话开始聊天</div>
     <MessageBubble
-      v-for="m in store.messages"
-      :key="m.id"
+      v-for="(m, i) in messages"
+      :key="m.id || i"
       :msg="m"
+      :index="i"
     />
   </div>
 </template>
 
 <script setup>
-import { ref, watch, nextTick } from 'vue'
-import { store } from '../store.js'
+import { ref, watch, onMounted } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useChatStore } from '../stores/chat.js'
 import MessageBubble from './MessageBubble.vue'
+import { registerScrollContainer, scrollToBottomIfLocked, onContainerScroll } from '../composables/useScroll.js'
+
+const chat = useChatStore()
+const { messages } = storeToRefs(chat)
 
 const messagesRef = ref(null)
 
-function scrollToBottom() {
-  const el = messagesRef.value
-  if (!el) return
-  el.scrollTop = el.scrollHeight
-}
+onMounted(() => registerScrollContainer(messagesRef.value))
 
 watch(
-  () => store.messages.length,
-  () => {
-    if (store.userHasScrolledUp) return
-    nextTick(() => scrollToBottom())
-  }
+  () => messages.value.length,
+  () => scrollToBottomIfLocked()
 )
+
+defineExpose({ onContainerScroll })
 </script>
 
 <style scoped>

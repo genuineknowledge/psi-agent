@@ -10,7 +10,7 @@ on:
 
 concurrency:
   group: nuitka-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   nuitka:
@@ -34,18 +34,14 @@ jobs:
       - run: npm run build
         working-directory: src/psi_agent/gateway/spa
       - shell: bash
-        run: |
-          uv run python -m nuitka \
-            --mode=app \
-            --output-dir=nuitka-dist \
-            --output-filename=psi-agent \
-            --assume-yes-for-downloads \
-            --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist \
-            --include-package=any_llm \
-            --include-package=mcp \
-            --include-package=pystray \
-            --include-package=serper_mcp_server \
-            src/psi_agent/cli.py
+        run: uv run python -m nuitka src/psi_agent/cli.py
+        if: matrix.os == 'ubuntu-latest'
+      - shell: bash
+        run: uv run python -m nuitka --macos-app-name=psi-agent src/psi_agent/cli.py
+        if: matrix.os == 'macos-latest'
+      - shell: bash
+        run: uv run python -m nuitka --clang src/psi_agent/cli.py
+        if: matrix.os == 'windows-latest'
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-nuitka-${{ matrix.os }}

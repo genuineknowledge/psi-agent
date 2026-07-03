@@ -69,13 +69,15 @@ body {
 .md-surface { background: var(--md-surface); border-radius: var(--md-shape-medium); }
 .md-surface-variant { background: var(--md-surface-variant); border-radius: var(--md-shape-medium); }
 
-/* MD3 Dialog */
-.md-dialog {
-  background: var(--md-surface-container-high); border-radius: var(--md-shape-extra-large);
-  padding: 24px; width: 400px; max-width: 90vw;
-  box-shadow: var(--md-elevation-3);
+/* 弹窗表单字段(AiDialog / SessDialog 共用) */
+.field { margin-bottom: 16px; position: relative; }
+.field label { display: block; font-size: 12px; font-weight: 500; color: var(--md-primary); margin-bottom: 6px; }
+.field input, .field select {
+  width: 100%; background: var(--md-bg); color: var(--md-text-primary);
+  border: 1px solid var(--md-outline-variant); border-radius: 8px;
+  padding: 10px 12px; font-size: 14px; outline: none;
 }
-.md-dialog h3 { font-size: 24px; font-weight: 400; margin-bottom: 16px; color: var(--md-text-primary); }
+.field input:focus, .field select:focus { border-color: var(--md-primary); }
 
 /* MD3 Text Field */
 .md-text-field {
