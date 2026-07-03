@@ -10,22 +10,22 @@ Gateway 维护 `state/latest.json`（相对 CWD），在每次状态变更时自
 
 ## Architecture
 
-新增 `_state.py` 模块，定义 `GatewayState` dataclass 负责 JSON 文件的 load/save。三个有状态 manager 各自增加 `_on_change` 回调参数，在 mutate 后触发异步保存。
+新增 `_state.py` 模块，定义 `GatewayState` dataclass 负责 JSON 文件的 load/save。三个有状态 manager 各自增加 `_persist` 回调参数（语义明确：仅用于落盘），在 mutate 后触发异步保存。
 
 ```
 GatewayState (新模块)
-     ▲  save_snapshot(ais, sessions, titles)
+     ▲  persist(ais, sessions, titles)
      │
-     ├── AIManager._on_change ──── create/delete ──► save
-     ├── SessionManager._on_change ─ create/delete ─► save
-     └── TitleManager._on_change ─── set/generate ──► save
+     ├── AIManager._persist ──── create/delete ──► save
+     ├── SessionManager._persist ─ create/delete ─► save
+     └── TitleManager._persist ─── set/generate ──► save
 
 Gateway.run():
   1. state.load()                     ← 文件不存在返回空 dict
   2. for each ai → aim.create()       ← 失败 skip
   3. for each session → sm.create()   ← 失败 skip
   4. for each title → tm.set()
-  5. 创建 save_snapshot 闭包 → 注入三个 manager
+  5. 创建 persist 闭包 → 注入三个 manager
 ```
 
 ## JSON Format
@@ -65,25 +65,25 @@ class GatewayState:
 
 ### `_ai_manager.py`
 
-- 新增 `_on_change: Callable[[], Awaitable[None]] | None` 字段（构造函数参数，默认 `None`）
-- `create()`: `return AiInfo(...)` 前 `if self._on_change: await self._on_change()`
-- `delete()`: `logger.info(...)` 前 `if self._on_change: await self._on_change()`
-- Crash 清理 (`_run_ai` except): `self._entries.pop(...)` 后 `if self._on_change: await self._on_change()`
+- 新增 `_persist: Callable[[], Awaitable[None]] | None` 字段（构造函数参数，默认 `None`）
+- `create()`: `return AiInfo(...)` 前 `if self._persist: await self._persist()`
+- `delete()`: `logger.info(...)` 前 `if self._persist: await self._persist()`
+- Crash 清理 (`_run_ai` except): `self._entries.pop(...)` 后 `if self._persist: await self._persist()`
 - `get_socket(ai_id)`: 不存在时用 `_socket_path()` 计算路径返回，**不抛 LookupError**
 
 ### `_session_manager.py`
 
-- 新增 `_on_change: Callable[[], Awaitable[None]] | None` 字段（构造函数参数，默认 `None`）
+- 新增 `_persist: Callable[[], Awaitable[None]] | None` 字段（构造函数参数，默认 `None`）
 - `create()`: 去掉 `self._aim.has(ai_id)` 检查；`ai_socket` 通过 `self._aim.get_socket(ai_id)` 获取（支持 AI 尚未创建的场景）
-- `create()`: `return SessionInfo(...)` 前 `if self._on_change: await self._on_change()`
-- `delete()`: `logger.info(...)` 前 `if self._on_change: await self._on_change()`
-- Crash 清理 (`_run_session` except): `self._entries.pop(...)` 后 `if self._on_change: await self._on_change()`
+- `create()`: `return SessionInfo(...)` 前 `if self._persist: await self._persist()`
+- `delete()`: `logger.info(...)` 前 `if self._persist: await self._persist()`
+- Crash 清理 (`_run_session` except): `self._entries.pop(...)` 后 `if self._persist: await self._persist()`
 
 ### `_title_manager.py`
 
-- 新增 `_on_change: Callable[[], Awaitable[None]] | None` 字段（`__init__` 参数，默认 `None`）
-- `set()`: 改为 `async def set()`，`self._titles[sid] = title` 后 `if self._on_change: await self._on_change()`
-- `generate()`: `self._titles[session_id] = title` 后 `if self._on_change: await self._on_change()`
+- 新增 `_persist: Callable[[], Awaitable[None]] | None` 字段（`__init__` 参数，默认 `None`）
+- `set()`: 改为 `async def set()`，`self._titles[sid] = title` 后 `if self._persist: await self._persist()`
+- `generate()`: `self._titles[session_id] = title` 后 `if self._persist: await self._persist()`
 
 ### `__init__.py` (Gateway.run)
 
@@ -95,24 +95,24 @@ setup_logging(verbose)
 → snapshot = await state.load()
 → async with anyio.create_task_group() as tg:
     → aim = AIManager(...) + sm = SessionManager(...)
-    → 恢复（_on_change 未设置，不触发 save）:
+    → 恢复（_persist 未设置，不触发 save）:
         for ai in snapshot.ais → aim.create(..., id=ai_id)
         for sess in snapshot.sessions → sm.create(..., id=sess_id)
     → app = await create_app(aim, sm, ...)
         ← server.py 内部: tm = TitleManager(...)
-    → 创建 save_snapshot 闭包（tm 已存在，闭包捕获引用）:
-        async def save_snapshot():
+    → 创建 _do_persist 闭包（tm 已存在，闭包捕获引用）:
+        async def _do_persist():
             await state.save(
                 ais=await aim.list_all(),
                 sessions=await sm.list_all(),
                 titles=tm.get_all(),
             )
-    → 注入 _on_change:
-        aim._on_change = sm._on_change = tm._on_change = save_snapshot
+    → 注入 _persist:
+        aim._persist = sm._persist = tm._persist = _do_persist
     → 恢复标题:
         for sid, title in snapshot.titles.items():
             await tm.set(sid, title)
-    → 调用一次 save_snapshot() 持久化恢复后的初始状态
+    → 调用一次 _do_persist() 持久化恢复后的初始状态
     → ... 后续不变
 ```
 
@@ -121,8 +121,8 @@ setup_logging(verbose)
 ### `server.py`
 
 - `_set_title`: `await tm.set(...)` （原来是同步调用）
-- `_generate_title`: `tm.generate()` 成功后内部已调用 `_on_change`，无需额外处理
-- `create_app()` 签名不变 —— `tm._on_change` 由 `Gateway.run()` 在 `create_app()` 返回后外部注入
+- `_generate_title`: `tm.generate()` 成功后内部已调用 `_persist`，无需额外处理
+- `create_app()` 签名不变 —— `tm._persist` 由 `Gateway.run()` 在 `create_app()` 返回后外部注入
 
 ## Edge Cases
 
@@ -141,4 +141,4 @@ setup_logging(verbose)
 
 - `state/` 目录在 `save()` 首次写入时自动创建（`anyio.Path.mkdir(parents=True)`）
 - 不自动添加 `.gitignore`（`state/` 是 Gateway 内部状态，不属于 workspace 范畴）
-- `_on_change` 为 `None` 时（CLI 上下文直接使用 manager），不会尝试保存
+- `_persist` 为 `None` 时（CLI 上下文直接使用 manager），不会尝试保存
