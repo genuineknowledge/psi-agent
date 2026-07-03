@@ -20,7 +20,7 @@ try:
 
     _xdisplay.Display()
     _HAS_X11 = True
-except (DisplayNameError, ModuleNotFoundError):
+except DisplayNameError, ModuleNotFoundError:
     pass
 
 

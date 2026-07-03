@@ -7,9 +7,7 @@ import pytest
 from psi_agent.gateway.electron import ElectronRuntimeNotFoundError, ensure_electron_runtime, resolve_launch_spec
 
 
-def test_resolve_launch_spec_prefers_local_electron_cli(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_launch_spec_prefers_local_electron_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_dir = tmp_path / "electron"
     cli_path = project_dir / "node_modules" / "electron" / "cli.js"
     cli_path.parent.mkdir(parents=True)
@@ -28,9 +26,7 @@ def test_resolve_launch_spec_prefers_local_electron_cli(
     assert spec.cwd == str(project_dir.resolve())
 
 
-def test_resolve_launch_spec_falls_back_to_global_electron(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_launch_spec_falls_back_to_global_electron(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_dir = tmp_path / "electron"
     project_dir.mkdir()
 
@@ -47,9 +43,7 @@ def test_resolve_launch_spec_falls_back_to_global_electron(
     assert spec.cwd == str(project_dir.resolve())
 
 
-def test_resolve_launch_spec_raises_helpful_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_launch_spec_raises_helpful_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_dir = tmp_path / "electron"
     project_dir.mkdir()
     monkeypatch.setattr("psi_agent.gateway.electron.shutil.which", lambda _name: None)
@@ -93,9 +87,7 @@ async def test_ensure_electron_runtime_bootstraps_local_install(
 
 
 @pytest.mark.anyio
-async def test_ensure_electron_runtime_requires_npm(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_ensure_electron_runtime_requires_npm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project_dir = tmp_path / "electron"
     project_dir.mkdir()
     monkeypatch.setattr("psi_agent.gateway.electron.shutil.which", lambda _name: None)
