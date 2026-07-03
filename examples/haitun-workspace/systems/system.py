@@ -46,11 +46,13 @@ from prompt_sections import (
     BOOTSTRAP_PENDING_SECTION,
     CONTEXT_FILE_ORDER,
     CLOSING_QUESTIONS_SECTION,
+    CLARIFY_ASSUMPTIONS_SECTION,
     DELIVERABLES_AS_FILES_SECTION,
     DYNAMIC_CONTEXT_FILE_BASENAMES,
     ERROR_HANDLING_RETRY_SECTION,
     EXECUTION_BIAS_SECTION,
     IDENTITY_LINE,
+    LANGUAGE_LOCALIZATION_SECTION,
     PSI_AGENT_HELP_GUIDANCE,
     FUSION_MEMORY_SECTION,
     SAFETY_SECTION,
@@ -918,7 +920,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
         bootstrap = await _build_bootstrap_files(ws)
         global_agents_md = await _build_global_agents_md()
 
-        stable_parts: list[str] = [identity]
+        stable_parts: list[str] = [identity, "", LANGUAGE_LOCALIZATION_SECTION]
 
         help_skill_md = ws / "skills" / HELP_SKILL_NAME / "SKILL.md"
         if await help_skill_md.exists():
@@ -939,6 +941,8 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
             EXECUTION_BIAS_SECTION,
             "",
             ERROR_HANDLING_RETRY_SECTION,
+            "",
+            CLARIFY_ASSUMPTIONS_SECTION,
             "",
             CLOSING_QUESTIONS_SECTION,
             "",

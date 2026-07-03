@@ -10,7 +10,7 @@
           <span class="material-symbols-outlined">undo</span>
         </button>
       </div>
-      <ThinkingBubble v-if="msg.role === 'assistant' && store.streaming && !msg.text" />
+      <ThinkingBubble v-if="msg.role === 'assistant' && streaming && !msg.text" />
       <div v-else class="bubble">
         <div v-if="msg.text" class="bubble-content" v-html="msg.html"></div>
         <div v-if="msg.stopped" class="stopped-tag">（已停止）</div>
@@ -41,11 +41,17 @@
 
 <script setup>
 import { ref } from 'vue'
-import { store } from '../store.js'
+import { storeToRefs } from 'pinia'
+import { useChatStore } from '../stores/chat.js'
+import { useUiStore } from '../stores/ui.js'
 import { loadUndoSkipConfirm } from '../utils.js'
 import { undoFrom } from '../composables/useChat.js'
 import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
+
+const chat = useChatStore()
+const { streaming } = storeToRefs(chat)
+const ui = useUiStore()
 
 const props = defineProps({
   msg: {
@@ -71,16 +77,16 @@ async function copyMessage() {
 }
 
 function requestUndo() {
-  if (store.streaming) return
+  if (chat.streaming) return
   // 已勾选“不再提示”则直接撤回，否则弹确认框
   if (loadUndoSkipConfirm()) {
     undoFrom(props.index)
     return
   }
-  store.dlgConfirm.message = '确认撤回此条提问及其对应的回复？此操作不可恢复。'
-  store.dlgConfirm.actionType = 'undo'
-  store.dlgConfirm.actionArgs = props.index
-  store.dlgConfirm.show = true
+  ui.dlgConfirm.message = '确认撤回此条提问及其对应的回复？此操作不可恢复。'
+  ui.dlgConfirm.actionType = 'undo'
+  ui.dlgConfirm.actionArgs = props.index
+  ui.dlgConfirm.show = true
 }
 
 function previewKey(f, i) {

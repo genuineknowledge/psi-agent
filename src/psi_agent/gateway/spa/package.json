@@ -15,6 +15,7 @@
     "material-symbols": "^0.45.4",
     "papaparse": "^5.5.4",
     "pdfjs-dist": "^5.6.205",
+    "pinia": "^3.0.4",
     "pptx-preview": "^1.0.7",
     "vue": "^3.4.21",
     "xlsx": "^0.18.5"

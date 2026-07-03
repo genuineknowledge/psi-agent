@@ -1,18 +1,20 @@
 import { onMounted } from 'vue'
-import { store } from '../store.js'
+import { useChatStore } from '../stores/chat.js'
 
 export function useKeyboard() {
+  const chat = useChatStore()
+
   onMounted(() => {
     const messagesEl = document.getElementById('messages')
 
     if (messagesEl) {
       messagesEl.addEventListener('scroll', () => {
-        if (!store.streaming) return
+        if (!chat.streaming) return
         const diff = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop
         if (diff > 60) {
-          if (!store.userHasScrolledUp) store.userHasScrolledUp = true
+          if (!chat.userHasScrolledUp) chat.userHasScrolledUp = true
         } else {
-          store.userHasScrolledUp = false
+          chat.userHasScrolledUp = false
         }
       })
     }

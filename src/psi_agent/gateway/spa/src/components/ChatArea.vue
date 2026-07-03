@@ -1,8 +1,8 @@
 <template>
   <div id="messages" ref="messagesRef" @scroll="onContainerScroll">
-    <div v-if="store.messages.length === 0" class="empty">选择一个会话开始聊天</div>
+    <div v-if="messages.length === 0" class="empty">选择一个会话开始聊天</div>
     <MessageBubble
-      v-for="(m, i) in store.messages"
+      v-for="(m, i) in messages"
       :key="m.id || i"
       :msg="m"
       :index="i"
@@ -12,16 +12,20 @@
 
 <script setup>
 import { ref, watch, onMounted } from 'vue'
-import { store } from '../store.js'
+import { storeToRefs } from 'pinia'
+import { useChatStore } from '../stores/chat.js'
 import MessageBubble from './MessageBubble.vue'
 import { registerScrollContainer, scrollToBottomIfLocked, onContainerScroll } from '../composables/useScroll.js'
+
+const chat = useChatStore()
+const { messages } = storeToRefs(chat)
 
 const messagesRef = ref(null)
 
 onMounted(() => registerScrollContainer(messagesRef.value))
 
 watch(
-  () => store.messages.length,
+  () => messages.value.length,
   () => scrollToBottomIfLocked()
 )
 
