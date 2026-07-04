@@ -373,7 +373,7 @@ onMounted(async () => {
   -webkit-background-clip: text; background-clip: text;
   -webkit-text-fill-color: transparent; color: transparent;
 }
-#chat-main.welcome :deep(#input-wrapper) { padding-bottom: 0; }
+#chat-main.welcome :deep(#input-wrapper) { padding-bottom: 0; width: 100%; }
 @media (max-width: 768px) {
   .welcome-greeting { font-size: 34px; }
 }

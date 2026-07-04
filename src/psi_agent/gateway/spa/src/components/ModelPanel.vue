@@ -87,7 +87,6 @@ function openNewAi() {
 .model-chip:hover { background: var(--md-surface-container-high); }
 .model-chip.open {
   background: var(--md-secondary-container);
-  border-color: var(--md-primary);
   color: var(--md-on-secondary-container);
 }
 .model-chip .chip-icon { font-size: 16px; flex-shrink: 0; opacity: 0.75; }

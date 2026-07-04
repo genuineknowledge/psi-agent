@@ -82,7 +82,7 @@ watch(uploadResetToken, () => {
   padding: 0 16px 16px; align-items: center;
   transition: background 0.25s, border-color 0.25s;
 }
-#file-preview-bar { display: flex; padding: 8px 24px 0 24px; }
+#file-preview-bar { display: flex; width: 100%; max-width: 820px; padding: 0 0 8px; }
 .preview-chip {
   display: inline-flex;
   align-items: center;
@@ -114,7 +114,6 @@ watch(uploadResetToken, () => {
   resize: none; min-height: 28px; max-height: 160px; padding: 6px 4px;
 }
 #input-area textarea:focus { border: none; }
-#file-preview-bar { width: 100%; max-width: 820px; padding: 0 0 8px; }
 #input-area label.btn {
   background: transparent; color: var(--md-primary); border: none; border-radius: var(--md-shape-full);
   width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
