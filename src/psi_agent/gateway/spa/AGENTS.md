@@ -96,7 +96,7 @@ spa/
 │   ├── composables/
 │   │   ├── useSSE.js                # ReadableStream SSE 逐行解析 async generator
 │   │   ├── useKeyboard.js           # visualViewport 键盘适配 + 手动上滚检测
-│   │   ├── useTheme.js              # 暗色/亮色切换 + localStorage + <html> class
+│   │   ├── useTheme.js              # 暗色/亮色切换（VueUse useColorMode + gw-theme + <html> light-mode class）
 │   │   ├── useSession.js            # selectSession：会话切换 + 草稿/消息缓存（App.vue + Sidebar 共用）
 │   │   ├── useScroll.js             # 消息容器滚动控制（注册容器 + 未锁定则滚底 + 上滚检测）
 │   │   └── useChat.js               # sendMessage 及其内部辅助（addMessage, encodeFiles, generateTitle）；不含 DOM 操作，滚动委托 useScroll、清空 file input 经 chat store 的 uploadResetToken 信号
@@ -137,7 +137,7 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 |
 |------|------|----------|
-| `src/App.vue` | 编排层 | 组装 `#root-layout` 布局（Sidebar / #chat / 各弹窗）；`import { storeToRefs } from 'pinia'`，实例化 `useAiStore/useSessionStore/useChatStore/useUiStore` 并经 `storeToRefs` 取所需字段；持有跨组件 handler：`createAI/deleteAI/selectAI`、`createSession/executeConfirmedAction`（confirm 弹窗按 `actionType` 分派 ai/session 删除）、`browseWorkspace`、`fetchAvailableModels`（兼容 OpenAI `data[]` 与 Anthropic `models[]` 两种响应）；`#chat` 上的 drag-drop 事件（追加到 chat store 的 `selectedFiles`）；`toggleSidebar`（按 768px 分桌面折叠/移动抽屉，委托 ui store 的 `toggleSidebar` action）；`onMounted` 启动流程（GET titles/ais/sessions → 恢复选中 → `selectSession`）。**不写会话/发送业务逻辑**（已下沉到 Sidebar/InputBar/composable） |
+| `src/App.vue` | 编排层 | 组装 `#root-layout` 布局（Sidebar / #chat / 各弹窗）；`import { storeToRefs } from 'pinia'`，实例化 `useAiStore/useSessionStore/useChatStore/useUiStore` 并经 `storeToRefs` 取所需字段；持有跨组件 handler：`createAI/deleteAI/selectAI`、`createSession/executeConfirmedAction`（confirm 弹窗按 `actionType` 分派 ai/session 删除）、`browseWorkspace`、`fetchAvailableModels`（兼容 OpenAI `data[]` 与 Anthropic `models[]` 两种响应）；`#chat` 上的拖拽上传用 VueUse `useDropZone`（`isOverDropZone` → chat store 的 `selectedFiles` + ui store 的 `isDragging`）；`toggleSidebar`（用 VueUse `useBreakpoints({ mobile: 768 })` 分桌面折叠/移动抽屉，委托 ui store 的 `toggleSidebar` action）；侧栏折叠状态持久化用 VueUse `useStorage('gw-sidebar-state', 'expanded')`（`watch isSidebarCollapsed` 写回 `'collapsed'/'expanded'`）；`onMounted` 启动流程（GET titles/ais/sessions → 恢复选中 → `selectSession`）。**不写会话/发送业务逻辑**（已下沉到 Sidebar/InputBar/composable） |
 
 ### 组件 `src/components/`
 
@@ -145,7 +145,7 @@ spa/
 |------|----------|----------|
 | `Sidebar.vue` | 会话列表侧栏 | 新建（emit `new-session`）/双击改名（`v-focus` input + POST `/titles`）/删除（走 confirm 弹窗）/置顶（`togglePinnedSessionId` + 持久化）/搜索；`visibleSessions` = `buildVisibleSessions(...)`；`watch` sessions 变化时清理失效的置顶 id |
 | `ChatArea.vue` | 消息列表容器 | `messages` 经 `storeToRefs` 从 `useChatStore` 取；`v-for messages` 渲染 `MessageBubble`；空状态提示；`onMounted` 向 `useScroll` 注册滚动容器；`watch messages.length` → `scrollToBottomIfLocked` |
-| `MessageBubble.vue` | 单条消息气泡 | 按 `role` 左右分栏；`v-html="msg.html"`（AI）/等待首 token 时显示 `ThinkingBubble`；复制按钮（`navigator.clipboard`）；附件 chip 点击打开 `FilePreview`（`openPreviewKey` 追踪当前打开项） |
+| `MessageBubble.vue` | 单条消息气泡 | 按 `role` 左右分栏；`v-html="msg.html"`（AI）/等待首 token 时显示 `ThinkingBubble`；复制按钮用 VueUse `useClipboard`；附件 chip 点击打开 `FilePreview`（`openPreviewKey` 追踪当前打开项） |
 | `ThinkingBubble.vue` | 加载指示 | 纯展示：三个脉冲圆点动画，等待首 token 时由 MessageBubble 显示 |
 | `InputBar.vue` | 输入区 UI | `v-show selectedSessionId`；已选文件 chip 条；`<input multiple>` 追加文件；textarea 自适应高度（`autoResizeInput`）；Enter 发送（委托 `useChat.sendMessage`）；内嵌 `ModelPanel`；`watch uploadResetToken` 清空 file input。**不含发送业务逻辑** |
 | `ModelPanel.vue` | 模型切换浮层 | 由 InputBar 内嵌；`modelPanelOpen/ais/selectedAiId` 经 `storeToRefs` 从 `useAiStore` 取；chip 显示当前模型；浮层列出 `ais`，点击 emit `select-ai`/`delete-ai`/`new-ai`（均冒泡到 App.vue） |
@@ -166,7 +166,7 @@ spa/
 | `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → 恢复输入 → 从 `/history` 或 localStorage 加载消息 → 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
 | `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |
 | `useKeyboard.js` | 移动端视口适配 | `onMounted` 挂 `visualViewport` resize/scroll + window.resize 监听，同步 `#input-wrapper`/`#mobile-topbar`/`#messages`/`#sidebar`/`.mobile-overlay` 的键盘偏移内联样式；>768px 清空所有内联样式；textarea focus 时延迟滚底。移动端视口逻辑的唯一归属地（约束 11） |
-| `useTheme.js` | 主题切换 | `useTheme()` 函数体内部调用 `useUiStore()`（不在模块顶层）；初始化时读 `gw-theme` 应用 `light-mode` class；`toggleTheme()` 切换 `ui.isLightMode` + `<html>` class + localStorage |
+| `useTheme.js` | 主题切换 | `useTheme()` 函数体内部调用 `useUiStore()`（不在模块顶层）；用 VueUse `useColorMode` 管理主题（`modes: { light: 'light-mode', dark: '' }` 增删 `<html>` class，`storageKey: 'gw-theme'`）；显式配置 `disableTransition: false` / `emitAuto: false` / 自建 `storageRef`（`writeDefaults: false`）保持既有行为；`toggleTheme()` 切换 `mode`，`ui.isLightMode` 经 `watch` 同步 |
 
 ### 样式 `src/styles/`（分层不越界，见约束 10）
 
@@ -198,7 +198,7 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 ├── .page-loader          (v-if loadingEnv — 全屏 spinner)
 ├── .mobile-overlay       (v-if 移动端抽屉打开 — 半透明遮罩)
 ├── <Sidebar>             (@new-session → openSessDialog)
-├── #chat                 (drag-drop 事件：dragenter/over/leave/drop → ui store 的 isDragging + chat store 的 selectedFiles)
+├── #chat                 (VueUse `useDropZone` 监听拖拽 → `isOverDropZone` 同步至 ui store 的 isDragging + chat store 的 selectedFiles)
 │   ├── .drop-overlay     (v-if ui store 的 isDragging — 拖放提示遮罩)
 │   ├── #mobile-topbar    (≤768px: 汉堡菜单 + 标题 + 主题切换)
 │   ├── .sidebar-toggle-btn / .theme-toggle-btn  (>768px 悬浮按钮)
@@ -318,7 +318,7 @@ props 含预览目标（文件名 + 数据），emit `close` 关闭抽屉。
 |-----|------|------|
 | `gw-active-ids` | `{aiId, sessId}` | 选中的 AI/Session ID |
 | `gw-hist-<id>` | `[{role, text, files}]` | 对话历史（文件 blob 合并服务端文本） |
-| `gw-sidebar-state` | `'expanded'/'collapsed'` | 侧栏折叠状态 |
+| `gw-sidebar-state` | `'expanded'/'collapsed'` | 侧栏折叠状态（由 `App.vue` 经 VueUse `useStorage` 读写） |
 | `gw-theme` | `'light'/'dark'` | 主题偏好 |
 | `gw-pinned-session-ids` | `string[]` | 置顶会话 id 列表（由 `sessionList.js` 的 `loadPinnedSessionIds`/`savePinnedSessionIds` 读写） |
 
@@ -354,7 +354,7 @@ Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 
 **新特性**：
 - `<input type="file" multiple>` 支持一次选多文件，`onFileSelected` 追加至 chat store 的 `selectedFiles`
-- 拖放文件至 `#chat` 区域（由 `App.vue` 处理 drag 事件）→ 追加到 chat store 的 `selectedFiles`，`InputBar` 统一处理上传
+- 拖放文件至 `#chat` 区域（`App.vue` 用 VueUse `useDropZone` 监听）→ 追加到 chat store 的 `selectedFiles`，`InputBar` 统一处理上传
 - `#input-wrapper` 底部显示 `Enter 发送 · Shift+Enter 换行` 提示（`.input-hint`）
 
 ### 切换 AI (`selectAI` — `InputBar.vue` → 事件冒泡至 `App.vue`)
@@ -381,7 +381,7 @@ DELETE + POST /sessions (同 id, 原 workspace) → POST /titles
 ## 移动端适配 (`useKeyboard.js`)
 
 ### visualViewport 键盘同步
-监听 `resize`、`scroll`、`window.resize` 三种事件，覆盖键盘弹出、滚动偏移、横竖屏切换。
+用 VueUse `useEventListener` 监听 `resize`、`scroll`、`window.resize` 三种事件（组件卸载自动清理），覆盖键盘弹出、滚动偏移、横竖屏切换。
 
 | 元素 | 动态调整 |
 |------|----------|
@@ -394,7 +394,7 @@ DELETE + POST /sessions (同 id, 原 workspace) → POST /titles
 桌面端（>768px）清空所有动态内联样式。
 
 ### 响应用户手动上滚
-`#messages` `scroll` 事件检测：距底部 > 60px → `userHasScrolledUp=true`，暂停自动滚动。回到底部时自动恢复。
+`#messages` `scroll` 事件（VueUse `useEventListener`）检测：距底部 > 60px → `userHasScrolledUp=true`，暂停自动滚动。回到底部时自动恢复。
 
 ## MD3 主题系统 (`tokens.css` + `useTheme.js`)
 
@@ -405,7 +405,7 @@ DELETE + POST /sessions (同 id, 原 workspace) → POST /titles
 - **Shape**：`--md-shape-extra-small` ~ `--md-shape-full`
 - **State layer**：`--md-state-hover/press/focus` opacity 值
 
-切换逻辑：`document.documentElement.classList.toggle('light-mode')` + localStorage。
+切换逻辑：`useTheme.js` 用 VueUse `useColorMode` 管理（`modes: { light: 'light-mode', dark: '' }` 给 `<html>` 增删 `light-mode` class，`storageKey: 'gw-theme'`）。为保持既有行为显式配置：`disableTransition: false`（保留切换过渡动画）、`emitAuto: false` + 默认 `'light'`（不跟随系统偏好）、自建 `storageRef`（`writeDefaults: false`，用户不切换则从不写 localStorage）。`ui.isLightMode` 经 `watch(mode)` 同步（非 `'dark'` 即亮色）。
 
 ## 关键设计经验
 

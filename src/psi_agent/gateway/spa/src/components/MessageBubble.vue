@@ -42,6 +42,7 @@
 <script setup>
 import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useClipboard } from '@vueuse/core'
 import { useChatStore } from '../stores/chat.js'
 import { useUiStore } from '../stores/ui.js'
 import { loadUndoSkipConfirm } from '../utils.js'
@@ -65,15 +66,11 @@ const props = defineProps({
   },
 })
 
-const copied = ref(false)
+const { copy, copied } = useClipboard({ copiedDuring: 1500 })
 const openPreviewKey = ref('')
 const openPreviewFile = ref(null)
-async function copyMessage() {
-  await navigator.clipboard.writeText(props.msg.text)
-  copied.value = true
-  setTimeout(() => {
-    copied.value = false
-  }, 1500)
+function copyMessage() {
+  copy(props.msg.text)
 }
 
 function requestUndo() {

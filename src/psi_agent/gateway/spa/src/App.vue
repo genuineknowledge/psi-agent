@@ -11,10 +11,7 @@
 
     <div
       id="chat"
-      @dragenter.prevent="onChatDragOver"
-      @dragover.prevent="onChatDragOver"
-      @dragleave="onChatDragLeave"
-      @drop="onChatDrop"
+      ref="chatDropRef"
     >
       <div v-if="isDragging" class="drop-overlay">
         <div class="drop-overlay-inner">
@@ -61,8 +58,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useBreakpoints, useDropZone, useStorage } from '@vueuse/core'
 import { useAiStore } from './stores/ai.js'
 import { useSessionStore } from './stores/session.js'
 import { useChatStore } from './stores/chat.js'
@@ -87,6 +85,7 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import Snackbar from './components/Snackbar.vue'
 
 const LS_SIDEBAR = 'gw-sidebar-state'
+const sidebarState = useStorage(LS_SIDEBAR, 'expanded')
 
 const ai = useAiStore()
 const { ais, selectedAiId, aiForm, fetchedModels, loadingModels } = storeToRefs(ai)
@@ -103,35 +102,27 @@ const { loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, dlgConfirm, isSideb
 const { toggleTheme } = useTheme()
 useKeyboard()
 
+const breakpoints = useBreakpoints({ mobile: 768 })
+const isMobile = breakpoints.smallerOrEqual('mobile')
+
 function toggleSidebar() {
-  ui.toggleSidebar(window.innerWidth <= 768)
+  ui.toggleSidebar(isMobile.value)
 }
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
 }
 
-function onChatDragOver(e) {
-  if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
-  e.preventDefault()
-  if (selectedSessionId.value) isDragging.value = true
-}
-
-function onChatDragLeave(e) {
-  // Only clear when the pointer actually leaves the #chat element,
-  // not when moving between its children.
-  if (e.currentTarget.contains(e.relatedTarget)) return
-  isDragging.value = false
-}
-
-function onChatDrop(e) {
-  if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
-  e.preventDefault()
-  isDragging.value = false
-  if (!selectedSessionId.value) return
-  const files = Array.from(e.dataTransfer.files || [])
-  if (files.length) selectedFiles.value.push(...files)
-}
+const chatDropRef = ref(null)
+const { isOverDropZone } = useDropZone(chatDropRef, {
+  onDrop: (files) => {
+    if (!selectedSessionId.value) return
+    if (files && files.length) selectedFiles.value.push(...files)
+  },
+})
+watch(isOverDropZone, (over) => {
+  isDragging.value = over && !!selectedSessionId.value
+})
 
 async function refreshAIs() {
   try {
@@ -314,17 +305,17 @@ async function createSession() {
   }
 }
 
+if (sidebarState.value === 'collapsed') isSidebarCollapsed.value = true
+
 watch(
   isSidebarCollapsed,
   (v) => {
-    localStorage.setItem(LS_SIDEBAR, v ? 'collapsed' : 'expanded')
+    sidebarState.value = v ? 'collapsed' : 'expanded'
   }
 )
 
 onMounted(async () => {
   sessionTitles.value = await api('GET', '/titles').catch(() => ({}))
-  const savedSidebar = localStorage.getItem(LS_SIDEBAR)
-  if (savedSidebar === 'collapsed') isSidebarCollapsed.value = true
 
   try {
     await refreshAll()

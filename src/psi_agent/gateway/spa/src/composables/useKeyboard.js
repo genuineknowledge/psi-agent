@@ -1,14 +1,17 @@
 import { onMounted } from 'vue'
+import { useEventListener, useBreakpoints } from '@vueuse/core'
 import { useChatStore } from '../stores/chat.js'
 
 export function useKeyboard() {
   const chat = useChatStore()
+  const breakpoints = useBreakpoints({ mobile: 768 })
+  const isMobile = breakpoints.smallerOrEqual('mobile')
 
   onMounted(() => {
     const messagesEl = document.getElementById('messages')
 
     if (messagesEl) {
-      messagesEl.addEventListener('scroll', () => {
+      useEventListener(messagesEl, 'scroll', () => {
         if (!chat.streaming) return
         const diff = messagesEl.scrollHeight - messagesEl.clientHeight - messagesEl.scrollTop
         if (diff > 60) {
@@ -27,7 +30,7 @@ export function useKeyboard() {
         const sidebar = document.getElementById('sidebar')
         const overlay = document.querySelector('.mobile-overlay')
 
-        if (window.innerWidth > 768) {
+        if (!isMobile.value) {
           if (inputWrapper) inputWrapper.style.bottom = ''
           if (topbar) topbar.style.top = ''
           if (messagesEl) {
@@ -65,16 +68,16 @@ export function useKeyboard() {
         if (overlay) overlay.style.top = (topbarH + viewportTop) + 'px'
       }
 
-      window.visualViewport.addEventListener('resize', syncInputPosition)
-      window.visualViewport.addEventListener('scroll', syncInputPosition)
-      window.addEventListener('resize', syncInputPosition)
+      useEventListener(window.visualViewport, 'resize', syncInputPosition)
+      useEventListener(window.visualViewport, 'scroll', syncInputPosition)
+      useEventListener(window, 'resize', syncInputPosition)
       syncInputPosition()
     }
 
     const ta = document.querySelector('#input-area textarea')
     if (ta) {
-      ta.addEventListener('focus', () => {
-        if (window.innerWidth > 768) return
+      useEventListener(ta, 'focus', () => {
+        if (!isMobile.value) return
         setTimeout(() => {
           if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight
         }, 350)
