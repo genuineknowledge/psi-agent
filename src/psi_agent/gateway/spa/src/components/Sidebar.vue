@@ -198,24 +198,23 @@ watch(
 }
 .sb-brand-name { font-size: 20px; font-weight: 500; color: var(--md-text-primary); }
 .new-chat {
-  display: inline-flex; align-items: center; gap: 12px;
-  margin: 4px 8px 8px; padding: 10px 16px;
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 8px 4px; padding: 10px 16px;
   background: transparent; color: var(--md-text-secondary);
   border: none; border-radius: var(--md-shape-full); cursor: pointer;
-  font-size: 14px; align-self: flex-start; transition: background 0.2s;
+  font-size: 14px; text-align: left; transition: background 0.2s;
 }
 .new-chat:hover { background: var(--md-surface-container-high); }
-.new-chat .material-symbols-outlined { font-size: 20px; }
+.new-chat .material-symbols-outlined { font-size: 20px; flex-shrink: 0; }
 .recent-label {
   padding: 12px 16px 6px; font-size: 13px; color: var(--md-text-secondary);
 }
 .session-search {
   margin: 0 8px 8px;
-  height: 40px;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 12px 0 16px;
+  gap: 12px;
+  padding: 10px 16px;
   background: transparent;
   border: none;
   border-radius: var(--md-shape-full);
@@ -226,7 +225,7 @@ watch(
 .session-search:focus-within {
   background: var(--md-surface-container-high);
 }
-.session-search .material-symbols-outlined { font-size: 18px; flex-shrink: 0; }
+.session-search .material-symbols-outlined { font-size: 20px; flex-shrink: 0; }
 .session-search input {
   min-width: 0;
   flex: 1;
@@ -235,8 +234,9 @@ watch(
   background: transparent;
   color: var(--md-text-primary);
   font: inherit;
-  font-size: 13px;
+  font-size: 14px;
 }
+.session-search input::placeholder { color: var(--md-text-secondary); }
 .session-search input::-webkit-search-cancel-button { appearance: none; }
 .session-search .clear-search {
   width: 26px;
