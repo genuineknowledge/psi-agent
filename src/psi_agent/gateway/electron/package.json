@@ -2,6 +2,8 @@
   "name": "psi-agent-electron",
   "version": "1.0.0",
   "private": true,
+  "author": "Hao Zhang <hzhangxyz@outlook.com>",
+  "homepage": "https://github.com/genuineknowledge/psi-agent",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
