@@ -44,9 +44,11 @@ async def feishu_send_text(content: str, webhook_url: str = "") -> str:
     body = {"msg_type": "text", "content": {"text": content}}
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=body) as resp:
-                data = await resp.json()
+        async with (
+            aiohttp.ClientSession() as session,
+            session.post(url, json=body) as resp,
+        ):
+            data = await resp.json()
     except aiohttp.ClientError as e:
         return f"[Error] Feishu request failed: {e}"
 

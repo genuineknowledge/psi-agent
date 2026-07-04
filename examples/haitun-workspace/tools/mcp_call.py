@@ -45,7 +45,8 @@ async def mcp_call(server: str, tool: str, args_json: str = "{}") -> str:
     Example:
         mcp_call("PW", "browser_navigate", '{"url": "https://example.com"}')
         mcp_call("FEISHU", "feishu_send_text", '{"content": "Hello from Haitun!"}')
-        mcp_call("MEDIA", "generate_image", '{"prompt": "A dolphin jumping out of waves", "output_path": "dolphin.png"}')
+        mcp_call("MEDIA", "generate_image",
+                 '{"prompt": "A dolphin jumping out of waves", "output_path": "dolphin.png"}')
     """
     return await call_mcp(server, tool, args_json)
 

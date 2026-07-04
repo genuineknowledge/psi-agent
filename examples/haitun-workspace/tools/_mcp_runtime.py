@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import json
 import os
-import sys
+import shlex
 import time
 from collections.abc import Mapping
 from typing import Any
 
+import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
@@ -118,7 +120,6 @@ def _resolve(raw: dict[str, Any]) -> dict[str, Any]:
             url = url or srv
         else:
             # Split shell-style: "npx @playwright/mcp"
-            import shlex
             parts = shlex.split(srv)
             if parts:
                 cmd, args = parts[0], parts[1:]
@@ -182,20 +183,14 @@ class _Session:
         return await self._s.__aenter__()
 
     async def __aexit__(self, *a: Any) -> None:
-        import anyio
-        try:
+        with contextlib.suppress(Exception):
             if self._s is not None:
                 with anyio.CancelScope(shield=True):
                     await self._s.__aexit__(*a)
-        except Exception:
-            pass
-        finally:
-            try:
-                if self._c is not None:
-                    with anyio.CancelScope(shield=True):
-                        await self._c.__aexit__(*a)
-            except Exception:
-                pass
+        with contextlib.suppress(Exception):
+            if self._c is not None:
+                with anyio.CancelScope(shield=True):
+                    await self._c.__aexit__(*a)
 
 
 def _connect(config: dict[str, Any]) -> _Session:
@@ -280,10 +275,8 @@ async def _close_one(key: str, entry: dict[str, Any]) -> None:
     """Close a single pooled connection."""
     transport: _Session | None = entry.pop("transport", None)
     if transport is not None:
-        try:
+        with contextlib.suppress(Exception):
             await transport.__aexit__(None, None, None)
-        except Exception:
-            pass
     _POOL.pop(key, None)
 
 
@@ -418,14 +411,12 @@ def _cleanup_sync() -> None:
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            loop.create_task(_cleanup_async())
+            _ = loop.create_task(_cleanup_async())
         else:
             loop.run_until_complete(_cleanup_async())
     except RuntimeError:
-        try:
+        with contextlib.suppress(Exception):
             asyncio.run(_cleanup_async())
-        except Exception:
-            pass
 
 
 async def _cleanup_async() -> None:

@@ -22,6 +22,7 @@ import time
 from typing import Any
 
 import aiohttp
+import anyio
 from mcp.server.fastmcp import FastMCP
 
 # ---------------------------------------------------------------------------
@@ -75,9 +76,11 @@ async def _get_token() -> str:
     url = f"{_API_BASE}/auth/v3/tenant_access_token/internal"
     body = {"app_id": _APP_ID, "app_secret": _APP_SECRET}
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=body) as resp:
-            data = await resp.json()
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(url, json=body) as resp,
+    ):
+        data = await resp.json()
 
     code = data.get("code", -1)
     if code != 0:
@@ -98,9 +101,11 @@ async def _webhook_post(webhook_url: str, body: dict[str, Any]) -> str:
             "No webhook URL. Set FEISHU_WEBHOOK_URL env var or pass webhook_url."
         )
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(url, json=body) as resp:
-            data = await resp.json()
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(url, json=body) as resp,
+    ):
+        data = await resp.json()
 
     code = data.get("code", -1)
     if code != 0:
@@ -218,7 +223,7 @@ async def feishu_upload_image(image_path: str) -> str:
             data.add_field("image_type", "message")
             data.add_field(
                 "image",
-                open(image_path, "rb"),
+                open(image_path, "rb"),  # noqa: ASYNC230, SIM115
                 filename=os.path.basename(image_path),
             )
             headers = {"Authorization": f"Bearer {token}"}
@@ -278,7 +283,7 @@ async def feishu_send_file(file_path: str, webhook_url: str = "") -> str:
     if err:
         return f"[Error] {err}"
 
-    if not os.path.isfile(file_path):
+    if not await anyio.Path(file_path).is_file():
         return f"[Error] File not found: {file_path}"
 
     # File sending via webhook requires upload first, then send.
@@ -292,15 +297,14 @@ async def feishu_send_file(file_path: str, webhook_url: str = "") -> str:
     token = await _get_token()
 
     try:
-        fname = os.path.basename(file_path)
-        fsize = os.path.getsize(file_path)
+        fname = anyio.Path(file_path).name
 
         async with aiohttp.ClientSession() as session:
             # Step 1: Upload
             data = aiohttp.FormData()
             data.add_field("file_type", "stream")
             data.add_field("file_name", fname)
-            data.add_field("file", open(file_path, "rb"), filename=fname)
+            data.add_field("file", open(file_path, "rb"), filename=fname)  # noqa: ASYNC230, SIM115
             headers = {"Authorization": f"Bearer {token}"}
 
             async with session.post(
