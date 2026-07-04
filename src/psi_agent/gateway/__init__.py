@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import sys
 import webbrowser
 from dataclasses import dataclass
 
@@ -46,8 +47,15 @@ class Gateway:
     tray: str | None = None
     """Path to tray icon image file. If set, a system tray icon is shown."""
 
+    desktop: bool = False
+    """Electron desktop mode. Suppresses browser/tray and prints GATEWAY_ADDR=<url> to stdout."""
+
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
+
+        if self.desktop:
+            self.browser = False
+            self.tray = None
 
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
@@ -68,6 +76,10 @@ class Gateway:
                     raise
 
                 logger.info(f"Gateway listening on {addr}")
+
+                if self.desktop:
+                    sys.stdout.write(f"GATEWAY_ADDR={addr}\n")
+                    sys.stdout.flush()
 
                 if self.browser:
                     await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
