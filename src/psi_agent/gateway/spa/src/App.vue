@@ -45,10 +45,12 @@
       </div>
 
       <div id="chat-main" :class="{ welcome: showWelcome }">
-        <div v-if="showWelcome" class="welcome-hero">
-          <div class="welcome-greeting">Qihua，你说，我在听！</div>
-        </div>
-        <ChatArea v-else />
+        <transition name="hero-fade" mode="out-in">
+          <div v-if="showWelcome" class="welcome-hero" key="welcome">
+            <div class="welcome-greeting">Qihua，你说，我在听！</div>
+          </div>
+          <ChatArea v-else key="chat" />
+        </transition>
         <InputBar
           @select-ai="selectAI"
           @delete-ai="confirmDeleteAI"
@@ -377,4 +379,6 @@ onMounted(async () => {
 @media (max-width: 768px) {
   .welcome-greeting { font-size: 34px; }
 }
+.hero-fade-enter-active, .hero-fade-leave-active { transition: opacity 0.4s ease, transform 0.4s ease; }
+.hero-fade-enter-from, .hero-fade-leave-to { opacity: 0; transform: translateY(8px); }
 </style>
