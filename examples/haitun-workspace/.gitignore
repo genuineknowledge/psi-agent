@@ -19,6 +19,10 @@ __pycache__/
 skills/fusion-flow/node_modules/
 skills/fusion-flow/runs/
 skills/fusion-flow/.env
+
+# multimodal API credentials (local dev only)
+.env.multimodal
+bin/apply_multimodal_test_api.ps1
 skills/fusion-flow/examples/*.flow.ts
 skills/fusion-flow/examples/*.flow.mts
 !skills/fusion-flow/examples/_placeholder.ts
@@ -29,7 +33,9 @@ flows/*
 !flows/curated/**/FLOW.md
 flows/curated/**/runs/
 
-haitun agent.lnk
+# image generation output (placeholder / inference)
+generated/
+
 psi-agent.exe
 psi-agent
 
