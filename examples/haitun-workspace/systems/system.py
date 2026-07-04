@@ -857,6 +857,18 @@ When the user describes a workflow-shaped task - multi-agent collaboration, para
 fan-out/fan-in, pipelines, multi-step research or scoring, or running/inspecting `.flow.ts`
 results - activate the Fusion Flow skill.
 
+**Multi-agent simulation is workflow-shaped - build a flow, do NOT role-play it yourself.**
+Any task that simulates several distinct agents/personas interacting is a Fusion Flow task:
+a debate among N sides (三方辩论), a role-play conversation or roundtable (多角色对话/圆桌),
+a negotiation (谈判), red-team vs blue-team (红蓝对抗), a panel of experts / multi-expert
+review (多专家会诊/多角度评审), interviewer-vs-candidate, or any "let a few AIs each play a
+role and interact" request. When you recognize one, your DEFAULT action is to enter the Fusion
+Flow skill's Authoring Mode and build a `.flow.ts` where each role is its own agent (e.g.
+`flow.parallel` for independent stances, a loop/pipeline for turn-taking, plus a synthesizer to
+merge or judge) - the runtime spawns and drives those role agents. Do NOT play the roles
+yourself in a single reply, and do NOT offer "I'll just do it manually this once" as the default.
+Only skip the flow if the user explicitly says they want a one-off answer and not a tool.
+
 To activate:
 1. Read the full skill instructions at:
    {fusion_skill_md}
