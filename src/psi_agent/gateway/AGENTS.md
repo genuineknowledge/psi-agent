@@ -47,13 +47,13 @@ Gateway 进程
 1. setup_logging(verbose)                             — 第一行
 2. state = GatewayState() + snapshot = await state.load()  — 加载持久化状态
 3. anyio.create_task_group()                          — 手动管理 task group
-4. 创建 AIManager + SessionManager
+4. 创建 AIManager + SessionManager + TitleManager
 5. 恢复 AI（遍历 snapshot.ais → aim.create，失败 skip）
 6. 恢复 Session（遍历 snapshot.sessions → sm.create，失败 skip）
-7. await create_app(aim, sm)                          — 注册 REST 路由（获取 tm）
-8. 创建 _do_persist 闭包（快照三个 manager → state.save）
-9. 注入 _persist（aim._persist = sm._persist = tm._persist = _do_persist）
-10. 恢复标题（遍历 snapshot.titles → tm.set）
+7. 恢复标题（遍历 snapshot.titles → tm.set）
+8. await create_app(aim, sm, tm)                      — 注册 REST 路由
+9. 创建 _do_persist 闭包（快照三个 manager → state.save）
+10. 注入 _persist（aim._persist = sm._persist = tm._persist = _do_persist）
 11. await _do_persist()                                — 初始全量持久化
 12. runner.setup() + create_site(runner, listen) + site.start()
 13. if self.browser: webbrowser.open(addr)

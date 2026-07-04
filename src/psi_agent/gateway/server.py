@@ -46,11 +46,13 @@ def _error(message: str, status: int) -> web.Response:
     return _json({"error": message}, status=status)
 
 
-async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | None = None) -> web.Application:
+async def create_app(
+    aim: AIManager, sm: SessionManager, tm: TitleManager, favicon_path: str | None = None
+) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
     app["sm"] = sm
-    app["tm"] = TitleManager()
+    app["tm"] = tm
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
     app["hm"] = HistoryManager()

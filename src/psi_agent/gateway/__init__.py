@@ -60,6 +60,7 @@ class Gateway:
         async with anyio.create_task_group() as tg:
             aim = AIManager(_prefix=self.socket_path, _tg=tg)
             sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
+            tm = TitleManager()
 
             for cfg in snapshot.get("ais", []):
                 try:
@@ -85,8 +86,10 @@ class Gateway:
                 except Exception as e:
                     logger.warning(f"Failed to restore Session {cfg.get('id', '?')!r}: {e!r}")
 
-            app = await create_app(aim, sm, favicon_path=self.tray)
-            tm: TitleManager = app["tm"]
+            for t in snapshot.get("titles", []):
+                await tm.set(t["id"], t["title"])
+
+            app = await create_app(aim, sm, tm, favicon_path=self.tray)
 
             async def _do_persist() -> None:
                 await state.save(
@@ -110,9 +113,6 @@ class Gateway:
             aim._persist = _do_persist
             sm._persist = _do_persist
             tm._persist = _do_persist
-
-            for t in snapshot.get("titles", []):
-                await tm.set(t["id"], t["title"])
 
             await _do_persist()
 
