@@ -45,7 +45,7 @@ Gateway 进程
 
 ```
 1. setup_logging(verbose)                             — 第一行
-2. state = GatewayState(...) + snapshot = await state.load()  — 加载持久化状态
+2. state = GatewayState() + snapshot = await state.load()  — 加载持久化状态
 3. anyio.create_task_group()                          — 手动管理 task group
 4. 创建 AIManager + SessionManager
 5. 恢复 AI（遍历 snapshot.ais → aim.create，失败 skip）
@@ -122,7 +122,7 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 **delete(ai_id) 流程**：
 1. 获取 lock，断言存在
 2. `del _entries[ai_id]` + `entry.scope.cancel()`
-3. `_remove_socket(entry.socket)` + 调用 `_persist`
+3. `_remove_socket(entry.info.socket)` + 调用 `_persist`
 
 **get_socket(ai_id)**：AI 在 `_entries` 中则返回其 socket 路径；不在则通过 `_socket_path()` 计算路径返回（不抛 LookupError）。这使 Session 创建可以在 AI 尚未启动时预计算 socket 路径，支持启动恢复场景。
 
@@ -152,7 +152,7 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 **delete(session_id)**：
 1. 获取 lock，断言存在
 2. `del _entries[session_id]` + `entry.scope.cancel()`
-3. `_remove_socket(entry.channel_socket)` + 调用 `_persist`
+3. `_remove_socket(entry.info.channel_socket)` + 调用 `_persist`
 
 Session 运行时 crash 时，`_run_session` 的 except 块从 `_entries` 中移除该 entry 并调用 `_persist`。
 

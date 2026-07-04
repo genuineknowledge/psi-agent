@@ -91,7 +91,7 @@ class GatewayState:
 
 ```
 setup_logging(verbose)
-→ state = GatewayState(anyio.Path("state/latest.json"))
+→ state = GatewayState()
 → snapshot = await state.load()
 → async with anyio.create_task_group() as tg:
     → aim = AIManager(...) + sm = SessionManager(...)
