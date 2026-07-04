@@ -31,7 +31,7 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP(
     "feishu-mcp",
-    description="Feishu/Lark messaging — send text, cards, images, and files",
+    instructions="Feishu/Lark messaging — send text, cards, images, and files",
 )
 
 # ---------------------------------------------------------------------------
