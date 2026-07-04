@@ -122,7 +122,9 @@ const { sessions, selectedSessionId, sessionTitles, sessForm, browser } = storeT
 
 const chat = useChatStore()
 const { messages, selectedFiles } = storeToRefs(chat)
-const showWelcome = computed(() => messages.value.length === 0)
+// 欢迎屏：仅在「无选中会话」时显示。切换会话时 selectedSessionId 是同步设置的
+// （早于历史 fetch），故加载历史的异步间隙里 messages 虽短暂为空，也不会闪回欢迎屏。
+const showWelcome = computed(() => !selectedSessionId.value && messages.value.length === 0)
 
 const ui = useUiStore()
 const { loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen } = storeToRefs(ui)
