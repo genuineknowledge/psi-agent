@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import importlib
 import io
 import json
 import sys
@@ -16,16 +17,16 @@ import pytest
 
 from psi_agent.session.tool_registry import ToolFunction
 
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3] / "examples" / "haitun-workspace"
+WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_DIR = WORKSPACE_ROOT / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-import _xfyun_speech as speech  # noqa: E402
-import _xfyun_stt as stt  # noqa: E402
-import _xfyun_tts as tts  # noqa: E402
-import speech_to_text as stt_tool  # noqa: E402
-import text_to_speech as tts_tool  # noqa: E402
+speech: Any = importlib.import_module("_xfyun_speech")
+stt: Any = importlib.import_module("_xfyun_stt")
+tts: Any = importlib.import_module("_xfyun_tts")
+stt_tool: Any = importlib.import_module("speech_to_text")
+tts_tool: Any = importlib.import_module("text_to_speech")
 
 
 class _FakeWebSocket:
