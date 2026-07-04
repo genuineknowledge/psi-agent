@@ -4,6 +4,10 @@ const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 
+if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
+  app.commandLine.appendSwitch('ozone-platform', 'wayland')
+}
+
 const STARTUP_TIMEOUT_MS = 30_000
 
 let mainWindow = null
@@ -13,16 +17,24 @@ let gatewayAddr = null
 function resolveBackendPath() {
   const ext = process.platform === 'win32' ? '.exe' : ''
   const binary = `psi-agent${ext}`
-  const backendDir = app.isPackaged
-    ? path.join(process.resourcesPath, 'backend')
-    : path.join(__dirname, 'backend')
 
+  // Prefer __dirname (dev mode, or backend placed alongside main.js)
+  const devPath = path.join(__dirname, 'backend', binary)
+  const devAppPath = path.join(__dirname, 'backend', 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
+
+  const darwinDevPath = process.platform === 'darwin' && fs.existsSync(devAppPath)
+    ? devAppPath : (fs.existsSync(devPath) ? devPath : null)
+
+  if (darwinDevPath) return darwinDevPath
+  if (!app.isPackaged) return devPath
+
+  const resourcesPath = path.join(process.resourcesPath, 'backend')
   if (process.platform === 'darwin') {
-    const appPath = path.join(backendDir, 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
+    const appPath = path.join(resourcesPath, 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
     if (fs.existsSync(appPath)) return appPath
-    return path.join(backendDir, binary)
+    return path.join(resourcesPath, binary)
   }
-  return path.join(backendDir, binary)
+  return path.join(resourcesPath, binary)
 }
 
 function startGateway() {
