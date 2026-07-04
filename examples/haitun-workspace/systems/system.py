@@ -45,6 +45,7 @@ import anyio
 from prompt_sections import (
     BOOTSTRAP_PENDING_SECTION,
     CONTEXT_FILE_ORDER,
+    CITATIONS_TRUSTWORTHINESS_SECTION,
     CLOSING_QUESTIONS_SECTION,
     CLARIFY_ASSUMPTIONS_SECTION,
     DELIVERABLES_AS_FILES_SECTION,
@@ -952,6 +953,8 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
             STRUCTURED_TABLES_SECTION,
             "",
             TASK_SELF_CHECK_SECTION,
+            "",
+            CITATIONS_TRUSTWORTHINESS_SECTION,
             "",
             SUBAGENT_DELEGATION_SECTION,
             "",
