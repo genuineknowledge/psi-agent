@@ -61,29 +61,29 @@ class Gateway:
             aim = AIManager(_prefix=self.socket_path, _tg=tg)
             sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
 
-            for ai_id, cfg in snapshot.get("ais", {}).items():
+            for cfg in snapshot.get("ais", []):
                 try:
                     await aim.create(
                         provider=cfg.get("provider", ""),
                         model=cfg.get("model", ""),
                         api_key=cfg.get("api_key", ""),
                         base_url=cfg.get("base_url", ""),
-                        id=ai_id,
+                        id=cfg.get("id", ""),
                     )
-                    logger.info(f"Restored AI {ai_id!r}")
+                    logger.info(f"Restored AI {cfg.get('id', '?')!r}")
                 except Exception as e:
-                    logger.warning(f"Failed to restore AI {ai_id!r}: {e!r}")
+                    logger.warning(f"Failed to restore AI {cfg.get('id', '?')!r}: {e!r}")
 
-            for sess_id, cfg in snapshot.get("sessions", {}).items():
+            for cfg in snapshot.get("sessions", []):
                 try:
                     await sm.create(
                         ai_id=cfg.get("ai_id", ""),
                         workspace=cfg.get("workspace", ""),
-                        id=sess_id,
+                        id=cfg.get("id", ""),
                     )
-                    logger.info(f"Restored Session {sess_id!r}")
+                    logger.info(f"Restored Session {cfg.get('id', '?')!r}")
                 except Exception as e:
-                    logger.warning(f"Failed to restore Session {sess_id!r}: {e!r}")
+                    logger.warning(f"Failed to restore Session {cfg.get('id', '?')!r}: {e!r}")
 
             app = await create_app(aim, sm, favicon_path=self.tray)
             tm: TitleManager = app["tm"]
@@ -111,8 +111,8 @@ class Gateway:
             sm._persist = _do_persist
             tm._persist = _do_persist
 
-            for sid, title in snapshot.get("titles", {}).items():
-                await tm.set(sid, title)
+            for t in snapshot.get("titles", []):
+                await tm.set(t["id"], t["title"])
 
             await _do_persist()
 

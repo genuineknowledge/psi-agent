@@ -15,24 +15,24 @@ class GatewayState:
     _history_dir: anyio.Path = field(default_factory=lambda: anyio.Path("state"))
     _startup_ts: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S"))
 
-    async def load(self) -> dict[str, dict[str, Any]]:
+    async def load(self) -> dict[str, list[dict[str, Any]]]:
         try:
             raw = await self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
             logger.debug(f"State file {self._path} not found, starting fresh")
-            return {"ais": {}, "sessions": {}, "titles": {}}
+            return {"ais": [], "sessions": [], "titles": []}
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
             logger.warning(f"State file {self._path} is corrupt, starting fresh")
-            return {"ais": {}, "sessions": {}, "titles": {}}
+            return {"ais": [], "sessions": [], "titles": []}
         if not isinstance(data, dict):
             logger.warning(f"State file {self._path} is not a dict, starting fresh")
-            return {"ais": {}, "sessions": {}, "titles": {}}
+            return {"ais": [], "sessions": [], "titles": []}
         return {
-            "ais": {a["id"]: a for a in data.get("ais", [])},
-            "sessions": {s["id"]: s for s in data.get("sessions", [])},
-            "titles": {t["id"]: t["title"] for t in data.get("titles", [])},
+            "ais": data.get("ais", []),
+            "sessions": data.get("sessions", []),
+            "titles": data.get("titles", []),
         }
 
     async def save(

@@ -29,20 +29,20 @@ async def test_state_save_and_load_roundtrip(tmp_path: str) -> None:
 
     snapshot = await state.load()
     assert len(snapshot["ais"]) == 2
-    assert snapshot["ais"]["a1"]["provider"] == "openai"
-    assert snapshot["ais"]["a1"]["api_key"] == "sk-abc"
-    assert snapshot["ais"]["a2"]["base_url"] == ""
+    assert snapshot["ais"][0]["provider"] == "openai"
+    assert snapshot["ais"][0]["api_key"] == "sk-abc"
+    assert snapshot["ais"][1]["base_url"] == ""
     assert len(snapshot["sessions"]) == 1
-    assert snapshot["sessions"]["s1"]["ai_id"] == "a1"
-    assert snapshot["sessions"]["s1"]["workspace"] == "/tmp/ws"
-    assert snapshot["titles"] == {"s1": "Hello Chat"}
+    assert snapshot["sessions"][0]["ai_id"] == "a1"
+    assert snapshot["sessions"][0]["workspace"] == "/tmp/ws"
+    assert snapshot["titles"] == [{"id": "s1", "title": "Hello Chat"}]
 
 
 @pytest.mark.anyio
 async def test_state_load_missing_file_returns_empty(tmp_path: str) -> None:
     state = GatewayState(_path=anyio.Path(tmp_path) / "nonexistent" / "latest.json")
     snapshot = await state.load()
-    assert snapshot == {"ais": {}, "sessions": {}, "titles": {}}
+    assert snapshot == {"ais": [], "sessions": [], "titles": []}
 
 
 @pytest.mark.anyio
@@ -62,8 +62,7 @@ async def test_state_overwrite_on_save(tmp_path: str) -> None:
 
     snapshot = await state.load()
     assert len(snapshot["ais"]) == 1
-    assert "a2" in snapshot["ais"]
-    assert "a1" not in snapshot["ais"]
+    assert snapshot["ais"][0]["id"] == "a2"
 
 
 @pytest.mark.anyio
