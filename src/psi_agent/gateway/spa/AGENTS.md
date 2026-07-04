@@ -96,7 +96,7 @@ spa/
 │   ├── composables/
 │   │   ├── useSSE.js                # ReadableStream SSE 逐行解析 async generator
 │   │   ├── useKeyboard.js           # visualViewport 键盘适配 + 手动上滚检测
-│   │   ├── useTheme.js              # 暗色/亮色切换 + localStorage + <html> class
+│   │   ├── useTheme.js              # 暗色/亮色切换（VueUse useColorMode + gw-theme + <html> light-mode class）
 │   │   ├── useSession.js            # selectSession：会话切换 + 草稿/消息缓存（App.vue + Sidebar 共用）
 │   │   ├── useScroll.js             # 消息容器滚动控制（注册容器 + 未锁定则滚底 + 上滚检测）
 │   │   └── useChat.js               # sendMessage 及其内部辅助（addMessage, encodeFiles, generateTitle）；不含 DOM 操作，滚动委托 useScroll、清空 file input 经 chat store 的 uploadResetToken 信号
@@ -166,7 +166,7 @@ spa/
 | `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → 恢复输入 → 从 `/history` 或 localStorage 加载消息 → 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
 | `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |
 | `useKeyboard.js` | 移动端视口适配 | `onMounted` 挂 `visualViewport` resize/scroll + window.resize 监听，同步 `#input-wrapper`/`#mobile-topbar`/`#messages`/`#sidebar`/`.mobile-overlay` 的键盘偏移内联样式；>768px 清空所有内联样式；textarea focus 时延迟滚底。移动端视口逻辑的唯一归属地（约束 11） |
-| `useTheme.js` | 主题切换 | `useTheme()` 函数体内部调用 `useUiStore()`（不在模块顶层）；初始化时读 `gw-theme` 应用 `light-mode` class；`toggleTheme()` 切换 `ui.isLightMode` + `<html>` class + localStorage |
+| `useTheme.js` | 主题切换 | `useTheme()` 函数体内部调用 `useUiStore()`（不在模块顶层）；用 VueUse `useColorMode` 管理主题（`modes: { light: 'light-mode', dark: '' }` 增删 `<html>` class，`storageKey: 'gw-theme'`）；显式配置 `disableTransition: false` / `emitAuto: false` / 自建 `storageRef`（`writeDefaults: false`）保持既有行为；`toggleTheme()` 切换 `mode`，`ui.isLightMode` 经 `watch` 同步 |
 
 ### 样式 `src/styles/`（分层不越界，见约束 10）
 
@@ -405,7 +405,7 @@ DELETE + POST /sessions (同 id, 原 workspace) → POST /titles
 - **Shape**：`--md-shape-extra-small` ~ `--md-shape-full`
 - **State layer**：`--md-state-hover/press/focus` opacity 值
 
-切换逻辑：`document.documentElement.classList.toggle('light-mode')` + localStorage。
+切换逻辑：`useTheme.js` 用 VueUse `useColorMode` 管理（`modes: { light: 'light-mode', dark: '' }` 给 `<html>` 增删 `light-mode` class，`storageKey: 'gw-theme'`）。为保持既有行为显式配置：`disableTransition: false`（保留切换过渡动画）、`emitAuto: false` + 默认 `'light'`（不跟随系统偏好）、自建 `storageRef`（`writeDefaults: false`，用户不切换则从不写 localStorage）。`ui.isLightMode` 经 `watch(mode)` 同步（非 `'dark'` 即亮色）。
 
 ## 关键设计经验
 
