@@ -30,9 +30,9 @@ class GatewayState:
             logger.warning(f"State file {self._path} is not a dict, starting fresh")
             return {"ais": {}, "sessions": {}, "titles": {}}
         return {
-            "ais": {a["id"]: a for a in data.get("ais", []) if isinstance(a, dict)},
-            "sessions": {s["id"]: s for s in data.get("sessions", []) if isinstance(s, dict)},
-            "titles": {t["id"]: t["title"] for t in data.get("titles", []) if isinstance(t, dict)},
+            "ais": {a["id"]: a for a in data.get("ais", [])},
+            "sessions": {s["id"]: s for s in data.get("sessions", [])},
+            "titles": {t["id"]: t["title"] for t in data.get("titles", [])},
         }
 
     async def save(
