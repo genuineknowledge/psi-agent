@@ -25,9 +25,8 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--md-primary);
-  opacity: 0.4;
-  animation: thinking-pulse 1.4s ease-in-out infinite;
+  background: var(--g-spark);
+  animation: g-pulse 1.4s ease-in-out infinite;
 }
 
 .thinking-dot:nth-child(2) {
@@ -38,8 +37,8 @@
   animation-delay: 0.4s;
 }
 
-@keyframes thinking-pulse {
-  0%, 80%, 100% { transform: scale(0.7); opacity: 0.3; }
-  40%            { transform: scale(1);   opacity: 1;   }
+@keyframes g-pulse {
+  0%, 100% { opacity: 0.5; transform: scale(0.9); }
+  50%       { opacity: 1;   transform: scale(1);   }
 }
 </style>

@@ -1,6 +1,8 @@
 <template>
   <div :class="['msg', msg.role]">
-    <div class="role">{{ msg.role === 'user' ? 'You' : 'Assistant' }}</div>
+    <div v-if="msg.role !== 'user'" class="spark">
+      <span class="material-symbols-outlined">auto_awesome</span>
+    </div>
     <div class="bubble-wrap">
       <button v-if="msg.role === 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
         <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
@@ -85,6 +87,7 @@ function closePreview() {
   min-width: 50px;
   display: flex;
   flex-direction: column;
+  gap: 6px;
 }
 
 .msg.user {
@@ -97,12 +100,19 @@ function closePreview() {
   align-items: flex-start;
 }
 
-.role {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--md-text-secondary);
-  margin-bottom: 4px;
-  padding: 0 6px;
+.spark {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--md-shape-full);
+  background: var(--g-spark);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.spark .material-symbols-outlined {
+  font-size: 16px;
+  color: #fff;
 }
 
 .bubble-wrap {
@@ -146,10 +156,10 @@ function closePreview() {
 }
 
 .msg.assistant .bubble {
-  background: var(--md-surface-container-high);
+  background: transparent;
   color: var(--md-text-primary);
-  border: 1px solid var(--md-outline-variant);
-  border-radius: 16px 16px 16px 4px;
+  border: none;
+  padding: 0;
 }
 
 /* 文本容器保持块级：v-html 产出的块级 markdown 嵌进块级元素，避免
