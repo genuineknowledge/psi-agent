@@ -1,13 +1,16 @@
 <template>
   <div id="sidebar" :class="{ collapsed: isSidebarCollapsed, 'mobile-open': isMobileSidebarOpen }">
     <div class="col">
-      <div class="col-header">
-        会话
-        <button @click="$emit('new-session')">
-          <span class="material-symbols-outlined">add</span>
-          新建
-        </button>
+      <div class="sb-header">
+        <div class="sb-brand">
+          <div class="sb-logo"></div>
+          <span class="sb-brand-name">Dolphin</span>
+        </div>
       </div>
+      <button class="new-chat" @click="$emit('new-session')">
+        <span class="material-symbols-outlined">edit_square</span>
+        <span>发起新对话</span>
+      </button>
       <div class="session-search">
         <span class="material-symbols-outlined">search</span>
         <input
@@ -26,6 +29,7 @@
           <span class="material-symbols-outlined">close</span>
         </button>
       </div>
+      <div class="recent-label">最近</div>
       <div
         v-for="s in visibleSessions"
         :key="s.id"
@@ -184,33 +188,25 @@ watch(
   height: 100%;
   overflow-y: auto;
 }
-.col-header {
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: .5px;
-  color: var(--md-primary);
-  padding: 16px 16px 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.sb-header { display: flex; align-items: center; padding: 12px 12px 8px; }
+.sb-brand { display: flex; align-items: center; gap: 10px; }
+.sb-logo {
+  width: 26px; height: 26px; border-radius: var(--md-shape-full);
+  background: var(--g-spark);
 }
-.col-header button {
-  background: var(--md-primary-container);
-  color: var(--md-on-primary-container);
-  border: none;
-  border-radius: var(--md-shape-full);
-  padding: 6px 12px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  transition: box-shadow .2s;
-  box-shadow: var(--md-elevation-1);
+.sb-brand-name { font-size: 20px; font-weight: 500; color: var(--md-text-primary); }
+.new-chat {
+  display: inline-flex; align-items: center; gap: 12px;
+  margin: 4px 12px 8px; padding: 10px 16px;
+  background: var(--md-surface-container-high); color: var(--md-text-secondary);
+  border: none; border-radius: var(--md-shape-full); cursor: pointer;
+  font-size: 14px; align-self: flex-start; transition: background 0.2s;
 }
-.col-header button:hover { box-shadow: var(--md-elevation-2); filter: brightness(1.05); }
-.col-header button .material-symbols-outlined { font-size: 16px; }
+.new-chat:hover { background: var(--md-surface-variant); }
+.new-chat .material-symbols-outlined { font-size: 20px; }
+.recent-label {
+  padding: 12px 16px 6px; font-size: 13px; color: var(--md-text-secondary);
+}
 .session-search {
   margin: 0 12px 8px;
   height: 38px;
@@ -254,20 +250,17 @@ watch(
 }
 .item {
   padding: 8px 8px;
-  border-radius: 12px;
+  border-radius: var(--md-shape-full);
   cursor: pointer;
   font-size: 13px;
-  margin: 4px 12px;
+  margin: 0 8px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   transition: background 0.2s;
 }
-.item:hover { background: var(--md-surface-variant); }
-.item.selected {
-  background: var(--md-secondary-container);
-  color: var(--md-on-secondary-container);
-}
+.item:hover { background: var(--md-surface-container-high); }
+.item.selected { background: var(--md-surface-container-high); }
 .item .pin {
   color: var(--md-text-secondary);
   background: none;
