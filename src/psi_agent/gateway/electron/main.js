@@ -10,6 +10,34 @@ if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
 
 const STARTUP_TIMEOUT_MS = 30_000
 
+const LOADING_HTML = `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100vh; width: 100vw;
+    background: linear-gradient(135deg, #0d1117 0%, #161b22 100%);
+    color: #c9d1d9; font-family: system-ui, -apple-system, sans-serif;
+    user-select: none; -webkit-user-select: none;
+  }
+  .title { font-size: 28px; font-weight: 300; letter-spacing: 1px; margin-bottom: 32px; }
+  .dots { display: flex; gap: 8px; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: #6366f1;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .dot:nth-child(2) { animation-delay: 0.2s; }
+  .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.2; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); }
+  }
+</style></head><body>
+  <div class="title">Psi Agent</div>
+  <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+</body></html>`
+
 let mainWindow = null
 let gatewayProc = null
 let gatewayAddr = null
@@ -18,7 +46,6 @@ function resolveBackendPath() {
   const ext = process.platform === 'win32' ? '.exe' : ''
   const binary = `psi-agent${ext}`
 
-  // Prefer __dirname (dev mode, or backend placed alongside main.js)
   const devPath = path.join(__dirname, 'backend', binary)
   const devAppPath = path.join(__dirname, 'backend', 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
 
@@ -105,6 +132,7 @@ function createWindow() {
     height: 800,
     minWidth: 400,
     minHeight: 300,
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -112,10 +140,14 @@ function createWindow() {
     },
   })
 
-  mainWindow.loadURL(gatewayAddr + '/spa/index.html')
+  mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`)
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow.show()
+  })
 
   mainWindow.webContents.on('will-navigate', (_event, url) => {
-    if (!url.startsWith(gatewayAddr)) _event.preventDefault()
+    if (!url.startsWith(gatewayAddr) && !url.startsWith('data:')) _event.preventDefault()
   })
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
@@ -129,6 +161,10 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null
   })
+}
+
+function navigateToSPA() {
+  mainWindow.loadURL(gatewayAddr + '/spa/index.html')
 }
 
 function cleanupStderr() {
@@ -146,6 +182,8 @@ function cleanup() {
 }
 
 app.whenReady().then(async () => {
+  createWindow()
+
   try {
     await startGateway()
   } catch (err) {
@@ -160,7 +198,7 @@ app.whenReady().then(async () => {
     }
   })
 
-  createWindow()
+  navigateToSPA()
 })
 
 app.on('window-all-closed', () => {
