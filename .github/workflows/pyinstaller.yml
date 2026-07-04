@@ -111,7 +111,10 @@ jobs:
           name: psi-agent-pyinstaller-${{ matrix.os }}
           path: backend-temp
       - shell: bash
-        run: mkdir -p src/psi_agent/gateway/electron/backend
+        run: mv backend-temp/psi-agent src/psi_agent/gateway/electron/backend/
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
       - shell: bash
         if: matrix.os == 'windows-latest'
         run: mv backend-temp/psi-agent.exe src/psi_agent/gateway/electron/backend/
@@ -120,8 +123,7 @@ jobs:
         run: mv backend-temp/psi-agent src/psi_agent/gateway/electron/backend/
       - shell: bash
         run: |
-          python3 -m pip install Pillow
-          python3 -c "
+          uv run --with Pillow python -c "
           from PIL import Image
           img = Image.open('.github/inno-setup/haitun.ico')
           img = img.resize((512, 512), Image.LANCZOS)

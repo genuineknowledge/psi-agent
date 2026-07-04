@@ -142,10 +142,12 @@ jobs:
       - shell: bash
         if: matrix.os == 'ubuntu-latest'
         run: mv backend-temp/psi-agent src/psi_agent/gateway/electron/backend/
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
       - shell: bash
         run: |
-          python3 -m pip install Pillow
-          python3 -c "
+          uv run --with Pillow python -c "
           from PIL import Image
           img = Image.open('.github/inno-setup/haitun.ico')
           img = img.resize((512, 512), Image.LANCZOS)
