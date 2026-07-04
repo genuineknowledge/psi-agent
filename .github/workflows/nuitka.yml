@@ -151,5 +151,5 @@ jobs:
         working-directory: src/psi_agent/gateway/electron
       - uses: actions/upload-artifact@v7
         with:
-          name: psi-gateway-electron-${{ matrix.os }}
+          name: psi-gateway-electron-nuitka-${{ matrix.os }}
           path: src/psi_agent/gateway/electron/dist/*
