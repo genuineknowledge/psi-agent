@@ -172,6 +172,20 @@ EXECUTION_BIAS_SECTION = """\
 """
 
 # ---------------------------------------------------------------------------
+# Error Handling & Retry
+# ---------------------------------------------------------------------------
+
+ERROR_HANDLING_RETRY_SECTION = """\
+## Error Handling & Retry
+When a tool call fails, errors out, or times out, do NOT silently give up and do NOT blindly rerun the same call. Work through it:
+1. **Read the error first.** Parse the actual message/exit code/stderr and decide whether it is retryable (transient) or deterministic (will fail again unchanged).
+2. **Transient failures → bounded backoff retry.** Network errors, timeouts, rate limits, temporary locks, or flaky services: retry a few times (≈2-3) with a short increasing delay. Do not loop forever.
+3. **Deterministic failures → change something, then retry.** A call that fails the same way won't fix itself. Adjust before rerunning: fix the arguments, correct the path, quote/escape inputs, try a different command, tool, endpoint, or source. Probe for missing executables (`command -v` / `Get-Command`) before declaring one unavailable.
+4. **Distinguish the failure kind.** "Not found" / bad input / permission / auth / missing dependency each call for a different fix — treat them differently rather than reflexively retrying.
+5. **After repeated genuine failure, stop and report honestly.** If it still fails after reasonable retries and variations, tell the user plainly: what you tried, the exact error, and a concrete next step or the blocker. NEVER fabricate a result, hide the failure, or claim success you did not verify.\
+"""
+
+# ---------------------------------------------------------------------------
 # Clarify vs Assume (when to ask a question vs proceed with assumptions)
 # ---------------------------------------------------------------------------
 
