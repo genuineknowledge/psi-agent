@@ -3,7 +3,7 @@
 
 #define MyAppName "Haitun Agent"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "Zhenzhi Company, Inc."
+#define MyAppPublisher "Hefei Zhenzhi Artificial Intelligence Application Software Co., Ltd"
 #define MyAppExeName "haitun.exe"
 
 [Setup]
