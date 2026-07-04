@@ -111,13 +111,13 @@ jobs:
           name: psi-agent-pyinstaller-${{ matrix.os }}
           path: backend-temp
       - shell: bash
-        run: |
-          mkdir -p src/psi_agent/gateway/electron/backend
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            mv backend-temp/psi-agent.exe src/psi_agent/gateway/electron/backend/
-          else
-            mv backend-temp/psi-agent src/psi_agent/gateway/electron/backend/
-          fi
+        run: mkdir -p src/psi_agent/gateway/electron/backend
+      - shell: bash
+        if: matrix.os == 'windows-latest'
+        run: mv backend-temp/psi-agent.exe src/psi_agent/gateway/electron/backend/
+      - shell: bash
+        if: matrix.os != 'windows-latest'
+        run: mv backend-temp/psi-agent src/psi_agent/gateway/electron/backend/
       - uses: actions/setup-node@v6
         with:
           node-version: "26"

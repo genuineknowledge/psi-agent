@@ -1,5 +1,6 @@
 const { app, BrowserWindow } = require('electron')
 const { spawn } = require('child_process')
+const fs = require('fs')
 const path = require('path')
 
 let mainWindow = null
@@ -14,7 +15,9 @@ function resolveBackendPath() {
     : path.join(__dirname, 'backend')
 
   if (process.platform === 'darwin') {
-    return path.join(backendDir, 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
+    const appPath = path.join(backendDir, 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
+    if (fs.existsSync(appPath)) return appPath
+    return path.join(backendDir, binary)
   }
   return path.join(backendDir, binary)
 }
