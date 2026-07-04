@@ -69,9 +69,7 @@ async def _get_token() -> str:
         return _token_cache["token"]
 
     if not _APP_ID or not _APP_SECRET:
-        raise RuntimeError(
-            "API mode requires FEISHU_APP_ID and FEISHU_APP_SECRET env vars."
-        )
+        raise RuntimeError("API mode requires FEISHU_APP_ID and FEISHU_APP_SECRET env vars.")
 
     url = f"{_API_BASE}/auth/v3/tenant_access_token/internal"
     body = {"app_id": _APP_ID, "app_secret": _APP_SECRET}
@@ -84,9 +82,7 @@ async def _get_token() -> str:
 
     code = data.get("code", -1)
     if code != 0:
-        raise RuntimeError(
-            f"Failed to get Feishu token: code={code}, msg={data.get('msg', data)}"
-        )
+        raise RuntimeError(f"Failed to get Feishu token: code={code}, msg={data.get('msg', data)}")
 
     _token_cache["token"] = data["tenant_access_token"]
     _token_cache["expires_at"] = now + data.get("expire", 7200)
@@ -97,9 +93,7 @@ async def _webhook_post(webhook_url: str, body: dict[str, Any]) -> str:
     """Send a message via webhook URL."""
     url = webhook_url.strip() or _WEBHOOK_URL
     if not url:
-        raise RuntimeError(
-            "No webhook URL. Set FEISHU_WEBHOOK_URL env var or pass webhook_url."
-        )
+        raise RuntimeError("No webhook URL. Set FEISHU_WEBHOOK_URL env var or pass webhook_url.")
 
     async with (
         aiohttp.ClientSession() as session,
@@ -182,7 +176,8 @@ async def feishu_send_card(
             "title": {"tag": "plain_text", "content": title},
             "template": header_color,
         },
-        "elements": elements or [
+        "elements": elements
+        or [
             {"tag": "markdown", "content": content},
         ],
     }
@@ -307,9 +302,7 @@ async def feishu_send_file(file_path: str, webhook_url: str = "") -> str:
             data.add_field("file", open(file_path, "rb"), filename=fname)  # noqa: ASYNC230, SIM115
             headers = {"Authorization": f"Bearer {token}"}
 
-            async with session.post(
-                f"{_API_BASE}/im/v1/files", data=data, headers=headers
-            ) as resp:
+            async with session.post(f"{_API_BASE}/im/v1/files", data=data, headers=headers) as resp:
                 result = await resp.json()
 
             code = result.get("code", -1)

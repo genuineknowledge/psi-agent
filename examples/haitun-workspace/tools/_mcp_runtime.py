@@ -49,6 +49,7 @@ _IDLE_TTL: float = 300.0  # 5 minutes idle timeout
 # Config parsing
 # ---------------------------------------------------------------------------
 
+
 def _config(prefix: str) -> dict[str, Any]:
     """Read MCP server config from ``MCP_<PREFIX>_CONFIG`` env var (JSON)."""
 
@@ -167,6 +168,7 @@ def _resolve(raw: dict[str, Any]) -> dict[str, Any]:
 # Transport connection
 # ---------------------------------------------------------------------------
 
+
 class _Session:
     """Async context manager wrapping an MCP transport + ClientSession."""
 
@@ -216,6 +218,7 @@ def _connect(config: dict[str, Any]) -> _Session:
 # ---------------------------------------------------------------------------
 # Pooling logic
 # ---------------------------------------------------------------------------
+
 
 async def _get_or_create(prefix: str) -> tuple[ClientSession, dict[str, Any]]:
     """Return a pooled (session, entry) for *prefix*. Reuses live connections
@@ -282,6 +285,7 @@ async def _close_one(key: str, entry: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 async def call_mcp(prefix: str, tool_name: str, args_json: str = "{}") -> str:
     """Call a tool on an MCP server with connection pooling.
@@ -376,13 +380,10 @@ async def close_mcp(prefix: str = "*") -> str:
 # Formatting
 # ---------------------------------------------------------------------------
 
+
 def _format_result(result: Any) -> str:
     """Format an MCP tool result into a readable string."""
-    parts = [
-        b.text
-        for b in getattr(result, "content", [])
-        if isinstance(b, TextContent) and b.text
-    ]
+    parts = [b.text for b in getattr(result, "content", []) if isinstance(b, TextContent) and b.text]
     if parts:
         prefix = "Error: " if getattr(result, "isError", False) else ""
         return prefix + "\n".join(parts)
@@ -391,7 +392,7 @@ def _format_result(result: Any) -> str:
     if sc is not None:
         try:
             return json.dumps(sc, ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             pass
 
     if getattr(result, "isError", False):
@@ -402,6 +403,7 @@ def _format_result(result: Any) -> str:
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
+
 
 def _cleanup_sync() -> None:
     """atexit handler: close all pooled MCP connections."""
