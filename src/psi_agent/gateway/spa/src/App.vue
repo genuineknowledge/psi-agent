@@ -44,13 +44,17 @@
         <div class="tb-avatar">Q</div>
       </div>
 
-      <ChatArea />
-
-      <InputBar
-        @select-ai="selectAI"
-        @delete-ai="confirmDeleteAI"
-        @new-ai="openAiDialog"
-      />
+      <div id="chat-main" :class="{ welcome: showWelcome }">
+        <div v-if="showWelcome" class="welcome-hero">
+          <div class="welcome-greeting">Qihua，你说，我在听！</div>
+        </div>
+        <ChatArea v-else />
+        <InputBar
+          @select-ai="selectAI"
+          @delete-ai="confirmDeleteAI"
+          @new-ai="openAiDialog"
+        />
+      </div>
     </div>
 
     <AiDialog @create="createAI" @fetchModels="fetchAvailableModels" />
@@ -97,6 +101,7 @@ const { sessions, selectedSessionId, sessionTitles, sessForm, browser } = storeT
 
 const chat = useChatStore()
 const { messages, selectedFiles } = storeToRefs(chat)
+const showWelcome = computed(() => messages.value.length === 0)
 
 const ui = useUiStore()
 const { loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen } = storeToRefs(ui)
@@ -356,4 +361,20 @@ onMounted(async () => {
   font-size: 15px; font-weight: 500;
 }
 @media (max-width: 768px) { #topbar { display: none; } }
+
+#chat-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#chat-main.welcome {
+  justify-content: center; align-items: center; gap: 40px;
+}
+#chat-main.welcome .welcome-hero { display: flex; justify-content: center; }
+.welcome-greeting {
+  font-size: 52px; font-weight: 500; letter-spacing: -1px;
+  background: var(--g-grad-hello);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
+#chat-main.welcome :deep(#input-wrapper) { padding-bottom: 0; }
+@media (max-width: 768px) {
+  .welcome-greeting { font-size: 34px; }
+}
 </style>
