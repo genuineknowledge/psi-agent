@@ -81,22 +81,19 @@ function closePreview() {
 
 <style scoped>
 .msg {
-  margin-bottom: 20px;
-  max-width: 75%;
-  width: max-content;
-  min-width: 50px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  max-width: 820px;
+  width: 100%;
+  margin: 0 auto 24px;
 }
 
 .msg.user {
-  margin-left: auto;
   align-items: flex-end;
 }
 
 .msg.assistant {
-  margin-right: auto;
   align-items: flex-start;
 }
 
