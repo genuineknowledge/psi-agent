@@ -96,3 +96,36 @@ jobs:
         with:
           name: haitun-agent-installer
           path: installer-output/Haitun Agent Setup.exe
+
+  electron:
+    needs: pyinstaller
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: psi-agent-pyinstaller-${{ matrix.os }}
+          path: backend-temp
+      - shell: bash
+        run: |
+          mkdir -p src/psi_agent/gateway/electron/backend
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            mv backend-temp/psi-agent.exe src/psi_agent/gateway/electron/backend/
+          else
+            mv backend-temp/psi-agent src/psi_agent/gateway/electron/backend/
+          fi
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "26"
+      - run: npm ci
+        working-directory: src/psi_agent/gateway/electron
+      - run: npx electron-builder --publish=never
+        working-directory: src/psi_agent/gateway/electron
+      - uses: actions/upload-artifact@v7
+        with:
+          name: psi-gateway-electron-pyinstaller-${{ matrix.os }}
+          path: src/psi_agent/gateway/electron/dist/*
