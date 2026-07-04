@@ -118,6 +118,15 @@ jobs:
       - shell: bash
         if: matrix.os != 'windows-latest'
         run: mv backend-temp/psi-agent src/psi_agent/gateway/electron/backend/
+      - shell: bash
+        run: |
+          python3 -m pip install Pillow
+          python3 -c "
+          from PIL import Image
+          img = Image.open('.github/inno-setup/haitun.ico')
+          img = img.resize((512, 512), Image.LANCZOS)
+          img.save('src/psi_agent/gateway/electron/assets/icon.png')
+          "
       - uses: actions/setup-node@v6
         with:
           node-version: "26"
