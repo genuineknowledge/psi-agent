@@ -171,7 +171,7 @@ watch(
 #sidebar {
   width: 280px;
   display: flex;
-  background: var(--md-surface);
+  background: var(--md-surface-container);
   border-right: 1px solid var(--md-outline-variant);
   flex-shrink: 0;
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.25s, border-color 0.25s;
