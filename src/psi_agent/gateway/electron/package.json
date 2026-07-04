@@ -1,9 +1,7 @@
 {
-  "name": "psi-gateway",
-  "version": "0.1.0",
-  "description": "Psi Gateway desktop application",
-  "main": "main.js",
+  "name": "psi-agent-electron",
   "private": true,
+  "main": "main.js",
   "scripts": {
     "start": "electron .",
     "build": "electron-builder --publish=never"
@@ -13,8 +11,8 @@
     "electron-builder": "^26.0.0"
   },
   "build": {
-    "appId": "com.hzhangxyz.psi-gateway",
-    "productName": "Psi Gateway",
+    "appId": "com.genuine-knowledge.psi-agent-electron",
+    "productName": "Psi Agent",
     "extraResources": [
       {
         "from": "backend",
@@ -28,11 +26,11 @@
     },
     "win": {
       "target": ["nsis"],
-      "icon": "assets/icon.png"
+      "icon": "assets/haitun.ico"
     },
     "mac": {
       "target": ["dmg"],
-      "icon": "assets/icon.icns",
+      "icon": "assets/icon.png",
       "category": "public.app-category.utilities"
     }
   }
