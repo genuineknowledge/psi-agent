@@ -1,4 +1,4 @@
-"""Shared socket helpers for AIManager and SessionManager."""
+"""Shared helpers for gateway managers."""
 
 from __future__ import annotations
 
@@ -12,6 +12,11 @@ from loguru import logger
 
 def _new_uuid() -> str:
     return uuid.uuid4().hex
+
+
+async def _noop() -> None:
+    """No-op async callable, used as default for persist callbacks."""
+    pass
 
 
 def _socket_path(prefix: str, kind: str, entity_id: str) -> str:

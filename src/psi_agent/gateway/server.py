@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 from base64 import b64encode
 from contextlib import aclosing, suppress
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 import anyio
@@ -46,11 +46,13 @@ def _error(message: str, status: int) -> web.Response:
     return _json({"error": message}, status=status)
 
 
-async def create_app(aim: AIManager, sm: SessionManager, favicon_path: str | None = None) -> web.Application:
+async def create_app(
+    aim: AIManager, sm: SessionManager, tm: TitleManager, favicon_path: str | None = None
+) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
     app["sm"] = sm
-    app["tm"] = TitleManager()
+    app["tm"] = tm
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
     app["hm"] = HistoryManager()
@@ -167,7 +169,7 @@ async def _set_title(request: web.Request) -> web.Response:
     try:
         body = await request.json()
         sid = body["id"]
-        tm.set(sid, body["title"])
+        await tm.set(sid, body["title"])
         return _json({"id": sid, "title": body["title"]})
     except (KeyError, TypeError) as e:
         return _error(str(e), status=400)
@@ -211,10 +213,10 @@ async def _get_cwd(request: web.Request) -> web.Response:
 
 async def _browse_workspace(request: web.Request) -> web.Response:
     wm: WorkspaceManager = request.app["wm"]
-    path = request.query.get("path") or str(Path.cwd())
+    path = request.query.get("path") or os.getcwd()
     try:
         result = await wm.browse(path)
-        parent = str(Path(path).parent)
+        parent = os.path.dirname(path)
         return _json({"path": path, "parent": parent, **result})
     except (OSError, PermissionError) as e:
         return _error(str(e), status=400)
@@ -246,6 +248,8 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
             data = await request.post()
             raw = data.get("chunks")
             raw_chunks = json.loads(str(raw)) if raw else []
+            if not isinstance(raw_chunks, list):
+                return _error("chunks must be a JSON array", status=400)
             body: dict[str, Any] = {"chunks": raw_chunks}
             for file_field in data.getall("file", []):
                 fname = getattr(file_field, "filename", None)
