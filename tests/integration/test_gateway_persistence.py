@@ -36,8 +36,10 @@ async def test_gateway_state_persistence_roundtrip(tmp_path: str) -> None:
 
     raw = await state_path.read_text(encoding="utf-8")
     parsed = json.loads(raw)
-    assert parsed["ais"]["a1"]["provider"] == "openai"
-    assert parsed["sessions"]["s1"]["ai_id"] == "a1"
+    assert isinstance(parsed["ais"], list)
+    assert parsed["ais"][0]["provider"] == "openai"
+    assert isinstance(parsed["sessions"], list)
+    assert parsed["sessions"][0]["ai_id"] == "a1"
     assert isinstance(parsed["titles"], list)
     assert parsed["titles"][0] == {"id": "s1", "title": "Test Chat"}
 

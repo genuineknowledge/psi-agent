@@ -32,12 +32,12 @@ Gateway.run():
 
 ```json
 {
-  "ais": {
-    "<ai_id>": {"provider": "openai", "model": "gpt-4o", "api_key": "sk-...", "base_url": "http://..."}
-  },
-  "sessions": {
-    "<session_id>": {"ai_id": "<ai_id>", "workspace": "/home/..."}
-  },
+  "ais": [
+    {"id": "<ai_id>", "provider": "openai", "model": "gpt-4o", "api_key": "sk-...", "base_url": "http://..."}
+  ],
+  "sessions": [
+    {"id": "<session_id>", "ai_id": "<ai_id>", "workspace": "/home/..."}
+  ],
   "titles": [
     {"id": "<session_id>", "title": "My Chat"}
   ]

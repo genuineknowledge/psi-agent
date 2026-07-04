@@ -29,14 +29,19 @@ class GatewayState:
         if not isinstance(data, dict):
             logger.warning(f"State file {self._path} is not a dict, starting fresh")
             return {"ais": {}, "sessions": {}, "titles": {}}
+        raw_ais = data.get("ais", [])
+        ais = {a["id"]: a for a in raw_ais if isinstance(a, dict)} if isinstance(raw_ais, list) else {}
+        raw_sessions = data.get("sessions", [])
+        sessions = {s["id"]: s for s in raw_sessions if isinstance(s, dict)} if isinstance(raw_sessions, list) else {}
         raw_titles = data.get("titles", [])
-        if isinstance(raw_titles, list):
-            titles = {t["id"]: t["title"] for t in raw_titles if isinstance(t, dict)}
-        else:
-            titles = {}
+        titles = (
+            {t["id"]: t["title"] for t in raw_titles if isinstance(t, dict)}
+            if isinstance(raw_titles, list)
+            else {}
+        )
         return {
-            "ais": data.get("ais", {}),
-            "sessions": data.get("sessions", {}),
+            "ais": ais,
+            "sessions": sessions,
             "titles": titles,
         }
 
@@ -47,16 +52,17 @@ class GatewayState:
         titles: dict[str, str],
     ) -> None:
         data = {
-            "ais": {
-                a["id"]: {
+            "ais": [
+                {
+                    "id": a["id"],
                     "provider": a["provider"],
                     "model": a["model"],
                     "api_key": a["api_key"],
                     "base_url": a["base_url"],
                 }
                 for a in ais
-            },
-            "sessions": {s["id"]: {"ai_id": s["ai_id"], "workspace": s["workspace"]} for s in sessions},
+            ],
+            "sessions": [{"id": s["id"], "ai_id": s["ai_id"], "workspace": s["workspace"]} for s in sessions],
             "titles": [{"id": sid, "title": title} for sid, title in titles.items()],
         }
         json_str = json.dumps(data, ensure_ascii=False, indent=2)
