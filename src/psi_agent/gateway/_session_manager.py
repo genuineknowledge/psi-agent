@@ -104,8 +104,8 @@ class SessionManager:
             entry = self._entries.pop(session_id)
             entry.scope.cancel()
             await _remove_socket(entry.info.channel_socket)
-            await self._persist()
-            logger.info(f"Session {session_id!r} deleted")
+        await self._persist()
+        logger.info(f"Session {session_id!r} deleted")
 
     async def list_all(self) -> list[SessionInfo]:
         return [e.info for e in list(self._entries.values())]

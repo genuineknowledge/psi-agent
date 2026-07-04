@@ -104,8 +104,8 @@ class AIManager:
             entry = self._entries.pop(ai_id)
             entry.scope.cancel()
             await _remove_socket(entry.info.socket)
-            await self._persist()
-            logger.info(f"AI {ai_id!r} deleted")
+        await self._persist()
+        logger.info(f"AI {ai_id!r} deleted")
 
     async def list_all(self) -> list[AiInfo]:
         return [e.info for e in list(self._entries.values())]
