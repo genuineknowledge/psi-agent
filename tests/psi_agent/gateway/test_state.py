@@ -24,7 +24,7 @@ async def test_state_save_and_load_roundtrip(tmp_path: str) -> None:
         sessions=[
             {"id": "s1", "ai_id": "a1", "workspace": "/tmp/ws"},
         ],
-        titles={"s1": "Hello Chat"},
+        titles=[{"id": "s1", "title": "Hello Chat"}],
     )
 
     snapshot = await state.load()
@@ -52,12 +52,12 @@ async def test_state_overwrite_on_save(tmp_path: str) -> None:
     await state.save(
         ais=[{"id": "a1", "provider": "o", "model": "m", "api_key": "k1", "base_url": ""}],
         sessions=[],
-        titles={},
+        titles=[],
     )
     await state.save(
         ais=[{"id": "a2", "provider": "x", "model": "y", "api_key": "k2", "base_url": ""}],
         sessions=[],
-        titles={},
+        titles=[],
     )
 
     snapshot = await state.load()
@@ -77,7 +77,7 @@ async def test_state_save_writes_history_file(tmp_path: str) -> None:
     await state.save(
         ais=[{"id": "a1", "provider": "o", "model": "m", "api_key": "k", "base_url": ""}],
         sessions=[],
-        titles={},
+        titles=[],
     )
 
     assert await (anyio.Path(tmp_path) / "state" / "latest.json").exists()
@@ -91,7 +91,7 @@ async def test_state_no_history_file_without_startup_ts(tmp_path: str) -> None:
     await state.save(
         ais=[{"id": "a1", "provider": "o", "model": "m", "api_key": "k", "base_url": ""}],
         sessions=[],
-        titles={},
+        titles=[],
     )
 
     assert await (anyio.Path(tmp_path) / "state" / "latest.json").exists()

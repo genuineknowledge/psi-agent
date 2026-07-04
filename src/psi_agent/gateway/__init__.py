@@ -104,7 +104,7 @@ class Gateway:
                         {"id": info.id, "ai_id": info.ai_id, "workspace": info.workspace}
                         for info in await sm.list_all()
                     ],
-                    titles=tm.get_all(),
+                    titles=[{"id": sid, "title": title} for sid, title in tm.get_all().items()],
                 )
 
             aim._persist = _do_persist

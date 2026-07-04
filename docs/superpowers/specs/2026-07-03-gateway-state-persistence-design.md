@@ -59,7 +59,7 @@ class GatewayState:
     async def load(self) -> dict[str, dict]:
         """读取 JSON，文件不存在返回 {"ais": {}, "sessions": {}, "titles": {}}"""
 
-    async def save(self, ais: list[AiInfo], sessions: list[SessionInfo], titles: dict[str, str]) -> None:
+    async def save(self, ais: list[dict[str, str]], sessions: list[dict[str, str]], titles: list[dict[str, str]]) -> None:
         """写入 JSON。失败 log warning，不抛异常"""
 ```
 

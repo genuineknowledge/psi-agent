@@ -39,7 +39,7 @@ class GatewayState:
         self,
         ais: list[dict[str, str]],
         sessions: list[dict[str, str]],
-        titles: dict[str, str],
+        titles: list[dict[str, str]],
     ) -> None:
         data = {
             "ais": [
@@ -53,7 +53,7 @@ class GatewayState:
                 for a in ais
             ],
             "sessions": [{"id": s["id"], "ai_id": s["ai_id"], "workspace": s["workspace"]} for s in sessions],
-            "titles": [{"id": sid, "title": title} for sid, title in titles.items()],
+            "titles": titles,
         }
         json_str = json.dumps(data, ensure_ascii=False, indent=2)
         try:

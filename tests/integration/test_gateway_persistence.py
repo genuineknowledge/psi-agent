@@ -26,7 +26,7 @@ async def test_gateway_state_persistence_roundtrip(tmp_path: str) -> None:
     sessions_data = {
         "s1": {"id": "s1", "ai_id": "a1", "workspace": str(tmp_path)},
     }
-    titles_data = {"s1": "Test Chat"}
+    titles_data = [{"id": "s1", "title": "Test Chat"}]
 
     await state.save(
         ais=list(ais_data.values()),
