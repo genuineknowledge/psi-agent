@@ -22,6 +22,7 @@ import sys
 import types
 import typing
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -306,7 +307,12 @@ class ToolRegistry:
         registered_modules: list[str] = []
         tools_anyio = anyio.Path(str(tools_dir))
 
-        if not await tools_anyio.is_dir():
+        try:
+            tools_dir_exists = await tools_anyio.is_dir()
+        except Exception as e:
+            logger.warning(f"Cannot access tools directory {tools_dir!r}: {e!r}")
+            return files
+        if not tools_dir_exists:
             logger.warning(f"Tools directory not found: {tools_dir!r}")
             return files
 
@@ -315,66 +321,64 @@ class ToolRegistry:
                 if py_file.name.startswith("_"):
                     continue
 
-                file_bytes = await py_file.read_bytes()
-                file_hash = hashlib.sha256(file_bytes).hexdigest()
-                str_path = str(py_file)
-
-                if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
-                    logger.debug(f"Skipping unchanged file: {py_file!r}")
-                    old = old_files[str_path]
-                    files[str_path] = FileEntry(file_hash=old.file_hash, tools=old.tools, funcs=old.funcs, fresh=False)
-                    continue
-
-                module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
-
+                module_name = None
                 try:
+                    file_bytes = await py_file.read_bytes()
+                    file_hash = hashlib.sha256(file_bytes).hexdigest()
+                    str_path = str(py_file)
+
+                    if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
+                        logger.debug(f"Skipping unchanged file: {py_file!r}")
+                        old = old_files[str_path]
+                        files[str_path] = FileEntry(
+                            file_hash=old.file_hash, tools=old.tools, funcs=old.funcs, fresh=False
+                        )
+                        continue
+
+                    module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
+
                     source = await py_file.read_text(encoding="utf-8")
                     compiled = compile(source, str_path, "exec")
-                except Exception as e:
-                    logger.error(f"Failed to read or compile {py_file!r}: {e!r}")
-                    continue
 
-                module = types.ModuleType(module_name)
-                module.__file__ = str_path
-                sys.modules[module_name] = module
-                registered_modules.append(module_name)
-                try:
+                    module = types.ModuleType(module_name)
+                    module.__file__ = str_path
+                    sys.modules[module_name] = module
+                    registered_modules.append(module_name)
+
                     exec(compiled, module.__dict__)
+
+                    attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
+                    tools: dict[str, ToolFunction] = {}
+                    funcs: dict[str, Callable[..., Any]] = {}
+
+                    for name in attr_names:
+                        func = getattr(module, name, None)
+                        if not inspect.iscoroutinefunction(func):
+                            continue
+
+                        try:
+                            tool_func = ToolFunction.from_callable(func)
+                        except Exception as e:
+                            logger.error(f"Skipping tool {name!r} in {py_file!r}: {e!r}")
+                            continue
+
+                        tools[name] = tool_func
+                        funcs[name] = func
+                        logger.debug(f"Loaded tool: {name!r} from {py_file!r}")
+
+                    files[str_path] = FileEntry(
+                        file_hash=file_hash,
+                        tools=tools,
+                        funcs=funcs,
+                        fresh=True,
+                    )
                 except Exception as e:
-                    logger.error(f"Failed to execute tool module {py_file!r}: {e!r}")
-                    sys.modules.pop(module_name, None)
-                    registered_modules.pop()
+                    if module_name is not None:
+                        sys.modules.pop(module_name, None)
+                        with suppress(ValueError):
+                            registered_modules.remove(module_name)
+                    logger.error(f"Failed to load tool file {py_file!r}: {e!r}")
                     continue
-                except BaseException:
-                    sys.modules.pop(module_name, None)
-                    registered_modules.pop()
-                    raise
-
-                attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
-                tools: dict[str, ToolFunction] = {}
-                funcs: dict[str, Callable[..., Any]] = {}
-
-                for name in attr_names:
-                    func = getattr(module, name, None)
-                    if not inspect.iscoroutinefunction(func):
-                        continue
-
-                    try:
-                        tool_func = ToolFunction.from_callable(func)
-                    except (TypeError, NameError, AttributeError, SyntaxError, ValueError) as e:
-                        logger.error(f"Skipping tool {name!r} in {py_file!r}: {e!r}")
-                        continue
-
-                    tools[name] = tool_func
-                    funcs[name] = func
-                    logger.debug(f"Loaded tool: {name!r} from {py_file!r}")
-
-                files[str_path] = FileEntry(
-                    file_hash=file_hash,
-                    tools=tools,
-                    funcs=funcs,
-                    fresh=True,
-                )
         except BaseException:
             for mn in registered_modules:
                 sys.modules.pop(mn, None)

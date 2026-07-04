@@ -214,48 +214,57 @@ class ScheduleRegistry:
         files: dict[str, ScheduleEntry] = {}
         sched_anyio = anyio.Path(str(schedules_dir))
 
-        if not await sched_anyio.is_dir():
+        try:
+            sched_dir_exists = await sched_anyio.is_dir()
+        except Exception as e:
+            logger.warning(f"Cannot access schedules directory {schedules_dir!r}: {e!r}")
+            return files
+        if not sched_dir_exists:
             logger.warning(f"Schedules directory not found: {schedules_dir!r}")
             return files
 
         async for task_dir in sched_anyio.iterdir():
-            task_dir_anyio = anyio.Path(str(task_dir))
-            if not await task_dir_anyio.is_dir():
-                continue
-            task_file = task_dir_anyio / "TASK.md"
-            if not await task_file.exists():
-                continue
-
-            content = await task_file.read_text(encoding="utf-8")
-            file_hash = hashlib.sha256(content.encode()).hexdigest()
-            str_path = str(task_file)
-
-            if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
-                logger.debug(f"Skipping unchanged file: {task_file!r}")
-                old = old_files[str_path]
-                files[str_path] = ScheduleEntry(file_hash=old.file_hash, schedule=old.schedule, fresh=False)
-                continue
-
-            header, body = parse_yaml_header(content)
-            if header is None:
-                logger.warning(f"No valid YAML header in {task_file!r}, skipping")
-                continue
-
-            name = header.get("name")
-            cron = header.get("cron")
-            if not name or not cron:
-                logger.warning(f"Missing 'name' or 'cron' in {task_file!r} header, skipping")
-                continue
-
             try:
-                croniter(cron)
-            except (ValueError, Exception) as e:
-                logger.error(f"Invalid cron expression for schedule {name!r}: {e!r}")
-                continue
+                task_dir_anyio = anyio.Path(str(task_dir))
+                if not await task_dir_anyio.is_dir():
+                    continue
+                task_file = task_dir_anyio / "TASK.md"
+                if not await task_file.exists():
+                    continue
 
-            schedule = Schedule(name=str(name), cron=str(cron), task_content=body.strip())
-            files[str_path] = ScheduleEntry(file_hash=file_hash, schedule=schedule, fresh=True)
-            logger.debug(f"Loaded schedule: {name!r} (cron: {cron!r})")
+                content = await task_file.read_text(encoding="utf-8")
+                file_hash = hashlib.sha256(content.encode()).hexdigest()
+                str_path = str(task_file)
+
+                if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
+                    logger.debug(f"Skipping unchanged file: {task_file!r}")
+                    old = old_files[str_path]
+                    files[str_path] = ScheduleEntry(file_hash=old.file_hash, schedule=old.schedule, fresh=False)
+                    continue
+
+                header, body = parse_yaml_header(content)
+                if header is None:
+                    logger.warning(f"No valid YAML header in {task_file!r}, skipping")
+                    continue
+
+                name = header.get("name")
+                cron = header.get("cron")
+                if not name or not cron:
+                    logger.warning(f"Missing 'name' or 'cron' in {task_file!r} header, skipping")
+                    continue
+
+                try:
+                    croniter(cron)
+                except (ValueError, Exception) as e:
+                    logger.error(f"Invalid cron expression for schedule {name!r}: {e!r}")
+                    continue
+
+                schedule = Schedule(name=str(name), cron=str(cron), task_content=body.strip())
+                files[str_path] = ScheduleEntry(file_hash=file_hash, schedule=schedule, fresh=True)
+                logger.debug(f"Loaded schedule: {name!r} (cron: {cron!r})")
+            except Exception as e:
+                logger.error(f"Failed to load schedule from {task_dir!r}: {e!r}")
+                continue
 
         logger.info(f"Loaded {len(files)} schedule(s) from {schedules_dir!r}")
         return files

@@ -224,7 +224,7 @@ Generate a daily progress report.
 ```
 
 - Each schedule has an independent CancelScope and supports hot-reload
-- `croniter` parses cron expressions; invalid expressions skip that schedule
+- Each schedule is loaded independently — IO errors, YAML parsing issues, or cron validation failures only skip that schedule
 - Schedule triggers acquire the session lock and execute serially
 
 ### Skills

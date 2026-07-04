@@ -224,7 +224,7 @@ cron: "0 12 * * *"
 ```
 
 - 每个 schedule 有独立 CancelScope，支持热重载
-- `croniter` 解析 cron 表达式，非法表达式会跳过该 schedule
+- 每个 schedule 独立加载——IO 错误、YAML 解析问题、cron 验证失败只跳过该 schedule
 - Schedule 触发时自动获取 session lock，串行处理
 
 ### Skills
