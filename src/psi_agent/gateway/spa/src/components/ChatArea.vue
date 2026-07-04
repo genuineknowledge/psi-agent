@@ -5,7 +5,6 @@
       v-for="(m, i) in messages"
       :key="m.id || i"
       :msg="m"
-      :index="i"
     />
   </div>
 </template>

@@ -2,14 +2,9 @@
   <div :class="['msg', msg.role]">
     <div class="role">{{ msg.role === 'user' ? 'You' : 'Assistant' }}</div>
     <div class="bubble-wrap">
-      <div v-if="msg.role === 'user'" class="msg-actions">
-        <button class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
-          <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
-        </button>
-        <button class="copy-btn" @click="requestUndo" title="撤回此条提问及其对应回复">
-          <span class="material-symbols-outlined">undo</span>
-        </button>
-      </div>
+      <button v-if="msg.role === 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
+        <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
+      </button>
       <ThinkingBubble v-if="msg.role === 'assistant' && streaming && !msg.text" />
       <div v-else class="bubble">
         <div v-if="msg.text" class="bubble-content" v-html="msg.html"></div>
@@ -44,25 +39,17 @@ import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useClipboard } from '@vueuse/core'
 import { useChatStore } from '../stores/chat.js'
-import { useUiStore } from '../stores/ui.js'
-import { loadUndoSkipConfirm } from '../utils.js'
-import { undoFrom } from '../composables/useChat.js'
 import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
 
 const chat = useChatStore()
 const { streaming } = storeToRefs(chat)
-const ui = useUiStore()
 
 const props = defineProps({
   msg: {
     type: Object,
     required: true,
     validator: (m) => m && typeof m.role === 'string',
-  },
-  index: {
-    type: Number,
-    default: -1,
   },
 })
 
@@ -71,19 +58,6 @@ const openPreviewKey = ref('')
 const openPreviewFile = ref(null)
 function copyMessage() {
   copy(props.msg.text)
-}
-
-function requestUndo() {
-  if (chat.streaming) return
-  // 已勾选“不再提示”则直接撤回，否则弹确认框
-  if (loadUndoSkipConfirm()) {
-    undoFrom(props.index)
-    return
-  }
-  ui.dlgConfirm.message = '确认撤回此条提问及其对应的回复？此操作不可恢复。'
-  ui.dlgConfirm.actionType = 'undo'
-  ui.dlgConfirm.actionArgs = props.index
-  ui.dlgConfirm.show = true
 }
 
 function previewKey(f, i) {
@@ -211,12 +185,6 @@ function closePreview() {
   opacity: 0;
   transition: opacity 0.15s, background 0.15s;
   margin-top: 2px;
-}
-
-.msg-actions {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
 }
 
 .bubble-wrap:hover .copy-btn,
