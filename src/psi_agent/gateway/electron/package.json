@@ -7,7 +7,7 @@
     "build": "electron-builder --publish=never"
   },
   "devDependencies": {
-    "electron": "^36.0.0",
+    "electron": "^42.0.0",
     "electron-builder": "^26.0.0"
   },
   "build": {
