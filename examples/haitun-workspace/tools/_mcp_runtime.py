@@ -37,7 +37,6 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.types import TextContent
 
-
 # ---------------------------------------------------------------------------
 # Connection pool
 # ---------------------------------------------------------------------------
@@ -411,7 +410,7 @@ def _cleanup_sync() -> None:
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            _ = loop.create_task(_cleanup_async())
+            loop.create_task(_cleanup_async())  # noqa: RUF006
         else:
             loop.run_until_complete(_cleanup_async())
     except RuntimeError:
