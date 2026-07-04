@@ -192,32 +192,39 @@ watch(
 .sb-brand { display: flex; align-items: center; gap: 10px; }
 .sb-logo {
   width: 26px; height: 26px; border-radius: var(--md-shape-full);
-  background: var(--g-spark);
+  background-image: url('/spa/haitun-logo.png');
+  background-size: cover;
+  background-position: center;
 }
 .sb-brand-name { font-size: 20px; font-weight: 500; color: var(--md-text-primary); }
 .new-chat {
   display: inline-flex; align-items: center; gap: 12px;
-  margin: 4px 12px 8px; padding: 10px 16px;
-  background: var(--md-surface-container-high); color: var(--md-text-secondary);
+  margin: 4px 8px 8px; padding: 10px 16px;
+  background: transparent; color: var(--md-text-secondary);
   border: none; border-radius: var(--md-shape-full); cursor: pointer;
   font-size: 14px; align-self: flex-start; transition: background 0.2s;
 }
-.new-chat:hover { background: var(--md-surface-variant); }
+.new-chat:hover { background: var(--md-surface-container-high); }
 .new-chat .material-symbols-outlined { font-size: 20px; }
 .recent-label {
   padding: 12px 16px 6px; font-size: 13px; color: var(--md-text-secondary);
 }
 .session-search {
-  margin: 0 12px 8px;
-  height: 38px;
+  margin: 0 8px 8px;
+  height: 40px;
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px 0 12px;
-  background: var(--md-surface-container-high);
-  border: 1px solid var(--md-outline-variant);
-  border-radius: 8px;
+  gap: 10px;
+  padding: 0 12px 0 16px;
+  background: transparent;
+  border: none;
+  border-radius: var(--md-shape-full);
   color: var(--md-text-secondary);
+  transition: background 0.2s;
+}
+.session-search:hover,
+.session-search:focus-within {
+  background: var(--md-surface-container-high);
 }
 .session-search .material-symbols-outlined { font-size: 18px; flex-shrink: 0; }
 .session-search input {

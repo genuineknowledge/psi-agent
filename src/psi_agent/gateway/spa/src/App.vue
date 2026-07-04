@@ -41,13 +41,16 @@
         <button class="tb-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
           <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
         </button>
-        <div class="tb-avatar">Q</div>
+        <button class="tb-avatar" @click="editUserName" :title="userName ? `${userName}（点击修改称呼）` : '设置称呼'">
+          <span v-if="avatarInitial">{{ avatarInitial }}</span>
+          <span v-else class="material-symbols-outlined">person</span>
+        </button>
       </div>
 
       <div id="chat-main" :class="{ welcome: showWelcome }">
         <transition name="hero-fade" mode="out-in">
           <div v-if="showWelcome" class="welcome-hero" key="welcome">
-            <div class="welcome-greeting">Qihua，你说，我在听！</div>
+            <div class="welcome-greeting">{{ greetingText }}</div>
           </div>
           <ChatArea v-else key="chat" />
         </transition>
@@ -94,6 +97,22 @@ import Snackbar from './components/Snackbar.vue'
 
 const LS_SIDEBAR = 'gw-sidebar-state'
 const sidebarState = useStorage(LS_SIDEBAR, 'expanded')
+
+// 用户称呼：localStorage 持久化，为空时用通用问候、头像用默认图标。
+// 后续可由 agent 对话设置（见 profile 机制），届时接入同一 gw-user-name key。
+const LS_USER_NAME = 'gw-user-name'
+const userName = useStorage(LS_USER_NAME, '')
+const greetingText = computed(() =>
+  userName.value ? `${userName.value}，你说，我在听！` : '你好，有什么可以帮你？'
+)
+const avatarInitial = computed(() =>
+  userName.value ? userName.value.trim().charAt(0).toUpperCase() : ''
+)
+function editUserName() {
+  const next = window.prompt('希望我怎么称呼你？（留空则不显示）', userName.value)
+  if (next === null) return
+  userName.value = next.trim()
+}
 
 const ai = useAiStore()
 const { ais, selectedAiId, aiForm, fetchedModels, loadingModels } = storeToRefs(ai)
@@ -361,7 +380,11 @@ onMounted(async () => {
   background: var(--md-primary); color: var(--md-on-primary);
   display: flex; align-items: center; justify-content: center;
   font-size: 15px; font-weight: 500;
+  border: none; cursor: pointer; padding: 0;
+  transition: filter 0.2s;
 }
+#topbar .tb-avatar:hover { filter: brightness(1.08); }
+#topbar .tb-avatar .material-symbols-outlined { font-size: 20px; }
 @media (max-width: 768px) { #topbar { display: none; } }
 
 #chat-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
