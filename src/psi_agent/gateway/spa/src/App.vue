@@ -33,13 +33,16 @@
         </div>
       </div>
 
-      <button class="sidebar-toggle-btn" @click="toggleSidebar" :title="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
-        <span class="material-symbols-outlined">{{ (isSidebarCollapsed && !isMobileSidebarOpen) ? 'menu' : 'menu_open' }}</span>
-      </button>
-
-      <button class="theme-toggle-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
-        <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
-      </button>
+      <div id="topbar">
+        <button class="tb-btn" @click="toggleSidebar" :title="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
+          <span class="material-symbols-outlined">{{ (isSidebarCollapsed && !isMobileSidebarOpen) ? 'menu' : 'left_panel_close' }}</span>
+        </button>
+        <div class="tb-spacer"></div>
+        <button class="tb-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
+          <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
+        </button>
+        <div class="tb-avatar">Q</div>
+      </div>
 
       <ChatArea />
 
@@ -332,3 +335,25 @@ onMounted(async () => {
   }
 })
 </script>
+
+<style scoped>
+#topbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; flex-shrink: 0;
+}
+#topbar .tb-spacer { flex: 1; }
+#topbar .tb-btn {
+  width: 40px; height: 40px; border: none; background: transparent;
+  color: var(--md-text-secondary); border-radius: var(--md-shape-full);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: background 0.2s;
+}
+#topbar .tb-btn:hover { background: var(--md-surface-container-high); }
+#topbar .tb-avatar {
+  width: 32px; height: 32px; border-radius: var(--md-shape-full);
+  background: var(--md-primary); color: var(--md-on-primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 500;
+}
+@media (max-width: 768px) { #topbar { display: none; } }
+</style>
