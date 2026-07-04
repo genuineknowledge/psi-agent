@@ -26,7 +26,7 @@
     },
     "win": {
       "target": ["nsis"],
-      "icon": "assets/haitun.ico"
+      "icon": "assets/icon.png"
     },
     "mac": {
       "target": ["dmg"],
