@@ -29,20 +29,10 @@ class GatewayState:
         if not isinstance(data, dict):
             logger.warning(f"State file {self._path} is not a dict, starting fresh")
             return {"ais": {}, "sessions": {}, "titles": {}}
-        raw_ais = data.get("ais", [])
-        ais = {a["id"]: a for a in raw_ais if isinstance(a, dict)} if isinstance(raw_ais, list) else {}
-        raw_sessions = data.get("sessions", [])
-        sessions = {s["id"]: s for s in raw_sessions if isinstance(s, dict)} if isinstance(raw_sessions, list) else {}
-        raw_titles = data.get("titles", [])
-        titles = (
-            {t["id"]: t["title"] for t in raw_titles if isinstance(t, dict)}
-            if isinstance(raw_titles, list)
-            else {}
-        )
         return {
-            "ais": ais,
-            "sessions": sessions,
-            "titles": titles,
+            "ais": {a["id"]: a for a in data.get("ais", []) if isinstance(a, dict)},
+            "sessions": {s["id"]: s for s in data.get("sessions", []) if isinstance(s, dict)},
+            "titles": {t["id"]: t["title"] for t in data.get("titles", []) if isinstance(t, dict)},
         }
 
     async def save(
