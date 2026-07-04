@@ -54,10 +54,12 @@ Gateway.run():
 ```python
 @dataclass
 class GatewayState:
-    _path: anyio.Path          # Path("state/latest.json")
+    _path: anyio.Path = field(default_factory=lambda: anyio.Path("state/latest.json"))
+    _history_dir: anyio.Path = field(default_factory=lambda: anyio.Path("state"))
+    _startup_ts: str = field(default_factory=lambda: datetime.now().strftime("%Y%m%d-%H%M%S"))
 
-    async def load(self) -> dict[str, dict]:
-        """读取 JSON，文件不存在返回 {"ais": {}, "sessions": {}, "titles": {}}"""
+    async def load(self) -> dict[str, list[dict[str, Any]]]:
+        """读取 JSON，文件不存在返回 {"ais": [], "sessions": [], "titles": []}"""
 
     async def save(self, ais: list[dict[str, str]], sessions: list[dict[str, str]], titles: list[dict[str, str]]) -> None:
         """写入 JSON。失败 log warning，不抛异常"""
@@ -65,25 +67,25 @@ class GatewayState:
 
 ### `_ai_manager.py`
 
-- 新增 `_persist: Callable[[], Awaitable[None]] | None` 字段（构造函数参数，默认 `None`）
-- `create()`: `return AiInfo(...)` 前 `if self._persist: await self._persist()`
-- `delete()`: `logger.info(...)` 前 `if self._persist: await self._persist()`
-- Crash 清理 (`_run_ai` except): `self._entries.pop(...)` 后 `if self._persist: await self._persist()`
+- 新增 `_persist: Callable[[], Awaitable[None]]` 字段（默认 shared `_noop()`）
+- `create()`: `return AiInfo(...)` 前 `await self._persist()`
+- `delete()`: `logger.info(...)` 前 `await self._persist()`
+- Crash 清理 (`_run_ai` except): `self._entries.pop(...)` 后 `await self._persist()`
 - `get_socket(ai_id)`: 不存在时用 `_socket_path()` 计算路径返回，**不抛 LookupError**
 
 ### `_session_manager.py`
 
-- 新增 `_persist: Callable[[], Awaitable[None]] | None` 字段（构造函数参数，默认 `None`）
+- 新增 `_persist: Callable[[], Awaitable[None]]` 字段（默认 shared `_noop()`）
 - `create()`: 去掉 `self._aim.has(ai_id)` 检查；`ai_socket` 通过 `self._aim.get_socket(ai_id)` 获取（支持 AI 尚未创建的场景）
-- `create()`: `return SessionInfo(...)` 前 `if self._persist: await self._persist()`
-- `delete()`: `logger.info(...)` 前 `if self._persist: await self._persist()`
-- Crash 清理 (`_run_session` except): `self._entries.pop(...)` 后 `if self._persist: await self._persist()`
+- `create()`: `return SessionInfo(...)` 前 `await self._persist()`
+- `delete()`: `logger.info(...)` 前 `await self._persist()`
+- Crash 清理 (`_run_session` except): `self._entries.pop(...)` 后 `await self._persist()`
 
 ### `_title_manager.py`
 
 - 新增 `_persist: Callable[[], Awaitable[None]] | None` 字段（`__init__` 参数，默认 `None`）
-- `set()`: 改为 `async def set()`，`self._titles[sid] = title` 后 `if self._persist: await self._persist()`
-- `generate()`: `self._titles[session_id] = title` 后 `if self._persist: await self._persist()`
+- `set()`: 改为 `async def set()`，`self._titles[sid] = title` 后 `await self._persist()`
+- `generate()`: `self._titles[session_id] = title` 后 `await self._persist()`
 
 ### `__init__.py` (Gateway.run)
 
@@ -103,15 +105,15 @@ setup_logging(verbose)
     → 创建 _do_persist 闭包（tm 已存在，闭包捕获引用）:
         async def _do_persist():
             await state.save(
-                ais=await aim.list_all(),
-                sessions=await sm.list_all(),
-                titles=tm.get_all(),
+                ais=[{"id": info.id, ...} for info in await aim.list_all()],
+                sessions=[{"id": info.id, ...} for info in await sm.list_all()],
+                titles=[{"id": sid, "title": title} for sid, title in tm.get_all().items()],
             )
     → 注入 _persist:
         aim._persist = sm._persist = tm._persist = _do_persist
     → 恢复标题:
-        for sid, title in snapshot.titles.items():
-            await tm.set(sid, title)
+        for t in snapshot.titles:
+            await tm.set(t["id"], t["title"])
     → 调用一次 _do_persist() 持久化恢复后的初始状态
     → ... 后续不变
 ```

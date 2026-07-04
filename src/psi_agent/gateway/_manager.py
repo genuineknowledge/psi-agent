@@ -1,4 +1,4 @@
-"""Shared socket helpers for AIManager and SessionManager."""
+"""Shared helpers for gateway managers."""
 
 from __future__ import annotations
 

@@ -28,7 +28,7 @@ Gateway 进程
 | 文件 | 职责 |
 |------|------|
 | `__init__.py` | `Gateway` dataclass + `run()` 入口 |
-| `_manager.py` | 共享 socket helpers（_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
+| `_manager.py` | 共享 helpers（_new_uuid/_noop/_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
 | `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + AiInfo |
 | `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo |
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
