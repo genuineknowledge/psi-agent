@@ -90,7 +90,7 @@ class SessionManager:
                     self._entries.pop(session_id, None)
                     scope.cancel()
                     await _remove_socket(info.channel_socket)
-                    await self._persist()
+                await self._persist()
             raise
         await self._persist()
         logger.info(f"Session {session_id!r} created on {info.channel_socket} -> AI '{ai_id}'")

@@ -90,7 +90,7 @@ class AIManager:
                     self._entries.pop(ai_id, None)
                     scope.cancel()
                     await _remove_socket(info.socket)
-                    await self._persist()
+                await self._persist()
             raise
         await self._persist()
         logger.info(f"AI {ai_id!r} created on {info.socket}")
