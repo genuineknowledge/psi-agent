@@ -44,6 +44,16 @@ cd "$AGENT_DIR/fusion-memory"
 sh install.sh
 ```
 
+On Windows PowerShell, use the same target directory rule but run the PowerShell
+installer:
+
+```powershell
+$env:AGENT_DIR = "C:\path\to\current-agent-directory"
+git clone https://github.com/genuineknowledge/fusion-memory.git "$env:AGENT_DIR\fusion-memory"
+Set-Location "$env:AGENT_DIR\fusion-memory"
+.\install.ps1
+```
+
 The default local_full configuration is SQLite plus bundled local Qwen vector models:
 
 ```text
@@ -72,21 +82,40 @@ weights from other locations.
 
 If bundled model files are missing, incomplete, or Git LFS pointers,
 installation reports not ready and asks you to restore the repository-local
-model files. If model files are present but Qwen runtime dependencies are unavailable,
-or this hardware/runtime cannot load or run both bundled vector models,
-installation falls back to compromised local mode. In compromised mode Fusion
-Memory still runs with SQLite plus built-in lightweight embedding/reranker, but
-memory quality is compromised.
+model files. If Qwen runtime dependencies are unavailable, installation is also
+not ready; install `.[postgres,qwen]` successfully before reporting setup as
+complete. Only when model files and dependencies are present but this
+hardware/runtime cannot load or run both bundled vector models does installation
+fall back to compromised local mode. In compromised mode Fusion Memory still
+runs with SQLite plus built-in lightweight embedding/reranker, but memory
+quality is compromised.
 
 If readiness reports a Git LFS pointer instead of a real model file, install Git
 LFS if needed, run `git lfs pull` in the Fusion Memory checkout, and rerun
 `fusion-memory install-check --force`. Do not treat pointer files as usable model
 weights.
 
-If readiness reports a Git LFS pointer instead of a real model file, install Git
-LFS if needed, run `git lfs pull` in the Fusion Memory checkout, and rerun
-`fusion-memory install-check --force`. Do not treat pointer files as usable model
-weights.
+If install-check returns not_ready because Qwen runtime dependencies are
+unavailable, make one explicit repair attempt before stopping:
+
+```bash
+AGENT_DIR="/path/to/current-agent-directory"
+python3 -m pip install -e "$AGENT_DIR/fusion-memory[postgres,qwen]"
+fusion-memory install-check --force --json
+```
+
+On Windows PowerShell:
+
+```powershell
+$env:AGENT_DIR = "C:\path\to\current-agent-directory"
+python -m pip install -e "$env:AGENT_DIR\fusion-memory[postgres,qwen]"
+fusion-memory install-check --force --json
+```
+
+If the repair attempt still reports not_ready, summarize the pip error and the
+install-check `missing` / `next_step` fields for the user. Do not silently fall back to local_test or report setup as complete.
+`local_test` is allowed only when the user explicitly chooses temporary
+evaluation after being told memory quality is downgraded.
 
 Recommended API provider for API-backed models: Aliyun DashScope.
 
@@ -117,8 +146,10 @@ Initialize the default local_full configuration:
 fusion-memory init --json
 ```
 
-Use local test mode only for temporary evaluation when Qwen model dependencies
-or hardware are not ready: `fusion-memory init --local-test --json`.
+Use local test mode only for temporary evaluation when Qwen model dependencies,
+model files, or hardware are not ready: `fusion-memory init --local-test --json`.
+Tell the user this is a quality downgrade and not a completed full-memory
+installation.
 
 Start the local HTTP service and use the returned URL:
 
@@ -132,65 +163,67 @@ The beginner default is `http://127.0.0.1:8700`, but if that port is busy the
 start command may choose another local port. Set `PSI_MEMORY_BASE_URL` to the
 returned URL before starting Haitun or psi-agent.
 
-After verifying, immediately start the passive sync process as a long-running
-process beside the agent session. Check the pid file first; if the pid is
-missing or not alive, start passive sync and write the new pid. Passive sync
-posts saved turns to the Fusion Memory daemon through HTTP /add, so it reuses
-the daemon's loaded models and configuration:
+After verifying, immediately start the passive sync process as a background
+process beside the agent session. Do not run the long-running sync in the
+foreground tool call. Use `sync-haitun-history --once` only for a finite
+backfill check, or use `sync-haitun-history --background` / the watcher start
+command for the long-running watcher.
 
 ```bash
-WORKSPACE_DIR="/path/to/haitun-workspace"
-SESSION_ID="<session-id>"
-PASSIVE_SYNC_DIR="$WORKSPACE_DIR/.fusion-memory/haitun-history-watcher"
-PASSIVE_SYNC_PID="$PASSIVE_SYNC_DIR/$SESSION_ID.pid"
-mkdir -p "$PASSIVE_SYNC_DIR"
-
-if [ -f "$PASSIVE_SYNC_PID" ] && kill -0 "$(cat "$PASSIVE_SYNC_PID")" 2>/dev/null; then
-  echo "Fusion Memory passive sync already running: $(cat "$PASSIVE_SYNC_PID")"
-else
-  nohup fusion-memory sync-haitun-history \
-    --workspace "$WORKSPACE_DIR" \
-    --session-id "$SESSION_ID" \
-    > "$PASSIVE_SYNC_DIR/$SESSION_ID.log" 2>&1 &
-  echo $! > "$PASSIVE_SYNC_PID"
-fi
+fusion-memory status --json
+fusion-memory doctor --json
+fusion-memory sync-haitun-history \
+  --workspace /path/to/haitun-workspace \
+  --session-id <session-id> \
+  --memory-url <url-from-fusion-memory-start-or-status> \
+  --once --json
+fusion-memory sync-haitun-history \
+  --workspace /path/to/haitun-workspace \
+  --session-id <session-id> \
+  --memory-url <url-from-fusion-memory-start-or-status> \
+  --background --json
+fusion-memory status-haitun-history-watcher \
+  --workspace /path/to/haitun-workspace \
+  --session-id <session-id> \
+  --memory-url <url-from-fusion-memory-start-or-status> \
+  --json
 ```
 
 Do not continue as if cross-session persistence is active until this process is
-running and `kill -0 "$(cat "$PASSIVE_SYNC_PID")"` succeeds, or the user
-explicitly chooses to continue without passive sync.
+reported as running with an OS pid, pid_file, and log_file, or the user
+explicitly chooses to continue without passive sync. On Windows, do not use
+PowerShell job/process wrappers to manage this watcher; the Fusion Memory CLI
+writes the real OS pid itself. On Linux/macOS, do not hand-write shell
+backgrounding; use the same CLI background command.
 
 ## Persistence (Required After Start)
 
 Start or verify the passive sync process after every service start for Haitun
 workspaces. The sync reads saved `histories/<session-id>.jsonl` turns and
 persists conversation evidence through HTTP /add without requiring the agent to
-decide every write:
+decide every write. Never run the long-running watcher in the foreground tool
+call:
 
 ```bash
-WORKSPACE_DIR="/path/to/haitun-workspace"
-SESSION_ID="<session-id>"
-PASSIVE_SYNC_DIR="$WORKSPACE_DIR/.fusion-memory/haitun-history-watcher"
-PASSIVE_SYNC_PID="$PASSIVE_SYNC_DIR/$SESSION_ID.pid"
-mkdir -p "$PASSIVE_SYNC_DIR"
-
-if [ -f "$PASSIVE_SYNC_PID" ] && kill -0 "$(cat "$PASSIVE_SYNC_PID")" 2>/dev/null; then
-  echo "Fusion Memory passive sync already running: $(cat "$PASSIVE_SYNC_PID")"
-else
-  nohup fusion-memory sync-haitun-history \
-    --workspace "$WORKSPACE_DIR" \
-    --session-id "$SESSION_ID" \
-    > "$PASSIVE_SYNC_DIR/$SESSION_ID.log" 2>&1 &
-  echo $! > "$PASSIVE_SYNC_PID"
-fi
+fusion-memory sync-haitun-history \
+  --workspace /path/to/haitun-workspace \
+  --session-id <session-id> \
+  --memory-url <url-from-fusion-memory-start-or-status> \
+  --background --json
+fusion-memory status-haitun-history-watcher \
+  --workspace /path/to/haitun-workspace \
+  --session-id <session-id> \
+  --memory-url <url-from-fusion-memory-start-or-status> \
+  --json
 ```
 
 For a one-time backfill:
 
 ```bash
 fusion-memory sync-haitun-history \
-  --workspace "$WORKSPACE_DIR" \
-  --session-id "$SESSION_ID" \
+  --workspace /path/to/haitun-workspace \
+  --session-id <session-id> \
+  --memory-url <url-from-fusion-memory-start-or-status> \
   --once --json
 ```
 
