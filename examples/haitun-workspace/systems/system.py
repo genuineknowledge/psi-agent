@@ -52,6 +52,7 @@ from prompt_sections import (
     EXECUTION_BIAS_SECTION,
     IDENTITY_LINE,
     LANGUAGE_LOCALIZATION_SECTION,
+    MCP_SERVICES_SECTION,
     PSI_AGENT_HELP_GUIDANCE,
     FUSION_MEMORY_SECTION,
     SAFETY_SECTION,
@@ -952,6 +953,8 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
             SAFETY_SECTION,
             "",
             FUSION_MEMORY_SECTION,
+            "",
+            MCP_SERVICES_SECTION,
         ]
 
         skills_section = build_skills_section(skills_xml)

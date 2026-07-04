@@ -304,12 +304,18 @@ class SessionAgent:
                                         r[idx] = f"Error executing tool '{fn}': {e}"
                                         logger.error(f"Tool execution error ({fn!r}): {e!r}")
 
-                            async with anyio.create_task_group() as tg:
-                                for i, _tc, func_name, args in tool_args:
-                                    if func_name:
-                                        tg.start_soon(_execute_one, i, func_name, args, results)
-                                    else:
-                                        results[i] = "Error: empty tool call name"
+                            try:
+                                async with anyio.create_task_group() as tg:
+                                    for i, _tc, func_name, args in tool_args:
+                                        if func_name:
+                                            tg.start_soon(_execute_one, i, func_name, args, results)
+                                        else:
+                                            results[i] = "Error: empty tool call name"
+                            except* Exception as exc:
+                                # Suppress any cleanup races (e.g. MCP subprocess teardown
+                                # triggering cancel-scope errors inside anyio TaskGroup)
+                                logger.debug(f"Suppressed TaskGroup cleanup exception: {exc!r}")
+                                pass
 
                             # yield results in order, save
                             for i, tc, func_name, _args in tool_args:

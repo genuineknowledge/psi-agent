@@ -44,10 +44,36 @@ All are optional and only affect the dynamic suffix / runtime line:
 |---|---|
 | `bash` | Shell commands (anyio, Windows-aware bash detection). On Windows the installer bundles MSYS2 at `{app}\msys64`, added to PATH by the launcher, so bash works out-of-the-box. |
 | `powershell` | Windows-native shell. |
-| `read` / `write` / `edit` | Async file ops. |
+| `read` / `write` / `edit` | Async file ops (read, create/overwrite, patch by exact string replacement). |
+| `list_dir` | List directory contents with optional recursive traversal. |
+| `write_excel` | Create a real .xlsx spreadsheet from tabular data. |
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
 | `flow_manage` | CRUD + promote on Fusion Flow assets under `flows/`. |
+| `flow_run` | Run a .flow.ts workflow in the background. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
+| `subagent_plan` / `subagent_wait` / `subagent_chat` | Subagent lifecycle management. |
+| `background_start` / `background_stop` / `background_list` | Detached background process management. |
+| `memory_add` / `memory_search` / `memory_answer_context` | Fusion Memory durable storage. |
+| `feishu_send_text` | Send plain text to a Feishu group via webhook (no MCP needed). |
+| `mcp_call` | Call a tool on an MCP server (PW/Playwright, FEISHU/Feishu, MEDIA/Media) with connection pooling. |
+| `mcp_list` | Discover available tools on an MCP server. |
+| `mcp_close` | Close MCP server connection(s). |
+
+## MCP Services (`mcp_call` / `mcp_list` / `mcp_close`)
+
+This workspace can connect to external MCP servers. The `_mcp_runtime.py` module provides
+connection pooling — stateful servers (Playwright) keep their session alive across tool calls.
+
+| Prefix | Purpose | MCP Server | Transport |
+|---|---|---|---|
+| **PW** | Playwright browser automation | `@playwright/mcp` (npm) | stdio via npx |
+| **FEISHU** | Feishu/Lark messaging | `mcp_servers/feishu_server.py` | stdio via python |
+| **MEDIA** | Image gen, vision, TTS, STT | `mcp_servers/media_server.py` | stdio via python |
+
+**Configure** each server via `MCP_<PREFIX>_CONFIG` env var (JSON). See TOOLS.md for examples.
+
+**Usage:** `mcp_list("PW")` to discover tools, `mcp_call("PW", "tool_name", '{"arg":"val"}')` to execute.
+For simple Feishu text messaging, prefer the native `feishu_send_text` tool.
 
 ## Skills (`skills/`)
 

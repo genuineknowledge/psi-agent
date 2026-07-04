@@ -11,6 +11,18 @@ histories/
 skills/.curator_state.json
 skills/.curator_report.md
 
+# secrets & env
+.env
+
+# test runtime sockets
+_test_*.sock
+
+# playwright mcp runtime artifacts
+.playwright-mcp/
+
+# node (if installing mcp deps locally)
+node_modules/
+
 # python
 __pycache__/
 *.pyc

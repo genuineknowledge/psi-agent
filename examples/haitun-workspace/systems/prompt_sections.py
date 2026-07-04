@@ -71,6 +71,10 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "memory_add": "Store durable user preferences, project facts, or decisions",
     "memory_search": "Search Fusion Memory for raw evidence",
     "memory_answer_context": "Retrieve a query-grounded Fusion Memory context pack",
+    "mcp_call": "Call a tool on an MCP server (Playwright browser, Feishu messaging, Media generation) with connection pooling",
+    "mcp_list": "List all available tools on an MCP server — call this first when exploring",
+    "mcp_close": "Close MCP server connection(s) — use to reset browser state or clean up",
+    "feishu_send_text": "Send a plain text message to a Feishu group via webhook (no MCP needed)",
 }
 
 # Display order - listed tools first, any extra tools (e.g. MCP search) after.
@@ -92,6 +96,10 @@ TOOL_ORDER: list[str] = [
     "memory_add",
     "memory_search",
     "memory_answer_context",
+    "feishu_send_text",
+    "mcp_call",
+    "mcp_list",
+    "mcp_close",
 ]
 
 # ---------------------------------------------------------------------------
@@ -273,6 +281,46 @@ Explain that without installing and enabling Fusion Memory, you cannot remember 
 If the user agrees, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, and check the Fusion Memory service.
 If the user declines, continue without memory and do not call Fusion Memory tools.
 If a memory tool reports that Fusion Memory is unavailable, continue without memory and tell the user to run `fusion-memory doctor`.\
+"""
+
+# ---------------------------------------------------------------------------
+# MCP Services
+# ---------------------------------------------------------------------------
+
+MCP_SERVICES_SECTION = """\
+## MCP Services
+This workspace can connect to external MCP (Model Context Protocol) servers for
+extended capabilities. Connections are pooled and reused within a session — you
+do not need to reconnect each time.
+
+### Available MCP servers
+
+- **PW** (Playwright browser automation): Full browser control — navigate pages,
+  click elements, type text, take screenshots, evaluate JavaScript, and more.
+  **Stateful**: the same browser session persists across every PW call in a turn
+  (navigate → click → screenshot all share one browser). Use `mcp_list("PW")`
+  first to see the full tool list (~20 tools including browser_navigate,
+  browser_click, browser_type, browser_screenshot, browser_snapshot,
+  browser_evaluate, and more).
+
+- **FEISHU** (Feishu/Lark messaging): Send text, interactive cards, images,
+  and files to Feishu chats via webhook or API. For simple text messaging
+  via webhook, use the native `feishu_send_text` tool instead — it is faster
+  and does not need MCP.
+
+- **MEDIA** (Media generation and understanding): Generate images from text
+  prompts (Pollinations.ai free + DALL-E fallback), analyze images with
+  vision AI (GPT-4o), convert text to speech, and transcribe audio to text.
+
+### Usage pattern
+1. First time using a server: `mcp_list("PW")` to discover available tools.
+2. Call tools: `mcp_call("PW", "browser_navigate", '{"url":"https://..."}')`.
+3. Connections are pooled — the browser stays open between calls automatically.
+4. Close when done: `mcp_close("PW")` to free resources, or `mcp_close("*")`.
+
+### Configuration
+Each server reads its config from the `MCP_<PREFIX>_CONFIG` environment variable
+(JSON format). See TOOLS.md for setup examples.\
 """
 
 # ---------------------------------------------------------------------------
