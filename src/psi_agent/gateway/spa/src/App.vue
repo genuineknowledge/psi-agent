@@ -392,6 +392,7 @@ onMounted(async () => {
 #chat-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #chat-main.welcome {
   justify-content: center; align-items: center; gap: 40px;
+  background: var(--g-welcome-glow);
 }
 #chat-main.welcome .welcome-hero { display: flex; justify-content: center; }
 .welcome-greeting {

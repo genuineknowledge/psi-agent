@@ -44,6 +44,8 @@ html { height: 100%; height: 100dvh; overscroll-behavior: none; }
   --g-grad-hello: linear-gradient(90deg,#4285F4,#9B72CB,#D96570);
   --g-spark: conic-gradient(from 0deg,#4285F4,#9B72CB,#D96570,#FBBC04,#4285F4);
   --g-pill-radius: 28px;
+  /* 欢迎屏中央光晕（深色：中央深蓝光晕散向黑底） */
+  --g-welcome-glow: radial-gradient(60% 55% at 50% 52%, rgba(38,68,140,0.55) 0%, rgba(27,28,29,0) 70%);
 }
 
 /* 🔵 MD3 Light Theme */
@@ -66,6 +68,8 @@ html { height: 100%; height: 100dvh; overscroll-behavior: none; }
   --md-text-secondary: #575B5F;
   --md-text-error: #ba1a1a;
   --md-error-container: #ffdad6;
+  /* 欢迎屏中央光晕（浅色：中央淡蓝光晕散向白底） */
+  --g-welcome-glow: radial-gradient(60% 55% at 50% 52%, rgba(66,133,244,0.16) 0%, rgba(255,255,255,0) 70%);
   --md-elevation-1: 0 1px 2px rgba(0,0,0,.05), 0 1px 3px 1px rgba(0,0,0,.04);
   --md-elevation-2: 0 1px 2px rgba(0,0,0,.08), 0 2px 6px 2px rgba(0,0,0,.04);
   --md-elevation-3: 0 4px 8px 3px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.08);
