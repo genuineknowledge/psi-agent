@@ -54,6 +54,17 @@ Set-Location "$env:AGENT_DIR\fusion-memory"
 .\install.ps1
 ```
 
+Do not use MSYS2/Mingw Python for the full local Qwen runtime on Windows;
+PyTorch wheels are not available for that Python ABI. Use official Windows
+CPython or conda Python 3.11/3.12. If the agent PATH resolves `python` to MSYS2,
+set `PYTHON_BIN` explicitly before installing:
+
+```powershell
+$env:PYTHON_BIN = (py -3.12 -c "import sys; print(sys.executable)")
+# If Python 3.12 is not installed, use py -3.11 or a conda python.exe.
+.\install.ps1
+```
+
 The default local_full configuration is SQLite plus bundled local Qwen vector models:
 
 ```text
@@ -108,8 +119,9 @@ On Windows PowerShell:
 
 ```powershell
 $env:AGENT_DIR = "C:\path\to\current-agent-directory"
-python -m pip install -e "$env:AGENT_DIR\fusion-memory[postgres,qwen]"
-fusion-memory install-check --force --json
+$env:PYTHON_BIN = (py -3.12 -c "import sys; print(sys.executable)")
+& $env:PYTHON_BIN -m pip install -e "$env:AGENT_DIR\fusion-memory[postgres,qwen]"
+& $env:PYTHON_BIN -m fusion_memory.cli install-check --force --json
 ```
 
 If the repair attempt still reports not_ready, summarize the pip error and the
