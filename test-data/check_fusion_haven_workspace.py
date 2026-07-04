@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import importlib
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -53,6 +55,13 @@ def _load_bash_tool(module_name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _import_security_module(name: str) -> Any:
+    workspace_path = str(WORKSPACE)
+    if workspace_path not in sys.path:
+        sys.path.insert(0, workspace_path)
+    return importlib.import_module(f"fusion_guard_security.{name}")
 
 
 async def _assert_bash_builds_security_context() -> None:
@@ -105,9 +114,9 @@ async def _assert_allow_rule_policy_flow() -> None:
 
     module = _load_bash_tool(f"psi_tool_bash_{session_id}_{'b' * 64}")
 
-    import fusion_guard_security.analysis as analysis  # noqa: PLC0415
-    import fusion_guard_security.policy as policy  # noqa: PLC0415
-    import fusion_guard_security.runner as runner  # noqa: PLC0415
+    analysis = _import_security_module("analysis")
+    policy = _import_security_module("policy")
+    runner = _import_security_module("runner")
 
     allow_rule = (
         "allow fusionclaw_agent_fusion_haven_policy_session_session_abcd_t "
@@ -189,7 +198,7 @@ async def _assert_none_policy_flow_installs_base_policy() -> None:
 
     module = _load_bash_tool(f"psi_tool_bash_{session_id}_{'c' * 64}")
 
-    import fusion_guard_security.runner as runner  # noqa: PLC0415
+    runner = _import_security_module("runner")
 
     events: list[str] = []
     captured: dict[str, Any] = {}
@@ -253,7 +262,7 @@ async def _assert_prompt_includes_command_and_script_content() -> None:
 
     module = _load_bash_tool(f"psi_tool_bash_{session_id}_{'d' * 64}")
 
-    import fusion_guard_security.runner as runner  # noqa: PLC0415
+    runner = _import_security_module("runner")
 
     captured: dict[str, Any] = {}
 
@@ -300,7 +309,7 @@ async def _assert_prompt_includes_command_and_script_content() -> None:
 
 
 async def _assert_static_dangerous_shell_patterns_are_denied_before_analysis() -> None:
-    import fusion_guard_security.runner as runner  # noqa: PLC0415
+    runner = _import_security_module("runner")
 
     session_id = "fusion_haven_static_session"
     history_path = WORKSPACE / "histories" / f"{session_id}.jsonl"
@@ -357,8 +366,8 @@ async def _assert_static_dangerous_shell_patterns_are_denied_before_analysis() -
 
 
 async def _assert_bash_exec_uses_runcon_domain() -> None:
-    import fusion_guard_security.policy as policy  # noqa: PLC0415
-    import fusion_guard_security.runner as runner  # noqa: PLC0415
+    policy = _import_security_module("policy")
+    runner = _import_security_module("runner")
 
     session_id = "fusion_haven_runcon_session"
     ctx = SimpleNamespace(session_id=session_id, workspace_path=WORKSPACE)
@@ -412,7 +421,7 @@ async def _assert_bash_exec_uses_runcon_domain() -> None:
 
 
 async def _assert_bash_exec_blocks_when_selinux_is_not_enforcing() -> None:
-    import fusion_guard_security.runner as runner  # noqa: PLC0415
+    runner = _import_security_module("runner")
 
     session_id = "fusion_haven_permissive_session"
     ctx = SimpleNamespace(session_id=session_id, workspace_path=WORKSPACE)
