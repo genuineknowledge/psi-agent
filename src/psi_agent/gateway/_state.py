@@ -53,7 +53,7 @@ class GatewayState:
                 for a in ais
             ],
             "sessions": [{"id": s["id"], "ai_id": s["ai_id"], "workspace": s["workspace"]} for s in sessions],
-            "titles": titles,
+            "titles": [{"id": t["id"], "title": t["title"]} for t in titles],
         }
         json_str = json.dumps(data, ensure_ascii=False, indent=2)
         try:
