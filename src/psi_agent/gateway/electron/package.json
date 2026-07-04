@@ -15,9 +15,6 @@
   "build": {
     "appId": "com.hzhangxyz.psi-gateway",
     "productName": "Psi Gateway",
-    "files": [
-      "main.js"
-    ],
     "extraResources": [
       {
         "from": "backend",

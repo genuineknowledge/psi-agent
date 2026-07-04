@@ -1,7 +1,10 @@
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, dialog } = require('electron')
 const { spawn } = require('child_process')
+const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
+
+const STARTUP_TIMEOUT_MS = 30_000
 
 let mainWindow = null
 let gatewayProc = null
@@ -24,34 +27,62 @@ function resolveBackendPath() {
 
 function startGateway() {
   const backend = resolveBackendPath()
+  const socketPath = `psi-desktop-${crypto.randomUUID()}`
 
-  gatewayProc = spawn(backend, ['gateway', '--desktop', '--socket-path=psi-desktop'], {
-    stdio: ['pipe', 'pipe', 'pipe'],
+  gatewayProc = spawn(backend, ['gateway', '--desktop', `--socket-path=${socketPath}`], {
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
+
+  gatewayProc.stderr.pipe(process.stderr)
 
   return new Promise((resolve, reject) => {
     let resolved = false
+    let stdoutBuf = ''
+
+    const finish = (fn) => {
+      if (resolved) return
+      resolved = true
+      fn()
+    }
+
+    const timeoutHandle = setTimeout(() => {
+      finish(() => {
+        cleanupStderr()
+        gatewayProc.kill('SIGTERM')
+        reject(new Error('Gateway did not report address within 30s'))
+      })
+    }, STARTUP_TIMEOUT_MS)
 
     gatewayProc.stdout.on('data', (data) => {
-      const lines = data.toString().split('\n')
-      for (const line of lines) {
-        const m = line.match(/GATEWAY_ADDR=(.+)/)
-        if (m && !resolved) {
+      stdoutBuf += data.toString()
+      let idx
+      while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
+        const line = stdoutBuf.slice(0, idx)
+        stdoutBuf = stdoutBuf.slice(idx + 1)
+        const m = line.match(/^GATEWAY_ADDR=(.+)$/)
+        if (m) {
           gatewayAddr = m[1].trim()
-          resolved = true
-          resolve(gatewayAddr)
+          finish(() => {
+            clearTimeout(timeoutHandle)
+            resolve(gatewayAddr)
+          })
+          return
         }
       }
     })
 
-    gatewayProc.stderr.pipe(process.stderr)
-
     gatewayProc.on('error', (err) => {
-      if (!resolved) reject(err)
+      finish(() => {
+        clearTimeout(timeoutHandle)
+        reject(err)
+      })
     })
 
     gatewayProc.on('exit', (code) => {
-      if (!resolved) reject(new Error(`Gateway exited with code ${code} before printing addr`))
+      finish(() => {
+        clearTimeout(timeoutHandle)
+        reject(new Error(`Gateway exited with code ${code} before printing address`))
+      })
     })
   })
 }
@@ -65,10 +96,19 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      sandbox: true,
     },
   })
 
   mainWindow.loadURL(gatewayAddr + '/spa/index.html')
+
+  mainWindow.webContents.on('will-navigate', (_event, url) => {
+    if (!url.startsWith(gatewayAddr)) _event.preventDefault()
+  })
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    console.error(`Page load failed (${errorCode}): ${errorDescription}`)
+  })
 
   if (process.platform !== 'darwin') {
     mainWindow.setMenuBarVisibility(false)
@@ -79,7 +119,15 @@ function createWindow() {
   })
 }
 
+function cleanupStderr() {
+  if (gatewayProc && gatewayProc.stderr) {
+    gatewayProc.stderr.unpipe()
+    gatewayProc.stderr.destroy()
+  }
+}
+
 function cleanup() {
+  cleanupStderr()
   if (gatewayProc && !gatewayProc.killed) {
     gatewayProc.kill('SIGTERM')
   }
@@ -88,16 +136,26 @@ function cleanup() {
 app.whenReady().then(async () => {
   try {
     await startGateway()
-    createWindow()
   } catch (err) {
-    console.error('Failed to start Gateway:', err.message)
+    dialog.showErrorBox('Startup Error', `Failed to start Gateway:\n${err.message}`)
     app.quit()
+    return
   }
+
+  gatewayProc.on('exit', (code) => {
+    if (mainWindow) {
+      dialog.showErrorBox('Gateway Error', `Gateway process exited unexpectedly (code ${code}).`)
+    }
+  })
+
+  createWindow()
 })
 
 app.on('window-all-closed', () => {
-  cleanup()
-  app.quit()
+  if (process.platform !== 'darwin') {
+    cleanup()
+    app.quit()
+  }
 })
 
 app.on('before-quit', () => {
