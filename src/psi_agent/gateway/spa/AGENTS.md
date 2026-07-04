@@ -137,17 +137,17 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 |
 |------|------|----------|
-| `src/App.vue` | 编排层 | 组装 `#root-layout` 布局（Sidebar / #chat / 各弹窗）；`import { storeToRefs } from 'pinia'`，实例化 `useAiStore/useSessionStore/useChatStore/useUiStore` 并经 `storeToRefs` 取所需字段；持有跨组件 handler：`createAI/deleteAI/selectAI`、`createSession/executeConfirmedAction`（confirm 弹窗按 `actionType` 分派 ai/session 删除）、`browseWorkspace`、`fetchAvailableModels`（兼容 OpenAI `data[]` 与 Anthropic `models[]` 两种响应）；`#chat` 上的拖拽上传用 VueUse `useDropZone`（`isOverDropZone` → chat store 的 `selectedFiles` + ui store 的 `isDragging`）；`toggleSidebar`（用 VueUse `useBreakpoints({ mobile: 768 })` 分桌面折叠/移动抽屉，委托 ui store 的 `toggleSidebar` action）；侧栏折叠状态持久化用 VueUse `useStorage('gw-sidebar-state', 'expanded')`（`watch isSidebarCollapsed` 写回 `'collapsed'/'expanded'`）；`onMounted` 启动流程（GET titles/ais/sessions → 恢复选中 → `selectSession`）。**不写会话/发送业务逻辑**（已下沉到 Sidebar/InputBar/composable） |
+| `src/App.vue` | 编排层 | 组装 `#root-layout` 布局（Sidebar / #chat / 各弹窗）；`import { storeToRefs } from 'pinia'`，实例化 `useAiStore/useSessionStore/useChatStore/useUiStore` 并经 `storeToRefs` 取所需字段；持有跨组件 handler：`createAI/deleteAI/selectAI`、`createSession/executeConfirmedAction`（confirm 弹窗按 `actionType` 分派 ai/session 删除）、`browseWorkspace`、`fetchAvailableModels`（兼容 OpenAI `data[]` 与 Anthropic `models[]` 两种响应）；`#chat` 上的拖拽上传用 VueUse `useDropZone`（`isOverDropZone` → chat store 的 `selectedFiles` + ui store 的 `isDragging`）；`toggleSidebar`（用 VueUse `useBreakpoints({ mobile: 768 })` 分桌面折叠/移动抽屉，委托 ui store 的 `toggleSidebar` action）；侧栏折叠状态持久化用 VueUse `useStorage('gw-sidebar-state', 'expanded')`（`watch isSidebarCollapsed` 写回 `'collapsed'/'expanded'`）；`onMounted` 启动流程（GET titles/ais/sessions → 恢复选中 → `selectSession`）。**不写会话/发送业务逻辑**（已下沉到 Sidebar/InputBar/composable）。主区含 `#topbar`（折叠/主题切换/头像，头像点击设置 `gw-user-name` 称呼）；`#chat-main` 按 `showWelcome`（`computed(() => !selectedSessionId && messages.length===0)`，**加 `!selectedSessionId` 守卫避免切换会话时的加载间隙闪回欢迎屏**）切换两态：欢迎态显示渐变问候语（`--g-grad-hello`，`greetingText` 派生自 `gw-user-name`）+ 居中胶囊，用 `<transition name="hero-fade" mode="out-in">` 淡入；对话态胶囊沉底 |
 
 ### 组件 `src/components/`
 
 | 文件 | 组件职责 | 关键逻辑 |
 |------|----------|----------|
-| `Sidebar.vue` | 会话列表侧栏 | 新建（emit `new-session`）/双击改名（`v-focus` input + POST `/titles`）/删除（走 confirm 弹窗）/置顶（`togglePinnedSessionId` + 持久化）/搜索；`visibleSessions` = `buildVisibleSessions(...)`；`watch` sessions 变化时清理失效的置顶 id |
-| `ChatArea.vue` | 消息列表容器 | `messages` 经 `storeToRefs` 从 `useChatStore` 取；`v-for messages` 渲染 `MessageBubble`；空状态提示；`onMounted` 向 `useScroll` 注册滚动容器；`watch messages.length` → `scrollToBottomIfLocked` |
-| `MessageBubble.vue` | 单条消息气泡 | 按 `role` 左右分栏；`v-html="msg.html"`（AI）/等待首 token 时显示 `ThinkingBubble`；复制按钮用 VueUse `useClipboard`；附件 chip 点击打开 `FilePreview`（`openPreviewKey` 追踪当前打开项） |
+| `Sidebar.vue` | 会话列表侧栏 | 新建（emit `new-session`）/双击改名（`v-focus` input + POST `/titles`）/删除（走 confirm 弹窗）/置顶（`togglePinnedSessionId` + 持久化）/搜索；`visibleSessions` = `buildVisibleSessions(...)`；`watch` sessions 变化时清理失效的置顶 id。视觉为 Neural Expressive 导航式：顶部 `.sb-header`（海豚 logo `public/haitun-logo.png` + 「Dolphin」品牌名）+「发起新对话」药丸 + 搜索框 +「最近」分区标题 + 会话列表；新建/搜索/会话项统一为整行药丸，**默认透明、hover 才高亮**（`--md-surface-container-high`），选中项常亮；侧栏底色用 `--md-surface-container` |
+| `ChatArea.vue` | 消息列表容器 | `messages` 经 `storeToRefs` 从 `useChatStore` 取；`v-for messages` 渲染 `MessageBubble`；`onMounted` 向 `useScroll` 注册滚动容器；`watch messages.length` → `scrollToBottomIfLocked`。空状态由 App.vue 的欢迎屏承担（本组件不再渲染空提示） |
+| `MessageBubble.vue` | 单条消息气泡 | 消息居中 820px 列（`.msg` `max-width:820px;margin:0 auto`），用户 `align-items:flex-end`、助手 `flex-start`；用户气泡为中性 `--md-surface-container-high` 面板（**非** accent 蓝，对齐参考深色规则）；助手消息**去卡片**（透明背景）+ 左侧四色 `--g-spark` 头像（`auto_awesome`）；`v-html="msg.html"`（AI）/等待首 token 时显示 `ThinkingBubble`；复制按钮用 VueUse `useClipboard`；附件 chip 点击打开 `FilePreview`（`openPreviewKey` 追踪当前打开项） |
 | `ThinkingBubble.vue` | 加载指示 | 纯展示：三个脉冲圆点动画，等待首 token 时由 MessageBubble 显示 |
-| `InputBar.vue` | 输入区 UI | `v-show selectedSessionId`；已选文件 chip 条；`<input multiple>` 追加文件；textarea 自适应高度（`autoResizeInput`）；Enter 发送（委托 `useChat.sendMessage`）；内嵌 `ModelPanel`；`watch uploadResetToken` 清空 file input。**不含发送业务逻辑** |
+| `InputBar.vue` | 输入区 UI | `v-show selectedSessionId`；已选文件 chip 条；`<input multiple>` 追加文件；textarea 自适应高度（`autoResizeInput`）；Enter 发送（委托 `useChat.sendMessage`）；内嵌 `ModelPanel`（模型选择器融入胶囊右侧）；`watch uploadResetToken` 清空 file input。**不含发送业务逻辑**。视觉为 Neural Expressive 药丸：`#input-area` 单行圆角胶囊（`--g-pill-radius`），欢迎态居中、对话态沉底（由 App.vue `#chat-main.welcome` class 控制定位） |
 | `ModelPanel.vue` | 模型切换浮层 | 由 InputBar 内嵌；`modelPanelOpen/ais/selectedAiId` 经 `storeToRefs` 从 `useAiStore` 取；chip 显示当前模型；浮层列出 `ais`，点击 emit `select-ai`/`delete-ai`/`new-ai`（均冒泡到 App.vue） |
 | `BaseDialog.vue` | 弹窗外壳 | 所有弹窗的基类：overlay + dialog + `title`/默认/`actions` 三插槽；`show` prop 控制，overlay 点击 emit `close`；`.ok`/`.cancel` 按钮样式在此 scoped |
 | `AiDialog.vue` | 链接大模型弹窗 | 基于 BaseDialog；provider 自定义下拉（选中回填 base_url）；模型名自定义下拉（替代原生 datalist：↑↓/Enter/Esc 键盘导航 + 输入过滤 + `@mousedown.prevent` 防 blur）；base_url/api_key `@change` 触发 `fetchModels`；无 AI 时 `handleCancel` 拒绝关闭 |
@@ -172,7 +172,7 @@ spa/
 
 | 文件 | 负责 | 内容 |
 |------|------|------|
-| `tokens.css` | MD3 设计 token | `:root`(暗)/`:root.light-mode`(亮) 双主题 CSS variables：`--md-*` 颜色、`--md-elevation-1/2/3`、`--md-shape-*`、`--md-state-*`；全局 box-sizing reset |
+| `tokens.css` | MD3 设计 token | `:root`(暗)/`:root.light-mode`(亮) 双主题 CSS variables：`--md-*` 颜色、`--md-elevation-1/2/3`、`--md-shape-*`、`--md-state-*`；全局 box-sizing reset。调色板采用 Neural Expressive 风格（品牌蓝 primary、中性 surface 分层、圆润 shape），另有 `--g-grad-hello`（问候语渐变）、`--g-spark`（四色 spark）、`--g-pill-radius` 三个 `--g-*` 专用变量 |
 | `components.css` | MD3 组件基类 | `body` 基础样式；`.md-icon-btn`/`.md-filled-btn` 等按钮基类 + 弹窗共用的 `.field` 表单字段。dialog 外壳已由 BaseDialog 承担 |
 | `layout.css` | app-shell 布局 | 仅 `#app`/`#root-layout`/`#chat`、`.sidebar-toggle-btn`/`.theme-toggle-btn`、`#mobile-topbar`、`.mobile-overlay`、`.drop-overlay`（含各自移动端 `@media`）。组件专属样式一律在各组件 `<style scoped>` |
 
@@ -321,6 +321,7 @@ props 含预览目标（文件名 + 数据），emit `close` 关闭抽屉。
 | `gw-sidebar-state` | `'expanded'/'collapsed'` | 侧栏折叠状态（由 `App.vue` 经 VueUse `useStorage` 读写） |
 | `gw-theme` | `'light'/'dark'` | 主题偏好 |
 | `gw-pinned-session-ids` | `string[]` | 置顶会话 id 列表（由 `sessionList.js` 的 `loadPinnedSessionIds`/`savePinnedSessionIds` 读写） |
+| `gw-user-name` | `string` | 用户称呼（欢迎屏问候语 + 头像首字母）；空则显示通用问候「你好，有什么可以帮你？」+ 默认 person 图标。由 `App.vue` 经 VueUse `useStorage` 读写，点右上头像可设置。预留给后续「agent 对话设置称呼」接同一 key |
 
 Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 
