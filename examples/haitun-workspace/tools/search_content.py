@@ -156,7 +156,7 @@ async def _search_with_python(
             return
         try:
             content = await file_path.read_text(encoding="utf-8", errors="strict")
-        except (UnicodeDecodeError, OSError):
+        except UnicodeDecodeError, OSError:
             return  # Skip binary / unreadable files.
         for lineno, line in enumerate(content.splitlines(), start=1):
             if matcher.search(line):
