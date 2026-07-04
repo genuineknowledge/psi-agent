@@ -9,7 +9,9 @@ async def list_dir(dir_path: str = ".", recursive: bool = False, max_entries: in
     """List the contents of a directory so folders and files can be recognized.
 
     Directories are suffixed with ``/`` to distinguish them from files. Use this
-    when a path is a folder (``read`` only handles individual files).
+    when a path is a folder (``read`` only handles individual files). To locate
+    files recursively by glob pattern (e.g. ``**/*.py``) rather than browsing a
+    tree level by level, use ``find_files`` instead.
 
     Args:
         dir_path: Path to the directory to list (defaults to the current directory).
