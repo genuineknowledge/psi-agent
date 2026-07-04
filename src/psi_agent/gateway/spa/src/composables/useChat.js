@@ -126,16 +126,6 @@ export function stopMessage() {
   if (chat.abortController) chat.abortController.abort()
 }
 
-export function undoFrom(index) {
-  // 撤回：删除索引 index 处的消息及其之后的所有消息，仅影响前端显示与本地历史。
-  const chat = useChatStore()
-  const session = useSessionStore()
-  if (index < 0 || index >= chat.messages.length) return
-  if (chat.streaming) return
-  chat.messages.splice(index)
-  if (session.selectedSessionId) saveHistory(session.selectedSessionId, chat.messages)
-}
-
 async function generateTitle() {
   const session = useSessionStore()
   const sid = session.selectedSessionId
