@@ -145,9 +145,10 @@ function closePreview() {
 }
 
 .msg.user .bubble {
-  background: var(--md-primary-container);
-  color: var(--md-on-primary-container);
-  border-radius: 16px 16px 4px 16px;
+  background: var(--md-surface-container-high);
+  color: var(--md-text-primary);
+  border-radius: 20px;
+  padding: 12px 18px;
   /* User text is html-escaped (not markdown), so keep literal newlines. */
   white-space: pre-wrap;
 }
