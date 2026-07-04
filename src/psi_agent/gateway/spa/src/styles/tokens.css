@@ -7,12 +7,14 @@ html { height: 100%; height: 100dvh; overscroll-behavior: none; }
 
 /* 🟢 MD3 Dark Theme */
 :root {
-  --md-bg: #1B1C1D;
+  --md-bg: #0E0E0F;
   --md-surface: #282A2C;
   --md-surface-variant: #2D2F31;
-  --md-surface-container: #1E1F20;
-  --md-surface-container-low: #1B1C1D;
+  --md-surface-container: #1B1C1D;
+  --md-surface-container-low: #131314;
   --md-surface-container-high: #333537;
+  /* 侧栏导航项 hover/选中：两主题都比侧栏底色「更暗」（inset 内凹感） */
+  --md-nav-hover: #0A0A0B;
   --md-primary: #A8C7FA;
   --md-on-primary: #062E6F;
   --md-primary-container: #1C4487;
@@ -45,7 +47,7 @@ html { height: 100%; height: 100dvh; overscroll-behavior: none; }
   --g-spark: conic-gradient(from 0deg,#4285F4,#9B72CB,#D96570,#FBBC04,#4285F4);
   --g-pill-radius: 28px;
   /* 欢迎屏中央光晕（深色：中央深蓝光晕散向黑底） */
-  --g-welcome-glow: radial-gradient(60% 55% at 50% 52%, rgba(38,68,140,0.55) 0%, rgba(27,28,29,0) 70%);
+  --g-welcome-glow: radial-gradient(60% 55% at 50% 52%, rgba(38,68,140,0.45) 0%, rgba(14,14,15,0) 70%);
 }
 
 /* 🔵 MD3 Light Theme */
@@ -68,6 +70,8 @@ html { height: 100%; height: 100dvh; overscroll-behavior: none; }
   --md-text-secondary: #575B5F;
   --md-text-error: #ba1a1a;
   --md-error-container: #ffdad6;
+  /* 侧栏导航项 hover/选中：浅色比侧栏底色略深 */
+  --md-nav-hover: #E1E7EF;
   /* 欢迎屏中央光晕（浅色：中央淡蓝光晕散向白底） */
   --g-welcome-glow: radial-gradient(60% 55% at 50% 52%, rgba(66,133,244,0.16) 0%, rgba(255,255,255,0) 70%);
   --md-elevation-1: 0 1px 2px rgba(0,0,0,.05), 0 1px 3px 1px rgba(0,0,0,.04);

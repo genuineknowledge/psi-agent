@@ -204,7 +204,7 @@ watch(
   border: none; border-radius: var(--md-shape-full); cursor: pointer;
   font-size: 14px; text-align: left; transition: background 0.2s;
 }
-.new-chat:hover { background: var(--md-surface-container-high); }
+.new-chat:hover { background: var(--md-nav-hover); }
 .new-chat .material-symbols-outlined { font-size: 20px; flex-shrink: 0; }
 .recent-label {
   padding: 12px 16px 6px; font-size: 13px; color: var(--md-text-secondary);
@@ -223,7 +223,7 @@ watch(
 }
 .session-search:hover,
 .session-search:focus-within {
-  background: var(--md-surface-container-high);
+  background: var(--md-nav-hover);
 }
 .session-search .material-symbols-outlined { font-size: 20px; flex-shrink: 0; }
 .session-search input {
@@ -266,8 +266,8 @@ watch(
   align-items: center;
   transition: background 0.2s;
 }
-.item:hover { background: var(--md-surface-container-high); }
-.item.selected { background: var(--md-surface-container-high); }
+.item:hover { background: var(--md-nav-hover); }
+.item.selected { background: var(--md-nav-hover); }
 .item .pin {
   color: var(--md-text-secondary);
   background: none;
