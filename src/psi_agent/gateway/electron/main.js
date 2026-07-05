@@ -53,7 +53,7 @@ let gatewayAddr = null
 let shuttingDown = false
 
 function isGatewayAlive() {
-  return gatewayProc && gatewayProc.exitCode === null
+  return gatewayProc && gatewayProc.exitCode === null && gatewayProc.signalCode === null
 }
 
 function resolveBackendPath() {
@@ -119,10 +119,20 @@ function startGateway() {
         stdoutBuf = stdoutBuf.slice(idx + 1)
         const m = line.match(/^GATEWAY_ADDR=(.+)$/)
         if (m) {
-          gatewayAddr = m[1].trim()
+          gatewayAddr = m[1].trim().replace(/\/$/, '')
+          if (!gatewayAddr) {
+            finish(() => {
+              clearTimeout(timeoutHandle)
+              cleanupGateway()
+              reject(new Error('Gateway reported empty address'))
+            })
+            return
+          }
           gatewayProc.stdout.removeListener('data', onStdoutData)
+          gatewayProc.stdout.removeListener('error', onStartupError)
           gatewayProc.removeListener('error', onStartupError)
           gatewayProc.removeListener('exit', onStartupExit)
+          gatewayProc.stdout.on('error', () => {})
           gatewayProc.on('exit', onCrash)
           finish(() => {
             clearTimeout(timeoutHandle)
@@ -155,6 +165,7 @@ function startGateway() {
     }
 
     gatewayProc.stdout.on('data', onStdoutData)
+    gatewayProc.stdout.on('error', onStartupError)
     gatewayProc.on('error', onStartupError)
     gatewayProc.on('exit', onStartupExit)
   })
@@ -193,7 +204,7 @@ function createWindow() {
   })
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-    if (mainWindow && gatewayAddr) {
+    if (!shuttingDown && mainWindow && gatewayAddr) {
       dialog.showErrorBox('Connection Error', `Failed to load Gateway (${errorCode}):\n${errorDescription}`)
     }
   })
