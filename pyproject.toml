@@ -34,10 +34,8 @@ dependencies = [
     "httpx>=0.28.1",
     "readability-lxml>=0.8.1",
     "markdownify>=0.13.1",
+    "pywebview>=5.4",
 ]
-
-[project.optional-dependencies]
-webview = ["pywebview>=5.4"]
 
 [dependency-groups]
 dev = [

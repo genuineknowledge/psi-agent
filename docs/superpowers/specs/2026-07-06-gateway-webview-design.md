@@ -39,7 +39,7 @@ Gateway 有两个相关字段：
 - 提供 `events.closing` 可拦截窗口关闭
 - `window.hide()` / `window.show()` 可隐藏/恢复窗口
 
-pywebview 是**可选依赖**——通过 `pip install psi-agent[webview]` 安装，不加 `[webview]` 时 gateway 默认不使用 webview。
+pywebview 作为主依赖加入 `pyproject.toml`。
 
 ## 架构变更
 
@@ -175,5 +175,5 @@ finally:
 
 - Gateway 不在 `_run.py` 批量启动中，无需修改批量配置
 - `cli.py` 无需修改——tyro 自动从 dataclass 字段推导 CLI flag
-- pywebview 作为可选依赖加入 `pyproject.toml`（`[project.optional-dependencies] webview = ["pywebview>=5.4"]`），通过 `pip install psi-agent[webview]` 安装
+- pywebview 作为主依赖加入 `pyproject.toml`
 - SPA 前端无需改动
