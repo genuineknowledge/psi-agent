@@ -39,14 +39,17 @@ class Gateway:
     socket_path: str = "psi"
     """Prefix for AI/Session Unix socket paths."""
 
-    verbose: bool = False
-    """Enable DEBUG-level logging."""
+    icon: str | None = None
+    """Path to icon image file (png/jpg/ico). Used as favicon and—if --tray is set—system tray icon."""
 
-    browser: bool = True
+    browser: bool = False
     """Open a browser tab on startup."""
 
-    tray: str | None = None
-    """Path to tray icon image file. If set, a system tray icon is shown."""
+    tray: bool = False
+    """Show a system tray icon (requires --icon)."""
+
+    verbose: bool = False
+    """Enable DEBUG-level logging."""
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
@@ -89,7 +92,7 @@ class Gateway:
             for t in snapshot.get("titles", []):
                 await tm.set(t["id"], t["title"])
 
-            app = await create_app(aim, sm, tm, favicon_path=self.tray)
+            app = await create_app(aim, sm, tm, favicon_path=self.icon)
 
             async def _do_persist() -> None:
                 await state.save(
@@ -133,7 +136,9 @@ class Gateway:
 
                 tray = None
                 if self.tray:
-                    tray = GatewayTray(addr, self.tray)
+                    if self.icon is None:
+                        raise ValueError("--tray requires --icon to be set")
+                    tray = GatewayTray(addr, self.icon)
                     try:
                         tray.start()
                     except Exception as e:

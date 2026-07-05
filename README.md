@@ -115,9 +115,9 @@ uv run psi-agent gateway --listen http://127.0.0.1:8080   # 指定端口
 - **管理**：侧边栏切换会话、双击改名、删除确认
 - **自动标题**：首次对话后 AI 自动生成会话标题
 
-> **安全提示**：Gateway 默认仅监听 `127.0.0.1`。请勿用 `--listen http://0.0.0.0:PORT` 对外暴露——这会将整个 REST API（包括无限制的目录浏览）暴露给网络上的所有人。注意 `--listen` 参数需要 `http://` 前缀，裸 `IP:PORT` 会被误判为 Unix socket 路径。
+注意 `--listen` 参数需要 `http://` 前缀，裸 `IP:PORT` 会被误判为 Unix socket 路径。
 
-Gateway 还支持系统托盘图标（`--tray icon.png`）、抑制自动打开浏览器（`--no-browser`）和自定义 socket 路径前缀（`--socket-path psi`，控制 AI/Session Unix socket 的 `/tmp/{prefix}/ais/...` 和 `/tmp/{prefix}/channels/...` 路径）。
+Gateway 还支持系统托盘图标（`--tray --icon icon.png`）、自动打开浏览器（`--browser`）和自定义 socket 路径前缀（`--socket-path psi`，控制 AI/Session Unix socket 的 `/tmp/{prefix}/ais/...` 和 `/tmp/{prefix}/channels/...` 路径）。
 
 ## CLI 一览
 
@@ -292,7 +292,7 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
 | GET | `/workspace/cwd` | 获取工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |
-| GET | `/favicon.ico` | favicon（仅当 `--tray` 设置时有效，否则返回 404） |
+| GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 
 ### Web Console 聊天协议
 

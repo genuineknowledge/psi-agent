@@ -51,7 +51,7 @@ uv run python examples/haitun-workspace/systems/system.py
 
 1. PyInstaller 生成的 `psi-agent.exe` 被拷贝进本目录
 2. `haitun.iss`（Inno Setup 脚本）将整个 workspace 打包为安装程序
-3. 安装后通过 `haitun agent.vbs` 启动 `psi-agent gateway --tray haitun.ico`
+3. 安装后通过 `haitun agent.vbs` 启动 `psi-agent gateway --tray --icon haitun.ico`
 
 产物为 GitHub artifact `haitun-agent-installer`（`Haitun Agent Setup.exe`）。
 

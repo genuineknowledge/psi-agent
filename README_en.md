@@ -115,9 +115,9 @@ Open the printed address to see a Material Design 3 Web Console. From the UI you
 - **Manage**: Sidebar session switching, double-click rename, delete with confirmation
 - **Automatic titles**: AI generates session titles after first conversation
 
-> **Security note**: Gateway binds to `127.0.0.1` by default. Do not use `--listen http://0.0.0.0:PORT` — this binds to all network interfaces, exposing the entire REST API (including arbitrary directory browsing) to anyone on your network. The `--listen` value must include the `http://` prefix; bare `IP:PORT` is interpreted as a Unix socket path.
+The `--listen` value must include the `http://` prefix; bare `IP:PORT` is interpreted as a Unix socket path.
 
-Gateway also supports system tray icon (`--tray icon.png`), disabling auto browser open (`--no-browser`), and custom socket path prefix (`--socket-path psi`, controlling the `/tmp/{prefix}/ais/...` and `/tmp/{prefix}/channels/...` layout for AI/Session Unix sockets).
+Gateway also supports system tray icon (`--tray --icon icon.png`), auto browser open (`--browser`), and custom socket path prefix (`--socket-path psi`, controlling the `/tmp/{prefix}/ais/...` and `/tmp/{prefix}/channels/...` layout for AI/Session Unix sockets).
 
 ## CLI Overview
 
@@ -292,7 +292,7 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
 | GET | `/workspace/cwd` | Get working directory |
 | GET | `/openapi.json` | OpenAPI schema |
-| GET | `/favicon.ico` | Favicon (available only with `--tray`; returns 404 otherwise) |
+| GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 
 ### Web Console Chat Protocol
 

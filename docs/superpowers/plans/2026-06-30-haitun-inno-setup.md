@@ -50,7 +50,7 @@ Create `examples/haitun-workspace/haitun agent.vbs` with EXACTLY this content:
 Set objFSO = CreateObject("Scripting.FileSystemObject")
 Set objShell = CreateObject("WScript.Shell")
 objShell.CurrentDirectory = objFSO.GetParentFolderName(WScript.ScriptFullName)
-objShell.Run "psi-agent.exe gateway --tray haitun.ico", 0, False
+objShell.Run "psi-agent.exe gateway --tray --icon haitun.ico", 0, False
 ```
 
 Rationale: line 3 forces the working directory to the script's own folder, so `psi-agent.exe`, `haitun.ico`, and the workspace files resolve correctly no matter how the `.vbs` is launched. `0` runs hidden; `False` returns without waiting.
@@ -246,7 +246,7 @@ Append to `examples/haitun-workspace/README.md`:
 
 1. PyInstaller 生成的 `psi-agent.exe` 被拷贝进本目录
 2. `haitun.iss`（Inno Setup 脚本）将整个 workspace 打包为安装程序
-3. 安装后通过 `haitun agent.vbs` 启动 `psi-agent gateway --tray haitun.ico`
+3. 安装后通过 `haitun agent.vbs` 启动 `psi-agent gateway --tray --icon haitun.ico`
 
 产物为 GitHub artifact `haitun-agent-installer`（`Haitun Agent Setup.exe`）。
 ```

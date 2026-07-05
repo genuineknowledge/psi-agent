@@ -62,9 +62,10 @@ src/psi_agent/gateway/
 class Gateway:
     listen: str = ""                          # 空 = 127.0.0.1 随机高端口
     socket_path: str = "psi"                 # socket 路径前缀
-    verbose: bool = False
-    browser: bool = True                    # 启动时打开浏览器
-    tray: str | None = None                 # 系统托盘图标文件路径，None 表示不启用
+    icon: str | None = None                 # 图标文件路径（favicon + 托盘共用）
+    browser: bool = False                   # 启动时打开浏览器
+    tray: bool = False                      # 启用系统托盘（需 --icon）
+    verbose: bool = False                   # DEBUG 日志
 ```
 
 ### 3.2 `Gateway.run()` 启动流程
@@ -76,9 +77,11 @@ class Gateway:
 5. 构建 `aiohttp.web.Application`，注入 managers + `ChatManager`/`HistoryManager`/`TitleManager`/`WorkspaceManager`
 6. 注册 REST 路由 + Web UI chat 路由 + `/openapi.json` + SPA 静态文件服务
 7. `create_site(runner, addr)` — TCP
-8. 若 `--browser`（默认），`webbrowser.open(addr)`
-9. `await anyio.sleep_forever()`
-10. `finally` shield cleanup: `runner.cleanup()` + `tg.__aexit__()`
+8. 若 `--browser`，`webbrowser.open(addr)`
+9. 若 `--tray` 且 `--icon` 未设置，`raise ValueError`
+10. 若 `--tray`，`GatewayTray(addr, self.icon).start()`
+11. `await anyio.sleep_forever()`（无托盘）或 `tray.wait_stop()`（有托盘）
+12. `finally` shield cleanup: `runner.cleanup()` + `tg.__aexit__()`
 
 ## 4. AIManager
 
@@ -104,8 +107,8 @@ class _AiEntry:
 4. 构造 `Ai(session_socket=socket, provider=..., model=..., api_key=..., base_url=...)`
 5. 创建 `anyio.CancelScope`，`task_group.start_soon(ai.run)`
 6. 存入 `_entries[ai_id]`
-7. `_wait_socket(socket)` 轮询等待 socket 文件出现 + 额外 0.3s sleep 确保 acceptor 就绪
-8. 返回 `AiInfo(id, socket, provider, model)`
+7. `_wait_socket(socket)` 轮询等待 socket 就绪（无限等待直到成功）
+8. 返回 `AiInfo(id, socket, provider, model, api_key, base_url)`
 
 ### 4.2 `delete(ai_id) -> None`
 1. 获取 lock，断言存在

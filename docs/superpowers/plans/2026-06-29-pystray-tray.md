@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Gateway 添加 `--tray` 参数：设置时加载指定图标显示系统托盘，未设置时不创建托盘。
+**Goal:** Gateway 添加 `--icon` 和 `--tray` 参数：`--icon` 指定图标文件（同时用作 favicon），`--tray` 开启系统托盘（需 `--icon`）。未设置时不创建托盘。
 
-**Architecture:** `Gateway` dataclass 新增 `stray: str | None = None` 字段，`run()` 根据 `stray` 是否为 None 分支。`GatewayTray` 改为从文件加载图标，删除 `_create_icon_image`。
+**Architecture:** `Gateway` dataclass 新增 `icon: str | None = None` 和 `tray: bool = False` 字段，`run()` 中若 `tray` 为 True 且 `icon` 为 None 则报错，否则创建 `GatewayTray`。`GatewayTray` 从文件加载图标，删除 `_create_icon_image`。
 
 **Tech Stack:** pystray 0.19.5, Pillow 12.2.0, anyio, webbrowser
 
@@ -55,43 +55,43 @@ uv run ruff check src/psi_agent/gateway/_tray.py
 
 ---
 
-### Task 2: 修改 `__init__.py` — 加 `stray` 参数 + 条件分支
+### Task 2: 修改 `__init__.py` — 加 `icon` + `tray` 参数 + 条件分支 + 校验
 
 **Files:**
 - Modify: `src/psi_agent/gateway/__init__.py`
 
-- [ ] **Step 1: `Gateway` dataclass 加 `stray` 字段**
+- [ ] **Step 1: `Gateway` dataclass 加 `icon` 和 `tray` 字段**
 
 ```python
-stray: str | None = None
-"""Path to tray icon image file. If set, a system tray icon is shown."""
+icon: str | None = None
+"""Path to icon image file (png/jpg/ico). Used as favicon and—if --tray is set—system tray icon."""
+
+tray: bool = False
+"""Show a system tray icon (requires --icon)."""
 ```
 
-- [ ] **Step 2: `run()` 中条件创建托盘**
-
-将当前托盘代码替换为条件分支。`self.tray` 为 None 时用 `anyio.sleep_forever()`；否则创建 `GatewayTray`。
+- [ ] **Step 2: `run()` 中条件创建托盘 + 校验**
 
 ```python
+if self.tray and self.icon is None:
+    raise ValueError("--tray requires --icon to be set")
+
+tray = None
 if self.tray:
-    tray = GatewayTray(addr, self.tray)
+    tray = GatewayTray(addr, self.icon)  # type: ignore[arg-type]
     try:
         tray.start()
     except Exception as e:
-        logger.warning(f"Failed to start system tray: {e}")
+        logger.warning(f"Failed to start system tray: {e!r}")
 
-    try:
-        await anyio.to_thread.run_sync(tray._stop_event.wait)
-    finally:
+try:
+    if tray is not None and tray.is_running():
+        await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
+    else:
+        await anyio.sleep_forever()
+finally:
+    if tray is not None:
         tray.stop()
-else:
-    await anyio.sleep_forever()
-
-logger.info("Shutting down Gateway")
-with anyio.CancelScope(shield=True):
-    await runner.cleanup()
-with anyio.CancelScope(shield=True):
-    await tg.__aexit__(None, None, None)
-logger.info("Gateway shutdown complete")
 ```
 
 - [ ] **Step 3: 运行 type check 和 lint**
@@ -139,18 +139,19 @@ uv run pytest tests/psi_agent/gateway/test_tray.py -v
 
 - [ ] **Step 1: 更新系统托盘章节**
 
-- "启动后会自动创建系统托盘图标" → "可通过 `--tray` 参数指定图标文件以启用系统托盘"
+- "启动后会自动创建系统托盘图标" → "可通过 `--tray --icon PATH` 开启系统托盘"
 - 图标来源从"Pillow 程序化生成" → "用户指定图片文件"
-- 补充：`--tray` 未设置时不创建托盘，Gateway 通过 `anyio.sleep_forever()` 等待 cancel
-- CLI 示例加 `--tray` 选项
+- 补充：`--tray` 未设置 `--icon` 时报错；`--tray` 未设置时不创建托盘，Gateway 通过 `anyio.sleep_forever()` 等待 cancel
+- CLI 示例加 `--tray --icon` 选项
 
 - [ ] **Step 2: 更新启动流程**
 
-步骤 7 改为条件创建：
+步骤 7 改为条件创建 + 校验：
 ```
-7. if self.tray: GatewayTray(addr, self.tray).start()  ← 可选托盘
-8. if stray: _stop_event.wait(); else: sleep_forever()   ← 条件等待
-9. finally: 清理托盘（如有）+ runner.cleanup() + tg.__aexit__()
+7. if self.tray and self.icon is None: raise ValueError
+8. if self.tray: GatewayTray(addr, self.icon).start()  ← 可选托盘
+9. if tray: wait_stop(); else: sleep_forever()         ← 条件等待
+10. finally: 清理托盘（如有）+ runner.cleanup() + tg.__aexit__()
 ```
 
 ---
