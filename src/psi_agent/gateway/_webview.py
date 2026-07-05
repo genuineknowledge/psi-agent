@@ -45,10 +45,8 @@ class GatewayWebView:
     def show(self) -> None:
         """Restore a previously hidden webview window (called from tray callback)."""
         if self._window is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._window.show()
-            except Exception:
-                pass
 
     def stop(self) -> None:
         """Destroy the webview window and wait for the thread to finish."""

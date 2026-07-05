@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import threading
 
 import pytest
@@ -76,8 +77,6 @@ def test_webview_double_start_raises():
     mock_module = type("module", (), {})
     mock_module.create_window = lambda title, url: MockWindow()
     mock_module.start = lambda: None
-
-    import sys
 
     sys.modules["webview"] = mock_module
     try:
