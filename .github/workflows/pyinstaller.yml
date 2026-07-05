@@ -25,9 +25,6 @@ jobs:
         --collect-submodules docx
         --collect-submodules pptx
         --collect-submodules openpyxl
-      MACOS_PYOBJC_FLAGS: >-
-        --collect-submodules pyobjc_core
-        --collect-submodules pyobjc_framework_Cocoa
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -46,13 +43,18 @@ jobs:
         run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS src/psi_agent/cli.py
         if: matrix.os != 'macos-latest'
       - shell: bash
-        run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS $MACOS_PYOBJC_FLAGS src/psi_agent/cli.py
+        run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS --windowed src/psi_agent/cli.py
         if: matrix.os == 'macos-latest'
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
           path: pyinstaller-dist/psi-agent
-        if: matrix.os != 'windows-latest'
+        if: matrix.os == 'ubuntu-latest'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: psi-agent-pyinstaller-${{ matrix.os }}
+          path: pyinstaller-dist/psi-agent.app
+        if: matrix.os == 'macos-latest'
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
