@@ -14,7 +14,7 @@ def test_webview_init():
     assert wv._has_tray is False
     assert wv._window is None
     assert wv._thread is None
-    assert not wv._closed.is_set()
+    assert not wv._closed_event.is_set()
 
 
 def test_webview_init_with_tray():
@@ -26,14 +26,14 @@ def test_webview_on_closing_no_tray_sets_closed_and_returns_true():
     wv = GatewayWebView("http://127.0.0.1:9999", has_tray=False)
     result = wv._on_closing()
     assert result is True
-    assert wv._closed.is_set()
+    assert wv._closed_event.is_set()
 
 
 def test_webview_on_closing_with_tray_returns_false():
     wv = GatewayWebView("http://127.0.0.1:9999", has_tray=True)
     result = wv._on_closing()
     assert result is False
-    assert not wv._closed.is_set()
+    assert not wv._closed_event.is_set()
 
 
 def test_webview_wait_closed_blocks_and_unblocks():

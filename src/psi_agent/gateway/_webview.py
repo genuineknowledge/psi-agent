@@ -21,7 +21,7 @@ class GatewayWebView:
         self._url = url
         self._has_tray = has_tray
         self._window: Any = None
-        self._closed = threading.Event()
+        self._closed_event = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -42,7 +42,7 @@ class GatewayWebView:
         self._thread.start()
         logger.info("Gateway webview window started")
 
-    def show(self) -> None:
+    def show(self, _icon: Any = None) -> None:
         """Restore a previously hidden webview window (called from tray callback)."""
         if self._window is not None:
             with contextlib.suppress(Exception):
@@ -61,7 +61,7 @@ class GatewayWebView:
 
     def wait_closed(self) -> None:
         """Block (in a worker thread) until the webview window is closed."""
-        self._closed.wait()
+        self._closed_event.wait()
 
     def is_running(self) -> bool:
         """True if the webview thread is alive."""
@@ -78,5 +78,5 @@ class GatewayWebView:
             if self._window is not None:
                 self._window.hide()
             return False
-        self._closed.set()
+        self._closed_event.set()
         return True

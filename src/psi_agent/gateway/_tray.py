@@ -22,13 +22,16 @@ class GatewayTray:
     ) -> None:
         self._url = url
         self._icon_path = icon_path
-        self._on_open = on_open
+        self._on_open = on_open if on_open is not None else self._open_browser
         self._stop_event = threading.Event()
         self._icon: Any = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         """Start the system tray icon in a background daemon thread."""
+        if self._thread is not None:
+            raise RuntimeError("GatewayTray already started")
+
         pystray = __import__("pystray")
 
         try:
@@ -39,7 +42,7 @@ class GatewayTray:
 
         try:
             menu = pystray.Menu(
-                pystray.MenuItem("打开控制台", self._open_browser, default=True),
+                pystray.MenuItem("打开控制台", self._on_open, default=True),
                 pystray.MenuItem("退出", self._quit),
             )
             self._icon = pystray.Icon("psi-agent", image, "psi-agent", menu)
@@ -58,7 +61,8 @@ class GatewayTray:
             with contextlib.suppress(Exception):
                 self._icon.stop()
         if self._thread is not None and self._thread.is_alive():
-            self._thread.join()
+            self._thread.join(timeout=2)
+            self._thread = None
         logger.info("Gateway system tray icon stopped")
 
     def is_running(self) -> bool:
@@ -70,10 +74,7 @@ class GatewayTray:
         self._stop_event.wait()
 
     def _open_browser(self, icon: Any = None) -> None:
-        if self._on_open is not None:
-            self._on_open()
-        else:
-            webbrowser.open(self._url)
+        webbrowser.open(self._url)
 
     def _quit(self, icon: Any = None) -> None:
         self._stop_event.set()
