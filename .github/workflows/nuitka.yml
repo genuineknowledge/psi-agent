@@ -30,6 +30,7 @@ jobs:
         --include-package=mcp
         --include-package=serper_mcp_server
         --include-package=pystray
+        --include-package=webview
         --include-package=fitz
         --include-package=docx
         --include-package=pptx
