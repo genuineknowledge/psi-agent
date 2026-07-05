@@ -46,22 +46,20 @@ function resolveBackendPath() {
   const ext = process.platform === 'win32' ? '.exe' : ''
   const binary = `psi-agent${ext}`
 
-  const devPath = path.join(__dirname, 'backend', binary)
-  const devAppPath = path.join(__dirname, 'backend', 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
-
-  const darwinDevPath = process.platform === 'darwin' && fs.existsSync(devAppPath)
-    ? devAppPath : (fs.existsSync(devPath) ? devPath : null)
-
-  if (darwinDevPath) return darwinDevPath
-  if (!app.isPackaged) return devPath
-
-  const resourcesPath = path.join(process.resourcesPath, 'backend')
-  if (process.platform === 'darwin') {
-    const appPath = path.join(resourcesPath, 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
-    if (fs.existsSync(appPath)) return appPath
-    return path.join(resourcesPath, binary)
+  if (app.isPackaged) {
+    const dir = path.join(process.resourcesPath, 'backend')
+    if (process.platform === 'darwin') {
+      return path.join(dir, 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
+    }
+    return path.join(dir, binary)
   }
-  return path.join(resourcesPath, binary)
+
+  const devDir = path.join(__dirname, 'backend')
+  if (process.platform === 'darwin') {
+    const appPath = path.join(devDir, 'psi-agent.app', 'Contents', 'MacOS', 'psi-agent')
+    if (fs.existsSync(appPath)) return appPath
+  }
+  return path.join(devDir, binary)
 }
 
 function startGateway() {
