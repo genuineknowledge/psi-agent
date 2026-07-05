@@ -41,20 +41,11 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - shell: bash
         run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS src/psi_agent/cli.py
-        if: matrix.os != 'macos-latest'
-      - shell: bash
-        run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS --windowed src/psi_agent/cli.py
-        if: matrix.os == 'macos-latest'
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
           path: pyinstaller-dist/psi-agent
-        if: matrix.os == 'ubuntu-latest'
-      - uses: actions/upload-artifact@v7
-        with:
-          name: psi-agent-pyinstaller-${{ matrix.os }}
-          path: pyinstaller-dist/psi-agent.app
-        if: matrix.os == 'macos-latest'
+        if: matrix.os != 'windows-latest'
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
