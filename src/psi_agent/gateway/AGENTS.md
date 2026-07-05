@@ -60,7 +60,7 @@ Gateway 进程
 12. await _do_persist()                                — 初始全量持久化
 13. runner.setup() + create_site(runner, listen) + site.start()
 14. if self.webview and self.icon is None: raise ValueError("--webview requires --icon")
-15. if self.webview: wv = GatewayWebView(addr, has_tray=self.tray); wv.start()
+15. if self.webview: wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon); wv.start()
 16. if self.browser: webbrowser.open(addr)
 17. if self.tray and self.icon is None: raise ValueError("--tray requires --icon")
 18. if self.tray: GatewayTray(addr, self.icon, on_open=wv.show).start()
