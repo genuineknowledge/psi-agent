@@ -8,6 +8,12 @@ if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
   app.commandLine.appendSwitch('ozone-platform', 'wayland')
 }
 
+const singleInstance = app.requestSingleInstanceLock()
+if (!singleInstance) {
+  app.quit()
+  return
+}
+
 const STARTUP_TIMEOUT_MS = 30_000
 const STDOUT_MAX_BUF = 100_000
 
@@ -39,11 +45,16 @@ const LOADING_HTML = `<!DOCTYPE html>
   <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
 </body></html>`
 
+function isGatewayAlive() {
+  return gatewayProc && gatewayProc.exitCode === null
+}
+
+const LOADING_URL = `data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`
+
 let mainWindow = null
 let gatewayProc = null
 let gatewayAddr = null
 let shuttingDown = false
-let startupRejected = false
 
 function resolveBackendPath() {
   const ext = process.platform === 'win32' ? '.exe' : ''
@@ -87,7 +98,6 @@ function startGateway() {
 
     const timeoutHandle = setTimeout(() => {
       finish(() => {
-        startupRejected = true
         cleanupGateway()
         reject(new Error('Gateway did not report address within 30s'))
       })
@@ -95,15 +105,6 @@ function startGateway() {
 
     gatewayProc.stdout.on('data', (data) => {
       stdoutBuf += data.toString()
-      if (stdoutBuf.length > STDOUT_MAX_BUF) {
-        finish(() => {
-          clearTimeout(timeoutHandle)
-          startupRejected = true
-          cleanupGateway()
-          reject(new Error('Gateway stdout exceeded max buffer size'))
-        })
-        return
-      }
       let idx
       while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
         const line = stdoutBuf.slice(0, idx)
@@ -118,12 +119,18 @@ function startGateway() {
           return
         }
       }
+      if (stdoutBuf.length > STDOUT_MAX_BUF) {
+        finish(() => {
+          clearTimeout(timeoutHandle)
+          cleanupGateway()
+          reject(new Error('Gateway stdout exceeded max buffer size'))
+        })
+      }
     })
 
     gatewayProc.on('error', (err) => {
       finish(() => {
         clearTimeout(timeoutHandle)
-        startupRejected = true
         reject(err)
       })
     })
@@ -131,7 +138,6 @@ function startGateway() {
     gatewayProc.on('exit', (code) => {
       finish(() => {
         clearTimeout(timeoutHandle)
-        startupRejected = true
         reject(new Error(`Gateway exited with code ${code} before printing address`))
       })
     })
@@ -152,7 +158,7 @@ function createWindow() {
     },
   })
 
-  mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`)
+  mainWindow.loadURL(LOADING_URL)
 
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
@@ -161,17 +167,19 @@ function createWindow() {
   })
 
   mainWindow.webContents.on('will-navigate', (_event, url) => {
-    const allowed = (gatewayAddr && url.startsWith(gatewayAddr))
-      || url === `data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`
+    const allowed = (gatewayAddr && url.startsWith(gatewayAddr + '/'))
+      || url === LOADING_URL
     if (!allowed) _event.preventDefault()
   })
 
   mainWindow.webContents.on('will-redirect', (_event, url) => {
-    if (!gatewayAddr || !url.startsWith(gatewayAddr)) _event.preventDefault()
+    if (!gatewayAddr || !url.startsWith(gatewayAddr + '/')) _event.preventDefault()
   })
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-    console.error(`Page load failed (${errorCode}): ${errorDescription}`)
+    if (mainWindow && gatewayAddr) {
+      dialog.showErrorBox('Connection Error', `Failed to load Gateway (${errorCode}):\n${errorDescription}`)
+    }
   })
 
   if (process.platform !== 'darwin') {
@@ -184,7 +192,9 @@ function createWindow() {
 }
 
 function navigateToSPA() {
-  mainWindow.loadURL(gatewayAddr + '/spa/index.html')
+  if (mainWindow && gatewayAddr) {
+    mainWindow.loadURL(gatewayAddr + '/spa/index.html')
+  }
 }
 
 function cleanupGateway() {
@@ -202,24 +212,36 @@ function cleanup() {
   cleanupGateway()
 }
 
+app.on('second-instance', () => {
+  if (mainWindow) {
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  }
+})
+
 app.whenReady().then(async () => {
   createWindow()
 
   try {
     await startGateway()
   } catch (err) {
-    dialog.showErrorBox('Startup Error', `Failed to start Gateway:\n${err.message}`)
+    if (!shuttingDown) {
+      dialog.showErrorBox('Startup Error', `Failed to start Gateway:\n${err.message}`)
+    }
     app.quit()
     return
   }
 
   gatewayProc.on('exit', (code) => {
-    if (!shuttingDown && mainWindow && !startupRejected) {
+    if (!shuttingDown && mainWindow && gatewayAddr) {
       dialog.showErrorBox('Gateway Error', `Gateway process exited unexpectedly (code ${code}).`)
+      mainWindow.loadURL(LOADING_URL)
     }
   })
 
   navigateToSPA()
+}).catch(() => {
+  app.quit()
 })
 
 app.on('window-all-closed', () => {
@@ -235,11 +257,9 @@ app.on('before-quit', () => {
 
 app.on('activate', () => {
   if (mainWindow === null) {
-    if (gatewayProc && !gatewayProc.killed && gatewayAddr) {
-      createWindow()
+    createWindow()
+    if (isGatewayAlive() && gatewayAddr) {
       navigateToSPA()
-    } else {
-      createWindow()
     }
   }
 })
