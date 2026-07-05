@@ -22,6 +22,7 @@ jobs:
         --collect-submodules serper_mcp_server
         --collect-submodules pystray
         --collect-submodules webview
+        --collect-binaries webview
         --collect-submodules fitz
         --collect-submodules docx
         --collect-submodules pptx
