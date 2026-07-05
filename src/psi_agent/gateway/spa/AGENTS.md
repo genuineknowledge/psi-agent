@@ -115,7 +115,7 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 |
 |------|------|----------|
-| `index.html` | HTML 外壳 | 定义 `#app` 挂载点（内含初始 loading spinner，Vue mount 后被替换）；`viewport` 带 `interactive-widget=resizes-visual`（iOS 键盘缩小 visual viewport）；`<link rel=icon>` 由 Gateway 在 `--tray` 时服务 |
+| `index.html` | HTML 外壳 | 定义 `#app` 挂载点（内含初始 loading spinner，Vue mount 后被替换）；`viewport` 带 `interactive-widget=resizes-visual`（iOS 键盘缩小 visual viewport）；`<link rel=icon>` 由 Gateway 在 `--icon` 时服务 |
 | `vite.config.js` | 构建配置 | `base:'/spa/'` 匹配 Gateway 静态路由；`@`→`/src` alias；输出 `dist/`，assets 进 `dist/assets/` |
 | `package.json` | 依赖声明 | `dev/build/preview` 脚本；Vue + 文件预览大库（懒加载，不进主 bundle）|
 | `src/main.js` | 应用引导 | `createApp(App)`；`app.use(createPinia())`（在 `app.mount` 之前挂载）；顶层 `import` 全局 CSS（material-symbols、katex、tokens/components/layout）；注册全局 `v-focus` 指令（mounted 时 `el.focus()`，供 Sidebar 改名 input 使用）；`mount('#app')` |
@@ -185,7 +185,7 @@ spa/
 
 `index.html`:
 - `<meta viewport interactive-widget=resizes-visual>` — iOS 键盘弹出时缩小 visual viewport 而非 overlay
-- `<link rel="icon" href="/favicon.ico">` — favicon 由 Gateway 在 `--tray` 设置时服务（即托盘图标）；未设置时该请求 404
+- `<link rel="icon" href="/favicon.ico">` — favicon 由 Gateway 在 `--icon` 设置时服务（即托盘/icon 图标）；未设置时该请求 404
 - `<title>控制台</title>`
 - 初始 `#app` 内含加载 spinner，Vue mount 后被替换
 

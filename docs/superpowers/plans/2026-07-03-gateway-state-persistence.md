@@ -513,7 +513,7 @@ Replace the `run()` method:
                 except Exception as e:
                     logger.warning(f"Failed to restore Session {sess_id!r}: {e!r}")
 
-            app = await create_app(aim, sm, favicon_path=self.tray)
+            app = await create_app(aim, sm, favicon_path=self.icon)
             tm: TitleManager = app["tm"]
 
             async def _do_persist() -> None:
@@ -549,9 +549,12 @@ Replace the `run()` method:
                 if self.browser:
                     await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
 
+                if self.tray and self.icon is None:
+                    raise ValueError("--tray requires --icon to be set")
+
                 tray = None
                 if self.tray:
-                    tray = GatewayTray(addr, self.tray)
+                    tray = GatewayTray(addr, self.icon)  # type: ignore[arg-type]
                     try:
                         tray.start()
                     except Exception as e:

@@ -26,7 +26,7 @@
 ```vbs
 End If
 
-objShell.Run "psi-agent.exe gateway --tray haitun.ico", 0, False
+objShell.Run "psi-agent.exe gateway --tray --icon haitun.ico", 0, False
 ```
 
 替换为：
@@ -41,7 +41,7 @@ objShell.Environment("Process")("PATH") = strUsrBin & ";" & strUcrtBin & ";" & o
 ' Keep bash -lc in the current working directory instead of cd-ing to $HOME.
 objShell.Environment("Process")("CHERE_INVOKING") = "1"
 
-objShell.Run "psi-agent.exe gateway --tray haitun.ico", 0, False
+objShell.Run "psi-agent.exe gateway --tray --icon haitun.ico", 0, False
 ```
 
 说明：放在 .env 加载之后，保证即使 `.env` 覆盖了 `PATH`，`msys64\usr\bin` 与 `msys64\ucrt64\bin` 仍在最前。`Environment("Process")` 修改的是当前进程环境，`objShell.Run` 启动的子进程继承之。
