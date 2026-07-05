@@ -4,16 +4,17 @@
 
 为 Gateway 新增 `--webview` / `--no-webview` 选项（默认 `False`）。
 开启后，所有"弹出浏览器"的动作改为弹出原生 webview 窗口，与浏览器行为互斥。
-当 `--tray` 未设置时，关闭 webview 窗口将关闭 Gateway 进程。
+需要 `--icon` 设置窗口图标；当 `--tray` 未设置时，关闭 webview 窗口将关闭 Gateway 进程。
 
 ## 当前状态
 
-Gateway 有两个相关字段：
+Gateway 有三个相关字段：
 
 | 字段 | 类型 | 默认 | 作用 |
 |------|------|------|------|
 | `browser` | `bool` | `False` | 启动时调用 `webbrowser.open(addr)` 打开系统浏览器 |
 | `tray` | `bool` | `False` | 显示系统托盘图标（需 `--icon`） |
+| `icon` | `str \| None` | `None` | 图标文件路径，用作 favicon 和托盘图标 |
 
 `GatewayTray._open_browser()` 也使用 `webbrowser.open()`。
 
@@ -127,9 +128,11 @@ else:
 
 变更为三路：
 ```python
-# 1. webview 初始化
+# 1. webview 初始化（需 --icon）
 wv = None
 if self.webview:
+    if self.icon is None:
+        raise ValueError("--webview requires --icon to be set")
     wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon)
     try:
         wv.start()
