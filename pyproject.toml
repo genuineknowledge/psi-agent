@@ -36,6 +36,9 @@ dependencies = [
     "markdownify>=0.13.1",
 ]
 
+[project.optional-dependencies]
+webview = ["pywebview>=5.4"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
