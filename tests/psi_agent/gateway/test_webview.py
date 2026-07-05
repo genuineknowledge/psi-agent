@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 import threading
 
 import pytest
@@ -63,28 +62,9 @@ def test_webview_is_running_before_start():
 
 def test_webview_double_start_raises():
     wv = GatewayWebView("http://127.0.0.1:9999")
-
-    class MockEvent:
-        def __iadd__(self, handler: object) -> MockEvent:
-            return self
-
-    class MockEvents:
-        closing = MockEvent()
-
-    class MockWindow:
-        events = MockEvents()
-
-    mock_module = type("module", (), {})
-    mock_module.create_window = lambda title, url: MockWindow()
-    mock_module.start = lambda: None
-
-    sys.modules["webview"] = mock_module
-    try:
+    wv._thread = threading.Thread(target=lambda: None)
+    with pytest.raises(RuntimeError, match="already started"):
         wv.start()
-        with pytest.raises(RuntimeError, match="already started"):
-            wv.start()
-    finally:
-        del sys.modules["webview"]
 
 
 def test_webview_show_no_window():
