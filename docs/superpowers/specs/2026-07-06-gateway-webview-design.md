@@ -53,17 +53,17 @@ class GatewayWebView:
         self._url = url
         self._has_tray = has_tray
         self._window: Any = None
-        self._closed = threading.Event()
+        self._closed_event = threading.Event()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        """后台 daemon 线程启动 webview。"""
+        """后台 daemon 线程启动 webview。若 _thread 非 None 则 raise RuntimeError。"""
 
-    def show(self) -> None:
-        """托盘回调：restore 已隐藏的窗口。"""
+    def show(self, _icon: Any = None) -> None:
+        """托盘回调：restore 已隐藏的窗口。_icon 接受 pystray 传入的 icon 参数并忽略。"""
 
     def stop(self) -> None:
-        """销毁窗口，join 线程。"""
+        """销毁窗口，join 线程（timeout=2s）。然后 _window=None, _thread=None。"""
 
     def wait_closed(self) -> None:
         """阻塞直到窗口关闭。用于主 anyio loop。"""
@@ -78,8 +78,9 @@ class GatewayWebView:
 **关键设计**：
 - `webview.create_window("psi-agent Gateway", url)` 创建窗口
 - `webview.start()` 在 daemon 线程中运行（阻塞式 GUI event loop）
-- `events.closing` 中：`_has_tray` → `self._window.hide()` + `return False`；否则 `self._closed.set()` + `return True`
-- `_closed` Event 供主 anyio loop 通过 `anyio.to_thread.run_sync(wv.wait_closed)` 等待退出
+- `events.closing` 中：`_has_tray` → `self._window.hide()` + `return False`；否则 `self._closed_event.set()` + `return True`
+- `_closed_event` Event 供主 anyio loop 通过 `anyio.to_thread.run_sync(wv.wait_closed)` 等待退出
+- `show(_icon)` 接受忽略的 `_icon` 参数，用于 pystray 直接作为回调
 
 ### 修改：`_tray.py` — GatewayTray 加回调
 
@@ -87,21 +88,20 @@ class GatewayWebView:
 class GatewayTray:
     def __init__(
         self, url: str, icon_path: str,
-        on_open: Callable[[], None] | None = None,
+        on_open: Any = None,
     ):
         ...
-        self._on_open = on_open
+        self._on_open = on_open if on_open is not None else self._open_browser
 
     def _open_browser(self, icon: Any = None) -> None:
-        if self._on_open is not None:
-            self._on_open()
-        else:
-            webbrowser.open(self._url)
+        webbrowser.open(self._url)
 ```
 
-- 新增 `on_open` 可选回调，默认 `None`
-- 有回调则调之，否则回退到 `webbrowser.open`
-- 完全不感知 webview
+- 新增 `on_open` 可选回调，默认 `_open_browser`
+- pystray 菜单直接调用 `self._on_open`（不再是 `_open_browser`）
+- 托盘完全不感知 webview
+- `start()` 新增 `_thread` 重复调用 guard（`raise RuntimeError`）与 webview 一致
+- `stop()` 清理后 `_icon = None`, `_thread = None` 与 webview 一致
 
 ### 修改：`__init__.py` — Gateway 编排
 
@@ -130,7 +130,10 @@ else:
 wv = None
 if self.webview:
     wv = GatewayWebView(addr, has_tray=self.tray)
-    wv.start()
+    try:
+        wv.start()
+    except:
+        logger.warning(...)
 
 # 2. 打开 browser / webview（原有 browser 逻辑不变）
 if self.browser:
@@ -139,15 +142,18 @@ if self.browser:
 # 3. tray 初始化，注入 webview 回调
 tray = None
 if self.tray:
-    on_open = wv.show if wv is not None else None
+    on_open = wv.show if wv is not None and wv.is_running() else None
     tray = GatewayTray(addr, self.icon, on_open=on_open)
-    ...
+    try:
+        tray.start()
+    except:
+        logger.warning(...)
 
 # 4. 三路等待 + finally 清理
 try:
     if tray is not None and tray.is_running():
         await anyio.to_thread.run_sync(tray.wait_stop, ...)
-    elif wv is not None:
+    elif wv is not None and wv.is_running():
         await anyio.to_thread.run_sync(wv.wait_closed, ...)
     else:
         await anyio.sleep_forever()
@@ -160,9 +166,9 @@ finally:
 
 ## 边缘情况
 
-1. **pywebview 未安装**：`import webview` 失败时给出 `"pywebview is required for --webview. Install with: pip install pywebview"` 错误
-2. **webview 线程崩溃**：`_run` 用 `try/finally` 确保 `_closed` 一定被 set，主 loop 不会永久 hang
-3. **无桌面环境**：pywebview 在无显示器环境启动失败，Gtk 报错，在 `start()` 中 catch 并给出 warning
+1. **pywebview 未安装**：`__import__("webview")` 自然抛出 `ImportError`，在 `Gateway.run()` 中被 catch 并记录 warning
+2. **webview 线程崩溃**：线程退出后 `is_running()` 返回 False，主 loop 的 `elif wv.is_running()` 分支不命中，回退到 `sleep_forever()`；若同时有 tray 则正常等托盘退出
+3. **无桌面环境**：pywebview 在无显示器环境启动失败，Gtk 报错，在 `start()` 中由 `Gateway.run()` catch 并给出 warning
 4. **多次关闭窗口**（tray 模式下 hide 后再关闭）：pywebview `events.closing` 每次关闭都会触发，`_has_tray` 判断始终生效
 
 ## 不涉及
