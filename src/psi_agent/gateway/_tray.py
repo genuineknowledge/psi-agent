@@ -1,4 +1,4 @@
-"""System tray icon for Gateway. Left-click opens browser; right-click shows menu."""
+"""System tray icon for Gateway. Left-click opens browser or restores webview; right-click shows menu."""
 
 from __future__ import annotations
 

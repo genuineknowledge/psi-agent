@@ -47,19 +47,19 @@ Gateway 进程
 
 ```
 1. setup_logging(verbose)                             — 第一行
-2. state = GatewayState() + snapshot = await state.load()  — 加载持久化状态
-3. anyio.create_task_group()                          — 手动管理 task group
-4. 创建 AIManager + SessionManager + TitleManager
-5. 恢复 AI（遍历 snapshot.ais → aim.create，失败 skip）
-6. 恢复 Session（遍历 snapshot.sessions → sm.create，失败 skip）
-7. 恢复标题（遍历 snapshot.titles → tm.set）
-8. await create_app(aim, sm, tm, favicon_path=self.icon)  — 注册 REST 路由
-9. 创建 _do_persist 闭包（快照三个 manager → state.save）
-10. 注入 _persist（aim._persist = sm._persist = tm._persist = _do_persist）
-11. await _do_persist()                                — 初始全量持久化
-12. runner.setup() + create_site(runner, listen) + site.start()
-13. if self.browser and self.webview: raise ValueError("--browser and --webview are mutually exclusive")
-14. if self.webview: GatewayWebView(addr, has_tray=self.tray).start()
+2. if self.browser and self.webview: raise ValueError  — 互斥校验
+3. state = GatewayState() + snapshot = await state.load()  — 加载持久化状态
+4. anyio.create_task_group()                          — 手动管理 task group
+5. 创建 AIManager + SessionManager + TitleManager
+6. 恢复 AI（遍历 snapshot.ais → aim.create，失败 skip）
+7. 恢复 Session（遍历 snapshot.sessions → sm.create，失败 skip）
+8. 恢复标题（遍历 snapshot.titles → tm.set）
+9. await create_app(aim, sm, tm, favicon_path=self.icon)  — 注册 REST 路由
+10. 创建 _do_persist 闭包（快照三个 manager → state.save）
+11. 注入 _persist（aim._persist = sm._persist = tm._persist = _do_persist）
+12. await _do_persist()                                — 初始全量持久化
+13. runner.setup() + create_site(runner, listen) + site.start()
+14. if self.webview: wv = GatewayWebView(addr, has_tray=self.tray); wv.start()
 15. if self.browser: webbrowser.open(addr)
 16. if self.tray and self.icon is None: raise ValueError("--tray requires --icon")
 17. if self.tray: GatewayTray(addr, self.icon, on_open=wv.show).start()
