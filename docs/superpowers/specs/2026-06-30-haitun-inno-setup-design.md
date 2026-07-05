@@ -9,7 +9,7 @@
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `haitun.ico` → `examples/haitun-workspace/haitun.ico` | 移动 | 图标文件，用于 tray icon、installer icon、shortcut icon |
-| `examples/haitun-workspace/haitun agent.vbs` | 新建 | VBS 启动器，负责 launch `psi-agent gateway --tray haitun.ico` |
+| `examples/haitun-workspace/haitun agent.vbs` | 新建 | VBS 启动器，负责 launch `psi-agent gateway --tray --icon haitun.ico` |
 | `examples/haitun-workspace/haitun.iss` | 新建 | Inno Setup 安装脚本 |
 | `examples/haitun-workspace/.gitignore` | 修改 | 移除 `haitun agent.vbs`、`haitun.ico` 行（现已提交） |
 | `.github/workflows/pyinstaller.yml` | 修改 | 新增 `haitun-inno-setup` job，在 PyInstaller 之后运行 |
@@ -47,7 +47,7 @@ If objFSO.FileExists(strEnvPath) Then
     objFile.Close
 End If
 
-objShell.Run "psi-agent.exe gateway --tray haitun.ico", 0, False
+objShell.Run "psi-agent.exe gateway --tray --icon haitun.ico", 0, False
 ```
 
 - 设置工作目录到脚本所在目录，确保 `psi-agent.exe`、`haitun.ico`、`.env` 及 workspace 文件可被找到

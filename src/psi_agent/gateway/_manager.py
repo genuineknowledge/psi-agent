@@ -41,18 +41,17 @@ async def _remove_socket(path: str) -> None:
         logger.warning(f"Failed to remove socket file {path!r}: {e!r}")
 
 
-async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
+async def _wait_socket(path: str) -> None:
     if sys.platform == "win32":
         connector: aiohttp.BaseConnector = aiohttp.NamedPipeConnector(path=path)
         kind = "Named Pipe"
     else:
         connector = aiohttp.UnixConnector(path=path)
         kind = "Unix socket"
-    logger.debug(f"Waiting for {kind} {path!r} to become ready (timeout={timeout_sec}s)")
-    deadline = anyio.current_time() + timeout_sec
+    logger.debug(f"Waiting for {kind} {path!r} to become ready")
     session = aiohttp.ClientSession(connector=connector)
     try:
-        while anyio.current_time() < deadline:
+        while True:
             try:
                 async with session.get("http://localhost/") as _resp:
                     pass
@@ -60,7 +59,6 @@ async def _wait_socket(path: str, timeout_sec: float = 30.0) -> None:
                 return
             except Exception:
                 await anyio.sleep(0.1)
-        raise TimeoutError(f"{kind} {path!r} not ready within {timeout_sec}s")
     finally:
         with anyio.CancelScope(shield=True):
             await session.close()
