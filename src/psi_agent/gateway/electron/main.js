@@ -9,6 +9,7 @@ if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
 }
 
 const STARTUP_TIMEOUT_MS = 30_000
+const STDOUT_MAX_BUF = 100_000
 
 const LOADING_HTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
@@ -41,6 +42,8 @@ const LOADING_HTML = `<!DOCTYPE html>
 let mainWindow = null
 let gatewayProc = null
 let gatewayAddr = null
+let shuttingDown = false
+let startupRejected = false
 
 function resolveBackendPath() {
   const ext = process.platform === 'win32' ? '.exe' : ''
@@ -84,14 +87,23 @@ function startGateway() {
 
     const timeoutHandle = setTimeout(() => {
       finish(() => {
-        cleanupStderr()
-        gatewayProc.kill('SIGTERM')
+        startupRejected = true
+        cleanupGateway()
         reject(new Error('Gateway did not report address within 30s'))
       })
     }, STARTUP_TIMEOUT_MS)
 
     gatewayProc.stdout.on('data', (data) => {
       stdoutBuf += data.toString()
+      if (stdoutBuf.length > STDOUT_MAX_BUF) {
+        finish(() => {
+          clearTimeout(timeoutHandle)
+          startupRejected = true
+          cleanupGateway()
+          reject(new Error('Gateway stdout exceeded max buffer size'))
+        })
+        return
+      }
       let idx
       while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
         const line = stdoutBuf.slice(0, idx)
@@ -111,6 +123,7 @@ function startGateway() {
     gatewayProc.on('error', (err) => {
       finish(() => {
         clearTimeout(timeoutHandle)
+        startupRejected = true
         reject(err)
       })
     })
@@ -118,6 +131,7 @@ function startGateway() {
     gatewayProc.on('exit', (code) => {
       finish(() => {
         clearTimeout(timeoutHandle)
+        startupRejected = true
         reject(new Error(`Gateway exited with code ${code} before printing address`))
       })
     })
@@ -140,12 +154,20 @@ function createWindow() {
 
   mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`)
 
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show()
   })
 
   mainWindow.webContents.on('will-navigate', (_event, url) => {
-    if (!url.startsWith(gatewayAddr) && !url.startsWith('data:')) _event.preventDefault()
+    const allowed = (gatewayAddr && url.startsWith(gatewayAddr))
+      || url === `data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`
+    if (!allowed) _event.preventDefault()
+  })
+
+  mainWindow.webContents.on('will-redirect', (_event, url) => {
+    if (!gatewayAddr || !url.startsWith(gatewayAddr)) _event.preventDefault()
   })
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
@@ -165,18 +187,19 @@ function navigateToSPA() {
   mainWindow.loadURL(gatewayAddr + '/spa/index.html')
 }
 
-function cleanupStderr() {
-  if (gatewayProc && gatewayProc.stderr) {
+function cleanupGateway() {
+  if (gatewayProc && gatewayProc.stderr && !gatewayProc.stderr.destroyed) {
     gatewayProc.stderr.unpipe()
     gatewayProc.stderr.destroy()
+  }
+  if (gatewayProc && !gatewayProc.killed) {
+    gatewayProc.kill('SIGTERM')
   }
 }
 
 function cleanup() {
-  cleanupStderr()
-  if (gatewayProc && !gatewayProc.killed) {
-    gatewayProc.kill('SIGTERM')
-  }
+  shuttingDown = true
+  cleanupGateway()
 }
 
 app.whenReady().then(async () => {
@@ -191,7 +214,7 @@ app.whenReady().then(async () => {
   }
 
   gatewayProc.on('exit', (code) => {
-    if (mainWindow) {
+    if (!shuttingDown && mainWindow && !startupRejected) {
       dialog.showErrorBox('Gateway Error', `Gateway process exited unexpectedly (code ${code}).`)
     }
   })
@@ -212,6 +235,11 @@ app.on('before-quit', () => {
 
 app.on('activate', () => {
   if (mainWindow === null) {
-    createWindow()
+    if (gatewayProc && !gatewayProc.killed && gatewayAddr) {
+      createWindow()
+      navigateToSPA()
+    } else {
+      createWindow()
+    }
   }
 })
