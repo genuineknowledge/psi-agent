@@ -45,16 +45,16 @@ const LOADING_HTML = `<!DOCTYPE html>
   <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
 </body></html>`
 
-function isGatewayAlive() {
-  return gatewayProc && gatewayProc.exitCode === null
-}
-
 const LOADING_URL = `data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`
 
 let mainWindow = null
 let gatewayProc = null
 let gatewayAddr = null
 let shuttingDown = false
+
+function isGatewayAlive() {
+  return gatewayProc && gatewayProc.exitCode === null
+}
 
 function resolveBackendPath() {
   const ext = process.platform === 'win32' ? '.exe' : ''
@@ -99,11 +99,19 @@ function startGateway() {
     const timeoutHandle = setTimeout(() => {
       finish(() => {
         cleanupGateway()
-        reject(new Error('Gateway did not report address within 30s'))
+        reject(new Error(`Gateway did not report address within ${STARTUP_TIMEOUT_MS / 1000}s`))
       })
     }, STARTUP_TIMEOUT_MS)
 
-    gatewayProc.stdout.on('data', (data) => {
+    const onCrash = (code) => {
+      gatewayAddr = null
+      if (!shuttingDown && mainWindow) {
+        dialog.showErrorBox('Gateway Error', `Gateway process exited unexpectedly (code ${code}).`)
+        mainWindow.loadURL(LOADING_URL)
+      }
+    }
+
+    const onStdoutData = (data) => {
       stdoutBuf += data.toString()
       let idx
       while ((idx = stdoutBuf.indexOf('\n')) >= 0) {
@@ -112,6 +120,10 @@ function startGateway() {
         const m = line.match(/^GATEWAY_ADDR=(.+)$/)
         if (m) {
           gatewayAddr = m[1].trim()
+          gatewayProc.stdout.removeListener('data', onStdoutData)
+          gatewayProc.removeListener('error', onStartupError)
+          gatewayProc.removeListener('exit', onStartupExit)
+          gatewayProc.on('exit', onCrash)
           finish(() => {
             clearTimeout(timeoutHandle)
             resolve(gatewayAddr)
@@ -126,21 +138,25 @@ function startGateway() {
           reject(new Error('Gateway stdout exceeded max buffer size'))
         })
       }
-    })
+    }
 
-    gatewayProc.on('error', (err) => {
+    const onStartupError = (err) => {
       finish(() => {
         clearTimeout(timeoutHandle)
         reject(err)
       })
-    })
+    }
 
-    gatewayProc.on('exit', (code) => {
+    const onStartupExit = (code) => {
       finish(() => {
         clearTimeout(timeoutHandle)
         reject(new Error(`Gateway exited with code ${code} before printing address`))
       })
-    })
+    }
+
+    gatewayProc.stdout.on('data', onStdoutData)
+    gatewayProc.on('error', onStartupError)
+    gatewayProc.on('exit', onStartupExit)
   })
 }
 
@@ -231,13 +247,6 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
-
-  gatewayProc.on('exit', (code) => {
-    if (!shuttingDown && mainWindow && gatewayAddr) {
-      dialog.showErrorBox('Gateway Error', `Gateway process exited unexpectedly (code ${code}).`)
-      mainWindow.loadURL(LOADING_URL)
-    }
-  })
 
   navigateToSPA()
 }).catch(() => {
