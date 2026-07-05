@@ -17,6 +17,7 @@ from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._state import GatewayState
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._tray import GatewayTray
+from psi_agent.gateway._webview import GatewayWebView
 from psi_agent.gateway.server import create_app
 
 
@@ -45,6 +46,9 @@ class Gateway:
     browser: bool = False
     """Open a browser tab on startup."""
 
+    webview: bool = False
+    """Use a native webview window instead of the system browser."""
+
     tray: bool = False
     """Show a system tray icon (requires --icon)."""
 
@@ -53,6 +57,9 @@ class Gateway:
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
+
+        if self.browser and self.webview:
+            raise ValueError("--browser and --webview are mutually exclusive")
 
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
@@ -131,6 +138,14 @@ class Gateway:
 
                 logger.info(f"Gateway listening on {addr}")
 
+                wv = None
+                if self.webview:
+                    wv = GatewayWebView(addr, has_tray=self.tray)
+                    try:
+                        wv.start()
+                    except Exception as e:
+                        logger.warning(f"Failed to start webview window: {e!r}")
+
                 if self.browser:
                     await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
 
@@ -138,7 +153,8 @@ class Gateway:
                 if self.tray:
                     if self.icon is None:
                         raise ValueError("--tray requires --icon to be set")
-                    tray = GatewayTray(addr, self.icon)
+                    on_open = wv.show if wv is not None and wv.is_running() else None
+                    tray = GatewayTray(addr, self.icon, on_open=on_open)
                     try:
                         tray.start()
                     except Exception as e:
@@ -147,11 +163,15 @@ class Gateway:
                 try:
                     if tray is not None and tray.is_running():
                         await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
+                    elif wv is not None and wv.is_running():
+                        await anyio.to_thread.run_sync(wv.wait_closed, abandon_on_cancel=True)  # ty: ignore
                     else:
                         await anyio.sleep_forever()
                 finally:
                     if tray is not None:
                         tray.stop()
+                    if wv is not None:
+                        wv.stop()
             finally:
                 logger.info("Shutting down Gateway")
                 with anyio.CancelScope(shield=True):
