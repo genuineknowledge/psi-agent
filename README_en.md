@@ -2,31 +2,32 @@
 
 > [中文](README.md)
 
-A microkernel framework for assembling AI agents from Python sockets.
+A microkernel framework for assembling AI agents from composable socket-connected components.
 
-You write Python functions and Markdown. The framework handles socket communication, tool calling, SSE streaming, cron scheduling, conversation persistence, and a Web management console for you.
+You write Python functions and Markdown. The framework handles socket communication, tool calling, SSE streaming, cron scheduling, and conversation persistence, and provides a Web management console.
 
 ## Why
 
-- **Simple composition**: ai, session, channel — three standalone processes connected through sockets. No central config, no database
+- **Simple composition**: ai, session, channel — three standalone processes connected through sockets. No global config, no database
 - **Workspace is the agent**: Drop Python functions in `workspace/` for tools, write a system prompt for personality, add a cron for scheduled tasks
-- **Streaming interactions**: REPL shows AI reasoning (dimmed) and final response in real time
+- **Streaming interactions**: REPL/CLI show AI reasoning (dimmed) and final response in real time
 - **One-command launch**: `psi-agent run config.yml` starts AI + Session + Channel from a single YAML
 - **Web management console**: `psi-agent gateway` starts a REST API + Web Console SPA for visual management
 
 ## Architecture
 
 ```
-User ←→ Channel (REPL/CLI/Telegram/Feishu/Web UI) ── TCP/Unix/Named Pipe ── Session ── TCP/Unix/Named Pipe ── AI
+User ←→ Channel (REPL/CLI/Telegram/Feishu) ── TCP/Unix/Named Pipe ── Session ── TCP/Unix/Named Pipe ── AI
+User ←→ Web UI → HTTP → Gateway ── TCP/Unix/Named Pipe ── Session ── TCP/Unix/Named Pipe ── AI
 ```
 
-AI layer is stateless. Session maintains conversation history. Channel is a pure UI client. All three are independent processes communicating via the OpenAI Chat Completions HTTP/SSE protocol over sockets.
+AI layer is stateless. Session maintains conversation history. Channel is a pure UI client — the three core components are independent processes communicating via the OpenAI Chat Completions HTTP/SSE protocol over sockets. Gateway provides an HTTP bridge for the Web UI, internally reusing Channel sockets to communicate with Session.
 
 For developers: start components independently, mix and match for debugging and customization. For users: `psi-agent run config.yml` launches everything in one command, and `psi-agent gateway` provides a visual web console for managing everything.
 
 ## Quick Start
 
-> Requires Python >= 3.14
+**Requires Python >= 3.14**
 
 ### Option 1: Start individually
 
@@ -36,7 +37,7 @@ Three terminals, three commands:
 # Install
 uv sync
 
-# Terminal 1: Start AI backend (--api-key optional, reads PSI_AI_API_KEY env if omitted)
+# Terminal 1: Start AI backend (--provider/--model/--api-key/--base-url are optional, fall back to PSI_AI_* env vars)
 uv run psi-agent ai \
   --provider openai \
   --session-socket ./ai.sock \
@@ -54,7 +55,7 @@ uv run psi-agent session \
 uv run psi-agent channel repl --session-socket ./channel.sock
 ```
 
-REPL controls: `Enter` for newline, `Alt+Enter` to send, `Ctrl+D` to exit.
+REPL controls: `Enter` to insert a newline, `Alt+Enter` (or `Escape+Enter`) to send, `Ctrl+D` to exit.
 
 Or one-shot:
 
@@ -79,11 +80,12 @@ uv run psi-agent run config.yml
   provider: openai
   session_socket: ./ai.sock
   model: gpt-4o-mini
-  api_key: sk-xxxx                 # omit to fall back to PSI_AI_API_KEY env var
+  api_key: sk-xxxx                 # AI params are optional: omit to fall back to PSI_AI_* env vars
   base_url: https://api.openai.com/v1
 
 - type: session
   workspace: ./examples/a-simple-bash-only-workspace  # optional, defaults to .
+  session_id: mychat         # optional, UUID auto-generated
   channel_socket: ./channel.sock
   ai_socket: ./ai.sock
 
@@ -92,27 +94,30 @@ uv run psi-agent run config.yml
   session_socket: ./channel.sock
 ```
 
-Servers (ai, session) run forever; channel components exit as needed (CLI exits after response, REPL runs until Ctrl+D).
+Servers (ai, session) run forever; channel components exit when done — CLI exits after the response, REPL runs until Ctrl+D.
+
+> **Note**: `psi-agent run` does not exit automatically (ai/session run forever) — use `Ctrl+C` to stop. Batch mode always enables DEBUG-level logging; per-component `verbose` fields in the YAML are ignored.
 
 ### Option 3: Gateway Web Console
 
 Start the Gateway and manage everything in your browser:
 
 ```bash
-uv run psi-agent gateway
+uv run psi-agent gateway                         # Random port on 127.0.0.1 (default)
+uv run psi-agent gateway --listen http://127.0.0.1:8080   # Specify a listen address
 ```
 
-Open the printed address (random port on 127.0.0.1 by default) to see a Material Design 3 Web Console. From the UI you can:
+Open the printed address to see a Material Design 3 Web Console. From the UI you can:
 
 - **Connect LLMs**: Choose from 50+ providers, enter your API key
 - **Create sessions**: Pick a workspace directory, start a Session
 - **Chat**: Markdown + LaTeX rendering, file upload/download, streaming output
 - **Manage**: Sidebar session switching, double-click rename, delete with confirmation
-- **Auto titles**: AI generates session titles after first conversation
+- **Automatic titles**: AI generates session titles after first conversation
 
-> **Security note**: Gateway listens on `127.0.0.1` by default. Do not use `--listen 0.0.0.0` — this would expose arbitrary directory listing.
+> **Security note**: Gateway binds to `127.0.0.1` by default. Do not use `--listen http://0.0.0.0:PORT` — this binds to all network interfaces, exposing the entire REST API (including arbitrary directory browsing) to anyone on your network. The `--listen` value must include the `http://` prefix; bare `IP:PORT` is interpreted as a Unix socket path.
 
-Gateway also supports system tray icon (`--tray icon.png`) and disabling auto browser open (`--no-browser`).
+Gateway also supports system tray icon (`--tray icon.png`), disabling auto browser open (`--no-browser`), and custom socket path prefix (`--socket-path psi`, controlling the `/tmp/{prefix}/ais/...` and `/tmp/{prefix}/channels/...` layout for AI/Session Unix sockets).
 
 ## CLI Overview
 
@@ -135,11 +140,23 @@ All components auto-detect transport type via address prefix:
 
 | Address Format | Transport |
 |----------------|-----------|
-| `./ai.sock` (bare filesystem path) | Unix socket |
+| `./ai.sock` (bare filesystem path, relative or absolute) | Unix socket |
 | `http://127.0.0.1:8080` | TCP |
 | `\\.\pipe\name` (Windows) | Named Pipe |
 
 AI and Session components are transport-agnostic — handled uniformly by `_sockets.py`.
+
+Protocol errors between components take two forms:
+
+- **Non-streaming (HTTP level)**: request parsing failures return HTTP error status with a JSON body:
+  ```json
+  {"error": {"message": "...", "type": "...", "param": null, "code": 400}}
+  ```
+- **Streaming (SSE level)**: errors after HTTP 200 is committed are returned as ChatCompletionChunk (`[DONE]` varies by layer, see below):
+  ```
+  data: {"id": "error", "choices": [{"index": 0, "delta": {"content": "[Upstream Error]: ..."}, "finish_reason": "error"}]}
+  ```
+  `finish_reason="error"` is a psi-agent internal extension, not exposed externally. `[DONE]` is always sent by Gateway; the Session layer sends it only on success; the AI layer never sends `[DONE]` (stream end is indicated by response completion).
 
 ## Environment Variables
 
@@ -154,7 +171,7 @@ AI and Session components are transport-agnostic — handled uniformly by `_sock
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
 | `PSI_FEISHU_APP_SECRET` | Feishu app secret |
 
-CLI args take precedence over environment variables. All parameters are optional and fall back to env vars when omitted.
+CLI args take precedence over environment variables. AI params (provider, model, api_key, base_url) and channel auth params are optional and fall back to env vars when omitted. Socket path params (--session-socket, --channel-socket, --ai-socket) are required.
 
 ## Define Your Own Agent
 
@@ -162,19 +179,19 @@ A workspace is an agent:
 
 ```
 my-workspace/
-├── tools/                    # One .py file = one or more tools (all non-_ async def)
+├── tools/                    # Each non-_-prefixed .py file — all non-_ async def in it
 │   └── bash.py               # async def bash(command: str) -> str
 ├── skills/                   # */SKILL.md skill docs (enumerated by system_prompt_builder)
 ├── schedules/                # Cron-triggered tasks
 │   └── daily-report/
 │       └── TASK.md           # YAML header (name, cron) + Markdown body
 └── systems/
-    └── system.py             # async def system_prompt_builder() -> str
+    └── system.py             # async def system_prompt_builder() / system_prompt_rebuild_checker()
 ```
 
 ### Tools
 
-A tool is just an async function — every non-`_` `async def` in the file is loaded as a tool:
+A tool is just an async function — in each non-`_`-prefixed `.py` file, every non-`_` `async def` is loaded as a tool:
 
 ```python
 # tools/bash.py
@@ -243,16 +260,16 @@ skills/
 
 Session automatically persists conversation history to `workspace/histories/{session_id}.jsonl`:
 
-- `--session-id` auto-generates a UUID when omitted; provide a custom ID to resume a session
-- JSONL line-by-line format, atomic writes (tempfile + `os.replace`)
-- **Turn-level atomicity**: only successfully completed turns are persisted; rollback on errors
+- `--session-id` auto-generates a UUID when omitted; provide a custom ID to resume a session (only `[a-zA-Z0-9_-]` allowed)
+- JSONL line-by-line format, atomic writes (temp file + `anyio.Path.replace`)
+- **Turn-level atomicity**: user message is persisted immediately as a crash baseline; AI responses are persisted only on successful completion, skipped on error
 
 ```bash
 # New session
-uv run psi-agent session --session-id mychat --channel-socket ./c.sock --ai-socket ./ai.sock
+uv run psi-agent session --session-id mychat --channel-socket ./channel.sock --ai-socket ./ai.sock
 
 # Resume later
-uv run psi-agent session --session-id mychat --channel-socket ./c.sock --ai-socket ./ai.sock
+uv run psi-agent session --session-id mychat --channel-socket ./channel.sock --ai-socket ./ai.sock
 ```
 
 ## Gateway REST API
@@ -275,7 +292,7 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
 | GET | `/workspace/cwd` | Get working directory |
 | GET | `/openapi.json` | OpenAPI schema |
-| GET | `/favicon.ico` | Favicon (requires `--tray`) |
+| GET | `/favicon.ico` | Favicon (available only with `--tray`; returns 404 otherwise) |
 
 ### Web Console Chat Protocol
 
@@ -293,8 +310,10 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 
 **Response (SSE):**
 ```
+data: {"type": "reasoning", "text": "Let me think..."}
 data: {"type": "text", "text": "Hello! "}
 data: {"type": "blob", "name": "generated.png", "data": "base64..."}
+data: {"type": "error", "error": "..."}
 data: [DONE]
 ```
 
@@ -305,7 +324,7 @@ data: [DONE]
 ```bash
 uv run psi-agent channel telegram \
   --session-socket ./channel.sock \
-  --bot-token $TELEGRAM_BOT_TOKEN \
+  --bot-token $PSI_TELEGRAM_BOT_TOKEN \
   --allowed-user-ids 123456789 \
   --proxy socks5://127.0.0.1:1080
 ```
@@ -320,8 +339,8 @@ uv run psi-agent channel telegram \
 ```bash
 uv run psi-agent channel feishu \
   --session-socket ./channel.sock \
-  --app-id $FEISHU_APP_ID \
-  --app-secret $FEISHU_APP_SECRET \
+  --app-id $PSI_FEISHU_APP_ID \
+  --app-secret $PSI_FEISHU_APP_SECRET \
   --allowed-user-ids "ou_abc123"
 ```
 
