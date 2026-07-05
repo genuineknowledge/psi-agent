@@ -41,7 +41,7 @@ class Gateway:
     """Prefix for AI/Session Unix socket paths."""
 
     icon: str | None = None
-    """Path to icon image file (png/jpg/ico). Used as favicon and—if --tray is set—system tray icon."""
+    """Path to icon image file (png/jpg/ico). Used as favicon, tray icon (requires --tray), and webview window icon (requires --webview)."""
 
     browser: bool = False
     """Open a browser tab on startup."""
@@ -140,6 +140,8 @@ class Gateway:
 
                 wv = None
                 if self.webview:
+                    if self.icon is None:
+                        raise ValueError("--webview requires --icon to be set")
                     wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon)
                     try:
                         wv.start()
