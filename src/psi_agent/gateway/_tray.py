@@ -14,9 +14,15 @@ from PIL import Image
 class GatewayTray:
     """System tray icon that provides quick access to Gateway Web Console."""
 
-    def __init__(self, url: str, icon_path: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        icon_path: str,
+        on_open: Any = None,
+    ) -> None:
         self._url = url
         self._icon_path = icon_path
+        self._on_open = on_open
         self._stop_event = threading.Event()
         self._icon: Any = None
         self._thread: threading.Thread | None = None
@@ -64,7 +70,10 @@ class GatewayTray:
         self._stop_event.wait()
 
     def _open_browser(self, icon: Any = None) -> None:
-        webbrowser.open(self._url)
+        if self._on_open is not None:
+            self._on_open()
+        else:
+            webbrowser.open(self._url)
 
     def _quit(self, icon: Any = None) -> None:
         self._stop_event.set()
