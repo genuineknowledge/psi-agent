@@ -49,9 +49,10 @@ pywebview 作为主依赖加入 `pyproject.toml`。
 class GatewayWebView:
     """管理 pywebview 窗口生命周期。"""
 
-    def __init__(self, url: str, has_tray: bool = False):
+    def __init__(self, url: str, has_tray: bool = False, icon: str | None = None):
         self._url = url
         self._has_tray = has_tray
+        self._icon = icon
         self._window: Any = None
         self._closed_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -76,8 +77,8 @@ class GatewayWebView:
 ```
 
 **关键设计**：
-- `webview.create_window("psi-agent Gateway", url)` 创建窗口
-- `webview.start()` 在 daemon 线程中运行（阻塞式 GUI event loop）
+- `webview.create_window("控制台", url)` 创建窗口
+- `webview.start(icon=self._icon)` 在 daemon 线程中运行，传入 Gateway 的 `--icon` 作为窗口图标
 - `events.closing` 中：`_has_tray` → `self._window.hide()` + `return False`；否则 `self._closed_event.set()` + `return True`
 - `_closed_event` Event 供主 anyio loop 通过 `anyio.to_thread.run_sync(wv.wait_closed)` 等待退出
 - `show(_icon)` 接受忽略的 `_icon` 参数，用于 pystray 直接作为回调
@@ -129,7 +130,7 @@ else:
 # 1. webview 初始化
 wv = None
 if self.webview:
-    wv = GatewayWebView(addr, has_tray=self.tray)
+    wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon)
     try:
         wv.start()
     except:

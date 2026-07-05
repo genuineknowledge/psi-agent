@@ -11,6 +11,7 @@ def test_webview_init():
     wv = GatewayWebView("http://127.0.0.1:9999")
     assert wv._url == "http://127.0.0.1:9999"
     assert wv._has_tray is False
+    assert wv._icon is None
     assert wv._window is None
     assert wv._thread is None
     assert not wv._closed_event.is_set()

@@ -140,7 +140,7 @@ class Gateway:
 
                 wv = None
                 if self.webview:
-                    wv = GatewayWebView(addr, has_tray=self.tray)
+                    wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon)
                     try:
                         wv.start()
                     except Exception as e:

@@ -17,9 +17,10 @@ class GatewayWebView:
     is closed by the user.
     """
 
-    def __init__(self, url: str, has_tray: bool = False) -> None:
+    def __init__(self, url: str, has_tray: bool = False, icon: str | None = None) -> None:
         self._url = url
         self._has_tray = has_tray
+        self._icon = icon
         self._window: Any = None
         self._closed_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -38,7 +39,11 @@ class GatewayWebView:
         self._window = webview.create_window("psi-agent Gateway", self._url)
         self._window.events.closing += self._on_closing
 
-        self._thread = threading.Thread(target=webview.start, daemon=True)
+        self._thread = threading.Thread(
+            target=webview.start,
+            kwargs={"icon": self._icon},
+            daemon=True,
+        )
         self._thread.start()
         logger.info("Gateway webview window started")
 
