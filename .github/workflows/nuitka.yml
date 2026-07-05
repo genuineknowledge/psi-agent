@@ -21,6 +21,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     env:
       NUITKA_COMMON_FLAGS: >-
+        --mode=onefile
         --output-dir=nuitka-dist
         --output-filename=psi-agent
         --assume-yes-for-downloads
@@ -48,10 +49,10 @@ jobs:
       - run: npm run build
         working-directory: src/psi_agent/gateway/spa
       - shell: bash
-        run: uv run python -m nuitka --mode=onefile $NUITKA_COMMON_FLAGS src/psi_agent/cli.py
+        run: uv run python -m nuitka $NUITKA_COMMON_FLAGS src/psi_agent/cli.py
         if: matrix.os != 'windows-latest'
       - shell: bash
-        run: uv run python -m nuitka --mode=onefile $NUITKA_COMMON_FLAGS --clang src/psi_agent/cli.py
+        run: uv run python -m nuitka $NUITKA_COMMON_FLAGS --clang src/psi_agent/cli.py
         if: matrix.os == 'windows-latest'
       - uses: actions/upload-artifact@v7
         with:
