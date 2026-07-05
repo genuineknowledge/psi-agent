@@ -60,6 +60,7 @@ class GatewayTray:
         if self._icon is not None:
             with contextlib.suppress(Exception):
                 self._icon.stop()
+            self._icon = None
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2)
             self._thread = None
