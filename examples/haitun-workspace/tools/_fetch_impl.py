@@ -25,9 +25,7 @@ from readability import Document  # type: ignore[import-untyped]
 DEFAULT_TIMEOUT = 20.0  # seconds for connect+read
 MAX_BYTES = 5 * 1024 * 1024  # 5 MiB cap on the downloaded body
 DEFAULT_MAX_CHARS = 20000  # cap on returned text to protect the context window
-_USER_AGENT = (
-    "Mozilla/5.0 (compatible; psi-agent-fetch/1.0; +https://github.com/genuineknowledge/psi-agent)"
-)
+_USER_AGENT = "Mozilla/5.0 (compatible; psi-agent-fetch/1.0; +https://github.com/genuineknowledge/psi-agent)"
 
 
 def dumps_result(result: dict[str, Any]) -> str:
@@ -167,7 +165,7 @@ async def fetch_impl(
     raw_body = b"".join(chunks)
     try:
         body = raw_body.decode(encoding, errors="replace")
-    except (LookupError, UnicodeDecodeError):
+    except LookupError, UnicodeDecodeError:
         body = raw_body.decode("utf-8", errors="replace")
 
     title = ""

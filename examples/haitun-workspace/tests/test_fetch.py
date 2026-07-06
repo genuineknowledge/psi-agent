@@ -72,9 +72,7 @@ async def test_html_is_converted_to_markdown(monkeypatch: pytest.MonkeyPatch) ->
 async def test_readability_drops_boilerplate(monkeypatch: pytest.MonkeyPatch) -> None:
     # On a realistically sized document readability isolates the article and
     # drops navigation/footer chrome.
-    body_paras = "".join(
-        f"<p>Body sentence number {i} carrying the real article content here.</p>" for i in range(30)
-    )
+    body_paras = "".join(f"<p>Body sentence number {i} carrying the real article content here.</p>" for i in range(30))
     html = (
         "<html><head><title>Real Article</title></head><body>"
         "<nav>HOME ABOUT CONTACT navigation boilerplate</nav>"
