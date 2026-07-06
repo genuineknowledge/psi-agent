@@ -59,6 +59,7 @@ Common useful skills in this workspace include:
 
 - `psi-agent-help`: this help and onboarding guide.
 - `code-review-checklist`: structured code review.
+- `git-workflow`: safe git branching, commits, PRs, and conflict resolution.
 - `python-async-basics`: Python async guidance.
 - `python-static-analysis`: Python static analysis.
 - `user-preferences-and-language`: user preference and language handling.
