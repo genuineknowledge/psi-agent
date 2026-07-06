@@ -45,7 +45,8 @@ sh install.sh
 ```
 
 On Windows PowerShell, use the same target directory rule but run the PowerShell
-installer:
+installer. It creates a dedicated `.fusion-memory-venv` for Memory instead of
+using the agent's MSYS2 Python environment:
 
 ```powershell
 $env:AGENT_DIR = "C:\path\to\current-agent-directory"
@@ -56,8 +57,9 @@ Set-Location "$env:AGENT_DIR\fusion-memory"
 
 Do not use MSYS2/Mingw Python for the full local Qwen runtime on Windows;
 PyTorch wheels are not available for that Python ABI. Use official Windows
-CPython or conda Python 3.11/3.12. If the agent PATH resolves `python` to MSYS2,
-set `PYTHON_BIN` explicitly before installing:
+CPython or conda Python 3.11/3.12. The installer tries `py -3.12`, then
+`py -3.11`, then `python`. If the agent PATH resolves `python` to MSYS2, set
+`PYTHON_BIN` explicitly before installing:
 
 ```powershell
 $env:PYTHON_BIN = (py -3.12 -c "import sys; print(sys.executable)")
@@ -91,6 +93,11 @@ Postgres integration, local Qwen models, PyTorch, and Transformers. It does not
 install or start a PostgreSQL/pgvector server, and it does not download model
 weights from other locations.
 
+On Windows, `install.ps1` performs the same full-runtime readiness check through
+the dedicated `.fusion-memory-venv`; the local Qwen dependency step is
+wheel-only and stops on failure instead of compiling from source or falling back
+to `local_test`.
+
 If bundled model files are missing, incomplete, or Git LFS pointers,
 installation reports not ready and asks you to restore the repository-local
 model files. If Qwen runtime dependencies are unavailable, installation is also
@@ -120,12 +127,12 @@ On Windows PowerShell:
 ```powershell
 $env:AGENT_DIR = "C:\path\to\current-agent-directory"
 $env:PYTHON_BIN = (py -3.12 -c "import sys; print(sys.executable)")
-& $env:PYTHON_BIN -m pip install -e "$env:AGENT_DIR\fusion-memory[postgres,qwen]"
-& $env:PYTHON_BIN -m fusion_memory.cli install-check --force --json
+Set-Location "$env:AGENT_DIR\fusion-memory"
+.\install.ps1
 ```
 
 If the repair attempt still reports not_ready, summarize the pip error and the
-install-check `missing` / `next_step` fields for the user. Do not silently fall back to local_test or report setup as complete.
+install-check `missing` / `next_step` fields for the user. Do not paste full pip logs into chat; give the concise failure step and log path. Do not silently fall back to local_test or report setup as complete.
 `local_test` is allowed only when the user explicitly chooses temporary
 evaluation after being told memory quality is downgraded.
 
@@ -142,6 +149,18 @@ AGENT_DIR="/path/to/current-agent-directory"
 git -C "$AGENT_DIR/fusion-memory" pull --ff-only origin main
 python3 -m pip install -e "$AGENT_DIR/fusion-memory[postgres,qwen]"
 fusion-memory doctor --json
+```
+
+On Windows after pulling, rerun the installer and use the venv command it
+created:
+
+```powershell
+$env:AGENT_DIR = "C:\path\to\current-agent-directory"
+git -C "$env:AGENT_DIR\fusion-memory" pull --ff-only origin main
+Set-Location "$env:AGENT_DIR\fusion-memory"
+.\install.ps1
+$FusionMemory = "$env:AGENT_DIR\fusion-memory\.fusion-memory-venv\Scripts\fusion-memory.exe"
+& $FusionMemory doctor --json
 ```
 
 Use the wizard only when defaults need to be overridden:
@@ -169,6 +188,15 @@ Start the local HTTP service and use the returned URL:
 fusion-memory start --json
 fusion-memory status --json
 fusion-memory doctor --json
+```
+
+On Windows PowerShell, use the CLI from the Memory venv:
+
+```powershell
+$FusionMemory = "$env:AGENT_DIR\fusion-memory\.fusion-memory-venv\Scripts\fusion-memory.exe"
+& $FusionMemory start --json
+& $FusionMemory status --json
+& $FusionMemory doctor --json
 ```
 
 The beginner default is `http://127.0.0.1:8700`, but if that port is busy the
