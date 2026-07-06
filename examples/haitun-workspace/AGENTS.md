@@ -37,6 +37,9 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `HAITUN_AGENT_ID` | Agent ID shown in the runtime line. |
 | `HAITUN_CHANNEL` | Channel name shown in the runtime line. |
 | `HAITUN_TIMEZONE` | Time zone for the date/time section (default `UTC`). |
+| `XFYUN_STT_APP_ID`, `XFYUN_STT_API_KEY`, `XFYUN_STT_API_SECRET` | iFLYTEK streaming STT credentials. |
+| `XFYUN_TTS_APP_ID`, `XFYUN_TTS_API_KEY`, `XFYUN_TTS_API_SECRET` | iFLYTEK online TTS credentials. |
+| `XFYUN_APP_ID`, `XFYUN_API_KEY`, `XFYUN_API_SECRET` | Optional shared fallback when both services use one app. |
 
 ## Tools (`tools/`)
 
@@ -49,6 +52,8 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
 | `flow_manage` | CRUD + promote on Fusion Flow assets under `flows/`. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
+| `speech_to_text` | iFLYTEK streaming STT for WAV/PCM/MP3 files received through `[RECV:]`. |
+| `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
 
 ## Skills (`skills/`)
 
@@ -56,6 +61,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 - The hermes domain skill set (cryptanalysis, image-segmentation, ml-inference, …).
 - Selected curated skills (`psi-agent-help`, `code-review-checklist`, `python-async-basics`,
   `python-static-analysis`, `user-preferences-and-language`, `example-skill`).
+- `speech-to-text` / `text-to-speech` — iFLYTEK voice input/output recipes.
 - `fusion-flow` — the immutable Fusion Flow runtime skill (node-based). **Do not edit it.**
 
 ## Schedules (`schedules/`)

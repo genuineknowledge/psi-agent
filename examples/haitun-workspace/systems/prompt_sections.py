@@ -71,6 +71,8 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "memory_add": "Store durable user preferences, project facts, or decisions",
     "memory_search": "Search Fusion Memory for raw evidence",
     "memory_answer_context": "Retrieve a query-grounded Fusion Memory context pack",
+    "speech_to_text": "Transcribe a received WAV, PCM, or MP3 file with iFLYTEK streaming STT",
+    "text_to_speech": "Create an MP3 file with iFLYTEK online TTS and deliver it with [SEND:]",
 }
 
 # Display order - listed tools first, any extra tools (e.g. MCP search) after.
@@ -92,6 +94,8 @@ TOOL_ORDER: list[str] = [
     "memory_add",
     "memory_search",
     "memory_answer_context",
+    "speech_to_text",
+    "text_to_speech",
 ]
 
 # ---------------------------------------------------------------------------
