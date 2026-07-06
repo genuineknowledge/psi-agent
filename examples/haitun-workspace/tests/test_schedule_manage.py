@@ -69,17 +69,13 @@ async def test_create_view_and_list(workspace: Path) -> None:
 
 
 async def test_create_rejects_invalid_cron(workspace: Path) -> None:
-    msg = await tool.schedule_manage(
-        action="create", schedule_name="bad", cron="not a cron", content="x"
-    )
+    msg = await tool.schedule_manage(action="create", schedule_name="bad", cron="not a cron", content="x")
     assert msg.startswith("[Error]")
     assert not (workspace / "schedules" / "bad").exists()
 
 
 async def test_create_rejects_bad_name(workspace: Path) -> None:
-    msg = await tool.schedule_manage(
-        action="create", schedule_name="../escape", cron="* * * * *", content="x"
-    )
+    msg = await tool.schedule_manage(action="create", schedule_name="../escape", cron="* * * * *", content="x")
     assert msg.startswith("[Error]")
 
 
