@@ -5,11 +5,14 @@ import json
 import pytest
 
 from psi_agent.session.protocol import (
+    AgentChunk,
+    AgentError,
+    AiDelta,
     ChatCompletionChunk,
     DeltaMessage,
     StreamChoice,
-    ToolFunction,
 )
+from psi_agent.session.tool_registry import ToolFunction
 
 
 async def _bash_tool(command: str) -> str:
@@ -68,11 +71,11 @@ def test_chat_completion_chunk_to_sse() -> None:
 
 def test_chat_completion_chunk_reasoning() -> None:
     chunk = ChatCompletionChunk(
-        choices=[StreamChoice(index=0, delta=DeltaMessage(reasoning_content="Let me think..."))],
+        choices=[StreamChoice(index=0, delta=DeltaMessage(reasoning="Let me think..."))],
     )
     sse = chunk.to_sse()
     parsed = json.loads(sse[6:].strip())
-    assert parsed["choices"][0]["delta"]["reasoning_content"] == "Let me think..."
+    assert parsed["choices"][0]["delta"]["reasoning"] == "Let me think..."
 
 
 def test_chat_completion_chunk_tool_calls_in_delta() -> None:
@@ -152,14 +155,14 @@ def test_chat_completion_chunk_to_dict_direct() -> None:
         choices=[
             StreamChoice(
                 index=0,
-                delta=DeltaMessage(content="ok", reasoning_content="think"),
+                delta=DeltaMessage(content="ok", reasoning="think"),
                 finish_reason="stop",
             )
         ],
     )
     d = chunk.to_dict()
     assert d["id"] == "c1"
-    assert d["choices"][0]["delta"]["reasoning_content"] == "think"
+    assert d["choices"][0]["delta"]["reasoning"] == "think"
 
 
 def test_tool_function_optional_none_type() -> None:
@@ -308,8 +311,8 @@ def test_tool_function_kwargs_raises() -> None:
 
 
 def test_delta_message_reasoning_only() -> None:
-    dm = DeltaMessage(reasoning_content="think")
-    assert dm.to_dict() == {"reasoning_content": "think"}
+    dm = DeltaMessage(reasoning="think")
+    assert dm.to_dict() == {"reasoning": "think"}
 
 
 def test_delta_message_tool_calls_only() -> None:
@@ -318,9 +321,9 @@ def test_delta_message_tool_calls_only() -> None:
 
 
 def test_delta_message_all_fields() -> None:
-    dm = DeltaMessage(content="hi", role="assistant", reasoning_content="think", tool_calls=[{"index": 0}])
+    dm = DeltaMessage(content="hi", role="assistant", reasoning="think", tool_calls=[{"index": 0}])
     d = dm.to_dict()
-    assert d == {"content": "hi", "role": "assistant", "reasoning_content": "think", "tool_calls": [{"index": 0}]}
+    assert d == {"content": "hi", "role": "assistant", "reasoning": "think", "tool_calls": [{"index": 0}]}
 
 
 def test_stream_choice_default() -> None:
@@ -428,3 +431,57 @@ def test_parse_param_descriptions_empty_value() -> None:
 
     result = ToolFunction._parse_param_descriptions("Args:\n    x:")
     assert result == {"x": ""}
+
+
+# --- AgentChunk, AiDelta, AgentError tests ---
+
+
+def test_agent_chunk_defaults():
+    c = AgentChunk()
+    assert c.content is None
+    assert c.reasoning is None
+
+
+def test_agent_chunk_with_content():
+    c = AgentChunk(content="hello")
+    assert c.content == "hello"
+    assert c.reasoning is None
+
+
+def test_agent_chunk_with_reasoning():
+    c = AgentChunk(reasoning="thinking...")
+    assert c.content is None
+    assert c.reasoning == "thinking..."
+
+
+def test_agent_chunk_with_both():
+    c = AgentChunk(content="world", reasoning="thinking...")
+    assert c.content == "world"
+    assert c.reasoning == "thinking..."
+
+
+def test_ai_delta_defaults():
+    d = AiDelta()
+    assert d.content is None
+    assert d.reasoning is None
+    assert d.tool_calls is None
+    assert d.finish_reason is None
+
+
+def test_ai_delta_full():
+    d = AiDelta(content="hi", reasoning="r", tool_calls=[{}], finish_reason="stop")
+    assert d.content == "hi"
+    assert d.reasoning == "r"
+    assert d.tool_calls == [{}]
+    assert d.finish_reason == "stop"
+
+
+def test_agent_error_init():
+    e = AgentError("something went wrong")
+    assert e.message == "something went wrong"
+    assert str(e) == "something went wrong"
+
+
+def test_agent_error_is_exception():
+    e = AgentError("test")
+    assert isinstance(e, Exception)

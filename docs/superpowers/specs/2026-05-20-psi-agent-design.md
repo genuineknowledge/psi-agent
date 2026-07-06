@@ -1,7 +1,14 @@
 # psi-agent 微内核 Agent 框架设计规格
 
+> [!NOTE]
+> **Historical design spec.**  This document describes the original
+> ψ-agent architecture.  Several mechanics have since evolved —
+> particularly history persistence (now turn-level atomic with
+> snapshot/rollback).  For current details see the per-layer
+> ``AGENTS.md`` files under ``src/psi_agent/*/``.
+
 **日期**: 2026-05-20
-**状态**: 已审批
+**状态**: 已审批（历史档案）
 
 ---
 
@@ -47,7 +54,7 @@ psi/
 │   ├── __init__.py
 │   ├── cli.py                      # tyro CLI 入口
 │   ├── _yaml.py                    # 共享 YAML header 解析
-│   ├── _socket.py                  # 共享 socket 工具（prefix-based transport 解析）
+│   ├── _sockets.py                 # 共享 socket 工具（prefix-based transport 解析）
 │   ├── _run.py                     # YAML 批量启动（psi-agent run config.yml）
 │   ├── _logging.py                  # loguru 配置
 │   ├── ai/  (统一多 provider，基于 any-llm-sdk)
@@ -129,7 +136,7 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
      │                         │─────────────────────────────▶│
      │                         │                              │
      │                         │ SSE chunks (content/        │
-     │                         │ reasoning_content/tool_calls)│
+     │                         │ reasoning/tool_calls)│
      │                         │◀─────────────────────────────│
      │                         │                              │
      │                         │ [若 tool_calls]              │
@@ -139,18 +146,18 @@ Channel (REPL/CLI)          Session                     AI (OpenAI/Anthropic)
      │                         │─────────────────────────────▶│
      │                         │          ...                 │
      │                         │                              │
-     │ SSE chunks (reasoning_content + content)               │
+     │ SSE chunks (reasoning + content)               │
      │◀────────────────────────│                              │
      │                         │ 释放锁                       │
 ```
 
-**通信协议**：所有 socket 端点使用标准 HTTP/SSE（OpenAI Chat Completions 兼容格式），支持 Unix socket、TCP、Windows Named Pipe。传输类型由地址前缀自动检测：`http(s)://` → TCP，`\\\\.\\pipe\\` → Named Pipe，裸路径 → Unix socket。检测逻辑位于 `psi_agent._socket`。
+**通信协议**：所有 socket 端点使用标准 HTTP/SSE（OpenAI Chat Completions 兼容格式），支持 Unix socket、TCP、Windows Named Pipe。传输类型由地址前缀自动检测：`http(s)://` → TCP，`\\\\.\\pipe\\` → Named Pipe，裸路径 → Unix socket。检测逻辑位于 `psi_agent._sockets`。
 
 **错误响应格式**（两种形式）：
 
 1. **非流式（HTTP 层面）**：请求解析失败等，在 `response.prepare()` 之前返回
    ```json
-   {"error": {"message": "...", "type": "...", "code": "..."}}
+    {"error": {"message": "...", "type": "...", "param": null, "code": 400}}
    ```
 
 2. **流式（SSE 层面）**：已 commit HTTP 200 后发生的错误（上游异常、连接断开等），使用 ChatCompletionChunk 格式
@@ -239,32 +246,33 @@ class Session:
 ### 6.3 Agent Loop（`agent.py`）
 
 ```
-收到 channel 请求时（handle_chat_completions handler）：
+收到 channel 请求时（ChannelAdapter.handle()）：
   0. 解析 request body → 取最后一条 user message，其余字段透传到 AI
   1. 获取 `anyio.Lock`（FIFO 排队等待）
   2. agent.run(user_message, extra_params=...) 内部：
      a. 惰性构建 system prompt（首次 run，history 尚无 system 消息）
-     b. 检查暂存 schedule 响应 → 有则先流式返回
+     b. 检查暂存 schedule 响应 → 有则先流式返回（AgentChunk）
      c. 将 user message 追加到 self.history
-     d. 构建请求：history + tools + extra_params → POST ai_socket（streaming）
-      e. SSE 流处理（每 chunk 恰好 1 个 choice，多 choice 报错，0 choice 心跳跳过）：
-         - content delta          → yield 到 channel + 累计
-         - reasoning delta        → yield 到 channel + 累计
-         - tool_calls delta       → 累积（按 index 拼接 partial JSON）
+     d. 通过 AiClient.stream() 发送 history + tools + extra_params → AI backend（streaming）
+      e. 消费 AiDelta 流（AiClient 已做好 SSE 解析、错误检测）：
+         - content          → yield AgentChunk(content=...) 给 ChannelAdapter
+         - reasoning        → yield AgentChunk(reasoning=...) 给 ChannelAdapter
+         - tool_calls       → 累积（按 index 拼接 partial JSON）
          - finish_reason="tool_calls":
              a. 解析完整 tool_calls
-             b. 追加 assistant_message(tool_calls) + reasoning_content + tool_result 到 history
+             b. 追加 assistant_message(tool_calls) + reasoning + tool_result 到 history
              c. 回到步骤 d（最多 max_tool_rounds 轮，可配置，默认 128）
          - finish_reason="stop":
-            最终 content + reasoning_content 追加到 history，释放锁
+            最终 content + reasoning 追加到 history，释放锁
         - finish_reason="error":
-           停止处理，错误不写入 history
+            raise AgentError(message)，错误不写入 history
   3. 释放锁
 ```
 
+
 **Schedule 响应处理**：
 - 暂存的 schedule 响应和新消息的回复都正常经过 agent loop
-- content 和 reasoning_content 各自存在于各自的消息周期中，不会交错
+- content 和 reasoning 各自存在于各自的消息周期中，不会交错
 
 **关于 history**：
 - Channel 不发送 history；每次请求只带最新一条 user message

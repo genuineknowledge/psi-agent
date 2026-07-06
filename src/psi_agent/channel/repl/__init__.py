@@ -22,7 +22,4 @@ class ChannelRepl:
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
-        await run_repl(
-            self.session_socket,
-            models=self.models,
-        )
+        await run_repl(session_socket=self.session_socket)

@@ -1,0 +1,68 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { height: 100%; height: 100dvh; overscroll-behavior: none; }
+
+/* ==========================================================================
+   🎨 MATERIAL DESIGN 3 Tokens
+   ========================================================================== */
+
+/* 🟢 MD3 Dark Theme */
+:root {
+  --md-bg: #111318;
+  --md-surface: #1a1c22;
+  --md-surface-variant: #24262f;
+  --md-surface-container: #1e2027;
+  --md-surface-container-low: #161820;
+  --md-surface-container-high: #282a33;
+  --md-primary: #a8c7fa;
+  --md-on-primary: #062e6f;
+  --md-primary-container: #1c4487;
+  --md-on-primary-container: #c2e7ff;
+  --md-secondary-container: #333544;
+  --md-on-secondary-container: #e1e2f6;
+  --md-outline: #43474e;
+  --md-outline-variant: rgba(255, 255, 255, 0.08);
+  --md-text-primary: #e2e2e9;
+  --md-text-secondary: #c6c6d0;
+  --md-text-error: #ffb4ab;
+  --md-error-container: #93000a;
+  /* MD3 Elevation */
+  --md-elevation-1: 0 1px 2px rgba(0,0,0,.3), 0 1px 3px 1px rgba(0,0,0,.15);
+  --md-elevation-2: 0 1px 2px rgba(0,0,0,.3), 0 2px 6px 2px rgba(0,0,0,.15);
+  --md-elevation-3: 0 4px 8px 3px rgba(0,0,0,.15), 0 1px 3px rgba(0,0,0,.3);
+  /* MD3 Shape */
+  --md-shape-extra-small: 4px;
+  --md-shape-small: 8px;
+  --md-shape-medium: 12px;
+  --md-shape-large: 16px;
+  --md-shape-extra-large: 28px;
+  --md-shape-full: 9999px;
+  /* MD3 State layer opacity */
+  --md-state-hover: .08;
+  --md-state-press: .12;
+  --md-state-focus: .12;
+}
+
+/* 🔵 MD3 Light Theme */
+:root.light-mode {
+  --md-bg: #f8f9ff;
+  --md-surface: #f1f4fa;
+  --md-surface-variant: #e1e2ec;
+  --md-surface-container: #f0f3f9;
+  --md-surface-container-low: #eef0f6;
+  --md-surface-container-high: #e7ebf2;
+  --md-primary: #005FAF;
+  --md-on-primary: #ffffff;
+  --md-primary-container: #d4e3ff;
+  --md-on-primary-container: #001c3a;
+  --md-secondary-container: #e0e2ed;
+  --md-on-secondary-container: #191c21;
+  --md-outline: #74777f;
+  --md-outline-variant: #c4c6d0;
+  --md-text-primary: #191c21;
+  --md-text-secondary: #43474e;
+  --md-text-error: #ba1a1a;
+  --md-error-container: #ffdad6;
+  --md-elevation-1: 0 1px 2px rgba(0,0,0,.05), 0 1px 3px 1px rgba(0,0,0,.04);
+  --md-elevation-2: 0 1px 2px rgba(0,0,0,.08), 0 2px 6px 2px rgba(0,0,0,.04);
+  --md-elevation-3: 0 4px 8px 3px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.08);
+}

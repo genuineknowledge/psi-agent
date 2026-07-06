@@ -15,7 +15,7 @@ def _chunk(content: str = "", reasoning: str = "", finish_reason: str | None = N
     if content:
         d["content"] = content
     if reasoning:
-        d["reasoning_content"] = reasoning
+        d["reasoning"] = reasoning
     return json.dumps(
         {
             "id": "test",
@@ -125,7 +125,7 @@ async def test_channel_receives_content_from_session(tmp_path, mock_ai_server: M
 
 @pytest.mark.anyio
 async def test_sse_reasoning_and_content_interleaved(tmp_path) -> None:
-    """SSE stream with reasoning_content and content should be parsed separately."""
+    """SSE stream with reasoning and content should be parsed separately."""
 
     async def handler(request: web.Request) -> web.StreamResponse:
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
@@ -149,7 +149,7 @@ async def test_sse_reasoning_and_content_interleaved(tmp_path) -> None:
 
     try:
         chunks = await _read_tcp_sse(f"http://127.0.0.1:{port}", "test")
-        reasonings = [c.get("choices", [{}])[0].get("delta", {}).get("reasoning_content", "") for c in chunks]
+        reasonings = [c.get("choices", [{}])[0].get("delta", {}).get("reasoning", "") for c in chunks]
         contents = [c.get("choices", [{}])[0].get("delta", {}).get("content", "") for c in chunks]
         assert any("thinking" in r for r in reasonings)
         assert any("answer" in c for c in contents)

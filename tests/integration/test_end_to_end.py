@@ -21,7 +21,7 @@ def _chunk(
     if content:
         d["content"] = content
     if reasoning:
-        d["reasoning_content"] = reasoning
+        d["reasoning"] = reasoning
     if tool_calls:
         d["tool_calls"] = tool_calls
     return json.dumps(

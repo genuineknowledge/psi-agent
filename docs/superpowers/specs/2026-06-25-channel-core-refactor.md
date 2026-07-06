@@ -1,7 +1,9 @@
 # Channel 层公共部件提取设计规格
 
 **日期**: 2026-06-25
-**状态**: 待审批
+**状态**: 已实现
+
+> **演进说明（截至 2026-06-29）**：本规格为 ChannelCore 最初提取时的设计快照。正文中的 `Chunk = FileChunk | TextChunk`、内联 `post()`、CLI/REPL 行数等均已被后续重构取代（新增 `ReasoningChunk`、拆 `InputChunk`/`OutputChunk`、抽 `_markers.py`/`_stream.py`/`_errors.py`）。当前权威状态以 `src/psi_agent/channel/AGENTS.md` 为准。
 
 ---
 
@@ -127,7 +129,7 @@ on stream end:
 - `resolve_connector_and_endpoint` + `aiohttp.ClientSession` 连接管理
 - `req_data` 构造
 - HTTP 状态码错误处理
-- SSE 逐行解析 + reasoning_content/content 显示
+- SSE 逐行解析 + reasoning/content 显示
 - `finish_reason="error"` 检测
 - 顶级 try/except
 

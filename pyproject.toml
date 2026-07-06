@@ -11,28 +11,35 @@ authors = [{name = "Hao Zhang", email = "hzhangxyz@outlook.com"}]
 license = {text = "MIT"}
 requires-python = ">=3.14"
 dependencies = [
-    "anyio>=4.14.0",
+    "anyio>=4.14.1",
     "aiohttp>=3.14.1",
     "loguru>=0.7.3",
     "tyro>=1.0.15",
-    "croniter>=6.2.2",
+    "croniter>=6.2.3",
     "pyyaml>=6.0.3",
     "prompt-toolkit>=3.0.52",
     "rich>=15.0.0",
-    "any-llm-sdk>=1.18.0",
+    "any-llm-sdk>=1.19.0",
+    "platformdirs>=4.10.0",
+    "lark-channel-sdk>=1.1.0",
+    "python-telegram-bot[socks]>=22.8",
+    "mcp>=1.28.1",
+    "serper-mcp-server>=0.0.10",
+    "pystray>=0.19.5",
+    "pillow>=12.3.0",
+    "pymupdf>=1.28.0",
+    "python-docx>=1.2.0",
+    "python-pptx>=1.0.2",
+    "openpyxl>=3.1.5",
 ]
-
-[project.optional-dependencies]
-all = ["mcp>=1.28.0"]
 
 [dependency-groups]
 dev = [
-    "mcp>=1.28.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.18",
-    "ty>=0.0.52",
+    "ruff>=0.15.20",
+    "ty>=0.0.56",
 ]
 
 [project.scripts]
@@ -40,6 +47,19 @@ psi-agent = "psi_agent.cli:main"
 
 [tool.hatch.version]
 source = "vcs"
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["src/psi_agent/gateway/spa/dist/**/*"]
+exclude = ["src/psi_agent/gateway/spa/node_modules/**"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/psi_agent"]
+exclude = [
+    "src/psi_agent/**/AGENTS.md",
+    "src/psi_agent/**/.gitignore",
+    "src/psi_agent/gateway/spa",
+]
+artifacts = ["src/psi_agent/gateway/spa/dist/**/*"]
 
 [tool.ruff]
 target-version = "py314"
@@ -61,3 +81,4 @@ markers = ["schedule: schedule-based tests (> 30s)"]
 
 [tool.coverage.run]
 source = ["src/psi_agent"]
+

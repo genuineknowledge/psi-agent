@@ -421,3 +421,22 @@ Expected: ~154 tests 全绿
 ```bash
 git add -A && git commit -m "test(feishu): add dataclass and token validation tests"
 ```
+
+---
+
+## 后续增强：处理状态表情回复（2026-06-28，已完成）
+
+参考 Hermes：收到白名单消息后立即在该消息上加 `Typing` 表情，回复完成后移除；处理失败则替换为 `CrossMark`。设计详见 spec 第 11 节。
+
+**Files:**
+- Modify: `src/psi_agent/channel/feishu/client.py`
+- Modify: `tests/psi_agent/channel/feishu/test_feishu.py`
+- Modify: `src/psi_agent/channel/AGENTS.md`
+
+- [x] 调研 Hermes 实际使用的 `emoji_type`（`Typing` 处理中 / `CrossMark` 失败，均为飞书官方有效）
+- [x] 加常量 `_EMOJI_PROCESSING = "Typing"`、`_EMOJI_FAILED = "CrossMark"`
+- [x] 实现 `_add_reaction(channel, message_id, emoji_type)` / `_remove_reaction(channel, message_id, reaction_id)`（失败安全，try/except + log，永不抛）
+- [x] `_handle_and_stream` 重构：白名单后立即 `_add_reaction(Typing)`；`try` 包裹 build + stream（异常置 `failed=True`）；`finally` 中移除 `Typing`，`failed` 时加 `CrossMark`
+- [x] 测试：`_add_reaction` 成功/异常、`_remove_reaction` 调用/吞异常、生命周期成功（加 Typing → 移除，不加 CrossMark）、生命周期失败（加 Typing → 移除 → 加 CrossMark）
+- [x] 质量门：`uv run ruff check .` / `ruff format --check .` / `ty check` / `pytest -m "not schedule"`（168 passed）
+- [x] Commit `feat(feishu): add processing-status reaction (Typing while working, CrossMark on failure)`（`36e9031`）

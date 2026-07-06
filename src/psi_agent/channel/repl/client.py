@@ -1,25 +1,19 @@
 from __future__ import annotations
 
-import json
-import sys
+from contextlib import aclosing
 
-from aiohttp import ClientConnectorError, ClientSession, ClientTimeout
+from aiohttp import ClientConnectorError
 from loguru import logger
 from prompt_toolkit.shortcuts import PromptSession
 from rich.console import Console
 from rich.panel import Panel
 
-from psi_agent._socket import resolve_connector_and_endpoint
-from psi_agent.channel.route._routing import select_model_for_message
-
-console = Console(highlight=False)
+from psi_agent.channel._core import ChannelCore
+from psi_agent.channel._types import ReasoningChunk, TextChunk
 
 
-async def run_repl(
-    session_socket: str,
-    *,
-    models: list[str] | tuple[str, ...] = (),
-) -> None:
+async def run_repl(*, session_socket: str) -> None:
+    console = Console(highlight=False)
     logger.info(f"Connecting to session at {session_socket}")
 
     connector, endpoint = resolve_connector_and_endpoint(session_socket)
@@ -41,62 +35,18 @@ async def run_repl(
                 if not user_input.strip():
                     continue
 
-                model = await select_model_for_message(
-                    user_input,
-                    models=models,
-                )
-                req_data = {
-                    "messages": [{"role": "user", "content": user_input}],
-                    "stream": True,
-                }
-                if model:
-                    req_data["model"] = model
-
-                async with session.post(
-                    endpoint,
-                    json=req_data,
-                ) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        try:
-                            error = json.loads(body)
-                            console.print(f"\n[red]Error: {error.get('error', {}).get('message', body)}[/red]")
-                        except Exception:
-                            console.print(f"\n[red]Error: {body}[/red]")
-                        continue
-
-                    console.print()
-
-                    async for raw_line in resp.content:
-                        line = raw_line.decode().strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            break
-
-                        try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-
-                        for choice in data.get("choices", []):
-                            delta = choice.get("delta", {})
-                            reasoning = delta.get("reasoning_content")
-                            content = delta.get("content")
-
-                            if choice.get("finish_reason") == "error":
-                                console.print(f"\n[red]Error: {content}[/red]")
-                                continue
-
-                            if reasoning:
-                                logger.debug(f"Reasoning: {reasoning}")
-                                console.print(reasoning, style="dim", end="")
-
-                            if content:
-                                console.print(content, end="")
-
-                    console.print("\n")
+                console.print()
+                try:
+                    async with aclosing(core.post([TextChunk(user_input)])) as stream:
+                        async for chunk in stream:
+                            if isinstance(chunk, ReasoningChunk):
+                                console.print(chunk.text, end="", style="dim")
+                            elif isinstance(chunk, TextChunk):
+                                console.print(chunk.text, end="")
+                except Exception as e:
+                    logger.error(f"REPL error: {e!r}")
+                    console.print(f"\n[red]Error: {e}[/red]")
+                console.print("\n")
 
     except ClientConnectorError as e:
         console.print(f"[red]Connection error: {e}[/red]")

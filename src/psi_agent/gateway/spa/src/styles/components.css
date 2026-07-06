@@ -1,0 +1,120 @@
+body {
+  font-family: "Roboto", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--md-bg);
+  color: var(--md-text-primary);
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  transition: background .25s cubic-bezier(.2,0,0,1), color .25s cubic-bezier(.2,0,0,1);
+}
+
+/* ==========================================================================
+   🏗️ MD3 Component Styles
+   ========================================================================== */
+
+/* MD3 Icon Button */
+.md-icon-btn {
+  background: none; border: none; border-radius: var(--md-shape-full);
+  width: 40px; height: 40px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--md-text-secondary); position: relative;
+  transition: background .2s;
+}
+.md-icon-btn:hover { background: rgba(128,128,128,var(--md-state-hover)); }
+
+/* MD3 Filled Button */
+.md-filled-btn {
+  background: var(--md-primary); color: var(--md-on-primary);
+  border: none; border-radius: var(--md-shape-full);
+  padding: 10px 24px; font-size: 14px; font-weight: 500; cursor: pointer;
+  box-shadow: var(--md-elevation-1);
+  transition: box-shadow .2s, filter .2s;
+  position: relative; overflow: hidden;
+}
+.md-filled-btn:hover { box-shadow: var(--md-elevation-2); filter: brightness(1.08); }
+.md-filled-btn:disabled { opacity: .4; cursor: default; box-shadow: none; filter: none; }
+
+/* MD3 Outlined Button */
+.md-outlined-btn {
+  background: transparent; color: var(--md-primary);
+  border: 1px solid var(--md-outline); border-radius: var(--md-shape-full);
+  padding: 10px 24px; font-size: 14px; font-weight: 500; cursor: pointer;
+  transition: background .2s, border-color .2s;
+}
+.md-outlined-btn:hover { background: rgba(128,128,128,var(--md-state-hover)); }
+
+/* MD3 Filled Tonal Button */
+.md-tonal-btn {
+  background: var(--md-secondary-container); color: var(--md-on-secondary-container);
+  border: none; border-radius: var(--md-shape-full);
+  padding: 8px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
+  box-shadow: var(--md-elevation-1);
+  transition: box-shadow .2s, filter .2s;
+}
+.md-tonal-btn:hover { box-shadow: var(--md-elevation-2); filter: brightness(1.05); }
+
+/* MD3 FAB (small) */
+.md-fab {
+  background: var(--md-primary-container); color: var(--md-on-primary-container);
+  border: none; border-radius: var(--md-shape-medium);
+  width: 40px; height: 40px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--md-elevation-2);
+  transition: box-shadow .2s;
+}
+.md-fab:hover { box-shadow: var(--md-elevation-3); }
+
+/* MD3 Card / Surface Container */
+.md-surface { background: var(--md-surface); border-radius: var(--md-shape-medium); }
+.md-surface-variant { background: var(--md-surface-variant); border-radius: var(--md-shape-medium); }
+
+/* 弹窗表单字段(AiDialog / SessDialog 共用) */
+.field { margin-bottom: 16px; position: relative; }
+.field label { display: block; font-size: 12px; font-weight: 500; color: var(--md-primary); margin-bottom: 6px; }
+.field input, .field select {
+  width: 100%; background: var(--md-bg); color: var(--md-text-primary);
+  border: 1px solid var(--md-outline-variant); border-radius: 8px;
+  padding: 10px 12px; font-size: 14px; outline: none;
+}
+.field input:focus, .field select:focus { border-color: var(--md-primary); }
+
+/* MD3 Text Field */
+.md-text-field {
+  width: 100%; background: var(--md-bg); color: var(--md-text-primary);
+  border: 1px solid var(--md-outline-variant); border-radius: var(--md-shape-extra-small);
+  padding: 10px 12px; font-size: 14px; outline: none;
+  transition: border-color .2s;
+}
+.md-text-field:focus { border-color: var(--md-primary); border-width: 2px; padding: 9px 11px; }
+
+/* MD3 Select */
+.md-select {
+  width: 100%; background: var(--md-bg); color: var(--md-text-primary);
+  border: 1px solid var(--md-outline-variant); border-radius: var(--md-shape-extra-small);
+  padding: 10px 12px; font-size: 14px; outline: none; cursor: pointer;
+  transition: border-color .2s;
+}
+.md-select:focus { border-color: var(--md-primary); border-width: 2px; padding: 9px 11px; }
+
+/* MD3 List Item */
+.md-list-item {
+  padding: 8px 12px; border-radius: var(--md-shape-small); cursor: pointer;
+  font-size: 14px; margin: 2px 8px;
+  display: flex; justify-content: space-between; align-items: center;
+  transition: background .2s;
+  position: relative;
+}
+.md-list-item:hover { background: rgba(128,128,128,var(--md-state-hover)); }
+.md-list-item.selected {
+  background: var(--md-secondary-container); color: var(--md-on-secondary-container);
+}
+
+/* MD3 Divider */
+.md-divider { border: none; border-top: 1px solid var(--md-outline-variant); margin: 0; }
+
+.material-symbols-outlined {
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  user-select: none;
+}

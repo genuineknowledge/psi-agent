@@ -54,21 +54,22 @@ Session ── POST /chat/completions ──► AI
 
 ## 请求透传
 
-Session 发送的 body 中，除 `messages` 被显式提取外，其余字段（`tools`, `temperature`, `max_tokens`, `model` 等）全部通过 `**body` 透传给 any-llm-sdk。AI 层会使用请求体里的 `model`，如果未提供则退回到启动默认值。
+Session 发送的 body 中，除 `model` 被启动配置覆盖、`messages` 被显式提取、`stream` 被剥离（AI 层始终强制 `stream=True`）、`provider`/`api_key`/`api_base` 防御性剥离（避免与启动配置冲突）外，其余字段（`tools`, `temperature`, `max_tokens` 等）全部通过 `**body` 透传给 any-llm-sdk。
 
 ## Provider 支持
 
 any-llm-sdk 原生支持的 50+ provider 全部可用，无需额外代码。包括：OpenAI, Anthropic, Gemini, DeepSeek, Mistral, Groq, Ollama, Cerebras, Cohere, Perplexity, Fireworks, Together, xAI, Bedrock, Azure, VertexAI 等。
 
-Anthropic→OpenAI 格式转换由 any-llm-sdk 自动完成，包括 `thinking_delta`→`reasoning_content`、`input_json_delta`→`tool_calls`、`content_block_stop`→`finish_reason="tool_calls"`。
+Anthropic→OpenAI 格式转换由 any-llm-sdk 自动完成，包括 `thinking_delta`→`reasoning`、`input_json_delta`→`tool_calls`、`content_block_stop`→`finish_reason="tool_calls"`。
 
 ## 错误处理
 
 - **HTTP 层**（`response.prepare()` 之前）：返回 OpenAI 格式 `{"error": {...}}` JSON + HTTP 4xx/5xx
 - **SSE 层**（`response.prepare()` 之后）：ChatCompletionChunk error chunk → `finish_reason="error"`（psi-agent 内部扩展，非 OpenAI 标准）
+- **取消/断开安全**：上游 stream 在 `finally` 中用 `anyio.CancelScope(shield=True)` 调 `stream.aclose()` 关闭（`getattr` 守卫兼容无 `aclose` 的流），确保客户端断开 / 进程关闭被 cancel 时不泄露上游连接
 
 ## 依赖
 
-- `any-llm-sdk >= 1.17`：多 provider 客户端
+- `any-llm-sdk`：多 provider 客户端
 - `aiohttp`：HTTP/SSE server + client
 - `anyio`：异步 runtime
