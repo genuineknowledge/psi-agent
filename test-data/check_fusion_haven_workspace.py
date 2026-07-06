@@ -8,9 +8,12 @@ import json
 import os
 import shlex
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+
+import anyio
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE = ROOT / "examples" / "fusion-haven-workspace"
@@ -89,6 +92,14 @@ def _restore_env(previous: dict[str, str | None]) -> None:
             os.environ[key] = value
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(parent.resolve(strict=False))
+    except ValueError:
+        return False
+    return True
+
+
 async def _assert_bash_builds_security_context() -> None:
     session_id = "fusion_haven_session"
     module = _load_bash_tool(f"psi_tool_bash_{session_id}_{'a' * 64}")
@@ -105,11 +116,23 @@ async def _assert_bash_builds_security_context() -> None:
     class FakeAgent:
         def __init__(self) -> None:
             self._ai_client = SimpleNamespace(ai_socket="http://127.0.0.1:9999")
+            self._conversation = SimpleNamespace(
+                messages=[
+                    {"role": "system", "content": "system"},
+                    {"role": "user", "content": "host-side history is available"},
+                ]
+            )
 
         async def call_tool(self) -> str:
             return await module.bash("printf connected")
 
-    result = await FakeAgent().call_tool()
+    with tempfile.TemporaryDirectory() as history_dir:
+        previous = _replace_env({"DOLPHIN_FUSION_GUARD_HISTORY_DIR": history_dir})
+        try:
+            result = await FakeAgent().call_tool()
+            history_text = (await anyio.Path(str(captured["ctx"].history_path)).read_text(encoding="utf-8")).strip()
+        finally:
+            _restore_env(previous)
 
     assert result == "ok"
     ctx = captured["ctx"]
@@ -118,7 +141,10 @@ async def _assert_bash_builds_security_context() -> None:
     assert ctx is not None, "bash tool must pass context_override to secure_bash"
     assert ctx.session_id == session_id
     assert ctx.workspace_path == WORKSPACE
-    assert ctx.history_path == WORKSPACE / "histories" / f"{session_id}.jsonl"
+    assert ctx.workspace_history_path == WORKSPACE / "histories" / f"{session_id}.jsonl"
+    assert not _is_relative_to(Path(ctx.history_path), WORKSPACE)
+    assert ctx.history_messages[-1] == {"role": "user", "content": "host-side history is available"}
+    assert history_text.endswith(json.dumps({"role": "user", "content": "host-side history is available"}))
     assert ctx.ai_socket == "http://127.0.0.1:9999"
 
 
@@ -269,6 +295,79 @@ async def _assert_none_policy_flow_installs_base_policy() -> None:
     assert events == ["analysis", "install", "execute"]
     assert captured["rules"] == []
     assert captured["command"] == "printf base"
+
+
+async def _assert_policy_identity_decouples_session_from_workspace_dir() -> None:
+    policy = _import_security_module("policy")
+    runner = _import_security_module("runner")
+
+    session_id = "session_not_matching_workspace"
+    workspace_path = Path(os.sep) / "managed" / "workspace-root" / "post_sysadm_1"
+    captured: dict[str, Any] = {}
+
+    async def fake_install_policy_with_daemon(request: dict[str, object]) -> dict[str, Any]:
+        captured["request"] = request
+        return {"ok": True, "installed": True, "relabeled": True, "workspaceReady": True}
+
+    original_install = runner.install_policy_with_daemon
+    runner.install_policy_with_daemon = fake_install_policy_with_daemon
+    try:
+        result = await runner.install_allowed_policy(
+            [],
+            SimpleNamespace(session_id=session_id, workspace_path=workspace_path),
+        )
+    finally:
+        runner.install_policy_with_daemon = original_install
+
+    request = captured["request"]
+    assert result["workspaceReady"] is True
+    assert request["agentId"] == "post_sysadm_1"
+    assert request["workspaceRoot"] == str(workspace_path.parent)
+    assert request["cwdHint"] == str(workspace_path)
+    assert policy.build_agent_session_domain("post_sysadm_1", session_id) in str(request["policyContent"])
+
+
+async def _assert_prompt_uses_workspace_agent_policy_domain() -> None:
+    policy = _import_security_module("policy")
+    runner = _import_security_module("runner")
+
+    session_id = "session_not_matching_workspace"
+    workspace_path = Path(os.sep) / "managed" / "workspace-root" / "post_sysadm_1"
+    ctx = SimpleNamespace(
+        session_id=session_id,
+        workspace_path=workspace_path,
+        history_messages=[{"role": "user", "content": "run a command in the managed workspace"}],
+        ai_socket="http://127.0.0.1:9999",
+    )
+    captured: dict[str, Any] = {}
+
+    async def fake_analysis(*, prompt: str, ctx: Any) -> str:
+        captured["prompt"] = prompt
+        return "NONE"
+
+    async def fake_install(rules: list[str], ctx: Any) -> dict[str, Any]:
+        return {"ok": True, "installed": True, "relabeled": True, "workspaceReady": True}
+
+    async def fake_execute(command: str, *, cwd: str | None, ctx: Any) -> str:
+        return "domain prompt output"
+
+    original_analysis = runner.run_intent_analysis_via_ai_socket
+    original_install = runner.install_allowed_policy
+    original_execute = runner.execute_bash
+    runner.run_intent_analysis_via_ai_socket = fake_analysis
+    runner.install_allowed_policy = fake_install
+    runner.execute_bash = fake_execute
+    try:
+        result = await runner.secure_bash("printf domain", cwd=str(workspace_path), context_override=ctx)
+    finally:
+        runner.run_intent_analysis_via_ai_socket = original_analysis
+        runner.install_allowed_policy = original_install
+        runner.execute_bash = original_execute
+
+    expected_domain = policy.build_agent_session_domain("post_sysadm_1", session_id)
+    assert result == "domain prompt output"
+    assert "WORKSPACE_AGENT_ID: post_sysadm_1\n" in captured["prompt"]
+    assert f"POLICY_DOMAIN: {expected_domain}\n" in captured["prompt"]
 
 
 async def _assert_prompt_includes_command_and_script_content() -> None:
@@ -450,9 +549,11 @@ def _assert_selinux_policy_covers_managed_workspace_runtime() -> None:
     domain = policy.build_agent_session_domain(session_id, session_id)
 
     assert "type user_home_t;" in content
-    assert f"allow {domain} user_home_t:dir {{ search getattr open read }};" in content
+    assert f"allow {domain} user_home_t:dir {{ search getattr }};" in content
+    assert f"allow {domain} user_home_t:dir {{ search getattr open read }};" not in content
     assert f"allow {domain} self:fd use;" in content
     assert f"allow {domain} self:fifo_file {{ getattr read write ioctl }};" in content
+    assert f"allow {domain} self:capability {{ dac_override dac_read_search }};" in content
 
 
 async def _assert_bash_exec_uses_runcon_domain() -> None:
@@ -512,6 +613,50 @@ async def _assert_bash_exec_uses_runcon_domain() -> None:
         inner_command,
     )
     assert captured["kwargs"]["cwd"] != str(WORKSPACE)
+    assert captured["kwargs"]["cwd"] == os.sep
+
+
+async def _assert_bash_exec_uses_workspace_agent_domain() -> None:
+    policy = _import_security_module("policy")
+    runner = _import_security_module("runner")
+
+    session_id = "session_not_matching_workspace"
+    workspace_path = Path(os.sep) / "managed" / "workspace-root" / "post_sysadm_1"
+    ctx = SimpleNamespace(session_id=session_id, workspace_path=workspace_path)
+    captured: dict[str, Any] = {}
+
+    class FakeProcess:
+        def __init__(self, stdout: bytes, stderr: bytes = b"", returncode: int = 0) -> None:
+            self._stdout = stdout
+            self._stderr = stderr
+            self.returncode = returncode
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return self._stdout, self._stderr
+
+    def fake_which(name: str) -> str | None:
+        return {"bash": "/mock/bash", "runcon": "/mock/runcon", "getenforce": "/mock/getenforce"}.get(name)
+
+    async def fake_create_subprocess_exec(*argv: str, **kwargs: Any) -> FakeProcess:
+        if argv == ("/mock/getenforce",):
+            return FakeProcess(b"Enforcing\n")
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        return FakeProcess(b"workspace domain output")
+
+    original_which = runner.shutil.which
+    original_create = runner.asyncio.create_subprocess_exec
+    runner.shutil.which = fake_which
+    runner.asyncio.create_subprocess_exec = fake_create_subprocess_exec
+    try:
+        result = await runner.execute_bash("pwd", cwd=None, ctx=ctx)
+    finally:
+        runner.shutil.which = original_which
+        runner.asyncio.create_subprocess_exec = original_create
+
+    expected_domain = policy.build_agent_session_domain("post_sysadm_1", session_id)
+    assert result == "workspace domain output"
+    assert captured["argv"][2] == expected_domain
     assert captured["kwargs"]["cwd"] == os.sep
 
 
@@ -590,11 +735,14 @@ def main() -> None:
     asyncio.run(_assert_bash_builds_security_context())
     asyncio.run(_assert_allow_rule_policy_flow())
     asyncio.run(_assert_none_policy_flow_installs_base_policy())
+    asyncio.run(_assert_policy_identity_decouples_session_from_workspace_dir())
+    asyncio.run(_assert_prompt_uses_workspace_agent_policy_domain())
     asyncio.run(_assert_prompt_includes_command_and_script_content())
     asyncio.run(_assert_static_dangerous_shell_patterns_are_denied_before_analysis())
     _assert_daemon_accepts_deployed_legacy_environment()
     _assert_selinux_policy_covers_managed_workspace_runtime()
     asyncio.run(_assert_bash_exec_uses_runcon_domain())
+    asyncio.run(_assert_bash_exec_uses_workspace_agent_domain())
     asyncio.run(_assert_bash_exec_blocks_when_selinux_is_not_enforcing())
 
 

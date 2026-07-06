@@ -53,15 +53,17 @@ def build_policy_install_request(
     session_scope_key: str,
     rules: list[str],
     workspace_path: str,
+    workspace_root: str | None = None,
 ) -> dict[str, object]:
     safe_agent_id = _assert_valid_agent_id(agent_id)
     policy = generate_agent_policy(agent_id=safe_agent_id, session_scope_key=session_scope_key)
+    resolved_workspace_root = workspace_root or workspace_path
     return {
         "agentId": safe_agent_id,
         "tePath": policy["file_name"],
         "policyContent": policy["content"],
         "cwdHint": workspace_path,
-        "workspaceRoot": workspace_path,
+        "workspaceRoot": resolved_workspace_root,
         "extraRules": rules,
     }
 
@@ -140,6 +142,7 @@ allow {session_domain} cert_t:dir {{ search open read getattr }};
 allow {session_domain} cert_t:file {{ map open read getattr }};
 allow {session_domain} io_uring_t:anon_inode {{ create map read write }};
 allow {session_domain} proc_t:file {{ open read }};
+allow {session_domain} self:capability {{ dac_override dac_read_search }};
 allow {session_domain} self:fd use;
 allow {session_domain} self:fifo_file {{ getattr read write ioctl }};
 allow {session_domain} self:process execmem;
@@ -164,7 +167,7 @@ optional_policy(`
     ')
     files_search_home({session_domain})
     allow {session_domain} user_home_dir_t:dir {{ search getattr }};
-    allow {session_domain} user_home_t:dir {{ search getattr open read }};
+    allow {session_domain} user_home_t:dir {{ search getattr }};
 ')
 """
     return {

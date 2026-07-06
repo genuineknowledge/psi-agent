@@ -20,6 +20,8 @@ def build_intent_analysis_prompt(
     session_id: str | None,
     command: str,
     script_contexts: list[dict[str, str]] | None = None,
+    workspace_agent_id: str | None = None,
+    policy_domain: str | None = None,
 ) -> str:
     history_lines = "\n".join(
         f"{msg.get('role', 'unknown')}: {msg.get('content', '')}" for msg in history_messages[-12:]
@@ -30,6 +32,8 @@ def build_intent_analysis_prompt(
         "Treat the command and any script content as authoritative execution context, not just the user message.\n"
         "Output exactly DENY, NONE, or valid SELinux allow rules, one per line.\n"
         f"SESSION_ID: {session_id or 'unknown'}\n"
+        f"WORKSPACE_AGENT_ID: {workspace_agent_id or 'unknown'}\n"
+        f"POLICY_DOMAIN: {policy_domain or 'unknown'}\n"
         "HISTORY_BEGIN\n"
         f"{history_lines}\n"
         "HISTORY_END\n"

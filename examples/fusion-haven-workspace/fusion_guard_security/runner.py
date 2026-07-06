@@ -40,17 +40,21 @@ async def secure_bash(
     working_dir = _working_directory(cwd, ctx)
     script_contexts = _script_contexts_for_command(command, working_dir=working_dir, ctx=ctx)
 
-    history_messages = _read_history_messages(getattr(ctx, "history_path", None))
+    history_messages = _history_messages_from_context(ctx)
     latest_user_message = _latest_user_message(history_messages)
     if latest_user_message is None:
         return _deny("missing latest user message in Dolphin history")
 
+    identity = _policy_identity(ctx)
+    policy_domain = build_agent_session_domain(identity["agent_id"], identity["session_id"])
     prompt = build_intent_analysis_prompt(
         history_messages=history_messages,
         latest_user_message=latest_user_message,
-        session_id=getattr(ctx, "session_id", None),
+        session_id=identity["session_id"],
         command=command,
         script_contexts=script_contexts,
+        workspace_agent_id=identity["agent_id"],
+        policy_domain=policy_domain,
     )
 
     try:
@@ -84,18 +88,14 @@ async def run_intent_analysis_via_ai_socket(*, prompt: str, ctx: Any) -> str:
 
 
 async def install_allowed_policy(rules: list[str], ctx: Any) -> dict[str, Any]:
-    session_id = str(getattr(ctx, "session_id", "") or "").strip()
-    workspace_path = str(getattr(ctx, "workspace_path", "") or "").strip()
-    if not session_id:
-        raise RuntimeError("missing session_id")
-    if not workspace_path:
-        raise RuntimeError("missing workspace_path")
+    identity = _policy_identity(ctx)
 
     request = build_policy_install_request(
-        agent_id=session_id,
-        session_scope_key=session_id,
+        agent_id=identity["agent_id"],
+        session_scope_key=identity["session_id"],
         rules=rules,
-        workspace_path=workspace_path,
+        workspace_path=identity["workspace_path"],
+        workspace_root=identity["workspace_root"],
     )
     return await install_policy_with_daemon(request)
 
@@ -290,7 +290,8 @@ async def execute_bash(command: str, *, cwd: str | None, ctx: Any) -> str:
     enforcing, enforcing_error = await _selinux_enforcing_status()
     if not enforcing:
         return f"Error executing command: {enforcing_error}"
-    domain = build_agent_session_domain(session_id, session_id)
+    identity = _policy_identity(ctx)
+    domain = build_agent_session_domain(identity["agent_id"], identity["session_id"])
     inner_command = _runcon_shell_command(bash_exe=bash_exe, working_dir=working_dir, command=command)
     proc = await asyncio.create_subprocess_exec(
         runcon_exe,
@@ -321,6 +322,41 @@ def _runcon_shell_command(*, bash_exe: str, working_dir: str, command: str) -> s
     quoted_bash = shlex.quote(bash_exe)
     quoted_command = shlex.quote(command)
     return f"cd -- {quoted_working_dir} && exec {quoted_bash} --noprofile --norc -c {quoted_command}"
+
+
+def _policy_identity(ctx: Any) -> dict[str, str]:
+    session_id = str(getattr(ctx, "session_id", "") or "").strip()
+    workspace_path = str(getattr(ctx, "workspace_path", "") or "").strip()
+    if not session_id:
+        raise RuntimeError("missing session_id")
+    if not workspace_path:
+        raise RuntimeError("missing workspace_path")
+
+    explicit_agent_id = str(getattr(ctx, "agent_id", "") or "").strip()
+    agent_id = explicit_agent_id or _workspace_agent_id(workspace_path, session_id)
+    workspace_root = str(getattr(ctx, "workspace_root", "") or "").strip()
+    if not workspace_root:
+        workspace_root = _workspace_root_for_agent(agent_id, workspace_path)
+    return {
+        "agent_id": agent_id,
+        "session_id": session_id,
+        "workspace_path": workspace_path,
+        "workspace_root": workspace_root,
+    }
+
+
+def _workspace_agent_id(workspace_path: str, fallback: str) -> str:
+    workspace_name = Path(workspace_path).name
+    if re.fullmatch(r"[A-Za-z0-9_]+", workspace_name):
+        return workspace_name
+    return fallback
+
+
+def _workspace_root_for_agent(agent_id: str, workspace_path: str) -> str:
+    path = Path(workspace_path)
+    if agent_id == path.name and agent_id != "main":
+        return str(path.parent)
+    return workspace_path
 
 
 async def _request_ai_socket(*, ai_socket: str, prompt: str) -> str:
@@ -380,6 +416,32 @@ def _load_dolphin_socket_resolver() -> Callable[..., Any]:
         return resolve_connector_and_endpoint
     except Exception as exc:
         raise RuntimeError("Dolphin ai_socket client dependencies are unavailable") from exc
+
+
+def _history_messages_from_context(ctx: Any) -> list[dict[str, Any]]:
+    in_memory_messages = _normalize_history_messages(getattr(ctx, "history_messages", None))
+    if _latest_user_message(in_memory_messages) is not None:
+        return in_memory_messages
+
+    for attr_name in ("history_path", "workspace_history_path"):
+        messages = _read_history_messages(getattr(ctx, attr_name, None))
+        if _latest_user_message(messages) is not None:
+            return messages
+    return in_memory_messages
+
+
+def _normalize_history_messages(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    messages: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or item.get("speaker") or "").strip()
+        content = _message_content(item.get("content"))
+        if role and content:
+            messages.append({"role": role, "content": content})
+    return messages
 
 
 def _read_history_messages(history_path: Any) -> list[dict[str, Any]]:
