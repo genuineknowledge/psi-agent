@@ -32,6 +32,7 @@ if _THIS_DIR not in sys.path:
 import ast
 import contextlib
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -690,12 +691,14 @@ async def _build_volatile(workspace_dir: anyio.Path) -> str:
 
 
 # Tools injected at runtime by an ``@mcp`` decorator are invisible to static
-# analysis, so map each mcp-backed tool file to the real tool name(s) it
-# surfaces. Keys are file stems; values are the runtime tool names. Only the
-# primary tool is listed to keep the prompt's ## Tooling section readable; the
-# summary for it notes that ``serper_*`` variants exist.
-_MCP_TOOL_NAMES: dict[str, list[str]] = {
-    "search": ["serper_google_search"],
+# analysis. Map each mcp-backed tool file (by stem) to the module that must be
+# importable for its tools to actually register, plus the tool name(s) it
+# surfaces. Only the primary tool is listed to keep the ## Tooling section
+# readable; its summary notes that ``serper_*`` variants exist. The gate module
+# is checked with importlib.util.find_spec (no import, no side effects) so we
+# never advertise a tool whose optional backend is absent.
+_MCP_TOOL_NAMES: dict[str, tuple[str, list[str]]] = {
+    "search": ("serper_mcp_server", ["serper_google_search"]),
 }
 
 
@@ -707,7 +710,7 @@ def _scan_tool_file(source: str) -> list[str]:
     """
     try:
         tree = ast.parse(source)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
         return []
     names: list[str] = []
     for node in tree.body:
@@ -737,7 +740,12 @@ async def _scan_tool_names(workspace_dir: anyio.Path) -> list[str]:
         with contextlib.suppress(OSError):
             source = await entry.read_text(encoding="utf-8")
             names.update(_scan_tool_file(source))
-        names.update(_MCP_TOOL_NAMES.get(entry.stem, []))
+        mcp_entry = _MCP_TOOL_NAMES.get(entry.stem)
+        if mcp_entry is not None:
+            module, tool_names = mcp_entry
+            with contextlib.suppress(ModuleNotFoundError, ValueError):
+                if importlib.util.find_spec(module) is not None:
+                    names.update(tool_names)
     return sorted(names)
 
 

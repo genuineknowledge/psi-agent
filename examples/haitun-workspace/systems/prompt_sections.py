@@ -55,6 +55,7 @@ TOOLING_FOOTER = "TOOLS.md is usage guidance, not availability."
 # Summaries for the tools this workspace actually ships.
 CORE_TOOL_SUMMARIES: dict[str, str] = {
     "read": "Read file contents",
+    "list_dir": "List the contents of a directory (folders and files)",
     "write": "Create or overwrite files",
     "edit": "Make precise string replacements in files",
     "write_excel": "Create a real .xlsx spreadsheet from tabular data (use this for tables/spreadsheets instead of a markdown table)",
@@ -82,6 +83,7 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
 # Display order - listed tools first, any extra tools (e.g. MCP search) after.
 TOOL_ORDER: list[str] = [
     "read",
+    "list_dir",
     "write",
     "edit",
     "write_excel",
