@@ -29,6 +29,7 @@ _THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
+import ast
 import contextlib
 import hashlib
 import json
@@ -688,15 +689,55 @@ async def _build_volatile(workspace_dir: anyio.Path) -> str:
     return "\n\n".join(parts)
 
 
+# Tools injected at runtime by an ``@mcp`` decorator are invisible to static
+# analysis, so map each mcp-backed tool file to the real tool name(s) it
+# surfaces. Keys are file stems; values are the runtime tool names. Only the
+# primary tool is listed to keep the prompt's ## Tooling section readable; the
+# summary for it notes that ``serper_*`` variants exist.
+_MCP_TOOL_NAMES: dict[str, list[str]] = {
+    "search": ["serper_google_search"],
+}
+
+
+def _scan_tool_file(source: str) -> list[str]:
+    """Return top-level ``async def`` names (non-``_``) in one tool file.
+
+    Uses ``ast`` only — the file is never imported or executed, so tool
+    side effects (network, .env reads) do not run at prompt-build time.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    names: list[str] = []
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef) and not node.name.startswith("_"):
+            names.append(node.name)
+    return names
+
+
 async def _scan_tool_names(workspace_dir: anyio.Path) -> list[str]:
-    """Derive tool names from ``workspace/tools/*.py`` filenames (fallback)."""
+    """Derive tool names from real ``async def`` functions in ``tools/*.py``.
+
+    Names come from AST parsing (not filenames), so a file defining several
+    tools (e.g. ``background_stop.py`` -> ``background_stop`` +
+    ``background_list``) surfaces all of them, and a file whose tools are
+    injected by ``@mcp`` at runtime (e.g. ``search.py`` -> ``serper_*``)
+    surfaces via ``_MCP_TOOL_NAMES`` instead of a non-existent ``search``.
+    """
     tools_dir = workspace_dir / "tools"
     if not await tools_dir.exists():
         return []
-    names: list[str] = []
+    names: set[str] = set()
     async for entry in tools_dir.iterdir():
-        if await entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
-            names.append(entry.stem)
+        if not (await entry.is_file() and entry.suffix == ".py"):
+            continue
+        if entry.name.startswith("_"):
+            continue
+        with contextlib.suppress(OSError):
+            source = await entry.read_text(encoding="utf-8")
+            names.update(_scan_tool_file(source))
+        names.update(_MCP_TOOL_NAMES.get(entry.stem, []))
     return sorted(names)
 
 
