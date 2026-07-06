@@ -261,6 +261,14 @@ fusion-memory doctor --json
 fusion-memory start --json
 ```
 
+If status and doctor are healthy but memory tools still report
+`service_unavailable` / `connection_failed` while local Qwen is loading or
+running on CPU, do not repeatedly restart the service. Check
+`PSI_MEMORY_TIMEOUT_SECONDS`; the default is 30 seconds and values up to 120
+seconds are allowed for slow local Qwen calls. After changing workspace tool
+code or timeout environment, start a fresh agent session so cached tool modules
+do not keep the old timeout.
+
 If a tool returns `bad_request`, fix the reported `cause` first, such as
 `missing_scope` or `missing_query`; reinstalling will not fix request-shape
 errors.

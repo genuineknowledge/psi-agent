@@ -19,8 +19,8 @@ Fusion Memory model, service, or database code in the agent process.
 - `PSI_MEMORY_AGENT_ID`: agent scope. Defaults to `haitun`.
 - `PSI_MEMORY_SESSION_ID`: optional session scope. When unset, reads allow
   cross-session retrieval.
-- `PSI_MEMORY_TIMEOUT_SECONDS`: request timeout in seconds. Defaults to `2.0` and is
-  clamped to `0.1..5.0`.
+- `PSI_MEMORY_TIMEOUT_SECONDS`: request timeout in seconds. Defaults to `30.0` and is
+  clamped to `0.1..120.0`.
 - `PSI_AGENT_GATEWAY_URL`: optional psi-agent gateway URL used by automatic
   history persistence. Example: `http://127.0.0.1:8080`.
 - `PSI_AGENT_WORKSPACE`: optional workspace path used by automatic history
@@ -44,14 +44,14 @@ fusion-memory doctor --json
 export PSI_MEMORY_BASE_URL=http://127.0.0.1:8700
 ```
 
-The Fusion Memory repository includes `models/Qwen3-Embedding-0.6B` and
-`models/Qwen3-Reranker-0.6B`. The installer does not download model weights from
-other locations. It installs full runtime dependencies (`.[postgres,qwen]`),
-including Postgres adapter, local Qwen adapter, PyTorch, and Transformers. If
-model files are missing or dependency installation failed, install-check reports
-not ready and asks you to rerun `pip install -e ".[postgres,qwen]"`. Only when
+The Fusion Memory installer downloads `models/Qwen3-Embedding-0.6B` and
+`models/Qwen3-Reranker-0.6B` from ModelScope, then installs the full local Qwen
+runtime dependencies, including Postgres adapter, local Qwen adapter, PyTorch,
+and Transformers. It does not require Git LFS. If model download or dependency
+installation fails, install-check reports not ready with the failed step and log
+path; do not report setup as complete or fall back to `local_test`. Only when
 model files and dependencies are present but this hardware/runtime cannot load or
-run both bundled vector models does it fall back to a compromised local mode with
+run both local vector models does it fall back to a compromised local mode with
 built-in lightweight retrieval and print the API-key next step. Recommended API
 provider: Aliyun DashScope; set `DASHSCOPE_API_KEY` before configuring API-backed
 providers.
