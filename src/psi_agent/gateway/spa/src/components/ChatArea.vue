@@ -37,6 +37,8 @@ defineExpose({ onContainerScroll })
   padding: 24px;
   display: flex;
   flex-direction: column;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent 100%);
+          mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent 100%);
 }
 
 @media (max-width: 768px) {
