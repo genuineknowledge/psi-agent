@@ -117,7 +117,7 @@ Open the printed address to see a Material Design 3 Web Console. From the UI you
 
 The `--listen` value must include the `http://` prefix; bare `IP:PORT` is interpreted as a Unix socket path.
 
-Gateway also supports system tray icon (`--tray --icon icon.png`), auto browser open (`--browser`), and custom socket path prefix (`--socket-path psi`, controlling the `/tmp/{prefix}/ais/...` and `/tmp/{prefix}/channels/...` layout for AI/Session Unix sockets).
+Gateway also supports system tray icon (`--tray --icon icon.png`), auto browser open (`--browser`), native webview window (`--webview`), and custom socket path prefix (`--socket-path psi`, controlling the `/tmp/{prefix}/ais/...` and `/tmp/{prefix}/channels/...` layout for AI/Session Unix sockets).
 
 ## CLI Overview
 

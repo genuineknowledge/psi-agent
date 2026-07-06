@@ -117,7 +117,7 @@ uv run psi-agent gateway --listen http://127.0.0.1:8080   # 指定端口
 
 注意 `--listen` 参数需要 `http://` 前缀，裸 `IP:PORT` 会被误判为 Unix socket 路径。
 
-Gateway 还支持系统托盘图标（`--tray --icon icon.png`）、自动打开浏览器（`--browser`）和自定义 socket 路径前缀（`--socket-path psi`，控制 AI/Session Unix socket 的 `/tmp/{prefix}/ais/...` 和 `/tmp/{prefix}/channels/...` 路径）。
+Gateway 还支持系统托盘图标（`--tray --icon icon.png`）、自动打开浏览器（`--browser`）、原生 webview 窗口（`--webview`）和自定义 socket 路径前缀（`--socket-path psi`，控制 AI/Session Unix socket 的 `/tmp/{prefix}/ais/...` 和 `/tmp/{prefix}/channels/...` 路径）。
 
 ## CLI 一览
 
