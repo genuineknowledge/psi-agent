@@ -16,9 +16,7 @@ class MemoryToolError(RuntimeError):
         self.message = message
 
 
-async def post_json(
-    base_url: str, path: str, payload: dict[str, Any], timeout_seconds: float
-) -> dict[str, Any]:
+async def post_json(base_url: str, path: str, payload: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
     timeout = aiohttp.ClientTimeout(total=_normalize_timeout_seconds(timeout_seconds))
     url = f"{base_url.rstrip('/')}/{path.lstrip('/')}"
     try:
@@ -28,7 +26,7 @@ async def post_json(
         ):
             try:
                 data = await response.json()
-            except (aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError):
+            except aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError:
                 data = {}
             if response.status >= 400:
                 raise MemoryToolError(
