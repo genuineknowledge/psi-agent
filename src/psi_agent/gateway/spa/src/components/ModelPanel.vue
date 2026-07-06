@@ -76,27 +76,17 @@ function openNewAi() {
   position: relative;
 }
 .model-chip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 36px;
-  padding: 0 12px 0 10px;
-  background: var(--md-surface-container-high);
-  border: 1px solid var(--md-outline-variant);
-  border-radius: 18px;
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
-  max-width: 160px;
-  color: var(--md-text-primary);
-  font-size: 13px;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
+  display: flex; align-items: center; gap: 6px;
+  height: 36px; padding: 0 10px;
+  background: transparent; border: none;
+  border-radius: var(--md-shape-full); cursor: pointer;
+  transition: all 0.2s; max-width: 160px;
+  color: var(--md-text-primary); font-size: 13px; font-weight: 500;
+  white-space: nowrap; overflow: hidden;
 }
-.model-chip:hover { background: var(--md-surface-variant); border-color: var(--md-primary); }
+.model-chip:hover { background: var(--md-surface-container-high); }
 .model-chip.open {
   background: var(--md-secondary-container);
-  border-color: var(--md-primary);
   color: var(--md-on-secondary-container);
 }
 .model-chip .chip-icon { font-size: 16px; flex-shrink: 0; opacity: 0.75; }

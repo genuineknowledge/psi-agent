@@ -1,6 +1,5 @@
 <template>
   <div id="messages" ref="messagesRef" @scroll="onContainerScroll">
-    <div v-if="messages.length === 0" class="empty">选择一个会话开始聊天</div>
     <MessageBubble
       v-for="(m, i) in messages"
       :key="m.id || i"
@@ -38,13 +37,6 @@ defineExpose({ onContainerScroll })
   padding: 24px;
   display: flex;
   flex-direction: column;
-}
-
-.empty {
-  color: var(--md-text-secondary);
-  text-align: center;
-  margin-top: 140px;
-  font-size: 15px;
 }
 
 @media (max-width: 768px) {

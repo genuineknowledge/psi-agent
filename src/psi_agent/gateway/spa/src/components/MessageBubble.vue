@@ -1,6 +1,5 @@
 <template>
   <div :class="['msg', msg.role]">
-    <div class="role">{{ msg.role === 'user' ? 'You' : 'Assistant' }}</div>
     <div class="bubble-wrap">
       <button v-if="msg.role === 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
         <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
@@ -79,30 +78,20 @@ function closePreview() {
 
 <style scoped>
 .msg {
-  margin-bottom: 20px;
-  max-width: 75%;
-  width: max-content;
-  min-width: 50px;
   display: flex;
   flex-direction: column;
+  gap: 6px;
+  max-width: 820px;
+  width: 100%;
+  margin: 0 auto 24px;
 }
 
 .msg.user {
-  margin-left: auto;
   align-items: flex-end;
 }
 
 .msg.assistant {
-  margin-right: auto;
   align-items: flex-start;
-}
-
-.role {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--md-text-secondary);
-  margin-bottom: 4px;
-  padding: 0 6px;
 }
 
 .bubble-wrap {
@@ -115,41 +104,75 @@ function closePreview() {
 .bubble {
   flex: 1;
   padding: 12px 16px;
-  font-size: 14px;
-  line-height: 1.6;
+  /* 对齐 Gemini：chat 正文比侧边栏(13/14px)大一档，建立层级 */
+  font-size: 16px;
+  line-height: 1.7;
   word-break: break-word;
   max-width: 100%;
 }
 
-/* Rendered markdown: block code (<pre>) preserves whitespace without
-   wrapping so ASCII diagrams / wide code keep their layout — the box
-   scrolls horizontally on narrow windows instead of collapsing. */
-.bubble :deep(pre),
-.bubble :deep(pre code) {
-  white-space: pre;
-  overflow-x: auto;
-  max-width: 100%;
+/* 渲染后的 markdown 正文统一为气泡字体（sans-serif）：正文/标题/列表/表格
+   都 inherit，避免落到浏览器默认字体而杂乱。代码另用等宽字体（见下）。 */
+.bubble :deep(p),
+.bubble :deep(li),
+.bubble :deep(h1),
+.bubble :deep(h2),
+.bubble :deep(h3),
+.bubble :deep(h4),
+.bubble :deep(th),
+.bubble :deep(td) {
+  font-family: inherit;
 }
 
-/* Inline code (not inside a <pre>) still wraps so a long token can't
-   overflow the bubble. */
-.bubble :deep(code) {
+/* 代码统一等宽字体栈——语法高亮的代码块靠等宽才易读，对齐 FilePreview。 */
+.bubble :deep(code),
+.bubble :deep(pre) {
+  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Courier New", monospace;
+}
+
+/* 内联代码（反引号，非 <pre> 内）：浅背景片 + 圆角，与正文区分；长 token 可换行。 */
+.bubble :deep(:not(pre) > code) {
+  background: var(--md-surface-container-high);
+  border-radius: 6px;
+  padding: 0.12em 0.4em;
+  font-size: 0.9em;
   overflow-wrap: break-word;
 }
 
+/* 代码块：带背景方框 + padding + 圆角 + 横向滚动（宽代码/ASCII 图保留布局，
+   窗口窄时块内横向滚动而非撑破气泡）。块内 code 去掉内联片样式。 */
+.bubble :deep(pre) {
+  background: var(--md-surface-container-low);
+  border: 1px solid var(--md-outline-variant);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 8px 0;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.bubble :deep(pre code) {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.875em;
+  line-height: 1.6;
+  white-space: pre;
+}
+
 .msg.user .bubble {
-  background: var(--md-primary-container);
-  color: var(--md-on-primary-container);
-  border-radius: 16px 16px 4px 16px;
+  background: var(--md-surface-container-high);
+  color: var(--md-text-primary);
+  border-radius: 20px;
+  padding: 12px 18px;
   /* User text is html-escaped (not markdown), so keep literal newlines. */
   white-space: pre-wrap;
 }
 
 .msg.assistant .bubble {
-  background: var(--md-surface-container-high);
+  background: transparent;
   color: var(--md-text-primary);
-  border: 1px solid var(--md-outline-variant);
-  border-radius: 16px 16px 16px 4px;
+  border: none;
+  padding: 0;
 }
 
 /* 文本容器保持块级：v-html 产出的块级 markdown 嵌进块级元素，避免

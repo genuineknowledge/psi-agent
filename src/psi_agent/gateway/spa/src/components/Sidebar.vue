@@ -1,13 +1,16 @@
 <template>
   <div id="sidebar" :class="{ collapsed: isSidebarCollapsed, 'mobile-open': isMobileSidebarOpen }">
     <div class="col">
-      <div class="col-header">
-        会话
-        <button @click="$emit('new-session')">
-          <span class="material-symbols-outlined">add</span>
-          新建
-        </button>
+      <div class="sb-header">
+        <div class="sb-brand">
+          <div class="sb-logo"></div>
+          <span class="sb-brand-name">Dolphin</span>
+        </div>
       </div>
+      <button class="new-chat" @click="$emit('new-session')">
+        <span class="material-symbols-outlined">edit_square</span>
+        <span>发起新对话</span>
+      </button>
       <div class="session-search">
         <span class="material-symbols-outlined">search</span>
         <input
@@ -26,6 +29,7 @@
           <span class="material-symbols-outlined">close</span>
         </button>
       </div>
+      <div class="recent-label">最近</div>
       <div
         v-for="s in visibleSessions"
         :key="s.id"
@@ -167,7 +171,7 @@ watch(
 #sidebar {
   width: 280px;
   display: flex;
-  background: var(--md-surface);
+  background: var(--md-surface-container);
   border-right: 1px solid var(--md-outline-variant);
   flex-shrink: 0;
   transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.25s, border-color 0.25s;
@@ -184,46 +188,44 @@ watch(
   height: 100%;
   overflow-y: auto;
 }
-.col-header {
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: .5px;
-  color: var(--md-primary);
-  padding: 16px 16px 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+.sb-header { display: flex; align-items: center; padding: 12px 12px 8px; }
+.sb-brand { display: flex; align-items: center; gap: 10px; }
+.sb-logo {
+  width: 26px; height: 26px; border-radius: var(--md-shape-full);
+  background-image: url('/spa/haitun-logo.png');
+  background-size: cover;
+  background-position: center;
 }
-.col-header button {
-  background: var(--md-primary-container);
-  color: var(--md-on-primary-container);
+.sb-brand-name { font-size: 20px; font-weight: 500; color: var(--md-text-primary); }
+.new-chat {
+  display: flex; align-items: center; gap: 12px;
+  margin: 0 8px 4px; padding: 10px 16px;
+  background: transparent; color: var(--md-text-secondary);
+  border: none; border-radius: var(--md-shape-full); cursor: pointer;
+  font-size: 14px; text-align: left; transition: background 0.2s;
+}
+.new-chat:hover { background: var(--md-nav-hover); }
+.new-chat .material-symbols-outlined { font-size: 20px; flex-shrink: 0; }
+.recent-label {
+  padding: 12px 16px 6px; font-size: 13px; color: var(--md-text-secondary);
+}
+.session-search {
+  margin: 0 8px 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: transparent;
   border: none;
   border-radius: var(--md-shape-full);
-  padding: 6px 12px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  transition: box-shadow .2s;
-  box-shadow: var(--md-elevation-1);
-}
-.col-header button:hover { box-shadow: var(--md-elevation-2); filter: brightness(1.05); }
-.col-header button .material-symbols-outlined { font-size: 16px; }
-.session-search {
-  margin: 0 12px 8px;
-  height: 38px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px 0 12px;
-  background: var(--md-surface-container-high);
-  border: 1px solid var(--md-outline-variant);
-  border-radius: 8px;
   color: var(--md-text-secondary);
+  transition: background 0.2s;
 }
-.session-search .material-symbols-outlined { font-size: 18px; flex-shrink: 0; }
+.session-search:hover,
+.session-search:focus-within {
+  background: var(--md-nav-hover);
+}
+.session-search .material-symbols-outlined { font-size: 20px; flex-shrink: 0; }
 .session-search input {
   min-width: 0;
   flex: 1;
@@ -232,8 +234,9 @@ watch(
   background: transparent;
   color: var(--md-text-primary);
   font: inherit;
-  font-size: 13px;
+  font-size: 14px;
 }
+.session-search input::placeholder { color: var(--md-text-secondary); }
 .session-search input::-webkit-search-cancel-button { appearance: none; }
 .session-search .clear-search {
   width: 26px;
@@ -254,20 +257,17 @@ watch(
 }
 .item {
   padding: 8px 8px;
-  border-radius: 12px;
+  border-radius: var(--md-shape-full);
   cursor: pointer;
   font-size: 13px;
-  margin: 4px 12px;
+  margin: 0 8px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   transition: background 0.2s;
 }
-.item:hover { background: var(--md-surface-variant); }
-.item.selected {
-  background: var(--md-secondary-container);
-  color: var(--md-on-secondary-container);
-}
+.item:hover { background: var(--md-nav-hover); }
+.item.selected { background: var(--md-nav-hover); }
 .item .pin {
   color: var(--md-text-secondary);
   background: none;

@@ -6,6 +6,7 @@ import 'katex/dist/katex.min.css'
 import './styles/tokens.css'
 import './styles/components.css'
 import './styles/layout.css'
+import './styles/highlight.css'
 
 const app = createApp(App)
 app.use(createPinia())
