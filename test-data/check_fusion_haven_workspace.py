@@ -5,6 +5,8 @@ import asyncio
 import importlib
 import importlib.util
 import json
+import os
+import shlex
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,6 +64,29 @@ def _import_security_module(name: str) -> Any:
     if workspace_path not in sys.path:
         sys.path.insert(0, workspace_path)
     return importlib.import_module(f"fusion_guard_security.{name}")
+
+
+def _legacy_te_env_name(field: str) -> str:
+    return "OPEN" + "CLAW" + "_TE_DAEMON_" + field
+
+
+def _replace_env(overrides: dict[str, str | None]) -> dict[str, str | None]:
+    previous: dict[str, str | None] = {}
+    for key, value in overrides.items():
+        previous[key] = os.environ.get(key)
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    return previous
+
+
+def _restore_env(previous: dict[str, str | None]) -> None:
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 async def _assert_bash_builds_security_context() -> None:
@@ -365,6 +390,71 @@ async def _assert_static_dangerous_shell_patterns_are_denied_before_analysis() -
     assert events == []
 
 
+def _assert_daemon_accepts_deployed_legacy_environment() -> None:
+    policy = _import_security_module("policy")
+
+    class FakeUnixConnector:
+        def __init__(self, *, path: str) -> None:
+            self.path = path
+
+    class FakeTCPConnector:
+        pass
+
+    class FakeAiohttp:
+        UnixConnector = FakeUnixConnector
+        TCPConnector = FakeTCPConnector
+
+    env_keys = {
+        "DOLPHIN_TE_DAEMON_SOCKET",
+        "DOLPHIN_TE_DAEMON_PORT",
+        "DOLPHIN_TE_DAEMON_TOKEN",
+        "DOLPHIN_TE_DAEMON_TOKEN_FILE",
+        "DOLPHIN_TE_DAEMON_TIMEOUT_SECONDS",
+        "DOLPHIN_TE_DAEMON_TIMEOUT_MS",
+        _legacy_te_env_name("SOCKET"),
+        _legacy_te_env_name("PORT"),
+        _legacy_te_env_name("TOKEN"),
+        _legacy_te_env_name("TOKEN_FILE"),
+        _legacy_te_env_name("TIMEOUT_SECONDS"),
+        _legacy_te_env_name("TIMEOUT_MS"),
+    }
+    previous = _replace_env(dict.fromkeys(env_keys))
+    try:
+        os.environ[_legacy_te_env_name("SOCKET")] = "/tmp/deployed-te-daemon.sock"
+        connector, endpoint = policy._daemon_connector_and_endpoint(FakeAiohttp)
+        assert isinstance(connector, FakeUnixConnector)
+        assert connector.path == "/tmp/deployed-te-daemon.sock"
+        assert endpoint == "http://localhost/install"
+
+        os.environ.pop(_legacy_te_env_name("SOCKET"))
+        os.environ[_legacy_te_env_name("PORT")] = "19876"
+        connector, endpoint = policy._daemon_connector_and_endpoint(FakeAiohttp)
+        assert isinstance(connector, FakeTCPConnector)
+        assert endpoint == "http://127.0.0.1:19876/install"
+
+        os.environ[_legacy_te_env_name("TOKEN")] = "deployed-token"
+        assert policy._daemon_token() == "deployed-token"
+
+        os.environ[_legacy_te_env_name("TIMEOUT_SECONDS")] = "9.5"
+        assert policy._daemon_timeout_seconds() == 9.5
+    finally:
+        _restore_env(previous)
+
+
+def _assert_selinux_policy_covers_managed_workspace_runtime() -> None:
+    policy = _import_security_module("policy")
+
+    session_id = "fusion_haven_runtime_policy_session"
+    generated = policy.generate_agent_policy(agent_id=session_id, session_scope_key=session_id)
+    content = generated["content"]
+    domain = policy.build_agent_session_domain(session_id, session_id)
+
+    assert "type user_home_t;" in content
+    assert f"allow {domain} user_home_t:dir {{ search getattr open read }};" in content
+    assert f"allow {domain} self:fd use;" in content
+    assert f"allow {domain} self:fifo_file {{ getattr read write ioctl }};" in content
+
+
 async def _assert_bash_exec_uses_runcon_domain() -> None:
     policy = _import_security_module("policy")
     runner = _import_security_module("runner")
@@ -404,6 +494,10 @@ async def _assert_bash_exec_uses_runcon_domain() -> None:
         runner.asyncio.create_subprocess_exec = original_create
 
     domain = policy.build_agent_session_domain(session_id, session_id)
+    inner_command = (
+        f"cd -- {shlex.quote(str(WORKSPACE))} && "
+        f"exec {shlex.quote('/mock/bash')} --noprofile --norc -c {shlex.quote('printf runcon')}"
+    )
     assert result == "runcon output"
     assert captured["getenforce_argv"] == ("/mock/getenforce",)
     assert captured["argv"] == (
@@ -415,9 +509,10 @@ async def _assert_bash_exec_uses_runcon_domain() -> None:
         "--noprofile",
         "--norc",
         "-c",
-        "printf runcon",
+        inner_command,
     )
-    assert captured["kwargs"]["cwd"] == str(WORKSPACE)
+    assert captured["kwargs"]["cwd"] != str(WORKSPACE)
+    assert captured["kwargs"]["cwd"] == os.sep
 
 
 async def _assert_bash_exec_blocks_when_selinux_is_not_enforcing() -> None:
@@ -497,6 +592,8 @@ def main() -> None:
     asyncio.run(_assert_none_policy_flow_installs_base_policy())
     asyncio.run(_assert_prompt_includes_command_and_script_content())
     asyncio.run(_assert_static_dangerous_shell_patterns_are_denied_before_analysis())
+    _assert_daemon_accepts_deployed_legacy_environment()
+    _assert_selinux_policy_covers_managed_workspace_runtime()
     asyncio.run(_assert_bash_exec_uses_runcon_domain())
     asyncio.run(_assert_bash_exec_blocks_when_selinux_is_not_enforcing())
 

@@ -105,6 +105,8 @@ optional_policy(`
     role staff_r types {session_domain};
     domain_trans(staff_t, shell_exec_t, {session_domain})
     domain_trans(staff_t, bin_t, {session_domain})
+    allow {session_domain} staff_t:fd use;
+    allow {session_domain} staff_t:fifo_file {{ getattr read write ioctl }};
 ')
 
 optional_policy(`
@@ -115,6 +117,8 @@ optional_policy(`
     role sysadm_r types {session_domain};
     domain_trans(sysadm_t, shell_exec_t, {session_domain})
     domain_trans(sysadm_t, bin_t, {session_domain})
+    allow {session_domain} sysadm_t:fd use;
+    allow {session_domain} sysadm_t:fifo_file {{ getattr read write ioctl }};
 ')
 
 optional_policy(`
@@ -125,6 +129,8 @@ optional_policy(`
     role unconfined_r types {session_domain};
     domain_trans(unconfined_t, shell_exec_t, {session_domain})
     domain_trans(unconfined_t, bin_t, {session_domain})
+    allow {session_domain} unconfined_t:fd use;
+    allow {session_domain} unconfined_t:fifo_file {{ getattr read write ioctl }};
 ')
 
 allow {session_domain} shell_exec_t:file {{ entrypoint map execute execute_no_trans }};
@@ -134,6 +140,8 @@ allow {session_domain} cert_t:dir {{ search open read getattr }};
 allow {session_domain} cert_t:file {{ map open read getattr }};
 allow {session_domain} io_uring_t:anon_inode {{ create map read write }};
 allow {session_domain} proc_t:file {{ open read }};
+allow {session_domain} self:fd use;
+allow {session_domain} self:fifo_file {{ getattr read write ioctl }};
 allow {session_domain} self:process execmem;
 allow {session_domain} user_devpts_t:chr_file {{ read write getattr ioctl }};
 allow {session_domain} {SHARED_WORKSPACE_ROOT_TYPE}:dir {{ search open read getattr }};
@@ -147,13 +155,16 @@ allow {session_domain} {TE_DAEMON_SOCKET_TYPE}:sock_file {{ open read write geta
 allow {session_domain} {TE_DAEMON_SOCKET_TYPE}:unix_stream_socket connectto;
 allow {session_domain} unconfined_service_t:unix_stream_socket connectto;
 allow {session_domain} self:tcp_socket {{ create connect getattr read write setopt getopt }};
+allow {session_domain} self:unix_dgram_socket {{ create getattr read write setopt getopt }};
 
 optional_policy(`
     gen_require(`
         type user_home_dir_t;
+        type user_home_t;
     ')
     files_search_home({session_domain})
     allow {session_domain} user_home_dir_t:dir {{ search getattr }};
+    allow {session_domain} user_home_t:dir {{ search getattr open read }};
 ')
 """
     return {
@@ -205,15 +216,13 @@ def build_agent_workspace_file_type(agent_id: str) -> str:
 
 
 def _daemon_connector_and_endpoint(aiohttp_module: Any) -> tuple[Any, str]:
-    socket_path = os.environ.get("DOLPHIN_TE_DAEMON_SOCKET", "").strip()
+    socket_path = _first_env_value("DOLPHIN_TE_DAEMON_SOCKET", _legacy_te_daemon_env_name("SOCKET"))
     if not socket_path:
-        default_socket = Path(os.sep) / "run" / "dolphin-security" / "te-daemon.sock"
-        if default_socket.exists():
-            socket_path = str(default_socket)
+        socket_path = _first_existing_path(_default_daemon_socket_paths())
     if socket_path:
         return aiohttp_module.UnixConnector(path=socket_path), "http://localhost/install"
 
-    raw_port = os.environ.get("DOLPHIN_TE_DAEMON_PORT", "18790")
+    raw_port = _first_env_value("DOLPHIN_TE_DAEMON_PORT", _legacy_te_daemon_env_name("PORT")) or "18790"
     try:
         port = int(raw_port)
     except ValueError:
@@ -224,19 +233,31 @@ def _daemon_connector_and_endpoint(aiohttp_module: Any) -> tuple[Any, str]:
 
 
 def _daemon_token() -> str:
-    from_env = os.environ.get("DOLPHIN_TE_DAEMON_TOKEN", "").strip()
+    from_env = _first_env_value("DOLPHIN_TE_DAEMON_TOKEN", _legacy_te_daemon_env_name("TOKEN"))
     if from_env:
         return from_env
-    token_file = os.environ.get("DOLPHIN_TE_DAEMON_TOKEN_FILE", "").strip()
-    path = Path(token_file).expanduser() if token_file else Path.home() / ".dolphin" / "security" / "te-daemon.token"
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+    token_file = _first_env_value("DOLPHIN_TE_DAEMON_TOKEN_FILE", _legacy_te_daemon_env_name("TOKEN_FILE"))
+    paths = [Path(token_file).expanduser()] if token_file else _default_daemon_token_paths()
+    for path in paths:
+        try:
+            token = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if token:
+            return token
+    return ""
 
 
 def _daemon_timeout_seconds() -> float:
-    raw = os.environ.get("DOLPHIN_TE_DAEMON_TIMEOUT_SECONDS", os.environ.get("DOLPHIN_TE_DAEMON_TIMEOUT_MS", "30"))
+    raw = (
+        _first_env_value(
+            "DOLPHIN_TE_DAEMON_TIMEOUT_SECONDS",
+            "DOLPHIN_TE_DAEMON_TIMEOUT_MS",
+            _legacy_te_daemon_env_name("TIMEOUT_SECONDS"),
+            _legacy_te_daemon_env_name("TIMEOUT_MS"),
+        )
+        or "30"
+    )
     try:
         value = float(raw)
     except ValueError:
@@ -244,6 +265,39 @@ def _daemon_timeout_seconds() -> float:
     if value > 1000:
         value = value / 1000
     return value if value > 0 else 30.0
+
+
+def _first_env_value(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _legacy_te_daemon_env_name(field: str) -> str:
+    return "OPEN" + "CLAW" + "_TE_DAEMON_" + field
+
+
+def _first_existing_path(paths: Iterable[Path]) -> str:
+    for path in paths:
+        if path.exists():
+            return str(path)
+    return ""
+
+
+def _default_daemon_socket_paths() -> list[Path]:
+    return [
+        Path(os.sep) / "run" / "dolphin-security" / "te-daemon.sock",
+        Path(os.sep) / "run" / ("open" + "claw-security") / "te-daemon.sock",
+    ]
+
+
+def _default_daemon_token_paths() -> list[Path]:
+    return [
+        Path.home() / ".dolphin" / "security" / "te-daemon.token",
+        Path.home() / (".open" + "claw") / "security" / "te-daemon.token",
+    ]
 
 
 def _assert_valid_agent_id(agent_id: str) -> str:

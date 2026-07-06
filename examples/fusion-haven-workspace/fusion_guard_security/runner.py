@@ -291,6 +291,7 @@ async def execute_bash(command: str, *, cwd: str | None, ctx: Any) -> str:
     if not enforcing:
         return f"Error executing command: {enforcing_error}"
     domain = build_agent_session_domain(session_id, session_id)
+    inner_command = _runcon_shell_command(bash_exe=bash_exe, working_dir=working_dir, command=command)
     proc = await asyncio.create_subprocess_exec(
         runcon_exe,
         "-t",
@@ -300,8 +301,8 @@ async def execute_bash(command: str, *, cwd: str | None, ctx: Any) -> str:
         "--noprofile",
         "--norc",
         "-c",
-        command,
-        cwd=working_dir,
+        inner_command,
+        cwd=os.sep,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -313,6 +314,13 @@ async def execute_bash(command: str, *, cwd: str | None, ctx: Any) -> str:
     if stderr:
         return f"{stdout}\n[stderr]\n{stderr}" if stdout else f"[stderr]\n{stderr}"
     return stdout or "(no output)"
+
+
+def _runcon_shell_command(*, bash_exe: str, working_dir: str, command: str) -> str:
+    quoted_working_dir = shlex.quote(working_dir)
+    quoted_bash = shlex.quote(bash_exe)
+    quoted_command = shlex.quote(command)
+    return f"cd -- {quoted_working_dir} && exec {quoted_bash} --noprofile --norc -c {quoted_command}"
 
 
 async def _request_ai_socket(*, ai_socket: str, prompt: str) -> str:
