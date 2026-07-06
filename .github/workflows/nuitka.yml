@@ -52,7 +52,7 @@ jobs:
         run: uv run python -m nuitka $NUITKA_COMMON_FLAGS src/psi_agent/cli.py
         if: matrix.os == 'ubuntu-latest'
       - shell: bash
-        run: uv run python -m nuitka $NUITKA_COMMON_FLAGS --macos-app-name=psi-agent src/psi_agent/cli.py
+        run: uv run python -m nuitka $NUITKA_COMMON_FLAGS --output-folder-name=psi-agent --macos-app-name=psi-agent src/psi_agent/cli.py
         if: matrix.os == 'macos-latest'
       - shell: bash
         run: uv run python -m nuitka $NUITKA_COMMON_FLAGS --clang src/psi_agent/cli.py
