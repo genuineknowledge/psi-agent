@@ -14,6 +14,11 @@ def test_fusion_memory_setup_skills_use_windows_venv_installer() -> None:
         skill = path.read_text(encoding="utf-8")
 
         assert ".fusion-memory-venv" in skill
+        assert "ModelScope" in skill
+        assert "Do not ask the user to manually install Python" in skill
+        assert "Git LFS" in skill
+        assert "git lfs pull" not in skill.lower()
+        assert "uv.exe" in skill
         assert "wheel-only" in skill
         assert "Do not paste full pip logs" in skill
         assert "local_test" in skill
