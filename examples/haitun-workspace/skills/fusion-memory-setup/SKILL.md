@@ -61,6 +61,11 @@ used to bootstrap the installer. Do not ask the user to manually install Python
 or Git LFS. If compatible Windows CPython is unavailable, `install.ps1`
 downloads a local `uv.exe` non-interactively and uses uv-managed Python 3.12
 for the Fusion Memory tool runtime.
+The installer owns any `.fusion-memory-venv` compatibility/runtime directory;
+do not ask the user to create, activate, or repair that environment manually.
+Native-risk Qwen dependencies are installed in wheel-only mode. If compatible
+wheels are unavailable, stop with not_ready and report the concise failed step
+and log path.
 
 The default local_full configuration is SQLite plus local Qwen vector models
 stored under the Fusion Memory home models directory:
@@ -111,10 +116,10 @@ Set-Location "$env:AGENT_DIR\fusion-memory"
 ```
 
 If the repair attempt still reports not_ready, summarize the failed install step
-and the install-check `missing` / `next_step` fields for the user. Do not paste
-full uv, dependency, or model download logs into chat; give the concise failure
-step and log path. Do not silently fall back to local_test or report setup as
-complete.
+and the install-check `missing` / `next_step` fields for the user.
+Do not paste full pip logs into chat. Do not paste full uv, dependency, or
+model download logs into chat; give the concise failure step and log path. Do
+not silently fall back to local_test or report setup as complete.
 `local_test` is allowed only when the user explicitly chooses temporary
 evaluation after being told memory quality is downgraded.
 
