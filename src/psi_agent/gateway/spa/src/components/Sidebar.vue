@@ -361,7 +361,6 @@ watch(
   font-size: 13px;
   text-align: center;
 }
-.new-chat { position: relative; }
 .shortcut {
   margin-left: auto;
   font-size: 12px;
