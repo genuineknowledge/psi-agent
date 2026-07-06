@@ -70,7 +70,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useBreakpoints, useDropZone, useStorage } from '@vueuse/core'
+import { useBreakpoints, useDropZone, useStorage, useEventListener } from '@vueuse/core'
 import { useAiStore } from './stores/ai.js'
 import { useSessionStore } from './stores/session.js'
 import { useChatStore } from './stores/chat.js'
@@ -85,6 +85,7 @@ import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
 import { useKeyboard } from './composables/useKeyboard.js'
 import { selectSession } from './composables/useSession.js'
+import { matchSidebarShortcut } from './shortcuts.js'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBar from './components/InputBar.vue'
@@ -136,6 +137,22 @@ useKeyboard()
 
 const breakpoints = useBreakpoints({ mobile: 768 })
 const isMobile = breakpoints.smallerOrEqual('mobile')
+
+useEventListener(window, 'keydown', (e) => {
+  const action = matchSidebarShortcut(e)
+  if (!action) return
+  e.preventDefault()
+  if (action === 'new-session') {
+    openSessDialog()
+  } else if (action === 'focus-search') {
+    if (isMobile.value) {
+      isMobileSidebarOpen.value = true
+    } else {
+      isSidebarCollapsed.value = false
+    }
+    ui.focusSessionSearch()
+  }
+})
 
 function toggleSidebar() {
   ui.toggleSidebar(isMobile.value)

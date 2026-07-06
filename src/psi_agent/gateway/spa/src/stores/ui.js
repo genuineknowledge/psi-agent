@@ -11,6 +11,7 @@ export const useUiStore = defineStore('ui', () => {
   const isDragging = ref(false)
   const dlgAI = ref(false)
   const dlgSess = ref(false)
+  const sessionSearchFocusToken = ref(0)
 
   let snackbarTimer = null
 
@@ -35,6 +36,10 @@ export const useUiStore = defineStore('ui', () => {
     isMobileSidebarOpen.value = false
   }
 
+  function focusSessionSearch() {
+    sessionSearchFocusToken.value++
+  }
+
   return {
     loadingEnv,
     snackbar,
@@ -45,8 +50,10 @@ export const useUiStore = defineStore('ui', () => {
     isDragging,
     dlgAI,
     dlgSess,
+    sessionSearchFocusToken,
     showAlert,
     toggleSidebar,
     closeMobileSidebar,
+    focusSessionSearch,
   }
 })

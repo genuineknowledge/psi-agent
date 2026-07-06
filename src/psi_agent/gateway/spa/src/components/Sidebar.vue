@@ -16,6 +16,7 @@
         <div class="session-search">
           <span class="material-symbols-outlined">search</span>
           <input
+            ref="searchInputRef"
             v-model="sessionSearchText"
             type="search"
             placeholder="搜索会话"
@@ -82,7 +83,7 @@
 </template>
 
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, watch, ref, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useSessionStore } from '../stores/session.js'
 import { useUiStore } from '../stores/ui.js'
@@ -108,9 +109,14 @@ const {
 } = storeToRefs(session)
 
 const ui = useUiStore()
-const { isSidebarCollapsed, isMobileSidebarOpen, dlgConfirm } = storeToRefs(ui)
+const { isSidebarCollapsed, isMobileSidebarOpen, dlgConfirm, sessionSearchFocusToken } = storeToRefs(ui)
 
 defineEmits(['new-session'])
+
+const searchInputRef = ref(null)
+watch(sessionSearchFocusToken, () => {
+  nextTick(() => searchInputRef.value?.focus())
+})
 
 const visibleSessions = computed(() => buildVisibleSessions(sessions.value, {
   titles: sessionTitles.value,
