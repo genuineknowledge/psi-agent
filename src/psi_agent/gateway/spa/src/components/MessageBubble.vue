@@ -1,8 +1,5 @@
 <template>
   <div :class="['msg', msg.role]">
-    <div v-if="msg.role !== 'user'" class="spark">
-      <span class="material-symbols-outlined">auto_awesome</span>
-    </div>
     <div class="bubble-wrap">
       <button v-if="msg.role === 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
         <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
@@ -95,21 +92,6 @@ function closePreview() {
 
 .msg.assistant {
   align-items: flex-start;
-}
-
-.spark {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--md-shape-full);
-  background: var(--g-spark);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.spark .material-symbols-outlined {
-  font-size: 16px;
-  color: #fff;
 }
 
 .bubble-wrap {
