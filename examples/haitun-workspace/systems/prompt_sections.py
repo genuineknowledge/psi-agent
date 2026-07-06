@@ -71,6 +71,12 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "memory_add": "Store durable user preferences, project facts, or decisions",
     "memory_search": "Search Fusion Memory for raw evidence",
     "memory_answer_context": "Retrieve a query-grounded Fusion Memory context pack",
+    "find_files": "Recursively find file paths matching a glob pattern, newest first",
+    "search_content": "Search file contents for a regex or literal string and return matching lines",
+    "flow_run": "Run a Fusion Flow (.flow.ts) in the background and poll node-level progress",
+    "describe_image": "Return a text description or answer about an image file",
+    "generate_image": "Create an image file from a scene description",
+    "serper_google_search": "Web search via Serper (needs SERPER_API_KEY); serper_* variants exist for images/news/scholar/webpage_scrape etc.",
 }
 
 # Display order - listed tools first, any extra tools (e.g. MCP search) after.
@@ -92,6 +98,12 @@ TOOL_ORDER: list[str] = [
     "memory_add",
     "memory_search",
     "memory_answer_context",
+    "find_files",
+    "search_content",
+    "flow_run",
+    "describe_image",
+    "generate_image",
+    "serper_google_search",
 ]
 
 # ---------------------------------------------------------------------------
