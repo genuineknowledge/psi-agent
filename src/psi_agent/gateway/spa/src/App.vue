@@ -48,12 +48,10 @@
       </div>
 
       <div id="chat-main" :class="{ welcome: showWelcome }">
-        <transition name="hero-fade" mode="out-in">
-          <div v-if="showWelcome" class="welcome-hero" key="welcome">
-            <div class="welcome-greeting">{{ greetingText }}</div>
-          </div>
-          <ChatArea v-else key="chat" />
-        </transition>
+        <div v-if="showWelcome" class="welcome-hero" key="welcome">
+          <div class="welcome-greeting">{{ greetingText }}</div>
+        </div>
+        <ChatArea v-else key="chat" />
         <InputBar
           @select-ai="selectAI"
           @delete-ai="confirmDeleteAI"
@@ -122,12 +120,16 @@ const { sessions, selectedSessionId, sessionTitles, sessForm, browser } = storeT
 
 const chat = useChatStore()
 const { messages, selectedFiles } = storeToRefs(chat)
-// 欢迎屏：仅在「无选中会话」时显示。切换会话时 selectedSessionId 是同步设置的
-// （早于历史 fetch），故加载历史的异步间隙里 messages 虽短暂为空，也不会闪回欢迎屏。
-const showWelcome = computed(() => !selectedSessionId.value && messages.value.length === 0)
 
 const ui = useUiStore()
 const { loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen } = storeToRefs(ui)
+
+// 欢迎屏：只要「当前会话为空」就显示（含刚新建、尚无消息的空会话）——这正是
+// 新建对话时要看到居中问候+胶囊的场景。启动阶段 loadingEnv=true 会把它压成 false，
+// 让会话恢复/历史加载都在 page-loader 遮罩之下完成，避免启动瞬间闪一下。
+// 切换到有内容的旧会话不会闪回欢迎屏：selectSession 已改为「先取完历史再原子替换
+// messages」，不再有「先清空→await」的空窗，故 messages 不会经过空态。
+const showWelcome = computed(() => !loadingEnv.value && messages.value.length === 0)
 
 const { toggleTheme } = useTheme()
 useKeyboard()
@@ -353,10 +355,19 @@ onMounted(async () => {
     const activeState = loadActiveState()
     if (activeState.aiId && ais.value.some(a => a.id === activeState.aiId))
       selectedAiId.value = activeState.aiId
-    if (activeState.sessId && sessions.value.some(s => s.id === activeState.sessId))
-      selectSession(activeState.sessId)
     if (!selectedAiId.value && ais.value.length) selectedAiId.value = ais.value[0].id
-    if (!selectedSessionId.value && sessions.value.length) selectSession(sessions.value[0].id)
+
+    // 恢复会话：优先上次选中的会话（仍在后端 /sessions 列表中才算有效），
+    // 否则退回最近一个会话。已崩溃（如 system prompt 过大 400）的会话已被后端
+    // 从 /sessions 剔除，不在列表里，因此不会被恢复，也就不会自动打开幽灵会话。
+    const persisted = activeState.sessId && sessions.value.some(s => s.id === activeState.sessId)
+      ? activeState.sessId
+      : (sessions.value.length ? sessions.value[0].id : null)
+    if (persisted) {
+      await selectSession(persisted)
+    } else if (activeState.sessId) {
+      saveActiveState(selectedAiId.value, null)
+    }
     loadingEnv.value = false
   } catch (err) {
     loadingEnv.value = false
@@ -405,6 +416,4 @@ onMounted(async () => {
 @media (max-width: 768px) {
   .welcome-greeting { font-size: 34px; }
 }
-.hero-fade-enter-active, .hero-fade-leave-active { transition: opacity 0.4s ease, transform 0.4s ease; }
-.hero-fade-enter-from, .hero-fade-leave-to { opacity: 0; transform: translateY(8px); }
 </style>

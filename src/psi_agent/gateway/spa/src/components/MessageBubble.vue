@@ -104,8 +104,9 @@ function closePreview() {
 .bubble {
   flex: 1;
   padding: 12px 16px;
-  font-size: 14px;
-  line-height: 1.6;
+  /* 对齐 Gemini：chat 正文比侧边栏(13/14px)大一档，建立层级 */
+  font-size: 16px;
+  line-height: 1.7;
   word-break: break-word;
   max-width: 100%;
 }

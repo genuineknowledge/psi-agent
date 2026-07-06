@@ -1,5 +1,5 @@
 <template>
-  <div id="input-wrapper" v-show="selectedSessionId">
+  <div id="input-wrapper">
     <div id="file-preview-bar" v-if="selectedFiles.length">
       <div class="preview-chip" v-for="(f, i) in selectedFiles" :key="i">
         <span class="material-symbols-outlined" style="font-size:16px;">attach_file</span>
