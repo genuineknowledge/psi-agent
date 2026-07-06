@@ -11,6 +11,7 @@
         <button class="new-chat" @click="$emit('new-session')">
           <span class="material-symbols-outlined">edit_square</span>
           <span class="label">发起新对话</span>
+          <span class="shortcut">Ctrl+Shift+O</span>
         </button>
         <div class="session-search">
           <span class="material-symbols-outlined">search</span>
@@ -20,6 +21,7 @@
             placeholder="搜索会话"
             aria-label="搜索会话"
           >
+          <span v-if="!sessionSearchText" class="shortcut search-shortcut">Ctrl+Shift+K</span>
           <button
             v-if="sessionSearchText"
             class="clear-search"
@@ -353,6 +355,20 @@ watch(
   font-size: 13px;
   text-align: center;
 }
+.new-chat { position: relative; }
+.shortcut {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--md-text-secondary);
+  opacity: 0;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.new-chat:hover .shortcut,
+.session-search:hover .shortcut,
+.session-search:focus-within .shortcut { opacity: 1; }
+.search-shortcut { margin-left: 4px; }
 
 @media (hover: none) {
   .item .del,
