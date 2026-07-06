@@ -41,7 +41,7 @@ class Gateway:
     """Prefix for AI/Session Unix socket paths."""
 
     icon: str | None = None
-    """Path to icon image file (png/jpg/ico). Used as favicon, tray icon (requires --tray), and webview window icon (requires --webview)."""
+    """Path to icon image file (png/jpg/ico). Used as favicon, tray icon (--tray), and webview icon (--webview)."""
 
     browser: bool = False
     """Open a browser tab on startup."""
