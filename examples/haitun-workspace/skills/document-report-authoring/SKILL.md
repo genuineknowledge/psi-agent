@@ -84,6 +84,51 @@ def add_toc(doc):
 - Embed an image with `doc.add_picture("chart.png", width=Inches(6))`.
 - Set fonts / sizes via `run.font` when the user cares about styling; keep defaults otherwise.
 
+### Chinese fonts — set `w:eastAsia` or the doc will look "字体不齐"
+
+python-docx's `run.font.name` (and `add_heading`) only sets the **Latin** font
+(`w:ascii` / `w:hAnsi`); it does NOT set the **East Asian** font (`w:eastAsia`). Word then
+renders CJK characters in its default East Asian font, so some Chinese glyphs (e.g. 增长、报、
+维、结、跃、稳) fall back to a different typeface and the text looks uneven — this is a font
+bug, not a content bug. **For any document containing Chinese, set `w:eastAsia`.**
+
+The robust fix is to set the East Asian font on the base styles once, so every paragraph,
+heading, and table cell inherits it:
+
+```python
+from docx.oxml.ns import qn
+
+def set_cjk_font(doc, cjk="微软雅黑", latin="Calibri"):
+    """Set East-Asian + Latin fonts on base styles so all text is consistent."""
+    for style_name in ("Normal", "Heading 1", "Heading 2", "Heading 3", "Title"):
+        try:
+            style = doc.styles[style_name]
+        except KeyError:
+            continue
+        rpr = style.element.get_or_add_rPr()
+        rfonts = rpr.find(qn("w:rFonts"))
+        if rfonts is None:
+            rfonts = rpr.makeelement(qn("w:rFonts"), {})
+            rpr.append(rfonts)
+        rfonts.set(qn("w:ascii"), latin)
+        rfonts.set(qn("w:hAnsi"), latin)
+        rfonts.set(qn("w:eastAsia"), cjk)   # <-- the line that fixes 字体不齐
+
+doc = Document()
+set_cjk_font(doc)                            # call right after creating the document
+```
+
+If you instead style individual runs, set `w:eastAsia` on each run too — setting only
+`run.font.name` is the exact cause of the uneven-font problem:
+
+```python
+run.font.name = "微软雅黑"
+run._element.rPr.rFonts.set(qn("w:eastAsia"), "微软雅黑")
+```
+
+Common CJK fonts safe on most systems: `微软雅黑` (Windows), `宋体`, `黑体`. Do not mix
+several CJK fonts in one document unless the user asks.
+
 ## PowerPoint (.pptx) — python-pptx
 
 ```python
@@ -156,6 +201,9 @@ editable and need no image files):
 - **Don't output a markdown table when the user asked for a file.** Produce the actual .xlsx/.docx/.pptx.
 - **Sheet names cap at 31 chars**; titles longer than that raise. Truncate.
 - **Word TOC is empty until fields update** — say so instead of "re-generating".
+- **Chinese text looks "字体不齐" in Word** — you set `run.font.name` but not `w:eastAsia`,
+  so some CJK glyphs fell back to Word's default font. Call `set_cjk_font(doc)` (above) after
+  creating any Chinese document.
 - **Number formatting** (thousands separators, %, currency) is the author's job — format before
   writing, or set Excel cell `number_format`.
 - **Verify before claiming done**: reopen the saved file and read back a slide count / sheet
