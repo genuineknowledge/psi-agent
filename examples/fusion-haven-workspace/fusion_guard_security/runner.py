@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -420,14 +421,68 @@ def _load_dolphin_socket_resolver() -> Callable[..., Any]:
 
 def _history_messages_from_context(ctx: Any) -> list[dict[str, Any]]:
     in_memory_messages = _normalize_history_messages(getattr(ctx, "history_messages", None))
+    host_snapshot_path = _host_history_snapshot_path(ctx)
     if _latest_user_message(in_memory_messages) is not None:
+        _write_history_snapshot(host_snapshot_path, in_memory_messages)
         return in_memory_messages
 
-    for attr_name in ("history_path", "workspace_history_path"):
-        messages = _read_history_messages(getattr(ctx, attr_name, None))
+    for candidate_path in _history_candidate_paths(ctx, host_snapshot_path):
+        messages = _read_history_messages(candidate_path)
         if _latest_user_message(messages) is not None:
+            if not _same_path(candidate_path, host_snapshot_path):
+                _write_history_snapshot(host_snapshot_path, messages)
             return messages
     return in_memory_messages
+
+
+def _history_candidate_paths(ctx: Any, host_snapshot_path: Path | None) -> list[Path]:
+    candidates: list[Path] = []
+    for attr_name in ("history_path", "workspace_history_path"):
+        raw_path = getattr(ctx, attr_name, None)
+        if raw_path:
+            candidates.append(Path(str(raw_path)))
+    if host_snapshot_path is not None:
+        candidates.append(host_snapshot_path)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.expanduser())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _host_history_snapshot_path(ctx: Any) -> Path | None:
+    session_id = str(getattr(ctx, "session_id", "") or "").strip()
+    workspace_path = str(getattr(ctx, "workspace_path", "") or "").strip()
+    if not session_id or not workspace_path:
+        return None
+    root = os.environ.get("DOLPHIN_FUSION_GUARD_HISTORY_DIR", "").strip()
+    base = Path(root).expanduser() if root else Path.home() / ".dolphin" / "security" / "fusion-guard-history"
+    workspace_key = hashlib.sha256(workspace_path.encode("utf-8")).hexdigest()[:16]
+    return base / workspace_key / f"{session_id}.jsonl"
+
+
+def _write_history_snapshot(path: Path | None, messages: list[dict[str, Any]]) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = "\n".join(json.dumps(message, ensure_ascii=False) for message in messages) + "\n"
+        tmp_path = path.with_suffix(".jsonl.tmp")
+        tmp_path.write_text(content, encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError:
+        return
+
+
+def _same_path(left: Path, right: Path | None) -> bool:
+    if right is None:
+        return False
+    return str(left.expanduser()) == str(right.expanduser())
 
 
 def _normalize_history_messages(value: Any) -> list[dict[str, Any]]:

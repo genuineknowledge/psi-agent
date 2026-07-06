@@ -327,6 +327,37 @@ async def _assert_policy_identity_decouples_session_from_workspace_dir() -> None
     assert policy.build_agent_session_domain("post_sysadm_1", session_id) in str(request["policyContent"])
 
 
+def _assert_workspace_history_is_mirrored_before_relabel_breaks_reads() -> None:
+    runner = _import_security_module("runner")
+
+    with tempfile.TemporaryDirectory() as root_dir:
+        root = Path(root_dir)
+        workspace = root / "managed" / "final_hist"
+        workspace_history_path = workspace / "histories" / "session_a.jsonl"
+        workspace_history_path.parent.mkdir(parents=True)
+        workspace_history_path.write_text(
+            json.dumps({"role": "user", "content": "first pwd request"}) + "\n",
+            encoding="utf-8",
+        )
+        previous = _replace_env({"DOLPHIN_FUSION_GUARD_HISTORY_DIR": str(root / "host-history")})
+        try:
+            ctx = SimpleNamespace(
+                session_id="session_a",
+                workspace_path=workspace,
+                history_path=workspace_history_path,
+            )
+
+            first_messages = runner._history_messages_from_context(ctx)
+            assert first_messages[-1] == {"role": "user", "content": "first pwd request"}
+
+            workspace_history_path.unlink()
+            second_messages = runner._history_messages_from_context(ctx)
+        finally:
+            _restore_env(previous)
+
+    assert second_messages[-1] == {"role": "user", "content": "first pwd request"}
+
+
 async def _assert_prompt_uses_workspace_agent_policy_domain() -> None:
     policy = _import_security_module("policy")
     runner = _import_security_module("runner")
@@ -736,6 +767,7 @@ def main() -> None:
     asyncio.run(_assert_allow_rule_policy_flow())
     asyncio.run(_assert_none_policy_flow_installs_base_policy())
     asyncio.run(_assert_policy_identity_decouples_session_from_workspace_dir())
+    _assert_workspace_history_is_mirrored_before_relabel_breaks_reads()
     asyncio.run(_assert_prompt_uses_workspace_agent_policy_domain())
     asyncio.run(_assert_prompt_includes_command_and_script_content())
     asyncio.run(_assert_static_dangerous_shell_patterns_are_denied_before_analysis())
