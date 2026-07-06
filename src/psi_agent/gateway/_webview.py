@@ -36,8 +36,8 @@ class GatewayWebView:
 
         webview = __import__("webview")
 
-        self._window = webview.create_window("psi-agent Gateway", self._url)
-        self._window.events.closing += self._on_closing
+        self._window = webview.create_window("控制台", self._url)
+        self._window.events.closing += self._on_closing  # ty: ignore
 
         self._thread = threading.Thread(
             target=webview.start,
