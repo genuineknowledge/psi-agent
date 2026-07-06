@@ -62,6 +62,7 @@ class SessionAgent:
         *,
         ai_socket: str,
         workspace_path: Path,
+        model_ai_sockets: dict[str, str] | None = None,
         max_tool_rounds: int = 128,
         session_id: str | None = None,
     ) -> SessionAgent:

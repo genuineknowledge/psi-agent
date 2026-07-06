@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
@@ -8,6 +8,7 @@ import anyio
 from loguru import logger
 
 from psi_agent._logging import setup_logging
+from psi_agent.session._routing import build_effective_model_ai_sockets
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.server import serve_session
 
@@ -29,8 +30,15 @@ class Session:
         workspace_path = Path.cwd() if self.workspace == "" else Path(str(await anyio.Path(self.workspace).resolve()))
         logger.info(f"Loading workspace from {workspace_path}")
 
+        effective_model_ai_sockets = build_effective_model_ai_sockets(
+            self.ai_socket,
+            self.model_names,
+            explicit_model_ai_sockets=self.model_ai_sockets,
+        )
+
         agent = await SessionAgent.create(
             ai_socket=self.ai_socket,
+            model_ai_sockets=effective_model_ai_sockets,
             workspace_path=workspace_path,
             max_tool_rounds=self.max_tool_rounds,
             session_id=self.session_id,

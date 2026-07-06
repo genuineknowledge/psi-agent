@@ -50,7 +50,7 @@ Session ── POST /chat/completions ──► AI
 | `api_key` | `--api-key` | `PSI_AI_API_KEY` | 上游 API key |
 | `base_url` | `--base-url` | `PSI_AI_BASE_URL` | 上游 base URL |
 
-全部参数可选，CLI 优先于环境变量。`model` 在请求处理中被启动配置覆盖（AI 层隐藏上游 model 细节）。
+全部参数可选，CLI 优先于环境变量。`model` 作为默认值使用；如果请求体里提供了 `model`，则会覆盖启动默认值，方便 Channel 做按请求路由。
 
 ## 请求透传
 

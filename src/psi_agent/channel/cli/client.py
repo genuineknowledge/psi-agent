@@ -13,6 +13,12 @@ async def run_cli(*, session_socket: str, message: str) -> None:
     console = Console(highlight=False)
     logger.info(f"Connecting to session at {session_socket}")
 
+    connector, endpoint = resolve_connector_and_endpoint(session_socket)
+    model = await select_model_for_message(
+        message,
+        models=models,
+    )
+
     try:
         async with (
             ChannelCore(session_socket, interval=0.0) as core,
@@ -26,6 +32,4 @@ async def run_cli(*, session_socket: str, message: str) -> None:
     except Exception as e:
         logger.error(f"CLI error: {e!r}")
         console.print(f"[red]Error: {e}[/red]")
-        raise
-
-    console.print()
+        sys.exit(1)

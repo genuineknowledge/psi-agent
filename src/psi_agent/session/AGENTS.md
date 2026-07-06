@@ -53,6 +53,8 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - `SessionAgent.handle_request()` 编排完整请求生命周期：parse → lock+prepare → run → write。
 - `ChannelAdapter` 是纯无状态工具——不持有 agent/lock 引用。
 - Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。
+- `model_ai_sockets` 可以把某个请求 `model` 直接路由到不同的 AI socket；不命中时回退到 `ai_socket`。
+- `model_names` 可以在 Session 启动时自动展开成同目录下的 `./<model>.sock`，并与 `model_ai_sockets` 合并。
 - AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
 - AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history，且通过 turn 快照回滚机制保证本轮用户消息也不落盘。
 

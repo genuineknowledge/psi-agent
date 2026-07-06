@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket as _s
 import textwrap
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import anyio
@@ -235,6 +236,41 @@ async def test_agent_history_accumulation(tmp_path: Path) -> None:
         assert len(agent._conversation.messages) >= 4
     finally:
         await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_skips_reasoning_only_history_entry() -> None:
+    class _ReasoningOnlySessionAgent(SessionAgent):
+        async def _stream_ai_request(
+            self,
+            request_body: dict,
+            *,
+            ai_socket: str | None = None,
+        ) -> AsyncIterator[ChatCompletionChunk]:
+            del request_body, ai_socket
+            yield ChatCompletionChunk(
+                choices=[
+                    StreamChoice(
+                        index=0,
+                        delta=DeltaMessage(reasoning_content="Thinking only"),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+    agent = _ReasoningOnlySessionAgent(ai_socket="http://unused", tools={})
+    chunks = []
+    async for chunk in agent.run({"role": "user", "content": "hi"}):
+        chunks.append(chunk)
+
+    reasoning = "".join(
+        c.choices[0].delta.reasoning_content or ""
+        for c in chunks
+        if c.choices and c.choices[0].delta.reasoning_content
+    )
+    assert "Thinking only" in reasoning
+    assert len(agent.history) == 1
+    assert agent.history[0]["role"] == "user"
 
 
 # --- Missing coverage: tool execution error paths ---

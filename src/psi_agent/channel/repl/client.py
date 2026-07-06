@@ -16,10 +16,11 @@ async def run_repl(*, session_socket: str) -> None:
     console = Console(highlight=False)
     logger.info(f"Connecting to session at {session_socket}")
 
+    connector, endpoint = resolve_connector_and_endpoint(session_socket)
     prompt_session = PromptSession(multiline=True)
 
     try:
-        async with ChannelCore(session_socket, interval=0.0) as core:
+        async with ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session:
             logger.info("Connected to session. Enter for newline, Alt+Enter to send (Ctrl+D to exit).")
             console.print(Panel.fit("psi-agent REPL — Enter newline, Alt+Enter send"))
             console.print("[dim]Ctrl+D to exit[/dim]\n")
@@ -27,7 +28,7 @@ async def run_repl(*, session_socket: str) -> None:
             while True:
                 try:
                     user_input = await prompt_session.prompt_async("> ", prompt_continuation=". ")
-                except EOFError, KeyboardInterrupt:
+                except (EOFError, KeyboardInterrupt):
                     console.print("\nGoodbye!")
                     break
 
@@ -49,8 +50,8 @@ async def run_repl(*, session_socket: str) -> None:
 
     except ClientConnectorError as e:
         console.print(f"[red]Connection error: {e}[/red]")
-        raise
+        sys.exit(1)
     except Exception as e:
         logger.exception("Unexpected REPL error")
         console.print(f"[red]Unexpected error: {e}[/red]")
-        raise
+        sys.exit(1)

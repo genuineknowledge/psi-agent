@@ -19,6 +19,10 @@ Config format (``run-config.yml``):
       workspace: ./examples/a-simple-bash-only-workspace  # optional, defaults to .
       channel_socket: ./channel.sock
       ai_socket: ./ai.sock
+      model_names:
+        - qwen3.6-chat
+        - deepseek-v4-pro
+        - gpt-4o
 
     - type: channel
       name: repl                    # "cli", "repl", "telegram", or "feishu"
@@ -43,9 +47,7 @@ from tyro import conf
 from psi_agent._logging import setup_logging
 from psi_agent.ai import Ai
 from psi_agent.channel.cli import ChannelCli
-from psi_agent.channel.feishu import ChannelFeishu
 from psi_agent.channel.repl import ChannelRepl
-from psi_agent.channel.telegram import ChannelTelegram
 from psi_agent.session import Session
 
 
