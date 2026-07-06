@@ -45,8 +45,8 @@ sh install.sh
 ```
 
 On Windows PowerShell, use the same target directory rule but run the PowerShell
-installer. It creates a dedicated `.fusion-memory-venv` for Memory instead of
-using the agent's MSYS2 Python environment:
+installer. It installs Fusion Memory as a `uv tool` with uv-managed Python 3.12
+instead of using the agent's MSYS2 Python environment:
 
 ```powershell
 $env:AGENT_DIR = "C:\path\to\current-agent-directory"
@@ -59,30 +59,31 @@ Do not use MSYS2/Mingw Python for the full local Qwen runtime on Windows;
 PyTorch wheels are not available for that Python ABI. MSYS2 Python may only be
 used to bootstrap the installer. Do not ask the user to manually install Python
 or Git LFS. If compatible Windows CPython is unavailable, `install.ps1`
-downloads a local `uv.exe` non-interactively and creates a managed
-`.fusion-memory-venv` for Memory.
+downloads a local `uv.exe` non-interactively and uses uv-managed Python 3.12
+for the Fusion Memory tool runtime.
 
-The default local_full configuration is SQLite plus local Qwen vector models:
+The default local_full configuration is SQLite plus local Qwen vector models
+stored under the Fusion Memory home models directory:
 
 ```text
 database: SQLite using Fusion Memory's default local database path
-embedding: models/Qwen3-Embedding-0.6B
-reranker: models/Qwen3-Reranker-0.6B
+embedding: FUSION_MEMORY_HOME/models/Qwen3-Embedding-0.6B or the platform default Fusion Memory home
+reranker: FUSION_MEMORY_HOME/models/Qwen3-Reranker-0.6B or the platform default Fusion Memory home
 ```
 
 Postgres/pgvector is optional for production deployments that need pgvector
 indexes, larger datasets, or multi-user service storage. It is not required for
 the default local setup.
 
-The installer checks Python 3.11+, installs Fusion Memory in editable mode,
-downloads the two Qwen model directories from ModelScope into `models/`, and
-installs the Python runtime dependencies for Postgres integration, local Qwen
-models, PyTorch, and Transformers. It does not install or start a PostgreSQL/pgvector server.
+The installer installs Fusion Memory with `uv tool install --managed-python
+--python 3.12`, downloads the two Qwen model directories from ModelScope into
+the Fusion Memory home models directory, and installs the Python runtime
+dependencies for Postgres integration, local Qwen models, PyTorch, and
+Transformers. It does not install or start a PostgreSQL/pgvector server.
 
 On Windows, `install.ps1` performs the same full-runtime readiness check through
-the dedicated `.fusion-memory-venv`; the local Qwen dependency step is
-wheel-only and stops on failure instead of compiling from source or falling back
-to `local_test`.
+the uv-managed tool runtime; native-risk dependency steps are configured to stop
+instead of compiling from source or falling back to `local_test`.
 
 If model files are missing, incomplete, or Git LFS pointers, installation
 downloads the real model weights from ModelScope. If model download or Qwen runtime dependency installation fails, installation is not ready; do not report
@@ -109,9 +110,11 @@ Set-Location "$env:AGENT_DIR\fusion-memory"
 .\install.ps1
 ```
 
-If the repair attempt still reports not_ready, summarize the pip error and the
-install-check `missing` / `next_step` fields for the user. Do not paste full pip logs or model download logs into chat; give the concise failure step and log
-path. Do not silently fall back to local_test or report setup as complete.
+If the repair attempt still reports not_ready, summarize the failed install step
+and the install-check `missing` / `next_step` fields for the user. Do not paste
+full uv, dependency, or model download logs into chat; give the concise failure
+step and log path. Do not silently fall back to local_test or report setup as
+complete.
 `local_test` is allowed only when the user explicitly chooses temporary
 evaluation after being told memory quality is downgraded.
 
@@ -130,16 +133,15 @@ sh "$AGENT_DIR/fusion-memory/install.sh"
 fusion-memory doctor --json
 ```
 
-On Windows after pulling, rerun the installer and use the venv command it
-created:
+On Windows after pulling, rerun the installer and then use the installed
+`fusion-memory` tool command:
 
 ```powershell
 $env:AGENT_DIR = "C:\path\to\current-agent-directory"
 git -C "$env:AGENT_DIR\fusion-memory" pull --ff-only origin main
 Set-Location "$env:AGENT_DIR\fusion-memory"
 .\install.ps1
-$FusionMemory = "$env:AGENT_DIR\fusion-memory\.fusion-memory-venv\Scripts\fusion-memory.exe"
-& $FusionMemory doctor --json
+fusion-memory doctor --json
 ```
 
 Use the wizard only when defaults need to be overridden:
@@ -169,13 +171,12 @@ fusion-memory status --json
 fusion-memory doctor --json
 ```
 
-On Windows PowerShell, use the CLI from the Memory venv:
+On Windows PowerShell, use the installed Fusion Memory tool command:
 
 ```powershell
-$FusionMemory = "$env:AGENT_DIR\fusion-memory\.fusion-memory-venv\Scripts\fusion-memory.exe"
-& $FusionMemory start --json
-& $FusionMemory status --json
-& $FusionMemory doctor --json
+fusion-memory start --json
+fusion-memory status --json
+fusion-memory doctor --json
 ```
 
 The beginner default is `http://127.0.0.1:8700`, but if that port is busy the
