@@ -56,9 +56,7 @@ class SessionAgent:
         self._system_prompt = system_prompt or SystemPrompt()
         self._default_ai_socket = default_ai_socket or ai_client.ai_socket
         self._model_ai_sockets = {
-            str(model): str(socket)
-            for model, socket in (model_ai_sockets or {}).items()
-            if model and socket
+            str(model): str(socket) for model, socket in (model_ai_sockets or {}).items() if model and socket
         }
         self._max_tool_rounds = max_tool_rounds
         self._lock = anyio.Lock()
@@ -307,7 +305,7 @@ class SessionAgent:
                                     if not isinstance(args, dict):
                                         logger.warning(f"Tool arguments is not a dict: {type(args).__name__}")
                                         args = {}
-                                except (json.JSONDecodeError, TypeError):
+                                except json.JSONDecodeError, TypeError:
                                     logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
                                     args = {}
 

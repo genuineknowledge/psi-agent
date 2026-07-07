@@ -19,7 +19,7 @@ def _build_router_system_prompt() -> str:
         "如果任务明显与海外, 英文语境, 国外平台, 国外政策法规或国际业务有关, 优先选择国外模型。"
         "如果任务同时涉及中外两边, 优先选择与主要语境和目标用户更匹配的模型。"
         "如果地域不明显, 再结合任务复杂度, 代码/推理强度和候选模型能力做选择。"
-        "只返回 JSON 对象, 格式必须是 {\"model\": \"候选模型名\"}, 不要输出任何解释。"
+        '只返回 JSON 对象, 格式必须是 {"model": "候选模型名"}, 不要输出任何解释。'
     )
 
 
@@ -89,11 +89,14 @@ async def choose_model_via_ustc_api(
     }
 
     try:
-        async with ClientSession(timeout=ClientTimeout(total=30)) as session, session.post(
-            endpoint,
-            json=payload,
-            headers=headers,
-        ) as response:
+        async with (
+            ClientSession(timeout=ClientTimeout(total=30)) as session,
+            session.post(
+                endpoint,
+                json=payload,
+                headers=headers,
+            ) as response,
+        ):
             response.raise_for_status()
             data = await response.json()
     except Exception as exc:

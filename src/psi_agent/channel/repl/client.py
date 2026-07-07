@@ -32,7 +32,7 @@ async def run_repl(
             while True:
                 try:
                     user_input = await prompt_session.prompt_async("> ", prompt_continuation=". ")
-                except (EOFError, KeyboardInterrupt):
+                except EOFError, KeyboardInterrupt:
                     console.print("\nGoodbye!")
                     break
 
@@ -46,9 +46,7 @@ async def run_repl(
 
                 console.print()
                 try:
-                    async with aclosing(
-                        core.post([TextChunk(user_input)], model=selected_model)
-                    ) as stream:
+                    async with aclosing(core.post([TextChunk(user_input)], model=selected_model)) as stream:
                         async for chunk in stream:
                             if isinstance(chunk, ReasoningChunk):
                                 console.print(chunk.text, end="", style="dim")

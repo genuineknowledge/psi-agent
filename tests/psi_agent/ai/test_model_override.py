@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from aiohttp import web
 
 from psi_agent.ai.server import _resolve_model, handle_chat_completions
 
@@ -130,7 +131,7 @@ async def test_handle_chat_completions_uses_resolved_model(
         },
     )
 
-    response = await handle_chat_completions(request)
+    response = await handle_chat_completions(cast(web.Request, request))
 
     assert seen_models == [expected_model]
     assert response.status == 200

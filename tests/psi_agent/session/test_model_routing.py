@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 
@@ -11,23 +13,32 @@ from psi_agent.session._routing import (
     select_ai_socket_for_model,
 )
 from psi_agent.session.agent import SessionAgent
-from psi_agent.session.protocol import ChatCompletionChunk, DeltaMessage, StreamChoice
+from psi_agent.session.ai_client import AiClient
+from psi_agent.session.conversation import Conversation
+from psi_agent.session.protocol import AiDelta
+from psi_agent.session.tool_registry import ToolRegistry
 
 
 def test_select_ai_socket_for_model_uses_mapping() -> None:
-    assert select_ai_socket_for_model(
-        "qwen3.6-chat",
-        default_ai_socket="http://default-ai",
-        model_ai_sockets={"qwen3.6-chat": "http://qwen-ai"},
-    ) == "http://qwen-ai"
+    assert (
+        select_ai_socket_for_model(
+            "qwen3.6-chat",
+            default_ai_socket="http://default-ai",
+            model_ai_sockets={"qwen3.6-chat": "http://qwen-ai"},
+        )
+        == "http://qwen-ai"
+    )
 
 
 def test_select_ai_socket_for_model_falls_back_to_default() -> None:
-    assert select_ai_socket_for_model(
-        "unknown-model",
-        default_ai_socket="http://default-ai",
-        model_ai_sockets={"qwen3.6-chat": "http://qwen-ai"},
-    ) == "http://default-ai"
+    assert (
+        select_ai_socket_for_model(
+            "unknown-model",
+            default_ai_socket="http://default-ai",
+            model_ai_sockets={"qwen3.6-chat": "http://qwen-ai"},
+        )
+        == "http://default-ai"
+    )
 
 
 def test_build_model_ai_sockets_uses_model_names() -> None:
@@ -35,9 +46,9 @@ def test_build_model_ai_sockets_uses_model_names() -> None:
         ["qwen3.6-chat", "deepseek-v4-pro", "gpt-4o"],
         socket_dir="/tmp",
     ) == {
-        "qwen3.6-chat": "/tmp/qwen3.6-chat.sock",
-        "deepseek-v4-pro": "/tmp/deepseek-v4-pro.sock",
-        "gpt-4o": "/tmp/gpt-4o.sock",
+        "qwen3.6-chat": os.path.join("/tmp", "qwen3.6-chat.sock"),
+        "deepseek-v4-pro": os.path.join("/tmp", "deepseek-v4-pro.sock"),
+        "gpt-4o": os.path.join("/tmp", "gpt-4o.sock"),
     }
 
 
@@ -47,7 +58,7 @@ def test_build_model_ai_sockets_preserves_explicit_mapping() -> None:
         socket_dir="/tmp",
         explicit_model_ai_sockets={"deepseek-v4-pro": "/custom/deepseek.sock"},
     ) == {
-        "qwen3.6-chat": "/tmp/qwen3.6-chat.sock",
+        "qwen3.6-chat": os.path.join("/tmp", "qwen3.6-chat.sock"),
         "deepseek-v4-pro": "/custom/deepseek.sock",
     }
 
@@ -58,7 +69,7 @@ def test_build_effective_model_ai_sockets_expands_local_socket_dir() -> None:
         ["qwen3.6-chat", "deepseek-v4-pro"],
         explicit_model_ai_sockets={"deepseek-v4-pro": "/custom/deepseek.sock"},
     ) == {
-        "qwen3.6-chat": "/tmp/qwen3.6-chat.sock",
+        "qwen3.6-chat": os.path.join("/tmp", "qwen3.6-chat.sock"),
         "deepseek-v4-pro": "/custom/deepseek.sock",
     }
 
@@ -97,29 +108,26 @@ def test_session_defaults_include_routing_fields() -> None:
 async def test_agent_routes_request_to_matching_ai_socket() -> None:
     seen_sockets: list[str | None] = []
 
-    class _RoutingSessionAgent(SessionAgent):
-        async def _stream_ai_request(
+    class _RoutingAiClient(AiClient):
+        def __init__(self) -> None:
+            super().__init__("http://default-ai")
+
+        async def stream(
             self,
-            request_body: dict,
+            request_body: dict[str, Any],
             *,
             ai_socket: str | None = None,
-        ) -> AsyncIterator[ChatCompletionChunk]:
+        ) -> AsyncGenerator[AiDelta]:
             del request_body
             seen_sockets.append(ai_socket)
-            yield ChatCompletionChunk(
-                choices=[
-                    StreamChoice(
-                        index=0,
-                        delta=DeltaMessage(content="ok"),
-                        finish_reason="stop",
-                    )
-                ],
-            )
+            yield AiDelta(content="ok", finish_reason="stop")
 
-    agent = _RoutingSessionAgent(
-        ai_socket="http://default-ai",
+    agent = SessionAgent(
+        ai_client=_RoutingAiClient(),
+        conversation=Conversation(),
+        tool_registry=ToolRegistry(),
+        default_ai_socket="http://default-ai",
         model_ai_sockets={"qwen3.6-chat": "http://qwen-ai"},
-        tools={},
     )
 
     async for _ in agent.run({"role": "user", "content": "hi"}, extra_params={"model": "qwen3.6-chat"}):
@@ -132,29 +140,26 @@ async def test_agent_routes_request_to_matching_ai_socket() -> None:
 async def test_agent_uses_default_ai_socket_when_model_not_mapped() -> None:
     seen_sockets: list[str | None] = []
 
-    class _RoutingSessionAgent(SessionAgent):
-        async def _stream_ai_request(
+    class _RoutingAiClient(AiClient):
+        def __init__(self) -> None:
+            super().__init__("http://default-ai")
+
+        async def stream(
             self,
-            request_body: dict,
+            request_body: dict[str, Any],
             *,
             ai_socket: str | None = None,
-        ) -> AsyncIterator[ChatCompletionChunk]:
+        ) -> AsyncGenerator[AiDelta]:
             del request_body
             seen_sockets.append(ai_socket)
-            yield ChatCompletionChunk(
-                choices=[
-                    StreamChoice(
-                        index=0,
-                        delta=DeltaMessage(content="ok"),
-                        finish_reason="stop",
-                    )
-                ],
-            )
+            yield AiDelta(content="ok", finish_reason="stop")
 
-    agent = _RoutingSessionAgent(
-        ai_socket="http://default-ai",
+    agent = SessionAgent(
+        ai_client=_RoutingAiClient(),
+        conversation=Conversation(),
+        tool_registry=ToolRegistry(),
+        default_ai_socket="http://default-ai",
         model_ai_sockets={"qwen3.6-chat": "http://qwen-ai"},
-        tools={},
     )
 
     async for _ in agent.run({"role": "user", "content": "hi"}, extra_params={"model": "unknown-model"}):

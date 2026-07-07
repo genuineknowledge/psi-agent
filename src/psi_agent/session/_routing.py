@@ -26,9 +26,7 @@ def build_model_ai_sockets(
     sockets are generated as ``<socket_dir>/<model>.sock``.
     """
     routes = {
-        str(model): str(socket)
-        for model, socket in (explicit_model_ai_sockets or {}).items()
-        if model and socket
+        str(model): str(socket) for model, socket in (explicit_model_ai_sockets or {}).items() if model and socket
     }
 
     resolved_socket_dir = socket_dir or "."
@@ -53,9 +51,7 @@ def build_effective_model_ai_sockets(
     named pipe), only explicit mappings are kept.
     """
     routes = {
-        str(model): str(socket)
-        for model, socket in (explicit_model_ai_sockets or {}).items()
-        if model and socket
+        str(model): str(socket) for model, socket in (explicit_model_ai_sockets or {}).items() if model and socket
     }
 
     if not models:

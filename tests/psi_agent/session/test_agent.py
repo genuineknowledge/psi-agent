@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import socket as _s
 import textwrap
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import anyio
@@ -249,7 +249,7 @@ async def test_agent_skips_reasoning_only_history_entry() -> None:
             request_body: dict,
             *,
             ai_socket: str | None = None,
-        ) -> AsyncIterator[AiDelta]:
+        ) -> AsyncGenerator[AiDelta]:
             del request_body, ai_socket
             yield AiDelta(reasoning="Thinking only", finish_reason="stop")
 
