@@ -35,7 +35,7 @@ _BIN = "cua-driver"
 # One-line installer, printed by action="setup" (we never run it automatically:
 # it is a networked, system-wide install and needs the user's consent).
 _INSTALL_HINT = (
-    'Install cua-driver, then grant permissions:\n'
+    "Install cua-driver, then grant permissions:\n"
     '  /bin/bash -c "$(curl -fsSL '
     'https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"\n'
     "  cua-driver permissions grant   # approve Accessibility + Screen Recording\n"
