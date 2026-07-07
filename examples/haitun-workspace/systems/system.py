@@ -669,11 +669,29 @@ def _build_runtime_info(model: str | None) -> str:
 
 
 def _build_datetime_section() -> str:
-    """Build the ## Current Date & Time section. Reads HAITUN_TIMEZONE (default UTC)."""
+    """Build the ## Current Date & Time section.
+
+    Reads HAITUN_TIMEZONE (default UTC) for the timezone label and
+    HAITUN_KNOWLEDGE_CUTOFF (optional, e.g. "2026-01") for the knowledge
+    cutoff anchor. When the cutoff is unset, emit a neutral line rather
+    than fabricating a date.
+    """
     tz = os.environ.get("HAITUN_TIMEZONE", "UTC")
     now = datetime.now()
+    cutoff = os.environ.get("HAITUN_KNOWLEDGE_CUTOFF", "").strip()
+    if cutoff:
+        cutoff_line = (
+            f"Knowledge cutoff: {cutoff} (facts that may have changed after this "
+            "date are not reliable from memory — verify online)."
+        )
+    else:
+        cutoff_line = (
+            "Knowledge cutoff: unknown — treat any fact that may have changed "
+            "recently as possibly stale and verify online."
+        )
     return (
-        f"## Current Date & Time\nDate: {now.strftime('%Y-%m-%d')}\nTime: {now.strftime('%H:%M:%S')}\nTime zone: {tz}"
+        f"## Current Date & Time\nDate: {now.strftime('%Y-%m-%d')}\n"
+        f"Time: {now.strftime('%H:%M:%S')}\nTime zone: {tz}\n{cutoff_line}"
     )
 
 
