@@ -34,6 +34,7 @@ dependencies = [
     "readability-lxml>=0.8.1",
     "markdownify>=0.13.1",
     "pywebview>=5.4",
+    "pygount>=3.2.0",
 ]
 
 [dependency-groups]

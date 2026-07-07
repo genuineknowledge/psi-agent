@@ -28,6 +28,10 @@ jobs:
         --collect-submodules openpyxl
         --collect-submodules readability
         --collect-submodules markdownify
+        --collect-submodules pygount
+        --collect-submodules pygments
+        --collect-submodules git
+        --collect-submodules chardet
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
