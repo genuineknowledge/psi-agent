@@ -82,7 +82,7 @@ async def _run_memo_editing(args: list[str], body: str, *, input_text: str | Non
             env_extra={"EDITOR": str(editor_file), "APPLE_NOTES_CONTENT": str(content_file)},
         )
     finally:
-        await anyio.to_thread.run_sync(lambda: shutil.rmtree(str(tmpdir), ignore_errors=True))
+        await anyio.to_thread.run_sync(lambda: shutil.rmtree(str(tmpdir), ignore_errors=True))  # ty: ignore
 
 
 def _parse_notes(text: str) -> list[tuple[int, str]]:
