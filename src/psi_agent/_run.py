@@ -47,7 +47,9 @@ from tyro import conf
 from psi_agent._logging import setup_logging
 from psi_agent.ai import Ai
 from psi_agent.channel.cli import ChannelCli
+from psi_agent.channel.feishu import ChannelFeishu
 from psi_agent.channel.repl import ChannelRepl
+from psi_agent.channel.telegram import ChannelTelegram
 from psi_agent.session import Session
 
 

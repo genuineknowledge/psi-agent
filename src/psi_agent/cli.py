@@ -10,7 +10,6 @@ from psi_agent._run import Run
 from psi_agent.ai import Ai
 from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.repl import ChannelRepl
-from psi_agent.channel.telegram import ChannelTelegram
 from psi_agent.gateway import Gateway
 from psi_agent.session import Session
 

@@ -6,8 +6,7 @@ from typing import Any
 
 import pytest
 
-from psi_agent.ai.server import _resolve_model
-from psi_agent.ai.server import handle_chat_completions
+from psi_agent.ai.server import _resolve_model, handle_chat_completions
 
 
 def test_resolve_model_uses_request_override() -> None:
