@@ -56,6 +56,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `speech_to_text` | iFLYTEK streaming STT for WAV/PCM/MP3 files received through `[RECV:]`. |
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
 | `apple_notes` | Apple toolset. Manage Apple Notes via the `memo` CLI: list, search, view, create, edit. macOS only; needs `memo` installed (`brew install antoniorodr/memo/memo`). |
+| `computer_use` | Apple toolset. Drive the macOS desktop in the background (screenshot/click/type/scroll/drag) via the `cua-driver` CLI — no cursor/focus/Space theft. macOS only; needs `cua-driver` installed + Accessibility & Screen Recording permissions. See `skills/macos-computer-use/`. |
 
 ## Skills (`skills/`)
 
@@ -65,6 +66,7 @@ All are optional and only affect the dynamic suffix / runtime line:
   `python-static-analysis`, `user-preferences-and-language`, `example-skill`).
 - `speech-to-text` / `text-to-speech` — iFLYTEK voice input/output recipes.
 - `github-auth` — GitHub authentication setup (HTTPS PAT, SSH keys, `gh` CLI login); shell-only, no extra deps.
+- `macos-computer-use` — drive native Mac apps in the background via `computer_use` (`cua-driver`).
 - `fusion-flow` — the immutable Fusion Flow runtime skill (node-based). **Do not edit it.**
 
 ## Schedules (`schedules/`)
