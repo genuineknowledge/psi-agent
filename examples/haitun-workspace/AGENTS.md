@@ -51,6 +51,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `list_dir` / `find_files` | List one directory level; recursively find files by glob (`**/*.py`), sorted newest-first. |
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
 | `flow_manage` | CRUD + promote on Fusion Flow assets under `flows/`. |
+| `schedule_manage` | CRUD on `schedules/<name>/TASK.md` (cron + task body); validates the cron expression. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
 | `speech_to_text` | iFLYTEK streaming STT for WAV/PCM/MP3 files received through `[RECV:]`. |
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
@@ -67,6 +68,8 @@ All are optional and only affect the dynamic suffix / runtime line:
 ## Schedules (`schedules/`)
 
 - `heartbeat` — every 30 min; the agent replies `HEARTBEAT_OK` when nothing needs attention.
+- Use `schedule_manage` to add / list / view / update / delete tasks instead of editing
+  `schedules/<name>/TASK.md` by hand.
 
 ## Prerequisites
 
