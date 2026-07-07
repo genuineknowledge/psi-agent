@@ -10,6 +10,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent.session._routing import select_ai_socket_for_model
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
@@ -43,6 +44,8 @@ class SessionAgent:
         tool_registry: ToolRegistry | None = None,
         schedule_registry: ScheduleRegistry | None = None,
         system_prompt: SystemPrompt | None = None,
+        default_ai_socket: str | None = None,
+        model_ai_sockets: dict[str, str] | None = None,
         max_tool_rounds: int = 128,
     ) -> None:
         self._ai_client = ai_client
@@ -51,6 +54,12 @@ class SessionAgent:
         self._tool_registry = tool_registry or ToolRegistry()
         self._schedule_registry = schedule_registry or ScheduleRegistry()
         self._system_prompt = system_prompt or SystemPrompt()
+        self._default_ai_socket = default_ai_socket or ai_client.ai_socket
+        self._model_ai_sockets = {
+            str(model): str(socket)
+            for model, socket in (model_ai_sockets or {}).items()
+            if model and socket
+        }
         self._max_tool_rounds = max_tool_rounds
         self._lock = anyio.Lock()
 
@@ -79,6 +88,8 @@ class SessionAgent:
             tool_registry=tool_registry,
             schedule_registry=schedule_registry,
             system_prompt=system_prompt,
+            default_ai_socket=ai_socket,
+            model_ai_sockets=model_ai_sockets,
             max_tool_rounds=max_tool_rounds,
         )
 
@@ -191,15 +202,32 @@ class SessionAgent:
                     extra_params.pop("stream", None)
                     request_body |= extra_params
 
+                request_model = request_body.get("model")
+                if not isinstance(request_model, str):
+                    request_model = None
+                resolved_ai_socket = select_ai_socket_for_model(
+                    request_model,
+                    default_ai_socket=self._default_ai_socket,
+                    model_ai_sockets=self._model_ai_sockets,
+                )
+
                 logger.info("Sending request to AI via AiClient")
-                logger.debug(f"Request messages count: {len(self._conversation.messages)}, tools: {len(tool_defs)}")
+                logger.debug(
+                    f"Request messages count: {len(self._conversation.messages)}, "
+                    f"tools: {len(tool_defs)}, model={request_model!r}, ai_socket={resolved_ai_socket!r}"
+                )
 
                 finish_reason: str | None = None
                 accumulated_tool_calls: dict[int, dict[str, Any]] = {}
                 accumulated_content: str = ""
                 accumulated_reasoning: str = ""
 
-                async with aclosing(self._ai_client.stream(request_body)) as stream:
+                async with aclosing(
+                    self._ai_client.stream(
+                        request_body,
+                        ai_socket=resolved_ai_socket,
+                    )
+                ) as stream:
                     async for delta in stream:
                         logger.debug(
                             f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
@@ -244,13 +272,14 @@ class SessionAgent:
                                 f"Stop: content={len(accumulated_content)} chars, "
                                 f"reasoning={len(accumulated_reasoning)} chars"
                             )
-                            if accumulated_content or accumulated_reasoning:
+                            if accumulated_content:
                                 assistant_msg: dict[str, Any] = {"role": "assistant"}
-                                if accumulated_content:
-                                    assistant_msg["content"] = accumulated_content
+                                assistant_msg["content"] = accumulated_content
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
                                 self._conversation.add(assistant_msg)
+                            elif accumulated_reasoning:
+                                logger.debug("Skipping reasoning-only assistant history entry")
                             await self._conversation.commit()
                             await self._schedule_registry.refresh()
                             return
@@ -278,7 +307,7 @@ class SessionAgent:
                                     if not isinstance(args, dict):
                                         logger.warning(f"Tool arguments is not a dict: {type(args).__name__}")
                                         args = {}
-                                except json.JSONDecodeError, TypeError:
+                                except (json.JSONDecodeError, TypeError):
                                     logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
                                     args = {}
 
@@ -333,13 +362,14 @@ class SessionAgent:
                         f"Unexpected finish_reason={finish_reason!r}, "
                         f"saving {len(accumulated_content)} chars of content and stopping"
                     )
-                    if accumulated_content or accumulated_reasoning:
+                    if accumulated_content:
                         assistant_msg: dict[str, Any] = {"role": "assistant"}
-                        if accumulated_content:
-                            assistant_msg["content"] = accumulated_content
+                        assistant_msg["content"] = accumulated_content
                         if accumulated_reasoning:
                             assistant_msg["reasoning"] = accumulated_reasoning
                         self._conversation.add(assistant_msg)
+                    elif accumulated_reasoning:
+                        logger.debug("Skipping reasoning-only assistant history entry after unexpected finish")
                     await self._conversation.commit()
                     return
 

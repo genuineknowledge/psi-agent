@@ -19,6 +19,8 @@ class Session:
 
     ai_socket: str
     channel_socket: str
+    model_names: list[str] = field(default_factory=list)
+    model_ai_sockets: dict[str, str] = field(default_factory=dict)
     workspace: str = ""
     max_tool_rounds: int = 128
     session_id: str | None = None
@@ -35,6 +37,18 @@ class Session:
             self.model_names,
             explicit_model_ai_sockets=self.model_ai_sockets,
         )
+        if self.ai_socket.startswith(("http://", "https://")):
+            unmapped_models = [
+                model_name
+                for model_name in self.model_names
+                if model_name and model_name not in effective_model_ai_sockets
+            ]
+            if unmapped_models:
+                logger.warning(
+                    "Remote TCP ai_socket does not auto-expand model_names; "
+                    "these models will fall back to the default ai_socket unless explicitly mapped: "
+                    f"{unmapped_models!r}"
+                )
 
         agent = await SessionAgent.create(
             ai_socket=self.ai_socket,

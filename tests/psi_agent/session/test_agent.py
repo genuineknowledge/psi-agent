@@ -13,7 +13,7 @@ from aiohttp import web
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.protocol import AgentChunk, AgentError, AiDelta
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 
@@ -240,37 +240,28 @@ async def test_agent_history_accumulation(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_agent_skips_reasoning_only_history_entry() -> None:
-    class _ReasoningOnlySessionAgent(SessionAgent):
-        async def _stream_ai_request(
+    class _ReasoningOnlyAiClient(AiClient):
+        def __init__(self) -> None:
+            super().__init__("http://unused")
+
+        async def stream(
             self,
             request_body: dict,
             *,
             ai_socket: str | None = None,
-        ) -> AsyncIterator[ChatCompletionChunk]:
+        ) -> AsyncIterator[AiDelta]:
             del request_body, ai_socket
-            yield ChatCompletionChunk(
-                choices=[
-                    StreamChoice(
-                        index=0,
-                        delta=DeltaMessage(reasoning_content="Thinking only"),
-                        finish_reason="stop",
-                    )
-                ],
-            )
+            yield AiDelta(reasoning="Thinking only", finish_reason="stop")
 
-    agent = _ReasoningOnlySessionAgent(ai_socket="http://unused", tools={})
-    chunks = []
+    agent = SessionAgent(ai_client=_ReasoningOnlyAiClient(), conversation=Conversation(), tool_registry=ToolRegistry())
+    chunks: list[AgentChunk] = []
     async for chunk in agent.run({"role": "user", "content": "hi"}):
         chunks.append(chunk)
 
-    reasoning = "".join(
-        c.choices[0].delta.reasoning_content or ""
-        for c in chunks
-        if c.choices and c.choices[0].delta.reasoning_content
-    )
+    reasoning = "".join(chunk.reasoning or "" for chunk in chunks if chunk.reasoning)
     assert "Thinking only" in reasoning
-    assert len(agent.history) == 1
-    assert agent.history[0]["role"] == "user"
+    assistant_messages = [message for message in agent._conversation.messages if message.get("role") == "assistant"]
+    assert assistant_messages == []
 
 
 # --- Missing coverage: tool execution error paths ---

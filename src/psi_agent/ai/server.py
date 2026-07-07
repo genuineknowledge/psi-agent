@@ -42,9 +42,8 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
 
     logger.debug(f"Body keys before pop: {list(body)}")
     messages = body.pop("messages", [])
-    body.pop("stream", None)
+    model, request_model = _resolve_model(body, default_model)
     body.pop("provider", None)
-    body.pop("model", None)
     body.pop("api_key", None)
     body.pop("api_base", None)
     logger.debug(f"Body keys to passthrough: {list(body)}")
@@ -66,7 +65,10 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         logger.warning("Client disconnected before SSE response prepared")
         return response
 
-    logger.debug(f"Forwarding to upstream: provider={provider!r}, model={model!r}, base_url={base_url!r}")
+    logger.debug(
+        "Forwarding to upstream: "
+        f"provider={provider!r}, model={model!r}, request_model={request_model!r}, base_url={base_url!r}"
+    )
     upstream_error = False
     client_gone = False
     stream: AsyncIterator[ChatCompletionChunk] | None = None

@@ -54,7 +54,8 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - `ChannelAdapter` 是纯无状态工具——不持有 agent/lock 引用。
 - Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。
 - `model_ai_sockets` 可以把某个请求 `model` 直接路由到不同的 AI socket；不命中时回退到 `ai_socket`。
-- `model_names` 可以在 Session 启动时自动展开成同目录下的 `./<model>.sock`，并与 `model_ai_sockets` 合并。
+- `model_names` 只会在默认 `ai_socket` 是本地文件系统 socket 时自动展开成同目录下的 `./<model>.sock`，并与 `model_ai_sockets` 合并。
+- 当默认 `ai_socket` 是 TCP 地址（`http://` / `https://`）时，`model_names` 不会自动生成模型后端地址；跨平台多模型部署应显式配置 `model_ai_sockets` 指向各自的 TCP endpoint。
 - AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
 - AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history，且通过 turn 快照回滚机制保证本轮用户消息也不落盘。
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import aclosing
 
 from loguru import logger
@@ -7,14 +8,19 @@ from rich.console import Console
 
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import ReasoningChunk, TextChunk
+from psi_agent.channel.route import select_model_for_message
 
 
-async def run_cli(*, session_socket: str, message: str) -> None:
+async def run_cli(
+    *,
+    session_socket: str,
+    message: str,
+    models: Sequence[str] = (),
+) -> None:
     console = Console(highlight=False)
     logger.info(f"Connecting to session at {session_socket}")
 
-    connector, endpoint = resolve_connector_and_endpoint(session_socket)
-    model = await select_model_for_message(
+    selected_model = await select_model_for_message(
         message,
         models=models,
     )
@@ -22,7 +28,7 @@ async def run_cli(*, session_socket: str, message: str) -> None:
     try:
         async with (
             ChannelCore(session_socket, interval=0.0) as core,
-            aclosing(core.post([TextChunk(message)])) as stream,
+            aclosing(core.post([TextChunk(message)], model=selected_model)) as stream,
         ):
             async for chunk in stream:
                 if isinstance(chunk, ReasoningChunk):
@@ -32,4 +38,4 @@ async def run_cli(*, session_socket: str, message: str) -> None:
     except Exception as e:
         logger.error(f"CLI error: {e!r}")
         console.print(f"[red]Error: {e}[/red]")
-        sys.exit(1)
+        raise SystemExit(1) from e

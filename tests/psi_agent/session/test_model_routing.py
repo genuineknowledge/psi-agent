@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+from psi_agent.session import Session
 from psi_agent.session._routing import (
     build_effective_model_ai_sockets,
     build_model_ai_sockets,
@@ -70,6 +71,26 @@ def test_build_effective_model_ai_sockets_keeps_explicit_mapping_for_remote_back
     ) == {
         "deepseek-v4-pro": "http://deepseek-ai",
     }
+
+
+def test_session_defaults_include_routing_fields() -> None:
+    first_session = Session(
+        ai_socket="http://default-ai",
+        channel_socket="http://channel",
+    )
+    second_session = Session(
+        ai_socket="http://default-ai",
+        channel_socket="http://channel",
+    )
+
+    assert first_session.model_names == []
+    assert first_session.model_ai_sockets == {}
+
+    first_session.model_names.append("qwen3.6-chat")
+    first_session.model_ai_sockets["qwen3.6-chat"] = "http://qwen-ai"
+
+    assert second_session.model_names == []
+    assert second_session.model_ai_sockets == {}
 
 
 @pytest.mark.anyio
