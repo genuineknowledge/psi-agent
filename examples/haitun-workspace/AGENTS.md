@@ -55,6 +55,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
 | `speech_to_text` | iFLYTEK streaming STT for WAV/PCM/MP3 files received through `[RECV:]`. |
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
+| `apple_notes` | Apple toolset. Manage Apple Notes via the `memo` CLI: list, search, view, create, edit. macOS only; needs `memo` installed (`brew install antoniorodr/memo/memo`). |
 
 ## Skills (`skills/`)
 
