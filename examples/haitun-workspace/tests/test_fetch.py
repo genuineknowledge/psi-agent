@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import httpx
+import aiohttp
 import pytest
+from yarl import URL
 
 from psi_agent.session.tool_registry import ToolFunction
 
@@ -22,16 +23,73 @@ impl: Any = importlib.import_module("_fetch_impl")
 fetch_tool: Any = importlib.import_module("fetch")
 
 
-def _mock_transport(monkeypatch: pytest.MonkeyPatch, handler) -> None:
-    """Route all httpx requests in the impl through a MockTransport handler."""
-    transport = httpx.MockTransport(handler)
-    original = httpx.AsyncClient
+class _FakeContent:
+    """Mimics ``aiohttp`` response ``.content`` streaming interface."""
 
-    def _factory(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
-        kwargs["transport"] = transport
-        return original(*args, **kwargs)
+    def __init__(self, body: bytes) -> None:
+        self._body = body
 
-    monkeypatch.setattr(impl.httpx, "AsyncClient", _factory)
+    async def iter_chunked(self, size: int):
+        for i in range(0, len(self._body), size):
+            yield self._body[i : i + size]
+
+
+class _FakeResponse:
+    def __init__(self, status: int, url: str, content_type: str, body: bytes, charset: str) -> None:
+        self.status = status
+        self.url = URL(url)
+        self.headers = {"content-type": content_type} if content_type else {}
+        self.charset = charset
+        self.content = _FakeContent(body)
+
+    async def __aenter__(self) -> _FakeResponse:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+class _FakeSession:
+    """Stands in for ``aiohttp.ClientSession``; records the requested URL."""
+
+    seen_url: str = ""
+
+    def __init__(self, response: _FakeResponse | Exception) -> None:
+        self._response = response
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    def get(self, url: str, allow_redirects: bool = True) -> _FakeResponse:
+        type(self).seen_url = url
+        if isinstance(self._response, Exception):
+            raise self._response
+        return self._response
+
+
+def _mock_session(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    status: int = 200,
+    url: str = "https://example.com/doc",
+    content_type: str = "text/html; charset=utf-8",
+    text: str = "",
+    body: bytes | None = None,
+    charset: str = "utf-8",
+    error: Exception | None = None,
+) -> None:
+    """Patch ``aiohttp.ClientSession`` in the impl to return a canned response."""
+    payload = body if body is not None else text.encode(charset or "utf-8")
+    response = _FakeResponse(status, url, content_type, payload, charset)
+    _FakeSession.seen_url = ""
+
+    def _factory(*_args: Any, **_kwargs: Any) -> _FakeSession:
+        return _FakeSession(error if error is not None else response)
+
+    monkeypatch.setattr(impl.aiohttp, "ClientSession", _factory)
 
 
 def test_tool_metadata_is_loadable() -> None:
@@ -52,13 +110,8 @@ async def test_html_is_converted_to_markdown(monkeypatch: pytest.MonkeyPatch) ->
         "<p>Second paragraph with a <a href='https://x'>link</a>.</p></article>"
         "</body></html>"
     )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, text=html)
-
-    _mock_transport(monkeypatch, handler)
-    raw = await fetch_tool.fetch("https://example.com/doc")
-    result = json.loads(raw)
+    _mock_session(monkeypatch, text=html)
+    result = json.loads(await fetch_tool.fetch("https://example.com/doc"))
 
     assert result["ok"] is True
     assert result["format"] == "markdown"
@@ -80,11 +133,7 @@ async def test_readability_drops_boilerplate(monkeypatch: pytest.MonkeyPatch) ->
         "<footer>copyright footer boilerplate junk</footer>"
         "</body></html>"
     )
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/html"}, text=html)
-
-    _mock_transport(monkeypatch, handler)
+    _mock_session(monkeypatch, content_type="text/html", text=html)
     result = json.loads(await fetch_tool.fetch("https://example.com/article"))
     assert result["ok"] is True
     assert "Body sentence number 15" in result["content"]
@@ -93,10 +142,7 @@ async def test_readability_drops_boilerplate(monkeypatch: pytest.MonkeyPatch) ->
 
 
 async def test_plain_text_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/plain"}, text="just text")
-
-    _mock_transport(monkeypatch, handler)
+    _mock_session(monkeypatch, content_type="text/plain", text="just text")
     result = json.loads(await fetch_tool.fetch("https://example.com/robots.txt"))
     assert result["ok"] is True
     assert result["format"] == "text"
@@ -104,20 +150,14 @@ async def test_plain_text_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_binary_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "image/png"}, content=b"\x89PNG\r\n")
-
-    _mock_transport(monkeypatch, handler)
+    _mock_session(monkeypatch, content_type="image/png", body=b"\x89PNG\r\n")
     result = json.loads(await fetch_tool.fetch("https://example.com/logo.png"))
     assert result["ok"] is False
     assert "not textual" in result["message"]
 
 
 async def test_raw_returns_html_unconverted(monkeypatch: pytest.MonkeyPatch) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "image/svg+xml"}, text="<svg></svg>")
-
-    _mock_transport(monkeypatch, handler)
+    _mock_session(monkeypatch, content_type="image/svg+xml", text="<svg></svg>")
     # raw=True bypasses both the textual guard and Markdown conversion.
     result = json.loads(await fetch_tool.fetch("https://example.com/pic.svg", raw=True))
     assert result["ok"] is True
@@ -126,32 +166,20 @@ async def test_raw_returns_html_unconverted(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 async def test_http_error_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, headers={"content-type": "text/html"}, text="nope")
-
-    _mock_transport(monkeypatch, handler)
+    _mock_session(monkeypatch, status=404, content_type="text/html", text="nope")
     result = json.loads(await fetch_tool.fetch("https://example.com/missing"))
     assert result["ok"] is False
     assert result["status"] == 404
 
 
 async def test_bare_host_gets_https(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: dict[str, str] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["url"] = str(request.url)
-        return httpx.Response(200, headers={"content-type": "text/plain"}, text="ok")
-
-    _mock_transport(monkeypatch, handler)
+    _mock_session(monkeypatch, content_type="text/plain", text="ok")
     await fetch_tool.fetch("example.com/page")
-    assert seen["url"].startswith("https://example.com/page")
+    assert _FakeSession.seen_url.startswith("https://example.com/page")
 
 
 async def test_content_truncation(monkeypatch: pytest.MonkeyPatch) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/plain"}, text="x" * 500)
-
-    _mock_transport(monkeypatch, handler)
+    _mock_session(monkeypatch, content_type="text/plain", text="x" * 500)
     result = json.loads(await fetch_tool.fetch("https://example.com/big", max_chars=100))
     assert result["ok"] is True
     assert result["truncated"] is True
@@ -159,10 +187,14 @@ async def test_content_truncation(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_timeout_reports_cleanly(monkeypatch: pytest.MonkeyPatch) -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.TimeoutException("slow")
-
-    _mock_transport(monkeypatch, handler)
+    _mock_session(monkeypatch, error=TimeoutError("slow"))
     result = json.loads(await fetch_tool.fetch("https://example.com/slow"))
     assert result["ok"] is False
     assert "timed out" in result["message"]
+
+
+async def test_client_error_reported(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_session(monkeypatch, error=aiohttp.ClientConnectionError("boom"))
+    result = json.loads(await fetch_tool.fetch("https://example.com/broken"))
+    assert result["ok"] is False
+    assert "Request failed" in result["message"]

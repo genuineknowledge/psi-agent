@@ -31,7 +31,6 @@ dependencies = [
     "python-docx>=1.2.0",
     "python-pptx>=1.0.2",
     "openpyxl>=3.1.5",
-    "httpx>=0.28.1",
     "readability-lxml>=0.8.1",
     "markdownify>=0.13.1",
     "pywebview>=5.4",

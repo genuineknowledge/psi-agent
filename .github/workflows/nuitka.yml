@@ -35,6 +35,8 @@ jobs:
         --include-package=docx
         --include-package=pptx
         --include-package=openpyxl
+        --include-package=readability
+        --include-package=markdownify
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7

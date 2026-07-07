@@ -26,6 +26,8 @@ jobs:
         --collect-submodules docx
         --collect-submodules pptx
         --collect-submodules openpyxl
+        --collect-submodules readability
+        --collect-submodules markdownify
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7

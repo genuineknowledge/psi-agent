@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import httpx
+import aiohttp
 from markdownify import markdownify as _md  # type: ignore[import-untyped]
 from readability import Document  # type: ignore[import-untyped]
 
@@ -117,14 +117,14 @@ async def fetch_impl(
     if max_chars <= 0:
         max_chars = DEFAULT_MAX_CHARS
 
-    client = httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=timeout_s,
-        headers={"User-Agent": _USER_AGENT, "Accept": "*/*"},
-    )
+    timeout = aiohttp.ClientTimeout(total=timeout_s)
+    headers = {"User-Agent": _USER_AGENT, "Accept": "*/*"}
     try:
-        async with client, client.stream("GET", normalized) as response:
-            status = response.status_code
+        async with (
+            aiohttp.ClientSession(timeout=timeout, headers=headers) as session,
+            session.get(normalized, allow_redirects=True) as response,
+        ):
+            status = response.status
             final_url = str(response.url)
             content_type = response.headers.get("content-type", "")
 
@@ -150,16 +150,16 @@ async def fetch_impl(
             chunks: list[bytes] = []
             total = 0
             truncated_bytes = False
-            async for chunk in response.aiter_bytes():
+            async for chunk in response.content.iter_chunked(65536):
                 chunks.append(chunk)
                 total += len(chunk)
                 if total >= MAX_BYTES:
                     truncated_bytes = True
                     break
-            encoding = response.encoding or "utf-8"
-    except httpx.TimeoutException:
+            encoding = response.charset or "utf-8"
+    except TimeoutError:
         return _error(f"Request timed out after {timeout_s:.0f}s.", normalized)
-    except httpx.HTTPError as exc:
+    except aiohttp.ClientError as exc:
         return _error(f"Request failed: {type(exc).__name__}: {exc}", normalized)
 
     raw_body = b"".join(chunks)
