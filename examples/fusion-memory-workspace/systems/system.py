@@ -36,6 +36,10 @@ async def system_prompt_builder() -> str:
         "and can only use current-session context. "
         "If the user agrees, use the fusion-memory-setup skill to initialize, start, "
         "check the Fusion Memory service, and start and verify passive sync. "
+        "On Windows, use finite Fusion Memory CLI commands such as fusion-memory start --json "
+        "and fusion-memory sync-haitun-history --background --json; the CLI creates the "
+        "hidden/no-window service and watcher internally, so do not use pwsh, powershell.exe, "
+        "PowerShell jobs, or shell backgrounding to keep memory processes alive. "
         "If the user declines, continue without memory and do not call Fusion Memory tools.\n\n"
         f"## Workspace Skills\nLocation: {skills_dir}\n\nAvailable:\n{skills_text}"
     )

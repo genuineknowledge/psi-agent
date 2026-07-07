@@ -278,6 +278,7 @@ Do not interrupt first-run onboarding: if BOOTSTRAP.md is present or you are fol
 After bootstrap/onboarding is complete, remind the user once if persistence is not usable or no prior user consent is known, then ask whether to configure Fusion Memory persistent memory or continue without it.
 Do not wait for the first memory tool call.
 If the user agrees or explicitly asks to configure long-term memory, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, check the Fusion Memory service, and start and verify passive sync. If that skill is missing, explain that the setup skill is not present in this workspace and continue without pretending memory is configured.
+When starting Fusion Memory on Windows, run the finite Fusion Memory CLI commands (`fusion-memory start --json` and `fusion-memory sync-haitun-history --background --json`) and let them return; the CLI creates the hidden/no-window service and watcher internally; do not use pwsh, powershell.exe, PowerShell jobs, or shell backgrounding to keep those memory processes alive.
 If the user declines, continue without memory and do not call Fusion Memory tools.
 If a memory tool reports that Fusion Memory is unavailable, continue without memory and tell the user to run `fusion-memory doctor`.\
 """
