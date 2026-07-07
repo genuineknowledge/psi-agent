@@ -75,5 +75,4 @@ def test_gateway_tray_thread_terminates_on_stop(icon_file: str) -> None:
 
     tray.stop()
 
-    assert tray._thread is not None
-    assert not tray._thread.is_alive()
+    assert not tray.is_running()

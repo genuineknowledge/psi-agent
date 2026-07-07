@@ -4,51 +4,6 @@
 /* 核心工作区 */
 #chat { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--md-bg); position: relative; transition: background 0.25s; }
 
-.sidebar-toggle-btn {
-  position: absolute;
-  top: 16px;
-  left: 16px;
-  z-index: 10;
-  background: var(--md-surface-container-high);
-  color: var(--md-text-secondary);
-  border: 1px solid var(--md-outline-variant);
-  border-radius: 12px;
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-  transition: all 0.2s ease;
-}
-.sidebar-toggle-btn:hover {
-  background: var(--md-surface-variant);
-  color: var(--md-primary);
-}
-
-.theme-toggle-btn {
-  position: absolute;
-  top: 16px;
-  right: 24px;
-  z-index: 10;
-  background: var(--md-surface-container-high);
-  color: var(--md-primary);
-  border: 1px solid var(--md-outline-variant);
-  border-radius: 12px;
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-  transition: all 0.2s ease;
-}
-.theme-toggle-btn:hover {
-  background: var(--md-surface-variant);
-  transform: scale(1.02);
-}
 .page-loader {
   position: fixed; top:0; left:0; right:0; bottom:0; z-index: 999;
   background: var(--md-bg); display: flex; flex-direction: column;
@@ -118,9 +73,6 @@
   }
   .topbar-btn:active { background: var(--md-surface-variant); }
   .topbar-btn .material-symbols-outlined { font-size: 22px; }
-
-  .sidebar-toggle-btn,
-  .theme-toggle-btn { display: none; }
 
   #chat {
     display: flex;

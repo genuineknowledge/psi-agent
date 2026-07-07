@@ -33,21 +33,31 @@
         </div>
       </div>
 
-      <button class="sidebar-toggle-btn" @click="toggleSidebar" :title="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
-        <span class="material-symbols-outlined">{{ (isSidebarCollapsed && !isMobileSidebarOpen) ? 'menu' : 'menu_open' }}</span>
-      </button>
+      <div id="topbar">
+        <button class="tb-btn" @click="toggleSidebar" :title="isSidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'">
+          <span class="material-symbols-outlined">{{ (isSidebarCollapsed && !isMobileSidebarOpen) ? 'menu' : 'left_panel_close' }}</span>
+        </button>
+        <div class="tb-spacer"></div>
+        <button class="tb-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
+          <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
+        </button>
+        <button class="tb-avatar" @click="editUserName" :title="userName ? `${userName}（点击修改称呼）` : '设置称呼'">
+          <span v-if="avatarInitial">{{ avatarInitial }}</span>
+          <span v-else class="material-symbols-outlined">person</span>
+        </button>
+      </div>
 
-      <button class="theme-toggle-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
-        <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
-      </button>
-
-      <ChatArea />
-
-      <InputBar
-        @select-ai="selectAI"
-        @delete-ai="confirmDeleteAI"
-        @new-ai="openAiDialog"
-      />
+      <div id="chat-main" :class="{ welcome: showWelcome }">
+        <div v-if="showWelcome" class="welcome-hero" key="welcome">
+          <div class="welcome-greeting">{{ greetingText }}</div>
+        </div>
+        <ChatArea v-else key="chat" />
+        <InputBar
+          @select-ai="selectAI"
+          @delete-ai="confirmDeleteAI"
+          @new-ai="openAiDialog"
+        />
+      </div>
     </div>
 
     <AiDialog @create="createAI" @fetchModels="fetchAvailableModels" />
@@ -86,6 +96,22 @@ import Snackbar from './components/Snackbar.vue'
 const LS_SIDEBAR = 'gw-sidebar-state'
 const sidebarState = useStorage(LS_SIDEBAR, 'expanded')
 
+// 用户称呼：localStorage 持久化，为空时用通用问候、头像用默认图标。
+// 后续可由 agent 对话设置（见 profile 机制），届时接入同一 gw-user-name key。
+const LS_USER_NAME = 'gw-user-name'
+const userName = useStorage(LS_USER_NAME, '')
+const greetingText = computed(() =>
+  userName.value ? `${userName.value}，你说，我在听！` : '你好，有什么可以帮你？'
+)
+const avatarInitial = computed(() =>
+  userName.value ? userName.value.trim().charAt(0).toUpperCase() : ''
+)
+function editUserName() {
+  const next = window.prompt('希望我怎么称呼你？（留空则不显示）', userName.value)
+  if (next === null) return
+  userName.value = next.trim()
+}
+
 const ai = useAiStore()
 const { ais, selectedAiId, aiForm, fetchedModels, loadingModels } = storeToRefs(ai)
 
@@ -97,6 +123,13 @@ const { messages, selectedFiles } = storeToRefs(chat)
 
 const ui = useUiStore()
 const { loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen } = storeToRefs(ui)
+
+// 欢迎屏：只要「当前会话为空」就显示（含刚新建、尚无消息的空会话）——这正是
+// 新建对话时要看到居中问候+胶囊的场景。启动阶段 loadingEnv=true 会把它压成 false，
+// 让会话恢复/历史加载都在 page-loader 遮罩之下完成，避免启动瞬间闪一下。
+// 切换到有内容的旧会话不会闪回欢迎屏：selectSession 已改为「先取完历史再原子替换
+// messages」，不再有「先清空→await」的空窗，故 messages 不会经过空态。
+const showWelcome = computed(() => !loadingEnv.value && messages.value.length === 0)
 
 const { toggleTheme } = useTheme()
 useKeyboard()
@@ -322,13 +355,65 @@ onMounted(async () => {
     const activeState = loadActiveState()
     if (activeState.aiId && ais.value.some(a => a.id === activeState.aiId))
       selectedAiId.value = activeState.aiId
-    if (activeState.sessId && sessions.value.some(s => s.id === activeState.sessId))
-      selectSession(activeState.sessId)
     if (!selectedAiId.value && ais.value.length) selectedAiId.value = ais.value[0].id
-    if (!selectedSessionId.value && sessions.value.length) selectSession(sessions.value[0].id)
+
+    // 恢复会话：优先上次选中的会话（仍在后端 /sessions 列表中才算有效），
+    // 否则退回最近一个会话。已崩溃（如 system prompt 过大 400）的会话已被后端
+    // 从 /sessions 剔除，不在列表里，因此不会被恢复，也就不会自动打开幽灵会话。
+    const persisted = activeState.sessId && sessions.value.some(s => s.id === activeState.sessId)
+      ? activeState.sessId
+      : (sessions.value.length ? sessions.value[0].id : null)
+    if (persisted) {
+      await selectSession(persisted)
+    } else if (activeState.sessId) {
+      saveActiveState(selectedAiId.value, null)
+    }
     loadingEnv.value = false
   } catch (err) {
     loadingEnv.value = false
   }
 })
 </script>
+
+<style scoped>
+#topbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px; flex-shrink: 0;
+}
+#topbar .tb-spacer { flex: 1; }
+#topbar .tb-btn {
+  width: 40px; height: 40px; border: none; background: transparent;
+  color: var(--md-text-secondary); border-radius: var(--md-shape-full);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  transition: background 0.2s;
+}
+#topbar .tb-btn:hover { background: var(--md-surface-container-high); }
+#topbar .tb-avatar {
+  width: 32px; height: 32px; border-radius: var(--md-shape-full);
+  background: var(--md-primary); color: var(--md-on-primary);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; font-weight: 500;
+  border: none; cursor: pointer; padding: 0;
+  transition: filter 0.2s;
+}
+#topbar .tb-avatar:hover { filter: brightness(1.08); }
+#topbar .tb-avatar .material-symbols-outlined { font-size: 20px; }
+@media (max-width: 768px) { #topbar { display: none; } }
+
+#chat-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#chat-main.welcome {
+  justify-content: center; align-items: center; gap: 40px;
+  background: var(--g-welcome-glow);
+}
+#chat-main.welcome .welcome-hero { display: flex; justify-content: center; }
+.welcome-greeting {
+  font-size: 52px; font-weight: 500; letter-spacing: -1px;
+  background: var(--g-grad-hello);
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
+#chat-main.welcome :deep(#input-wrapper) { padding-bottom: 0; width: 100%; }
+@media (max-width: 768px) {
+  .welcome-greeting { font-size: 34px; }
+}
+</style>

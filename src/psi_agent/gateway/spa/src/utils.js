@@ -1,11 +1,36 @@
 import { marked } from 'marked'
 import katex from 'katex'
+import hljs from 'highlight.js/lib/common'
 
 // GFM tables + single-newline -> <br>. With breaks on, in-paragraph line
 // breaks become semantic <br>, so the chat bubble no longer needs
 // `white-space: pre-wrap` (which used to render marked's inter-tag
 // newlines as stray blank lines).
 marked.setOptions({ gfm: true, breaks: true })
+
+// 代码块语法高亮：用 highlight.js 覆盖 marked 的 code renderer，输出带
+// `hljs language-xxx` class 的 <pre><code>，配合 styles/highlight.css 主题着色。
+// 内联代码（inline code / 反引号）不走高亮，只由 CSS 加背景片区分，保持轻量。
+// 语言标注无效或高亮抛错时回退到纯转义文本，绝不因高亮失败而丢内容。
+function highlightCode(code, lang) {
+  const language = hljs.getLanguage(lang) ? lang : null
+  try {
+    const out = language
+      ? hljs.highlight(code, { language, ignoreIllegals: true })
+      : hljs.highlightAuto(code)
+    return { html: out.value, language: out.language || language || '' }
+  } catch (e) {
+    return { html: htmlEscape(code), language: '' }
+  }
+}
+
+const markedRenderer = new marked.Renderer()
+markedRenderer.code = function ({ text, lang }) {
+  const { html, language } = highlightCode(text, (lang || '').trim())
+  const cls = language ? ` class="hljs language-${language}"` : ' class="hljs"'
+  return `<pre><code${cls}>${html}</code></pre>`
+}
+marked.use({ renderer: markedRenderer })
 
 export function renderMd(text) {
   if (!marked || !marked.parse) return htmlEscape(text)

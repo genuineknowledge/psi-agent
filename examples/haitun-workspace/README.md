@@ -5,7 +5,8 @@ A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combin
 - a de-branded OpenClaw-style system-prompt engine (all config kept **inside** the workspace),
 - full **Fusion Flow** workflow authoring (node runtime + `flow_manage` + `flows/`),
 - the hermes domain skill set + curated skills, and
-- clean async file/shell tools plus Serper web search.
+- clean async file/shell tools, Serper web search, and environment-configured
+  iFLYTEK STT/TTS tools.
 
 See `AGENTS.md` for the full layout and conventions.
 

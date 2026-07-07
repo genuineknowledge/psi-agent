@@ -1,0 +1,79 @@
+/* highlight.js 语法高亮主题 —— Neural Expressive 双主题版
+ *
+ * 不直接引用 highlight.js 自带主题(硬编码颜色、不随明暗切换),而是定义一套
+ * 语法配色变量并映射到 hljs 的 token class。深色默认值在 :root,浅色在
+ * :root.light-mode 覆盖,与 tokens.css 的主题机制一致。
+ *
+ * 新增语言无需改这里;要调色只改下面的 --hl-* 变量。 */
+
+:root {
+  --hl-comment: #7d8590;
+  --hl-keyword: #ff7b72;
+  --hl-string: #a5d6ff;
+  --hl-number: #79c0ff;
+  --hl-function: #d2a8ff;
+  --hl-title: #7ee787;
+  --hl-attr: #79c0ff;
+  --hl-type: #ffa657;
+  --hl-meta: #7d8590;
+  --hl-punct: var(--md-text-primary);
+}
+
+:root.light-mode {
+  --hl-comment: #6e7781;
+  --hl-keyword: #cf222e;
+  --hl-string: #0a3069;
+  --hl-number: #0550ae;
+  --hl-function: #8250df;
+  --hl-title: #116329;
+  --hl-attr: #0550ae;
+  --hl-type: #953800;
+  --hl-meta: #6e7781;
+  --hl-punct: var(--md-text-primary);
+}
+
+.hljs { color: var(--md-text-primary); background: transparent; }
+
+.hljs-comment,
+.hljs-quote { color: var(--hl-comment); font-style: italic; }
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag,
+.hljs-name { color: var(--hl-keyword); }
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition { color: var(--hl-string); }
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet { color: var(--hl-number); }
+
+.hljs-function .hljs-title,
+.hljs-title.function_ { color: var(--hl-function); }
+
+.hljs-title,
+.hljs-title.class_,
+.hljs-section { color: var(--hl-title); }
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-selector-attr,
+.hljs-selector-pseudo { color: var(--hl-attr); }
+
+.hljs-type,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-class .hljs-title,
+.hljs-params { color: var(--hl-type); }
+
+.hljs-meta,
+.hljs-comment.hljs-meta { color: var(--hl-meta); }
+
+.hljs-deletion { color: var(--hl-keyword); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }

@@ -48,10 +48,18 @@ export function buildSessionTitlePayload(session, title) {
   }
 }
 
-export function buildVisibleSessions(sessions, { titles = {}, query = '', pinnedIds = [] } = {}) {
+function hasTitle(session, titles) {
+  const t = session && titles ? titles[session.id] : ''
+  return typeof t === 'string' && t.trim() !== ''
+}
+
+export function buildVisibleSessions(sessions, { titles = {}, query = '', pinnedIds = [], requireTitle = true } = {}) {
   const normalizedQuery = query.trim().toLowerCase()
   const pinned = new Set(normalizeIdList(pinnedIds))
   return sessions
+    // 仅显示已生成标题的会话：新对话在首轮问答生成标题前不进侧栏，
+    // 标题写入 titles[id] 后自动出现（对齐 Gemini），避免显示丑陋的 workspace 路径。
+    .filter(session => !requireTitle || hasTitle(session, titles))
     .map((session, index) => ({
       session,
       index,

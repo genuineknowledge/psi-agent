@@ -30,15 +30,17 @@ export async function selectSession(id) {
   if (session.sessionMessages[id]) {
     chat.messages.splice(0, chat.messages.length, ...session.sessionMessages[id])
   } else {
-    chat.messages.splice(0)
+    // 先在本地数组里把消息构建完整，再一次性原子替换 chat.messages，
+    // 避免「先清空 → await fetch → 逐条 push」中间那段空窗让聊天区闪一下空白。
     const localHist = loadHistory(id)
+    const built = []
     try {
       const r = await fetch(origin() + '/sessions/' + id + '/history')
       if (r.ok) {
         const serverMsgs = await r.json()
         serverMsgs.forEach((h, i) => {
           const local = i < localHist.length ? localHist[i] : null
-          chat.messages.push({
+          built.push({
             id: '', role: h.role, text: h.text,
             html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text),
             files: local ? local.files || [] : [],
@@ -48,8 +50,12 @@ export async function selectSession(id) {
       } else { throw new Error() }
     } catch (e) {
       localHist.forEach(h => {
-        chat.messages.push({ id: '', role: h.role, text: h.text, html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text), files: h.files || [], stopped: h.stopped || false })
+        built.push({ id: '', role: h.role, text: h.text, html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text), files: h.files || [], stopped: h.stopped || false })
       })
+    }
+    // 切换期间用户可能又点了别的会话；仅当仍停留在本会话时才落地，避免竞态覆盖。
+    if (session.selectedSessionId === id) {
+      chat.messages.splice(0, chat.messages.length, ...built)
     }
   }
 

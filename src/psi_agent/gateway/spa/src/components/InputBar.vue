@@ -1,5 +1,5 @@
 <template>
-  <div id="input-wrapper" v-show="selectedSessionId">
+  <div id="input-wrapper">
     <div id="file-preview-bar" v-if="selectedFiles.length">
       <div class="preview-chip" v-for="(f, i) in selectedFiles" :key="i">
         <span class="material-symbols-outlined" style="font-size:16px;">attach_file</span>
@@ -18,7 +18,7 @@
         id="chat-input"
         v-model="inputText"
         rows="1"
-        placeholder="发送消息..."
+        placeholder="问问 Dolphin"
         @keydown.enter.exact.prevent="sendMessage"
         @input="autoResizeInput"
       ></textarea>
@@ -77,13 +77,12 @@ watch(uploadResetToken, () => {
 
 <style scoped>
 #input-wrapper {
-  border-top: 1px solid var(--md-outline-variant);
-  background: var(--md-surface-container);
-  display: flex;
-  flex-direction: column;
+  background: transparent; border-top: none;
+  display: flex; flex-direction: column;
+  padding: 0 16px 16px; align-items: center;
   transition: background 0.25s, border-color 0.25s;
 }
-#file-preview-bar { display: flex; padding: 8px 24px 0 24px; }
+#file-preview-bar { display: flex; width: 100%; max-width: 820px; padding: 0 0 8px; }
 .preview-chip {
   display: inline-flex;
   align-items: center;
@@ -101,24 +100,29 @@ watch(uploadResetToken, () => {
 }
 .preview-chip .close-btn:hover { background: rgba(0,0,0,0.05); color: var(--md-text-error); }
 
-#input-area { padding: 12px 24px 16px 24px; display: flex; gap: 12px; align-items: center; }
-#input-area textarea {
-  flex: 1; background: var(--md-bg); color: var(--md-text-primary);
-  border: 1px solid var(--md-outline-variant); border-radius: 24px;
-  padding: 10px 18px; font-size: 14px; font-family: inherit;
-  resize: none; min-height: 42px; max-height: 120px; outline: none;
-  transition: background 0.25s, border-color 0.25s;
+#input-area {
+  width: 100%; max-width: 820px;
+  display: flex; gap: 8px; align-items: center;
+  background: var(--md-surface-container);
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--g-pill-radius);
+  padding: 8px 10px 8px 14px;
 }
-#input-area textarea:focus { border-color: var(--md-primary); }
+#input-area textarea {
+  flex: 1; background: transparent; border: none; outline: none;
+  color: var(--md-text-primary); font-size: 16px; font-family: inherit;
+  resize: none; min-height: 28px; max-height: 160px; padding: 6px 4px;
+}
+#input-area textarea:focus { border: none; }
 #input-area label.btn {
-  background: transparent; color: var(--md-primary); border: none; border-radius: 50%;
+  background: transparent; color: var(--md-primary); border: none; border-radius: var(--md-shape-full);
   width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
   cursor: pointer; transition: background 0.2s;
 }
 #input-area label.btn:hover { background: var(--md-surface-variant); }
 #input-area input[type=file] { display: none; }
 #input-area button.send {
-  background: var(--md-primary); color: var(--md-on-primary); border: none; border-radius: 50%;
+  background: var(--md-primary); color: var(--md-on-primary); border: none; border-radius: var(--md-shape-full);
   width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
   cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.1); flex-shrink: 0;
 }
