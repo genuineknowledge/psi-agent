@@ -37,6 +37,10 @@ jobs:
         --include-package=openpyxl
         --include-package=readability
         --include-package=markdownify
+        --include-package=pygount
+        --include-package=pygments
+        --include-package=git
+        --include-package=chardet
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
