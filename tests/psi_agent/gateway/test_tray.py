@@ -1,23 +1,39 @@
 from __future__ import annotations
 
 import contextlib
+import sys
 import time
 from pathlib import Path
 
 import pytest
 from PIL import Image as PILImage
-from Xlib.error import DisplayNameError
 
 from psi_agent.gateway._tray import GatewayTray
 
-_HAS_X11 = False
-try:
-    from Xlib import display as _xdisplay
+_IS_WINDOWS = sys.platform == "win32"
 
-    _xdisplay.Display()
-    _HAS_X11 = True
-except DisplayNameError:
+
+class _MissingDisplayNameError(Exception):
     pass
+
+
+DisplayNameError: type[BaseException] = _MissingDisplayNameError
+_HAS_X11_SUPPORT = False
+_HAS_X11 = False
+if not _IS_WINDOWS:
+    try:
+        xlib_error = __import__("Xlib.error", fromlist=["DisplayNameError"])
+        xdisplay = __import__("Xlib.display", fromlist=["Display"])
+    except ImportError:
+        pass
+    else:
+        DisplayNameError = xlib_error.DisplayNameError
+        _HAS_X11_SUPPORT = True
+        try:
+            xdisplay.Display()
+            _HAS_X11 = True
+        except DisplayNameError:
+            pass
 
 
 @pytest.fixture
@@ -46,6 +62,10 @@ def test_gateway_tray_quit_callback_sets_stop_event(icon_file: str) -> None:
     assert tray._stop_event.is_set()
 
 
+@pytest.mark.skipif(
+    _IS_WINDOWS or not _HAS_X11_SUPPORT,
+    reason="requires python-xlib on a non-Windows platform",
+)
 def test_gateway_tray_start_no_display(icon_file: str) -> None:
     """start() raises when no X11 display available."""
     tray = GatewayTray("http://127.0.0.1:8888", icon_file)
@@ -58,7 +78,10 @@ def test_gateway_tray_start_no_display(icon_file: str) -> None:
             tray.stop()
 
 
-@pytest.mark.skipif(not _HAS_X11, reason="no X11 display available")
+@pytest.mark.skipif(
+    _IS_WINDOWS or not _HAS_X11,
+    reason="requires an active X11 display on a non-Windows platform",
+)
 def test_gateway_tray_thread_terminates_on_stop(icon_file: str) -> None:
     tray = GatewayTray("http://127.0.0.1:8888", icon_file)
     tray.start()
