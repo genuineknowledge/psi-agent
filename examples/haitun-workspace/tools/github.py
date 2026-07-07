@@ -93,9 +93,7 @@ def _scan_summary(
     total_code = project.total_code_count
     total_doc = project.total_documentation_count
     ratio = round(total_code / total_doc, 2) if total_doc else None
-    comment_percent = (
-        round(100 * total_doc / (total_code + total_doc), 1) if (total_code + total_doc) else 0.0
-    )
+    comment_percent = round(100 * total_doc / (total_code + total_doc), 1) if (total_code + total_doc) else 0.0
 
     return {
         "path": path,
