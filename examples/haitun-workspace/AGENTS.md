@@ -61,7 +61,6 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `computer_use` | Apple toolset. Drive the macOS desktop in the background (screenshot/click/type/scroll/drag) via the `cua-driver` CLI — no cursor/focus/Space theft. macOS only; needs `cua-driver` installed + Accessibility & Screen Recording permissions. See `skills/macos-computer-use/`. |
 | `claude_code` | Autonomous-AI-agents toolset. Delegate a coding task (implement features, fix bugs, open PRs) to the Claude Code CLI running headless (`claude -p`). Needs `claude` installed (`npm i -g @anthropic-ai/claude-code`) and authenticated; runs non-interactively so it defaults to `acceptEdits` (raise to `bypassPermissions` for unattended git/PR flows). |
 | `github` (`github.py`) | GitHub toolset. `inspect_codebase` counts LOC / languages / code-vs-comment ratio (pygount). PR code review: `review_pull_request` (overview + changed files), `get_pull_request_diff` (full unified diff), `list_pull_request_comments` (inline + top-level), `add_pull_request_comment` (top-level or inline). Talks to the GitHub REST API v3 over aiohttp — no `gh` binary, no extra dep. Needs a token (`GH_TOKEN` / `GITHUB_TOKEN`, or `gh auth token`); posting comments needs write access. See `skills/github-code-review/` and `skills/github-auth/`. |
-| `codex` | Autonomous-AI-agents toolset. Delegate a coding task (implement features, fix bugs, open PRs) to the OpenAI Codex CLI running non-interactively (`codex exec`). Needs `codex` installed (`npm i -g @openai/codex`) and authenticated; the sandbox defaults to `workspace-write` (raise to `danger-full-access` or set `dangerously_bypass` for unattended network/git/PR flows). |
 
 ## Skills (`skills/`)
 
@@ -74,6 +73,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 - `github-code-review` — review GitHub PRs via the `github` toolset: overview, diff, read/write inline and top-level comments.
 - `macos-computer-use` — drive native Mac apps in the background via `computer_use` (`cua-driver`).
 - `apple-imessage` — send/receive iMessages & SMS via the `imsg` CLI (`bash`-driven, macOS only; needs `imsg` + Full Disk Access & Messages Automation). No dedicated tool.
+- `codex` — Autonomous-AI-agents skill: delegate coding (features, fixes, PRs) to the OpenAI Codex CLI via `codex exec` through the `bash` tool; needs `codex` installed (`npm i -g @openai/codex`) + authenticated, no extra deps.
 - `fusion-flow` — the immutable Fusion Flow runtime skill (node-based). **Do not edit it.**
 
 ## Schedules (`schedules/`)
