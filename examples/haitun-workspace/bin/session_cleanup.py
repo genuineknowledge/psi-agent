@@ -33,7 +33,8 @@ def _alive(pid: int) -> bool:
     if os.name == "nt":
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         return str(pid) in out.stdout
     try:
@@ -49,7 +50,8 @@ def _kill(pid: int) -> None:
         # /F forces it. Windows has no killpg / SIGKILL.
         subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         return
     for sig in (signal.SIGTERM, signal.SIGKILL):

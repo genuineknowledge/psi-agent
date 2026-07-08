@@ -173,7 +173,7 @@ def _wait_endpoint(ep: str, timeout: float = 30.0) -> bool:
     return _endpoint_ready(ep)
 
 
-def _record_pid(state: Path, kind: str, pid: int, sock: Path) -> None:
+def _record_pid(state: Path, kind: str, pid: int, sock: str) -> None:
     """Register a process for the cleanup script. One JSON record per line."""
     with (state / "procs.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps({"kind": kind, "pid": pid, "socket": str(sock)}) + "\n")
