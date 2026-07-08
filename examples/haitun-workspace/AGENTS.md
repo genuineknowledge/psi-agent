@@ -72,6 +72,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 - `github-auth` — GitHub authentication setup (HTTPS PAT, SSH keys, `gh` CLI login); shell-only, no extra deps.
 - `github-code-review` — review GitHub PRs via the `github` toolset: overview, diff, read/write inline and top-level comments.
 - `macos-computer-use` — drive native Mac apps in the background via `computer_use` (`cua-driver`).
+- `apple-imessage` — send/receive iMessages & SMS via the `imsg` CLI (`bash`-driven, macOS only; needs `imsg` + Full Disk Access & Messages Automation). No dedicated tool.
 - `fusion-flow` — the immutable Fusion Flow runtime skill (node-based). **Do not edit it.**
 
 ## Schedules (`schedules/`)
