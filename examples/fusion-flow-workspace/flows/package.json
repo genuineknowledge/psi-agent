@@ -1,0 +1,6 @@
+{
+  "name": "fusion-flow-generated",
+  "private": true,
+  "type": "module",
+  "//": "Marks every generated flows/<task-slug>/*.flow.ts as an ES module. Without this, NodeNext resolves them as CommonJS (no package.json with \"type\":\"module\" above them), and tsc/tsx reject the mandatory top-level await and import.meta in the flow template. Do not remove."
+}
