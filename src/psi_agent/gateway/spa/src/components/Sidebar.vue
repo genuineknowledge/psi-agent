@@ -230,6 +230,7 @@ watch(
 .sb-brand-name { font-size: 20px; font-weight: 500; color: var(--md-text-primary); }
 .new-chat {
   display: flex; align-items: center; gap: 12px;
+  width: calc(100% - 16px); box-sizing: border-box;
   margin: 0 8px 4px; padding: 10px 16px;
   background: transparent; color: var(--md-text-secondary);
   border: none; border-radius: var(--md-shape-full); cursor: pointer;
