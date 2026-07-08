@@ -35,7 +35,6 @@ Environment variables (reuse the flow's existing FLOW_PSI_*):
 
 from __future__ import annotations
 
-import fcntl  # POSIX-only; the shim already targets POSIX (unix sockets, /tmp)
 import hashlib
 import json
 import os
@@ -46,9 +45,35 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+# Cross-platform advisory file lock. POSIX uses fcntl.flock; Windows uses
+# msvcrt.locking. The shim runs on both (Linux servers + the Windows desktop
+# build), so importing fcntl unconditionally used to crash on Windows.
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 
 def _psi_cmd() -> list[str]:
     return shlex.split(os.environ.get("PSI_CMD", "uv run --no-sync psi-agent"))
+
+
+def _popen_detached(cmd: list[str]) -> subprocess.Popen:
+    """Start a detached background process cross-platform.
+
+    POSIX: start_new_session=True (own session/process group). Windows:
+    CREATE_NEW_PROCESS_GROUP (start_new_session is a POSIX-only kwarg).
+    """
+    kwargs: dict = {
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "stdin": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
+    return subprocess.Popen(cmd, **kwargs)
 
 
 @contextmanager
@@ -64,11 +89,24 @@ def _resource_lock(state: Path, name: str):
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"{name}.lock"
     with lock_path.open("w") as lf:
-        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+        if os.name == "nt":
+            # msvcrt locks a byte range; lock 1 byte as an advisory whole-file lock.
+            # LK_LOCK blocks (retries) until the range is available.
+            lf.write("x")
+            lf.flush()
+            lf.seek(0)
+            msvcrt.locking(lf.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lf.seek(0)
+                msvcrt.locking(lf.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
 
 
 def _state_dir() -> Path:
@@ -105,16 +143,37 @@ def _session_key(system: str) -> str:
     return hashlib.sha256(system.encode("utf-8")).hexdigest()[:16]
 
 
-def _wait_socket(sock: Path, timeout: float = 30.0) -> bool:
+def _endpoint(state: Path, name: str) -> str:
+    """Endpoint for a named resource (AI backend / session channel).
+
+    POSIX: a unix-socket file under state/sockets/. Windows: a named pipe path —
+    psi-agent's _sockets layer only recognizes endpoints starting with \\\\.\\pipe\\.
+    The tag is a deterministic hash of the state dir so concurrent shim processes
+    in the SAME run compute the SAME pipe name (session reuse depends on this).
+    """
+    if os.name == "nt":
+        tag = hashlib.sha256(str(state).encode("utf-8")).hexdigest()[:8]
+        return rf"\\.\pipe\psi-shim-{tag}-{name}"
+    return str(state / "sockets" / f"{name}.sock")
+
+
+def _endpoint_ready(ep: str) -> bool:
+    if os.name == "nt":
+        # Named pipe shows up in the pipe filesystem once the server is listening.
+        return os.path.exists(ep)
+    return Path(ep).is_socket()
+
+
+def _wait_endpoint(ep: str, timeout: float = 30.0) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if sock.is_socket():
+        if _endpoint_ready(ep):
             return True
         time.sleep(0.2)
-    return sock.is_socket()
+    return _endpoint_ready(ep)
 
 
-def _record_pid(state: Path, kind: str, pid: int, sock: Path) -> None:
+def _record_pid(state: Path, kind: str, pid: int, sock: str) -> None:
     """Register a process for the cleanup script. One JSON record per line."""
     with (state / "procs.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps({"kind": kind, "pid": pid, "socket": str(sock)}) + "\n")
@@ -132,19 +191,19 @@ def _ensure_ai_backend(state: Path) -> str:
 
     marker = state / "ai_socket"
     if marker.exists():
-        sock = marker.read_text(encoding="utf-8").strip()
-        if Path(sock).is_socket():
-            return sock
+        ep = marker.read_text(encoding="utf-8").strip()
+        if _endpoint_ready(ep):
+            return ep
 
     # Serialize concurrent first-calls so only one shared AI backend is started.
     with _resource_lock(state, "ai"):
         # Double-check under the lock: another shim may have started it already.
         if marker.exists():
-            sock = marker.read_text(encoding="utf-8").strip()
-            if Path(sock).is_socket():
-                return sock
+            ep = marker.read_text(encoding="utf-8").strip()
+            if _endpoint_ready(ep):
+                return ep
 
-        sock = state / "sockets" / "shared-ai.sock"
+        sock = _endpoint(state, "shared-ai")
         # main architecture: the AI backend is `ai --provider <name>` (any-llm-sdk),
         # no longer the old `ai openai-completions` subcommand.
         cmd = [
@@ -162,12 +221,10 @@ def _ensure_ai_backend(state: Path) -> str:
         if os.environ.get("FLOW_PSI_BASE_URL"):
             cmd += ["--base-url", os.environ["FLOW_PSI_BASE_URL"]]
 
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True
-        )
+        proc = _popen_detached(cmd)
         _record_pid(state, "ai", proc.pid, sock)
-        if not _wait_socket(sock):
-            sys.stderr.write(f"[shim] AI backend socket not up: {sock}\n")
+        if not _wait_endpoint(sock):
+            sys.stderr.write(f"[shim] AI backend endpoint not up: {sock}\n")
             sys.exit(1)
         marker.write_text(str(sock), encoding="utf-8")
         return str(sock)
@@ -179,9 +236,9 @@ def _ensure_session(state: Path, key: str, workspace: str, ai_socket: str) -> st
     The caller MUST hold _resource_lock(state, f"sess-{key}"); the socket check
     below is the double-check of the double-checked-locking pattern.
     """
-    sock = state / "sockets" / f"sess-{key}.sock"
-    if sock.is_socket():
-        return str(sock)
+    sock = _endpoint(state, f"sess-{key}")
+    if _endpoint_ready(sock):
+        return sock
 
     # main architecture: Session no longer accepts --model (model is decided by the AI backend layer).
     cmd = [
@@ -190,19 +247,17 @@ def _ensure_session(state: Path, key: str, workspace: str, ai_socket: str) -> st
         "--workspace",
         workspace,
         "--channel-socket",
-        str(sock),
+        sock,
         "--ai-socket",
         ai_socket,
     ]
 
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, start_new_session=True
-    )
+    proc = _popen_detached(cmd)
     _record_pid(state, "session", proc.pid, sock)
-    if not _wait_socket(sock):
-        sys.stderr.write(f"[shim] session socket not up for key={key}: {sock}\n")
+    if not _wait_endpoint(sock):
+        sys.stderr.write(f"[shim] session endpoint not up for key={key}: {sock}\n")
         sys.exit(1)
-    return str(sock)
+    return sock
 
 
 def _send(channel_socket: str, prompt: str) -> int:
