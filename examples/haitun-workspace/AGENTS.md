@@ -73,6 +73,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 - `github-code-review` — review GitHub PRs via the `github` toolset: overview, diff, read/write inline and top-level comments.
 - `macos-computer-use` — drive native Mac apps in the background via `computer_use` (`cua-driver`).
 - `apple-imessage` — send/receive iMessages & SMS via the `imsg` CLI (`bash`-driven, macOS only; needs `imsg` + Full Disk Access & Messages Automation). No dedicated tool.
+- `opencode` — delegate coding & PR review to the OpenCode CLI (`opencode run` / `opencode pr`, non-interactive with `--auto`); autonomous-ai-agents category, `bash`-driven, needs `opencode` installed + authenticated. No dedicated tool, no extra deps.
 - `fusion-flow` — the immutable Fusion Flow runtime skill (node-based). **Do not edit it.**
 
 ## Schedules (`schedules/`)
