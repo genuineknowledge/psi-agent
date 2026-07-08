@@ -71,7 +71,8 @@ All are optional and only affect the dynamic suffix / runtime line:
 
 ## Schedules (`schedules/`)
 
-- `heartbeat` — every 30 min; the agent replies `HEARTBEAT_OK` when nothing needs attention.
+- No schedules ship by default. (The old `heartbeat` self-check was removed —
+  it added no value and leaked `HEARTBEAT_OK` into the chat UI.)
 - Use `schedule_manage` to add / list / view / update / delete tasks instead of editing
   `schedules/<name>/TASK.md` by hand.
 
