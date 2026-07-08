@@ -59,6 +59,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
 | `apple_notes` | Apple toolset. Manage Apple Notes via the `memo` CLI: list, search, view, create, edit. macOS only; needs `memo` installed (`brew install antoniorodr/memo/memo`). |
 | `computer_use` | Apple toolset. Drive the macOS desktop in the background (screenshot/click/type/scroll/drag) via the `cua-driver` CLI — no cursor/focus/Space theft. macOS only; needs `cua-driver` installed + Accessibility & Screen Recording permissions. See `skills/macos-computer-use/`. |
+| `claude_code` | Autonomous-AI-agents toolset. Delegate a coding task (implement features, fix bugs, open PRs) to the Claude Code CLI running headless (`claude -p`). Needs `claude` installed (`npm i -g @anthropic-ai/claude-code`) and authenticated; runs non-interactively so it defaults to `acceptEdits` (raise to `bypassPermissions` for unattended git/PR flows). |
 
 ## Skills (`skills/`)
 
