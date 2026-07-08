@@ -1,99 +1,129 @@
 ---
 name: github-code-review
-description: "Review GitHub pull requests: read a PR's overview and changed files, fetch its full unified diff, list existing inline (file/line) and top-level review comments, and post your own top-level or inline comments. Use when asked to review a PR, look at what a PR changed, read its diff, see or reply to review feedback, or leave inline comments. Backed by the GitHub REST API over the github toolset (review_pull_request / get_pull_request_diff / list_pull_request_comments / add_pull_request_comment); needs a GitHub token."
+description: "Review GitHub pull requests with the gh CLI: read a PR's overview and changed files, view its full unified diff, list existing inline (file/line) and top-level review comments, and post your own top-level or inline comments. Use when asked to review a PR, look at what a PR changed, read its diff, see or reply to review feedback, or leave inline comments. Runs gh / gh api through the bash tool; needs gh installed and authenticated (see github-auth)."
 category: github
 ---
 
 # GitHub PR Code Review
 
-Use this skill to review pull requests on GitHub: understand what a PR changes,
-read its diff, read existing review feedback, and leave your own comments —
-either on the whole PR or inline on a specific file and line.
+Use this skill to review pull requests on GitHub with the [`gh` CLI](https://cli.github.com/):
+understand what a PR changes, read its diff, read existing review feedback, and leave your
+own comments — either on the whole PR or inline on a specific file and line.
 
-It is backed by the `github` toolset, which talks to the GitHub REST API v3
-directly (no `gh` binary required). Related: the [github-auth](../github-auth/SKILL.md)
-skill sets up the token this skill uses.
+Everything here runs through the `bash` tool. There is no dedicated tool; `gh` (and `gh api`
+for the REST endpoints `gh` doesn't wrap) does the work. On Windows the bundled msys64
+provides `bash`, but `gh` must be installed separately.
 
 Reply in Chinese unless the user clearly uses another language.
 
-## Authentication
+## Prerequisites
 
-Every tool needs a GitHub token, resolved in this order:
+- **`gh` installed and authenticated.** Check with `gh auth status`. If it's not logged in
+  or not installed, use the [github-auth](../github-auth/SKILL.md) skill first.
+- Reading a PR only needs read access; **posting a comment needs write access** to the repo.
+- Never print, echo, or log a token. `gh` manages its own credential — you never handle the
+  token value directly here.
 
-1. `GH_TOKEN` environment variable
-2. `GITHUB_TOKEN` environment variable
-3. `gh auth token` (when the `gh` CLI is installed and logged in)
+## Orient first (read-only)
 
-Reading a PR only needs read access; **posting a comment needs write access** to
-the repo. If a tool returns `No GitHub token found`, set one of the env vars or
-run `gh auth login` (see the github-auth skill). Never print, echo, or hard-code
-a token.
+```bash
+gh auth status 2>&1 || echo "gh not logged in / not installed"
+```
 
-## When to use
+Most commands take `--repo <owner>/<repo>`; inside a cloned repo with a GitHub remote you can
+omit it and `gh` infers the repo from the remote.
 
-Trigger on requests like:
+## Read a PR
 
-- "Review PR #123 in owner/repo" / "看一下这个 PR 改了什么"
-- "Show me the diff of this pull request"
-- "What review comments are on this PR?" / "有哪些 inline 评论"
-- "Leave a comment on line 42 of foo.py in this PR" / "在这个 PR 上留言"
+```bash
+# Overview: title, state, author, base/head branches, labels, body
+gh pr view <number> --repo <owner>/<repo>
 
-## Tools
+# As JSON for precise fields (mergeable, files, additions/deletions, headRefOid, ...)
+gh pr view <number> --repo <owner>/<repo> \
+  --json number,title,state,isDraft,author,baseRefName,headRefName,headRefOid,mergeable,additions,deletions,changedFiles,files,url
 
-### `review_pull_request(owner, repo, number, include_files=True, include_patch=False)`
+# List changed files with per-file additions/deletions
+gh pr view <number> --repo <owner>/<repo> --json files --jq '.files[] | "\(.path)  +\(.additions) -\(.deletions)"'
+```
 
-PR overview: title, body, author, state/draft, base/head branches, head SHA,
-mergeable state, changed_files / additions / deletions, and (by default) the list
-of changed files with per-file stats. Set `include_patch=True` to embed each
-file's diff hunk — handy for a small PR, but prefer `get_pull_request_diff` for
-the full picture.
+## Read the diff
 
-### `get_pull_request_diff(owner, repo, number, max_chars=60000)`
+```bash
+# Full unified diff (same as git diff) — the core of a review
+gh pr diff <number> --repo <owner>/<repo>
 
-The complete unified diff as text (same as `git diff`). Long diffs are truncated
-to protect the context window (`truncated` flag in the result); raise `max_chars`
-if you need more, or review file-by-file via `review_pull_request(include_patch=True)`.
+# Just the file names that changed
+gh pr diff <number> --repo <owner>/<repo> --name-only
+```
 
-### `list_pull_request_comments(owner, repo, number, kind="all")`
+For a large PR, review file-by-file: get the file list from `--json files`, then read each
+file's diff hunk. Long diffs can blow up the context window — narrow when you can.
 
-Existing comments. Two streams: **review comments** (inline — carry `path`,
-`line`, `diff_hunk`) and **issue comments** (top-level PR conversation). `kind`
-selects `"review"`, `"issue"`, or `"all"`.
+## Read existing comments
 
-### `add_pull_request_comment(owner, repo, number, body, path="", line=0, side="RIGHT", commit_id="")`
+Two comment streams live on a PR: **review comments** (inline, anchored to a file and line)
+and **issue comments** (the top-level PR conversation).
 
-Post a comment. **Write operation.**
+```bash
+# Inline review comments (path, line, diff_hunk, body, author)
+gh api repos/<owner>/<repo>/pulls/<number>/comments --paginate \
+  --jq '.[] | {user: .user.login, path, line, body}'
 
-- No `path`/`line` → a top-level PR conversation comment.
-- With `path` + `line` → an inline review comment anchored to that file/line of
-  the diff. `line` refers to the line in the diff; `side` is `RIGHT` (new version,
-  default) or `LEFT` (old version). `commit_id` defaults to the PR head SHA.
+# Top-level PR conversation comments
+gh api repos/<owner>/<repo>/issues/<number>/comments --paginate \
+  --jq '.[] | {user: .user.login, body}'
+
+# Submitted reviews (APPROVE / REQUEST_CHANGES / COMMENT) with their summary body
+gh api repos/<owner>/<repo>/pulls/<number>/reviews --paginate \
+  --jq '.[] | {user: .user.login, state, body}'
+```
+
+## Post a comment
+
+**Write operations — need write access.**
+
+```bash
+# Top-level PR conversation comment
+gh pr comment <number> --repo <owner>/<repo> --body "LGTM, 已 review"
+```
+
+Inline comment (anchored to a file/line of the diff). `gh` has no first-class flag for this,
+so use `gh api`. `line` is the line in the file's new version; `side` is RIGHT (new) or LEFT
+(old); `commit_id` is the PR head SHA:
+
+```bash
+HEAD_SHA=$(gh pr view <number> --repo <owner>/<repo> --json headRefOid --jq .headRefOid)
+gh api --method POST repos/<owner>/<repo>/pulls/<number>/comments \
+  -f body="这里建议加个空值判断" \
+  -f commit_id="$HEAD_SHA" \
+  -f path="src/foo.py" \
+  -F line=42 \
+  -f side="RIGHT"
+```
+
+Submit a whole review (a summary verdict plus optional inline comments in one shot):
+
+```bash
+gh api --method POST repos/<owner>/<repo>/pulls/<number>/reviews \
+  -f body="整体没问题，有几处小建议" \
+  -f event="COMMENT"      # or APPROVE / REQUEST_CHANGES
+```
 
 ## Typical flow
 
-1. `review_pull_request(owner, repo, number)` — get the shape of the change.
-2. `get_pull_request_diff(...)` — read exactly what changed.
-3. `list_pull_request_comments(...)` — see what reviewers already said.
-4. `add_pull_request_comment(...)` — leave top-level or inline feedback.
+1. `gh pr view <n> --json ...` — get the shape of the change.
+2. `gh pr diff <n>` — read exactly what changed.
+3. `gh api .../comments` — see what reviewers already said.
+4. `gh pr comment` / `gh api .../pulls/<n>/comments` — leave top-level or inline feedback.
 
 ## Pitfalls
 
-- **Inline `line` is a diff position, not necessarily the source line.** If GitHub
-  rejects an inline comment (422), the line isn't part of the diff — comment on a
-  changed line, or fall back to a top-level comment.
-- **403 / "Resource not accessible"** — the token lacks write access (or the repo
-  is private and the token lacks `repo`/`pull_requests` scope). Fix auth via
-  github-auth; reading may still work while writing fails.
-- **Large PRs are truncated.** `files_truncated` / `truncated` flags signal there
-  was more; narrow with `get_pull_request_diff(max_chars=...)` or review per file.
-
-## Fallback: gh CLI
-
-If the tools are unavailable, the `gh` CLI does the same over `bash`:
-
-```bash
-gh pr view <number> --repo <owner>/<repo>              # overview
-gh pr diff <number> --repo <owner>/<repo>              # unified diff
-gh api repos/<owner>/<repo>/pulls/<number>/comments    # inline review comments
-gh pr comment <number> --repo <owner>/<repo> --body "…"  # top-level comment
-```
+- **Inline `line` is a position in the diff, not any source line.** GitHub returns 422 if the
+  line isn't part of the PR's diff — comment on a changed line, or fall back to a top-level
+  comment.
+- **403 / "Resource not accessible"** — the token lacks write access (or the repo is private
+  and the login lacks scope). Reading may still work while writing fails; fix via github-auth.
+- **Not logged in** — `gh` prints an auth error. Run `gh auth status` and, if needed, the
+  github-auth skill; don't hard-code a token.
+- **Large PRs** — `gh pr diff` can be huge. Use `--name-only` first and review per file.
