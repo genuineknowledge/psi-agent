@@ -228,8 +228,12 @@ Do not continue as if cross-session persistence is active until this process is
 reported as running with an OS pid, pid_file, and log_file, or the user
 explicitly chooses to continue without passive sync. On Windows, do not use
 pwsh, powershell.exe, PowerShell jobs, or shell backgrounding to manage this
-watcher; the Fusion Memory CLI writes the real OS pid itself. On Linux/macOS,
-do not hand-write shell backgrounding; use the same CLI background command.
+watcher; the Fusion Memory CLI writes the real OS pid itself. If Windows still
+shows a persistent watcher console after `--background --json` returns, treat it
+as a foreground PowerShell or console wrapper startup bug and report the pid_file
+and log_file instead of switching to PowerShell jobs or a foreground watcher. On
+Linux/macOS, do not hand-write shell backgrounding; use the same CLI background
+command.
 
 ## Persistence (Required After Start)
 
