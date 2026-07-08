@@ -1,5 +1,7 @@
 *                                       @hzhangxyz
 
+docs/                                   @hzhangxyz @wey-bo @zhangqh0 @idol643 @misakamikoto0721
+
 src/psi_agent/gateway/spa/              @zhangqh0 @hzhangxyz
 
 examples/haitun-workspace/              @idol643 @hzhangxyz
@@ -7,5 +9,7 @@ examples/haitun-workspace/              @idol643 @hzhangxyz
 examples/fusion-flow-workspace/         @zhangqh0 @hzhangxyz
 
 examples/fusion-memory-workspace/       @wey-bo @hzhangxyz
+
+examples/fusion-haven-workspace/        @wey-bo @hzhangxyz
 
 examples/tb2-specific-workspace/        @asyua-ye @hzhangxyz
