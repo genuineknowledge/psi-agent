@@ -28,6 +28,25 @@ else:
     _HAS_X11 = True
 
 
+DisplayNameError: type[BaseException] = _MissingDisplayNameError
+_HAS_X11_SUPPORT = False
+_HAS_X11 = False
+if not _IS_WINDOWS:
+    try:
+        xlib_error = __import__("Xlib.error", fromlist=["DisplayNameError"])
+        xdisplay = __import__("Xlib.display", fromlist=["Display"])
+    except ImportError:
+        pass
+    else:
+        DisplayNameError = xlib_error.DisplayNameError
+        _HAS_X11_SUPPORT = True
+        try:
+            xdisplay.Display()
+            _HAS_X11 = True
+        except DisplayNameError:
+            pass
+
+
 @pytest.fixture
 def icon_file(tmp_path: Path) -> str:
     img = PILImage.new("RGBA", (64, 64), (41, 98, 255, 255))
@@ -54,6 +73,10 @@ def test_gateway_tray_quit_callback_sets_stop_event(icon_file: str) -> None:
     assert tray._stop_event.is_set()
 
 
+@pytest.mark.skipif(
+    _IS_WINDOWS or not _HAS_X11_SUPPORT,
+    reason="requires python-xlib on a non-Windows platform",
+)
 def test_gateway_tray_start_no_display(icon_file: str) -> None:
     """start() raises when no X11 display available."""
     tray = GatewayTray("http://127.0.0.1:8888", icon_file)
@@ -66,7 +89,10 @@ def test_gateway_tray_start_no_display(icon_file: str) -> None:
             tray.stop()
 
 
-@pytest.mark.skipif(not _HAS_X11, reason="no X11 display available")
+@pytest.mark.skipif(
+    _IS_WINDOWS or not _HAS_X11,
+    reason="requires an active X11 display on a non-Windows platform",
+)
 def test_gateway_tray_thread_terminates_on_stop(icon_file: str) -> None:
     tray = GatewayTray("http://127.0.0.1:8888", icon_file)
     tray.start()

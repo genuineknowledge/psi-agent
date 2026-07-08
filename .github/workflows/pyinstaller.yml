@@ -28,6 +28,10 @@ jobs:
         --collect-submodules openpyxl
         --collect-submodules readability
         --collect-submodules markdownify
+        --collect-submodules pygount
+        --collect-submodules pygments
+        --collect-submodules git
+        --collect-submodules chardet
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -97,5 +101,5 @@ jobs:
         run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp /O"installer-output" ".github\inno-setup\haitun.iss"'
       - uses: actions/upload-artifact@v7
         with:
-          name: haitun-agent-installer
+          name: haitun-agent-installer-pyinstaller
           path: installer-output/Haitun Agent Setup.exe
