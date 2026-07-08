@@ -59,7 +59,6 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
 | `computer_use` | Apple toolset. Drive the macOS desktop in the background (screenshot/click/type/scroll/drag) via the `cua-driver` CLI — no cursor/focus/Space theft. macOS only; needs `cua-driver` installed + Accessibility & Screen Recording permissions. See `skills/macos-computer-use/`. |
 | `claude_code` | Autonomous-AI-agents toolset. Delegate a coding task (implement features, fix bugs, open PRs) to the Claude Code CLI running headless (`claude -p`). Needs `claude` installed (`npm i -g @anthropic-ai/claude-code`) and authenticated; runs non-interactively so it defaults to `acceptEdits` (raise to `bypassPermissions` for unattended git/PR flows). |
-| `github` (`github.py`) | GitHub toolset. `inspect_codebase` counts LOC / languages / code-vs-comment ratio (pygount). PR code review: `review_pull_request` (overview + changed files), `get_pull_request_diff` (full unified diff), `list_pull_request_comments` (inline + top-level), `add_pull_request_comment` (top-level or inline). Talks to the GitHub REST API v3 over aiohttp — no `gh` binary, no extra dep. Needs a token (`GH_TOKEN` / `GITHUB_TOKEN`, or `gh auth token`); posting comments needs write access. See `skills/github-code-review/` and `skills/github-auth/`. |
 
 ## Skills (`skills/`)
 
@@ -69,9 +68,10 @@ All are optional and only affect the dynamic suffix / runtime line:
   `python-static-analysis`, `user-preferences-and-language`, `example-skill`).
 - `speech-to-text` / `text-to-speech` — iFLYTEK voice input/output recipes.
 - `github-auth` — GitHub authentication setup (HTTPS PAT, SSH keys, `gh` CLI login); shell-only, no extra deps.
-- `github-code-review` — review GitHub PRs via the `github` toolset: overview, diff, read/write inline and top-level comments.
+- `github-code-review` — review GitHub PRs with the `gh` CLI (via `bash`): overview, diff, read/write inline and top-level comments. Complements `github-auth`.
 - `macos-computer-use` — drive native Mac apps in the background via `computer_use` (`cua-driver`).
 - `apple-notes` — manage Apple Notes from the terminal via the `memo` CLI (list/search/view/create/edit); shell-only, macOS + Homebrew `memo`.
+- `apple-imessage` — send/receive iMessages & SMS via the `imsg` CLI (`bash`-driven, macOS only; needs `imsg` + Full Disk Access & Messages Automation). No dedicated tool.
 - `fusion-flow` — the immutable Fusion Flow runtime skill (node-based). **Do not edit it.**
 
 ## Schedules (`schedules/`)
