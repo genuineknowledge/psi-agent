@@ -15,6 +15,7 @@ import json
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import time
 from contextlib import suppress
@@ -29,6 +30,12 @@ def _resolve_state(argv: list[str]) -> Path:
 
 
 def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True,
+        )
+        return str(pid) in out.stdout
     try:
         os.kill(pid, 0)
         return True
@@ -37,6 +44,14 @@ def _alive(pid: int) -> bool:
 
 
 def _kill(pid: int) -> None:
+    if os.name == "nt":
+        # taskkill /T kills the whole process tree (uv -> psi-agent child),
+        # /F forces it. Windows has no killpg / SIGKILL.
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True, text=True,
+        )
+        return
     for sig in (signal.SIGTERM, signal.SIGKILL):
         if not _alive(pid):
             return
