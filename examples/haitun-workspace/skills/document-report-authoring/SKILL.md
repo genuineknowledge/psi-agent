@@ -19,7 +19,10 @@ Reply in Chinese unless the user clearly uses another language.
   tool (it handles rows, a bold header, and column-width fitting). Only drop to raw `openpyxl`
   when you need multiple sheets, styling, formulas, or charts.
 - **Word (.docx)** — prose reports: sections, headings, a table of contents, embedded
-  tables and images. Use `python-docx`.
+  tables. For headings + paragraphs + tables, use the existing `write_word` tool — it
+  sets the East-Asian font automatically, so Chinese never comes out "字体不齐". Only
+  drop to raw `python-docx` for what the tool can't express (images, native charts,
+  per-run styling).
 - **PowerPoint (.pptx)** — slide decks: title slide, agenda, one idea per slide, charts.
   Use `python-pptx`. Build slides programmatically from scratch (do not depend on a
   specific local template file).
@@ -39,7 +42,21 @@ chart API instead (see Charts below).
 4. If the user wants it delivered over a channel (Telegram/Feishu), emit the `[SEND:path]`
    marker so the file is sent, not just described.
 
-## Word (.docx) — python-docx
+## Word (.docx) — `write_word` tool or python-docx
+
+- **Headings / paragraphs / tables → `write_word` tool.** Pass `blocks_json` (an ordered
+  array of `{"type": "heading"|"paragraph"|"table"|"page_break", ...}`) and an optional
+  `title`. It sets `w:eastAsia` on every base style for you, so Chinese text is consistent
+  — no "字体不齐". Example:
+
+  ```json
+  [{"type": "heading", "level": 1, "text": "概述"},
+   {"type": "paragraph", "text": "本季度……"},
+   {"type": "table", "rows": [["月份", "收入"], ["1月", "100"]]}]
+  ```
+
+- **Images / native charts / per-run styling → raw python-docx.** When you build the
+  document by hand, you own the CJK-font fix below.
 
 ```python
 from docx import Document
@@ -93,30 +110,31 @@ renders CJK characters in its default East Asian font, so some Chinese glyphs (e
 bug, not a content bug. **For any document containing Chinese, set `w:eastAsia`.**
 
 The robust fix is to set the East Asian font on the base styles once, so every paragraph,
-heading, and table cell inherits it:
+heading, and table cell inherits it. (The `write_word` tool does exactly this; the code
+below is for when you build the document by hand.)
 
 ```python
 from docx.oxml.ns import qn
 
 def set_cjk_font(doc, cjk="微软雅黑", latin="Calibri"):
     """Set East-Asian + Latin fonts on base styles so all text is consistent."""
-    for style_name in ("Normal", "Heading 1", "Heading 2", "Heading 3", "Title"):
-        try:
-            style = doc.styles[style_name]
-        except KeyError:
-            continue
-        rpr = style.element.get_or_add_rPr()
-        rfonts = rpr.find(qn("w:rFonts"))
-        if rfonts is None:
-            rfonts = rpr.makeelement(qn("w:rFonts"), {})
-            rpr.append(rfonts)
+    for style in doc.styles:
+        element = style.element
+        if not hasattr(element, "get_or_add_rPr"):
+            continue                          # numbering styles have no run props
+        rpr = element.get_or_add_rPr()
+        rfonts = rpr.get_or_add_rFonts()      # keeps w:rFonts first, per OOXML schema
         rfonts.set(qn("w:ascii"), latin)
         rfonts.set(qn("w:hAnsi"), latin)
-        rfonts.set(qn("w:eastAsia"), cjk)   # <-- the line that fixes 字体不齐
+        rfonts.set(qn("w:eastAsia"), cjk)     # <-- the line that fixes 字体不齐
 
 doc = Document()
 set_cjk_font(doc)                            # call right after creating the document
 ```
+
+Iterating `doc.styles` covers Normal, every Heading, Title, and table styles in one pass,
+and `get_or_add_rFonts()` inserts `w:rFonts` as the first child of `w:rPr` (the order the
+schema requires) instead of appending it at the end.
 
 If you instead style individual runs, set `w:eastAsia` on each run too — setting only
 `run.font.name` is the exact cause of the uneven-font problem:
@@ -202,7 +220,8 @@ editable and need no image files):
 - **Sheet names cap at 31 chars**; titles longer than that raise. Truncate.
 - **Word TOC is empty until fields update** — say so instead of "re-generating".
 - **Chinese text looks "字体不齐" in Word** — you set `run.font.name` but not `w:eastAsia`,
-  so some CJK glyphs fell back to Word's default font. Call `set_cjk_font(doc)` (above) after
+  so some CJK glyphs fell back to Word's default font. Prefer the `write_word` tool (handles
+  this for you); if you build the doc by hand, call `set_cjk_font(doc)` (above) right after
   creating any Chinese document.
 - **Number formatting** (thousands separators, %, currency) is the author's job — format before
   writing, or set Excel cell `number_format`.
