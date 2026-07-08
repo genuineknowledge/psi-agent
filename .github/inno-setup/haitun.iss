@@ -1,7 +1,7 @@
-; Inno Setup script for Haitun Agent.
+; Inno Setup script for HaiTun Agent.
 ; Packages the entire haitun-workspace (including psi-agent.exe, copied in at build time).
 
-#define MyAppName "Haitun Agent"
+#define MyAppName "HaiTun Agent"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "Hefei Zhenzhi Artificial Intelligence Application Software Co., Ltd"
 #define MyAppExeName "haitun.exe"
@@ -16,7 +16,7 @@ UninstallDisplayIcon={app}\haitun.ico
 DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-OutputBaseFilename=Haitun Agent Setup
+OutputBaseFilename=HaiTun Agent Setup
 SetupIconFile=haitun.ico
 Compression=lzma2/ultra64
 SolidCompression=yes

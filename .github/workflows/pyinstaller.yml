@@ -102,4 +102,4 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: haitun-agent-installer-pyinstaller
-          path: installer-output/Haitun Agent Setup.exe
+          path: installer-output/HaiTun Agent Setup.exe
