@@ -59,7 +59,6 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
 | `apple_notes` | Apple toolset. Manage Apple Notes via the `memo` CLI: list, search, view, create, edit. macOS only; needs `memo` installed (`brew install antoniorodr/memo/memo`). |
 | `computer_use` | Apple toolset. Drive the macOS desktop in the background (screenshot/click/type/scroll/drag) via the `cua-driver` CLI — no cursor/focus/Space theft. macOS only; needs `cua-driver` installed + Accessibility & Screen Recording permissions. See `skills/macos-computer-use/`. |
-| `imessage` | Apple toolset. Send and receive iMessages/SMS via the `imsg` CLI: list chats, read history, search, send text/files, poll for new messages. macOS only; needs `imsg` installed (`brew install steipete/tap/imsg`) plus Full Disk Access + Messages Automation permission. Confirm recipient & content before sending. |
 | `claude_code` | Autonomous-AI-agents toolset. Delegate a coding task (implement features, fix bugs, open PRs) to the Claude Code CLI running headless (`claude -p`). Needs `claude` installed (`npm i -g @anthropic-ai/claude-code`) and authenticated; runs non-interactively so it defaults to `acceptEdits` (raise to `bypassPermissions` for unattended git/PR flows). |
 
 ## Skills (`skills/`)
@@ -71,6 +70,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 - `speech-to-text` / `text-to-speech` — iFLYTEK voice input/output recipes.
 - `github-auth` — GitHub authentication setup (HTTPS PAT, SSH keys, `gh` CLI login); shell-only, no extra deps.
 - `macos-computer-use` — drive native Mac apps in the background via `computer_use` (`cua-driver`).
+- `apple-imessage` — send/receive iMessages & SMS via the `imsg` CLI (`bash`-driven, macOS only; needs `imsg` + Full Disk Access & Messages Automation). No dedicated tool.
 - `fusion-flow` — the immutable Fusion Flow runtime skill (node-based). **Do not edit it.**
 
 ## Schedules (`schedules/`)
