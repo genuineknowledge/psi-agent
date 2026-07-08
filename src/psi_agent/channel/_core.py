@@ -37,7 +37,12 @@ class ChannelCore:
         with anyio.CancelScope(shield=True):
             await self._session.close()
 
-    async def post(self, chunks: list[InputChunk]) -> AsyncGenerator[OutputChunk]:
+    async def post(
+        self,
+        chunks: list[InputChunk],
+        *,
+        model: str | None = None,
+    ) -> AsyncGenerator[OutputChunk]:
         logger.debug(
             f"{len(chunks)} chunk(s) — "
             f"FileChunks={sum(1 for c in chunks if isinstance(c, FileChunk))} "
@@ -46,6 +51,8 @@ class ChannelCore:
 
         content = encode_input(chunks)
         body = {"messages": [{"role": "user", "content": content}], "stream": True}
+        if model:
+            body["model"] = model
 
         buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()

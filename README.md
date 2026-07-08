@@ -31,10 +31,11 @@ AI 层无状态、Session 层维护对话历史、Channel 层是纯 UI 客户端
 
 ### 方式一：逐个启动
 
-三个终端，三步跑起来：
+### 单模型启动
+
+最小可运行示例只需要一组 `ai`、`session` 和 `channel` 进程：
 
 ```bash
-# 安装
 uv sync
 
 # 终端 1：启动 AI 后端（--provider/--model/--api-key/--base-url 均可选，不传则读 PSI_AI_* 环境变量）
@@ -49,20 +50,54 @@ uv run psi-agent ai \
 uv run psi-agent session \
   --workspace ./examples/a-simple-bash-only-workspace \
   --channel-socket ./channel.sock \
-  --ai-socket ./ai.sock
+  --ai-socket ./deepseek-v4-pro.sock \
+  --model-ai-sockets qwen3.6-chat ./qwen3.6-chat.sock deepseek-v4-pro ./deepseek-v4-pro.sock gpt-4o ./gpt-4o.sock
 
-# 终端 3：REPL 交互
-uv run psi-agent channel repl --session-socket ./channel.sock
+# Channel 传入候选模型列表
+uv run psi-agent channel repl \
+  --session-socket ./channel.sock \
+  --models qwen3.6-chat deepseek-v4-pro gpt-4o
 ```
 
 REPL 操作：`Enter` 换行，`Alt+Enter`（或 `Escape+Enter`）发送，`Ctrl+D` 退出。
 
-也可以一句命令搞定：
+### 显式映射
+
+如果你的部署中不同模型对应不同后端，推荐在 `session` 中显式绑定模型名与 AI socket：
+
+```bash
+uv run psi-agent session \
+  --workspace ./examples/a-simple-bash-only-workspace \
+  --channel-socket ./channel.sock \
+  --ai-socket ./deepseek-v4-pro.sock \
+  --model-ai-sockets qwen3.6-chat ./qwen3.6-chat.sock deepseek-v4-pro ./deepseek-v4-pro.sock
+```
+
+`--model-ai-sockets` 用于显式指定“模型名 -> AI socket”的对应关系，优先级高于默认的 `--ai-socket`。如果同一个模型存在更明确的后端地址，显式映射会覆盖自动推导结果。
+
+### 自动映射
+
+如果模型名和 socket 文件名保持一致，也可以只提供模型名列表，由 Session 自动生成同目录下的 sibling socket 路径：
+
+```bash
+uv run psi-agent session \
+  --workspace ./examples/a-simple-bash-only-workspace \
+  --channel-socket ./channel.sock \
+  --ai-socket ./models/deepseek-v4-pro.sock \
+  --model-names qwen3.6-chat deepseek-v4-pro
+```
+
+启用 `--model-names` 后，Session 会基于 `--ai-socket` 所在目录自动展开模型映射，例如 `qwen3.6-chat -> ./models/qwen3.6-chat.sock`，`deepseek-v4-pro -> ./models/deepseek-v4-pro.sock`。
+
+### 一次性调用
+
+如果只需要发送单条消息，可以使用 `channel cli`：
 
 ```bash
 uv run psi-agent channel cli \
   --session-socket ./channel.sock \
-  --message "列出当前目录的文件"
+  --models qwen3.6-chat deepseek-v4-pro \
+  --message "请梳理中国新能源汽车产业链的主要环节"
 ```
 
 ### 方式二：YAML 批量启动
@@ -129,9 +164,7 @@ psi-agent
 ├── session                    # Session + workspace 管理
 └── channel
     ├── repl                   # 交互式 REPL
-    ├── cli                    # 单次消息
-    ├── telegram               # Telegram bot
-    └── feishu                 # 飞书 bot
+    └── cli                    # 单次消息
 ```
 
 ## 传输协议

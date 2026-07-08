@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket as _s
 import textwrap
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import anyio
@@ -12,7 +13,7 @@ from aiohttp import web
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.protocol import AgentChunk, AgentError, AiDelta
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 
@@ -235,6 +236,32 @@ async def test_agent_history_accumulation(tmp_path: Path) -> None:
         assert len(agent._conversation.messages) >= 4
     finally:
         await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_skips_reasoning_only_history_entry() -> None:
+    class _ReasoningOnlyAiClient(AiClient):
+        def __init__(self) -> None:
+            super().__init__("http://unused")
+
+        async def stream(
+            self,
+            request_body: dict,
+            *,
+            ai_socket: str | None = None,
+        ) -> AsyncGenerator[AiDelta]:
+            del request_body, ai_socket
+            yield AiDelta(reasoning="Thinking only", finish_reason="stop")
+
+    agent = SessionAgent(ai_client=_ReasoningOnlyAiClient(), conversation=Conversation(), tool_registry=ToolRegistry())
+    chunks: list[AgentChunk] = []
+    async for chunk in agent.run({"role": "user", "content": "hi"}):
+        chunks.append(chunk)
+
+    reasoning = "".join(chunk.reasoning or "" for chunk in chunks if chunk.reasoning)
+    assert "Thinking only" in reasoning
+    assistant_messages = [message for message in agent._conversation.messages if message.get("role") == "assistant"]
+    assert assistant_messages == []
 
 
 # --- Missing coverage: tool execution error paths ---
