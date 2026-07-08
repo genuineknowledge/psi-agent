@@ -11,4 +11,8 @@ export default defineConfig({
   resolve: {
     alias: { '@': '/src' },
   },
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.js'],
+  },
 })

@@ -1,82 +1,89 @@
 <template>
   <div id="sidebar" :class="{ collapsed: isSidebarCollapsed, 'mobile-open': isMobileSidebarOpen }">
     <div class="col">
-      <div class="sb-header">
-        <div class="sb-brand">
-          <div class="sb-logo"></div>
-          <span class="sb-brand-name">Dolphin</span>
+      <div class="sb-top">
+        <div class="sb-header">
+          <div class="sb-brand">
+            <div class="sb-logo"></div>
+            <span class="sb-brand-name">Dolphin</span>
+          </div>
+        </div>
+        <button class="new-chat" @click="$emit('new-session')">
+          <span class="material-symbols-outlined">edit_square</span>
+          <span class="label">发起新对话</span>
+          <span class="shortcut">Ctrl+Shift+O</span>
+        </button>
+        <div class="session-search">
+          <span class="material-symbols-outlined">search</span>
+          <input
+            ref="searchInputRef"
+            v-model="sessionSearchText"
+            type="search"
+            placeholder="搜索会话"
+            aria-label="搜索会话"
+          >
+          <span v-if="!sessionSearchText" class="shortcut search-shortcut">Ctrl+Shift+K</span>
+          <button
+            v-if="sessionSearchText"
+            class="clear-search"
+            type="button"
+            title="清空搜索"
+            @click="sessionSearchText = ''"
+          >
+            <span class="material-symbols-outlined">close</span>
+          </button>
         </div>
       </div>
-      <button class="new-chat" @click="$emit('new-session')">
-        <span class="material-symbols-outlined">edit_square</span>
-        <span>发起新对话</span>
-      </button>
-      <div class="session-search">
-        <span class="material-symbols-outlined">search</span>
-        <input
-          v-model="sessionSearchText"
-          type="search"
-          placeholder="搜索会话"
-          aria-label="搜索会话"
+      <div class="sb-scroll">
+        <div class="recent-label">最近</div>
+        <div
+          v-for="s in visibleSessions"
+          :key="s.id"
+          class="item"
+          :class="{ selected: s.id === selectedSessionId }"
+          @click="selectSession(s.id)"
         >
-        <button
-          v-if="sessionSearchText"
-          class="clear-search"
-          type="button"
-          title="清空搜索"
-          @click="sessionSearchText = ''"
-        >
-          <span class="material-symbols-outlined">close</span>
-        </button>
-      </div>
-      <div class="recent-label">最近</div>
-      <div
-        v-for="s in visibleSessions"
-        :key="s.id"
-        class="item"
-        :class="{ selected: s.id === selectedSessionId }"
-        @click="selectSession(s.id)"
-      >
-        <button
-          class="pin"
-          :class="{ pinned: isSessionPinned(s.id) }"
-          @click.stop="toggleSessionPin(s.id)"
-          :title="isSessionPinned(s.id) ? '取消置顶' : '置顶会话'"
-        >
-          <span class="material-symbols-outlined">keep</span>
-        </button>
-        <span class="info">
-          <input
-            v-if="editingSessionId === s.id"
-            v-model="editingWorkspaceText"
-            class="edit-input"
-            v-focus
-            @blur="saveSessionWorkspace(s)"
-            @keydown.enter="saveSessionWorkspace(s)"
-            @click.stop
+          <button
+            class="pin"
+            :class="{ pinned: isSessionPinned(s.id) }"
+            @click.stop="toggleSessionPin(s.id)"
+            :title="isSessionPinned(s.id) ? '取消置顶' : '置顶会话'"
           >
-          <div
-            v-else
-            class="name"
-            :title="displaySessionName(s)"
-            @dblclick.stop="startEditWorkspace(s)"
-          >
-            {{ displaySessionName(s) }}
-          </div>
-        </span>
-        <button class="del" @click.stop="confirmDeleteSession(s.id)">
-          <span class="material-symbols-outlined">delete</span>
-        </button>
-      </div>
-      <div v-if="sessions.length && visibleSessions.length === 0" class="session-empty">
-        没有匹配的会话
+            <span class="material-symbols-outlined">keep</span>
+          </button>
+          <span class="info">
+            <input
+              v-if="editingSessionId === s.id"
+              v-model="editingWorkspaceText"
+              class="edit-input"
+              v-focus
+              @blur="saveSessionWorkspace(s)"
+              @keydown.enter="saveSessionWorkspace(s)"
+              @click.stop
+            >
+            <div
+              v-else
+              class="name"
+              :title="displaySessionName(s)"
+              @dblclick.stop="startEditWorkspace(s)"
+            >
+              {{ displaySessionName(s) }}
+            </div>
+          </span>
+          <button class="del" @click.stop="confirmDeleteSession(s.id)">
+            <span class="material-symbols-outlined">delete</span>
+          </button>
+        </div>
+        <div v-if="sessions.length && visibleSessions.length === 0" class="session-empty">
+          没有匹配的会话
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, watch, ref, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useSessionStore } from '../stores/session.js'
 import { useUiStore } from '../stores/ui.js'
@@ -102,9 +109,14 @@ const {
 } = storeToRefs(session)
 
 const ui = useUiStore()
-const { isSidebarCollapsed, isMobileSidebarOpen, dlgConfirm } = storeToRefs(ui)
+const { isSidebarCollapsed, isMobileSidebarOpen, dlgConfirm, sessionSearchFocusToken } = storeToRefs(ui)
 
 defineEmits(['new-session'])
+
+const searchInputRef = ref(null)
+watch(sessionSearchFocusToken, () => {
+  nextTick(() => searchInputRef.value?.focus())
+})
 
 const visibleSessions = computed(() => buildVisibleSessions(sessions.value, {
   titles: sessionTitles.value,
@@ -186,8 +198,27 @@ watch(
   display: flex;
   flex-direction: column;
   height: 100%;
-  overflow-y: auto;
+  overflow: hidden;
 }
+.sb-top { flex-shrink: 0; }
+.sb-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-mask-image: linear-gradient(to bottom,
+    transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+          mask-image: linear-gradient(to bottom,
+    transparent 0, #000 12px, #000 calc(100% - 12px), transparent 100%);
+}
+.sb-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.sb-scroll:hover { scrollbar-color: var(--md-outline-variant) transparent; }
+.sb-scroll::-webkit-scrollbar { width: 6px; }
+.sb-scroll::-webkit-scrollbar-track { background: transparent; }
+.sb-scroll::-webkit-scrollbar-thumb { background: transparent; border-radius: 10px; transition: background 0.2s; }
+.sb-scroll:hover::-webkit-scrollbar-thumb { background: var(--md-outline-variant); }
 .sb-header { display: flex; align-items: center; padding: 12px 12px 8px; }
 .sb-brand { display: flex; align-items: center; gap: 10px; }
 .sb-logo {
@@ -330,6 +361,19 @@ watch(
   font-size: 13px;
   text-align: center;
 }
+.shortcut {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--md-text-secondary);
+  opacity: 0;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.new-chat:hover .shortcut,
+.session-search:hover .shortcut,
+.session-search:focus-within .shortcut { opacity: 1; }
+.search-shortcut { margin-left: 4px; }
 
 @media (hover: none) {
   .item .del,
