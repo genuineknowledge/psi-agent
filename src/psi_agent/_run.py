@@ -19,6 +19,10 @@ Config format (``run-config.yml``):
       workspace: ./examples/a-simple-bash-only-workspace  # optional, defaults to .
       channel_socket: ./channel.sock
       ai_socket: ./ai.sock
+      model_names:
+        - qwen3.6-chat
+        - deepseek-v4-pro
+        - gpt-4o
 
     - type: channel
       name: repl                    # "cli", "repl", "telegram", or "feishu"

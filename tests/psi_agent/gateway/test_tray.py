@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import contextlib
-import sys
+import importlib
 import time
 from pathlib import Path
 
@@ -10,11 +10,22 @@ from PIL import Image as PILImage
 
 from psi_agent.gateway._tray import GatewayTray
 
-_IS_WINDOWS = sys.platform == "win32"
-
-
-class _MissingDisplayNameError(Exception):
+DisplayNameError = RuntimeError
+_HAS_X11 = False
+try:
+    _xerror = importlib.import_module("Xlib.error")
+    display_name_error = getattr(_xerror, "DisplayNameError", RuntimeError)
+    if isinstance(display_name_error, type) and issubclass(display_name_error, Exception):
+        DisplayNameError = display_name_error
+    _xdisplay = importlib.import_module("Xlib.display")
+    display_ctor = getattr(_xdisplay, "Display", None)
+    if callable(display_ctor):
+        display_ctor()
+        _HAS_X11 = True
+except (ImportError, DisplayNameError):
     pass
+else:
+    _HAS_X11 = True
 
 
 DisplayNameError: type[BaseException] = _MissingDisplayNameError

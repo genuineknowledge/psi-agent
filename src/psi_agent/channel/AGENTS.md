@@ -46,11 +46,9 @@ Channel 客户端不再直接处理 HTTP、SSE 解析或错误格式。
 
 Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通过 SSE 流式显示 AI 回复。
 
-提供四种交互模式：
+提供两种交互模式：
 - **CLI**（单次消息） — 发送一条消息，显示回复，退出
 - **REPL**（交互式） — 持续对话
-- **Telegram**（bot） — 通过 Telegram Bot 交互，支持文件收发、流式编辑
-- **Feishu**（bot） — 通过 Feishu Bot 交互，支持卡片流式渲染、文件收发
 
 ## 终端输出约定
 
@@ -72,20 +70,10 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 ## CLI 约定
 
 - 连接 session socket，发送 `--message`，SSE 流式接收后退出
-- 错误：打印错误信息后 raise（不再 `sys.exit`，以支持非 CLI 上下文）
+- 错误：session socket 不存在时打印友好错误，exit code 1
 - 不发送 history，每次只带一条 user message
 
-## Telegram 约定
-
-- 通过 python-telegram-bot 异步 API（initialize/start/start_polling）进行 long polling
-- 所有消息类型（`filters.ALL`）包括 slash command 均传递给 agent
-- 文本通过 `edit_text` 增量累积实现流式效果，完成后以 Markdown 格式最终渲染
-- FileChunk 通过 `reply_photo` / `reply_document` 发送；用户文件下载至 `Downloads/.psi/<date>/`
-- 输入文件（photo/document）自动下载并作为 FileChunk 传给 agent
-- 支持 SOCKS5 proxy（`--proxy` CLI arg > `PSI_TELEGRAM_PROXY` env）
-- 用户白名单：`--allowed-user-ids` 参数或 `None`（不限制）
-
-## Feishu 约定
+## Model Routing
 
 - 通过 lark-channel-sdk 的 `FeishuChannel.start_background()` 建立 WebSocket 长连接（SDK 推荐的 async 启动：后台拉起、握手就绪即返回；`connect()` 是旧的前台阻塞式），关停用 `stop_background()`
 - **并发模型（刻意为之）**：lark SDK 在自己的后台线程/event loop 上派发消息回调；`_on_message` 通过 `anyio.from_thread.BlockingPortal.start_task_soon` 把处理协程桥接回主 anyio loop（取代 asyncio `run_coroutine_threadsafe`，遵守「一切异步用 anyio」原则）。`run_feishu` / `run_telegram` 把**启动调用**（telegram: initialize/start/start_polling；feishu: start_background）一并纳入 `try`，`finally` 用 `anyio.CancelScope(shield=True)` 保护——**启动中途失败与正常 cancel 两条路径都会执行关停**，不泄露 bot 连接。**（刻意为之）关停按步骤 best-effort：逐个 `try/except Exception` 吞掉清理异常并 WARNING**——partial-startup 下库会抛 "not running" 之类错误，吞掉以免遮蔽原始异常或中断后续 teardown；`except Exception` 不吞 `CancelledError`，勿把这层 swallow 当 bug "修掉"
