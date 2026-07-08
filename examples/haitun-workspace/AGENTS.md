@@ -49,6 +49,8 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `powershell` | Windows-native shell. |
 | `read` / `write` / `edit` | Async file ops. |
 | `list_dir` / `find_files` | List one directory level; recursively find files by glob (`**/*.py`), sorted newest-first. |
+| `write_excel` | Build a real `.xlsx` from a 2D array (bold header, column-width fitting). |
+| `write_word` | Build a real `.docx` from structured blocks (headings/paragraphs/tables); sets the East-Asian font (`w:eastAsia`) on every style so Chinese text isn't "字体不齐". |
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
 | `flow_manage` | CRUD + promote on Fusion Flow assets under `flows/`. |
 | `schedule_manage` | CRUD on `schedules/<name>/TASK.md` (cron + task body); validates the cron expression. |
