@@ -172,9 +172,21 @@ async def _parse_skill_frontmatter(skill_md_path: anyio.Path) -> dict[str, str]:
         match = re.search(rf"^{field}:\s*(.+)$", frontmatter, re.MULTILINE)
         return match.group(1).strip().strip('"').strip("'") if match else ""
 
+    # The frontmatter ``description`` is the trigger signal the model scans in
+    # the skills index to decide whether to load a skill. Truncating it to a few
+    # dozen chars silently drops the activation keywords (e.g. Fusion Flow's
+    # "coordinate multiple agents, run sub-tasks in parallel, build a multi-step
+    # pipeline"), so a task like a three-way debate never matches and the skill
+    # is never loaded. Keep the description intact; only guard against a pathologically
+    # long one, and cut on a word boundary so we never sever a keyword mid-token.
     description = _extract("description")
-    if len(description) > 60:
-        description = description[:57] + "..."
+    max_len = 500
+    if len(description) > max_len:
+        cut = description[: max_len - 1]
+        last_space = cut.rfind(" ")
+        if last_space > max_len // 2:
+            cut = cut[:last_space]
+        description = cut.rstrip() + "…"
 
     return {
         "name": _extract("name"),
@@ -426,8 +438,20 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
 ## Operating Rules
 
 - For workflow-shaped natural-language requests, build a flow instead of manually acting as the sub-agents.
-- Before running a flow, ensure the Fusion Flow skill directory has dependencies installed.
-- If `node_modules` is missing, ask the user before running `npm install` unless they already requested full execution.
+- The Fusion Flow runtime ships **inside this workspace** as a local bundle at
+  `skills/fusion-flow/runtime/agent-flow-core.bundle.mjs`. It is NOT a public npm package.
+  Generated flows import it via the relative path `../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs`
+  (see SKILL.md "Runtime mode detection", Mode C). Never write a bare `import ... from "@agent-flow/core"`,
+  and never run `npm install @agent-flow/core` — that name will 404. A `MODULE_NOT_FOUND`/`TS2307` on the
+  runtime import is always a wrong relative path, never a missing dependency.
+- Before running a flow, ensure the Fusion Flow skill directory has its dev dependencies installed.
+  If `skills/fusion-flow/node_modules` is missing, `npx tsx` and `tsc` will not resolve. Run
+  `cd skills/fusion-flow && npm install` to install the *local* devDependencies declared in its
+  `package.json` (tsx, typescript, dotenv) — this does NOT fetch the runtime, which already ships in `runtime/`.
+  Ask the user before running `npm install` unless they already requested full execution.
+- When a flow fails to start, read the actual error before concluding. `MODULE_NOT_FOUND` on
+  `@agent-flow/core` or the bundle path = fix the import path. `tsx`/`tsc` "not found" = run `npm install`
+  in `skills/fusion-flow`. Do NOT respond by hand-simulating the multi-agent flow — that defeats the runtime.
 - Prefer concise user-facing progress updates and report generated file paths.
 - Use `read`, `write`, `edit`, `bash`, `skill_manage`, and `flow_manage` tools as needed.
 """
