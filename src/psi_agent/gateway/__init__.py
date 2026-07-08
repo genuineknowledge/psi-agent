@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import socket
+import threading
 import webbrowser
 from dataclasses import dataclass
 
@@ -56,12 +57,85 @@ class Gateway:
     """Enable DEBUG-level logging."""
 
     async def run(self) -> None:
+        """Async entry point (used by ``anyio.run``) for non-webview mode.
+
+        The ``--webview`` path does NOT go through here: pywebview must own the
+        main thread, so ``cli.main`` calls the synchronous ``run_webview``
+        instead. See that method for the threading model.
+        """
         setup_logging(verbose=self.verbose)
 
         if self.browser and self.webview:
             raise ValueError("--browser and --webview are mutually exclusive")
 
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
+        stop = threading.Event()
+        await self._serve(addr, stop)
+
+    def run_webview(self) -> None:
+        """Synchronous entry point for ``--webview`` mode. Must run on the main thread.
+
+        pywebview requires its GUI loop on the main thread (the WinForms backend
+        installs a SIGINT handler). So the threading model is inverted relative
+        to non-webview mode:
+
+        - main thread: the pywebview GUI loop (blocks until the window closes)
+        - background thread: ``anyio.run(self._serve)`` — aiohttp REST server
+          plus the optional system tray
+
+        Closing the window (no tray) or choosing "退出" in the tray both stop the
+        server and unblock the main thread.
+        """
+        setup_logging(verbose=self.verbose)
+
+        if self.browser and self.webview:
+            raise ValueError("--browser and --webview are mutually exclusive")
+        if self.icon is None:
+            raise ValueError("--webview requires --icon to be set")
+
+        addr = self.listen or f"http://127.0.0.1:{_random_port()}"
+        stop = threading.Event()
+        ready = threading.Event()
+
+        wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon, on_close=stop.set)
+
+        def _serve_thread() -> None:
+            try:
+                anyio.run(self._serve, addr, stop, ready, wv)
+            except Exception as e:  # pragma: no cover - surfaced via logs
+                logger.error(f"Gateway server thread crashed: {e!r}")
+            finally:
+                stop.set()
+                ready.set()  # unblock the main thread even if startup failed
+
+        t = threading.Thread(target=_serve_thread, name="gateway-server", daemon=True)
+        t.start()
+
+        # Wait until the REST server is listening before loading it in the window,
+        # so the console doesn't flash a connection error. Bounded so a failed
+        # startup doesn't hang the main thread forever.
+        ready.wait(timeout=30)
+
+        try:
+            wv.create()
+            wv.run()  # blocks on the main thread until the window is destroyed
+        finally:
+            stop.set()
+            t.join(timeout=10)
+
+    async def _serve(
+        self,
+        addr: str,
+        stop: threading.Event,
+        ready: threading.Event | None = None,
+        wv: GatewayWebView | None = None,
+    ) -> None:
+        """Run the REST server (and optional tray) until ``stop`` is set.
+
+        Shared by both entry points. ``ready`` is set once the server is
+        listening; ``wv`` (webview mode only) wires the tray "open" action to
+        restore the window and the tray "quit" action to destroy it.
+        """
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
 
         state = GatewayState()
@@ -138,15 +212,9 @@ class Gateway:
 
                 logger.info(f"Gateway listening on {addr}")
 
-                wv = None
-                if self.webview:
-                    if self.icon is None:
-                        raise ValueError("--webview requires --icon to be set")
-                    wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon)
-                    try:
-                        wv.start()
-                    except Exception as e:
-                        logger.warning(f"Failed to start webview window: {e!r}")
+                # Signal the main thread (webview mode) that it can load the URL.
+                if ready is not None:
+                    ready.set()
 
                 if self.browser:
                     await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
@@ -155,25 +223,32 @@ class Gateway:
                 if self.tray:
                     if self.icon is None:
                         raise ValueError("--tray requires --icon to be set")
-                    on_open = wv.show if wv is not None and wv.is_running() else None
-                    tray = GatewayTray(addr, self.icon, on_open=on_open)
+                    # In webview mode the tray restores the window; otherwise
+                    # left-click just opens the browser. "退出" always stops the
+                    # server and, in webview mode, destroys the window (which
+                    # unblocks the main thread's GUI loop).
+                    on_open = wv.show if wv is not None else None
+
+                    def _on_quit() -> None:
+                        stop.set()
+                        if wv is not None:
+                            wv.destroy()
+
+                    tray = GatewayTray(addr, self.icon, on_open=on_open, on_quit=_on_quit)
                     try:
                         tray.start()
                     except Exception as e:
                         logger.warning(f"Failed to start system tray: {e!r}")
 
                 try:
-                    if tray is not None and tray.is_running():
-                        await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
-                    elif wv is not None and wv.is_running():
-                        await anyio.to_thread.run_sync(wv.wait_closed, abandon_on_cancel=True)  # ty: ignore
-                    else:
-                        await anyio.sleep_forever()
+                    # Block until asked to stop, from any thread: the webview
+                    # window closing (on_close), the tray "退出" item, or a
+                    # crash in the serve thread. `stop` is a cross-thread
+                    # threading.Event, so wait on it in a worker thread.
+                    await anyio.to_thread.run_sync(stop.wait, abandon_on_cancel=True)  # ty: ignore
                 finally:
                     if tray is not None:
                         tray.stop()
-                    if wv is not None:
-                        wv.stop()
             finally:
                 logger.info("Shutting down Gateway")
                 with anyio.CancelScope(shield=True):

@@ -26,7 +26,13 @@ ChannelGroup = Annotated[
 
 def main() -> None:
     cmd = tyro.cli(Run | Ai | Session | ChannelGroup | Gateway)
-    anyio.run(cmd.run)
+    # pywebview must own the main thread, so --webview runs synchronously and
+    # drives the anyio loop from a background thread itself. Everything else
+    # runs on the main-thread event loop as usual.
+    if isinstance(cmd, Gateway) and cmd.webview:
+        cmd.run_webview()
+    else:
+        anyio.run(cmd.run)
 
 
 if __name__ == "__main__":

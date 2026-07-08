@@ -62,6 +62,27 @@ def test_gateway_tray_quit_callback_sets_stop_event(icon_file: str) -> None:
     assert tray._stop_event.is_set()
 
 
+def test_gateway_tray_quit_invokes_on_quit(icon_file: str) -> None:
+    called = {"n": 0}
+    tray = GatewayTray(
+        "http://127.0.0.1:8888",
+        icon_file,
+        on_quit=lambda: called.__setitem__("n", called["n"] + 1),
+    )
+    tray._quit()
+    assert tray._stop_event.is_set()
+    assert called["n"] == 1
+
+
+def test_gateway_tray_quit_suppresses_on_quit_errors(icon_file: str) -> None:
+    def _boom() -> None:
+        raise RuntimeError("boom")
+
+    tray = GatewayTray("http://127.0.0.1:8888", icon_file, on_quit=_boom)
+    tray._quit()  # must not raise
+    assert tray._stop_event.is_set()
+
+
 @pytest.mark.skipif(
     _IS_WINDOWS or not _HAS_X11_SUPPORT,
     reason="requires python-xlib on a non-Windows platform",

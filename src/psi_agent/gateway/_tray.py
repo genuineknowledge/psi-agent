@@ -19,10 +19,12 @@ class GatewayTray:
         url: str,
         icon_path: str,
         on_open: Any = None,
+        on_quit: Any = None,
     ) -> None:
         self._url = url
         self._icon_path = icon_path
         self._on_open = on_open if on_open is not None else self._open_browser
+        self._on_quit = on_quit
         self._stop_event = threading.Event()
         self._icon: Any = None
         self._thread: threading.Thread | None = None
@@ -79,3 +81,6 @@ class GatewayTray:
 
     def _quit(self, icon: Any = None) -> None:
         self._stop_event.set()
+        if self._on_quit is not None:
+            with contextlib.suppress(Exception):
+                self._on_quit()

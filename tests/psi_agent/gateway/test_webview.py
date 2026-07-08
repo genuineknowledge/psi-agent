@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import threading
+from typing import Any
 
 import pytest
 
@@ -12,9 +12,8 @@ def test_webview_init():
     assert wv._url == "http://127.0.0.1:9999"
     assert wv._has_tray is False
     assert wv._icon is None
+    assert wv._on_close is None
     assert wv._window is None
-    assert wv._thread is None
-    assert not wv._closed_event.is_set()
 
 
 def test_webview_init_with_tray():
@@ -22,52 +21,85 @@ def test_webview_init_with_tray():
     assert wv._has_tray is True
 
 
-def test_webview_on_closing_no_tray_sets_closed_and_returns_true():
-    wv = GatewayWebView("http://127.0.0.1:9999", has_tray=False)
+def test_webview_on_closing_no_tray_calls_on_close_and_returns_true():
+    called = {"n": 0}
+
+    def _on_close() -> None:
+        called["n"] += 1
+
+    wv = GatewayWebView("http://127.0.0.1:9999", has_tray=False, on_close=_on_close)
     result = wv._on_closing()
     assert result is True
-    assert wv._closed_event.is_set()
+    assert called["n"] == 1
 
 
-def test_webview_on_closing_with_tray_returns_false():
+def test_webview_on_closing_no_tray_without_on_close_returns_true():
+    wv = GatewayWebView("http://127.0.0.1:9999", has_tray=False)
+    assert wv._on_closing() is True
+
+
+def test_webview_on_closing_with_tray_hides_and_returns_false():
+    calls: list[str] = []
+
+    class _FakeWindow:
+        def hide(self) -> None:
+            calls.append("hide")
+
     wv = GatewayWebView("http://127.0.0.1:9999", has_tray=True)
+    wv._window = _FakeWindow()
     result = wv._on_closing()
     assert result is False
-    assert not wv._closed_event.is_set()
-
-
-def test_webview_wait_closed_blocks_and_unblocks():
-    wv = GatewayWebView("http://127.0.0.1:9999", has_tray=False)
-    signal = {"done": False}
-
-    def closer():
-        wv._on_closing()
-        signal["done"] = True
-
-    t = threading.Thread(target=closer)
-    t.start()
-    wv.wait_closed()
-    t.join()
-    assert signal["done"]
-
-
-def test_webview_stop_when_not_started():
-    wv = GatewayWebView("http://127.0.0.1:9999")
-    wv.stop()
-
-
-def test_webview_is_running_before_start():
-    wv = GatewayWebView("http://127.0.0.1:9999")
-    assert wv.is_running() is False
-
-
-def test_webview_double_start_raises():
-    wv = GatewayWebView("http://127.0.0.1:9999")
-    wv._thread = threading.Thread(target=lambda: None)
-    with pytest.raises(RuntimeError, match="already started"):
-        wv.start()
+    assert calls == ["hide"]
 
 
 def test_webview_show_no_window():
     wv = GatewayWebView("http://127.0.0.1:9999")
+    wv.show()  # no window: no-op, must not raise
+
+
+def test_webview_hide_no_window():
+    wv = GatewayWebView("http://127.0.0.1:9999")
+    wv.hide()  # no-op
+
+
+def test_webview_destroy_no_window():
+    wv = GatewayWebView("http://127.0.0.1:9999")
+    wv.destroy()  # no-op
+
+
+def test_webview_show_hide_destroy_dispatch_to_window():
+    calls: list[str] = []
+
+    class _FakeWindow:
+        def show(self) -> None:
+            calls.append("show")
+
+        def hide(self) -> None:
+            calls.append("hide")
+
+        def destroy(self) -> None:
+            calls.append("destroy")
+
+    wv = GatewayWebView("http://127.0.0.1:9999")
+    wv._window = _FakeWindow()
     wv.show()
+    wv.hide()
+    wv.destroy()
+    assert calls == ["show", "hide", "destroy"]
+
+
+def test_webview_create_twice_raises():
+    wv = GatewayWebView("http://127.0.0.1:9999")
+    wv._window = object()  # simulate already-created
+    with pytest.raises(RuntimeError, match="already created"):
+        wv.create()
+
+
+def test_webview_show_suppresses_window_errors():
+    class _BadWindow:
+        def show(self, *_: Any) -> None:
+            raise RuntimeError("boom")
+
+    wv = GatewayWebView("http://127.0.0.1:9999")
+    wv._window = _BadWindow()
+    wv.show()  # error is suppressed
