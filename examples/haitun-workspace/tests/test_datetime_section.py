@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,11 @@ def test_cutoff_line_neutral_when_env_unset(monkeypatch):
     monkeypatch.delenv("HAITUN_KNOWLEDGE_CUTOFF", raising=False)
     out = system._build_datetime_section()
     assert "Knowledge cutoff: unknown" in out
-    # never fabricate a fake date when unset
-    assert "2026-01" not in out
+    # never fabricate a date on the cutoff line when unset. Check the cutoff
+    # line itself rather than a bare "YYYY-MM" literal, which could legitimately
+    # collide with the live "Date:" line in some months.
+    cutoff_line = next(line for line in out.splitlines() if line.startswith("Knowledge cutoff:"))
+    assert not re.search(r"\d{4}-\d{2}", cutoff_line)
 
 
 def test_current_date_still_present(monkeypatch):
