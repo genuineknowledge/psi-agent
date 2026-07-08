@@ -57,6 +57,20 @@ uv run psi-agent channel repl --session-socket ./channel.sock
 
 REPL controls: `Enter` to insert a newline, `Alt+Enter` (or `Escape+Enter`) to send, `Ctrl+D` to exit.
 
+To switch models within the same channel based on request difficulty, pass multiple model names via `--models` to `channel repl` or `channel cli`. The router in `src/psi_agent/channel/route/chat_with_ustc.py` picks one model and forwards `model` to Session.
+
+If you run multiple AI backends, route by model name in Session:
+
+```bash
+uv run psi-agent session \
+  --workspace ./examples/a-simple-bash-only-workspace \
+  --channel-socket ./channel.sock \
+  --ai-socket ./deepseek.sock \
+  --model-ai-sockets qwen3.6-chat ./qwen.sock deepseek-v4-pro ./deepseek.sock
+```
+
+If you want automatic model-to-socket expansion, use `--model-names`. Session will expand model names to sibling `./<model>.sock` paths, so the backend socket file names need to match the model names.
+
 Or one-shot:
 
 ```bash

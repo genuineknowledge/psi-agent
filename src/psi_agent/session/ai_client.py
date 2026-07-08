@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import aiohttp
 from loguru import logger
@@ -21,11 +22,17 @@ class AiClient:
     def __init__(self, ai_socket: str) -> None:
         self.ai_socket = ai_socket
 
-    def _build_connector_and_endpoint(self) -> tuple[aiohttp.BaseConnector, str]:
-        return resolve_connector_and_endpoint(self.ai_socket)
+    def _build_connector_and_endpoint(self, ai_socket: str) -> tuple[aiohttp.BaseConnector, str]:
+        return resolve_connector_and_endpoint(ai_socket)
 
-    async def stream(self, request_body: dict) -> AsyncGenerator[AiDelta]:
-        connector, endpoint = self._build_connector_and_endpoint()
+    async def stream(
+        self,
+        request_body: dict[str, Any],
+        *,
+        ai_socket: str | None = None,
+    ) -> AsyncGenerator[AiDelta]:
+        resolved_ai_socket = ai_socket or self.ai_socket
+        connector, endpoint = self._build_connector_and_endpoint(resolved_ai_socket)
         async with (
             aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
             session.post(endpoint, json=request_body) as resp,
@@ -33,7 +40,7 @@ class AiClient:
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:
                 error_text = await resp.text()
-                logger.error(f"AI error from {self.ai_socket!r}: {error_text[:1000]!r}")
+                logger.error(f"AI error from {resolved_ai_socket!r}: {error_text[:1000]!r}")
                 yield AiDelta(finish_reason="error", content=f"[AI Error: {resp.status}]")
                 return
 
