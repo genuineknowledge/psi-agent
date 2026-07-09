@@ -948,16 +948,19 @@ async def export_session(
             payload = raw_messages
         else:
             payload = [m for m in raw_messages if m.get("role") in ("user", "assistant", "system")]
-        body = json.dumps(
-            {
-                "session_id": sid,
-                "title": title,
-                "message_count": len(payload),
-                "messages": payload,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ) + "\n"
+        body = (
+            json.dumps(
+                {
+                    "session_id": sid,
+                    "title": title,
+                    "message_count": len(payload),
+                    "messages": payload,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        )
     elif fmt == "jsonl":
         body = _format_export_jsonl(raw_messages)
     else:

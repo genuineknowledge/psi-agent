@@ -7,18 +7,20 @@ Usage:
 
 from __future__ import annotations
 
-# ruff: noqa: E402, T201
+# ruff: noqa: T201
 import argparse
 import asyncio
+import importlib
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-import _session_helpers as _h
+_h: Any = importlib.import_module("_session_helpers")
 
 
 def _parse_args() -> argparse.Namespace:

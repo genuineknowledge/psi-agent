@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-# ruff: noqa: E402, T201
+# ruff: noqa: T201
 import asyncio
+import importlib
 import json
 import sys
 from pathlib import Path
@@ -13,11 +14,11 @@ TOOLS_DIR = Path(__file__).resolve().parents[1] / "tools"
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-import session_keyword_search as session_keyword_search_tool
-import session_status as session_status_tool
-import session_task_search as session_task_search_tool
-import sessions_history as sessions_history_tool
-import sessions_list as sessions_list_tool
+session_keyword_search_tool: Any = importlib.import_module("session_keyword_search")
+session_status_tool: Any = importlib.import_module("session_status")
+session_task_search_tool: Any = importlib.import_module("session_task_search")
+sessions_history_tool: Any = importlib.import_module("sessions_history")
+sessions_list_tool: Any = importlib.import_module("sessions_list")
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 
@@ -107,12 +108,10 @@ async def main() -> int:
         )
         results.append(status_gw)
         session = status_gw.get("data", {}).get("session", {})
-        has_gw_meta = bool(gw_url) and isinstance(session, dict) and (
-            session.get("gateway") is not None or session.get("title")
+        has_gw_meta = (
+            bool(gw_url) and isinstance(session, dict) and (session.get("gateway") is not None or session.get("title"))
         )
-        print(
-            f"[{'PASS' if has_gw_meta or not gw_url else 'WARN'}] gateway metadata present when online"
-        )
+        print(f"[{'PASS' if has_gw_meta or not gw_url else 'WARN'}] gateway metadata present when online")
         results.append(
             {
                 "name": "gateway metadata",
@@ -136,9 +135,7 @@ async def main() -> int:
         "session_status (empty id)",
         session_status_tool.session_status(workspace=str(WORKSPACE), include_gateway=False),
     )
-    expect_fail = not empty_status.get("ok") and "required" in str(
-        empty_status.get("data", {}).get("message", "")
-    )
+    expect_fail = not empty_status.get("ok") and "required" in str(empty_status.get("data", {}).get("message", ""))
     print(f"[{'PASS' if expect_fail else 'FAIL'}] empty session_id correctly rejected")
     results.append({"name": "empty session_id rejected", "ok": expect_fail})
 

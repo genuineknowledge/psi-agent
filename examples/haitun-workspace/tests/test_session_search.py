@@ -39,8 +39,7 @@ async def test_keyword_search_finds_match(tmp_path: Path) -> None:
     histories = tmp_path / "histories"
     histories.mkdir()
     (histories / "alpha.jsonl").write_text(
-        '{"role":"user","content":"talk about Docker deploy"}\n'
-        '{"role":"assistant","content":"ok"}\n',
+        '{"role":"user","content":"talk about Docker deploy"}\n{"role":"assistant","content":"ok"}\n',
         encoding="utf-8",
     )
     (histories / "beta.jsonl").write_text(
