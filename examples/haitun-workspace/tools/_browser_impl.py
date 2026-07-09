@@ -148,12 +148,11 @@ def ensure_server() -> str:
         logger.info(f"Starting Playwright MCP server: {' '.join(cmd)}")
         # npx spawns a Node child that is the real server; give it its own process
         # group / job so we can terminate the whole tree at exit rather than orphaning
-        # the Node process (which would otherwise leak on every reload).
-        popen_kwargs: dict[str, object] = {}
-        if _IS_WINDOWS:
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            popen_kwargs["start_new_session"] = True
+        # the Node process (which would otherwise leak on every reload). Pass both
+        # platform knobs explicitly (rather than **-unpacking an object dict) so the
+        # type checker can resolve the ``Popen[str]`` overload from ``text=True``.
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if _IS_WINDOWS else 0
+        start_new_session = not _IS_WINDOWS
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -162,7 +161,8 @@ def ensure_server() -> str:
                 text=True,
                 bufsize=1,
                 cwd=os.environ.get("WORKSPACE_DIR") or None,
-                **popen_kwargs,  # type: ignore[arg-type]
+                creationflags=creationflags,
+                start_new_session=start_new_session,
             )
         except OSError as exc:
             raise BrowserServerError(f"Failed to launch npx: {exc}") from exc
