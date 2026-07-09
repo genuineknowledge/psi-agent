@@ -113,8 +113,11 @@ himalaya envelope list -f INBOX "from alice and after 2026-01-01 order by date d
 查询语法：条件 `date/before/after <yyyy-mm-dd>`、`from/to/subject/body <pattern>`、`flag <flag>`，
 用 `and` / `or` / `not` 组合；排序 `order by date|from|to|subject [asc|desc]`。
 权威语法查 `himalaya envelope list --help`。
-**注意**：过滤/排序编译成后端原生 IMAP SEARCH/SORT，需服务器支持——**Gmail 的 IMAP 不支持
-SORT**，带 `order by` 会被拒；Gmail 上去掉排序、或用其 webmail 侧过滤。
+**注意（实测）**：过滤/排序编译成后端原生 IMAP SEARCH/SORT，需服务器支持——**很多国内邮箱
+（QQ 实测）和 Gmail 的 IMAP 都不支持 SEARCH/SORT**，带任何查询串（`order by`、`subject xxx`、
+`from xxx`）会**静默返回空列表**（不是报错，容易误判成"没邮件"）。这些服务上**别加查询串**，
+直接 `envelope list -f INBOX` 用普通分页（默认按日期降序，最新在最前），要筛就自己在客户端侧
+`jq` 过滤，或在邮箱 webmail 里搜。
 
 ### 读信
 
@@ -146,8 +149,13 @@ himalaya template reply -A 42 "收到" | himalaya message send
 himalaya template forward 42 "帮忙看下这封" | himalaya message send
 ```
 
-`message send` 收原始 message（含头+正文），发完默认会存一份到 sent 文件夹。
-存草稿不发：`... | himalaya template save -f Drafts`（或 `message save -f Drafts`）。
+`message send` 收原始 message（含头+正文）。存草稿不发：`... | himalaya message save -f Drafts`。
+
+> **发送后存副本的坑（QQ 实测）**：`message.send.save-copy = true` 时，himalaya 发完会往
+> Sent 文件夹存一份副本；若服务器返回的 Sent 文件夹不给 UID（QQ 的 `Sent Messages` 实测如此），
+> 会**在 SMTP 已成功发出之后**报 `Error: cannot find UID of appended IMAP message`。
+> 这时**信其实已经发出去了**，别因这个报错就重发导致发两封。规避：配置里设
+> `message.send.save-copy = false`（发送就不报错，只是本地不留副本；收件人照常收到）。
 
 ### 标记 / 移动 / 附件
 
@@ -164,9 +172,10 @@ himalaya attachment download -f INBOX 42   # 下附件
 
 用户说「帮我回一下 Alice 那封关于发票的邮件，说这周五前处理」：
 
-1. **定位邮件**——列/搜信封拿 `id`：
+1. **定位邮件**——列信封拿 `id`（服务器支持 SEARCH 时可加 `"from alice"` 过滤；QQ/Gmail 等
+   不支持，就列普通列表后自己 `jq` 筛）：
    ```bash
-   himalaya envelope list -f INBOX "from alice" -o json | jq
+   himalaya envelope list -f INBOX -o json | jq '.[] | select(.from.addr | test("alice";"i"))'
    ```
    拿不准是哪封就把候选列给用户选，别猜。
 2. **看原文**（避免答非所问）：`himalaya message read <id> -o json | jq .`
@@ -187,7 +196,9 @@ himalaya attachment download -f INBOX 42   # 下附件
 | 任意命令挂住问 `wizard? (Y/n)` | 无配置文件时**所有**命令都弹向导等输入 → 跑命令前先确认 config 存在，没有就停下引导用户配，别挂死 |
 | `--json` 无效 | v1 用全局 `-o json`（`--output json`），不是 `--json` |
 | `-m/--mailbox` 报错 | v1 文件夹参数是 `-f/--folder`（`mailbox` 只是 `folder` 命令的别名） |
-| 带 `order by` 在 Gmail 报错 | Gmail IMAP 无 SORT 能力 → 去掉排序或换过滤方式 |
+| 带查询串列出来是空的 | QQ/Gmail 等 IMAP 不支持 SEARCH/SORT，带 `order by`/`from x` 会**静默返回空** → 去掉查询串用普通 list，自己 `jq` 筛 |
+| 发完报 `cannot find UID of appended IMAP message` | `save-copy=true` 存 Sent 副本时服务器不给 UID（QQ 实测）→ **信已发出别重发**，配置设 `message.send.save-copy = false` 规避 |
+| `-s/--page-size N` 返回空 | 部分服务器（QQ 实测）对 page-size 敏感 → 去掉 `-s` 用默认分页，或调 `-p` 页码 |
 | 认证失败 | 密码错、没用应用专用密码、或 `auth.command` 没打印出密钥 → `account doctor <name>` 诊断 |
 | 引用的 id 过一会失效 | `id` 是每文件夹局部键，copy/move 后变 → 长期定位靠 `Message-ID` 头 |
 | 发错人 | 没先确认收件人 → 永远发送前复述确认，候选拿不准让用户选 |
