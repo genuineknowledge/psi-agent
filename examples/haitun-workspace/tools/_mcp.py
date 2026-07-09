@@ -23,10 +23,19 @@ _T = {"string": str, "integer": int, "number": float, "boolean": bool, "array": 
 
 
 def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator: auto-discover MCP tools at import time."""
+    """Decorator: auto-discover MCP tools at import time.
+
+    Generated tool names default to ``<func name>_<mcp tool name>`` (so
+    ``serper`` -> ``serper_search``). A declaration may set ``prefix`` to
+    override this — e.g. ``prefix=""`` when the MCP server's own tool names
+    already carry the desired prefix (Playwright MCP exposes ``browser_*``),
+    which would otherwise double up to ``browser_browser_navigate``.
+    """
     config = _resolve(func())
+    prefix = config.pop("prefix", None)
+    if prefix is None:
+        prefix = getattr(func, "__name__", "mcp") + "_"
     schemas = _discover(config)
-    prefix = getattr(func, "__name__", "mcp") + "_"
     g = sys._getframe(1).f_globals
     prepend = func.__doc__
     for name, schema in schemas.items():
@@ -134,13 +143,20 @@ def _connect(config: dict[str, Any]):
         return _Session(lambda: stdio_client(p))
     if t == "sse":
         return _Session(lambda: sse_client(config["url"]))
-    return _Session(lambda: streamable_http_client(config["url"]))
+    # ``terminate_on_close`` defaults to True (send DELETE on disconnect). For servers
+    # that bind stateful resources to the HTTP session — e.g. Playwright MCP ties the
+    # open browser tab to the session — set it False so a per-call connection closing
+    # doesn't reset the server's state between tool calls.
+    terminate = config.get("terminate_on_close", True)
+    return _Session(lambda: streamable_http_client(config["url"], terminate_on_close=terminate))
 
 
 def _resolve(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise MCPError(f"MCP declaration must return a mapping: {raw!r}")
     d: dict[str, Any] = dict(raw)
+    prefix = d.pop("prefix", None)
+    terminate_on_close = bool(d.pop("terminate_on_close", True))
     srv: Any = next((d.pop(k) for k in ("server", "mcpServer", "mcp_server", "command", "cmd") if k in d), None)
     transport = _opt(d.pop("transport", None) or d.pop("type", None))
     url = _opt(d.pop("url", None) or d.pop("endpoint", None))
@@ -167,7 +183,7 @@ def _resolve(raw: Any) -> dict[str, Any]:
         fn = d.get("fn")
         if not callable(fn):
             raise MCPError("coroutine transport requires a callable 'fn'")
-        return {"transport": "coroutine", "fn": fn}
+        return {"transport": "coroutine", "fn": fn, "prefix": prefix}
     if transport not in {"stdio", "http", "sse"}:
         raise MCPError(f"Unsupported transport: {transport!r}")
     if transport == "stdio" and not cmd:
@@ -182,6 +198,8 @@ def _resolve(raw: Any) -> dict[str, Any]:
         "cwd": _opt(d.pop("cwd", None)),
         "url": url,
         "headers": _sd(d.pop("headers", None)),
+        "prefix": prefix,
+        "terminate_on_close": terminate_on_close,
     }
 
 

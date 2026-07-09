@@ -22,6 +22,9 @@ skills/fusion-flow/.env
 
 # multimodal API credentials (local dev only)
 .env.multimodal
+
+# local desktop runtime env (vbs injects into psi-agent.exe; never commit)
+.env
 bin/apply_multimodal_test_api.ps1
 skills/fusion-flow/examples/*.flow.ts
 skills/fusion-flow/examples/*.flow.mts
