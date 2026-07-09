@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 # ruff: noqa: E402, T201
-
 import asyncio
 import json
 import sys
