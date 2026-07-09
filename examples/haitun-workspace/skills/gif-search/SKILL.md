@@ -44,6 +44,20 @@ All requests below assume `$API` and `$GIPHY_API_KEY` are set as above. **Always
 URL-encode the query** — pass it via `curl --get --data-urlencode` rather than pasting raw
 text into the URL, so spaces and non-ASCII (Chinese) terms work.
 
+## Never fabricate URLs or IDs (hard rule)
+
+Every GIF id, `giphy.com/gifs/...` page link, and `media*.giphy.com` file URL you give the
+user **must come from an actual API response you just received** — copy it verbatim from the
+`curl | jq` output. **Do not guess, invent, or hand-craft a giphy.com link, a slug, or an
+id from memory.** A made-up link (e.g. `giphy.com/gifs/cat-typing-<random>`) will 404 with
+"Oops! There's nothing here" and is worse than admitting you couldn't search.
+
+If you can't run a real query — `jq`/`curl` missing, no `GIPHY_API_KEY`, or the API returned
+an error/empty `.data` — then **say so plainly and stop**. Report the exact blocker (which
+dependency or the `meta.msg`/HTTP status) and what the user must do (install jq, set
+`GIPHY_API_KEY`, try another query). **Never** substitute a "here's roughly how to find one
+yourself" answer with a fabricated link in place of a real search result.
+
 ## Search
 
 ```bash
@@ -182,5 +196,6 @@ attribution. For a one-off download in chat this is less critical, but mention t
   install; no `GIPHY_API_KEY` → set it; `401`/`403` → bad/missing key; `429` → rate limited,
   back off; empty `.data` → no matches, suggest a different `q` or use
   `autocomplete`/suggestions) and quote the actual `meta.msg` or HTTP status. Never ask for
-  or echo the API key in chat.
+  or echo the API key in chat. **Never paper over a failure with a fabricated giphy.com link
+  or a "go search it yourself" workaround** — see the hard rule above.
 
