@@ -79,7 +79,11 @@ snapshot→click 语义对齐。
 - **`browser_dialog`**：navigate 时挂 `page.on("dialog")`，把 pending dialog 存起来，
   snapshot 里暴露 `pending_dialogs`，本工具决定 accept/dismiss。
 - **`browser_vision`**：`page.screenshot()` 存临时 PNG → 调已有
-  `describe_image_impl(path, question)` → 清理临时文件。复用 MiniMax vision，不引新依赖。
+  `describe_image_impl(path, question)` → 清理临时文件。**不新增 vision provider**：
+  直接复用现有 `read_vision_api_config` + `describe_image_impl` 抽象（默认 MiniMax，
+  但已支持经 `.env.multimodal` 的 `VISION_BASE_URL` / `VISION_MODEL` / `VISION_API_KEY`
+  切换到任意 OpenAI 兼容视觉模型，如 Qwen-VL / GLM-4V / Claude）。`browser_vision`
+  不关心具体 provider，选择权留在既有 config 层。不引新依赖。
 - **`browser_cdp`**：`params` 收 JSON 字符串，内部 parse（工具参数是扁平标量，不传 dict）。
 
 ## 错误处理与边界
