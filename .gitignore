@@ -8,7 +8,9 @@ dist/
 .pytest_cache/
 *.sock
 .coverage
+
+# Generated dependencies and build outputs
 node_modules/
 .build/
 build/
-/state
+state/

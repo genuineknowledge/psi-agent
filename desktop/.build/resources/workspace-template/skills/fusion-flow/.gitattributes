@@ -1,7 +1,0 @@
-# Pin .flow.ts to TypeScript (double extension confuses linguist's .ts heuristic).
-*.flow.ts linguist-language=TypeScript
-# Mark prebuilt runtime bundle + tool script as generated so language stats
-# reflect the source (TypeScript), not the compiled JS artifact.
-runtime/agent-flow-core.bundle.mjs linguist-generated=true
-runtime/agent-flow-core.bundle.d.mts linguist-generated=true
-doctor.mjs linguist-generated=true
