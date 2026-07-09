@@ -63,6 +63,12 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "background_start": "Start a detached shell command; returns process_id",
     "background_stop": "Stop a background process by process_id",
     "background_list": "List registered background processes",
+    "sessions_list": "List workspace sessions (histories, background, optional Gateway)",
+    "sessions_history": "Read conversation history for one session",
+    "session_status": "Inspect one session runtime info and metadata",
+    "session_keyword_search": "Search session histories by keyword or phrase",
+    "session_task_search": "List sessions matching a task category",
+    "sessions_export": "Export session transcript (markdown = user/assistant dialogue only)",
     "subagent_plan": "Plan subagent sockets and spawn commands (does not start processes)",
     "subagent_wait": "Wait until subagent AI or Session socket is ready",
     "subagent_chat": "Send one message to a subagent; returns final text only",
@@ -86,6 +92,12 @@ TOOL_ORDER: list[str] = [
     "background_start",
     "background_stop",
     "background_list",
+    "sessions_list",
+    "sessions_history",
+    "session_status",
+    "session_keyword_search",
+    "session_task_search",
+    "sessions_export",
     "subagent_plan",
     "subagent_wait",
     "subagent_chat",
@@ -357,6 +369,16 @@ Explain that without installing and enabling Fusion Memory, you cannot remember 
 If the user agrees, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, and check the Fusion Memory service.
 If the user declines, continue without memory and do not call Fusion Memory tools.
 If a memory tool reports that Fusion Memory is unavailable, continue without memory and tell the user to run `fusion-memory doctor`.\
+"""
+
+SESSION_MANAGEMENT_SECTION = """\
+## Session management
+Cross-session recall uses workspace session tools (not Fusion Memory transcripts):
+- `sessions_list` / `session_status` / `sessions_history` — discover and inspect sessions
+- `session_keyword_search` — find sessions by phrase in past messages
+- `session_task_search` — find sessions by type (subagent, github, recent, …)
+
+When the user references another chat or past wording, read `skills/session-management/SKILL.md`, search, then `sessions_history` for details.\
 """
 
 # ---------------------------------------------------------------------------

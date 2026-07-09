@@ -62,6 +62,7 @@ from prompt_sections import (
     SEND_FILES_SECTION,
     SILENT_REPLIES_SECTION,
     SILENT_TOKEN,
+    SESSION_MANAGEMENT_SECTION,
     SYSTEM_CLI_TOOLS_SECTION,
     STRUCTURED_TABLES_SECTION,
     TASK_SELF_CHECK_SECTION,
@@ -998,6 +999,9 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
             "",
             FUSION_MEMORY_SECTION,
         ]
+
+        if "session_keyword_search" in tools or "session_task_search" in tools:
+            stable_parts += ["", SESSION_MANAGEMENT_SECTION]
 
         skills_section = build_skills_section(skills_xml)
         if skills_section:
