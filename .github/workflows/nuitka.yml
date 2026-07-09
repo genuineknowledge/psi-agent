@@ -115,8 +115,33 @@ jobs:
           rc /nologo ".github\inno-setup\haitun.rc"
           cl /nologo /O2 ".github\inno-setup\haitun.c" ".github\inno-setup\haitun.res" /Fe:".github\inno-setup\haitun.exe" /link /SUBSYSTEM:WINDOWS user32.lib
       - shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"
+          # Fetch via the authenticated GitHub Contents API (5000 req/hr with the
+          # workflow token) instead of anonymous raw.githubusercontent.com, whose
+          # low anonymous rate limit intermittently returns HTTP 429 on shared
+          # Actions runner IPs. Retry with exponential backoff as a safety net.
+          $uri = "https://api.github.com/repos/jrsoftware/issrc/contents/Files/Languages/ChineseSimplified.isl?ref=main"
+          $out = ".github\inno-setup\ChineseSimplified.isl"
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept        = "application/vnd.github.raw"
+            "User-Agent"  = "psi-agent-ci"
+          }
+          $maxAttempts = 5
+          for ($i = 1; $i -le $maxAttempts; $i++) {
+            try {
+              Invoke-WebRequest -Uri $uri -Headers $headers -OutFile $out
+              Write-Host "Downloaded ChineseSimplified.isl on attempt $i."
+              break
+            } catch {
+              if ($i -eq $maxAttempts) { throw }
+              $delay = [math]::Pow(2, $i)
+              Write-Host "Attempt $i failed: $($_.Exception.Message). Retrying in $delay s..."
+              Start-Sleep -Seconds $delay
+            }
+          }
       - shell: pwsh
         run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp /O"installer-output" ".github\inno-setup\haitun.iss"'
       - uses: actions/upload-artifact@v7
