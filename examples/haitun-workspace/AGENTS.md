@@ -52,6 +52,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
 | `flow_manage` | CRUD + promote on Fusion Flow assets under `flows/`. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
+| `browser` (`browser.py` + `_browser_impl.py` + `_mcp.py`) | Browser automation via Playwright MCP driving the system browser (Edge). Tools surface as `browser_*` (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press_key`, `browser_navigate_back`, `browser_console_messages`, `browser_handle_dialog`, `browser_take_screenshot`, …). One long-lived `npx @playwright/mcp` server with `--shared-browser-context` keeps page state across calls. Requires Node.js/`npx`. |
 | `speech_to_text` | iFLYTEK streaming STT for WAV/PCM/MP3 files received through `[RECV:]`. |
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
 
@@ -72,6 +73,10 @@ All are optional and only affect the dynamic suffix / runtime line:
 
 - **Fusion Flow**: Node.js / `npm` / `npx`. First use: `cd skills/fusion-flow && npm install`.
 - **Serper search**: install psi-agent with the `mcp` extra and have `uvx` available.
+- **Browser tools**: Node.js / `npx` (first run downloads `@playwright/mcp`) and a system
+  browser (Edge by default). Optional env: `BROWSER_CHANNEL` (`msedge`/`chrome`),
+  `BROWSER_HEADLESS` (`1`/`0`), `BROWSER_CAPS` (default `vision,devtools`). If Node is
+  missing the `browser_*` tools are skipped at load time (logged), not fatal.
 
 ## ⚠️ Intentionally-kept un-wired code (future extension)
 

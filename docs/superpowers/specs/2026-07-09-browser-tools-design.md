@@ -2,128 +2,82 @@
 
 日期：2026-07-09
 分支：`add-browser-back`
-状态：已批准，待实现
+状态：已实现并端到端验证通过
+
+> **路线修订说明**：本文件初稿曾描述"路线 A"（在 tools/ 用 Playwright Python 库
+> 复刻 12 个 Hermes 同名工具、无 Node）。经与既有实现核对，本分支实际采用并已落地的
+> 是 **路线 B**：接 `npx @playwright/mcp` 服务器 + 复用系统 Edge，通过 `_mcp.py` 桥接
+> 自动暴露 Playwright MCP 原生 `browser_*` 工具。本文件已改写为反映路线 B。详细踩坑记录
+> 另见工作区 `docs/browser-tools-plan.md`。
 
 ## 背景
 
-给 haitun agent 增加浏览器操作能力，实现以下 12 个工具（名称与语义对齐
-NousResearch Hermes Agent 的内置 browser toolset）：
+给 haitun agent 增加浏览器操作能力（gap 分析中的 P0 缺失项）。用户初始诉求是覆盖一批
+`browser_*` 工具（navigate / click / type / snapshot / back / press / console /
+scroll / get_images / vision / dialog / cdp）。
 
-`browser_navigate`、`browser_snapshot`、`browser_click`、`browser_type`、
-`browser_press`、`browser_scroll`、`browser_back`、`browser_get_images`、
-`browser_console`、`browser_vision`、`browser_dialog`、`browser_cdp`
-
-### 溯源与路线选择
-
-- 这 12 个工具名来自 **Hermes Agent 内置 browser toolset**，不是微软 Playwright
-  MCP（Playwright MCP 的命名是 `browser_navigate_back` / `browser_press_key`
-  等，且无 `browser_vision` / `browser_get_images` / `browser_cdp`）。
-- Hermes 那套实现约上万行（`browser_tool.py` 单文件 ~206KB）+ Camofox 反检测
-  Firefox + 多 provider（browser_use / browserbase / firecrawl）架构，与
-  psi-agent 的工具进程模型深度耦合，无法直接搬迁。
-- **采用路线 A**：在 psi-agent 里复刻这 12 个同名工具，后端用 Playwright
-  Python 库自实现轻量 session 管理。纯 Python、无 Node 预装要求、可控可测、
-  与现有 `_fetch_impl` / `_vision` 风格一致。
+这批工具名源自 NousResearch Hermes Agent 的内置 browser toolset。但 Hermes 那套实现
+上万行 + Camofox + 多 provider，无法搬迁。经评估，采用 **Playwright MCP** 作后端：
+它暴露的原生工具（`browser_navigate` / `browser_snapshot` / `browser_click` /
+`browser_type` / `browser_press_key` / `browser_navigate_back` /
+`browser_console_messages` / `browser_handle_dialog` / `browser_take_screenshot` …
+共约 40 个）在语义上覆盖用户诉求，且 `--caps vision,devtools` 补回截图与原生 CDP。
+工具名沿用 Playwright 原生命名，不逐一改名对齐 Hermes 的 12 个名字。
 
 ## 架构
 
-在 `examples/haitun-workspace/tools/` 下新增两个文件，遵循现有
-`fetch.py`（薄壳）+ `_fetch_impl.py`（实现）的分层：
+复用项目已有的 `_mcp.py` MCP 桥接（与 serper search 同一条管线）：
 
-- **`browser.py`** — 12 个薄壳 async 工具函数，每个带 Google-style docstring
-  （工具描述 + Args），由 `ToolRegistry` 的 `compile+exec` 加载、
-  `ToolFunction.from_callable()` 转 JSON Schema。
-- **`_browser_impl.py`** — 实现层：module 级 `_Session` 单例管理 Playwright 的
-  `browser` / `context` / `page`，生成 accessibility snapshot 的 `@eN` ref-id
-  映射，实现各操作。
+- **`tools/browser.py`** — `@mcp` 装饰器，返回
+  `{transport:"http", url, prefix:"", terminate_on_close:False}`；导入时自动把
+  Playwright MCP 的 `browser_*` 工具生成为一等 workspace 工具。
+- **`tools/_browser_impl.py`** — 单例管理一个常驻 `npx @playwright/mcp` 服务器子进程：
+  按需启动、探测 "Listening on" 就绪、返回 HTTP endpoint、`atexit` 清理整棵进程树。
+- **`tools/_mcp.py`（改造）** — 新增两个可选配置键：`prefix`（默认沿用 `<func>_`，
+  serper 行为不变）和 `terminate_on_close`（默认 True）。
 
-### session 保活机制（核心）
+### 状态跨调用保持（成败关键）
 
-工具通过 `compile+exec` 加载进同一进程的 module `__dict__`，按 agent session
-隔离（见 `src/psi_agent/session/tool_registry.py`）。因此 Playwright 浏览器实例
-作为 `_browser_impl` 的 **module 级全局变量**，在同一 session 内跨工具调用自然
-存活：`browser_navigate` 首次调用时 lazy 启动浏览器，后续
-`browser_click` / `browser_type` / `browser_snapshot` 复用同一 page。此模式与
-`_background_process_registry` 的有状态先例一致。
+`_mcp` 每次工具调用新建/关闭一个 HTTP 连接。要让 `browser_navigate` 打开的页面被后续
+`browser_snapshot` / `browser_click` 看到，必须两个条件同时满足：
+① server 带 `--shared-browser-context`（否则第二连接报 "Browser is already in use"）；
+② client 传 `terminate_on_close=False`（否则连接关闭时发 DELETE，Playwright MCP 把 tab
+绑在 HTTP session 上，一删页面就回 about:blank）。
 
-### 后端
+## 四个已实测踩过的坑（均已在实现中修复）
 
-Playwright Python（`async_api`），Chromium，默认 headless。ref-id 通过
-accessibility / ARIA 快照生成，给每个可交互元素分配 `@eN` 编号，与 Hermes 的
-snapshot→click 语义对齐。
+1. **双前缀**：`_mcp.py` 默认给工具名加 `<函数名>_`，`browser()` 会产出
+   `browser_browser_navigate`。Playwright 工具名已自带 `browser_`，故传 `prefix=""`。
+2. **状态跨调用丢失**：见上（`--shared-browser-context` + `terminate_on_close=False`）。
+3. **Windows 上 localhost ≠ 127.0.0.1**：server 绑 `localhost` 只监听 IPv6 `::1`，
+   连 `127.0.0.1` 返回 ConnectError。endpoint 必须用 `localhost`。
+4. **孤儿 node 进程**：npx spawn 一个 Node 子进程（真正的 server），只 terminate npx
+   会留孤儿泄漏。退出用 `taskkill /F /T /PID`（Win）/ `killpg`（POSIX）杀整棵树。
 
-## 工具签名与语义
+另：`--output-mode stdout` 必加，否则 snapshot 写文件而 agent 读不到。
 
-所有函数 `async def`，返回 JSON 字符串（与 `fetch` / `describe_image` 一致）。
-参数命名对齐 Hermes。
+## 环境依赖与打包
 
-| 工具 | 签名 | 行为 |
-|---|---|---|
-| `browser_navigate` | `(url: str)` | lazy 启动浏览器并导航；初始化 session，必须先调 |
-| `browser_snapshot` | `(full: bool = False)` | 返回 accessibility 树文本 + `@eN` ref-id；`full=False` 紧凑视图 |
-| `browser_click` | `(ref: str)` | 点击 `@eN` 元素 |
-| `browser_type` | `(ref: str, text: str)` | 清空后输入文本 |
-| `browser_press` | `(key: str)` | 按键（Enter/Tab/快捷键） |
-| `browser_scroll` | `(direction: str)` | 滚动（up/down/left/right） |
-| `browser_back` | `()` | 后退 |
-| `browser_get_images` | `()` | 列出页面图片 URL + alt |
-| `browser_console` | `()` | 返回 console 输出 + JS 错误（累积捕获） |
-| `browser_vision` | `(question: str = "")` | 截图存临时文件 → 复用 `_vision.describe_image_impl` 分析 |
-| `browser_dialog` | `(action: str)` | 响应原生 JS 对话框（accept/dismiss） |
-| `browser_cdp` | `(command: str, params: str = "")` | 发原始 CDP 命令（escape hatch），经 Playwright CDP session |
-
-实现要点：
-
-- **`browser_console`**：navigate 时挂 `page.on("console")` / `page.on("pageerror")`
-  监听器，累积到 buffer，本工具读出。
-- **`browser_dialog`**：navigate 时挂 `page.on("dialog")`，把 pending dialog 存起来，
-  snapshot 里暴露 `pending_dialogs`，本工具决定 accept/dismiss。
-- **`browser_vision`**：`page.screenshot()` 存临时 PNG → 调已有
-  `describe_image_impl(path, question)` → 清理临时文件。**不新增 vision provider**：
-  直接复用现有 `read_vision_api_config` + `describe_image_impl` 抽象（默认 MiniMax，
-  但已支持经 `.env.multimodal` 的 `VISION_BASE_URL` / `VISION_MODEL` / `VISION_API_KEY`
-  切换到任意 OpenAI 兼容视觉模型，如 Qwen-VL / GLM-4V / Claude）。`browser_vision`
-  不关心具体 provider，选择权留在既有 config 层。不引新依赖。
-- **`browser_cdp`**：`params` 收 JSON 字符串，内部 parse（工具参数是扁平标量，不传 dict）。
-
-## 错误处理与边界
-
-- **统一返回结构**：每个工具返回 JSON，`{"ok": true/false, ...}`，失败带 `message`
-  （与 `_fetch_impl._error` 同风格）。
-- **未初始化保护**：除 `browser_navigate` 外，若 session 未启动，返回 `ok=false` +
-  `"call browser_navigate first"`，不抛异常。
-- **陈旧 ref 保护**：页面变化后旧 `@eN` 失效，`browser_click` / `browser_type` 捕获
-  Playwright 错误，提示重新 `browser_snapshot`。
-- **超时**：navigate 30s，交互 10s，超时返回 `ok=false` 而非挂起。
-- **资源上限**：snapshot / get_images / console 输出截断到上限（仿 fetch 的 `max_chars`）。
-- **清理**：内部 `_shutdown()` + `atexit` 关闭浏览器，避免僵尸 Chromium 进程
-  （Windows 上尤其重要）。
-
-## 依赖与打包
-
-- **新依赖**：`playwright`（Python 库）加入 `pyproject.toml` dependencies。
-- **浏览器内核**：首次需 `playwright install chromium`。写进 README / 工具 docstring；
-  `browser_navigate` 检测到内核缺失时返回 `ok=false` + 安装指引，而非崩溃。
-- **无 Node 要求**：Playwright Python 的 driver 自带，不需用户预装 Node（区别于
-  Playwright MCP 的 `npx`）。这是路线 A 优于路线 B 的关键。
-- **打包风险（已知，划出本次 scope）**：Playwright 自带 driver（Node 子进程）+
-  Chromium 二进制，与 Nuitka/PyInstaller 单文件打包有已知张力（体积、driver 路径解析）。
-  本次只保证**源码运行 + 测试通过**；打包适配作为后续单独事项。
+- **运行时依赖**：Node.js / `npx`（首次运行会联网拉 `@playwright/mcp` 包）+ 系统浏览器
+  （默认 Edge）。Node 缺失时 `browser_*` 工具在加载期被 registry 优雅跳过（记日志，不致命）。
+- **无新增 Python 依赖**：Playwright MCP 是 Node 包，非 Python 依赖 →
+  `pyproject.toml` 不改，Nuitka / PyInstaller 都无需新增条目。inno-setup 已捆绑 msys2 nodejs。
+- **可选 env**：`BROWSER_CHANNEL`（`msedge`/`chrome`）、`BROWSER_HEADLESS`（`1`/`0`）、
+  `BROWSER_CAPS`（默认 `vision,devtools`）、`BROWSER_MCP_PACKAGE`、`BROWSER_STARTUP_TIMEOUT`。
 
 ## 测试
 
-仿 `tests/test_schedule_manage.py` / `test_write_word.py` 模式，新增
-`examples/haitun-workspace/tests/test_browser.py`：
+`tests/test_browser.py`（7 个用例，不起真实浏览器/npx）：验证 `_mcp` 的 `prefix=""` 不
+双写、默认前缀保持 serper 行为、生成的工具是带签名的 async 函数、`_build_command` 组装、
+npx 缺失时清晰报错。
 
-- 用 Playwright 起本地 headless Chromium，导航到本地 `data:` URL 或临时 HTML 文件
-  （不依赖外网）。
-- 覆盖：navigate→snapshot→click→type 主链路、未初始化保护、陈旧 ref、console 捕获、
-  dialog、get_images。
-- `browser_vision` 的 vision API 调用 mock 掉（不打真实 MiniMax）。
-- push 前跑 `ruff check` + `ruff format --check` + pytest（CI 两个 lint 都跑）。
+端到端冒烟（Node + Edge 在场时，已于 2026-07-09 实测通过）：启动 server → 40 工具发现 →
+navigate example.com → 独立第二连接 snapshot 仍见 example.com（证明状态跨连接保持）→ 清理。
+
+push 前跑 `ruff check` + `ruff format --check`（CI 两者都跑）+ pytest。
 
 ## 非目标（YAGNI）
 
-- 不实现 Camofox 反检测、多 provider（browserbase/firecrawl）、云浏览器。
-- 不做多 tab 管理（Hermes 的 `browser_tabs` 不在清单内）。
-- 不在本次处理 Nuitka/PyInstaller 打包适配。
+- 不实现 Hermes 的 Camofox 反检测、多 provider（browserbase/firecrawl）、云浏览器。
+- 不把工具逐一改名对齐 Hermes 的 12 个名字（直接用 Playwright 原生名）。
+- 不在本次处理 Nuitka/PyInstaller 打包适配（无新增 Python 依赖，本就无需改动）。
