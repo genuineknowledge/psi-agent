@@ -255,6 +255,11 @@ class _CapturedInvoke:
         return {"ok": True, "code": 0, "msg": "", "data": self._data}
 
 
+def _qdict(req: Any) -> dict[str, str]:
+    """SDK stores queries as list[tuple[str, str]] with str-coerced values."""
+    return dict(req.queries)
+
+
 async def test_add_comment_builds_create_request(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke({"comment_id": "c1"})
     monkeypatch.setattr(_impl, "_invoke", cap)
@@ -263,17 +268,17 @@ async def test_add_comment_builds_create_request(monkeypatch: pytest.MonkeyPatch
     req = cap.request
     assert req.http_method.name == "POST"
     assert req.paths["file_token"] == "tok"
-    assert req.queries.get("file_type") == "docx"
+    assert _qdict(req).get("file_type") == "docx"
 
 
 async def test_list_comments_passes_pagination(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke({"items": [], "has_more": False})
     monkeypatch.setattr(_impl, "_invoke", cap)
     await _impl.list_comments_impl("tok", "docx", 25, "pt1")
-    req = cap.request
-    assert req.queries.get("page_size") == 25
-    assert req.queries.get("page_token") == "pt1"
-    assert req.queries.get("is_whole") == "true"
+    q = _qdict(cap.request)
+    assert q.get("page_size") == "25"  # add_query coerces to str
+    assert q.get("page_token") == "pt1"
+    assert q.get("is_whole") == "true"
 
 
 async def test_reply_replies_list_request(monkeypatch: pytest.MonkeyPatch) -> None:
