@@ -5,9 +5,11 @@ import inspect
 import json
 import sys
 from collections.abc import Callable, Mapping
+from contextlib import AsyncExitStack, suppress
 from typing import Any
 
 import anyio
+from loguru import logger
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
@@ -17,6 +19,24 @@ from mcp.types import TextContent
 
 class MCPError(RuntimeError):
     pass
+
+
+def _is_fatal(exc: BaseException) -> bool:
+    """True for exceptions that must always propagate (never be swallowed).
+
+    A misbehaving MCP server (HTTP 502, timeout, dropped connection) surfaces as an
+    ``Exception`` — but its anyio/httpx teardown can *also* raise
+    ``BaseExceptionGroup`` and ``GeneratorExit`` (both ``BaseException``, not
+    ``Exception``). Those slip past a plain ``except Exception`` and, uncaught, take
+    the whole gateway process down. We contain everything MCP-related here, while
+    still letting genuine interpreter-control signals through.
+    """
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        return True
+    if isinstance(exc, BaseExceptionGroup):
+        # A group is fatal only if it contains a fatal leaf.
+        return exc.subgroup((KeyboardInterrupt, SystemExit)) is not None
+    return False
 
 
 _T = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
@@ -35,11 +55,22 @@ def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
     prefix = config.pop("prefix", None)
     if prefix is None:
         prefix = getattr(func, "__name__", "mcp") + "_"
-    schemas = _discover(config)
+    name = getattr(func, "__name__", "mcp")
+    try:
+        schemas = _discover(config)
+    except BaseException as exc:  # contain MCP/anyio teardown (see _is_fatal); re-raise only fatals
+        if _is_fatal(exc):
+            raise
+        # The MCP server was unreachable / errored during discovery (e.g. Playwright
+        # MCP returning 502, or npx missing). Degrade gracefully: register no tools and
+        # keep loading the rest of the workspace, rather than letting the failure — which
+        # can surface as a BaseExceptionGroup — crash tool loading and the gateway.
+        logger.warning(f"MCP tool discovery for {name!r} failed; skipping its tools: {exc!r}")
+        return func
     g = sys._getframe(1).f_globals
     prepend = func.__doc__
-    for name, schema in schemas.items():
-        g[prefix + name] = _build(prefix + name, schema, config, prepend)
+    for tool_name, schema in schemas.items():
+        g[prefix + tool_name] = _build(prefix + tool_name, schema, config, prepend)
     return func
 
 
@@ -86,10 +117,19 @@ def _build(name: str, schema: dict[str, Any], config: dict[str, Any], prepend_do
     tn, cfg = schema["name"], config
 
     async def _fn(**kw: Any) -> str:
-        async with _connect(cfg) as session:
-            await session.initialize()
-            r = await session.call_tool(tn, kw)
-        return _fmt(r)
+        try:
+            async with _connect(cfg) as session:
+                await session.initialize()
+                r = await session.call_tool(tn, kw)
+            return _fmt(r)
+        except BaseException as exc:  # contain MCP/anyio teardown (see _is_fatal); re-raise only fatals
+            if _is_fatal(exc):
+                raise
+            # Report the failure back to the agent as a normal tool error instead of
+            # letting it (possibly a BaseExceptionGroup from the transport teardown)
+            # propagate and crash the session/gateway.
+            logger.warning(f"MCP tool {tn!r} call failed: {exc!r}")
+            return f"Error: MCP tool {tn!r} failed: {exc}"
 
     _fn.__name__ = name
     _fn.__qualname__ = name
@@ -116,22 +156,37 @@ def _fmt(result: Any) -> str:
 
 
 class _Session:
+    """Open an MCP transport + :class:`ClientSession` as one async context.
+
+    Uses an :class:`AsyncExitStack` so the session and transport unwind in the correct
+    nested order via a single ``aclose()``. Teardown of the streamable-HTTP transport can
+    raise ``RuntimeError("Attempted to exit cancel scope in a different task…")`` — an
+    anyio quirk when the connection failed mid-flight — which we suppress so a *cleanup*
+    error never masks the real failure nor escapes to crash the caller.
+    """
+
     def __init__(self, opener):
         self._o = opener
-        self._c: Any = None
-        self._s: ClientSession | None = None
+        self._stack: AsyncExitStack | None = None
 
     async def __aenter__(self):
-        self._c = self._o()
-        r, w, *_ = await self._c.__aenter__()
-        self._s = ClientSession(r, w)
-        return await self._s.__aenter__()
+        stack = AsyncExitStack()
+        try:
+            r, w, *_ = await stack.enter_async_context(self._o())
+            session = await stack.enter_async_context(ClientSession(r, w))
+        except BaseException:
+            # Roll back anything already entered before re-raising the connect failure.
+            with suppress(RuntimeError):
+                await stack.aclose()
+            raise
+        self._stack = stack
+        return session
 
     async def __aexit__(self, *a):
-        if self._s is not None:
-            await self._s.__aexit__(*a)
-        if self._c is not None:
-            await self._c.__aexit__(*a)
+        if self._stack is not None:
+            with suppress(RuntimeError):
+                await self._stack.__aexit__(*a)
+            self._stack = None
 
 
 def _connect(config: dict[str, Any]):
