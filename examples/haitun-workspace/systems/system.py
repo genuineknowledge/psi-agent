@@ -65,6 +65,7 @@ from prompt_sections import (
     SESSION_MANAGEMENT_SECTION,
     SYSTEM_CLI_TOOLS_SECTION,
     STRUCTURED_TABLES_SECTION,
+    TASK_PLANNING_SECTION,
     TASK_SELF_CHECK_SECTION,
     SUBAGENT_DELEGATION_SECTION,
     TOOL_CALL_STYLE_SECTION,
@@ -1012,6 +1013,9 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
         }
         if _session_tools & set(tools):
             stable_parts += ["", SESSION_MANAGEMENT_SECTION]
+
+        if "todo" in tools:
+            stable_parts += ["", TASK_PLANNING_SECTION]
 
         skills_section = build_skills_section(skills_xml)
         if skills_section:
