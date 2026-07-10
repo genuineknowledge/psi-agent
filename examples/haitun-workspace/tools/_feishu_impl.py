@@ -80,5 +80,11 @@ async def _invoke(request: Any) -> dict[str, Any]:
 
     ok = code == 0
     if not ok:
-        return _error(f"Feishu API error {code}: {msg}", code=code)
+        return {
+            "ok": False,
+            "code": code,
+            "msg": msg,
+            "data": data,
+            "message": f"Feishu API error {code}: {msg}",
+        }
     return {"ok": True, "code": 0, "msg": msg, "data": data}
