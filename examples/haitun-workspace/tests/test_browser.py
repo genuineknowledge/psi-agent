@@ -220,11 +220,19 @@ def test_build_command_defaults() -> None:
     assert "--caps" in cmd
 
 
-def test_build_command_headless_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("BROWSER_HEADLESS", "0")
+def test_build_command_headed_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default (env unset) is headed so the user can watch the agent drive the browser."""
+    monkeypatch.delenv("BROWSER_HEADLESS", raising=False)
     assert "--headless" not in _browser_impl._build_command("npx", 1)
+
+
+def test_build_command_headless_toggle(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Opt in to headless for displayless hosts / CI.
     monkeypatch.setenv("BROWSER_HEADLESS", "1")
     assert "--headless" in _browser_impl._build_command("npx", 1)
+    # Anything else stays headed.
+    monkeypatch.setenv("BROWSER_HEADLESS", "0")
+    assert "--headless" not in _browser_impl._build_command("npx", 1)
 
 
 def test_find_npx_missing_raises(monkeypatch: pytest.MonkeyPatch) -> None:
