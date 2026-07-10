@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import anyio
 import pytest
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
@@ -96,6 +97,114 @@ def test_generated_tool_is_async_with_signature(_fake_discover: None) -> None:
     fn = ns["browser_navigate"]
     assert inspect.iscoroutinefunction(fn)
     assert "url" in inspect.signature(fn).parameters
+
+
+# ── discovery-failure containment (regression: crashed the gateway) ───────────
+#
+# When the MCP server is unreachable or errors during discovery (e.g. Playwright MCP
+# returning HTTP 502), the failure used to propagate — sometimes as a
+# ``BaseExceptionGroup`` from the anyio/httpx teardown — past the tool loader's
+# ``except Exception`` and take the whole gateway process down. The ``@mcp`` decorator
+# must instead log and register no tools, so the rest of the workspace keeps loading.
+
+
+def test_discovery_failure_is_contained(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A plain Exception during discovery must not escape ``@mcp``; no tools registered."""
+
+    def _boom(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        raise RuntimeError("Server error '502 Bad Gateway'")
+
+    monkeypatch.setattr(_mcp, "_discover", _boom)
+    ns: dict[str, Any] = {}
+    # Must not raise.
+    exec(
+        "from _mcp import mcp\n"
+        "@mcp\n"
+        "def browser():\n"
+        "    return {'transport': 'http', 'url': 'http://localhost:1/mcp', 'prefix': ''}\n",
+        ns,
+    )
+    assert "browser_navigate" not in ns
+    assert "browser" in ns  # the decorated declaration itself is still returned
+
+
+def test_discovery_base_exception_group_is_contained(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The real failure mode: a ``BaseExceptionGroup`` (not an ``Exception``) must be caught.
+
+    ``streamable_http_client`` teardown raised ``BaseExceptionGroup`` /
+    ``RuntimeError('Attempted to exit cancel scope in a different task')`` which a plain
+    ``except Exception`` cannot catch. ``@mcp`` must still contain it.
+    """
+
+    def _boom(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        raise BaseExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [RuntimeError("Attempted to exit cancel scope in a different task than it was entered in")],
+        )
+
+    monkeypatch.setattr(_mcp, "_discover", _boom)
+    ns: dict[str, Any] = {}
+    exec(
+        "from _mcp import mcp\n"
+        "@mcp\n"
+        "def browser():\n"
+        "    return {'transport': 'http', 'url': 'http://localhost:1/mcp', 'prefix': ''}\n",
+        ns,
+    )
+    assert "browser_navigate" not in ns
+
+
+def test_fatal_signals_still_propagate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """KeyboardInterrupt / SystemExit must never be swallowed by the containment."""
+
+    def _interrupt(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_mcp, "_discover", _interrupt)
+    ns: dict[str, Any] = {}
+    with pytest.raises(KeyboardInterrupt):
+        exec(
+            "from _mcp import mcp\n"
+            "@mcp\n"
+            "def browser():\n"
+            "    return {'transport': 'http', 'url': 'http://localhost:1/mcp', 'prefix': ''}\n",
+            ns,
+        )
+
+
+def test_is_fatal_classification() -> None:
+    assert _mcp._is_fatal(KeyboardInterrupt())
+    assert _mcp._is_fatal(SystemExit())
+    assert not _mcp._is_fatal(RuntimeError("cancel scope"))
+    assert not _mcp._is_fatal(BaseExceptionGroup("g", [RuntimeError("x")]))
+    # A group carrying a fatal leaf is fatal.
+    assert _mcp._is_fatal(BaseExceptionGroup("g", [KeyboardInterrupt()]))
+
+
+def test_failed_tool_call_returns_error_string(_fake_discover: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed per-call invocation returns an ``Error:`` string, not a raised exception."""
+    ns: dict[str, Any] = {}
+    exec(
+        "from _mcp import mcp\n"
+        "@mcp\n"
+        "def browser():\n"
+        "    return {'transport': 'http', 'url': 'http://localhost:1/mcp', 'prefix': ''}\n",
+        ns,
+    )
+    fn = ns["browser_navigate"]
+
+    def _boom(_config: dict[str, Any]) -> Any:
+        # Mimic the transport teardown surfacing a BaseExceptionGroup (not an Exception).
+        raise BaseExceptionGroup("teardown", [RuntimeError("peer closed connection")])
+
+    monkeypatch.setattr(_mcp, "_connect", _boom)
+
+    async def _call() -> str:
+        return await fn(url="http://example.com")
+
+    result = anyio.run(_call)
+    assert result.startswith("Error:")
+    assert "browser_navigate" in result
 
 
 # ── _browser_impl command + error handling ───────────────────────────────────
