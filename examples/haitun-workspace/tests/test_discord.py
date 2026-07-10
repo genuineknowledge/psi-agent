@@ -220,10 +220,16 @@ async def test_missing_token_reports_config_error(monkeypatch: pytest.MonkeyPatc
     assert "DISCORD_BOT_TOKEN" in result["message"]
 
 
+class _FakeHTTPError(Exception):
+    """Stands in for a hikari HTTP error, which carries a ``status`` attribute."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 async def test_api_error_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    boom = RuntimeError("rate limited")
-    boom.status = 429  # type: ignore[attr-defined]
-    _patch_client(monkeypatch, error=boom)
+    _patch_client(monkeypatch, error=_FakeHTTPError(429, "rate limited"))
     result = json.loads(await discord_tool.list_channels("42"))
     assert result["ok"] is False
     assert "429" in result["message"]
