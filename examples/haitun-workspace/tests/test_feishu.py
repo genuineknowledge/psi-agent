@@ -187,3 +187,46 @@ async def test_drive_add_comment_tool_returns_json(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(_impl, "add_comment_impl", _fake)
     out = await mod.feishu_drive_add_comment(file_token="t", file_type="docx", content="hi")
     assert json.loads(out)["data"]["comment_id"] == "c9"
+
+
+@pytest.mark.asyncio
+async def test_doc_read_rejects_bad_file_type() -> None:
+    result = await _impl.read_doc_impl("pdf", "tok", 20000)
+    assert result["ok"] is False
+    assert "docx" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_doc_read_docx_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"content": "hello world"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.read_doc_impl("docx", "doc123", 20000)
+    assert result["ok"] is True
+    assert result["content"] == "hello world"
+    assert cap.request.paths["document_id"] == "doc123"
+    assert "docx/v1/documents" in cap.request.uri
+
+
+@pytest.mark.asyncio
+async def test_doc_read_doc_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"content": "old doc body"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.read_doc_impl("doc", "dtok", 20000)
+    assert result["content"] == "old doc body"
+    assert "doc/v2" in cap.request.uri
+
+
+@pytest.mark.asyncio
+async def test_doc_read_truncates(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"content": "x" * 100})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.read_doc_impl("docx", "t", 10)
+    assert result["truncated"] is True
+    assert len(result["content"]) == 10
+
+
+def test_doc_tool_is_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_doc")
+    fn = mod.feishu_doc_read
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()
