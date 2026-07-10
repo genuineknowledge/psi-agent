@@ -71,6 +71,7 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "sessions_export": "Export session transcript (markdown = user/assistant dialogue only)",
     "sessions_create": "Create a new Gateway-managed session runtime",
     "sessions_handoff": "Transfer task + context from one session to another",
+    "todo": "Session task list for multi-step work (read with no args; write with todos[])",
     "subagent_plan": "Plan subagent sockets and spawn commands (does not start processes)",
     "subagent_wait": "Wait until subagent AI or Session socket is ready",
     "subagent_chat": "Send one message to a subagent; returns final text only",
@@ -102,6 +103,7 @@ TOOL_ORDER: list[str] = [
     "sessions_export",
     "sessions_create",
     "sessions_handoff",
+    "todo",
     "subagent_plan",
     "subagent_wait",
     "subagent_chat",
@@ -395,6 +397,14 @@ Cross-session work uses workspace session tools (not Fusion Memory transcripts):
 LOAD `skills/session-management/SKILL.md` when the user references another chat, exports a transcript, \
 hands off work to another session, or asks for session list/status. Follow its recipes (search → inspect → \
 export / create → handoff). After a successful handoff, stop executing the transferred task in the source session.\
+"""
+
+TASK_PLANNING_SECTION = """\
+## Task planning (todo)
+For **multi-step or multi-part work**, read `skills/task-planning/SKILL.md` and use the `todo` tool to track \
+progress. **You** decide when decomposition is worth it — the user does not need to ask for a task list. \
+Use `todo()` to read; `todo(todos='[...]')` with a JSON array to write; `merge=true` to update status or append steps. \
+Keep updates silent; summarize outcomes when done, not every todo change.\
 """
 
 # ---------------------------------------------------------------------------
