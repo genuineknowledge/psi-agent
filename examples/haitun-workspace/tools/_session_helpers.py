@@ -984,3 +984,537 @@ async def export_session(
         "message_count": len(raw_messages),
         "bytes_written": size,
     }
+
+
+_HANDOFF_HISTORY_DEFAULT = 20
+_HANDOFF_CONTEXT_MAX_CHARS = 8000
+
+
+def _default_channel_socket(session_id: str, *, prefix: str = "psi") -> str:
+    if sys.platform == "win32":
+        return rf"\\.\pipe\{prefix}\channels\{session_id}"
+    return f"/tmp/{prefix}/channels/{session_id}.sock"
+
+
+def _channel_socket_from_row(row: dict[str, Any]) -> str:
+    gateway_info = row.get("gateway")
+    if isinstance(gateway_info, dict):
+        channel_socket = str(gateway_info.get("channel_socket", "")).strip()
+        if channel_socket:
+            return channel_socket
+    processes = row.get("background_processes")
+    if isinstance(processes, list):
+        for proc in processes:
+            if not isinstance(proc, dict):
+                continue
+            command = str(proc.get("command", ""))
+            if "--channel-socket" not in command:
+                continue
+            try:
+                tokens = shlex.split(command, posix=(sys.platform != "win32"))
+            except ValueError:
+                tokens = []
+            channel_socket = _argv_flag(tokens, "--channel-socket")
+            if channel_socket:
+                return channel_socket
+    session_id = str(row.get("session_id", "")).strip()
+    if session_id and bool(row.get("running")):
+        return _default_channel_socket(session_id)
+    return ""
+
+
+async def resolve_channel_socket(
+    *,
+    session_id: str,
+    workspace_raw: str = "",
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    sid = session_id.strip()
+    if not sid:
+        return {"ok": False, "message": "session_id is required", "session_id": ""}
+
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+    row = rows.get(sid)
+    if row is None:
+        return {
+            "ok": False,
+            "message": f"session {sid!r} not found",
+            "session_id": sid,
+            "workspace": str(workspace),
+            "gateway_url": gateway_url,
+        }
+
+    channel_socket = _channel_socket_from_row(row)
+    if not channel_socket:
+        return {
+            "ok": False,
+            "message": f"session {sid!r} is not running (no channel socket)",
+            "session_id": sid,
+            "workspace": str(workspace),
+            "gateway_url": gateway_url,
+            "running": bool(row.get("running")),
+        }
+
+    ready = await _sub.wait_socket(channel_socket, timeout_seconds=3.0)
+    if not ready.get("ok"):
+        return {
+            "ok": False,
+            "message": f"channel for session {sid!r} is not reachable",
+            "session_id": sid,
+            "channel_socket": channel_socket,
+            "workspace": str(workspace),
+            "gateway_url": gateway_url,
+        }
+
+    return {
+        "ok": True,
+        "session_id": sid,
+        "channel_socket": channel_socket,
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "title": str(row.get("title", "")),
+        "running": bool(row.get("running")),
+    }
+
+
+def _format_handoff_message(
+    *,
+    source_session_id: str,
+    task: str,
+    context_body: str,
+    query: str = "",
+    source_title: str = "",
+) -> str:
+    title_line = f" ({source_title})" if source_title else ""
+    query_line = f"\n**Matched query:** `{query}`\n" if query.strip() else ""
+    return (
+        "## Session handoff\n\n"
+        f"**From session:** `{source_session_id}`{title_line}\n"
+        f"**Task:** {task.strip()}\n"
+        f"{query_line}\n"
+        "### Context\n\n"
+        f"{context_body.strip()}\n\n"
+        "---\n"
+        "Continue this work in the current session. Do not ask the user to re-paste this handoff."
+    )
+
+
+def _messages_to_context_body(
+    messages: list[dict[str, Any]],
+    *,
+    query: str = "",
+    snippets: list[dict[str, Any]] | None = None,
+) -> str:
+    parts: list[str] = []
+    needle = query.strip().casefold()
+
+    if snippets:
+        parts.append("#### Matching excerpts")
+        for item in snippets:
+            role = str(item.get("role", "")).strip() or "message"
+            text = str(item.get("text", "")).strip()
+            if text:
+                parts.append(f"- **{role}**: {text}")
+        parts.append("")
+
+    dialogue_lines: list[str] = []
+    for msg in messages:
+        role = str(msg.get("role", "")).strip()
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        content = content.strip()
+        if not content:
+            continue
+        if needle and needle not in content.casefold():
+            continue
+        dialogue_lines.append(f"**{role.capitalize()}:** {content}")
+
+    if dialogue_lines:
+        parts.append("#### Recent dialogue")
+        parts.extend(dialogue_lines)
+
+    body = "\n\n".join(parts).strip()
+    if not body:
+        return "(no user/assistant context extracted)"
+    if len(body) > _HANDOFF_CONTEXT_MAX_CHARS:
+        return body[: _HANDOFF_CONTEXT_MAX_CHARS - 1] + "…"
+    return body
+
+
+async def _resolve_handoff_source_session(
+    *,
+    source_session_id: str,
+    query: str,
+    category: str,
+    workspace_raw: str,
+) -> tuple[str, dict[str, Any] | None]:
+    sid = source_session_id.strip()
+    if sid:
+        return sid, None
+
+    q = query.strip()
+    if q:
+        search = await keyword_search_sessions(
+            query=q,
+            workspace_raw=workspace_raw,
+            limit=1,
+        )
+        hits = search.get("hits")
+        if isinstance(hits, list) and hits and isinstance(hits[0], dict):
+            hit_sid = str(hits[0].get("session_id", "")).strip()
+            if hit_sid:
+                return hit_sid, search
+        return "", search
+
+    cat = category.strip().lower()
+    if cat:
+        search = await task_search_sessions(
+            category=cat,
+            workspace_raw=workspace_raw,
+            limit=1,
+        )
+        sessions = search.get("sessions")
+        if isinstance(sessions, list) and sessions and isinstance(sessions[0], dict):
+            hit_sid = str(sessions[0].get("session_id", "")).strip()
+            if hit_sid:
+                return hit_sid, search
+        return "", search
+
+    return resolve_session_id(""), None
+
+
+async def build_handoff_context(
+    *,
+    source_session_id: str,
+    workspace_raw: str = "",
+    query: str = "",
+    context: str = "",
+    history_limit: int = _HANDOFF_HISTORY_DEFAULT,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    sid = source_session_id.strip()
+    if not sid:
+        return {"ok": False, "message": "source_session_id is required", "context_body": ""}
+
+    if context.strip():
+        return {
+            "ok": True,
+            "source_session_id": sid,
+            "context_body": context.strip()[:_HANDOFF_CONTEXT_MAX_CHARS],
+            "source": "manual",
+        }
+
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+    row = rows.get(sid, {})
+    title = str(row.get("title", "")) if isinstance(row, dict) else ""
+
+    snippets: list[dict[str, Any]] = []
+    q = query.strip()
+    if q:
+        path = _history_path(workspace, sid)
+        if await path.exists():
+            hit = await _keyword_search_file(path, query=q, session_row=row if row else {"session_id": sid})
+            if hit and isinstance(hit.get("snippets"), list):
+                snippets = [s for s in hit["snippets"] if isinstance(s, dict)]
+
+    hist = await get_session_history(
+        session_id=sid,
+        workspace_raw=workspace_raw,
+        limit=max(1, min(500, int(history_limit))),
+        include_tool_messages=False,
+        include_gateway=include_gateway,
+    )
+    if not hist.get("ok"):
+        return {
+            "ok": False,
+            "message": str(hist.get("message", "failed to read source history")),
+            "source_session_id": sid,
+            "context_body": "",
+        }
+
+    messages = hist.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+
+    context_body = _messages_to_context_body(messages, query=q, snippets=snippets or None)
+    return {
+        "ok": True,
+        "source_session_id": sid,
+        "source_title": title,
+        "context_body": context_body,
+        "message_count": len(messages),
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "source": "history",
+    }
+
+
+async def send_session_message(
+    *,
+    target_session_id: str,
+    message: str,
+    workspace_raw: str = "",
+    wait: bool = True,
+    timeout_seconds: float = 600.0,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    resolved = await resolve_channel_socket(
+        session_id=target_session_id,
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+    if not resolved.get("ok"):
+        return resolved
+
+    channel_socket = str(resolved.get("channel_socket", ""))
+    chat_timeout = timeout_seconds if wait else min(timeout_seconds, 30.0)
+    chat = await _sub.chat_subagent(
+        channel_socket=channel_socket,
+        message=message,
+        timeout_seconds=chat_timeout,
+    )
+
+    if wait:
+        return {
+            **resolved,
+            "ok": bool(chat.get("ok")),
+            "message": str(chat.get("message", "")),
+            "reply_text": str(chat.get("text", "")),
+            "waited": True,
+        }
+
+    delivered = bool(chat.get("text", "").strip()) or str(chat.get("message", "")) == "ok"
+    return {
+        **resolved,
+        "ok": delivered or "timed out" in str(chat.get("message", "")),
+        "message": "handoff delivered (reply not required)"
+        if delivered or "timed out" in str(chat.get("message", ""))
+        else str(chat.get("message", "delivery failed")),
+        "reply_text": str(chat.get("text", "")),
+        "waited": False,
+    }
+
+
+async def handoff_session(
+    *,
+    target_session_id: str,
+    task: str,
+    source_session_id: str = "",
+    query: str = "",
+    category: str = "",
+    context: str = "",
+    workspace_raw: str = "",
+    wait: bool = False,
+    timeout_seconds: float = 600.0,
+    history_limit: int = _HANDOFF_HISTORY_DEFAULT,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    target = target_session_id.strip()
+    if not target:
+        return {"ok": False, "message": "target_session_id is required"}
+
+    task_text = task.strip()
+    if not task_text:
+        return {"ok": False, "message": "task is required"}
+
+    source, search_meta = await _resolve_handoff_source_session(
+        source_session_id=source_session_id,
+        query=query,
+        category=category,
+        workspace_raw=workspace_raw,
+    )
+    if not source:
+        msg = "could not resolve source session"
+        if search_meta and not search_meta.get("ok", True):
+            msg = str(search_meta.get("message", msg))
+        elif query:
+            msg = f"no session found matching query {query!r}"
+        elif category:
+            msg = f"no session found for category {category!r}"
+        else:
+            msg = "source_session_id is required when not running inside a session process"
+        return {
+            "ok": False,
+            "message": msg,
+            "target_session_id": target,
+            "search": search_meta,
+        }
+
+    if source == target:
+        return {
+            "ok": False,
+            "message": "source and target session must differ",
+            "source_session_id": source,
+            "target_session_id": target,
+        }
+
+    ctx = await build_handoff_context(
+        source_session_id=source,
+        workspace_raw=workspace_raw,
+        query=query,
+        context=context,
+        history_limit=history_limit,
+        include_gateway=include_gateway,
+    )
+    if not ctx.get("ok"):
+        return {**ctx, "target_session_id": target, "search": search_meta}
+
+    handoff_message = _format_handoff_message(
+        source_session_id=source,
+        task=task_text,
+        context_body=str(ctx.get("context_body", "")),
+        query=query,
+        source_title=str(ctx.get("source_title", "")),
+    )
+
+    send = await send_session_message(
+        target_session_id=target,
+        message=handoff_message,
+        workspace_raw=workspace_raw,
+        wait=wait,
+        timeout_seconds=timeout_seconds,
+        include_gateway=include_gateway,
+    )
+
+    return {
+        "ok": bool(send.get("ok")),
+        "message": str(send.get("message", "")),
+        "source_session_id": source,
+        "target_session_id": target,
+        "task": task_text,
+        "query": query.strip(),
+        "category": category.strip(),
+        "context_body": ctx.get("context_body", ""),
+        "handoff_message_chars": len(handoff_message),
+        "channel_socket": send.get("channel_socket", ""),
+        "reply_text": send.get("reply_text", ""),
+        "waited": send.get("waited", wait),
+        "search": search_meta,
+        "gateway_url": send.get("gateway_url", ctx.get("gateway_url", "")),
+    }
+
+
+async def create_session(
+    *,
+    workspace_raw: str = "",
+    session_id: str = "",
+    ai_id: str = "",
+    include_gateway: bool = True,
+    ready_timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
+    """Create a new Gateway-managed session (in-process runtime)."""
+    if not include_gateway:
+        return {
+            "ok": False,
+            "message": "sessions_create requires Gateway (POST /sessions)",
+        }
+
+    workspace = _bg.resolve_workspace(workspace_raw)
+    workspace_path = Path(str(workspace))
+    workspace_abs = str(workspace_path)
+
+    gateway_url = await _sub.resolve_gateway_url(workspace_path)
+    if not gateway_url:
+        return {
+            "ok": False,
+            "message": "Gateway is not reachable; cannot create session",
+            "workspace": workspace_abs,
+        }
+
+    resolved_ai = ai_id.strip()
+    if not resolved_ai:
+        resolved_ai = await _sub._resolve_ai_id_for_workspace(
+            gateway_url,
+            workspace=workspace_path,
+        )
+    if not resolved_ai:
+        return {
+            "ok": False,
+            "message": "ai_id is required (link an AI in Gateway or pass ai_id)",
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+        }
+
+    body: dict[str, Any] = {
+        "ai_id": resolved_ai,
+        "workspace": workspace_abs,
+    }
+    sid = session_id.strip()
+    if sid:
+        body["id"] = sid
+
+    try:
+        created = await _sub.post_gateway_json(
+            f"{gateway_url.rstrip('/')}/sessions",
+            body,
+            timeout_seconds=ready_timeout_seconds,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"failed to create session: {exc}",
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+            "ai_id": resolved_ai,
+        }
+
+    if not isinstance(created, dict):
+        return {
+            "ok": False,
+            "message": "Gateway returned unexpected create-session payload",
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+        }
+
+    new_id = str(created.get("id", "")).strip()
+    channel_socket = str(created.get("channel_socket", "")).strip()
+    if not new_id:
+        return {
+            "ok": False,
+            "message": "Gateway did not return a session id",
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+        }
+
+    deadline = anyio.current_time() + ready_timeout_seconds
+    ready: dict[str, Any] = {"ok": False}
+    while anyio.current_time() < deadline:
+        ready = await resolve_channel_socket(
+            session_id=new_id,
+            workspace_raw=workspace_raw,
+            include_gateway=include_gateway,
+        )
+        if ready.get("ok"):
+            channel_socket = str(ready.get("channel_socket", channel_socket))
+            break
+        await anyio.sleep(0.2)
+
+    if not ready.get("ok"):
+        return {
+            "ok": False,
+            "message": f"session {new_id!r} was created but channel is not ready yet",
+            "session_id": new_id,
+            "ai_id": resolved_ai,
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+            "channel_socket": channel_socket,
+        }
+
+    return {
+        "ok": True,
+        "session_id": new_id,
+        "ai_id": str(created.get("ai_id", resolved_ai)),
+        "workspace": str(created.get("workspace", workspace_abs)),
+        "gateway_url": gateway_url,
+        "channel_socket": channel_socket,
+        "running": True,
+    }

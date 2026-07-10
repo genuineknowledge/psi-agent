@@ -69,6 +69,8 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "session_keyword_search": "Search session histories by keyword or phrase",
     "session_task_search": "List sessions matching a task category",
     "sessions_export": "Export session transcript (markdown = user/assistant dialogue only)",
+    "sessions_create": "Create a new Gateway-managed session runtime",
+    "sessions_handoff": "Transfer task + context from one session to another",
     "subagent_plan": "Plan subagent sockets and spawn commands (does not start processes)",
     "subagent_wait": "Wait until subagent AI or Session socket is ready",
     "subagent_chat": "Send one message to a subagent; returns final text only",
@@ -98,6 +100,8 @@ TOOL_ORDER: list[str] = [
     "session_keyword_search",
     "session_task_search",
     "sessions_export",
+    "sessions_create",
+    "sessions_handoff",
     "subagent_plan",
     "subagent_wait",
     "subagent_chat",
@@ -381,12 +385,16 @@ If a memory tool reports that Fusion Memory is unavailable, continue without mem
 
 SESSION_MANAGEMENT_SECTION = """\
 ## Session management
-Cross-session recall uses workspace session tools (not Fusion Memory transcripts):
-- `sessions_list` / `session_status` / `sessions_history` — discover and inspect sessions
-- `session_keyword_search` — find sessions by phrase in past messages
-- `session_task_search` — find sessions by type (subagent, github, recent, …)
+Cross-session work uses workspace session tools (not Fusion Memory transcripts):
+- `sessions_list` / `session_status` / `sessions_history` — discover and inspect
+- `session_keyword_search` / `session_task_search` — locate sessions by phrase or type
+- `sessions_export` — save transcript to file (default markdown = user/assistant dialogue only)
+- `sessions_create` — new Gateway session runtime
+- `sessions_handoff` — structured task + context transfer to a **running** target session
 
-When the user references another chat or past wording, read `skills/session-management/SKILL.md`, search, then `sessions_history` for details.\
+LOAD `skills/session-management/SKILL.md` when the user references another chat, exports a transcript, \
+hands off work to another session, or asks for session list/status. Follow its recipes (search → inspect → \
+export / create → handoff). After a successful handoff, stop executing the transferred task in the source session.\
 """
 
 # ---------------------------------------------------------------------------

@@ -34,9 +34,11 @@ PSI_AGENT_HELP_GUIDANCE = (
 # ---------------------------------------------------------------------------
 
 SESSION_SEARCH_GUIDANCE = (
-    "When the user references another conversation or asks whether something was discussed before, "
-    "read `skills/session-management/SKILL.md` and use `session_keyword_search` (by phrase) or "
-    "`session_task_search` (by session type). Follow with `sessions_history` for details. "
+    "When the user references another conversation, exports a transcript, transfers work to another "
+    "session, or asks about session list/status, read `skills/session-management/SKILL.md`. Use "
+    "`session_keyword_search` (by phrase) or `session_task_search` (by type) to locate sessions; "
+    "`sessions_history` / `session_status` to inspect; `sessions_export` to save transcripts; "
+    "`sessions_create` + `sessions_handoff` for new-tab handoff. "
     "Do not use `memory_search` for raw transcript recall."
 )
 

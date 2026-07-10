@@ -1000,7 +1000,17 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
             FUSION_MEMORY_SECTION,
         ]
 
-        if "session_keyword_search" in tools or "session_task_search" in tools:
+        _session_tools = {
+            "sessions_list",
+            "sessions_history",
+            "session_status",
+            "session_keyword_search",
+            "session_task_search",
+            "sessions_export",
+            "sessions_create",
+            "sessions_handoff",
+        }
+        if _session_tools & set(tools):
             stable_parts += ["", SESSION_MANAGEMENT_SECTION]
 
         skills_section = build_skills_section(skills_xml)
