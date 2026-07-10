@@ -32,6 +32,7 @@ jobs:
         --collect-submodules pygments
         --collect-submodules git
         --collect-submodules chardet
+        --collect-submodules hikari
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
