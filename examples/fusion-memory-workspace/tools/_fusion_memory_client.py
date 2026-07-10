@@ -27,7 +27,7 @@ async def post_json(base_url: str, path: str, payload: dict[str, Any], timeout_s
         ):
             try:
                 data = await response.json()
-            except (aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError):
+            except aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError:
                 data = {}
             if response.status >= 400:
                 raise FusionMemoryToolError(

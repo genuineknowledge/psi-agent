@@ -149,8 +149,8 @@ the system prompt instructions:
 
 ```bash
 mkdir -p ./my-workspace/tools ./my-workspace/systems ./my-workspace/skills
-cp examples/fusion-memory-workspace/tools/_client.py ./my-workspace/tools/
-cp examples/fusion-memory-workspace/tools/_config.py ./my-workspace/tools/
+cp examples/fusion-memory-workspace/tools/_fusion_memory_client.py ./my-workspace/tools/
+cp examples/fusion-memory-workspace/tools/_fusion_memory_config.py ./my-workspace/tools/
 cp examples/fusion-memory-workspace/tools/memory_*.py ./my-workspace/tools/
 cp -R examples/fusion-memory-workspace/skills/fusion-memory-setup ./my-workspace/skills/
 ```

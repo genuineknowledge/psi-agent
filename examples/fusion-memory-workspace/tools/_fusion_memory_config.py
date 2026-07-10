@@ -46,7 +46,7 @@ def _clamp_timeout(raw: str | None) -> float:
         return FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
     try:
         value = float(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
     if value <= 0:
         return FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
