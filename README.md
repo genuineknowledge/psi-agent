@@ -119,6 +119,23 @@ uv run psi-agent gateway --listen http://127.0.0.1:8080   # 指定端口
 
 Gateway 还支持系统托盘图标（`--tray --icon icon.png`）、自动打开浏览器（`--browser`）、原生 webview 窗口（`--webview`）和自定义 socket 路径前缀（`--socket-path psi`，控制 AI/Session Unix socket 的 `/tmp/{prefix}/ais/...` 和 `/tmp/{prefix}/channels/...` 路径）。
 
+### 方式四：Nix 一键运行
+
+装了 Nix（开启 flakes）就无需手动准备 Python、node 或依赖，直接跑：
+
+```bash
+nix run github:genuineknowledge/psi-agent -- gateway --listen http://127.0.0.1:8080
+```
+
+flake 是 headless 的（不含 `--webview`/`--tray` 的原生窗口特性），Web Console 在普通浏览器里照常使用。运行时所需的 `uv`、`node`/`npx`、`bash`、`git` 已经打进可执行文件的 PATH，agent 在 workspace 里拉起子进程时能直接找到。
+
+Flake 输出：
+
+- `packages.default`（= `psi-agent`）：注入了运行时工具 PATH 的可执行文件，`nix run` 的入口
+- `packages.psi-agent-unwrapped`：不含 PATH 注入的纯 Python 环境
+- `packages.psi-agent-spa`：单独构建的 Vue 前端产物
+- `devShells.default`：开发环境（见「开发」）
+
 ## CLI 一览
 
 ```
@@ -361,6 +378,8 @@ uv run ruff format --check . # 格式
 uv run ty check              # 类型
 uv run pytest -v             # 测试
 ```
+
+用 Nix 的话，`nix develop` 会进入带 Python 3.14、`uv` 和 `node` 的开发 shell，之后照常用上面的 `uv run ...` 命令即可。
 
 ## 贡献者
 
