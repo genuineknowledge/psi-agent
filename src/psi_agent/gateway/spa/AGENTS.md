@@ -77,7 +77,7 @@ spa/
 │   ├── App.vue                      # 根组件：编排层 — 跨组件 handler + 弹窗 + drag-drop；sidebar/input 业务逻辑已移入各组件
 │   ├── stores/                      # Pinia 领域 store（4 个 setup-store）
 │   │   ├── ai.js                    # useAiStore：ais, selectedAiId, aiForm, fetchedModels, loadingModels, modelPanelOpen
-│   │   ├── session.js               # useSessionStore：sessions, selectedSessionId, sessionTitles, sessionMessages, sessionInputs, sessForm, editingSessionId, editingWorkspaceText, sessionSearchText, pinnedSessionIds, browser
+│   │   ├── session.js               # useSessionStore：sessions, selectedSessionId, sessionTitles, sessionMessages, sessionInputs, sessionStreaming, sessionAbortControllers, …
 │   │   ├── chat.js                  # useChatStore：messages, inputText, streaming, abortController, selectedFiles, userHasScrolledUp, uploadResetToken
 │   │   └── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch
 │   ├── utils.js                     # renderMd, htmlEscape, mimeType, localStorage
@@ -133,13 +133,13 @@ spa/
 | 文件 | 负责 | 关键逻辑 / 导出 |
 |------|------|-----------------|
 | `src/stores/ai.js` | AI 领域 store | `useAiStore` setup-store，导出 `ais/selectedAiId/aiForm/fetchedModels/loadingModels/modelPanelOpen`（详见「状态管理」表） |
-| `src/stores/session.js` | Session 领域 store | `useSessionStore` setup-store，导出 `sessions/selectedSessionId/sessionTitles/sessionMessages/sessionInputs/sessForm/editingSessionId/editingWorkspaceText/sessionSearchText/pinnedSessionIds/browser`；`pinnedSessionIds` 在 setup 内经 `loadPinnedSessionIds(window.localStorage)` 初始化 |
+| `src/stores/session.js` | Session 领域 store | `useSessionStore` setup-store，导出 `sessions/selectedSessionId/sessionTitles/sessionMessages/sessionInputs/sessionStreaming/sessionAbortControllers/…`；`pinnedSessionIds` 在 setup 内经 `loadPinnedSessionIds(window.localStorage)` 初始化 |
 | `src/stores/chat.js` | Chat 领域 store | `useChatStore` setup-store，导出 `messages/inputText/streaming/abortController/selectedFiles/userHasScrolledUp/uploadResetToken` |
 | `src/stores/ui.js` | UI 领域 store | `useUiStore` setup-store，导出 `loadingEnv/isLightMode/isDragging/dlgAI/dlgSess/snackbar/dlgConfirm/isSidebarCollapsed/isMobileSidebarOpen/sessionSearchFocusToken` + action `showAlert(message)`/`toggleSidebar(isMobile)`/`closeMobileSidebar()`/`focusSessionSearch()`（递增 `sessionSearchFocusToken` 作聚焦搜索框的跨组件信号，Sidebar `watch` 后 focus 自身 input） |
 | `src/api.js` | HTTP 封装 | `api(method,path,body)` — JSON fetch，非 2xx 抛错；`streamChat(sessionId,formData)` — POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
 | `src/utils.js` | 纯工具 + 持久化 | `renderMd`（marked+KaTeX，见「Markdown 渲染流程」）；`htmlEscape`（用户输入转义）；`mimeType`（扩展名→MIME）；localStorage 读写：`saveActiveState/loadActiveState`（`gw-active-ids`）、`saveHistory/loadHistory/clearHistory`（`gw-hist-<id>`，仅存 role/text/files） |
 | `src/providers.js` | 预置 provider 表 | 导出 `PROVIDERS` 数组：13 家供应商的 `v`(值)/`l`(标签)/`base`(默认 base_url)/`models`(预置模型名)，供 AiDialog 下拉 |
-| `src/sessionList.js` | 会话列表纯逻辑 | 无副作用工具（可单测）：`PINNED_SESSIONS_KEY`、`getSessionDisplayName`(标题优先、回退 workspace/'新会话')、`loadPinnedSessionIds/savePinnedSessionIds/togglePinnedSessionId`(置顶持久化 + 去重规范化)、`buildSessionTitlePayload`、`buildVisibleSessions`(搜索过滤 + 置顶排在前) |
+| `src/sessionList.js` | 会话列表纯逻辑 | 无副作用工具（可单测）：`PINNED_SESSIONS_KEY`、`PLACEHOLDER_SESSION_TITLE`（「新对话」）、`isPlaceholderSessionTitle`、`getSessionDisplayName`(标题优先、回退 workspace/占位)、`loadPinnedSessionIds/savePinnedSessionIds/togglePinnedSessionId`(置顶持久化 + 去重规范化)、`buildSessionTitlePayload`、`buildVisibleSessions`(搜索过滤 + 置顶排在前) |
 | `src/shortcuts.js` | 快捷键判定纯逻辑 | `matchSidebarShortcut(event)` → `'new-session'`(Ctrl/Cmd+Shift+O) / `'focus-search'`(Ctrl/Cmd+Shift+K) / `null`；用 `event.code` 而非 `key`（规避 Shift 大小写/输入法差异），`ctrlKey||metaKey` 兼容 Windows/macOS。配套 `shortcuts.test.js` 单测 |
 
 ### 根组件
@@ -170,7 +170,7 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 / 导出 |
 |------|------|-----------------|
-| `useChat.js` | 发送消息 | `sendMessage()`：取 inputText+files → 立即显示用户消息（`encodeFiles` base64）→ 预建 assistant 气泡 → `streamChat` + `for await readSSE`：text 累加渲染 / blob 附件 / error 追加 / reasoning 关闭当前气泡分段 → 丢弃尾部空气泡 → `saveHistory` → 无标题则 `generateTitle`（POST `/titles/generate`）。滚动委托 `useScroll`、清空 input 经 `uploadResetToken` 信号，**不直接操作 DOM** |
+| `useChat.js` | 发送消息 | `sendMessage()`：取 inputText+files → **`ensureSessionSidebarTitle(sid)`**（首轮发送时 POST `/titles` 占位「新对话」，侧栏立即出现）→ 显示用户消息 → 预建 assistant 气泡 → `streamChat` + `for await readSSE` → 丢弃尾部空气泡 → `saveHistory` → 仍为占位标题则 `generateTitle`（POST `/titles/generate` 覆盖）。滚动委托 `useScroll`、清空 input 经 `uploadResetToken` 信号，**不直接操作 DOM** |
 | `useSSE.js` | SSE 解析 | `async function* readSSE(reader)`：TextDecoder 累积 → `\r\n`→`\n` → 逐行取 `data:` → `[DONE]` 结束 / `JSON.parse` / 非 JSON 降级为 `{type:'text'}` |
 | `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → 恢复输入 → 从 `/history` 或 localStorage 加载消息 → 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
 | `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |
@@ -244,8 +244,10 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 | `sessions` | `array` | 服务端 Session 列表（唯一数据源） |
 | `selectedSessionId` | `string/null` | 当前选中的会话 |
 | `sessionTitles` | `object` | sessionId → AI 生成的标题 |
-| `sessionMessages` | `object` | sessionId → messages（切换时保留状态） |
+| `sessionMessages` | `object` | sessionId → messages（切换时保留状态；后台流式仍写入此缓存） |
 | `sessionInputs` | `object` | sessionId → {text, files}（切换时保留输入框及已选文件，`files` 为数组） |
+| `sessionStreaming` | `object` | sessionId → bool（各会话独立 SSE 进行中标记；切换侧栏不 abort 后台流） |
+| `sessionAbortControllers` | `object` | sessionId → AbortController（内存 only；停止钮仅作用于当前可见 session） |
 | `sessForm` | `object` | SessDialog 弹窗表单数据 |
 | `editingSessionId`, `editingWorkspaceText` | `string` | 会话标题编辑状态 |
 | `sessionSearchText` | `string` | 侧栏会话搜索框文本（`sessionList.js` 的 `buildVisibleSessions` 据此过滤） |
@@ -361,7 +363,8 @@ Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
    - scrollChatAreaIfLocked → 自动滚底（unless userHasScrolledUp）
 7. streaming=false
 8. saveHistory → localStorage
-9. 无标题 → generateTitle → POST /titles/generate
+9. ensureSessionSidebarTitle → POST `/titles` 占位「新对话」（侧栏立即可见）
+10. 流式结束 → saveHistory → 仍为占位标题 → generateTitle → POST `/titles/generate`
 ```
 
 **新特性**：
@@ -383,11 +386,13 @@ DELETE + POST /sessions (同 id, 原 workspace) → POST /titles
 
 ### 会话切换 (`selectSession` — `composables/useSession.js`)
 ```
-保存旧会话 sessionMessages + sessionInputs（含 files 数组）
-→ 切换 selectedSessionId
-→ 恢复新会话 inputText + selectedFiles
-→ 从 /history 或 localStorage 加载消息
+消息以 sessionMessages[id] 为唯一数据源（后台 SSE 持续写入同一数组）
+→ 保存旧会话 sessionInputs + sessionStreaming + sessionAbortControllers
+→ 切换 selectedSessionId → mirrorSessionMessages 恢复 chat.messages → 恢复 streaming/abortController（**不 abort 后台 SSE**）
+→ 无缓存则从 /history 或 localStorage 加载
 → 滚底 + 关闭移动端侧栏
+
+createSession 必须走 selectSession，避免新建时清空 chat.messages 导致旧会话流式内容丢失。
 ```
 
 ## 移动端适配 (`useKeyboard.js`)

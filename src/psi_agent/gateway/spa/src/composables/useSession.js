@@ -9,6 +9,43 @@ function origin() {
   return window.location.origin.replace(/\/+$/, '')
 }
 
+/** Drop in-memory caches when a session is deleted from Gateway. */
+export function clearSessionLocalState(id) {
+  const session = useSessionStore()
+  delete session.sessionMessages[id]
+  delete session.sessionInputs[id]
+  delete session.sessionStreaming[id]
+  delete session.sessionAbortControllers[id]
+}
+
+function snapshotCurrentSession(oldId) {
+  const session = useSessionStore()
+  const chat = useChatStore()
+  if (!session.sessionMessages[oldId] && chat.messages.length > 0) {
+    session.sessionMessages[oldId] = [...chat.messages]
+  }
+  session.sessionInputs[oldId] = { text: chat.inputText, files: [...chat.selectedFiles] }
+  session.sessionStreaming[oldId] = chat.streaming
+  if (chat.abortController) {
+    session.sessionAbortControllers[oldId] = chat.abortController
+  }
+}
+
+function mirrorSessionMessages(id) {
+  const session = useSessionStore()
+  const chat = useChatStore()
+  const list = session.sessionMessages[id]
+  if (!list) return
+  chat.messages.splice(0, chat.messages.length, ...list)
+}
+
+function restoreSessionView(id) {
+  const session = useSessionStore()
+  const chat = useChatStore()
+  chat.streaming = !!session.sessionStreaming[id]
+  chat.abortController = session.sessionAbortControllers[id] ?? null
+}
+
 export async function selectSession(id) {
   const session = useSessionStore()
   const chat = useChatStore()
@@ -18,8 +55,7 @@ export async function selectSession(id) {
   if (session.editingSessionId === id) return
   const oldId = session.selectedSessionId
   if (oldId) {
-    session.sessionMessages[oldId] = [...chat.messages]
-    session.sessionInputs[oldId] = { text: chat.inputText, files: [...chat.selectedFiles] }
+    snapshotCurrentSession(oldId)
   }
   session.selectedSessionId = id
 
@@ -28,10 +64,9 @@ export async function selectSession(id) {
   chat.selectedFiles = saved?.files || []
 
   if (session.sessionMessages[id]) {
-    chat.messages.splice(0, chat.messages.length, ...session.sessionMessages[id])
+    mirrorSessionMessages(id)
+    restoreSessionView(id)
   } else {
-    // 先在本地数组里把消息构建完整，再一次性原子替换 chat.messages，
-    // 避免「先清空 → await fetch → 逐条 push」中间那段空窗让聊天区闪一下空白。
     const localHist = loadHistory(id)
     const built = []
     try {
@@ -53,9 +88,10 @@ export async function selectSession(id) {
         built.push({ id: '', role: h.role, text: h.text, html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text), files: h.files || [], stopped: h.stopped || false })
       })
     }
-    // 切换期间用户可能又点了别的会话；仅当仍停留在本会话时才落地，避免竞态覆盖。
     if (session.selectedSessionId === id) {
       chat.messages.splice(0, chat.messages.length, ...built)
+      session.sessionMessages[id] = [...built]
+      restoreSessionView(id)
     }
   }
 

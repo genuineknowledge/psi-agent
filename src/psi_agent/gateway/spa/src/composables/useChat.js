@@ -2,19 +2,92 @@ import { useChatStore } from '../stores/chat.js'
 import { useSessionStore } from '../stores/session.js'
 import { htmlEscape, renderMd, saveHistory, loadHistory } from '../utils.js'
 import { readSSE } from './useSSE.js'
-import { streamChat } from '../api.js'
+import { api, streamChat } from '../api.js'
 import { scrollToBottomIfLocked } from './useScroll.js'
+import {
+  buildSessionTitlePayload,
+  isPlaceholderSessionTitle,
+  PLACEHOLDER_SESSION_TITLE,
+} from '../sessionList.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
 }
 
-function addMessage(role, id) {
+function ensureSessionMessageList(sid) {
+  const session = useSessionStore()
   const chat = useChatStore()
+  if (!session.sessionMessages[sid]) {
+    if (session.selectedSessionId === sid && chat.messages.length > 0) {
+      session.sessionMessages[sid] = [...chat.messages]
+    } else {
+      session.sessionMessages[sid] = []
+    }
+  }
+  return session.sessionMessages[sid]
+}
+
+/** Message list for *sid* — always sessionMessages; visible session mirrors into chat.messages. */
+function getMessagesList(sid) {
+  return ensureSessionMessageList(sid)
+}
+
+function mirrorVisibleMessages(sid, list) {
+  const session = useSessionStore()
+  const chat = useChatStore()
+  if (session.selectedSessionId !== sid) return
+  if (chat.messages.length !== list.length || chat.messages.some((m, i) => m !== list[i])) {
+    chat.messages.splice(0, chat.messages.length, ...list)
+  }
+}
+
+function isSessionStreaming(sid) {
+  return !!useSessionStore().sessionStreaming[sid]
+}
+
+function setSessionStreaming(sid, value) {
+  const session = useSessionStore()
+  const chat = useChatStore()
+  session.sessionStreaming[sid] = value
+  if (session.selectedSessionId === sid) {
+    chat.streaming = value
+  }
+}
+
+/** Ensure sidebar shows this session immediately with a placeholder title. */
+export async function ensureSessionSidebarTitle(sid) {
+  if (!sid) return
+  const session = useSessionStore()
+  const current = session.sessionTitles[sid]
+  if (current && !isPlaceholderSessionTitle(current)) return
+  session.sessionTitles[sid] = PLACEHOLDER_SESSION_TITLE
+  try {
+    await api('POST', '/titles', buildSessionTitlePayload({ id: sid }, PLACEHOLDER_SESSION_TITLE))
+  } catch (_) {}
+}
+
+function setSessionAbortController(sid, controller) {
+  const session = useSessionStore()
+  const chat = useChatStore()
+  if (controller) {
+    session.sessionAbortControllers[sid] = controller
+  } else {
+    delete session.sessionAbortControllers[sid]
+  }
+  if (session.selectedSessionId === sid) {
+    chat.abortController = controller
+  }
+}
+
+function addMessage(sid, role, id) {
+  const list = getMessagesList(sid)
   const m = { id, role, text: '', html: '', files: [], stopped: false }
-  chat.messages.push(m)
-  scrollToBottomIfLocked()
-  return chat.messages[chat.messages.length - 1]
+  list.push(m)
+  mirrorVisibleMessages(sid, list)
+  if (useSessionStore().selectedSessionId === sid) {
+    scrollToBottomIfLocked()
+  }
+  return list[list.length - 1]
 }
 
 async function encodeFiles(files, um) {
@@ -35,12 +108,16 @@ export async function sendMessage() {
   const chat = useChatStore()
   const session = useSessionStore()
 
-  if (chat.streaming || !session.selectedSessionId) return
+  const sid = session.selectedSessionId
+  if (!sid || isSessionStreaming(sid)) return
   const text = chat.inputText.trim()
   const files = [...chat.selectedFiles]
   if (!text && !files.length) return
 
-  chat.streaming = true
+  await ensureSessionSidebarTitle(sid)
+  ensureSessionMessageList(sid)
+
+  setSessionStreaming(sid, true)
   chat.inputText = ''
   chat.selectedFiles = []
   chat.uploadResetToken++
@@ -48,12 +125,12 @@ export async function sendMessage() {
 
   let um = null
   if (text) {
-    um = addMessage('user', `u-${Date.now()}`)
+    um = addMessage(sid, 'user', `u-${Date.now()}`)
     um.text = text
     um.html = htmlEscape(text)
     await encodeFiles(files, um)
   } else if (files.length) {
-    um = addMessage('user', `u-${Date.now()}`)
+    um = addMessage(sid, 'user', `u-${Date.now()}`)
     um.text = `[Uploaded File${files.length > 1 ? 's' : ''}: ${files.map(f => f.name).join(', ')}]`
     um.html = htmlEscape(um.text)
     await encodeFiles(files, um)
@@ -65,38 +142,36 @@ export async function sendMessage() {
   fd.append('chunks', JSON.stringify(chunks))
   for (const f of files) fd.append('file', f)
 
-  let asst = addMessage('assistant', `a-${Date.now()}`)
+  let asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
 
   const controller = new AbortController()
-  chat.abortController = controller
+  setSessionAbortController(sid, controller)
 
   try {
-    const reader = await streamChat(session.selectedSessionId, fd, controller.signal)
+    const reader = await streamChat(sid, fd, controller.signal)
     for await (const chunkData of readSSE(reader)) {
       if (chunkData.type === 'text' && chunkData.text !== undefined) {
-        if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
+        if (!asst) asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
         asst.text += chunkData.text
         asst.html = renderMd(asst.text)
       } else if (chunkData.type === 'blob') {
-        if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
+        if (!asst) asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
         asst.files.push({ name: chunkData.name, data: chunkData.data })
       } else if (chunkData.type === 'error') {
-        if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
+        if (!asst) asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
         asst.text += '\n[Error: ' + chunkData.error + ']'
         asst.html = renderMd(asst.text)
       } else if (chunkData.type === 'reasoning') {
-        // reasoning marks a non-text step (tool call/result or model thinking);
-        // close the current text bubble so the next text starts a new one.
-        // Only split when the current bubble actually has content — avoids
-        // stranding the pre-created empty bubble or splitting on a leading think.
         if (asst && (asst.text || asst.files.length)) asst = null
       }
-      scrollToBottomIfLocked()
+      if (useSessionStore().selectedSessionId === sid) {
+        mirrorVisibleMessages(sid, getMessagesList(sid))
+        scrollToBottomIfLocked()
+      }
     }
   } catch (e) {
-    if (!asst) asst = addMessage('assistant', `a-${Date.now()}`)
+    if (!asst) asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
     if (e.name === 'AbortError') {
-      // 用户主动停止：保留已生成内容，用独立标记展示（样式固定，不走 markdown）
       asst.stopped = true
     } else {
       asst.text += '\n[Error: ' + e.message + ']'
@@ -104,31 +179,34 @@ export async function sendMessage() {
     }
   }
 
-  // Drop a trailing empty assistant bubble (e.g. a reasoning-only turn, or the
-  // pre-created bubble that never received text before the stream ended).
-  const last = chat.messages[chat.messages.length - 1]
+  const msgs = getMessagesList(sid)
+  const last = msgs[msgs.length - 1]
   if (last && last.role === 'assistant' && !last.text && !last.files.length) {
-    chat.messages.pop()
+    msgs.pop()
   }
+  mirrorVisibleMessages(sid, msgs)
 
-  chat.streaming = false
-  chat.abortController = null
-  saveHistory(session.selectedSessionId, chat.messages)
+  setSessionStreaming(sid, false)
+  setSessionAbortController(sid, null)
+  saveHistory(sid, msgs)
 
-  const currentTitle = session.sessionTitles[session.selectedSessionId]
-  if (!currentTitle || currentTitle === '新会话' || currentTitle.trim() === '') generateTitle()
+  const currentTitle = session.sessionTitles[sid]
+  if (isPlaceholderSessionTitle(currentTitle)) {
+    await generateTitle(sid)
+  }
 }
 
 export function stopMessage() {
+  const session = useSessionStore()
   const chat = useChatStore()
-  // 中止当前 fetch；取消信号会一路传导到后端，agent 停止生成。
-  // sendMessage 的 catch(AbortError) 负责保留已生成内容并重置 streaming 状态。
-  if (chat.abortController) chat.abortController.abort()
+  const sid = session.selectedSessionId
+  if (!sid) return
+  const controller = session.sessionAbortControllers[sid] ?? chat.abortController
+  if (controller) controller.abort()
 }
 
-async function generateTitle() {
+async function generateTitle(sid) {
   const session = useSessionStore()
-  const sid = session.selectedSessionId
   if (!sid) return
   const msgs = loadHistory(sid)
   if (!msgs.length) return

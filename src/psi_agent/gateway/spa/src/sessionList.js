@@ -1,10 +1,17 @@
 export const PINNED_SESSIONS_KEY = 'gw-pinned-session-ids'
+/** Placeholder shown in sidebar as soon as the user sends the first message. */
+export const PLACEHOLDER_SESSION_TITLE = '新对话'
+
+export function isPlaceholderSessionTitle(title) {
+  if (typeof title !== 'string' || !title.trim()) return true
+  return title === PLACEHOLDER_SESSION_TITLE || title === '新会话'
+}
 
 export function getSessionDisplayName(session, titles = {}) {
   if (session && titles && titles[session.id]) {
     return titles[session.id]
   }
-  return session?.workspace || '新会话'
+  return session?.workspace || PLACEHOLDER_SESSION_TITLE
 }
 
 function normalizeIdList(ids) {
@@ -57,8 +64,7 @@ export function buildVisibleSessions(sessions, { titles = {}, query = '', pinned
   const normalizedQuery = query.trim().toLowerCase()
   const pinned = new Set(normalizeIdList(pinnedIds))
   return sessions
-    // 仅显示已生成标题的会话：新对话在首轮问答生成标题前不进侧栏，
-    // 标题写入 titles[id] 后自动出现（对齐 Gemini），避免显示丑陋的 workspace 路径。
+    // 仅显示已有 titles[id] 的会话（占位「新对话」或 AI 生成标题均可）。
     .filter(session => !requireTitle || hasTitle(session, titles))
     .map((session, index) => ({
       session,
