@@ -14,7 +14,6 @@ AI 层是一个统一的多 provider LLM 客户端，对外提供 OpenAI-compati
 
 ```
 Session ── POST /chat/completions ──► AI
-                                            │
                                             │ any_llm.acompletion()
                                             ▼
                               OpenAI / Anthropic / Gemini / ...
@@ -54,7 +53,7 @@ Session ── POST /chat/completions ──► AI
 
 ## 请求透传
 
-Session 发送的 body 中，除 `model` 被启动配置覆盖、`messages` 被显式提取、`stream` 被剥离（AI 层始终强制 `stream=True`）、`provider`/`api_key`/`api_base` 防御性剥离（避免与启动配置冲突）外，其余字段（`tools`, `temperature`, `max_tokens` 等）全部通过 `**body` 透传给 any-llm-sdk。
+Session 发送的 body 中，除 `model` 被启动配置覆盖、`messages` 被显式提取、`routing` 被视为内部元数据而剥离、`stream` 被剥离（AI 层始终强制 `stream=True`）、`provider`/`api_key`/`api_base` 防御性剥离（避免与启动配置冲突）外，其余字段（`tools`, `temperature`, `max_tokens` 等）全部通过 `**body` 透传给 any-llm-sdk。
 
 ## Provider 支持
 
@@ -73,3 +72,14 @@ Anthropic→OpenAI 格式转换由 any-llm-sdk 自动完成，包括 `thinking_d
 - `any-llm-sdk`：多 provider 客户端
 - `aiohttp`：HTTP/SSE server + client
 - `anyio`：异步 runtime
+
+## Router Demo
+
+除单上游 `Ai` 外，AI 层还提供一个本地路由 demo：`AiRouter`。
+
+- CLI 入口：`psi-agent ai router --session-socket ./ai.sock --upstream ./ai1.sock ./ai2.sock --policy difficulty`
+- router 代理到已经启动的上游 AI socket / URL，不直接调用 provider
+- 支持策略：`first` / `last` / `round_robin` / `difficulty`
+- `difficulty` 为内置 demo 规则：最新一条 user 文本去掉首尾空白并转小写后若恰好为 `hello`，走第一个 upstream；否则走最后一个 upstream
+- router 对被选中的 upstream 透传原始 OpenAI Chat Completions 请求体，并将 SSE 响应原样代理回下游
+- router 只接收规则化策略（`--policy`），不接收请求内候选模型列表

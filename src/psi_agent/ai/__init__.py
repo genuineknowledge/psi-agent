@@ -13,6 +13,7 @@ from loguru import logger
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 
+from .router import AiRouter as AiRouter
 from .server import handle_chat_completions
 
 
