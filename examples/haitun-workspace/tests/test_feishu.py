@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -161,3 +162,28 @@ async def test_reply_comment_with_mention(monkeypatch: pytest.MonkeyPatch) -> No
     await _impl.reply_comment_impl("tok", "docx", "cid", "hi", "ou_abc")
     els = cap.request.body["content"]["elements"]
     assert any(e["type"] == "person" and e["person"]["user_id"] == "ou_abc" for e in els)
+
+
+def test_drive_tools_are_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_drive")
+    for name in (
+        "feishu_drive_add_comment",
+        "feishu_drive_list_comments",
+        "feishu_drive_list_comment_replies",
+        "feishu_drive_reply_comment",
+    ):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"
+
+
+@pytest.mark.asyncio
+async def test_drive_add_comment_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = importlib.import_module("feishu_drive")
+
+    async def _fake(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": True, "code": 0, "msg": "", "data": {"comment_id": "c9"}}
+
+    monkeypatch.setattr(_impl, "add_comment_impl", _fake)
+    out = await mod.feishu_drive_add_comment(file_token="t", file_type="docx", content="hi")
+    assert json.loads(out)["data"]["comment_id"] == "c9"
