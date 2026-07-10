@@ -5,10 +5,11 @@ from typing import Any
 
 import aiohttp
 
-UNAVAILABLE_MESSAGE = "Fusion Memory request failed"
+FUSION_MEMORY_UNAVAILABLE_MESSAGE = "Fusion Memory request failed"
+UNAVAILABLE_MESSAGE = FUSION_MEMORY_UNAVAILABLE_MESSAGE
 
 
-class MemoryToolError(RuntimeError):
+class FusionMemoryToolError(RuntimeError):
     def __init__(self, *, error: str, cause: str, message: str) -> None:
         super().__init__(message)
         self.error = error
@@ -26,19 +27,19 @@ async def post_json(base_url: str, path: str, payload: dict[str, Any], timeout_s
         ):
             try:
                 data = await response.json()
-            except aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError:
+            except (aiohttp.ContentTypeError, json.JSONDecodeError, UnicodeDecodeError):
                 data = {}
             if response.status >= 400:
-                raise MemoryToolError(
+                raise FusionMemoryToolError(
                     error=_extract_error(data) or "request_failed",
                     cause=_extract_cause(data) or f"http_{response.status}",
-                    message=_extract_message(data) or UNAVAILABLE_MESSAGE,
+                    message=_extract_message(data) or FUSION_MEMORY_UNAVAILABLE_MESSAGE,
                 )
             return data if isinstance(data, dict) else {}
-    except MemoryToolError:
+    except FusionMemoryToolError:
         raise
     except (aiohttp.ClientError, TimeoutError) as exc:
-        raise MemoryToolError(
+        raise FusionMemoryToolError(
             error="service_unavailable",
             cause="connection_failed",
             message="Fusion Memory service is not reachable. Run fusion-memory status or fusion-memory start.",
@@ -74,7 +75,7 @@ def format_context_pack(pack: dict[str, Any], limit: int = 8) -> str:
 
 
 def format_error_result(exc: Exception) -> str:
-    if isinstance(exc, MemoryToolError):
+    if isinstance(exc, FusionMemoryToolError):
         payload = {"ok": False, "error": exc.error, "cause": exc.cause, "message": exc.message}
     else:
         payload = {
@@ -84,6 +85,9 @@ def format_error_result(exc: Exception) -> str:
             "message": "Fusion Memory request failed. Run fusion-memory doctor.",
         }
     return json.dumps(payload, ensure_ascii=False)
+
+
+MemoryToolError = FusionMemoryToolError
 
 
 def _normalize_timeout_seconds(value: float) -> float:
