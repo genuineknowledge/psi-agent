@@ -89,3 +89,75 @@ async def test_invoke_error_passes_through_code_msg(monkeypatch: pytest.MonkeyPa
     assert result["code"] == 99991672
     assert result["msg"] == "permission denied"
     assert "permission denied" in result["message"]
+
+
+class _CapturedInvoke:
+    """Replace _invoke; record the BaseRequest, return a canned success dict."""
+
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
+        self.request: Any = None
+        self._data = data or {}
+
+    async def __call__(self, request: Any) -> dict[str, Any]:
+        self.request = request
+        return {"ok": True, "code": 0, "msg": "", "data": self._data}
+
+
+def _qdict(req: Any) -> dict[str, str]:
+    """SDK stores queries as list[tuple[str, str]] with str-coerced values."""
+    return dict(req.queries)
+
+
+@pytest.mark.asyncio
+async def test_add_comment_builds_create_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"comment_id": "c1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.add_comment_impl("tok", "docx", "hello")
+    assert result["ok"] is True
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.paths["file_token"] == "tok"
+    assert _qdict(req).get("file_type") == "docx"
+
+
+@pytest.mark.asyncio
+async def test_list_comments_passes_pagination(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.list_comments_impl("tok", "docx", 25, "pt1")
+    q = _qdict(cap.request)
+    assert q.get("page_size") == "25"  # add_query coerces to str
+    assert q.get("page_token") == "pt1"
+    assert q.get("is_whole") == "true"
+
+
+@pytest.mark.asyncio
+async def test_reply_replies_list_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": []})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.list_comment_replies_impl("tok", "docx", "cid", 50, "")
+    req = cap.request
+    assert req.paths["comment_id"] == "cid"
+    assert "replies" in req.uri
+
+
+@pytest.mark.asyncio
+async def test_reply_comment_plain(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"reply_id": "r1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.reply_comment_impl("tok", "docx", "cid", "hi", "")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert "replies" in req.uri
+    els = req.body["content"]["elements"]
+    assert els[0]["text_run"]["text"] == "hi"
+    assert all(e["type"] != "person" for e in els)
+
+
+@pytest.mark.asyncio
+async def test_reply_comment_with_mention(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"reply_id": "r2"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.reply_comment_impl("tok", "docx", "cid", "hi", "ou_abc")
+    els = cap.request.body["content"]["elements"]
+    assert any(e["type"] == "person" and e["person"]["user_id"] == "ou_abc" for e in els)

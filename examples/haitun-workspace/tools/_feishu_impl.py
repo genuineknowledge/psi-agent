@@ -14,6 +14,10 @@ import json
 import os
 from typing import Any
 
+from lark_channel.api.drive import comment as _comment
+from lark_channel.core.enum import AccessTokenType, HttpMethod
+from lark_channel.core.model import BaseRequest
+
 _client: Any = None
 
 
@@ -88,3 +92,63 @@ async def _invoke(request: Any) -> dict[str, Any]:
             "message": f"Feishu API error {code}: {msg}",
         }
     return {"ok": True, "code": 0, "msg": msg, "data": data}
+
+
+async def add_comment_impl(file_token: str, file_type: str, content: str) -> dict[str, Any]:
+    req = _comment.build_comment_create_request(file_token=file_token, file_type=file_type, content=content)
+    return await _invoke(req)
+
+
+async def list_comments_impl(file_token: str, file_type: str, page_size: int, page_token: str) -> dict[str, Any]:
+    req = _comment.build_comment_list_request(
+        file_token=file_token,
+        file_type=file_type,
+        page_size=page_size,
+        page_token=page_token or None,
+        is_whole="true",
+    )
+    return await _invoke(req)
+
+
+async def list_comment_replies_impl(
+    file_token: str, file_type: str, comment_id: str, page_size: int, page_token: str
+) -> dict[str, Any]:
+    req = _comment.build_comment_reply_list_request(
+        file_token=file_token,
+        file_type=file_type,
+        comment_id=comment_id,
+        page_size=page_size,
+        page_token=page_token or None,
+    )
+    return await _invoke(req)
+
+
+def _build_reply_create_request(
+    *, file_token: str, file_type: str, comment_id: str, content: str, at_user_id: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/drive/v1/files/:file_token/comments/:comment_id/replies"
+    req.paths["file_token"] = file_token
+    req.paths["comment_id"] = comment_id
+    req.add_query("file_type", file_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    elements: list[dict[str, Any]] = []
+    if at_user_id:
+        elements.append({"type": "person", "person": {"user_id": at_user_id}})
+    elements.append({"type": "text_run", "text_run": {"text": content}})
+    req.body = {"content": {"elements": elements}}
+    return req
+
+
+async def reply_comment_impl(
+    file_token: str, file_type: str, comment_id: str, content: str, at_user_id: str
+) -> dict[str, Any]:
+    req = _build_reply_create_request(
+        file_token=file_token,
+        file_type=file_type,
+        comment_id=comment_id,
+        content=content,
+        at_user_id=at_user_id,
+    )
+    return await _invoke(req)
