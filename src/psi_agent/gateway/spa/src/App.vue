@@ -84,7 +84,8 @@ import {
 import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
 import { useKeyboard } from './composables/useKeyboard.js'
-import { selectSession } from './composables/useSession.js'
+import { selectSession, clearSessionLocalState } from './composables/useSession.js'
+import { getSessionDisplayName } from './sessionList.js'
 import { matchSidebarShortcut } from './shortcuts.js'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
@@ -226,9 +227,14 @@ async function executeConfirmedAction() {
 
   await api('DELETE', '/sessions/' + id).catch(() => {})
   clearHistory(id)
+  clearSessionLocalState(id)
   if (id === selectedSessionId.value) {
     selectedSessionId.value = null
     messages.value.splice(0)
+    chat.streaming = false
+    chat.abortController = null
+    chat.inputText = ''
+    chat.selectedFiles = []
   }
   saveActiveState(selectedAiId.value, selectedSessionId.value)
   await refreshAll()
@@ -243,7 +249,7 @@ const currentSessionTitle = computed(() => {
   if (!selectedSessionId.value) return 'psi-agent'
   const sess = sessions.value.find(s => s.id === selectedSessionId.value)
   if (!sess) return 'psi-agent'
-  return sessionTitles.value[selectedSessionId.value] || sess.workspace || '新会话'
+  return getSessionDisplayName(sess, sessionTitles.value)
 })
 
 
@@ -338,11 +344,12 @@ async function createSession() {
   }
   try {
     const info = await api('POST', '/sessions', { ai_id: selectedAiId.value, workspace: sessForm.value.workspace })
-    selectedSessionId.value = info.id
+    session.sessionMessages[info.id] = []
+    session.sessionStreaming[info.id] = false
+    delete session.sessionAbortControllers[info.id]
     dlgSess.value = false
-    messages.value.splice(0)
-    saveActiveState(selectedAiId.value, selectedSessionId.value)
     await refreshAll()
+    await selectSession(info.id)
   } catch (e) {
     ui.showAlert(e.message)
   }

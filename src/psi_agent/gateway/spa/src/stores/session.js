@@ -9,6 +9,10 @@ export const useSessionStore = defineStore('session', () => {
   const sessionTitles = ref({})
   const sessionMessages = ref({})
   const sessionInputs = ref({})
+  /** Per-session SSE in flight; survives sidebar switches without aborting backend. */
+  const sessionStreaming = ref({})
+  /** Per-session AbortController for stop button (in-memory only). */
+  const sessionAbortControllers = ref({})
   const sessForm = ref({ workspace: '' })
   const editingSessionId = ref(null)
   const editingWorkspaceText = ref('')
@@ -22,6 +26,8 @@ export const useSessionStore = defineStore('session', () => {
     sessionTitles,
     sessionMessages,
     sessionInputs,
+    sessionStreaming,
+    sessionAbortControllers,
     sessForm,
     editingSessionId,
     editingWorkspaceText,
