@@ -30,7 +30,7 @@ async def feishu_drive_add_comment(file_token: str, file_type: str, content: str
 
 
 async def feishu_drive_list_comments(file_token: str, file_type: str, page_size: int = 50, page_token: str = "") -> str:
-    """List whole-document comments on a Feishu/Lark file, most recent first.
+    """List whole-document comments on a Feishu/Lark file.
 
     Args:
         file_token: The file's token (from its URL).
