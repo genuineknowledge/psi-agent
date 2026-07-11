@@ -98,7 +98,7 @@ class WorkspaceManager:
                 continue
             if query and query not in name.lower():
                 continue
-            entry_path = _norm_path(await entry.resolve())
+            entry_path = _norm_path(str(await entry.resolve()))
             if await entry.is_dir():
                 entries.append({"name": name, "path": entry_path, "kind": "directory"})
             elif include_files and await entry.is_file():
