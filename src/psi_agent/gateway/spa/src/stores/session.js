@@ -14,6 +14,8 @@ import { loadPinnedSessionIds, mergeWorkspacePaths, normalizeWorkspacePath } fro
 export const useSessionStore = defineStore('session', () => {
   const sessions = ref([])
   const selectedSessionId = ref(null)
+  /** Client-only draft chat; POST /sessions happens on first send. */
+  const draftSession = ref(null)
   const sessionTitles = ref({})
   const sessionMessages = ref({})
   const sessionInputs = ref({})
@@ -90,6 +92,7 @@ export const useSessionStore = defineStore('session', () => {
   return {
     sessions,
     selectedSessionId,
+    draftSession,
     sessionTitles,
     sessionMessages,
     sessionInputs,

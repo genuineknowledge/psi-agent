@@ -1,30 +1,40 @@
 <template>
   <div :class="['msg', msg.role]">
-    <div class="bubble-wrap">
-      <button v-if="msg.role === 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
-        <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
-      </button>
-      <ThinkingBubble v-if="msg.role === 'assistant' && streaming && !msg.text" />
-      <div v-else class="bubble">
-        <div v-if="msg.text" class="bubble-content" v-html="msg.html"></div>
-        <div v-if="msg.stopped" class="stopped-tag">（已停止）</div>
+    <div class="msg-row">
+      <div class="msg-avatar" :class="msg.role" :aria-label="speakerLabel">
+        <span v-if="msg.role === 'user' && userInitial" class="avatar-text">{{ userInitial }}</span>
+        <span v-else-if="msg.role === 'user'" class="material-symbols-outlined">person</span>
+        <span v-else class="material-symbols-outlined">smart_toy</span>
       </div>
-      <button v-if="msg.role !== 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
-        <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
-      </button>
+      <div class="msg-content">
+        <div class="msg-speaker">{{ speakerLabel }}</div>
+        <div class="bubble-wrap">
+          <button v-if="msg.role === 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
+            <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
+          </button>
+          <ThinkingBubble v-if="msg.role === 'assistant' && streaming && !msg.text" />
+          <div v-else class="bubble">
+            <div v-if="msg.text" class="bubble-content" v-html="msg.html"></div>
+            <div v-if="msg.stopped" class="stopped-tag">（已停止）</div>
+          </div>
+          <button v-if="msg.role !== 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
+            <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
+          </button>
+        </div>
+        <template v-for="(f, i) in msg.files" :key="previewKey(f, i)">
+          <button
+            class="blob"
+            :class="{ active: openPreviewKey === previewKey(f, i) }"
+            type="button"
+            @click="openPreview(f, i)"
+            :aria-label="`预览文件 ${f.name}`"
+          >
+            <span class="material-symbols-outlined blob-icon">description</span>
+            <span class="blob-name">{{ f.name }}</span>
+          </button>
+        </template>
+      </div>
     </div>
-    <template v-for="(f, i) in msg.files" :key="previewKey(f, i)">
-      <button
-        class="blob"
-        :class="{ active: openPreviewKey === previewKey(f, i) }"
-        type="button"
-        @click="openPreview(f, i)"
-        :aria-label="`预览文件 ${f.name}`"
-      >
-        <span class="material-symbols-outlined blob-icon">description</span>
-        <span class="blob-name">{{ f.name }}</span>
-      </button>
-    </template>
     <FilePreview
       v-if="openPreviewFile"
       :file="openPreviewFile"
@@ -34,15 +44,18 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useClipboard } from '@vueuse/core'
+import { useClipboard, useStorage } from '@vueuse/core'
 import { useChatStore } from '../stores/chat.js'
 import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
 
+const LS_USER_NAME = 'gw-user-name'
+
 const chat = useChatStore()
 const { streaming } = storeToRefs(chat)
+const userName = useStorage(LS_USER_NAME, '')
 
 const props = defineProps({
   msg: {
@@ -52,9 +65,21 @@ const props = defineProps({
   },
 })
 
+const userInitial = computed(() =>
+  userName.value ? userName.value.trim().charAt(0).toUpperCase() : ''
+)
+
+const speakerLabel = computed(() => {
+  if (props.msg.role === 'user') {
+    return userName.value.trim() || '您'
+  }
+  return 'HaiTun'
+})
+
 const { copy, copied } = useClipboard({ copiedDuring: 1500 })
 const openPreviewKey = ref('')
 const openPreviewFile = ref(null)
+
 function copyMessage() {
   copy(props.msg.text)
 }
@@ -73,25 +98,79 @@ function closePreview() {
   openPreviewKey.value = ''
   openPreviewFile.value = null
 }
-
 </script>
 
 <style scoped>
 .msg {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
   max-width: 820px;
   width: 100%;
   margin: 0 auto 24px;
 }
 
-.msg.user {
+.msg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.msg.user .msg-row {
+  flex-direction: row-reverse;
+}
+
+.msg-avatar {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--md-shape-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 22px;
+}
+
+.msg-avatar.user {
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+}
+
+.msg-avatar.assistant {
+  background: var(--md-secondary-container);
+  color: var(--md-on-secondary-container);
+}
+
+.avatar-text {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.msg-avatar .material-symbols-outlined {
+  font-size: 20px;
+}
+
+.msg-content {
+  flex: 1;
+  min-width: 0;
+  max-width: calc(100% - 46px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.msg.user .msg-content {
   align-items: flex-end;
 }
 
-.msg.assistant {
+.msg.assistant .msg-content {
   align-items: flex-start;
+}
+
+.msg-speaker {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--md-text-secondary);
+  padding: 0 4px;
 }
 
 .bubble-wrap {
@@ -99,20 +178,19 @@ function closePreview() {
   display: flex;
   align-items: flex-start;
   gap: 4px;
+  max-width: 100%;
 }
 
 .bubble {
   flex: 1;
+  min-width: 0;
   padding: 12px 16px;
-  /* 对齐 Gemini：chat 正文比侧边栏(13/14px)大一档，建立层级 */
   font-size: 16px;
   line-height: 1.7;
   word-break: break-word;
   max-width: 100%;
 }
 
-/* 渲染后的 markdown 正文统一为气泡字体（sans-serif）：正文/标题/列表/表格
-   都 inherit，避免落到浏览器默认字体而杂乱。代码另用等宽字体（见下）。 */
 .bubble :deep(p),
 .bubble :deep(li),
 .bubble :deep(h1),
@@ -124,13 +202,11 @@ function closePreview() {
   font-family: inherit;
 }
 
-/* 代码统一等宽字体栈——语法高亮的代码块靠等宽才易读，对齐 FilePreview。 */
 .bubble :deep(code),
 .bubble :deep(pre) {
   font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Courier New", monospace;
 }
 
-/* 内联代码（反引号，非 <pre> 内）：浅背景片 + 圆角，与正文区分；长 token 可换行。 */
 .bubble :deep(:not(pre) > code) {
   background: var(--md-surface-container-high);
   border-radius: 6px;
@@ -139,8 +215,6 @@ function closePreview() {
   overflow-wrap: break-word;
 }
 
-/* 代码块：带背景方框 + padding + 圆角 + 横向滚动（宽代码/ASCII 图保留布局，
-   窗口窄时块内横向滚动而非撑破气泡）。块内 code 去掉内联片样式。 */
 .bubble :deep(pre) {
   background: var(--md-surface-container-low);
   border: 1px solid var(--md-outline-variant);
@@ -150,6 +224,7 @@ function closePreview() {
   overflow-x: auto;
   max-width: 100%;
 }
+
 .bubble :deep(pre code) {
   background: transparent;
   border: none;
@@ -160,28 +235,25 @@ function closePreview() {
 }
 
 .msg.user .bubble {
-  background: var(--md-surface-container-high);
-  color: var(--md-text-primary);
-  border-radius: 20px;
-  padding: 12px 18px;
-  /* User text is html-escaped (not markdown), so keep literal newlines. */
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+  border-radius: 16px 16px 4px 16px;
+  padding: 12px 16px;
   white-space: pre-wrap;
 }
 
 .msg.assistant .bubble {
-  background: transparent;
+  background: var(--md-surface-container-high);
   color: var(--md-text-primary);
-  border: none;
-  padding: 0;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: 16px 16px 16px 4px;
+  padding: 12px 16px;
 }
 
-/* 文本容器保持块级：v-html 产出的块级 markdown 嵌进块级元素，避免
-   block-in-inline 的无效嵌套。已停止标记作为块级兄弟节点。 */
 .bubble-content {
   min-width: 0;
 }
 
-/* 固定字体的「已停止」标记：字号/字重/颜色不随回复内容(markdown)变化 */
 .stopped-tag {
   display: block;
   margin-top: 4px;
@@ -233,7 +305,6 @@ function closePreview() {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-top: 6px;
   padding: 8px 14px;
   background: var(--md-surface-container-high);
   border: 1px solid var(--md-outline-variant);
@@ -277,19 +348,13 @@ function closePreview() {
   color: var(--md-primary);
 }
 
-.msg.user .blob {
-  align-self: flex-end;
-}
-
 @media (max-width: 768px) {
   .msg {
-    max-width: 90%;
+    max-width: 100%;
   }
-}
 
-@media (max-width: 400px) {
-  .msg {
-    max-width: 95%;
+  .msg-content {
+    max-width: calc(100% - 42px);
   }
 }
 </style>

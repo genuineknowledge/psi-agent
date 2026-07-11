@@ -42,7 +42,7 @@
           <div
             class="ws-header item"
             :class="{
-              selected: group.path === selectedWorkspacePath && !selectedSessionId,
+              selected: group.path === selectedWorkspacePath && !selectedSessionId && !draftForWorkspace(group.path),
             }"
             @click="onSelectWorkspace(group.path)"
           >
@@ -78,6 +78,16 @@
             </button>
           </div>
           <div v-show="isWorkspaceExpanded(group.path)" class="ws-sessions">
+            <div
+              v-if="draftForWorkspace(group.path)"
+              class="item session-item draft-item"
+              :class="{ selected: isDraftSelected(group.path) }"
+              @click="selectDraftChat(group.path)"
+            >
+              <span class="info">
+                <div class="name">{{ PLACEHOLDER_SESSION_TITLE }}</div>
+              </span>
+            </div>
             <div
               v-for="s in group.sessions"
               :key="s.id"
@@ -117,7 +127,7 @@
               </button>
             </div>
             <div
-              v-if="group.sessions.length === 0 && !sessionSearchText.trim()"
+              v-if="group.sessions.length === 0 && !sessionSearchText.trim() && !draftForWorkspace(group.path)"
               class="ws-empty-sessions"
             >
               暂无会话
@@ -151,20 +161,23 @@ import { storeToRefs } from 'pinia'
 import { useSessionStore } from '../stores/session.js'
 import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
-import { selectSession, selectWorkspace } from '../composables/useSession.js'
+import { selectSession, selectWorkspace, selectDraftChat } from '../composables/useSession.js'
 import {
   buildSessionTitlePayload,
   buildWorkspaceGroups,
   getSessionDisplayName,
+  PLACEHOLDER_SESSION_TITLE,
   savePinnedSessionIds,
   sessionsForWorkspace,
   togglePinnedSessionId,
+  normalizeWorkspacePath,
 } from '../sessionList.js'
 
 const session = useSessionStore()
 const {
   sessions,
   selectedSessionId,
+  draftSession,
   selectedWorkspacePath,
   gatewayCwd,
   registeredWorkspaces,
@@ -182,6 +195,16 @@ const emit = defineEmits(['new-session', 'open-workspace'])
 
 function onNewSession(workspacePath) {
   emit('new-session', workspacePath)
+}
+
+function draftForWorkspace(path) {
+  const draft = draftSession.value
+  if (!draft) return false
+  return normalizeWorkspacePath(path) === draft.workspace
+}
+
+function isDraftSelected(path) {
+  return draftForWorkspace(path) && !selectedSessionId.value
 }
 
 const searchInputRef = ref(null)
@@ -451,6 +474,8 @@ watch(
   color: var(--md-primary);
 }
 .session-item { margin-left: 4px; }
+.draft-item .name { color: var(--md-text-secondary); font-style: italic; }
+.draft-item.selected .name { color: var(--md-text-primary); font-style: normal; }
 .ws-empty-sessions {
   margin: 4px 16px 8px 24px;
   font-size: 12px;

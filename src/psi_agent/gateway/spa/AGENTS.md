@@ -77,7 +77,7 @@ spa/
 │   ├── App.vue                      # 根组件：编排层 — 跨组件 handler + 弹窗 + drag-drop；sidebar/input 业务逻辑已移入各组件
 │   ├── stores/                      # Pinia 领域 store（4 个 setup-store）
 │   │   ├── ai.js                    # useAiStore：ais, selectedAiId, aiForm, fetchedModels, loadingModels, modelPanelOpen
-│   │   ├── session.js               # useSessionStore：sessions, selectedSessionId, sessionTitles, sessionMessages, sessionInputs, sessionStreaming, sessionAbortControllers, …
+│   │   ├── session.js               # useSessionStore：sessions, selectedSessionId, draftSession, sessionTitles, sessionMessages, sessionInputs, sessionStreaming, sessionAbortControllers, …
 │   │   ├── chat.js                  # useChatStore：messages, inputText, streaming, abortController, selectedFiles, userHasScrolledUp, uploadResetToken
 │   │   └── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch
 │   ├── utils.js                     # renderMd, htmlEscape, mimeType, localStorage
@@ -95,8 +95,10 @@ spa/
 │   │   ├── InputBar.vue             # 输入 UI：textarea 自适应高度 + 文件选择 + 发送按钮；发送逻辑委托给 useChat.js；内嵌 ModelPanel
 │   │   ├── ModelPanel.vue           # 模型管理浮层（自定义下拉替代原生 datalist）；由 InputBar 嵌入
 │   │   ├── BaseDialog.vue           # 弹窗外壳(overlay + dialog + actions，插槽:title/默认/actions)
+│   │   ├── NoWorkspaceView.vue      # 无工作区引导页（打开工作区 CTA）
+│   │   ├── NoSessionView.vue        # 有工作区无会话引导页（新对话 CTA）
 │   │   ├── AiDialog.vue             # 链接大模型弹窗（基于 BaseDialog）
-│   │   ├── SessDialog.vue           # 创建会话弹窗（基于 BaseDialog）
+│   │   ├── SessDialog.vue           # （已废弃）原创建会话确认弹窗；新对话改为 draft + 首条发送 POST
 │   │   ├── PathPickerDialog.vue     # 通用路径选择器（工作区/导出复用）
 │   │   ├── ConfirmDialog.vue        # 通用确认弹窗（基于 BaseDialog）
 │   │   ├── FilePreview.vue          # Teleport 到 body 的抽屉式文件预览组件，按扩展名动态分派到 codemirror/pdfjs/docx-preview/pptx-preview/xlsx/papaparse；被 MessageBubble.vue 使用；props 含预览目标，emit close
@@ -105,7 +107,8 @@ spa/
 │   │   ├── useSSE.js                # ReadableStream SSE 逐行解析 async generator
 │   │   ├── useKeyboard.js           # visualViewport 键盘适配 + 手动上滚检测
 │   │   ├── useTheme.js              # 暗色/亮色切换（VueUse useColorMode + gw-theme + <html> light-mode class）
-│   │   ├── useSession.js            # selectSession：会话切换 + 草稿/消息缓存（App.vue + Sidebar 共用）
+│   │   ├── useMainView.js           # mainView 三态推导（no-workspace / no-session / chat）；配套 useMainView.test.js
+│   │   ├── useSession.js            # selectSession/selectWorkspace/startDraftChat/promoteDraftToSession/discardDraft（App.vue + Sidebar 共用）
 │   │   ├── usePathPicker.js         # openPathPicker() Promise API + PathPicker 状态
 │   │   ├── useScroll.js             # 消息容器滚动控制（注册容器 + 未锁定则滚底 + 上滚检测）
 │   │   └── useChat.js               # sendMessage 及其内部辅助（addMessage, encodeFiles, generateTitle）；不含 DOM 操作，滚动委托 useScroll、清空 file input 经 chat store 的 uploadResetToken 信号
@@ -134,7 +137,7 @@ spa/
 | 文件 | 负责 | 关键逻辑 / 导出 |
 |------|------|-----------------|
 | `src/stores/ai.js` | AI 领域 store | `useAiStore` setup-store，导出 `ais/selectedAiId/aiForm/fetchedModels/loadingModels/modelPanelOpen`（详见「状态管理」表） |
-| `src/stores/session.js` | Session 领域 store | `useSessionStore` setup-store，导出 `sessions/selectedSessionId/sessionTitles/sessionMessages/sessionInputs/sessionStreaming/sessionAbortControllers/…`；`pinnedSessionIds` 在 setup 内经 `loadPinnedSessionIds(window.localStorage)` 初始化 |
+| `src/stores/session.js` | Session 领域 store | `useSessionStore` setup-store，导出 `sessions/selectedSessionId/draftSession/sessionTitles/sessionMessages/…`；`draftSession` 为 client-only 草稿（首条发送前不 POST）；`pinnedSessionIds` 在 setup 内经 `loadPinnedSessionIds(window.localStorage)` 初始化 |
 | `src/stores/chat.js` | Chat 领域 store | `useChatStore` setup-store，导出 `messages/inputText/streaming/abortController/selectedFiles/userHasScrolledUp/uploadResetToken` |
 | `src/stores/ui.js` | UI 领域 store | `useUiStore` setup-store，导出 `loadingEnv/isLightMode/isDragging/dlgAI/dlgSess/snackbar/dlgConfirm/isSidebarCollapsed/isMobileSidebarOpen/sessionSearchFocusToken` + action `showAlert(message)`/`toggleSidebar(isMobile)`/`closeMobileSidebar()`/`focusSessionSearch()`（递增 `sessionSearchFocusToken` 作聚焦搜索框的跨组件信号，Sidebar `watch` 后 focus 自身 input） |
 | `src/api.js` | HTTP 封装 | `api(method,path,body)` — JSON fetch，非 2xx 抛错；`streamChat(sessionId,formData)` — POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
@@ -147,17 +150,14 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 |
 |------|------|----------|
-| `src/App.vue` | 编排层 | 组装 `#root-layout` 布局（Sidebar / #chat / 各弹窗）；`import { storeToRefs } from 'pinia'`，实例化 `useAiStore/useSessionStore/useChatStore/useUiStore` 并经 `storeToRefs` 取所需字段；持有跨组件 handler：`createAI/deleteAI/selectAI`、`createSession/executeConfirmedAction`（confirm 弹窗按 `actionType` 分派 ai/session 删除）、`browseWorkspace`、`fetchAvailableModels`（兼容 OpenAI `data[]` 与 Anthropic `models[]` 两种响应）；`#chat` 上的拖拽上传用 VueUse `useDropZone`（`isOverDropZone` → chat store 的 `selectedFiles` + ui store 的 `isDragging`）；`toggleSidebar`（用 VueUse `useBreakpoints({ mobile: 768 })` 分桌面折叠/移动抽屉，委托 ui store 的 `toggleSidebar` action）；侧栏折叠状态持久化用 VueUse `useStorage('gw-sidebar-state', 'expanded')`（`watch isSidebarCollapsed` 写回 `'collapsed'/'expanded'`）；`onMounted` 启动流程（GET titles/ais/sessions → 恢复选中 → `selectSession`）；全局快捷键用 VueUse `useEventListener(window, 'keydown', ...)`，判定委托纯函数 `matchSidebarShortcut(e)`（`shortcuts.js`），`'new-session'` → `openSessDialog()`、`'focus-search'` → 先展开/打开侧栏再 `ui.focusSessionSearch()`。**不写会话/发送业务逻辑**（已下沉到 Sidebar/InputBar/composable）。主区含 `#topbar`（折叠/主题切换/头像，头像点击设置 `gw-user-name` 称呼）；`#chat-main` 按 `showWelcome`（`computed(() => !selectedSessionId && messages.length===0)`，**加 `!selectedSessionId` 守卫避免切换会话时的加载间隙闪回欢迎屏**）切换两态：欢迎态显示渐变问候语（`--g-grad-hello`，`greetingText` 派生自 `gw-user-name`）+ 居中胶囊，用 `<transition name="hero-fade" mode="out-in">` 淡入；对话态胶囊沉底 |
+| `src/App.vue` | 编排层 | 组装 `#root-layout`；消费 `useMainView()` 切换主区三态：`NoWorkspaceView` / `NoSessionView` / 聊天（空消息欢迎 + `ChatArea` + **仅 chat 态挂载** `InputBar`）；`handleNewSession` → `startDraftChat`（不再弹 SessDialog）；拖拽上传仅在 `isChatActive` 时生效；`onMounted` 恢复 workspace/sessId（不恢复 draft）。**不写发送业务逻辑** |
 
 ### 组件 `src/components/`
 
 | 文件 | 组件职责 | 关键逻辑 |
 |------|----------|----------|
-| `Sidebar.vue` | 会话列表侧栏 | 工作区树 + 工作区行/列表内「+」发起新对话（emit `new-session`）/双击改名/删除/置顶/搜索；**`.sb-top` 固定**：品牌 + 「打开工作区」+ 搜索框（无顶栏「发起新对话」）|
-| `ChatArea.vue` | 消息列表容器 | `messages` 经 `storeToRefs` 从 `useChatStore` 取；`v-for messages` 渲染 `MessageBubble`；`onMounted` 向 `useScroll` 注册滚动容器；`watch messages.length` → `scrollToBottomIfLocked`。空状态由 App.vue 的欢迎屏承担（本组件不再渲染空提示）。`#messages` 底部 24px `mask-image` 向上渐隐，让消息贴近输入胶囊处淡出（与侧栏 `.sb-scroll` 渐变统一；桌面态规则，移动端 `@media` 不含） |
-| `MessageBubble.vue` | 单条消息气泡 | 消息居中 820px 列（`.msg` `max-width:820px;margin:0 auto`），用户 `align-items:flex-end`、助手 `flex-start`；用户气泡为中性 `--md-surface-container-high` 面板（**非** accent 蓝，对齐参考深色规则）；助手消息**去卡片**（透明背景）、**纯文字流无头像**；正文/标题/表格继承 sans-serif、代码用等宽字体栈，内联代码加浅背景片、代码块加背景方框（语法高亮见「Markdown 渲染流程」）；`v-html="msg.html"`（AI）/等待首 token 时显示 `ThinkingBubble`；复制按钮用 VueUse `useClipboard`；附件 chip 点击打开 `FilePreview`（`openPreviewKey` 追踪当前打开项） |
-| `ThinkingBubble.vue` | 加载指示 | 纯展示：三个脉冲圆点动画，等待首 token 时由 MessageBubble 显示 |
-| `InputBar.vue` | 输入区 UI | `v-show selectedSessionId`；已选文件 chip 条；`<input multiple>` 追加文件；textarea 自适应高度（`autoResizeInput`）；Enter 发送（委托 `useChat.sendMessage`）；内嵌 `ModelPanel`（模型选择器融入胶囊右侧）；`watch uploadResetToken` 清空 file input。**不含发送业务逻辑**。视觉为 Neural Expressive 药丸：`#input-area` 单行圆角胶囊（`--g-pill-radius`），欢迎态居中、对话态沉底（由 App.vue `#chat-main.welcome` class 控制定位） |
+| `Sidebar.vue` | 会话列表侧栏 | 工作区树 + draft 虚拟行「新对话」（client-only）+ 真实 session 列表；「+」/底部按钮 emit `new-session` → `startDraftChat` |
+| `InputBar.vue` | 输入区 UI | 仅 chat 态由 App 挂载；Enter 发送（`useChat.sendMessage`，首条发送时 `promoteDraftToSession`） |
 | `ModelPanel.vue` | 模型切换浮层 | 由 InputBar 内嵌；`modelPanelOpen/ais/selectedAiId` 经 `storeToRefs` 从 `useAiStore` 取；chip 显示当前模型；浮层列出 `ais`，点击 emit `select-ai`/`delete-ai`/`new-ai`（均冒泡到 App.vue） |
 | `BaseDialog.vue` | 弹窗外壳 | 所有弹窗的基类：overlay + dialog + `title`/默认/`actions` 三插槽；`show` prop 控制，overlay 点击 emit `close`；`.ok`/`.cancel` 按钮样式在此 scoped |
 | `AiDialog.vue` | 链接大模型弹窗 | 基于 BaseDialog；provider 自定义下拉（选中回填 base_url）；模型名自定义下拉（替代原生 datalist：↑↓/Enter/Esc 键盘导航 + 输入过滤 + `@mousedown.prevent` 防 blur）；base_url/api_key `@change` 触发 `fetchModels`；无 AI 时 `handleCancel` 拒绝关闭 |
@@ -209,16 +209,11 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 #root-layout
 ├── .page-loader          (v-if loadingEnv — 全屏 spinner)
 ├── .mobile-overlay       (v-if 移动端抽屉打开 — 半透明遮罩)
-├── <Sidebar>             (@new-session → openSessDialog)
-├── #chat                 (VueUse `useDropZone` 监听拖拽 → `isOverDropZone` 同步至 ui store 的 isDragging + chat store 的 selectedFiles)
-│   ├── .drop-overlay     (v-if ui store 的 isDragging — 拖放提示遮罩)
-│   ├── #mobile-topbar    (≤768px: 汉堡菜单 + 标题 + 主题切换)
-│   ├── .sidebar-toggle-btn / .theme-toggle-btn  (>768px 悬浮按钮)
-│   ├── <ChatArea>        (#messages → MessageBubble v-for)
-│   └── <InputBar>        (@select-ai, @delete-ai, @new-ai；内嵌 <ModelPanel>)
-├── <AiDialog>    (@create, @fetchModels)
-├── <SessDialog>  (@create, @browse)
-├── <ConfirmDialog> (@confirm)
+├── <Sidebar>             (@new-session → handleNewSession → startDraftChat)
+├── #chat
+│   ├── NoWorkspaceView / NoSessionView / ChatArea+InputBar（由 useMainView 切换）
+├── <AiDialog>
+├── <ConfirmDialog>
 └── <Snackbar>
 ```
 
@@ -244,13 +239,14 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 | 字段 | 类型 | 用途 |
 |------|------|------|
 | `sessions` | `array` | 服务端 Session 列表（唯一数据源） |
-| `selectedSessionId` | `string/null` | 当前选中的会话 |
+| `selectedSessionId` | `string/null` | 当前选中的**已落库**会话 |
+| `draftSession` | `object/null` | client-only 草稿 `{ draftId, workspace, aiId }`；首条 `sendMessage` 时 promote |
 | `sessionTitles` | `object` | sessionId → AI 生成的标题 |
 | `sessionMessages` | `object` | sessionId → messages（切换时保留状态；后台流式仍写入此缓存） |
 | `sessionInputs` | `object` | sessionId → {text, files}（切换时保留输入框及已选文件，`files` 为数组） |
 | `sessionStreaming` | `object` | sessionId → bool（各会话独立 SSE 进行中标记；切换侧栏不 abort 后台流） |
 | `sessionAbortControllers` | `object` | sessionId → AbortController（内存 only；停止钮仅作用于当前可见 session） |
-| `sessForm` | `object` | SessDialog 弹窗表单数据 |
+| `sessForm` | `object` | （遗留字段，SessDialog 已废弃） |
 | `editingSessionId`, `editingWorkspaceText` | `string` | 会话标题编辑状态 |
 | `sessionSearchText` | `string` | 侧栏会话搜索框文本（`sessionList.js` 的 `buildVisibleSessions` 据此过滤） |
 | `pinnedSessionIds` | `string[]` | 置顶会话 id 列表；在 store 的 setup 内经 `loadPinnedSessionIds(window.localStorage)` 从 `gw-pinned-session-ids` 初始化，见 `sessionList.js` |
@@ -385,6 +381,14 @@ DELETE + POST /sessions (同 id, 原 workspace) → POST /titles
 → sidebar 刷新
 ```
 
+### 新对话与首条发送
+```
+Sidebar「+」/「新对话」或快捷键 → startDraftChat（不 POST）
+→ mainView=chat，InputBar 可用，sidebar 显示 draft 行「新对话」
+→ sendMessage → promoteDraftToSession（POST /sessions）→ ensureSessionSidebarTitle → SSE
+→ 未发送就切走 → discardDraft，后端无记录
+```
+
 ### 会话切换 (`selectSession` — `composables/useSession.js`)
 ```
 消息以 sessionMessages[id] 为唯一数据源（后台 SSE 持续写入同一数组）
@@ -393,7 +397,7 @@ DELETE + POST /sessions (同 id, 原 workspace) → POST /titles
 → 无缓存则从 /history 或 localStorage 加载
 → 滚底 + 关闭移动端侧栏
 
-createSession 必须走 selectSession，避免新建时清空 chat.messages 导致旧会话流式内容丢失。
+切换会话或工作区时会 discardDraft；promote 后走 selectSession 等价路径恢复消息缓存。
 ```
 
 ## 移动端适配 (`useKeyboard.js`)

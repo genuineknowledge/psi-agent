@@ -7,7 +7,7 @@
 
     <div class="mobile-overlay" :class="{ active: isMobileSidebarOpen }" @click="ui.closeMobileSidebar"></div>
 
-    <Sidebar @new-session="openSessDialog" @open-workspace="openWorkspacePicker" />
+    <Sidebar @new-session="handleNewSession" @open-workspace="openWorkspacePicker" />
 
     <div
       id="chat"
@@ -47,22 +47,37 @@
         </button>
       </div>
 
-      <div id="chat-main" :class="{ welcome: showWelcome }">
-        <div v-if="showWelcome" class="welcome-hero" key="welcome">
-          <div class="welcome-greeting">{{ greetingText }}</div>
-        </div>
-        <ChatArea v-else key="chat" />
-        <InputBar
-          @select-ai="selectAI"
-          @delete-ai="confirmDeleteAI"
-          @new-ai="openAiDialog"
+      <div
+        id="chat-main"
+        :class="{
+          onboarding: mainView === MainView.NO_WORKSPACE || mainView === MainView.NO_SESSION,
+          welcome: mainView === MainView.CHAT && messages.length === 0,
+        }"
+      >
+        <NoWorkspaceView
+          v-if="mainView === MainView.NO_WORKSPACE"
+          @open-workspace="openWorkspacePicker"
         />
+        <NoSessionView
+          v-else-if="mainView === MainView.NO_SESSION"
+          @new-session="handleNewSession()"
+        />
+        <template v-else-if="mainView === MainView.CHAT">
+          <div v-if="messages.length === 0" class="welcome-hero" key="welcome">
+            <div class="welcome-greeting">{{ greetingText }}</div>
+          </div>
+          <ChatArea v-else key="chat" />
+          <InputBar
+            @select-ai="selectAI"
+            @delete-ai="confirmDeleteAI"
+            @new-ai="openAiDialog"
+          />
+        </template>
       </div>
     </div>
 
     <AiDialog @create="createAI" @fetchModels="fetchAvailableModels" />
     <PathPickerDialog />
-    <SessDialog @create="createSession" />
     <ConfirmDialog @confirm="executeConfirmedAction" />
     <Snackbar />
   </div>
@@ -85,15 +100,29 @@ import {
 import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
 import { useKeyboard } from './composables/useKeyboard.js'
-import { selectSession, selectWorkspace, clearSessionLocalState } from './composables/useSession.js'
+import { useMainView } from './composables/useMainView.js'
+import {
+  selectSession,
+  selectWorkspace,
+  clearSessionLocalState,
+  startDraftChat,
+  discardDraft,
+} from './composables/useSession.js'
 import { openPathPicker } from './composables/usePathPicker.js'
-import { getSessionDisplayName, getWorkspaceLabel, normalizeWorkspacePath, sessionsForWorkspace } from './sessionList.js'
+import {
+  getSessionDisplayName,
+  getWorkspaceLabel,
+  normalizeWorkspacePath,
+  PLACEHOLDER_SESSION_TITLE,
+  sessionsForWorkspace,
+} from './sessionList.js'
 import { matchSidebarShortcut } from './shortcuts.js'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBar from './components/InputBar.vue'
+import NoWorkspaceView from './components/NoWorkspaceView.vue'
+import NoSessionView from './components/NoSessionView.vue'
 import AiDialog from './components/AiDialog.vue'
-import SessDialog from './components/SessDialog.vue'
 import PathPickerDialog from './components/PathPickerDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import Snackbar from './components/Snackbar.vue'
@@ -101,8 +130,6 @@ import Snackbar from './components/Snackbar.vue'
 const LS_SIDEBAR = 'gw-sidebar-state'
 const sidebarState = useStorage(LS_SIDEBAR, 'expanded')
 
-// 用户称呼：localStorage 持久化，为空时用通用问候、头像用默认图标。
-// 后续可由 agent 对话设置（见 profile 机制），届时接入同一 gw-user-name key。
 const LS_USER_NAME = 'gw-user-name'
 const userName = useStorage(LS_USER_NAME, '')
 const greetingText = computed(() =>
@@ -121,20 +148,15 @@ const ai = useAiStore()
 const { ais, selectedAiId, aiForm, fetchedModels, loadingModels } = storeToRefs(ai)
 
 const session = useSessionStore()
-const { sessions, selectedSessionId, sessionTitles, selectedWorkspacePath, gatewayCwd } = storeToRefs(session)
+const { sessions, selectedSessionId, draftSession, sessionTitles, selectedWorkspacePath, gatewayCwd } = storeToRefs(session)
 
 const chat = useChatStore()
 const { messages, selectedFiles } = storeToRefs(chat)
 
 const ui = useUiStore()
-const { loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen } = storeToRefs(ui)
+const { loadingEnv, isLightMode, isDragging, dlgAI, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen } = storeToRefs(ui)
 
-// 欢迎屏：只要「当前会话为空」就显示（含刚新建、尚无消息的空会话）——这正是
-// 新建对话时要看到居中问候+胶囊的场景。启动阶段 loadingEnv=true 会把它压成 false，
-// 让会话恢复/历史加载都在 page-loader 遮罩之下完成，避免启动瞬间闪一下。
-// 切换到有内容的旧会话不会闪回欢迎屏：selectSession 已改为「先取完历史再原子替换
-// messages」，不再有「先清空→await」的空窗，故 messages 不会经过空态。
-const showWelcome = computed(() => !loadingEnv.value && messages.value.length === 0)
+const { mainView, isChatActive, MainView } = useMainView()
 
 const { toggleTheme } = useTheme()
 useKeyboard()
@@ -147,7 +169,7 @@ useEventListener(window, 'keydown', (e) => {
   if (!action) return
   e.preventDefault()
   if (action === 'new-session') {
-    openSessDialog()
+    handleNewSession()
   } else if (action === 'focus-search') {
     if (isMobile.value) {
       isMobileSidebarOpen.value = true
@@ -162,19 +184,15 @@ function toggleSidebar() {
   ui.toggleSidebar(isMobile.value)
 }
 
-function origin() {
-  return window.location.origin.replace(/\/+$/, '')
-}
-
 const chatDropRef = ref(null)
 const { isOverDropZone } = useDropZone(chatDropRef, {
   onDrop: (files) => {
-    if (!selectedSessionId.value) return
+    if (!isChatActive.value) return
     if (files && files.length) selectedFiles.value.push(...files)
   },
 })
 watch(isOverDropZone, (over) => {
-  isDragging.value = over && !!selectedSessionId.value
+  isDragging.value = over && isChatActive.value
 })
 
 async function refreshAIs() {
@@ -253,6 +271,12 @@ async function executeConfirmedAction() {
         chat.selectedFiles = []
       }
     }
+    if (draftSession.value?.workspace === wsPath) {
+      discardDraft()
+      messages.value.splice(0)
+      chat.inputText = ''
+      chat.selectedFiles = []
+    }
     session.removeRegisteredWorkspace(wsPath)
     if (selectedWorkspacePath.value === wsPath) {
       await selectWorkspace('')
@@ -283,6 +307,7 @@ function handleProviderChange() {
 }
 
 const currentSessionTitle = computed(() => {
+  if (draftSession.value) return PLACEHOLDER_SESSION_TITLE
   if (selectedSessionId.value) {
     const sess = sessions.value.find(s => s.id === selectedSessionId.value)
     if (sess) return getSessionDisplayName(sess, sessionTitles.value)
@@ -333,7 +358,7 @@ async function openWorkspacePicker() {
   await selectWorkspace(path)
 }
 
-async function openSessDialog(workspacePath) {
+async function handleNewSession(workspacePath) {
   if (!ais.value.length) {
     ui.showAlert('请先配置大模型')
     openAiDialog()
@@ -349,12 +374,17 @@ async function openSessDialog(workspacePath) {
     await selectWorkspace(path)
   }
   session.ensureWorkspaceExpanded(path)
-  dlgSess.value = true
+  await startDraftChat(path)
 }
 
 async function selectAI(id) {
   if (id === selectedAiId.value) return
   selectedAiId.value = id
+  if (draftSession.value) {
+    draftSession.value = { ...draftSession.value, aiId: id }
+    saveActiveState(selectedAiId.value, null, selectedWorkspacePath.value)
+    return
+  }
   if (selectedSessionId.value && sessions.value.find(s => s.id === selectedSessionId.value)) {
     const s = sessions.value.find(s => s.id === selectedSessionId.value)
     await api('DELETE', '/sessions/' + selectedSessionId.value).catch(() => {})
@@ -383,33 +413,11 @@ async function createAI() {
     await refreshAll()
     loadingEnv.value = false
     saveActiveState(selectedAiId.value, selectedSessionId.value, selectedWorkspacePath.value)
-    if (sessions.value.length === 0 && !session.registeredWorkspaces.length) await openWorkspacePicker()
-    else if (sessions.value.length === 0) openSessDialog()
-  } catch (e) {
-    ui.showAlert(e.message)
-  }
-}
-
-async function createSession() {
-  if (!selectedAiId.value) {
-    ui.showAlert('请先选择一个大模型代理')
-    return
-  }
-  if (!selectedWorkspacePath.value) {
-    await openWorkspacePicker()
-    if (!selectedWorkspacePath.value) return
-  }
-  try {
-    const info = await api('POST', '/sessions', {
-      ai_id: selectedAiId.value,
-      workspace: selectedWorkspacePath.value,
-    })
-    session.sessionMessages[info.id] = []
-    session.sessionStreaming[info.id] = false
-    delete session.sessionAbortControllers[info.id]
-    dlgSess.value = false
-    await refreshAll()
-    await selectSession(info.id)
+    if (sessions.value.length === 0 && !session.registeredWorkspaces.length) {
+      await openWorkspacePicker()
+    } else if (!selectedWorkspacePath.value && session.registeredWorkspaces.length) {
+      await selectWorkspace(session.registeredWorkspaces[0])
+    }
   } catch (e) {
     ui.showAlert(e.message)
   }
@@ -498,6 +506,7 @@ onMounted(async () => {
 @media (max-width: 768px) { #topbar { display: none; } }
 
 #chat-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#chat-main.onboarding,
 #chat-main.welcome {
   justify-content: center; align-items: center; gap: 40px;
   background: var(--g-welcome-glow);
