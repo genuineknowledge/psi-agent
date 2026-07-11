@@ -264,9 +264,13 @@ def _ensure_session(state: Path, key: str, workspace: str, ai_socket: str) -> st
 
 
 def _send(channel_socket: str, prompt: str) -> int:
-    """Send prompt to the long-lived session via a one-shot channel cli; forward output to the bundle."""
-    cmd = [*_psi_cmd(), "channel", "cli", "--session-socket", channel_socket, "--message", prompt]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    """Send prompt to the long-lived session via a one-shot channel cli; forward output to the bundle.
+
+    The prompt goes through the channel cli's stdin (`--message -`), not argv, so a
+    large payload can't overflow the OS command-line length limit.
+    """
+    cmd = [*_psi_cmd(), "channel", "cli", "--session-socket", channel_socket, "--message", "-"]
+    proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True)
     sys.stdout.write(proc.stdout)
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
@@ -277,6 +281,11 @@ def main(argv: list[str]) -> int:
     # argv looks like: run --workspace W --message M ...  (the leading 'run' token is ignored)
     args = _parse_args(argv)
     message = args.get("message", "")
+    # `--message -` means the bundle put the (possibly large) message on our stdin
+    # instead of argv, to dodge the OS command-line length limit (ENAMETOOLONG on a
+    # synthesizer that aggregates several upstream reports). Read it from stdin.
+    if message == "-":
+        message = sys.stdin.read()
     workspace = args.get("workspace") or os.environ.get("FLOW_PSI_WORKSPACE", "")
     if not workspace:
         sys.stderr.write("[shim] no workspace (need --workspace or FLOW_PSI_WORKSPACE)\n")
