@@ -55,7 +55,10 @@ else:
 
 
 def _psi_cmd() -> list[str]:
-    return shlex.split(os.environ.get("PSI_CMD", "uv run --no-sync psi-agent"))
+    # posix=False on Windows so backslashes in a path-bearing PSI_CMD
+    # (e.g. C:\tools\psi-agent) are NOT eaten as shell escapes by shlex.
+    raw = os.environ.get("PSI_CMD", "uv run --no-sync psi-agent")
+    return shlex.split(raw, posix=(os.name != "nt"))
 
 
 def _popen_detached(cmd: list[str]) -> subprocess.Popen:
