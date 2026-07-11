@@ -25,7 +25,13 @@ async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
     logger.info(f"Starting session server on {channel_socket}")
 
     app = web.Application()
-    app.router.add_post("/chat/completions", agent.handle_request)
+
+    async def _handle_request(request: web.Request) -> web.StreamResponse:
+        trace_id = request.headers.get("X-Trace-ID")
+        with logger.contextualize(trace_id=trace_id):
+            return await agent.handle_request(request)
+
+    app.router.add_post("/chat/completions", _handle_request)
 
     runner = web.AppRunner(app)
     try:
@@ -33,7 +39,7 @@ async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
         site = create_site(runner, channel_socket)
         await site.start()
     except Exception as e:
-        logger.error(f"Failed to start session server on {channel_socket}: {e}")
+        logger.exception(f"Failed to start session server on {channel_socket}: {e}")
         with anyio.CancelScope(shield=True):
             await runner.cleanup()
         raise

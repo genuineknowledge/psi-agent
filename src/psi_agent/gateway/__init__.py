@@ -133,7 +133,7 @@ class Gateway:
                     site = create_site(runner, addr)
                     await site.start()
                 except Exception as e:
-                    logger.error(f"Failed to start Gateway on {addr}: {e!r}")
+                    logger.exception(f"Failed to start Gateway on {addr}: {e!r}")
                     raise
 
                 logger.info(f"Gateway listening on {addr}")

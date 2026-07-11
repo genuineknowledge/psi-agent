@@ -13,6 +13,7 @@ from loguru import logger
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 
+from ._keys import API_KEY_KEY, BASE_URL_KEY, MODEL_KEY, PROVIDER_KEY
 from .server import handle_chat_completions
 
 
@@ -34,10 +35,10 @@ async def serve_ai(
     )
 
     app = web.Application()
-    app["provider"] = provider
-    app["model"] = model
-    app["api_key"] = api_key
-    app["base_url"] = base_url
+    app[PROVIDER_KEY] = provider
+    app[MODEL_KEY] = model
+    app[API_KEY_KEY] = api_key
+    app[BASE_URL_KEY] = base_url
     app.router.add_post("/chat/completions", handler)
 
     runner = web.AppRunner(app)
@@ -46,7 +47,7 @@ async def serve_ai(
         site = create_site(runner, socket_path)
         await site.start()
     except Exception as e:
-        logger.error(f"Failed to start AI service on {socket_path}: {e}")
+        logger.exception(f"Failed to start AI service on {socket_path}: {e}")
         with anyio.CancelScope(shield=True):
             await runner.cleanup()
         raise

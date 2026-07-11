@@ -67,6 +67,8 @@ Anthropic→OpenAI 格式转换由 any-llm-sdk 自动完成，包括 `thinking_d
 - **HTTP 层**（`response.prepare()` 之前）：返回 OpenAI 格式 `{"error": {...}}` JSON + HTTP 4xx/5xx
 - **SSE 层**（`response.prepare()` 之后）：ChatCompletionChunk error chunk → `finish_reason="error"`（psi-agent 内部扩展，非 OpenAI 标准）
 - **取消/断开安全**：上游 stream 在 `finally` 中用 `anyio.CancelScope(shield=True)` 调 `stream.aclose()` 关闭（`getattr` 守卫兼容无 `aclose` 的流），确保客户端断开 / 进程关闭被 cancel 时不泄露上游连接
+- **重试机制**：上游 AI 调用实现指数退避重试（3 次），仅在 SSE 流开始前（即 `response.prepare()` 之前）发生错误时触发。
+- **Trace ID 传播**：从 `X-Trace-ID` 头部提取 `trace_id` 并通过 `loguru.contextualize` 注入日志上下文。
 
 ## 依赖
 

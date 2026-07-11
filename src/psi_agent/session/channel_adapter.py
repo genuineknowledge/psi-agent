@@ -70,7 +70,7 @@ class ChannelAdapter:
             logger.info("Channel client disconnected; agent run cancelled")
         except Exception as e:
             await ChannelAdapter._write_error(response, f"[Session Error: {e}]")
-            logger.error(f"Unexpected error in agent run: {e!r}")
+            logger.exception(f"Unexpected error in agent run: {e!r}")
 
     @staticmethod
     def _to_sse(chunk: AgentChunk) -> bytes:

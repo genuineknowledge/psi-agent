@@ -37,7 +37,7 @@ class ChannelCore:
         with anyio.CancelScope(shield=True):
             await self._session.close()
 
-    async def post(self, chunks: list[InputChunk]) -> AsyncGenerator[OutputChunk]:
+    async def post(self, chunks: list[InputChunk], *, trace_id: str | None = None) -> AsyncGenerator[OutputChunk]:
         logger.debug(
             f"{len(chunks)} chunk(s) — "
             f"FileChunks={sum(1 for c in chunks if isinstance(c, FileChunk))} "
@@ -50,8 +50,10 @@ class ChannelCore:
         buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()
 
-        logger.debug(f"POST {self._endpoint} content_len={len(content)}")
-        async with self._session.post(self._endpoint, json=body) as resp:
+        headers = {"X-Trace-ID": trace_id} if trace_id else {}
+
+        logger.debug(f"POST {self._endpoint} content_len={len(content)} trace_id={trace_id}")
+        async with self._session.post(self._endpoint, json=body, headers=headers) as resp:
             logger.info(f"HTTP {resp.status}")
 
             if resp.status != 200:

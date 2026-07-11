@@ -29,8 +29,10 @@ def setup_logging(*, verbose: bool = False) -> int:
         format=(
             "<green>{time:HH:mm:ss.SSS}</green> | "
             "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+            "<magenta>{extra[trace_id]}</magenta> - "
             "<level>{message}</level>"
         ),
     )
+    logger.configure(extra={"trace_id": "-"})
     return _handler_id

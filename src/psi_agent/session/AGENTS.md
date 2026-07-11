@@ -58,7 +58,8 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 
 ## 其他约定
 
-- AI 连接超时：`ClientTimeout(total=None)` — 语义：不超时，与 channel 一致（由 `AiClient.stream()` 管理）
+- AI 连接超时：`ClientTimeout(total=None, sock_connect=30)` — 语义：建立连接超时 30s，总时间不限，支持长流（由 `AiClient.stream()` 管理）
+- **Trace ID 传播**：从 Channel 请求提取 `X-Trace-ID` 并透传至 AI 后端，同时注入 `loguru` 上下文。
 - 流式 `delta` 字段可能为 `null`（非缺失 key），`AiClient` 用 `isinstance(delta_data, dict)` 校验后产出 `AiDelta`
 - Tool 模块在 `sys.modules` 中以 `psi_tool_{name}_{session_id}_{file_hash}` 注册（完整 64 位 SHA-256 hash，不截断），同进程多 session 互不冲突
 - Schedule 加载时捕获各种 per-task 错误（IO、YAML 解析、cron 验证），单个 schedule 失败不影响整体加载

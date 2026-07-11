@@ -18,7 +18,9 @@ psi-agent 是一个**微内核**式的 agent 框架。核心理念是：
 10. **参数透传**: Channel 请求中除 `messages` 外的不认识参数全部穿透到 AI 层，不丢失
 11. **类型精确化**: 避免裸 `tuple`/`dict`。尽量用 `tuple[X, Y]` 或具体类型（如 `aiohttp.BaseConnector`）
 12. **关键字参数风格统一**: `__init__` 参数顺序 ≡ 初始化赋值顺序。所有 connector 使用显式 `path=`/`ssl=` 等关键字
-13. **可取消**: 所有 `run()` 协程必须可在外部被 cancel，`finally` 块清理资源（close socket / stop bot / shutdown updater）
+13. **可取消**: 所有 `run()` 协程必须可在外部被 cancel，`finally`块清理资源（close socket / stop bot / shutdown updater）。
+14. **类型安全状态**: 始终在 aiohttp 中使用 `web.AppKey` 进行类型安全的状态访问。
+15. **追踪与日志**: 通过 `X-Trace-ID` 头部透传 `trace_id`。使用 `logger.exception` 保留捕获块中的堆栈跟踪。日志应包含 `{extra[trace_id]}` 字段。
 
 ## 架构决策记录
 

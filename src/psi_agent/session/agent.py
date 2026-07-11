@@ -100,6 +100,7 @@ class SessionAgent:
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         """aiohttp handler registered by ``serve_session``."""
+        trace_id = request.headers.get("X-Trace-ID")
         try:
             user_message, extra_params = await self._channel_adapter.parse_request(request)
         except ChannelAdapter.ParseError as e:
@@ -127,7 +128,7 @@ class SessionAgent:
                 return response
 
             logger.info("Acquired session lock, processing request")
-            await self._channel_adapter.write(response, self.run(user_message, extra_params))
+            await self._channel_adapter.write(response, self.run(user_message, extra_params, trace_id=trace_id))
 
         logger.info("Session request completed")
         return response
@@ -135,7 +136,11 @@ class SessionAgent:
     # -- agent loop -----------------------------------------------------------
 
     async def run(
-        self, user_message: dict[str, Any], extra_params: dict[str, Any] | None = None
+        self,
+        user_message: dict[str, Any],
+        extra_params: dict[str, Any] | None = None,
+        *,
+        trace_id: str | None = None,
     ) -> AsyncGenerator[AgentChunk]:
         """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``.
 
@@ -198,7 +203,7 @@ class SessionAgent:
                 accumulated_content: str = ""
                 accumulated_reasoning: str = ""
 
-                async with aclosing(self._ai_client.stream(request_body)) as stream:
+                async with aclosing(self._ai_client.stream(request_body, trace_id=trace_id)) as stream:
                     async for delta in stream:
                         logger.debug(
                             f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
@@ -302,7 +307,7 @@ class SessionAgent:
                                         logger.info(f"Tool result ({fn!r}): {str(raw)[:1000]!r}")
                                     except Exception as e:
                                         r[idx] = f"Error executing tool '{fn}': {e}"
-                                        logger.error(f"Tool execution error ({fn!r}): {e!r}")
+                                        logger.exception(f"Tool execution error ({fn!r}): {e!r}")
 
                             async with anyio.create_task_group() as tg:
                                 for i, _tc, func_name, args in tool_args:

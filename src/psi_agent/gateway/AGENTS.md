@@ -146,6 +146,8 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 
 **`_persist` 回调**：同 AIManager，默认 no-op，Gateway.run() 注入。
 
+**Trace ID 传播**：API 端点从 `X-Trace-ID` 提取或生成 `trace_id`，注入日志并在 `/chat` 请求中通过 `ChannelCore` 传播。
+
 **create(ai_id, *, id="", workspace="") 流程**：
 1. 获取 lock，断言不重复
 2. `aimanager.get_socket(ai_id)` 查 AI socket（AI 不存在时计算路径返回，不抛异常——支持启动恢复时 AI 尚未就绪）

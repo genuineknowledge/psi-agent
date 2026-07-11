@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from typing import Any, cast
 
 import anyio
@@ -9,8 +10,16 @@ from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
 
+from ._keys import API_KEY_KEY, BASE_URL_KEY, MODEL_KEY, PROVIDER_KEY
+
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
+    trace_id = request.headers.get("X-Trace-ID")
+    with logger.contextualize(trace_id=trace_id):
+        return await _handle_chat_completions(request)
+
+
+async def _handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.info("Received chat completion request")
     try:
         body: dict[str, Any] = await request.json()
@@ -23,10 +32,10 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             status=400,
         )
 
-    provider = request.app["provider"]
-    model = request.app["model"]
-    api_key = request.app["api_key"]
-    base_url = request.app["base_url"]
+    provider = request.app[PROVIDER_KEY]
+    model = request.app[MODEL_KEY]
+    api_key = request.app[API_KEY_KEY]
+    base_url = request.app[BASE_URL_KEY]
 
     logger.debug(f"Body keys before pop: {list(body)}")
     messages = body.pop("messages", [])
@@ -58,23 +67,48 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     upstream_error = False
     client_gone = False
     stream: AsyncIterator[ChatCompletionChunk] | None = None
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            stream = cast(
+                AsyncIterator[ChatCompletionChunk],
+                # ``acompletion()`` returns ``ChatCompletion | AsyncIterator[ChatCompletionChunk]``
+                # depending on the ``stream`` flag.  We always pass ``stream=True``, so the
+                # runtime type is always ``AsyncIterator[ChatCompletionChunk]`` — the cast is safe.
+                await acompletion(
+                    provider=provider,
+                    model=model,
+                    messages=messages,
+                    stream=True,
+                    api_key=api_key,
+                    api_base=base_url,
+                    **body,
+                ),
+            )
+            break
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait = 0.5 * (2**attempt)
+                logger.warning(f"Upstream call failed (attempt {attempt + 1}): {e!r}. Retrying in {wait}s...")
+                await anyio.sleep(wait)
+            else:
+                logger.error(f"Upstream call failed after {max_retries} attempts: {e!r}")
+                err_chunk = json.dumps(
+                    {
+                        "id": "error",
+                        "choices": [
+                            {"index": 0, "delta": {"content": f"[Upstream Error]: {e}"}, "finish_reason": "error"}
+                        ],
+                    }
+                )
+                with suppress(Exception):
+                    await response.write(f"data: {err_chunk}\n\n".encode())
+                return response
+
     try:
-        stream = cast(
-            AsyncIterator[ChatCompletionChunk],
-            # ``acompletion()`` returns ``ChatCompletion | AsyncIterator[ChatCompletionChunk]``
-            # depending on the ``stream`` flag.  We always pass ``stream=True``, so the
-            # runtime type is always ``AsyncIterator[ChatCompletionChunk]`` — the cast is safe.
-            await acompletion(
-                provider=provider,
-                model=model,
-                messages=messages,
-                stream=True,
-                api_key=api_key,
-                api_base=base_url,
-                **body,
-            ),
-        )
         logger.debug("Starting to consume upstream SSE stream")
+        assert stream is not None
         async for chunk in stream:
             data = chunk.model_dump_json()
             logger.debug(f"SSE chunk: {data[:1000]}")
@@ -86,7 +120,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         logger.info("Client disconnected; cancelling upstream stream")
     except Exception as e:
         upstream_error = True
-        logger.error(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e!r}")
+        logger.exception(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e!r}")
         err_chunk = json.dumps(
             {
                 "id": "error",

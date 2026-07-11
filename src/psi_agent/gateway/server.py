@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from base64 import b64encode
 from contextlib import aclosing, suppress
 from dataclasses import asdict
@@ -28,8 +29,20 @@ async def _handle_openapi(request: web.Request) -> web.Response:
     return web.Response(text=render_openapi(), content_type="application/json")
 
 
+AIM_KEY = web.AppKey("aim", AIManager)
+SM_KEY = web.AppKey("sm", SessionManager)
+TM_KEY = web.AppKey("tm", TitleManager)
+WM_KEY = web.AppKey("wm", WorkspaceManager)
+CM_KEY = web.AppKey("cm", ChatManager)
+HM_KEY = web.AppKey("hm", HistoryManager)
+FAVICON_PATH_KEY = web.AppKey("favicon_path", str)
+
+
 async def _handle_favicon(request: web.Request) -> web.FileResponse:
-    favicon_path: str = request.app["favicon_path"]
+    try:
+        favicon_path = request.app[FAVICON_PATH_KEY]
+    except KeyError:
+        raise web.HTTPNotFound() from None
     logger.debug(f"Serving favicon from {favicon_path!r}")
     return web.FileResponse(favicon_path)
 
@@ -50,13 +63,14 @@ async def create_app(
     aim: AIManager, sm: SessionManager, tm: TitleManager, favicon_path: str | None = None
 ) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
-    app["aim"] = aim
-    app["sm"] = sm
-    app["tm"] = tm
-    app["wm"] = WorkspaceManager()
-    app["cm"] = ChatManager()
-    app["hm"] = HistoryManager()
-    app["favicon_path"] = favicon_path
+    app[AIM_KEY] = aim
+    app[SM_KEY] = sm
+    app[TM_KEY] = tm
+    app[WM_KEY] = WorkspaceManager()
+    app[CM_KEY] = ChatManager()
+    app[HM_KEY] = HistoryManager()
+    if favicon_path is not None:
+        app[FAVICON_PATH_KEY] = favicon_path
 
     spa_dist = anyio.Path(__file__).parent / "spa" / "dist"
     if await spa_dist.exists():
@@ -86,133 +100,145 @@ async def create_app(
 
 
 async def _create_ai(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
-    try:
-        body = await request.json()
-        info = await aim.create(
-            provider=body["provider"],
-            model=body["model"],
-            api_key=body["api_key"],
-            base_url=body["base_url"],
-            id=body.get("id", ""),
-        )
-        return _json(asdict(info), status=201)
-    except (TypeError, ValueError, KeyError) as e:
-        return _error(str(e), status=400)
-    except Exception as e:
-        logger.error(f"Unexpected error creating AI: {e!r}")
-        return _error(str(e), status=500)
+    aim = request.app[AIM_KEY]
+    trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4()))
+    with logger.contextualize(trace_id=trace_id):
+        try:
+            body = await request.json()
+            info = await aim.create(
+                provider=body["provider"],
+                model=body["model"],
+                api_key=body["api_key"],
+                base_url=body["base_url"],
+                id=body.get("id", ""),
+            )
+            return _json(asdict(info), status=201)
+        except (TypeError, ValueError, KeyError) as e:
+            return _error(str(e), status=400)
+        except Exception as e:
+            logger.exception(f"Unexpected error creating AI: {e!r}")
+            return _error(str(e), status=500)
 
 
 async def _delete_ai(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
+    aim = request.app[AIM_KEY]
     ai_id = request.match_info["ai_id"]
-    try:
-        await aim.delete(ai_id)
-        return _json({"id": ai_id, "status": "stopped"})
-    except LookupError as e:
-        return _error(str(e), status=404)
-    except Exception as e:
-        logger.error(f"Unexpected error deleting AI {ai_id!r}: {e!r}")
-        return _error(str(e), status=500)
+    trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4()))
+    with logger.contextualize(trace_id=trace_id):
+        try:
+            await aim.delete(ai_id)
+            return _json({"id": ai_id, "status": "stopped"})
+        except LookupError as e:
+            return _error(str(e), status=404)
+        except Exception as e:
+            logger.exception(f"Unexpected error deleting AI {ai_id!r}: {e!r}")
+            return _error(str(e), status=500)
 
 
 async def _list_ais(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
+    aim = request.app[AIM_KEY]
     return _json([asdict(i) for i in await aim.list_all()])
 
 
 async def _create_session(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
-    try:
-        body = await request.json()
-        info = await sm.create(
-            ai_id=body["ai_id"],
-            id=body.get("id", ""),
-            workspace=body.get("workspace", ""),
-        )
-        return _json(asdict(info), status=201)
-    except (TypeError, ValueError, KeyError) as e:
-        return _error(str(e), status=400)
-    except LookupError as e:
-        return _error(str(e), status=404)
-    except Exception as e:
-        logger.error(f"Unexpected error creating session: {e!r}")
-        return _error(str(e), status=500)
+    sm = request.app[SM_KEY]
+    trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4()))
+    with logger.contextualize(trace_id=trace_id):
+        try:
+            body = await request.json()
+            info = await sm.create(
+                ai_id=body["ai_id"],
+                id=body.get("id", ""),
+                workspace=body.get("workspace", ""),
+            )
+            return _json(asdict(info), status=201)
+        except (TypeError, ValueError, KeyError) as e:
+            return _error(str(e), status=400)
+        except LookupError as e:
+            return _error(str(e), status=404)
+        except Exception as e:
+            logger.exception(f"Unexpected error creating session: {e!r}")
+            return _error(str(e), status=500)
 
 
 async def _delete_session(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
+    sm = request.app[SM_KEY]
     session_id = request.match_info["session_id"]
-    try:
-        await sm.delete(session_id)
-        return _json({"id": session_id, "status": "stopped"})
-    except LookupError as e:
-        return _error(str(e), status=404)
-    except Exception as e:
-        logger.error(f"Unexpected error deleting session {session_id!r}: {e!r}")
-        return _error(str(e), status=500)
+    trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4()))
+    with logger.contextualize(trace_id=trace_id):
+        try:
+            await sm.delete(session_id)
+            return _json({"id": session_id, "status": "stopped"})
+        except LookupError as e:
+            return _error(str(e), status=404)
+        except Exception as e:
+            logger.exception(f"Unexpected error deleting session {session_id!r}: {e!r}")
+            return _error(str(e), status=500)
 
 
 async def _list_sessions(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
+    sm = request.app[SM_KEY]
     return _json([asdict(i) for i in await sm.list_all()])
 
 
 async def _list_titles(request: web.Request) -> web.Response:
-    tm: TitleManager = request.app["tm"]
+    tm = request.app[TM_KEY]
     return _json(tm.get_all())
 
 
 async def _set_title(request: web.Request) -> web.Response:
-    tm: TitleManager = request.app["tm"]
-    try:
-        body = await request.json()
-        sid = body["id"]
-        await tm.set(sid, body["title"])
-        return _json({"id": sid, "title": body["title"]})
-    except (KeyError, TypeError) as e:
-        return _error(str(e), status=400)
-    except Exception as e:
-        logger.error(f"Unexpected error setting title: {e!r}")
-        return _error(str(e), status=500)
+    tm = request.app[TM_KEY]
+    trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4()))
+    with logger.contextualize(trace_id=trace_id):
+        try:
+            body = await request.json()
+            sid = body["id"]
+            await tm.set(sid, body["title"])
+            return _json({"id": sid, "title": body["title"]})
+        except (KeyError, TypeError) as e:
+            return _error(str(e), status=400)
+        except Exception as e:
+            logger.exception(f"Unexpected error setting title: {e!r}")
+            return _error(str(e), status=500)
 
 
 async def _generate_title(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
-    sm: SessionManager = request.app["sm"]
-    tm: TitleManager = request.app["tm"]
-    try:
-        body = await request.json()
-        sid = body["id"]
-        user_text = body.get("user_text", "")
-        assistant_text = body.get("assistant_text", "")
-    except (KeyError, TypeError) as e:
-        return _error(str(e), status=400)
+    aim = request.app[AIM_KEY]
+    sm = request.app[SM_KEY]
+    tm = request.app[TM_KEY]
+    trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4()))
+    with logger.contextualize(trace_id=trace_id):
+        try:
+            body = await request.json()
+            sid = body["id"]
+            user_text = body.get("user_text", "")
+            assistant_text = body.get("assistant_text", "")
+        except (KeyError, TypeError) as e:
+            return _error(str(e), status=400)
 
-    try:
-        sessions = await sm.list_all()
-        sess = next((s for s in sessions if s.id == sid), None)
-        if not sess:
-            return _error("Session not found", status=404)
-        ai_socket = aim.get_socket(sess.ai_id)
-    except LookupError as e:
-        return _error(str(e), status=404)
+        try:
+            sessions = await sm.list_all()
+            sess = next((s for s in sessions if s.id == sid), None)
+            if not sess:
+                return _error("Session not found", status=404)
+            ai_socket = aim.get_socket(sess.ai_id)
+        except LookupError as e:
+            return _error(str(e), status=404)
 
-    title = await tm.generate(sid, ai_socket, user_text, assistant_text)
-    if title:
-        return _json({"id": sid, "title": title})
-    logger.warning(f"Title generation returned no result for session {sid!r}")
-    return _error("Failed to generate title", status=500)
+        title = await tm.generate(sid, ai_socket, user_text, assistant_text)
+        if title:
+            return _json({"id": sid, "title": title})
+        logger.warning(f"Title generation returned no result for session {sid!r}")
+        return _error("Failed to generate title", status=500)
 
 
 async def _get_cwd(request: web.Request) -> web.Response:
-    wm: WorkspaceManager = request.app["wm"]
+    wm = request.app[WM_KEY]
     return _json({"cwd": wm.get_cwd()})
 
 
 async def _browse_workspace(request: web.Request) -> web.Response:
-    wm: WorkspaceManager = request.app["wm"]
+    wm = request.app[WM_KEY]
     path = request.query.get("path") or os.getcwd()
     try:
         result = await wm.browse(path)
@@ -223,8 +249,8 @@ async def _browse_workspace(request: web.Request) -> web.Response:
 
 
 async def _get_history(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
-    hm: HistoryManager = request.app["hm"]
+    sm = request.app[SM_KEY]
+    hm = request.app[HM_KEY]
     session_id = request.match_info["session_id"]
     try:
         workspace = sm.get_workspace(session_id)
@@ -235,9 +261,11 @@ async def _get_history(request: web.Request) -> web.Response:
 
 
 async def _handle_chat(request: web.Request) -> web.StreamResponse:
-    sm: SessionManager = request.app["sm"]
-    cm: ChatManager = request.app["cm"]
+    sm = request.app[SM_KEY]
+    cm = request.app[CM_KEY]
     session_id = request.match_info["session_id"]
+    trace_id = request.headers.get("X-Trace-ID", str(uuid.uuid4()))
+
     try:
         channel_socket = sm.get_socket(session_id)
     except LookupError:
@@ -281,7 +309,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
         return resp
 
     try:
-        async with aclosing(cm.handle(channel_socket, body)) as stream:
+        async with aclosing(cm.handle(channel_socket, body, trace_id=trace_id)) as stream:
             async for chunk in stream:
                 data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 await resp.write(data.encode())

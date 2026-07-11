@@ -16,9 +16,7 @@ from psi_agent.channel._types import FileChunk, InputChunk, ReasoningChunk, Text
 
 class ChatManager:
     async def handle(
-        self,
-        channel_socket: str,
-        body: dict[str, Any],
+        self, channel_socket: str, body: dict[str, Any], *, trace_id: str | None = None
     ) -> AsyncGenerator[dict[str, Any]]:
         """Send chat chunks to a Session and yield SSE-ready dicts.
 
@@ -71,7 +69,7 @@ class ChatManager:
 
         logger.info(f"Chat: posting {len(chunks)} chunk(s) to {channel_socket!r}")
         async with ChannelCore(session_socket=channel_socket, interval=0.0) as core:
-            async for chunk in core.post(chunks):
+            async for chunk in core.post(chunks, trace_id=trace_id):
                 if isinstance(chunk, TextChunk):
                     yield {"type": "text", "text": chunk.text}
                 elif isinstance(chunk, ReasoningChunk):

@@ -20,7 +20,11 @@ class _FailingSessionAgent(SessionAgent):
     """SessionAgent that raises an exception mid-stream."""
 
     async def run(
-        self, user_message: dict[str, Any], extra_params: dict[str, Any] | None = None
+        self,
+        user_message: dict[str, Any],
+        extra_params: dict[str, Any] | None = None,
+        *,
+        trace_id: str | None = None,
     ) -> AsyncGenerator[AgentChunk]:
         yield AgentChunk(content="partial")
         raise RuntimeError("boom")

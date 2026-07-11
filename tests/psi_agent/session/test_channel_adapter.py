@@ -87,7 +87,7 @@ async def test_write_catches_generic_exception():
 async def test_handle_request_integration_valid(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
-    async def fake_run(user_message, extra_params=None):
+    async def fake_run(user_message, extra_params=None, *, trace_id=None):
         yield AgentChunk(content="hello")
         yield AgentChunk(content=" world")
 
@@ -128,7 +128,7 @@ async def test_handle_request_integration_valid(tmp_path: Path):
 async def test_handle_request_integration_agent_error(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
-    async def fake_run(user_message, extra_params=None):
+    async def fake_run(user_message, extra_params=None, *, trace_id=None):
         if False:
             yield
         raise AgentError("test error message")
@@ -249,7 +249,7 @@ async def test_handle_request_integration_empty_messages(tmp_path: Path):
 async def test_handle_request_integration_generic_exception(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
-    async def fake_run(user_message, extra_params=None):
+    async def fake_run(user_message, extra_params=None, *, trace_id=None):
         if False:
             yield
         raise RuntimeError("boom")
@@ -321,7 +321,7 @@ async def test_handle_request_integration_message_not_dict(tmp_path: Path):
 
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
 
-    async def fake_run(user_message, extra_params=None):
+    async def fake_run(user_message, extra_params=None, *, trace_id=None):
         # Verify coercion: 42 → {"role": "user", "content": "42"}
         assert user_message == {"role": "user", "content": "42"}
         yield AgentChunk(content="ok")

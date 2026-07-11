@@ -24,11 +24,14 @@ class AiClient:
     def _build_connector_and_endpoint(self) -> tuple[aiohttp.BaseConnector, str]:
         return resolve_connector_and_endpoint(self.ai_socket)
 
-    async def stream(self, request_body: dict) -> AsyncGenerator[AiDelta]:
+    async def stream(self, request_body: dict, *, trace_id: str | None = None) -> AsyncGenerator[AiDelta]:
         connector, endpoint = self._build_connector_and_endpoint()
+        headers = {"X-Trace-ID": trace_id} if trace_id else {}
         async with (
-            aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
-            session.post(endpoint, json=request_body) as resp,
+            aiohttp.ClientSession(
+                connector=connector, timeout=aiohttp.ClientTimeout(total=None, sock_connect=30)
+            ) as session,
+            session.post(endpoint, json=request_body, headers=headers) as resp,
         ):
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:
