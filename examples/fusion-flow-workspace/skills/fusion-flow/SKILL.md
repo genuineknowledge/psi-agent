@@ -688,15 +688,21 @@ test -f /c/Program\ Files/Git/bin/bash.exe || \
   test -f /d/Program\ Files/Git/bin/bash.exe       # one of the candidates
 ```
 
-For the psi-agent engine, configure:
+For the psi-agent engine, configure. The engine emits `psi-agent run --workspace <W> --message <M> ...`,
+but the current psi-agent CLI's `run` is a YAML batch launcher that takes a single positional config
+path — those flags make it fail with `exit=2 Missing value for argument 'config'`. That exit=2 is a
+wiring gap (the fix below), not an incompatible engine; route the call through the psi-agent
+workspace's session shim (`bin/session_shim.py`), which translates it into the current CLI's
+three-layer form (`ai --provider` + `session` + `channel cli`):
 
 ```bash
 FLOW_ENGINE=psi
 FLOW_PSI_WORKSPACE=/abs/path/to/psi-agent/examples/a-simple-bash-only-workspace
 FLOW_PSI_PROFILE=fusion          # psi-agent reads ~/.psi-agent/config.toml
-# Optional when psi-agent is not installed globally:
-FLOW_PSI_COMMAND=uv
-FLOW_PSI_COMMAND_ARGS=--project /abs/path/to/psi-agent run psi-agent
+# Route through the session shim (POSIX python3 / Windows python + forward-slash path):
+FLOW_PSI_COMMAND=python3
+FLOW_PSI_COMMAND_ARGS=/abs/path/to/psi-agent/examples/fusion-flow-workspace/bin/session_shim.py
+PSI_CMD=uv run --no-sync --project /abs/path/to/psi-agent psi-agent   # shim uses this to start psi-agent
 # Optional: point at a non-default psi-agent config file
 FLOW_PSI_CONFIG=/abs/path/to/config.toml
 # Optional: connect to an existing AI backend instead of psi-agent's configured provider
