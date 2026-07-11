@@ -42,6 +42,25 @@ def _is_fatal(exc: BaseException) -> bool:
 _T = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
 
 
+def _json_type(ps: Mapping[str, Any]) -> str:
+    """Return a single JSON-Schema type string for a property.
+
+    A property's ``type`` may be a **list** (JSON Schema union, e.g.
+    ``["string", "null"]`` or ``["number", "array"]``) or absent entirely (when
+    the property uses ``anyOf`` / ``oneOf`` / ``enum`` instead). Some MCP servers
+    (e.g. Excalidraw) emit union types; feeding a ``list`` straight into
+    ``_T.get`` raised ``TypeError: unhashable type: 'list'`` and crashed tool
+    loading. We collapse to the first non-``null`` member (falling back to
+    ``string``) so the generated signature stays a simple, hashable type.
+    """
+    t = ps.get("type")
+    if isinstance(t, list):
+        t = next((x for x in t if x != "null"), None)
+    if not isinstance(t, str):
+        return "string"
+    return t
+
+
 def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator: auto-discover MCP tools at import time.
 
@@ -92,11 +111,27 @@ def _build(name: str, schema: dict[str, Any], config: dict[str, Any], prepend_do
     req: list[str] = schema.get("inputSchema", {}).get("required", [])
     params: list[inspect.Parameter] = []
     ann: dict[str, Any] = {}
+    # Params the tool runtime cannot express as a simple signature type (nested
+    # objects, arrays of objects). We expose them as JSON-string params and
+    # decode them back before the MCP call — see json_params below and _fn.
+    json_params: set[str] = set()
     for pn, ps in props.items():
-        jt = ps.get("type", "string")
+        jt = _json_type(ps)
         pt = _T.get(jt, str)
-        if jt == "array":
-            pt = list[_T.get(ps.get("items", {}).get("type", "string"), str)]  # type: ignore[valid-type]  # ty: ignore
+        if jt == "object":
+            # The runtime only accepts str/int/float/bool/list[scalar]; a nested
+            # object has no such type. Take it as a JSON string the tool decodes.
+            pt = str
+            json_params.add(pn)
+        elif jt == "array":
+            item_t = _json_type(ps.get("items", {})) if isinstance(ps.get("items"), Mapping) else "string"
+            if item_t in ("object", "array"):
+                # array of objects/arrays -> list[dict]/list[list], also rejected
+                # by the runtime; pass the whole array as a JSON string instead.
+                pt = str
+                json_params.add(pn)
+            else:
+                pt = list[_T.get(item_t, str)]  # type: ignore[valid-type]  # ty: ignore
         r = pn in req
         ann[pn] = pt | None if not r else pt
         params.append(
@@ -106,21 +141,41 @@ def _build(name: str, schema: dict[str, Any], config: dict[str, Any], prepend_do
         )
     ann["return"] = str
     desc = schema.get("description", "")
+
+    def _arg_line(p: str, ps: Mapping[str, Any]) -> str:
+        hint = ps.get("description", "")
+        if p in json_params:
+            # Tell the model this arg is a JSON string, not a native object/array.
+            hint = (hint + " " if hint else "") + "(pass as a JSON string)"
+        return f"    {p}: {hint}{'' if p in req else ' (optional)'}"
+
     doc = (
         (prepend_doc.strip() + "\n\n" if prepend_doc else "")
         + desc
         + "\n\nArgs:\n"
-        + "\n".join(
-            f"    {p}: {ps.get('description', '')}{'' if p in req else ' (optional)'}" for p, ps in props.items()
-        )
+        + "\n".join(_arg_line(p, ps) for p, ps in props.items())
     )
     tn, cfg = schema["name"], config
+
+    def _decode(kw: dict[str, Any]) -> dict[str, Any]:
+        """Parse JSON-string args back into objects/arrays before the MCP call.
+
+        Only ``json_params`` are decoded, and only when they arrive as strings
+        (the model may already send a structured value). A non-JSON string is
+        left as-is so the server can surface its own validation error.
+        """
+        for p in json_params:
+            v = kw.get(p)
+            if isinstance(v, str) and v.strip():
+                with suppress(json.JSONDecodeError):
+                    kw[p] = json.loads(v)
+        return kw
 
     async def _fn(**kw: Any) -> str:
         try:
             async with _connect(cfg) as session:
                 await session.initialize()
-                r = await session.call_tool(tn, kw)
+                r = await session.call_tool(tn, _decode(kw))
             return _fmt(r)
         except BaseException as exc:  # contain MCP/anyio teardown (see _is_fatal); re-raise only fatals
             if _is_fatal(exc):
