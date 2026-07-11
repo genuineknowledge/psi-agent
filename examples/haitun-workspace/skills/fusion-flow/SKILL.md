@@ -530,6 +530,7 @@ The author skill must catch and refuse to emit code that does any of these:
 5. **Agentic session or `flow.exec` inside `flow.pmap` / `flow.forEach` over many items.** Each agentic CLI call (`flow.agent` with `tools`) and each `flow.exec` cold-starts a subprocess (~3-10s, and on the claude engine roughly $0.25/call with no cross-session prompt-cache reuse); a 100-item loop = many minutes + stacked cost. If you need a plain LLM call on N items, use a `flow.session` on a tool-less agent inside `flow.pmap`. Reserve agentic mode / `flow.exec` for one-off tasks.
 6. **Using an agentic session or `flow.exec` to get a boolean / single value.** Both return free-form output, not strict JSON. Use `flow.evaluate({kind: "boolean" | "number" | "choice"})` (preferably on `engine: "claude"` for the native `--json-schema` path) instead. If the user really wants agentic autonomy *and* a structured answer, parse `result.text` / `result.stdout` with a regex/heuristic and document the fragility.
 7. **Relaying an external tool's API key through Fuclaw's `env`.** When generating a `flow.exec` that wraps an external tool (a Python pipeline, a CLI with its own config), do NOT thread that tool's API key through `env: { SOME_KEY: process.env.SOME_KEY }`. The key usually lives in the *external tool's own* config (read by its own dotenv at its `cwd`), not in Fuclaw's `process.env` — so the relay resolves to `""` and silently breaks the tool's auth while looking correct. It also drags the secret into Fuclaw's process memory for no reason. Pass through `env` only what the subprocess genuinely can't obtain itself (e.g. `PYTHONPATH`); for credentials, set `cwd` to the tool's dir and let it read its own config.
+8. **Inlining a large document (paper / long file / big blob) into a prompt or `flow.input`.** The psi engine passes each `flow.session` message as a command-line argument to the subprocess; a document of tens of KB overflows the OS argument limit and the run dies with `ENAMETOOLONG` (or a silently truncated prompt on other engines). Do NOT paste the full text into the prompt string or a `flow.input` default. Instead: write the document to a file under `<workDir>` once, give the reviewer/analyst `flow.agent({ tools: ["read", ...] })`, and pass only the **file path** in the prompt — each agent reads the file itself. This also keeps every sub-agent's context focused instead of duplicating the whole document across N branches. (For extracting text from a PDF first, use a one-shot `flow.exec` or do it outside the flow; `read` handles plain text, not PDF.)
 
 ### Runtime mode detection (which `import` path to use)
 
@@ -551,7 +552,17 @@ import { run } from "../src/index.js";
 
 How to detect: the working directory contains `core/src/index.ts` and `core/examples/`, OR the user explicitly said "in the repo / 源码仓".
 
+**Mode C — psi-agent workspace mode** (this skill ships *inside* a psi-agent workspace at `skills/fusion-flow/`, and generated task flows live in a sibling `flows/<task-slug>/` tree — NOT next to the runtime). This is the layout you are in whenever the workspace system prompt tells you to author flows under `flows/<task-slug>/<task-slug>.flow.ts`. The runtime bundle is two levels up and back down into the skill:
+
+```ts
+import { run } from "../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs";
+```
+
+How to detect: there is a `skills/fusion-flow/runtime/agent-flow-core.bundle.mjs` and the file you are generating goes under `flows/<task-slug>/` (a sibling of `skills/`, not under `examples/`), OR the workspace system prompt gave you an explicit `flows/<task-slug>/` layout and a `../../skills/fusion-flow/runtime/...` import string. When the system prompt specifies the import path, that instruction wins over Mode A/B — copy it verbatim. Typecheck and run from the skill dir: `cd skills/fusion-flow && npm run typecheck` / `npx tsx ../../flows/<task-slug>/<task-slug>.flow.ts`.
+
 **If still unsure, ask the user once.** Cost of guessing wrong: every file fails `tsc`. Cost of asking: one short question.
+
+> **The runtime is NOT a public npm package.** In every mode above, `@agent-flow/core` is resolved from a **local file** that ships with this skill — the bundle `.mjs` (Mode B/C) or `core/src` (Mode A). You must **never** write a bare `import { run } from "@agent-flow/core"` and you must **never** try to `npm install @agent-flow/core` — it is not published to the public registry and that install will 404. A `MODULE_NOT_FOUND` / `TS2307` here always means a **wrong relative path to the local bundle**, never a missing dependency. Fix the path (per the mode you're in); do not add a dependency, and do not fall back to "simulating" the flow by hand.
 
 ### Code template
 
@@ -604,7 +615,7 @@ After generation, run `cd <workDir> && npm run typecheck`. Common errors and fix
 - `Property 'paralel' does not exist on type 'FlowAPI'` — typo. The correct name is `parallel`. Check the spelling against the "Primitive usage rules" list above.
 - `Type 'X' is not assignable to type 'Y'` on a `flow.evaluate` call — most often `kind` was wrong (e.g. `"num"` instead of `"number"`).
 - `'someVar' is possibly 'undefined'` after `flow.call` or `flow.ifElse` — these return `T | undefined`. Use `?? <fallback>` or pull the call inside a function that always provides else.
-- `error TS2307: Cannot find module '../src/index.js'` (or `'../runtime/agent-flow-core.bundle.mjs'`) — **wrong runtime mode import path**, not a missing dependency. This is the #1 high-frequency trap (see "Runtime mode detection"). Bundle mode (`dist/fusion-flow/`, has a `runtime/` folder) must import `../runtime/agent-flow-core.bundle.mjs`; source-repo mode (has `core/src/`) must import `../src/index.js`. Check which folder you're actually in and match the path — don't add a dependency.
+- `error TS2307: Cannot find module '../src/index.js'` (or `'../runtime/agent-flow-core.bundle.mjs'` / `'../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs'` / `'@agent-flow/core'`) — **wrong runtime mode import path**, not a missing dependency. This is the #1 high-frequency trap (see "Runtime mode detection"). Match the path to the mode you're in: bundle mode (has a sibling `runtime/`) → `../runtime/agent-flow-core.bundle.mjs`; source-repo mode (has `core/src/`) → `../src/index.js`; **psi-agent workspace mode** (generated flow under `flows/<task-slug>/`, skill at `skills/fusion-flow/`) → `../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs`. A bare `@agent-flow/core` is **always wrong** — the runtime is a local file, never a public npm package, so `npm install @agent-flow/core` will 404. Fix the relative path; never add a dependency.
 - `Cannot find name 'flow'` — the closure parameter is destructured: `async ({ flow, save }) => { ... }`. Check the skeleton.
 - `Property 'X' does not exist on type` for context bindings — the binding-name string in `flow.session(...)`'s 3rd arg is opaque to TS. Re-read the corresponding `save`/`output` calls and align.
 
@@ -678,15 +689,21 @@ test -f /c/Program\ Files/Git/bin/bash.exe || \
   test -f /d/Program\ Files/Git/bin/bash.exe       # one of the candidates
 ```
 
-For the psi-agent engine, configure:
+For the psi-agent engine, configure. The engine emits `psi-agent run --workspace <W> --message <M> ...`,
+but the current psi-agent CLI's `run` is a YAML batch launcher that takes a single positional config
+path — those flags make it fail with `exit=2 Missing value for argument 'config'`. That exit=2 is a
+wiring gap (the fix below), not an incompatible engine; route the call through the psi-agent
+workspace's session shim (`bin/session_shim.py`), which translates it into the current CLI's
+three-layer form (`ai --provider` + `session` + `channel cli`):
 
 ```bash
 FLOW_ENGINE=psi
 FLOW_PSI_WORKSPACE=/abs/path/to/psi-agent/examples/a-simple-bash-only-workspace
 FLOW_PSI_PROFILE=fusion          # psi-agent reads ~/.psi-agent/config.toml
-# Optional when psi-agent is not installed globally:
-FLOW_PSI_COMMAND=uv
-FLOW_PSI_COMMAND_ARGS=--project /abs/path/to/psi-agent run psi-agent
+# Route through the session shim (POSIX python3 / Windows python + forward-slash path):
+FLOW_PSI_COMMAND=python3
+FLOW_PSI_COMMAND_ARGS=/abs/path/to/psi-agent/examples/fusion-flow-workspace/bin/session_shim.py
+PSI_CMD=uv run --no-sync --project /abs/path/to/psi-agent psi-agent   # shim uses this to start psi-agent
 # Optional: point at a non-default psi-agent config file
 FLOW_PSI_CONFIG=/abs/path/to/config.toml
 # Optional: connect to an existing AI backend instead of psi-agent's configured provider
