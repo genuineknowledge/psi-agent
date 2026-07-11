@@ -7,7 +7,7 @@
 
     <div class="mobile-overlay" :class="{ active: isMobileSidebarOpen }" @click="ui.closeMobileSidebar"></div>
 
-    <Sidebar @new-session="openSessDialog" />
+    <Sidebar @new-session="openSessDialog" @open-workspace="openWorkspacePicker" />
 
     <div
       id="chat"
@@ -61,7 +61,8 @@
     </div>
 
     <AiDialog @create="createAI" @fetchModels="fetchAvailableModels" />
-    <SessDialog @create="createSession" @browse="browseWorkspace" />
+    <PathPickerDialog />
+    <SessDialog @create="createSession" />
     <ConfirmDialog @confirm="executeConfirmedAction" />
     <Snackbar />
   </div>
@@ -84,14 +85,16 @@ import {
 import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
 import { useKeyboard } from './composables/useKeyboard.js'
-import { selectSession, clearSessionLocalState } from './composables/useSession.js'
-import { getSessionDisplayName } from './sessionList.js'
+import { selectSession, selectWorkspace, clearSessionLocalState } from './composables/useSession.js'
+import { openPathPicker } from './composables/usePathPicker.js'
+import { getSessionDisplayName, getWorkspaceLabel, normalizeWorkspacePath, sessionsForWorkspace } from './sessionList.js'
 import { matchSidebarShortcut } from './shortcuts.js'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBar from './components/InputBar.vue'
 import AiDialog from './components/AiDialog.vue'
 import SessDialog from './components/SessDialog.vue'
+import PathPickerDialog from './components/PathPickerDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import Snackbar from './components/Snackbar.vue'
 
@@ -118,7 +121,7 @@ const ai = useAiStore()
 const { ais, selectedAiId, aiForm, fetchedModels, loadingModels } = storeToRefs(ai)
 
 const session = useSessionStore()
-const { sessions, selectedSessionId, sessionTitles, sessForm, browser } = storeToRefs(session)
+const { sessions, selectedSessionId, sessionTitles, selectedWorkspacePath, gatewayCwd } = storeToRefs(session)
 
 const chat = useChatStore()
 const { messages, selectedFiles } = storeToRefs(chat)
@@ -188,6 +191,7 @@ async function refreshSessions() {
   } catch (e) {
     sessions.value = []
   }
+  session.syncRegisteredWorkspaces()
 }
 
 async function refreshAll() {
@@ -208,7 +212,7 @@ async function deleteAI(id) {
   await api('DELETE', '/ais/' + id).catch(() => {})
   if (selectedAiId.value === id) {
     selectedAiId.value = null
-    saveActiveState(null, selectedSessionId.value)
+    saveActiveState(null, selectedSessionId.value, selectedWorkspacePath.value)
   }
   await refreshAll()
 }
@@ -225,6 +229,39 @@ async function executeConfirmedAction() {
     return
   }
 
+  if (dlgConfirm.value.actionType === 'workspace-remove') {
+    session.removeRegisteredWorkspace(id)
+    if (selectedWorkspacePath.value === normalizeWorkspacePath(id)) {
+      await selectWorkspace('')
+    }
+    return
+  }
+
+  if (dlgConfirm.value.actionType === 'workspace') {
+    const wsPath = normalizeWorkspacePath(id)
+    const toDelete = sessionsForWorkspace(sessions.value, wsPath, gatewayCwd.value)
+    for (const s of toDelete) {
+      await api('DELETE', '/sessions/' + s.id).catch(() => {})
+      clearHistory(s.id)
+      clearSessionLocalState(s.id)
+      if (s.id === selectedSessionId.value) {
+        selectedSessionId.value = null
+        messages.value.splice(0)
+        chat.streaming = false
+        chat.abortController = null
+        chat.inputText = ''
+        chat.selectedFiles = []
+      }
+    }
+    session.removeRegisteredWorkspace(wsPath)
+    if (selectedWorkspacePath.value === wsPath) {
+      await selectWorkspace('')
+    }
+    saveActiveState(selectedAiId.value, selectedSessionId.value, selectedWorkspacePath.value)
+    await refreshAll()
+    return
+  }
+
   await api('DELETE', '/sessions/' + id).catch(() => {})
   clearHistory(id)
   clearSessionLocalState(id)
@@ -236,7 +273,7 @@ async function executeConfirmedAction() {
     chat.inputText = ''
     chat.selectedFiles = []
   }
-  saveActiveState(selectedAiId.value, selectedSessionId.value)
+  saveActiveState(selectedAiId.value, selectedSessionId.value, selectedWorkspacePath.value)
   await refreshAll()
 }
 
@@ -246,10 +283,12 @@ function handleProviderChange() {
 }
 
 const currentSessionTitle = computed(() => {
-  if (!selectedSessionId.value) return 'psi-agent'
-  const sess = sessions.value.find(s => s.id === selectedSessionId.value)
-  if (!sess) return 'psi-agent'
-  return getSessionDisplayName(sess, sessionTitles.value)
+  if (selectedSessionId.value) {
+    const sess = sessions.value.find(s => s.id === selectedSessionId.value)
+    if (sess) return getSessionDisplayName(sess, sessionTitles.value)
+  }
+  if (selectedWorkspacePath.value) return getWorkspaceLabel(selectedWorkspacePath.value)
+  return 'HaiTun'
 })
 
 
@@ -280,24 +319,37 @@ function openAiDialog() {
   dlgAI.value = true
 }
 
-function openSessDialog() {
+async function openWorkspacePicker() {
+  const path = await openPathPicker({
+    mode: 'directory',
+    title: '打开工作区',
+    confirmLabel: '打开',
+    hint: '选择本地文件夹作为 Agent 工作区，之后可在其下创建多个会话。',
+    initialPath: selectedWorkspacePath.value || gatewayCwd.value,
+  })
+  if (!path) return
+  session.addRegisteredWorkspace(path)
+  session.syncRegisteredWorkspaces()
+  await selectWorkspace(path)
+}
+
+async function openSessDialog(workspacePath) {
   if (!ais.value.length) {
     ui.showAlert('请先配置大模型')
     openAiDialog()
     return
   }
-  sessForm.value = { workspace: '' }
-  browser.value = { path: undefined, parent: '', entries: [] }
-  dlgSess.value = true
-}
-
-async function browseWorkspace(p) {
-  if (p === undefined && browser.value.path !== undefined) {
-    browser.value = { path: undefined, parent: '', entries: [] }
-    return
+  let path = normalizeWorkspacePath(workspacePath || selectedWorkspacePath.value)
+  if (!path) {
+    await openWorkspacePicker()
+    path = selectedWorkspacePath.value
+    if (!path) return
   }
-  const r = await fetch(origin() + '/workspace/browse?path=' + encodeURIComponent(p || sessForm.value.workspace || ''))
-  if (r.ok) browser.value = await r.json()
+  if (path !== selectedWorkspacePath.value) {
+    await selectWorkspace(path)
+  }
+  session.ensureWorkspaceExpanded(path)
+  dlgSess.value = true
 }
 
 async function selectAI(id) {
@@ -310,7 +362,7 @@ async function selectAI(id) {
   } else {
     selectedSessionId.value = null
   }
-  saveActiveState(selectedAiId.value, selectedSessionId.value)
+  saveActiveState(selectedAiId.value, selectedSessionId.value, selectedWorkspacePath.value)
   await refreshAll()
 }
 
@@ -330,8 +382,9 @@ async function createAI() {
     dlgAI.value = false
     await refreshAll()
     loadingEnv.value = false
-    saveActiveState(selectedAiId.value, selectedSessionId.value)
-    if (sessions.value.length === 0) openSessDialog()
+    saveActiveState(selectedAiId.value, selectedSessionId.value, selectedWorkspacePath.value)
+    if (sessions.value.length === 0 && !session.registeredWorkspaces.length) await openWorkspacePicker()
+    else if (sessions.value.length === 0) openSessDialog()
   } catch (e) {
     ui.showAlert(e.message)
   }
@@ -342,8 +395,15 @@ async function createSession() {
     ui.showAlert('请先选择一个大模型代理')
     return
   }
+  if (!selectedWorkspacePath.value) {
+    await openWorkspacePicker()
+    if (!selectedWorkspacePath.value) return
+  }
   try {
-    const info = await api('POST', '/sessions', { ai_id: selectedAiId.value, workspace: sessForm.value.workspace })
+    const info = await api('POST', '/sessions', {
+      ai_id: selectedAiId.value,
+      workspace: selectedWorkspacePath.value,
+    })
     session.sessionMessages[info.id] = []
     session.sessionStreaming[info.id] = false
     delete session.sessionAbortControllers[info.id]
@@ -368,6 +428,13 @@ onMounted(async () => {
   sessionTitles.value = await api('GET', '/titles').catch(() => ({}))
 
   try {
+    try {
+      const cwdInfo = await api('GET', '/workspace/cwd')
+      gatewayCwd.value = cwdInfo.cwd || ''
+    } catch (_) {
+      gatewayCwd.value = ''
+    }
+
     await refreshAll()
 
     if (ais.value.length === 0) {
@@ -381,17 +448,23 @@ onMounted(async () => {
       selectedAiId.value = activeState.aiId
     if (!selectedAiId.value && ais.value.length) selectedAiId.value = ais.value[0].id
 
-    // 恢复会话：优先上次选中的会话（仍在后端 /sessions 列表中才算有效），
-    // 否则退回最近一个会话。已崩溃（如 system prompt 过大 400）的会话已被后端
-    // 从 /sessions 剔除，不在列表里，因此不会被恢复，也就不会自动打开幽灵会话。
+    if (activeState.workspacePath) {
+      session.setSelectedWorkspace(activeState.workspacePath)
+    }
+
     const persisted = activeState.sessId && sessions.value.some(s => s.id === activeState.sessId)
       ? activeState.sessId
-      : (sessions.value.length ? sessions.value[0].id : null)
+      : null
     if (persisted) {
       await selectSession(persisted)
     } else if (activeState.sessId) {
-      saveActiveState(selectedAiId.value, null)
+      saveActiveState(selectedAiId.value, null, selectedWorkspacePath.value)
+    } else if (selectedWorkspacePath.value) {
+      await selectWorkspace(selectedWorkspacePath.value)
+    } else if (session.registeredWorkspaces.length) {
+      await selectWorkspace(session.registeredWorkspaces[0])
     }
+
     loadingEnv.value = false
   } catch (err) {
     loadingEnv.value = false

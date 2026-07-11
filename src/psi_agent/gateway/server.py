@@ -78,6 +78,7 @@ async def create_app(
     app.router.add_post("/titles", _set_title)
     app.router.add_post("/titles/generate", _generate_title)
     app.router.add_get("/workspace/cwd", _get_cwd)
+    app.router.add_get("/workspace/roots", _list_workspace_roots)
     app.router.add_get("/workspace/browse", _browse_workspace)
     app.router.add_get("/sessions/{session_id}/history", _get_history)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
@@ -211,14 +212,19 @@ async def _get_cwd(request: web.Request) -> web.Response:
     return _json({"cwd": wm.get_cwd()})
 
 
+async def _list_workspace_roots(request: web.Request) -> web.Response:
+    wm: WorkspaceManager = request.app["wm"]
+    return _json(await wm.list_roots())
+
+
 async def _browse_workspace(request: web.Request) -> web.Response:
     wm: WorkspaceManager = request.app["wm"]
     path = request.query.get("path") or os.getcwd()
+    kind = request.query.get("kind") or "directory"
+    q = request.query.get("q") or ""
     try:
-        result = await wm.browse(path)
-        parent = os.path.dirname(path)
-        return _json({"path": path, "parent": parent, **result})
-    except (OSError, PermissionError) as e:
+        return _json(await wm.browse(path, kind=kind, q=q))
+    except (OSError, PermissionError, FileNotFoundError, NotADirectoryError) as e:
         return _error(str(e), status=400)
 
 

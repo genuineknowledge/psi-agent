@@ -18,7 +18,7 @@
         id="chat-input"
         v-model="inputText"
         rows="1"
-        placeholder="问问 Dolphin"
+        placeholder="问问 HaiTun"
         @keydown.enter.exact.prevent="sendMessage"
         @input="autoResizeInput"
       ></textarea>

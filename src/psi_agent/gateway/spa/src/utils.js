@@ -87,14 +87,69 @@ export function mimeType(name) {
 }
 
 const LS_ACTIVE = 'gw-active-ids'
+const LS_WORKSPACES = 'gw-workspaces'
+const LS_SELECTED_WS = 'gw-selected-workspace'
+const LS_COLLAPSED_WS = 'gw-collapsed-workspaces'
 
-export function saveActiveState(aiId, sessId) {
-  localStorage.setItem(LS_ACTIVE, JSON.stringify({ aiId, sessId }))
+export function saveActiveState(aiId, sessId, workspacePath) {
+  const prev = loadActiveState()
+  localStorage.setItem(LS_ACTIVE, JSON.stringify({
+    aiId,
+    sessId,
+    workspacePath: workspacePath !== undefined ? workspacePath : prev.workspacePath ?? null,
+  }))
 }
 
 export function loadActiveState() {
-  try { return JSON.parse(localStorage.getItem(LS_ACTIVE)) || { aiId: null, sessId: null } }
-  catch (_) { return { aiId: null, sessId: null } }
+  try {
+    const data = JSON.parse(localStorage.getItem(LS_ACTIVE)) || {}
+    return {
+      aiId: data.aiId ?? null,
+      sessId: data.sessId ?? null,
+      workspacePath: data.workspacePath ?? null,
+    }
+  } catch (_) {
+    return { aiId: null, sessId: null, workspacePath: null }
+  }
+}
+
+export function loadRegisteredWorkspaces() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_WORKSPACES) || '[]')
+    return Array.isArray(raw) ? raw.filter(p => typeof p === 'string') : []
+  } catch (_) {
+    return []
+  }
+}
+
+export function saveRegisteredWorkspaces(paths) {
+  localStorage.setItem(LS_WORKSPACES, JSON.stringify(paths))
+}
+
+export function loadSelectedWorkspace() {
+  try {
+    return localStorage.getItem(LS_SELECTED_WS) || ''
+  } catch (_) {
+    return ''
+  }
+}
+
+export function saveSelectedWorkspace(path) {
+  if (path) localStorage.setItem(LS_SELECTED_WS, path)
+  else localStorage.removeItem(LS_SELECTED_WS)
+}
+
+export function loadCollapsedWorkspaces() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_COLLAPSED_WS) || '[]')
+    return Array.isArray(raw) ? raw.filter(p => typeof p === 'string') : []
+  } catch (_) {
+    return []
+  }
+}
+
+export function saveCollapsedWorkspaces(paths) {
+  localStorage.setItem(LS_COLLAPSED_WS, JSON.stringify(paths))
 }
 
 export function saveHistory(id, msgs) {

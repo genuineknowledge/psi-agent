@@ -4,6 +4,7 @@ import { useChatStore } from '../stores/chat.js'
 import { useAiStore } from '../stores/ai.js'
 import { useUiStore } from '../stores/ui.js'
 import { loadHistory, htmlEscape, renderMd, saveActiveState } from '../utils.js'
+import { resolveSessionWorkspace } from '../sessionList.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -44,6 +45,29 @@ function restoreSessionView(id) {
   const chat = useChatStore()
   chat.streaming = !!session.sessionStreaming[id]
   chat.abortController = session.sessionAbortControllers[id] ?? null
+}
+
+export async function selectWorkspace(path) {
+  const session = useSessionStore()
+  const chat = useChatStore()
+  const ai = useAiStore()
+  const ui = useUiStore()
+
+  const oldId = session.selectedSessionId
+  if (oldId) snapshotCurrentSession(oldId)
+
+  session.setSelectedWorkspace(path)
+  session.ensureWorkspaceExpanded(path)
+  session.selectedSessionId = null
+  chat.messages.splice(0, chat.messages.length)
+  chat.inputText = ''
+  chat.selectedFiles = []
+  chat.streaming = false
+  chat.abortController = null
+  chat.userHasScrolledUp = false
+
+  saveActiveState(ai.selectedAiId, null, session.selectedWorkspacePath)
+  ui.isMobileSidebarOpen = false
 }
 
 export async function selectSession(id) {
@@ -96,8 +120,12 @@ export async function selectSession(id) {
   }
 
   const currentSess = session.sessions.find(s => s.id === id)
-  if (currentSess) ai.selectedAiId = currentSess.ai_id
-  saveActiveState(ai.selectedAiId, session.selectedSessionId)
+  if (currentSess) {
+    ai.selectedAiId = currentSess.ai_id
+    session.setSelectedWorkspace(resolveSessionWorkspace(currentSess, session.gatewayCwd))
+    session.ensureWorkspaceExpanded(session.selectedWorkspacePath)
+  }
+  saveActiveState(ai.selectedAiId, session.selectedSessionId, session.selectedWorkspacePath)
 
   chat.userHasScrolledUp = false
   ui.isMobileSidebarOpen = false

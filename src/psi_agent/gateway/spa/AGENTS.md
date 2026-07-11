@@ -96,8 +96,8 @@ spa/
 │   │   ├── ModelPanel.vue           # 模型管理浮层（自定义下拉替代原生 datalist）；由 InputBar 嵌入
 │   │   ├── BaseDialog.vue           # 弹窗外壳(overlay + dialog + actions，插槽:title/默认/actions)
 │   │   ├── AiDialog.vue             # 链接大模型弹窗（基于 BaseDialog）
-│   │   ├── SessDialog.vue           # 创建会话弹窗 + FileBrowser（基于 BaseDialog）
-│   │   ├── FileBrowser.vue          # 目录浏览
+│   │   ├── SessDialog.vue           # 创建会话弹窗（基于 BaseDialog）
+│   │   ├── PathPickerDialog.vue     # 通用路径选择器（工作区/导出复用）
 │   │   ├── ConfirmDialog.vue        # 通用确认弹窗（基于 BaseDialog）
 │   │   ├── FilePreview.vue          # Teleport 到 body 的抽屉式文件预览组件，按扩展名动态分派到 codemirror/pdfjs/docx-preview/pptx-preview/xlsx/papaparse；被 MessageBubble.vue 使用；props 含预览目标，emit close
 │   │   └── Snackbar.vue             # MD3 toast 提示
@@ -106,6 +106,7 @@ spa/
 │   │   ├── useKeyboard.js           # visualViewport 键盘适配 + 手动上滚检测
 │   │   ├── useTheme.js              # 暗色/亮色切换（VueUse useColorMode + gw-theme + <html> light-mode class）
 │   │   ├── useSession.js            # selectSession：会话切换 + 草稿/消息缓存（App.vue + Sidebar 共用）
+│   │   ├── usePathPicker.js         # openPathPicker() Promise API + PathPicker 状态
 │   │   ├── useScroll.js             # 消息容器滚动控制（注册容器 + 未锁定则滚底 + 上滚检测）
 │   │   └── useChat.js               # sendMessage 及其内部辅助（addMessage, encodeFiles, generateTitle）；不含 DOM 操作，滚动委托 useScroll、清空 file input 经 chat store 的 uploadResetToken 信号
 │   └── styles/
@@ -152,7 +153,7 @@ spa/
 
 | 文件 | 组件职责 | 关键逻辑 |
 |------|----------|----------|
-| `Sidebar.vue` | 会话列表侧栏 | 新建（emit `new-session`）/双击改名（`v-focus` input + POST `/titles`）/删除（走 confirm 弹窗）/置顶（`togglePinnedSessionId` + 持久化）/搜索；`visibleSessions` = `buildVisibleSessions(...)`；`watch` sessions 变化时清理失效的置顶 id。**布局分两段**（Gemini 式）：`.col` 不滚动（`overflow:hidden`），内部拆 `.sb-top`（品牌 + 「发起新对话」药丸 + 搜索框，**固定置顶不随列表滚走**）与 `.sb-scroll`（「最近」+ 会话列表，`overflow-y:auto`）。`.sb-scroll` 上下 12px `mask-image` 渐隐；滚动条 **默认隐藏、hover 才显示**（`scrollbar-color`/`::-webkit-scrollbar-thumb` 仅在 `.sb-scroll:hover` 显 `--md-outline-variant`，作用域限本组件，不动全局 `layout.css`）。新建/搜索行右侧有快捷键提示 `.shortcut`（`Ctrl+Shift+O`/`Ctrl+Shift+K`，默认 `opacity:0`、行 hover/focus-within 淡入；搜索提示 `v-if="!sessionSearchText"` 输入非空时隐藏）；搜索 `<input>` 有本地 `searchInputRef`，`watch(sessionSearchFocusToken)` → `nextTick` 后 `focus()`（响应 App 层快捷键的跨组件聚焦信号，不被别处直接操作 DOM）。视觉为 Neural Expressive 导航式：新建/搜索/会话项统一整行药丸，**默认透明、hover 才高亮**（`--md-surface-container-high`），选中项常亮；侧栏底色用 `--md-surface-container` |
+| `Sidebar.vue` | 会话列表侧栏 | 工作区树 + 工作区行/列表内「+」发起新对话（emit `new-session`）/双击改名/删除/置顶/搜索；**`.sb-top` 固定**：品牌 + 「打开工作区」+ 搜索框（无顶栏「发起新对话」）|
 | `ChatArea.vue` | 消息列表容器 | `messages` 经 `storeToRefs` 从 `useChatStore` 取；`v-for messages` 渲染 `MessageBubble`；`onMounted` 向 `useScroll` 注册滚动容器；`watch messages.length` → `scrollToBottomIfLocked`。空状态由 App.vue 的欢迎屏承担（本组件不再渲染空提示）。`#messages` 底部 24px `mask-image` 向上渐隐，让消息贴近输入胶囊处淡出（与侧栏 `.sb-scroll` 渐变统一；桌面态规则，移动端 `@media` 不含） |
 | `MessageBubble.vue` | 单条消息气泡 | 消息居中 820px 列（`.msg` `max-width:820px;margin:0 auto`），用户 `align-items:flex-end`、助手 `flex-start`；用户气泡为中性 `--md-surface-container-high` 面板（**非** accent 蓝，对齐参考深色规则）；助手消息**去卡片**（透明背景）、**纯文字流无头像**；正文/标题/表格继承 sans-serif、代码用等宽字体栈，内联代码加浅背景片、代码块加背景方框（语法高亮见「Markdown 渲染流程」）；`v-html="msg.html"`（AI）/等待首 token 时显示 `ThinkingBubble`；复制按钮用 VueUse `useClipboard`；附件 chip 点击打开 `FilePreview`（`openPreviewKey` 追踪当前打开项） |
 | `ThinkingBubble.vue` | 加载指示 | 纯展示：三个脉冲圆点动画，等待首 token 时由 MessageBubble 显示 |
@@ -160,8 +161,9 @@ spa/
 | `ModelPanel.vue` | 模型切换浮层 | 由 InputBar 内嵌；`modelPanelOpen/ais/selectedAiId` 经 `storeToRefs` 从 `useAiStore` 取；chip 显示当前模型；浮层列出 `ais`，点击 emit `select-ai`/`delete-ai`/`new-ai`（均冒泡到 App.vue） |
 | `BaseDialog.vue` | 弹窗外壳 | 所有弹窗的基类：overlay + dialog + `title`/默认/`actions` 三插槽；`show` prop 控制，overlay 点击 emit `close`；`.ok`/`.cancel` 按钮样式在此 scoped |
 | `AiDialog.vue` | 链接大模型弹窗 | 基于 BaseDialog；provider 自定义下拉（选中回填 base_url）；模型名自定义下拉（替代原生 datalist：↑↓/Enter/Esc 键盘导航 + 输入过滤 + `@mousedown.prevent` 防 blur）；base_url/api_key `@change` 触发 `fetchModels`；无 AI 时 `handleCancel` 拒绝关闭 |
-| `SessDialog.vue` | 创建会话弹窗 | 基于 BaseDialog；工作区路径输入 + 「浏览」按钮切换内嵌 `FileBrowser`；emit `create`/`browse` |
-| `FileBrowser.vue` | 目录浏览器 | `browser/sessForm` 经 `storeToRefs` 从 `useSessionStore` 取；渲染 `browser`（当前目录/上级/子目录列表）；点条目 emit `browse`（进目录）或 `set-path`（选定）；实际 fetch `/workspace/browse` 在 App.vue |
+| `SessDialog.vue` | 创建会话弹窗 | 基于 BaseDialog；确认当前工作区 + 大模型后 emit `create` |
+| `PathPickerDialog.vue` | 路径选择器 | 资源管理器式 UI（左侧快捷位置 + 面包屑 + 列表 + 底部路径确认）；由 `usePathPicker.openPathPicker()` 控制；侧栏「打开工作区」直接调用，无中间 WorkspaceDialog |
+| `usePathPicker.js` | 路径选择 composable | `openPathPicker({ mode, title, initialPath, … }) → Promise<path\|null>`；fetch `/workspace/roots` + `/workspace/browse` |
 | `FilePreview.vue` | 文件预览抽屉 | `Teleport` 到 `body` 的抽屉面板；按扩展名分派渲染：图片/音视频/SVG 用 Blob URL，代码/JSON/文本用 codemirror，Markdown 用 renderMd，csv 用 papaparse，pdf 用 pdfjs，docx 用 docx-preview，xlsx 用 xlsx，pptx 用 pptx-preview（全部动态 `import()` 懒加载）；含大小/行数/页数上限与 fallback；`renderRun` 计数防竞态，`cleanup` 释放 editor/objectUrl；emit `close` |
 | `ConfirmDialog.vue` | 通用确认弹窗 | 基于 BaseDialog；`dlgConfirm` 经 `storeToRefs` 从 `useUiStore` 取；渲染 `dlgConfirm.message`，「删除」emit `confirm`（App.vue 按 `actionType` 分派） |
 | `Snackbar.vue` | Toast 提示 | `snackbar` 经 `storeToRefs` 从 `useUiStore` 取；渲染 `snackbar`（message + 显隐），「知道了」关闭 |
@@ -252,7 +254,6 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 | `editingSessionId`, `editingWorkspaceText` | `string` | 会话标题编辑状态 |
 | `sessionSearchText` | `string` | 侧栏会话搜索框文本（`sessionList.js` 的 `buildVisibleSessions` 据此过滤） |
 | `pinnedSessionIds` | `string[]` | 置顶会话 id 列表；在 store 的 setup 内经 `loadPinnedSessionIds(window.localStorage)` 从 `gw-pinned-session-ids` 初始化，见 `sessionList.js` |
-| `browser` | `object` | 目录浏览 {path, parent, entries} |
 
 ### `stores/chat.js` — `useChatStore`
 

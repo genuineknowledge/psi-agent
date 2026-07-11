@@ -11,7 +11,88 @@ export function getSessionDisplayName(session, titles = {}) {
   if (session && titles && titles[session.id]) {
     return titles[session.id]
   }
-  return session?.workspace || PLACEHOLDER_SESSION_TITLE
+  return PLACEHOLDER_SESSION_TITLE
+}
+
+/** Normalize workspace paths for grouping (forward slashes, no trailing slash). */
+export function normalizeWorkspacePath(path) {
+  if (typeof path !== 'string') return ''
+  let p = path.trim().replace(/\\/g, '/')
+  if (!p) return ''
+  if (p.length > 1) p = p.replace(/\/+$/, '')
+  return p
+}
+
+/** Last path segment for sidebar display. */
+export function getWorkspaceLabel(path) {
+  const p = normalizeWorkspacePath(path)
+  if (!p) return '工作区'
+  const parts = p.split('/').filter(Boolean)
+  return parts[parts.length - 1] || p
+}
+
+/** Session workspace: explicit path, else Gateway cwd when empty. */
+export function resolveSessionWorkspace(session, defaultCwd = '') {
+  const n = normalizeWorkspacePath(session?.workspace ?? '')
+  if (n) return n
+  return normalizeWorkspacePath(defaultCwd)
+}
+
+export function mergeWorkspacePaths(registered, sessions, defaultCwd = '') {
+  const seen = new Set()
+  const result = []
+  const add = (raw) => {
+    const n = normalizeWorkspacePath(raw)
+    if (!n || seen.has(n)) return
+    seen.add(n)
+    result.push(n)
+  }
+  if (Array.isArray(registered)) {
+    for (const p of registered) add(p)
+  }
+  if (Array.isArray(sessions)) {
+    for (const s of sessions) add(resolveSessionWorkspace(s, defaultCwd))
+  }
+  return result
+}
+
+export function sessionsForWorkspace(sessions, workspacePath, defaultCwd = '') {
+  const target = normalizeWorkspacePath(workspacePath)
+  if (!Array.isArray(sessions)) return []
+  return sessions.filter(s => resolveSessionWorkspace(s, defaultCwd) === target)
+}
+
+export function buildWorkspaceGroups(
+  sessions,
+  {
+    registered = [],
+    defaultCwd = '',
+    titles = {},
+    query = '',
+    pinnedIds = [],
+    requireTitle = true,
+  } = {},
+) {
+  const paths = mergeWorkspacePaths(registered, sessions, defaultCwd)
+  const normalizedQuery = query.trim().toLowerCase()
+  return paths
+    .map(path => {
+      const workspaceSessions = sessionsForWorkspace(sessions, path, defaultCwd)
+      const visibleSessions = buildVisibleSessions(workspaceSessions, {
+        titles,
+        query,
+        pinnedIds,
+        requireTitle,
+      })
+      const label = getWorkspaceLabel(path)
+      const searchable = [label, path].join('\n').toLowerCase()
+      return { path, label, sessions: visibleSessions, searchable }
+    })
+    .filter(group => {
+      if (!normalizedQuery) return true
+      if (group.searchable.includes(normalizedQuery)) return true
+      return group.sessions.length > 0
+    })
 }
 
 function normalizeIdList(ids) {
@@ -64,7 +145,6 @@ export function buildVisibleSessions(sessions, { titles = {}, query = '', pinned
   const normalizedQuery = query.trim().toLowerCase()
   const pinned = new Set(normalizeIdList(pinnedIds))
   return sessions
-    // 仅显示已有 titles[id] 的会话（占位「新对话」或 AI 生成标题均可）。
     .filter(session => !requireTitle || hasTitle(session, titles))
     .map((session, index) => ({
       session,

@@ -204,7 +204,7 @@ AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
 
 错误响应格式：`{"error": "message"}` + HTTP 状态码（404/400/500）。
 
-**注意**：`GET /workspace/browse` 对 `path` 不加限制，可列举本机任意目录——这是 FileBrowser 选 workspace 的预期功能。
+**注意**：`GET /workspace/browse` 对 `path` 不加限制，可列举本机任意目录——这是 PathPicker 选 workspace 的预期功能。`GET /workspace/roots` 返回快捷位置与盘符。
 
 ## Web UI Chat 协议
 
