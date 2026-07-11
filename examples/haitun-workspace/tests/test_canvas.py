@@ -17,8 +17,10 @@ import importlib
 import inspect
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+import anyio
 import pytest
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +85,163 @@ def test_generated_canvas_tool_is_async_with_signature(_fake_discover: None) -> 
     fn = ns["canvas_create_element"]
     assert inspect.iscoroutinefunction(fn)
     assert "type" in inspect.signature(fn).parameters
+
+
+def test_union_type_property_does_not_crash_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: Excalidraw emits union types (``"type": ["number", "array"]``).
+
+    ``_build`` used to do ``_T.get(ps["type"])`` with the raw list, raising
+    ``TypeError: unhashable type: 'list'`` and crashing the whole canvas.py load
+    (no ``canvas_*`` tools registered). A union type must collapse to its first
+    non-null member; a nullable array must still resolve to a ``list`` annotation.
+    """
+
+    def _discover(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {
+            "create_element": {
+                "name": "create_element",
+                "description": "Create an element.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        # union type: value may be a scalar or an array
+                        "width": {"type": ["number", "array"]},
+                        # nullable string (common JSON Schema union with null)
+                        "label": {"type": ["string", "null"]},
+                        # nullable array of numbers -> should stay list[...]
+                        "points": {"type": ["array", "null"], "items": {"type": "number"}},
+                    },
+                    "required": ["width"],
+                },
+            }
+        }
+
+    monkeypatch.setattr(_mcp, "_discover", _discover)
+    ns: dict[str, Any] = {}
+    # Must not raise TypeError.
+    exec(
+        "from _mcp import mcp\n"
+        "@mcp\n"
+        "def canvas():\n"
+        "    return {'transport': 'stdio', 'command': 'npx', 'args': ['-y', 'x']}\n",
+        ns,
+    )
+    assert "canvas_create_element" in ns
+    sig = inspect.signature(ns["canvas_create_element"])
+    assert set(sig.parameters) == {"width", "label", "points"}
+
+
+def test_object_and_object_array_params_degrade_to_json_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: batch_create_elements / apply have object & array-of-object params.
+
+    The tool runtime only accepts str/int/float/bool/list[scalar], so it *skipped*
+    ``canvas_batch_create_elements`` (``list[dict]``) and ``canvas_apply`` (nested
+    ``dict``) entirely. ``_build`` must degrade those to ``str`` (JSON string) params
+    so the tools load, and decode them back to structures before the MCP call.
+    """
+
+    def _discover(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {
+            "batch_create_elements": {
+                "name": "batch_create_elements",
+                "description": "Create many elements at once.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "elements": {"type": "array", "items": {"type": "object"}},
+                    },
+                    "required": ["elements"],
+                },
+            },
+            "apply": {
+                "name": "apply",
+                "description": "Multi-op patch.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"patch": {"type": "object"}},
+                    "required": ["patch"],
+                },
+            },
+        }
+
+    monkeypatch.setattr(_mcp, "_discover", _discover)
+    ns: dict[str, Any] = {}
+    exec(
+        "from _mcp import mcp\n"
+        "@mcp\n"
+        "def canvas():\n"
+        "    return {'transport': 'stdio', 'command': 'npx', 'args': ['-y', 'x']}\n",
+        ns,
+    )
+    # Both tools must now load, with their complex params typed as plain str.
+    for tool, param in (("canvas_batch_create_elements", "elements"), ("canvas_apply", "patch")):
+        assert tool in ns
+        ann = inspect.signature(ns[tool]).parameters[param].annotation
+        assert ann is str
+
+
+def test_json_string_param_is_decoded_before_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A JSON-string arg for an object/array param is parsed back before call_tool."""
+
+    def _discover(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return {
+            "batch_create_elements": {
+                "name": "batch_create_elements",
+                "description": "Create many elements.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"elements": {"type": "array", "items": {"type": "object"}}},
+                    "required": ["elements"],
+                },
+            }
+        }
+
+    captured: dict[str, Any] = {}
+
+    class _FakeSession:
+        async def initialize(self) -> None:
+            return None
+
+        async def call_tool(self, name: str, kw: dict[str, Any]) -> Any:
+            captured["name"] = name
+            captured["kw"] = kw
+            # A minimal MCP-shaped result: _fmt reads .content (TextContent list).
+            return SimpleNamespace(content=[], structuredContent={"ok": True}, isError=False)
+
+    class _FakeConn:
+        async def __aenter__(self) -> _FakeSession:
+            return _FakeSession()
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+    monkeypatch.setattr(_mcp, "_discover", _discover)
+    monkeypatch.setattr(_mcp, "_connect", lambda _cfg: _FakeConn())
+
+    ns: dict[str, Any] = {}
+    exec(
+        "from _mcp import mcp\n"
+        "@mcp\n"
+        "def canvas():\n"
+        "    return {'transport': 'stdio', 'command': 'npx', 'args': ['-y', 'x']}\n",
+        ns,
+    )
+    fn = ns["canvas_batch_create_elements"]
+    anyio.run(lambda: fn(elements='[{"type": "rectangle", "x": 1}]'))
+    # The JSON string must have been decoded into a real list of dicts before call_tool.
+    assert captured["name"] == "batch_create_elements"
+    assert captured["kw"]["elements"] == [{"type": "rectangle", "x": 1}]
+
+
+def test_json_type_helper() -> None:
+    """The ``_json_type`` normalizer collapses union/absent types to one string."""
+    assert _mcp._json_type({"type": "string"}) == "string"
+    assert _mcp._json_type({"type": ["string", "null"]}) == "string"
+    assert _mcp._json_type({"type": ["null", "number"]}) == "number"
+    assert _mcp._json_type({"type": ["array", "null"]}) == "array"
+    # absent type (anyOf/oneOf/enum-only property) falls back to string
+    assert _mcp._json_type({"enum": ["a", "b"]}) == "string"
+    assert _mcp._json_type({}) == "string"
 
 
 def test_stdio_config_resolves(_fake_discover: None) -> None:
