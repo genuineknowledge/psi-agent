@@ -2,11 +2,11 @@
 
 docs/                                   @hzhangxyz @wey-bo @zhangqh0 @idol643 @misakamikoto0721
 
-src/psi_agent/gateway/spa/              @zhangqh0 @hzhangxyz
+src/psi_agent/gateway/spa/              @misakamikoto0721 @hzhangxyz
 
-examples/haitun-workspace/              @idol643 @hzhangxyz
+examples/haitun-workspace/              @idol643 @misakamikoto0721 @hzhangxyz
 
-examples/fusion-flow-workspace/         @zhangqh0 @hzhangxyz
+examples/fusion-flow-workspace/         @idol643 @hzhangxyz
 
 examples/fusion-memory-workspace/       @wey-bo @hzhangxyz
 
