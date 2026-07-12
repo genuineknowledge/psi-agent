@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import aclosing
+from typing import Any
 
 import anyio
 import anyio.lowlevel

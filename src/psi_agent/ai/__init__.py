@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-import anyio
 from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger

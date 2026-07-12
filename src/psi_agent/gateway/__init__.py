@@ -7,7 +7,6 @@ import webbrowser
 from dataclasses import dataclass
 
 import anyio
-from aiohttp import web
 from loguru import logger
 
 from psi_agent._logging import setup_logging
