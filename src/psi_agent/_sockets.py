@@ -13,10 +13,44 @@ event loop (Windows only).
 from __future__ import annotations
 
 import urllib.parse
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import aiohttp
+import anyio
 from aiohttp import web
 from loguru import logger
+
+
+async def serve_app(
+    app: web.Application,
+    addr: str,
+    *,
+    wait_func: Callable[[], Awaitable[Any]] | None = None,
+) -> None:
+    """Run an aiohttp application on the given address with shielded cleanup.
+
+    If ``wait_func`` is provided, it is awaited after the server starts.
+    Otherwise, it sleeps forever until cancelled.
+    """
+    runner = web.AppRunner(app)
+    try:
+        await runner.setup()
+        site = create_site(runner, addr)
+        await site.start()
+    except Exception:
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()
+        raise
+
+    try:
+        if wait_func is not None:
+            await wait_func()
+        else:
+            await anyio.sleep_forever()
+    finally:
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()
 
 
 def resolve_connector_and_endpoint(

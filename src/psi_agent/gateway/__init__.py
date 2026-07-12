@@ -11,7 +11,7 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent._logging import setup_logging
-from psi_agent._sockets import create_site
+from psi_agent._sockets import serve_app
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._state import GatewayState
@@ -126,18 +126,8 @@ class Gateway:
 
             await _do_persist()
 
-            runner = web.AppRunner(app)
-            try:
-                try:
-                    await runner.setup()
-                    site = create_site(runner, addr)
-                    await site.start()
-                except Exception as e:
-                    logger.error(f"Failed to start Gateway on {addr}: {e!r}")
-                    raise
-
+            async def _wait() -> None:
                 logger.info(f"Gateway listening on {addr}")
-
                 wv = None
                 if self.webview:
                     if self.icon is None:
@@ -174,9 +164,10 @@ class Gateway:
                         tray.stop()
                     if wv is not None:
                         wv.stop()
+
+            try:
+                await serve_app(app, addr, wait_func=_wait)
             finally:
                 logger.info("Shutting down Gateway")
-                with anyio.CancelScope(shield=True):
-                    await runner.cleanup()
                 tg.cancel_scope.cancel()
         logger.info("Gateway shutdown complete")

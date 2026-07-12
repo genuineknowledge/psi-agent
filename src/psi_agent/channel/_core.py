@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
-from contextlib import aclosing
+from contextlib import aclosing, suppress
 from dataclasses import dataclass
 
 import aiohttp
@@ -10,6 +10,7 @@ import anyio
 from aiohttp import ClientTimeout
 from loguru import logger
 
+from psi_agent._logging import trace_id_var
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._markers import SendMarkerScanner, encode_input
@@ -47,11 +48,16 @@ class ChannelCore:
         content = encode_input(chunks)
         body = {"messages": [{"role": "user", "content": content}], "stream": True}
 
+        headers = {}
+        trace_id = trace_id_var.get()
+        if trace_id != "-":
+            headers["X-Trace-ID"] = trace_id
+
         buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()
 
         logger.debug(f"POST {self._endpoint} content_len={len(content)}")
-        async with self._session.post(self._endpoint, json=body) as resp:
+        async with self._session.post(self._endpoint, json=body, headers=headers) as resp:
             logger.info(f"HTTP {resp.status}")
 
             if resp.status != 200:

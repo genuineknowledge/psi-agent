@@ -607,7 +607,7 @@ class _RecordingPostSession:
     def __init__(self, resp: _RecordingResp) -> None:
         self._resp = resp
 
-    def post(self, endpoint: str, json: dict[str, object]) -> _RecordingResp:
+    def post(self, endpoint: str, json: dict[str, object], **kwargs: Any) -> _RecordingResp:
         return self._resp
 
     async def close(self) -> None:

@@ -9,8 +9,19 @@ from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
 
+from psi_agent._logging import trace_id_var
+
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
+    trace_id = request.headers.get("X-Trace-ID", "-")
+    token = trace_id_var.set(trace_id)
+    try:
+        return await _handle_chat_completions(request)
+    finally:
+        trace_id_var.reset(token)
+
+
+async def _handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.info("Received chat completion request")
     try:
         body: dict[str, Any] = await request.json()
@@ -58,12 +69,10 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     upstream_error = False
     client_gone = False
     stream: AsyncIterator[ChatCompletionChunk] | None = None
-    try:
-        stream = cast(
+
+    async def _get_stream() -> AsyncIterator[ChatCompletionChunk]:
+        return cast(
             AsyncIterator[ChatCompletionChunk],
-            # ``acompletion()`` returns ``ChatCompletion | AsyncIterator[ChatCompletionChunk]``
-            # depending on the ``stream`` flag.  We always pass ``stream=True``, so the
-            # runtime type is always ``AsyncIterator[ChatCompletionChunk]`` — the cast is safe.
             await acompletion(
                 provider=provider,
                 model=model,
@@ -71,9 +80,27 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 stream=True,
                 api_key=api_key,
                 api_base=base_url,
+                timeout=30,  # 30s connection timeout
                 **body,
             ),
         )
+
+    try:
+        # exponential backoff retry for upstream (only before yielding)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                stream = await _get_stream()
+                break
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    raise
+                wait = 2**attempt
+                logger.warning(
+                    f"Upstream AI call failed (attempt {attempt + 1}/{max_retries}): {e!r}. Retrying in {wait}s..."
+                )
+                await anyio.sleep(wait)
+
         logger.debug("Starting to consume upstream SSE stream")
         async for chunk in stream:
             data = chunk.model_dump_json()

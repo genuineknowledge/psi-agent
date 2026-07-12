@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sys
+from contextvars import ContextVar
 
 from loguru import logger
+
+trace_id_var: ContextVar[str] = ContextVar("trace_id", default="-")
 
 _handler_id: int | None = None
 
@@ -22,6 +25,7 @@ def setup_logging(*, verbose: bool = False) -> int:
     if _handler_id is not None:
         return _handler_id
     logger.remove()
+    logger.configure(patcher=lambda record: record["extra"].update(trace_id=trace_id_var.get()))
     level = "DEBUG" if verbose else "INFO"
     _handler_id = logger.add(
         sys.stderr,
@@ -29,7 +33,8 @@ def setup_logging(*, verbose: bool = False) -> int:
         format=(
             "<green>{time:HH:mm:ss.SSS}</green> | "
             "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
+            "<magenta>{extra[trace_id]}</magenta> - "
             "<level>{message}</level>"
         ),
     )

@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import anyio
 from aiohttp import web
 from loguru import logger
 
-from psi_agent._sockets import create_site
+from psi_agent._sockets import serve_app
 
 if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent
@@ -27,22 +26,8 @@ async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
     app = web.Application()
     app.router.add_post("/chat/completions", agent.handle_request)
 
-    runner = web.AppRunner(app)
-    try:
-        await runner.setup()
-        site = create_site(runner, channel_socket)
-        await site.start()
-    except Exception as e:
-        logger.error(f"Failed to start session server on {channel_socket}: {e}")
-        with anyio.CancelScope(shield=True):
-            await runner.cleanup()
-        raise
-
     logger.info(f"Session server listening on {channel_socket}")
-
     try:
-        await anyio.sleep_forever()
+        await serve_app(app, channel_socket)
     finally:
         logger.info(f"Shutting down session server on {channel_socket}")
-        with anyio.CancelScope(shield=True):
-            await runner.cleanup()

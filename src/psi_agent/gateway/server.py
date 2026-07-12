@@ -11,6 +11,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._logging import trace_id_var
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._chat_manager import ChatManager
 from psi_agent.gateway._history_manager import HistoryManager
@@ -235,6 +236,15 @@ async def _get_history(request: web.Request) -> web.Response:
 
 
 async def _handle_chat(request: web.Request) -> web.StreamResponse:
+    trace_id = request.headers.get("X-Trace-ID", "-")
+    token = trace_id_var.set(trace_id)
+    try:
+        return await __handle_chat(request)
+    finally:
+        trace_id_var.reset(token)
+
+
+async def __handle_chat(request: web.Request) -> web.StreamResponse:
     sm: SessionManager = request.app["sm"]
     cm: ChatManager = request.app["cm"]
     session_id = request.match_info["session_id"]

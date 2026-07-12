@@ -10,6 +10,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._logging import trace_id_var
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
@@ -100,6 +101,14 @@ class SessionAgent:
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         """aiohttp handler registered by ``serve_session``."""
+        trace_id = request.headers.get("X-Trace-ID", "-")
+        token = trace_id_var.set(trace_id)
+        try:
+            return await self._handle_request(request)
+        finally:
+            trace_id_var.reset(token)
+
+    async def _handle_request(self, request: web.Request) -> web.StreamResponse:
         try:
             user_message, extra_params = await self._channel_adapter.parse_request(request)
         except ChannelAdapter.ParseError as e:

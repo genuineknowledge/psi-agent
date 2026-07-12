@@ -58,7 +58,7 @@ async def test_serve_ai_cleans_up_runner_on_start_failure(monkeypatch: pytest.Mo
         async def start(self) -> None:
             raise RuntimeError("bind failed")
 
-    monkeypatch.setattr("psi_agent.ai.create_site", lambda runner, addr: _BadSite())
+    monkeypatch.setattr("psi_agent._sockets.create_site", lambda runner, addr: _BadSite())
 
     async def _handler(request: web.Request) -> web.StreamResponse:
         return web.StreamResponse()
