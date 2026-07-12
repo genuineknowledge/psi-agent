@@ -102,6 +102,7 @@ async def _handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 await anyio.sleep(wait)
 
         logger.debug("Starting to consume upstream SSE stream")
+        assert stream is not None
         async for chunk in stream:
             data = chunk.model_dump_json()
             logger.debug(f"SSE chunk: {data[:1000]}")
