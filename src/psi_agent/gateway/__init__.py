@@ -14,11 +14,11 @@ from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway._state import GatewayState
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._tray import GatewayTray
 from psi_agent.gateway._webview import GatewayWebView
-from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway.server import create_app
 
 

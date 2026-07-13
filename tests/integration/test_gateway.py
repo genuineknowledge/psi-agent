@@ -364,11 +364,10 @@ async def test_gateway_spa_index_app_name() -> None:
 
     try:
         timeout = ClientTimeout(total=10)
-        async with ClientSession(timeout=timeout) as session:
-            async with session.get(f"{base}/spa/index.html") as resp:
-                assert resp.status == 200
-                body = await resp.text()
-                assert "<title>Haitun Agent</title>" in body
+        async with ClientSession(timeout=timeout) as session, session.get(f"{base}/spa/index.html") as resp:
+            assert resp.status == 200
+            body = await resp.text()
+            assert "<title>Haitun Agent</title>" in body
     finally:
         await runner.cleanup()
         await tg.__aexit__(None, None, None)
