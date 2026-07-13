@@ -69,6 +69,16 @@ function setSessionStreaming(sid, value) {
   }
 }
 
+/** Clear streaming flag when no live AbortController (tab refresh / crashed fetch). */
+export function clearStaleStreaming() {
+  const sid = resolveActiveChatKey()
+  if (!sid || !isSessionStreaming(sid)) return
+  const session = useSessionStore()
+  const chat = useChatStore()
+  if (session.sessionAbortControllers[sid] || chat.abortController) return
+  setSessionStreaming(sid, false)
+}
+
 /** Ensure sidebar shows this session immediately with a placeholder title. */
 export async function ensureSessionSidebarTitle(sid) {
   if (!sid) return
@@ -194,59 +204,61 @@ async function runChatTurn(sid, { userMsg, text, files }) {
 
   let streamError = false
   try {
-    const reader = await streamChat(sid, fd, controller.signal)
-    for await (const chunkData of readSSE(reader)) {
-      if (chunkData.type === 'text' && chunkData.text !== undefined) {
-        if (!asst) asst = addAssistantAfter(sid, userMsg)
-        asst.text += chunkData.text
-        asst.html = renderMd(asst.text)
-      } else if (chunkData.type === 'blob') {
-        if (!asst) asst = addAssistantAfter(sid, userMsg)
-        asst.files.push({ name: chunkData.name, data: chunkData.data })
-      } else if (chunkData.type === 'error') {
+    try {
+      const reader = await streamChat(sid, fd, controller.signal)
+      for await (const chunkData of readSSE(reader)) {
+        if (chunkData.type === 'text' && chunkData.text !== undefined) {
+          if (!asst) asst = addAssistantAfter(sid, userMsg)
+          asst.text += chunkData.text
+          asst.html = renderMd(asst.text)
+        } else if (chunkData.type === 'blob') {
+          if (!asst) asst = addAssistantAfter(sid, userMsg)
+          asst.files.push({ name: chunkData.name, data: chunkData.data })
+        } else if (chunkData.type === 'error') {
+          streamError = true
+          if (!asst) asst = addAssistantAfter(sid, userMsg)
+          asst.text += '\n[Error: ' + chunkData.error + ']'
+          asst.html = renderMd(asst.text)
+        } else if (chunkData.type === 'reasoning') {
+          if (asst && (asst.text || asst.files.length)) asst = null
+        }
+        if (isVisibleChatKey(sid)) {
+          mirrorVisibleMessages(sid, getMessagesList(sid))
+          scrollToBottomIfLocked()
+        }
+      }
+    } catch (e) {
+      if (!asst) asst = addAssistantAfter(sid, userMsg)
+      if (e.name === 'AbortError') {
+        asst.stopped = true
+      } else {
         streamError = true
-        if (!asst) asst = addAssistantAfter(sid, userMsg)
-        asst.text += '\n[Error: ' + chunkData.error + ']'
+        asst.text += '\n[Error: ' + e.message + ']'
         asst.html = renderMd(asst.text)
-      } else if (chunkData.type === 'reasoning') {
-        if (asst && (asst.text || asst.files.length)) asst = null
-      }
-      if (isVisibleChatKey(sid)) {
-        mirrorVisibleMessages(sid, getMessagesList(sid))
-        scrollToBottomIfLocked()
       }
     }
-  } catch (e) {
-    if (!asst) asst = addAssistantAfter(sid, userMsg)
-    if (e.name === 'AbortError') {
-      asst.stopped = true
-    } else {
-      streamError = true
-      asst.text += '\n[Error: ' + e.message + ']'
-      asst.html = renderMd(asst.text)
+
+    const msgs = getMessagesList(sid)
+    const asstIdx = asst ? msgs.indexOf(asst) : -1
+    if (asstIdx >= 0) {
+      const stub = msgs[asstIdx]
+      if (!stub.text && !stub.files.length) {
+        msgs.splice(asstIdx, 1)
+        if (asst === stub) asst = null
+      }
     }
+
+    let outcome = resolveTurnOutcome(msgs, userMsg, asst)
+    if (streamError && outcome === 'ok') outcome = 'error'
+    applyTurnOutcome(msgs, userMsg, asst, outcome)
+    const normalized = normalizeFailedTurns(msgs)
+    msgs.splice(0, msgs.length, ...normalized)
+    mirrorVisibleMessages(sid, msgs)
+    saveHistory(sid, msgs)
+  } finally {
+    setSessionStreaming(sid, false)
+    setSessionAbortController(sid, null)
   }
-
-  const msgs = getMessagesList(sid)
-  const asstIdx = asst ? msgs.indexOf(asst) : -1
-  if (asstIdx >= 0) {
-    const stub = msgs[asstIdx]
-    if (!stub.text && !stub.files.length) {
-      msgs.splice(asstIdx, 1)
-      if (asst === stub) asst = null
-    }
-  }
-
-  let outcome = resolveTurnOutcome(msgs, userMsg, asst)
-  if (streamError && outcome === 'ok') outcome = 'error'
-  applyTurnOutcome(msgs, userMsg, asst, outcome)
-  const normalized = normalizeFailedTurns(msgs)
-  msgs.splice(0, msgs.length, ...normalized)
-  mirrorVisibleMessages(sid, msgs)
-
-  setSessionStreaming(sid, false)
-  setSessionAbortController(sid, null)
-  saveHistory(sid, msgs)
 
   const session = useSessionStore()
   const currentTitle = session.sessionTitles[sid]
@@ -335,6 +347,34 @@ export async function sendMessage() {
 
 function cloneStoredFiles(files) {
   return (files || []).map(f => ({ name: f.name, data: f.data }))
+}
+
+/** Re-run the turn for the user message preceding *assistantMsg*. */
+export async function regenerateAssistantMessage(assistantMsg) {
+  const sid = resolveActiveChatKey()
+  if (!sid || isSessionStreaming(sid) || !assistantMsg || assistantMsg.role !== 'assistant') return
+
+  const msgs = getMessagesList(sid)
+  const asstIdx = msgs.indexOf(assistantMsg)
+  if (asstIdx < 0) return
+
+  let userMsg = null
+  for (let i = asstIdx - 1; i >= 0; i--) {
+    if (msgs[i]?.role === 'user') {
+      userMsg = msgs[i]
+      break
+    }
+  }
+  if (!userMsg) return
+
+  const text = userMsg.text
+  const files = cloneStoredFiles(userMsg.files)
+
+  msgs.splice(asstIdx, 1)
+  addAssistantAfter(sid, userMsg)
+  mirrorVisibleMessages(sid, msgs)
+
+  await runChatTurn(sid, { userMsg, text, files })
 }
 
 /** Remove failed bubble, append a fresh copy, and send again. */

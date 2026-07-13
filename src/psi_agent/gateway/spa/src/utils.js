@@ -228,6 +228,7 @@ export function saveHistory(id, msgs) {
     stopped: m.stopped || false,
     failed: m.failed || false,
     failedReason: m.failedReason || '',
+    feedback: m.feedback || '',
   }))))
 }
 

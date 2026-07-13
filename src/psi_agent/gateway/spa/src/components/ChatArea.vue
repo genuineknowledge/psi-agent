@@ -4,6 +4,8 @@
       v-for="(m, i) in messages"
       :key="m.id || i"
       :msg="m"
+      :show-actions="showMessageActions(m, i)"
+      :is-streaming-target="isStreamingTarget(m, i)"
     />
   </div>
 </template>
@@ -14,13 +16,28 @@ import { storeToRefs } from 'pinia'
 import { useChatStore } from '../stores/chat.js'
 import MessageBubble from './MessageBubble.vue'
 import { registerScrollContainer, scrollToBottomIfLocked, onContainerScroll } from '../composables/useScroll.js'
+import { clearStaleStreaming } from '../composables/useChat.js'
+import { isCompleteAssistant } from '../messageTurn.js'
 
 const chat = useChatStore()
-const { messages } = storeToRefs(chat)
+const { messages, streaming } = storeToRefs(chat)
+
+function isStreamingTarget(msg, index) {
+  return streaming.value && index === messages.value.length - 1 && msg.role === 'assistant'
+}
+
+function showMessageActions(msg, index) {
+  if (msg.role !== 'assistant') return false
+  if (isStreamingTarget(msg, index)) return false
+  return isCompleteAssistant(msg)
+}
 
 const messagesRef = ref(null)
 
-onMounted(() => registerScrollContainer(messagesRef.value))
+onMounted(() => {
+  registerScrollContainer(messagesRef.value)
+  clearStaleStreaming()
+})
 
 watch(
   () => messages.value.length,
