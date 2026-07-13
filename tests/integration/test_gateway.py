@@ -350,3 +350,24 @@ async def test_gateway_favicon(tmp_path: str) -> None:
         await runner_with.cleanup()
         await runner_without.cleanup()
         await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_gateway_spa_index_app_name() -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+
+    aim = AIManager(_prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    app = await create_app(aim, sm, TitleManager(), app_name="Haitun Agent")
+    base, runner = await _start_app_on_free_port(app)
+
+    try:
+        timeout = ClientTimeout(total=10)
+        async with ClientSession(timeout=timeout) as session, session.get(f"{base}/spa/index.html") as resp:
+            assert resp.status == 200
+            body = await resp.text()
+            assert "<title>Haitun Agent</title>" in body
+    finally:
+        await runner.cleanup()
+        await tg.__aexit__(None, None, None)
