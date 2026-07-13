@@ -111,7 +111,8 @@ spa/
 │   │   ├── useSession.js            # selectSession/selectWorkspace/startDraftChat/promoteDraftToSession/discardDraft（App.vue + Sidebar 共用）
 │   │   ├── usePathPicker.js         # openPathPicker() Promise API + PathPicker 状态
 │   │   ├── useScroll.js             # 消息容器滚动控制（注册容器 + 未锁定则滚底 + 上滚检测）
-│   │   └── useChat.js               # sendMessage 及其内部辅助（addMessage, encodeFiles, generateTitle）；不含 DOM 操作，滚动委托 useScroll、清空 file input 经 chat store 的 uploadResetToken 信号
+│   │   └── useChat.js               # sendMessage / resendFailedMessage / runChatTurn；不含 DOM 操作
+│   ├── messageTurn.js               # 失败回合判定（normalizeFailedTurns、applyTurnOutcome）；配套 messageTurn.test.js
 │   └── styles/
 │       ├── tokens.css               # MD3 颜色/elevation/shape token（双主题）
 │       ├── components.css           # MD3 组件基类（button, spinner 等 + 弹窗共用的 .field 表单字段；dialog 外壳已由 BaseDialog.vue 承担）
@@ -172,7 +173,7 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 / 导出 |
 |------|------|-----------------|
-| `useChat.js` | 发送消息 | `sendMessage()`：取 inputText+files → **`ensureSessionSidebarTitle(sid)`**（首轮发送时 POST `/titles` 占位「新对话」，侧栏立即出现）→ 显示用户消息 → 预建 assistant 气泡 → `streamChat` + `for await readSSE` → 丢弃尾部空气泡 → `saveHistory` → 仍为占位标题则 `generateTitle`（POST `/titles/generate` 覆盖）。滚动委托 `useScroll`、清空 input 经 `uploadResetToken` 信号，**不直接操作 DOM** |
+| `useChat.js` | 发送消息 | `sendMessage()` → `runChatTurn()`：流式结束后 `applyTurnOutcome` + `normalizeFailedTurns`——未完成回合的用户消息标 `failed`，隐藏残缺 assistant。`resendFailedMessage(userMsg)`：删除失败气泡、在末尾复制一条并重发。滚动委托 `useScroll` |
 | `useSSE.js` | SSE 解析 | `async function* readSSE(reader)`：TextDecoder 累积 → `\r\n`→`\n` → 逐行取 `data:` → `[DONE]` 结束 / `JSON.parse` / 非 JSON 降级为 `{type:'text'}` |
 | `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → 恢复输入 → 从 `/history` 或 localStorage 加载消息 → 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
 | `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |

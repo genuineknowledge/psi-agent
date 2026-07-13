@@ -158,6 +158,8 @@ export function saveHistory(id, msgs) {
     text: m.text,
     files: (m.files || []).map(f => ({ name: f.name, data: f.data })),
     stopped: m.stopped || false,
+    failed: m.failed || false,
+    failedReason: m.failedReason || '',
   }))))
 }
 
