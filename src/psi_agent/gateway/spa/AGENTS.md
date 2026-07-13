@@ -81,6 +81,7 @@ spa/
 │   │   ├── chat.js                  # useChatStore：messages, inputText, streaming, abortController, selectedFiles, userHasScrolledUp, uploadResetToken
 │   │   └── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch
 │   ├── utils.js                     # renderMd, htmlEscape, mimeType, localStorage
+│   ├── utils.test.js                # renderMd GFM 表格规范化单测（Vitest）
 │   ├── api.js                       # fetch 封装(api) + chat 流请求(streamChat)
 │   ├── providers.js                 # 预置 provider 配置 (deepseek/openai/anthropic/gemini)
 │   ├── sessionList.js               # 会话列表纯逻辑工具：置顶(pin)持久化、搜索过滤、显示名、标题 payload 构造。导出：PINNED_SESSIONS_KEY、getSessionDisplayName、loadPinnedSessionIds、savePinnedSessionIds、togglePinnedSessionId、buildSessionTitlePayload、buildVisibleSessions
@@ -173,9 +174,9 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 / 导出 |
 |------|------|-----------------|
-| `useChat.js` | 发送消息 | `sendMessage()` → `runChatTurn()`：流式结束后 `applyTurnOutcome` + `normalizeFailedTurns`——未完成回合的用户消息标 `failed`，隐藏残缺 assistant。`resendFailedMessage(userMsg)`：删除失败气泡、在末尾复制一条并重发。滚动委托 `useScroll` |
+| `useChat.js` | 发送消息 | `sendMessage()` 先乐观 UI（清输入、用户气泡、ThinkingBubble），再 `encodeFiles` / draft 时 `promoteDraftToSession` / `runChatTurn()`；失败时 `abortOptimisticSend`。流式结束后 `applyTurnOutcome` + `normalizeFailedTurns`。`resendFailedMessage(userMsg)`：删除失败气泡、在末尾复制一条并重发。滚动委托 `useScroll` |
 | `useSSE.js` | SSE 解析 | `async function* readSSE(reader)`：TextDecoder 累积 → `\r\n`→`\n` → 逐行取 `data:` → `[DONE]` 结束 / `JSON.parse` / 非 JSON 降级为 `{type:'text'}` |
-| `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → 恢复输入 → 从 `/history` 或 localStorage 加载消息 → 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
+| `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → `restoreSessionView`（无 live AbortController 时清 stale `streaming`）→ 从 `/history` 或 localStorage 加载消息 → 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
 | `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |
 | `useKeyboard.js` | 移动端视口适配 | `onMounted` 挂 `visualViewport` resize/scroll + window.resize 监听，同步 `#input-wrapper`/`#mobile-topbar`/`#messages`/`#sidebar`/`.mobile-overlay` 的键盘偏移内联样式；>768px 清空所有内联样式；textarea focus 时延迟滚底。移动端视口逻辑的唯一归属地（约束 11） |
 | `useTheme.js` | 主题切换 | `useTheme()` 函数体内部调用 `useUiStore()`（不在模块顶层）；用 VueUse `useColorMode` 管理主题（`modes: { light: 'light-mode', dark: '' }` 增删 `<html>` class，`storageKey: 'gw-theme'`）；显式配置 `disableTransition: false` / `emitAuto: false` / 自建 `storageRef`（`writeDefaults: false`）保持既有行为；`toggleTheme()` 切换 `mode`，`ui.isLightMode` 经 `watch` 同步 |
@@ -292,7 +293,7 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 - KaTeX 设置 `throwOnError: false`，语法错误时 fallback 到 `<code>` 标签
 - `marked.parse()` 失败时降级为 `htmlEscape()` 纯文本
 - **代码块语法高亮**：`marked` 的 `code` renderer 被覆盖，用 `highlight.js/lib/common`（仅常用语言，控制体积）产出带 `hljs language-xxx` class 的 `<pre><code>`；语言标注无效或高亮抛错时回退纯转义文本，绝不丢内容。着色由 `styles/highlight.css` 承担（双主题，`--hl-*` 变量映射 hljs token class，调色只改该文件）。内联代码不高亮，仅由 MessageBubble 的 `<style scoped>` 加浅背景片区分
-- **GFM 表格**：`utils.js` 已开 `gfm: true`；`MessageBubble` 内表格 `width:100%` + `table-layout:fixed`，单元格自动换行（`overflow-wrap:anywhere`），格线用 `--md-outline`，不横向撑破气泡
+- **GFM 表格**：`utils.js` 已开 `gfm: true`，并在 `renderMd` 前做表格规范化（去掉表格块内空行、解开误包在 code fence 里的纯表格）；`MessageBubble` 内表格 `width:100%` + `table-layout:fixed`，单元格自动换行（`overflow-wrap:anywhere`），格线用 `--md-outline`，不横向撑破气泡
 
 ## SSE 流式解析 (`useSSE.js:readSSE`)
 
@@ -352,18 +353,16 @@ Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 ### 发送消息 (`sendMessage` — `composables/useChat.js`)
 ```
 1. 提取 inputText + selectedFiles（数组，含拖放文件）
-2. Files → FileReader.readAsDataURL → base64（encodeFiles）
-3. 用户消息立即显示 (addMessage + htmlEscape)
-4. AI 消息气泡出现 (addMessage, streaming=true)
-5. FormData + streamChat() POST /sessions/{id}/chat（multipart，多文件 append）
+2. 乐观 UI：清空输入/附件 → 用户气泡 (addMessage + htmlEscape) → streaming=true → 空 assistant（ThinkingBubble）
+3. encodeFiles → FileReader.readAsDataURL → base64 写入用户气泡
+4. draft 会话 → promoteDraftToSession（POST /sessions，~数秒）→ 消息列表迁移到新 sid
+5. ensureSessionSidebarTitle（fire-and-forget）→ runChatTurn → streamChat() POST /sessions/{id}/chat
 6. for await (readSSE(reader)):
    - text chunk → asst.text += chunk.text → renderMd → 更新 v-html
    - blob chunk → asst.files.push({name, data})
    - scrollChatAreaIfLocked → 自动滚底（unless userHasScrolledUp）
-7. streaming=false
-8. saveHistory → localStorage
-9. ensureSessionSidebarTitle → POST `/titles` 占位「新对话」（侧栏立即可见）
-10. 流式结束 → saveHistory → 仍为占位标题 → generateTitle → POST `/titles/generate`
+7. streaming=false → saveHistory → 仍为占位标题 → generateTitle → POST `/titles/generate`
+8. promote/encode/SSE 失败 → abortOptimisticSend（清 streaming、标 user failed、移除空 assistant）
 ```
 
 **新特性**：
@@ -387,7 +386,7 @@ DELETE + POST /sessions (同 id, 原 workspace) → POST /titles
 ```
 Sidebar「+」/「新对话」或快捷键 → startDraftChat（不 POST）
 → mainView=chat，InputBar 可用，sidebar 显示 draft 行「新对话」
-→ sendMessage → promoteDraftToSession（POST /sessions）→ ensureSessionSidebarTitle → SSE
+→ sendMessage → 立即显示用户气泡 + ThinkingBubble → promoteDraftToSession（POST /sessions）→ SSE
 → 未发送就切走 → discardDraft，后端无记录
 ```
 
