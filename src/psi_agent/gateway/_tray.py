@@ -10,6 +10,8 @@ from typing import Any
 from loguru import logger
 from PIL import Image
 
+from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
+
 
 class GatewayTray:
     """System tray icon that provides quick access to Gateway Web Console."""
@@ -18,10 +20,12 @@ class GatewayTray:
         self,
         url: str,
         icon_path: str,
+        app_name: str = DEFAULT_APP_NAME,
         on_open: Any = None,
     ) -> None:
         self._url = url
         self._icon_path = icon_path
+        self._app_name = app_name
         self._on_open = on_open if on_open is not None else self._open_browser
         self._stop_event = threading.Event()
         self._icon: Any = None
@@ -42,10 +46,10 @@ class GatewayTray:
 
         try:
             menu = pystray.Menu(
-                pystray.MenuItem("打开控制台", self._on_open, default=True),
+                pystray.MenuItem(f"打开 {self._app_name}", self._on_open, default=True),
                 pystray.MenuItem("退出", self._quit),
             )
-            self._icon = pystray.Icon("psi-agent", image, "psi-agent", menu)
+            self._icon = pystray.Icon("psi-agent", image, self._app_name, menu)
         except Exception as e:
             logger.warning(f"Failed to create tray icon: {e!r}")
             self._icon = None
