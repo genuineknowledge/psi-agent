@@ -291,6 +291,7 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 - KaTeX 设置 `throwOnError: false`，语法错误时 fallback 到 `<code>` 标签
 - `marked.parse()` 失败时降级为 `htmlEscape()` 纯文本
 - **代码块语法高亮**：`marked` 的 `code` renderer 被覆盖，用 `highlight.js/lib/common`（仅常用语言，控制体积）产出带 `hljs language-xxx` class 的 `<pre><code>`；语言标注无效或高亮抛错时回退纯转义文本，绝不丢内容。着色由 `styles/highlight.css` 承担（双主题，`--hl-*` 变量映射 hljs token class，调色只改该文件）。内联代码不高亮，仅由 MessageBubble 的 `<style scoped>` 加浅背景片区分
+- **GFM 表格**：`utils.js` 已开 `gfm: true`；`MessageBubble` 内表格 `width:100%` + `table-layout:fixed`，单元格自动换行（`overflow-wrap:anywhere`），格线用 `--md-outline`，不横向撑破气泡
 
 ## SSE 流式解析 (`useSSE.js:readSSE`)
 

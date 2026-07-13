@@ -234,6 +234,45 @@ function closePreview() {
   white-space: pre;
 }
 
+.bubble-content {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* GFM tables: fit bubble width; wrap cell text instead of horizontal scroll. */
+.bubble :deep(table) {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  font-size: 0.875em;
+  border: 2px solid var(--md-outline);
+}
+
+.bubble :deep(th),
+.bubble :deep(td) {
+  border: 1.5px solid var(--md-outline);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.bubble :deep(th) {
+  background: var(--md-surface-container-highest, var(--md-surface-container-high));
+  font-weight: 700;
+  color: var(--md-text-primary);
+}
+
+.msg.user .bubble :deep(th) {
+  background: color-mix(in srgb, var(--md-on-primary-container) 8%, var(--md-primary-container));
+}
+
 .msg.user .bubble {
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
@@ -248,10 +287,6 @@ function closePreview() {
   border: 1px solid var(--md-outline-variant);
   border-radius: 16px 16px 16px 4px;
   padding: 12px 16px;
-}
-
-.bubble-content {
-  min-width: 0;
 }
 
 .stopped-tag {
