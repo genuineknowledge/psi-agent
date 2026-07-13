@@ -4,6 +4,8 @@ import { htmlEscape, renderMd, saveHistory, loadHistory } from '../utils.js'
 import { readSSE } from './useSSE.js'
 import { api, streamChat } from '../api.js'
 import { scrollToBottomIfLocked } from './useScroll.js'
+import { promoteDraftToSession } from './useSession.js'
+import { useUiStore } from '../stores/ui.js'
 import {
   buildSessionTitlePayload,
   isPlaceholderSessionTitle,
@@ -14,11 +16,24 @@ function origin() {
   return window.location.origin.replace(/\/+$/, '')
 }
 
+function isVisibleChatKey(key) {
+  const session = useSessionStore()
+  if (!key) return false
+  if (session.selectedSessionId === key) return true
+  return session.draftSession?.draftId === key
+}
+
+function resolveActiveChatKey() {
+  const session = useSessionStore()
+  if (session.selectedSessionId) return session.selectedSessionId
+  return session.draftSession?.draftId ?? null
+}
+
 function ensureSessionMessageList(sid) {
   const session = useSessionStore()
   const chat = useChatStore()
   if (!session.sessionMessages[sid]) {
-    if (session.selectedSessionId === sid && chat.messages.length > 0) {
+    if (isVisibleChatKey(sid) && chat.messages.length > 0) {
       session.sessionMessages[sid] = [...chat.messages]
     } else {
       session.sessionMessages[sid] = []
@@ -33,9 +48,8 @@ function getMessagesList(sid) {
 }
 
 function mirrorVisibleMessages(sid, list) {
-  const session = useSessionStore()
   const chat = useChatStore()
-  if (session.selectedSessionId !== sid) return
+  if (!isVisibleChatKey(sid)) return
   if (chat.messages.length !== list.length || chat.messages.some((m, i) => m !== list[i])) {
     chat.messages.splice(0, chat.messages.length, ...list)
   }
@@ -49,7 +63,7 @@ function setSessionStreaming(sid, value) {
   const session = useSessionStore()
   const chat = useChatStore()
   session.sessionStreaming[sid] = value
-  if (session.selectedSessionId === sid) {
+  if (isVisibleChatKey(sid)) {
     chat.streaming = value
   }
 }
@@ -74,7 +88,7 @@ function setSessionAbortController(sid, controller) {
   } else {
     delete session.sessionAbortControllers[sid]
   }
-  if (session.selectedSessionId === sid) {
+  if (isVisibleChatKey(sid)) {
     chat.abortController = controller
   }
 }
@@ -84,7 +98,7 @@ function addMessage(sid, role, id) {
   const m = { id, role, text: '', html: '', files: [], stopped: false }
   list.push(m)
   mirrorVisibleMessages(sid, list)
-  if (useSessionStore().selectedSessionId === sid) {
+  if (isVisibleChatKey(sid)) {
     scrollToBottomIfLocked()
   }
   return list[list.length - 1]
@@ -108,11 +122,21 @@ export async function sendMessage() {
   const chat = useChatStore()
   const session = useSessionStore()
 
-  const sid = session.selectedSessionId
+  let sid = resolveActiveChatKey()
   if (!sid || isSessionStreaming(sid)) return
   const text = chat.inputText.trim()
   const files = [...chat.selectedFiles]
   if (!text && !files.length) return
+
+  if (session.draftSession) {
+    try {
+      sid = await promoteDraftToSession()
+    } catch (e) {
+      useUiStore().showAlert(e.message || '创建会话失败')
+      return
+    }
+    if (!sid) return
+  }
 
   await ensureSessionSidebarTitle(sid)
   ensureSessionMessageList(sid)
@@ -164,7 +188,7 @@ export async function sendMessage() {
       } else if (chunkData.type === 'reasoning') {
         if (asst && (asst.text || asst.files.length)) asst = null
       }
-      if (useSessionStore().selectedSessionId === sid) {
+      if (isVisibleChatKey(sid)) {
         mirrorVisibleMessages(sid, getMessagesList(sid))
         scrollToBottomIfLocked()
       }
@@ -199,7 +223,7 @@ export async function sendMessage() {
 export function stopMessage() {
   const session = useSessionStore()
   const chat = useChatStore()
-  const sid = session.selectedSessionId
+  const sid = resolveActiveChatKey()
   if (!sid) return
   const controller = session.sessionAbortControllers[sid] ?? chat.abortController
   if (controller) controller.abort()
