@@ -4,7 +4,7 @@
       <div class="msg-avatar" :class="msg.role" :aria-label="speakerLabel">
         <span v-if="msg.role === 'user' && userInitial" class="avatar-text">{{ userInitial }}</span>
         <span v-else-if="msg.role === 'user'" class="material-symbols-outlined">person</span>
-        <span v-else class="material-symbols-outlined">smart_toy</span>
+        <span v-else class="avatar-logo" aria-hidden="true"></span>
       </div>
       <div class="msg-content">
         <div class="msg-speaker">{{ speakerLabel }}</div>
@@ -134,8 +134,19 @@ function closePreview() {
 }
 
 .msg-avatar.assistant {
-  background: var(--md-secondary-container);
-  color: var(--md-on-secondary-container);
+  background: var(--md-surface-container);
+  overflow: hidden;
+  padding: 0;
+}
+
+.avatar-logo {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background-image: url('/spa/haitun-logo.png');
+  background-size: cover;
+  background-position: center;
+  display: block;
 }
 
 .avatar-text {
