@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import inspect
 import json
+import pathlib
 import sys
 from collections.abc import Callable, Mapping
 from contextlib import AsyncExitStack, suppress
@@ -62,35 +63,104 @@ def _json_type(ps: Mapping[str, Any]) -> str:
 
 
 def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator: auto-discover MCP tools at import time.
+    """Decorator: generate one workspace tool per MCP server tool.
 
     Generated tool names default to ``<func name>_<mcp tool name>`` (so
     ``serper`` -> ``serper_search``). A declaration may set ``prefix`` to
     override this — e.g. ``prefix=""`` when the MCP server's own tool names
     already carry the desired prefix (Playwright MCP exposes ``browser_*``),
     which would otherwise double up to ``browser_browser_navigate``.
+
+    **Lazy startup.** The workspace loader imports tool files *synchronously*
+    (a blocking ``exec``), so anything a decorator does at import time — spawning
+    an ``npx`` MCP server, connecting to enumerate tools — stalls session
+    startup (Playwright MCP costs ~90s cold). To avoid that we:
+
+    1. Read the tool **schemas from an on-disk cache** (``.mcp_cache/<name>.json``)
+       when present, so import touches neither ``func()`` nor the server. The
+       ``browser_*``/``canvas_*`` tool set is stable, so a committed cache is
+       authoritative.
+    2. Defer the real config — and therefore ``ensure_server()`` / spawning —
+       to **first call** of a generated tool (see ``_build``'s ``config_provider``).
+    3. Fall back to live discovery only on a cache miss, then **persist** the
+       result so subsequent imports are instant.
     """
-    config = _resolve(func())
-    prefix = config.pop("prefix", None)
+    prefix_hint = getattr(func, "__name__", "mcp")
+    name = prefix_hint
+
+    # Deferred config: resolved once, on first tool call, off the import path.
+    _cached_config: dict[str, Any] | None = None
+
+    def config_provider() -> dict[str, Any]:
+        nonlocal _cached_config
+        if _cached_config is None:
+            _cached_config = _resolve(func())
+        return _cached_config
+
+    prefix, schemas = _load_cached_schemas(name)
+    if schemas is None:
+        # Cache miss — pay the discovery cost now (blocking) and cache it.
+        try:
+            config = config_provider()
+            prefix = config.get("prefix")
+            schemas = _discover(config)
+        except BaseException as exc:  # contain MCP/anyio teardown (see _is_fatal); re-raise only fatals
+            if _is_fatal(exc):
+                raise
+            # The MCP server was unreachable / errored during discovery (e.g. Playwright
+            # MCP returning 502, or npx missing). Degrade gracefully: register no tools and
+            # keep loading the rest of the workspace, rather than letting the failure — which
+            # can surface as a BaseExceptionGroup — crash tool loading and the gateway.
+            logger.warning(f"MCP tool discovery for {name!r} failed; skipping its tools: {exc!r}")
+            return func
+        _save_cached_schemas(name, prefix, schemas)
+
     if prefix is None:
-        prefix = getattr(func, "__name__", "mcp") + "_"
-    name = getattr(func, "__name__", "mcp")
-    try:
-        schemas = _discover(config)
-    except BaseException as exc:  # contain MCP/anyio teardown (see _is_fatal); re-raise only fatals
-        if _is_fatal(exc):
-            raise
-        # The MCP server was unreachable / errored during discovery (e.g. Playwright
-        # MCP returning 502, or npx missing). Degrade gracefully: register no tools and
-        # keep loading the rest of the workspace, rather than letting the failure — which
-        # can surface as a BaseExceptionGroup — crash tool loading and the gateway.
-        logger.warning(f"MCP tool discovery for {name!r} failed; skipping its tools: {exc!r}")
-        return func
+        prefix = name + "_"
     g = sys._getframe(1).f_globals
     prepend = func.__doc__
     for tool_name, schema in schemas.items():
-        g[prefix + tool_name] = _build(prefix + tool_name, schema, config, prepend)
+        g[prefix + tool_name] = _build(prefix + tool_name, schema, config_provider, prepend)
     return func
+
+
+def _cache_path(name: str) -> pathlib.Path:
+    """Path to the on-disk schema cache for MCP declaration *name*."""
+    return pathlib.Path(__file__).resolve().parent / ".mcp_cache" / f"{name}.json"
+
+
+def _load_cached_schemas(name: str) -> tuple[str | None, dict[str, dict[str, Any]] | None]:
+    """Return ``(prefix, schemas)`` from the on-disk cache, or ``(None, None)`` on miss.
+
+    The cache holds the *tool schemas* only — never a live connection — so it is
+    safe to read on the (blocking) import path. A malformed/absent cache is a
+    miss, so the caller falls back to live discovery."""
+    path = _cache_path(name)
+    try:
+        if not path.is_file():
+            return None, None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        schemas = data["schemas"]
+        if not isinstance(schemas, dict):
+            return None, None
+        logger.debug(f"Loaded {len(schemas)} cached MCP schema(s) for {name!r} from {path}")
+        return data.get("prefix"), schemas
+    except Exception as exc:
+        # Any cache problem => treat as a miss and fall back to live discovery.
+        logger.warning(f"Ignoring unreadable MCP schema cache for {name!r} ({path}): {exc!r}")
+        return None, None
+
+
+def _save_cached_schemas(name: str, prefix: str | None, schemas: dict[str, dict[str, Any]]) -> None:
+    """Persist freshly discovered *schemas* so later imports skip live discovery."""
+    path = _cache_path(name)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"prefix": prefix, "schemas": schemas}, indent=2), encoding="utf-8")
+        logger.debug(f"Cached {len(schemas)} MCP schema(s) for {name!r} to {path}")
+    except Exception as exc:
+        # Caching is best-effort; never fail tool loading over a write error.
+        logger.warning(f"Failed to write MCP schema cache for {name!r} ({path}): {exc!r}")
 
 
 def _discover(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -106,7 +176,17 @@ def _discover(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
         return pool.submit(anyio.run, _go).result()  # ty: ignore
 
 
-def _build(name: str, schema: dict[str, Any], config: dict[str, Any], prepend_doc: str | None = None) -> Any:
+def _build(
+    name: str,
+    schema: dict[str, Any],
+    config_provider: Callable[[], dict[str, Any]],
+    prepend_doc: str | None = None,
+) -> Any:
+    """Build one workspace tool function from an MCP tool *schema*.
+
+    *config_provider* returns the resolved MCP transport config, evaluated
+    **lazily on first call** — so a cache-backed tool never touches the server
+    (or ``ensure_server()``) until the agent actually invokes it."""
     props = schema.get("inputSchema", {}).get("properties", {})
     req: list[str] = schema.get("inputSchema", {}).get("required", [])
     params: list[inspect.Parameter] = []
@@ -155,7 +235,7 @@ def _build(name: str, schema: dict[str, Any], config: dict[str, Any], prepend_do
         + "\n\nArgs:\n"
         + "\n".join(_arg_line(p, ps) for p, ps in props.items())
     )
-    tn, cfg = schema["name"], config
+    tn = schema["name"]
 
     def _decode(kw: dict[str, Any]) -> dict[str, Any]:
         """Parse JSON-string args back into objects/arrays before the MCP call.
@@ -173,6 +253,11 @@ def _build(name: str, schema: dict[str, Any], config: dict[str, Any], prepend_do
 
     async def _fn(**kw: Any) -> str:
         try:
+            # Resolve config lazily on first call. This is where a deferred
+            # server actually starts (e.g. ``ensure_server()`` spawning npx and
+            # blocking ~90s the first time) — run it in a worker thread so a
+            # cold start never stalls the shared event loop / other sessions.
+            cfg = await anyio.to_thread.run_sync(config_provider)  # ty: ignore
             async with _connect(cfg) as session:
                 await session.initialize()
                 r = await session.call_tool(tn, _decode(kw))
