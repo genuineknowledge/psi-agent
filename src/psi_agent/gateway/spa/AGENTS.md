@@ -79,11 +79,13 @@ spa/
 │   │   ├── ai.js                    # useAiStore：ais, selectedAiId, aiForm, fetchedModels, loadingModels, modelPanelOpen
 │   │   ├── session.js               # useSessionStore：sessions, selectedSessionId, draftSession, sessionTitles, sessionMessages, sessionInputs, sessionStreaming, sessionAbortControllers, …
 │   │   ├── chat.js                  # useChatStore：messages, inputText, streaming, abortController, selectedFiles, userHasScrolledUp, uploadResetToken
-│   │   └── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch
+│   │   └── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken, hubMenuOpen, hubPanel + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch/toggleHubMenu/openHubPanel/…
 │   ├── utils.js                     # renderMd, htmlEscape, mimeType, localStorage
 │   ├── utils.test.js                # renderMd GFM 表格规范化单测（Vitest）
 │   ├── api.js                       # fetch 封装(api) + chat 流请求(streamChat)
-│   ├── providers.js                 # 预置 provider 配置 (deepseek/openai/anthropic/gemini)
+│   ├── providers.js                 # 预置 provider 配置 (deepseek/openai/anthropic/gemini)，供 AiDialog 高级配置
+│   ├── modelPresets.js              # Hub 快捷连接预设表（展示 + provider/model/base_url 默认），配套 modelPresets.test.js
+│   ├── userProfile.js               # 用户资料 localStorage key + readAvatarDataUrl
 │   ├── sessionList.js               # 会话列表纯逻辑工具：置顶(pin)持久化、搜索过滤、显示名、标题 payload 构造。导出：PINNED_SESSIONS_KEY、getSessionDisplayName、loadPinnedSessionIds、savePinnedSessionIds、togglePinnedSessionId、buildSessionTitlePayload、buildVisibleSessions
 │   ├── shortcuts.js                 # 快捷键判定纯函数：matchSidebarShortcut(event) → 'new-session'|'focus-search'|null（用 event.code + Ctrl/Cmd+Shift）
 │   ├── shortcuts.test.js            # matchSidebarShortcut 单测（Vitest）
@@ -98,7 +100,12 @@ spa/
 │   │   ├── BaseDialog.vue           # 弹窗外壳(overlay + dialog + actions，插槽:title/默认/actions)
 │   │   ├── NoWorkspaceView.vue      # 无工作区引导页（打开工作区 CTA）
 │   │   ├── NoSessionView.vue        # 有工作区无会话引导页（新对话 CTA）
-│   │   ├── AiDialog.vue             # 链接大模型弹窗（基于 BaseDialog）
+│   │   ├── UserHub.vue              # 右上角用户菜单（资料/大模型/登录/设置）
+│   │   ├── HubModelsPanel.vue       # Hub「大模型」：预设卡片 + API Key；右上角「高级配置」→ AiDialog
+│   │   ├── HubProfilePanel.vue      # Hub「我的资料」：称呼 + 头像上传
+│   │   ├── HubLoginPanel.vue        # Hub「登录」占位（本地模式说明）
+│   │   ├── HubSettingsPanel.vue     # Hub「设置」：主题切换等
+│   │   ├── AiDialog.vue             # 链接大模型弹窗（基于 BaseDialog，高级四项配置）
 │   │   ├── SessDialog.vue           # （已废弃）原创建会话确认弹窗；新对话改为 draft + 首条发送 POST
 │   │   ├── PathPickerDialog.vue     # 通用路径选择器（工作区/导出复用）
 │   │   ├── ConfirmDialog.vue        # 通用确认弹窗（基于 BaseDialog）
@@ -141,10 +148,12 @@ spa/
 | `src/stores/ai.js` | AI 领域 store | `useAiStore` setup-store，导出 `ais/selectedAiId/aiForm/fetchedModels/loadingModels/modelPanelOpen`（详见「状态管理」表） |
 | `src/stores/session.js` | Session 领域 store | `useSessionStore` setup-store，导出 `sessions/selectedSessionId/draftSession/sessionTitles/sessionMessages/…`；`draftSession` 为 client-only 草稿（首条发送前不 POST）；`pinnedSessionIds` 在 setup 内经 `loadPinnedSessionIds(window.localStorage)` 初始化 |
 | `src/stores/chat.js` | Chat 领域 store | `useChatStore` setup-store，导出 `messages/inputText/streaming/abortController/selectedFiles/userHasScrolledUp/uploadResetToken` |
-| `src/stores/ui.js` | UI 领域 store | `useUiStore` setup-store，导出 `loadingEnv/isLightMode/isDragging/dlgAI/dlgSess/snackbar/dlgConfirm/isSidebarCollapsed/isMobileSidebarOpen/sessionSearchFocusToken` + action `showAlert(message)`/`toggleSidebar(isMobile)`/`closeMobileSidebar()`/`focusSessionSearch()`（递增 `sessionSearchFocusToken` 作聚焦搜索框的跨组件信号，Sidebar `watch` 后 focus 自身 input） |
+| `src/stores/ui.js` | UI 领域 store | `useUiStore` setup-store，导出 `loadingEnv/isLightMode/isDragging/dlgAI/dlgSess/snackbar/dlgConfirm/isSidebarCollapsed/isMobileSidebarOpen/sessionSearchFocusToken/hubMenuOpen/hubPanel` + action `showAlert`/`toggleSidebar`/`closeMobileSidebar`/`focusSessionSearch`/`toggleHubMenu`/`openHubPanel`/`closeHubPanel` |
 | `src/api.js` | HTTP 封装 | `api(method,path,body)` — JSON fetch，非 2xx 抛错；`streamChat(sessionId,formData)` — POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
 | `src/utils.js` | 纯工具 + 持久化 | `renderMd`（marked+KaTeX，见「Markdown 渲染流程」）；`htmlEscape`（用户输入转义）；`mimeType`（扩展名→MIME）；localStorage 读写：`saveActiveState/loadActiveState`（`gw-active-ids`）、`saveHistory/loadHistory/clearHistory`（`gw-hist-<id>`，仅存 role/text/files） |
-| `src/providers.js` | 预置 provider 表 | 导出 `PROVIDERS` 数组：13 家供应商的 `v`(值)/`l`(标签)/`base`(默认 base_url)/`models`(预置模型名)，供 AiDialog 下拉 |
+| `src/providers.js` | 预置 provider 表 | 导出 `PROVIDERS` 数组：13 家供应商的 `v`(值)/`l`(标签)/`base`(默认 base_url)/`models`(预置模型名)，供 AiDialog 高级下拉 |
+| `src/modelPresets.js` | Hub 快捷连接预设 | 导出 `MODEL_PRESETS`（id/label/mark/accent + provider/model/base_url）、`getModelPreset`、`presetToAiPayload`；HubModelsPanel 只填 api_key |
+| `src/userProfile.js` | 用户资料持久化 | `LS_USER_NAME`/`LS_USER_AVATAR` + `readAvatarDataUrl(file)`（≤512KB 图片 → data URL） |
 | `src/sessionList.js` | 会话列表纯逻辑 | 无副作用工具（可单测）：`PINNED_SESSIONS_KEY`、`PLACEHOLDER_SESSION_TITLE`（「新对话」）、`isPlaceholderSessionTitle`、`getSessionDisplayName`(标题优先、回退 workspace/占位)、`loadPinnedSessionIds/savePinnedSessionIds/togglePinnedSessionId`(置顶持久化 + 去重规范化)、`buildSessionTitlePayload`、`buildVisibleSessions`(搜索过滤 + 置顶排在前) |
 | `src/shortcuts.js` | 快捷键判定纯逻辑 | `matchSidebarShortcut(event)` → `'new-session'`(Ctrl/Cmd+Shift+O) / `'focus-search'`(Ctrl/Cmd+Shift+K) / `null`；用 `event.code` 而非 `key`（规避 Shift 大小写/输入法差异），`ctrlKey||metaKey` 兼容 Windows/macOS。配套 `shortcuts.test.js` 单测 |
 
@@ -162,7 +171,10 @@ spa/
 | `InputBar.vue` | 输入区 UI | 仅 chat 态由 App 挂载；Enter 发送（`useChat.sendMessage`，首条发送时 `promoteDraftToSession`） |
 | `ModelPanel.vue` | 模型切换浮层 | 由 InputBar 内嵌；`modelPanelOpen/ais/selectedAiId` 经 `storeToRefs` 从 `useAiStore` 取；chip 显示当前模型；浮层列出 `ais`，点击 emit `select-ai`/`delete-ai`/`new-ai`（均冒泡到 App.vue） |
 | `BaseDialog.vue` | 弹窗外壳 | 所有弹窗的基类：overlay + dialog + `title`/默认/`actions` 三插槽；`show` prop 控制，overlay 点击 emit `close`；`.ok`/`.cancel` 按钮样式在此 scoped |
-| `AiDialog.vue` | 链接大模型弹窗 | 基于 BaseDialog；provider 自定义下拉（选中回填 base_url）；模型名自定义下拉（替代原生 datalist：↑↓/Enter/Esc 键盘导航 + 输入过滤 + `@mousedown.prevent` 防 blur）；base_url/api_key `@change` 触发 `fetchModels`；无 AI 时 `handleCancel` 拒绝关闭 |
+| `UserHub.vue` | 用户菜单入口 | 头像下拉 → 打开 HubProfile/Models/Login/Settings 面板；桌面 `#topbar` + 移动 `#mobile-topbar` 共用 |
+| `HubModelsPanel.vue` | Hub 大模型配置 | 预设卡片网格 → 选中后同弹窗内 API Key 输入 → POST `/ais`；标题栏「高级配置」关闭本面板并打开 `dlgAI` |
+| `HubProfilePanel.vue` | Hub 我的资料 | 称呼 + 头像上传（写 `gw-user-name`/`gw-user-avatar`）；MessageBubble 与右上头像同步 |
+| `AiDialog.vue` | 链接大模型弹窗（高级） | 基于 BaseDialog；provider 自定义下拉（选中回填 base_url）；模型名自定义下拉（替代原生 datalist：↑↓/Enter/Esc 键盘导航 + 输入过滤 + `@mousedown.prevent` 防 blur）；base_url/api_key `@change` 触发 `fetchModels`；无 AI 时 `handleCancel` 拒绝关闭 |
 | `SessDialog.vue` | 创建会话弹窗 | 基于 BaseDialog；确认当前工作区 + 大模型后 emit `create` |
 | `PathPickerDialog.vue` | 路径选择器 | 资源管理器式 UI（左侧快捷位置 + 面包屑 + 列表 + 底部路径确认）；由 `usePathPicker.openPathPicker()` 控制；侧栏「打开工作区」直接调用，无中间 WorkspaceDialog |
 | `usePathPicker.js` | 路径选择 composable | `openPathPicker({ mode, title, initialPath, … }) → Promise<path\|null>`；fetch `/workspace/roots` + `/workspace/browse` |
@@ -334,7 +346,8 @@ props 含预览目标（文件名 + 数据），emit `close` 关闭抽屉。
 | `gw-sidebar-state` | `'expanded'/'collapsed'` | 侧栏折叠状态（由 `App.vue` 经 VueUse `useStorage` 读写） |
 | `gw-theme` | `'light'/'dark'` | 主题偏好 |
 | `gw-pinned-session-ids` | `string[]` | 置顶会话 id 列表（由 `sessionList.js` 的 `loadPinnedSessionIds`/`savePinnedSessionIds` 读写） |
-| `gw-user-name` | `string` | 用户称呼（欢迎屏问候语 + 头像首字母）；空则显示通用问候「你好，有什么可以帮你？」+ 默认 person 图标。由 `App.vue` 经 VueUse `useStorage` 读写，点右上头像可设置。预留给后续「agent 对话设置称呼」接同一 key |
+| `gw-user-name` | `string` | 用户称呼（欢迎语、消息气泡显示名、Hub 头像首字母 fallback） |
+| `gw-user-avatar` | `string` | 用户头像 data URL（Hub「我的资料」上传；右上头像与消息气泡同步） |
 
 Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 
