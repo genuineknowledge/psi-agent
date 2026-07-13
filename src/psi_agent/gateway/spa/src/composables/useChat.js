@@ -12,6 +12,7 @@ import {
   PLACEHOLDER_SESSION_TITLE,
 } from '../sessionList.js'
 import { applyTurnOutcome, normalizeFailedTurns, resolveTurnOutcome } from '../messageTurn.js'
+import { isTurnBoundaryReasoning } from '../streamChunks.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -209,7 +210,13 @@ async function runChatTurn(sid, { userMsg, text, files }) {
         asst.text += '\n[Error: ' + chunkData.error + ']'
         asst.html = renderMd(asst.text)
       } else if (chunkData.type === 'reasoning') {
-        if (asst && (asst.text || asst.files.length)) asst = null
+        // Only tool-call/result markers end a turn and start a fresh bubble.
+        // The model's thinking stream interleaves token-by-token with content
+        // on reasoning models; splitting on it shatters the answer into
+        // single-character bubbles.
+        if (isTurnBoundaryReasoning(chunkData.text) && asst && (asst.text || asst.files.length)) {
+          asst = null
+        }
       }
       if (isVisibleChatKey(sid)) {
         mirrorVisibleMessages(sid, getMessagesList(sid))
