@@ -4,18 +4,30 @@
       <div class="msg-avatar" :class="msg.role" :aria-label="speakerLabel">
         <span v-if="msg.role === 'user' && userInitial" class="avatar-text">{{ userInitial }}</span>
         <span v-else-if="msg.role === 'user'" class="material-symbols-outlined">person</span>
-        <span v-else class="material-symbols-outlined">smart_toy</span>
+        <span v-else class="avatar-logo" aria-hidden="true"></span>
       </div>
       <div class="msg-content">
         <div class="msg-speaker">{{ speakerLabel }}</div>
         <div class="bubble-wrap">
-          <button v-if="msg.role === 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
-            <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
-          </button>
+          <div v-if="msg.role === 'user'" class="side-actions">
+            <button class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
+              <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
+            </button>
+            <button
+              v-if="msg.failed"
+              type="button"
+              class="retry-btn"
+              aria-label="重新发送"
+              :title="failedLabel"
+              :disabled="streaming"
+              @click="retryMessage"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">replay</span>
+            </button>
+          </div>
           <ThinkingBubble v-if="msg.role === 'assistant' && streaming && !msg.text" />
           <div v-else class="bubble">
             <div v-if="msg.text" class="bubble-content" v-html="msg.html"></div>
-            <div v-if="msg.stopped" class="stopped-tag">（已停止）</div>
           </div>
           <button v-if="msg.role !== 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
             <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
@@ -48,8 +60,10 @@ import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useClipboard, useStorage } from '@vueuse/core'
 import { useChatStore } from '../stores/chat.js'
+import { resendFailedMessage } from '../composables/useChat.js'
 import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
+import { FAILED_REASON_LABEL } from '../messageTurn.js'
 
 const LS_USER_NAME = 'gw-user-name'
 
@@ -76,6 +90,12 @@ const speakerLabel = computed(() => {
   return 'HaiTun'
 })
 
+const failedLabel = computed(() => {
+  if (!props.msg.failed) return ''
+  const key = props.msg.failedReason
+  return FAILED_REASON_LABEL[key] || FAILED_REASON_LABEL.incomplete
+})
+
 const { copy, copied } = useClipboard({ copiedDuring: 1500 })
 const openPreviewKey = ref('')
 const openPreviewFile = ref(null)
@@ -97,6 +117,11 @@ function openPreview(f, i) {
 function closePreview() {
   openPreviewKey.value = ''
   openPreviewFile.value = null
+}
+
+async function retryMessage() {
+  if (!props.msg.failed || streaming.value) return
+  await resendFailedMessage(props.msg)
 }
 </script>
 
@@ -134,8 +159,19 @@ function closePreview() {
 }
 
 .msg-avatar.assistant {
-  background: var(--md-secondary-container);
-  color: var(--md-on-secondary-container);
+  background: var(--md-surface-container);
+  overflow: hidden;
+  padding: 0;
+}
+
+.avatar-logo {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background-image: url('/spa/haitun-logo.png');
+  background-size: cover;
+  background-position: center;
+  display: block;
 }
 
 .avatar-text {
@@ -234,6 +270,45 @@ function closePreview() {
   white-space: pre;
 }
 
+.bubble-content {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* GFM tables: fit bubble width; wrap cell text instead of horizontal scroll. */
+.bubble :deep(table) {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  font-size: 0.875em;
+  border: 2px solid var(--md-outline);
+}
+
+.bubble :deep(th),
+.bubble :deep(td) {
+  border: 1.5px solid var(--md-outline);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.bubble :deep(th) {
+  background: var(--md-surface-container-highest, var(--md-surface-container-high));
+  font-weight: 700;
+  color: var(--md-text-primary);
+}
+
+.msg.user .bubble :deep(th) {
+  background: color-mix(in srgb, var(--md-on-primary-container) 8%, var(--md-primary-container));
+}
+
 .msg.user .bubble {
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
@@ -242,16 +317,52 @@ function closePreview() {
   white-space: pre-wrap;
 }
 
+.side-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  width: 32px;
+  margin-top: 2px;
+}
+
+.retry-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--md-shape-full);
+  border: 1.5px solid var(--md-text-error);
+  background: color-mix(in srgb, var(--md-text-error) 10%, transparent);
+  color: var(--md-text-error);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s, filter 0.15s;
+}
+
+.retry-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--md-text-error) 18%, transparent);
+  filter: brightness(1.05);
+}
+
+.retry-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.retry-btn .material-symbols-outlined {
+  font-size: 18px;
+}
+
 .msg.assistant .bubble {
   background: var(--md-surface-container-high);
   color: var(--md-text-primary);
   border: 1px solid var(--md-outline-variant);
   border-radius: 16px 16px 16px 4px;
   padding: 12px 16px;
-}
-
-.bubble-content {
-  min-width: 0;
 }
 
 .stopped-tag {
@@ -283,7 +394,8 @@ function closePreview() {
 }
 
 .bubble-wrap:hover .copy-btn,
-.copy-btn:focus-visible {
+.copy-btn:focus-visible,
+.side-actions:has(.retry-btn) .copy-btn {
   opacity: 1;
 }
 

@@ -11,6 +11,7 @@ import {
   isPlaceholderSessionTitle,
   PLACEHOLDER_SESSION_TITLE,
 } from '../sessionList.js'
+import { applyTurnOutcome, normalizeFailedTurns, resolveTurnOutcome } from '../messageTurn.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -95,13 +96,29 @@ function setSessionAbortController(sid, controller) {
 
 function addMessage(sid, role, id) {
   const list = getMessagesList(sid)
-  const m = { id, role, text: '', html: '', files: [], stopped: false }
+  const m = { id, role, text: '', html: '', files: [], stopped: false, failed: false }
   list.push(m)
   mirrorVisibleMessages(sid, list)
   if (isVisibleChatKey(sid)) {
     scrollToBottomIfLocked()
   }
   return list[list.length - 1]
+}
+
+function addAssistantAfter(sid, userMsg) {
+  const list = getMessagesList(sid)
+  const idx = list.indexOf(userMsg)
+  const m = { id: `a-${Date.now()}`, role: 'assistant', text: '', html: '', files: [], stopped: false, failed: false }
+  if (idx >= 0) {
+    list.splice(idx + 1, 0, m)
+  } else {
+    list.push(m)
+  }
+  mirrorVisibleMessages(sid, list)
+  if (isVisibleChatKey(sid)) {
+    scrollToBottomIfLocked()
+  }
+  return m
 }
 
 async function encodeFiles(files, um) {
@@ -116,6 +133,113 @@ async function encodeFiles(files, um) {
       if (um) um.files.push({ name: f.name, data: b64 })
     } catch {}
   }
+}
+
+function base64ToFile(b64, name) {
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return new File([bytes], name)
+}
+
+function turnTextForPayload(text, files) {
+  if (!text) return ''
+  if (files?.length && text.startsWith('[Uploaded File')) return ''
+  return text
+}
+
+function appendFilesToFormData(fd, files) {
+  for (const f of files) {
+    if (f instanceof File) {
+      fd.append('file', f)
+    } else if (f?.data && f?.name) {
+      fd.append('file', base64ToFile(f.data, f.name), f.name)
+    }
+  }
+}
+
+async function runChatTurn(sid, { userMsg, text, files }) {
+  ensureSessionMessageList(sid)
+  setSessionStreaming(sid, true)
+  chatTurnScrollReset()
+
+  const payloadText = turnTextForPayload(text, files)
+  const fd = new FormData()
+  const chunks = []
+  if (payloadText) chunks.push({ type: 'text', text: payloadText })
+  fd.append('chunks', JSON.stringify(chunks))
+  appendFilesToFormData(fd, files)
+
+  let asst = addAssistantAfter(sid, userMsg)
+
+  const controller = new AbortController()
+  setSessionAbortController(sid, controller)
+
+  let streamError = false
+  try {
+    const reader = await streamChat(sid, fd, controller.signal)
+    for await (const chunkData of readSSE(reader)) {
+      if (chunkData.type === 'text' && chunkData.text !== undefined) {
+        if (!asst) asst = addAssistantAfter(sid, userMsg)
+        asst.text += chunkData.text
+        asst.html = renderMd(asst.text)
+      } else if (chunkData.type === 'blob') {
+        if (!asst) asst = addAssistantAfter(sid, userMsg)
+        asst.files.push({ name: chunkData.name, data: chunkData.data })
+      } else if (chunkData.type === 'error') {
+        streamError = true
+        if (!asst) asst = addAssistantAfter(sid, userMsg)
+        asst.text += '\n[Error: ' + chunkData.error + ']'
+        asst.html = renderMd(asst.text)
+      } else if (chunkData.type === 'reasoning') {
+        if (asst && (asst.text || asst.files.length)) asst = null
+      }
+      if (isVisibleChatKey(sid)) {
+        mirrorVisibleMessages(sid, getMessagesList(sid))
+        scrollToBottomIfLocked()
+      }
+    }
+  } catch (e) {
+    if (!asst) asst = addAssistantAfter(sid, userMsg)
+    if (e.name === 'AbortError') {
+      asst.stopped = true
+    } else {
+      streamError = true
+      asst.text += '\n[Error: ' + e.message + ']'
+      asst.html = renderMd(asst.text)
+    }
+  }
+
+  const msgs = getMessagesList(sid)
+  const asstIdx = asst ? msgs.indexOf(asst) : -1
+  if (asstIdx >= 0) {
+    const stub = msgs[asstIdx]
+    if (!stub.text && !stub.files.length) {
+      msgs.splice(asstIdx, 1)
+      if (asst === stub) asst = null
+    }
+  }
+
+  let outcome = resolveTurnOutcome(msgs, userMsg, asst)
+  if (streamError && outcome === 'ok') outcome = 'error'
+  applyTurnOutcome(msgs, userMsg, asst, outcome)
+  const normalized = normalizeFailedTurns(msgs)
+  msgs.splice(0, msgs.length, ...normalized)
+  mirrorVisibleMessages(sid, msgs)
+
+  setSessionStreaming(sid, false)
+  setSessionAbortController(sid, null)
+  saveHistory(sid, msgs)
+
+  const session = useSessionStore()
+  const currentTitle = session.sessionTitles[sid]
+  if (isPlaceholderSessionTitle(currentTitle)) {
+    await generateTitle(sid)
+  }
+}
+
+function chatTurnScrollReset() {
+  useChatStore().userHasScrolledUp = false
 }
 
 export async function sendMessage() {
@@ -141,11 +265,9 @@ export async function sendMessage() {
   await ensureSessionSidebarTitle(sid)
   ensureSessionMessageList(sid)
 
-  setSessionStreaming(sid, true)
   chat.inputText = ''
   chat.selectedFiles = []
   chat.uploadResetToken++
-  chat.userHasScrolledUp = false
 
   let um = null
   if (text) {
@@ -160,64 +282,35 @@ export async function sendMessage() {
     await encodeFiles(files, um)
   }
 
-  const fd = new FormData()
-  const chunks = []
-  if (text) chunks.push({ type: 'text', text })
-  fd.append('chunks', JSON.stringify(chunks))
-  for (const f of files) fd.append('file', f)
+  await runChatTurn(sid, { userMsg: um, text: um.text, files })
+}
 
-  let asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
+function cloneStoredFiles(files) {
+  return (files || []).map(f => ({ name: f.name, data: f.data }))
+}
 
-  const controller = new AbortController()
-  setSessionAbortController(sid, controller)
-
-  try {
-    const reader = await streamChat(sid, fd, controller.signal)
-    for await (const chunkData of readSSE(reader)) {
-      if (chunkData.type === 'text' && chunkData.text !== undefined) {
-        if (!asst) asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
-        asst.text += chunkData.text
-        asst.html = renderMd(asst.text)
-      } else if (chunkData.type === 'blob') {
-        if (!asst) asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
-        asst.files.push({ name: chunkData.name, data: chunkData.data })
-      } else if (chunkData.type === 'error') {
-        if (!asst) asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
-        asst.text += '\n[Error: ' + chunkData.error + ']'
-        asst.html = renderMd(asst.text)
-      } else if (chunkData.type === 'reasoning') {
-        if (asst && (asst.text || asst.files.length)) asst = null
-      }
-      if (isVisibleChatKey(sid)) {
-        mirrorVisibleMessages(sid, getMessagesList(sid))
-        scrollToBottomIfLocked()
-      }
-    }
-  } catch (e) {
-    if (!asst) asst = addMessage(sid, 'assistant', `a-${Date.now()}`)
-    if (e.name === 'AbortError') {
-      asst.stopped = true
-    } else {
-      asst.text += '\n[Error: ' + e.message + ']'
-      asst.html = renderMd(asst.text)
-    }
-  }
+/** Remove failed bubble, append a fresh copy, and send again. */
+export async function resendFailedMessage(userMsg) {
+  const sid = resolveActiveChatKey()
+  if (!sid || isSessionStreaming(sid) || !userMsg?.failed) return
 
   const msgs = getMessagesList(sid)
-  const last = msgs[msgs.length - 1]
-  if (last && last.role === 'assistant' && !last.text && !last.files.length) {
-    msgs.pop()
-  }
+  const idx = msgs.indexOf(userMsg)
+  if (idx < 0) return
+
+  const text = userMsg.text
+  const files = cloneStoredFiles(userMsg.files)
+
+  msgs.splice(idx, 1)
+
+  const um = addMessage(sid, 'user', `u-${Date.now()}`)
+  um.text = text
+  um.html = htmlEscape(text)
+  um.files = files
+
   mirrorVisibleMessages(sid, msgs)
 
-  setSessionStreaming(sid, false)
-  setSessionAbortController(sid, null)
-  saveHistory(sid, msgs)
-
-  const currentTitle = session.sessionTitles[sid]
-  if (isPlaceholderSessionTitle(currentTitle)) {
-    await generateTitle(sid)
-  }
+  await runChatTurn(sid, { userMsg: um, text, files })
 }
 
 export function stopMessage() {

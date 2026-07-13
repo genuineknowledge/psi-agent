@@ -5,6 +5,7 @@ import { useAiStore } from '../stores/ai.js'
 import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
 import { loadHistory, htmlEscape, renderMd, saveActiveState } from '../utils.js'
+import { normalizeFailedTurns } from '../messageTurn.js'
 import { normalizeWorkspacePath, resolveSessionWorkspace } from '../sessionList.js'
 
 function origin() {
@@ -57,7 +58,11 @@ function mirrorSessionMessages(id) {
   const chat = useChatStore()
   const list = session.sessionMessages[id]
   if (!list) return
-  chat.messages.splice(0, chat.messages.length, ...list)
+  const normalized = normalizeFailedTurns(list)
+  if (normalized.length !== list.length || normalized.some((m, i) => m !== list[i])) {
+    session.sessionMessages[id] = normalized
+  }
+  chat.messages.splice(0, chat.messages.length, ...normalized)
 }
 
 function restoreSessionView(id) {
@@ -264,17 +269,40 @@ export async function selectSession(id) {
             html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text),
             files: local ? local.files || [] : [],
             stopped: local ? local.stopped || false : false,
+            failed: local ? local.failed || false : false,
+            failedReason: local?.failedReason || '',
           })
         })
+        if (localHist.length > built.length) {
+          for (let i = built.length; i < localHist.length; i++) {
+            const h = localHist[i]
+            built.push({
+              id: '', role: h.role, text: h.text,
+              html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text),
+              files: h.files || [],
+              stopped: h.stopped || false,
+              failed: h.failed || false,
+              failedReason: h.failedReason || '',
+            })
+          }
+        }
       } else { throw new Error() }
     } catch (e) {
       localHist.forEach(h => {
-        built.push({ id: '', role: h.role, text: h.text, html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text), files: h.files || [], stopped: h.stopped || false })
+        built.push({
+          id: '', role: h.role, text: h.text,
+          html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text),
+          files: h.files || [],
+          stopped: h.stopped || false,
+          failed: h.failed || false,
+          failedReason: h.failedReason || '',
+        })
       })
     }
+    const normalized = normalizeFailedTurns(built)
     if (session.selectedSessionId === id) {
-      chat.messages.splice(0, chat.messages.length, ...built)
-      session.sessionMessages[id] = [...built]
+      chat.messages.splice(0, chat.messages.length, ...normalized)
+      session.sessionMessages[id] = [...normalized]
       restoreSessionView(id)
     }
   }
