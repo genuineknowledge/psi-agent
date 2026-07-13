@@ -29,6 +29,7 @@ function isStreamingTarget(msg, index) {
 function showMessageActions(msg, index) {
   if (msg.role !== 'assistant') return false
   if (isStreamingTarget(msg, index)) return false
+  if (streaming.value && index !== messages.value.length - 1) return false
   return isCompleteAssistant(msg)
 }
 

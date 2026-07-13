@@ -12,6 +12,7 @@ import {
   PLACEHOLDER_SESSION_TITLE,
 } from '../sessionList.js'
 import { applyTurnOutcome, normalizeFailedTurns, resolveTurnOutcome } from '../messageTurn.js'
+import { hasAssistantSegmentAfterUser } from '../assistantSegments.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -184,6 +185,16 @@ function findPendingAssistantAfter(list, userMsg) {
   return null
 }
 
+/** First assistant segment sits right after user (#327); reasoning splits append below. */
+function ensureStreamingAssistant(sid, userMsg, currentAsst) {
+  if (currentAsst) return currentAsst
+  const list = getMessagesList(sid)
+  if (hasAssistantSegmentAfterUser(list, userMsg)) {
+    return addMessage(sid, 'assistant', `a-${Date.now()}`)
+  }
+  return addAssistantAfter(sid, userMsg)
+}
+
 async function runChatTurn(sid, { userMsg, text, files }) {
   ensureSessionMessageList(sid)
   setSessionStreaming(sid, true)
@@ -208,15 +219,15 @@ async function runChatTurn(sid, { userMsg, text, files }) {
       const reader = await streamChat(sid, fd, controller.signal)
       for await (const chunkData of readSSE(reader)) {
         if (chunkData.type === 'text' && chunkData.text !== undefined) {
-          if (!asst) asst = addAssistantAfter(sid, userMsg)
+          asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.text += chunkData.text
           asst.html = renderMd(asst.text)
         } else if (chunkData.type === 'blob') {
-          if (!asst) asst = addAssistantAfter(sid, userMsg)
+          asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.files.push({ name: chunkData.name, data: chunkData.data })
         } else if (chunkData.type === 'error') {
           streamError = true
-          if (!asst) asst = addAssistantAfter(sid, userMsg)
+          asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.text += '\n[Error: ' + chunkData.error + ']'
           asst.html = renderMd(asst.text)
         } else if (chunkData.type === 'reasoning') {
@@ -228,7 +239,7 @@ async function runChatTurn(sid, { userMsg, text, files }) {
         }
       }
     } catch (e) {
-      if (!asst) asst = addAssistantAfter(sid, userMsg)
+      asst = ensureStreamingAssistant(sid, userMsg, asst)
       if (e.name === 'AbortError') {
         asst.stopped = true
       } else {
