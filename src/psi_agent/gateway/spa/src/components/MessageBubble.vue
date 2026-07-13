@@ -2,7 +2,8 @@
   <div :class="['msg', msg.role]">
     <div class="msg-row">
       <div class="msg-avatar" :class="msg.role" :aria-label="speakerLabel">
-        <span v-if="msg.role === 'user' && userInitial" class="avatar-text">{{ userInitial }}</span>
+        <img v-if="msg.role === 'user' && userAvatar" class="avatar-img" :src="userAvatar" alt="">
+        <span v-else-if="msg.role === 'user' && userInitial" class="avatar-text">{{ userInitial }}</span>
         <span v-else-if="msg.role === 'user'" class="material-symbols-outlined">person</span>
         <span v-else class="avatar-logo" aria-hidden="true"></span>
       </div>
@@ -65,11 +66,12 @@ import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
 import { FAILED_REASON_LABEL } from '../messageTurn.js'
 
-const LS_USER_NAME = 'gw-user-name'
+import { LS_USER_AVATAR, LS_USER_NAME } from '../userProfile.js'
 
 const chat = useChatStore()
 const { streaming } = storeToRefs(chat)
 const userName = useStorage(LS_USER_NAME, '')
+const userAvatar = useStorage(LS_USER_AVATAR, '')
 
 const props = defineProps({
   msg: {
@@ -156,6 +158,13 @@ async function retryMessage() {
 .msg-avatar.user {
   background: var(--md-primary);
   color: var(--md-on-primary);
+  overflow: hidden;
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .msg-avatar.assistant {

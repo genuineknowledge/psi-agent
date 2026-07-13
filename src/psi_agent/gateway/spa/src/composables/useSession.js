@@ -68,8 +68,15 @@ function mirrorSessionMessages(id) {
 function restoreSessionView(id) {
   const session = useSessionStore()
   const chat = useChatStore()
-  chat.streaming = !!session.sessionStreaming[id]
-  chat.abortController = session.sessionAbortControllers[id] ?? null
+  const controller = session.sessionAbortControllers[id] ?? null
+  let streaming = !!session.sessionStreaming[id]
+  // Gateway/tab restart can leave streaming=true without a live AbortController.
+  if (streaming && !controller) {
+    streaming = false
+    session.sessionStreaming[id] = false
+  }
+  chat.streaming = streaming
+  chat.abortController = controller
 }
 
 function clearChatView() {

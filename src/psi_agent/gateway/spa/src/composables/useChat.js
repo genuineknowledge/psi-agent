@@ -158,6 +158,22 @@ function appendFilesToFormData(fd, files) {
   }
 }
 
+function findPendingAssistantAfter(list, userMsg) {
+  const idx = list.indexOf(userMsg)
+  if (idx < 0 || idx + 1 >= list.length) return null
+  const next = list[idx + 1]
+  if (
+    next.role === 'assistant'
+    && !next.text
+    && !next.files.length
+    && !next.stopped
+    && !next.failed
+  ) {
+    return next
+  }
+  return null
+}
+
 async function runChatTurn(sid, { userMsg, text, files }) {
   ensureSessionMessageList(sid)
   setSessionStreaming(sid, true)
@@ -170,7 +186,8 @@ async function runChatTurn(sid, { userMsg, text, files }) {
   fd.append('chunks', JSON.stringify(chunks))
   appendFilesToFormData(fd, files)
 
-  let asst = addAssistantAfter(sid, userMsg)
+  let asst = findPendingAssistantAfter(getMessagesList(sid), userMsg)
+  if (!asst) asst = addAssistantAfter(sid, userMsg)
 
   const controller = new AbortController()
   setSessionAbortController(sid, controller)
@@ -242,47 +259,78 @@ function chatTurnScrollReset() {
   useChatStore().userHasScrolledUp = false
 }
 
+function abortOptimisticSend(sid, userMsg) {
+  setSessionStreaming(sid, false)
+  if (!userMsg) return
+  const list = getMessagesList(sid)
+  userMsg.failed = true
+  userMsg.failedReason = 'error'
+  const idx = list.indexOf(userMsg)
+  if (idx >= 0) {
+    const next = list[idx + 1]
+    if (next?.role === 'assistant' && !next.text && !next.files.length) {
+      list.splice(idx + 1, 1)
+    }
+  }
+  mirrorVisibleMessages(sid, list)
+}
+
 export async function sendMessage() {
   const chat = useChatStore()
   const session = useSessionStore()
 
   let sid = resolveActiveChatKey()
-  if (!sid || isSessionStreaming(sid)) return
+  if (!sid) return
+  // Recover stale streaming after Gateway restart or aborted fetch without finally.
+  if (isSessionStreaming(sid) && !session.sessionAbortControllers[sid] && !chat.abortController) {
+    setSessionStreaming(sid, false)
+  }
+  if (isSessionStreaming(sid)) return
   const text = chat.inputText.trim()
   const files = [...chat.selectedFiles]
   if (!text && !files.length) return
 
-  if (session.draftSession) {
-    try {
-      sid = await promoteDraftToSession()
-    } catch (e) {
-      useUiStore().showAlert(e.message || '创建会话失败')
-      return
-    }
-    if (!sid) return
-  }
-
-  await ensureSessionSidebarTitle(sid)
   ensureSessionMessageList(sid)
 
+  // Optimistic UI: clear input and show user bubble + thinking immediately.
   chat.inputText = ''
   chat.selectedFiles = []
   chat.uploadResetToken++
+  chatTurnScrollReset()
 
   let um = null
   if (text) {
     um = addMessage(sid, 'user', `u-${Date.now()}`)
     um.text = text
     um.html = htmlEscape(text)
-    await encodeFiles(files, um)
   } else if (files.length) {
     um = addMessage(sid, 'user', `u-${Date.now()}`)
     um.text = `[Uploaded File${files.length > 1 ? 's' : ''}: ${files.map(f => f.name).join(', ')}]`
     um.html = htmlEscape(um.text)
-    await encodeFiles(files, um)
   }
 
-  await runChatTurn(sid, { userMsg: um, text: um.text, files })
+  setSessionStreaming(sid, true)
+  addAssistantAfter(sid, um)
+
+  try {
+    await encodeFiles(files, um)
+
+    if (session.draftSession) {
+      sid = await promoteDraftToSession()
+      const list = getMessagesList(sid)
+      if (!list.includes(um)) {
+        um = list.filter(m => m.role === 'user').at(-1) ?? um
+      }
+      mirrorVisibleMessages(sid, list)
+      if (!chat.streaming) setSessionStreaming(sid, true)
+    }
+
+    void ensureSessionSidebarTitle(sid)
+    await runChatTurn(sid, { userMsg: um, text: um.text, files })
+  } catch (e) {
+    abortOptimisticSend(sid, um)
+    useUiStore().showAlert(e.message || '发送失败')
+  }
 }
 
 function cloneStoredFiles(files) {

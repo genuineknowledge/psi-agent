@@ -32,10 +32,78 @@ markedRenderer.code = function ({ text, lang }) {
 }
 marked.use({ renderer: markedRenderer })
 
+const TABLE_ROW_RE = /^\s*\|.+\|\s*$/
+const TABLE_SEP_RE = /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/
+
+function isTableRow(line) {
+  return TABLE_ROW_RE.test(line)
+}
+
+function isTableSeparator(line) {
+  return TABLE_SEP_RE.test(line)
+}
+
+function isTableLine(line) {
+  return isTableRow(line) || isTableSeparator(line)
+}
+
+/** Drop blank lines inside pipe-table blocks so marked GFM can parse them. */
+function normalizeGfmTables(text) {
+  const lines = text.split('\n')
+  const out = []
+  let i = 0
+
+  while (i < lines.length) {
+    if (!isTableLine(lines[i])) {
+      out.push(lines[i])
+      i++
+      continue
+    }
+
+    const block = []
+    while (i < lines.length) {
+      const cur = lines[i]
+      if (cur.trim() === '') {
+        let j = i + 1
+        while (j < lines.length && lines[j].trim() === '') j++
+        if (j < lines.length && isTableLine(lines[j])) {
+          i++
+          continue
+        }
+        break
+      }
+      if (isTableLine(cur)) {
+        block.push(cur.trim())
+        i++
+        continue
+      }
+      break
+    }
+
+    out.push(...block)
+  }
+
+  return out.join('\n')
+}
+
+/** Models sometimes wrap tables in fenced code; unwrap when inner content is table-only. */
+function unwrapFencedTables(text) {
+  return text.replace(/```[^\n]*\n([\s\S]*?)```/g, (full, inner) => {
+    const body = inner.trim()
+    if (!body) return full
+    const innerLines = body.split('\n')
+    if (innerLines.length >= 2 && innerLines.every(isTableLine)) {
+      return body
+    }
+    return full
+  })
+}
+
 export function renderMd(text) {
   if (!marked || !marked.parse) return htmlEscape(text)
   const macros = []
-  const s = text
+  const normalized = normalizeGfmTables(unwrapFencedTables(text))
+  const s = normalized
     .replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => { const i = macros.length; macros.push({ block: true, tex: m.trim() }); return `\x00MATH${i}\x00` })
     .replace(/\$([^$]+?)\$/g, (_, m) => { const i = macros.length; macros.push({ block: false, tex: m.trim() }); return `\x00MATH${i}\x00` })
   let html = marked.parse(s)

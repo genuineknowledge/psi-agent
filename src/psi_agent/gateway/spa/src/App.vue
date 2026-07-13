@@ -30,6 +30,7 @@
           <button class="topbar-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
             <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
           </button>
+          <UserHub compact />
         </div>
       </div>
 
@@ -41,10 +42,7 @@
         <button class="tb-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
           <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
         </button>
-        <button class="tb-avatar" @click="editUserName" :title="userName ? `${userName}（点击修改称呼）` : '设置称呼'">
-          <span v-if="avatarInitial">{{ avatarInitial }}</span>
-          <span v-else class="material-symbols-outlined">person</span>
-        </button>
+        <UserHub />
       </div>
 
       <div
@@ -126,23 +124,16 @@ import AiDialog from './components/AiDialog.vue'
 import PathPickerDialog from './components/PathPickerDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import Snackbar from './components/Snackbar.vue'
+import UserHub from './components/UserHub.vue'
+import { LS_USER_NAME } from './userProfile.js'
 
 const LS_SIDEBAR = 'gw-sidebar-state'
 const sidebarState = useStorage(LS_SIDEBAR, 'expanded')
 
-const LS_USER_NAME = 'gw-user-name'
 const userName = useStorage(LS_USER_NAME, '')
 const greetingText = computed(() =>
   userName.value ? `${userName.value}，你说，我在听！` : '你好，有什么可以帮你？'
 )
-const avatarInitial = computed(() =>
-  userName.value ? userName.value.trim().charAt(0).toUpperCase() : ''
-)
-function editUserName() {
-  const next = window.prompt('希望我怎么称呼你？（留空则不显示）', userName.value)
-  if (next === null) return
-  userName.value = next.trim()
-}
 
 const ai = useAiStore()
 const { ais, selectedAiId, aiForm, fetchedModels, loadingModels } = storeToRefs(ai)
@@ -493,16 +484,6 @@ onMounted(async () => {
   transition: background 0.2s;
 }
 #topbar .tb-btn:hover { background: var(--md-surface-container-high); }
-#topbar .tb-avatar {
-  width: 32px; height: 32px; border-radius: var(--md-shape-full);
-  background: var(--md-primary); color: var(--md-on-primary);
-  display: flex; align-items: center; justify-content: center;
-  font-size: 15px; font-weight: 500;
-  border: none; cursor: pointer; padding: 0;
-  transition: filter 0.2s;
-}
-#topbar .tb-avatar:hover { filter: brightness(1.08); }
-#topbar .tb-avatar .material-symbols-outlined { font-size: 20px; }
 @media (max-width: 768px) { #topbar { display: none; } }
 
 #chat-main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
