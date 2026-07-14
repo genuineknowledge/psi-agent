@@ -604,3 +604,125 @@ async def test_topic_start_tool_returns_json(monkeypatch: pytest.MonkeyPatch) ->
     out = await mod.feishu_topic_start(chat_id="oc_9", text="hi", at_open_ids=["ou_x"])
     assert inspect.iscoroutinefunction(mod.feishu_topic_start)
     assert json.loads(out)["thread_id"] == "omt_9"
+
+
+# ── Document search (user_access_token) ───────────────────────────────────────
+
+
+class _FakeUAT:
+    def __init__(self, access_token: str = "uat_tok") -> None:
+        self.access_token = access_token
+        self.refresh_token = "rt"
+        self.expires_at = None
+        self.open_id = "ou_me"
+        self.scopes = ["docs:doc:readonly"]
+
+
+class _CapturingUatClient:
+    """Fake UAT client: record the (request, option) passed to arequest, return a canned body."""
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        self.request: Any = None
+        self.option: Any = None
+        self._raw = _FakeRaw(json.dumps(body).encode())
+
+    async def arequest(self, request: Any, option: Any = None) -> Any:
+        self.request = request
+        self.option = option
+        return type("R", (), {"raw": self._raw, "code": 0, "msg": ""})()
+
+
+@pytest.mark.asyncio
+async def test_search_docs_not_authorized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+
+    async def _no_uat() -> Any:
+        return None
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _no_uat)
+    result = await _impl.search_docs_impl("周报", 20, 0, "")
+    assert result["ok"] is False
+    assert result.get("need_auth") is True
+
+
+@pytest.mark.asyncio
+async def test_search_docs_builds_request_and_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    body = {
+        "code": 0,
+        "data": {
+            "docs_entities": [{"title": "周报", "docs_token": "doccnX", "docs_type": "docx", "owner_id": "ou_o"}],
+            "has_more": False,
+            "total": 1,
+        },
+    }
+    client = _CapturingUatClient(body)
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
+
+    async def _uat() -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    result = await _impl.search_docs_impl("周报", 10, 5, "docx,sheet")
+    req = client.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/suite/docs-api/search/object"
+    assert _impl.AccessTokenType.USER in req.token_types
+    assert req.body["search_key"] == "周报"
+    assert req.body["count"] == 10
+    assert req.body["offset"] == 5
+    assert req.body["docs_types"] == ["docx", "sheet"]
+    assert client.option.user_access_token == "uat_tok"
+    assert result["docs"][0] == {"title": "周报", "token": "doccnX", "obj_type": "docx", "owner_id": "ou_o"}
+    assert result["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_docs_api_error_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _CapturingUatClient({"code": 99991663, "msg": "permission denied", "data": {}})
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
+
+    async def _uat() -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    result = await _impl.search_docs_impl("x", 20, 0, "")
+    assert result["ok"] is False
+    assert result["code"] == 99991663
+
+
+@pytest.mark.asyncio
+async def test_auth_start_returns_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda: str(tmp_path / "pending.json"))
+
+    class _FakeInit:
+        verification_uri = "https://feishu/verify"
+        verification_uri_complete = "https://feishu/verify?code=ABC"
+        user_code = "ABC123"
+        device_code = "dev_1"
+        expires_in = 300
+        interval = 5
+
+    class _FakeDF:
+        def __init__(self, *a: Any, **k: Any) -> None: ...
+        async def start(self, scopes: Any) -> Any:
+            return _FakeInit()
+
+        async def close(self) -> None: ...
+
+    import lark_channel.channel.auth.device_flow as _df  # noqa: PLC0415
+
+    monkeypatch.setattr(_df, "DeviceFlowClient", _FakeDF)
+    result = await _impl.auth_start_impl("")
+    assert result["ok"] is True
+    assert result["verification_url"] == "https://feishu/verify?code=ABC"
+    assert result["user_code"] == "ABC123"
+
+
+def test_search_auth_tools_async_with_docstrings() -> None:
+    docs_mod = importlib.import_module("feishu_docs")
+    auth_mod = importlib.import_module("feishu_auth")
+    for fn in (docs_mod.feishu_docs_search, auth_mod.feishu_auth_start, auth_mod.feishu_auth_complete):
+        assert inspect.iscoroutinefunction(fn), fn.__name__
+        assert (inspect.getdoc(fn) or "").strip(), f"{fn.__name__} needs a docstring"

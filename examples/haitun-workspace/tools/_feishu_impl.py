@@ -10,10 +10,13 @@ the SDK's own ``api/drive/comment.py`` does it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import pathlib
 from typing import Any
 
+import anyio
 from lark_channel.api.drive import comment as _comment
 from lark_channel.api.wiki import node as _wiki_node
 from lark_channel.core.enum import AccessTokenType, HttpMethod
@@ -649,3 +652,212 @@ async def start_topic_impl(
         "thread_id": data.get("thread_id", ""),
         "chat_id": data.get("chat_id", "") or chat_id,
     }
+
+
+# ── Document search (needs user_access_token) ────────────────────────────────
+#
+# Feishu's doc search (/suite/docs-api/search/object) only accepts a
+# user_access_token (UAT), not the bot's tenant token — it returns docs the
+# authorizing USER can see. We use the SDK's device-flow OAuth to obtain/refresh
+# a UAT, cache it in <workspace>/.psi/feishu/uat.json (plaintext — dev use), and
+# call the search endpoint with a hand-built BaseRequest carrying the UAT.
+
+_UAT_USER_KEY = "default"  # single local user; not multi-tenant
+_token_store: Any = None
+_uat_client: Any = None
+_DEFAULT_SCOPES = "docs:doc:readonly drive:drive:readonly offline_access"
+
+
+def _uat_store_path() -> str:
+    workspace = os.environ.get("WORKSPACE_DIR", "")
+    base = pathlib.Path(workspace) if workspace else pathlib.Path(__file__).resolve().parents[1]
+    d = base / ".psi" / "feishu"
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d / "uat.json")
+
+
+def _pending_auth_path() -> str:
+    return str(pathlib.Path(_uat_store_path()).parent / "pending_auth.json")
+
+
+def _get_token_store() -> Any:
+    global _token_store
+    if _token_store is None:
+        from lark_channel.channel.auth.token_store import FileTokenStore  # noqa: PLC0415
+
+        _token_store = FileTokenStore(_uat_store_path())
+    return _token_store
+
+
+def _get_uat_client() -> Any:
+    """A client built with enable_set_token(True) so we can attach a UAT per request."""
+    global _uat_client
+    if _uat_client is not None:
+        return _uat_client
+    creds = _config()
+    if creds is None:
+        return None
+    from lark_channel.client import Client  # noqa: PLC0415
+
+    app_id, app_secret = creds
+    _uat_client = Client.builder().app_id(app_id).app_secret(app_secret).enable_set_token(True).build()
+    return _uat_client
+
+
+def _reset_uat_state() -> None:
+    global _token_store, _uat_client
+    _token_store = None
+    _uat_client = None
+
+
+async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
+    """Begin device-flow authorization. Returns a URL + user_code for the user to approve."""
+    creds = _config()
+    if creds is None:
+        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
+    from lark_channel.channel.auth.device_flow import DeviceFlowClient  # noqa: PLC0415
+
+    app_id, app_secret = creds
+    scope_list = (scopes or _DEFAULT_SCOPES).split()
+    df = DeviceFlowClient(app_id, app_secret)
+    try:
+        init = await df.start(scope_list)
+    except Exception as exc:
+        return _error(f"Device authorization failed: {type(exc).__name__}: {exc}")
+    finally:
+        await df.close()
+    pending = {"device_code": init.device_code, "interval": init.interval, "expires_in": init.expires_in}
+    await anyio.Path(_pending_auth_path()).write_text(json.dumps(pending), encoding="utf-8")
+    return {
+        "ok": True,
+        "verification_url": init.verification_uri_complete or init.verification_uri,
+        "user_code": init.user_code,
+        "expires_in": init.expires_in,
+        "message": "打开 verification_url 并输入 user_code 完成授权, 然后调用 feishu_auth_complete.",
+    }
+
+
+async def auth_complete_impl(timeout_seconds: int = 60) -> dict[str, Any]:
+    """Poll for the pending device-flow authorization to complete, then store the UAT."""
+    creds = _config()
+    if creds is None:
+        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
+    try:
+        pending = json.loads(await anyio.Path(_pending_auth_path()).read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return _error("No pending authorization. Call feishu_auth_start first.")
+    from lark_channel.channel.auth.device_flow import DeviceFlowClient  # noqa: PLC0415
+
+    app_id, app_secret = creds
+    df = DeviceFlowClient(app_id, app_secret)
+    try:
+        uat = await df.poll(
+            pending["device_code"], interval=int(pending.get("interval", 5)), timeout_seconds=timeout_seconds
+        )
+    except Exception as exc:
+        return _error(f"Authorization not completed: {type(exc).__name__}: {exc}")
+    finally:
+        await df.close()
+    await _get_token_store().set(_UAT_USER_KEY, uat)
+    with contextlib.suppress(OSError):
+        await anyio.Path(_pending_auth_path()).unlink()
+    return {
+        "ok": True,
+        "open_id": uat.open_id or "",
+        "scopes": uat.scopes,
+        "message": "授权成功, 已缓存 user_access_token.",
+    }
+
+
+async def _get_valid_uat() -> Any:
+    """Return a non-expired UAT (refreshing if needed), or None if not authorized."""
+    from lark_channel.channel.auth.device_flow import DeviceFlowClient, uat_needs_refresh  # noqa: PLC0415
+
+    store = _get_token_store()
+    uat = await store.get(_UAT_USER_KEY)
+    if uat is None:
+        return None
+    if uat_needs_refresh(uat) and uat.refresh_token:
+        creds = _config()
+        if creds is not None:
+            app_id, app_secret = creds
+            df = DeviceFlowClient(app_id, app_secret)
+            try:
+                uat = await df.refresh(uat.refresh_token)
+                await store.set(_UAT_USER_KEY, uat)
+            except Exception:  # refresh failed — fall back to the (possibly stale) token
+                pass
+            finally:
+                await df.close()
+    return uat
+
+
+def _build_doc_search_request(search_key: str, count: int, offset: int, docs_types: list[str]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/suite/docs-api/search/object"
+    req.token_types = {AccessTokenType.USER}
+    body: dict[str, Any] = {"search_key": search_key, "count": count, "offset": offset}
+    if docs_types:
+        body["docs_types"] = docs_types
+    req.body = body
+    return req
+
+
+async def search_docs_impl(search_key: str, count: int, offset: int, docs_types: str) -> dict[str, Any]:
+    """Search cloud docs by keyword (needs a user_access_token). Returns matched docs."""
+    client = _get_uat_client()
+    if client is None:
+        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
+    uat = await _get_valid_uat()
+    if uat is None or not uat.access_token:
+        return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
+
+    types_list = [t.strip() for t in docs_types.split(",") if t.strip()]
+    req = _build_doc_search_request(search_key, count, offset, types_list)
+    from lark_channel.core.model import RequestOption  # noqa: PLC0415
+
+    option = RequestOption.builder().user_access_token(uat.access_token).build()
+    try:
+        resp = await client.arequest(req, option)
+    except Exception as exc:
+        return _error(f"Feishu search failed: {type(exc).__name__}: {exc}")
+
+    body = _parse_resp_body(resp)
+    if body.get("code") not in (0, None):
+        return {
+            "ok": False,
+            "code": body.get("code"),
+            "msg": body.get("msg", ""),
+            "message": f"Feishu API error {body.get('code')}: {body.get('msg', '')}",
+        }
+    data = body.get("data", {}) if isinstance(body.get("data"), dict) else {}
+    docs = [
+        {
+            "title": e.get("title", ""),
+            "token": e.get("docs_token", ""),
+            "obj_type": e.get("docs_type", ""),
+            "owner_id": e.get("owner_id", ""),
+        }
+        for e in (data.get("docs_entities", []) if isinstance(data.get("docs_entities"), list) else [])
+    ]
+    return {
+        "ok": True,
+        "docs": docs,
+        "count": len(docs),
+        "has_more": bool(data.get("has_more")),
+        "total": data.get("total", 0),
+    }
+
+
+def _parse_resp_body(resp: Any) -> dict[str, Any]:
+    """Extract the JSON body dict from an SDK BaseResponse (raw.content bytes)."""
+    raw = getattr(resp, "raw", None)
+    content = getattr(raw, "content", None) if raw is not None else None
+    if content:
+        with contextlib.suppress(ValueError, UnicodeDecodeError):
+            parsed = json.loads(bytes(content).decode("utf-8"))
+            if isinstance(parsed, dict):
+                return parsed
+    code = getattr(resp, "code", None)
+    return {"code": code, "msg": getattr(resp, "msg", "") or ""}
