@@ -26,12 +26,55 @@
               <span class="material-symbols-outlined" aria-hidden="true">replay</span>
             </button>
           </div>
-          <ThinkingBubble v-if="msg.role === 'assistant' && streaming && !msg.text" />
+          <ThinkingBubble v-if="isStreamingTarget && !hasVisibleContent" />
           <div v-else class="bubble">
             <div v-if="msg.text" class="bubble-content" v-html="msg.html"></div>
           </div>
-          <button v-if="msg.role !== 'user'" class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
-            <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
+        </div>
+        <div
+          v-if="showActions"
+          class="msg-actions"
+          role="toolbar"
+          aria-label="消息操作"
+        >
+          <button
+            type="button"
+            class="action-btn"
+            :class="{ active: msg.feedback === 'up' }"
+            :title="msg.feedback === 'up' ? '取消点赞' : '点赞'"
+            :aria-pressed="msg.feedback === 'up'"
+            @click="setFeedback('up')"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">thumb_up</span>
+          </button>
+          <button
+            type="button"
+            class="action-btn"
+            :class="{ active: msg.feedback === 'down' }"
+            :title="msg.feedback === 'down' ? '取消点踩' : '点踩'"
+            :aria-pressed="msg.feedback === 'down'"
+            @click="setFeedback('down')"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">thumb_down</span>
+          </button>
+          <button
+            type="button"
+            class="action-btn"
+            title="重新生成"
+            aria-label="重新生成"
+            :disabled="streaming"
+            @click="regenerateMessage"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">refresh</span>
+          </button>
+          <button
+            type="button"
+            class="action-btn"
+            :title="copied ? '已复制' : '复制'"
+            aria-label="复制"
+            @click="copyMessage"
+          >
+            <span class="material-symbols-outlined" aria-hidden="true">{{ copied ? 'check' : 'content_copy' }}</span>
           </button>
         </div>
         <template v-for="(f, i) in msg.files" :key="previewKey(f, i)">
@@ -61,10 +104,12 @@ import { computed, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useClipboard, useStorage } from '@vueuse/core'
 import { useChatStore } from '../stores/chat.js'
-import { resendFailedMessage } from '../composables/useChat.js'
+import { resendFailedMessage, regenerateAssistantMessage } from '../composables/useChat.js'
 import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
 import { FAILED_REASON_LABEL } from '../messageTurn.js'
+import { saveHistory } from '../utils.js'
+import { useSessionStore } from '../stores/session.js'
 
 import { LS_USER_AVATAR, LS_USER_NAME } from '../userProfile.js'
 
@@ -79,6 +124,20 @@ const props = defineProps({
     required: true,
     validator: (m) => m && typeof m.role === 'string',
   },
+  showActions: {
+    type: Boolean,
+    default: false,
+  },
+  isStreamingTarget: {
+    type: Boolean,
+    default: false,
+  },
+})
+
+const hasVisibleContent = computed(() => {
+  const text = typeof props.msg.text === 'string' ? props.msg.text.trim() : ''
+  const hasFiles = Array.isArray(props.msg.files) && props.msg.files.length > 0
+  return !!text || hasFiles
 })
 
 const userInitial = computed(() =>
@@ -104,6 +163,20 @@ const openPreviewFile = ref(null)
 
 function copyMessage() {
   copy(props.msg.text)
+}
+
+function setFeedback(kind) {
+  props.msg.feedback = props.msg.feedback === kind ? '' : kind
+  const session = useSessionStore()
+  const sid = session.selectedSessionId || session.draftSession?.draftId
+  if (!sid) return
+  const msgs = session.sessionMessages[sid] ?? chat.messages
+  saveHistory(sid, msgs)
+}
+
+async function regenerateMessage() {
+  if (streaming.value) return
+  await regenerateAssistantMessage(props.msg)
 }
 
 function previewKey(f, i) {
@@ -406,6 +479,50 @@ async function retryMessage() {
 .copy-btn:focus-visible,
 .side-actions:has(.retry-btn) .copy-btn {
   opacity: 1;
+}
+
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0 0 4px;
+}
+
+.action-btn {
+  background: none;
+  border: none;
+  border-radius: var(--md-shape-full);
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-text-secondary);
+  padding: 0;
+  transition: background 0.15s, color 0.15s;
+}
+
+.action-btn:hover:not(:disabled) {
+  background: rgba(128, 128, 128, var(--md-state-hover));
+  color: var(--md-text-primary);
+}
+
+.action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.action-btn.active {
+  color: var(--md-primary);
+}
+
+.action-btn .material-symbols-outlined {
+  font-size: 18px;
+}
+
+.action-btn.active .material-symbols-outlined {
+  font-variation-settings: 'FILL' 1;
 }
 
 .copy-btn:hover {

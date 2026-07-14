@@ -29,6 +29,7 @@ export function clearSessionLocalState(id) {
   delete session.sessionMessages[id]
   delete session.sessionInputs[id]
   delete session.sessionStreaming[id]
+  delete session.sessionStreamMarks[id]
   delete session.sessionAbortControllers[id]
 }
 
@@ -134,6 +135,10 @@ export async function promoteDraftToSession() {
     session.sessionStreaming[sid] = session.sessionStreaming[draftId]
     delete session.sessionStreaming[draftId]
   }
+  if (session.sessionStreamMarks[draftId]) {
+    session.sessionStreamMarks[sid] = session.sessionStreamMarks[draftId]
+    delete session.sessionStreamMarks[draftId]
+  }
   if (session.sessionAbortControllers[draftId]) {
     session.sessionAbortControllers[sid] = session.sessionAbortControllers[draftId]
     delete session.sessionAbortControllers[draftId]
@@ -205,6 +210,7 @@ export async function selectDraftChat(workspacePath) {
     session.setSelectedWorkspace(path)
     session.ensureWorkspaceExpanded(path)
     session.selectedSessionId = null
+    delete session.sessionStreamMarks[draft.draftId]
     restoreDraftView(draft.draftId)
     saveActiveState(ai.selectedAiId, null, path)
     ui.isMobileSidebarOpen = false
@@ -254,6 +260,7 @@ export async function selectSession(id) {
   }
 
   session.selectedSessionId = id
+  delete session.sessionStreamMarks[id]
 
   const saved = session.sessionInputs[id]
   chat.inputText = saved ? saved.text : ''

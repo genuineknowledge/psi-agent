@@ -85,6 +85,7 @@
               @click="selectDraftChat(group.path)"
             >
               <span class="info">
+                <SessionStreamIndicator v-bind="draftStreamState(group.path)" />
                 <div class="name">{{ PLACEHOLDER_SESSION_TITLE }}</div>
               </span>
             </div>
@@ -104,6 +105,10 @@
                 <span class="material-symbols-outlined">keep</span>
               </button>
               <span class="info">
+                <SessionStreamIndicator
+                  :streaming="isSessionStreaming(s.id)"
+                  :marked="isSessionStreamMarked(s.id)"
+                />
                 <input
                   v-if="editingSessionId === s.id"
                   v-model="editingWorkspaceText"
@@ -172,6 +177,7 @@ import {
   togglePinnedSessionId,
   normalizeWorkspacePath,
 } from '../sessionList.js'
+import SessionStreamIndicator from './SessionStreamIndicator.vue'
 
 const session = useSessionStore()
 const {
@@ -186,6 +192,8 @@ const {
   editingWorkspaceText,
   sessionSearchText,
   pinnedSessionIds,
+  sessionStreaming,
+  sessionStreamMarks,
 } = storeToRefs(session)
 
 const ui = useUiStore()
@@ -226,6 +234,26 @@ function displaySessionName(sess) {
 
 function isSessionPinned(id) {
   return pinnedSessionIds.value.includes(id)
+}
+
+function isSessionStreaming(id) {
+  return !!sessionStreaming.value[id]
+}
+
+function isSessionStreamMarked(id) {
+  return !!sessionStreamMarks.value[id]
+}
+
+function draftStreamState(workspacePath) {
+  const draft = draftSession.value
+  if (!draft || normalizeWorkspacePath(workspacePath) !== draft.workspace) {
+    return { streaming: false, marked: false }
+  }
+  const id = draft.draftId
+  return {
+    streaming: !!sessionStreaming.value[id],
+    marked: !!sessionStreamMarks.value[id],
+  }
 }
 
 function toggleSessionPin(id) {
@@ -519,8 +547,10 @@ watch(
   font-variation-settings: 'FILL' 1;
 }
 .item .pin .material-symbols-outlined { font-size: 18px; }
-.item .info { flex: 1; overflow: hidden; display: flex; align-items: center; min-width: 0; }
+.item .info { flex: 1; overflow: hidden; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .item .info .name {
+  flex: 1;
+  min-width: 0;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
