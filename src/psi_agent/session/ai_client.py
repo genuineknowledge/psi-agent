@@ -11,6 +11,7 @@ from collections.abc import AsyncGenerator
 import aiohttp
 from loguru import logger
 
+from psi_agent._logging import trace_id_var
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.session.protocol import AiDelta
 
@@ -26,9 +27,12 @@ class AiClient:
 
     async def stream(self, request_body: dict) -> AsyncGenerator[AiDelta]:
         connector, endpoint = self._build_connector_and_endpoint()
+        headers = {"X-Trace-ID": trace_id_var.get()}
         async with (
-            aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
-            session.post(endpoint, json=request_body) as resp,
+            aiohttp.ClientSession(
+                connector=connector, timeout=aiohttp.ClientTimeout(total=None, connect=30)
+            ) as session,
+            session.post(endpoint, json=request_body, headers=headers) as resp,
         ):
             logger.info(f"AI response status: {resp.status}")
             if resp.status != 200:

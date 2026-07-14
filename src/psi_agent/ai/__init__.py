@@ -5,13 +5,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-import anyio
 from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger
 
+from psi_agent import _keys
 from psi_agent._logging import setup_logging
-from psi_agent._sockets import create_site
+from psi_agent._sockets import serve_app, trace_middleware
 
 from .server import handle_chat_completions
 
@@ -33,33 +33,18 @@ async def serve_ai(
         f"(provider={provider!r}, model={model!r}, base_url={base_url}, api_key={api_key_status})"
     )
 
-    app = web.Application()
-    app["provider"] = provider
-    app["model"] = model
-    app["api_key"] = api_key
-    app["base_url"] = base_url
+    app = web.Application(middlewares=[trace_middleware])
+    app[_keys.PROVIDER] = provider
+    app[_keys.MODEL] = model
+    app[_keys.API_KEY] = api_key
+    app[_keys.BASE_URL] = base_url
     app.router.add_post("/chat/completions", handler)
 
-    runner = web.AppRunner(app)
     try:
-        await runner.setup()
-        site = create_site(runner, socket_path)
-        await site.start()
+        await serve_app(app, socket_path)
     except Exception as e:
         logger.error(f"Failed to start AI service on {socket_path}: {e}")
-        with anyio.CancelScope(shield=True):
-            await runner.cleanup()
         raise
-
-    logger.info(f"AI listening on {socket_path}")
-
-    try:
-        await anyio.sleep_forever()
-    finally:
-        logger.info(f"Shutting down AI on {socket_path}")
-        with anyio.CancelScope(shield=True):
-            await runner.cleanup()
-        logger.info(f"AI shutdown complete on {socket_path}")
 
 
 @dataclass

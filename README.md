@@ -289,6 +289,8 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
+| POST | `/ui/attention` | 会话在后台完成时闪烁托盘/webview |
+| GET | `/workspace/roots` | 获取快捷位置与盘符 |
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
 | GET | `/workspace/cwd` | 获取工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |

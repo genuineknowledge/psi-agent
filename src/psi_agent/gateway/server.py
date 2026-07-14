@@ -11,6 +11,8 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent import _keys
+from psi_agent._sockets import trace_middleware
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
@@ -31,7 +33,7 @@ async def _handle_openapi(request: web.Request) -> web.Response:
 
 
 async def _handle_spa_index(request: web.Request) -> web.Response:
-    app_name: str = request.app["app_name"]
+    app_name: str = request.app[_keys.APP_NAME]
     template = await read_spa_index_template()
     if template is None:
         return _error("SPA index.html not found", status=404)
@@ -40,14 +42,16 @@ async def _handle_spa_index(request: web.Request) -> web.Response:
 
 
 async def _handle_favicon(request: web.Request) -> web.FileResponse:
-    favicon_path: str = request.app["favicon_path"]
+    favicon_path: str | None = request.app[_keys.FAVICON_PATH]
+    if favicon_path is None:
+        raise web.HTTPNotFound()
     logger.debug(f"Serving favicon from {favicon_path!r}")
     return web.FileResponse(favicon_path)
 
 
 async def _request_attention(request: web.Request) -> web.Response:
     """SPA pings this when a background chat turn finishes — flash tray/webview."""
-    attention: AttentionHub = request.app["attention"]
+    attention: AttentionHub = request.app[_keys.ATTENTION]
     # schedule_notify is non-blocking; do not await tray pulse on the request path.
     attention.schedule_notify()
     return _json({"ok": True})
@@ -73,16 +77,16 @@ async def create_app(
     app_name: str = DEFAULT_APP_NAME,
     attention: AttentionHub | None = None,
 ) -> web.Application:
-    app = web.Application(client_max_size=100 * 1024 * 1024)
-    app["aim"] = aim
-    app["sm"] = sm
-    app["tm"] = tm
-    app["wm"] = WorkspaceManager()
-    app["cm"] = ChatManager()
-    app["hm"] = HistoryManager()
-    app["favicon_path"] = favicon_path
-    app["app_name"] = app_name
-    app["attention"] = attention if attention is not None else AttentionHub()
+    app = web.Application(client_max_size=100 * 1024 * 1024, middlewares=[trace_middleware])
+    app[_keys.AIM] = aim
+    app[_keys.SM] = sm
+    app[_keys.TM] = tm
+    app[_keys.WM] = WorkspaceManager()
+    app[_keys.CM] = ChatManager()
+    app[_keys.HM] = HistoryManager()
+    app[_keys.FAVICON_PATH] = favicon_path
+    app[_keys.APP_NAME] = app_name
+    app[_keys.ATTENTION] = attention if attention is not None else AttentionHub()
 
     spa_dist = anyio.Path(__file__).parent / "spa" / "dist"
     app.router.add_get("/spa/index.html", _handle_spa_index)
@@ -115,7 +119,7 @@ async def create_app(
 
 
 async def _create_ai(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
+    aim: AIManager = request.app[_keys.AIM]
     try:
         body = await request.json()
         info = await aim.create(
@@ -134,7 +138,7 @@ async def _create_ai(request: web.Request) -> web.Response:
 
 
 async def _delete_ai(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
+    aim: AIManager = request.app[_keys.AIM]
     ai_id = request.match_info["ai_id"]
     try:
         await aim.delete(ai_id)
@@ -147,12 +151,12 @@ async def _delete_ai(request: web.Request) -> web.Response:
 
 
 async def _list_ais(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
+    aim: AIManager = request.app[_keys.AIM]
     return _json([asdict(i) for i in await aim.list_all()])
 
 
 async def _create_session(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
+    sm: SessionManager = request.app[_keys.SM]
     try:
         body = await request.json()
         info = await sm.create(
@@ -171,7 +175,7 @@ async def _create_session(request: web.Request) -> web.Response:
 
 
 async def _delete_session(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
+    sm: SessionManager = request.app[_keys.SM]
     session_id = request.match_info["session_id"]
     try:
         await sm.delete(session_id)
@@ -184,17 +188,17 @@ async def _delete_session(request: web.Request) -> web.Response:
 
 
 async def _list_sessions(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
+    sm: SessionManager = request.app[_keys.SM]
     return _json([asdict(i) for i in await sm.list_all()])
 
 
 async def _list_titles(request: web.Request) -> web.Response:
-    tm: TitleManager = request.app["tm"]
+    tm: TitleManager = request.app[_keys.TM]
     return _json(tm.get_all())
 
 
 async def _set_title(request: web.Request) -> web.Response:
-    tm: TitleManager = request.app["tm"]
+    tm: TitleManager = request.app[_keys.TM]
     try:
         body = await request.json()
         sid = body["id"]
@@ -208,9 +212,9 @@ async def _set_title(request: web.Request) -> web.Response:
 
 
 async def _generate_title(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
-    sm: SessionManager = request.app["sm"]
-    tm: TitleManager = request.app["tm"]
+    aim: AIManager = request.app[_keys.AIM]
+    sm: SessionManager = request.app[_keys.SM]
+    tm: TitleManager = request.app[_keys.TM]
     try:
         body = await request.json()
         sid = body["id"]
@@ -236,17 +240,17 @@ async def _generate_title(request: web.Request) -> web.Response:
 
 
 async def _get_cwd(request: web.Request) -> web.Response:
-    wm: WorkspaceManager = request.app["wm"]
+    wm: WorkspaceManager = request.app[_keys.WM]
     return _json({"cwd": wm.get_cwd()})
 
 
 async def _list_workspace_roots(request: web.Request) -> web.Response:
-    wm: WorkspaceManager = request.app["wm"]
+    wm: WorkspaceManager = request.app[_keys.WM]
     return _json(await wm.list_roots())
 
 
 async def _browse_workspace(request: web.Request) -> web.Response:
-    wm: WorkspaceManager = request.app["wm"]
+    wm: WorkspaceManager = request.app[_keys.WM]
     path = request.query.get("path") or os.getcwd()
     kind = request.query.get("kind") or "directory"
     q = request.query.get("q") or ""
@@ -257,8 +261,8 @@ async def _browse_workspace(request: web.Request) -> web.Response:
 
 
 async def _get_history(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
-    hm: HistoryManager = request.app["hm"]
+    sm: SessionManager = request.app[_keys.SM]
+    hm: HistoryManager = request.app[_keys.HM]
     session_id = request.match_info["session_id"]
     try:
         workspace = sm.get_workspace(session_id)
@@ -269,8 +273,8 @@ async def _get_history(request: web.Request) -> web.Response:
 
 
 async def _handle_chat(request: web.Request) -> web.StreamResponse:
-    sm: SessionManager = request.app["sm"]
-    cm: ChatManager = request.app["cm"]
+    sm: SessionManager = request.app[_keys.SM]
+    cm: ChatManager = request.app[_keys.CM]
     session_id = request.match_info["session_id"]
     try:
         channel_socket = sm.get_socket(session_id)

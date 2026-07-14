@@ -9,6 +9,9 @@ from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
 
+from psi_agent import _keys
+from psi_agent._logging import trace_id_var
+
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.info("Received chat completion request")
@@ -16,17 +19,17 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         body: dict[str, Any] = await request.json()
         logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:1000]}")
     except Exception as e:
-        logger.error(f"Failed to parse request body: {e!r}")
+        logger.exception(f"Failed to parse request body: {e!r}")
         # OpenAI-compatible error response.
         return web.json_response(
             {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
             status=400,
         )
 
-    provider = request.app["provider"]
-    model = request.app["model"]
-    api_key = request.app["api_key"]
-    base_url = request.app["base_url"]
+    provider = request.app[_keys.PROVIDER]
+    model = request.app[_keys.MODEL]
+    api_key = request.app[_keys.API_KEY]
+    base_url = request.app[_keys.BASE_URL]
 
     logger.debug(f"Body keys before pop: {list(body)}")
     messages = body.pop("messages", [])
@@ -59,6 +62,8 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     client_gone = False
     stream: AsyncIterator[ChatCompletionChunk] | None = None
     try:
+        # Propagation of trace ID to upstream if supported (some providers might use this)
+        extra_headers = {"X-Trace-ID": trace_id_var.get()}
         stream = cast(
             AsyncIterator[ChatCompletionChunk],
             # ``acompletion()`` returns ``ChatCompletion | AsyncIterator[ChatCompletionChunk]``
@@ -71,6 +76,8 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 stream=True,
                 api_key=api_key,
                 api_base=base_url,
+                extra_headers=extra_headers,
+                timeout=30,  # connect timeout
                 **body,
             ),
         )
@@ -86,7 +93,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         logger.info("Client disconnected; cancelling upstream stream")
     except Exception as e:
         upstream_error = True
-        logger.error(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e!r}")
+        logger.exception(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e!r}")
         err_chunk = json.dumps(
             {
                 "id": "error",

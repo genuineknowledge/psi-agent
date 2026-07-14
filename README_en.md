@@ -289,6 +289,8 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
+| POST | `/ui/attention` | Flash tray/webview when background turn completes |
+| GET | `/workspace/roots` | Get quick locations and drives |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
 | GET | `/workspace/cwd` | Get working directory |
 | GET | `/openapi.json` | OpenAPI schema |

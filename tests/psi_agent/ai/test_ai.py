@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 
+import anyio
 import pytest
 from aiohttp import web
 
@@ -58,10 +59,24 @@ async def test_serve_ai_cleans_up_runner_on_start_failure(monkeypatch: pytest.Mo
         async def start(self) -> None:
             raise RuntimeError("bind failed")
 
-    monkeypatch.setattr("psi_agent.ai.create_site", lambda runner, addr: _BadSite())
-
     async def _handler(request: web.Request) -> web.StreamResponse:
         return web.StreamResponse()
+
+    # Need to mock serve_app too because it now handles the lifecycle
+    async def fake_serve_app(app, addr):
+        runner = web.AppRunner(app)
+        await runner.setup()
+        try:
+            site = _BadSite()
+            await site.start()
+        except Exception:
+            # serve_ai also catches and logs, but here we just need to ensure cleanup happens
+            # to verify the spy
+            with anyio.CancelScope(shield=True):
+                await runner.cleanup()
+            raise
+
+    monkeypatch.setattr("psi_agent.ai.serve_app", fake_serve_app)
 
     with pytest.raises(RuntimeError, match="bind failed"):
         await serve_ai(

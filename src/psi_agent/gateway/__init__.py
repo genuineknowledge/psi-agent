@@ -7,11 +7,10 @@ import webbrowser
 from dataclasses import dataclass
 
 import anyio
-from aiohttp import web
 from loguru import logger
 
 from psi_agent._logging import setup_logging
-from psi_agent._sockets import create_site
+from psi_agent._sockets import serve_app
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._session_manager import SessionManager
@@ -139,62 +138,53 @@ class Gateway:
 
             await _do_persist()
 
-            runner = web.AppRunner(app)
             try:
-                try:
-                    await runner.setup()
-                    site = create_site(runner, addr)
-                    await site.start()
-                except Exception as e:
-                    logger.error(f"Failed to start Gateway on {addr}: {e!r}")
-                    raise
+                async with anyio.create_task_group() as server_tg:
+                    server_tg.start_soon(serve_app, app, addr)
 
-                logger.info(f"Gateway listening on {addr}")
+                    wv = None
+                    if self.webview:
+                        if self.icon is None:
+                            raise ValueError("--webview requires --icon to be set")
+                        wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon, app_name=self.app_name)
+                        try:
+                            wv.start()
+                        except Exception as e:
+                            logger.warning(f"Failed to start webview window: {e!r}")
 
-                wv = None
-                if self.webview:
-                    if self.icon is None:
-                        raise ValueError("--webview requires --icon to be set")
-                    wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon, app_name=self.app_name)
-                    try:
-                        wv.start()
-                    except Exception as e:
-                        logger.warning(f"Failed to start webview window: {e!r}")
+                    if self.browser:
+                        await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
 
-                if self.browser:
-                    await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
+                    tray = None
+                    if self.tray:
+                        if self.icon is None:
+                            raise ValueError("--tray requires --icon to be set")
+                        on_open = wv.show if wv is not None and wv.is_running() else None
+                        tray = GatewayTray(addr, self.icon, app_name=self.app_name, on_open=on_open)
+                        try:
+                            tray.start()
+                        except Exception as e:
+                            logger.warning(f"Failed to start system tray: {e!r}")
 
-                tray = None
-                if self.tray:
-                    if self.icon is None:
-                        raise ValueError("--tray requires --icon to be set")
-                    on_open = wv.show if wv is not None and wv.is_running() else None
-                    tray = GatewayTray(addr, self.icon, app_name=self.app_name, on_open=on_open)
-                    try:
-                        tray.start()
-                    except Exception as e:
-                        logger.warning(f"Failed to start system tray: {e!r}")
-
-                if wv is not None and wv.is_running():
-                    attention.bind(webview=wv)
-                if tray is not None and tray.is_running():
-                    attention.bind(tray=tray)
-
-                try:
+                    if wv is not None and wv.is_running():
+                        attention.bind(webview=wv)
                     if tray is not None and tray.is_running():
-                        await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
-                    elif wv is not None and wv.is_running():
-                        await anyio.to_thread.run_sync(wv.wait_closed, abandon_on_cancel=True)  # ty: ignore
-                    else:
-                        await anyio.sleep_forever()
-                finally:
-                    if tray is not None:
-                        tray.stop()
-                    if wv is not None:
-                        wv.stop()
+                        attention.bind(tray=tray)
+
+                    try:
+                        if tray is not None and tray.is_running():
+                            await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
+                        elif wv is not None and wv.is_running():
+                            await anyio.to_thread.run_sync(wv.wait_closed, abandon_on_cancel=True)  # ty: ignore
+                        else:
+                            await anyio.sleep_forever()
+                    finally:
+                        if tray is not None:
+                            tray.stop()
+                        if wv is not None:
+                            wv.stop()
+                        server_tg.cancel_scope.cancel()
             finally:
                 logger.info("Shutting down Gateway")
-                with anyio.CancelScope(shield=True):
-                    await runner.cleanup()
                 tg.cancel_scope.cancel()
         logger.info("Gateway shutdown complete")
