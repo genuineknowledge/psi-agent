@@ -1173,13 +1173,15 @@ async def create_task_impl(summary: str, description: str, due: str, assignees: 
     """Create a task, optionally with a due date and assignee/follower open_ids."""
     if not summary.strip():
         return _error("Task summary is required.")
+    # Feishu member object: type is the member KIND ("user"/"app"), id_type is the
+    # ID form (open_id/user_id). (Not type="open_id" — that's rejected as 1470400.)
     members: list[dict[str, str]] = []
     for oid in (a.strip() for a in assignees.split(",")):
         if oid:
-            members.append({"id": oid, "type": "open_id", "role": "assignee"})
+            members.append({"id": oid, "type": "user", "id_type": "open_id", "role": "assignee"})
     for oid in (f.strip() for f in followers.split(",")):
         if oid:
-            members.append({"id": oid, "type": "open_id", "role": "follower"})
+            members.append({"id": oid, "type": "user", "id_type": "open_id", "role": "follower"})
     body: dict[str, Any] = {"summary": summary}
     if description.strip():
         body["description"] = description

@@ -920,6 +920,8 @@ async def test_create_task_builds_members_and_due(monkeypatch: pytest.MonkeyPatc
     assert ("ou_a", "assignee") in roles
     assert ("ou_b", "assignee") in roles
     assert ("ou_c", "follower") in roles
+    # member kind must be "user" + id_type "open_id" (type="open_id" is rejected 1470400)
+    assert all(m["type"] == "user" and m["id_type"] == "open_id" for m in req.body["members"])
     assert result["task_guid"] == "g1"
 
 
