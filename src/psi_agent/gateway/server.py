@@ -12,6 +12,7 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent.gateway._ai_manager import AIManager
+from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
 from psi_agent.gateway._history_manager import HistoryManager
 from psi_agent.gateway._openapi import render_openapi
@@ -44,6 +45,14 @@ async def _handle_favicon(request: web.Request) -> web.FileResponse:
     return web.FileResponse(favicon_path)
 
 
+async def _request_attention(request: web.Request) -> web.Response:
+    """SPA pings this when a background chat turn finishes — flash tray/webview."""
+    attention: AttentionHub = request.app["attention"]
+    # schedule_notify is non-blocking; do not await tray pulse on the request path.
+    attention.schedule_notify()
+    return _json({"ok": True})
+
+
 def _json(data: object, status: int = 200) -> web.Response:
     return web.Response(
         text=json.dumps(data, ensure_ascii=False),
@@ -62,6 +71,7 @@ async def create_app(
     tm: TitleManager,
     favicon_path: str | None = None,
     app_name: str = DEFAULT_APP_NAME,
+    attention: AttentionHub | None = None,
 ) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
@@ -72,6 +82,7 @@ async def create_app(
     app["hm"] = HistoryManager()
     app["favicon_path"] = favicon_path
     app["app_name"] = app_name
+    app["attention"] = attention if attention is not None else AttentionHub()
 
     spa_dist = anyio.Path(__file__).parent / "spa" / "dist"
     app.router.add_get("/spa/index.html", _handle_spa_index)
@@ -93,6 +104,7 @@ async def create_app(
     app.router.add_get("/titles", _list_titles)
     app.router.add_post("/titles", _set_title)
     app.router.add_post("/titles/generate", _generate_title)
+    app.router.add_post("/ui/attention", _request_attention)
     app.router.add_get("/workspace/cwd", _get_cwd)
     app.router.add_get("/workspace/roots", _list_workspace_roots)
     app.router.add_get("/workspace/browse", _browse_workspace)

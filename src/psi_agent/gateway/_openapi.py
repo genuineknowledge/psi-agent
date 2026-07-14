@@ -258,6 +258,15 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/ui/attention": {
+            "post": {
+                "summary": "Flash tray icon / native window when chat completes in background",
+                "operationId": "requestAttention",
+                "responses": {
+                    "200": {"description": "Attention cue dispatched (best-effort)"},
+                },
+            },
+        },
         "/workspace/roots": {
             "get": {
                 "summary": "List quick-access paths and drives for path picker",
