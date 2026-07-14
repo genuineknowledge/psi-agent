@@ -997,9 +997,52 @@ async def test_update_task_nothing_to_update() -> None:
     assert result["ok"] is False
 
 
+@pytest.mark.asyncio
+async def test_get_task_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "task": {
+                "guid": "g1",
+                "summary": "写周报",
+                "status": "done",
+                "completed_at": "1752490200000",
+                "members": [{"id": "ou_a", "name": "王炜博", "role": "assignee"}],
+                "assignee_related": [{"id": "ou_a", "completed_at": "1752490200000"}],
+                "url": "http://t/g1",
+            }
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_task_impl("g1")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/task/v2/tasks/:task_guid"
+    assert req.paths["task_guid"] == "g1"
+    assert result["status"] == "done"
+    assert result["completed"] is True
+    assert result["completed_at"]  # formatted, non-empty
+    assert result["members"][0]["name"] == "王炜博"
+    assert result["assignee_completion"][0]["id"] == "ou_a"
+
+
+@pytest.mark.asyncio
+async def test_get_task_incomplete(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"task": {"guid": "g1", "summary": "s", "status": "todo", "members": []}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_task_impl("g1")
+    assert result["completed"] is False
+    assert result["completed_at"] == ""
+
+
 def test_task_tools_async_with_docstrings() -> None:
     mod = importlib.import_module("feishu_task")
-    for name in ("feishu_task_create", "feishu_task_list", "feishu_task_update", "feishu_task_complete"):
+    for name in (
+        "feishu_task_create",
+        "feishu_task_get",
+        "feishu_task_list",
+        "feishu_task_update",
+        "feishu_task_complete",
+    ):
         fn = getattr(mod, name)
         assert inspect.iscoroutinefunction(fn), name
         assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"

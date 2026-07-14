@@ -1285,3 +1285,56 @@ async def complete_task_impl(task_guid: str, completed: bool) -> dict[str, Any]:
     if not res["ok"]:
         return res
     return {"ok": True, "task_guid": task_guid, "completed": completed}
+
+
+def _build_get_task_request(task_guid: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/task/v2/tasks/:task_guid"
+    req.paths["task_guid"] = task_guid
+    req.add_query("user_id_type", "open_id")
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_task_impl(task_guid: str) -> dict[str, Any]:
+    """Get a task's detail incl. completion status and per-assignee completion.
+
+    Works for any task the calling identity (bot) can read — e.g. a task the bot
+    created and assigned to someone; lets you check whether that person finished it.
+    """
+    res = await _invoke(_build_get_task_request(task_guid))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    task = data.get("task", {}) if isinstance(data.get("task"), dict) else {}
+    members = [
+        {"id": m.get("id", ""), "name": m.get("name", ""), "role": m.get("role", "")}
+        for m in (task.get("members", []) if isinstance(task.get("members"), list) else [])
+    ]
+    per_assignee = [
+        {"id": a.get("id", ""), "completed_at": _fmt_ms(a.get("completed_at"))}
+        for a in (task.get("assignee_related", []) if isinstance(task.get("assignee_related"), list) else [])
+    ]
+    return {
+        "ok": True,
+        "task_guid": task.get("guid", task_guid),
+        "summary": task.get("summary", ""),
+        "status": task.get("status", ""),
+        "completed": task.get("status") == "done" or bool(task.get("completed_at")),
+        "completed_at": _fmt_ms(task.get("completed_at")),
+        "members": members,
+        "assignee_completion": per_assignee,
+        "url": task.get("url", ""),
+    }
+
+
+def _fmt_ms(ms: Any) -> str:
+    """Format a ms-epoch value (str/int) to 'YYYY-MM-DD HH:MM:SS', or '' if empty/0."""
+    if not ms or str(ms) == "0":
+        return ""
+    import datetime  # noqa: PLC0415
+
+    with contextlib.suppress(ValueError, OSError, OverflowError):
+        return datetime.datetime.fromtimestamp(int(ms) / 1000).strftime("%Y-%m-%d %H:%M:%S")
+    return str(ms)

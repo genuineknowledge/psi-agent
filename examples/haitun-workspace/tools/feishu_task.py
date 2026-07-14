@@ -40,6 +40,20 @@ async def feishu_task_create(
     return _f.dumps_result(await _f.create_task_impl(summary, description, due, assignees, followers))
 
 
+async def feishu_task_get(task_guid: str) -> str:
+    """Get a task's detail, including whether it's completed and who completed it.
+
+    Use this to check completion of a task assigned to someone else: create/assign
+    the task (keep its ``task_guid``), then query here. Returns ``status`` (todo/done),
+    ``completed`` (bool), ``completed_at``, the ``members``, and per-assignee
+    ``assignee_completion``. Works for any task the bot can read (e.g. one it created).
+
+    Args:
+        task_guid: The task's guid (from ``feishu_task_create`` or ``feishu_task_list``).
+    """
+    return _f.dumps_result(await _f.get_task_impl(task_guid))
+
+
 async def feishu_task_list(completed: str = "", page_size: int = 50, page_token: str = "") -> str:
     """List the bot's own tasks (tasks the calling identity is responsible for).
 
