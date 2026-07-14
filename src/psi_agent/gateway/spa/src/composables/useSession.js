@@ -5,6 +5,7 @@ import { useAiStore } from '../stores/ai.js'
 import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
 import { loadHistory, htmlEscape, renderMd, saveActiveState } from '../utils.js'
+import { stripSendMarkers } from '../sendMarkers.js'
 import { normalizeFailedTurns } from '../messageTurn.js'
 import { normalizeWorkspacePath, resolveSessionWorkspace } from '../sessionList.js'
 
@@ -280,7 +281,7 @@ export async function selectSession(id) {
           const local = i < localHist.length ? localHist[i] : null
           built.push({
             id: '', role: h.role, text: h.text,
-            html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text),
+            html: h.role === 'user' ? htmlEscape(h.text) : renderMd(stripSendMarkers(h.text)),
             files: local ? local.files || [] : [],
             stopped: local ? local.stopped || false : false,
             failed: local ? local.failed || false : false,
@@ -292,7 +293,7 @@ export async function selectSession(id) {
             const h = localHist[i]
             built.push({
               id: '', role: h.role, text: h.text,
-              html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text),
+              html: h.role === 'user' ? htmlEscape(h.text) : renderMd(stripSendMarkers(h.text)),
               files: h.files || [],
               stopped: h.stopped || false,
               failed: h.failed || false,
@@ -305,7 +306,7 @@ export async function selectSession(id) {
       localHist.forEach(h => {
         built.push({
           id: '', role: h.role, text: h.text,
-          html: h.role === 'user' ? htmlEscape(h.text) : renderMd(h.text),
+          html: h.role === 'user' ? htmlEscape(h.text) : renderMd(stripSendMarkers(h.text)),
           files: h.files || [],
           stopped: h.stopped || false,
           failed: h.failed || false,

@@ -63,9 +63,11 @@ const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp'])
 const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'm4a', 'flac'])
 const VIDEO_EXTS = new Set(['mp4', 'webm', 'mov', 'm4v'])
 const MARKDOWN_EXTS = new Set(['md', 'markdown'])
+/** Document preview (rendered page), not CodeMirror source. */
+const HTML_EXTS = new Set(['html', 'htm'])
 const TEXT_EXTS = new Set([
   'txt', 'log', 'sql', 'py', 'js', 'mjs', 'cjs', 'ts', 'tsx',
-  'jsx', 'vue', 'css', 'html', 'htm', 'xml', 'yaml', 'yml', 'toml', 'ini', 'sh',
+  'jsx', 'vue', 'css', 'xml', 'yaml', 'yml', 'toml', 'ini', 'sh',
   'bash', 'zsh', 'fish', 'java', 'c', 'h', 'cpp', 'hpp', 'cs', 'go', 'rs', 'rb',
   'php', 'swift', 'kt', 'kts', 'scala', 'r', 'lua', 'dockerfile', 'gitignore',
 ])
@@ -118,6 +120,7 @@ async function renderPreview() {
     else if (ext === 'json') await renderCode(formatJson(decodeText(bytes)), false)
     else if (ext === 'jsonl') await renderCode(formatJsonl(decodeText(bytes)), false)
     else if (MARKDOWN_EXTS.has(ext)) renderMarkdown(decodeText(bytes))
+    else if (HTML_EXTS.has(ext)) renderHtmlDocument(decodeText(bytes))
     else if (TEXT_EXTS.has(ext)) await renderCode(decodeText(bytes), false)
     else if (ext === 'csv') await renderCsv(decodeText(bytes))
     else if (ext === 'pdf') await renderPdf(bytesToArrayBuffer(bytes), run)
@@ -310,6 +313,23 @@ function renderMarkdown(text) {
   article.className = 'preview-markdown'
   article.innerHTML = renderMd(bounded.text)
   hostRef.value.append(article)
+}
+
+/**
+ * Render HTML as a sandboxed document (blob URL iframe).
+ * No allow-scripts / allow-same-origin — display only, no SPA escape.
+ */
+function renderHtmlDocument(text) {
+  const bounded = boundedText(text)
+  if (bounded.partial) notice.value = PARTIAL_NOTICE
+  const frame = document.createElement('iframe')
+  frame.className = 'preview-html-frame'
+  frame.title = props.file.name || 'HTML preview'
+  frame.setAttribute('sandbox', '')
+  frame.setAttribute('referrerpolicy', 'no-referrer')
+  objectUrl = URL.createObjectURL(new Blob([bounded.text], { type: 'text/html;charset=utf-8' }))
+  frame.src = objectUrl
+  hostRef.value.append(frame)
 }
 
 async function renderCsv(text) {
@@ -733,6 +753,15 @@ function showFallback() {
   height: auto;
   background: #fff;
   box-shadow: var(--md-elevation-1);
+}
+
+.preview-host :deep(.preview-html-frame) {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 96px);
+  min-height: 360px;
+  border: none;
+  background: #fff;
 }
 
 .preview-host :deep(.preview-markdown) {

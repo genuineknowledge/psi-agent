@@ -1,16 +1,26 @@
 /** @typedef {'ok' | 'error' | 'stopped' | 'incomplete'} TurnOutcome */
 
+/** Remove trailing/inline `[Error: …]` annotations appended by soft stream failures. */
+export function stripErrorAnnotations(text) {
+  if (!text) return ''
+  return String(text)
+    .replace(/\n?\[Error:[^\]]*\]/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
 /**
  * Whether an assistant message counts as a complete reply to the preceding user turn.
+ * Blob read failures may append `[Error:]` without canceling useful text/files.
  * @param {object | null | undefined} msg
  */
 export function isCompleteAssistant(msg) {
   if (!msg || msg.role !== 'assistant') return false
-  const text = typeof msg.text === 'string' ? msg.text.trim() : ''
-  const hasFiles = Array.isArray(msg.files) && msg.files.length > 0
-  if (!text && !hasFiles) return false
   if (msg.stopped) return false
-  if (text.includes('[Error:')) return false
+  const text = typeof msg.text === 'string' ? msg.text : ''
+  const hasFiles = Array.isArray(msg.files) && msg.files.length > 0
+  const clean = stripErrorAnnotations(text)
+  if (!clean && !hasFiles) return false
   return true
 }
 
@@ -23,7 +33,9 @@ export function inferFailedReason(assistantMsg) {
   if (!assistantMsg || assistantMsg.role !== 'assistant') return 'incomplete'
   if (assistantMsg.stopped) return 'stopped'
   const text = typeof assistantMsg.text === 'string' ? assistantMsg.text : ''
-  if (text.includes('[Error:')) return 'error'
+  const hasFiles = Array.isArray(assistantMsg.files) && assistantMsg.files.length > 0
+  const clean = stripErrorAnnotations(text)
+  if (!clean && !hasFiles && text.includes('[Error:')) return 'error'
   return 'incomplete'
 }
 
@@ -112,9 +124,10 @@ export function resolveTurnOutcome(msgs, userMsg, assistantMsg) {
 
   if (!asst) return 'incomplete'
   if (asst.stopped) return 'stopped'
-  const text = typeof asst.text === 'string' ? asst.text.trim() : ''
+  const text = typeof asst.text === 'string' ? asst.text : ''
   const hasFiles = Array.isArray(asst.files) && asst.files.length > 0
+  const clean = stripErrorAnnotations(text)
+  if (clean || hasFiles) return 'ok'
   if (text.includes('[Error:')) return 'error'
-  if (!text && !hasFiles) return 'incomplete'
-  return 'ok'
+  return 'incomplete'
 }
