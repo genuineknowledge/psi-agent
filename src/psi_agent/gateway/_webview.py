@@ -8,6 +8,7 @@ from typing import Any
 
 from loguru import logger
 
+from psi_agent.gateway._attention import _flash_hwnd
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 
 
@@ -80,6 +81,18 @@ class GatewayWebView:
     def is_running(self) -> bool:
         """True if the webview thread is alive."""
         return self._thread is not None and self._thread.is_alive()
+
+    def request_attention(self) -> None:
+        """Flash the native window on the taskbar (Windows only, best-effort)."""
+        if self._window is None:
+            return
+        try:
+            native = self._window.native
+            hwnd = getattr(native, "Handle", None)
+            if hwnd is not None:
+                _flash_hwnd(int(hwnd))
+        except Exception as e:
+            logger.debug(f"Webview attention flash failed: {e!r}")
 
     def _on_closing(self) -> bool:
         """Handle window close event.
