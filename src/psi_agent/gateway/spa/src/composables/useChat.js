@@ -61,10 +61,15 @@ function isSessionStreaming(sid) {
   return !!useSessionStore().sessionStreaming[sid]
 }
 
-function setSessionStreaming(sid, value) {
+function setSessionStreaming(sid, value, { markDone = false } = {}) {
   const session = useSessionStore()
   const chat = useChatStore()
   session.sessionStreaming[sid] = value
+  if (value) {
+    delete session.sessionStreamMarks[sid]
+  } else if (markDone && sid && !isVisibleChatKey(sid)) {
+    session.sessionStreamMarks[sid] = true
+  }
   if (isVisibleChatKey(sid)) {
     chat.streaming = value
   }
@@ -231,7 +236,8 @@ async function runChatTurn(sid, { userMsg, text, files }) {
           asst.text += '\n[Error: ' + chunkData.error + ']'
           asst.html = renderMd(asst.text)
         } else if (chunkData.type === 'reasoning') {
-          if (asst && (asst.text || asst.files.length)) asst = null
+          // Thinking + tool markers arrive as reasoning. Do not start a new
+          // bubble — keep one assistant message for the whole user turn.
         }
         if (isVisibleChatKey(sid)) {
           mirrorVisibleMessages(sid, getMessagesList(sid))
@@ -267,7 +273,7 @@ async function runChatTurn(sid, { userMsg, text, files }) {
     mirrorVisibleMessages(sid, msgs)
     saveHistory(sid, msgs)
   } finally {
-    setSessionStreaming(sid, false)
+    setSessionStreaming(sid, false, { markDone: true })
     setSessionAbortController(sid, null)
   }
 
