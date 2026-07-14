@@ -289,7 +289,7 @@ async def find_chat_impl(name: str, exact: bool, page_size: int = 50, page_token
     }
 
 
-def _build_send_message_request(receive_id: str, receive_id_type: str, text: str) -> BaseRequest:
+def _build_send_message_request(receive_id: str, receive_id_type: str, msg_type: str, content: str) -> BaseRequest:
     req = BaseRequest()
     req.http_method = HttpMethod.POST
     req.uri = "/open-apis/im/v1/messages"
@@ -297,15 +297,16 @@ def _build_send_message_request(receive_id: str, receive_id_type: str, text: str
     req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
     req.body = {
         "receive_id": receive_id,
-        "msg_type": "text",
-        "content": json.dumps({"text": text}, ensure_ascii=False),
+        "msg_type": msg_type,
+        "content": content,
     }
     return req
 
 
 async def send_message_impl(receive_id: str, text: str, receive_id_type: str) -> dict[str, Any]:
     """Send a text message to a chat/user. Returns message_id + thread_id (thread_id is the topic root)."""
-    res = await _invoke(_build_send_message_request(receive_id, receive_id_type, text))
+    content = json.dumps({"text": text}, ensure_ascii=False)
+    res = await _invoke(_build_send_message_request(receive_id, receive_id_type, "text", content))
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -603,18 +604,21 @@ async def get_wiki_node_impl(token: str) -> dict[str, Any]:
 
 # ── Start a group topic with @-mentions ──────────────────────────────────────
 #
-# Convenience over send_message_impl: builds the <at> tags from a list of
-# open_ids (and/or @everyone) so the agent doesn't hand-write the tag syntax.
-# In a topic-enabled group the returned thread_id is the new topic's root.
+# Text messages' <at> tags do NOT render as real mentions for bots (Feishu shows
+# the raw tag). Real mentions require the "post" rich-text message type, whose
+# `at` element ({"tag":"at","user_id":...}) does render. So when mentions are
+# requested we send a post; with no mentions we keep a plain text message.
 
 
-def _build_at_prefix(at_open_ids: list[str], at_all: bool) -> str:
-    """Build a leading run of <at> tags: @everyone first (if set), then each open_id."""
-    tags: list[str] = []
+def _build_post_at_content(text: str, at_open_ids: list[str], at_all: bool) -> str:
+    """Build a post rich-text content JSON string: leading @ elements, then the text run."""
+    line: list[dict[str, Any]] = []
     if at_all:
-        tags.append('<at user_id="all"></at>')
-    tags.extend(f'<at user_id="{oid}"></at>' for oid in at_open_ids if oid)
-    return "".join(tags)
+        line.append({"tag": "at", "user_id": "all"})
+    line.extend({"tag": "at", "user_id": oid} for oid in at_open_ids if oid)
+    # separate mentions from the message with a space, then the text
+    line.append({"tag": "text", "text": f" {text}" if line else text})
+    return json.dumps({"zh_cn": {"title": "", "content": [line]}}, ensure_ascii=False)
 
 
 async def start_topic_impl(
@@ -625,11 +629,17 @@ async def start_topic_impl(
 ) -> dict[str, Any]:
     """Post a topic root message to a group, @-mentioning the given open_ids (and/or everyone).
 
-    Returns message_id + thread_id (the new topic's root in a topic-enabled group).
+    Uses a post rich-text message when mentions are requested (so @ renders), a
+    plain text message otherwise. Returns message_id + thread_id (the topic root).
     """
-    prefix = _build_at_prefix(at_open_ids or [], at_all)
-    body = f"{prefix} {text}" if prefix else text
-    res = await _invoke(_build_send_message_request(chat_id, "chat_id", body))
+    ids = at_open_ids or []
+    if ids or at_all:
+        content = _build_post_at_content(text, ids, at_all)
+        req = _build_send_message_request(chat_id, "chat_id", "post", content)
+    else:
+        content = json.dumps({"text": text}, ensure_ascii=False)
+        req = _build_send_message_request(chat_id, "chat_id", "text", content)
+    res = await _invoke(req)
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}

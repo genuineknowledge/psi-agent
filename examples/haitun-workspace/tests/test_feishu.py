@@ -552,16 +552,25 @@ def test_wiki_tool_is_async_with_docstring() -> None:
 # ── Start topic with @-mentions ───────────────────────────────────────────────
 
 
-def test_at_prefix_builds_tags() -> None:
-    assert _impl._build_at_prefix(["ou_1", "ou_2"], False) == '<at user_id="ou_1"></at><at user_id="ou_2"></at>'
-    assert _impl._build_at_prefix([], True) == '<at user_id="all"></at>'
-    assert _impl._build_at_prefix(["ou_1"], True) == '<at user_id="all"></at><at user_id="ou_1"></at>'
-    assert _impl._build_at_prefix([], False) == ""
-    assert _impl._build_at_prefix(["ou_1", ""], False) == '<at user_id="ou_1"></at>'  # skips empties
+def test_build_post_at_content_has_at_elements() -> None:
+    content = json.loads(_impl._build_post_at_content("今天的待办", ["ou_a", "ou_b"], False))
+    line = content["zh_cn"]["content"][0]
+    assert line[0] == {"tag": "at", "user_id": "ou_a"}
+    assert line[1] == {"tag": "at", "user_id": "ou_b"}
+    assert line[2] == {"tag": "text", "text": " 今天的待办"}  # space separates mentions from text
+
+
+def test_build_post_at_content_at_all_and_skip_empty() -> None:
+    content = json.loads(_impl._build_post_at_content("hi", ["ou_a", ""], True))
+    line = content["zh_cn"]["content"][0]
+    assert line[0] == {"tag": "at", "user_id": "all"}  # @everyone first
+    assert line[1] == {"tag": "at", "user_id": "ou_a"}
+    assert all(e.get("user_id") != "" for e in line if e["tag"] == "at")  # empties skipped
+    assert line[-1] == {"tag": "text", "text": " hi"}
 
 
 @pytest.mark.asyncio
-async def test_start_topic_prepends_mentions(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_start_topic_uses_post_when_mentions(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke({"message_id": "om_1", "thread_id": "omt_1", "chat_id": "oc_1"})
     monkeypatch.setattr(_impl, "_invoke", cap)
     result = await _impl.start_topic_impl("oc_1", "今天的待办", ["ou_a", "ou_b"], False)
@@ -569,8 +578,9 @@ async def test_start_topic_prepends_mentions(monkeypatch: pytest.MonkeyPatch) ->
     assert req.http_method.name == "POST"
     assert req.uri == "/open-apis/im/v1/messages"
     assert req.body["receive_id"] == "oc_1"
-    text = json.loads(req.body["content"])["text"]
-    assert text == '<at user_id="ou_a"></at><at user_id="ou_b"></at> 今天的待办'
+    assert req.body["msg_type"] == "post"  # mentions -> post rich text
+    line = json.loads(req.body["content"])["zh_cn"]["content"][0]
+    assert {"tag": "at", "user_id": "ou_a"} in line
     assert result["thread_id"] == "omt_1"
 
 
@@ -579,7 +589,8 @@ async def test_start_topic_no_mentions_plain_text(monkeypatch: pytest.MonkeyPatc
     cap = _CapturedInvoke({"message_id": "om_1", "thread_id": "omt_1", "chat_id": "oc_1"})
     monkeypatch.setattr(_impl, "_invoke", cap)
     await _impl.start_topic_impl("oc_1", "hello", None, False)
-    assert json.loads(cap.request.body["content"])["text"] == "hello"  # no leading space
+    assert cap.request.body["msg_type"] == "text"  # no mentions -> plain text
+    assert json.loads(cap.request.body["content"])["text"] == "hello"
 
 
 @pytest.mark.asyncio
