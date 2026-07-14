@@ -25,6 +25,16 @@ function isVisibleChatKey(key) {
   return session.draftSession?.draftId === key
 }
 
+/** Ask Gateway to flash tray/webview when the user is not looking at this turn. */
+function notifyAttentionIfNeeded(sid) {
+  const lookingAtTurn =
+    document.visibilityState === 'visible'
+    && document.hasFocus()
+    && isVisibleChatKey(sid)
+  if (lookingAtTurn) return
+  void api('POST', '/ui/attention').catch(() => {})
+}
+
 function resolveActiveChatKey() {
   const session = useSessionStore()
   if (session.selectedSessionId) return session.selectedSessionId
@@ -219,6 +229,7 @@ async function runChatTurn(sid, { userMsg, text, files }) {
   setSessionAbortController(sid, controller)
 
   let streamError = false
+  let outcome = null
   try {
     try {
       const reader = await streamChat(sid, fd, controller.signal)
@@ -265,7 +276,7 @@ async function runChatTurn(sid, { userMsg, text, files }) {
       }
     }
 
-    let outcome = resolveTurnOutcome(msgs, userMsg, asst)
+    outcome = resolveTurnOutcome(msgs, userMsg, asst)
     if (streamError && outcome === 'ok') outcome = 'error'
     applyTurnOutcome(msgs, userMsg, asst, outcome)
     const normalized = normalizeFailedTurns(msgs)
@@ -276,6 +287,8 @@ async function runChatTurn(sid, { userMsg, text, files }) {
     setSessionStreaming(sid, false, { markDone: true })
     setSessionAbortController(sid, null)
   }
+
+  if (outcome === 'ok') notifyAttentionIfNeeded(sid)
 
   const session = useSessionStore()
   const currentTitle = session.sessionTitles[sid]

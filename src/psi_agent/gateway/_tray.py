@@ -10,6 +10,7 @@ from typing import Any
 from loguru import logger
 from PIL import Image
 
+from psi_agent.gateway._attention import _make_highlight_image, pulse_tray_icon
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 
 
@@ -30,6 +31,8 @@ class GatewayTray:
         self._stop_event = threading.Event()
         self._icon: Any = None
         self._thread: threading.Thread | None = None
+        self._normal_image: Any = None
+        self._highlight_image: Any = None
 
     def start(self) -> None:
         """Start the system tray icon in a background daemon thread."""
@@ -40,6 +43,8 @@ class GatewayTray:
 
         try:
             image = Image.open(self._icon_path)
+            self._normal_image = image
+            self._highlight_image = _make_highlight_image(image)
         except Exception as e:
             logger.warning(f"Failed to load tray icon from {self._icon_path!r}: {e!r}")
             return
@@ -77,6 +82,16 @@ class GatewayTray:
     def wait_stop(self) -> None:
         """Block (in a worker thread) until the user requests quit via the tray menu."""
         self._stop_event.wait()
+
+    def request_attention(self) -> None:
+        """Pulse tray icon (+ Windows balloon) to draw attention (best-effort)."""
+        if self._icon is None or self._normal_image is None or self._highlight_image is None:
+            return
+        logger.info("Tray attention pulse starting")
+        with contextlib.suppress(Exception):
+            # Visible even when icon swap is hard to notice on Windows.
+            self._icon.notify("有对话已完成", self._app_name)
+        pulse_tray_icon(self._icon, self._normal_image, self._highlight_image)
 
     def _open_browser(self, icon: Any = None) -> None:
         webbrowser.open(self._url)

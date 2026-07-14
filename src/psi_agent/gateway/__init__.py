@@ -13,6 +13,7 @@ from loguru import logger
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
+from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway._state import GatewayState
@@ -103,7 +104,15 @@ class Gateway:
             for t in snapshot.get("titles", []):
                 await tm.set(t["id"], t["title"])
 
-            app = await create_app(aim, sm, tm, favicon_path=self.icon, app_name=self.app_name)
+            attention = AttentionHub()
+            app = await create_app(
+                aim,
+                sm,
+                tm,
+                favicon_path=self.icon,
+                app_name=self.app_name,
+                attention=attention,
+            )
 
             async def _do_persist() -> None:
                 await state.save(
@@ -165,6 +174,11 @@ class Gateway:
                         tray.start()
                     except Exception as e:
                         logger.warning(f"Failed to start system tray: {e!r}")
+
+                if wv is not None and wv.is_running():
+                    attention.bind(webview=wv)
+                if tray is not None and tray.is_running():
+                    attention.bind(tray=tray)
 
                 try:
                     if tray is not None and tray.is_running():
