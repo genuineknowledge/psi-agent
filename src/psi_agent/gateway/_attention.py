@@ -105,5 +105,5 @@ class AttentionHub:
 
     async def notify(self) -> None:
         # Return immediately; icon pulse / FlashWindowEx run on a daemon thread.
+        # Do not await anyio.lowlevel.checkpoint() — ty cannot resolve that attribute.
         self.schedule_notify()
-        await anyio.lowlevel.checkpoint()
