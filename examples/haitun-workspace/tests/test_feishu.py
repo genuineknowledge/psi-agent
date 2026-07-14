@@ -510,3 +510,40 @@ async def test_approval_decide_tool_returns_json(monkeypatch: pytest.MonkeyPatch
         approve=True, approval_code="a", instance_code="inst1", approver_user_id="ou_b", task_id="t1"
     )
     assert json.loads(out)["action"] == "approve"
+
+
+# ── Wiki — resolve node token to underlying document ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_wiki_node_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"node": {"node_token": "NFOnw", "obj_token": "doccnX", "obj_type": "docx", "title": "SOP", "space_id": "s1"}}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_wiki_node_impl("NFOnw")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri.endswith("/wiki/v2/spaces/get_node")
+    assert _qdict(req).get("token") == "NFOnw"
+    assert result["obj_token"] == "doccnX"
+    assert result["obj_type"] == "docx"
+    assert result["title"] == "SOP"
+
+
+@pytest.mark.asyncio
+async def test_get_wiki_node_error_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake(_req: Any) -> dict[str, Any]:
+        return {"ok": False, "code": 131006, "msg": "node not found", "message": "Feishu API error 131006"}
+
+    monkeypatch.setattr(_impl, "_invoke", _fake)
+    result = await _impl.get_wiki_node_impl("bad")
+    assert result["ok"] is False
+    assert result["code"] == 131006
+
+
+def test_wiki_tool_is_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_wiki")
+    fn = mod.feishu_wiki_get_node
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()

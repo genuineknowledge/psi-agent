@@ -15,6 +15,7 @@ import os
 from typing import Any
 
 from lark_channel.api.drive import comment as _comment
+from lark_channel.api.wiki import node as _wiki_node
 from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
 
@@ -573,3 +574,28 @@ async def decide_approval_task_impl(
     if not res["ok"]:
         return res
     return {"ok": True, "action": action, "instance_code": instance_code, "task_id": task_id}
+
+
+# ── Wiki — resolve a wiki node token to its underlying document ───────────────
+#
+# A Feishu wiki URL (.../wiki/<node_token>) is a shell; the real content lives in
+# an underlying docx/sheet/bitable/... This resolves the node token to obj_token
+# + obj_type so the agent can then read it (docx/doc/sheet via read_doc_impl).
+
+
+async def get_wiki_node_impl(token: str) -> dict[str, Any]:
+    """Resolve a wiki node token to its underlying document (obj_token + obj_type)."""
+    res = await _invoke(_wiki_node.build_wiki_node_get_request(token=token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    node = data.get("node", {}) if isinstance(data.get("node"), dict) else {}
+    return {
+        "ok": True,
+        "node_token": node.get("node_token", ""),
+        "obj_token": node.get("obj_token", ""),
+        "obj_type": node.get("obj_type", ""),
+        "title": node.get("title", ""),
+        "space_id": node.get("space_id", ""),
+        "has_child": bool(node.get("has_child")),
+    }
