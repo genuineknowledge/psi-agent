@@ -6,6 +6,8 @@ describe('renderMd tables', () => {
     const html = renderMd('| a | b |\n|---|---|\n| 1 | 2 |')
     expect(html).toContain('<table>')
     expect(html).toContain('<th>a</th>')
+    expect(html).toContain('data-md-table')
+    expect(html).toContain('data-table-action="copy"')
     expect(html).not.toContain('| a |')
   })
 

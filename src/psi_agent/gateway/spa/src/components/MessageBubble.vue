@@ -28,7 +28,12 @@
           </div>
           <ThinkingBubble v-if="isStreamingTarget && !hasVisibleContent" />
           <div v-else class="bubble">
-            <div v-if="msg.text" class="bubble-content" v-html="msg.html"></div>
+            <div
+              v-if="msg.text"
+              class="bubble-content"
+              v-html="msg.html"
+              @click="onBubbleClick"
+            ></div>
           </div>
         </div>
         <div
@@ -108,6 +113,11 @@ import { resendFailedMessage, regenerateAssistantMessage } from '../composables/
 import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
 import { FAILED_REASON_LABEL } from '../messageTurn.js'
+import {
+  downloadMatrixXlsx,
+  matrixToTsv,
+  tableToMatrix,
+} from '../mdTable.js'
 import { saveHistory } from '../utils.js'
 import { useSessionStore } from '../stores/session.js'
 
@@ -163,6 +173,44 @@ const openPreviewFile = ref(null)
 
 function copyMessage() {
   copy(props.msg.text)
+}
+
+async function onBubbleClick(e) {
+  const btn = e.target.closest?.('[data-table-action]')
+  if (!btn) return
+  e.preventDefault()
+  const card = btn.closest('[data-md-table]')
+  const table = card?.querySelector('table')
+  const matrix = tableToMatrix(table)
+  if (!matrix.length) return
+  const action = btn.getAttribute('data-table-action')
+  if (action === 'copy') {
+    const tsv = matrixToTsv(matrix)
+    try {
+      await navigator.clipboard.writeText(tsv)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = tsv
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      ta.remove()
+    }
+    btn.classList.add('is-done')
+    window.setTimeout(() => btn.classList.remove('is-done'), 1400)
+    return
+  }
+  if (action === 'download') {
+    btn.classList.add('is-busy')
+    try {
+      const stamp = new Date().toISOString().slice(0, 10)
+      await downloadMatrixXlsx(matrix, `table-${stamp}.xlsx`)
+    } finally {
+      btn.classList.remove('is-busy')
+    }
+  }
 }
 
 function setFeedback(kind) {
@@ -358,33 +406,195 @@ async function retryMessage() {
   overflow-x: hidden;
 }
 
-/* GFM tables: fit bubble width; wrap cell text instead of horizontal scroll. */
+/* —— Assistant markdown typography (ChatGPT / Claude-like rhythm) —— */
+.msg.assistant .bubble-content {
+  font-size: 15px;
+  line-height: 1.75;
+  letter-spacing: 0.012em;
+}
+
+.msg.assistant .bubble-content :deep(h1),
+.msg.assistant .bubble-content :deep(h2),
+.msg.assistant .bubble-content :deep(h3),
+.msg.assistant .bubble-content :deep(h4) {
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  color: var(--md-text-primary);
+}
+
+.msg.assistant .bubble-content :deep(h1) {
+  font-size: 1.32em;
+  margin: 1.2em 0 0.45em;
+}
+
+.msg.assistant .bubble-content :deep(h2) {
+  font-size: 1.18em;
+  margin: 1.1em 0 0.4em;
+}
+
+.msg.assistant .bubble-content :deep(h3) {
+  font-size: 1.08em;
+  margin: 1em 0 0.35em;
+}
+
+.msg.assistant .bubble-content :deep(h4) {
+  font-size: 1.02em;
+  margin: 0.95em 0 0.3em;
+}
+
+.msg.assistant .bubble-content :deep(h1:first-child),
+.msg.assistant .bubble-content :deep(h2:first-child),
+.msg.assistant .bubble-content :deep(h3:first-child),
+.msg.assistant .bubble-content :deep(h4:first-child) {
+  margin-top: 0;
+}
+
+.msg.assistant .bubble-content :deep(p) {
+  margin: 0 0 0.85em;
+}
+
+.msg.assistant .bubble-content :deep(p:last-child),
+.msg.assistant .bubble-content :deep(ul:last-child),
+.msg.assistant .bubble-content :deep(ol:last-child),
+.msg.assistant .bubble-content :deep(.md-table-card:last-child),
+.msg.assistant .bubble-content :deep(pre:last-child),
+.msg.assistant .bubble-content :deep(blockquote:last-child) {
+  margin-bottom: 0;
+}
+
+.msg.assistant .bubble-content :deep(ul),
+.msg.assistant .bubble-content :deep(ol) {
+  margin: 0.35em 0 0.9em;
+  padding-left: 1.4em;
+}
+
+.msg.assistant .bubble-content :deep(li) {
+  margin: 0.28em 0;
+  line-height: 1.7;
+}
+
+.msg.assistant .bubble-content :deep(li > p) {
+  margin: 0.15em 0;
+}
+
+.msg.assistant .bubble-content :deep(blockquote) {
+  margin: 0.85em 0;
+  padding: 0.15em 0 0.15em 0.95em;
+  border-left: 3px solid color-mix(in srgb, var(--md-primary) 55%, var(--md-outline-variant));
+  color: var(--md-text-secondary);
+}
+
+.msg.assistant .bubble-content :deep(hr) {
+  margin: 1.15em 0;
+  border: none;
+  border-top: 1px solid var(--md-outline-variant);
+}
+
+.msg.assistant .bubble-content :deep(pre) {
+  margin: 0.85em 0;
+  border-radius: 10px;
+}
+
+.msg.assistant .bubble-content :deep(code) {
+  letter-spacing: 0;
+}
+
+.msg.assistant .bubble-content :deep(strong) {
+  font-weight: 650;
+}
+
+/* —— GFM tables + Yuanbao-style per-table actions —— */
+.bubble :deep(.md-table-card) {
+  margin: 0.9em 0;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: 12px;
+  background: var(--md-surface-container, var(--md-surface-container-high));
+  overflow: hidden;
+}
+
+.bubble :deep(.md-table-toolbar) {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--md-outline-variant);
+  background: color-mix(in srgb, var(--md-surface) 70%, var(--md-surface-container-high));
+}
+
+.bubble :deep(.md-table-action) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--md-text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 6px 8px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.bubble :deep(.md-table-action:hover) {
+  background: rgba(128, 128, 128, var(--md-state-hover));
+  color: var(--md-text-primary);
+}
+
+.bubble :deep(.md-table-action.is-done) {
+  color: var(--md-primary);
+}
+
+.bubble :deep(.md-table-action.is-busy) {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.bubble :deep(.md-table-action .material-symbols-outlined) {
+  font-size: 16px;
+}
+
+.bubble :deep(.md-table-scroll) {
+  width: 100%;
+  overflow-x: auto;
+}
+
 .bubble :deep(table) {
   border-collapse: collapse;
-  margin: 10px 0;
+  margin: 0;
   width: 100%;
   max-width: 100%;
   table-layout: fixed;
-  font-size: 0.875em;
-  border: 2px solid var(--md-outline);
+  font-size: 0.92em;
+  letter-spacing: 0.005em;
+  border: none;
 }
 
 .bubble :deep(th),
 .bubble :deep(td) {
-  border: 1.5px solid var(--md-outline);
-  padding: 6px 8px;
+  border: 1px solid var(--md-outline-variant);
+  padding: 8px 10px;
   text-align: left;
   vertical-align: top;
   white-space: normal;
   word-break: break-word;
   overflow-wrap: anywhere;
   min-width: 0;
+  line-height: 1.55;
 }
 
 .bubble :deep(th) {
   background: var(--md-surface-container-highest, var(--md-surface-container-high));
-  font-weight: 700;
+  font-weight: 650;
   color: var(--md-text-primary);
+}
+
+.bubble :deep(tr:nth-child(even) td) {
+  background: color-mix(in srgb, var(--md-surface-container-high) 45%, transparent);
 }
 
 .msg.user .bubble :deep(th) {
@@ -444,7 +654,7 @@ async function retryMessage() {
   color: var(--md-text-primary);
   border: 1px solid var(--md-outline-variant);
   border-radius: 16px 16px 16px 4px;
-  padding: 12px 16px;
+  padding: 14px 18px;
 }
 
 .stopped-tag {
