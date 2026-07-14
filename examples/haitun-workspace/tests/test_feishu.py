@@ -761,3 +761,73 @@ def test_search_auth_tools_async_with_docstrings() -> None:
     for fn in (docs_mod.feishu_docs_search, auth_mod.feishu_auth_start, auth_mod.feishu_auth_complete):
         assert inspect.iscoroutinefunction(fn), fn.__name__
         assert (inspect.getdoc(fn) or "").strip(), f"{fn.__name__} needs a docstring"
+
+
+# ── Bitable — list tables, list/create records ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_bitable_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"table_id": "tbl1", "name": "反馈表"}], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_bitable_tables_impl("appX", 100, "")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token/tables"
+    assert req.paths["app_token"] == "appX"
+    assert result["tables"] == [{"table_id": "tbl1", "name": "反馈表"}]
+
+
+@pytest.mark.asyncio
+async def test_list_bitable_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [{"record_id": "rec1", "fields": {"新人": "张三"}}],
+            "has_more": True,
+            "page_token": "pt2",
+            "total": 5,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_bitable_records_impl("appX", "tbl1", 100, "", "", '["日期 DESC"]', "")
+    req = cap.request
+    q = _qdict(req)
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"
+    assert req.paths["table_id"] == "tbl1"
+    assert q.get("sort") == '["日期 DESC"]'
+    assert result["records"][0] == {"record_id": "rec1", "fields": {"新人": "张三"}}
+    assert result["has_more"] is True
+    assert result["total"] == 5
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"record": {"record_id": "recNew", "fields": {"新人": "张三"}}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_bitable_record_impl("appX", "tbl1", '{"新人":"张三","评分":4}')
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"
+    assert req.body["fields"] == {"新人": "张三", "评分": 4}
+    assert result["record_id"] == "recNew"
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_record_bad_json() -> None:
+    result = await _impl.create_bitable_record_impl("appX", "tbl1", "not json")
+    assert result["ok"] is False
+    assert "JSON" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_record_non_object() -> None:
+    result = await _impl.create_bitable_record_impl("appX", "tbl1", '["a","b"]')
+    assert result["ok"] is False
+
+
+def test_bitable_tools_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_bitable")
+    for name in ("feishu_bitable_list_tables", "feishu_bitable_list_records", "feishu_bitable_create_record"):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"

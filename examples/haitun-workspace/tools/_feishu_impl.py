@@ -932,3 +932,120 @@ def _parse_resp_body(resp: Any) -> dict[str, Any]:
                 return parsed
     code = getattr(resp, "code", None)
     return {"code": code, "msg": getattr(resp, "msg", "") or ""}
+
+
+# ── Bitable (多维表格) — list tables, list/create records ─────────────────────
+#
+# Generic read/write for Feishu bases; the bot's tenant token can read+write
+# records provided the app is a collaborator on the base (scope bitable:app).
+# app_token is the segment in a feishu.cn/base/<app_token> URL (for wiki links,
+# resolve via feishu_wiki_get_node — obj_token is the app_token when obj_type=bitable).
+
+
+def _build_list_tables_request(app_token: str, page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables"
+    req.paths["app_token"] = app_token
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_bitable_tables_impl(app_token: str, page_size: int = 100, page_token: str = "") -> dict[str, Any]:
+    """List the data tables in a bitable app. Returns [{table_id, name}]."""
+    res = await _invoke(_build_list_tables_request(app_token, page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    tables = [
+        {"table_id": t.get("table_id", ""), "name": t.get("name", "")}
+        for t in (data.get("items", []) if isinstance(data.get("items"), list) else [])
+    ]
+    return {
+        "ok": True,
+        "tables": tables,
+        "count": len(tables),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+def _build_list_records_request(
+    app_token: str, table_id: str, page_size: int, page_token: str, filter_: str, sort: str, field_names: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    if filter_:
+        req.add_query("filter", filter_)
+    if sort:
+        req.add_query("sort", sort)
+    if field_names:
+        req.add_query("field_names", field_names)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_bitable_records_impl(
+    app_token: str,
+    table_id: str,
+    page_size: int = 100,
+    page_token: str = "",
+    filter_: str = "",
+    sort: str = "",
+    field_names: str = "",
+) -> dict[str, Any]:
+    """List records in a bitable table. Returns [{record_id, fields}] + pagination."""
+    res = await _invoke(
+        _build_list_records_request(app_token, table_id, page_size, page_token, filter_, sort, field_names)
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    records = [
+        {"record_id": r.get("record_id", ""), "fields": r.get("fields", {})}
+        for r in (data.get("items", []) if isinstance(data.get("items"), list) else [])
+    ]
+    return {
+        "ok": True,
+        "records": records,
+        "count": len(records),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+        "total": data.get("total", 0),
+    }
+
+
+def _build_create_record_request(app_token: str, table_id: str, fields: dict[str, Any]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"fields": fields}
+    return req
+
+
+async def create_bitable_record_impl(app_token: str, table_id: str, fields_json: str) -> dict[str, Any]:
+    """Create one record in a bitable table. fields_json is a JSON object of {column: value}."""
+    try:
+        fields = json.loads(fields_json)
+    except ValueError as exc:
+        return _error(f"fields_json is not valid JSON: {exc}")
+    if not isinstance(fields, dict):
+        return _error("fields_json must be a JSON object mapping column names to values.")
+    res = await _invoke(_build_create_record_request(app_token, table_id, fields))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    record = data.get("record", {}) if isinstance(data.get("record"), dict) else {}
+    return {"ok": True, "record_id": record.get("record_id", ""), "fields": record.get("fields", {})}
