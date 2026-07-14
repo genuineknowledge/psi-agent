@@ -328,3 +328,89 @@ def test_doc_tool_is_async_with_docstring() -> None:
     fn = mod.feishu_doc_read
     assert inspect.iscoroutinefunction(fn)
     assert (inspect.getdoc(fn) or "").strip()
+
+
+# ── Contact — find member id by name ──────────────────────────────────────────
+
+
+class _PagedInvoke:
+    """Replace _invoke; return a queued sequence of canned success dicts (one per call)."""
+
+    def __init__(self, pages: list[dict[str, Any]]) -> None:
+        self.requests: list[Any] = []
+        self._pages = list(pages)
+
+    async def __call__(self, request: Any) -> dict[str, Any]:
+        self.requests.append(request)
+        page = self._pages.pop(0) if self._pages else {}
+        return {"ok": True, "code": 0, "msg": "", "data": page}
+
+
+@pytest.mark.asyncio
+async def test_find_member_builds_members_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"items": [{"name": "张三", "member_id": "ou_1", "member_id_type": "open_id"}], "has_more": False}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.find_member_id_impl("oc_x", "张三", False, "open_id")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/im/v1/chats/:chat_id/members"
+    assert req.paths["chat_id"] == "oc_x"
+    assert _qdict(req).get("member_id_type") == "open_id"
+    assert result["matches"] == [{"name": "张三", "id": "ou_1", "member_id_type": "open_id"}]
+    assert result["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_find_member_paginates_full_roster(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke(
+        [
+            {"items": [{"name": "张三", "member_id": "ou_1"}], "has_more": True, "page_token": "pt2"},
+            {"items": [{"name": "张三丰", "member_id": "ou_2"}], "has_more": False, "page_token": ""},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.find_member_id_impl("oc_x", "张三", False, "open_id")
+    assert len(paged.requests) == 2  # walked both pages
+    assert _qdict(paged.requests[1]).get("page_token") == "pt2"
+    assert result["member_total"] == 2
+    assert result["count"] == 2  # substring: both contain 张三
+
+
+@pytest.mark.asyncio
+async def test_find_member_exact_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [
+                {"name": "张三", "member_id": "ou_1"},
+                {"name": "张三丰", "member_id": "ou_2"},
+            ],
+            "has_more": False,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.find_member_id_impl("oc_x", "张三", True, "open_id")
+    assert result["count"] == 1
+    assert result["matches"][0]["id"] == "ou_1"
+
+
+@pytest.mark.asyncio
+async def test_find_member_empty_name_returns_roster(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"name": "A", "member_id": "ou_a"}], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.find_member_id_impl("oc_x", "", False, "open_id")
+    assert result["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_chat_find_member_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = importlib.import_module("feishu_chat")
+
+    async def _fake(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": True, "matches": [{"name": "张三", "id": "ou_9", "member_id_type": "open_id"}], "count": 1}
+
+    monkeypatch.setattr(_impl, "find_member_id_impl", _fake)
+    out = await mod.feishu_chat_find_member(chat_id="oc_x", name="张三")
+    assert inspect.iscoroutinefunction(mod.feishu_chat_find_member)
+    assert json.loads(out)["matches"][0]["id"] == "ou_9"

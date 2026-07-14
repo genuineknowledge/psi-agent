@@ -31,3 +31,25 @@ async def feishu_chat_find(name: str, exact: bool = False, page_size: int = 50, 
         page_token: Pagination cursor from a previous call's has_more result (optional).
     """
     return _f.dumps_result(await _f.find_chat_impl(name, exact, page_size, page_token))
+
+
+async def feishu_chat_find_member(
+    chat_id: str, name: str = "", exact: bool = False, member_id_type: str = "open_id"
+) -> str:
+    """Resolve a group member's user id (open_id) by their name.
+
+    Feishu bots can't search all users by name, so this lists the group's members
+    (each carries a name + id) and matches by name. Use it to turn a person's name
+    into an ``open_id`` before @-mentioning or direct-messaging them. Pages through
+    the full roster automatically.
+
+    Returns matches as ``{name, id, member_id_type}``. If several people share the
+    name, all are returned — pick the right ``id``.
+
+    Args:
+        chat_id: The group's chat_id (from ``feishu_chat_find``). The person must be a member.
+        name: Person's name to match. Empty returns the whole roster.
+        exact: When true, match the name exactly; otherwise substring match.
+        member_id_type: Id form to return — open_id (default), union_id, or user_id.
+    """
+    return _f.dumps_result(await _f.find_member_id_impl(chat_id, name, exact, member_id_type))

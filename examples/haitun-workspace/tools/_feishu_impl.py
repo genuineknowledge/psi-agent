@@ -377,3 +377,69 @@ async def list_messages_impl(
         "has_more": bool(data.get("has_more")),
         "page_token": data.get("page_token", ""),
     }
+
+
+# ── Contact — resolve a member's user id (open_id) by name via chat roster ────
+#
+# Feishu tenant tokens cannot search all users by name; the supported path is to
+# list a group's members (each item has name + member_id) and match by name.
+# This resolves the "@ a specific person" need — the target is a group member.
+
+
+def _build_chat_members_request(chat_id: str, member_id_type: str, page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/im/v1/chats/:chat_id/members"
+    req.paths["chat_id"] = chat_id
+    req.add_query("member_id_type", member_id_type)
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def find_member_id_impl(
+    chat_id: str,
+    name: str,
+    exact: bool,
+    member_id_type: str = "open_id",
+) -> dict[str, Any]:
+    """Resolve a group member's id by name. Pages through the full roster and matches by name.
+
+    Returns matches [{name, id, member_id_type}]. ``name`` empty returns the whole roster.
+    """
+    members: list[dict[str, str]] = []
+    page_token = ""
+    while True:
+        res = await _invoke(_build_chat_members_request(chat_id, member_id_type, 100, page_token))
+        if not res["ok"]:
+            return res
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        for it in data.get("items", []) if isinstance(data.get("items"), list) else []:
+            members.append(
+                {
+                    "name": it.get("name", ""),
+                    "id": it.get("member_id", ""),
+                    "member_id_type": it.get("member_id_type", member_id_type),
+                }
+            )
+        page_token = data.get("page_token", "") or ""
+        if not data.get("has_more") or not page_token:
+            break
+
+    if not name:
+        matches = members
+    elif exact:
+        matches = [m for m in members if m["name"] == name]
+    else:
+        matches = [m for m in members if name in m["name"]]
+    return {
+        "ok": True,
+        "chat_id": chat_id,
+        "query": name,
+        "exact": exact,
+        "matches": matches,
+        "count": len(matches),
+        "member_total": len(members),
+    }
