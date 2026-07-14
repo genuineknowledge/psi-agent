@@ -1,6 +1,9 @@
 # psi-agent session history
 histories/
 
+# gateway runtime state (contains AI api_key snapshots — never commit)
+state/
+
 # subagent runtime registry (spawned PIDs; not source)
 .psi/
 

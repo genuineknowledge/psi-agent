@@ -189,6 +189,104 @@ async def test_drive_add_comment_tool_returns_json(monkeypatch: pytest.MonkeyPat
     assert json.loads(out)["data"]["comment_id"] == "c9"
 
 
+# ── IM (messaging) impl tests ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_find_chat_builds_search_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"chat_id": "oc_1", "name": "主群", "description": "d"}], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.find_chat_impl("主群", False, 50, "")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri.endswith("/chats/search")
+    assert _qdict(req).get("query") == "主群"
+    assert result["matches"][0]["chat_id"] == "oc_1"
+    assert result["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_find_chat_exact_filters(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"items": [{"chat_id": "oc_1", "name": "主群"}, {"chat_id": "oc_2", "name": "主群通知"}], "has_more": False}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.find_chat_impl("主群", True)
+    assert result["count"] == 1
+    assert result["matches"][0]["chat_id"] == "oc_1"
+
+
+@pytest.mark.asyncio
+async def test_send_message_builds_create_and_returns_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"message_id": "om_1", "thread_id": "omt_1", "chat_id": "oc_1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.send_message_impl("oc_1", "hello 待办", "chat_id")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/im/v1/messages"
+    assert _qdict(req).get("receive_id_type") == "chat_id"
+    assert req.body["receive_id"] == "oc_1"
+    assert req.body["msg_type"] == "text"
+    assert json.loads(req.body["content"])["text"] == "hello 待办"
+    assert result["message_id"] == "om_1"
+    assert result["thread_id"] == "omt_1"
+
+
+@pytest.mark.asyncio
+async def test_reply_message_sets_reply_in_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"message_id": "om_2", "thread_id": "omt_1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.reply_message_impl("om_1", "评价内容", True)
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.paths["message_id"] == "om_1"
+    assert req.uri.endswith("/reply")
+    assert req.body["reply_in_thread"] is True
+    assert json.loads(req.body["content"])["text"] == "评价内容"
+    assert result["thread_id"] == "omt_1"
+
+
+@pytest.mark.asyncio
+async def test_list_messages_thread_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"message_id": "om_x"}], "has_more": True, "page_token": "pt2"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_messages_impl("omt_1", "thread", "ByCreateTimeAsc", 50, "")
+    q = _qdict(cap.request)
+    assert cap.request.http_method.name == "GET"
+    assert q.get("container_id_type") == "thread"
+    assert q.get("container_id") == "omt_1"
+    assert q.get("sort_type") == "ByCreateTimeAsc"
+    assert result["has_more"] is True
+    assert result["page_token"] == "pt2"
+    assert result["items"][0]["message_id"] == "om_x"
+
+
+def test_im_tools_are_async_with_docstrings() -> None:
+    chat_mod = importlib.import_module("feishu_chat")
+    msg_mod = importlib.import_module("feishu_message")
+    fns = [
+        chat_mod.feishu_chat_find,
+        msg_mod.feishu_message_send,
+        msg_mod.feishu_message_reply,
+        msg_mod.feishu_message_list,
+    ]
+    for fn in fns:
+        assert inspect.iscoroutinefunction(fn), fn.__name__
+        assert (inspect.getdoc(fn) or "").strip(), f"{fn.__name__} needs a docstring"
+
+
+@pytest.mark.asyncio
+async def test_message_send_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = importlib.import_module("feishu_message")
+
+    async def _fake(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": True, "message_id": "om_9", "thread_id": "omt_9", "chat_id": "oc_9"}
+
+    monkeypatch.setattr(_impl, "send_message_impl", _fake)
+    out = await mod.feishu_message_send(receive_id="oc_9", text="hi")
+    assert json.loads(out)["thread_id"] == "omt_9"
+
+
 @pytest.mark.asyncio
 async def test_doc_read_rejects_bad_file_type() -> None:
     result = await _impl.read_doc_impl("pdf", "tok", 20000)

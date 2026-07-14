@@ -244,3 +244,136 @@ async def read_doc_impl(file_type: str, token: str, max_chars: int) -> dict[str,
         "content": content,
         "truncated": truncated,
     }
+
+
+# ── IM (messaging) — find chat, send, reply-in-thread, list messages ──────────
+#
+# These power the "daily todo topic" schedules: find the main group by name,
+# post a topic root message, reply-in-thread to form a native Feishu thread, and
+# read the thread's replies. All use bot/tenant credentials (no user token).
+
+
+def _build_chat_search_request(query: str, page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/im/v1/chats/search"
+    req.add_query("query", query)
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def find_chat_impl(name: str, exact: bool, page_size: int = 50, page_token: str = "") -> dict[str, Any]:
+    """Search groups the bot is in by name. Returns candidates [{chat_id, name, description}]."""
+    res = await _invoke(_build_chat_search_request(name, page_size, page_token))
+    if not res["ok"]:
+        return res
+    items = res["data"].get("items", []) if isinstance(res["data"], dict) else []
+    matches = [
+        {"chat_id": it.get("chat_id", ""), "name": it.get("name", ""), "description": it.get("description", "")}
+        for it in (items if isinstance(items, list) else [])
+    ]
+    if exact:
+        matches = [m for m in matches if m["name"] == name]
+    return {
+        "ok": True,
+        "query": name,
+        "exact": exact,
+        "matches": matches,
+        "count": len(matches),
+        "has_more": bool(res["data"].get("has_more")) if isinstance(res["data"], dict) else False,
+        "page_token": res["data"].get("page_token", "") if isinstance(res["data"], dict) else "",
+    }
+
+
+def _build_send_message_request(receive_id: str, receive_id_type: str, text: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/im/v1/messages"
+    req.add_query("receive_id_type", receive_id_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {
+        "receive_id": receive_id,
+        "msg_type": "text",
+        "content": json.dumps({"text": text}, ensure_ascii=False),
+    }
+    return req
+
+
+async def send_message_impl(receive_id: str, text: str, receive_id_type: str) -> dict[str, Any]:
+    """Send a text message to a chat/user. Returns message_id + thread_id (thread_id is the topic root)."""
+    res = await _invoke(_build_send_message_request(receive_id, receive_id_type, text))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {
+        "ok": True,
+        "message_id": data.get("message_id", ""),
+        "thread_id": data.get("thread_id", ""),
+        "chat_id": data.get("chat_id", ""),
+    }
+
+
+def _build_reply_message_request(message_id: str, text: str, reply_in_thread: bool) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/im/v1/messages/:message_id/reply"
+    req.paths["message_id"] = message_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {
+        "content": json.dumps({"text": text}, ensure_ascii=False),
+        "msg_type": "text",
+        "reply_in_thread": reply_in_thread,
+    }
+    return req
+
+
+async def reply_message_impl(message_id: str, text: str, reply_in_thread: bool) -> dict[str, Any]:
+    """Reply to a message. reply_in_thread=True forms/continues a native Feishu thread (topic)."""
+    res = await _invoke(_build_reply_message_request(message_id, text, reply_in_thread))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {
+        "ok": True,
+        "message_id": data.get("message_id", ""),
+        "thread_id": data.get("thread_id", ""),
+    }
+
+
+def _build_list_messages_request(
+    container_id: str, container_id_type: str, sort_type: str, page_size: int, page_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/im/v1/messages"
+    req.add_query("container_id_type", container_id_type)
+    req.add_query("container_id", container_id)
+    req.add_query("sort_type", sort_type)
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_messages_impl(
+    container_id: str,
+    container_id_type: str,
+    sort_type: str,
+    page_size: int,
+    page_token: str,
+) -> dict[str, Any]:
+    """List messages in a chat or thread. Use container_id_type='thread' + a thread_id to read a topic's replies."""
+    res = await _invoke(_build_list_messages_request(container_id, container_id_type, sort_type, page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {
+        "ok": True,
+        "items": data.get("items", []),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+    }
