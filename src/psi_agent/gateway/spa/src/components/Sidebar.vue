@@ -372,10 +372,14 @@ watch(
 .sb-header { display: flex; align-items: center; padding: 12px 12px 8px; }
 .sb-brand { display: flex; align-items: center; gap: 10px; }
 .sb-logo {
-  width: 26px; height: 26px; border-radius: var(--md-shape-full);
+  /* Match chat dolphin avatar (36px) so the same PNG doesn't downscale to mush. */
+  width: 36px;
+  height: 36px;
+  border-radius: var(--md-shape-full);
   background-image: url('/spa/haitun-logo.png');
   background-size: cover;
   background-position: center;
+  flex-shrink: 0;
 }
 .sb-brand-name { font-size: 20px; font-weight: 500; color: var(--md-text-primary); }
 .open-workspace {
