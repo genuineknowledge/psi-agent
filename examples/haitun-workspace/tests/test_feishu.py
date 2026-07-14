@@ -900,3 +900,104 @@ def test_attendance_tool_async_with_docstring() -> None:
     fn = mod.feishu_attendance_query
     assert inspect.iscoroutinefunction(fn)
     assert (inspect.getdoc(fn) or "").strip()
+
+
+# ── Tasks — create/assign, list, update, complete ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_task_builds_members_and_due(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"task": {"guid": "g1", "summary": "写周报", "url": "http://t/g1"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_task_impl("写周报", "本周总结", "2026-07-15 18:00", "ou_a,ou_b", "ou_c")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/task/v2/tasks"
+    assert req.body["summary"] == "写周报"
+    assert req.body["description"] == "本周总结"
+    assert req.body["due"]["timestamp"].isdigit()
+    roles = [(m["id"], m["role"]) for m in req.body["members"]]
+    assert ("ou_a", "assignee") in roles
+    assert ("ou_b", "assignee") in roles
+    assert ("ou_c", "follower") in roles
+    assert result["task_guid"] == "g1"
+
+
+@pytest.mark.asyncio
+async def test_create_task_requires_summary() -> None:
+    result = await _impl.create_task_impl("  ", "", "", "", "")
+    assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_task_no_due_no_members(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"task": {"guid": "g2", "summary": "s"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.create_task_impl("s", "", "", "", "")
+    assert "due" not in cap.request.body
+    assert "members" not in cap.request.body
+
+
+def test_due_to_ms_parsing() -> None:
+    assert _impl._due_to_ms("") is None
+    assert _impl._due_to_ms("not a date") is None
+    assert _impl._due_to_ms("2026-07-15").isdigit()
+    assert _impl._due_to_ms("2026-07-15 18:00").isdigit()
+
+
+@pytest.mark.asyncio
+async def test_list_tasks_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [{"guid": "g1", "summary": "s1", "status": "todo", "due": {"timestamp": "123"}, "url": "u"}],
+            "has_more": False,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_tasks_impl("false", 50, "")
+    q = _qdict(cap.request)
+    assert cap.request.http_method.name == "GET"
+    assert q.get("type") == "my_tasks"
+    assert q.get("completed") == "false"
+    assert result["tasks"][0] == {"guid": "g1", "summary": "s1", "status": "todo", "due": "123", "url": "u"}
+
+
+@pytest.mark.asyncio
+async def test_complete_task_patch(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.complete_task_impl("g1", True)
+    req = cap.request
+    assert req.http_method.name == "PATCH"
+    assert req.paths["task_guid"] == "g1"
+    assert req.body["update_fields"] == ["completed_at"]
+    assert req.body["task"]["completed_at"] != "0"
+    # reopen
+    cap2 = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap2)
+    await _impl.complete_task_impl("g1", False)
+    assert cap2.request.body["task"]["completed_at"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_update_task_only_provided_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.update_task_impl("g1", "新标题", "", "")
+    assert cap.request.body["update_fields"] == ["summary"]  # description/due omitted -> not cleared
+    assert cap.request.body["task"] == {"summary": "新标题"}
+    assert result["updated"] == ["summary"]
+
+
+@pytest.mark.asyncio
+async def test_update_task_nothing_to_update() -> None:
+    result = await _impl.update_task_impl("g1", "", "", "")
+    assert result["ok"] is False
+
+
+def test_task_tools_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_task")
+    for name in ("feishu_task_create", "feishu_task_list", "feishu_task_update", "feishu_task_complete"):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"

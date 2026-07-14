@@ -1135,3 +1135,151 @@ async def query_attendance_impl(
         "invalid_user_ids": data.get("invalid_user_ids", []),
         "unauthorized_user_ids": data.get("unauthorized_user_ids", []),
     }
+
+
+# ── Tasks (任务 v2) — create/assign, list, update, complete ───────────────────
+#
+# Feishu native tasks: assign work to people with a due date, list, and mark
+# done. Bot/tenant token works (task:task:write). Note: list returns "my_tasks"
+# = tasks the CALLING identity (the bot) is responsible for — not an arbitrary
+# person's tasks (that would need that user's OAuth).
+
+
+def _due_to_ms(due: str) -> str | None:
+    """Parse 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD' to a ms-epoch string, or None if empty/invalid."""
+    s = due.strip()
+    if not s:
+        return None
+    import datetime  # noqa: PLC0415
+
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        with contextlib.suppress(ValueError):
+            dt = datetime.datetime.strptime(s, fmt)
+            return str(int(dt.timestamp() * 1000))
+    return None
+
+
+def _build_create_task_request(body: dict[str, Any]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/task/v2/tasks"
+    req.add_query("user_id_type", "open_id")
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = body
+    return req
+
+
+async def create_task_impl(summary: str, description: str, due: str, assignees: str, followers: str) -> dict[str, Any]:
+    """Create a task, optionally with a due date and assignee/follower open_ids."""
+    if not summary.strip():
+        return _error("Task summary is required.")
+    members: list[dict[str, str]] = []
+    for oid in (a.strip() for a in assignees.split(",")):
+        if oid:
+            members.append({"id": oid, "type": "open_id", "role": "assignee"})
+    for oid in (f.strip() for f in followers.split(",")):
+        if oid:
+            members.append({"id": oid, "type": "open_id", "role": "follower"})
+    body: dict[str, Any] = {"summary": summary}
+    if description.strip():
+        body["description"] = description
+    due_ms = _due_to_ms(due)
+    if due_ms:
+        body["due"] = {"timestamp": due_ms, "is_all_day": False}
+    if members:
+        body["members"] = members
+    res = await _invoke(_build_create_task_request(body))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    task = data.get("task", {}) if isinstance(data.get("task"), dict) else {}
+    return {
+        "ok": True,
+        "task_guid": task.get("guid", ""),
+        "summary": task.get("summary", ""),
+        "url": task.get("url", ""),
+    }
+
+
+def _build_list_tasks_request(completed: str, page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/task/v2/tasks"
+    req.add_query("page_size", page_size)
+    req.add_query("type", "my_tasks")
+    req.add_query("user_id_type", "open_id")
+    if completed in ("true", "false"):
+        req.add_query("completed", completed)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_tasks_impl(completed: str = "", page_size: int = 50, page_token: str = "") -> dict[str, Any]:
+    """List the calling identity's (bot's) tasks. completed '' = all, 'true'/'false' to filter."""
+    res = await _invoke(_build_list_tasks_request(completed, page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    tasks = [
+        {
+            "guid": t.get("guid", ""),
+            "summary": t.get("summary", ""),
+            "status": t.get("status", ""),
+            "due": (t.get("due") or {}).get("timestamp", "") if isinstance(t.get("due"), dict) else "",
+            "url": t.get("url", ""),
+        }
+        for t in (data.get("items", []) if isinstance(data.get("items"), list) else [])
+    ]
+    return {
+        "ok": True,
+        "tasks": tasks,
+        "count": len(tasks),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+def _build_patch_task_request(task_guid: str, task_fields: dict[str, Any], update_fields: list[str]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.PATCH
+    req.uri = "/open-apis/task/v2/tasks/:task_guid"
+    req.paths["task_guid"] = task_guid
+    req.add_query("user_id_type", "open_id")
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"task": task_fields, "update_fields": update_fields}
+    return req
+
+
+async def update_task_impl(task_guid: str, summary: str, description: str, due: str) -> dict[str, Any]:
+    """Update only the provided (non-empty) fields of a task."""
+    task_fields: dict[str, Any] = {}
+    update_fields: list[str] = []
+    if summary.strip():
+        task_fields["summary"] = summary
+        update_fields.append("summary")
+    if description.strip():
+        task_fields["description"] = description
+        update_fields.append("description")
+    due_ms = _due_to_ms(due)
+    if due_ms:
+        task_fields["due"] = {"timestamp": due_ms, "is_all_day": False}
+        update_fields.append("due")
+    if not update_fields:
+        return _error("Nothing to update: provide summary, description, or due.")
+    res = await _invoke(_build_patch_task_request(task_guid, task_fields, update_fields))
+    if not res["ok"]:
+        return res
+    return {"ok": True, "task_guid": task_guid, "updated": update_fields}
+
+
+async def complete_task_impl(task_guid: str, completed: bool) -> dict[str, Any]:
+    """Mark a task complete (completed=True) or reopen it (False)."""
+    import time  # noqa: PLC0415
+
+    ts = str(int(time.time() * 1000)) if completed else "0"
+    res = await _invoke(_build_patch_task_request(task_guid, {"completed_at": ts}, ["completed_at"]))
+    if not res["ok"]:
+        return res
+    return {"ok": True, "task_guid": task_guid, "completed": completed}
