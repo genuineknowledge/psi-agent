@@ -547,3 +547,49 @@ def test_wiki_tool_is_async_with_docstring() -> None:
     fn = mod.feishu_wiki_get_node
     assert inspect.iscoroutinefunction(fn)
     assert (inspect.getdoc(fn) or "").strip()
+
+
+# ── Start topic with @-mentions ───────────────────────────────────────────────
+
+
+def test_at_prefix_builds_tags() -> None:
+    assert _impl._build_at_prefix(["ou_1", "ou_2"], False) == '<at user_id="ou_1"></at><at user_id="ou_2"></at>'
+    assert _impl._build_at_prefix([], True) == '<at user_id="all"></at>'
+    assert _impl._build_at_prefix(["ou_1"], True) == '<at user_id="all"></at><at user_id="ou_1"></at>'
+    assert _impl._build_at_prefix([], False) == ""
+    assert _impl._build_at_prefix(["ou_1", ""], False) == '<at user_id="ou_1"></at>'  # skips empties
+
+
+@pytest.mark.asyncio
+async def test_start_topic_prepends_mentions(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"message_id": "om_1", "thread_id": "omt_1", "chat_id": "oc_1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.start_topic_impl("oc_1", "今天的待办", ["ou_a", "ou_b"], False)
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/im/v1/messages"
+    assert req.body["receive_id"] == "oc_1"
+    text = json.loads(req.body["content"])["text"]
+    assert text == '<at user_id="ou_a"></at><at user_id="ou_b"></at> 今天的待办'
+    assert result["thread_id"] == "omt_1"
+
+
+@pytest.mark.asyncio
+async def test_start_topic_no_mentions_plain_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"message_id": "om_1", "thread_id": "omt_1", "chat_id": "oc_1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.start_topic_impl("oc_1", "hello", None, False)
+    assert json.loads(cap.request.body["content"])["text"] == "hello"  # no leading space
+
+
+@pytest.mark.asyncio
+async def test_topic_start_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = importlib.import_module("feishu_message")
+
+    async def _fake(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": True, "message_id": "om_9", "thread_id": "omt_9", "chat_id": "oc_9"}
+
+    monkeypatch.setattr(_impl, "start_topic_impl", _fake)
+    out = await mod.feishu_topic_start(chat_id="oc_9", text="hi", at_open_ids=["ou_x"])
+    assert inspect.iscoroutinefunction(mod.feishu_topic_start)
+    assert json.loads(out)["thread_id"] == "omt_9"

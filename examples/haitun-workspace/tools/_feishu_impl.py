@@ -599,3 +599,43 @@ async def get_wiki_node_impl(token: str) -> dict[str, Any]:
         "space_id": node.get("space_id", ""),
         "has_child": bool(node.get("has_child")),
     }
+
+
+# ── Start a group topic with @-mentions ──────────────────────────────────────
+#
+# Convenience over send_message_impl: builds the <at> tags from a list of
+# open_ids (and/or @everyone) so the agent doesn't hand-write the tag syntax.
+# In a topic-enabled group the returned thread_id is the new topic's root.
+
+
+def _build_at_prefix(at_open_ids: list[str], at_all: bool) -> str:
+    """Build a leading run of <at> tags: @everyone first (if set), then each open_id."""
+    tags: list[str] = []
+    if at_all:
+        tags.append('<at user_id="all"></at>')
+    tags.extend(f'<at user_id="{oid}"></at>' for oid in at_open_ids if oid)
+    return "".join(tags)
+
+
+async def start_topic_impl(
+    chat_id: str,
+    text: str,
+    at_open_ids: list[str] | None = None,
+    at_all: bool = False,
+) -> dict[str, Any]:
+    """Post a topic root message to a group, @-mentioning the given open_ids (and/or everyone).
+
+    Returns message_id + thread_id (the new topic's root in a topic-enabled group).
+    """
+    prefix = _build_at_prefix(at_open_ids or [], at_all)
+    body = f"{prefix} {text}" if prefix else text
+    res = await _invoke(_build_send_message_request(chat_id, "chat_id", body))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {
+        "ok": True,
+        "message_id": data.get("message_id", ""),
+        "thread_id": data.get("thread_id", ""),
+        "chat_id": data.get("chat_id", "") or chat_id,
+    }

@@ -22,6 +22,26 @@ if str(TOOLS_DIR) not in sys.path:
 import _feishu_impl as _f
 
 
+async def feishu_topic_start(
+    chat_id: str, text: str, at_open_ids: list[str] | None = None, at_all: bool = False
+) -> str:
+    """Start a topic in a group by posting a root message, @-mentioning the given people.
+
+    Convenience over ``feishu_message_send``: you pass the open_ids to @-mention
+    (resolve names via ``feishu_chat_find_member``) and the tool builds the ``<at>``
+    tags for you — no need to hand-write the tag syntax. In a topic-enabled group
+    the returned ``thread_id`` is the new topic's root; reply into it with
+    ``feishu_message_reply(message_id, ..., reply_in_thread=True)``.
+
+    Args:
+        chat_id: The target group's chat_id (from ``feishu_chat_find``). Must be a topic group.
+        text: The topic's opening message.
+        at_open_ids: Open_ids to @-mention at the start of the message (optional).
+        at_all: When true, prepend an @everyone mention (group must allow @all).
+    """
+    return _f.dumps_result(await _f.start_topic_impl(chat_id, text, at_open_ids, at_all))
+
+
 async def feishu_message_send(receive_id: str, text: str, receive_id_type: str = "chat_id") -> str:
     """Send a text message to a chat or user.
 
