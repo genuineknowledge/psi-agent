@@ -443,3 +443,133 @@ async def find_member_id_impl(
         "count": len(matches),
         "member_total": len(members),
     }
+
+
+# ── Approval (审批) — list pending tasks, read instance, approve/reject ────────
+#
+# Lets the agent read an approval application's form content and decide whether
+# to approve or reject it. Feishu requires approve/reject to carry the APPROVER's
+# own user_id — the bot acts on behalf of a real approver (the action is recorded
+# under that person). All endpoints work with bot/tenant credentials.
+
+_APPROVAL_TASK_STATUS = {1: "待办", 2: "已办", 17: "未读", 18: "已读", 33: "处理中", 34: "撤回"}
+_APPROVAL_INSTANCE_STATUS = {0: "none", 1: "running", 2: "approved", 3: "rejected", 4: "revoked", 5: "terminated"}
+
+
+def _build_task_query_request(
+    user_id: str, topic: str, user_id_type: str, page_size: int, page_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/approval/v4/tasks/query"
+    req.add_query("user_id", user_id)
+    req.add_query("topic", topic)
+    req.add_query("user_id_type", user_id_type)
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_approval_tasks_impl(
+    user_id: str,
+    topic: str = "1",
+    user_id_type: str = "open_id",
+    page_size: int = 100,
+    page_token: str = "",
+) -> dict[str, Any]:
+    """List a user's approval tasks. topic '1' = pending (待办). Returns task summaries + pagination."""
+    res = await _invoke(_build_task_query_request(user_id, topic, user_id_type, page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    tasks = [
+        {
+            "task_id": t.get("task_id", ""),
+            "instance_code": t.get("process_id", ""),
+            "approval_code": t.get("definition_code", "") or t.get("process_code", ""),
+            "title": t.get("title", ""),
+            "status": _APPROVAL_TASK_STATUS.get(t.get("status"), t.get("status")),
+            "process_status": _APPROVAL_INSTANCE_STATUS.get(t.get("process_status"), t.get("process_status")),
+            "initiators": t.get("initiator_names", []),
+        }
+        for t in (data.get("tasks", []) if isinstance(data.get("tasks"), list) else [])
+    ]
+    return {
+        "ok": True,
+        "tasks": tasks,
+        "count": len(tasks),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+def _build_instance_get_request(instance_id: str, user_id_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/approval/v4/instances/:instance_id"
+    req.paths["instance_id"] = instance_id
+    req.add_query("user_id_type", user_id_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_approval_instance_impl(instance_id: str, user_id_type: str = "open_id") -> dict[str, Any]:
+    """Read an approval instance's detail — applicant, status, the submitted form, and task_list."""
+    res = await _invoke(_build_instance_get_request(instance_id, user_id_type))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {
+        "ok": True,
+        "instance_code": instance_id,
+        "approval_code": data.get("approval_code", ""),
+        "approval_name": data.get("approval_name", ""),
+        "status": data.get("status", ""),
+        "applicant": data.get("user_id", "") or data.get("open_id", ""),
+        "form": data.get("form", ""),
+        "task_list": data.get("task_list", []),
+        "timeline": data.get("timeline", []),
+    }
+
+
+def _build_task_action_request(
+    action: str, approval_code: str, instance_code: str, user_id: str, task_id: str, comment: str, user_id_type: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = f"/open-apis/approval/v4/tasks/{action}"
+    req.add_query("user_id_type", user_id_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {
+        "approval_code": approval_code,
+        "instance_code": instance_code,
+        "user_id": user_id,
+        "task_id": task_id,
+    }
+    if comment:
+        body["comment"] = comment
+    req.body = body
+    return req
+
+
+async def decide_approval_task_impl(
+    approve: bool,
+    approval_code: str,
+    instance_code: str,
+    approver_user_id: str,
+    task_id: str,
+    comment: str = "",
+    user_id_type: str = "open_id",
+) -> dict[str, Any]:
+    """Approve or reject a task on behalf of ``approver_user_id``. approve=True -> approve, else reject."""
+    action = "approve" if approve else "reject"
+    res = await _invoke(
+        _build_task_action_request(
+            action, approval_code, instance_code, approver_user_id, task_id, comment, user_id_type
+        )
+    )
+    if not res["ok"]:
+        return res
+    return {"ok": True, "action": action, "instance_code": instance_code, "task_id": task_id}

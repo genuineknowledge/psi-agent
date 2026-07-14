@@ -414,3 +414,99 @@ async def test_chat_find_member_tool_returns_json(monkeypatch: pytest.MonkeyPatc
     out = await mod.feishu_chat_find_member(chat_id="oc_x", name="张三")
     assert inspect.iscoroutinefunction(mod.feishu_chat_find_member)
     assert json.loads(out)["matches"][0]["id"] == "ou_9"
+
+
+# ── Approval — list tasks, read instance, approve/reject ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_approval_tasks_builds_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "tasks": [
+                {
+                    "task_id": "t1",
+                    "process_id": "inst1",
+                    "definition_code": "appr1",
+                    "title": "请假申请",
+                    "status": 1,
+                    "process_status": 1,
+                    "initiator_names": ["张三"],
+                }
+            ],
+            "has_more": False,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_approval_tasks_impl("ou_a", "1", "open_id")
+    q = _qdict(cap.request)
+    assert cap.request.http_method.name == "GET"
+    assert cap.request.uri.endswith("/approval/v4/tasks/query")
+    assert q.get("user_id") == "ou_a"
+    assert q.get("topic") == "1"
+    t = result["tasks"][0]
+    assert t["task_id"] == "t1"
+    assert t["instance_code"] == "inst1"
+    assert t["approval_code"] == "appr1"
+    assert t["status"] == "待办"
+
+
+@pytest.mark.asyncio
+async def test_get_approval_instance_reads_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"approval_code": "appr1", "status": "PENDING", "user_id": "ou_app", "form": '[{"id":"w1"}]', "task_list": []}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_approval_instance_impl("inst1")
+    assert cap.request.paths["instance_id"] == "inst1"
+    assert "approval/v4/instances" in cap.request.uri
+    assert result["applicant"] == "ou_app"
+    assert result["form"] == '[{"id":"w1"}]'
+
+
+@pytest.mark.asyncio
+async def test_decide_approve_builds_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.decide_approval_task_impl(True, "appr1", "inst1", "ou_boss", "t1", "同意")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri.endswith("/tasks/approve")
+    assert req.body["approval_code"] == "appr1"
+    assert req.body["instance_code"] == "inst1"
+    assert req.body["user_id"] == "ou_boss"
+    assert req.body["task_id"] == "t1"
+    assert req.body["comment"] == "同意"
+    assert result["action"] == "approve"
+
+
+@pytest.mark.asyncio
+async def test_decide_reject_uses_reject_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.decide_approval_task_impl(False, "appr1", "inst1", "ou_boss", "t1")
+    assert cap.request.uri.endswith("/tasks/reject")
+    assert "comment" not in cap.request.body  # empty comment omitted
+    assert result["action"] == "reject"
+
+
+def test_approval_tools_are_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_approval")
+    for name in ("feishu_approval_list_tasks", "feishu_approval_get", "feishu_approval_decide"):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"
+
+
+@pytest.mark.asyncio
+async def test_approval_decide_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = importlib.import_module("feishu_approval")
+
+    async def _fake(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": True, "action": "approve", "instance_code": "inst1", "task_id": "t1"}
+
+    monkeypatch.setattr(_impl, "decide_approval_task_impl", _fake)
+    out = await mod.feishu_approval_decide(
+        approve=True, approval_code="a", instance_code="inst1", approver_user_id="ou_b", task_id="t1"
+    )
+    assert json.loads(out)["action"] == "approve"
