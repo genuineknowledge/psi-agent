@@ -831,3 +831,72 @@ def test_bitable_tools_async_with_docstrings() -> None:
         fn = getattr(mod, name)
         assert inspect.iscoroutinefunction(fn), name
         assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"
+
+
+# ── Attendance — query clock results (read-only) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_query_attendance_builds_request_and_parses(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "user_task_results": [
+                {
+                    "user_id": "e1",
+                    "employee_name": "张三",
+                    "day": 20260714,
+                    "check_in_record": {"check_time": "1752460200", "location_name": "总部"},
+                    "check_in_result": "Normal",
+                    "check_out_record": {"check_time": "1752490200", "location_name": "总部"},
+                    "check_out_result": "Late",
+                }
+            ],
+            "invalid_user_ids": ["bad1"],
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.query_attendance_impl("e1, e2", "20260714", "20260714", "employee_id", False)
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/attendance/v1/user_tasks/query"
+    assert _qdict(req).get("employee_type") == "employee_id"
+    assert req.body["user_ids"] == ["e1", "e2"]  # comma string split
+    assert req.body["check_date_from"] == 20260714
+    r0 = result["results"][0]
+    assert r0["name"] == "张三"
+    assert r0["check_in_result"] == "Normal"
+    assert r0["check_out_result"] == "Late"
+    assert r0["check_in_time"]  # timestamp formatted to a non-empty string
+    assert result["invalid_user_ids"] == ["bad1"]
+
+
+@pytest.mark.asyncio
+async def test_query_attendance_empty_users() -> None:
+    result = await _impl.query_attendance_impl("  ,  ", "20260714", "20260714", "employee_id", False)
+    assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_query_attendance_bad_date() -> None:
+    result = await _impl.query_attendance_impl("e1", "2026-07-14", "20260714", "employee_id", False)
+    assert result["ok"] is False
+    assert "yyyyMMdd" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_query_attendance_missing_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"user_task_results": [{"user_id": "e1", "employee_name": "李四", "day": 20260714, "check_in_result": "Lack"}]}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.query_attendance_impl("e1", "20260714", "20260714")
+    r0 = result["results"][0]
+    assert r0["check_out_time"] == ""  # no check_out_record -> empty, no crash
+    assert r0["check_in_result"] == "Lack"
+
+
+def test_attendance_tool_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_attendance")
+    fn = mod.feishu_attendance_query
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()
