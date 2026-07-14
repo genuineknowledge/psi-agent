@@ -12,11 +12,19 @@ describe('isCompleteAssistant', () => {
     expect(isCompleteAssistant({ role: 'assistant', text: 'hello' })).toBe(true)
   })
 
-  it('rejects empty, stopped, and error assistant', () => {
+  it('rejects empty, stopped, and error-only assistant', () => {
     expect(isCompleteAssistant({ role: 'assistant', text: '' })).toBe(false)
     expect(isCompleteAssistant({ role: 'assistant', text: 'x', stopped: true })).toBe(false)
     expect(isCompleteAssistant({ role: 'assistant', text: '[Error: bad]' })).toBe(false)
-    expect(isCompleteAssistant({ role: 'assistant', text: 'oops\n[Error: bad]' })).toBe(false)
+  })
+
+  it('soft-fails blob errors when text or files remain', () => {
+    expect(isCompleteAssistant({ role: 'assistant', text: 'oops\n[Error: bad]' })).toBe(true)
+    expect(isCompleteAssistant({
+      role: 'assistant',
+      text: '[Error: read failed]',
+      files: [{ name: 'a.html', data: 'x' }],
+    })).toBe(true)
   })
 })
 
@@ -66,5 +74,18 @@ describe('resolveTurnOutcome', () => {
 
   it('infers error reason from assistant text', () => {
     expect(inferFailedReason({ role: 'assistant', text: '[Error: key expired]' })).toBe('error')
+  })
+
+  it('keeps ok when error annotation coexists with content or files', () => {
+    const user = { role: 'user', text: 'hi' }
+    expect(resolveTurnOutcome([], user, {
+      role: 'assistant',
+      text: 'done\n[Error: blob]',
+    })).toBe('ok')
+    expect(resolveTurnOutcome([], user, {
+      role: 'assistant',
+      text: '[Error: blob]',
+      files: [{ name: 'a.md', data: 'YQ==' }],
+    })).toBe('ok')
   })
 })

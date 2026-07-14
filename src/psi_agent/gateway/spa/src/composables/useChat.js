@@ -13,6 +13,7 @@ import {
 } from '../sessionList.js'
 import { applyTurnOutcome, normalizeFailedTurns, resolveTurnOutcome } from '../messageTurn.js'
 import { hasAssistantSegmentAfterUser } from '../assistantSegments.js'
+import { stripSendMarkers } from '../sendMarkers.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -237,15 +238,17 @@ async function runChatTurn(sid, { userMsg, text, files }) {
         if (chunkData.type === 'text' && chunkData.text !== undefined) {
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.text += chunkData.text
-          asst.html = renderMd(asst.text)
+          asst.html = renderMd(stripSendMarkers(asst.text))
         } else if (chunkData.type === 'blob') {
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.files.push({ name: chunkData.name, data: chunkData.data })
+          // SEND path succeeded as a chip — hide leftover markers from bubble text.
+          asst.html = renderMd(stripSendMarkers(asst.text))
         } else if (chunkData.type === 'error') {
           streamError = true
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.text += '\n[Error: ' + chunkData.error + ']'
-          asst.html = renderMd(asst.text)
+          asst.html = renderMd(stripSendMarkers(asst.text))
         } else if (chunkData.type === 'reasoning') {
           // Thinking + tool markers arrive as reasoning. Do not start a new
           // bubble — keep one assistant message for the whole user turn.
@@ -262,7 +265,7 @@ async function runChatTurn(sid, { userMsg, text, files }) {
       } else {
         streamError = true
         asst.text += '\n[Error: ' + e.message + ']'
-        asst.html = renderMd(asst.text)
+        asst.html = renderMd(stripSendMarkers(asst.text))
       }
     }
 
@@ -273,11 +276,15 @@ async function runChatTurn(sid, { userMsg, text, files }) {
       if (!stub.text && !stub.files.length) {
         msgs.splice(asstIdx, 1)
         if (asst === stub) asst = null
+      } else if (stub.text) {
+        stub.text = stripSendMarkers(stub.text)
+        stub.html = renderMd(stub.text)
       }
     }
 
+    // resolveTurnOutcome soft-fails blob `[Error:]` when text/files already exist.
     outcome = resolveTurnOutcome(msgs, userMsg, asst)
-    if (streamError && outcome === 'ok') outcome = 'error'
+    if (streamError && outcome === 'incomplete') outcome = 'error'
     applyTurnOutcome(msgs, userMsg, asst, outcome)
     const normalized = normalizeFailedTurns(msgs)
     msgs.splice(0, msgs.length, ...normalized)

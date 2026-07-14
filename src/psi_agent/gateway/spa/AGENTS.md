@@ -81,6 +81,7 @@ spa/
 │   │   ├── chat.js                  # useChatStore：messages, inputText, streaming, abortController, selectedFiles, userHasScrolledUp, uploadResetToken
 │   │   └── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken, hubMenuOpen, hubPanel + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch/toggleHubMenu/openHubPanel/…
 │   ├── utils.js                     # renderMd, htmlEscape, mimeType, localStorage
+│   ├── sendMarkers.js               # stripSendMarkers（去掉气泡里残留的 [SEND:]）
 │   ├── utils.test.js                # renderMd GFM 表格规范化单测（Vitest）
 │   ├── api.js                       # fetch 封装(api) + chat 流请求(streamChat)
 │   ├── providers.js                 # 预置 provider 配置 (deepseek/openai/anthropic/gemini)，供 AiDialog 高级配置
@@ -178,7 +179,8 @@ spa/
 | `SessDialog.vue` | 创建会话弹窗 | 基于 BaseDialog；确认当前工作区 + 大模型后 emit `create` |
 | `PathPickerDialog.vue` | 路径选择器 | 资源管理器式 UI（左侧快捷位置 + 面包屑 + 列表 + 底部路径确认）；由 `usePathPicker.openPathPicker()` 控制；侧栏「打开工作区」直接调用，无中间 WorkspaceDialog |
 | `usePathPicker.js` | 路径选择 composable | `openPathPicker({ mode, title, initialPath, … }) → Promise<path\|null>`；fetch `/workspace/roots` + `/workspace/browse` |
-| `FilePreview.vue` | 文件预览抽屉 | `Teleport` 到 `body` 的抽屉面板；按扩展名分派渲染：图片/音视频/SVG 用 Blob URL，代码/JSON/文本用 codemirror，Markdown 用 renderMd，csv 用 papaparse，pdf 用 pdfjs，docx 用 docx-preview，xlsx 用 xlsx，pptx 用 pptx-preview（全部动态 `import()` 懒加载）；含大小/行数/页数上限与 fallback；`renderRun` 计数防竞态，`cleanup` 释放 editor/objectUrl；emit `close` |
+| `FilePreview.vue` | 文件预览抽屉 | `Teleport` 到 `body` 的抽屉面板；按扩展名分派：图片/音视频/SVG 用 Blob URL，`.md` 用 `renderMd`，`.html`/`.htm` 用沙箱 iframe（`sandbox=""` + blob URL，无脚本/无同源），其它代码用 codemirror，csv/pdf/office 懒加载；不解析磁盘路径、不回灌 workspace；emit `close` |
+| `sendMarkers.js` | SEND 文本清理 | `stripSendMarkers`：气泡展示前去掉 `[SEND:…]`（附件走 blob chip，不靠路径回读） |
 | `mdTable.js` | 气泡表格工具 | `wrapMdTableHtml` 给 GFM `<table>` 加复制/下载工具栏；`matrixToTsv` / `downloadMatrixXlsx`；`MessageBubble` 事件委托处理点击 |
 | `ConfirmDialog.vue` | 通用确认弹窗 | 基于 BaseDialog；`dlgConfirm` 经 `storeToRefs` 从 `useUiStore` 取；渲染 `dlgConfirm.message`，「删除」emit `confirm`（App.vue 按 `actionType` 分派） |
 | `Snackbar.vue` | Toast 提示 | `snackbar` 经 `storeToRefs` 从 `useUiStore` 取；渲染 `snackbar`（message + 显隐），「知道了」关闭 |
@@ -326,14 +328,18 @@ ReadableStream reader
 
 MessageBubble 中点击附件 → 触发 `FilePreview` 组件（Teleport 到 `body` 的抽屉式面板）。组件按文件扩展名动态 import 对应预览库（懒加载，不进主 bundle）：
 
-| 扩展名 | 预览库 |
-|--------|--------|
-| `.js/.ts/.py/.java` 等代码文件 | `codemirror ^6.0.2` |
-| `.pdf` | `pdfjs-dist ^5.6.205` |
-| `.docx` | `docx-preview ^0.3.7` |
-| `.pptx` | `pptx-preview ^1.0.7` |
-| `.xlsx/.xls` | `xlsx ^0.18.5` |
-| `.csv` | `papaparse ^5.5.4` |
+| 扩展名 | 预览方式 |
+|--------|----------|
+| `.md` / `.markdown` | `renderMd`（文档样式） |
+| `.html` / `.htm` | 沙箱 iframe + blob URL（只展示，不跑脚本） |
+| `.js/.ts/.py/.java` 等代码文件 | `codemirror` |
+| `.pdf` | `pdfjs-dist` |
+| `.docx` | `docx-preview` |
+| `.pptx` | `pptx-preview` |
+| `.xlsx/.xls` | `xlsx` |
+| `.csv` | `papaparse` |
+
+预览只消费 SSE blob（name + base64），**不**按 `[SEND:]` 路径回读磁盘。bubble 文本用 `stripSendMarkers` 去掉残留标记。blob 读失败若已有正文/附件，不当整轮失败。
 
 props 含预览目标（文件名 + 数据），emit `close` 关闭抽屉。
 
