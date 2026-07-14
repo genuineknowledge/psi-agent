@@ -6,6 +6,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -691,33 +692,67 @@ async def test_search_docs_api_error_passthrough(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_auth_start_returns_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+async def test_auth_start_builds_authorize_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda: str(tmp_path / "pending.json"))
+    result = await _impl.auth_start_impl("")
+    assert result["ok"] is True
+    parsed = urlparse(result["authorize_url"])
+    assert parsed.hostname == "accounts.feishu.cn"
+    q = parse_qs(parsed.query)
+    assert q["client_id"] == ["cli_x"]
+    assert q["response_type"] == ["code"]
+    assert "offline_access" in q["scope"][0]
+    # state persisted for CSRF check
+    assert json.loads((tmp_path / "pending.json").read_text())["state"] == q["state"][0]
+
+
+def test_extract_code_from_url_or_bare() -> None:
+    assert _impl._extract_code("https://localhost/?code=ABC123&state=x") == "ABC123"
+    assert _impl._extract_code("  ABC123  ") == "ABC123"
+
+
+@pytest.mark.asyncio
+async def test_auth_complete_exchanges_code(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
     monkeypatch.setattr(_impl, "_pending_auth_path", lambda: str(tmp_path / "pending.json"))
 
-    class _FakeInit:
-        verification_uri = "https://feishu/verify"
-        verification_uri_complete = "https://feishu/verify?code=ABC"
-        user_code = "ABC123"
-        device_code = "dev_1"
-        expires_in = 300
-        interval = 5
+    stored: dict[str, Any] = {}
 
-    class _FakeDF:
-        def __init__(self, *a: Any, **k: Any) -> None: ...
-        async def start(self, scopes: Any) -> Any:
-            return _FakeInit()
+    class _Store:
+        async def set(self, k: str, v: Any) -> None:
+            stored["uat"] = v
 
-        async def close(self) -> None: ...
+    monkeypatch.setattr(_impl, "_get_token_store", lambda: _Store())
 
-    import lark_channel.channel.auth.device_flow as _df  # noqa: PLC0415
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    monkeypatch.setattr(_df, "DeviceFlowClient", _FakeDF)
-    result = await _impl.auth_start_impl("")
+    async def _fake_post(url: str, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
+        calls.append((url, body))
+        if "app_access_token" in url:
+            return {"code": 0, "app_access_token": "a-tok"}
+        return {
+            "code": 0,
+            "data": {
+                "access_token": "u-tok",
+                "refresh_token": "r-tok",
+                "expires_in": 7200,
+                "open_id": "ou_me",
+                "scope": "docs:doc:readonly",
+            },
+        }
+
+    monkeypatch.setattr(_impl, "_post_json", _fake_post)
+    result = await _impl.auth_complete_impl("https://localhost/?code=THECODE&state=x")
     assert result["ok"] is True
-    assert result["verification_url"] == "https://feishu/verify?code=ABC"
-    assert result["user_code"] == "ABC123"
+    assert result["open_id"] == "ou_me"
+    # token-exchange call carried the extracted code
+    exchange = next(c for c in calls if c[0].endswith("/authen/v1/access_token"))
+    assert exchange[1]["grant_type"] == "authorization_code"
+    assert exchange[1]["code"] == "THECODE"
+    assert stored["uat"].access_token == "u-tok"
 
 
 def test_search_auth_tools_async_with_docstrings() -> None:

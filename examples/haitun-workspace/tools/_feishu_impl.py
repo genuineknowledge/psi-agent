@@ -710,54 +710,126 @@ def _reset_uat_state() -> None:
     _uat_client = None
 
 
+# Authorization-code flow endpoints (China/feishu.cn — the device flow's v2
+# endpoint 404s here). Browser authorize on accounts.feishu.cn; token exchange
+# and refresh on open.feishu.cn/authen/v1.
+_AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+_TOKEN_URL = "https://open.feishu.cn/open-apis/authen/v1/access_token"
+_REFRESH_URL = "https://open.feishu.cn/open-apis/authen/v1/refresh_access_token"
+_APP_TOKEN_URL = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal"
+
+
+def _redirect_uri() -> str:
+    return os.environ.get("PSI_FEISHU_REDIRECT_URI", "").strip() or "http://localhost/"
+
+
+def _extract_code(code_or_url: str) -> str:
+    """Accept either a bare code or a full callback URL and return the code."""
+    s = code_or_url.strip()
+    if "code=" in s:
+        from urllib.parse import parse_qs, urlparse  # noqa: PLC0415
+
+        qs = parse_qs(urlparse(s).query)
+        if qs.get("code"):
+            return qs["code"][0]
+    return s
+
+
+async def _post_json(url: str, body: dict[str, Any], headers: dict[str, str] | None = None) -> dict[str, Any]:
+    import httpx  # noqa: PLC0415
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, json=body, headers=headers or {})
+    with contextlib.suppress(ValueError):
+        data = resp.json()
+        if isinstance(data, dict):
+            return data
+    return {"code": resp.status_code, "msg": f"non-JSON response ({resp.status_code})"}
+
+
+async def _get_app_access_token() -> str | None:
+    creds = _config()
+    if creds is None:
+        return None
+    app_id, app_secret = creds
+    data = await _post_json(_APP_TOKEN_URL, {"app_id": app_id, "app_secret": app_secret})
+    return data.get("app_access_token") if data.get("code") == 0 else None
+
+
+def _uat_from_token_response(payload: dict[str, Any]) -> Any:
+    import time  # noqa: PLC0415
+
+    from lark_channel.channel.types import UAT  # noqa: PLC0415
+
+    now = time.time()
+    inner = payload.get("data")
+    data: dict[str, Any] = inner if isinstance(inner, dict) else payload
+    expires_in = int(data.get("expires_in") or 0)
+    refresh_expires_in = int(data.get("refresh_expires_in") or 0)
+    scope_str = data.get("scope") or ""
+    return UAT(
+        access_token=data.get("access_token") or "",
+        refresh_token=data.get("refresh_token"),
+        expires_at=now + expires_in if expires_in else None,
+        refresh_expires_at=now + refresh_expires_in if refresh_expires_in else None,
+        scopes=scope_str.split() if scope_str else [],
+        open_id=data.get("open_id"),
+        raw=data if isinstance(data, dict) else {},
+    )
+
+
 async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
-    """Begin device-flow authorization. Returns a URL + user_code for the user to approve."""
+    """Build the browser authorize URL for the authorization-code flow."""
     creds = _config()
     if creds is None:
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
-    from lark_channel.channel.auth.device_flow import DeviceFlowClient  # noqa: PLC0415
+    from urllib.parse import urlencode  # noqa: PLC0415
 
-    app_id, app_secret = creds
-    scope_list = (scopes or _DEFAULT_SCOPES).split()
-    df = DeviceFlowClient(app_id, app_secret)
-    try:
-        init = await df.start(scope_list)
-    except Exception as exc:
-        return _error(f"Device authorization failed: {type(exc).__name__}: {exc}")
-    finally:
-        await df.close()
-    pending = {"device_code": init.device_code, "interval": init.interval, "expires_in": init.expires_in}
-    await anyio.Path(_pending_auth_path()).write_text(json.dumps(pending), encoding="utf-8")
+    app_id, _ = creds
+    scope_str = scopes or _DEFAULT_SCOPES
+    state = os.urandom(8).hex()
+    await anyio.Path(_pending_auth_path()).write_text(json.dumps({"state": state}), encoding="utf-8")
+    query = urlencode(
+        {
+            "client_id": app_id,
+            "redirect_uri": _redirect_uri(),
+            "response_type": "code",
+            "scope": scope_str,
+            "state": state,
+        }
+    )
     return {
         "ok": True,
-        "verification_url": init.verification_uri_complete or init.verification_uri,
-        "user_code": init.user_code,
-        "expires_in": init.expires_in,
-        "message": "打开 verification_url 并输入 user_code 完成授权, 然后调用 feishu_auth_complete.",
+        "authorize_url": f"{_AUTHORIZE_URL}?{query}",
+        "message": (
+            "打开 authorize_url 并同意授权. 浏览器会跳转到 redirect_uri, 地址栏里带 ?code=XXX; "
+            "把那个 code (或整段跳转后的网址) 交给 feishu_auth_complete."
+        ),
     }
 
 
-async def auth_complete_impl(timeout_seconds: int = 60) -> dict[str, Any]:
-    """Poll for the pending device-flow authorization to complete, then store the UAT."""
-    creds = _config()
-    if creds is None:
-        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
-    try:
-        pending = json.loads(await anyio.Path(_pending_auth_path()).read_text(encoding="utf-8"))
-    except OSError, ValueError:
-        return _error("No pending authorization. Call feishu_auth_start first.")
-    from lark_channel.channel.auth.device_flow import DeviceFlowClient  # noqa: PLC0415
-
-    app_id, app_secret = creds
-    df = DeviceFlowClient(app_id, app_secret)
-    try:
-        uat = await df.poll(
-            pending["device_code"], interval=int(pending.get("interval", 5)), timeout_seconds=timeout_seconds
-        )
-    except Exception as exc:
-        return _error(f"Authorization not completed: {type(exc).__name__}: {exc}")
-    finally:
-        await df.close()
+async def auth_complete_impl(code: str) -> dict[str, Any]:
+    """Exchange the authorization code for a user_access_token and cache it."""
+    if not code.strip():
+        return _error("No code provided.")
+    app_token = await _get_app_access_token()
+    if app_token is None:
+        return _error("Feishu app not configured or app_access_token fetch failed.")
+    payload = await _post_json(
+        _TOKEN_URL,
+        {"grant_type": "authorization_code", "code": _extract_code(code)},
+        headers={"Authorization": f"Bearer {app_token}"},
+    )
+    if payload.get("code") not in (0, None):
+        return {
+            "ok": False,
+            "code": payload.get("code"),
+            "msg": payload.get("msg", ""),
+            "message": f"Token exchange failed: {payload.get('msg', '')}",
+        }
+    uat = _uat_from_token_response(payload)
+    if not uat.access_token:
+        return _error("Token exchange returned no access_token.")
     await _get_token_store().set(_UAT_USER_KEY, uat)
     with contextlib.suppress(OSError):
         await anyio.Path(_pending_auth_path()).unlink()
@@ -770,25 +842,24 @@ async def auth_complete_impl(timeout_seconds: int = 60) -> dict[str, Any]:
 
 
 async def _get_valid_uat() -> Any:
-    """Return a non-expired UAT (refreshing if needed), or None if not authorized."""
-    from lark_channel.channel.auth.device_flow import DeviceFlowClient, uat_needs_refresh  # noqa: PLC0415
+    """Return a non-expired UAT (refreshing via refresh_token if needed), or None."""
+    from lark_channel.channel.auth.device_flow import uat_needs_refresh  # noqa: PLC0415
 
     store = _get_token_store()
     uat = await store.get(_UAT_USER_KEY)
     if uat is None:
         return None
     if uat_needs_refresh(uat) and uat.refresh_token:
-        creds = _config()
-        if creds is not None:
-            app_id, app_secret = creds
-            df = DeviceFlowClient(app_id, app_secret)
-            try:
-                uat = await df.refresh(uat.refresh_token)
+        app_token = await _get_app_access_token()
+        if app_token is not None:
+            payload = await _post_json(
+                _REFRESH_URL,
+                {"grant_type": "refresh_token", "refresh_token": uat.refresh_token},
+                headers={"Authorization": f"Bearer {app_token}"},
+            )
+            if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
+                uat = _uat_from_token_response(payload)
                 await store.set(_UAT_USER_KEY, uat)
-            except Exception:  # refresh failed — fall back to the (possibly stale) token
-                pass
-            finally:
-                await df.close()
     return uat
 
 
