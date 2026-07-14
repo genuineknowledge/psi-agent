@@ -2,8 +2,8 @@
 
 These let the bot proactively post to a group/user, form a native Feishu
 **thread** (topic) by replying in-thread, and read the messages under a chat or
-thread. Used by the daily-todo-topic schedules: post a topic root at 08:00, then
-read the thread's replies and post per-reply feedback at 12:00.
+thread. For example: post a topic root message, then read the thread's replies
+and post per-reply feedback back into the same thread.
 
 To @-mention someone in the text, embed ``<at user_id="ou_xxx"></at>`` in the
 ``text`` / ``content`` string (the value is the person's open_id).
