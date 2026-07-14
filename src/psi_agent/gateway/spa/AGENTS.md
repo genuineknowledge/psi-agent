@@ -179,6 +179,7 @@ spa/
 | `PathPickerDialog.vue` | 路径选择器 | 资源管理器式 UI（左侧快捷位置 + 面包屑 + 列表 + 底部路径确认）；由 `usePathPicker.openPathPicker()` 控制；侧栏「打开工作区」直接调用，无中间 WorkspaceDialog |
 | `usePathPicker.js` | 路径选择 composable | `openPathPicker({ mode, title, initialPath, … }) → Promise<path\|null>`；fetch `/workspace/roots` + `/workspace/browse` |
 | `FilePreview.vue` | 文件预览抽屉 | `Teleport` 到 `body` 的抽屉面板；按扩展名分派渲染：图片/音视频/SVG 用 Blob URL，代码/JSON/文本用 codemirror，Markdown 用 renderMd，csv 用 papaparse，pdf 用 pdfjs，docx 用 docx-preview，xlsx 用 xlsx，pptx 用 pptx-preview（全部动态 `import()` 懒加载）；含大小/行数/页数上限与 fallback；`renderRun` 计数防竞态，`cleanup` 释放 editor/objectUrl；emit `close` |
+| `mdTable.js` | 气泡表格工具 | `wrapMdTableHtml` 给 GFM `<table>` 加复制/下载工具栏；`matrixToTsv` / `downloadMatrixXlsx`；`MessageBubble` 事件委托处理点击 |
 | `ConfirmDialog.vue` | 通用确认弹窗 | 基于 BaseDialog；`dlgConfirm` 经 `storeToRefs` 从 `useUiStore` 取；渲染 `dlgConfirm.message`，「删除」emit `confirm`（App.vue 按 `actionType` 分派） |
 | `Snackbar.vue` | Toast 提示 | `snackbar` 经 `storeToRefs` 从 `useUiStore` 取；渲染 `snackbar`（message + 显隐），「知道了」关闭 |
 
@@ -305,7 +306,8 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 - KaTeX 设置 `throwOnError: false`，语法错误时 fallback 到 `<code>` 标签
 - `marked.parse()` 失败时降级为 `htmlEscape()` 纯文本
 - **代码块语法高亮**：`marked` 的 `code` renderer 被覆盖，用 `highlight.js/lib/common`（仅常用语言，控制体积）产出带 `hljs language-xxx` class 的 `<pre><code>`；语言标注无效或高亮抛错时回退纯转义文本，绝不丢内容。着色由 `styles/highlight.css` 承担（双主题，`--hl-*` 变量映射 hljs token class，调色只改该文件）。内联代码不高亮，仅由 MessageBubble 的 `<style scoped>` 加浅背景片区分
-- **GFM 表格**：`utils.js` 已开 `gfm: true`，并在 `renderMd` 前做表格规范化（去掉表格块内空行、解开误包在 code fence 里的纯表格）；`MessageBubble` 内表格 `width:100%` + `table-layout:fixed`，单元格自动换行（`overflow-wrap:anywhere`），格线用 `--md-outline`，不横向撑破气泡
+- **GFM 表格**：`utils.js` 已开 `gfm: true`，并在 `renderMd` 前做表格规范化（去掉表格块内空行、解开误包在 code fence 里的纯表格）；自定义 `table` renderer 包一层 `.md-table-card` 工具栏（复制 TSV / 下载 `.xlsx`，逻辑在 `mdTable.js`，点击由 `MessageBubble` 事件委托处理）；表格 `width:100%` + `table-layout:fixed`，单元格自动换行
+- **助手气泡排版**：`MessageBubble` 内增大行高/字距，并拉开标题与段落、列表间距（参考常见 Agent 正文节奏），用户气泡仍 `pre-wrap`
 
 ## SSE 流式解析 (`useSSE.js:readSSE`)
 

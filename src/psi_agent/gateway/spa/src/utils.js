@@ -1,6 +1,7 @@
 import { marked } from 'marked'
 import katex from 'katex'
 import hljs from 'highlight.js/lib/common'
+import { wrapMdTableHtml } from './mdTable.js'
 
 // GFM tables + single-newline -> <br>. With breaks on, in-paragraph line
 // breaks become semantic <br>, so the chat bubble no longer needs
@@ -28,7 +29,27 @@ const markedRenderer = new marked.Renderer()
 markedRenderer.code = function ({ text, lang }) {
   const { html, language } = highlightCode(text, (lang || '').trim())
   const cls = language ? ` class="hljs language-${language}"` : ' class="hljs"'
-  return `<pre><code${cls}>${html}</code></pre>`
+  return `<pre><code${cls}>${html}</code></pre>\n`
+}
+// Wrap every GFM table with a Yuanbao-style copy / download toolbar.
+markedRenderer.table = function (token) {
+  let header = ''
+  for (let i = 0; i < token.header.length; i++) {
+    header += this.tablecell(token.header[i])
+  }
+  header = this.tablerow({ text: header })
+  let body = ''
+  for (let i = 0; i < token.rows.length; i++) {
+    const row = token.rows[i]
+    let cells = ''
+    for (let j = 0; j < row.length; j++) {
+      cells += this.tablecell(row[j])
+    }
+    body += this.tablerow({ text: cells })
+  }
+  if (body) body = `<tbody>${body}</tbody>`
+  const tableHtml = `<table>\n<thead>\n${header}</thead>\n${body}</table>\n`
+  return wrapMdTableHtml(tableHtml)
 }
 marked.use({ renderer: markedRenderer })
 
