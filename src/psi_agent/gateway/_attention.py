@@ -9,7 +9,6 @@ import time
 from ctypes import wintypes
 from typing import TYPE_CHECKING, Any
 
-import anyio
 from loguru import logger
 from PIL import Image, ImageDraw
 
