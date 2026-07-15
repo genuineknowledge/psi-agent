@@ -26,7 +26,7 @@
           <div v-if="loading" class="preview-state">正在生成预览...</div>
           <div v-else-if="message" class="preview-state">{{ message }}</div>
           <div v-show="notice" class="preview-notice">{{ notice }}</div>
-          <div ref="hostRef" class="preview-host"></div>
+          <div ref="hostRef" class="preview-host" @click="onPreviewClick"></div>
         </div>
       </aside>
     </div>
@@ -36,6 +36,7 @@
 <script setup>
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { mimeType, renderMd } from '../utils.js'
+import { downloadMatrixXlsx, matrixToTsv, tableToMatrix } from '../mdTable.js'
 
 const props = defineProps({
   file: {
@@ -313,6 +314,46 @@ function renderMarkdown(text) {
   article.className = 'preview-markdown'
   article.innerHTML = renderMd(bounded.text)
   hostRef.value.append(article)
+}
+
+/** Same table copy / Excel download as chat bubbles (md-table-card toolbar). */
+async function onPreviewClick(e) {
+  const btn = e.target.closest?.('[data-table-action]')
+  if (!btn) return
+  e.preventDefault()
+  const card = btn.closest('[data-md-table]')
+  const table = card?.querySelector('table')
+  const matrix = tableToMatrix(table)
+  if (!matrix.length) return
+  const action = btn.getAttribute('data-table-action')
+  if (action === 'copy') {
+    const tsv = matrixToTsv(matrix)
+    try {
+      await navigator.clipboard.writeText(tsv)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = tsv
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      ta.remove()
+    }
+    btn.classList.add('is-done')
+    window.setTimeout(() => btn.classList.remove('is-done'), 1400)
+    return
+  }
+  if (action === 'download') {
+    btn.classList.add('is-busy')
+    try {
+      const stamp = new Date().toISOString().slice(0, 10)
+      const base = String(props.file.name || 'table').replace(/\.[^.]+$/, '')
+      await downloadMatrixXlsx(matrix, `${base}-${stamp}.xlsx`)
+    } finally {
+      btn.classList.remove('is-busy')
+    }
+  }
 }
 
 /**
@@ -790,7 +831,6 @@ function showFallback() {
 .preview-host :deep(.preview-markdown ul),
 .preview-host :deep(.preview-markdown ol),
 .preview-host :deep(.preview-markdown blockquote),
-.preview-host :deep(.preview-markdown table),
 .preview-host :deep(.preview-markdown pre) {
   margin: 0 0 1em;
 }
@@ -811,17 +851,98 @@ function showFallback() {
   font-family: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
 }
 
-.preview-host :deep(.preview-markdown table) {
-  display: block;
-  overflow-x: auto;
-  border-collapse: collapse;
+/* Match chat-bubble GFM tables: one continuous card + toolbar strip */
+.preview-host :deep(.preview-markdown .md-table-card) {
+  margin: 0.9em 0 1.2em;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: 12px;
+  background: var(--md-surface-container, var(--md-surface-container-high));
+  overflow: hidden;
 }
 
-.preview-host :deep(.preview-markdown th),
-.preview-host :deep(.preview-markdown td) {
+.preview-host :deep(.preview-markdown .md-table-toolbar) {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--md-outline-variant);
+  background: color-mix(in srgb, var(--md-surface) 70%, var(--md-surface-container-high));
+}
+
+.preview-host :deep(.preview-markdown .md-table-action) {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--md-text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 6px 8px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.preview-host :deep(.preview-markdown .md-table-action:hover) {
+  background: rgba(128, 128, 128, var(--md-state-hover));
+  color: var(--md-text-primary);
+}
+
+.preview-host :deep(.preview-markdown .md-table-action.is-done) {
+  color: var(--md-primary);
+}
+
+.preview-host :deep(.preview-markdown .md-table-action.is-busy) {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.preview-host :deep(.preview-markdown .md-table-action .material-symbols-outlined) {
+  font-size: 16px;
+}
+
+.preview-host :deep(.preview-markdown .md-table-scroll) {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.preview-host :deep(.preview-markdown .md-table-card table) {
+  display: table;
+  border-collapse: collapse;
+  margin: 0;
+  width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
+  font-size: 0.92em;
+  letter-spacing: 0.005em;
+  border: none;
+}
+
+.preview-host :deep(.preview-markdown .md-table-card th),
+.preview-host :deep(.preview-markdown .md-table-card td) {
   border: 1px solid var(--md-outline-variant);
-  padding: 6px 10px;
-  white-space: nowrap;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  line-height: 1.55;
+}
+
+.preview-host :deep(.preview-markdown .md-table-card th) {
+  background: var(--md-surface-container-highest, var(--md-surface-container-high));
+  font-weight: 650;
+  color: var(--md-text-primary);
+}
+
+.preview-host :deep(.preview-markdown .md-table-card tr:nth-child(even) td) {
+  background: color-mix(in srgb, var(--md-surface-container-high) 45%, transparent);
 }
 
 .preview-host :deep(.office-preview-scroll) {
