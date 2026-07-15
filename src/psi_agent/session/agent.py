@@ -13,6 +13,11 @@ from loguru import logger
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
+from psi_agent.session.history_display import (
+    is_schedule_turn_message,
+    messages_for_ai,
+    tag_schedule_origin,
+)
 from psi_agent.session.protocol import AgentChunk, AgentError
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
@@ -160,6 +165,13 @@ class SessionAgent:
                     yield chunk
                 self._conversation.clear_pending()
 
+            schedule_turn = is_schedule_turn_message(user_message)
+
+            def _persist(msg: dict[str, Any]) -> None:
+                if schedule_turn and msg.get("role") in ("assistant", "tool"):
+                    msg = tag_schedule_origin(msg)
+                self._conversation.add(msg)
+
             self._conversation.add(user_message)
             await self._conversation.commit()
             logger.debug(f"History now has {len(self._conversation.messages)} messages")
@@ -180,7 +192,7 @@ class SessionAgent:
                 ]
 
                 request_body: dict[str, Any] = {
-                    "messages": self._conversation.messages,
+                    "messages": messages_for_ai(self._conversation.messages),
                     "tools": tool_defs,
                     "stream": True,
                 }
@@ -191,7 +203,9 @@ class SessionAgent:
                     request_body |= extra_params
 
                 logger.info("Sending request to AI via AiClient")
-                logger.debug(f"Request messages count: {len(self._conversation.messages)}, tools: {len(tool_defs)}")
+                logger.debug(
+                    f"Request messages count: {len(request_body['messages'])}, tools: {len(tool_defs)}"
+                )
 
                 finish_reason: str | None = None
                 accumulated_tool_calls: dict[int, dict[str, Any]] = {}
@@ -249,7 +263,7 @@ class SessionAgent:
                                     assistant_msg["content"] = accumulated_content
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
-                                self._conversation.add(assistant_msg)
+                                _persist(assistant_msg)
                             await self._conversation.commit()
                             await self._schedule_registry.refresh()
                             return
@@ -263,7 +277,7 @@ class SessionAgent:
                                 assistant_msg["content"] = accumulated_content
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
-                            self._conversation.add(assistant_msg)
+                            _persist(assistant_msg)
 
                             # pre-compute args + yield tool-call intent
                             tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
@@ -315,7 +329,7 @@ class SessionAgent:
                             for i, tc, func_name, _args in tool_args:
                                 result = results[i]
                                 yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:1000]}]")
-                                self._conversation.add(
+                                _persist(
                                     {
                                         "role": "tool",
                                         "tool_call_id": tc.get("id", ""),
@@ -338,12 +352,12 @@ class SessionAgent:
                             assistant_msg["content"] = accumulated_content
                         if accumulated_reasoning:
                             assistant_msg["reasoning"] = accumulated_reasoning
-                        self._conversation.add(assistant_msg)
+                        _persist(assistant_msg)
                     await self._conversation.commit()
                     return
 
             else:
                 logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
-                self._conversation.add({"role": "assistant", "content": "[Max tool rounds reached]"})
+                _persist({"role": "assistant", "content": "[Max tool rounds reached]"})
                 await self._conversation.commit()
                 yield AgentChunk(content="[Max tool rounds reached]")

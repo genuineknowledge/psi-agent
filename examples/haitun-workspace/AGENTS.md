@@ -88,9 +88,10 @@ All are optional and only affect the dynamic suffix / runtime line:
 
 ## Schedules (`schedules/`)
 
+- `heartbeat` — every 30 min; stored as `user_schedule` + schedule-origin assistant so Web Console `/history` does not show TASK / `HEARTBEAT_OK`. Agent still sees them as `user` when calling the model.
 - Use `schedule_manage` to add / list / view / update / delete tasks instead of editing
   `schedules/<name>/TASK.md` by hand.
--（已移除）原 30 分钟 `heartbeat` schedule；勿重新添加除非明确要求定期背景负载。
+- **Anti-leak (framework):** every schedule fires the same agent loop (TASK body → model). Do **not** invent a special path for heartbeat. Session writes `role: user_schedule` and stamps schedule-turn `assistant`/`tool` with `source: schedule`; Gateway `/history` whitelists real chat only. New schedule tools or runners **must** reuse `psi_agent.session.history_display` — see `src/psi_agent/session/AGENTS.md` 「Schedule 展示隔离约定」.
 
 ## Prerequisites
 

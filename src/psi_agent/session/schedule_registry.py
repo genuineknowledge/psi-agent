@@ -19,7 +19,6 @@ from croniter import croniter
 from loguru import logger
 
 from psi_agent._yaml import parse_yaml_header
-from psi_agent.session.protocol import AgentChunk
 
 if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent
@@ -177,20 +176,19 @@ class ScheduleRegistry:
                         await anyio.sleep(wait)
 
                         logger.info(f"Schedule triggered: {schedule.name!r}")
-                        msg = {"role": "user", "content": schedule.task_content}
+                        msg = {"role": "user_schedule", "content": schedule.task_content}
 
                         async with agent._lock:
-                            pending_chunks: list[AgentChunk] = []
+                            # Run for model-history side effects only — do not
+                            # inject schedule output into the next chat SSE
+                            # (avoids HEARTBEAT_OK leaking into the Web Console).
                             async with aclosing(agent.run(msg)) as chunks:
                                 async for chunk in chunks:
-                                    pending_chunks.append(chunk)
                                     logger.debug(
-                                        f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}"
+                                        f"Schedule chunk: content={chunk.content!r}, "
+                                        f"reasoning={chunk.reasoning!r}"
                                     )
-                                agent.set_pending_schedule_chunks(pending_chunks)
-                                logger.info(
-                                    f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)"
-                                )
+                            logger.info(f"Schedule {schedule.name!r} turn finished (not queued for UI)")
                     except Exception as e:
                         logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
         finally:

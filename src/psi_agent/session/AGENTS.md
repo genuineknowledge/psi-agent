@@ -32,7 +32,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 2. `SessionAgent.run()` 入口：
    - add() / replace_system() 在首次变更时自动建立快照（implicit snapshot）
    - 惰性构建或重建 system prompt（首次 run 或 rebuild checker 返回 True 时）
-   - 检查暂存的 schedule 响应 → peek + yield → yield 全部成功后 `clear_pending()`
+   - 检查暂存的 pending chunks（若有）→ peek + yield → yield 全部成功后 `clear_pending()`（现行 schedule runner 不再入队，见「Schedule 展示隔离约定」）
    - User message 追加到 history 后立即 ``commit()`` 落盘
 3. 获取 `anyio.Lock`（忙则 FIFO 排队等待）—— `handle_request()` 在调用 `run()` 前持有
 4. 通过 `AiClient.stream()` 发送 `history + tools + extra_params` 到 AI backend（streaming）
@@ -161,20 +161,30 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
     croniter.get_next()         ← 计算下次触发时间
     await anyio.sleep(触发时间 - now) ← 睡到触发
     async with agent._lock:       ← 等当前请求完成
-      调用 agent.run(msg)       ← AI 处理
-      流式结果追加到 pending_chunks (list[AgentChunk])
-      agent.set_pending_schedule_chunks(chunks)
-      ↓
-    下次 channel 请求到达时：
-      SessionAgent.run() 开头先 yield 所有 _pending_schedule_chunks
-      然后正常处理当前 channel 消息
+      msg = {role: user_schedule, content: task}  ← 非裸 user
+      调用 agent.run(msg)       ← AI 处理；assistant/tool 戳 source=schedule
+      调 AI 时 messages_for_ai 把 user_schedule→user
+      （不再 stash 进下一轮 channel SSE，避免 HEARTBEAT 进 Web Console）
 ```
 
 关键点：
 - Schedule 是纯配置数据类（`name, cron, task_content`），cron 状态由 `run_one_schedule` 维护
-- Schedule 响应的 content 和 reasoning 各自存在于各自的消息周期，不会交错
+- Gateway ``GET /history`` 用 ``history_display.is_displayable_chat_message``：跳过 ``user_schedule`` 与 ``source=schedule``
 - 多个 schedule 可以并发 sleep，但通过 lock 串行触发
 - 每个 schedule 在加载时独立处理——IO 错误、YAML 解析问题、cron 验证失败都只跳过该 schedule
+
+### Schedule 展示隔离约定（防 Web Console 泄露）
+
+所有定时任务（含 heartbeat 与 workspace 自定义 `schedules/*/TASK.md`）底层都是**同一条 agent loop：把 TASK 正文当一次用户输入发给模型**。因此隔离必须走**出处白名单**，禁止靠正文关键词/前缀黑名单，也禁止只改前端字符串。
+
+| 层 | 必须做 | 禁止 |
+|----|--------|------|
+| Session `ScheduleRegistry` | 触发消息一律 `role: user_schedule`（`history_display.ROLE_USER_SCHEDULE`）；消费 `agent.run()` 仅落盘，**不要** `set_pending_schedule_chunks` 塞进下一轮 channel SSE | 用裸 `role: user` 写 schedule 触发；把 HEARTBEAT / TASK 正文 stash 进聊天流 |
+| Session `SessionAgent` | schedule 回合产生的 `assistant` / `tool` 经 `tag_schedule_origin` 打 `source: schedule`；调 AI 前一律 `messages_for_ai(...)`（`user_schedule`→`user`，并去掉 `source`） | 把带 `source` / `user_schedule` 的原始 JSONL 行原样 POST 给上游 |
+| Gateway `HistoryManager` | `/history` 只返回 `is_displayable_chat_message` 为真的行（真人 `user` + 非 schedule 的 `assistant`） | 自写一套按 content 过滤；或把 `user_schedule` / `source=schedule` 暴露给 SPA |
+| SPA | 信任 `/history` 白名单；刷新以服务端为准 | 把「隐藏 heartbeat」当成前端特例；不要假设 JSONL 角色与气泡一一对应 |
+
+新增或改写任何 schedule 触发路径时：**复用** `psi_agent.session.history_display` 的常量与函数，不要另造角色名或 `source` 取值。单测见 `tests/psi_agent/session/test_history_display.py` 与 `tests/psi_agent/gateway/test_history_manager.py`。
 
 ## History 持久化
 
@@ -194,4 +204,4 @@ Session 支持将对话历史持久化到 `workspace/histories/{session_id}.json
 
 ### peek_pending / clear_pending 安全机制
 
-`Conversation.peek_pending()` 返回 pending chunks 的副本但**不清空** buffer——调用方在 yield 全部成功后显式调用 `clear_pending()`。这保证 channel 断开时 pending schedule chunks 不会永久丢失，下次请求会重新 push。
+`Conversation.peek_pending()` 返回 pending chunks 的副本但**不清空** buffer——调用方在 yield 全部成功后显式调用 `clear_pending()`。API 仍保留供其它暂存场景；**现行 schedule runner 不再入队**（避免 schedule 输出进入下一轮聊天 SSE）。若重新启用 schedule→SSE 推送，必须同时满足上方「展示隔离约定」，且不得把 `HEARTBEAT_OK` 类内容直接当真人回合展示。
