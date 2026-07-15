@@ -1,20 +1,37 @@
 from __future__ import annotations
 
-from loguru import logger
+import pytest
 
-import psi_agent._logging as _logging
-from psi_agent._logging import setup_logging
-
-
-def test_setup_logging_default_info() -> None:
-    _logging._handler_id = None
-    handler_id = setup_logging(verbose=False)
-    assert isinstance(handler_id, int)
-    logger.remove(handler_id)
+from psi_agent._logging import generate_trace_id, trace_context, trace_id_var
 
 
-def test_setup_logging_verbose_debug() -> None:
-    _logging._handler_id = None
-    handler_id = setup_logging(verbose=True)
-    assert isinstance(handler_id, int)
-    logger.remove(handler_id)
+class MockRequest:
+    def __init__(self, headers):
+        self.headers = headers
+
+
+@pytest.mark.anyio
+async def test_trace_context_generates_id():
+    request = MockRequest(headers={})
+
+    assert trace_id_var.get() == "-"
+    async with trace_context(request):  # type: ignore
+        tid = trace_id_var.get()
+        assert tid != "-"
+        assert len(tid) == 8
+    assert trace_id_var.get() == "-"
+
+
+@pytest.mark.anyio
+async def test_trace_context_uses_header():
+    request = MockRequest(headers={"X-Trace-ID": "test-trace-id"})
+
+    async with trace_context(request):  # type: ignore
+        assert trace_id_var.get() == "test-trace-id"
+    assert trace_id_var.get() == "-"
+
+
+def test_generate_trace_id():
+    tid = generate_trace_id()
+    assert len(tid) == 8
+    assert tid != generate_trace_id()

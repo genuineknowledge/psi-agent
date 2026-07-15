@@ -10,6 +10,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._logging import trace_context
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
@@ -100,6 +101,10 @@ class SessionAgent:
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         """aiohttp handler registered by ``serve_session``."""
+        async with trace_context(request):
+            return await self._handle_request(request)
+
+    async def _handle_request(self, request: web.Request) -> web.StreamResponse:
         try:
             user_message, extra_params = await self._channel_adapter.parse_request(request)
         except ChannelAdapter.ParseError as e:

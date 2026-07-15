@@ -307,9 +307,11 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
+| GET | `/workspace/roots` | 列出驱动器根目录 |
 | GET | `/workspace/cwd` | 获取工作目录 |
+| POST | `/ui/attention` | 请求注意力提示（闪烁托盘/窗口） |
 | GET | `/openapi.json` | OpenAPI schema |
-| GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
+| GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时提供，否则返回 404） |
 
 ### Web Console 聊天协议
 

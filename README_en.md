@@ -307,9 +307,11 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
+| GET | `/workspace/roots` | List drive roots |
 | GET | `/workspace/cwd` | Get working directory |
+| POST | `/ui/attention` | Request attention (flash tray/window) |
 | GET | `/openapi.json` | OpenAPI schema |
-| GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
+| GET | `/favicon.ico` | Favicon (provided only with `--icon`; returns 404 otherwise) |
 
 ### Web Console Chat Protocol
 

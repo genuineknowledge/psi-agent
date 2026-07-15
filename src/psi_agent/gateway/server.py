@@ -11,6 +11,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._logging import trace_context
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
@@ -65,6 +66,12 @@ def _error(message: str, status: int) -> web.Response:
     return _json({"error": message}, status=status)
 
 
+@web.middleware
+async def _trace_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+    async with trace_context(request):
+        return await handler(request)
+
+
 async def create_app(
     aim: AIManager,
     sm: SessionManager,
@@ -73,7 +80,7 @@ async def create_app(
     app_name: str = DEFAULT_APP_NAME,
     attention: AttentionHub | None = None,
 ) -> web.Application:
-    app = web.Application(client_max_size=100 * 1024 * 1024)
+    app = web.Application(client_max_size=100 * 1024 * 1024, middlewares=[_trace_middleware])
     app["aim"] = aim
     app["sm"] = sm
     app["tm"] = tm

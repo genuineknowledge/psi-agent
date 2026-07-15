@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import aclosing
+from typing import Any
 
 import anyio
 import anyio.lowlevel
@@ -607,7 +608,7 @@ class _RecordingPostSession:
     def __init__(self, resp: _RecordingResp) -> None:
         self._resp = resp
 
-    def post(self, endpoint: str, json: dict[str, object]) -> _RecordingResp:
+    def post(self, endpoint: str, json: dict[str, object], **kwargs: Any) -> _RecordingResp:
         return self._resp
 
     async def close(self) -> None:

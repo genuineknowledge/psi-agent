@@ -9,8 +9,15 @@ from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
 
+from psi_agent._logging import retry_async, trace_context
+
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
+    async with trace_context(request):
+        return await _handle_chat_completions(request)
+
+
+async def _handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.info("Received chat completion request")
     try:
         body: dict[str, Any] = await request.json()
@@ -58,12 +65,11 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     upstream_error = False
     client_gone = False
     stream: AsyncIterator[ChatCompletionChunk] | None = None
-    try:
-        stream = cast(
+
+    @retry_async(attempts=3, delay=1.0, exceptions=(Exception,))
+    async def _get_upstream_stream() -> AsyncIterator[ChatCompletionChunk]:
+        return cast(
             AsyncIterator[ChatCompletionChunk],
-            # ``acompletion()`` returns ``ChatCompletion | AsyncIterator[ChatCompletionChunk]``
-            # depending on the ``stream`` flag.  We always pass ``stream=True``, so the
-            # runtime type is always ``AsyncIterator[ChatCompletionChunk]`` — the cast is safe.
             await acompletion(
                 provider=provider,
                 model=model,
@@ -74,6 +80,9 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 **body,
             ),
         )
+
+    try:
+        stream = await _get_upstream_stream()
         logger.debug("Starting to consume upstream SSE stream")
         async for chunk in stream:
             data = chunk.model_dump_json()
