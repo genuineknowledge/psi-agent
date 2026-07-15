@@ -90,3 +90,20 @@ async def feishu_message_list(
     return _f.dumps_result(
         await _f.list_messages_impl(container_id, container_id_type, sort_type, page_size, page_token)
     )
+
+
+async def feishu_thread_read(thread_id: str, page_size: int = 50) -> str:
+    """Read a topic thread as clean, per-message records — sender + plain text.
+
+    Convenience over ``feishu_message_list``: pages the whole thread and returns
+    ``messages`` as ``[{message_id, sender_open_id, sender_type, create_time, text}]``,
+    with text already extracted from both plain (text) and rich (post) messages.
+    Ideal for scanning a topic's replies, spotting who posted what (e.g. a todo
+    list), and then replying to or DMing that person by their ``sender_open_id``.
+
+    Args:
+        thread_id: The topic's thread_id (e.g. the ``thread_id`` returned by
+            ``feishu_topic_start`` / ``feishu_message_send``).
+        page_size: Messages per page while paging (default 50, max 50).
+    """
+    return _f.dumps_result(await _f.read_thread_impl(thread_id, page_size))

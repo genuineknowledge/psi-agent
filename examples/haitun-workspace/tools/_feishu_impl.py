@@ -384,6 +384,67 @@ async def list_messages_impl(
     }
 
 
+def _extract_post_text(node: Any) -> str:
+    """Recursively collect all 'text' values from a post rich-text content tree."""
+    parts: list[str] = []
+    if isinstance(node, dict):
+        if node.get("tag") == "text" and isinstance(node.get("text"), str):
+            parts.append(node["text"])
+        for v in node.values():
+            if isinstance(v, (dict, list)):
+                parts.append(_extract_post_text(v))
+    elif isinstance(node, list):
+        for v in node:
+            parts.append(_extract_post_text(v))
+    return " ".join(p for p in parts if p)
+
+
+def _message_plain_text(item: dict[str, Any]) -> str:
+    """Best-effort plain text of a message item (handles text and post; others -> '')."""
+    if item.get("deleted"):
+        return ""
+    body = item.get("body", {}) if isinstance(item.get("body"), dict) else {}
+    raw = body.get("content", "")
+    if not raw:
+        return ""
+    try:
+        content = json.loads(raw)
+    except ValueError, TypeError:
+        return raw if isinstance(raw, str) else ""
+    if not isinstance(content, dict):
+        return ""
+    if "text" in content and isinstance(content["text"], str):
+        return content["text"]
+    return _extract_post_text(content)  # post / rich text
+
+
+async def read_thread_impl(thread_id: str, page_size: int = 50) -> dict[str, Any]:
+    """Read a topic thread and return cleaned messages: [{message_id, sender_open_id, name?, text}]."""
+    messages: list[dict[str, Any]] = []
+    page_token = ""
+    while True:
+        res = await _invoke(_build_list_messages_request(thread_id, "thread", "ByCreateTimeAsc", page_size, page_token))
+        if not res["ok"]:
+            return res
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        for it in data.get("items", []) if isinstance(data.get("items"), list) else []:
+            sender = it.get("sender", {}) if isinstance(it.get("sender"), dict) else {}
+            is_user = sender.get("sender_type") == "user"
+            messages.append(
+                {
+                    "message_id": it.get("message_id", ""),
+                    "sender_open_id": sender.get("id", "") if is_user else "",
+                    "sender_type": sender.get("sender_type", ""),
+                    "create_time": it.get("create_time", ""),
+                    "text": _message_plain_text(it),
+                }
+            )
+        page_token = data.get("page_token", "") or ""
+        if not data.get("has_more") or not page_token:
+            break
+    return {"ok": True, "thread_id": thread_id, "messages": messages, "count": len(messages)}
+
+
 # ── Contact — resolve a member's user id (open_id) by name via chat roster ────
 #
 # Feishu tenant tokens cannot search all users by name; the supported path is to

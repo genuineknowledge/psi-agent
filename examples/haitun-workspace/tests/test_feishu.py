@@ -1119,3 +1119,97 @@ def test_calendar_tool_async_with_docstring() -> None:
     fn = mod.feishu_calendar_create_event
     assert inspect.iscoroutinefunction(fn)
     assert (inspect.getdoc(fn) or "").strip()
+
+
+# ── Thread read — clean sender + text extraction ──────────────────────────────
+
+
+def test_message_plain_text_variants() -> None:
+    # plain text
+    txt = _impl._message_plain_text({"body": {"content": '{"text":"你好 <at></at>"}'}})
+    assert txt == "你好 <at></at>"
+    # post rich text — nested title/blocks, text nodes concatenated
+    post = {
+        "body": {
+            "content": json.dumps(
+                {"zh_cn": {"content": [[{"tag": "at", "user_id": "ou_x"}, {"tag": "text", "text": "看看这个清单"}]]}}
+            )
+        }
+    }
+    assert "看看这个清单" in _impl._message_plain_text(post)
+    # recalled message -> empty
+    assert _impl._message_plain_text({"deleted": True, "body": {"content": '{"text":"x"}'}}) == ""
+
+
+@pytest.mark.asyncio
+async def test_read_thread_parses_sender_and_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [
+                {
+                    "message_id": "om_1",
+                    "msg_type": "text",
+                    "create_time": "1752000000000",
+                    "sender": {"id": "ou_zhang", "sender_type": "user"},
+                    "body": {"content": '{"text":"我的todo: 1.写周报 2.交方案"}'},
+                },
+                {
+                    "message_id": "om_2",
+                    "msg_type": "text",
+                    "sender": {"id": "cli_bot", "sender_type": "app"},
+                    "body": {"content": '{"text":"机器人消息"}'},
+                },
+            ],
+            "has_more": False,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.read_thread_impl("omt_1")
+    req = cap.request
+    assert req.uri == "/open-apis/im/v1/messages"
+    assert _qdict(req).get("container_id_type") == "thread"
+    m0 = result["messages"][0]
+    assert m0["sender_open_id"] == "ou_zhang"  # user sender -> open_id
+    assert "写周报" in m0["text"]
+    assert result["messages"][1]["sender_open_id"] == ""  # app sender -> no open_id
+    assert result["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_read_thread_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke(
+        [
+            {
+                "items": [
+                    {
+                        "message_id": "m1",
+                        "sender": {"id": "ou_a", "sender_type": "user"},
+                        "body": {"content": '{"text":"a"}'},
+                    }
+                ],
+                "has_more": True,
+                "page_token": "pt2",
+            },
+            {
+                "items": [
+                    {
+                        "message_id": "m2",
+                        "sender": {"id": "ou_b", "sender_type": "user"},
+                        "body": {"content": '{"text":"b"}'},
+                    }
+                ],
+                "has_more": False,
+            },
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.read_thread_impl("omt_1")
+    assert len(paged.requests) == 2
+    assert result["count"] == 2
+
+
+def test_thread_read_tool_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_message")
+    fn = mod.feishu_thread_read
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()
