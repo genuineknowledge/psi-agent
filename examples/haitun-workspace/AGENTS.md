@@ -88,9 +88,9 @@ All are optional and only affect the dynamic suffix / runtime line:
 
 ## Schedules (`schedules/`)
 
-- `heartbeat` — every 30 min; the agent replies `HEARTBEAT_OK` when nothing needs attention.
 - Use `schedule_manage` to add / list / view / update / delete tasks instead of editing
   `schedules/<name>/TASK.md` by hand.
+-（已移除）原 30 分钟 `heartbeat` schedule；勿重新添加除非明确要求定期背景负载。
 
 ## Prerequisites
 

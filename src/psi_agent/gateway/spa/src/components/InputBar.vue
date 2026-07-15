@@ -26,7 +26,6 @@
       <ModelPanel
         @select-ai="$emit('select-ai', $event)"
         @delete-ai="$emit('delete-ai', $event)"
-        @new-ai="$emit('new-ai')"
       />
 
       <button v-if="streaming" class="send stop" @click="stopMessage" title="停止生成">
@@ -49,7 +48,7 @@ import ModelPanel from './ModelPanel.vue'
 const chat = useChatStore()
 const { selectedFiles, inputText, uploadResetToken, streaming } = storeToRefs(chat)
 
-defineEmits(['select-ai', 'delete-ai', 'new-ai'])
+defineEmits(['select-ai', 'delete-ai'])
 
 function onFileSelected(e) {
   const files = Array.from(e.target.files || [])

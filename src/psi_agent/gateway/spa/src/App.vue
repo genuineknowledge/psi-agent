@@ -68,7 +68,6 @@
           <InputBar
             @select-ai="selectAI"
             @delete-ai="confirmDeleteAI"
-            @new-ai="openAiDialog"
           />
         </template>
       </div>
@@ -351,8 +350,8 @@ async function openWorkspacePicker() {
 
 async function handleNewSession(workspacePath) {
   if (!ais.value.length) {
-    ui.showAlert('请先配置大模型')
-    openAiDialog()
+    ui.showAlert('请先到右上角「大模型」连接模型')
+    ui.openHubPanel('models')
     return
   }
   let path = normalizeWorkspacePath(workspacePath || selectedWorkspacePath.value)
@@ -437,7 +436,7 @@ onMounted(async () => {
     await refreshAll()
 
     if (ais.value.length === 0) {
-      openAiDialog()
+      ui.openHubPanel('models')
       loadingEnv.value = false
       return
     }
