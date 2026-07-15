@@ -1046,3 +1046,76 @@ def test_task_tools_async_with_docstrings() -> None:
         fn = getattr(mod, name)
         assert inspect.iscoroutinefunction(fn), name
         assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"
+
+
+# ── Calendar — create event ───────────────────────────────────────────────────
+
+
+def test_time_to_info_parsing() -> None:
+    timed = _impl._time_to_info("2026-07-15 14:30", "Asia/Shanghai")
+    assert timed is not None and timed["timestamp"].isdigit() and timed["timezone"] == "Asia/Shanghai"
+    allday = _impl._time_to_info("2026-07-15", "Asia/Shanghai")
+    assert allday == {"date": "2026-07-15", "timezone": "Asia/Shanghai"}
+    assert _impl._time_to_info("", "Asia/Shanghai") is None
+    assert _impl._time_to_info("bad", "Asia/Shanghai") is None
+
+
+@pytest.mark.asyncio
+async def test_create_event_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _cal_id() -> str:
+        return "cal_1"
+
+    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _cal_id)
+    cap = _CapturedInvoke({"event": {"event_id": "ev_1", "summary": "周会"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_event_impl("周会", "2026-07-15 14:00", "2026-07-15 15:00", "议题…")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/calendar/v4/calendars/:calendar_id/events"
+    assert req.paths["calendar_id"] == "cal_1"
+    assert req.body["summary"] == "周会"
+    assert req.body["start_time"]["timestamp"].isdigit()
+    assert req.body["end_time"]["timezone"] == "Asia/Shanghai"
+    assert result["event_id"] == "ev_1"
+
+
+@pytest.mark.asyncio
+async def test_create_event_with_attendees(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _cal_id() -> str:
+        return "cal_1"
+
+    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _cal_id)
+    paged = _PagedInvoke([{"event": {"event_id": "ev_1"}}, {}])  # create, then add-attendees
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.create_event_impl("周会", "2026-07-15", "2026-07-15", "", "ou_a, ou_b")
+    assert len(paged.requests) == 2
+    att_req = paged.requests[1]
+    assert att_req.uri == "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id/attendees"
+    assert att_req.paths["event_id"] == "ev_1"
+    ids = [a["user_id"] for a in att_req.body["attendees"]]
+    assert ids == ["ou_a", "ou_b"]
+    assert all(a["type"] == "user" for a in att_req.body["attendees"])
+    assert result["attendees_added"] == ["ou_a", "ou_b"]
+
+
+@pytest.mark.asyncio
+async def test_create_event_bad_time() -> None:
+    result = await _impl.create_event_impl("x", "not-a-date", "2026-07-15 15:00")
+    assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_event_no_calendar(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _none() -> None:
+        return None
+
+    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _none)
+    result = await _impl.create_event_impl("x", "2026-07-15 14:00", "2026-07-15 15:00")
+    assert result["ok"] is False
+
+
+def test_calendar_tool_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_calendar")
+    fn = mod.feishu_calendar_create_event
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()

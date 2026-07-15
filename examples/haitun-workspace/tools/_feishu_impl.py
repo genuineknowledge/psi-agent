@@ -1338,3 +1338,113 @@ def _fmt_ms(ms: Any) -> str:
     with contextlib.suppress(ValueError, OSError, OverflowError):
         return datetime.datetime.fromtimestamp(int(ms) / 1000).strftime("%Y-%m-%d %H:%M:%S")
     return str(ms)
+
+
+# ── Calendar (日历) — create an event on the bot's primary calendar ───────────
+#
+# The bot creates events on its own primary calendar (auto-resolved). Bot/tenant
+# token works (calendar:calendar), but the app must have bot ability enabled
+# (else 190007). Attendees are added via a second call.
+
+_primary_calendar_id: str | None = None
+
+
+async def _get_primary_calendar_id() -> str | None:
+    """Resolve (and cache) the bot's primary calendar_id, or None on failure."""
+    global _primary_calendar_id
+    if _primary_calendar_id:
+        return _primary_calendar_id
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/calendar/v4/calendars/primary"
+    req.add_query("user_id_type", "open_id")
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    res = await _invoke(req)
+    if not res["ok"]:
+        return None
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    for item in data.get("calendars", []) if isinstance(data.get("calendars"), list) else []:
+        cal = item.get("calendar", {}) if isinstance(item, dict) else {}
+        cid = cal.get("calendar_id", "")
+        if cid:
+            _primary_calendar_id = cid
+            return cid
+    return None
+
+
+def _time_to_info(t: str, timezone: str) -> dict[str, str] | None:
+    """Parse 'YYYY-MM-DD HH:MM' -> timed {timestamp, timezone}; 'YYYY-MM-DD' -> all-day {date, timezone}."""
+    s = t.strip()
+    if not s:
+        return None
+    import datetime  # noqa: PLC0415
+
+    with contextlib.suppress(ValueError):
+        dt = datetime.datetime.strptime(s, "%Y-%m-%d %H:%M")
+        return {"timestamp": str(int(dt.timestamp())), "timezone": timezone}
+    with contextlib.suppress(ValueError):
+        datetime.datetime.strptime(s, "%Y-%m-%d")
+        return {"date": s, "timezone": timezone}
+    return None
+
+
+def _build_create_event_request(calendar_id: str, body: dict[str, Any]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/calendar/v4/calendars/:calendar_id/events"
+    req.paths["calendar_id"] = calendar_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = body
+    return req
+
+
+def _build_add_attendees_request(calendar_id: str, event_id: str, open_ids: list[str]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id/attendees"
+    req.paths["calendar_id"] = calendar_id
+    req.paths["event_id"] = event_id
+    req.add_query("user_id_type", "open_id")
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"attendees": [{"type": "user", "user_id": oid} for oid in open_ids]}
+    return req
+
+
+async def create_event_impl(
+    summary: str, start: str, end: str, description: str = "", attendees: str = "", timezone: str = "Asia/Shanghai"
+) -> dict[str, Any]:
+    """Create a calendar event on the bot's primary calendar, optionally adding attendees."""
+    start_info = _time_to_info(start, timezone)
+    end_info = _time_to_info(end, timezone)
+    if start_info is None or end_info is None:
+        return _error("start/end must be 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD'.")
+    calendar_id = await _get_primary_calendar_id()
+    if not calendar_id:
+        return _error(
+            "Could not resolve the bot's primary calendar. Ensure bot ability is enabled and calendar scope granted."
+        )
+    body: dict[str, Any] = {"summary": summary, "start_time": start_info, "end_time": end_info}
+    if description.strip():
+        body["description"] = description
+    res = await _invoke(_build_create_event_request(calendar_id, body))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    event = data.get("event", {}) if isinstance(data.get("event"), dict) else {}
+    event_id = event.get("event_id", "")
+    result: dict[str, Any] = {
+        "ok": True,
+        "event_id": event_id,
+        "calendar_id": calendar_id,
+        "summary": event.get("summary", summary),
+        "start": start,
+        "end": end,
+    }
+    open_ids = [a.strip() for a in attendees.split(",") if a.strip()]
+    if open_ids and event_id:
+        att_res = await _invoke(_build_add_attendees_request(calendar_id, event_id, open_ids))
+        if att_res["ok"]:
+            result["attendees_added"] = open_ids
+        else:
+            result["attendee_warning"] = att_res.get("message", "failed to add attendees")
+    return result
