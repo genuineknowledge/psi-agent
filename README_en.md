@@ -119,6 +119,23 @@ The `--listen` value must include the `http://` prefix; bare `IP:PORT` is interp
 
 Gateway also supports system tray icon (`--tray --icon icon.png`), auto browser open (`--browser`), native webview window (`--webview`), and custom socket path prefix (`--socket-path psi`, controlling the `/tmp/{prefix}/ais/...` and `/tmp/{prefix}/channels/...` layout for AI/Session Unix sockets).
 
+### Option 4: Run with Nix
+
+With Nix installed (flakes enabled), no need to set up Python, node, or dependencies by hand:
+
+```bash
+nix run github:genuineknowledge/psi-agent -- gateway --listen http://127.0.0.1:8080
+```
+
+The flake is headless (no native `--webview`/`--tray` window features); the Web Console still works in a regular browser. The runtime tools it needs — `uv`, `node`/`npx`, `bash`, `git` — are baked into the executable's PATH, so workspace tools/skills that spawn subprocesses can find them.
+
+Flake outputs:
+
+- `packages.default` (= `psi-agent`): executable with runtime tools on PATH, the `nix run` entry point
+- `packages.psi-agent-unwrapped`: the plain Python environment without PATH injection
+- `packages.psi-agent-spa`: the Vue frontend built on its own
+- `devShells.default`: development environment (see "Development")
+
 ## CLI Overview
 
 ```
@@ -361,6 +378,8 @@ uv run ruff format --check . # format
 uv run ty check              # types
 uv run pytest -v             # tests
 ```
+
+With Nix, `nix develop` drops you into a dev shell with Python 3.14, `uv`, and `node`, after which the `uv run ...` commands above work as usual.
 
 ## Contributors
 
