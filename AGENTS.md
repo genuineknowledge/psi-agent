@@ -65,6 +65,12 @@ src/
     │   ├── AGENTS.md                # AI 层设计文档
     │   ├── __init__.py               # Ai + serve_ai
     │   └── server.py                 # handler（请求处理）
+    ├── router/
+    │   ├── AGENTS.md                 # 语义路由层设计文档
+    │   ├── __init__.py               # AiRouter + serve_router 生命周期
+    │   ├── models.py                 # upstream 配置与路由决策类型
+    │   ├── selector.py               # description-only 路由选择
+    │   └── server.py                 # 默认回退与 SSE 字节流代理
     ├── session/
     │   ├── AGENTS.md                # Session 层设计文档
     │   ├── __init__.py             # Session dataclass + run()，入口编排
@@ -111,6 +117,7 @@ src/
 
 各层的详细设计文档见：
 - **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理
+- **Router 层**: `src/psi_agent/router/AGENTS.md` — description-only 选择、默认回退、SSE 代理
 - **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化
 - **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
 - **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包

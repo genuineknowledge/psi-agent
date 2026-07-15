@@ -89,9 +89,7 @@ class AiRouter:
             raise ValueError("--default-addr must be provided")
         if self.router_context_chars <= 0:
             raise ValueError("--router-context-chars must be positive")
-        if self.router_timeout is not None and (
-            not math.isfinite(self.router_timeout) or self.router_timeout <= 0
-        ):
+        if self.router_timeout is not None and (not math.isfinite(self.router_timeout) or self.router_timeout <= 0):
             raise ValueError("--router-timeout must be a finite positive number")
         targets = parse_upstreams(self.upstream)
         settings = RouterSettings(

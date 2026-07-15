@@ -114,9 +114,7 @@ async def test_select_upstream_calls_openai_compatible_router(unused_tcp_port: i
         rendered = "\n".join(item["content"] for item in body["messages"])
         assert "simple Chinese tasks" in rendered
         assert "secret-model" not in rendered
-        return web.json_response(
-            {"choices": [{"message": {"content": '{"candidate":0,"reason":"simple"}'}}]}
-        )
+        return web.json_response({"choices": [{"message": {"content": '{"candidate":0,"reason":"simple"}'}}]})
 
     runner = await _serve_router_model(handler, unused_tcp_port)
     try:
