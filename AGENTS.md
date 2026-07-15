@@ -111,9 +111,9 @@ src/
 
 各层的详细设计文档见：
 - **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理
-- **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化
+- **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制（含「Schedule 展示隔离约定」）、history 持久化
 - **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
-- **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包
+- **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包；`/history` 须复用 `history_display` 白名单（跳过 schedule 回合）
 
 ## 核心通信协议
 
@@ -192,6 +192,8 @@ SSE 流中的特殊字段：
 15. **Log 中两处同类操作应格式一致**：如 build prompt 和 rebuild prompt 都应该 log `({len(sp)} chars)`，否则排查时信息不对等。
 
 16. **消费 async generator 必须用 `aclosing()`**：`async for` 在提前退出或被 cancel 时不调用 generator 的 `aclose()`，导致 generator 内 `async with` 持有的资源（aiohttp 连接、文件句柄等）被遗弃给 GC。正确做法：`async with aclosing(gen) as g: async for chunk in g: ...`。对标 `ai/server.py` 的 `finally` + shielded `aclose()` 模式。参见 `agent.py`、`channel_adapter.py`、`schedule_registry.py`。
+
+17. **Schedule / heartbeat 展示隔离（防 Web Console 泄露）**：所有 `schedules/*/TASK.md`（含 heartbeat）底层都是同一条 agent loop——把 TASK 正文当一轮输入发给模型。隔离必须走出处白名单，**禁止**靠正文关键词黑名单，也**禁止**只在 SPA 藏气泡。Session 写入 `role: user_schedule` 并为 schedule 回合的 `assistant`/`tool` 打 `source: schedule`；调 AI 前用 `messages_for_ai` 投影回 `user`；Gateway `/history` 只返回 `is_displayable_chat_message`。新增或改写任何 schedule 触发路径时**必须复用** `psi_agent.session.history_display`。完整约定与分层表见 `src/psi_agent/session/AGENTS.md`「Schedule 展示隔离约定」；Gateway / SPA 侧禁令见各自 `AGENTS.md`。
 
 ## 测试约定
 
