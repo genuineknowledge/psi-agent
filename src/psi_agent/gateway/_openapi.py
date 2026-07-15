@@ -258,6 +258,24 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/ui/attention": {
+            "post": {
+                "summary": "Flash tray icon / native window when chat completes in background",
+                "operationId": "requestAttention",
+                "responses": {
+                    "200": {"description": "Attention cue dispatched (best-effort)"},
+                },
+            },
+        },
+        "/workspace/roots": {
+            "get": {
+                "summary": "List quick-access paths and drives for path picker",
+                "operationId": "listWorkspaceRoots",
+                "responses": {
+                    "200": {"description": "Roots and drives"},
+                },
+            },
+        },
         "/workspace/browse": {
             "get": {
                 "summary": "Browse directories for workspace selection",
@@ -267,7 +285,17 @@ OPENAPI_SPEC = {
                         "name": "path",
                         "in": "query",
                         "schema": {"type": "string"},
-                    }
+                    },
+                    {
+                        "name": "kind",
+                        "in": "query",
+                        "schema": {"type": "string", "enum": ["directory", "file", "all"]},
+                    },
+                    {
+                        "name": "q",
+                        "in": "query",
+                        "schema": {"type": "string"},
+                    },
                 ],
                 "responses": {
                     "200": {"description": "Directory listing"},

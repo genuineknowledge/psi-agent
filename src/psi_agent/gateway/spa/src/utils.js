@@ -1,6 +1,7 @@
 import { marked } from 'marked'
 import katex from 'katex'
 import hljs from 'highlight.js/lib/common'
+import { wrapMdTableHtml } from './mdTable.js'
 
 // GFM tables + single-newline -> <br>. With breaks on, in-paragraph line
 // breaks become semantic <br>, so the chat bubble no longer needs
@@ -28,14 +29,102 @@ const markedRenderer = new marked.Renderer()
 markedRenderer.code = function ({ text, lang }) {
   const { html, language } = highlightCode(text, (lang || '').trim())
   const cls = language ? ` class="hljs language-${language}"` : ' class="hljs"'
-  return `<pre><code${cls}>${html}</code></pre>`
+  return `<pre><code${cls}>${html}</code></pre>\n`
+}
+// Wrap every GFM table with a Yuanbao-style copy / download toolbar.
+markedRenderer.table = function (token) {
+  let header = ''
+  for (let i = 0; i < token.header.length; i++) {
+    header += this.tablecell(token.header[i])
+  }
+  header = this.tablerow({ text: header })
+  let body = ''
+  for (let i = 0; i < token.rows.length; i++) {
+    const row = token.rows[i]
+    let cells = ''
+    for (let j = 0; j < row.length; j++) {
+      cells += this.tablecell(row[j])
+    }
+    body += this.tablerow({ text: cells })
+  }
+  if (body) body = `<tbody>${body}</tbody>`
+  const tableHtml = `<table>\n<thead>\n${header}</thead>\n${body}</table>\n`
+  return wrapMdTableHtml(tableHtml)
 }
 marked.use({ renderer: markedRenderer })
+
+const TABLE_ROW_RE = /^\s*\|.+\|\s*$/
+const TABLE_SEP_RE = /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/
+
+function isTableRow(line) {
+  return TABLE_ROW_RE.test(line)
+}
+
+function isTableSeparator(line) {
+  return TABLE_SEP_RE.test(line)
+}
+
+function isTableLine(line) {
+  return isTableRow(line) || isTableSeparator(line)
+}
+
+/** Drop blank lines inside pipe-table blocks so marked GFM can parse them. */
+function normalizeGfmTables(text) {
+  const lines = text.split('\n')
+  const out = []
+  let i = 0
+
+  while (i < lines.length) {
+    if (!isTableLine(lines[i])) {
+      out.push(lines[i])
+      i++
+      continue
+    }
+
+    const block = []
+    while (i < lines.length) {
+      const cur = lines[i]
+      if (cur.trim() === '') {
+        let j = i + 1
+        while (j < lines.length && lines[j].trim() === '') j++
+        if (j < lines.length && isTableLine(lines[j])) {
+          i++
+          continue
+        }
+        break
+      }
+      if (isTableLine(cur)) {
+        block.push(cur.trim())
+        i++
+        continue
+      }
+      break
+    }
+
+    out.push(...block)
+  }
+
+  return out.join('\n')
+}
+
+/** Models sometimes wrap tables in fenced code; unwrap when inner content is table-only. */
+function unwrapFencedTables(text) {
+  return text.replace(/```[^\n]*\n([\s\S]*?)```/g, (full, inner) => {
+    const body = inner.trim()
+    if (!body) return full
+    const innerLines = body.split('\n')
+    if (innerLines.length >= 2 && innerLines.every(isTableLine)) {
+      return body
+    }
+    return full
+  })
+}
 
 export function renderMd(text) {
   if (!marked || !marked.parse) return htmlEscape(text)
   const macros = []
-  const s = text
+  const normalized = normalizeGfmTables(unwrapFencedTables(text))
+  const s = normalized
     .replace(/\$\$([\s\S]+?)\$\$/g, (_, m) => { const i = macros.length; macros.push({ block: true, tex: m.trim() }); return `\x00MATH${i}\x00` })
     .replace(/\$([^$]+?)\$/g, (_, m) => { const i = macros.length; macros.push({ block: false, tex: m.trim() }); return `\x00MATH${i}\x00` })
   let html = marked.parse(s)
@@ -87,14 +176,69 @@ export function mimeType(name) {
 }
 
 const LS_ACTIVE = 'gw-active-ids'
+const LS_WORKSPACES = 'gw-workspaces'
+const LS_SELECTED_WS = 'gw-selected-workspace'
+const LS_COLLAPSED_WS = 'gw-collapsed-workspaces'
 
-export function saveActiveState(aiId, sessId) {
-  localStorage.setItem(LS_ACTIVE, JSON.stringify({ aiId, sessId }))
+export function saveActiveState(aiId, sessId, workspacePath) {
+  const prev = loadActiveState()
+  localStorage.setItem(LS_ACTIVE, JSON.stringify({
+    aiId,
+    sessId,
+    workspacePath: workspacePath !== undefined ? workspacePath : prev.workspacePath ?? null,
+  }))
 }
 
 export function loadActiveState() {
-  try { return JSON.parse(localStorage.getItem(LS_ACTIVE)) || { aiId: null, sessId: null } }
-  catch (_) { return { aiId: null, sessId: null } }
+  try {
+    const data = JSON.parse(localStorage.getItem(LS_ACTIVE)) || {}
+    return {
+      aiId: data.aiId ?? null,
+      sessId: data.sessId ?? null,
+      workspacePath: data.workspacePath ?? null,
+    }
+  } catch (_) {
+    return { aiId: null, sessId: null, workspacePath: null }
+  }
+}
+
+export function loadRegisteredWorkspaces() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_WORKSPACES) || '[]')
+    return Array.isArray(raw) ? raw.filter(p => typeof p === 'string') : []
+  } catch (_) {
+    return []
+  }
+}
+
+export function saveRegisteredWorkspaces(paths) {
+  localStorage.setItem(LS_WORKSPACES, JSON.stringify(paths))
+}
+
+export function loadSelectedWorkspace() {
+  try {
+    return localStorage.getItem(LS_SELECTED_WS) || ''
+  } catch (_) {
+    return ''
+  }
+}
+
+export function saveSelectedWorkspace(path) {
+  if (path) localStorage.setItem(LS_SELECTED_WS, path)
+  else localStorage.removeItem(LS_SELECTED_WS)
+}
+
+export function loadCollapsedWorkspaces() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(LS_COLLAPSED_WS) || '[]')
+    return Array.isArray(raw) ? raw.filter(p => typeof p === 'string') : []
+  } catch (_) {
+    return []
+  }
+}
+
+export function saveCollapsedWorkspaces(paths) {
+  localStorage.setItem(LS_COLLAPSED_WS, JSON.stringify(paths))
 }
 
 export function saveHistory(id, msgs) {
@@ -103,6 +247,9 @@ export function saveHistory(id, msgs) {
     text: m.text,
     files: (m.files || []).map(f => ({ name: f.name, data: f.data })),
     stopped: m.stopped || false,
+    failed: m.failed || false,
+    failedReason: m.failedReason || '',
+    feedback: m.feedback || '',
   }))))
 }
 

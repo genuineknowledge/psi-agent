@@ -34,9 +34,12 @@ PSI_AGENT_HELP_GUIDANCE = (
 # ---------------------------------------------------------------------------
 
 SESSION_SEARCH_GUIDANCE = (
-    "When the user references something from a past conversation or you suspect "
-    "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "When the user references another conversation, exports a transcript, transfers work to another "
+    "session, or asks about session list/status, read `skills/session-management/SKILL.md`. Use "
+    "`session_keyword_search` (by phrase) or `session_task_search` (by type) to locate sessions; "
+    "`sessions_history` / `session_status` to inspect; `sessions_export` to save transcripts; "
+    "`sessions_create` + `sessions_handoff` for new-tab handoff. "
+    "Do not use `memory_search` for raw transcript recall."
 )
 
 SKILLS_GUIDANCE = (

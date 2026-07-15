@@ -5,7 +5,8 @@ import sys
 import types
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
+from typing import cast as _cast
 
 TOOLS_DIR = Path(__file__).resolve().parent
 
@@ -36,12 +37,12 @@ def _load_sibling_module(name: str) -> dict[str, Any]:
     return module.__dict__
 
 
-_client = _load_sibling_module("_client")
-_config = _load_sibling_module("_config")
-_format_context_pack = cast(FormatContextPack, _client["format_context_pack"])
-_format_error_result = cast(FormatErrorResult, _client["format_error_result"])
-_post_json = cast(PostJson, _client["post_json"])
-CONFIG = cast(MemoryConfig, _config["CONFIG"])
+_client = _load_sibling_module("_fusion_memory_client")
+_config = _load_sibling_module("_fusion_memory_config")
+_format_context_pack = _cast(FormatContextPack, _client["format_context_pack"])
+_format_error_result = _cast(FormatErrorResult, _client["format_error_result"])
+_post_json = _cast(PostJson, _client["post_json"])
+CONFIG = _cast(MemoryConfig, _config["CONFIG"])
 
 
 async def memory_answer_context(query: str) -> str:

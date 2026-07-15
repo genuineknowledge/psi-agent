@@ -12,10 +12,12 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent.gateway._ai_manager import AIManager
+from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
 from psi_agent.gateway._history_manager import HistoryManager
 from psi_agent.gateway._openapi import render_openapi
 from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME, inject_app_name, read_spa_index_template
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._workspace_manager import WorkspaceManager
 
@@ -28,10 +30,27 @@ async def _handle_openapi(request: web.Request) -> web.Response:
     return web.Response(text=render_openapi(), content_type="application/json")
 
 
+async def _handle_spa_index(request: web.Request) -> web.Response:
+    app_name: str = request.app["app_name"]
+    template = await read_spa_index_template()
+    if template is None:
+        return _error("SPA index.html not found", status=404)
+    body = inject_app_name(template, app_name)
+    return web.Response(text=body, content_type="text/html", charset="utf-8")
+
+
 async def _handle_favicon(request: web.Request) -> web.FileResponse:
     favicon_path: str = request.app["favicon_path"]
     logger.debug(f"Serving favicon from {favicon_path!r}")
     return web.FileResponse(favicon_path)
+
+
+async def _request_attention(request: web.Request) -> web.Response:
+    """SPA pings this when a background chat turn finishes — flash tray/webview."""
+    attention: AttentionHub = request.app["attention"]
+    # schedule_notify is non-blocking; do not await tray pulse on the request path.
+    attention.schedule_notify()
+    return _json({"ok": True})
 
 
 def _json(data: object, status: int = 200) -> web.Response:
@@ -47,7 +66,12 @@ def _error(message: str, status: int) -> web.Response:
 
 
 async def create_app(
-    aim: AIManager, sm: SessionManager, tm: TitleManager, favicon_path: str | None = None
+    aim: AIManager,
+    sm: SessionManager,
+    tm: TitleManager,
+    favicon_path: str | None = None,
+    app_name: str = DEFAULT_APP_NAME,
+    attention: AttentionHub | None = None,
 ) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
@@ -57,8 +81,11 @@ async def create_app(
     app["cm"] = ChatManager()
     app["hm"] = HistoryManager()
     app["favicon_path"] = favicon_path
+    app["app_name"] = app_name
+    app["attention"] = attention if attention is not None else AttentionHub()
 
     spa_dist = anyio.Path(__file__).parent / "spa" / "dist"
+    app.router.add_get("/spa/index.html", _handle_spa_index)
     if await spa_dist.exists():
         app.router.add_static("/spa/", str(spa_dist), show_index=False)
     app.router.add_get("/", _handle_spa)
@@ -77,7 +104,9 @@ async def create_app(
     app.router.add_get("/titles", _list_titles)
     app.router.add_post("/titles", _set_title)
     app.router.add_post("/titles/generate", _generate_title)
+    app.router.add_post("/ui/attention", _request_attention)
     app.router.add_get("/workspace/cwd", _get_cwd)
+    app.router.add_get("/workspace/roots", _list_workspace_roots)
     app.router.add_get("/workspace/browse", _browse_workspace)
     app.router.add_get("/sessions/{session_id}/history", _get_history)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
@@ -211,14 +240,19 @@ async def _get_cwd(request: web.Request) -> web.Response:
     return _json({"cwd": wm.get_cwd()})
 
 
+async def _list_workspace_roots(request: web.Request) -> web.Response:
+    wm: WorkspaceManager = request.app["wm"]
+    return _json(await wm.list_roots())
+
+
 async def _browse_workspace(request: web.Request) -> web.Response:
     wm: WorkspaceManager = request.app["wm"]
     path = request.query.get("path") or os.getcwd()
+    kind = request.query.get("kind") or "directory"
+    q = request.query.get("q") or ""
     try:
-        result = await wm.browse(path)
-        parent = os.path.dirname(path)
-        return _json({"path": path, "parent": parent, **result})
-    except (OSError, PermissionError) as e:
+        return _json(await wm.browse(path, kind=kind, q=q))
+    except (OSError, PermissionError, FileNotFoundError, NotADirectoryError) as e:
         return _error(str(e), status=400)
 
 
