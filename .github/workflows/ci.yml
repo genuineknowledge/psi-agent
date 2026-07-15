@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+env:
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -11,8 +14,18 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
+          version: "0.11.23"
           python-version: "3.14"
-      - run: uv sync
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+      - uses: dtolnay/rust-toolchain@stable
+      - run: uv sync --frozen
+      - name: Verify LLMRouter environment
+        run: |
+          uv run python -c "import litellm; from llmrouter.models.llmmultiroundrouter import LLMMultiRoundRouter; assert hasattr(LLMMultiRoundRouter, '_decompose_and_route'); print('LLMRouter API OK')"
+          uv run python -c "from importlib.resources import files; root = files('psi_agent.ai').joinpath('custom_tasks'); names = ('agent_decomp_route.yaml', 'agent_decomp_cot.yaml', 'agent_prompt.yaml'); missing = [name for name in names if not root.joinpath(name).is_file()]; assert not missing, missing; print('LLMRouter prompts OK')"
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run ty check .
@@ -24,8 +37,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
+          version: "0.11.23"
           python-version: "3.14"
-      - run: uv sync
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+      - uses: dtolnay/rust-toolchain@stable
+      - run: uv sync --frozen
       - run: uv run pytest -v
 
   publish:
@@ -46,6 +65,11 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - uses: astral-sh/setup-uv@v7
         with:
+          version: "0.11.23"
           python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
       - run: uv build
       - uses: pypa/gh-action-pypi-publish@release/v1

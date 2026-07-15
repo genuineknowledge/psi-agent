@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
 jobs:
   auto-tag:
     runs-on: ubuntu-latest
@@ -87,6 +90,11 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - uses: astral-sh/setup-uv@v7
         with:
+          version: "0.11.23"
           python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
       - run: uv build
       - uses: pypa/gh-action-pypi-publish@release/v1

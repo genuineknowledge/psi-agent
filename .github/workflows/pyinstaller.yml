@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+env:
+  PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+
 jobs:
   pyinstaller:
     runs-on: ${{ matrix.os }}
@@ -36,8 +39,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
+          version: "0.11.23"
           python-version: "3.14"
-      - run: uv sync
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+      - uses: dtolnay/rust-toolchain@stable
+      - run: uv sync --frozen
       - run: uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]"
       - uses: actions/setup-node@v6
         with:
