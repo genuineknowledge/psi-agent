@@ -8,6 +8,9 @@ from typing import Any
 
 from loguru import logger
 
+from psi_agent.gateway._attention import _flash_hwnd
+from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
+
 
 class GatewayWebView:
     """Manages a pywebview window for the Gateway Web Console.
@@ -17,10 +20,17 @@ class GatewayWebView:
     is closed by the user.
     """
 
-    def __init__(self, url: str, has_tray: bool = False, icon: str | None = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        has_tray: bool = False,
+        icon: str | None = None,
+        app_name: str = DEFAULT_APP_NAME,
+    ) -> None:
         self._url = url
         self._has_tray = has_tray
         self._icon = icon
+        self._app_name = app_name
         self._window: Any = None
         self._closed_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -36,7 +46,7 @@ class GatewayWebView:
 
         webview = __import__("webview")
 
-        self._window = webview.create_window("控制台", self._url)
+        self._window = webview.create_window(self._app_name, self._url)
         self._window.events.closing += self._on_closing  # ty: ignore
 
         self._thread = threading.Thread(
@@ -71,6 +81,18 @@ class GatewayWebView:
     def is_running(self) -> bool:
         """True if the webview thread is alive."""
         return self._thread is not None and self._thread.is_alive()
+
+    def request_attention(self) -> None:
+        """Flash the native window on the taskbar (Windows only, best-effort)."""
+        if self._window is None:
+            return
+        try:
+            native = self._window.native
+            hwnd = getattr(native, "Handle", None)
+            if hwnd is not None:
+                _flash_hwnd(int(hwnd))
+        except Exception as e:
+            logger.debug(f"Webview attention flash failed: {e!r}")
 
     def _on_closing(self) -> bool:
         """Handle window close event.

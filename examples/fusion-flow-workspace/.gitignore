@@ -1,0 +1,9 @@
+# Never commit the psi-engine .env — it holds the AI api_key copied from the gateway.
+.env
+.env.*
+
+# Fusion Flow run artifacts (generated per run under the workDir).
+runs/
+
+# Shim state dir if ever created inside the workspace.
+.fusion-shim-*/

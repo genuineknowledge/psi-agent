@@ -62,8 +62,10 @@ from prompt_sections import (
     SEND_FILES_SECTION,
     SILENT_REPLIES_SECTION,
     SILENT_TOKEN,
+    SESSION_MANAGEMENT_SECTION,
     SYSTEM_CLI_TOOLS_SECTION,
     STRUCTURED_TABLES_SECTION,
+    TASK_PLANNING_SECTION,
     TASK_SELF_CHECK_SECTION,
     SUBAGENT_DELEGATION_SECTION,
     TOOL_CALL_STYLE_SECTION,
@@ -865,6 +867,9 @@ class System:
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
         flows_index = await _build_flows_index(flows_dir)
         runtime_bundle = fusion_skill_dir / "runtime" / "agent-flow-core.bundle.mjs"
+        # psi engine MUST route through the session shim (the current CLI's `run` is a
+        # YAML batch launcher and rejects the bundle's old-style flags with exit=2).
+        session_shim_posix = (Path(str(workspace_resolved)) / "bin" / "session_shim.py").as_posix()
 
         return f"""## Fusion Flow (workflow authoring)
 
@@ -935,12 +940,27 @@ FLOW_ENGINE=psi
 FLOW_PSI_WORKSPACE={default_executor_workspace}
 FLOW_PSI_PROFILE=fusion
 
-When psi-agent is not installed globally, run Fusion Flow with these local overrides:
+CRITICAL — the psi engine MUST route through the session shim, never call `psi-agent run`
+directly. The current psi-agent CLI's `run` is a YAML batch launcher taking a single positional
+config path; the Fusion Flow bundle emits the OLD form `psi-agent run --workspace --message ...`,
+which that CLI rejects with `exit=2 Missing value for argument 'config'`. If you see that exit=2
+(or think "the psi engine is incompatible with the current CLI"), the cause is missing shim
+wiring — it is NOT a reason to abandon Fusion Flow and hand-roll a parallel run with background
+tasks. Fix the wiring and re-run. The shim (`bin/session_shim.py`) translates the old call into
+the new three-layer architecture (`ai --provider` + `session` + `channel cli`).
 
-FLOW_PSI_COMMAND=uv
-FLOW_PSI_COMMAND_ARGS=--project {repo_root} run psi-agent
+Wire it (forward-slash paths work on Windows + POSIX; use `python3` if `python` is absent):
 
-Never write API keys into this workspace, generated `.flow.ts` files, or `.env` files."""
+FLOW_PSI_COMMAND=python
+FLOW_PSI_COMMAND_ARGS={session_shim_posix}
+PSI_CMD=uv run --no-sync --project {repo_root} psi-agent
+
+The shim also needs FLOW_PSI_AI / FLOW_PSI_MODEL / FLOW_PSI_BASE_URL / FLOW_PSI_API_KEY. If a
+gateway has been used, reuse its saved config with the fusion-flow-workspace helper
+`bin/env_from_gateway.py` (reads state/latest.json, writes the .env) instead of
+hand-copying the key.
+
+Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files."""
 
     async def build_system_prompt(self, model: str | None = None, tool_names: list[str] | None = None) -> str:
         ws = self._workspace_dir
@@ -998,6 +1018,22 @@ Never write API keys into this workspace, generated `.flow.ts` files, or `.env` 
             "",
             FUSION_MEMORY_SECTION,
         ]
+
+        _session_tools = {
+            "sessions_list",
+            "sessions_history",
+            "session_status",
+            "session_keyword_search",
+            "session_task_search",
+            "sessions_export",
+            "sessions_create",
+            "sessions_handoff",
+        }
+        if _session_tools & set(tools):
+            stable_parts += ["", SESSION_MANAGEMENT_SECTION]
+
+        if "todo" in tools:
+            stable_parts += ["", TASK_PLANNING_SECTION]
 
         skills_section = build_skills_section(skills_xml)
         if skills_section:

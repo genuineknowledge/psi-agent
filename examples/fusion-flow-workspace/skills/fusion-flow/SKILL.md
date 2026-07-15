@@ -530,6 +530,7 @@ The author skill must catch and refuse to emit code that does any of these:
 5. **Agentic session or `flow.exec` inside `flow.pmap` / `flow.forEach` over many items.** Each agentic CLI call (`flow.agent` with `tools`) and each `flow.exec` cold-starts a subprocess (~3-10s, and on the claude engine roughly $0.25/call with no cross-session prompt-cache reuse); a 100-item loop = many minutes + stacked cost. If you need a plain LLM call on N items, use a `flow.session` on a tool-less agent inside `flow.pmap`. Reserve agentic mode / `flow.exec` for one-off tasks.
 6. **Using an agentic session or `flow.exec` to get a boolean / single value.** Both return free-form output, not strict JSON. Use `flow.evaluate({kind: "boolean" | "number" | "choice"})` (preferably on `engine: "claude"` for the native `--json-schema` path) instead. If the user really wants agentic autonomy *and* a structured answer, parse `result.text` / `result.stdout` with a regex/heuristic and document the fragility.
 7. **Relaying an external tool's API key through Fuclaw's `env`.** When generating a `flow.exec` that wraps an external tool (a Python pipeline, a CLI with its own config), do NOT thread that tool's API key through `env: { SOME_KEY: process.env.SOME_KEY }`. The key usually lives in the *external tool's own* config (read by its own dotenv at its `cwd`), not in Fuclaw's `process.env` — so the relay resolves to `""` and silently breaks the tool's auth while looking correct. It also drags the secret into Fuclaw's process memory for no reason. Pass through `env` only what the subprocess genuinely can't obtain itself (e.g. `PYTHONPATH`); for credentials, set `cwd` to the tool's dir and let it read its own config.
+8. **Inlining a large document (paper / long file / big blob) into a prompt or `flow.input`.** The psi engine passes each `flow.session` message as a command-line argument to the subprocess; a document of tens of KB overflows the OS argument limit and the run dies with `ENAMETOOLONG` (or a silently truncated prompt on other engines). Do NOT paste the full text into the prompt string or a `flow.input` default. Instead: write the document to a file under `<workDir>` once, give the reviewer/analyst `flow.agent({ tools: ["read", ...] })`, and pass only the **file path** in the prompt — each agent reads the file itself. This also keeps every sub-agent's context focused instead of duplicating the whole document across N branches. (For extracting text from a PDF first, use a one-shot `flow.exec` or do it outside the flow; `read` handles plain text, not PDF.)
 
 ### Runtime mode detection (which `import` path to use)
 
@@ -688,15 +689,21 @@ test -f /c/Program\ Files/Git/bin/bash.exe || \
   test -f /d/Program\ Files/Git/bin/bash.exe       # one of the candidates
 ```
 
-For the psi-agent engine, configure:
+For the psi-agent engine, configure. The engine emits `psi-agent run --workspace <W> --message <M> ...`,
+but the current psi-agent CLI's `run` is a YAML batch launcher that takes a single positional config
+path — those flags make it fail with `exit=2 Missing value for argument 'config'`. That exit=2 is a
+wiring gap (the fix below), not an incompatible engine; route the call through the psi-agent
+workspace's session shim (`bin/session_shim.py`), which translates it into the current CLI's
+three-layer form (`ai --provider` + `session` + `channel cli`):
 
 ```bash
 FLOW_ENGINE=psi
 FLOW_PSI_WORKSPACE=/abs/path/to/psi-agent/examples/a-simple-bash-only-workspace
 FLOW_PSI_PROFILE=fusion          # psi-agent reads ~/.psi-agent/config.toml
-# Optional when psi-agent is not installed globally:
-FLOW_PSI_COMMAND=uv
-FLOW_PSI_COMMAND_ARGS=--project /abs/path/to/psi-agent run psi-agent
+# Route through the session shim (POSIX python3 / Windows python + forward-slash path):
+FLOW_PSI_COMMAND=python3
+FLOW_PSI_COMMAND_ARGS=/abs/path/to/psi-agent/examples/fusion-flow-workspace/bin/session_shim.py
+PSI_CMD=uv run --no-sync --project /abs/path/to/psi-agent psi-agent   # shim uses this to start psi-agent
 # Optional: point at a non-default psi-agent config file
 FLOW_PSI_CONFIG=/abs/path/to/config.toml
 # Optional: connect to an existing AI backend instead of psi-agent's configured provider
