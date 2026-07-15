@@ -185,8 +185,7 @@ class ScheduleRegistry:
                             async with aclosing(agent.run(msg)) as chunks:
                                 async for chunk in chunks:
                                     logger.debug(
-                                        f"Schedule chunk: content={chunk.content!r}, "
-                                        f"reasoning={chunk.reasoning!r}"
+                                        f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}"
                                     )
                             logger.info(f"Schedule {schedule.name!r} turn finished (not queued for UI)")
                     except Exception as e:

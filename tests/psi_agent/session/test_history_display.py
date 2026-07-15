@@ -28,9 +28,7 @@ def test_displayable_skips_schedule_rows() -> None:
     assert is_displayable_chat_message({"role": "user", "content": "hi"})
     assert is_displayable_chat_message({"role": "assistant", "content": "yo"})
     assert not is_displayable_chat_message({"role": ROLE_USER_SCHEDULE, "content": "task"})
-    assert not is_displayable_chat_message(
-        {"role": "assistant", "content": "HEARTBEAT_OK", "source": SOURCE_SCHEDULE}
-    )
+    assert not is_displayable_chat_message({"role": "assistant", "content": "HEARTBEAT_OK", "source": SOURCE_SCHEDULE})
     assert not is_displayable_chat_message({"role": "tool", "content": "x"})
 
 

@@ -203,9 +203,7 @@ class SessionAgent:
                     request_body |= extra_params
 
                 logger.info("Sending request to AI via AiClient")
-                logger.debug(
-                    f"Request messages count: {len(request_body['messages'])}, tools: {len(tool_defs)}"
-                )
+                logger.debug(f"Request messages count: {len(request_body['messages'])}, tools: {len(tool_defs)}")
 
                 finish_reason: str | None = None
                 accumulated_tool_calls: dict[int, dict[str, Any]] = {}
