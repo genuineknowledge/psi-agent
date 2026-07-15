@@ -20,9 +20,8 @@ The first run may download the ``@playwright/mcp`` package. If Node is missing t
 tools are skipped at load time with a logged error rather than crashing tool loading.
 
 Env knobs (all optional): ``BROWSER_CHANNEL`` (default ``msedge``),
-``BROWSER_HEADLESS`` (default headed/visible; set ``1`` for headless on displayless
-hosts), ``BROWSER_CAPS`` (default ``vision,devtools``), ``BROWSER_MCP_PACKAGE``,
-``BROWSER_STARTUP_TIMEOUT``.
+``BROWSER_HEADLESS`` (``1``/``0``), ``BROWSER_CAPS`` (default ``vision,devtools``),
+``BROWSER_MCP_PACKAGE``, ``BROWSER_STARTUP_TIMEOUT``.
 """
 
 from __future__ import annotations

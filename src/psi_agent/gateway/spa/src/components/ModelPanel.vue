@@ -10,12 +10,13 @@
 
     <div v-if="modelPanelOpen" class="model-panel">
       <div class="model-panel-header">
-        <span>切换模型</span>
+        <span>大模型</span>
+        <button @click="openNewAi">
+          <span class="material-symbols-outlined">add</span>链接新模型
+        </button>
       </div>
       <div class="model-panel-list">
-        <div v-if="ais.length === 0" class="model-panel-empty">
-          暂无模型，请到右上角 → 大模型 连接
-        </div>
+        <div v-if="ais.length === 0" class="model-panel-empty">暂无模型，请点击「链接新模型」</div>
         <div v-for="a in ais" :key="a.id"
              class="model-panel-item"
              :class="{ active: a.id === selectedAiId }"
@@ -43,7 +44,7 @@ import { useAiStore } from '../stores/ai.js'
 const ai = useAiStore()
 const { modelPanelOpen, ais, selectedAiId } = storeToRefs(ai)
 
-const emit = defineEmits(['select-ai', 'delete-ai'])
+const emit = defineEmits(['select-ai', 'delete-ai', 'new-ai'])
 
 const currentModelLabel = computed(() => {
   const found = ais.value.find(a => a.id === selectedAiId.value)
@@ -58,6 +59,11 @@ function selectAi(id) {
 function requestDelete(id) {
   modelPanelOpen.value = false
   emit('delete-ai', id)
+}
+
+function openNewAi() {
+  modelPanelOpen.value = false
+  emit('new-ai')
 }
 </script>
 
@@ -102,6 +108,7 @@ function requestDelete(id) {
 .model-panel-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--md-outline-variant);
 }
@@ -109,6 +116,15 @@ function requestDelete(id) {
   font-size: 13px; font-weight: 600; color: var(--md-text-secondary);
   letter-spacing: 0.5px; text-transform: uppercase;
 }
+.model-panel-header button {
+  display: flex; align-items: center; gap: 4px;
+  background: var(--md-primary-container); color: var(--md-on-primary-container);
+  border: none; border-radius: 12px;
+  padding: 5px 10px; font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: filter 0.15s;
+}
+.model-panel-header button:hover { filter: brightness(0.95); }
+.model-panel-header button .material-symbols-outlined { font-size: 15px; }
 .model-panel-list { padding: 6px 8px; max-height: 220px; overflow-y: auto; }
 .model-panel-item {
   display: flex; align-items: center; gap: 8px;

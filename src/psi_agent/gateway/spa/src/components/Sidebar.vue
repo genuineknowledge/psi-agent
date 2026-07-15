@@ -5,12 +5,13 @@
         <div class="sb-header">
           <div class="sb-brand">
             <div class="sb-logo"></div>
-            <span class="sb-brand-name">HaiTun</span>
+            <span class="sb-brand-name">Dolphin</span>
           </div>
         </div>
-        <button class="open-workspace" @click="$emit('open-workspace')">
-          <span class="material-symbols-outlined">folder_open</span>
-          <span class="label">打开工作区</span>
+        <button class="new-chat" @click="$emit('new-session')">
+          <span class="material-symbols-outlined">edit_square</span>
+          <span class="label">发起新对话</span>
+          <span class="shortcut">Ctrl+Shift+O</span>
         </button>
         <div class="session-search">
           <span class="material-symbols-outlined">search</span>
@@ -18,8 +19,8 @@
             ref="searchInputRef"
             v-model="sessionSearchText"
             type="search"
-            placeholder="搜索工作区或会话"
-            aria-label="搜索工作区或会话"
+            placeholder="搜索会话"
+            aria-label="搜索会话"
           >
           <span v-if="!sessionSearchText" class="shortcut search-shortcut">Ctrl+Shift+K</span>
           <button
@@ -34,126 +35,47 @@
         </div>
       </div>
       <div class="sb-scroll">
-        <div class="recent-label">工作区</div>
-        <div v-if="workspaceGroups.length === 0" class="session-empty">
-          点击「打开工作区」添加文件夹
-        </div>
-        <div v-for="group in workspaceGroups" :key="group.path" class="ws-group">
-          <div
-            class="ws-header item"
-            :class="{
-              selected: group.path === selectedWorkspacePath && !selectedSessionId && !draftForWorkspace(group.path),
-            }"
-            @click="onSelectWorkspace(group.path)"
-          >
-            <button
-              class="ws-toggle"
-              type="button"
-              :title="isWorkspaceExpanded(group.path) ? '折叠' : '展开'"
-              @click.stop="toggleWorkspaceExpanded(group.path)"
-            >
-              <span class="material-symbols-outlined">
-                {{ isWorkspaceExpanded(group.path) ? 'expand_more' : 'chevron_right' }}
-              </span>
-            </button>
-            <span class="material-symbols-outlined ws-folder">folder</span>
-            <span class="info">
-              <div class="name ws-name" :title="group.path">{{ group.label }}</div>
-            </span>
-            <button
-              class="ws-add"
-              type="button"
-              title="在此工作区发起新对话"
-              @click.stop="onNewSession(group.path)"
-            >
-              <span class="material-symbols-outlined">add</span>
-            </button>
-            <button
-              class="del ws-remove"
-              type="button"
-              title="从列表移除工作区"
-              @click.stop="confirmRemoveWorkspace(group)"
-            >
-              <span class="material-symbols-outlined">close</span>
-            </button>
-          </div>
-          <div v-show="isWorkspaceExpanded(group.path)" class="ws-sessions">
-            <div
-              v-if="draftForWorkspace(group.path)"
-              class="item session-item draft-item"
-              :class="{ selected: isDraftSelected(group.path) }"
-              @click="selectDraftChat(group.path)"
-            >
-              <span class="info">
-                <SessionStreamIndicator v-bind="draftStreamState(group.path)" />
-                <div class="name">{{ PLACEHOLDER_SESSION_TITLE }}</div>
-              </span>
-            </div>
-            <div
-              v-for="s in group.sessions"
-              :key="s.id"
-              class="item session-item"
-              :class="{ selected: s.id === selectedSessionId }"
-              @click="selectSession(s.id)"
-            >
-              <button
-                class="pin"
-                :class="{ pinned: isSessionPinned(s.id) }"
-                @click.stop="toggleSessionPin(s.id)"
-                :title="isSessionPinned(s.id) ? '取消置顶' : '置顶会话'"
-              >
-                <span class="material-symbols-outlined">keep</span>
-              </button>
-              <span class="info">
-                <SessionStreamIndicator
-                  :streaming="isSessionStreaming(s.id)"
-                  :marked="isSessionStreamMarked(s.id)"
-                />
-                <input
-                  v-if="editingSessionId === s.id"
-                  v-model="editingWorkspaceText"
-                  class="edit-input"
-                  v-focus
-                  @blur="saveSessionTitle(s)"
-                  @keydown.enter="saveSessionTitle(s)"
-                  @click.stop
-                >
-                <div
-                  v-else
-                  class="name"
-                  :title="displaySessionName(s)"
-                  @dblclick.stop="startEditTitle(s)"
-                >
-                  {{ displaySessionName(s) }}
-                </div>
-              </span>
-              <button class="del" type="button" @click.stop="confirmDeleteSession(s.id)">
-                <span class="material-symbols-outlined">delete</span>
-              </button>
-            </div>
-            <div
-              v-if="group.sessions.length === 0 && !sessionSearchText.trim() && !draftForWorkspace(group.path)"
-              class="ws-empty-sessions"
-            >
-              暂无会话
-            </div>
-            <button
-              v-if="!sessionSearchText.trim()"
-              class="ws-new-session"
-              type="button"
-              title="在此工作区发起新对话"
-              @click.stop="onNewSession(group.path)"
-            >
-              <span class="material-symbols-outlined">add</span>
-              <span>新对话</span>
-            </button>
-          </div>
-        </div>
+        <div class="recent-label">最近</div>
         <div
-          v-if="sessions.length && workspaceGroups.length === 0 && sessionSearchText.trim()"
-          class="session-empty"
+          v-for="s in visibleSessions"
+          :key="s.id"
+          class="item"
+          :class="{ selected: s.id === selectedSessionId }"
+          @click="selectSession(s.id)"
         >
-          没有匹配的工作区或会话
+          <button
+            class="pin"
+            :class="{ pinned: isSessionPinned(s.id) }"
+            @click.stop="toggleSessionPin(s.id)"
+            :title="isSessionPinned(s.id) ? '取消置顶' : '置顶会话'"
+          >
+            <span class="material-symbols-outlined">keep</span>
+          </button>
+          <span class="info">
+            <input
+              v-if="editingSessionId === s.id"
+              v-model="editingWorkspaceText"
+              class="edit-input"
+              v-focus
+              @blur="saveSessionWorkspace(s)"
+              @keydown.enter="saveSessionWorkspace(s)"
+              @click.stop
+            >
+            <div
+              v-else
+              class="name"
+              :title="displaySessionName(s)"
+              @dblclick.stop="startEditWorkspace(s)"
+            >
+              {{ displaySessionName(s) }}
+            </div>
+          </span>
+          <button class="del" @click.stop="confirmDeleteSession(s.id)">
+            <span class="material-symbols-outlined">delete</span>
+          </button>
+        </div>
+        <div v-if="sessions.length && visibleSessions.length === 0" class="session-empty">
+          没有匹配的会话
         </div>
       </div>
     </div>
@@ -166,63 +88,37 @@ import { storeToRefs } from 'pinia'
 import { useSessionStore } from '../stores/session.js'
 import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
-import { selectSession, selectWorkspace, selectDraftChat } from '../composables/useSession.js'
+import { selectSession } from '../composables/useSession.js'
 import {
   buildSessionTitlePayload,
-  buildWorkspaceGroups,
+  buildVisibleSessions,
   getSessionDisplayName,
-  PLACEHOLDER_SESSION_TITLE,
   savePinnedSessionIds,
-  sessionsForWorkspace,
   togglePinnedSessionId,
-  normalizeWorkspacePath,
 } from '../sessionList.js'
-import SessionStreamIndicator from './SessionStreamIndicator.vue'
 
 const session = useSessionStore()
 const {
   sessions,
   selectedSessionId,
-  draftSession,
-  selectedWorkspacePath,
-  gatewayCwd,
-  registeredWorkspaces,
   sessionTitles,
   editingSessionId,
   editingWorkspaceText,
   sessionSearchText,
   pinnedSessionIds,
-  sessionStreaming,
-  sessionStreamMarks,
 } = storeToRefs(session)
 
 const ui = useUiStore()
 const { isSidebarCollapsed, isMobileSidebarOpen, dlgConfirm, sessionSearchFocusToken } = storeToRefs(ui)
 
-const emit = defineEmits(['new-session', 'open-workspace'])
-
-function onNewSession(workspacePath) {
-  emit('new-session', workspacePath)
-}
-
-function draftForWorkspace(path) {
-  const draft = draftSession.value
-  if (!draft) return false
-  return normalizeWorkspacePath(path) === draft.workspace
-}
-
-function isDraftSelected(path) {
-  return draftForWorkspace(path) && !selectedSessionId.value
-}
+defineEmits(['new-session'])
 
 const searchInputRef = ref(null)
 watch(sessionSearchFocusToken, () => {
   nextTick(() => searchInputRef.value?.focus())
 })
 
-const workspaceGroups = computed(() => buildWorkspaceGroups(sessions.value, {
-  registered: registeredWorkspaces.value,
-  defaultCwd: gatewayCwd.value,
+const visibleSessions = computed(() => buildVisibleSessions(sessions.value, {
   titles: sessionTitles.value,
   query: sessionSearchText.value,
   pinnedIds: pinnedSessionIds.value,
@@ -236,49 +132,17 @@ function isSessionPinned(id) {
   return pinnedSessionIds.value.includes(id)
 }
 
-function isSessionStreaming(id) {
-  return !!sessionStreaming.value[id]
-}
-
-function isSessionStreamMarked(id) {
-  return !!sessionStreamMarks.value[id]
-}
-
-function draftStreamState(workspacePath) {
-  const draft = draftSession.value
-  if (!draft || normalizeWorkspacePath(workspacePath) !== draft.workspace) {
-    return { streaming: false, marked: false }
-  }
-  const id = draft.draftId
-  return {
-    streaming: !!sessionStreaming.value[id],
-    marked: !!sessionStreamMarks.value[id],
-  }
-}
-
 function toggleSessionPin(id) {
   pinnedSessionIds.value = togglePinnedSessionId(pinnedSessionIds.value, id)
   savePinnedSessionIds(window.localStorage, pinnedSessionIds.value)
 }
 
-function isWorkspaceExpanded(path) {
-  return session.isWorkspaceExpanded(path)
-}
-
-function toggleWorkspaceExpanded(path) {
-  session.toggleWorkspaceExpanded(path)
-}
-
-function onSelectWorkspace(path) {
-  selectWorkspace(path)
-}
-
-function startEditTitle(sess) {
+function startEditWorkspace(sess) {
   editingSessionId.value = sess.id
   editingWorkspaceText.value = displaySessionName(sess)
 }
 
-async function saveSessionTitle(sess) {
+async function saveSessionWorkspace(sess) {
   if (editingSessionId.value === null) return
   const targetText = editingWorkspaceText.value.trim()
   const oldText = displaySessionName(sess)
@@ -300,21 +164,6 @@ function confirmDeleteSession(id) {
   dlgConfirm.value.show = true
 }
 
-function confirmRemoveWorkspace(group) {
-  const count = sessionsForWorkspace(sessions.value, group.path, gatewayCwd.value).length
-  if (count > 0) {
-    dlgConfirm.value.message =
-      `工作区「${group.label}」下有 ${count} 个会话。确认移除工作区并删除其下全部会话？`
-    dlgConfirm.value.actionType = 'workspace'
-    dlgConfirm.value.actionArgs = group.path
-  } else {
-    dlgConfirm.value.message = `确认从列表移除工作区「${group.label}」？`
-    dlgConfirm.value.actionType = 'workspace-remove'
-    dlgConfirm.value.actionArgs = group.path
-  }
-  dlgConfirm.value.show = true
-}
-
 watch(
   () => sessions.value.map(sess => sess.id),
   (sessionIds) => {
@@ -327,6 +176,7 @@ watch(
   },
   { immediate: true },
 )
+
 </script>
 
 <style scoped>
@@ -372,17 +222,13 @@ watch(
 .sb-header { display: flex; align-items: center; padding: 12px 12px 8px; }
 .sb-brand { display: flex; align-items: center; gap: 10px; }
 .sb-logo {
-  /* Match chat dolphin avatar (36px) so the same PNG doesn't downscale to mush. */
-  width: 36px;
-  height: 36px;
-  border-radius: var(--md-shape-full);
+  width: 26px; height: 26px; border-radius: var(--md-shape-full);
   background-image: url('/spa/haitun-logo.png');
   background-size: cover;
   background-position: center;
-  flex-shrink: 0;
 }
 .sb-brand-name { font-size: 20px; font-weight: 500; color: var(--md-text-primary); }
-.open-workspace {
+.new-chat {
   display: flex; align-items: center; gap: 12px;
   width: calc(100% - 16px); box-sizing: border-box;
   margin: 0 8px 4px; padding: 10px 16px;
@@ -390,8 +236,8 @@ watch(
   border: none; border-radius: var(--md-shape-full); cursor: pointer;
   font-size: 14px; text-align: left; transition: background 0.2s;
 }
-.open-workspace:hover { background: var(--md-nav-hover); }
-.open-workspace .material-symbols-outlined { font-size: 20px; flex-shrink: 0; }
+.new-chat:hover { background: var(--md-nav-hover); }
+.new-chat .material-symbols-outlined { font-size: 20px; flex-shrink: 0; }
 .recent-label {
   padding: 12px 16px 6px; font-size: 13px; color: var(--md-text-secondary);
 }
@@ -441,78 +287,6 @@ watch(
   background: rgba(128,128,128,var(--md-state-hover));
   color: var(--md-primary);
 }
-.ws-group { margin-bottom: 2px; }
-.ws-header { padding-left: 4px; }
-.ws-toggle {
-  color: var(--md-text-secondary);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.ws-toggle .material-symbols-outlined { font-size: 20px; }
-.ws-folder {
-  font-size: 18px;
-  color: var(--md-primary);
-  flex-shrink: 0;
-}
-.ws-name { font-weight: 600; }
-.ws-add {
-  color: var(--md-text-secondary);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  visibility: hidden;
-  flex-shrink: 0;
-  transition: all 0.2s;
-}
-.ws-add .material-symbols-outlined { font-size: 18px; }
-.ws-header:hover .ws-add,
-.ws-header .ws-add:focus-visible { visibility: visible; }
-.ws-add:hover {
-  background: rgba(128,128,128,var(--md-state-hover));
-  color: var(--md-primary);
-}
-.ws-remove { visibility: visible; opacity: 0.5; }
-.ws-header:hover .ws-remove { opacity: 1; }
-.ws-sessions { padding-left: 12px; }
-.ws-new-session {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 2px 8px 6px 16px;
-  padding: 6px 12px;
-  border: none;
-  border-radius: var(--md-shape-full);
-  background: transparent;
-  color: var(--md-text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-  transition: background 0.2s;
-}
-.ws-new-session .material-symbols-outlined { font-size: 18px; }
-.ws-new-session:hover {
-  background: var(--md-nav-hover);
-  color: var(--md-primary);
-}
-.session-item { margin-left: 4px; }
-.draft-item .name { color: var(--md-text-secondary); font-style: italic; }
-.draft-item.selected .name { color: var(--md-text-primary); font-style: normal; }
-.ws-empty-sessions {
-  margin: 4px 16px 8px 24px;
-  font-size: 12px;
-  color: var(--md-text-secondary);
-}
 .item {
   padding: 8px 8px;
   border-radius: var(--md-shape-full);
@@ -551,18 +325,8 @@ watch(
   font-variation-settings: 'FILL' 1;
 }
 .item .pin .material-symbols-outlined { font-size: 18px; }
-.item .info { flex: 1; overflow: hidden; display: flex; align-items: center; gap: 8px; min-width: 0; }
-.item .info .name {
-  flex: 1;
-  min-width: 0;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  direction: rtl;
-  text-align: left;
-  width: 100%;
-}
+.item .info { flex: 1; overflow: hidden; display: flex; align-items: center; }
+.item .info .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; width: 100%; }
 .item .info .edit-input {
   width: 100%;
   background: var(--md-bg);
@@ -607,7 +371,7 @@ watch(
   white-space: nowrap;
   flex-shrink: 0;
 }
-.open-workspace:hover .shortcut,
+.new-chat:hover .shortcut,
 .session-search:hover .shortcut,
 .session-search:focus-within .shortcut { opacity: 1; }
 .search-shortcut { margin-left: 4px; }
@@ -615,8 +379,6 @@ watch(
 @media (hover: none) {
   .item .del,
   .item .pin { visibility: visible; }
-  .ws-add { visibility: visible; }
-  .ws-remove { opacity: 1; }
 }
 
 @media (max-width: 768px) {

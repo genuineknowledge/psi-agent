@@ -13,9 +13,7 @@ from loguru import logger
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._session_manager import SessionManager
-from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway._state import GatewayState
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._tray import GatewayTray
@@ -44,9 +42,6 @@ class Gateway:
 
     icon: str | None = None
     """Path to icon image file (png/jpg/ico). Used as favicon, tray icon (--tray), and webview icon (--webview)."""
-
-    app_name: str = DEFAULT_APP_NAME
-    """Browser tab / webview / tray label. Injected into SPA index.html at serve time."""
 
     browser: bool = False
     """Open a browser tab on startup."""
@@ -104,15 +99,7 @@ class Gateway:
             for t in snapshot.get("titles", []):
                 await tm.set(t["id"], t["title"])
 
-            attention = AttentionHub()
-            app = await create_app(
-                aim,
-                sm,
-                tm,
-                favicon_path=self.icon,
-                app_name=self.app_name,
-                attention=attention,
-            )
+            app = await create_app(aim, sm, tm, favicon_path=self.icon)
 
             async def _do_persist() -> None:
                 await state.save(
@@ -155,7 +142,7 @@ class Gateway:
                 if self.webview:
                     if self.icon is None:
                         raise ValueError("--webview requires --icon to be set")
-                    wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon, app_name=self.app_name)
+                    wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon)
                     try:
                         wv.start()
                     except Exception as e:
@@ -169,16 +156,11 @@ class Gateway:
                     if self.icon is None:
                         raise ValueError("--tray requires --icon to be set")
                     on_open = wv.show if wv is not None and wv.is_running() else None
-                    tray = GatewayTray(addr, self.icon, app_name=self.app_name, on_open=on_open)
+                    tray = GatewayTray(addr, self.icon, on_open=on_open)
                     try:
                         tray.start()
                     except Exception as e:
                         logger.warning(f"Failed to start system tray: {e!r}")
-
-                if wv is not None and wv.is_running():
-                    attention.bind(webview=wv)
-                if tray is not None and tray.is_running():
-                    attention.bind(tray=tray)
 
                 try:
                     if tray is not None and tray.is_running():

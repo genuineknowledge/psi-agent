@@ -11,9 +11,8 @@ Your first user-visible reply should actively introduce:
 
 1. The workspace structure
 2. The available tools and skills
-3. The current memory status and the consequence of not configuring durable memory
-4. Common beginner paths
-5. How the user can trigger help later
+3. Common beginner paths
+4. How the user can trigger help later
 
 Do not start by asking for the user's name or preferences. First help them understand
 what this workspace can do.
@@ -49,27 +48,14 @@ Summarize the important tool groups:
 - Shell tools: `bash`, `powershell`
 - Skill tools: `skill_manage`
 - Flow tools: `flow_manage`
-- Memory tools: `memory_add`, `memory_search`, `memory_answer_context` (durable semantic memory requires Fusion Memory service and passive sync)
+- Memory tools: `memory_add`, `memory_search`, `memory_answer_context`
 - Spreadsheet tool: `write_excel`
 - Search tools, if configured in this runtime
 
 Explain that skills cover areas such as psi-agent usage, code review, Python, static analysis,
 systems work, data/text processing, Fusion Flow, memory setup, and other domain tasks.
 
-### 4. Memory Status
-
-Include a short memory status note. Explain that this workspace exposes memory tools, but durable
-semantic memory works only after Fusion Memory service and passive sync are configured.
-
-Clearly state the consequence of not configuring it: you can still use the current conversation and
-workspace files such as `SESSION.md`, `USER.md`, and `HEARTBEAT.md`, but you cannot write to or search
-durable semantic memory or reliably recall user preferences, project facts, and decisions across new
-sessions.
-
-Do not ask the user to configure memory during this first reply. Mention that if they need
-cross-session long-term memory later, they can say `配置长期记忆` or `帮我配置长期记忆`.
-
-### 5. Common Starter Paths
+### 4. Common Starter Paths
 
 Offer concrete things the user can say, for example:
 
@@ -82,7 +68,7 @@ Offer concrete things the user can say, for example:
 - `帮我配置长期记忆`
 - `新手指导`
 
-### 6. Light Next Step
+### 5. Light Next Step
 
 After the orientation, ask what the user wants to do next, but keep it light.
 Do not ask multiple personal onboarding questions unless the user wants personalization.

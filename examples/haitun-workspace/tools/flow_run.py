@@ -17,7 +17,6 @@ import contextlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -58,56 +57,6 @@ def _find_bash() -> str | None:
     return shutil.which("bash")
 
 
-def _ensure_esm_package_json(flow_dir: Path) -> None:
-    """Guarantee tsx compiles the flow as ESM, not CommonJS.
-
-    A generated ``.flow.ts`` uses top-level ``await run(...)`` (the shape SKILL.md
-    mandates). tsx/esbuild decides ESM-vs-CJS from the nearest ``package.json``'s
-    ``"type"`` field; with none in scope it falls back to CJS and top-level await
-    crashes the transform ("Top-level await is currently not supported with the
-    cjs output format") before the flow can even start.
-
-    The skill bundle folder has ``"type": "module"``, but flows generated into a
-    sibling ``flows/`` dir (as the psi-agent workspace does) have no package.json
-    in scope. Drop a minimal one next to the flow so tsx picks ESM. Never clobber
-    an existing package.json.
-    """
-    pkg = flow_dir / "package.json"
-    if pkg.exists():
-        return
-    with contextlib.suppress(OSError):
-        pkg.write_text('{ "type": "module" }\n', encoding="utf-8")
-
-
-def _load_flow_env(flow: Path) -> dict[str, str]:
-    """Merge the Fusion Flow ``.env`` into the child environment.
-
-    The runtime bundle loads config via ``dotenvConfig()`` with no path, i.e. from
-    ``process.cwd()``. But this tool runs the flow from the flow file's own dir
-    (or a caller-supplied cwd), which is not where the operator put ``.env`` — the
-    convention (see bin/env.stateful.template) is ``skills/fusion-flow/.env``.
-    When cwd has no ``.env`` the bundle silently falls back to the default engine
-    (``claude``) instead of the configured ``psi``, so every session spawns the
-    wrong CLI and fails. Read the skill ``.env`` ourselves and pass it through the
-    child's environment so the engine wiring survives regardless of cwd.
-    """
-    env = dict(os.environ)
-    # Walk up from the flow to find the workspace root (holds skills/), then the
-    # skill's .env. Bounded search so we never scan the whole disk.
-    for base in [flow.resolve().parent, *flow.resolve().parents][:6]:
-        dotenv = base / "skills" / "fusion-flow" / ".env"
-        if dotenv.is_file():
-            for raw in dotenv.read_text(encoding="utf-8", errors="replace").splitlines():
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                # Don't override vars the operator already exported in the real env.
-                env.setdefault(k.strip(), v.strip())
-            break
-    return env
-
-
 def _parse_run_header(log_path: Path, deadline: float) -> tuple[str, str]:
     """Tail the log until the runtime prints [run] <runId> and [run] dir: <dir>."""
     run_id = ""
@@ -139,22 +88,13 @@ def _spawn_flow(flow: Path, workdir: str, log_path: Path) -> tuple[int, str, str
     (pid, run_id, run_dir); run_id/run_dir are "" if the runtime never printed
     its start header within the timeout (start likely failed).
     """
-    # tsx needs an ESM package.json in scope for the flow's top-level await, and
-    # the runtime needs the engine wiring from skills/fusion-flow/.env regardless
-    # of cwd — set both up before spawning.
-    _ensure_esm_package_json(flow.resolve().parent)
-    child_env = _load_flow_env(flow)
-
+    argv = ["npx", "tsx", str(flow)]
     bash = _find_bash()
     if os.name == "nt" and bash:
-        # 经 git-bash -lc, 保证 npx/tsx 的解析与运行时既有约定一致。
-        # flow 路径用正斜杠(as_posix)避免 Windows 反斜杠被 bash 当转义吞掉,
-        # 并用 shlex.join 逐个 POSIX 引用,防止含空格的路径(如 "Saved Games")被拆成多个参数。
-        argv = ["npx", "tsx", flow.as_posix()]
-        popen_args: list[str] = [bash, "-lc", shlex.join(argv)]
+        # 经 git-bash -lc, 保证 npx/tsx 的解析与运行时既有约定一致
+        popen_args: list[str] = [bash, "-lc", " ".join(argv)]
         use_shell = False
     else:
-        argv = ["npx", "tsx", str(flow)]
         popen_args = argv
         use_shell = os.name == "nt"
 
@@ -162,7 +102,6 @@ def _spawn_flow(flow: Path, workdir: str, log_path: Path) -> tuple[int, str, str
         "cwd": workdir,
         "stderr": subprocess.STDOUT,
         "stdin": subprocess.DEVNULL,
-        "env": child_env,
     }
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP

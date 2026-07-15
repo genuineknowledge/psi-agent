@@ -61,33 +61,6 @@ async def _fetch_gateway_json(url: str, *, timeout_seconds: float = 3.0) -> Any:
         return await resp.json()
 
 
-async def post_gateway_json(
-    url: str,
-    body: dict[str, Any],
-    *,
-    timeout_seconds: float = 30.0,
-) -> Any:
-    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-    async with (
-        aiohttp.ClientSession(timeout=timeout) as session,
-        session.post(url, json=body) as resp,
-    ):
-        text = await resp.text()
-        if resp.status >= 400:
-            msg = f"Gateway HTTP {resp.status}"
-            try:
-                payload = json.loads(text)
-                if isinstance(payload, dict) and payload.get("error"):
-                    msg = str(payload["error"])
-            except json.JSONDecodeError:
-                if text.strip():
-                    msg = text.strip()
-            raise RuntimeError(msg)
-        if not text.strip():
-            return {}
-        return json.loads(text)
-
-
 async def _gateway_is_alive(gateway_url: str, *, timeout_seconds: float = 1.5) -> bool:
     try:
         await _fetch_gateway_json(

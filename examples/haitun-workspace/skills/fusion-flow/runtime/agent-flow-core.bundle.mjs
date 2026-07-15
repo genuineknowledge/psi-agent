@@ -305,7 +305,7 @@ ${req.prompt}` : req.prompt;
       "--workspace",
       workspace,
       "--message",
-      "-",
+      message,
       "--output-format",
       "text"
     ];
@@ -322,7 +322,7 @@ ${req.prompt}` : req.prompt;
     if (/^(1|true|yes)$/i.test(process.env.FLOW_PSI_SHOW_REASONING ?? "")) {
       args.push("--show-reasoning");
     }
-    return { command: resolved.command, args, stdin: message, useShell: resolved.useShell };
+    return { command: resolved.command, args, useShell: resolved.useShell };
   },
   buildEnv(req) {
     const env = { ...req.env ?? {} };

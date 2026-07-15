@@ -5,19 +5,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-FUSION_MEMORY_DEFAULT_BASE_URL = "http://127.0.0.1:8700"
-FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS = 30.0
-FUSION_MEMORY_MIN_TIMEOUT_SECONDS = 0.1
-FUSION_MEMORY_MAX_TIMEOUT_SECONDS = 120.0
-
-DEFAULT_BASE_URL = FUSION_MEMORY_DEFAULT_BASE_URL
-DEFAULT_TIMEOUT_SECONDS = FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
-MIN_TIMEOUT_SECONDS = FUSION_MEMORY_MIN_TIMEOUT_SECONDS
-MAX_TIMEOUT_SECONDS = FUSION_MEMORY_MAX_TIMEOUT_SECONDS
+DEFAULT_BASE_URL = "http://127.0.0.1:8700"
+DEFAULT_TIMEOUT_SECONDS = 2.0
+MIN_TIMEOUT_SECONDS = 0.1
+MAX_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
-class FusionMemoryConfig:
+class MemoryConfig:
     base_url: str
     timeout_seconds: float
     workspace_id: str
@@ -43,20 +38,20 @@ class FusionMemoryConfig:
 
 def _clamp_timeout(raw: str | None) -> float:
     if raw is None:
-        return FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
+        return DEFAULT_TIMEOUT_SECONDS
     try:
         value = float(raw)
     except TypeError, ValueError:
-        return FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
+        return DEFAULT_TIMEOUT_SECONDS
     if value <= 0:
-        return FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
-    return max(FUSION_MEMORY_MIN_TIMEOUT_SECONDS, min(FUSION_MEMORY_MAX_TIMEOUT_SECONDS, value))
+        return DEFAULT_TIMEOUT_SECONDS
+    return max(MIN_TIMEOUT_SECONDS, min(MAX_TIMEOUT_SECONDS, value))
 
 
-def build_fusion_memory_config(env: Mapping[str, str] | None = None) -> FusionMemoryConfig:
+def build_memory_config(env: Mapping[str, str] | None = None) -> MemoryConfig:
     env = os.environ if env is None else env
-    return FusionMemoryConfig(
-        base_url=(env.get("PSI_MEMORY_BASE_URL") or FUSION_MEMORY_DEFAULT_BASE_URL).rstrip("/"),
+    return MemoryConfig(
+        base_url=(env.get("PSI_MEMORY_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
         timeout_seconds=_clamp_timeout(env.get("PSI_MEMORY_TIMEOUT_SECONDS")),
         workspace_id=env.get("PSI_MEMORY_WORKSPACE_ID") or "haitun",
         user_id=env.get("PSI_MEMORY_USER_ID") or env.get("USER") or env.get("USERNAME") or "user",
@@ -65,8 +60,4 @@ def build_fusion_memory_config(env: Mapping[str, str] | None = None) -> FusionMe
     )
 
 
-FUSION_MEMORY_CONFIG = build_fusion_memory_config()
-
-MemoryConfig = FusionMemoryConfig
-build_memory_config = build_fusion_memory_config
-CONFIG = FUSION_MEMORY_CONFIG
+CONFIG = build_memory_config()

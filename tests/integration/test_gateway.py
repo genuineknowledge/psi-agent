@@ -6,14 +6,12 @@ import os
 import socket
 import tempfile
 import textwrap
-from unittest.mock import MagicMock
 
 import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, FormData, web
 
 from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway.server import create_app
@@ -351,50 +349,4 @@ async def test_gateway_favicon(tmp_path: str) -> None:
     finally:
         await runner_with.cleanup()
         await runner_without.cleanup()
-        await tg.__aexit__(None, None, None)
-
-
-@pytest.mark.anyio
-async def test_gateway_spa_index_app_name() -> None:
-    tg = anyio.create_task_group()
-    await tg.__aenter__()
-
-    aim = AIManager(_prefix="gw-test", _tg=tg)
-    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager(), app_name="Haitun Agent")
-    base, runner = await _start_app_on_free_port(app)
-
-    try:
-        timeout = ClientTimeout(total=10)
-        async with ClientSession(timeout=timeout) as session, session.get(f"{base}/spa/index.html") as resp:
-            assert resp.status == 200
-            body = await resp.text()
-            assert "<title>Haitun Agent</title>" in body
-    finally:
-        await runner.cleanup()
-        await tg.__aexit__(None, None, None)
-
-
-@pytest.mark.anyio
-async def test_gateway_ui_attention() -> None:
-    tg = anyio.create_task_group()
-    await tg.__aenter__()
-
-    aim = AIManager(_prefix="gw-test", _tg=tg)
-    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    attention = AttentionHub()
-    tray = MagicMock()
-    attention.bind(tray=tray)
-    app = await create_app(aim, sm, TitleManager(), attention=attention)
-    base, runner = await _start_app_on_free_port(app)
-
-    try:
-        timeout = ClientTimeout(total=10)
-        async with ClientSession(timeout=timeout) as session, session.post(f"{base}/ui/attention") as resp:
-            assert resp.status == 200
-            body = await resp.json()
-            assert body == {"ok": True}
-        tray.request_attention.assert_called_once()
-    finally:
-        await runner.cleanup()
         await tg.__aexit__(None, None, None)

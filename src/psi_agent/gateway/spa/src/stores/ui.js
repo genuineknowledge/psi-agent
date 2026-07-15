@@ -12,9 +12,6 @@ export const useUiStore = defineStore('ui', () => {
   const dlgAI = ref(false)
   const dlgSess = ref(false)
   const sessionSearchFocusToken = ref(0)
-  const hubMenuOpen = ref(false)
-  /** @type {import('vue').Ref<'profile'|'models'|'login'|'settings'|null>} */
-  const hubPanel = ref(null)
 
   let snackbarTimer = null
 
@@ -43,23 +40,6 @@ export const useUiStore = defineStore('ui', () => {
     sessionSearchFocusToken.value++
   }
 
-  function toggleHubMenu() {
-    hubMenuOpen.value = !hubMenuOpen.value
-  }
-
-  function closeHubMenu() {
-    hubMenuOpen.value = false
-  }
-
-  function openHubPanel(panel) {
-    hubPanel.value = panel
-    hubMenuOpen.value = false
-  }
-
-  function closeHubPanel() {
-    hubPanel.value = null
-  }
-
   return {
     loadingEnv,
     snackbar,
@@ -71,15 +51,9 @@ export const useUiStore = defineStore('ui', () => {
     dlgAI,
     dlgSess,
     sessionSearchFocusToken,
-    hubMenuOpen,
-    hubPanel,
     showAlert,
     toggleSidebar,
     closeMobileSidebar,
     focusSessionSearch,
-    toggleHubMenu,
-    closeHubMenu,
-    openHubPanel,
-    closeHubPanel,
   }
 })

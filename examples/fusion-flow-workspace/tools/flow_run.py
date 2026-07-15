@@ -17,7 +17,6 @@ import contextlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -89,16 +88,13 @@ def _spawn_flow(flow: Path, workdir: str, log_path: Path) -> tuple[int, str, str
     (pid, run_id, run_dir); run_id/run_dir are "" if the runtime never printed
     its start header within the timeout (start likely failed).
     """
+    argv = ["npx", "tsx", str(flow)]
     bash = _find_bash()
     if os.name == "nt" and bash:
-        # 经 git-bash -lc, 保证 npx/tsx 的解析与运行时既有约定一致。
-        # flow 路径用正斜杠(as_posix)避免 Windows 反斜杠被 bash 当转义吞掉,
-        # 并用 shlex.join 逐个 POSIX 引用,防止含空格的路径(如 "Saved Games")被拆成多个参数。
-        argv = ["npx", "tsx", flow.as_posix()]
-        popen_args: list[str] = [bash, "-lc", shlex.join(argv)]
+        # 经 git-bash -lc, 保证 npx/tsx 的解析与运行时既有约定一致
+        popen_args: list[str] = [bash, "-lc", " ".join(argv)]
         use_shell = False
     else:
-        argv = ["npx", "tsx", str(flow)]
         popen_args = argv
         use_shell = os.name == "nt"
 

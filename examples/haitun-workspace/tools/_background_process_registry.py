@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-import anyio.to_thread
 from loguru import logger
 
 if sys.platform == "win32":

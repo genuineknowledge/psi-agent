@@ -312,12 +312,6 @@ class System:
 
         repo_root = Path(str(workspace_resolved)).parents[1]
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
-        # The psi engine MUST route through the session shim: the current CLI's `run`
-        # is a YAML batch launcher and rejects the bundle's old-style
-        # `run --workspace --message ...` (exit=2). The shim translates that into the
-        # new three-layer architecture. Forward-slash path works on Windows + POSIX.
-        session_shim = Path(str(workspace_resolved)) / "bin" / "session_shim.py"
-        session_shim_posix = session_shim.as_posix()
 
         skills_index = await _build_skills_index(skills_dir)
         flows_index = await _build_flows_index(flows_dir)
@@ -433,30 +427,13 @@ FLOW_ENGINE=psi
 FLOW_PSI_WORKSPACE={default_executor_workspace}
 FLOW_PSI_PROFILE=fusion
 
-CRITICAL — the psi engine MUST route through the session shim, never call `psi-agent run`
-directly. The current psi-agent CLI's `run` subcommand is a YAML batch launcher that takes a
-single positional config path; the Fusion Flow bundle emits the OLD form
-`psi-agent run --workspace <W> --message <M> ...`, which that CLI rejects with
-`exit=2 Missing value for argument 'config'`. If you ever see that exit=2 (or conclude "the psi
-engine is incompatible with the current CLI"), the cause is missing shim wiring — it is NOT a
-reason to abandon Fusion Flow and hand-roll a parallel run with background tasks. Fix the wiring
-and re-run the flow. The shim (`bin/session_shim.py`) translates the old call into the new
-three-layer architecture (`ai --provider` + `session` + `channel cli`).
+When the Haitun agent CLI is not installed globally, run Fusion Flow with these local overrides:
 
-Wire it via these overrides (forward-slash paths work on Windows + POSIX; on POSIX use
-`python3` if `python` is absent):
-
-FLOW_PSI_COMMAND=python
-FLOW_PSI_COMMAND_ARGS={session_shim_posix}
-PSI_CMD=uv run --no-sync --project {repo_root} psi-agent
-
-The shim needs the AI backend params too (FLOW_PSI_AI / FLOW_PSI_MODEL / FLOW_PSI_BASE_URL /
-FLOW_PSI_API_KEY). If a gateway has been used, reuse its saved config with
-`python bin/env_from_gateway.py --state <ws>/state/latest.json --executor-workspace <W> --out <workDir>/.env`
-instead of hand-copying the key. See `bin/README.stateful.md` for the full wiring guide.
+FLOW_PSI_COMMAND=uv
+FLOW_PSI_COMMAND_ARGS=--project {repo_root} run psi-agent
 
 Keep provider URLs and API keys in Haitun agent profile configuration or environment variables.
-Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files.
+Never write API keys into this workspace, generated `.flow.ts` files, or `.env` files.
 
 ## Operating Rules
 

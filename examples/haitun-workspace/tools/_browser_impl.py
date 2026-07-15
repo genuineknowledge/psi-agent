@@ -35,9 +35,7 @@ _IS_WINDOWS = sys.platform == "win32"
 
 # Pinned package + flags. ``--shared-browser-context`` is what makes cross-connection
 # state work (verified: without it a second connection errors "Browser is already in
-# use"). The browser runs **headed** by default so the user can watch the agent drive
-# it; ``--headless`` is opt-IN via BROWSER_HEADLESS=1 for headless servers / CI that
-# have no display.
+# use"). ``--headless`` is opt-out via BROWSER_HEADLESS=0 for local debugging.
 _MCP_PACKAGE = os.environ.get("BROWSER_MCP_PACKAGE", "@playwright/mcp@latest")
 _BROWSER_CHANNEL = os.environ.get("BROWSER_CHANNEL", "msedge")
 _CAPS = os.environ.get("BROWSER_CAPS", "vision,devtools")
@@ -72,9 +70,7 @@ def _free_port() -> int:
 
 
 def _headless_flag() -> bool:
-    # Headed by default (empty/unset -> visible window); opt in to headless with
-    # BROWSER_HEADLESS=1/true/yes on displayless hosts.
-    return os.environ.get("BROWSER_HEADLESS", "0").strip().lower() in {"1", "true", "yes"}
+    return os.environ.get("BROWSER_HEADLESS", "1").strip().lower() not in {"0", "false", "no"}
 
 
 def _build_command(npx: str, port: int) -> list[str]:

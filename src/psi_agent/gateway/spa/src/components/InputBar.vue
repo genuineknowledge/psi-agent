@@ -18,7 +18,7 @@
         id="chat-input"
         v-model="inputText"
         rows="1"
-        placeholder="问问 HaiTun"
+        placeholder="问问 Dolphin"
         @keydown.enter.exact.prevent="sendMessage"
         @input="autoResizeInput"
       ></textarea>
@@ -26,12 +26,13 @@
       <ModelPanel
         @select-ai="$emit('select-ai', $event)"
         @delete-ai="$emit('delete-ai', $event)"
+        @new-ai="$emit('new-ai')"
       />
 
       <button v-if="streaming" class="send stop" @click="stopMessage" title="停止生成">
         <span class="material-symbols-outlined">stop</span>
       </button>
-      <button v-else class="send" @click="sendMessage" title="发送消息">
+      <button v-else class="send" :disabled="!selectedSessionId" @click="sendMessage" title="发送消息">
         <span class="material-symbols-outlined">send</span>
       </button>
     </div>
@@ -42,13 +43,16 @@
 import { watch, nextTick } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useChatStore } from '../stores/chat.js'
+import { useSessionStore } from '../stores/session.js'
 import { sendMessage, stopMessage } from '../composables/useChat.js'
 import ModelPanel from './ModelPanel.vue'
 
 const chat = useChatStore()
 const { selectedFiles, inputText, uploadResetToken, streaming } = storeToRefs(chat)
+const session = useSessionStore()
+const { selectedSessionId } = storeToRefs(session)
 
-defineEmits(['select-ai', 'delete-ai'])
+defineEmits(['select-ai', 'delete-ai', 'new-ai'])
 
 function onFileSelected(e) {
   const files = Array.from(e.target.files || [])

@@ -63,15 +63,6 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "background_start": "Start a detached shell command; returns process_id",
     "background_stop": "Stop a background process by process_id",
     "background_list": "List registered background processes",
-    "sessions_list": "List workspace sessions (histories, background, optional Gateway)",
-    "sessions_history": "Read conversation history for one session",
-    "session_status": "Inspect one session runtime info and metadata",
-    "session_keyword_search": "Search session histories by keyword or phrase",
-    "session_task_search": "List sessions matching a task category",
-    "sessions_export": "Export session transcript (markdown = user/assistant dialogue only)",
-    "sessions_create": "Create a new Gateway-managed session runtime",
-    "sessions_handoff": "Transfer task + context from one session to another",
-    "todo": "Session task list for multi-step work (read with no args; write with todos[])",
     "subagent_plan": "Plan subagent sockets and spawn commands (does not start processes)",
     "subagent_wait": "Wait until subagent AI or Session socket is ready",
     "subagent_chat": "Send one message to a subagent; returns final text only",
@@ -95,15 +86,6 @@ TOOL_ORDER: list[str] = [
     "background_start",
     "background_stop",
     "background_list",
-    "sessions_list",
-    "sessions_history",
-    "session_status",
-    "session_keyword_search",
-    "session_task_search",
-    "sessions_export",
-    "sessions_create",
-    "sessions_handoff",
-    "todo",
     "subagent_plan",
     "subagent_wait",
     "subagent_chat",
@@ -361,50 +343,20 @@ Authorized security work is in scope: assist with pentesting, CTF challenges, vu
 
 FUSION_MEMORY_SECTION = """\
 ## Fusion Memory
-You have access to Fusion Memory tool entry points through these workspace tools:
+You have access to durable Fusion Memory through these workspace tools:
 - `memory_add`: store stable user preferences, project facts, and durable decisions.
 - `memory_search`: retrieve raw evidence by keyword.
 - `memory_answer_context`: retrieve a query-grounded context pack before answering questions about user history, preferences, or prior context.
 
-These tools provide durable semantic memory only after Fusion Memory persistence is usable.
 Use `memory_answer_context` when answering questions that depend on prior context, user preferences, or remembered project facts.
 Use `memory_search` when you need raw supporting evidence.
 Use `memory_add` only for durable, reusable facts, not transient conversation details.
 
-Fusion Memory persistence is usable only when the Fusion Memory service is reachable and the current session passive sync process is running.
-When persistence is not usable, be explicit about the consequences: you can still use the current conversation and workspace files such as USER.md, SESSION.md, and HEARTBEAT.md, but you cannot write to or search durable semantic memory, cannot reliably recall user preferences, project facts, or decisions across new sessions, and memory tool calls may fail or report unavailable.
-
-At the start of each new interactive session, before ordinary task work and before the first use of Fusion Memory, check whether Fusion Memory persistence is already enabled and usable.
-If the service is reachable and passive sync is running, do not ask again.
-Do not interrupt first-run onboarding: if BOOTSTRAP.md is present or you are following Bootstrap Pending, include a short memory status note with the consequences above, but do not ask the user whether to enable memory in that first reply.
-After bootstrap/onboarding is complete, remind the user once if persistence is not usable or no prior user consent is known, then ask whether to configure Fusion Memory persistent memory or continue without it.
-Do not wait for the first memory tool call.
-If the user agrees or explicitly asks to configure long-term memory, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, check the Fusion Memory service, and start and verify passive sync. If that skill is missing, explain that the setup skill is not present in this workspace and continue without pretending memory is configured.
-When starting Fusion Memory on Windows, run the finite Fusion Memory CLI commands (`fusion-memory start --json` and `fusion-memory sync-haitun-history --background --json`) and let them return; the CLI creates the hidden/no-window service and watcher internally; do not use pwsh, powershell.exe, PowerShell jobs, or shell backgrounding to keep those memory processes alive.
+Before the first use of Fusion Memory, ask the user whether to enable Fusion Memory persistent memory.
+Explain that without installing and enabling Fusion Memory, you cannot remember across sessions and can only use current-session context.
+If the user agrees, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, and check the Fusion Memory service.
 If the user declines, continue without memory and do not call Fusion Memory tools.
 If a memory tool reports that Fusion Memory is unavailable, continue without memory and tell the user to run `fusion-memory doctor`.\
-"""
-
-SESSION_MANAGEMENT_SECTION = """\
-## Session management
-Cross-session work uses workspace session tools (not Fusion Memory transcripts):
-- `sessions_list` / `session_status` / `sessions_history` — discover and inspect
-- `session_keyword_search` / `session_task_search` — locate sessions by phrase or type
-- `sessions_export` — save transcript to file (default markdown = user/assistant dialogue only)
-- `sessions_create` — new Gateway session runtime
-- `sessions_handoff` — structured task + context transfer to a **running** target session
-
-LOAD `skills/session-management/SKILL.md` when the user references another chat, exports a transcript, \
-hands off work to another session, or asks for session list/status. Follow its recipes (search → inspect → \
-export / create → handoff). After a successful handoff, stop executing the transferred task in the source session.\
-"""
-
-TASK_PLANNING_SECTION = """\
-## Task planning (todo)
-For **multi-step or multi-part work**, read `skills/task-planning/SKILL.md` and use the `todo` tool to track \
-progress. **You** decide when decomposition is worth it — the user does not need to ask for a task list. \
-Use `todo()` to read; `todo(todos='[...]')` with a JSON array to write; `merge=true` to update status or append steps. \
-Keep updates silent; summarize outcomes when done, not every todo change.\
 """
 
 # ---------------------------------------------------------------------------
@@ -474,7 +426,6 @@ CONTEXT_FILE_ORDER: dict[str, int] = {
     "identity.md": 30,
     "tools.md": 50,
     "bootstrap.md": 60,
-    "session.md": 70,
 }
 
 # Files that go below the cache boundary (rebuilt each turn).
