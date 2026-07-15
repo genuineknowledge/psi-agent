@@ -351,13 +351,16 @@ class ChannelRepl:
 @dataclass
 class ChannelCli:
     session_socket: str
-    message: str
+    message: str  # 传入 ``-`` 表示从 stdin 读取（规避 OS 命令行参数长度限制）
     verbose: bool = False
 
-    async def run(self) -> None: ...
+    async def run(self) -> None:
+        setup_logging(verbose=self.verbose)
+        await run_cli(session_socket=self.session_socket, message=self.message)
 ```
 
 **行为**：
+- `run_cli()` 内部判断 `message == "-"` 并调用 `await anyio.to_thread.run_sync(sys.stdin.read)` 异步读入完整消息
 - 通过 `ChannelCore` 管理到 `session_socket` 的连接
 - `core.post([TextChunk(message)])` 发送消息并流式接收
 - ChannelCore 处理 HTTP/SSE 和缓冲合并，客户端仅处理 `TextChunk`
