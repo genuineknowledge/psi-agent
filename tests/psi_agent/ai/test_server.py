@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 from typing import Any
 
 import anyio
 import pytest
-from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
+from aiohttp import ClientSession, ClientTimeout, web
 
 from psi_agent.ai.server import handle_chat_completions
 
@@ -44,11 +45,10 @@ class _TrackingStream:
 
 
 async def _serve_handler(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream: _TrackingStream
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_acompletion: Any,
 ) -> tuple[web.AppRunner, str]:
-    async def fake_acompletion(**kwargs: Any) -> _TrackingStream:
-        return stream
-
     monkeypatch.setattr("psi_agent.ai.server.acompletion", fake_acompletion)
 
     app = web.Application()
@@ -59,20 +59,23 @@ async def _serve_handler(
     app.router.add_post("/chat/completions", handle_chat_completions)
     runner = web.AppRunner(app)
     await runner.setup()
-    socket_path = str(tmp_path / "ai.sock")
-    site = web.UnixSite(runner, socket_path)
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(128)
+    listener.setblocking(False)
+    port = listener.getsockname()[1]
+    site = web.SockSite(runner, listener)
     await site.start()
     await anyio.sleep(0.1)
-    return runner, socket_path
+    return runner, f"http://127.0.0.1:{port}"
 
 
-async def _drain(socket_path: str) -> None:
+async def _drain(base_url: str) -> None:
     body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True}
-    connector = UnixConnector(path=socket_path)
     timeout = ClientTimeout(total=5)
     async with (
-        ClientSession(connector=connector, timeout=timeout) as s,
-        s.post("http://localhost/chat/completions", json=body) as resp,
+        ClientSession(timeout=timeout) as s,
+        s.post(f"{base_url}/chat/completions", json=body) as resp,
     ):
         assert resp.status == 200
         async for _ in resp.content:
@@ -83,9 +86,13 @@ async def _drain(socket_path: str) -> None:
 async def test_upstream_stream_closed_after_normal_completion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The upstream stream must be closed once the handler finishes streaming."""
     stream = _TrackingStream([_FakeChunk()])
-    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream)
+
+    async def fake_acompletion(**kwargs: Any) -> _TrackingStream:
+        return stream
+
+    runner, base_url = await _serve_handler(tmp_path, monkeypatch, fake_acompletion)
     try:
-        await _drain(socket_path)
+        await _drain(base_url)
         await anyio.sleep(0.05)
         assert stream.closed is True
     finally:
@@ -96,10 +103,48 @@ async def test_upstream_stream_closed_after_normal_completion(tmp_path: Path, mo
 async def test_upstream_stream_closed_after_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The upstream stream must be closed even when iteration raises mid-stream."""
     stream = _TrackingStream([_FakeChunk()], raise_after=1)
-    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream)
+
+    async def fake_acompletion(**kwargs: Any) -> _TrackingStream:
+        return stream
+
+    runner, base_url = await _serve_handler(tmp_path, monkeypatch, fake_acompletion)
     try:
-        await _drain(socket_path)
+        await _drain(base_url)
         await anyio.sleep(0.05)
+        assert stream.closed is True
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_routing_field_is_not_forwarded_to_upstream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The direct AI server strips internal routing metadata before provider calls."""
+    calls: list[dict[str, Any]] = []
+    stream = _TrackingStream([_FakeChunk()])
+
+    async def fake_acompletion(**kwargs: Any) -> _TrackingStream:
+        calls.append(kwargs)
+        return stream
+
+    runner, base_url = await _serve_handler(tmp_path, monkeypatch, fake_acompletion)
+    body = {
+        "model": "ignored-by-ai",
+        "messages": [{"role": "user", "content": "hello"}],
+        "stream": True,
+        "routing": {"policy": "difficulty"},
+    }
+    timeout = ClientTimeout(total=5)
+    try:
+        async with (
+            ClientSession(timeout=timeout) as s,
+            s.post(f"{base_url}/chat/completions", json=body) as resp,
+        ):
+            assert resp.status == 200
+            async for _ in resp.content:
+                pass
+        await anyio.sleep(0.05)
+        assert len(calls) == 1
+        assert "routing" not in calls[0]
         assert stream.closed is True
     finally:
         await runner.cleanup()

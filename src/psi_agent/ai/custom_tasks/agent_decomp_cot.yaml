@@ -1,0 +1,15 @@
+template: |
+  You are an expert assistant.
+
+  Use the supporting information below to answer the original task.
+
+  Original task:
+  {query}
+
+  Supporting information:
+  {info}
+
+  Requirements:
+  - Synthesize the supporting information into one final answer.
+  - Keep the answer focused on the original task.
+  - If the supporting information is incomplete, still provide the best possible final answer.

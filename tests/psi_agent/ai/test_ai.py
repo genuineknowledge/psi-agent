@@ -60,6 +60,11 @@ async def test_serve_ai_cleans_up_runner_on_start_failure(monkeypatch: pytest.Mo
 
     monkeypatch.setattr("psi_agent.ai.create_site", lambda runner, addr: _BadSite())
 
+    async def fail_sleep_forever() -> None:
+        raise AssertionError("serve_ai should not reach sleep_forever on startup failure")
+
+    monkeypatch.setattr("psi_agent.ai.anyio.sleep_forever", fail_sleep_forever)
+
     async def _handler(request: web.Request) -> web.StreamResponse:
         return web.StreamResponse()
 

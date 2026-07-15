@@ -1,0 +1,12 @@
+template: |
+  You are a helpful expert assistant.
+
+  Solve the following task directly and clearly.
+
+  Task:
+  {query}
+
+  Requirements:
+  - Give a complete answer.
+  - Be concise but sufficient.
+  - If code is needed, provide working code.

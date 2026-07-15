@@ -75,11 +75,46 @@ Anthropic→OpenAI 格式转换由 any-llm-sdk 自动完成，包括 `thinking_d
 
 ## Router Demo
 
-除单上游 `Ai` 外，AI 层还提供一个本地路由 demo：`AiRouter`。
+除单上游 `Ai` 外，AI 层还提供基于 `llmrouter-lib==0.3.1` 的 `AiRouter`。Router 使用一个远程小模型分析有界对话上下文，只选择一个候选 upstream，再原样代理 OpenAI Chat Completions 请求和 SSE 响应。
 
-- CLI 入口：`psi-agent ai router --session-socket ./ai.sock --upstream ./ai1.sock ./ai2.sock --policy difficulty`
-- router 代理到已经启动的上游 AI socket / URL，不直接调用 provider
-- 支持策略：`first` / `last` / `round_robin` / `difficulty`
-- `difficulty` 为内置 demo 规则：最新一条 user 文本去掉首尾空白并转小写后若恰好为 `hello`，走第一个 upstream；否则走最后一个 upstream
-- router 对被选中的 upstream 透传原始 OpenAI Chat Completions 请求体，并将 SSE 响应原样代理回下游
-- router 只接收规则化策略（`--policy`），不接收请求内候选模型列表
+PowerShell TCP 启动示例：
+
+```powershell
+uv run psi-agent ai router `
+  --session-socket "http://127.0.0.1:8100" `
+  --router-model "qwen-turbo" `
+  --router-base-url "https://router.example/v1" `
+  --router-api-key "sk-router" `
+  --upstream `
+    '{\"addr\":\"http://127.0.0.1:8101\",\"model\":\"qwen-plus\",\"description\":\"通用中文问答和总结\"}' `
+    '{\"addr\":\"http://127.0.0.1:8102\",\"model\":\"deepseek-reasoner\",\"description\":\"复杂推理和代码分析\"}' `
+  --default-model "qwen-plus"
+```
+
+- `--upstream` 是一个 `list[str]` 参数：只写一次，后面每行提供一个独立 JSON object；不再接受带外层 `[...]` 的完整 JSON 数组。
+- 每个 JSON object 必须且只能包含非空的 `addr`、`model`、`description`；候选模型名不能重复。
+- Windows PowerShell 调用原生 `uv.exe` 时可能剥离 JSON 双引号，因此示例使用 `\"` 保留内部引号。
+- 候选顺序有意义：未指定 `--default-model` 时，路由失败或超时会降级到第一个候选，即 `upstream[0]`。
+- 请求体显式指定已知候选 `model` 时跳过 LLMRouter；未知或缺失模型时才根据上下文路由。
+- Router 序列化 system、user、assistant 和工具名称，但省略工具参数与工具结果正文；字符预算由 `--router-context-chars` 控制。
+- `--router-timeout` 省略时无限等待；传入有限正数时，超时只降级到默认候选，不重试其他模型。
+- Router 剥离内部 `routing` 元数据，设置选中模型的 `model`，其余请求字段及 `content`、`reasoning`、`tool_calls`、`[DONE]` SSE 数据保持透传。
+- 默认只在 DEBUG 日志记录投票；`--log-router-details` 额外记录 LLMRouter 返回的子问题和路由结果。
+
+### LLMRouter prompt 资源
+
+`llmrouter-lib==0.3.1` 的 prompt loader 会从模块级私有变量 `_PROJECT_ROOT` 和 `_CUSTOM_TASKS_DIR` 推导自定义模板目录。作为第三方依赖安装时，它的默认目录不指向 psi-agent，因此 `LLMRouterAdapter` 在同步 worker 中将这两个全局变量设置为包内 `psi_agent.ai/custom_tasks`，再构造 `LLMMultiRoundRouter`。设置路径、构造 Router 与后续路由调用共用进程级锁，避免并发访问第三方全局状态。
+
+以下三个 YAML 是运行时必需的包资源，启动时缺失任意一个都会直接失败：
+
+- `custom_tasks/agent_decomp_route.yaml`
+- `custom_tasks/agent_decomp_cot.yaml`
+- `custom_tasks/agent_prompt.yaml`
+
+该接入依赖 LLMRouter 0.3.1 的私有 prompt 全局变量。升级 `llmrouter-lib` 时必须重新验证变量名称、模板名称、延迟加载行为以及 wheel 中的 YAML 包含情况；禁止通过修改 `.venv/site-packages` 或启动时复制模板来掩盖兼容性问题。
+
+### 运行时模型数据
+
+Adapter 根据命令行生成两份运行时数据：`llm_data.json` 只包含 `--upstream` 提供的候选模型，key 和 `model` 来自候选 `model`，`feature` 来自 `description`；`runtime.yaml` 的 `base_model` 和 `api_endpoint` 分别来自 `--router-model` 与 `--router-base-url`。API key 只在进程锁内临时写入 `API_KEYS`，不得进入 YAML 或 JSON。
+
+LLMRouter 0.3.1 在 `llm_data` 非空但不包含 `base_model` 时不会回退到 YAML 的 `api_endpoint`。为兼容该缺陷，Adapter 先用候选专用 JSON 构造 Router，让候选 prompt 不包含独立路由模型；构造完成后再向实例内存的 `llm_data[router_model]` 注入 `model` 和 `api_endpoint`。若路由模型与某个 upstream 同名，则保留该候选的 `feature`，只补充 endpoint。升级 LLMRouter 时必须重新检查该两阶段注入是否仍有必要。

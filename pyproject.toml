@@ -35,6 +35,7 @@ dependencies = [
     "markdownify>=0.13.1",
     "pywebview>=5.4",
     "pygount>=3.2.0",
+    "llmrouter-lib==0.3.1",
 ]
 
 [dependency-groups]

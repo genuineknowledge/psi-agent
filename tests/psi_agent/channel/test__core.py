@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 
@@ -75,7 +74,6 @@ async def test_post_converts_file_chunk_to_recv_marker(tmp_path):
     await runner.cleanup()
 
 
-@pytest.mark.anyio
 async def test_post_sse_buffering_merges_within_interval(tmp_path):
     """SSE chunks within interval are merged into one TextChunk."""
     sock_path = str(tmp_path / "session.sock")
