@@ -31,7 +31,9 @@ def resolve_connector_and_endpoint(
     """
     if addr.startswith(("http://", "https://")):
         connector = aiohttp.TCPConnector(ssl=addr.startswith("https://"))
-        endpoint = addr.rstrip("/") + path_prefix
+        base = addr.rstrip("/")
+        suffix = path_prefix if path_prefix.startswith("/") else f"/{path_prefix}"
+        endpoint = base if base.endswith(suffix) else base + suffix
         logger.debug(f"Resolved transport: addr={addr!r} → TCP endpoint={endpoint!r}")
     elif addr.startswith("\\\\.\\pipe\\"):
         connector = aiohttp.NamedPipeConnector(path=addr)
