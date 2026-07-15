@@ -8,6 +8,4 @@ dist/
 .pytest_cache/
 *.sock
 .coverage
-
-# nix build output
 /result
