@@ -54,6 +54,36 @@ else:
     import fcntl
 
 
+# The whole Fusion Flow chain (bundle -> shim -> psi-agent subprocess) speaks
+# UTF-8 bytes end to end: system prompts and DeepSeek replies routinely carry
+# CJK text and emoji. On Windows, Python's std streams default to the console
+# locale (GBK / cp936), so any of these UTF-8-only characters raise
+# UnicodeEncodeError (or produce lone surrogates when a UTF-8 pipe is decoded as
+# GBK). Pin every I/O boundary to UTF-8 so the shim never falls over on emoji.
+for _stream_name in ("stdin", "stdout", "stderr"):
+    _stream = getattr(sys, _stream_name, None)
+    _reconfigure = getattr(_stream, "reconfigure", None)
+    if _reconfigure is not None:
+        # errors="replace" on the write side so a stray unencodable char degrades
+        # to a placeholder instead of crashing the whole flow branch.
+        _reconfigure(encoding="utf-8", errors="replace" if _stream_name != "stdin" else "strict")
+
+
+def _utf8_env() -> dict[str, str]:
+    """Environment for psi-agent subprocesses, forcing UTF-8 I/O.
+
+    Child psi-agent processes (ai / session / channel cli) write their output
+    with rich.console.Console, whose encoding follows the child's locale. When
+    the shim captures that output through a pipe on Windows the child defaults to
+    GBK and chokes on emoji in the model's reply. PYTHONUTF8 + PYTHONIOENCODING
+    make the child use UTF-8 for stdin/stdout/stderr, matching this shim.
+    """
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def _psi_cmd() -> list[str]:
     # posix=False on Windows so backslashes in a path-bearing PSI_CMD
     # (e.g. C:\tools\psi-agent) are NOT eaten as shell escapes by shlex.
@@ -71,6 +101,7 @@ def _popen_detached(cmd: list[str]) -> subprocess.Popen:
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "stdin": subprocess.DEVNULL,
+        "env": _utf8_env(),
     }
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -270,7 +301,19 @@ def _send(channel_socket: str, prompt: str) -> int:
     large payload can't overflow the OS command-line length limit.
     """
     cmd = [*_psi_cmd(), "channel", "cli", "--session-socket", channel_socket, "--message", "-"]
-    proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True)
+    # Force UTF-8 on both the text codec (encoding=) and the child's locale (env),
+    # so the prompt we pipe in and the emoji-bearing reply we read back never touch
+    # the Windows GBK console codec. errors="replace" keeps a single bad char from
+    # aborting the whole flow branch.
+    proc = subprocess.run(
+        cmd,
+        input=prompt,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=_utf8_env(),
+    )
     sys.stdout.write(proc.stdout)
     if proc.returncode != 0:
         sys.stderr.write(proc.stderr)
@@ -284,8 +327,13 @@ def main(argv: list[str]) -> int:
     # `--message -` means the bundle put the (possibly large) message on our stdin
     # instead of argv, to dodge the OS command-line length limit (ENAMETOOLONG on a
     # synthesizer that aggregates several upstream reports). Read it from stdin.
+    #
+    # Read RAW bytes and decode UTF-8 ourselves rather than trusting sys.stdin's
+    # text codec: the bundle writes UTF-8 bytes, but a Git-Bash -> Python pipe on
+    # Windows otherwise decodes them as GBK, which mangles CJK text and can surface
+    # lone surrogates. errors="replace" guarantees a clean str no matter what.
     if message == "-":
-        message = sys.stdin.read()
+        message = sys.stdin.buffer.read().decode("utf-8", errors="replace")
     workspace = args.get("workspace") or os.environ.get("FLOW_PSI_WORKSPACE", "")
     if not workspace:
         sys.stderr.write("[shim] no workspace (need --workspace or FLOW_PSI_WORKSPACE)\n")
