@@ -47,6 +47,10 @@ All routing-model prompt text lives in `prompts.py`. Iterate on
 descriptions; the security boundary above still applies to every prompt
 revision.
 
+The prompt must distinguish the latest user task from earlier turns. If the
+latest task depends on earlier work, route the combined task type; if it is
+unrelated, ignore earlier turns and route from the latest user task alone.
+
 ## Lifecycle and logging
 
 All I/O uses aiohttp and anyio. Network responses and sessions must remain in
