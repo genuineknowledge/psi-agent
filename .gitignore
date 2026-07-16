@@ -9,7 +9,3 @@ dist/
 *.sock
 .coverage
 /result
-build/
-.build/
-state/
-desktop/
