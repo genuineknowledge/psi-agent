@@ -194,8 +194,7 @@ OPENAPI_SPEC = {
                 "responses": {
                     "200": {
                         "description": (
-                            "Displayable chat rows {role, text}. "
-                            "Skips schedule turns and SSE keepalive ping/pong."
+                            "Displayable chat rows {role, text}. Skips schedule turns and SSE keepalive ping/pong."
                         )
                     },
                     "404": {"$ref": "#/components/responses/Error"},
