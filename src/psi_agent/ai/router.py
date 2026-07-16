@@ -74,7 +74,7 @@ async def _select_destination(app: web.Application, body: dict[str, Any]) -> Rou
     requested = body.get("model")
     if isinstance(requested, str):
         for target in app[_ROUTE_TARGETS_KEY]:
-            if target.model == requested:
+            if target.addr == requested:
                 return RouteDecision(target=target, routes=(), votes={}, source="request_model")
 
     context = serialize_context(body.get("messages"), max_chars=app[_CONTEXT_CHARS_KEY])
@@ -111,13 +111,17 @@ async def handle_router_chat_completions(request: web.Request) -> web.StreamResp
     body: dict[str, Any] = dict(payload)
     decision = await _select_destination(request.app, body)
     body.pop("routing", None)
-    body["model"] = decision.target.model
+    body["model"] = decision.target.model_name
     if request.app[_LOG_DETAILS_KEY]:
         logger.debug(f"LLMRouter routes={decision.routes!r}, votes={decision.votes!r}")
     else:
         logger.debug(f"LLMRouter votes={decision.votes!r}")
     logger.info(
-        f"Router selected model={decision.target.model!r}, addr={decision.target.addr!r}, source={decision.source!r}"
+        "Router selected "
+        f"model_name={decision.target.model_name!r}, "
+        f"addr={decision.target.addr!r}, "
+        f"source={decision.source!r}, "
+        f"votes={decision.votes!r}"
     )
 
     connector, endpoint = resolve_connector_and_endpoint(decision.target.addr)
@@ -226,8 +230,8 @@ class AiRouter:
     upstream: list[str] = field(default_factory=list)
     """Candidate JSON objects supplied as one or more values after --upstream."""
 
-    default_model: str = ""
-    """Fallback candidate model; defaults to the first upstream."""
+    default_addr: str = ""
+    """Fallback candidate addr; defaults to the first upstream."""
 
     router_timeout: float | None = None
     """Routing timeout in seconds; omit the value to wait indefinitely."""
@@ -255,11 +259,11 @@ class AiRouter:
         if self.router_context_chars <= 0:
             raise ValueError("--router-context-chars must be positive")
         targets = parse_upstreams(self.upstream)
-        target_by_model = {target.model: target for target in targets}
-        if self.default_model and self.default_model not in target_by_model:
-            raise ValueError(f"--default-model {self.default_model!r} is not present in --upstream")
-        explicit_default = bool(self.default_model)
-        default_target = target_by_model.get(self.default_model, targets[0])
+        target_by_addr = {target.addr: target for target in targets}
+        if self.default_addr and self.default_addr not in target_by_addr:
+            raise ValueError(f"--default-addr {self.default_addr!r} is not present in --upstream")
+        explicit_default = bool(self.default_addr)
+        default_target = target_by_addr.get(self.default_addr, targets[0])
         fallback = _fallback_decision(default_target, explicit=explicit_default)
 
         adapter = LLMRouterAdapter(

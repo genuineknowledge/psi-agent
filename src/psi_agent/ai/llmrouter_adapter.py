@@ -25,7 +25,7 @@ _REQUIRED_PROMPTS = ("agent_decomp_route.yaml", "agent_decomp_cot.yaml", "agent_
 @dataclass(frozen=True)
 class RouteTarget:
     addr: str
-    model: str
+    model_name: str
     description: str
 
 
@@ -48,8 +48,8 @@ def parse_upstreams(raw: list[str]) -> list[RouteTarget]:
     if not raw:
         raise ValueError("--upstream must provide at least one JSON object")
     targets: list[RouteTarget] = []
-    models: set[str] = set()
-    allowed = {"addr", "model", "description"}
+    model_names: set[str] = set()
+    allowed = {"addr", "model_name", "description"}
     for index, encoded in enumerate(raw):
         location = f"upstream[{index}]"
         try:
@@ -69,12 +69,12 @@ def parse_upstreams(raw: list[str]) -> list[RouteTarget]:
             raise ValueError(f"{location} has unsupported fields: {sorted(unknown)!r}")
         target = RouteTarget(
             addr=_required_text(value, "addr", location),
-            model=_required_text(value, "model", location),
+            model_name=_required_text(value, "model_name", location),
             description=_required_text(value, "description", location),
         )
-        if target.model in models:
-            raise ValueError(f"duplicate upstream model: {target.model!r}")
-        models.add(target.model)
+        if target.model_name in model_names:
+            raise ValueError(f"duplicate upstream model_name: {target.model_name!r}")
+        model_names.add(target.model_name)
         targets.append(target)
     return targets
 
@@ -221,7 +221,8 @@ class LLMRouterAdapter:
         try:
             await self.runtime_dir.mkdir(parents=True, exist_ok=True)
             descriptions = {
-                target.model: {"feature": target.description, "model": target.model} for target in self.targets
+                target.model_name: {"feature": target.description, "model": target.model_name}
+                for target in self.targets
             }
             await self.llm_data.write_text(
                 json.dumps(descriptions, ensure_ascii=False, indent=2),
@@ -277,23 +278,27 @@ class LLMRouterAdapter:
             # Once scheduled, an abandoned worker owns the decrement in _route_sync.
             raise
         routes: list[tuple[str, str]] = []
-        target_by_model = {target.model: target for target in self.targets}
+        target_by_model_name = {target.model_name: target for target in self.targets}
         if isinstance(raw_routes, list):
             for item in raw_routes:
                 if not isinstance(item, (list, tuple)) or len(item) != 2:
                     continue
-                sub_query, model = item
-                if isinstance(sub_query, str) and isinstance(model, str) and model in target_by_model:
-                    routes.append((sub_query, model))
+                sub_query, model_name = item
+                if (
+                    isinstance(sub_query, str)
+                    and isinstance(model_name, str)
+                    and model_name in target_by_model_name
+                ):
+                    routes.append((sub_query, model_name))
         if not routes:
             raise RuntimeError("LLMRouter returned no valid candidate routes")
         votes: dict[str, int] = {}
-        for _, model in routes:
-            votes[model] = votes.get(model, 0) + 1
+        for _, model_name in routes:
+            votes[model_name] = votes.get(model_name, 0) + 1
         maximum = max(votes.values())
-        winner = next(model for _, model in routes if votes[model] == maximum)
+        winner = next(model_name for _, model_name in routes if votes[model_name] == maximum)
         return RouteDecision(
-            target=target_by_model[winner],
+            target=target_by_model_name[winner],
             routes=tuple(routes),
             votes=votes,
         )

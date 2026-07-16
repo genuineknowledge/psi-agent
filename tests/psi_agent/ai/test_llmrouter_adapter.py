@@ -171,11 +171,11 @@ def test_build_router_reports_missing_packaged_prompt(
 
 def test_parse_upstreams_accepts_independent_json_objects_in_order() -> None:
     raw = [
-        json.dumps({"addr": "./qwen.sock", "model": "qwen-plus", "description": "General tasks"}),
+        json.dumps({"addr": "./qwen.sock", "model_name": "qwen-plus", "description": "General tasks"}),
         json.dumps(
             {
                 "addr": "./reasoner.sock",
-                "model": "deepseek-reasoner",
+                "model_name": "deepseek-reasoner",
                 "description": "Complex reasoning",
             }
         ),
@@ -195,15 +195,15 @@ def test_parse_upstreams_accepts_independent_json_objects_in_order() -> None:
         (["[]"], r"upstream\[0\].*object"),
         (["{}"], r"upstream\[0\].*addr"),
         (
-            ['{"addr":"a","model":"m","description":"d","api_key":"secret"}'],
+            ['{"addr":"a","model_name":"m","description":"d","api_key":"secret"}'],
             "unsupported fields",
         ),
         (
             [
-                '{"addr":"a","model":"m","description":"d"}',
-                '{"addr":"b","model":"m","description":"d2"}',
+                '{"addr":"a","model_name":"m","description":"d"}',
+                '{"addr":"b","model_name":"m","description":"d2"}',
             ],
-            "duplicate upstream model",
+            "duplicate upstream model_name",
         ),
     ],
 )
@@ -214,8 +214,8 @@ def test_parse_upstreams_rejects_invalid_values(raw: list[str], message: str) ->
 
 def test_parse_upstreams_reports_json_error_location_and_powershell_hint() -> None:
     raw = [
-        '{"addr":"a","model":"m","description":"d"}',
-        "{addr:http://127.0.0.1:8101,model:qwen-plus,description:general}",
+        '{"addr":"a","model_name":"m","description":"d"}',
+        "{addr:http://127.0.0.1:8101,model_name:qwen-plus,description:general}",
     ]
 
     with pytest.raises(ValueError) as error:
@@ -291,7 +291,7 @@ async def test_adapter_builds_once_routes_and_restores_api_keys(
     decision = await adapter.route("analyze")
 
     assert len(built) == 1
-    assert decision.target.model == "reasoner"
+    assert decision.target.model_name == "reasoner"
     assert decision.votes == {"reasoner": 2, "coder": 1}
     assert os.environ["API_KEYS"] == "original"
     runtime = yaml.safe_load(await adapter.runtime_yaml.read_text(encoding="utf-8"))
@@ -351,6 +351,14 @@ async def test_adapter_routes_with_cli_base_endpoint_and_candidate_only_disk_dat
     assert "router-small" not in disk_data
     assert "router-secret" not in runtime_text
     assert "router-secret" not in await adapter.llm_data.read_text(encoding="utf-8")
-    assert decision.target.model == "reasoner"
+    assert decision.target.model_name == "reasoner"
     assert decision.source == "llmrouter_majority"
     await adapter.close()
+
+
+def test_parse_upstreams_uses_model_name_field() -> None:
+    raw = [json.dumps({"addr": "./qwen.sock", "model_name": "qwen-plus", "description": "General tasks"})]
+
+    targets = parse_upstreams(raw)
+
+    assert targets == [RouteTarget("./qwen.sock", "qwen-plus", "General tasks")]

@@ -9,6 +9,7 @@ import pytest
 import tyro
 from aiohttp import ClientSession, ClientTimeout, web
 
+import psi_agent.ai.router as router_module
 from psi_agent.ai.llmrouter_adapter import RouteDecision, RouteTarget
 from psi_agent.ai.router import (
     _CONTEXT_CHARS_KEY,
@@ -26,7 +27,7 @@ def test_ai_router_upstream_defaults_are_not_shared() -> None:
     first = AiRouter(session_socket="http://127.0.0.1:8100")
     second = AiRouter(session_socket="http://127.0.0.1:8101")
 
-    first.upstream.append('{"addr":"a","model":"m","description":"d"}')
+    first.upstream.append('{"addr":"a","model_name":"m","description":"d"}')
 
     assert second.upstream == []
 
@@ -45,8 +46,8 @@ async def test_ai_router_rejects_empty_upstream_list() -> None:
 
 
 def test_tyro_accepts_one_upstream_option_with_multiple_json_values() -> None:
-    first = '{"addr":"http://127.0.0.1:8101","model":"qwen-plus","description":"General"}'
-    second = '{"addr":"http://127.0.0.1:8102","model":"reasoner","description":"Reasoning"}'
+    first = '{"addr":"http://127.0.0.1:8101","model_name":"qwen-plus","description":"General"}'
+    second = '{"addr":"http://127.0.0.1:8102","model_name":"reasoner","description":"Reasoning"}'
 
     router = tyro.cli(
         AiRouter,
@@ -60,10 +61,13 @@ def test_tyro_accepts_one_upstream_option_with_multiple_json_values() -> None:
             "--upstream",
             first,
             second,
+            "--default-addr",
+            "127.0.0.1:8101",
         ],
     )
 
     assert router.upstream == [first, second]
+    assert router.default_addr == "127.0.0.1:8101"
 
 
 class FakeAdapter:
@@ -191,7 +195,7 @@ async def test_matching_request_model_bypasses_llmrouter() -> None:
     try:
         status, _ = await _post(
             router_url,
-            {"model": "chosen", "messages": [{"role": "user", "content": "hello"}]},
+            {"model": upstream_url, "messages": [{"role": "user", "content": "hello"}]},
         )
         assert status == 200
         assert adapter.calls == []
@@ -223,6 +227,20 @@ async def test_router_failure_or_timeout_uses_explicit_default(failure: Exceptio
 
 
 @pytest.mark.anyio
+async def test_ai_router_rejects_unknown_default_addr() -> None:
+    router = AiRouter(
+        session_socket="http://127.0.0.1:8100",
+        router_model="router-small",
+        router_base_url="https://router.example/v1",
+        upstream=['{"addr":"http://127.0.0.1:7001","model_name":"qwen-plus","description":"General"}'],
+        default_addr="127.0.0.1:9999",
+    )
+
+    with pytest.raises(ValueError, match="--default-addr"):
+        await router.run()
+
+
+@pytest.mark.anyio
 async def test_missing_user_context_uses_first_fallback_without_calling_adapter() -> None:
     runner, upstream_url, requests = await _start_upstream("first")
     target = RouteTarget(upstream_url, "first", "first")
@@ -235,6 +253,30 @@ async def test_missing_user_context_uses_first_fallback_without_calling_adapter(
         assert status == 200
         assert adapter.calls == []
         assert requests[0]["model"] == "first"
+    finally:
+        await router_runner.cleanup()
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_router_logs_votes_in_selection_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner, upstream_url, _requests = await _start_upstream("logged")
+    target = RouteTarget(upstream_url, "logged-model", "logged")
+    decision = RouteDecision(target, (("reason", "logged-model"),), {"logged-model": 1})
+    adapter = FakeAdapter(decision)
+    router_runner, router_url = await _start_router(
+        [target], adapter, fallback=RouteDecision(target, (), {}, "fallback_first")
+    )
+    messages: list[str] = []
+
+    def fake_info(message: str) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr(router_module.logger, "info", fake_info)
+    try:
+        status, _ = await _post(router_url, {"messages": [{"role": "user", "content": "hello"}]})
+        assert status == 200
+        assert any("votes={'logged-model': 1}" in message for message in messages)
     finally:
         await router_runner.cleanup()
         await runner.cleanup()
