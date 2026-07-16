@@ -48,9 +48,41 @@ def test_slugify() -> None:
     assert impl.slugify("###") == "untitled"
 
 
+def test_slugify_preserves_non_latin_titles() -> None:
+    # Non-Latin (CJK, Cyrillic, …) titles must get real, distinct slugs — not
+    # all collapse to "untitled" (which made them overwrite each other on disk).
+    assert impl.slugify("校训") == "校训"
+    assert impl.slugify("校规") == "校规"
+    assert impl.slugify("校训") != impl.slugify("校规")
+    assert impl.slugify("中国科学技术大学") == "中国科学技术大学"
+    assert impl.slugify("校区 East") == "校区-east"
+    assert impl.slugify("_schema") == "_schema"
+
+
 def test_extract_links_dedupes_and_handles_labels() -> None:
     body = "See [[Attention]] and [[Attention|self-attention]] plus [[KV Cache]]."
     assert impl.extract_links(body) == ["attention", "kv-cache"]
+
+
+async def test_chinese_titles_do_not_collide_on_disk(tmp_path: Path) -> None:
+    # Regression: several distinct Chinese titles used to all slug to "untitled"
+    # and overwrite one another. Each must land in its own file and read back.
+    await _write(tmp_path, "校训", "红专并进。见 [[中国科学技术大学]]。")
+    await _write(tmp_path, "校规", "学籍规定。")
+    await _write(tmp_path, "中国科学技术大学", "USTC。链接 [[校训]] [[校规]]。")
+
+    files = sorted(p.name for p in (tmp_path / "wiki").glob("*.md"))
+    assert files == ["中国科学技术大学.md", "校规.md", "校训.md"]
+    assert "untitled.md" not in files
+
+    back = await impl.wiki_read_impl("校训", workspace_raw=str(tmp_path))
+    assert back["ok"] is True
+    assert "红专并进" in back["content"]
+    assert back["title"] == "校训"
+
+    links = await impl.wiki_links_impl("中国科学技术大学", workspace_raw=str(tmp_path))
+    assert set(links["outgoing"]) == {"校训", "校规"}
+    assert links["broken"] == []
 
 
 async def test_write_creates_page_with_frontmatter(tmp_path: Path) -> None:
