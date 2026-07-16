@@ -57,6 +57,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
 | `x_search` (`x_search.py` + `_x_search_impl.py`) | Search recent public posts on X (Twitter) via the X API v2 recent-search endpoint (last ~7 days). `x_search(query, max_results, sort_order)` supports X search operators (`from:`, `#tag`, `"phrase"`, `lang:`, `-is:retweet`). Uses `aiohttp` (already a core dep), no extra packages. Requires `X_BEARER_TOKEN` (X API v2 App-only OAuth 2.0 bearer token). |
 | `browser` (`browser.py` + `_browser_impl.py` + `_mcp.py`) | Browser automation via Playwright MCP driving the system browser (Edge). Tools surface as `browser_*` (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press_key`, `browser_navigate_back`, `browser_console_messages`, `browser_handle_dialog`, `browser_take_screenshot`, …). One long-lived `npx @playwright/mcp` server with `--shared-browser-context` keeps page state across calls. Requires Node.js/`npx`. |
+| `browser_cdp` (`browser_cdp.py` + `_browser_cdp_impl.py`) | Send a **raw Chrome DevTools Protocol** command to a browser — the escape hatch for anything the `browser_*` tools don't wrap (any CDP domain: `Page.*`, `Network.*`, `Emulation.*`, `Runtime.*`, `Browser.*`, `Target.*`, …). `browser_cdp(method, params, target="page"/"browser", timeout_s)` where `params` is a **JSON object string** (e.g. `'{"url": "https://example.com"}'`, empty for no-arg methods); returns the raw CDP result JSON. Launches a **dedicated** debug browser (Edge, then Chrome, with `--remote-debugging-port` + isolated profile — separate from the Playwright MCP browser) on first use and reuses it, or connects to an existing browser when `CDP_ENDPOINT` is set. CDP is JSON-over-WebSocket; uses `aiohttp` (already a core dep), no extra packages. |
 | `feishu_doc` (`feishu_doc.py` + `_feishu_impl.py`) | Read full text of a Feishu/Lark document. Tool `feishu_doc_read(file_type, token, max_chars)` supports docx/doc/sheet. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
 | `feishu_drive` (`feishu_drive.py` + `_feishu_impl.py`) | Read/post whole-document comments on a Feishu/Lark file. Tools `feishu_drive_add_comment`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment`. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
 | `speech_to_text` | iFLYTEK streaming STT for WAV/PCM/MP3 files received through `[RECV:]`. |
@@ -104,6 +105,12 @@ All are optional and only affect the dynamic suffix / runtime line:
   browser (Edge by default). Optional env: `BROWSER_CHANNEL` (`msedge`/`chrome`),
   `BROWSER_HEADLESS` (`1`/`0`), `BROWSER_CAPS` (default `vision,devtools`). If Node is
   missing the `browser_*` tools are skipped at load time (logged), not fatal.
+- **`browser_cdp` (raw CDP)**: a Chromium-family browser (Edge/Chrome) installed, **or**
+  `CDP_ENDPOINT` pointing at a browser started with `--remote-debugging-port` (e.g.
+  `http://localhost:9222`). No Node needed — it launches the browser directly and speaks
+  CDP over a WebSocket with `aiohttp`. Optional env: `CDP_ENDPOINT`, `CDP_BROWSER_CHANNEL`
+  (`msedge`/`chrome`), `CDP_HEADLESS` (`1`/`0`, default headed), `CDP_STARTUP_TIMEOUT`,
+  `CDP_COMMAND_TIMEOUT`. If no browser is found the tool returns `ok=false` (not fatal).
 - **Feishu tools**: set `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` (same app as the Feishu channel). Reuses the `lark-channel-sdk` dependency; no extra install. If unset, the tools return `ok=false` (not fatal).
 
 ## ⚠️ Intentionally-kept un-wired code (future extension)
