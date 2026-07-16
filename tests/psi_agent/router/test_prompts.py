@@ -11,8 +11,11 @@ def test_build_routing_messages_keeps_prompt_in_dedicated_module() -> None:
     )
     messages = build_routing_messages("[USER]\nsolve this", targets)
     rendered = "\n".join(message["content"] for message in messages)
-    assert "Candidate 0: simple tasks" in rendered
-    assert "Candidate 1: complex reasoning" in rendered
+    assert "请选择与对话内容最匹配的唯一候选模型" in rendered
+    assert "仅返回 JSON" in rendered
+    assert "简短说明选择理由" in rendered
+    assert "候选模型 0: simple tasks" in rendered
+    assert "候选模型 1: complex reasoning" in rendered
     assert "secret-model" not in rendered
     assert "http://secret" not in rendered
     assert messages[-1] == {"role": "user", "content": "[USER]\nsolve this"}

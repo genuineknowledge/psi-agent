@@ -25,8 +25,8 @@ TARGETS = (
 def test_prompt_exposes_only_candidate_numbers_and_descriptions() -> None:
     messages = build_routing_messages("[USER]\nprove this", TARGETS)
     rendered = "\n".join(item["content"] for item in messages)
-    assert "Candidate 0: simple Chinese tasks" in rendered
-    assert "Candidate 1: code and mathematics" in rendered
+    assert "候选模型 0: simple Chinese tasks" in rendered
+    assert "候选模型 1: code and mathematics" in rendered
     assert "secret-model" not in rendered
     assert "http://secret" not in rendered
 
