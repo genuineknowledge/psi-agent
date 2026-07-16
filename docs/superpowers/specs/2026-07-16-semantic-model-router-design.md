@@ -141,11 +141,11 @@ candidate's `socket` and posts the original body to it unchanged. The original
 `model`, `messages`, `tools`, `tool_choice`, sampling parameters, and unknown
 extensions all pass through unchanged.
 
-Candidate sockets are service addresses. The implementation appends
-`/chat/completions` when needed and does not duplicate it when the complete
-endpoint was supplied. It should reuse the project's transport helpers so
-supported HTTP/TCP, Unix-socket, and Windows Named Pipe addresses behave
-consistently.
+Candidate sockets are service base addresses rather than complete request
+endpoints. The implementation always appends `/chat/completions` for HTTP/TCP
+addresses, so callers must not include that suffix in the configured socket.
+It should reuse the project's transport helpers so supported HTTP/TCP,
+Unix-socket, and Windows Named Pipe addresses behave consistently.
 
 ### 6. Proxy SSE unchanged
 

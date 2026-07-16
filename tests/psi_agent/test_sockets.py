@@ -27,15 +27,6 @@ async def test_resolve_https_tcp_keeps_base_path() -> None:
 
 
 @pytest.mark.anyio
-async def test_resolve_complete_endpoint_is_not_duplicated() -> None:
-    connector, endpoint = resolve_connector_and_endpoint("https://api.example.com/v1/chat/completions")
-    try:
-        assert endpoint == "https://api.example.com/v1/chat/completions"
-    finally:
-        await connector.close()
-
-
-@pytest.mark.anyio
 async def test_resolve_strips_trailing_slash() -> None:
     connector, endpoint = resolve_connector_and_endpoint("http://h:1/")
     try:

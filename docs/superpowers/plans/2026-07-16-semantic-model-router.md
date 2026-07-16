@@ -152,22 +152,15 @@ git add src/psi_agent/router/models.py tests/psi_agent/router/__init__.py tests/
 git commit -m "feat(router): validate semantic upstreams"
 ```
 
-### Task 2: Address endpoint normalization
+### Task 2: Address endpoint construction
 
 **Files:**
 - Modify: `tests/psi_agent/test_sockets.py`
 - Modify: `src/psi_agent/_sockets.py`
 
-- [ ] **Step 1: Add failing tests for complete and `/v1` endpoints**
+- [ ] **Step 1: Add a test for a base address containing `/v1`**
 
 ```python
-def test_tcp_complete_chat_completions_endpoint_is_not_duplicated() -> None:
-    connector, endpoint = resolve_connector_and_endpoint("http://example.com/v1/chat/completions")
-    assert endpoint == "http://example.com/v1/chat/completions"
-    awaitable = connector.close()
-    assert awaitable is None
-
-
 def test_tcp_v1_root_gets_chat_completions_suffix() -> None:
     connector, endpoint = resolve_connector_and_endpoint("https://example.com/v1")
     assert endpoint == "https://example.com/v1/chat/completions"
@@ -175,22 +168,22 @@ def test_tcp_v1_root_gets_chat_completions_suffix() -> None:
     assert awaitable is None
 ```
 
-Adapt cleanup to the exact aiohttp connector API already used by neighboring tests; do not leave unclosed-connector warnings.
+TCP addresses are service base addresses. Callers must not include the complete
+`/chat/completions` endpoint. Adapt cleanup to the exact aiohttp connector API
+already used by neighboring tests; do not leave unclosed-connector warnings.
 
-- [ ] **Step 2: Run the socket tests and confirm the duplicated-path failure**
+- [ ] **Step 2: Run the socket tests and confirm the base path is preserved**
 
 Run: `uv run pytest tests/psi_agent/test_sockets.py -v`
 
-Expected: the complete endpoint is currently rendered as `/v1/chat/completions/chat/completions`.
+Expected: the `/v1` base address is rendered as `/v1/chat/completions`.
 
-- [ ] **Step 3: Normalize only TCP endpoint paths**
+- [ ] **Step 3: Append the request path to TCP base addresses**
 
 Replace the TCP endpoint construction with:
 
 ```python
-base = addr.rstrip("/")
-suffix = path_prefix if path_prefix.startswith("/") else f"/{path_prefix}"
-endpoint = base if base.endswith(suffix) else base + suffix
+endpoint = addr.rstrip("/") + path_prefix
 ```
 
 Keep Unix socket and Named Pipe behavior unchanged and keep explicit connector keyword arguments.
