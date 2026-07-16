@@ -20,6 +20,15 @@ derivation, YAML frontmatter, timestamps, link indexing). Do not hand-craft wiki
 files with the generic `write`/`edit`/`bash` tools — let the tools keep the
 format and link graph consistent.
 
+The pattern has **three layers**: raw sources (read, never rewrite) → the
+`wiki/*.md` pages (the durable synthesis layer) → the **schema layer** in
+[SCHEMA.md](SCHEMA.md), which defines page anatomy, naming/linking rules, the
+three maintenance loops, and known anti-patterns. **Read SCHEMA.md before
+seeding a new wiki or running a lint pass**, and seed a copy into the wiki as
+`wiki/_schema.md` (title `_schema`) so the contract travels with the knowledge
+base. The core idea: **preserve synthesis, don't regenerate it** — write a
+conclusion into a page once, then revise that page rather than recomputing it.
+
 Reply in Chinese unless the user clearly uses another language.
 
 ## The tools
@@ -70,60 +79,59 @@ with [[Absolute Positional Embeddings]]. Widely used in [[LLaMA]] and others.
 - <https://arxiv.org/abs/2104.09864>
 ```
 
-## Workflow
+## Seeding a new wiki
 
-### 1. Before writing — always search first
+When asked to build a wiki on a topic (and `wiki_list` shows it's empty or the
+topic is absent):
 
-Avoid duplicate pages. Check whether the concept already exists with
-`wiki_search` (matches titles, aliases, and bodies), or scan the table of
-contents with `wiki_list`:
+1. Read [SCHEMA.md](SCHEMA.md) and `wiki_write` a copy into the wiki as title
+   `_schema`, adapting its "Domain conventions" to the topic.
+2. `wiki_write` an `index` hub page that will link the top-level topics.
+3. Create one atomic page per concept, linking them with `[[…]]`, and add each
+   to the `index` hub. Do **not** dump everything into one page or one chat blob.
 
-```
-wiki_search  query="rotary RoPE"
-wiki_list                          # or wiki_list tag="attention"
-```
+## The three maintenance loops
 
-If a matching page exists, **update it** rather than creating a near-duplicate:
-`wiki_read` it, merge the new facts, and `wiki_write` the same title again (the
-tool preserves `created` and bumps `updated`).
+Run the loop that fits the request — the wiki is a living layer, not a one-shot
+document. Full detail (and the anti-patterns to avoid) is in
+[SCHEMA.md](SCHEMA.md); the short form:
 
-### 2. Writing / updating a page
+### Ingest — new material arrives
 
-- New or updated page: call `wiki_write(title, content, tags, aliases)`. Writing
-  an existing title updates it in place — read first if you want to preserve
-  existing body text and merge rather than replace.
-- Whenever you state a fact that has (or should have) its own page, link it with
-  `[[…]]` in the `content`, even if that page doesn't exist yet.
+1. Identify the concepts in the source.
+2. Per concept: `wiki_search` → if it exists, `wiki_read` + merge + `wiki_write`
+   the same title (preserves `created`); if not, `wiki_write` a new page.
+3. Add the source to each touched page's `## Sources`; link new `[[concepts]]`
+   even before their pages exist.
 
-### 3. Answering from the wiki
+### Query — a question comes in
 
-When the user asks something the wiki might cover: `wiki_search` for the term,
-`wiki_read` the top page(s), answer from them, and cite the page slug. If the
-wiki is missing or thin on the topic, answer normally **and** offer to compile a
-new page with `wiki_write` so it's captured for next time.
+1. `wiki_search` the term(s); `wiki_read` the top page(s).
+2. Answer **from the wiki**, citing the page slug(s).
+3. If the wiki is thin on a high-value topic, answer and **backfill** with
+   `wiki_write` so the next ask is cheaper. Backfilling is how the wiki compounds.
 
-### 4. Traversing links (backlinks & broken links)
+### Lint — periodic health check ("check/clean/maintain the wiki")
 
-The wiki is a graph; keep it navigable with `wiki_links(title_or_slug)`:
+1. `wiki_list` to enumerate pages.
+2. For each page, `wiki_links`: collect `broken` (→ wanted pages to write) and
+   empty-`backlinks` non-hub pages (→ orphans to link from `index`).
+3. Flag stale pages (old `updated`) for re-ingest; merge near-duplicates
+   (`wiki_delete` the loser, repoint its backlinks).
+4. Report a short punch-list; fix the cheap items immediately. A `[[link]]` that
+   resolves to nothing is a lint failure to fix, not a cosmetic issue.
 
-- `outgoing` — the pages this page links to.
-- `backlinks` — the pages that link *to* this one (check these before renaming or
-  deleting).
-- `broken` — `[[links]]` pointing at pages that don't exist yet. These are the
-  best candidates to write next.
+## Housekeeping
 
-### 5. Housekeeping
-
-- Renaming a concept: `wiki_write` under the new title (creates the new slug),
-  then use `wiki_links` on the old page to find inbound `[[old title]]` links,
-  repoint them, and `wiki_delete` the old page.
-- Deleting a page: `wiki_delete` reports `orphaned_backlinks`; go fix or drop
-  those now-broken `[[…]]` links so the graph stays consistent.
-- Optionally keep a `wiki/index.md` hub page (via `wiki_write` title "index")
-  that links the top-level topics.
+- Renaming a concept: `wiki_write` under the new title, use `wiki_links` on the
+  old page to find inbound links, repoint them, then `wiki_delete` the old page.
+- Deleting: `wiki_delete` reports `orphaned_backlinks`; fix or drop those now-
+  broken `[[…]]` links so the graph stays consistent.
 
 ## Notes
 
 - Never store secrets in the wiki. It's plain Markdown the user reads and edits.
+- The `wiki/*.md` files **are** the wiki. If you export to HTML for viewing,
+  keep the Markdown sources — never delete them and keep only the HTML.
 - The value compounds: the more you compile into linked pages, the less you
   re-search — that's the whole point of the pattern.
