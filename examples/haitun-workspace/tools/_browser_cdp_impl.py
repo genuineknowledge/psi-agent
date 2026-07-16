@@ -156,7 +156,7 @@ async def _endpoint_from(port: int) -> str | None:
             if resp.status != 200:
                 return None
             data = await resp.json()
-    except (aiohttp.ClientError, TimeoutError, ValueError):
+    except aiohttp.ClientError, TimeoutError, ValueError:
         return None
     ws = data.get("webSocketDebuggerUrl")
     return str(ws) if ws else None
@@ -301,7 +301,7 @@ async def _first_page_ws(base_http: str) -> str | None:
             session.get(url) as resp,
         ):
             targets = await resp.json()
-    except (aiohttp.ClientError, TimeoutError, ValueError):
+    except aiohttp.ClientError, TimeoutError, ValueError:
         return None
     if not isinstance(targets, list):
         return None
