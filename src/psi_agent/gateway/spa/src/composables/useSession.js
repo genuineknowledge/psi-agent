@@ -4,7 +4,7 @@ import { useChatStore } from '../stores/chat.js'
 import { useAiStore } from '../stores/ai.js'
 import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
-import { loadHistory, htmlEscape, renderMd, saveActiveState } from '../utils.js'
+import { loadHistory, htmlEscape, renderMd, saveActiveState, loadActiveState } from '../utils.js'
 import { stripTransferMarkers } from '../sendMarkers.js'
 import { normalizeFailedTurns } from '../messageTurn.js'
 import { normalizeWorkspacePath, resolveSessionWorkspace } from '../sessionList.js'
@@ -158,6 +158,44 @@ export async function promoteDraftToSession() {
   return sid
 }
 
+/** Recreate Gateway session process when SPA still holds an id after Gateway restart. */
+export async function ensureBackendSession(sid) {
+  const session = useSessionStore()
+  const ai = useAiStore()
+  if (!sid || session.draftSession?.draftId === sid) return sid
+
+  if (session.sessions.some(s => s.id === sid)) return sid
+
+  let live = []
+  try {
+    live = await api('GET', '/sessions')
+  } catch (_) {
+    live = []
+  }
+  if (Array.isArray(live) && live.some(s => s.id === sid)) {
+    session.sessions = live
+    return sid
+  }
+
+  const aiId = ai.selectedAiId || ai.ais[0]?.id
+  if (!aiId) throw new Error('请先选择一个大模型')
+
+  const workspace =
+    session.selectedWorkspacePath
+    || loadActiveState().workspacePath
+    || session.gatewayCwd
+  if (!workspace) throw new Error('请先打开工作区')
+
+  await api('POST', '/sessions', { id: sid, ai_id: aiId, workspace })
+  try {
+    session.sessions = await api('GET', '/sessions')
+  } catch (_) {
+    session.sessions = []
+  }
+  session.syncRegisteredWorkspaces()
+  return sid
+}
+
 export async function startDraftChat(workspacePath) {
   const session = useSessionStore()
   const ai = useAiStore()
@@ -250,6 +288,12 @@ export async function selectSession(id) {
   const ui = useUiStore()
 
   if (session.editingSessionId === id) return
+  try {
+    await ensureBackendSession(id)
+  } catch (e) {
+    ui.showAlert(e.message || '会话已失效，请新建对话')
+    return
+  }
   const oldId = session.selectedSessionId
   if (oldId) {
     snapshotCurrentSession(oldId)

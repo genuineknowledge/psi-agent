@@ -78,7 +78,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         async for chunk in stream:
             data = chunk.model_dump_json()
             logger.debug(f"SSE chunk: {data[:1000]}")
-            await response.write(f"data: {data}\n\n".encode())
+            await response.write(f"data: {data}\n\n".encode("utf-8"))
     except ConnectionResetError:
         # Downstream client (session/channel) disconnected — e.g. user pressed
         # "stop". The finally block closes the upstream provider stream.
@@ -91,11 +91,12 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             {
                 "id": "error",
                 "choices": [{"index": 0, "delta": {"content": f"[Upstream Error]: {e}"}, "finish_reason": "error"}],
-            }
+            },
+            ensure_ascii=False,
         )
         logger.debug(f"SSE error chunk: {err_chunk[:1000]}")
         try:
-            await response.write(f"data: {err_chunk}\n\n".encode())
+            await response.write(f"data: {err_chunk}\n\n".encode("utf-8"))
         except Exception:
             logger.warning("Failed to send upstream error chunk to client")
     else:

@@ -39,7 +39,7 @@ class AiClient:
 
             logger.debug("Starting to consume SSE stream")
             async for raw_line in resp.content:
-                line = raw_line.decode().strip()
+                line = raw_line.decode("utf-8").strip()
                 if not line or not line.startswith("data: "):
                     continue
                 data_str = line[6:]

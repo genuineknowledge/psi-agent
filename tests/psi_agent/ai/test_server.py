@@ -14,8 +14,14 @@ from psi_agent.ai.server import handle_chat_completions
 class _FakeChunk:
     """Minimal stand-in for an any-llm ChatCompletionChunk."""
 
+    def __init__(self, content: str = "hi") -> None:
+        self._content = content
+
     def model_dump_json(self) -> str:
-        return json.dumps({"id": "x", "choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": "stop"}]})
+        return json.dumps(
+            {"id": "x", "choices": [{"index": 0, "delta": {"content": self._content}, "finish_reason": "stop"}]},
+            ensure_ascii=False,
+        )
 
 
 class _TrackingStream:
@@ -66,7 +72,7 @@ async def _serve_handler(
     return runner, socket_path
 
 
-async def _drain(socket_path: str) -> None:
+async def _drain(socket_path: str) -> bytes:
     body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True}
     connector = UnixConnector(path=socket_path)
     timeout = ClientTimeout(total=5)
@@ -75,8 +81,21 @@ async def _drain(socket_path: str) -> None:
         s.post("http://localhost/chat/completions", json=body) as resp,
     ):
         assert resp.status == 200
-        async for _ in resp.content:
-            pass
+        return await resp.content.read()
+
+
+@pytest.mark.anyio
+async def test_unicode_sse_chunk_uses_utf8(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-ASCII model output must be written as UTF-8 SSE, not default locale."""
+    text = "扫描书籍_鬼河地狱设定册"
+    stream = _TrackingStream([_FakeChunk(text)])
+    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream)
+    try:
+        raw = await _drain(socket_path)
+        decoded = raw.decode("utf-8")
+        assert text in decoded
+    finally:
+        await runner.cleanup()
 
 
 @pytest.mark.anyio

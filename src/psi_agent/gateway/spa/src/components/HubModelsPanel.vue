@@ -153,9 +153,9 @@ async function connect() {
     const info = await api('POST', '/ais', presetToAiPayload(preset, apiKey.value))
     ais.value = await api('GET', '/ais')
     selectedAiId.value = info.id
-    resetForm()
     emit('connected', info.id)
     ui.showAlert(`${preset.label} 已连接`)
+    handleClose()
   } catch (e) {
     ui.showAlert(e.message || '连接失败')
   } finally {

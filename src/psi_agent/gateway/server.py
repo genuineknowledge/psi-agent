@@ -318,12 +318,14 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
         async with aclosing(cm.handle(channel_socket, body)) as stream:
             async for chunk in stream:
                 data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                await resp.write(data.encode())
+                await resp.write(data.encode("utf-8"))
                 logger.debug(f"Chat SSE chunk: {data[:1000]}")
     except Exception as e:
         logger.warning(f"Chat error for session {session_id!r}: {e!r}")
         with suppress(Exception):
-            await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n".encode())
+            await resp.write(
+                f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n".encode("utf-8")
+            )
     finally:
         with suppress(Exception):
             await resp.write(b"data: [DONE]\n\n")

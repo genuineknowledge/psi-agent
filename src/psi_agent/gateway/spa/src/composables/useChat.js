@@ -4,7 +4,7 @@ import { htmlEscape, renderMd, saveHistory, loadHistory } from '../utils.js'
 import { readSSE } from './useSSE.js'
 import { api, streamChat } from '../api.js'
 import { scrollToBottomIfLocked } from './useScroll.js'
-import { promoteDraftToSession } from './useSession.js'
+import { promoteDraftToSession, ensureBackendSession } from './useSession.js'
 import { useUiStore } from '../stores/ui.js'
 import {
   buildSessionTitlePayload,
@@ -233,6 +233,7 @@ async function runChatTurn(sid, { userMsg, text, files }) {
   let outcome = null
   try {
     try {
+      await ensureBackendSession(sid)
       const reader = await streamChat(sid, fd, controller.signal)
       for await (const chunkData of readSSE(reader)) {
         if (chunkData.type === 'text' && chunkData.text !== undefined) {

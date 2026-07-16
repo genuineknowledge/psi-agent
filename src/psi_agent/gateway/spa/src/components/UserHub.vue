@@ -36,7 +36,11 @@
     </div>
 
     <HubProfilePanel :show="hubPanel === 'profile'" @close="ui.closeHubPanel()" />
-    <HubModelsPanel :show="hubPanel === 'models'" @close="ui.closeHubPanel()" />
+    <HubModelsPanel
+      :show="hubPanel === 'models'"
+      @close="ui.closeHubPanel()"
+      @connected="(id) => emit('modelsConnected', id)"
+    />
     <HubLoginPanel :show="hubPanel === 'login'" @close="ui.closeHubPanel()" />
     <HubSettingsPanel :show="hubPanel === 'settings'" @close="ui.closeHubPanel()" />
   </div>
@@ -58,6 +62,8 @@ import HubSettingsPanel from './HubSettingsPanel.vue'
 defineProps({
   compact: { type: Boolean, default: false },
 })
+
+const emit = defineEmits(['modelsConnected'])
 
 const ui = useUiStore()
 const { hubMenuOpen, hubPanel } = storeToRefs(ui)

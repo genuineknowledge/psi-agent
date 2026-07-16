@@ -31,7 +31,7 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
     ``delta`` is coerced to ``{}`` so the caller always receives a dict.
     """
     async for raw_line in lines:
-        line = raw_line.decode().strip()
+        line = raw_line.decode("utf-8").strip()
         if not line or not line.startswith("data: "):
             continue
         data_str = line[6:]

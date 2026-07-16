@@ -83,6 +83,14 @@ async def test_write_catches_generic_exception():
     assert "boom" in text
 
 
+def test_to_sse_unicode_is_valid_utf8() -> None:
+    """Chinese content in SSE must encode as UTF-8 bytes."""
+    text = "扫描书籍_鬼河地狱设定册"
+    raw = ChannelAdapter._to_sse(AgentChunk(content=text))
+    assert text.encode("utf-8") in raw
+    assert raw.decode("utf-8").count(text) == 1
+
+
 @pytest.mark.anyio
 async def test_handle_request_integration_valid(tmp_path: Path):
     agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())

@@ -30,7 +30,7 @@
           <button class="topbar-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
             <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
           </button>
-          <UserHub compact />
+          <UserHub compact @models-connected="onHubModelsConnected" />
         </div>
       </div>
 
@@ -42,7 +42,7 @@
         <button class="tb-btn" @click="toggleTheme" :title="isLightMode ? '切换至暗色模式' : '切换至亮色模式'">
           <span class="material-symbols-outlined">{{ isLightMode ? 'dark_mode' : 'light_mode' }}</span>
         </button>
-        <UserHub />
+        <UserHub @models-connected="onHubModelsConnected" />
       </div>
 
       <div
@@ -98,6 +98,7 @@ import { PROVIDERS } from './providers.js'
 import { useTheme } from './composables/useTheme.js'
 import { useKeyboard } from './composables/useKeyboard.js'
 import { useMainView } from './composables/useMainView.js'
+import { ensureBackendSession } from './composables/useSession.js'
 import {
   selectSession,
   selectWorkspace,
@@ -386,6 +387,24 @@ async function selectAI(id) {
   await refreshAll()
 }
 
+async function finishAiSetup(aiId) {
+  selectedAiId.value = aiId
+  dlgAI.value = false
+  ui.closeHubPanel()
+  await refreshAll()
+  loadingEnv.value = false
+  saveActiveState(selectedAiId.value, selectedSessionId.value, selectedWorkspacePath.value)
+  if (sessions.value.length === 0 && !session.registeredWorkspaces.length) {
+    await openWorkspacePicker()
+  } else if (!selectedWorkspacePath.value && session.registeredWorkspaces.length) {
+    await selectWorkspace(session.registeredWorkspaces[0])
+  }
+}
+
+async function onHubModelsConnected(aiId) {
+  await finishAiSetup(aiId)
+}
+
 async function createAI() {
   if (!aiForm.value.model) {
     ui.showAlert('请选择或输入模型名称')
@@ -398,16 +417,7 @@ async function createAI() {
       api_key: aiForm.value.api_key,
       base_url: aiForm.value.base_url,
     })
-    selectedAiId.value = info.id
-    dlgAI.value = false
-    await refreshAll()
-    loadingEnv.value = false
-    saveActiveState(selectedAiId.value, selectedSessionId.value, selectedWorkspacePath.value)
-    if (sessions.value.length === 0 && !session.registeredWorkspaces.length) {
-      await openWorkspacePicker()
-    } else if (!selectedWorkspacePath.value && session.registeredWorkspaces.length) {
-      await selectWorkspace(session.registeredWorkspaces[0])
-    }
+    await finishAiSetup(info.id)
   } catch (e) {
     ui.showAlert(e.message)
   }
@@ -450,13 +460,14 @@ onMounted(async () => {
       session.setSelectedWorkspace(activeState.workspacePath)
     }
 
-    const persisted = activeState.sessId && sessions.value.some(s => s.id === activeState.sessId)
-      ? activeState.sessId
-      : null
+    const persisted = activeState.sessId || null
     if (persisted) {
-      await selectSession(persisted)
-    } else if (activeState.sessId) {
-      saveActiveState(selectedAiId.value, null, selectedWorkspacePath.value)
+      try {
+        await ensureBackendSession(persisted)
+        await selectSession(persisted)
+      } catch (_) {
+        saveActiveState(selectedAiId.value, null, selectedWorkspacePath.value)
+      }
     } else if (selectedWorkspacePath.value) {
       await selectWorkspace(selectedWorkspacePath.value)
     } else if (session.registeredWorkspaces.length) {

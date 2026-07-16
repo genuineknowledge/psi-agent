@@ -76,7 +76,7 @@ class ChannelAdapter:
     def _to_sse(chunk: AgentChunk) -> bytes:
         delta = DeltaMessage(content=chunk.content, reasoning=chunk.reasoning)
         cc = ChatCompletionChunk(choices=[StreamChoice(index=0, delta=delta)])
-        return cc.to_sse().encode()
+        return cc.to_sse().encode("utf-8")
 
     @staticmethod
     async def _write_error(response: web.StreamResponse, message: str) -> None:
@@ -91,6 +91,6 @@ class ChannelAdapter:
             ],
         )
         try:
-            await response.write(err_chunk.to_sse().encode())
+            await response.write(err_chunk.to_sse().encode("utf-8"))
         except Exception:
             logger.warning("Failed to write error chunk to SSE stream")
