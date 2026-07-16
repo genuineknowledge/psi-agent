@@ -14,6 +14,7 @@ import {
 import { applyTurnOutcome, normalizeFailedTurns, resolveTurnOutcome } from '../messageTurn.js'
 import { hasAssistantSegmentAfterUser } from '../assistantSegments.js'
 import { stripTransferMarkers } from '../sendMarkers.js'
+import { isSseKeepaliveText } from '../sseKeepalive.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -236,6 +237,7 @@ async function runChatTurn(sid, { userMsg, text, files }) {
       const reader = await streamChat(sid, fd, controller.signal)
       for await (const chunkData of readSSE(reader)) {
         if (chunkData.type === 'text' && chunkData.text !== undefined) {
+          if (isSseKeepaliveText(chunkData.text)) continue
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.text += chunkData.text
           asst.html = renderMd(stripTransferMarkers(asst.text))

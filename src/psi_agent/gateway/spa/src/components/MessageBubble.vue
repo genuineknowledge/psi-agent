@@ -118,6 +118,7 @@ import {
   matrixToTsv,
   tableToMatrix,
 } from '../mdTable.js'
+import { submitFeedback } from '../api.js'
 import { saveHistory } from '../utils.js'
 import { useSessionStore } from '../stores/session.js'
 
@@ -213,13 +214,23 @@ async function onBubbleClick(e) {
   }
 }
 
-function setFeedback(kind) {
-  props.msg.feedback = props.msg.feedback === kind ? '' : kind
+async function setFeedback(kind) {
+  const next = props.msg.feedback === kind ? '' : kind
+  props.msg.feedback = next
   const session = useSessionStore()
   const sid = session.selectedSessionId || session.draftSession?.draftId
   if (!sid) return
   const msgs = session.sessionMessages[sid] ?? chat.messages
   saveHistory(sid, msgs)
+  // Draft tabs have no Session process — keep local only until promoted.
+  if (session.draftSession && sid === session.draftSession.draftId) return
+  if (!session.selectedSessionId) return
+  try {
+    await submitFeedback(session.selectedSessionId, next)
+  } catch (e) {
+    // Keep optimistic UI; next refresh may diverge until retry.
+    console.warn('submitFeedback failed', e)
+  }
 }
 
 async function regenerateMessage() {

@@ -6,6 +6,7 @@ import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
 import { loadHistory, htmlEscape, renderMd, saveActiveState } from '../utils.js'
 import { stripTransferMarkers } from '../sendMarkers.js'
+import { isSseKeepaliveText } from '../sseKeepalive.js'
 import { normalizeFailedTurns } from '../messageTurn.js'
 import { normalizeWorkspacePath, resolveSessionWorkspace } from '../sessionList.js'
 
@@ -278,6 +279,7 @@ export async function selectSession(id) {
       if (r.ok) {
         const serverMsgs = await r.json()
         serverMsgs.forEach((h, i) => {
+          if (isSseKeepaliveText(h.text)) return
           const local = i < localHist.length ? localHist[i] : null
           const text = stripTransferMarkers(h.text)
           built.push({
@@ -287,12 +289,14 @@ export async function selectSession(id) {
             stopped: local ? local.stopped || false : false,
             failed: local ? local.failed || false : false,
             failedReason: local?.failedReason || '',
-            feedback: local?.feedback || '',
+            // Server stamps feedback on assistant from hidden user_feedback rows.
+            feedback: h.feedback || local?.feedback || '',
           })
         })
         if (localHist.length > built.length) {
           for (let i = built.length; i < localHist.length; i++) {
             const h = localHist[i]
+            if (isSseKeepaliveText(h.text)) continue
             const text = stripTransferMarkers(h.text)
             built.push({
               id: '', role: h.role, text,
@@ -308,6 +312,7 @@ export async function selectSession(id) {
       } else { throw new Error() }
     } catch (e) {
       localHist.forEach(h => {
+        if (isSseKeepaliveText(h.text)) return
         const text = stripTransferMarkers(h.text)
         built.push({
           id: '', role: h.role, text,

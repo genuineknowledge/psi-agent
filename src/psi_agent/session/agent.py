@@ -14,6 +14,7 @@ from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.history_display import (
+    ROLE_USER_FEEDBACK,
     is_schedule_turn_message,
     messages_for_ai,
     tag_schedule_origin,
@@ -22,6 +23,7 @@ from psi_agent.session.protocol import AgentChunk, AgentError
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_registry import ToolRegistry
+from psi_agent.session.user_visible_tools import surface_tool_result_text
 
 
 class SessionAgent:
@@ -131,11 +133,39 @@ class SessionAgent:
                 logger.warning("Failed to prepare SSE response, client likely disconnected")
                 return response
 
-            logger.info("Acquired session lock, processing request")
-            await self._channel_adapter.write(response, self.run(user_message, extra_params))
+            if user_message.get("role") == ROLE_USER_FEEDBACK:
+                kind = self._conversation.apply_user_feedback(str(user_message.get("feedback", "")))
+                await self._conversation.commit()
+                logger.info(f"Recorded user_feedback kind={kind!r} (not shown in Web Console)")
+                await self._channel_adapter.write(response, self._empty_chunks())
+            else:
+                logger.info("Acquired session lock, processing request")
+                await self._channel_adapter.write(response, self.run(user_message, extra_params))
 
         logger.info("Session request completed")
         return response
+
+    @staticmethod
+    async def _empty_chunks() -> AsyncGenerator[AgentChunk]:
+        if False:  # pragma: no cover — satisfies AsyncGenerator type
+            yield AgentChunk(content="")
+
+    def _merge_into_last_tool_calls_assistant(self, text: str) -> None:
+        """Append user-visible tool text onto the latest tool_calls assistant.
+
+        Keeps a single bubble / history row instead of a second assistant message.
+        """
+        for msg in reversed(self._conversation.messages):
+            if msg.get("role") != "assistant" or not msg.get("tool_calls"):
+                continue
+            existing = msg.get("content")
+            if isinstance(existing, str) and existing.strip():
+                if text not in existing:
+                    msg["content"] = existing.rstrip() + "\n\n" + text
+            else:
+                msg["content"] = text
+            return
+        self._conversation.add({"role": "assistant", "content": text})
 
     # -- agent loop -----------------------------------------------------------
 
@@ -324,9 +354,21 @@ class SessionAgent:
                                         results[i] = "Error: empty tool call name"
 
                             # yield results in order, save
+                            surfaced: list[str] = []
                             for i, tc, func_name, _args in tool_args:
                                 result = results[i]
                                 yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:1000]}]")
+                                # Tools like clarify build user-facing text. Channels
+                                # that hide reasoning would otherwise show nothing —
+                                # stream as content into the *same* turn/bubble, merge
+                                # into this tool_calls assistant's content, end turn.
+                                visible = surface_tool_result_text(func_name, result)
+                                if visible is not None:
+                                    yield AgentChunk(content=visible)
+                                    surfaced.append(visible)
+                                    logger.info(
+                                        f"Surfaced user-visible tool result ({func_name!r}, {len(visible)} chars)"
+                                    )
                                 _persist(
                                     {
                                         "role": "tool",
@@ -336,6 +378,16 @@ class SessionAgent:
                                     }
                                 )
                             await self._conversation.commit()
+
+                            if surfaced:
+                                self._merge_into_last_tool_calls_assistant("\n\n".join(surfaced))
+                                await self._conversation.commit()
+                                await self._schedule_registry.refresh()
+                                logger.info(
+                                    f"Ended turn after {len(surfaced)} user-visible tool result(s) "
+                                    "(no further model round)"
+                                )
+                                return
 
                             break
 

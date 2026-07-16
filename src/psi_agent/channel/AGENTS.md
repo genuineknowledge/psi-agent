@@ -31,6 +31,7 @@ ChannelCore 是所有 Channel（CLI、REPL、Telegram）共享的公共部件：
 - `post(list[InputChunk]) -> AsyncIterator[OutputChunk]`：InputChunk → 字符串 → POST → SSE → OutputChunk
 - 将输入中的 FileChunk 转换为 `[RECV:/path]` 标记（session 端负责读文件）
 - 检测输出中的 `[SEND:/path]` 标记并产生 FileChunk
+- **展示剥离**：上述标记会进 Session JSONL / 用户可见 `content`。Web Console 不得原样展示绝对路径。新增或改名任何写入 `content` 的线路标记时，必须同步登记 Gateway `AGENTS.md`「Wire 标记登记表」并更新展示剥离实现（见该文档「展示剥离约定」）；Channel 层本身不负责 UI 过滤
 - 将 SSE 的 `delta.reasoning` 流切分为 `ReasoningChunk`，与 `content`（`TextChunk`）按到达顺序交错产出（类型切换时先 flush 旧类型）；`[SEND:...]` 仅扫描 content
 - SSE 内容在 interval 窗口内缓冲合并为单个 TextChunk（默认 1s，可配置）
 - 终端通道（CLI/REPL）设置 interval=0 无需缓冲

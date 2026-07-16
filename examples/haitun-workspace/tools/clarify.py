@@ -37,10 +37,10 @@ async def clarify(
     * **Open-ended** — omit ``options`` (or pass an empty list) to ask a single
       free-text question, optionally offering a ``default``.
 
-    IMPORTANT: this tool only BUILDS the question. After calling it you MUST
-    output the returned text to the user and END THE TURN — do not call more
-    tools and do not guess past the question. The user's answer will arrive as
-    the next message.
+    IMPORTANT: this tool only BUILDS the question. The Session runtime will
+    surface the returned text as visible assistant content on every Channel and
+    end the turn for you — still do not call more tools or guess past the
+    question. The user's answer will arrive as the next message.
 
     Args:
         question: The single, focused question to ask. State what you need

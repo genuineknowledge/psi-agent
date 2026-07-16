@@ -46,11 +46,19 @@ class ChannelCore:
 
         content = encode_input(chunks)
         body = {"messages": [{"role": "user", "content": content}], "stream": True}
+        async for chunk in self.post_json(body):
+            yield chunk
 
+    async def post_json(self, body: dict) -> AsyncGenerator[OutputChunk]:
+        """POST an already-built chat-completions body and yield output chunks.
+
+        Used by normal ``post()`` and by Gateway feedback (``user_feedback`` role)
+        which must not go through ``encode_input``.
+        """
         buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()
 
-        logger.debug(f"POST {self._endpoint} content_len={len(content)}")
+        logger.debug(f"POST {self._endpoint} body_keys={sorted(body)}")
         async with self._session.post(self._endpoint, json=body) as resp:
             logger.info(f"HTTP {resp.status}")
 

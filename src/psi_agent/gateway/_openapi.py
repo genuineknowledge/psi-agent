@@ -192,8 +192,51 @@ OPENAPI_SPEC = {
                     }
                 ],
                 "responses": {
-                    "200": {"description": "Array of {role, text} messages"},
+                    "200": {
+                        "description": (
+                            "Displayable chat rows {role, text, feedback?}. "
+                            "Skips schedule / user_feedback rows; feedback is stamped on the prior assistant."
+                        )
+                    },
                     "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/sessions/{session_id}/feedback": {
+            "post": {
+                "summary": "Record like/dislike for the latest assistant turn",
+                "operationId": "submitFeedback",
+                "parameters": [
+                    {
+                        "name": "session_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": ["up", "down", ""],
+                                        "description": "Thumbs vote; empty string clears",
+                                    }
+                                },
+                                "required": ["kind"],
+                            }
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {"description": "{ok, kind} — stored as user_feedback in Session history"},
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
                 },
             },
         },

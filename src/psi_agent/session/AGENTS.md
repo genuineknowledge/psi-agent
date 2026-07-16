@@ -41,6 +41,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
    - reasoning → `yield AgentChunk(reasoning=...)` 给 ChannelAdapter
    - tool_calls → 累积（按 index 拼接 partial JSON）
     - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 4
+      - **例外（用户可见工具结果）**：若工具名在 `user_visible_tools.USER_VISIBLE_RESULT_TOOLS`（当前含 `clarify`），成功返回值以 ``AgentChunk(content=…)`` 推给**所有 Channel**（进**同一回合/同一气泡**，不是新气泡），合并进本轮带 `tool_calls` 的 assistant 的 `content` 供刷新，并**结束本回合**。因多数 Channel 不展示 `reasoning`，仅靠模型抄 tool 结果不可靠。
     - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry（本轮 tool 可能修改了 schedule 文件）→ 释放锁
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
    - 任何未捕获异常 → 回滚到快照 → 向上传播
@@ -185,6 +186,19 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 | SPA | 信任 `/history` 白名单；刷新以服务端为准 | 把「隐藏 heartbeat」当成前端特例；不要假设 JSONL 角色与气泡一一对应 |
 
 新增或改写任何 schedule 触发路径时：**复用** `psi_agent.session.history_display` 的常量与函数，不要另造角色名或 `source` 取值。单测见 `tests/psi_agent/session/test_history_display.py` 与 `tests/psi_agent/gateway/test_history_manager.py`。
+
+### 点赞 / 点踩（``user_feedback``）
+
+Web Console 对助手气泡的赞/踩是**给模型的后续指导**，不是聊天气泡：
+
+| 层 | 行为 |
+|----|------|
+| Gateway ``POST /sessions/{id}/feedback`` | `{kind: "up"\|"down"\|""}` → 经 Channel 发往 Session（不跑 agent loop） |
+| Session | 写入 / 替换 trailing ``role: user_feedback``，``messages_for_ai`` 投影为 ``user`` |
+| Gateway ``GET /history`` | **跳过** ``user_feedback`` 行；若其紧跟在 assistant 后，把 ``feedback`` 戳到该 assistant 上供按钮态 |
+| SPA | 按钮调 feedback API；刷新后用 `/history` 的 ``feedback`` 字段；**不要**把 feedback 文案渲染成气泡 |
+
+与 schedule 一样：靠角色出处隔离，不要靠正文关键词藏气泡。
 
 ## History 持久化
 

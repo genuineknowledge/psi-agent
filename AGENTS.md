@@ -75,6 +75,7 @@ src/
     │   ├── conversation.py         # Conversation — 对话历史 + 持久化
     │   ├── system_prompt.py        # SystemPrompt — 系统 prompt 生命周期
     │   ├── schedule_registry.py    # ScheduleRegistry — 定时任务集
+    │   ├── user_visible_tools.py   # 工具结果必须进 content 的名单（如 clarify）
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
     │   ├── protocol.py             # Session 层类型
     ├── channel/
@@ -112,8 +113,8 @@ src/
 各层的详细设计文档见：
 - **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理
 - **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制（含「Schedule 展示隔离约定」）、history 持久化
-- **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
-- **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包；`/history` 须复用 `history_display` 白名单（跳过 schedule 回合）
+- **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定；新增写入 content 的线路标记须登记 Gateway「展示剥离约定」
+- **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包；`/history` 须复用 `history_display` 白名单（跳过 schedule 回合）；线路标记见「展示剥离约定」
 
 ## 核心通信协议
 
@@ -194,6 +195,10 @@ SSE 流中的特殊字段：
 16. **消费 async generator 必须用 `aclosing()`**：`async for` 在提前退出或被 cancel 时不调用 generator 的 `aclose()`，导致 generator 内 `async with` 持有的资源（aiohttp 连接、文件句柄等）被遗弃给 GC。正确做法：`async with aclosing(gen) as g: async for chunk in g: ...`。对标 `ai/server.py` 的 `finally` + shielded `aclose()` 模式。参见 `agent.py`、`channel_adapter.py`、`schedule_registry.py`。
 
 17. **Schedule / heartbeat 展示隔离（防 Web Console 泄露）**：所有 `schedules/*/TASK.md`（含 heartbeat）底层都是同一条 agent loop——把 TASK 正文当一轮输入发给模型。隔离必须走出处白名单，**禁止**靠正文关键词黑名单，也**禁止**只在 SPA 藏气泡。Session 写入 `role: user_schedule` 并为 schedule 回合的 `assistant`/`tool` 打 `source: schedule`；调 AI 前用 `messages_for_ai` 投影回 `user`；Gateway `/history` 只返回 `is_displayable_chat_message`。新增或改写任何 schedule 触发路径时**必须复用** `psi_agent.session.history_display`。完整约定与分层表见 `src/psi_agent/session/AGENTS.md`「Schedule 展示隔离约定」；Gateway / SPA 侧禁令见各自 `AGENTS.md`。
+
+18. **Content 展示剥离（防线路标记 / 路径进气泡）**：Channel 文件传输等协议会把 `[RECV:/path]`、`[SEND:/path]` 写入 `messages[].content`（Session 仍需据此读文件）。这与 schedule「整条跳过」不同——真人气泡里夹带的 wire 片段必须**投影剥离**。当前过渡期由 SPA `stripTransferMarkers` 处理；**凡新增可能写入 content 的线路标记，必须先登记** `gateway/AGENTS.md`「Wire 标记登记表」并加入剥离实现，禁止只在单个组件临时 replace。目标权威投影在 Gateway `HistoryManager`。详见该节「展示剥离约定」。
+
+19. **点赞 / 点踩进模型、不进气泡**：Web Console 赞踩写入 Session history 的 `role: user_feedback`（经 `POST /sessions/{id}/feedback`）。`messages_for_ai` 投影为 `user` 以指导后续回复；`/history` 跳过该行，仅把 `feedback` 戳到前一条 assistant 供按钮态。禁止把反馈正文渲染成聊天气泡。详见 `session/AGENTS.md`「点赞 / 点踩」。
 
 ## 测试约定
 

@@ -1,3 +1,5 @@
+import { isSseKeepaliveText } from '../sseKeepalive.js'
+
 export async function* readSSE(reader) {
   const dec = new TextDecoder()
   let buf = ''
@@ -14,10 +16,12 @@ export async function* readSSE(reader) {
       buf = buf.slice(idx + 1)
       if (!line || !line.startsWith('data:')) continue
       const p = line.slice(5).trim()
-      if (p === '[DONE]' || !p) continue
+      if (p === '[DONE]' || !p || isSseKeepaliveText(p)) continue
 
       try {
-        yield JSON.parse(p)
+        const parsed = JSON.parse(p)
+        if (parsed?.type === 'text' && isSseKeepaliveText(parsed.text)) continue
+        yield parsed
       } catch (_) {
         if (!p.startsWith('{') && !p.startsWith('[')) {
           yield { type: 'text', text: p }
