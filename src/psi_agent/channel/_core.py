@@ -46,8 +46,10 @@ class ChannelCore:
 
         content = encode_input(chunks)
         body = {"messages": [{"role": "user", "content": content}], "stream": True}
-        async for chunk in self.post_json(body):
-            yield chunk
+        # aclosing required: bare async-for does not aclose nested generators on break.
+        async with aclosing(self.post_json(body)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     async def post_json(self, body: dict) -> AsyncGenerator[OutputChunk]:
         """POST an already-built chat-completions body and yield output chunks.
