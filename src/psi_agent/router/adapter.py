@@ -178,7 +178,7 @@ class LLMRouterAdapter:
 
     @staticmethod
     def _build_router_sync(runtime_yaml: str, router_model: str, router_base_url: str) -> Any:
-        custom_tasks = Path(str(files("psi_agent.ai").joinpath("custom_tasks")))
+        custom_tasks = Path(str(files("psi_agent.router").joinpath("custom_tasks")))
         for filename in _REQUIRED_PROMPTS:
             prompt = custom_tasks / filename
             if not prompt.is_file():
@@ -275,7 +275,6 @@ class LLMRouterAdapter:
         try:
             raw_routes = await run_sync(self._route_sync, context, abandon_on_cancel=True)
         except BaseException:
-            # Once scheduled, an abandoned worker owns the decrement in _route_sync.
             raise
         routes: list[tuple[str, str]] = []
         target_by_model_name = {target.model_name: target for target in self.targets}

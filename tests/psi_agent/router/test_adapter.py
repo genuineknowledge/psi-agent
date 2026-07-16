@@ -10,14 +10,14 @@ import pytest
 import yaml
 from llmrouter import prompts as llm_prompts
 
-import psi_agent.ai.llmrouter_adapter as adapter_module
-from psi_agent.ai.llmrouter_adapter import LLMRouterAdapter, RouteTarget, parse_upstreams, serialize_context
+import psi_agent.router.adapter as adapter_module
+from psi_agent.router.adapter import LLMRouterAdapter, RouteTarget, parse_upstreams, serialize_context
 
 _REQUIRED_PROMPTS = ("agent_decomp_route.yaml", "agent_decomp_cot.yaml", "agent_prompt.yaml")
 
 
 def test_packaged_custom_tasks_are_valid_templates() -> None:
-    custom_tasks = files("psi_agent.ai").joinpath("custom_tasks")
+    custom_tasks = files("psi_agent.router").joinpath("custom_tasks")
 
     for filename in _REQUIRED_PROMPTS:
         resource = custom_tasks.joinpath(filename)

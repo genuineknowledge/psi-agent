@@ -75,7 +75,7 @@ Anthropic→OpenAI 格式转换由 any-llm-sdk 自动完成，包括 `thinking_d
 
 ## Router Demo
 
-除单上游 `Ai` 外，AI 层还提供基于 `llmrouter-lib==0.3.1` 的 `AiRouter`。Router 使用一个远程小模型分析有界对话上下文，只选择一个候选 upstream，再原样代理 OpenAI Chat Completions 请求和 SSE 响应。
+基于 `llmrouter-lib==0.3.1` 的多模型路由能力现已独立放在 `src/psi_agent/router/` 包中，不再属于 AI 层实现。AI 层只保留单上游 `Ai` 服务；Router 使用一个远程小模型分析有界对话上下文，只选择一个候选 upstream，再原样代理 OpenAI Chat Completions 请求和 SSE 响应。
 
 PowerShell TCP 启动示例：
 
@@ -103,13 +103,13 @@ uv run psi-agent ai router `
 
 ### LLMRouter prompt 资源
 
-`llmrouter-lib==0.3.1` 的 prompt loader 会从模块级私有变量 `_PROJECT_ROOT` 和 `_CUSTOM_TASKS_DIR` 推导自定义模板目录。作为第三方依赖安装时，它的默认目录不指向 psi-agent，因此 `LLMRouterAdapter` 在同步 worker 中将这两个全局变量设置为包内 `psi_agent.ai/custom_tasks`，再构造 `LLMMultiRoundRouter`。设置路径、构造 Router 与后续路由调用共用进程级锁，避免并发访问第三方全局状态。
+`llmrouter-lib==0.3.1` 的 prompt loader 会从模块级私有变量 `_PROJECT_ROOT` 和 `_CUSTOM_TASKS_DIR` 推导自定义模板目录。作为第三方依赖安装时，它的默认目录不指向 psi-agent，因此 `src/psi_agent/router/adapter.py` 会在同步 worker 中将这两个全局变量设置为包内 `psi_agent.router/custom_tasks`，再构造 `LLMMultiRoundRouter`。设置路径、构造 Router 与后续路由调用共用进程级锁，避免并发访问第三方全局状态。
 
 以下三个 YAML 是运行时必需的包资源，启动时缺失任意一个都会直接失败：
 
-- `custom_tasks/agent_decomp_route.yaml`
-- `custom_tasks/agent_decomp_cot.yaml`
-- `custom_tasks/agent_prompt.yaml`
+- `../router/custom_tasks/agent_decomp_route.yaml`
+- `../router/custom_tasks/agent_decomp_cot.yaml`
+- `../router/custom_tasks/agent_prompt.yaml`
 
 该接入依赖 LLMRouter 0.3.1 的私有 prompt 全局变量。升级 `llmrouter-lib` 时必须重新验证变量名称、模板名称、延迟加载行为以及 wheel 中的 YAML 包含情况；禁止通过修改 `.venv/site-packages` 或启动时复制模板来掩盖兼容性问题。
 

@@ -87,3 +87,14 @@ def test_ci_smoke_checks_llmrouter_api_and_packaged_prompts() -> None:
         "agent_prompt.yaml",
     ):
         assert expected in command
+    assert "psi_agent.router" in command
+
+
+def test_nuitka_workflow_includes_router_custom_tasks_data() -> None:
+    workflow = _load_workflow("nuitka.yml")
+    common_flags = workflow["jobs"]["nuitka"]["env"]["NUITKA_COMMON_FLAGS"]
+    assert isinstance(common_flags, str)
+    assert (
+        "--include-data-dir=src/psi_agent/router/custom_tasks=psi_agent/router/custom_tasks"
+        in common_flags
+    )

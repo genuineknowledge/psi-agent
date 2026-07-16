@@ -16,7 +16,7 @@ from loguru import logger
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site, resolve_connector_and_endpoint
 
-from .llmrouter_adapter import (
+from .adapter import (
     LLMRouterAdapter,
     RouteDecision,
     RouteTarget,
@@ -212,7 +212,7 @@ async def serve_router(
 
 
 @dataclass
-class AiRouter:
+class Router:
     """Route requests to JSON-described upstreams with a remote LLMRouter model."""
 
     session_socket: str

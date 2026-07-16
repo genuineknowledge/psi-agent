@@ -9,23 +9,23 @@ import pytest
 import tyro
 from aiohttp import ClientSession, ClientTimeout, web
 
-import psi_agent.ai.router as router_module
-from psi_agent.ai.llmrouter_adapter import RouteDecision, RouteTarget
-from psi_agent.ai.router import (
+import psi_agent.router.server as router_module
+from psi_agent.router.adapter import RouteDecision, RouteTarget
+from psi_agent.router.server import (
     _CONTEXT_CHARS_KEY,
     _FALLBACK_KEY,
     _LLMROUTER_KEY,
     _LOG_DETAILS_KEY,
     _ROUTE_TARGETS_KEY,
     _ROUTER_TIMEOUT_KEY,
-    AiRouter,
+    Router,
     handle_router_chat_completions,
 )
 
 
-def test_ai_router_upstream_defaults_are_not_shared() -> None:
-    first = AiRouter(session_socket="http://127.0.0.1:8100")
-    second = AiRouter(session_socket="http://127.0.0.1:8101")
+def test_router_upstream_defaults_are_not_shared() -> None:
+    first = Router(session_socket="http://127.0.0.1:8100")
+    second = Router(session_socket="http://127.0.0.1:8101")
 
     first.upstream.append('{"addr":"a","model_name":"m","description":"d"}')
 
@@ -33,8 +33,8 @@ def test_ai_router_upstream_defaults_are_not_shared() -> None:
 
 
 @pytest.mark.anyio
-async def test_ai_router_rejects_empty_upstream_list() -> None:
-    router = AiRouter(
+async def test_router_rejects_empty_upstream_list() -> None:
+    router = Router(
         session_socket="http://127.0.0.1:8100",
         router_model="router-small",
         router_base_url="https://router.example/v1",
@@ -50,7 +50,7 @@ def test_tyro_accepts_one_upstream_option_with_multiple_json_values() -> None:
     second = '{"addr":"http://127.0.0.1:8102","model_name":"reasoner","description":"Reasoning"}'
 
     router = tyro.cli(
-        AiRouter,
+        Router,
         args=[
             "--session-socket",
             "http://127.0.0.1:8100",
@@ -227,8 +227,8 @@ async def test_router_failure_or_timeout_uses_explicit_default(failure: Exceptio
 
 
 @pytest.mark.anyio
-async def test_ai_router_rejects_unknown_default_addr() -> None:
-    router = AiRouter(
+async def test_router_rejects_unknown_default_addr() -> None:
+    router = Router(
         session_socket="http://127.0.0.1:8100",
         router_model="router-small",
         router_base_url="https://router.example/v1",

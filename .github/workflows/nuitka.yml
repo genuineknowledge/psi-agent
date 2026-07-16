@@ -29,6 +29,7 @@ jobs:
         --output-filename=psi-agent
         --assume-yes-for-downloads
         --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist
+        --include-data-dir=src/psi_agent/router/custom_tasks=psi_agent/router/custom_tasks
         --include-package=any_llm
         --include-package=mcp
         --include-package=serper_mcp_server

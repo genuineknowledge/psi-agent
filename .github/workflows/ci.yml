@@ -25,7 +25,7 @@ jobs:
       - name: Verify LLMRouter environment
         run: |
           uv run python -c "import litellm; from llmrouter.models.llmmultiroundrouter import LLMMultiRoundRouter; assert hasattr(LLMMultiRoundRouter, '_decompose_and_route'); print('LLMRouter API OK')"
-          uv run python -c "from importlib.resources import files; root = files('psi_agent.ai').joinpath('custom_tasks'); names = ('agent_decomp_route.yaml', 'agent_decomp_cot.yaml', 'agent_prompt.yaml'); missing = [name for name in names if not root.joinpath(name).is_file()]; assert not missing, missing; print('LLMRouter prompts OK')"
+          uv run python -c "from importlib.resources import files; root = files('psi_agent.router').joinpath('custom_tasks'); names = ('agent_decomp_route.yaml', 'agent_decomp_cot.yaml', 'agent_prompt.yaml'); missing = [name for name in names if not root.joinpath(name).is_file()]; assert not missing, missing; print('LLMRouter prompts OK')"
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run ty check .
