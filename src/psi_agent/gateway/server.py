@@ -11,6 +11,17 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._keys import (
+    AIM_KEY,
+    APP_NAME_KEY,
+    ATTENTION_KEY,
+    CM_KEY,
+    FAVICON_PATH_KEY,
+    HM_KEY,
+    SM_KEY,
+    TM_KEY,
+    WM_KEY,
+)
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
@@ -31,7 +42,7 @@ async def _handle_openapi(request: web.Request) -> web.Response:
 
 
 async def _handle_spa_index(request: web.Request) -> web.Response:
-    app_name: str = request.app["app_name"]
+    app_name: str = request.app[APP_NAME_KEY]
     template = await read_spa_index_template()
     if template is None:
         return _error("SPA index.html not found", status=404)
@@ -40,14 +51,16 @@ async def _handle_spa_index(request: web.Request) -> web.Response:
 
 
 async def _handle_favicon(request: web.Request) -> web.FileResponse:
-    favicon_path: str = request.app["favicon_path"]
+    favicon_path = request.app[FAVICON_PATH_KEY]
+    if favicon_path is None:
+        raise web.HTTPNotFound()
     logger.debug(f"Serving favicon from {favicon_path!r}")
     return web.FileResponse(favicon_path)
 
 
 async def _request_attention(request: web.Request) -> web.Response:
     """SPA pings this when a background chat turn finishes — flash tray/webview."""
-    attention: AttentionHub = request.app["attention"]
+    attention: AttentionHub = request.app[ATTENTION_KEY]
     # schedule_notify is non-blocking; do not await tray pulse on the request path.
     attention.schedule_notify()
     return _json({"ok": True})
@@ -74,15 +87,15 @@ async def create_app(
     attention: AttentionHub | None = None,
 ) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
-    app["aim"] = aim
-    app["sm"] = sm
-    app["tm"] = tm
-    app["wm"] = WorkspaceManager()
-    app["cm"] = ChatManager()
-    app["hm"] = HistoryManager()
-    app["favicon_path"] = favicon_path
-    app["app_name"] = app_name
-    app["attention"] = attention if attention is not None else AttentionHub()
+    app[AIM_KEY] = aim
+    app[SM_KEY] = sm
+    app[TM_KEY] = tm
+    app[WM_KEY] = WorkspaceManager()
+    app[CM_KEY] = ChatManager()
+    app[HM_KEY] = HistoryManager()
+    app[FAVICON_PATH_KEY] = favicon_path
+    app[APP_NAME_KEY] = app_name
+    app[ATTENTION_KEY] = attention if attention is not None else AttentionHub()
 
     spa_dist = anyio.Path(__file__).parent / "spa" / "dist"
     app.router.add_get("/spa/index.html", _handle_spa_index)
@@ -115,7 +128,7 @@ async def create_app(
 
 
 async def _create_ai(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
+    aim: AIManager = request.app[AIM_KEY]
     try:
         body = await request.json()
         info = await aim.create(
@@ -129,12 +142,12 @@ async def _create_ai(request: web.Request) -> web.Response:
     except (TypeError, ValueError, KeyError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error creating AI: {e!r}")
+        logger.exception("Unexpected error creating AI")
         return _error(str(e), status=500)
 
 
 async def _delete_ai(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
+    aim: AIManager = request.app[AIM_KEY]
     ai_id = request.match_info["ai_id"]
     try:
         await aim.delete(ai_id)
@@ -142,17 +155,17 @@ async def _delete_ai(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting AI {ai_id!r}: {e!r}")
+        logger.exception(f"Unexpected error deleting AI {ai_id!r}")
         return _error(str(e), status=500)
 
 
 async def _list_ais(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
+    aim: AIManager = request.app[AIM_KEY]
     return _json([asdict(i) for i in await aim.list_all()])
 
 
 async def _create_session(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
+    sm: SessionManager = request.app[SM_KEY]
     try:
         body = await request.json()
         info = await sm.create(
@@ -166,12 +179,12 @@ async def _create_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error creating session: {e!r}")
+        logger.exception("Unexpected error creating session")
         return _error(str(e), status=500)
 
 
 async def _delete_session(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
+    sm: SessionManager = request.app[SM_KEY]
     session_id = request.match_info["session_id"]
     try:
         await sm.delete(session_id)
@@ -179,22 +192,22 @@ async def _delete_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting session {session_id!r}: {e!r}")
+        logger.exception(f"Unexpected error deleting session {session_id!r}")
         return _error(str(e), status=500)
 
 
 async def _list_sessions(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
+    sm: SessionManager = request.app[SM_KEY]
     return _json([asdict(i) for i in await sm.list_all()])
 
 
 async def _list_titles(request: web.Request) -> web.Response:
-    tm: TitleManager = request.app["tm"]
+    tm: TitleManager = request.app[TM_KEY]
     return _json(tm.get_all())
 
 
 async def _set_title(request: web.Request) -> web.Response:
-    tm: TitleManager = request.app["tm"]
+    tm: TitleManager = request.app[TM_KEY]
     try:
         body = await request.json()
         sid = body["id"]
@@ -203,14 +216,14 @@ async def _set_title(request: web.Request) -> web.Response:
     except (KeyError, TypeError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error setting title: {e!r}")
+        logger.exception("Unexpected error setting title")
         return _error(str(e), status=500)
 
 
 async def _generate_title(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
-    sm: SessionManager = request.app["sm"]
-    tm: TitleManager = request.app["tm"]
+    aim: AIManager = request.app[AIM_KEY]
+    sm: SessionManager = request.app[SM_KEY]
+    tm: TitleManager = request.app[TM_KEY]
     try:
         body = await request.json()
         sid = body["id"]
@@ -236,17 +249,17 @@ async def _generate_title(request: web.Request) -> web.Response:
 
 
 async def _get_cwd(request: web.Request) -> web.Response:
-    wm: WorkspaceManager = request.app["wm"]
+    wm: WorkspaceManager = request.app[WM_KEY]
     return _json({"cwd": wm.get_cwd()})
 
 
 async def _list_workspace_roots(request: web.Request) -> web.Response:
-    wm: WorkspaceManager = request.app["wm"]
+    wm: WorkspaceManager = request.app[WM_KEY]
     return _json(await wm.list_roots())
 
 
 async def _browse_workspace(request: web.Request) -> web.Response:
-    wm: WorkspaceManager = request.app["wm"]
+    wm: WorkspaceManager = request.app[WM_KEY]
     path = request.query.get("path") or os.getcwd()
     kind = request.query.get("kind") or "directory"
     q = request.query.get("q") or ""
@@ -257,8 +270,8 @@ async def _browse_workspace(request: web.Request) -> web.Response:
 
 
 async def _get_history(request: web.Request) -> web.Response:
-    sm: SessionManager = request.app["sm"]
-    hm: HistoryManager = request.app["hm"]
+    sm: SessionManager = request.app[SM_KEY]
+    hm: HistoryManager = request.app[HM_KEY]
     session_id = request.match_info["session_id"]
     try:
         workspace = sm.get_workspace(session_id)
@@ -269,8 +282,8 @@ async def _get_history(request: web.Request) -> web.Response:
 
 
 async def _handle_chat(request: web.Request) -> web.StreamResponse:
-    sm: SessionManager = request.app["sm"]
-    cm: ChatManager = request.app["cm"]
+    sm: SessionManager = request.app[SM_KEY]
+    cm: ChatManager = request.app[CM_KEY]
     session_id = request.match_info["session_id"]
     try:
         channel_socket = sm.get_socket(session_id)

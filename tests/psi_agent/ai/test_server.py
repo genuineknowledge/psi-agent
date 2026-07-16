@@ -8,6 +8,7 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from psi_agent._keys import API_KEY_KEY, BASE_URL_KEY, MODEL_KEY, PROVIDER_KEY
 from psi_agent.ai.server import handle_chat_completions
 
 
@@ -52,10 +53,10 @@ async def _serve_handler(
     monkeypatch.setattr("psi_agent.ai.server.acompletion", fake_acompletion)
 
     app = web.Application()
-    app["provider"] = "openai"
-    app["model"] = "test"
-    app["api_key"] = "k"
-    app["base_url"] = "http://upstream"
+    app[PROVIDER_KEY] = "openai"
+    app[MODEL_KEY] = "test"
+    app[API_KEY_KEY] = "k"
+    app[BASE_URL_KEY] = "http://upstream"
     app.router.add_post("/chat/completions", handle_chat_completions)
     runner = web.AppRunner(app)
     await runner.setup()

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
+from contextlib import aclosing
 
 from aiohttp import ClientSession, ClientTimeout
 from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
+from psi_agent.channel._stream import iter_sse_events
 from psi_agent.gateway._manager import _noop
 
 
@@ -44,33 +45,8 @@ class TitleManager:
                     logger.debug(f"Title AI returned {resp.status}")
                     return None
                 title = ""
-                buf = b""
-                async for raw in resp.content:
-                    buf += raw
-                    while b"\n" in buf:
-                        line_bytes, buf = buf.split(b"\n", 1)
-                        line = line_bytes.decode().strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            chunk = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(chunk, dict):
-                            continue
-                        logger.debug(f"Title SSE chunk: {data_str[:200]}")
-                        choices = chunk.get("choices", [])
-                        if not isinstance(choices, list) or not choices:
-                            continue
-                        first = choices[0]
-                        if not isinstance(first, dict):
-                            continue
-                        delta = first.get("delta")
-                        if not isinstance(delta, dict):
-                            continue
+                async with aclosing(iter_sse_events(resp.content)) as events:
+                    async for delta in events:
                         content = delta.get("content") or ""
                         if content:
                             title += content

@@ -9,8 +9,10 @@ import json
 from collections.abc import AsyncGenerator
 
 import aiohttp
+import anyio
 from loguru import logger
 
+from psi_agent._logging import trace_id_var
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.session.protocol import AiDelta
 
@@ -26,56 +28,81 @@ class AiClient:
 
     async def stream(self, request_body: dict) -> AsyncGenerator[AiDelta]:
         connector, endpoint = self._build_connector_and_endpoint()
-        async with (
-            aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
-            session.post(endpoint, json=request_body) as resp,
-        ):
-            logger.info(f"AI response status: {resp.status}")
-            if resp.status != 200:
-                error_text = await resp.text()
-                logger.error(f"AI error from {self.ai_socket!r}: {error_text[:1000]!r}")
-                yield AiDelta(finish_reason="error", content=f"[AI Error: {resp.status}]")
-                return
-
-            logger.debug("Starting to consume SSE stream")
-            async for raw_line in resp.content:
-                line = raw_line.decode().strip()
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    continue
-
+        headers = {"X-Trace-ID": trace_id_var.get()}
+        async with aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session:
+            last_resp = None
+            for attempt in range(3):
                 try:
-                    data = json.loads(data_str)
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse SSE data: {data_str[:1000]!r}")
-                    continue
+                    # Manually enter the context manager to allow retries on the response itself.
+                    resp = await session.post(endpoint, json=request_body, headers=headers).__aenter__()
+                    if resp.status == 200:
+                        last_resp = resp
+                        break
 
-                choices_data = data.get("choices", [])
-                if not isinstance(choices_data, list):
-                    logger.warning(f"Expected choices as list, got {type(choices_data).__name__}")
-                    continue
-                if len(choices_data) > 1:
-                    logger.warning(f"Expected 1 choice, got {len(choices_data)}, yielding error")
-                    yield AiDelta(
-                        finish_reason="error", content=f"[AI Error: expected 1 choice, got {len(choices_data)}]"
-                    )
+                    # Retry on 5xx errors
+                    if resp.status >= 500 and attempt < 2:
+                        logger.warning(f"AI backend returned {resp.status}, retrying ({attempt + 1}/3)...")
+                        await resp.__aexit__(None, None, None)
+                        await anyio.sleep(1.0 * (2**attempt))
+                        continue
+
+                    last_resp = resp
+                    break
+                except (aiohttp.ClientError, anyio.EndOfStream, OSError) as e:
+                    if attempt < 2:
+                        logger.warning(f"AI connection error: {e!r}, retrying ({attempt + 1}/3)...")
+                        await anyio.sleep(1.0 * (2**attempt))
+                        continue
+                    raise
+
+            assert last_resp is not None
+            async with last_resp:
+                logger.info(f"AI response status: {last_resp.status}")
+                if last_resp.status != 200:
+                    error_text = await last_resp.text()
+                    logger.error(f"AI error from {self.ai_socket!r}: {error_text[:1000]!r}")
+                    yield AiDelta(finish_reason="error", content=f"[AI Error: {last_resp.status}]")
                     return
-                if not choices_data:
-                    continue
 
-                c = choices_data[0]
-                if not isinstance(c, dict):
-                    logger.warning(f"Expected choice as dict, got {type(c).__name__}")
-                    continue
-                delta_data = c.get("delta")
-                if not isinstance(delta_data, dict):
-                    delta_data = {}
-                yield AiDelta(
-                    content=delta_data.get("content"),
-                    reasoning=delta_data.get("reasoning"),
-                    tool_calls=delta_data.get("tool_calls"),
-                    finish_reason=c.get("finish_reason"),
-                )
+                logger.debug("Starting to consume SSE stream")
+                async for raw_line in last_resp.content:
+                    line = raw_line.decode().strip()
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        continue
+
+                    try:
+                        data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse SSE data: {data_str[:1000]!r}")
+                        continue
+
+                    choices_data = data.get("choices", [])
+                    if not isinstance(choices_data, list):
+                        logger.warning(f"Expected choices as list, got {type(choices_data).__name__}")
+                        continue
+                    if len(choices_data) > 1:
+                        logger.warning(f"Expected 1 choice, got {len(choices_data)}, yielding error")
+                        yield AiDelta(
+                            finish_reason="error", content=f"[AI Error: expected 1 choice, got {len(choices_data)}]"
+                        )
+                        return
+                    if not choices_data:
+                        continue
+
+                    c = choices_data[0]
+                    if not isinstance(c, dict):
+                        logger.warning(f"Expected choice as dict, got {type(c).__name__}")
+                        continue
+                    delta_data = c.get("delta")
+                    if not isinstance(delta_data, dict):
+                        delta_data = {}
+                    yield AiDelta(
+                        content=delta_data.get("content"),
+                        reasoning=delta_data.get("reasoning"),
+                        tool_calls=delta_data.get("tool_calls"),
+                        finish_reason=c.get("finish_reason"),
+                    )
             logger.debug("SSE stream consumed successfully")

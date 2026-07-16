@@ -117,7 +117,7 @@ uv run psi-agent gateway --listen http://127.0.0.1:8080   # 指定端口
 
 注意 `--listen` 参数需要 `http://` 前缀，裸 `IP:PORT` 会被误判为 Unix socket 路径。
 
-Gateway 还支持系统托盘图标（`--tray --icon icon.png`）、自动打开浏览器（`--browser`）、原生 webview 窗口（`--webview`）和自定义 socket 路径前缀（`--socket-path psi`，控制 AI/Session Unix socket 的 `/tmp/{prefix}/ais/...` 和 `/tmp/{prefix}/channels/...` 路径）。
+Gateway 还支持系统托盘图标（`--tray --icon icon.png`）、自动打开浏览器（`--browser`）、原生 webview 窗口（`--webview`）、自定义应用名称（`--app-name "My Agent"`）和自定义 socket 路径前缀（`--socket-path psi`，控制 AI/Session Unix socket 的 `/tmp/{prefix}/ais/...` 和 `/tmp/{prefix}/channels/...` 路径）。
 
 ### 方式四：Nix 一键运行
 
@@ -306,7 +306,9 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
-| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
+| POST | `/ui/attention` | 会话后台完成提示（闪烁托盘/webview） |
+| GET | `/workspace/roots` | 获取系统快捷位置与盘符 |
+| GET | `/workspace/browse` | 浏览目录（支持 `?path=...&kind=...&q=...`） |
 | GET | `/workspace/cwd` | 获取工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |

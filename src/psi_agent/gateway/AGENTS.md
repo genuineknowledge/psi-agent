@@ -199,7 +199,8 @@ workspace 中的 history JSONL 不受影响。
 | POST | `/titles` | 设置 session 标题 `{id, title}` |
 | POST | `/titles/generate` | AI 自动生成标题 `{id, user_text, assistant_text}` |
 | POST | `/ui/attention` | 会话在后台完成时闪烁托盘/webview（best-effort，需 `--tray` / `--webview`） |
-| GET | `/workspace/browse` | 浏览目录 `?path=...` |
+| GET | `/workspace/roots` | 获取系统快捷位置与盘符 |
+| GET | `/workspace/browse` | 浏览目录 `?path=...&kind=...&q=...` |
 | GET | `/workspace/cwd` | 获取服务端当前工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--icon` 设置时注册，返回该图标文件） |

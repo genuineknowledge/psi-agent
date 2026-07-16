@@ -15,6 +15,7 @@ from __future__ import annotations
 import urllib.parse
 
 import aiohttp
+import anyio
 from aiohttp import web
 from loguru import logger
 
@@ -42,6 +43,26 @@ def resolve_connector_and_endpoint(
         endpoint = f"http://localhost{path_prefix}"
         logger.debug(f"Resolved transport: addr={addr!r} → Unix socket endpoint={endpoint!r}")
     return connector, endpoint
+
+
+async def serve_app(app: web.Application, addr: str) -> None:
+    """Consolidated server-side utility for AI and Session components.
+
+    Handles ``AppRunner`` setup, site creation, and ensures ``cleanup()``
+    is always executed within a shielded ``CancelScope``.
+    """
+    runner = web.AppRunner(app)
+    try:
+        await runner.setup()
+        site = create_site(runner, addr)
+        await site.start()
+        logger.info(f"Server listening on {addr}")
+        await anyio.sleep_forever()
+    finally:
+        logger.info(f"Shutting down server on {addr}")
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()
+        logger.info(f"Server shutdown complete on {addr}")
 
 
 def create_site(

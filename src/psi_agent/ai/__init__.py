@@ -5,13 +5,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-import anyio
 from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger
 
+from psi_agent._keys import API_KEY_KEY, BASE_URL_KEY, MODEL_KEY, PROVIDER_KEY
 from psi_agent._logging import setup_logging
-from psi_agent._sockets import create_site
+from psi_agent._sockets import serve_app
 
 from .server import handle_chat_completions
 
@@ -34,32 +34,13 @@ async def serve_ai(
     )
 
     app = web.Application()
-    app["provider"] = provider
-    app["model"] = model
-    app["api_key"] = api_key
-    app["base_url"] = base_url
+    app[PROVIDER_KEY] = provider
+    app[MODEL_KEY] = model
+    app[API_KEY_KEY] = api_key
+    app[BASE_URL_KEY] = base_url
     app.router.add_post("/chat/completions", handler)
 
-    runner = web.AppRunner(app)
-    try:
-        await runner.setup()
-        site = create_site(runner, socket_path)
-        await site.start()
-    except Exception as e:
-        logger.error(f"Failed to start AI service on {socket_path}: {e}")
-        with anyio.CancelScope(shield=True):
-            await runner.cleanup()
-        raise
-
-    logger.info(f"AI listening on {socket_path}")
-
-    try:
-        await anyio.sleep_forever()
-    finally:
-        logger.info(f"Shutting down AI on {socket_path}")
-        with anyio.CancelScope(shield=True):
-            await runner.cleanup()
-        logger.info(f"AI shutdown complete on {socket_path}")
+    await serve_app(app, socket_path)
 
 
 @dataclass
