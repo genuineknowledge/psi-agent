@@ -16,9 +16,7 @@ UPSTREAM = '{"socket":"http://127.0.0.1:7001","description":"simple"}'
 
 def test_ai_router_defaults() -> None:
     router = Router(session_socket="http://127.0.0.1:8100")
-    assert router.router_model == ""
-    assert router.router_base_url == ""
-    assert router.router_api_key == ""
+    assert router.router_socket == ""
     assert router.upstream == []
     assert router.default_socket == ""
     assert router.router_timeout is None
@@ -40,8 +38,8 @@ def test_ai_router_run_sets_up_logging_first() -> None:
 @pytest.mark.parametrize(
     ("field_name", "invalid_value", "message"),
     [
-        ("router_model", "", "router-model"),
-        ("router_base_url", "", "router-base-url"),
+        ("router_socket", "", "router-socket"),
+        ("router_socket", "http://127.0.0.1:7999", "must match one --upstream socket"),
         ("upstream", [], "upstream"),
         ("default_socket", "", "default-socket"),
         ("router_context_chars", 0, "router-context-chars"),
@@ -52,12 +50,9 @@ def test_ai_router_run_sets_up_logging_first() -> None:
 async def test_ai_router_rejects_invalid_configuration(
     monkeypatch: pytest.MonkeyPatch, field_name: str, invalid_value: object, message: str
 ) -> None:
-    monkeypatch.delenv("PSI_ROUTER_MODEL", raising=False)
-    monkeypatch.delenv("PSI_ROUTER_BASE_URL", raising=False)
     router = Router(
         session_socket="http://127.0.0.1:8100",
-        router_model="router",
-        router_base_url="http://127.0.0.1:9000/v1",
+        router_socket="http://127.0.0.1:7001",
         upstream=[UPSTREAM],
         default_socket="http://127.0.0.1:7001",
     )
@@ -67,18 +62,16 @@ async def test_ai_router_rejects_invalid_configuration(
 
 
 @pytest.mark.anyio
-async def test_ai_router_resolves_environment_and_calls_server(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_router_builds_socket_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[tuple[str, RouterSettings]] = []
 
     async def fake_serve_router(*, socket_path: str, settings: RouterSettings) -> None:
         captured.append((socket_path, settings))
 
     monkeypatch.setattr("psi_agent.router.serve_router", fake_serve_router)
-    monkeypatch.setenv("PSI_ROUTER_MODEL", "env-router")
-    monkeypatch.setenv("PSI_ROUTER_BASE_URL", "http://router/v1")
-    monkeypatch.setenv("PSI_ROUTER_API_KEY", "env-key")
     router = Router(
         session_socket="http://127.0.0.1:8100",
+        router_socket="http://127.0.0.1:7001",
         upstream=[UPSTREAM],
         default_socket="http://127.0.0.1:7001",
     )
@@ -88,9 +81,7 @@ async def test_ai_router_resolves_environment_and_calls_server(monkeypatch: pyte
             "http://127.0.0.1:8100",
             RouterSettings(
                 targets=(Upstream("http://127.0.0.1:7001", "simple"),),
-                router_model="env-router",
-                router_base_url="http://router/v1",
-                router_api_key="env-key",
+                router_socket="http://127.0.0.1:7001",
                 default_socket="http://127.0.0.1:7001",
                 router_timeout=None,
                 context_chars=12_000,
@@ -117,9 +108,7 @@ async def test_serve_router_cleans_up_runner_on_start_failure(monkeypatch: pytes
     monkeypatch.setattr("psi_agent.router.create_site", lambda runner, addr: BadSite())
     settings = RouterSettings(
         targets=(Upstream("http://upstream", "simple"),),
-        router_model="router",
-        router_base_url="http://router/v1",
-        router_api_key="key",
+        router_socket="http://upstream",
         default_socket="http://default",
         router_timeout=None,
         context_chars=12_000,

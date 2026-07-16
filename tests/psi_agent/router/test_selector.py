@@ -97,7 +97,7 @@ def test_serialize_context_rejects_non_positive_limit() -> None:
 
 async def _serve_router_model(handler: Handler, port: int) -> web.AppRunner:
     app = web.Application()
-    app.router.add_post("/v1/chat/completions", handler)
+    app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", port).start()
@@ -106,24 +106,30 @@ async def _serve_router_model(handler: Handler, port: int) -> web.AppRunner:
 
 @pytest.mark.anyio
 async def test_select_upstream_calls_openai_compatible_router(unused_tcp_port: int) -> None:
-    async def handler(request: web.Request) -> web.Response:
+    async def handler(request: web.Request) -> web.StreamResponse:
         body = await request.json()
-        assert request.headers["Authorization"] == "Bearer router-key"
-        assert body["model"] == "router-model"
-        assert body["stream"] is False
+        assert "Authorization" not in request.headers
+        assert body["model"] == "router"
+        assert body["stream"] is True
         rendered = "\n".join(item["content"] for item in body["messages"])
         assert "simple Chinese tasks" in rendered
         assert "secret-model" not in rendered
-        return web.json_response({"choices": [{"message": {"content": '{"candidate":0,"reason":"simple"}'}}]})
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(b'data: {"choices":[{"index":0,"delta":{"content":"{\\"candidate\\":0,"}}]}\n\n')
+        await response.write(
+            b'data: {"choices":[{"index":0,"delta":{"content":"\\"reason\\":\\"simple\\"}"},'
+            b'"finish_reason":"stop"}]}\n\n'
+        )
+        await response.write(b"data: [DONE]\n\n")
+        return response
 
     runner = await _serve_router_model(handler, unused_tcp_port)
     try:
         decision = await select_upstream(
             context="[USER]\nsummarize this",
             targets=TARGETS,
-            router_model="router-model",
-            router_base_url=f"http://127.0.0.1:{unused_tcp_port}/v1",
-            router_api_key="router-key",
+            router_socket=f"http://127.0.0.1:{unused_tcp_port}",
             router_timeout=None,
         )
         assert decision == RouteDecision(0, "simple")
@@ -133,16 +139,21 @@ async def test_select_upstream_calls_openai_compatible_router(unused_tcp_port: i
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "payload",
+    "chunks",
     [
-        {"choices": []},
-        {"choices": [{"message": {"content": 7}}]},
-        {"choices": [{"message": {"content": "not-json"}}]},
+        [b'data: {"choices":[]}\n\n'],
+        [b'data: {"choices":[{"index":0,"delta":{"content":7}}]}\n\n'],
+        [b'data: {"choices":[{"index":0,"delta":{"content":"not-json"}}]}\n\n'],
     ],
 )
-async def test_select_upstream_rejects_incompatible_responses(payload: object, unused_tcp_port: int) -> None:
-    async def handler(request: web.Request) -> web.Response:
-        return web.json_response(payload)
+async def test_select_upstream_rejects_incompatible_responses(chunks: list[bytes], unused_tcp_port: int) -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        for chunk in chunks:
+            await response.write(chunk)
+        await response.write(b"data: [DONE]\n\n")
+        return response
 
     runner = await _serve_router_model(handler, unused_tcp_port)
     try:
@@ -150,9 +161,7 @@ async def test_select_upstream_rejects_incompatible_responses(payload: object, u
             await select_upstream(
                 context="[USER]\ntask",
                 targets=TARGETS,
-                router_model="router-model",
-                router_base_url=f"http://127.0.0.1:{unused_tcp_port}/v1",
-                router_api_key="",
+                router_socket=f"http://127.0.0.1:{unused_tcp_port}",
                 router_timeout=None,
             )
     finally:
@@ -170,9 +179,7 @@ async def test_select_upstream_rejects_http_error(unused_tcp_port: int) -> None:
             await select_upstream(
                 context="[USER]\ntask",
                 targets=TARGETS,
-                router_model="router-model",
-                router_base_url=f"http://127.0.0.1:{unused_tcp_port}/v1",
-                router_api_key="",
+                router_socket=f"http://127.0.0.1:{unused_tcp_port}",
                 router_timeout=None,
             )
     finally:
@@ -191,9 +198,7 @@ async def test_select_upstream_enforces_timeout(unused_tcp_port: int) -> None:
             await select_upstream(
                 context="[USER]\ntask",
                 targets=TARGETS,
-                router_model="router-model",
-                router_base_url=f"http://127.0.0.1:{unused_tcp_port}/v1",
-                router_api_key="",
+                router_socket=f"http://127.0.0.1:{unused_tcp_port}",
                 router_timeout=0.01,
             )
     finally:

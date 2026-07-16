@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -38,7 +39,6 @@ async def _start_router(settings: RouterSettings, port: int) -> web.AppRunner:
 @pytest.mark.anyio
 async def test_semantic_router_selects_models_and_preserves_tool_sse(unused_tcp_port_factory) -> None:
     router_model_port = unused_tcp_port_factory()
-    simple_port = unused_tcp_port_factory()
     complex_port = unused_tcp_port_factory()
     default_port = unused_tcp_port_factory()
     service_port = unused_tcp_port_factory()
@@ -46,21 +46,24 @@ async def test_semantic_router_selects_models_and_preserves_tool_sse(unused_tcp_
     complex_requests: list[dict[str, Any]] = []
     default_requests: list[dict[str, Any]] = []
 
-    async def router_model_handler(request: web.Request) -> web.Response:
+    async def router_model_handler(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         rendered = "\n".join(item["content"] for item in body["messages"])
+        if "候选模型" not in rendered:
+            simple_requests.append(body)
+            return web.Response(body=b"data: [DONE]\n\n", content_type="text/event-stream")
         assert "qwen" not in rendered
         assert "deepseek" not in rendered
         assert "127.0.0.1" not in rendered
         context = body["messages"][1]["content"]
         candidate = 1 if "code" in context else 0
-        return web.json_response(
-            {"choices": [{"message": {"content": f'{{"candidate":{candidate},"reason":"matched"}}'}}]}
-        )
-
-    async def simple_handler(request: web.Request) -> web.Response:
-        simple_requests.append(await request.json())
-        return web.Response(body=b"data: [DONE]\n\n", content_type="text/event-stream")
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        content = f'{{"candidate":{candidate},"reason":"matched"}}'
+        chunk = {"choices": [{"index": 0, "delta": {"content": content}}]}
+        await response.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        await response.write(b"data: [DONE]\n\n")
+        return response
 
     async def complex_handler(request: web.Request) -> web.Response:
         complex_requests.append(await request.json())
@@ -71,19 +74,16 @@ async def test_semantic_router_selects_models_and_preserves_tool_sse(unused_tcp_
         return web.Response(body=b"data: [DONE]\n\n", content_type="text/event-stream")
 
     runners = [
-        await _start(router_model_handler, "/v1/chat/completions", router_model_port),
-        await _start(simple_handler, "/chat/completions", simple_port),
+        await _start(router_model_handler, "/chat/completions", router_model_port),
         await _start(complex_handler, "/chat/completions", complex_port),
         await _start(default_handler, "/chat/completions", default_port),
     ]
     settings = RouterSettings(
         targets=(
-            Upstream(f"http://127.0.0.1:{simple_port}", "summaries and simple tasks"),
+            Upstream(f"http://127.0.0.1:{router_model_port}", "summaries and simple tasks"),
             Upstream(f"http://127.0.0.1:{complex_port}", "code analysis and reasoning"),
         ),
-        router_model="route-model",
-        router_base_url=f"http://127.0.0.1:{router_model_port}/v1",
-        router_api_key="key",
+        router_socket=f"http://127.0.0.1:{router_model_port}",
         default_socket=f"http://127.0.0.1:{default_port}",
         router_timeout=1,
         context_chars=12_000,
@@ -120,22 +120,24 @@ async def test_damaged_router_response_uses_default_and_preserves_model(unused_t
     service_port = unused_tcp_port_factory()
     default_requests: list[dict[str, Any]] = []
 
-    async def router_model_handler(request: web.Request) -> web.Response:
-        return web.json_response({"choices": [{"message": {"content": "damaged"}}]})
+    async def router_model_handler(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(b'data: {"choices":[{"index":0,"delta":{"content":"damaged"}}]}\n\n')
+        await response.write(b"data: [DONE]\n\n")
+        return response
 
     async def default_handler(request: web.Request) -> web.Response:
         default_requests.append(await request.json())
         return web.Response(body=b"data: [DONE]\n\n", content_type="text/event-stream")
 
     runners = [
-        await _start(router_model_handler, "/v1/chat/completions", router_model_port),
+        await _start(router_model_handler, "/chat/completions", router_model_port),
         await _start(default_handler, "/chat/completions", default_port),
     ]
     settings = RouterSettings(
-        targets=(Upstream("http://unused", "simple"),),
-        router_model="route-model",
-        router_base_url=f"http://127.0.0.1:{router_model_port}/v1",
-        router_api_key="key",
+        targets=(Upstream(f"http://127.0.0.1:{router_model_port}", "simple"),),
+        router_socket=f"http://127.0.0.1:{router_model_port}",
         default_socket=f"http://127.0.0.1:{default_port}",
         router_timeout=1,
         context_chars=12_000,

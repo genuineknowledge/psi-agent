@@ -131,44 +131,59 @@ async def _request_decision(
     *,
     context: str,
     targets: tuple[Upstream, ...],
-    router_model: str,
-    router_base_url: str,
-    router_api_key: str,
+    router_socket: str,
 ) -> RouteDecision:
-    connector, endpoint = resolve_connector_and_endpoint(router_base_url)
-    headers = {"Authorization": f"Bearer {router_api_key}"}
+    connector, endpoint = resolve_connector_and_endpoint(router_socket)
     body = {
-        "model": router_model,
+        "model": "router",
         "messages": build_routing_messages(context, targets),
-        "stream": False,
+        "stream": True,
     }
     try:
         async with (
             aiohttp.ClientSession(connector=connector, timeout=ClientTimeout(total=None)) as session,
-            session.post(endpoint, json=body, headers=headers) as response,
+            session.post(endpoint, json=body) as response,
         ):
             if response.status != 200:
                 detail = (await response.text())[:500]
                 raise RouterSelectionError(f"routing model returned HTTP {response.status}: {detail}")
-            payload: Any = await response.json()
+            parts: list[str] = []
+            async for raw_line in response.content:
+                line = raw_line.decode().strip()
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                payload: Any = json.loads(data)
+                if not isinstance(payload, dict):
+                    raise TypeError("SSE chunk must be a JSON object")
+                choices = payload.get("choices")
+                if not isinstance(choices, list):
+                    raise TypeError("SSE choices must be a list")
+                if not choices:
+                    continue
+                if len(choices) != 1 or not isinstance(choices[0], dict):
+                    raise TypeError("SSE chunk must contain exactly one choice")
+                choice = choices[0]
+                delta = choice.get("delta")
+                if not isinstance(delta, dict):
+                    continue
+                if choice.get("finish_reason") == "error":
+                    raise RouterSelectionError(str(delta.get("content", "routing model error")))
+                content = delta.get("content")
+                if content is None:
+                    continue
+                if not isinstance(content, str):
+                    raise TypeError("SSE delta content must be a string")
+                parts.append(content)
     except RouterSelectionError:
         raise
     except (aiohttp.ClientError, json.JSONDecodeError, TypeError) as exc:
         raise RouterSelectionError(f"routing model request failed: {exc}") from exc
     try:
-        if not isinstance(payload, dict):
-            raise TypeError("response must be a JSON object")
-        choices = payload.get("choices")
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise TypeError("response choices must contain one item")
-        message = choices[0].get("message")
-        if not isinstance(message, dict):
-            raise TypeError("response message must be an object")
-        content = message.get("content")
-        if not isinstance(content, str):
-            raise TypeError("response content must be a string")
-        return parse_decision(content, candidate_count=len(targets))
-    except (TypeError, ValueError) as exc:
+        return parse_decision("".join(parts), candidate_count=len(targets))
+    except ValueError as exc:
         raise RouterSelectionError(f"routing model returned an incompatible response: {exc}") from exc
 
 
@@ -176,9 +191,7 @@ async def select_upstream(
     *,
     context: str,
     targets: tuple[Upstream, ...],
-    router_model: str,
-    router_base_url: str,
-    router_api_key: str,
+    router_socket: str,
     router_timeout: float | None,
 ) -> RouteDecision:
     try:
@@ -186,17 +199,13 @@ async def select_upstream(
             return await _request_decision(
                 context=context,
                 targets=targets,
-                router_model=router_model,
-                router_base_url=router_base_url,
-                router_api_key=router_api_key,
+                router_socket=router_socket,
             )
         with anyio.fail_after(router_timeout):
             return await _request_decision(
                 context=context,
                 targets=targets,
-                router_model=router_model,
-                router_base_url=router_base_url,
-                router_api_key=router_api_key,
+                router_socket=router_socket,
             )
     except TimeoutError as exc:
         raise RouterSelectionError(f"routing model timed out after {router_timeout}s") from exc

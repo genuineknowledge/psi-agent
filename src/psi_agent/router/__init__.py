@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import os
 from dataclasses import dataclass, field
 
 import anyio
@@ -49,14 +48,8 @@ class Router:
     session_socket: str
     """Path or URL on which the router listens for Session requests."""
 
-    router_model: str = ""
-    """Model used only to select a candidate upstream."""
-
-    router_base_url: str = ""
-    """OpenAI-compatible service address for the routing model."""
-
-    router_api_key: str = ""
-    """API key for the routing model; an empty key is allowed."""
+    router_socket: str = ""
+    """Candidate model socket used to make routing decisions."""
 
     upstream: list[str] = field(default_factory=list)
     """Candidate JSON objects with socket and description."""
@@ -78,13 +71,8 @@ class Router:
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
-        router_model = self.router_model or os.environ.get("PSI_ROUTER_MODEL", "")
-        router_base_url = self.router_base_url or os.environ.get("PSI_ROUTER_BASE_URL", "")
-        router_api_key = self.router_api_key or os.environ.get("PSI_ROUTER_API_KEY", "")
-        if not router_model.strip():
-            raise ValueError("--router-model or PSI_ROUTER_MODEL must be provided")
-        if not router_base_url.strip():
-            raise ValueError("--router-base-url or PSI_ROUTER_BASE_URL must be provided")
+        if not self.router_socket.strip():
+            raise ValueError("--router-socket must be provided")
         if not self.default_socket.strip():
             raise ValueError("--default-socket must be provided")
         if self.router_context_chars <= 0:
@@ -92,19 +80,19 @@ class Router:
         if self.router_timeout is not None and (not math.isfinite(self.router_timeout) or self.router_timeout <= 0):
             raise ValueError("--router-timeout must be a finite positive number")
         targets = parse_upstreams(self.upstream)
+        router_socket = self.router_socket.strip()
+        if router_socket not in {target.socket for target in targets}:
+            raise ValueError("--router-socket must match one --upstream socket")
         settings = RouterSettings(
             targets=targets,
-            router_model=router_model.strip(),
-            router_base_url=router_base_url.strip(),
-            router_api_key=router_api_key,
+            router_socket=router_socket,
             default_socket=self.default_socket.strip(),
             router_timeout=self.router_timeout,
             context_chars=self.router_context_chars,
             log_details=self.log_router_details,
         )
         logger.debug(
-            f"Router resolved params: model={settings.router_model!r}, base_url={settings.router_base_url!r}, "
-            f"upstreams={len(settings.targets)}, default_socket={settings.default_socket!r}, "
-            f"api_key={'*' * 8 if settings.router_api_key else '(empty)'}"
+            f"Router resolved params: router_socket={settings.router_socket!r}, "
+            f"upstreams={len(settings.targets)}, default_socket={settings.default_socket!r}"
         )
         await serve_router(socket_path=self.session_socket, settings=settings)

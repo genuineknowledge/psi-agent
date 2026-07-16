@@ -18,9 +18,7 @@ The router is exposed as the top-level `router` command:
 ```powershell
 uv run psi-agent router `
   --session-socket "http://127.0.0.1:8100" `
-  --router-model "qwen-chat" `
-  --router-base-url "https://api.llm.ustc.edu.cn/v1" `
-  --router-api-key "..." `
+  --router-socket "http://127.0.0.1:7001" `
   --upstream `
     '{\"socket\":\"http://127.0.0.1:7001\",\"description\":\"本地通用中文问答、摘要和简单任务\"}' `
     '{\"socket\":\"http://127.0.0.1:7002\",\"description\":\"复杂推理、代码分析、数学和多步骤任务\"}' `
@@ -122,12 +120,13 @@ any API key. It is asked to return JSON shaped as:
 Candidate numbering is only an index into local validated configuration. The
 routing model can never synthesize or select an arbitrary network address.
 
-### 4. Call the routing model
+### 4. Call the routing model service
 
-The selector sends a non-streaming OpenAI-compatible request using
-`router_model`, `router_base_url`, and `router_api_key`. Base URL handling
-accepts a service root, a `/v1` URL, or a complete
-`/v1/chat/completions` URL without duplicating path components.
+The selector sends an OpenAI-compatible streaming request to `router_socket`,
+which must equal one configured candidate socket. That socket points to an
+already running ordinary psi-agent AI service, so provider, model, base URL,
+and API key configuration remain entirely on that AI service. The selector
+aggregates `delta.content` from its SSE response before parsing the decision.
 
 The response parser accepts a plain JSON object, fenced JSON, or the first
 valid JSON object surrounded by explanatory text. A decision is valid only
@@ -178,8 +177,7 @@ for later requests.
 
 Startup fails clearly unless all of the following hold:
 
-- `router_model` is non-empty;
-- `router_base_url` is a valid supported service address;
+- `router_socket` is non-empty and exactly matches one candidate socket;
 - at least one upstream is present;
 - every upstream JSON value is an object with exactly `socket` and
   `description`;

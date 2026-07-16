@@ -39,9 +39,7 @@ def _settings(*, selected_socket: str, default_socket: str) -> RouterSettings:
             Upstream(selected_socket, "simple"),
             Upstream(selected_socket, "complex"),
         ),
-        router_model="router-model",
-        router_base_url="http://router.invalid/v1",
-        router_api_key="secret",
+        router_socket=selected_socket,
         default_socket=default_socket,
         router_timeout=None,
         context_chars=12_000,
@@ -258,9 +256,7 @@ async def test_router_summary_logs_only_reason_and_final_result(
     settings = _settings(selected_socket=addr, default_socket=addr)
     settings = RouterSettings(
         targets=settings.targets,
-        router_model=settings.router_model,
-        router_base_url=settings.router_base_url,
-        router_api_key=settings.router_api_key,
+        router_socket=settings.router_socket,
         default_socket=settings.default_socket,
         router_timeout=settings.router_timeout,
         context_chars=settings.context_chars,

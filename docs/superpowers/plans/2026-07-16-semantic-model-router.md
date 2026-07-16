@@ -345,9 +345,7 @@ async def select_upstream(
     *,
     context: str,
     targets: tuple[Upstream, ...],
-    router_model: str,
-    router_base_url: str,
-    router_api_key: str,
+    router_socket: str,
     timeout: float | None,
 ) -> RouteDecision: ...
 ```
@@ -355,8 +353,8 @@ async def select_upstream(
 The mock handler must assert this request shape:
 
 ```python
-assert body["model"] == "router-model"
-assert body["stream"] is False
+assert body["model"] == "router"
+assert body["stream"] is True
 assert body["messages"][0]["role"] == "system"
 assert request.headers["Authorization"] == "Bearer router-key"
 ```
@@ -386,11 +384,12 @@ class RouterSelectionError(RuntimeError):
     pass
 ```
 
-Resolve the endpoint with `resolve_connector_and_endpoint(router_base_url)`,
-use `aiohttp.ClientSession(connector=connector, timeout=ClientTimeout(total=None))`,
-and send a non-streaming JSON request. If `timeout` is not `None`, wrap the
-request in `anyio.fail_after(timeout)` and translate timeout/network/status/
-shape errors into `RouterSelectionError` with no API key in the message.
+Resolve the endpoint with `resolve_connector_and_endpoint(router_socket)`, use
+`aiohttp.ClientSession(connector=connector, timeout=ClientTimeout(total=None))`,
+and send a streaming request to the already running AI service. Aggregate SSE
+`delta.content` before parsing. If `timeout` is not `None`, wrap the request in
+`anyio.fail_after(timeout)` and translate timeout/network/status/shape errors
+into `RouterSelectionError`.
 
 - [ ] **Step 4: Run selector tests and type checking**
 
@@ -507,16 +506,9 @@ git commit -m "feat(router): proxy selected model streams"
 
 - [ ] **Step 1: Add failing `Router` defaults, validation, and cleanup tests**
 
-Assert the dataclass fields and environment fallback names:
-
-```text
-PSI_ROUTER_MODEL
-PSI_ROUTER_BASE_URL
-PSI_ROUTER_API_KEY
-```
-
-Test rejection of empty router model/base URL, empty upstreams, empty default
-address, non-positive context characters, and non-finite/non-positive timeout.
+Assert the dataclass fields and test rejection of an empty or unconfigured
+router socket, empty upstreams, empty default socket, non-positive context
+characters, and non-finite/non-positive timeout.
 Spy on `web.AppRunner.cleanup` and force `site.start()` to fail, matching the
 existing `serve_ai` cleanup test. Inspect `Router.run` source and assert its
 first executable statement is `setup_logging(verbose=self.verbose)`.
@@ -535,9 +527,7 @@ Use this dataclass field order and matching assignment order:
 @dataclass
 class Router:
     session_socket: str
-    router_model: str = ""
-    router_base_url: str = ""
-    router_api_key: str = ""
+    router_socket: str = ""
     upstream: list[str] = field(default_factory=list)
     default_socket: str = ""
     router_timeout: float | None = None

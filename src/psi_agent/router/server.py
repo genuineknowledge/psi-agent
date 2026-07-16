@@ -18,9 +18,7 @@ from .selector import RouterSelectionError, select_upstream, serialize_context
 @dataclass(frozen=True)
 class RouterSettings:
     targets: tuple[Upstream, ...]
-    router_model: str
-    router_base_url: str
-    router_api_key: str
+    router_socket: str
     default_socket: str
     router_timeout: float | None
     context_chars: int
@@ -118,9 +116,7 @@ async def handle_router_chat_completions(request: web.Request) -> web.StreamResp
             decision = await select_upstream(
                 context=context,
                 targets=settings.targets,
-                router_model=settings.router_model,
-                router_base_url=settings.router_base_url,
-                router_api_key=settings.router_api_key,
+                router_socket=settings.router_socket,
                 router_timeout=settings.router_timeout,
             )
             target = settings.targets[decision.candidate]
