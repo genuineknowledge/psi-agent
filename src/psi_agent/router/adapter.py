@@ -283,11 +283,7 @@ class LLMRouterAdapter:
                 if not isinstance(item, (list, tuple)) or len(item) != 2:
                     continue
                 sub_query, model_name = item
-                if (
-                    isinstance(sub_query, str)
-                    and isinstance(model_name, str)
-                    and model_name in target_by_model_name
-                ):
+                if isinstance(sub_query, str) and isinstance(model_name, str) and model_name in target_by_model_name:
                     routes.append((sub_query, model_name))
         if not routes:
             raise RuntimeError("LLMRouter returned no valid candidate routes")
