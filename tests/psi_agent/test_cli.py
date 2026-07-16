@@ -42,8 +42,8 @@ def test_main_preserves_ordinary_ai_shape(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_main_builds_top_level_router_with_ordered_upstreams(monkeypatch: pytest.MonkeyPatch) -> None:
-    first = '{"model_name":"qwen","addr":"http://a","description":"simple"}'
-    second = '{"model_name":"deepseek","addr":"http://b","description":"complex"}'
+    first = '{"socket":"http://a","description":"simple"}'
+    second = '{"socket":"http://b","description":"complex"}'
     command = _capture_command(
         monkeypatch,
         [
@@ -57,7 +57,7 @@ def test_main_builds_top_level_router_with_ordered_upstreams(monkeypatch: pytest
             "--upstream",
             first,
             second,
-            "--default-addr",
+            "--default-socket",
             "http://default",
             "--router-context-chars",
             "8000",
@@ -67,7 +67,7 @@ def test_main_builds_top_level_router_with_ordered_upstreams(monkeypatch: pytest
     )
     assert isinstance(command, Router)
     assert command.upstream == [first, second]
-    assert command.default_addr == "http://default"
+    assert command.default_socket == "http://default"
     assert command.router_context_chars == 8000
     assert command.log_router_details is True
     assert command.verbose is True
@@ -80,5 +80,5 @@ def test_router_help_lists_router_options(monkeypatch: pytest.MonkeyPatch, capsy
     assert exc_info.value.code == 0
     output = capsys.readouterr().out
     assert "--upstream" in output
-    assert "--default-addr" in output
+    assert "--default-socket" in output
     assert "--router-context-chars" in output

@@ -11,7 +11,7 @@ from psi_agent.router import Router, serve_router
 from psi_agent.router.models import Upstream
 from psi_agent.router.server import RouterSettings
 
-UPSTREAM = '{"model_name":"qwen","addr":"http://127.0.0.1:7001","description":"simple"}'
+UPSTREAM = '{"socket":"http://127.0.0.1:7001","description":"simple"}'
 
 
 def test_ai_router_defaults() -> None:
@@ -20,7 +20,7 @@ def test_ai_router_defaults() -> None:
     assert router.router_base_url == ""
     assert router.router_api_key == ""
     assert router.upstream == []
-    assert router.default_addr == ""
+    assert router.default_socket == ""
     assert router.router_timeout is None
     assert router.router_context_chars == 12_000
     assert router.log_router_details is False
@@ -43,7 +43,7 @@ def test_ai_router_run_sets_up_logging_first() -> None:
         ("router_model", "", "router-model"),
         ("router_base_url", "", "router-base-url"),
         ("upstream", [], "upstream"),
-        ("default_addr", "", "default-addr"),
+        ("default_socket", "", "default-socket"),
         ("router_context_chars", 0, "router-context-chars"),
         ("router_timeout", 0.0, "router-timeout"),
         ("router_timeout", float("inf"), "router-timeout"),
@@ -59,7 +59,7 @@ async def test_ai_router_rejects_invalid_configuration(
         router_model="router",
         router_base_url="http://127.0.0.1:9000/v1",
         upstream=[UPSTREAM],
-        default_addr="http://127.0.0.1:7001",
+        default_socket="http://127.0.0.1:7001",
     )
     setattr(router, field_name, invalid_value)
     with pytest.raises(ValueError, match=message):
@@ -80,18 +80,18 @@ async def test_ai_router_resolves_environment_and_calls_server(monkeypatch: pyte
     router = Router(
         session_socket="http://127.0.0.1:8100",
         upstream=[UPSTREAM],
-        default_addr="http://127.0.0.1:7001",
+        default_socket="http://127.0.0.1:7001",
     )
     await router.run()
     assert captured == [
         (
             "http://127.0.0.1:8100",
             RouterSettings(
-                targets=(Upstream("qwen", "http://127.0.0.1:7001", "simple"),),
+                targets=(Upstream("http://127.0.0.1:7001", "simple"),),
                 router_model="env-router",
                 router_base_url="http://router/v1",
                 router_api_key="env-key",
-                default_addr="http://127.0.0.1:7001",
+                default_socket="http://127.0.0.1:7001",
                 router_timeout=None,
                 context_chars=12_000,
                 log_details=False,
@@ -116,11 +116,11 @@ async def test_serve_router_cleans_up_runner_on_start_failure(monkeypatch: pytes
     monkeypatch.setattr(web.AppRunner, "cleanup", spy_cleanup)
     monkeypatch.setattr("psi_agent.router.create_site", lambda runner, addr: BadSite())
     settings = RouterSettings(
-        targets=(Upstream("qwen", "http://upstream", "simple"),),
+        targets=(Upstream("http://upstream", "simple"),),
         router_model="router",
         router_base_url="http://router/v1",
         router_api_key="key",
-        default_addr="http://default",
+        default_socket="http://default",
         router_timeout=None,
         context_chars=12_000,
         log_details=False,

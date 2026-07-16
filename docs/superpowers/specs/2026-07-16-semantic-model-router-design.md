@@ -22,9 +22,9 @@ uv run psi-agent router `
   --router-base-url "https://api.llm.ustc.edu.cn/v1" `
   --router-api-key "..." `
   --upstream `
-    '{\"model_name\":\"qwen3.6-chat\",\"addr\":\"http://127.0.0.1:7001\",\"description\":\"本地通用中文问答、摘要和简单任务\"}' `
-    '{\"model_name\":\"deepseek-v4-pro\",\"addr\":\"http://127.0.0.1:7002\",\"description\":\"复杂推理、代码分析、数学和多步骤任务\"}' `
-  --default-addr "http://127.0.0.1:7001" `
+    '{\"socket\":\"http://127.0.0.1:7001\",\"description\":\"本地通用中文问答、摘要和简单任务\"}' `
+    '{\"socket\":\"http://127.0.0.1:7002\",\"description\":\"复杂推理、代码分析、数学和多步骤任务\"}' `
+  --default-socket "http://127.0.0.1:7001" `
   --router-context-chars 12000 `
   --log-router-details `
   --verbose
@@ -34,14 +34,13 @@ Each `--upstream` value is one JSON object with exactly three fields:
 
 ```json
 {
-  "model_name": "deepseek-v4-pro",
-  "addr": "http://127.0.0.1:7002",
+  "socket": "http://127.0.0.1:7002",
   "description": "复杂推理、代码分析、数学和多步骤任务"
 }
 ```
 
-`--default-addr` is required. It is an address rather than a model reference
-and does not have to equal a configured candidate address.
+`--default-socket` is required and does not have to equal a configured
+candidate socket.
 
 The existing single-model AI command remains available. CLI composition must
 make both ordinary AI service startup and `psi-agent router` discoverable
@@ -98,7 +97,7 @@ The selector creates context from `messages`:
 - never exceed `router_context_chars` characters.
 
 If no usable user content exists, semantic selection is skipped and the
-request uses the default address.
+request uses the default socket.
 
 ### 3. Expose descriptions only
 
@@ -110,8 +109,8 @@ Candidate 0: 本地通用中文问答、摘要和简单任务
 Candidate 1: 复杂推理、代码分析、数学和多步骤任务
 ```
 
-The routing model must not receive candidate `model_name`, candidate `addr`,
-the default address, or any API key. It is asked to return JSON shaped as:
+The routing model must not receive candidate `socket`, the default socket, or
+any API key. It is asked to return JSON shaped as:
 
 ```json
 {
@@ -139,11 +138,11 @@ range. `reason` is diagnostic metadata and cannot affect address selection.
 
 For a valid decision, the handler retrieves the selected `Upstream` locally,
 copies the original request body, overwrites its `model` field with the
-candidate's `model_name`, and posts it to the candidate's `addr`. Every other
-field, including `messages`, `tools`, `tool_choice`, sampling parameters, and
-unknown extensions, passes through unchanged.
+candidate's `socket` and posts the original body to it unchanged. The original
+`model`, `messages`, `tools`, `tool_choice`, sampling parameters, and unknown
+extensions all pass through unchanged.
 
-Candidate addresses are service addresses. The implementation appends
+Candidate sockets are service addresses. The implementation appends
 `/chat/completions` when needed and does not duplicate it when the complete
 endpoint was supplied. It should reuse the project's transport helpers so
 supported HTTP/TCP, Unix-socket, and Windows Named Pipe addresses behave
@@ -157,7 +156,7 @@ provider extensions, and `[DONE]` exactly as emitted.
 
 ## Default fallback
 
-The router uses `default_addr` for this request when:
+The router uses `default_socket` for this request when:
 
 - the routing model times out or raises a network error;
 - the routing endpoint returns an HTTP error;
@@ -168,7 +167,7 @@ The router uses `default_addr` for this request when:
 - no usable user context exists.
 
 Fallback copies and forwards the original request without changing its
-`model` field. The service at `default_addr` is responsible for interpreting
+`model` field. The service at `default_socket` is responsible for interpreting
 that original model value. A default-upstream failure is reported directly;
 there is no recursive fallback.
 
@@ -182,17 +181,16 @@ Startup fails clearly unless all of the following hold:
 - `router_model` is non-empty;
 - `router_base_url` is a valid supported service address;
 - at least one upstream is present;
-- every upstream JSON value is an object with exactly `model_name`, `addr`,
-  and `description`;
-- all three upstream fields are trimmed, non-empty strings;
-- candidate model names are unique;
-- candidate addresses and `default_addr` use supported address formats;
-- `default_addr` is non-empty;
+- every upstream JSON value is an object with exactly `socket` and
+  `description`;
+- both upstream fields are trimmed, non-empty strings;
+- candidate sockets and `default_socket` use supported address formats;
+- `default_socket` is non-empty;
 - `router_context_chars` is positive; and
 - an optional routing timeout, if exposed, is finite and positive.
 
-The default address is intentionally not required to appear in the candidate
-list because it has no configured model name in this design.
+The default socket is intentionally not required to appear in the candidate
+list.
 
 ## Errors, cancellation, and cleanup
 
@@ -216,9 +214,8 @@ shielded both when startup fails and during shutdown. `Router.run()` calls
 
 ## Logging and secrets
 
-Normal logs identify the selected model name, destination address, and
-selection source (`semantic` or `default`). Every proxied SSE chunk is logged
-at DEBUG consistently with existing protocol boundaries.
+Normal selection logs identify the final destination socket. Every proxied SSE
+chunk is logged at DEBUG consistently with existing protocol boundaries.
 
 With `log_router_details`, DEBUG logs may additionally include the candidate
 index, selected description, routing reason, and serialized-context length.
@@ -234,7 +231,7 @@ non-object values, missing/empty/unknown fields, duplicate model names,
 address normalization, and exact index-to-upstream mapping.
 
 `selector.py` tests prove that prompts contain descriptions and opaque indices
-but do not contain model names, addresses, or API keys. They cover plain,
+but do not contain sockets or API keys. They cover plain,
 fenced, and surrounded JSON; invalid booleans, negative and out-of-range
 indices; damaged output; bounded conversation serialization; tool-call
 markers; and multimodal placeholders.
@@ -253,7 +250,7 @@ the logging-first invariant.
 ### Integration tests
 
 Local aiohttp mock services verify simple and complex task selection, damaged
-and timed-out router responses falling back to the default address, tool-call
+and timed-out router responses falling back to the default socket, tool-call
 SSE surviving Router-to-Session forwarding, and upstream errors not being
 committed to conversation history. Tests do not call external networks.
 

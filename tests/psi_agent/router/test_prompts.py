@@ -6,8 +6,8 @@ from psi_agent.router.prompts import build_routing_messages
 
 def test_build_routing_messages_keeps_prompt_in_dedicated_module() -> None:
     targets = (
-        Upstream("secret-model", "http://secret:7001", "simple tasks"),
-        Upstream("other-model", "http://other:7002", "complex reasoning"),
+        Upstream("http://secret:7001", "simple tasks"),
+        Upstream("http://other:7002", "complex reasoning"),
     )
     messages = build_routing_messages("[USER]\nsolve this", targets)
     rendered = "\n".join(message["content"] for message in messages)

@@ -4,7 +4,7 @@
 
 **Goal:** Add `psi-agent router`, which selects one configured upstream from description-only semantic routing and transparently proxies the original Chat Completions/SSE request.
 
-**Architecture:** A new `psi_agent.router` package separates validated upstream configuration, description-only selection, HTTP/SSE proxying, and service lifecycle. The routing model returns an opaque candidate index; local configuration alone maps that index to `model_name` and `addr`, while all routing failures use `default_addr` without changing the request's original model.
+**Architecture:** A new `psi_agent.router` package separates validated upstream configuration, description-only selection, HTTP/SSE proxying, and service lifecycle. The routing model returns an opaque candidate index; local configuration maps that index to a `socket`, while semantic selection and fallback both preserve the request's original `model`.
 
 **Tech Stack:** Python 3.14, anyio, aiohttp, tyro, loguru, pytest, pytest-asyncio, ruff, ty
 
@@ -49,25 +49,25 @@ from psi_agent.router.models import RouteDecision, Upstream, parse_upstreams
 def test_parse_upstreams_preserves_order_and_maps_candidate() -> None:
     targets = parse_upstreams(
         [
-            '{"model_name":"qwen","addr":"http://127.0.0.1:7001","description":"simple"}',
-            '{"model_name":"deepseek","addr":"http://127.0.0.1:7002","description":"complex"}',
+            '{"socket":"http://127.0.0.1:7001","description":"simple"}',
+            '{"socket":"http://127.0.0.1:7002","description":"complex"}',
         ]
     )
     assert targets == (
-        Upstream(model_name="qwen", addr="http://127.0.0.1:7001", description="simple"),
-        Upstream(model_name="deepseek", addr="http://127.0.0.1:7002", description="complex"),
+        Upstream(socket="http://127.0.0.1:7001", description="simple"),
+        Upstream(socket="http://127.0.0.1:7002", description="complex"),
     )
     decision = RouteDecision(candidate=1, reason="needs reasoning")
-    assert targets[decision.candidate].addr == "http://127.0.0.1:7002"
+    assert targets[decision.candidate].socket == "http://127.0.0.1:7002"
 
 
 @pytest.mark.parametrize(
     ("encoded", "message"),
     [
         ("[]", "must be a JSON object"),
-        ('{"model_name":"m","addr":"a"}', "missing fields"),
-        ('{"model_name":"m","addr":"a","description":"d","extra":1}', "unsupported fields"),
-        ('{"model_name":" ","addr":"a","description":"d"}', "model_name must be a non-empty string"),
+        ('{"socket":"a"}', "missing fields"),
+        ('{"socket":"a","description":"d","extra":1}', "unsupported fields"),
+        ('{"socket":" ","description":"d"}', "socket must be a non-empty string"),
     ],
 )
 def test_parse_upstreams_rejects_invalid_values(encoded: str, message: str) -> None:
@@ -75,10 +75,6 @@ def test_parse_upstreams_rejects_invalid_values(encoded: str, message: str) -> N
         parse_upstreams([encoded])
 
 
-def test_parse_upstreams_rejects_duplicate_model_names() -> None:
-    raw = '{"model_name":"same","addr":"http://a","description":"d"}'
-    with pytest.raises(ValueError, match="duplicate upstream model_name"):
-        parse_upstreams([raw, raw])
 ```
 
 - [ ] **Step 2: Run the focused test and confirm the red state**
@@ -99,8 +95,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Upstream:
-    model_name: str
-    addr: str
+    socket: str
     description: str
 
 
@@ -121,8 +116,7 @@ def parse_upstreams(raw: list[str]) -> tuple[Upstream, ...]:
     if not raw:
         raise ValueError("--upstream must provide at least one JSON object")
     targets: list[Upstream] = []
-    model_names: set[str] = set()
-    allowed = {"model_name", "addr", "description"}
+    allowed = {"socket", "description"}
     for index, encoded in enumerate(raw):
         location = f"upstream[{index}]"
         try:
@@ -138,13 +132,9 @@ def parse_upstreams(raw: list[str]) -> tuple[Upstream, ...]:
         if unknown:
             raise ValueError(f"{location} has unsupported fields: {sorted(unknown)!r}")
         target = Upstream(
-            model_name=_required_text(value, "model_name", location),
-            addr=_required_text(value, "addr", location),
+            socket=_required_text(value, "socket", location),
             description=_required_text(value, "description", location),
         )
-        if target.model_name in model_names:
-            raise ValueError(f"duplicate upstream model_name: {target.model_name!r}")
-        model_names.add(target.model_name)
         targets.append(target)
     return tuple(targets)
 ```
@@ -319,7 +309,7 @@ def parse_decision(text: str, *, candidate_count: int) -> RouteDecision: ...
 Use `json.JSONDecoder.raw_decode()` from every `{` position. Validate with
 `isinstance(candidate, int) and not isinstance(candidate, bool)`. Construct the
 system prompt by enumerating only `target.description`; do not interpolate
-`target.model_name` or `target.addr`. Use the serialization rules in the spec,
+`target.socket`. Use the serialization rules in the spec,
 drop oldest non-system blocks first, and add `[TRUNCATED]` when a single final
 block must be cut.
 
@@ -461,10 +451,9 @@ async def handle_router_chat_completions(request: web.Request) -> web.StreamResp
 ```
 
 Parse and guard the JSON object before any `.get()`. Call `serialize_context`;
-on empty context select `default_addr`. Catch `RouterSelectionError` and log a
-WARNING before selecting `default_addr`. For semantic success, copy the body
-and set `body["model"] = selected.model_name`; for fallback, copy without model
-mutation.
+on empty context select `default_socket`. Catch `RouterSelectionError` and log
+a WARNING before selecting `default_socket`. Both semantic success and fallback
+forward the original body without changing its `model`.
 
 - [ ] **Step 4: Implement byte-preserving upstream proxying**
 
@@ -550,7 +539,7 @@ class Router:
     router_base_url: str = ""
     router_api_key: str = ""
     upstream: list[str] = field(default_factory=list)
-    default_addr: str = ""
+    default_socket: str = ""
     router_timeout: float | None = None
     router_context_chars: int = 12_000
     log_router_details: bool = False
@@ -569,7 +558,7 @@ Patch `sys.argv` and `anyio.run`, invoke `psi_agent.cli.main()`, and assert:
 - ordinary AI invocation creates `Ai`;
 - `router` creates `Router`;
 - two JSON values following `--upstream` arrive in order;
-- `--default-addr`, `--router-context-chars`, and boolean flags parse correctly;
+- `--default-socket`, `--router-context-chars`, and boolean flags parse correctly;
 - `router --help` exits successfully and contains the new option names.
 
 - [ ] **Step 5: Add `Router` to the top-level command union**
@@ -588,7 +577,7 @@ Expected: all tests pass.
 
 Run: `uv run psi-agent router --help`
 
-Expected: help includes `--upstream`, `--default-addr`, and router options.
+Expected: help includes `--upstream`, `--default-socket`, and router options.
 
 Run: `uv run psi-agent ai --help`
 
@@ -638,7 +627,7 @@ for service readiness after socket creation, and cancel the task group in a
 - [ ] **Step 4: Add fallback and protocol-preservation cases**
 
 Add cases where the routing model returns damaged content and where it delays
-beyond `router_timeout`; both must hit `default_addr` and preserve the original
+beyond `router_timeout`; both must hit `default_socket` and preserve the original
 model. Add a tool-call SSE response containing `delta.tool_calls` and assert it
 survives byte-for-byte through the router. Add an upstream error case and
 assert Session does not commit that failed turn to conversation history.
@@ -670,7 +659,7 @@ git commit -m "test(router): cover semantic routing end to end"
 Document these non-obvious invariants in `src/psi_agent/router/AGENTS.md`:
 
 - routing prompts expose only candidate indices and descriptions;
-- `model_name`, addresses, and API keys remain local;
+- sockets and API keys remain local;
 - semantic success overwrites `model`, default fallback preserves it;
 - default failure is terminal and never recursively falls back;
 - normal SSE is proxied as bytes and every chunk is logged at DEBUG;
@@ -683,7 +672,7 @@ Add `src/psi_agent/router/` to the root architecture tree and explain the
 router's place between Session and candidate AI services. Update AI-layer docs
 to distinguish ordinary provider forwarding from `router`. Add the approved
 PowerShell command and an equivalent POSIX example to both READMEs. Explain
-the exact upstream JSON schema, `default_addr` behavior, address path
+the exact upstream JSON schema, `default_socket` behavior, address path
 normalization, and environment variables.
 
 - [ ] **Step 3: Run documentation stale-term checks**

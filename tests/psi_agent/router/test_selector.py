@@ -17,8 +17,8 @@ from psi_agent.router.selector import (
 )
 
 TARGETS = (
-    Upstream("secret-model-a", "http://secret-a:1", "simple Chinese tasks"),
-    Upstream("secret-model-b", "http://secret-b:2", "code and mathematics"),
+    Upstream("http://secret-a:1", "simple Chinese tasks"),
+    Upstream("http://secret-b:2", "code and mathematics"),
 )
 
 

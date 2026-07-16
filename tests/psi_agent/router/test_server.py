@@ -33,16 +33,16 @@ async def _start_router(settings: RouterSettings, port: int) -> web.AppRunner:
     return runner
 
 
-def _settings(*, selected_addr: str, default_addr: str) -> RouterSettings:
+def _settings(*, selected_socket: str, default_socket: str) -> RouterSettings:
     return RouterSettings(
         targets=(
-            Upstream("qwen", selected_addr, "simple"),
-            Upstream("deepseek", selected_addr, "complex"),
+            Upstream(selected_socket, "simple"),
+            Upstream(selected_socket, "complex"),
         ),
         router_model="router-model",
         router_base_url="http://router.invalid/v1",
         router_api_key="secret",
-        default_addr=default_addr,
+        default_socket=default_socket,
         router_timeout=None,
         context_chars=12_000,
         log_details=False,
@@ -50,7 +50,7 @@ def _settings(*, selected_addr: str, default_addr: str) -> RouterSettings:
 
 
 @pytest.mark.anyio
-async def test_semantic_selection_overwrites_model_and_preserves_body(
+async def test_semantic_selection_preserves_model_and_body(
     monkeypatch: pytest.MonkeyPatch,
     unused_tcp_port_factory,
 ) -> None:
@@ -68,7 +68,7 @@ async def test_semantic_selection_overwrites_model_and_preserves_body(
     monkeypatch.setattr("psi_agent.router.server.select_upstream", fake_select_upstream)
     upstream_runner = await _start_app(upstream_handler, upstream_port)
     addr = f"http://127.0.0.1:{upstream_port}"
-    router_runner = await _start_router(_settings(selected_addr=addr, default_addr=addr), router_port)
+    router_runner = await _start_router(_settings(selected_socket=addr, default_socket=addr), router_port)
     body = {
         "model": "original",
         "messages": [{"role": "user", "content": "analyze code"}],
@@ -82,7 +82,7 @@ async def test_semantic_selection_overwrites_model_and_preserves_body(
         ):
             assert response.status == 200
             assert await response.read() == SSE_BYTES
-        assert received == [{**body, "model": "deepseek"}]
+        assert received == [body]
     finally:
         await router_runner.cleanup()
         await upstream_runner.cleanup()
@@ -106,9 +106,9 @@ async def test_selection_failure_uses_default_and_preserves_original_model(
 
     monkeypatch.setattr("psi_agent.router.server.select_upstream", failing_select_upstream)
     default_runner = await _start_app(default_handler, default_port)
-    default_addr = f"http://127.0.0.1:{default_port}"
+    default_socket = f"http://127.0.0.1:{default_port}"
     router_runner = await _start_router(
-        _settings(selected_addr="http://unused", default_addr=default_addr), router_port
+        _settings(selected_socket="http://unused", default_socket=default_socket), router_port
     )
     body = {"model": "original", "messages": [{"role": "user", "content": "task"}]}
     try:
@@ -142,9 +142,9 @@ async def test_missing_user_context_skips_selector_and_uses_default(
 
     monkeypatch.setattr("psi_agent.router.server.select_upstream", forbidden_select_upstream)
     default_runner = await _start_app(default_handler, default_port)
-    default_addr = f"http://127.0.0.1:{default_port}"
+    default_socket = f"http://127.0.0.1:{default_port}"
     router_runner = await _start_router(
-        _settings(selected_addr="http://unused", default_addr=default_addr), router_port
+        _settings(selected_socket="http://unused", default_socket=default_socket), router_port
     )
     body = {"model": "original", "messages": [{"role": "system", "content": "rules"}]}
     try:
@@ -163,7 +163,7 @@ async def test_missing_user_context_skips_selector_and_uses_default(
 @pytest.mark.anyio
 async def test_non_object_request_returns_400(unused_tcp_port: int) -> None:
     router_runner = await _start_router(
-        _settings(selected_addr="http://unused", default_addr="http://unused"), unused_tcp_port
+        _settings(selected_socket="http://unused", default_socket="http://unused"), unused_tcp_port
     )
     try:
         async with (
@@ -187,7 +187,7 @@ async def test_business_upstream_http_error_returns_502(unused_tcp_port_factory)
 
     upstream_runner = await _start_app(upstream_handler, upstream_port)
     addr = f"http://127.0.0.1:{upstream_port}"
-    router_runner = await _start_router(_settings(selected_addr=addr, default_addr=addr), router_port)
+    router_runner = await _start_router(_settings(selected_socket=addr, default_socket=addr), router_port)
     try:
         async with (
             ClientSession() as session,
@@ -221,7 +221,7 @@ async def test_upstream_disconnect_after_prepare_emits_error_chunk(unused_tcp_po
 
     upstream_runner = await _start_app(upstream_handler, upstream_port)
     addr = f"http://127.0.0.1:{upstream_port}"
-    router_runner = await _start_router(_settings(selected_addr=addr, default_addr=addr), router_port)
+    router_runner = await _start_router(_settings(selected_socket=addr, default_socket=addr), router_port)
     try:
         async with (
             ClientSession() as session,
@@ -255,13 +255,13 @@ async def test_router_summary_logs_only_reason_and_final_result(
     monkeypatch.setattr("psi_agent.router.server.select_upstream", fake_select_upstream)
     upstream_runner = await _start_app(upstream_handler, upstream_port)
     addr = f"http://127.0.0.1:{upstream_port}"
-    settings = _settings(selected_addr=addr, default_addr=addr)
+    settings = _settings(selected_socket=addr, default_socket=addr)
     settings = RouterSettings(
         targets=settings.targets,
         router_model=settings.router_model,
         router_base_url=settings.router_base_url,
         router_api_key=settings.router_api_key,
-        default_addr=settings.default_addr,
+        default_socket=settings.default_socket,
         router_timeout=settings.router_timeout,
         context_chars=settings.context_chars,
         log_details=True,
@@ -281,7 +281,7 @@ async def test_router_summary_logs_only_reason_and_final_result(
         router_logs = [message.strip() for message in logs if message.startswith("Router ")]
         assert router_logs == [
             "Router reason: requires code analysis",
-            f"Router result: model='deepseek', addr='{addr}'",
+            f"Router result: socket='{addr}'",
         ]
         assert "description" not in "\n".join(router_logs)
         assert "context_chars" not in "\n".join(router_logs)

@@ -78,13 +78,13 @@ async def test_semantic_router_selects_models_and_preserves_tool_sse(unused_tcp_
     ]
     settings = RouterSettings(
         targets=(
-            Upstream("qwen", f"http://127.0.0.1:{simple_port}", "summaries and simple tasks"),
-            Upstream("deepseek", f"http://127.0.0.1:{complex_port}", "code analysis and reasoning"),
+            Upstream(f"http://127.0.0.1:{simple_port}", "summaries and simple tasks"),
+            Upstream(f"http://127.0.0.1:{complex_port}", "code analysis and reasoning"),
         ),
         router_model="route-model",
         router_base_url=f"http://127.0.0.1:{router_model_port}/v1",
         router_api_key="key",
-        default_addr=f"http://127.0.0.1:{default_port}",
+        default_socket=f"http://127.0.0.1:{default_port}",
         router_timeout=1,
         context_chars=12_000,
         log_details=False,
@@ -104,8 +104,8 @@ async def test_semantic_router_selects_models_and_preserves_tool_sse(unused_tcp_
             ) as response:
                 assert response.status == 200
                 assert await response.read() == TOOL_SSE
-        assert simple_requests[0]["model"] == "qwen"
-        assert complex_requests[0]["model"] == "deepseek"
+        assert simple_requests[0]["model"] == "original"
+        assert complex_requests[0]["model"] == "original"
         assert default_requests == []
     finally:
         await router_runner.cleanup()
@@ -132,11 +132,11 @@ async def test_damaged_router_response_uses_default_and_preserves_model(unused_t
         await _start(default_handler, "/chat/completions", default_port),
     ]
     settings = RouterSettings(
-        targets=(Upstream("qwen", "http://unused", "simple"),),
+        targets=(Upstream("http://unused", "simple"),),
         router_model="route-model",
         router_base_url=f"http://127.0.0.1:{router_model_port}/v1",
         router_api_key="key",
-        default_addr=f"http://127.0.0.1:{default_port}",
+        default_socket=f"http://127.0.0.1:{default_port}",
         router_timeout=1,
         context_chars=12_000,
         log_details=False,

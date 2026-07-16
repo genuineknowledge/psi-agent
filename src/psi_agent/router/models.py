@@ -7,8 +7,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Upstream:
-    model_name: str
-    addr: str
+    socket: str
     description: str
 
 
@@ -29,8 +28,7 @@ def parse_upstreams(raw: list[str]) -> tuple[Upstream, ...]:
     if not raw:
         raise ValueError("--upstream must provide at least one JSON object")
     targets: list[Upstream] = []
-    model_names: set[str] = set()
-    allowed = {"model_name", "addr", "description"}
+    allowed = {"socket", "description"}
     for index, encoded in enumerate(raw):
         location = f"upstream[{index}]"
         try:
@@ -46,12 +44,8 @@ def parse_upstreams(raw: list[str]) -> tuple[Upstream, ...]:
         if unknown:
             raise ValueError(f"{location} has unsupported fields: {sorted(unknown)!r}")
         target = Upstream(
-            model_name=_required_text(value, "model_name", location),
-            addr=_required_text(value, "addr", location),
+            socket=_required_text(value, "socket", location),
             description=_required_text(value, "description", location),
         )
-        if target.model_name in model_names:
-            raise ValueError(f"duplicate upstream model_name: {target.model_name!r}")
-        model_names.add(target.model_name)
         targets.append(target)
     return tuple(targets)

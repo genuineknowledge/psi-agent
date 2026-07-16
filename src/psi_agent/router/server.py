@@ -21,7 +21,7 @@ class RouterSettings:
     router_model: str
     router_base_url: str
     router_api_key: str
-    default_addr: str
+    default_socket: str
     router_timeout: float | None
     context_chars: int
     log_details: bool
@@ -55,8 +55,8 @@ def _error_chunk(message: str) -> bytes:
     return f"data: {json.dumps(payload)}\n\n".encode()
 
 
-async def _proxy_request(request: web.Request, *, body: dict[str, Any], addr: str) -> web.StreamResponse:
-    connector, endpoint = resolve_connector_and_endpoint(addr)
+async def _proxy_request(request: web.Request, *, body: dict[str, Any], socket: str) -> web.StreamResponse:
+    connector, endpoint = resolve_connector_and_endpoint(socket)
     response = web.StreamResponse(
         status=200,
         reason="OK",
@@ -74,7 +74,7 @@ async def _proxy_request(request: web.Request, *, body: dict[str, Any], addr: st
         ):
             if upstream_response.status != 200:
                 detail = (await upstream_response.text())[:1000]
-                logger.warning(f"Router upstream {addr!r} returned HTTP {upstream_response.status}: {detail!r}")
+                logger.warning(f"Router upstream {socket!r} returned HTTP {upstream_response.status}: {detail!r}")
                 return web.json_response(
                     _error_payload(detail or f"Upstream returned HTTP {upstream_response.status}", 502),
                     status=502,
@@ -87,7 +87,7 @@ async def _proxy_request(request: web.Request, *, body: dict[str, Any], addr: st
     except ConnectionResetError:
         logger.info("Router client disconnected; cancelling upstream proxy")
     except Exception as exc:
-        logger.error(f"Router proxy error for upstream {addr!r}: {exc!r}")
+        logger.error(f"Router proxy error for upstream {socket!r}: {exc!r}")
         if response.prepared:
             with suppress(Exception):
                 await response.write(_error_chunk(str(exc)))
@@ -111,8 +111,7 @@ async def handle_router_chat_completions(request: web.Request) -> web.StreamResp
     settings = request.app[ROUTER_SETTINGS_KEY]
     body: dict[str, Any] = dict(payload)
     context = serialize_context(body.get("messages"), max_chars=settings.context_chars)
-    addr = settings.default_addr
-    model_name: str | None = None
+    socket = settings.default_socket
     reason = "No usable user context; using default address"
     if context:
         try:
@@ -125,14 +124,12 @@ async def handle_router_chat_completions(request: web.Request) -> web.StreamResp
                 router_timeout=settings.router_timeout,
             )
             target = settings.targets[decision.candidate]
-            addr = target.addr
-            model_name = target.model_name
+            socket = target.socket
             reason = decision.reason
-            body["model"] = target.model_name
         except RouterSelectionError as exc:
             reason = str(exc)
             logger.warning(f"Semantic routing failed; using default address: {exc}")
     if settings.log_details:
         logger.info(f"Router reason: {reason}")
-    logger.info(f"Router result: model={model_name!r}, addr={addr!r}")
-    return await _proxy_request(request, body=body, addr=addr)
+    logger.info(f"Router result: socket={socket!r}")
+    return await _proxy_request(request, body=body, socket=socket)

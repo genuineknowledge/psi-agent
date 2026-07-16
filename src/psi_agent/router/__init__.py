@@ -59,9 +59,9 @@ class Router:
     """API key for the routing model; an empty key is allowed."""
 
     upstream: list[str] = field(default_factory=list)
-    """Candidate JSON objects with model_name, addr, and description."""
+    """Candidate JSON objects with socket and description."""
 
-    default_addr: str = ""
+    default_socket: str = ""
     """Fallback service address used when semantic selection fails."""
 
     router_timeout: float | None = None
@@ -85,8 +85,8 @@ class Router:
             raise ValueError("--router-model or PSI_ROUTER_MODEL must be provided")
         if not router_base_url.strip():
             raise ValueError("--router-base-url or PSI_ROUTER_BASE_URL must be provided")
-        if not self.default_addr.strip():
-            raise ValueError("--default-addr must be provided")
+        if not self.default_socket.strip():
+            raise ValueError("--default-socket must be provided")
         if self.router_context_chars <= 0:
             raise ValueError("--router-context-chars must be positive")
         if self.router_timeout is not None and (not math.isfinite(self.router_timeout) or self.router_timeout <= 0):
@@ -97,14 +97,14 @@ class Router:
             router_model=router_model.strip(),
             router_base_url=router_base_url.strip(),
             router_api_key=router_api_key,
-            default_addr=self.default_addr.strip(),
+            default_socket=self.default_socket.strip(),
             router_timeout=self.router_timeout,
             context_chars=self.router_context_chars,
             log_details=self.log_router_details,
         )
         logger.debug(
             f"Router resolved params: model={settings.router_model!r}, base_url={settings.router_base_url!r}, "
-            f"upstreams={len(settings.targets)}, default_addr={settings.default_addr!r}, "
+            f"upstreams={len(settings.targets)}, default_socket={settings.default_socket!r}, "
             f"api_key={'*' * 8 if settings.router_api_key else '(empty)'}"
         )
         await serve_router(socket_path=self.session_socket, settings=settings)
