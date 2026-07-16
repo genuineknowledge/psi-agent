@@ -137,6 +137,8 @@ on stream end:
 
 ```python
 async def run_cli(*, session_socket: str, message: str) -> None:
+    if message == "-":
+        message = await anyio.to_thread.run_sync(sys.stdin.read, abandon_on_cancel=True)  # ty: ignore  # 绕过 OS 命令行参数长度限制
     try:
         async with ChannelCore(session_socket, interval=0.0) as core:
             async for chunk in core.post([TextChunk(message)]):

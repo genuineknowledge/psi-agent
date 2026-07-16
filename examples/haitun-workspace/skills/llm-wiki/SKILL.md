@@ -1,6 +1,6 @@
 ---
 name: llm-wiki
-description: "Build and maintain a self-growing, interlinked Markdown knowledge base (Andrej Karpathy's \"LLM wiki\" pattern): compile what you learn into durable, cross-referenced pages under <workspace>/wiki/ instead of re-searching raw sources every time. Each page is Markdown with YAML frontmatter (title/tags/aliases/timestamps) and a body that links other pages with [[wikilink]] syntax. Use when asked to record, organize, or look up domain knowledge (LLM concepts, papers, techniques, glossary terms) as a browsable second brain, or to answer from / extend that wiki. Uses only the existing read/write/edit/find_files/list_dir/search_content/bash tools — no dedicated tool, no extra deps."
+description: "Build and maintain a self-growing, interlinked Markdown knowledge base (Andrej Karpathy's \"LLM wiki\" pattern): compile what you learn into durable, cross-referenced pages under <workspace>/wiki/ instead of re-searching raw sources every time. Each page is Markdown with YAML frontmatter (title/tags/aliases/timestamps) and a body that links other pages with [[wikilink]] syntax. Use when asked to record, organize, or look up domain knowledge (LLM concepts, papers, techniques, glossary terms) as a browsable second brain, or to answer from / extend that wiki. Drives the dedicated wiki_* tools (wiki_write/read/search/list/links/delete) — this skill is the discipline for when and how to use them."
 category: coding
 ---
 
@@ -13,37 +13,55 @@ under `<workspace>/wiki/` and compound over time. Prefer answering from the wiki
 when you learn something new or the user shares a source, sink it into a page so
 the next question is cheaper.
 
-This skill is pure discipline + conventions — it uses only the workspace's
-existing file tools (`read`, `write`, `edit`, `find_files`, `list_dir`,
-`search_content`, `bash`). There is no dedicated Python tool and no extra
-dependency.
+This skill is the **discipline layer**: it decides *when* to record knowledge and
+*how* to organize, name, and link pages. All read/write/search operations go
+through the dedicated **`wiki_*` tools**, which own the storage format (slug
+derivation, YAML frontmatter, timestamps, link indexing). Do not hand-craft wiki
+files with the generic `write`/`edit`/`bash` tools — let the tools keep the
+format and link graph consistent.
 
 Reply in Chinese unless the user clearly uses another language.
 
+## The tools
+
+| Tool | Purpose |
+|------|---------|
+| `wiki_write(title, content, tags="", aliases="", overwrite=True)` | Create or update a page. Slug, frontmatter, and `created`/`updated` timestamps are handled for you; re-writing the same title updates that page and preserves its original `created`. |
+| `wiki_read(title_or_slug)` | Read one page's body + metadata (tags, aliases, timestamps, outgoing links). |
+| `wiki_search(query, limit=20)` | Full-text search across titles, tags, aliases, and bodies; title/tag hits rank above body hits, each result carries a snippet. |
+| `wiki_list(tag="")` | Table of contents: every page's slug/title/tags/updated/links, optionally filtered to one tag. |
+| `wiki_links(title_or_slug)` | A page's link graph: `outgoing`, `backlinks`, and `broken` (links to pages that don't exist yet). |
+| `wiki_delete(title_or_slug)` | Delete a page; reports the `orphaned_backlinks` whose `[[links]]` are now broken. |
+
 ## Where the wiki lives
 
-- Root: `wiki/` under the workspace (create it on first write).
-- One page per concept: `wiki/<slug>.md`, where `<slug>` is the title
-  lowercased with non-alphanumerics collapsed to single dashes
-  (e.g. "Rotary Positional Embeddings" → `rotary-positional-embeddings.md`,
-  "KV-Cache!!" → `kv-cache.md`).
-- Optionally group by topic with subfolders (`wiki/architectures/…`) once the
-  base grows, but keep slugs unique across the whole tree so links resolve.
+- Root: `wiki/` under the workspace — created automatically on first `wiki_write`.
+- One page per concept, filename `wiki/<slug>.md`. The slug is derived by the
+  tool from the title (lowercased, non-alphanumerics collapsed to single dashes),
+  e.g. "Rotary Positional Embeddings" → `rotary-positional-embeddings`. You pass
+  the human title; you never compute the slug yourself.
 
-## Page format
+## Page format (owned by the tools)
 
-Every page is Markdown with a small YAML frontmatter block, then the body:
+Each page is Markdown with YAML frontmatter (`title`, `slug`, `tags`, `aliases`,
+`created`, `updated`) followed by the body. You supply `title`, `content`,
+`tags`, and `aliases` to `wiki_write`; the tool writes the frontmatter and
+timestamps. Body content follows these conventions:
+
+- **Body links** use `[[Page Title]]` or `[[Page Title|display text]]`. The link
+  target resolves by slugifying the text before the `|`. Link liberally — even to
+  pages that don't exist yet; they surface as `broken` in `wiki_links` and become
+  "wanted pages" to write next.
+- Keep pages **atomic**: one concept per page, a few paragraphs. When a page
+  starts covering two things, split it and link the halves instead.
+- Add a `## Sources` section with the URLs/refs the page was compiled from.
+- **tags** are kebab-case topic labels; **aliases** are alternate names people
+  search by (e.g. `RoPE` for "Rotary Positional Embeddings") — `wiki_search`
+  matches them too.
+
+Example body passed as `content`:
 
 ```markdown
----
-title: Rotary Positional Embeddings
-slug: rotary-positional-embeddings
-tags: [positional-encoding, attention]
-aliases: [RoPE]
-created: 2026-07-13T10:00:00Z
-updated: 2026-07-13T10:00:00Z
----
-
 RoPE injects absolute position by rotating the query/key vectors, so the dot
 product in [[Self-Attention]] depends only on the *relative* offset. Contrast
 with [[Absolute Positional Embeddings]]. Widely used in [[LLaMA]] and others.
@@ -52,84 +70,60 @@ with [[Absolute Positional Embeddings]]. Widely used in [[LLaMA]] and others.
 - <https://arxiv.org/abs/2104.09864>
 ```
 
-Rules:
-- **Frontmatter keys**: `title` (human title), `slug` (the filename stem),
-  `tags` (list, kebab-case), `aliases` (other names people search by),
-  `created` / `updated` (ISO-8601 UTC — get them with `bash: date -u +%Y-%m-%dT%H:%M:%SZ`).
-- **Body links** use `[[Page Title]]` or `[[Page Title|display text]]`. The link
-  target resolves by slugifying the text before the `|`.
-- Keep pages **atomic**: one concept per page, a few paragraphs. Split when a
-  page tries to cover two things; link them instead.
-- Add a `## Sources` section with the URLs/refs the page was compiled from.
-
 ## Workflow
 
 ### 1. Before writing — always search first
 
-Avoid duplicate pages. Check whether the concept already exists:
-
-```bash
-# list the base
-list_dir wiki/                     # or: find_files pattern="wiki/**/*.md"
-```
-
-Search titles, aliases, and bodies with `search_content` (falls back to
-`bash: grep -rin "<term>" wiki/`):
+Avoid duplicate pages. Check whether the concept already exists with
+`wiki_search` (matches titles, aliases, and bodies), or scan the table of
+contents with `wiki_list`:
 
 ```
-search_content  query="rotary|RoPE"  path="wiki"
+wiki_search  query="rotary RoPE"
+wiki_list                          # or wiki_list tag="attention"
 ```
 
-If a matching page exists, **update it** (read → edit) rather than creating a
-near-duplicate. Merge new facts into the existing page and bump `updated`.
+If a matching page exists, **update it** rather than creating a near-duplicate:
+`wiki_read` it, merge the new facts, and `wiki_write` the same title again (the
+tool preserves `created` and bumps `updated`).
 
 ### 2. Writing / updating a page
 
-- New page: `write` the file with full frontmatter (`created` == `updated` ==
-  now).
-- Existing page: `read` it, `edit` the body/frontmatter, and set `updated` to
-  now while **preserving the original `created`**.
+- New or updated page: call `wiki_write(title, content, tags, aliases)`. Writing
+  an existing title updates it in place — read first if you want to preserve
+  existing body text and merge rather than replace.
 - Whenever you state a fact that has (or should have) its own page, link it with
-  `[[…]]` — even if that page doesn't exist yet. Those become "wanted pages" to
-  fill in later (see broken-link check below).
+  `[[…]]` in the `content`, even if that page doesn't exist yet.
 
 ### 3. Answering from the wiki
 
-When the user asks a question the wiki might cover: `search_content` for the
-term, `read` the top page(s), answer from them, and cite the page slug. If the
+When the user asks something the wiki might cover: `wiki_search` for the term,
+`wiki_read` the top page(s), answer from them, and cite the page slug. If the
 wiki is missing or thin on the topic, answer normally **and** offer to compile a
-new page so it's captured for next time.
+new page with `wiki_write` so it's captured for next time.
 
 ### 4. Traversing links (backlinks & broken links)
 
-The wiki is a graph; keep it navigable.
+The wiki is a graph; keep it navigable with `wiki_links(title_or_slug)`:
 
-- **Outgoing links** of a page: `grep -oE '\[\[[^]]+\]\]'` on that file.
-- **Backlinks** (who links *to* page X): search the whole base for its title or
-  slug:
-  ```bash
-  grep -rilE '\[\[[^]|]*(Rotary Positional Embeddings|rotary-positional-embeddings)' wiki/
-  ```
-- **Broken links / wanted pages**: collect every `[[Target]]` across the base,
-  slugify each, and flag those with no matching `wiki/<slug>.md`. These are the
-  best candidates to write next. A quick pass:
-  ```bash
-  # list all link targets, then eyeball against existing filenames
-  grep -rhoE '\[\[[^]|]+' wiki/ | sed 's/\[\[//' | sort -u
-  ```
+- `outgoing` — the pages this page links to.
+- `backlinks` — the pages that link *to* this one (check these before renaming or
+  deleting).
+- `broken` — `[[links]]` pointing at pages that don't exist yet. These are the
+  best candidates to write next.
 
 ### 5. Housekeeping
 
-- Renaming a page: rename the file to the new slug, update its `slug`/`title`,
-  then fix inbound `[[old title]]` links (find backlinks first).
-- Deleting a page: remove the file, then find backlinks and repoint or drop the
-  now-broken `[[…]]` links so the graph stays consistent.
-- Optionally keep a `wiki/index.md` hub page that links the top-level topics.
+- Renaming a concept: `wiki_write` under the new title (creates the new slug),
+  then use `wiki_links` on the old page to find inbound `[[old title]]` links,
+  repoint them, and `wiki_delete` the old page.
+- Deleting a page: `wiki_delete` reports `orphaned_backlinks`; go fix or drop
+  those now-broken `[[…]]` links so the graph stays consistent.
+- Optionally keep a `wiki/index.md` hub page (via `wiki_write` title "index")
+  that links the top-level topics.
 
 ## Notes
 
-- All paths are relative to the workspace; on Windows the bundled msys64
-  provides `bash`/`grep`/`sed`.
 - Never store secrets in the wiki. It's plain Markdown the user reads and edits.
 - The value compounds: the more you compile into linked pages, the less you
   re-search — that's the whole point of the pattern.
