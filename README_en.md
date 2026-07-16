@@ -45,35 +45,6 @@ uv run psi-agent ai \
   --api-key sk-xxxx \
   --base-url https://api.openai.com/v1
 
-# Optional: replace the single-model AI backend above with semantic routing (POSIX shell)
-uv run psi-agent ai router \
-  --session-socket http://127.0.0.1:8100 \
-  --router-model qwen-chat \
-  --router-base-url https://api.llm.ustc.edu.cn/v1 \
-  --router-api-key sk-xxxx \
-  --upstream \
-    '{"model_name":"qwen3.6-chat","addr":"http://127.0.0.1:7001","description":"General Chinese Q&A, summaries, and simple tasks"}' \
-    '{"model_name":"deepseek-v4-pro","addr":"http://127.0.0.1:7002","description":"Complex reasoning, code analysis, mathematics, and multi-step tasks"}' \
-  --default-addr http://127.0.0.1:7001 \
-  --router-context-chars 12000
-
-# PowerShell uses backticks for continuation and escaped JSON quotes
-uv run psi-agent ai router `
-  --session-socket "http://127.0.0.1:8100" `
-  --router-model "qwen-chat" `
-  --router-base-url "https://api.llm.ustc.edu.cn/v1" `
-  --router-api-key "sk-xxxx" `
-  --upstream `
-    '{\"model_name\":\"qwen3.6-chat\",\"addr\":\"http://127.0.0.1:7001\",\"description\":\"General Chinese Q&A, summaries, and simple tasks\"}' `
-    '{\"model_name\":\"deepseek-v4-pro\",\"addr\":\"http://127.0.0.1:7002\",\"description\":\"Complex reasoning, code analysis, mathematics, and multi-step tasks\"}' `
-  --default-addr "http://127.0.0.1:7001"
-
-The routing model sees only opaque candidate numbers and `description` values;
-model names, addresses, and API keys remain local. Semantic success overwrites
-the request's `model` and forwards it to the candidate `addr`. Routing failure
-uses `--default-addr` and preserves the original model. Service roots gain a
-`/chat/completions` suffix automatically; complete endpoints are not duplicated.
-
 # Terminal 2: Start Session (--workspace optional, defaults to .)
 uv run psi-agent session \
   --workspace ./examples/a-simple-bash-only-workspace \
@@ -212,9 +183,6 @@ Protocol errors between components take two forms:
 | `PSI_AI_MODEL` | Model name |
 | `PSI_AI_API_KEY` | API key |
 | `PSI_AI_BASE_URL` | Upstream base URL |
-| `PSI_ROUTER_MODEL` | Model used for semantic selection |
-| `PSI_ROUTER_BASE_URL` | OpenAI-compatible routing-model service address |
-| `PSI_ROUTER_API_KEY` | Routing-model API key |
 | `PSI_TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 proxy |
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
