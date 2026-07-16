@@ -39,6 +39,14 @@ short markers, and omits tool result bodies. It preserves the first system
 message and newest useful conversation blocks within `router_context_chars`.
 No usable user content means direct default fallback.
 
+## Prompt maintenance
+
+All routing-model prompt text lives in `prompts.py`. Iterate on
+`ROUTING_SYSTEM_PROMPT` there instead of embedding prompt strings in
+`selector.py`. The prompt builder may interpolate only candidate indices and
+descriptions; the security boundary above still applies to every prompt
+revision.
+
 ## Lifecycle and logging
 
 All I/O uses aiohttp and anyio. Network responses and sessions must remain in

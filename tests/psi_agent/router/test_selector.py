@@ -8,9 +8,9 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 
 from psi_agent.router.models import RouteDecision, Upstream
+from psi_agent.router.prompts import build_routing_messages
 from psi_agent.router.selector import (
     RouterSelectionError,
-    build_routing_messages,
     parse_decision,
     select_upstream,
     serialize_context,

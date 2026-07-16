@@ -10,6 +10,7 @@ from aiohttp import ClientTimeout
 from psi_agent._sockets import resolve_connector_and_endpoint
 
 from .models import RouteDecision, Upstream
+from .prompts import build_routing_messages
 
 
 class RouterSelectionError(RuntimeError):
@@ -103,16 +104,6 @@ def serialize_context(messages: Any, *, max_chars: int) -> str:
     if max_chars <= len(marker):
         return marker[:max_chars]
     return result[: max_chars - len(marker)] + marker
-
-
-def build_routing_messages(context: str, targets: tuple[Upstream, ...]) -> list[dict[str, str]]:
-    candidates = "\n".join(f"Candidate {index}: {target.description}" for index, target in enumerate(targets))
-    system = (
-        "Select the single candidate whose description best matches the conversation.\n"
-        f"{candidates}\n"
-        'Return JSON only: {"candidate":0,"reason":"brief explanation"}.'
-    )
-    return [{"role": "system", "content": system}, {"role": "user", "content": context}]
 
 
 def parse_decision(text: str, *, candidate_count: int) -> RouteDecision:

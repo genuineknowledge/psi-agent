@@ -69,6 +69,7 @@ src/
     │   ├── AGENTS.md                 # 语义路由层设计文档
     │   ├── __init__.py               # AiRouter + serve_router 生命周期
     │   ├── models.py                 # upstream 配置与路由决策类型
+    │   ├── prompts.py                # 独立路由 prompt 模板与候选描述插值
     │   ├── selector.py               # description-only 路由选择
     │   └── server.py                 # 默认回退与 SSE 字节流代理
     ├── session/
