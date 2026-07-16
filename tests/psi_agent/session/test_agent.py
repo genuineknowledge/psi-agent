@@ -240,6 +240,46 @@ async def test_agent_history_accumulation(tmp_path: Path) -> None:
 # --- Missing coverage: tool execution error paths ---
 
 
+@pytest.mark.anyio
+async def test_agent_surfaces_clarify_as_content_and_ends_turn(tmp_path: Path) -> None:
+    """clarify result must be visible content on every Channel; no second model round."""
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "clarify.py").write_text(
+        textwrap.dedent("""\
+        async def clarify(question: str, options: list[str] | None = None) -> str:
+            \"\"\"Ask the user a clarification question.\"\"\"
+            lines = [question, "", "  1. A", "  2. B", ""]
+            return "\\n".join(lines)
+        """),
+        encoding="utf-8",
+    )
+    tr = await ToolRegistry.load(tools_dir)
+    handler = await _make_inline_ai_handler([_tc("clarify", '{"question": "pick?", "options": ["A", "B"]}')])
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), tool_registry=tr)
+        chunks = [c async for c in agent.run({"role": "user", "content": "help me choose"})]
+        content = "".join(c.content or "" for c in chunks)
+        assert "pick?" in content
+        assert "1. A" in content
+        # Merged into the tool_calls assistant — not a second bubble row.
+        with_content = [m for m in agent._conversation.messages if m.get("role") == "assistant" and m.get("content")]
+        assert len(with_content) == 1
+        assert "pick?" in str(with_content[0].get("content"))
+        assert with_content[0].get("tool_calls")
+    finally:
+        await runner.cleanup()
+
+
 async def _make_inline_ai_handler(responses: list[dict]):
     req_count = 0
 
