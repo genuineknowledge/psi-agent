@@ -35,7 +35,7 @@ async def test_history_filters_roles_and_content(tmp_path: str) -> None:
 
     assert result == [
         {"role": "user", "text": "hi"},
-        {"role": "assistant", "text": "\u4f60\u597d", "feedback": ""},
+        {"role": "assistant", "text": "\u4f60\u597d"},
     ]
 
 
@@ -58,20 +58,21 @@ async def test_history_hides_schedule_turns(tmp_path: str) -> None:
 
     assert result == [
         {"role": "user", "text": "real chat"},
-        {"role": "assistant", "text": "ok", "feedback": ""},
+        {"role": "assistant", "text": "ok"},
     ]
 
 
 @pytest.mark.anyio
-async def test_history_stamps_feedback_on_assistant_hides_row(tmp_path: str) -> None:
+async def test_history_hides_sse_keepalive(tmp_path: str) -> None:
     hm = HistoryManager()
     hist_dir = anyio.Path(str(tmp_path)) / "histories"
     await hist_dir.mkdir(parents=True)
     content = "\n".join(
         [
-            '{"role": "user", "content": "q"}',
-            '{"role": "assistant", "content": "a"}',
-            '{"role": "user_feedback", "content": "helpful", "feedback": "up"}',
+            '{"role": "user", "content": "ping"}',
+            '{"role": "assistant", "content": "pong"}',
+            '{"role": "user", "content": "real"}',
+            '{"role": "assistant", "content": "ok"}',
         ]
     )
     await (hist_dir / "s3.jsonl").write_text(content, encoding="utf-8")
@@ -79,6 +80,6 @@ async def test_history_stamps_feedback_on_assistant_hides_row(tmp_path: str) -> 
     result = await hm.get(str(tmp_path), "s3")
 
     assert result == [
-        {"role": "user", "text": "q"},
-        {"role": "assistant", "text": "a", "feedback": "up"},
+        {"role": "user", "text": "real"},
+        {"role": "assistant", "text": "ok"},
     ]

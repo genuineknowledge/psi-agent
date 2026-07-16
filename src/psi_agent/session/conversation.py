@@ -18,10 +18,6 @@ from typing import Any
 import anyio
 from loguru import logger
 
-from psi_agent.session.history_display import (
-    ROLE_USER_FEEDBACK,
-    feedback_content_for,
-)
 from psi_agent.session.protocol import AgentChunk
 
 
@@ -85,27 +81,6 @@ class Conversation:
         first mutation after creation / ``commit`` / ``rollback``."""
         self._begin_if_needed()
         self.messages.append(msg)
-
-    def apply_user_feedback(self, kind: str) -> str:
-        """Record or clear a thumbs vote after the latest turn.
-
-        ``kind`` is ``\"up\"``, ``\"down\"``, or empty (clear). Trailing
-        ``user_feedback`` rows are replaced so toggle / switch stay a
-        single guidance message for the model. Returns the normalized kind.
-        """
-        normalized = kind if kind in ("up", "down") else ""
-        self._begin_if_needed()
-        while self.messages and self.messages[-1].get("role") == ROLE_USER_FEEDBACK:
-            self.messages.pop()
-        if normalized:
-            self.messages.append(
-                {
-                    "role": ROLE_USER_FEEDBACK,
-                    "content": feedback_content_for(normalized),
-                    "feedback": normalized,
-                }
-            )
-        return normalized
 
     def replace_system(self, content: str) -> None:
         """Replace the system message (``messages[0]``) in-place,

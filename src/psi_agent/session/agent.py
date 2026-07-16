@@ -14,7 +14,6 @@ from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.history_display import (
-    ROLE_USER_FEEDBACK,
     is_schedule_turn_message,
     messages_for_ai,
     tag_schedule_origin,
@@ -133,22 +132,11 @@ class SessionAgent:
                 logger.warning("Failed to prepare SSE response, client likely disconnected")
                 return response
 
-            if user_message.get("role") == ROLE_USER_FEEDBACK:
-                kind = self._conversation.apply_user_feedback(str(user_message.get("feedback", "")))
-                await self._conversation.commit()
-                logger.info(f"Recorded user_feedback kind={kind!r} (not shown in Web Console)")
-                await self._channel_adapter.write(response, self._empty_chunks())
-            else:
-                logger.info("Acquired session lock, processing request")
-                await self._channel_adapter.write(response, self.run(user_message, extra_params))
+            logger.info("Acquired session lock, processing request")
+            await self._channel_adapter.write(response, self.run(user_message, extra_params))
 
         logger.info("Session request completed")
         return response
-
-    @staticmethod
-    async def _empty_chunks() -> AsyncGenerator[AgentChunk]:
-        if False:  # pragma: no cover — satisfies AsyncGenerator type
-            yield AgentChunk(content="")
 
     def _merge_into_last_tool_calls_assistant(self, text: str) -> None:
         """Append user-visible tool text onto the latest tool_calls assistant.

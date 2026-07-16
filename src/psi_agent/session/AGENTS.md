@@ -187,19 +187,6 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 
 新增或改写任何 schedule 触发路径时：**复用** `psi_agent.session.history_display` 的常量与函数，不要另造角色名或 `source` 取值。单测见 `tests/psi_agent/session/test_history_display.py` 与 `tests/psi_agent/gateway/test_history_manager.py`。
 
-### 点赞 / 点踩（``user_feedback``）
-
-Web Console 对助手气泡的赞/踩是**给模型的后续指导**，不是聊天气泡：
-
-| 层 | 行为 |
-|----|------|
-| Gateway ``POST /sessions/{id}/feedback`` | `{kind: "up"\|"down"\|""}` → 经 Channel 发往 Session（不跑 agent loop） |
-| Session | 写入 / 替换 trailing ``role: user_feedback``，``messages_for_ai`` 投影为 ``user`` |
-| Gateway ``GET /history`` | **跳过** ``user_feedback`` 行；若其紧跟在 assistant 后，把 ``feedback`` 戳到该 assistant 上供按钮态 |
-| SPA | 按钮调 feedback API；刷新后用 `/history` 的 ``feedback`` 字段；**不要**把 feedback 文案渲染成气泡 |
-
-与 schedule 一样：靠角色出处隔离，不要靠正文关键词藏气泡。
-
 ## History 持久化
 
 Session 支持将对话历史持久化到 `workspace/histories/{session_id}.jsonl`：

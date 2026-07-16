@@ -198,7 +198,6 @@ SSE 流中的特殊字段：
 
 18. **Content 展示剥离（防线路标记 / 路径进气泡）**：Channel 文件传输等协议会把 `[RECV:/path]`、`[SEND:/path]` 写入 `messages[].content`（Session 仍需据此读文件）。这与 schedule「整条跳过」不同——真人气泡里夹带的 wire 片段必须**投影剥离**。当前过渡期由 SPA `stripTransferMarkers` 处理；**凡新增可能写入 content 的线路标记，必须先登记** `gateway/AGENTS.md`「Wire 标记登记表」并加入剥离实现，禁止只在单个组件临时 replace。目标权威投影在 Gateway `HistoryManager`。详见该节「展示剥离约定」。
 
-19. **点赞 / 点踩进模型、不进气泡**：Web Console 赞踩写入 Session history 的 `role: user_feedback`（经 `POST /sessions/{id}/feedback`）。`messages_for_ai` 投影为 `user` 以指导后续回复；`/history` 跳过该行，仅把 `feedback` 戳到前一条 assistant 供按钮态。禁止把反馈正文渲染成聊天气泡。详见 `session/AGENTS.md`「点赞 / 点踩」。
 
 ## 测试约定
 

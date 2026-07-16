@@ -14,7 +14,6 @@ from loguru import logger
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
-from psi_agent.gateway._feedback_manager import FeedbackManager
 from psi_agent.gateway._history_manager import HistoryManager
 from psi_agent.gateway._openapi import render_openapi
 from psi_agent.gateway._session_manager import SessionManager
@@ -81,7 +80,6 @@ async def create_app(
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
     app["hm"] = HistoryManager()
-    app["fm"] = FeedbackManager()
     app["favicon_path"] = favicon_path
     app["app_name"] = app_name
     app["attention"] = attention if attention is not None else AttentionHub()
@@ -112,7 +110,6 @@ async def create_app(
     app.router.add_get("/workspace/browse", _browse_workspace)
     app.router.add_get("/sessions/{session_id}/history", _get_history)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
-    app.router.add_post("/sessions/{session_id}/feedback", _submit_feedback)
 
     return app
 
@@ -269,29 +266,6 @@ async def _get_history(request: web.Request) -> web.Response:
         return _error(f"Session '{session_id}' not found", status=404)
     messages = await hm.get(workspace, session_id)
     return _json(messages)
-
-
-async def _submit_feedback(request: web.Request) -> web.Response:
-    """Record like/dislike into Session history as ``user_feedback`` (hidden from /history bubbles)."""
-    sm: SessionManager = request.app["sm"]
-    fm: FeedbackManager = request.app["fm"]
-    session_id = request.match_info["session_id"]
-    try:
-        channel_socket = sm.get_socket(session_id)
-    except LookupError:
-        return _error(f"Session '{session_id}' not found", status=404)
-    try:
-        body = await request.json()
-        if not isinstance(body, dict):
-            return _error("Request body must be a JSON object", status=400)
-        kind = body.get("kind", "")
-        if kind not in ("up", "down", ""):
-            return _error("kind must be 'up', 'down', or empty string", status=400)
-        result = await fm.submit(channel_socket, str(kind))
-        return _json(result)
-    except Exception as e:
-        logger.error(f"Feedback error for session {session_id!r}: {e!r}")
-        return _error(str(e), status=500)
 
 
 async def _handle_chat(request: web.Request) -> web.StreamResponse:

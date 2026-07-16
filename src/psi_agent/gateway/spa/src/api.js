@@ -38,8 +38,3 @@ export async function streamChat(sessionId, formData, signal) {
   }
   return r.body.getReader()
 }
-
-/** Record thumbs up/down into Session history (``user_feedback``, hidden from chat bubbles). */
-export async function submitFeedback(sessionId, kind) {
-  return api('POST', `/sessions/${sessionId}/feedback`, { kind: kind || '' })
-}

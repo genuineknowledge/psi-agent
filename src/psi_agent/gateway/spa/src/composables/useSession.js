@@ -289,8 +289,7 @@ export async function selectSession(id) {
             stopped: local ? local.stopped || false : false,
             failed: local ? local.failed || false : false,
             failedReason: local?.failedReason || '',
-            // Server stamps feedback on assistant from hidden user_feedback rows.
-            feedback: h.feedback || local?.feedback || '',
+            feedback: local?.feedback || '',
           })
         })
         if (localHist.length > built.length) {
