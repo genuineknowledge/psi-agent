@@ -38,7 +38,7 @@ import _browser_cdp_impl as _c
 
 async def browser_cdp(
     method: str,
-    params: dict[str, Any] | None = None,
+    params: str = "",
     target: str = "page",
     timeout_s: float = 30.0,
 ) -> str:
@@ -59,7 +59,9 @@ async def browser_cdp(
 
     Args:
         method: CDP method name, ``Domain.command`` (e.g. ``"Page.navigate"``). Required.
-        params: The command's parameters object. Defaults to ``{}``.
+        params: The command's parameters as a **JSON object string**, e.g.
+            ``'{"url": "https://example.com"}'``. Leave empty for methods that take no
+            params (e.g. ``Page.enable``).
         target: Which endpoint to send to. ``"page"`` (default) targets the first open
             page — use for ``Page``/``Runtime``/``DOM``/``Network``/``Emulation``. ``"browser"``
             targets the browser-level endpoint — use for ``Browser``/``Target``/``SystemInfo``.
@@ -68,11 +70,26 @@ async def browser_cdp(
     Returns:
         JSON string. On success ``{"ok": true, "method", "result": {...}}`` where
         ``result`` is the raw CDP result object. On a CDP-level error
-        ``{"ok": false, "method", "error": {...}}``. On a transport/launch failure
-        ``{"ok": false, "method", "message": "..."}``.
+        ``{"ok": false, "method", "error": {...}}``. On a transport/launch failure or a
+        malformed ``params`` string ``{"ok": false, "method", "message": "..."}``.
     """
+    parsed: dict[str, Any] = {}
+    if params and params.strip():
+        try:
+            loaded = json.loads(params)
+        except (ValueError, TypeError) as exc:
+            return json.dumps(
+                {"ok": False, "method": method, "message": f"params is not valid JSON: {exc}"},
+                ensure_ascii=False,
+            )
+        if not isinstance(loaded, dict):
+            return json.dumps(
+                {"ok": False, "method": method, "message": 'params must be a JSON object (e.g. \'{"url": "..."}\').'},
+                ensure_ascii=False,
+            )
+        parsed = loaded
     try:
-        result = await _c.send_command(method, params, target=target, timeout_s=timeout_s)
+        result = await _c.send_command(method, parsed, target=target, timeout_s=timeout_s)
     except _c.CDPError as exc:
         return json.dumps({"ok": False, "method": method, "message": str(exc)}, ensure_ascii=False)
     return json.dumps(result, ensure_ascii=False)

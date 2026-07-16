@@ -21,6 +21,8 @@ from typing import Any
 import anyio
 import pytest
 
+from psi_agent.session.tool_registry import ToolFunction
+
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
 TOOLS_DIR = WORKSPACE_ROOT / "tools"
 if str(TOOLS_DIR) not in sys.path:
@@ -112,7 +114,20 @@ def test_tool_is_async_with_signature() -> None:
     assert "method" in params and "params" in params and "target" in params
 
 
-def test_tool_success_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tool_registers_via_toolfunction() -> None:
+    """The tool loader only accepts str/int/float/bool/list[X] params — a ``dict``
+    annotation makes ``ToolFunction.from_callable`` raise and the tool is silently
+    skipped at load time. Guard against a regression to a dict-typed ``params``."""
+    tf = ToolFunction.from_callable(_tool.browser_cdp)
+    props = tf.parameters["properties"]
+    assert props["params"]["type"] == "string"
+    assert props["method"]["type"] == "string"
+    # method has no default -> required; params has a default -> optional.
+    assert "method" in tf.parameters["required"]
+    assert "params" not in tf.parameters["required"]
+
+
+def test_tool_parses_json_string_params(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake_send(method: str, params: Any, *, target: str, timeout_s: float) -> dict[str, Any]:
         assert method == "Page.navigate"
         assert params == {"url": "https://example.com"}
@@ -121,11 +136,42 @@ def test_tool_success_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_impl, "send_command", _fake_send)
 
     async def _run() -> str:
-        return await _tool.browser_cdp("Page.navigate", {"url": "https://example.com"})
+        return await _tool.browser_cdp("Page.navigate", '{"url": "https://example.com"}')
 
     out = json.loads(anyio.run(_run))
     assert out["ok"] is True
     assert out["result"] == {"frameId": "F1"}
+
+
+def test_tool_empty_params_sends_empty_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_send(method: str, params: Any, *, target: str, timeout_s: float) -> dict[str, Any]:
+        assert params == {}
+        return {"ok": True, "method": method, "result": {}}
+
+    monkeypatch.setattr(_impl, "send_command", _fake_send)
+
+    async def _run() -> str:
+        return await _tool.browser_cdp("Page.enable")
+
+    assert json.loads(anyio.run(_run))["ok"] is True
+
+
+def test_tool_rejects_malformed_json_params() -> None:
+    async def _run() -> str:
+        return await _tool.browser_cdp("Page.navigate", "{not json}")
+
+    out = json.loads(anyio.run(_run))
+    assert out["ok"] is False
+    assert "not valid JSON" in out["message"]
+
+
+def test_tool_rejects_non_object_params() -> None:
+    async def _run() -> str:
+        return await _tool.browser_cdp("Page.navigate", "[1, 2, 3]")
+
+    out = json.loads(anyio.run(_run))
+    assert out["ok"] is False
+    assert "JSON object" in out["message"]
 
 
 def test_tool_wraps_cdp_error(monkeypatch: pytest.MonkeyPatch) -> None:
