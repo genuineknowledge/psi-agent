@@ -112,8 +112,8 @@ async def handle_router_chat_completions(request: web.Request) -> web.StreamResp
     body: dict[str, Any] = dict(payload)
     context = serialize_context(body.get("messages"), max_chars=settings.context_chars)
     addr = settings.default_addr
-    source = "default"
     model_name: str | None = None
+    reason = "No usable user context; using default address"
     if context:
         try:
             decision = await select_upstream(
@@ -126,15 +126,13 @@ async def handle_router_chat_completions(request: web.Request) -> web.StreamResp
             )
             target = settings.targets[decision.candidate]
             addr = target.addr
-            source = "semantic"
             model_name = target.model_name
+            reason = decision.reason
             body["model"] = target.model_name
-            if settings.log_details:
-                logger.debug(
-                    f"Router candidate={decision.candidate}, description={target.description!r}, "
-                    f"reason={decision.reason!r}, context_chars={len(context)}"
-                )
         except RouterSelectionError as exc:
+            reason = str(exc)
             logger.warning(f"Semantic routing failed; using default address: {exc}")
-    logger.info(f"Router selected model={model_name!r}, addr={addr!r}, source={source!r}")
+    if settings.log_details:
+        logger.info(f"Router reason: {reason}")
+    logger.info(f"Router result: model={model_name!r}, addr={addr!r}")
     return await _proxy_request(request, body=body, addr=addr)

@@ -49,8 +49,10 @@ its first executable statement.
 
 Every proxied SSE chunk is DEBUG. Startup, shutdown, and selected destination
 are INFO. Recoverable semantic-selection failures are WARNING. Proxy failures
-are ERROR. `--log-router-details` may add candidate description, reason, index,
-and context length, but never raw context or API keys.
+are ERROR. With `--log-router-details`, the selection summary contains only
+`Router reason` and the final `Router result` (`model_name` and `addr`). Do not
+add candidate descriptions, indices, context lengths, source labels, raw
+context, or API keys to these summary logs.
 
 ## CLI schema
 

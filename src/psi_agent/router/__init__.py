@@ -71,7 +71,7 @@ class AiRouter:
     """Maximum serialized conversation characters sent for selection."""
 
     log_router_details: bool = False
-    """Log candidate description and selection reason at DEBUG level."""
+    """Log only the routing reason in addition to the final result."""
 
     verbose: bool = False
     """Enable DEBUG-level logging."""

@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 from aiohttp import ClientSession, web
 from aiohttp.typedefs import Handler
+from loguru import logger
 
 from psi_agent.router.models import RouteDecision, Upstream
 from psi_agent.router.selector import RouterSelectionError
@@ -233,5 +234,59 @@ async def test_upstream_disconnect_after_prepare_emits_error_chunk(unused_tcp_po
             assert response.status == 200
             assert '"finish_reason": "error"' in content
     finally:
+        await router_runner.cleanup()
+        await upstream_runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_router_summary_logs_only_reason_and_final_result(
+    monkeypatch: pytest.MonkeyPatch,
+    unused_tcp_port_factory,
+) -> None:
+    upstream_port = unused_tcp_port_factory()
+    router_port = unused_tcp_port_factory()
+
+    async def upstream_handler(request: web.Request) -> web.Response:
+        return web.Response(body=SSE_BYTES, content_type="text/event-stream")
+
+    async def fake_select_upstream(**kwargs: Any) -> RouteDecision:
+        return RouteDecision(candidate=1, reason="requires code analysis")
+
+    monkeypatch.setattr("psi_agent.router.server.select_upstream", fake_select_upstream)
+    upstream_runner = await _start_app(upstream_handler, upstream_port)
+    addr = f"http://127.0.0.1:{upstream_port}"
+    settings = _settings(selected_addr=addr, default_addr=addr)
+    settings = RouterSettings(
+        targets=settings.targets,
+        router_model=settings.router_model,
+        router_base_url=settings.router_base_url,
+        router_api_key=settings.router_api_key,
+        default_addr=settings.default_addr,
+        router_timeout=settings.router_timeout,
+        context_chars=settings.context_chars,
+        log_details=True,
+    )
+    router_runner = await _start_router(settings, router_port)
+    logs: list[str] = []
+    sink_id = logger.add(lambda message: logs.append(str(message)), format="{message}", level="INFO")
+    try:
+        async with (
+            ClientSession() as session,
+            session.post(
+                f"http://127.0.0.1:{router_port}/chat/completions",
+                json={"model": "original", "messages": [{"role": "user", "content": "analyze code"}]},
+            ) as response,
+        ):
+            await response.read()
+        router_logs = [message.strip() for message in logs if message.startswith("Router ")]
+        assert router_logs == [
+            "Router reason: requires code analysis",
+            f"Router result: model='deepseek', addr='{addr}'",
+        ]
+        assert "description" not in "\n".join(router_logs)
+        assert "context_chars" not in "\n".join(router_logs)
+        assert "source" not in "\n".join(router_logs)
+    finally:
+        logger.remove(sink_id)
         await router_runner.cleanup()
         await upstream_runner.cleanup()
