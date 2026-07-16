@@ -22,7 +22,7 @@ Session ── POST /chat/completions ──► AI
 
 单一入口：`psi-agent ai --provider <name> --model <name> --api-key <key> --base-url <url>`。
 
-需要按任务语义选择多个 AI 服务时，使用独立的 `psi-agent ai router`。
+需要按任务语义选择多个 AI 服务时，使用独立的 `psi-agent router`。
 Router 位于 Session 与多个 AI 服务之间，只向路由模型暴露候选 description，
 详细约定见 `src/psi_agent/router/AGENTS.md`。普通 AI provider 转发行为不受影响。
 

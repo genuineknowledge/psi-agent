@@ -1,14 +1,31 @@
 from __future__ import annotations
 
+import sys
+from typing import Any
+
 import pytest
 
 from psi_agent.ai import Ai
-from psi_agent.cli import parse_command
-from psi_agent.router import AiRouter
+from psi_agent.cli import main
+from psi_agent.router import Router
 
 
-def test_parse_command_preserves_ordinary_ai_shape() -> None:
-    command = parse_command(
+def _capture_command(monkeypatch: pytest.MonkeyPatch, args: list[str]) -> object:
+    captured: list[object] = []
+
+    def fake_anyio_run(run: Any) -> None:
+        captured.append(run.__self__)
+
+    monkeypatch.setattr(sys, "argv", ["psi-agent", *args])
+    monkeypatch.setattr("psi_agent.cli.anyio.run", fake_anyio_run)
+    main()
+    assert len(captured) == 1
+    return captured[0]
+
+
+def test_main_preserves_ordinary_ai_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    command = _capture_command(
+        monkeypatch,
         [
             "ai",
             "--session-socket",
@@ -17,19 +34,19 @@ def test_parse_command_preserves_ordinary_ai_shape() -> None:
             "openai",
             "--model",
             "qwen",
-        ]
+        ],
     )
     assert isinstance(command, Ai)
     assert command.provider == "openai"
     assert command.model == "qwen"
 
 
-def test_parse_command_builds_router_with_ordered_upstreams() -> None:
+def test_main_builds_top_level_router_with_ordered_upstreams(monkeypatch: pytest.MonkeyPatch) -> None:
     first = '{"model_name":"qwen","addr":"http://a","description":"simple"}'
     second = '{"model_name":"deepseek","addr":"http://b","description":"complex"}'
-    command = parse_command(
+    command = _capture_command(
+        monkeypatch,
         [
-            "ai",
             "router",
             "--session-socket",
             "http://127.0.0.1:8100",
@@ -46,9 +63,9 @@ def test_parse_command_builds_router_with_ordered_upstreams() -> None:
             "8000",
             "--log-router-details",
             "--verbose",
-        ]
+        ],
     )
-    assert isinstance(command, AiRouter)
+    assert isinstance(command, Router)
     assert command.upstream == [first, second]
     assert command.default_addr == "http://default"
     assert command.router_context_chars == 8000
@@ -56,9 +73,10 @@ def test_parse_command_builds_router_with_ordered_upstreams() -> None:
     assert command.verbose is True
 
 
-def test_router_help_lists_router_options(capsys: pytest.CaptureFixture[str]) -> None:
+def test_router_help_lists_router_options(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(sys, "argv", ["psi-agent", "router", "--help"])
     with pytest.raises(SystemExit) as exc_info:
-        parse_command(["ai", "router", "--help"])
+        main()
     assert exc_info.value.code == 0
     output = capsys.readouterr().out
     assert "--upstream" in output

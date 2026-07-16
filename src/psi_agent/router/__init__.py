@@ -43,7 +43,7 @@ async def serve_router(*, socket_path: str, settings: RouterSettings) -> None:
 
 
 @dataclass
-class AiRouter:
+class Router:
     """Route Chat Completions requests using candidate descriptions."""
 
     session_socket: str

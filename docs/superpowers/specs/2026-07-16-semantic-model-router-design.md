@@ -13,10 +13,10 @@ second local classification pass.
 
 ## Command-line interface
 
-The router is exposed as the nested `ai router` command:
+The router is exposed as the top-level `router` command:
 
 ```powershell
-uv run psi-agent ai router `
+uv run psi-agent router `
   --session-socket "http://127.0.0.1:8100" `
   --router-model "qwen-chat" `
   --router-base-url "https://api.llm.ustc.edu.cn/v1" `
@@ -44,7 +44,7 @@ Each `--upstream` value is one JSON object with exactly three fields:
 and does not have to equal a configured candidate address.
 
 The existing single-model AI command remains available. CLI composition must
-make both ordinary AI service startup and `psi-agent ai router` discoverable
+make both ordinary AI service startup and `psi-agent router` discoverable
 without changing the ordinary AI service's behavior or parameter meanings.
 
 ## Package and component boundaries
@@ -54,9 +54,10 @@ provider adapter:
 
 ```text
 src/psi_agent/router/
-├── __init__.py       # AiRouter configuration, validation, and lifecycle
+├── __init__.py       # Router configuration, validation, and lifecycle
 ├── models.py         # Upstream and RouteDecision types; JSON parsing
-├── selector.py       # Context serialization, routing prompt, and decision parsing
+├── prompts.py        # Routing prompt template and candidate interpolation
+├── selector.py       # Context serialization, router client, and decision parsing
 ├── server.py         # HTTP handler, fallback policy, and SSE proxy
 └── AGENTS.md         # Router-specific design and maintenance constraints
 ```
@@ -68,11 +69,12 @@ Chat Completions/SSE protocol remain unchanged.
 Each unit has one responsibility:
 
 - `models.py` converts untrusted CLI JSON into immutable validated values.
-- `selector.py` knows what the routing model may see and converts its response
-  into a candidate index. It does not make network-routing decisions.
+- `prompts.py` owns the routing prompt and exposes descriptions only.
+- `selector.py` serializes context, calls the routing model, and converts its
+  response into a candidate index. It does not make network-routing decisions.
 - `server.py` owns the request lifecycle, chooses between a candidate and the
   default address, and proxies the selected upstream.
-- `AiRouter` resolves CLI/environment configuration, constructs dependencies,
+- `Router` resolves CLI/environment configuration, constructs dependencies,
   starts the aiohttp application, and cleans it up.
 
 ## Routing data flow
@@ -209,7 +211,7 @@ Once a destination has been selected:
 All I/O is asynchronous and uses `aiohttp` and `anyio`, not native `asyncio`,
 synchronous HTTP libraries, or synchronous filesystem calls. Network streams
 are consumed through closing async contexts. aiohttp runner cleanup is
-shielded both when startup fails and during shutdown. `AiRouter.run()` calls
+shielded both when startup fails and during shutdown. `Router.run()` calls
 `setup_logging(verbose=self.verbose)` as its first executable statement.
 
 ## Logging and secrets
@@ -244,7 +246,7 @@ streaming errors, cancellation, and resource cleanup.
 
 ### CLI tests
 
-CLI tests cover `psi-agent ai router --help`, repeated PowerShell-style JSON
+CLI tests cover `psi-agent router --help`, repeated PowerShell-style JSON
 upstreams, missing required arguments, ordinary AI command compatibility, and
 the logging-first invariant.
 
@@ -268,7 +270,7 @@ uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run ty check
-uv run psi-agent ai router --help
+uv run psi-agent router --help
 uv run psi-agent ai --help
 ```
 

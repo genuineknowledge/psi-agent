@@ -7,7 +7,7 @@ import textwrap
 import pytest
 from aiohttp import web
 
-from psi_agent.router import AiRouter, serve_router
+from psi_agent.router import Router, serve_router
 from psi_agent.router.models import Upstream
 from psi_agent.router.server import RouterSettings
 
@@ -15,7 +15,7 @@ UPSTREAM = '{"model_name":"qwen","addr":"http://127.0.0.1:7001","description":"s
 
 
 def test_ai_router_defaults() -> None:
-    router = AiRouter(session_socket="http://127.0.0.1:8100")
+    router = Router(session_socket="http://127.0.0.1:8100")
     assert router.router_model == ""
     assert router.router_base_url == ""
     assert router.router_api_key == ""
@@ -28,7 +28,7 @@ def test_ai_router_defaults() -> None:
 
 
 def test_ai_router_run_sets_up_logging_first() -> None:
-    tree = ast.parse(textwrap.dedent(inspect.getsource(AiRouter.run)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(Router.run)))
     function = tree.body[0]
     assert isinstance(function, ast.AsyncFunctionDef)
     first = function.body[0]
@@ -54,7 +54,7 @@ async def test_ai_router_rejects_invalid_configuration(
 ) -> None:
     monkeypatch.delenv("PSI_ROUTER_MODEL", raising=False)
     monkeypatch.delenv("PSI_ROUTER_BASE_URL", raising=False)
-    router = AiRouter(
+    router = Router(
         session_socket="http://127.0.0.1:8100",
         router_model="router",
         router_base_url="http://127.0.0.1:9000/v1",
@@ -77,7 +77,7 @@ async def test_ai_router_resolves_environment_and_calls_server(monkeypatch: pyte
     monkeypatch.setenv("PSI_ROUTER_MODEL", "env-router")
     monkeypatch.setenv("PSI_ROUTER_BASE_URL", "http://router/v1")
     monkeypatch.setenv("PSI_ROUTER_API_KEY", "env-key")
-    router = AiRouter(
+    router = Router(
         session_socket="http://127.0.0.1:8100",
         upstream=[UPSTREAM],
         default_addr="http://127.0.0.1:7001",

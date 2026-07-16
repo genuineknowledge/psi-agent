@@ -56,7 +56,7 @@ unrelated, ignore earlier turns and route from the latest user task alone.
 All I/O uses aiohttp and anyio. Network responses and sessions must remain in
 async context managers so cancellation closes both routing-model and business
 upstream connections. aiohttp runner cleanup is shielded on startup failure and
-shutdown. `AiRouter.run()` must call `setup_logging(verbose=self.verbose)` as
+shutdown. `Router.run()` must call `setup_logging(verbose=self.verbose)` as
 its first executable statement.
 
 Every proxied SSE chunk is DEBUG. Startup, shutdown, and selected destination
@@ -68,7 +68,7 @@ context, or API keys to these summary logs.
 
 ## CLI schema
 
-The command is `psi-agent ai router`. Each repeated `--upstream` value is
+The command is `psi-agent router`. Each repeated `--upstream` value is
 strict JSON containing exactly `model_name`, `addr`, and `description`.
 `--default-addr` is a direct service address and need not appear in the
 candidate list. Router model configuration may fall back to

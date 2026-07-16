@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add `psi-agent ai router`, which selects one configured upstream from description-only semantic routing and transparently proxies the original Chat Completions/SSE request.
+**Goal:** Add `psi-agent router`, which selects one configured upstream from description-only semantic routing and transparently proxies the original Chat Completions/SSE request.
 
 **Architecture:** A new `psi_agent.router` package separates validated upstream configuration, description-only selection, HTTP/SSE proxying, and service lifecycle. The routing model returns an opaque candidate index; local configuration alone maps that index to `model_name` and `addr`, while all routing failures use `default_addr` without changing the request's original model.
 
@@ -15,13 +15,13 @@
 - Create `src/psi_agent/router/models.py`: immutable routing types and untrusted `--upstream` JSON validation.
 - Create `src/psi_agent/router/selector.py`: bounded message serialization, description-only prompt generation, router HTTP call, and response parsing.
 - Create `src/psi_agent/router/server.py`: destination selection, default fallback, request forwarding, and byte-preserving SSE proxy.
-- Create `src/psi_agent/router/__init__.py`: `AiRouter` CLI dataclass, environment fallback, validation, and aiohttp lifecycle.
+- Create `src/psi_agent/router/__init__.py`: `Router` CLI dataclass, environment fallback, validation, and aiohttp lifecycle.
 - Create `src/psi_agent/router/AGENTS.md`: router invariants and maintenance guidance.
 - Create `tests/psi_agent/router/__init__.py`: package marker required by the test layout.
 - Create `tests/psi_agent/router/test_models.py`: configuration parsing tests.
 - Create `tests/psi_agent/router/test_selector.py`: context and router-decision tests.
 - Create `tests/psi_agent/router/test_server.py`: handler, proxy, fallback, and cleanup tests.
-- Create `tests/psi_agent/router/test_router.py`: `AiRouter` validation and lifecycle tests.
+- Create `tests/psi_agent/router/test_router.py`: `Router` validation and lifecycle tests.
 - Create `tests/integration/test_semantic_router.py`: local end-to-end router/upstream/Session coverage.
 - Modify `src/psi_agent/_sockets.py`: avoid duplicating a complete Chat Completions path.
 - Modify `tests/psi_agent/test_sockets.py`: endpoint normalization coverage.
@@ -516,7 +516,7 @@ git commit -m "feat(router): proxy selected model streams"
 - Create: `tests/psi_agent/test_cli.py`
 - Modify: `src/psi_agent/cli.py`
 
-- [ ] **Step 1: Add failing `AiRouter` defaults, validation, and cleanup tests**
+- [ ] **Step 1: Add failing `Router` defaults, validation, and cleanup tests**
 
 Assert the dataclass fields and environment fallback names:
 
@@ -529,22 +529,22 @@ PSI_ROUTER_API_KEY
 Test rejection of empty router model/base URL, empty upstreams, empty default
 address, non-positive context characters, and non-finite/non-positive timeout.
 Spy on `web.AppRunner.cleanup` and force `site.start()` to fail, matching the
-existing `serve_ai` cleanup test. Inspect `AiRouter.run` source and assert its
+existing `serve_ai` cleanup test. Inspect `Router.run` source and assert its
 first executable statement is `setup_logging(verbose=self.verbose)`.
 
-- [ ] **Step 2: Run lifecycle tests and confirm `AiRouter` is missing**
+- [ ] **Step 2: Run lifecycle tests and confirm `Router` is missing**
 
 Run: `uv run pytest tests/psi_agent/router/test_router.py -v`
 
-Expected: import failure for `AiRouter`.
+Expected: import failure for `Router`.
 
-- [ ] **Step 3: Implement `serve_router` and `AiRouter`**
+- [ ] **Step 3: Implement `serve_router` and `Router`**
 
 Use this dataclass field order and matching assignment order:
 
 ```python
 @dataclass
-class AiRouter:
+class Router:
     session_socket: str
     router_model: str = ""
     router_base_url: str = ""
@@ -567,20 +567,18 @@ shutdown, and waits via `anyio.sleep_forever()`.
 Patch `sys.argv` and `anyio.run`, invoke `psi_agent.cli.main()`, and assert:
 
 - ordinary AI invocation creates `Ai`;
-- `ai router` creates `AiRouter`;
+- `router` creates `Router`;
 - two JSON values following `--upstream` arrive in order;
 - `--default-addr`, `--router-context-chars`, and boolean flags parse correctly;
-- `ai router --help` exits successfully and contains the new option names.
+- `router --help` exits successfully and contains the new option names.
 
-- [ ] **Step 5: Implement the nested `AiGroup` union**
+- [ ] **Step 5: Add `Router` to the top-level command union**
 
-In `src/psi_agent/cli.py`, define an annotated union that keeps the ordinary AI
-variant and adds the router variant under the `ai` command. Verify tyro's exact
-generated syntax with the tests; prefer an explicit default/ordinary
-subcommand name only if tyro cannot preserve `psi-agent ai --provider ...`.
-Do not silently remove the existing ordinary AI CLI shape. If tyro requires
-`psi-agent ai direct`, document and test that intentional compatibility break
-before proceeding.
+In `src/psi_agent/cli.py`, add `Router` directly to
+`Run | Ai | Router | Session | ChannelGroup | Gateway`. Keep the ordinary
+`psi-agent ai --provider ...` shape unchanged and expose routing through the
+top-level `psi-agent router` command. Do not add a `sys.argv` pre-parser or a
+special-case `parse_command()` function.
 
 - [ ] **Step 6: Run lifecycle and CLI tests**
 
@@ -588,7 +586,7 @@ Run: `uv run pytest tests/psi_agent/router/test_router.py tests/psi_agent/test_c
 
 Expected: all tests pass.
 
-Run: `uv run psi-agent ai router --help`
+Run: `uv run psi-agent router --help`
 
 Expected: help includes `--upstream`, `--default-addr`, and router options.
 
@@ -683,7 +681,7 @@ Document these non-obvious invariants in `src/psi_agent/router/AGENTS.md`:
 
 Add `src/psi_agent/router/` to the root architecture tree and explain the
 router's place between Session and candidate AI services. Update AI-layer docs
-to distinguish ordinary provider forwarding from `ai router`. Add the approved
+to distinguish ordinary provider forwarding from `router`. Add the approved
 PowerShell command and an equivalent POSIX example to both READMEs. Explain
 the exact upstream JSON schema, `default_addr` behavior, address path
 normalization, and environment variables.
@@ -709,7 +707,7 @@ uv run ruff check .
 uv run ruff format --check .
 uv run ty check
 uv run pytest -v
-uv run psi-agent ai router --help
+uv run psi-agent router --help
 uv run psi-agent ai --help
 ```
 
