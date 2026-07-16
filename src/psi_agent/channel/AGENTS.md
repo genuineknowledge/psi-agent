@@ -73,6 +73,7 @@ Channel 层是 psi-agent 的用户界面层，负责连接 Session socket 并通
 ## CLI 约定
 
 - 连接 session socket，发送 `--message`，SSE 流式接收后退出
+- ``--message -`` 从 stdin 读取消息内容，`run_cli()` 内部通过 `await anyio.to_thread.run_sync(sys.stdin.read, abandon_on_cancel=True)` 异步读入，规避 OS 命令行参数长度限制
 - 错误：打印错误信息后 raise（不再 `sys.exit`，以支持非 CLI 上下文）
 - 不发送 history，每次只带一条 user message
 

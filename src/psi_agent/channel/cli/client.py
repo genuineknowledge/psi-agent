@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sys
 from contextlib import aclosing
 
+import anyio
 from loguru import logger
 from rich.console import Console
 
@@ -10,6 +12,8 @@ from psi_agent.channel._types import ReasoningChunk, TextChunk
 
 
 async def run_cli(*, session_socket: str, message: str) -> None:
+    if message == "-":
+        message = await anyio.to_thread.run_sync(sys.stdin.read, abandon_on_cancel=True)  # ty: ignore
     console = Console(highlight=False)
     logger.info(f"Connecting to session at {session_socket}")
 
