@@ -506,9 +506,10 @@ git commit -m "feat(router): proxy selected model streams"
 
 - [ ] **Step 1: Add failing `Router` defaults, validation, and cleanup tests**
 
-Assert the dataclass fields and test rejection of an empty or unconfigured
-router socket, empty upstreams, empty default socket, non-positive context
-characters, and non-finite/non-positive timeout.
+Assert the dataclass fields and test rejection of an empty router socket, empty
+upstreams, empty default socket, non-positive context characters, and
+non-finite/non-positive timeout. The router socket may be independent from all
+candidate sockets.
 Spy on `web.AppRunner.cleanup` and force `site.start()` to fail, matching the
 existing `serve_ai` cleanup test. Inspect `Router.run` source and assert its
 first executable statement is `setup_logging(verbose=self.verbose)`.

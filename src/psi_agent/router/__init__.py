@@ -81,8 +81,6 @@ class Router:
             raise ValueError("--router-timeout must be a finite positive number")
         targets = parse_upstreams(self.upstream)
         router_socket = self.router_socket.strip()
-        if router_socket not in {target.socket for target in targets}:
-            raise ValueError("--router-socket must match one --upstream socket")
         settings = RouterSettings(
             targets=targets,
             router_socket=router_socket,

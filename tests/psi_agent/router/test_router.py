@@ -39,7 +39,6 @@ def test_ai_router_run_sets_up_logging_first() -> None:
     ("field_name", "invalid_value", "message"),
     [
         ("router_socket", "", "router-socket"),
-        ("router_socket", "http://127.0.0.1:7999", "must match one --upstream socket"),
         ("upstream", [], "upstream"),
         ("default_socket", "", "default-socket"),
         ("router_context_chars", 0, "router-context-chars"),
@@ -52,7 +51,7 @@ async def test_ai_router_rejects_invalid_configuration(
 ) -> None:
     router = Router(
         session_socket="http://127.0.0.1:8100",
-        router_socket="http://127.0.0.1:7001",
+        router_socket="http://127.0.0.1:7999",
         upstream=[UPSTREAM],
         default_socket="http://127.0.0.1:7001",
     )
@@ -71,7 +70,7 @@ async def test_router_builds_socket_settings(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr("psi_agent.router.serve_router", fake_serve_router)
     router = Router(
         session_socket="http://127.0.0.1:8100",
-        router_socket="http://127.0.0.1:7001",
+        router_socket="http://127.0.0.1:7999",
         upstream=[UPSTREAM],
         default_socket="http://127.0.0.1:7001",
     )
@@ -81,7 +80,7 @@ async def test_router_builds_socket_settings(monkeypatch: pytest.MonkeyPatch) ->
             "http://127.0.0.1:8100",
             RouterSettings(
                 targets=(Upstream("http://127.0.0.1:7001", "simple"),),
-                router_socket="http://127.0.0.1:7001",
+                router_socket="http://127.0.0.1:7999",
                 default_socket="http://127.0.0.1:7001",
                 router_timeout=None,
                 context_chars=12_000,

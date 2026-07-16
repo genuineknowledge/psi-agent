@@ -70,7 +70,8 @@ context, or API keys to these summary logs.
 
 The command is `psi-agent router`. Each repeated `--upstream` value is
 strict JSON containing exactly `socket` and `description`.
-`--router-socket` must equal one candidate socket and points to an already
-running ordinary AI service used for routing decisions. `--default-socket` is
-a direct service address and need not appear in the candidate list. Router
-holds no provider, model, base URL, or API key configuration.
+`--router-socket` points to an already running ordinary AI service used for
+routing decisions. It may be independent from every candidate socket.
+`--default-socket` is a direct service address and need not appear in the
+candidate list. Router holds no provider, model, base URL, or API key
+configuration.

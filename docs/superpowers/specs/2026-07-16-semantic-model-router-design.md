@@ -122,10 +122,10 @@ routing model can never synthesize or select an arbitrary network address.
 
 ### 4. Call the routing model service
 
-The selector sends an OpenAI-compatible streaming request to `router_socket`,
-which must equal one configured candidate socket. That socket points to an
-already running ordinary psi-agent AI service, so provider, model, base URL,
-and API key configuration remain entirely on that AI service. The selector
+The selector sends an OpenAI-compatible streaming request to `router_socket`.
+That socket points to an already running ordinary psi-agent AI service and may
+be independent from every candidate socket, so provider, model, base URL, and
+API key configuration remain entirely on that AI service. The selector
 aggregates `delta.content` from its SSE response before parsing the decision.
 
 The response parser accepts a plain JSON object, fenced JSON, or the first
@@ -177,7 +177,7 @@ for later requests.
 
 Startup fails clearly unless all of the following hold:
 
-- `router_socket` is non-empty and exactly matches one candidate socket;
+- `router_socket` is non-empty and uses a supported address format;
 - at least one upstream is present;
 - every upstream JSON value is an object with exactly `socket` and
   `description`;
