@@ -129,7 +129,7 @@ async def _create_ai(request: web.Request) -> web.Response:
     except (TypeError, ValueError, KeyError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error creating AI: {e!r}")
+        logger.exception(f"Unexpected error creating AI: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -142,7 +142,7 @@ async def _delete_ai(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting AI {ai_id!r}: {e!r}")
+        logger.exception(f"Unexpected error deleting AI {ai_id!r}: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -166,7 +166,7 @@ async def _create_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error creating session: {e!r}")
+        logger.exception(f"Unexpected error creating session: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -179,7 +179,7 @@ async def _delete_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting session {session_id!r}: {e!r}")
+        logger.exception(f"Unexpected error deleting session {session_id!r}: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -203,7 +203,7 @@ async def _set_title(request: web.Request) -> web.Response:
     except (KeyError, TypeError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error setting title: {e!r}")
+        logger.exception(f"Unexpected error setting title: {e!r}")
         return _error(str(e), status=500)
 
 
@@ -321,7 +321,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
                 await resp.write(data.encode())
                 logger.debug(f"Chat SSE chunk: {data[:1000]}")
     except Exception as e:
-        logger.warning(f"Chat error for session {session_id!r}: {e!r}")
+        logger.exception(f"Chat error for session {session_id!r}: {e!r}")
         with suppress(Exception):
             await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n".encode())
     finally:
