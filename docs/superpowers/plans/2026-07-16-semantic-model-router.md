@@ -526,7 +526,6 @@ class Router:
     default_socket: str = ""
     router_timeout: float | None = None
     router_context_chars: int = 12_000
-    log_router_details: bool = False
     verbose: bool = False
 ```
 

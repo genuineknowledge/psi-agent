@@ -59,12 +59,12 @@ upstream connections. aiohttp runner cleanup is shielded on startup failure and
 shutdown. `Router.run()` must call `setup_logging(verbose=self.verbose)` as
 its first executable statement.
 
-Every proxied SSE chunk is DEBUG. Startup, shutdown, and selected destination
-are INFO. Recoverable semantic-selection failures are WARNING. Proxy failures
-are ERROR. With `--log-router-details`, the selection summary contains only
-`Router reason` and the final `Router result` (`socket`). Do not
-add candidate descriptions, indices, context lengths, source labels, raw
-context, or API keys to these summary logs.
+Every proxied SSE chunk is DEBUG. Startup, shutdown, the routing reason, and
+the selected destination are INFO. Recoverable semantic-selection failures
+are WARNING. Proxy failures are ERROR. The default selection summary contains
+only `Router reason` and the final `Router result` (`socket`). `--verbose`
+enables other DEBUG diagnostics. Do not add candidate descriptions, indices,
+context lengths, source labels, raw context, or API keys to the INFO summary.
 
 ## CLI schema
 

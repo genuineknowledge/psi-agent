@@ -22,7 +22,6 @@ class RouterSettings:
     default_socket: str
     router_timeout: float | None
     context_chars: int
-    log_details: bool
 
 
 ROUTER_SETTINGS_KEY = web.AppKey("router_settings", RouterSettings)
@@ -125,7 +124,6 @@ async def handle_router_chat_completions(request: web.Request) -> web.StreamResp
         except RouterSelectionError as exc:
             reason = str(exc)
             logger.warning(f"Semantic routing failed; using default address: {exc}")
-    if settings.log_details:
-        logger.info(f"Router reason: {reason}")
+    logger.info(f"Router reason: {reason}")
     logger.info(f"Router result: socket={socket!r}")
     return await _proxy_request(request, body=body, socket=socket)

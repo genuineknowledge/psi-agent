@@ -63,9 +63,6 @@ class Router:
     router_context_chars: int = 12_000
     """Maximum serialized conversation characters sent for selection."""
 
-    log_router_details: bool = False
-    """Log only the routing reason in addition to the final result."""
-
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -87,7 +84,6 @@ class Router:
             default_socket=self.default_socket.strip(),
             router_timeout=self.router_timeout,
             context_chars=self.router_context_chars,
-            log_details=self.log_router_details,
         )
         logger.debug(
             f"Router resolved params: router_socket={settings.router_socket!r}, "

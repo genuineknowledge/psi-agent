@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 import textwrap
+from dataclasses import fields
 
 import pytest
 from aiohttp import web
@@ -21,8 +22,12 @@ def test_ai_router_defaults() -> None:
     assert router.default_socket == ""
     assert router.router_timeout is None
     assert router.router_context_chars == 12_000
-    assert router.log_router_details is False
     assert router.verbose is False
+
+
+def test_router_has_no_separate_details_logging_setting() -> None:
+    assert "log_router_details" not in {field.name for field in fields(Router)}
+    assert "log_details" not in {field.name for field in fields(RouterSettings)}
 
 
 def test_ai_router_run_sets_up_logging_first() -> None:
@@ -84,7 +89,6 @@ async def test_router_builds_socket_settings(monkeypatch: pytest.MonkeyPatch) ->
                 default_socket="http://127.0.0.1:7001",
                 router_timeout=None,
                 context_chars=12_000,
-                log_details=False,
             ),
         )
     ]
@@ -111,7 +115,6 @@ async def test_serve_router_cleans_up_runner_on_start_failure(monkeypatch: pytes
         default_socket="http://default",
         router_timeout=None,
         context_chars=12_000,
-        log_details=False,
     )
     with pytest.raises(RuntimeError, match="bind failed"):
         await serve_router(socket_path="http://127.0.0.1:8100", settings=settings)

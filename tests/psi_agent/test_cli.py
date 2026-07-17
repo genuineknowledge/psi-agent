@@ -59,7 +59,6 @@ def test_main_builds_top_level_router_with_ordered_upstreams(monkeypatch: pytest
             "http://default",
             "--router-context-chars",
             "8000",
-            "--log-router-details",
             "--verbose",
         ],
     )
@@ -67,7 +66,6 @@ def test_main_builds_top_level_router_with_ordered_upstreams(monkeypatch: pytest
     assert command.upstream == [first, second]
     assert command.default_socket == "http://default"
     assert command.router_context_chars == 8000
-    assert command.log_router_details is True
     assert command.verbose is True
 
 
@@ -80,3 +78,4 @@ def test_router_help_lists_router_options(monkeypatch: pytest.MonkeyPatch, capsy
     assert "--upstream" in output
     assert "--default-socket" in output
     assert "--router-context-chars" in output
+    assert "--log-router-details" not in output

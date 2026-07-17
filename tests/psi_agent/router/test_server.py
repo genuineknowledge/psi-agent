@@ -43,7 +43,6 @@ def _settings(*, selected_socket: str, default_socket: str) -> RouterSettings:
         default_socket=default_socket,
         router_timeout=None,
         context_chars=12_000,
-        log_details=False,
     )
 
 
@@ -254,14 +253,6 @@ async def test_router_summary_logs_only_reason_and_final_result(
     upstream_runner = await _start_app(upstream_handler, upstream_port)
     addr = f"http://127.0.0.1:{upstream_port}"
     settings = _settings(selected_socket=addr, default_socket=addr)
-    settings = RouterSettings(
-        targets=settings.targets,
-        router_socket=settings.router_socket,
-        default_socket=settings.default_socket,
-        router_timeout=settings.router_timeout,
-        context_chars=settings.context_chars,
-        log_details=True,
-    )
     router_runner = await _start_router(settings, router_port)
     logs: list[str] = []
     sink_id = logger.add(lambda message: logs.append(str(message)), format="{message}", level="INFO")

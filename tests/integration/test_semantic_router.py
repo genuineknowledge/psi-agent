@@ -87,7 +87,6 @@ async def test_semantic_router_selects_models_and_preserves_tool_sse(unused_tcp_
         default_socket=f"http://127.0.0.1:{default_port}",
         router_timeout=1,
         context_chars=12_000,
-        log_details=False,
     )
     router_runner = await _start_router(settings, service_port)
     try:
@@ -141,7 +140,6 @@ async def test_damaged_router_response_uses_default_and_preserves_model(unused_t
         default_socket=f"http://127.0.0.1:{default_port}",
         router_timeout=1,
         context_chars=12_000,
-        log_details=False,
     )
     router_runner = await _start_router(settings, service_port)
     body = {"model": "original", "messages": [{"role": "user", "content": "task"}]}

@@ -24,7 +24,6 @@ uv run psi-agent router `
     '{\"socket\":\"http://127.0.0.1:7002\",\"description\":\"复杂推理、代码分析、数学和多步骤任务\"}' `
   --default-socket "http://127.0.0.1:7001" `
   --router-context-chars 12000 `
-  --log-router-details `
   --verbose
 ```
 
@@ -212,13 +211,11 @@ shielded both when startup fails and during shutdown. `Router.run()` calls
 
 ## Logging and secrets
 
-Normal selection logs identify the final destination socket. Every proxied SSE
-chunk is logged at DEBUG consistently with existing protocol boundaries.
-
-With `log_router_details`, DEBUG logs may additionally include the candidate
-index, selected description, routing reason, and serialized-context length.
-They must not contain API keys. Full routing context is not logged because it
-may contain user secrets; the option logs routing details, not raw user data.
+Normal selection logs always identify the routing reason and final destination
+socket. Every proxied SSE chunk is logged at DEBUG consistently with existing
+protocol boundaries, and `--verbose` enables those additional diagnostics.
+INFO summary logs must not include candidate descriptions, indices,
+serialized-context lengths, raw routing context, or API keys.
 
 ## Testing
 
