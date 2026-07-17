@@ -27,7 +27,12 @@ import yaml
 WIKI_DIRNAME = "wiki"
 MAX_CONTENT_BYTES = 512 * 1024  # 512 KiB cap per page body
 DEFAULT_SEARCH_LIMIT = 20
-_SLUG_RE = re.compile(r"[^a-z0-9]+")
+# Collapse runs of non-"word" characters into a single dash. Under Python's
+# default Unicode matching, ``\w`` covers letters/digits of ANY script (CJK,
+# Cyrillic, …) plus underscore — so non-Latin titles like Chinese "校训" get a
+# real, distinct slug instead of all collapsing to "untitled". Underscore is
+# kept so intentional names like "_schema" survive.
+_SLUG_RE = re.compile(r"\W+")
 _WIKILINK_RE = re.compile(r"\[\[([^\[\]|]+?)(?:\|[^\[\]]*)?\]\]")
 
 
