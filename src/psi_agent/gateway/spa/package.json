@@ -15,17 +15,17 @@
     "highlight.js": "^11.11.1",
     "katex": "^0.17.0",
     "marked": "^18.0.6",
-    "material-symbols": "^0.45.7",
+    "material-symbols": "^0.45.8",
     "papaparse": "^5.5.4",
     "pdfjs-dist": "^6.1.200",
-    "pinia": "^3.0.4",
+    "pinia": "^4.0.2",
     "pptx-preview": "^1.0.7",
-    "vue": "^3.5.0",
+    "vue": "^3.5.40",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^6.0.7",
-    "vite": "^8.1.4",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "vite": "^8.1.5",
     "vitest": "^4.1.10"
   }
 }
