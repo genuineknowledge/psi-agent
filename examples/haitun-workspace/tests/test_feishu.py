@@ -845,10 +845,14 @@ async def test_query_attendance_builds_request_and_parses(monkeypatch: pytest.Mo
                     "user_id": "e1",
                     "employee_name": "张三",
                     "day": 20260714,
-                    "check_in_record": {"check_time": "1752460200", "location_name": "总部"},
-                    "check_in_result": "Normal",
-                    "check_out_record": {"check_time": "1752490200", "location_name": "总部"},
-                    "check_out_result": "Late",
+                    "records": [
+                        {
+                            "check_in_record": {"check_time": "1752460200", "location_name": "总部"},
+                            "check_in_result": "Normal",
+                            "check_out_record": {"check_time": "1752490200", "location_name": "总部"},
+                            "check_out_result": "Late",
+                        }
+                    ],
                 }
             ],
             "invalid_user_ids": ["bad1"],
@@ -886,7 +890,16 @@ async def test_query_attendance_bad_date() -> None:
 @pytest.mark.asyncio
 async def test_query_attendance_missing_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke(
-        {"user_task_results": [{"user_id": "e1", "employee_name": "李四", "day": 20260714, "check_in_result": "Lack"}]}
+        {
+            "user_task_results": [
+                {
+                    "user_id": "e1",
+                    "employee_name": "李四",
+                    "day": 20260714,
+                    "records": [{"check_in_result": "Lack"}],
+                }
+            ]
+        }
     )
     monkeypatch.setattr(_impl, "_invoke", cap)
     result = await _impl.query_attendance_impl("e1", "20260714", "20260714")

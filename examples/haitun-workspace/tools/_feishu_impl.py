@@ -1263,21 +1263,24 @@ async def query_attendance_impl(
     data = res["data"] if isinstance(res["data"], dict) else {}
     results = []
     for r in data.get("user_task_results", []) if isinstance(data.get("user_task_results"), list) else []:
-        cin = r.get("check_in_record", {}) if isinstance(r.get("check_in_record"), dict) else {}
-        cout = r.get("check_out_record", {}) if isinstance(r.get("check_out_record"), dict) else {}
-        results.append(
-            {
-                "user_id": r.get("user_id", ""),
-                "name": r.get("employee_name", ""),
-                "day": r.get("day", ""),
-                "check_in_time": _fmt_check_time(cin),
-                "check_in_result": r.get("check_in_result", ""),
-                "check_in_location": cin.get("location_name", ""),
-                "check_out_time": _fmt_check_time(cout),
-                "check_out_result": r.get("check_out_result", ""),
-                "check_out_location": cout.get("location_name", ""),
-            }
-        )
+        # Each user_task_result has a "records" array with per-shift check-in/out
+        records = r.get("records", []) if isinstance(r.get("records"), list) else []
+        for rec in records:
+            cin = rec.get("check_in_record", {}) if isinstance(rec.get("check_in_record"), dict) else {}
+            cout = rec.get("check_out_record", {}) if isinstance(rec.get("check_out_record"), dict) else {}
+            results.append(
+                {
+                    "user_id": r.get("user_id", ""),
+                    "name": r.get("employee_name", ""),
+                    "day": r.get("day", ""),
+                    "check_in_time": _fmt_check_time(cin),
+                    "check_in_result": rec.get("check_in_result", ""),
+                    "check_in_location": cin.get("location_name", ""),
+                    "check_out_time": _fmt_check_time(cout),
+                    "check_out_result": rec.get("check_out_result", ""),
+                    "check_out_location": cout.get("location_name", ""),
+                }
+            )
     return {
         "ok": True,
         "results": results,
