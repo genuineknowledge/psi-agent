@@ -581,12 +581,45 @@ def _build_instance_get_request(instance_id: str, user_id_type: str) -> BaseRequ
     return req
 
 
+def _parse_approval_attachments(form: Any) -> list[dict[str, Any]]:
+    """Pull downloadable attachments out of an approval form.
+
+    The ``form`` field is a JSON string of widget objects. File/image widgets
+    (attachmentV2/image/imageV2/…) carry **direct URLs** in their ``value`` —
+    these are valid only ~12 hours, so download them promptly. Only ``document``
+    widgets return a drive token instead of a URL.
+    """
+    widgets: Any = form
+    if isinstance(form, str):
+        with contextlib.suppress(ValueError):
+            widgets = json.loads(form)
+    if not isinstance(widgets, list):
+        return []
+    attachments: list[dict[str, Any]] = []
+    for w in widgets:
+        if not isinstance(w, dict):
+            continue
+        wtype = str(w.get("type", "")).lower()
+        name = w.get("name", "") or w.get("id", "")
+        value = w.get("value")
+        if "document" in wtype:
+            for tok in value if isinstance(value, list) else [value]:
+                if tok:
+                    attachments.append({"name": name, "type": w.get("type", ""), "kind": "drive", "value": tok})
+        elif any(k in wtype for k in ("attachment", "image", "file")):
+            for v in value if isinstance(value, list) else [value]:
+                if v:
+                    attachments.append({"name": name, "type": w.get("type", ""), "kind": "url", "value": v})
+    return attachments
+
+
 async def get_approval_instance_impl(instance_id: str, user_id_type: str = "open_id") -> dict[str, Any]:
     """Read an approval instance's detail — applicant, status, the submitted form, and task_list."""
     res = await _invoke(_build_instance_get_request(instance_id, user_id_type))
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
+    form = data.get("form", "")
     return {
         "ok": True,
         "instance_code": instance_id,
@@ -594,9 +627,65 @@ async def get_approval_instance_impl(instance_id: str, user_id_type: str = "open
         "approval_name": data.get("approval_name", ""),
         "status": data.get("status", ""),
         "applicant": data.get("user_id", "") or data.get("open_id", ""),
-        "form": data.get("form", ""),
+        "form": form,
+        "attachments": _parse_approval_attachments(form),
         "task_list": data.get("task_list", []),
         "timeline": data.get("timeline", []),
+    }
+
+
+def _build_list_instances_request(
+    approval_code: str, start_time: str, end_time: str, page_size: int, page_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/approval/v4/instances"
+    req.add_query("approval_code", approval_code)
+    if start_time:
+        req.add_query("start_time", start_time)
+    if end_time:
+        req.add_query("end_time", end_time)
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_approval_instances_impl(approval_code: str, start_time: str = "", end_time: str = "") -> dict[str, Any]:
+    """List all instance codes for an approval definition in a time window (Unix ms strings).
+
+    Defaults to the last 30 days when start/end omitted. Pages through everything and
+    returns ``instance_codes`` to feed into ``get_approval_instance_impl`` one by one.
+    """
+    if not approval_code:
+        return _error("approval_code is required (the approval definition code).")
+    if not start_time or not end_time:
+        import time  # noqa: PLC0415
+
+        now_ms = int(time.time() * 1000)
+        end_time = end_time or str(now_ms)
+        start_time = start_time or str(now_ms - 30 * 24 * 3600 * 1000)
+    codes: list[str] = []
+    page_token = ""
+    while True:
+        res = await _invoke(_build_list_instances_request(approval_code, start_time, end_time, 100, page_token))
+        if not res["ok"]:
+            return res
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        chunk = data.get("instance_code_list", [])
+        if isinstance(chunk, list):
+            codes.extend(str(c) for c in chunk)
+        page_token = data.get("page_token", "") or ""
+        if not data.get("has_more") or not page_token:
+            break
+    return {
+        "ok": True,
+        "approval_code": approval_code,
+        "start_time": start_time,
+        "end_time": end_time,
+        "instance_codes": codes,
+        "count": len(codes),
     }
 
 
@@ -1509,3 +1598,203 @@ async def create_event_impl(
         else:
             result["attendee_warning"] = att_res.get("message", "failed to add attendees")
     return result
+
+
+# ── Contact (通讯录) — list department members ────────────────────────────────
+#
+# Get the roster for a department (or the whole org from root id "0"), so the
+# agent has the user_id list needed to batch-query attendance/payroll. Tenant
+# token works; the app's 通讯录权限范围 must cover the members you want to see.
+
+
+def _build_dept_children_request(
+    department_id: str, department_id_type: str, page_size: int, page_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/contact/v3/departments/:department_id/children"
+    req.paths["department_id"] = department_id
+    req.add_query("department_id_type", department_id_type)
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+def _build_find_by_department_request(
+    department_id: str, department_id_type: str, user_id_type: str, page_size: int, page_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/contact/v3/users/find_by_department"
+    req.add_query("department_id", department_id)
+    req.add_query("department_id_type", department_id_type)
+    req.add_query("user_id_type", user_id_type)
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def _members_of_department(
+    department_id: str, department_id_type: str, user_id_type: str
+) -> tuple[list[dict[str, str]], dict[str, Any] | None]:
+    """All members directly in one department (paged). Returns (members, error_or_None)."""
+    members: list[dict[str, str]] = []
+    page_token = ""
+    while True:
+        res = await _invoke(
+            _build_find_by_department_request(department_id, department_id_type, user_id_type, 50, page_token)
+        )
+        if not res["ok"]:
+            return members, res
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        for it in data.get("items", []) if isinstance(data.get("items"), list) else []:
+            members.append(
+                {
+                    "user_id": it.get("user_id", ""),
+                    "open_id": it.get("open_id", ""),
+                    "name": it.get("name", ""),
+                }
+            )
+        page_token = data.get("page_token", "") or ""
+        if not data.get("has_more") or not page_token:
+            break
+    return members, None
+
+
+async def _child_department_ids(department_id: str, department_id_type: str) -> list[str]:
+    """Direct child department ids of a department (one level, paged)."""
+    ids: list[str] = []
+    page_token = ""
+    while True:
+        res = await _invoke(_build_dept_children_request(department_id, department_id_type, 50, page_token))
+        if not res["ok"]:
+            return ids
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        for it in data.get("items", []) if isinstance(data.get("items"), list) else []:
+            did = (
+                it.get("department_id", "")
+                if department_id_type == "department_id"
+                else it.get("open_department_id", "")
+            )
+            if did:
+                ids.append(did)
+        page_token = data.get("page_token", "") or ""
+        if not data.get("has_more") or not page_token:
+            break
+    return ids
+
+
+async def list_department_members_impl(
+    department_id: str = "0",
+    department_id_type: str = "open_department_id",
+    user_id_type: str = "open_id",
+    recursive: bool = False,
+) -> dict[str, Any]:
+    """List members of a department. recursive=True walks sub-departments too.
+
+    department_id "0" is the org root. Returns de-duplicated [{user_id, open_id, name}].
+    """
+    seen: set[str] = set()
+    all_members: list[dict[str, str]] = []
+    to_visit = [department_id]
+    visited: set[str] = set()
+    while to_visit:
+        did = to_visit.pop()
+        if did in visited:
+            continue
+        visited.add(did)
+        members, err = await _members_of_department(did, department_id_type, user_id_type)
+        if err is not None:
+            return err
+        for m in members:
+            key = m.get("open_id") or m.get("user_id") or m.get("name")
+            if key and key not in seen:
+                seen.add(key)
+                all_members.append(m)
+        if recursive:
+            child_type = "department_id" if department_id_type == "department_id" else "open_department_id"
+            to_visit.extend(await _child_department_ids(did, child_type))
+    return {
+        "ok": True,
+        "department_id": department_id,
+        "recursive": recursive,
+        "members": all_members,
+        "count": len(all_members),
+    }
+
+
+# ── Drive — download a file/attachment to disk ────────────────────────────────
+#
+# Two sources: a drive media file_token (goes through the medias endpoint), or a
+# direct URL (approval-form attachments are direct URLs valid only ~12h — download
+# them straight, NOT via medias).
+
+
+def _build_media_download_request(file_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/drive/v1/medias/:file_token/download"
+    req.paths["file_token"] = file_token
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def _download_url_bytes(url: str) -> tuple[bytes | None, str]:
+    import httpx  # noqa: PLC0415
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+    except Exception as exc:  # transport failure
+        return None, f"{type(exc).__name__}: {exc}"
+    if resp.status_code in (403, 404):
+        return None, (
+            f"HTTP {resp.status_code} — the attachment link may have expired "
+            "(approval-form URLs are valid ~12h). Re-read the instance detail for a fresh URL."
+        )
+    if resp.status_code >= 400:
+        return None, f"HTTP {resp.status_code}"
+    return resp.content, ""
+
+
+async def _download_media_bytes(file_token: str) -> tuple[bytes | None, str]:
+    client = _get_client()
+    if client is None:
+        return None, "Feishu app not configured."
+    try:
+        resp = await client.arequest(_build_media_download_request(file_token))
+    except Exception as exc:  # SDK/transport failure
+        return None, f"{type(exc).__name__}: {exc}"
+    raw = getattr(resp, "raw", None)
+    content = getattr(raw, "content", None) if raw is not None else None
+    if not content:
+        code = getattr(resp, "code", None)
+        return None, f"no file content returned (code={code})"
+    data = bytes(content)
+    # A JSON error body (not a binary file) means the token was rejected.
+    if data[:1] in (b"{", b"["):
+        with contextlib.suppress(ValueError, UnicodeDecodeError):
+            body = json.loads(data.decode("utf-8"))
+            if isinstance(body, dict) and body.get("code") not in (0, None):
+                return None, f"Feishu API error {body.get('code')}: {body.get('msg', '')}"
+    return data, ""
+
+
+async def download_file_impl(source: str, save_path: str, is_url: bool = False) -> dict[str, Any]:
+    """Download a Feishu file to disk. is_url=True treats source as a direct URL, else a media file_token."""
+    if not source or not save_path:
+        return _error("source and save_path are required.")
+    data, err = await (_download_url_bytes(source) if is_url else _download_media_bytes(source))
+    if data is None:
+        return _error(err or "download failed", source=source)
+    path = pathlib.Path(save_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        await anyio.Path(path).write_bytes(data)
+    except OSError as exc:
+        return _error(f"could not write file: {exc}", path=str(path))
+    return {"ok": True, "path": str(path), "bytes": len(data)}

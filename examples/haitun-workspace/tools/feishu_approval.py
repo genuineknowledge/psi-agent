@@ -45,14 +45,33 @@ async def feishu_approval_list_tasks(
     return _f.dumps_result(await _f.list_approval_tasks_impl(user_id, topic, user_id_type, page_size, page_token))
 
 
+async def feishu_approval_list_instances(approval_code: str, start_time: str = "", end_time: str = "") -> str:
+    """List every approval instance code for one approval definition in a time window.
+
+    Use this to enumerate all applications of a given approval (e.g. every reimbursement)
+    so you can read each one with ``feishu_approval_get``. Feeds reimbursement/attendance
+    report flows.
+
+    Args:
+        approval_code: The approval definition code (identifies which approval flow).
+        start_time: Window start as a Unix millisecond timestamp string (optional; defaults to 30 days ago).
+        end_time: Window end as a Unix millisecond timestamp string (optional; defaults to now).
+    """
+    return _f.dumps_result(await _f.list_approval_instances_impl(approval_code, start_time, end_time))
+
+
 async def feishu_approval_get(instance_id: str, user_id_type: str = "open_id") -> str:
     """Read an approval instance's detail — applicant, status, submitted form, and task_list.
 
     Use this to inspect what an application actually contains before deciding.
-    The ``form`` field is a JSON string of the submitted form widgets.
+    The ``form`` field is a JSON string of the submitted form widgets, and
+    ``attachments`` lists downloadable files pulled from that form: each is
+    ``{name, type, kind, value}`` where kind ``"url"`` is a direct link (valid
+    only ~12h — download promptly with ``feishu_file_download`` is_url=True) and
+    kind ``"drive"`` is a media token (download with is_url=False).
 
     Args:
-        instance_id: The approval instance code (from ``feishu_approval_list_tasks``).
+        instance_id: The approval instance code (from list_tasks or list_instances).
         user_id_type: Id form for returned user ids — open_id (default), union_id, user_id.
     """
     return _f.dumps_result(await _f.get_approval_instance_impl(instance_id, user_id_type))

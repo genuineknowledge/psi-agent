@@ -69,3 +69,21 @@ async def feishu_drive_reply_comment(
         at_user_id: open_id/user_id to @-mention at the start of the reply (optional).
     """
     return _f.dumps_result(await _f.reply_comment_impl(file_token, file_type, comment_id, content, at_user_id))
+
+
+async def feishu_file_download(source: str, save_path: str, is_url: bool = False) -> str:
+    """Download a Feishu file/attachment to a local path.
+
+    Two sources:
+    - is_url=False (default): ``source`` is a drive media file_token; downloads via
+      the drive medias endpoint.
+    - is_url=True: ``source`` is a direct URL. Approval-form attachments are direct
+      URLs valid only ~12 hours — pass them here and download promptly. If the link
+      has expired, re-read the approval instance for a fresh URL.
+
+    Args:
+        source: A drive media file_token, or a direct URL when is_url=True.
+        save_path: Local filesystem path to write the file to (parent dirs are created).
+        is_url: True if source is a direct URL, False if it is a media file_token.
+    """
+    return _f.dumps_result(await _f.download_file_impl(source, save_path, is_url))

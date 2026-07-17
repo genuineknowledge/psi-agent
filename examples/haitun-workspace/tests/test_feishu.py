@@ -1213,3 +1213,183 @@ def test_thread_read_tool_async_with_docstring() -> None:
     fn = mod.feishu_thread_read
     assert inspect.iscoroutinefunction(fn)
     assert (inspect.getdoc(fn) or "").strip()
+
+
+# ── Contact — list department members ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_department_members_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"user_id": "e1", "open_id": "ou_1", "name": "张三"}], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_department_members_impl("0", "open_department_id", "open_id", False)
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri.endswith("/contact/v3/users/find_by_department")
+    q = _qdict(req)
+    assert q.get("department_id") == "0"
+    assert q.get("user_id_type") == "open_id"
+    assert q.get("page_size") == "50"
+    assert result["members"] == [{"user_id": "e1", "open_id": "ou_1", "name": "张三"}]
+    assert result["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_department_members_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke(
+        [
+            {"items": [{"open_id": "ou_1", "name": "A"}], "has_more": True, "page_token": "pt2"},
+            {"items": [{"open_id": "ou_2", "name": "B"}], "has_more": False, "page_token": ""},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.list_department_members_impl("d1", "department_id", "open_id", False)
+    assert len(paged.requests) == 2
+    assert _qdict(paged.requests[1]).get("page_token") == "pt2"
+    assert result["count"] == 2
+
+
+def test_contact_tool_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_contact")
+    fn = mod.feishu_department_members
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()
+
+
+@pytest.mark.asyncio
+async def test_department_members_recursive_walks_children(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    async def fake_invoke(req: Any) -> dict[str, Any]:
+        calls.append(req.uri)
+        if req.uri.endswith("/children"):
+            did = req.paths["department_id"]
+            # root "0" has one child "c1"; c1 has no children
+            items = [{"open_department_id": "c1"}] if did == "0" else []
+            return {"ok": True, "code": 0, "msg": "", "data": {"items": items, "has_more": False}}
+        did = _qdict(req).get("department_id")
+        name = "root-user" if did == "0" else "child-user"
+        oid = "ou_root" if did == "0" else "ou_child"
+        return {
+            "ok": True,
+            "code": 0,
+            "msg": "",
+            "data": {"items": [{"open_id": oid, "name": name}], "has_more": False},
+        }
+
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    result = await _impl.list_department_members_impl("0", "open_department_id", "open_id", True)
+    assert result["count"] == 2  # root + child, de-duped
+    assert any(u.endswith("/children") for u in calls)  # walked children
+
+
+# ── Approval — list instances + attachment parsing ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_approval_instances_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"instance_code_list": ["i1", "i2"], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_approval_instances_impl("APV_CODE", "1000", "2000")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri.endswith("/approval/v4/instances")
+    q = _qdict(req)
+    assert q.get("approval_code") == "APV_CODE"
+    assert q.get("start_time") == "1000"
+    assert result["instance_codes"] == ["i1", "i2"]
+    assert result["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_approval_instances_requires_code() -> None:
+    result = await _impl.list_approval_instances_impl("", "1000", "2000")
+    assert result["ok"] is False
+    assert "approval_code" in result["message"]
+
+
+def test_parse_approval_attachments_url_and_drive() -> None:
+    form = json.dumps(
+        [
+            {"id": "w1", "name": "发票", "type": "attachmentV2", "value": ["https://f.co/a.jpg", "https://f.co/b.jpg"]},
+            {"id": "w2", "name": "合同", "type": "document", "value": ["doccnXXX"]},
+            {"id": "w3", "name": "金额", "type": "number", "value": "100"},
+        ]
+    )
+    atts = _impl._parse_approval_attachments(form)
+    kinds = {(a["kind"], a["value"]) for a in atts}
+    assert ("url", "https://f.co/a.jpg") in kinds
+    assert ("url", "https://f.co/b.jpg") in kinds
+    assert ("drive", "doccnXXX") in kinds
+    assert all(a["value"] != "100" for a in atts)  # non-file widget ignored
+
+
+@pytest.mark.asyncio
+async def test_get_approval_instance_exposes_attachments(monkeypatch: pytest.MonkeyPatch) -> None:
+    form = json.dumps([{"name": "发票", "type": "image", "value": ["https://f.co/x.png"]}])
+    cap = _CapturedInvoke({"approval_code": "APV", "status": "APPROVED", "user_id": "e1", "form": form})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_approval_instance_impl("inst1", "open_id")
+    assert cap.request.paths["instance_id"] == "inst1"
+    assert result["attachments"] == [{"name": "发票", "type": "image", "kind": "url", "value": "https://f.co/x.png"}]
+
+
+def test_approval_list_instances_tool_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_approval")
+    fn = mod.feishu_approval_list_instances
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()
+
+
+# ── Drive — download file/attachment ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_download_file_via_media_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Client:
+        async def arequest(self, req: Any) -> Any:
+            captured["uri"] = req.uri
+            captured["token"] = req.paths.get("file_token")
+            return _FakeResp(None, "", b"\x89PNG\r\nbinary")
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _Client())
+    dest = tmp_path / "sub" / "receipt.png"
+    result = await _impl.download_file_impl("media_tok", str(dest), False)
+    assert result["ok"] is True
+    assert captured["uri"].endswith("/drive/v1/medias/:file_token/download")
+    assert captured["token"] == "media_tok"
+    assert dest.read_bytes() == b"\x89PNG\r\nbinary"
+    assert result["bytes"] == len(b"\x89PNG\r\nbinary")
+
+
+@pytest.mark.asyncio
+async def test_download_file_via_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def fake_url_bytes(url: str) -> tuple[bytes | None, str]:
+        assert url == "https://f.co/a.jpg"
+        return b"JPEGDATA", ""
+
+    monkeypatch.setattr(_impl, "_download_url_bytes", fake_url_bytes)
+    dest = tmp_path / "claim" / "a.jpg"
+    result = await _impl.download_file_impl("https://f.co/a.jpg", str(dest), True)
+    assert result["ok"] is True
+    assert dest.read_bytes() == b"JPEGDATA"
+
+
+@pytest.mark.asyncio
+async def test_download_file_url_expired_message(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    async def fake_url_bytes(url: str) -> tuple[bytes | None, str]:
+        return None, "HTTP 403 — the attachment link may have expired (approval-form URLs are valid ~12h)."
+
+    monkeypatch.setattr(_impl, "_download_url_bytes", fake_url_bytes)
+    result = await _impl.download_file_impl("https://f.co/gone.jpg", str(tmp_path / "x.jpg"), True)
+    assert result["ok"] is False
+    assert "expired" in result["message"]
+
+
+def test_file_download_tool_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_drive")
+    fn = mod.feishu_file_download
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()
