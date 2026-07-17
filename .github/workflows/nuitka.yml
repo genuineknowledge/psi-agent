@@ -48,7 +48,7 @@ jobs:
           python-version: "3.14"
       - run: uv sync
       - run: uv pip install nuitka
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "26"
       - run: npm ci
