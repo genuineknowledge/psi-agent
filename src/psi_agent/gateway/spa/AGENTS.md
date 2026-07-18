@@ -98,7 +98,7 @@ spa/
 │   │   ├── SessionStreamIndicator.vue # 侧栏流式 spinner / 后台完成未读蓝点
 │   │   ├── ChatArea.vue             # 消息列表容器 + 自动滚动 + 空状态
 │   │   ├── MessageBubble.vue        # 单条消息：Markdown + 附件 + 助手操作栏（赞踩/复制/重新生成）
-│   │   ├── ThinkingBubble.vue       # 等待首 token 的三个脉冲圆点
+│   │   ├── ThinkingBubble.vue       # 思考/工具进度：状态条 + 可展开 reasoning 正文
 │   │   ├── InputBar.vue             # 输入 UI：textarea 自适应高度 + 文件选择 + 发送按钮；发送逻辑委托给 useChat.js；内嵌 ModelPanel
 │   │   ├── ModelPanel.vue           # 输入栏旁模型切换（只切换/删除已连接；链接走 User Hub）
 │   │   ├── BaseDialog.vue           # 弹窗外壳(overlay + dialog + actions，插槽:title/默认/actions)
@@ -193,7 +193,7 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 / 导出 |
 |------|------|-----------------|
-| `useChat.js` | 发送消息 | `sendMessage()` 先乐观 UI（清输入、用户气泡、ThinkingBubble），再 `encodeFiles` / draft 时 `promoteDraftToSession` / `runChatTurn()`；失败时 `abortOptimisticSend`。流式结束后 `applyTurnOutcome` + `normalizeFailedTurns`；`outcome === 'ok'` 且当前未聚焦该会话时 `POST /ui/attention`（托盘脉冲 / webview 任务栏闪烁）。**刻意**：SSE `type:'reasoning'`（thinking + tool markers）**不分新气泡**——一轮 user → 至多一个主 assistant。`regenerateAssistantMessage` / `resendFailedMessage`。气泡文案经 `stripTransferMarkers`。滚动委托 `useScroll` |
+| `useChat.js` | 发送消息 | `sendMessage()` 先乐观 UI（清输入、用户气泡、ThinkingBubble），再 `encodeFiles` / draft 时 `promoteDraftToSession` / `runChatTurn()`；失败时 `abortOptimisticSend`。流式结束后 `applyTurnOutcome` + `normalizeFailedTurns`；`outcome === 'ok'` 且当前未聚焦该会话时 `POST /ui/attention`（托盘脉冲 / webview 任务栏闪烁）。SSE `type:'reasoning'`（thinking + tool markers）写入同一 assistant 的 `reasoning` 字段，由 `ThinkingBubble` 做**可折叠状态条**（流式无正文时默认展开，首段 `content` 后默认收起）——仍**不分新气泡**。`regenerateAssistantMessage` / `resendFailedMessage`。气泡文案经 `stripTransferMarkers`。滚动委托 `useScroll` |
 | `useSSE.js` | SSE 解析 | `async function* readSSE(reader)`：TextDecoder 累积 → `\r\n`→`\n` → 逐行取 `data:` → `[DONE]` 结束 / `JSON.parse` / 非 JSON 降级为 `{type:'text'}` |
 | `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → `restoreSessionView`（无 live AbortController 时清 stale `streaming`）→ 从 `/history` 或 localStorage 加载消息时对 **user/assistant** 均 `stripTransferMarkers`（防 `[RECV:]` 路径泄露）→ 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
 | `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |
