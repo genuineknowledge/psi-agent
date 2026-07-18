@@ -87,7 +87,7 @@ async def _make_workspace(base: str) -> str:
 @pytest.mark.anyio
 async def test_gateway_rest_crud(tmp_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
     async def ready(_path: str) -> None:
-        await anyio.lowlevel.checkpoint()
+        await anyio.sleep(0.001)
 
     async def serve(**_kwargs: object) -> None:
         await anyio.sleep_forever()

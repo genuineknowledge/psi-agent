@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from types import ModuleType
 from typing import cast
 
 import anyio
@@ -36,10 +38,16 @@ async def test_run_router_service_builds_merged_router(monkeypatch: pytest.Monke
 
     original_import = __import__
 
-    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+    def fake_import(
+        name: str,
+        globals: Mapping[str, object] | None = None,
+        locals: Mapping[str, object] | None = None,
+        fromlist: Sequence[str] = (),
+        level: int = 0,
+    ) -> ModuleType | object:
         if name == "psi_agent.router":
             return FakeModule()
-        return original_import(name, *args, **kwargs)
+        return original_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr("builtins.__import__", fake_import)
     await _run_router_service(
@@ -58,7 +66,7 @@ async def test_run_router_service_builds_merged_router(monkeypatch: pytest.Monke
 @pytest.mark.anyio
 async def test_create_and_delete_router(monkeypatch: pytest.MonkeyPatch) -> None:
     async def ready(_path: str) -> None:
-        await anyio.lowlevel.checkpoint()
+        await anyio.sleep(0.001)
 
     async def serve(**_kwargs: object) -> None:
         await anyio.sleep_forever()
