@@ -17,15 +17,22 @@ from psi_agent.gateway._manager import (
     _socket_path,
     _wait_socket,
 )
+from psi_agent.gateway._router_manager import RouterManager
 from psi_agent.session import Session
 
 
 @dataclass
 class SessionInfo:
     id: str
-    ai_id: str
+    backend_type: str
+    backend_id: str
     workspace: str
     channel_socket: str
+
+    @property
+    def ai_id(self) -> str:
+        """Compatibility alias for clients that still create direct-AI sessions."""
+        return self.backend_id
 
 
 @dataclass
@@ -39,30 +46,34 @@ class SessionManager:
     _aim: AIManager
     _prefix: str
     _tg: Any  # anyio.TaskGroup (ty不识别的第三方类型)
+    _rm: RouterManager | None = None
     _entries: dict[str, _SessionEntry] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
     _persist: Callable[[], Awaitable[None]] = _noop
 
     async def create(
         self,
-        ai_id: str,
+        backend_type: str = "ai",
+        backend_id: str = "",
         *,
+        ai_id: str = "",
         id: str = "",
         workspace: str = "",
     ) -> SessionInfo:
         session_id = id or _new_uuid()
         workspace = workspace or os.getcwd()
+        backend_id = backend_id or ai_id
+        upstream_socket = self.resolve_backend_socket(backend_type, backend_id)
         async with self._lock:
             logger.debug(f"SessionManager: acquired lock for create {session_id!r}")
             if session_id in self._entries:
                 raise ValueError(f"Session {session_id!r} already exists")
-            ai_socket = self._aim.get_socket(ai_id)
             channel_socket = _socket_path(self._prefix, "channels", session_id)
             await _ensure_socket_dir(channel_socket)
             sess = Session(
                 workspace=workspace,
                 channel_socket=channel_socket,
-                ai_socket=ai_socket,
+                ai_socket=upstream_socket,
                 session_id=session_id,
             )
             scope = anyio.CancelScope()
@@ -79,7 +90,7 @@ class SessionManager:
 
             logger.debug(f"SessionManager: starting session {session_id!r} task")
             self._tg.start_soon(_run_session)
-            info = SessionInfo(id=session_id, ai_id=ai_id, workspace=workspace, channel_socket=channel_socket)
+            info = SessionInfo(session_id, backend_type, backend_id, workspace, channel_socket)
             self._entries[session_id] = _SessionEntry(scope=scope, info=info)
         try:
             await _wait_socket(info.channel_socket)
@@ -93,8 +104,17 @@ class SessionManager:
                 await self._persist()
             raise
         await self._persist()
-        logger.info(f"Session {session_id!r} created on {info.channel_socket} -> AI '{ai_id}'")
+        logger.info(f"Session {session_id!r} created on {info.channel_socket} -> {backend_type} {backend_id!r}")
         return info
+
+    def resolve_backend_socket(self, backend_type: str, backend_id: str) -> str:
+        if backend_type == "ai":
+            return self._aim.get_socket(backend_id)
+        if backend_type == "router":
+            if self._rm is None:
+                raise LookupError("Router manager is not configured")
+            return self._rm.get_socket(backend_id)
+        raise ValueError("backend_type must be either 'ai' or 'router'")
 
     async def delete(self, session_id: str) -> None:
         async with self._lock:

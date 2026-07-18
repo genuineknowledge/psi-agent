@@ -16,7 +16,8 @@ from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
 from psi_agent.gateway._history_manager import HistoryManager
 from psi_agent.gateway._openapi import render_openapi
-from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.gateway._router_manager import RouterManager, RouterUpstreamInfo
+from psi_agent.gateway._session_manager import SessionInfo, SessionManager
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME, inject_app_name, read_spa_index_template
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._workspace_manager import WorkspaceManager
@@ -65,16 +66,25 @@ def _error(message: str, status: int) -> web.Response:
     return _json({"error": message}, status=status)
 
 
+def _session_data(info: SessionInfo) -> dict[str, Any]:
+    data = asdict(info)
+    if data.get("backend_type") == "ai":
+        data["ai_id"] = data["backend_id"]
+    return data
+
+
 async def create_app(
     aim: AIManager,
     sm: SessionManager,
     tm: TitleManager,
+    rm: RouterManager | None = None,
     favicon_path: str | None = None,
     app_name: str = DEFAULT_APP_NAME,
     attention: AttentionHub | None = None,
 ) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
+    app["rm"] = rm
     app["sm"] = sm
     app["tm"] = tm
     app["wm"] = WorkspaceManager()
@@ -98,6 +108,9 @@ async def create_app(
     app.router.add_post("/ais", _create_ai)
     app.router.add_delete("/ais/{ai_id}", _delete_ai)
     app.router.add_get("/ais", _list_ais)
+    app.router.add_post("/routers", _create_router)
+    app.router.add_delete("/routers/{router_id}", _delete_router)
+    app.router.add_get("/routers", _list_routers)
     app.router.add_post("/sessions", _create_session)
     app.router.add_delete("/sessions/{session_id}", _delete_session)
     app.router.add_get("/sessions", _list_sessions)
@@ -151,16 +164,64 @@ async def _list_ais(request: web.Request) -> web.Response:
     return _json([asdict(i) for i in await aim.list_all()])
 
 
+async def _create_router(request: web.Request) -> web.Response:
+    rm: RouterManager | None = request.app["rm"]
+    if rm is None:
+        return _error("Router manager is not configured", status=503)
+    try:
+        body = await request.json()
+        info = await rm.create(
+            name=body["name"],
+            router_ai_id=body["router_ai_id"],
+            upstreams=[RouterUpstreamInfo(item["ai_id"], item["description"]) for item in body["upstreams"]],
+            default_ai_id=body["default_ai_id"],
+            router_timeout=body.get("router_timeout"),
+            router_context_chars=body.get("router_context_chars", 12_000),
+            id=body.get("id", ""),
+        )
+        return _json(asdict(info), status=201)
+    except (TypeError, ValueError, KeyError) as e:
+        return _error(str(e), status=400)
+    except LookupError as e:
+        return _error(str(e), status=404)
+    except Exception as e:
+        logger.error(f"Unexpected error creating Router: {e!r}")
+        return _error(str(e), status=500)
+
+
+async def _delete_router(request: web.Request) -> web.Response:
+    rm: RouterManager | None = request.app["rm"]
+    if rm is None:
+        return _error("Router manager is not configured", status=503)
+    router_id = request.match_info["router_id"]
+    try:
+        await rm.delete(router_id)
+        return _json({"id": router_id, "status": "stopped"})
+    except LookupError as e:
+        return _error(str(e), status=404)
+    except Exception as e:
+        logger.error(f"Unexpected error deleting Router {router_id!r}: {e!r}")
+        return _error(str(e), status=500)
+
+
+async def _list_routers(request: web.Request) -> web.Response:
+    rm: RouterManager | None = request.app["rm"]
+    return _json([] if rm is None else [asdict(info) for info in await rm.list_all()])
+
+
 async def _create_session(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
     try:
         body = await request.json()
+        backend_type = body.get("backend_type", "ai")
+        backend_id = body.get("backend_id", body.get("ai_id", ""))
         info = await sm.create(
-            ai_id=body["ai_id"],
+            backend_type=backend_type,
+            backend_id=backend_id,
             id=body.get("id", ""),
             workspace=body.get("workspace", ""),
         )
-        return _json(asdict(info), status=201)
+        return _json(_session_data(info), status=201)
     except (TypeError, ValueError, KeyError) as e:
         return _error(str(e), status=400)
     except LookupError as e:
@@ -185,7 +246,7 @@ async def _delete_session(request: web.Request) -> web.Response:
 
 async def _list_sessions(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
-    return _json([asdict(i) for i in await sm.list_all()])
+    return _json([_session_data(info) for info in await sm.list_all()])
 
 
 async def _list_titles(request: web.Request) -> web.Response:
@@ -224,7 +285,13 @@ async def _generate_title(request: web.Request) -> web.Response:
         sess = next((s for s in sessions if s.id == sid), None)
         if not sess:
             return _error("Session not found", status=404)
-        ai_socket = aim.get_socket(sess.ai_id)
+        if sess.backend_type == "ai":
+            ai_socket = aim.get_socket(sess.backend_id)
+        else:
+            rm: RouterManager | None = request.app["rm"]
+            if rm is None:
+                raise LookupError("Router manager is not configured")
+            ai_socket = aim.get_socket(rm.get(sess.backend_id).default_ai_id)
     except LookupError as e:
         return _error(str(e), status=404)
 
