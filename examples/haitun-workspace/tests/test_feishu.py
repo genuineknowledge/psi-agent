@@ -804,12 +804,93 @@ async def test_list_bitable_records(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_create_bitable_record(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke({"record": {"record_id": "recNew", "fields": {"新人": "张三"}}})
     monkeypatch.setattr(_impl, "_invoke", cap)
-    result = await _impl.create_bitable_record_impl("appX", "tbl1", '{"新人":"张三","评分":4}')
+    # validate_fields=False → single write call, no pre-fetch of columns.
+    result = await _impl.create_bitable_record_impl("appX", "tbl1", '{"新人":"张三","评分":4}', validate_fields=False)
     req = cap.request
     assert req.http_method.name == "POST"
     assert req.uri == "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"
     assert req.body["fields"] == {"新人": "张三", "评分": 4}
     assert result["record_id"] == "recNew"
+
+
+class _SequencedInvoke:
+    """Replace _invoke; return canned data dicts in order and record every request."""
+
+    def __init__(self, *datas: dict[str, Any]) -> None:
+        self.requests: list[Any] = []
+        self._datas = list(datas)
+
+    async def __call__(self, request: Any) -> dict[str, Any]:
+        self.requests.append(request)
+        data = self._datas[len(self.requests) - 1] if len(self.requests) <= len(self._datas) else {}
+        return {"ok": True, "code": 0, "msg": "", "data": data}
+
+
+@pytest.mark.asyncio
+async def test_list_bitable_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [
+                {"field_name": "姓名", "type": 1, "ui_type": "Text", "is_primary": True},
+                {"field_name": "Mentor", "type": 1, "ui_type": "Text", "is_primary": False},
+            ],
+            "has_more": False,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_bitable_fields_impl("appX", "tbl1")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields"
+    assert result["field_names"] == ["姓名", "Mentor"]
+    assert result["fields"][0]["is_primary"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_record_validates_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    # First _invoke = list fields (only 中文 columns); the write must be rejected
+    # because the payload uses English keys that Feishu would silently drop.
+    seq = _SequencedInvoke(
+        {"items": [{"field_name": "姓名"}, {"field_name": "Mentor"}, {"field_name": "SOP合规度"}], "has_more": False},
+    )
+    monkeypatch.setattr(_impl, "_invoke", seq)
+    result = await _impl.create_bitable_record_impl("appX", "tbl1", '{"Name":"张三","SOP_Compliance":"合规"}')
+    assert result["ok"] is False
+    assert set(result["unknown_fields"]) == {"Name", "SOP_Compliance"}
+    assert "姓名" in result["valid_fields"]
+    # Only the fields call happened — no write was attempted.
+    assert len(seq.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_record_valid_columns_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    seq = _SequencedInvoke(
+        {"items": [{"field_name": "姓名"}, {"field_name": "Mentor"}], "has_more": False},
+        {"record": {"record_id": "recOK", "fields": {"姓名": "张三", "Mentor": "李四"}}},
+    )
+    monkeypatch.setattr(_impl, "_invoke", seq)
+    result = await _impl.create_bitable_record_impl("appX", "tbl1", '{"姓名":"张三","Mentor":"李四"}')
+    assert result["ok"] is True
+    assert result["record_id"] == "recOK"
+    assert "warning" not in result
+    # fields fetch + write.
+    assert len(seq.requests) == 2
+    assert seq.requests[1].uri == "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records"
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_record_warns_on_dropped_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Column name is valid, but Feishu returns the record with that column empty
+    # (e.g. incompatible type) → we should surface a dropped-value warning.
+    seq = _SequencedInvoke(
+        {"items": [{"field_name": "姓名"}, {"field_name": "评分"}], "has_more": False},
+        {"record": {"record_id": "recW", "fields": {"姓名": "张三"}}},
+    )
+    monkeypatch.setattr(_impl, "_invoke", seq)
+    result = await _impl.create_bitable_record_impl("appX", "tbl1", '{"姓名":"张三","评分":4}')
+    assert result["ok"] is True
+    assert result["dropped_fields"] == ["评分"]
+    assert "warning" in result
 
 
 @pytest.mark.asyncio
@@ -827,7 +908,12 @@ async def test_create_bitable_record_non_object() -> None:
 
 def test_bitable_tools_async_with_docstrings() -> None:
     mod = importlib.import_module("feishu_bitable")
-    for name in ("feishu_bitable_list_tables", "feishu_bitable_list_records", "feishu_bitable_create_record"):
+    for name in (
+        "feishu_bitable_list_tables",
+        "feishu_bitable_list_fields",
+        "feishu_bitable_list_records",
+        "feishu_bitable_create_record",
+    ):
         fn = getattr(mod, name)
         assert inspect.iscoroutinefunction(fn), name
         assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"

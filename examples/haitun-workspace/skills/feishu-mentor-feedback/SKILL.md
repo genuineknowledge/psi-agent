@@ -12,8 +12,29 @@ in Feishu — not lost in chat history.
 
 Uses the generic `feishu_bitable_*` tools:
 - `feishu_bitable_list_tables(app_token)` — find the `table_id`
+- `feishu_bitable_list_fields(app_token, table_id)` — get the exact column names before writing
 - `feishu_bitable_list_records(app_token, table_id, ...)` — read feedback back
 - `feishu_bitable_create_record(app_token, table_id, fields_json)` — record one feedback
+
+## 硬性规矩（务必遵守，否则会静默写错）
+
+1. **一律走 `feishu_bitable_*` 工具，禁止用 `bash`/`powershell` 里的 `urllib`/`requests`
+   裸调飞书 REST API 写表。** 裸调绕过了所有列名校验，飞书会把对不上的列静默丢弃
+   还返回成功，导致"表里只有姓名列有值，其他列全空"。
+2. **写数据前必须先 `feishu_bitable_list_fields` 拿到真实列名**，`fields_json` 的每个 key
+   必须与返回的 `field_names` **逐字一致**（含中文、大小写、标点、括号）。
+3. **确认写的是哪一张表**：一个 base 里常有多张表，`table_id` 用错就会写到别的表去。
+4. 写完检查工具返回：若有 `warning` / `dropped_fields`，说明那几列的值被飞书丢了，
+   必须改对列名重写，**不要当成功汇报**。
+
+### ⚠️ 真实翻车案例（引以为戒）
+
+一次填导师反馈表时，用 `bash`+`urllib` 裸调 API，`fields` 的 key 写成了英文
+（`Name`/`Mentor`/`SOP_Compliance`/`Score`），而表的真实列名是中文
+（`姓名`/`Mentor`/`填写状态`/`SOP合规度`）。飞书对不上的英文列**全部静默丢弃、仍返回
+`code:0`**，结果表里前一批记录只有主键姓名落了值，Mentor/填写状态/SOP合规度整列空白，
+且脚本打印 `DONE: 22/22` 让人误以为成功。根因就是"裸调 + 列名不匹配 + 飞书静默丢值"。
+现在用 `feishu_bitable_create_record` 会先校验列名并拦截，务必用工具、不要裸调。
 
 ## Prerequisites
 
@@ -56,13 +77,16 @@ If the user hasn't made a table yet, suggest these columns (they can adapt):
 When a mentor gives feedback in conversation:
 
 1. Resolve `app_token` (once) and `table_id` (via `feishu_bitable_list_tables`).
-2. Build `fields_json` matching the table's real column names, e.g.:
+2. Get the real column names via `feishu_bitable_list_fields(app_token, table_id)`.
+3. Build `fields_json` whose keys exactly match those column names, e.g.:
    ```json
    {"新人":"张三","Mentor":"李四","日期":"2026-07-14","反馈内容":"本周主动承担了两个模块，沟通清晰；下一步多写测试。","评分":4,"标签":"主动性"}
    ```
-3. Call `feishu_bitable_create_record(app_token, table_id, fields_json)`.
-4. Confirm with the returned `record_id`. If it returns `ok=false`, surface the
+4. Call `feishu_bitable_create_record(app_token, table_id, fields_json)`.
+5. Confirm with the returned `record_id`. If it returns `ok=false`, surface the
    Feishu error (often a permission or column-name mismatch) — don't claim success.
+   If it returns a `warning`/`dropped_fields`, those columns were silently dropped —
+   fix the column names and rewrite; don't report it as done.
 
 Notes: column names in `fields_json` must exactly match the table's fields; date
 columns often accept a string like `"2026-07-14"` but some bases want a timestamp

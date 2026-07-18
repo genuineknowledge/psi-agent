@@ -1194,6 +1194,55 @@ async def list_bitable_records_impl(
     }
 
 
+def _build_list_fields_request(app_token: str, table_id: str, page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_bitable_fields_impl(app_token: str, table_id: str) -> dict[str, Any]:
+    """List a bitable table's columns (fields). Returns [{field_name, type, ui_type, is_primary}].
+
+    Pages through all fields so the returned ``field_names`` is the complete set —
+    callers rely on it to validate record payloads before writing.
+    """
+    names: list[str] = []
+    fields: list[dict[str, Any]] = []
+    page_token = ""
+    while True:
+        res = await _invoke(_build_list_fields_request(app_token, table_id, 100, page_token))
+        if not res["ok"]:
+            return res
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        items = data.get("items", []) if isinstance(data.get("items"), list) else []
+        for f in items:
+            if not isinstance(f, dict):
+                continue
+            name = f.get("field_name", "")
+            names.append(name)
+            fields.append(
+                {
+                    "field_name": name,
+                    "type": f.get("type"),
+                    "ui_type": f.get("ui_type", ""),
+                    "is_primary": bool(f.get("is_primary")),
+                }
+            )
+        if not data.get("has_more"):
+            break
+        page_token = data.get("page_token", "")
+        if not page_token:
+            break
+    return {"ok": True, "fields": fields, "field_names": names, "count": len(fields)}
+
+
 def _build_create_record_request(app_token: str, table_id: str, fields: dict[str, Any]) -> BaseRequest:
     req = BaseRequest()
     req.http_method = HttpMethod.POST
@@ -1205,20 +1254,79 @@ def _build_create_record_request(app_token: str, table_id: str, fields: dict[str
     return req
 
 
-async def create_bitable_record_impl(app_token: str, table_id: str, fields_json: str) -> dict[str, Any]:
-    """Create one record in a bitable table. fields_json is a JSON object of {column: value}."""
+async def create_bitable_record_impl(
+    app_token: str, table_id: str, fields_json: str, validate_fields: bool = True
+) -> dict[str, Any]:
+    """Create one record in a bitable table. fields_json is a JSON object of {column: value}.
+
+    Guards against Feishu's silent-drop behavior: unknown column names are NOT
+    rejected by the API — it returns success (code 0) and just discards the value,
+    leaving that column blank. So by default we:
+
+    1. Fetch the table's real column names first and reject the write if any key in
+       ``fields`` doesn't exist, listing the unknown keys and the valid columns.
+    2. After a successful write, compare the returned record against the request and
+       warn about any column we sent a non-empty value for that came back empty.
+
+    Set ``validate_fields=False`` to skip the pre-write field fetch (one fewer API
+    call) when the caller has already confirmed the column names.
+    """
     try:
         fields = json.loads(fields_json)
     except ValueError as exc:
         return _error(f"fields_json is not valid JSON: {exc}")
     if not isinstance(fields, dict):
         return _error("fields_json must be a JSON object mapping column names to values.")
+    if not fields:
+        return _error("fields_json is empty — nothing to write.")
+
+    valid_names: list[str] | None = None
+    if validate_fields:
+        fres = await list_bitable_fields_impl(app_token, table_id)
+        if not fres["ok"]:
+            return _error(
+                "Could not read the table's columns to validate the write: "
+                f"{fres.get('message', 'unknown error')}. "
+                "Fix access to the table, or pass validate_fields=false to skip this check.",
+                **{k: v for k, v in fres.items() if k not in ("ok", "message")},
+            )
+        valid_names = fres["field_names"]
+        unknown = [k for k in fields if k not in valid_names]
+        if unknown:
+            return _error(
+                f"These column names don't exist in the table and would be silently dropped by Feishu: {unknown}. "
+                f"Valid columns are: {valid_names}. "
+                "Fix the keys in fields_json to match the table's real column names exactly.",
+                unknown_fields=unknown,
+                valid_fields=valid_names,
+            )
+
     res = await _invoke(_build_create_record_request(app_token, table_id, fields))
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
     record = data.get("record", {}) if isinstance(data.get("record"), dict) else {}
-    return {"ok": True, "record_id": record.get("record_id", ""), "fields": record.get("fields", {})}
+    written = record.get("fields", {}) if isinstance(record.get("fields"), dict) else {}
+
+    # Post-write check: a column we sent a non-empty value for that came back empty
+    # means Feishu dropped it (wrong name, wrong type, or not writable).
+    dropped = [
+        k
+        for k, v in fields.items()
+        if v not in (None, "", [], {}) and (k not in written or written.get(k) in (None, "", [], {}))
+    ]
+    result: dict[str, Any] = {
+        "ok": True,
+        "record_id": record.get("record_id", ""),
+        "fields": written,
+    }
+    if dropped:
+        result["warning"] = (
+            f"Feishu accepted the write but these columns came back empty — the values were dropped: {dropped}. "
+            "Usually a column-name mismatch or an incompatible field type. Verify the column names/types and rewrite."
+        )
+        result["dropped_fields"] = dropped
+    return result
 
 
 # ── Attendance (考勤) — read clock-in/out results (read-only) ─────────────────

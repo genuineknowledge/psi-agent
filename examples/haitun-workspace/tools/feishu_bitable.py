@@ -66,14 +66,42 @@ async def feishu_bitable_list_records(
     )
 
 
-async def feishu_bitable_create_record(app_token: str, table_id: str, fields_json: str) -> str:
+async def feishu_bitable_list_fields(app_token: str, table_id: str) -> str:
+    """List a Feishu bitable table's columns (fields) and their names/types.
+
+    Call this BEFORE writing records: ``feishu_bitable_create_record`` validates
+    your column names against this list, and Feishu silently drops values whose
+    column name doesn't match a real field. Returns ``field_names`` (the exact
+    strings to use as keys in ``fields_json``) plus each field's type/ui_type.
+
+    Args:
+        app_token: The base's app_token (from a feishu.cn/base/<app_token> URL).
+        table_id: The table's id (from ``feishu_bitable_list_tables``).
+    """
+    return _f.dumps_result(await _f.list_bitable_fields_impl(app_token, table_id))
+
+
+async def feishu_bitable_create_record(
+    app_token: str, table_id: str, fields_json: str, validate_fields: bool = True
+) -> str:
     """Create one record (row) in a Feishu bitable table.
+
+    IMPORTANT: Feishu silently drops values for column names that don't exist in
+    the table — the API returns success and just leaves that column blank. This
+    tool guards against that: by default it fetches the table's real columns first
+    and refuses the write (``ok=false``) if any key in ``fields_json`` is unknown,
+    telling you the valid column names. After writing it also warns if any value
+    came back empty (``dropped_fields``). Get the exact column names from
+    ``feishu_bitable_list_fields`` first, and make every key match a real column.
 
     Args:
         app_token: The base's app_token.
         table_id: The table's id (from ``feishu_bitable_list_tables``).
         fields_json: A JSON object string mapping column names to values, e.g.
             '{"新人":"张三","Mentor":"李四","反馈内容":"进步明显","评分":4}'.
-            Column names must match the table's fields.
+            Column names must match the table's fields exactly.
+        validate_fields: When true (default), fetch the table's columns and reject
+            unknown column names before writing. Set false only when you have
+            already confirmed the names (saves one API call).
     """
-    return _f.dumps_result(await _f.create_bitable_record_impl(app_token, table_id, fields_json))
+    return _f.dumps_result(await _f.create_bitable_record_impl(app_token, table_id, fields_json, validate_fields))
