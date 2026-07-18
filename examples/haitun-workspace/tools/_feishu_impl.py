@@ -22,6 +22,26 @@ from lark_channel.api.wiki import node as _wiki_node
 from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
 
+
+def _load_workspace_env() -> None:
+    """Load PSI_* vars from the workspace-root .env so Feishu tools work without
+    relying on the launching process's environment. Existing env vars win."""
+    env_path = pathlib.Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.is_file():
+        return
+    with env_path.open("r", encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if key and not os.environ.get(key, "").strip():
+                os.environ[key] = value.strip()
+
+
+_load_workspace_env()
+
 _client: Any = None
 
 
