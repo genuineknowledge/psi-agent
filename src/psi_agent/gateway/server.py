@@ -11,6 +11,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._logging import trace_middleware
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
@@ -73,7 +74,7 @@ async def create_app(
     app_name: str = DEFAULT_APP_NAME,
     attention: AttentionHub | None = None,
 ) -> web.Application:
-    app = web.Application(client_max_size=100 * 1024 * 1024)
+    app = web.Application(client_max_size=100 * 1024 * 1024, middlewares=[trace_middleware])
     app["aim"] = aim
     app["sm"] = sm
     app["tm"] = tm
@@ -129,7 +130,7 @@ async def _create_ai(request: web.Request) -> web.Response:
     except (TypeError, ValueError, KeyError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error creating AI: {e!r}")
+        logger.exception("Unexpected error creating AI")
         return _error(str(e), status=500)
 
 
@@ -142,7 +143,7 @@ async def _delete_ai(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting AI {ai_id!r}: {e!r}")
+        logger.exception(f"Unexpected error deleting AI {ai_id!r}")
         return _error(str(e), status=500)
 
 
@@ -166,7 +167,7 @@ async def _create_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error creating session: {e!r}")
+        logger.exception("Unexpected error creating session")
         return _error(str(e), status=500)
 
 
@@ -179,7 +180,7 @@ async def _delete_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting session {session_id!r}: {e!r}")
+        logger.exception(f"Unexpected error deleting session {session_id!r}")
         return _error(str(e), status=500)
 
 
@@ -203,7 +204,7 @@ async def _set_title(request: web.Request) -> web.Response:
     except (KeyError, TypeError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error setting title: {e!r}")
+        logger.exception("Unexpected error setting title")
         return _error(str(e), status=500)
 
 

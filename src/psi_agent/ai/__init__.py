@@ -10,7 +10,7 @@ from aiohttp import web
 from aiohttp.typedefs import Handler
 from loguru import logger
 
-from psi_agent._logging import setup_logging
+from psi_agent._logging import setup_logging, trace_middleware
 from psi_agent._sockets import create_site
 
 from .server import handle_chat_completions
@@ -33,7 +33,7 @@ async def serve_ai(
         f"(provider={provider!r}, model={model!r}, base_url={base_url}, api_key={api_key_status})"
     )
 
-    app = web.Application()
+    app = web.Application(middlewares=[trace_middleware])
     app["provider"] = provider
     app["model"] = model
     app["api_key"] = api_key

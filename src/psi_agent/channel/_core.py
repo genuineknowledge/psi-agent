@@ -10,6 +10,7 @@ import anyio
 from aiohttp import ClientTimeout
 from loguru import logger
 
+from psi_agent._logging import trace_id_var
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._markers import SendMarkerScanner, encode_input
@@ -30,7 +31,7 @@ class ChannelCore:
 
     async def __aenter__(self) -> ChannelCore:
         connector, self._endpoint = resolve_connector_and_endpoint(self.session_socket)
-        self._session = aiohttp.ClientSession(connector=connector, timeout=ClientTimeout(total=None))
+        self._session = aiohttp.ClientSession(connector=connector, timeout=ClientTimeout(total=None, connect=30.0))
         return self
 
     async def __aexit__(self, *args: object) -> None:
@@ -50,8 +51,13 @@ class ChannelCore:
         buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()
 
+        headers = {}
+        trace_id = trace_id_var.get()
+        if trace_id:
+            headers["X-Trace-ID"] = trace_id
+
         logger.debug(f"POST {self._endpoint} content_len={len(content)}")
-        async with self._session.post(self._endpoint, json=body) as resp:
+        async with self._session.post(self._endpoint, json=body, headers=headers) as resp:
             logger.info(f"HTTP {resp.status}")
 
             if resp.status != 200:

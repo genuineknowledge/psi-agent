@@ -9,6 +9,14 @@ from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
 
+from psi_agent._logging import retry_async
+
+
+@retry_async(attempts=3, delay=1.0, backoff=2.0)
+async def _call_acompletion(**kwargs: Any) -> Any:
+    """Helper to wrap acompletion with exponential backoff retries."""
+    return await acompletion(**kwargs)
+
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.info("Received chat completion request")
@@ -16,7 +24,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         body: dict[str, Any] = await request.json()
         logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:1000]}")
     except Exception as e:
-        logger.error(f"Failed to parse request body: {e!r}")
+        logger.exception("Failed to parse request body")
         # OpenAI-compatible error response.
         return web.json_response(
             {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
@@ -48,6 +56,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             "X-Accel-Buffering": "no",
         },
     )
+
     try:
         await response.prepare(request)
     except Exception:
@@ -59,12 +68,10 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     client_gone = False
     stream: AsyncIterator[ChatCompletionChunk] | None = None
     try:
+        # Call acompletion first, with exponential retries if transient error occurs.
         stream = cast(
             AsyncIterator[ChatCompletionChunk],
-            # ``acompletion()`` returns ``ChatCompletion | AsyncIterator[ChatCompletionChunk]``
-            # depending on the ``stream`` flag.  We always pass ``stream=True``, so the
-            # runtime type is always ``AsyncIterator[ChatCompletionChunk]`` — the cast is safe.
-            await acompletion(
+            await _call_acompletion(
                 provider=provider,
                 model=model,
                 messages=messages,
@@ -74,6 +81,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 **body,
             ),
         )
+
         logger.debug("Starting to consume upstream SSE stream")
         async for chunk in stream:
             data = chunk.model_dump_json()
@@ -86,7 +94,8 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         logger.info("Client disconnected; cancelling upstream stream")
     except Exception as e:
         upstream_error = True
-        logger.error(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e!r}")
+        logger.exception(f"Error forwarding to upstream (provider={provider!r}, model={model!r})")
+
         err_chunk = json.dumps(
             {
                 "id": "error",

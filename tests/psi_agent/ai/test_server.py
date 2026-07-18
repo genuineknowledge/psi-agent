@@ -93,6 +93,103 @@ async def test_upstream_stream_closed_after_normal_completion(tmp_path: Path, mo
 
 
 @pytest.mark.anyio
+async def test_upstream_retry_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that acompletion is retried up to 3 times on failure, succeeding if a subsequent attempt works."""
+    call_count = 0
+    stream = _TrackingStream([_FakeChunk()])
+
+    async def fake_acompletion(**kwargs: Any) -> _TrackingStream:
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise RuntimeError(f"attempt {call_count} boom")
+        return stream
+
+    monkeypatch.setattr("psi_agent.ai.server.acompletion", fake_acompletion)
+
+    async def fake_sleep(seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr("anyio.sleep", fake_sleep)
+
+    app = web.Application()
+    app["provider"] = "openai"
+    app["model"] = "test"
+    app["api_key"] = "k"
+    app["base_url"] = "http://upstream"
+    app.router.add_post("/chat/completions", handle_chat_completions)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    try:
+        socket_path = str(tmp_path / "ai_retry.sock")
+        site = web.UnixSite(runner, socket_path)
+        await site.start()
+        await anyio.sleep(0.05)
+
+        body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        connector = UnixConnector(path=socket_path)
+        timeout = ClientTimeout(total=5)
+        async with (
+            ClientSession(connector=connector, timeout=timeout) as s,
+            s.post("http://localhost/chat/completions", json=body) as resp,
+        ):
+            assert resp.status == 200
+            content = await resp.read()
+            assert b"hi" in content
+
+        assert call_count == 3
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_upstream_retry_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that acompletion fails after 3 attempts and returns an SSE error chunk."""
+    call_count = 0
+
+    async def fake_acompletion(**kwargs: Any) -> Any:
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError(f"attempt {call_count} boom")
+
+    monkeypatch.setattr("psi_agent.ai.server.acompletion", fake_acompletion)
+
+    async def fake_sleep(seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr("anyio.sleep", fake_sleep)
+
+    app = web.Application()
+    app["provider"] = "openai"
+    app["model"] = "test"
+    app["api_key"] = "k"
+    app["base_url"] = "http://upstream"
+    app.router.add_post("/chat/completions", handle_chat_completions)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    try:
+        socket_path = str(tmp_path / "ai_fail.sock")
+        site = web.UnixSite(runner, socket_path)
+        await site.start()
+        await anyio.sleep(0.05)
+
+        body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+        connector = UnixConnector(path=socket_path)
+        timeout = ClientTimeout(total=5)
+        async with (
+            ClientSession(connector=connector, timeout=timeout) as s,
+            s.post("http://localhost/chat/completions", json=body) as resp,
+        ):
+            assert resp.status == 200
+            content = await resp.read()
+            assert b"[Upstream Error]: attempt 3 boom" in content
+
+        assert call_count == 3
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_upstream_stream_closed_after_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The upstream stream must be closed even when iteration raises mid-stream."""
     stream = _TrackingStream([_FakeChunk()], raise_after=1)

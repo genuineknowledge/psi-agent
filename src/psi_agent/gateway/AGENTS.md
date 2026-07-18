@@ -201,6 +201,7 @@ workspace 中的 history JSONL 不受影响。
 | POST | `/ui/attention` | 会话在后台完成时闪烁托盘/webview（best-effort，需 `--tray` / `--webview`） |
 | GET | `/workspace/browse` | 浏览目录 `?path=...` |
 | GET | `/workspace/cwd` | 获取服务端当前工作目录 |
+| GET | `/workspace/roots` | 获取系统根目录/驱动器列表 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--icon` 设置时注册，返回该图标文件） |
 

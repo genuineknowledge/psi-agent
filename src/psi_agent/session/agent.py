@@ -10,6 +10,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._logging import trace_context
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
@@ -100,37 +101,38 @@ class SessionAgent:
 
     async def handle_request(self, request: web.Request) -> web.StreamResponse:
         """aiohttp handler registered by ``serve_session``."""
-        try:
-            user_message, extra_params = await self._channel_adapter.parse_request(request)
-        except ChannelAdapter.ParseError as e:
-            return web.json_response(
-                {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
-                status=400,
+        async with trace_context(request):
+            try:
+                user_message, extra_params = await self._channel_adapter.parse_request(request)
+            except ChannelAdapter.ParseError as e:
+                return web.json_response(
+                    {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
+                    status=400,
+                )
+
+            response = web.StreamResponse(
+                status=200,
+                reason="OK",
+                headers={
+                    "Content-Type": "text/event-stream",
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
             )
 
-        response = web.StreamResponse(
-            status=200,
-            reason="OK",
-            headers={
-                "Content-Type": "text/event-stream",
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
+            async with self._lock:
+                try:
+                    await response.prepare(request)
+                except Exception:
+                    logger.warning("Failed to prepare SSE response, client likely disconnected")
+                    return response
 
-        async with self._lock:
-            try:
-                await response.prepare(request)
-            except Exception:
-                logger.warning("Failed to prepare SSE response, client likely disconnected")
-                return response
+                logger.info("Acquired session lock, processing request")
+                await self._channel_adapter.write(response, self.run(user_message, extra_params))
 
-            logger.info("Acquired session lock, processing request")
-            await self._channel_adapter.write(response, self.run(user_message, extra_params))
-
-        logger.info("Session request completed")
-        return response
+            logger.info("Session request completed")
+            return response
 
     # -- agent loop -----------------------------------------------------------
 
