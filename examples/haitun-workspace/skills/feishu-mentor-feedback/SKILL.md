@@ -37,6 +37,20 @@ If the user hasn't made a table yet, suggest these columns (they can adapt):
 | 评分 | 数字 | Optional 1–5 |
 | 标签 | 文本 | Optional theme (沟通/技术/主动性…) |
 
+### 飞书默认空行/空列（重要）
+
+飞书新建一张数据表时会**自动带上几个默认空列**（如"文本""单选""附件"占位列）
+和**一批默认空行**。这不是工具产生的——`feishu_bitable_create_record` 只追加数据行，
+不会碰这些预置内容。若不处理，最终表里会同时出现你的数据 + 一堆飞书预置的空行空列。
+
+所以建表后、写数据前，提醒用户在飞书界面里先清理一次：
+- **删空列**：右键预置列的列头 → 删除字段，只保留下表约定的列。
+- **删空行**：选中预置空行 → 右键 → 删除行（或先清空默认表再写）。
+- 然后**确认剩下的列名与 `fields_json` 的键完全一致**——列名对不上时，飞书不会把值
+  填进去（那一列会一直空着），也不报错，容易误以为写成功了。
+
+工具本身不提供删行/删字段能力（YAGNI），清理默认空行空列需在飞书界面手动做一次。
+
 ## Recording feedback
 
 When a mentor gives feedback in conversation:
