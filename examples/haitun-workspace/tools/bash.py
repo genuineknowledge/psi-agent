@@ -47,14 +47,20 @@ async def bash(command: str, timeout_seconds: int = 30) -> str:
             "[Error] bash executable was not found on PATH. Install Git Bash, WSL, or bash before using this workspace."
         )
 
+    # Force UTF-8 for any Python (and most CLIs) spawned by the command. On Windows
+    # the child would otherwise default to the system codepage (GBK/cp936), so any
+    # non-ASCII stdout comes back as mojibake once we decode it as UTF-8 below. On
+    # Linux/macOS the locale is already UTF-8, so this is a harmless no-op.
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
     try:
         with anyio.fail_after(timeout_seconds):
-            result = await anyio.run_process([bash, "-lc", command], check=False)
+            result = await anyio.run_process([bash, "-lc", command], check=False, env=env)
     except TimeoutError:
         return f"[Error] Command timed out after {timeout_seconds}s: {command}"
 
-    out = result.stdout.decode(errors="replace")
-    err = result.stderr.decode(errors="replace")
+    out = result.stdout.decode("utf-8", errors="replace")
+    err = result.stderr.decode("utf-8", errors="replace")
     combined = (out + err).rstrip()
 
     if result.returncode != 0:
