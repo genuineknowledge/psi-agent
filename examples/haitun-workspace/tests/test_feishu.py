@@ -825,9 +825,101 @@ async def test_create_bitable_record_non_object() -> None:
     assert result["ok"] is False
 
 
+@pytest.mark.asyncio
+async def test_delete_bitable_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.delete_bitable_records_impl("appX", "tbl1", "recA, recB")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri.endswith("/records/batch_delete")
+    assert req.paths["table_id"] == "tbl1"
+    assert req.body["records"] == ["recA", "recB"]
+    assert result["deleted"] == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_bitable_records_empty() -> None:
+    result = await _impl.delete_bitable_records_impl("appX", "tbl1", " , ")
+    assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_clear_bitable_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke(
+        [
+            {"items": [{"record_id": "r1"}, {"record_id": "r2"}], "has_more": True, "page_token": "pt2"},
+            {"items": [{"record_id": "r3"}], "has_more": False, "page_token": ""},
+            {},  # batch_delete response
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.clear_bitable_table_impl("appX", "tbl1")
+    assert result["deleted"] == 3
+    # last request is the batch_delete carrying all 3 ids
+    assert paged.requests[-1].body["records"] == ["r1", "r2", "r3"]
+
+
+@pytest.mark.asyncio
+async def test_clear_bitable_table_already_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.clear_bitable_table_impl("appX", "tbl1")
+    assert result["ok"] is True
+    assert result["deleted"] == 0
+
+
+@pytest.mark.asyncio
+async def test_list_bitable_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [
+                {"field_id": "fld1", "field_name": "标题", "type": 1, "is_primary": True},
+                {"field_id": "fld2", "field_name": "文本", "type": 1, "is_primary": False},
+            ],
+            "has_more": False,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_bitable_fields_impl("appX", "tbl1")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri.endswith("/fields")
+    assert result["fields"][0] == {"field_id": "fld1", "name": "标题", "type": "文本", "is_primary": True}
+    assert result["fields"][1]["is_primary"] is False
+    assert result["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_bitable_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke([{}, {}])
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.delete_bitable_fields_impl("appX", "tbl1", "fldA, fldB")
+    assert result["deleted"] == ["fldA", "fldB"]
+    assert result["count"] == 2
+    last = paged.requests[-1]
+    assert last.http_method.name == "DELETE"
+    assert last.uri.endswith("/fields/:field_id")
+    assert last.paths["field_id"] == "fldB"
+
+
+@pytest.mark.asyncio
+async def test_delete_bitable_fields_empty() -> None:
+    result = await _impl.delete_bitable_fields_impl("appX", "tbl1", "")
+    assert result["ok"] is False
+
+
 def test_bitable_tools_async_with_docstrings() -> None:
     mod = importlib.import_module("feishu_bitable")
-    for name in ("feishu_bitable_list_tables", "feishu_bitable_list_records", "feishu_bitable_create_record"):
+    for name in (
+        "feishu_bitable_list_tables",
+        "feishu_bitable_list_records",
+        "feishu_bitable_create_record",
+        "feishu_bitable_delete_records",
+        "feishu_bitable_clear_table",
+        "feishu_bitable_list_fields",
+        "feishu_bitable_delete_fields",
+    ):
         fn = getattr(mod, name)
         assert inspect.iscoroutinefunction(fn), name
         assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"

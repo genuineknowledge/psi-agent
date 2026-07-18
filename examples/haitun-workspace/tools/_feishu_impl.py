@@ -1201,6 +1201,147 @@ async def create_bitable_record_impl(app_token: str, table_id: str, fields_json:
     return {"ok": True, "record_id": record.get("record_id", ""), "fields": record.get("fields", {})}
 
 
+def _build_batch_delete_records_request(app_token: str, table_id: str, record_ids: list[str]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/batch_delete"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"records": record_ids}
+    return req
+
+
+async def delete_bitable_records_impl(app_token: str, table_id: str, record_ids: str) -> dict[str, Any]:
+    """Delete records (rows) by id. record_ids is comma-separated; batches of 500."""
+    ids = [r.strip() for r in record_ids.split(",") if r.strip()]
+    if not ids:
+        return _error("No record_ids provided (comma-separated record ids).")
+    deleted = 0
+    for i in range(0, len(ids), 500):
+        batch = ids[i : i + 500]
+        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch))
+        if not res["ok"]:
+            return {**res, "deleted": deleted}
+        deleted += len(batch)
+    return {"ok": True, "deleted": deleted, "record_ids": ids}
+
+
+async def clear_bitable_table_impl(app_token: str, table_id: str) -> dict[str, Any]:
+    """Delete ALL records (rows) in a table — pages through every record, then batch-deletes."""
+    ids: list[str] = []
+    page_token = ""
+    while True:
+        res = await _invoke(_build_list_records_request(app_token, table_id, 500, page_token, "", "", ""))
+        if not res["ok"]:
+            return res
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        for r in data.get("items", []) if isinstance(data.get("items"), list) else []:
+            rid = r.get("record_id", "")
+            if rid:
+                ids.append(rid)
+        page_token = data.get("page_token", "") or ""
+        if not data.get("has_more") or not page_token:
+            break
+    if not ids:
+        return {"ok": True, "deleted": 0, "note": "table already has no records"}
+    deleted = 0
+    for i in range(0, len(ids), 500):
+        batch = ids[i : i + 500]
+        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch))
+        if not res["ok"]:
+            return {**res, "deleted": deleted}
+        deleted += len(batch)
+    return {"ok": True, "deleted": deleted}
+
+
+_BITABLE_FIELD_TYPES = {
+    1: "文本",
+    2: "数字",
+    3: "单选",
+    4: "多选",
+    5: "日期",
+    7: "复选框",
+    11: "人员",
+    13: "电话",
+    15: "超链接",
+    17: "附件",
+    18: "单向关联",
+    20: "公式",
+    21: "双向关联",
+    22: "地理位置",
+    23: "群组",
+    1001: "创建时间",
+    1002: "最后更新时间",
+    1003: "创建人",
+    1004: "修改人",
+    1005: "自动编号",
+}
+
+
+def _build_list_fields_request(app_token: str, table_id: str, page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_bitable_fields_impl(app_token: str, table_id: str) -> dict[str, Any]:
+    """List a table's fields (columns). Returns [{field_id, name, type, is_primary}] for all fields."""
+    fields: list[dict[str, Any]] = []
+    page_token = ""
+    while True:
+        res = await _invoke(_build_list_fields_request(app_token, table_id, 100, page_token))
+        if not res["ok"]:
+            return res
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        for f in data.get("items", []) if isinstance(data.get("items"), list) else []:
+            ftype = f.get("type")
+            fields.append(
+                {
+                    "field_id": f.get("field_id", ""),
+                    "name": f.get("field_name", ""),
+                    "type": _BITABLE_FIELD_TYPES.get(ftype, ftype),
+                    "is_primary": bool(f.get("is_primary")),
+                }
+            )
+        page_token = data.get("page_token", "") or ""
+        if not data.get("has_more") or not page_token:
+            break
+    return {"ok": True, "fields": fields, "count": len(fields)}
+
+
+def _build_delete_field_request(app_token: str, table_id: str, field_id: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.DELETE
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields/:field_id"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.paths["field_id"] = field_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def delete_bitable_fields_impl(app_token: str, table_id: str, field_ids: str) -> dict[str, Any]:
+    """Delete fields (columns) by id. field_ids is comma-separated. Primary field cannot be deleted."""
+    ids = [f.strip() for f in field_ids.split(",") if f.strip()]
+    if not ids:
+        return _error("No field_ids provided (comma-separated field ids from feishu_bitable_list_fields).")
+    deleted: list[str] = []
+    for fid in ids:
+        res = await _invoke(_build_delete_field_request(app_token, table_id, fid))
+        if not res["ok"]:
+            return {**res, "deleted": deleted, "failed_field_id": fid}
+        deleted.append(fid)
+    return {"ok": True, "deleted": deleted, "count": len(deleted)}
+
+
 # ── Attendance (考勤) — read clock-in/out results (read-only) ─────────────────
 #
 # Query attendance task results (who clocked in/out, when, where, and whether

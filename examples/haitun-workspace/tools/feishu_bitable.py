@@ -77,3 +77,60 @@ async def feishu_bitable_create_record(app_token: str, table_id: str, fields_jso
             Column names must match the table's fields.
     """
     return _f.dumps_result(await _f.create_bitable_record_impl(app_token, table_id, fields_json))
+
+
+async def feishu_bitable_delete_records(app_token: str, table_id: str, record_ids: str) -> str:
+    """Delete records (rows) from a Feishu bitable table by id.
+
+    Use to remove specific rows — e.g. Feishu's default empty rows on a new table.
+    Get record_ids from ``feishu_bitable_list_records``. Deletes in batches of 500.
+
+    Args:
+        app_token: The base's app_token.
+        table_id: The table's id (from ``feishu_bitable_list_tables``).
+        record_ids: Comma-separated record ids to delete, e.g. "recAAA,recBBB".
+    """
+    return _f.dumps_result(await _f.delete_bitable_records_impl(app_token, table_id, record_ids))
+
+
+async def feishu_bitable_clear_table(app_token: str, table_id: str) -> str:
+    """Delete ALL records (rows) in a Feishu bitable table.
+
+    Pages through every record and batch-deletes them — useful to wipe a table's
+    default empty rows (or all data) before writing fresh records. Fields/columns
+    are NOT touched (use ``feishu_bitable_delete_fields`` for columns).
+
+    Args:
+        app_token: The base's app_token.
+        table_id: The table's id (from ``feishu_bitable_list_tables``).
+    """
+    return _f.dumps_result(await _f.clear_bitable_table_impl(app_token, table_id))
+
+
+async def feishu_bitable_list_fields(app_token: str, table_id: str) -> str:
+    """List a Feishu bitable table's fields (columns).
+
+    Returns ``{field_id, name, type, is_primary}`` per field. Use this to find the
+    field_id of columns you want to remove (e.g. Feishu's default placeholder
+    columns) before calling ``feishu_bitable_delete_fields``.
+
+    Args:
+        app_token: The base's app_token.
+        table_id: The table's id (from ``feishu_bitable_list_tables``).
+    """
+    return _f.dumps_result(await _f.list_bitable_fields_impl(app_token, table_id))
+
+
+async def feishu_bitable_delete_fields(app_token: str, table_id: str, field_ids: str) -> str:
+    """Delete fields (columns) from a Feishu bitable table by id.
+
+    Use to remove Feishu's default empty/placeholder columns. Get field_ids from
+    ``feishu_bitable_list_fields``. The primary (index) column cannot be deleted —
+    Feishu returns error 1254046 for it.
+
+    Args:
+        app_token: The base's app_token.
+        table_id: The table's id (from ``feishu_bitable_list_tables``).
+        field_ids: Comma-separated field ids to delete, e.g. "fldAAA,fldBBB".
+    """
+    return _f.dumps_result(await _f.delete_bitable_fields_impl(app_token, table_id, field_ids))
