@@ -66,14 +66,16 @@
           </div>
           <ChatArea v-else key="chat" />
           <InputBar
-            @select-ai="selectAI"
+            @select-backend="selectBackend"
             @delete-ai="confirmDeleteAI"
+            @delete-router="confirmDeleteRouter"
           />
         </template>
       </div>
     </div>
 
     <AiDialog @create="createAI" @fetchModels="fetchAvailableModels" />
+    <RouterDialog :show="dlgRouter" @close="dlgRouter = false" @connect-ai="openAiFromRouter" @submit="createRouter" />
     <PathPickerDialog />
     <ConfirmDialog @confirm="executeConfirmedAction" />
     <Snackbar />
@@ -86,6 +88,7 @@ import { storeToRefs } from 'pinia'
 import { useBreakpoints, useDropZone, useStorage, useEventListener } from '@vueuse/core'
 import { useAiStore } from './stores/ai.js'
 import { useSessionStore } from './stores/session.js'
+import { useRouterStore } from './stores/router.js'
 import { useChatStore } from './stores/chat.js'
 import { useUiStore } from './stores/ui.js'
 import { api } from './api.js'
@@ -120,6 +123,7 @@ import InputBar from './components/InputBar.vue'
 import NoWorkspaceView from './components/NoWorkspaceView.vue'
 import NoSessionView from './components/NoSessionView.vue'
 import AiDialog from './components/AiDialog.vue'
+import RouterDialog from './components/RouterDialog.vue'
 import PathPickerDialog from './components/PathPickerDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import Snackbar from './components/Snackbar.vue'
@@ -136,15 +140,17 @@ const greetingText = computed(() =>
 
 const ai = useAiStore()
 const { ais, selectedAiId, aiForm, fetchedModels, loadingModels } = storeToRefs(ai)
+const router = useRouterStore()
+const { routers } = storeToRefs(router)
 
 const session = useSessionStore()
-const { sessions, selectedSessionId, draftSession, sessionTitles, selectedWorkspacePath, gatewayCwd } = storeToRefs(session)
+const { sessions, selectedSessionId, selectedBackendType, selectedBackendId, draftSession, sessionTitles, selectedWorkspacePath, gatewayCwd } = storeToRefs(session)
 
 const chat = useChatStore()
 const { messages, selectedFiles } = storeToRefs(chat)
 
 const ui = useUiStore()
-const { loadingEnv, isLightMode, isDragging, dlgAI, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen } = storeToRefs(ui)
+const { loadingEnv, isLightMode, isDragging, dlgAI, dlgRouter, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen } = storeToRefs(ui)
 
 const { mainView, isChatActive, MainView } = useMainView()
 
@@ -202,8 +208,13 @@ async function refreshSessions() {
   session.syncRegisteredWorkspaces()
 }
 
+async function refreshRouters() {
+  try { routers.value = await api('GET', '/routers') } catch (_) { routers.value = [] }
+}
+
 async function refreshAll() {
   await refreshAIs()
+  await refreshRouters()
   await refreshSessions()
 }
 
@@ -214,6 +225,16 @@ function confirmDeleteAI(id) {
   dlgConfirm.value.actionType = 'ai'
   dlgConfirm.value.actionArgs = id
   dlgConfirm.value.show = true
+}
+
+function confirmDeleteRouter(id) {
+  const item = routers.value.find(r => r.id === id)
+  dlgConfirm.value = {
+    show: true,
+    message: `确认停止路由服务「${item?.name || id}」？`,
+    actionType: 'router',
+    actionArgs: id,
+  }
 }
 
 async function deleteAI(id) {
@@ -234,6 +255,12 @@ async function executeConfirmedAction() {
 
   if (dlgConfirm.value.actionType === 'ai') {
     await deleteAI(id)
+    return
+  }
+
+  if (dlgConfirm.value.actionType === 'router') {
+    await api('DELETE', '/routers/' + id).catch(() => {})
+    await refreshRouters()
     return
   }
 
@@ -334,6 +361,11 @@ function openAiDialog() {
   dlgAI.value = true
 }
 
+function openAiFromRouter() {
+  dlgRouter.value = false
+  openAiDialog()
+}
+
 async function openWorkspacePicker() {
   const path = await openPathPicker({
     mode: 'directory',
@@ -367,23 +399,20 @@ async function handleNewSession(workspacePath) {
   await startDraftChat(path)
 }
 
-async function selectAI(id) {
-  if (id === selectedAiId.value) return
-  selectedAiId.value = id
+async function selectBackend({ type, id }) {
+  if (type === selectedBackendType.value && id === selectedBackendId.value) return
+  selectedBackendType.value = type
+  selectedBackendId.value = id
+  if (type === 'ai') selectedAiId.value = id
   if (draftSession.value) {
-    draftSession.value = { ...draftSession.value, aiId: id }
-    saveActiveState(selectedAiId.value, null, selectedWorkspacePath.value)
+    draftSession.value = { ...draftSession.value, backendType: type, backendId: id, aiId: type === 'ai' ? id : null }
     return
   }
-  if (selectedSessionId.value && sessions.value.find(s => s.id === selectedSessionId.value)) {
-    const s = sessions.value.find(s => s.id === selectedSessionId.value)
-    await api('DELETE', '/sessions/' + selectedSessionId.value).catch(() => {})
-    await api('POST', '/sessions', { id: selectedSessionId.value, ai_id: id, workspace: s.workspace })
-  } else {
-    selectedSessionId.value = null
-  }
-  saveActiveState(selectedAiId.value, selectedSessionId.value, selectedWorkspacePath.value)
-  await refreshAll()
+  const current = sessions.value.find(s => s.id === selectedSessionId.value)
+  if (!current) return
+  await api('DELETE', '/sessions/' + selectedSessionId.value).catch(() => {})
+  await api('POST', '/sessions', { id: selectedSessionId.value, backend_type: type, backend_id: id, workspace: current.workspace })
+  await refreshSessions()
 }
 
 async function createAI() {
@@ -399,6 +428,8 @@ async function createAI() {
       base_url: aiForm.value.base_url,
     })
     selectedAiId.value = info.id
+    selectedBackendType.value = 'ai'
+    selectedBackendId.value = info.id
     dlgAI.value = false
     await refreshAll()
     loadingEnv.value = false
@@ -410,6 +441,18 @@ async function createAI() {
     }
   } catch (e) {
     ui.showAlert(e.message)
+  }
+}
+
+async function createRouter(payload) {
+  try {
+    await api('POST', '/routers', payload)
+    await refreshRouters()
+    router.resetRouterForm()
+    dlgRouter.value = false
+    ui.showAlert('路由服务已启动')
+  } catch (e) {
+    ui.showAlert(e.message || '路由服务启动失败')
   }
 }
 
@@ -445,6 +488,7 @@ onMounted(async () => {
     if (activeState.aiId && ais.value.some(a => a.id === activeState.aiId))
       selectedAiId.value = activeState.aiId
     if (!selectedAiId.value && ais.value.length) selectedAiId.value = ais.value[0].id
+    if (!selectedBackendId.value && selectedAiId.value) selectedBackendId.value = selectedAiId.value
 
     if (activeState.workspacePath) {
       session.setSelectedWorkspace(activeState.workspacePath)

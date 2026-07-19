@@ -13,22 +13,31 @@
         <span>切换模型</span>
       </div>
       <div class="model-panel-list">
-        <div v-if="ais.length === 0" class="model-panel-empty">
+        <div v-if="ais.length === 0 && routers.length === 0" class="model-panel-empty">
           暂无模型，请到右上角 → 大模型 连接
         </div>
         <div v-for="a in ais" :key="a.id"
              class="model-panel-item"
-             :class="{ active: a.id === selectedAiId }"
-             @click="selectAi(a.id)">
+             :class="{ active: selectedBackendType === 'ai' && a.id === selectedBackendId }"
+             @click="selectBackend('ai', a.id)">
           <span class="material-symbols-outlined mpi-icon">smart_toy</span>
           <div class="mpi-info">
             <div class="mpi-name" :title="a.model || a.id">{{ a.model || a.id }}</div>
             <div class="mpi-provider">{{ a.provider }}</div>
           </div>
-          <span v-if="a.id === selectedAiId" class="material-symbols-outlined mpi-check">check_circle</span>
+          <span v-if="selectedBackendType === 'ai' && a.id === selectedBackendId" class="material-symbols-outlined mpi-check">check_circle</span>
           <button class="mpi-del" @click.stop="requestDelete(a.id)" title="删除此模型">
             <span class="material-symbols-outlined">delete</span>
           </button>
+        </div>
+        <div v-if="routers.length" class="model-group-label">智能路由</div>
+        <div v-for="r in routers" :key="`router:${r.id}`" class="model-panel-item"
+             :class="{ active: selectedBackendType === 'router' && r.id === selectedBackendId }"
+             @click="selectBackend('router', r.id)">
+          <span class="material-symbols-outlined mpi-icon">route</span>
+          <div class="mpi-info"><div class="mpi-name">{{ r.name || r.id }}</div><div class="mpi-provider">{{ r.upstreams.length }} 个候选模型</div></div>
+          <span v-if="selectedBackendType === 'router' && r.id === selectedBackendId" class="material-symbols-outlined mpi-check">check_circle</span>
+          <button class="mpi-del" @click.stop="requestDeleteRouter(r.id)" title="停止此路由"><span class="material-symbols-outlined">delete</span></button>
         </div>
       </div>
     </div>
@@ -39,21 +48,26 @@
 import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAiStore } from '../stores/ai.js'
+import { useRouterStore } from '../stores/router.js'
+import { useSessionStore } from '../stores/session.js'
+import { getBackendLabel } from '../backendOptions.js'
 
 const ai = useAiStore()
-const { modelPanelOpen, ais, selectedAiId } = storeToRefs(ai)
+const { modelPanelOpen, ais } = storeToRefs(ai)
+const { routers } = storeToRefs(useRouterStore())
+const { selectedBackendType, selectedBackendId } = storeToRefs(useSessionStore())
 
-const emit = defineEmits(['select-ai', 'delete-ai'])
+const emit = defineEmits(['select-backend', 'delete-ai', 'delete-router'])
 
 const currentModelLabel = computed(() => {
-  const found = ais.value.find(a => a.id === selectedAiId.value)
-  return found ? (found.model || found.id) : '选择模型'
+  return getBackendLabel(selectedBackendType.value, selectedBackendId.value, ais.value, routers.value)
 })
 
-function selectAi(id) {
-  emit('select-ai', id)
+function selectBackend(type, id) {
+  emit('select-backend', { type, id })
   modelPanelOpen.value = false
 }
+function requestDeleteRouter(id) { modelPanelOpen.value = false; emit('delete-router', id) }
 
 function requestDelete(id) {
   modelPanelOpen.value = false
@@ -140,6 +154,7 @@ function requestDelete(id) {
 .model-panel-item .mpi-del:hover { background: rgba(255,80,80,0.12); color: var(--md-text-error); }
 .model-panel-item .mpi-del .material-symbols-outlined { font-size: 16px; }
 .model-panel-empty { padding: 16px; text-align: center; font-size: 13px; color: var(--md-text-secondary); }
+.model-group-label { padding: 8px 10px 4px; font-size: 11px; color: var(--md-text-secondary); text-transform: uppercase; }
 .model-panel-backdrop { position: fixed; inset: 0; z-index: 49; }
 
 @media (hover: none) {
