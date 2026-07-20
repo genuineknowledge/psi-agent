@@ -19,7 +19,7 @@ from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway._state import GatewayState
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._tray import GatewayTray
-from psi_agent.gateway._webview import GatewayWebView
+from psi_agent.gateway._webview import WebViewProcess, merge
 from psi_agent.gateway.server import create_app
 
 
@@ -155,9 +155,10 @@ class Gateway:
                 if self.webview:
                     if self.icon is None:
                         raise ValueError("--webview requires --icon to be set")
-                    wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon, app_name=self.app_name)
+                    wv = WebViewProcess(addr, icon=self.icon, tray_mode=bool(self.tray), app_name=self.app_name)
                     try:
-                        wv.start()
+                        await wv.start()
+                        tg.start_soon(wv._pump_events)
                     except Exception as e:
                         logger.warning(f"Failed to start webview window: {e!r}")
 
@@ -168,30 +169,42 @@ class Gateway:
                 if self.tray:
                     if self.icon is None:
                         raise ValueError("--tray requires --icon to be set")
-                    on_open = wv.show if wv is not None and wv.is_running() else None
-                    tray = GatewayTray(addr, self.icon, app_name=self.app_name, on_open=on_open)
+                    tray = GatewayTray(addr, self.icon, app_name=self.app_name)
                     try:
                         tray.start()
+                        if tray.is_running():
+                            tg.start_soon(tray._pump_events)
                     except Exception as e:
                         logger.warning(f"Failed to start system tray: {e!r}")
 
-                if wv is not None and wv.is_running():
+                if wv is not None and wv.is_alive():
                     attention.bind(webview=wv)
                 if tray is not None and tray.is_running():
                     attention.bind(tray=tray)
 
                 try:
-                    if tray is not None and tray.is_running():
-                        await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
-                    elif wv is not None and wv.is_running():
-                        await anyio.to_thread.run_sync(wv.wait_closed, abandon_on_cancel=True)  # ty: ignore
+                    if wv is not None and tray is not None and tray.is_running():
+                        async for evt in merge(wv.events, tray.events):
+                            match evt:
+                                case "tray.open":
+                                    await wv.send("show")
+                                case "tray.quit":
+                                    await wv.send("destroy")
+                                    break
+                                case "wv.closed":
+                                    break
+                    elif wv is not None:
+                        async for evt in merge(wv.events):
+                            match evt:
+                                case "wv.closed":
+                                    break
                     else:
                         await anyio.sleep_forever()
                 finally:
                     if tray is not None:
                         tray.stop()
                     if wv is not None:
-                        wv.stop()
+                        await wv.stop()
             finally:
                 logger.info("Shutting down Gateway")
                 with anyio.CancelScope(shield=True):
