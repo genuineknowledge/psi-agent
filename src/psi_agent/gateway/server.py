@@ -219,8 +219,7 @@ async def _bootstrap_ai(request: web.Request) -> web.Response:
             base_url=defaults.base_url,
         )
         logger.info(
-            f"Bootstrap created AI {info.id!r} ({defaults.label}, "
-            f"source={defaults.source}, model={defaults.model!r})"
+            f"Bootstrap created AI {info.id!r} ({defaults.label}, source={defaults.source}, model={defaults.model!r})"
         )
         return _json(asdict(info), status=201)
     except (TypeError, ValueError) as e:
