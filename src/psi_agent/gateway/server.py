@@ -12,10 +12,6 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
-from psi_agent.gateway._ai_defaults import (
-    ai_defaults_public_dict,
-    resolve_ai_defaults,
-)
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
@@ -144,8 +140,6 @@ async def create_app(
         app.router.add_get("/favicon.ico", _handle_favicon)
     app.router.add_get("/openapi.json", _handle_openapi)
     app.router.add_post("/ais", _create_ai)
-    app.router.add_post("/ais/bootstrap", _bootstrap_ai)
-    app.router.add_get("/ais/default-config", _get_ai_default_config)
     app.router.add_delete("/ais/{ai_id}", _delete_ai)
     app.router.add_get("/ais", _list_ais)
     app.router.add_post("/sessions", _create_session)
@@ -199,34 +193,6 @@ async def _delete_ai(request: web.Request) -> web.Response:
 async def _list_ais(request: web.Request) -> web.Response:
     aim: AIManager = request.app["aim"]
     return _json([asdict(i) for i in await aim.list_all()])
-
-
-async def _get_ai_default_config(request: web.Request) -> web.Response:
-    return _json(ai_defaults_public_dict(resolve_ai_defaults()))
-
-
-async def _bootstrap_ai(request: web.Request) -> web.Response:
-    aim: AIManager = request.app["aim"]
-    existing = await aim.list_all()
-    if existing:
-        return _json({"skipped": True, "reason": "already_configured"})
-    defaults = resolve_ai_defaults()
-    try:
-        info = await aim.create(
-            provider=defaults.provider,
-            model=defaults.model,
-            api_key=defaults.api_key,
-            base_url=defaults.base_url,
-        )
-        logger.info(
-            f"Bootstrap created AI {info.id!r} ({defaults.label}, source={defaults.source}, model={defaults.model!r})"
-        )
-        return _json(asdict(info), status=201)
-    except (TypeError, ValueError) as e:
-        return _error(str(e), status=400)
-    except Exception as e:
-        logger.error(f"Unexpected error bootstrapping AI: {e!r}")
-        return _error(str(e), status=500)
 
 
 async def _create_session(request: web.Request) -> web.Response:
