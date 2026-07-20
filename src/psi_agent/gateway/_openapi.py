@@ -313,10 +313,42 @@ OPENAPI_SPEC = {
         },
         "/workspace/places": {
             "get": {
-                "summary": "List quick-access paths and drives for path picker",
-                "operationId": "listWorkspaceRoots",
+                "summary": "List quick-access places and drives",
+                "operationId": "listWorkspacePlaces",
                 "responses": {
-                    "200": {"description": "Roots and drives"},
+                    "200": {
+                        "description": "Places and drives",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "places": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "id": {"type": "string"},
+                                                    "label": {"type": "string"},
+                                                    "path": {"type": "string"},
+                                                },
+                                            },
+                                        },
+                                        "drives": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "label": {"type": "string"},
+                                                    "path": {"type": "string"},
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
                 },
             },
         },
