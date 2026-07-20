@@ -31,7 +31,7 @@ Gateway 有三个相关字段：
 | 5 | False | True | False | 弹出 webview 窗口，关闭 webview → gateway 退出 |
 | 6 | False | True | True | 弹出 webview + 托盘，关闭 webview → 隐藏到托盘；托盘"退出"才退出 |
 
-**特别注意**：case 6 时，托盘左键/右键"打开控制台"应 restore 已隐藏的 webview，而非打开系统浏览器。
+**特别注意**：case 6 时，托盘左键/右键"打开 {app_name}"应 restore 已隐藏的 webview，而非打开系统浏览器。
 
 ## 技术选型
 
@@ -78,7 +78,7 @@ class GatewayWebView:
 ```
 
 **关键设计**：
-- `webview.create_window("控制台", url)` 创建窗口
+- `webview.create_window(app_name, url)` 创建窗口，`app_name` 由 `Gateway.app_name` 传入（默认 `"控制台"`）
 - `webview.start(icon=self._icon)` 在 daemon 线程中运行，传入 Gateway 的 `--icon` 作为窗口图标
 - `events.closing` 中：`_has_tray` → `self._window.hide()` + `return False`；否则 `self._closed_event.set()` + `return True`
 - `_closed_event` Event 供主 anyio loop 通过 `anyio.to_thread.run_sync(wv.wait_closed)` 等待退出

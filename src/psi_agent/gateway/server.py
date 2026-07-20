@@ -17,7 +17,6 @@ from psi_agent.gateway._chat_manager import ChatManager
 from psi_agent.gateway._history_manager import HistoryManager
 from psi_agent.gateway._openapi import render_openapi
 from psi_agent.gateway._session_manager import SessionManager
-from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME, inject_app_name, read_spa_index_template
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._workspace_manager import WorkspaceManager
 
@@ -73,13 +72,9 @@ async def _handle_openapi(request: web.Request) -> web.Response:
     return web.Response(text=render_openapi(), content_type="application/json")
 
 
-async def _handle_spa_index(request: web.Request) -> web.Response:
+async def _handle_title(request: web.Request) -> web.Response:
     app_name: str = request.app["app_name"]
-    template = await read_spa_index_template()
-    if template is None:
-        return _error("SPA index.html not found", status=404)
-    body = inject_app_name(template, app_name)
-    return web.Response(text=body, content_type="text/html", charset="utf-8")
+    return _json({"title": app_name})
 
 
 async def _handle_favicon(request: web.Request) -> web.FileResponse:
@@ -113,7 +108,7 @@ async def create_app(
     sm: SessionManager,
     tm: TitleManager,
     favicon_path: str | None = None,
-    app_name: str = DEFAULT_APP_NAME,
+    app_name: str = "控制台",
     attention: AttentionHub | None = None,
 ) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
@@ -128,9 +123,9 @@ async def create_app(
     app["attention"] = attention if attention is not None else AttentionHub()
 
     spa_dist = anyio.Path(__file__).parent / "spa" / "dist"
-    app.router.add_get("/spa/index.html", _handle_spa_index)
     if await spa_dist.exists():
         app.router.add_static("/spa/", str(spa_dist), show_index=False)
+    app.router.add_get("/title", _handle_title)
     app.router.add_get("/", _handle_spa)
     app.router.add_get("/spa", _handle_spa)
     app.router.add_get("/spa/", _handle_spa)

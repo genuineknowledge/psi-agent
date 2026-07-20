@@ -227,7 +227,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
                                   &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
         lstrcpyW(cmd, g_dir);
-        lstrcatW(cmd, L"\\psi-agent.exe gateway --tray --browser --icon haitun.ico --verbose");
+        lstrcatW(cmd, L"\\psi-agent.exe gateway --tray --browser --icon haitun.ico --app-name \"HaiTun Agent\" --verbose");
 
         PROCESS_INFORMATION pi = {0};
         STARTUPINFOW si = {sizeof(si)};

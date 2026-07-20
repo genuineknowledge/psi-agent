@@ -12,3 +12,8 @@ const app = createApp(App)
 app.use(createPinia())
 app.directive('focus', { mounted(el) { el.focus() } })
 app.mount('#app')
+
+fetch('/title')
+  .then(r => r.json())
+  .then(data => { if (data.title) document.title = data.title; })
+  .catch(() => {})

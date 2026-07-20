@@ -355,21 +355,32 @@ async def test_gateway_favicon(tmp_path: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_gateway_spa_index_app_name() -> None:
+async def test_gateway_title_endpoint() -> None:
     tg = anyio.create_task_group()
     await tg.__aenter__()
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager(), app_name="Haitun Agent")
+    app = await create_app(aim, sm, TitleManager(), app_name="Custom App")
     base, runner = await _start_app_on_free_port(app)
 
     try:
         timeout = ClientTimeout(total=10)
-        async with ClientSession(timeout=timeout) as session, session.get(f"{base}/spa/index.html") as resp:
+        async with ClientSession(timeout=timeout) as session, session.get(f"{base}/title") as resp:
             assert resp.status == 200
-            body = await resp.text()
-            assert "<title>Haitun Agent</title>" in body
+            body = await resp.json()
+            assert body == {"title": "Custom App"}
+
+        # Default title
+        app_default = await create_app(aim, sm, TitleManager())
+        base2, runner2 = await _start_app_on_free_port(app_default)
+        try:
+            async with ClientSession(timeout=timeout) as session2, session2.get(f"{base2}/title") as resp2:
+                assert resp2.status == 200
+                body2 = await resp2.json()
+                assert body2 == {"title": "控制台"}
+        finally:
+            await runner2.cleanup()
     finally:
         await runner.cleanup()
         await tg.__aexit__(None, None, None)
