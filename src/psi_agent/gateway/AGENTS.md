@@ -188,8 +188,6 @@ workspace 中的 history JSONL 不受影响。
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/ais` | 创建 AI（201） |
-| POST | `/ais/bootstrap` | AI 池为空时挂上远程默认模型（打开即用；201 / 已配置则 200 skipped） |
-| GET | `/ais/default-config` | 解析后的默认 AI 配置（不含 api_key） |
 | DELETE | `/ais/{ai_id}` | 删除 AI（200/404） |
 | GET | `/ais` | 列出所有 AI |
 | POST | `/sessions` | 创建 Session（201） |
@@ -349,10 +347,10 @@ Session 标题由服务端 `/titles` 端点维护，不在浏览器 localStorage
 
 **启动加载流程**：
 ```
-GET /ais + GET /sessions → 池为空则 POST /ais/bootstrap（远程免费默认）→ 恢复上次 AI/Session
+GET /ais + GET /sessions → 恢复上次 AI/Session → 无 AI 时由 SPA 自行 POST /ais（打开即用，见 spa/AGENTS.md）
 → 仍无 AI 则弹窗 Hub「大模型」→ 恢复 titles / sidebar / theme / active IDs
 ```
-打开即用：默认 `https://haitun.addchess.cn` / `glm-4-flash`（占位 key `haitun-default`，真实 upstream key 仅在 VPS Nginx，见 `spa/remote-ai/`）。Hub / 高级配置可覆盖。Chat SSE 在长空闲时写 `: keepalive` 注释，**不得**对上游 `agen.__anext__()` 使用 `fail_after`（会拆掉 ChatManager，导致前端「正在同步」挂死）。
+Chat SSE 在长空闲时写 `: keepalive` 注释，**不得**对上游 `agen.__anext__()` 使用 `fail_after`（会拆掉 ChatManager，导致前端「正在同步」挂死）。打开即用默认模型 / 域名由 SPA 维护，Gateway 不内置默认 AI。
 
 服务端通过 `state/latest.json` 自动持久化 AI、Session、Title 状态，重启后自动恢复。对话历史仍通过 JSONL 文件独立持久化。浏览器 localStorage 仅保留 UI 状态（active ids、sidebar 折叠、主题偏好）和对话历史缓存。
 
