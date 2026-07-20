@@ -8,7 +8,9 @@ import { api } from './api.js'
 export const DEFAULT_REMOTE_AI = {
   provider: 'openai',
   model: 'glm-4-flash',
-  base_url: 'https://haitun.genuineknowledge.cn',
+  // Root company domain (not a haitun.* subdomain). Nginx must expose
+  // OpenAI-compatible chat; any-llm posts to `{base_url}/chat/completions`.
+  base_url: 'https://genuineknowledge.cn',
   api_key: 'haitun-default',
 }
 
