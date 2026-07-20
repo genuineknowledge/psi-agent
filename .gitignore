@@ -9,3 +9,6 @@ dist/
 *.sock
 .coverage
 /result
+
+# SPA open-and-use VPS secret (never commit)
+src/psi_agent/gateway/spa/remote-ai/config.env

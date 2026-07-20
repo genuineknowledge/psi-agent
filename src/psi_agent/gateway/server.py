@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from base64 import b64encode
+from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import asdict
 from typing import Any
@@ -11,6 +12,10 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent.gateway._ai_defaults import (
+    ai_defaults_public_dict,
+    resolve_ai_defaults,
+)
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
@@ -20,6 +25,49 @@ from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME, inject_app_name, read_spa_index_template
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._workspace_manager import WorkspaceManager
+
+# Browser fetch often dies during multi-minute tool silence; SSE comments keep it open.
+_SSE_KEEPALIVE_SEC = 15.0
+
+
+async def _write_chat_sse_with_keepalive(
+    resp: web.StreamResponse,
+    chunks: AsyncGenerator[dict[str, Any]],
+    *,
+    session_id: str,
+    keepalive_sec: float = _SSE_KEEPALIVE_SEC,
+) -> None:
+    """Write chat SSE chunks, emitting comment keepalives on idle.
+
+    Keepalives must **not** wrap ``agen.__anext__()`` in ``anyio.fail_after``.
+    Cancelling ``__anext__`` tears down ChatManager / ChannelCore, so the browser
+    gets early ``[DONE]`` while Session is still waiting on the model — SPA then
+    spins forever on「正在同步」and the assistant reply is never committed.
+    """
+    send, recv = anyio.create_memory_object_stream[dict[str, Any]](64)
+
+    async def pump() -> None:
+        async with send, aclosing(chunks) as stream:
+            async for chunk in stream:
+                await send.send(chunk)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(pump)
+        async with recv:
+            while True:
+                try:
+                    with anyio.fail_after(keepalive_sec):
+                        chunk = await recv.receive()
+                except TimeoutError:
+                    with suppress(Exception):
+                        await resp.write(b": keepalive\n\n")
+                        logger.debug(f"Chat SSE keepalive for session {session_id!r}")
+                    continue
+                except anyio.EndOfStream:
+                    break
+                data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                await resp.write(data.encode())
+                logger.debug(f"Chat SSE chunk: {data[:1000]}")
 
 
 async def _handle_spa(request: web.Request) -> web.HTTPFound:
@@ -96,6 +144,8 @@ async def create_app(
         app.router.add_get("/favicon.ico", _handle_favicon)
     app.router.add_get("/openapi.json", _handle_openapi)
     app.router.add_post("/ais", _create_ai)
+    app.router.add_post("/ais/bootstrap", _bootstrap_ai)
+    app.router.add_get("/ais/default-config", _get_ai_default_config)
     app.router.add_delete("/ais/{ai_id}", _delete_ai)
     app.router.add_get("/ais", _list_ais)
     app.router.add_post("/sessions", _create_session)
@@ -149,6 +199,35 @@ async def _delete_ai(request: web.Request) -> web.Response:
 async def _list_ais(request: web.Request) -> web.Response:
     aim: AIManager = request.app["aim"]
     return _json([asdict(i) for i in await aim.list_all()])
+
+
+async def _get_ai_default_config(request: web.Request) -> web.Response:
+    return _json(ai_defaults_public_dict(resolve_ai_defaults()))
+
+
+async def _bootstrap_ai(request: web.Request) -> web.Response:
+    aim: AIManager = request.app["aim"]
+    existing = await aim.list_all()
+    if existing:
+        return _json({"skipped": True, "reason": "already_configured"})
+    defaults = resolve_ai_defaults()
+    try:
+        info = await aim.create(
+            provider=defaults.provider,
+            model=defaults.model,
+            api_key=defaults.api_key,
+            base_url=defaults.base_url,
+        )
+        logger.info(
+            f"Bootstrap created AI {info.id!r} ({defaults.label}, "
+            f"source={defaults.source}, model={defaults.model!r})"
+        )
+        return _json(asdict(info), status=201)
+    except (TypeError, ValueError) as e:
+        return _error(str(e), status=400)
+    except Exception as e:
+        logger.error(f"Unexpected error bootstrapping AI: {e!r}")
+        return _error(str(e), status=500)
 
 
 async def _create_session(request: web.Request) -> web.Response:
@@ -315,11 +394,14 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
         return resp
 
     try:
-        async with aclosing(cm.handle(channel_socket, body)) as stream:
-            async for chunk in stream:
-                data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                await resp.write(data.encode())
-                logger.debug(f"Chat SSE chunk: {data[:1000]}")
+        # Long tool / first-token waits yield nothing for minutes; keep the browser
+        # fetch alive with SSE comments (ignored by readSSE) without cancelling
+        # the upstream ChatManager generator — see `_write_chat_sse_with_keepalive`.
+        await _write_chat_sse_with_keepalive(
+            resp,
+            cm.handle(channel_socket, body),
+            session_id=session_id,
+        )
     except Exception as e:
         logger.warning(f"Chat error for session {session_id!r}: {e!r}")
         with suppress(Exception):
