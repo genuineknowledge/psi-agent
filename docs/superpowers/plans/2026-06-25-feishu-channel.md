@@ -440,3 +440,49 @@ git add -A && git commit -m "test(feishu): add dataclass and token validation te
 - [x] 测试：`_add_reaction` 成功/异常、`_remove_reaction` 调用/吞异常、生命周期成功（加 Typing → 移除，不加 CrossMark）、生命周期失败（加 Typing → 移除 → 加 CrossMark）
 - [x] 质量门：`uv run ruff check .` / `ruff format --check .` / `ty check` / `pytest -m "not schedule"`（168 passed）
 - [x] Commit `feat(feishu): add processing-status reaction (Typing while working, CrossMark on failure)`（`36e9031`）
+
+---
+
+## 后续增强：群聊 @ 触发与准入策略（2026-07-20，已完成）
+
+**目标**：飞书机器人在群里被 @ 时才用 Haitun Agent 读取消息并回复；单聊照常回复。策略可配置。设计详见 spec 第 12 节。
+
+**根因（"群里 @ 了也不回复"）**：`lark_channel` 的 `PolicyGate` 默认 `require_mention=True`，群聊只有 @机器人才通过。@机器人判定依赖机器人 `open_id`——`FeishuChannel` 启动时调 `/bot/v3/info` 自动拉取；拉取失败（网络抖动 / 飞书后台未开启机器人能力）时 `open_id` 恒为 None，群里所有消息被判"未 @"而拒绝。psi-agent 侧此前无兜底、无日志，且从未传 `policy`。
+
+**Files:**
+- Modify: `src/psi_agent/channel/feishu/__init__.py`
+- Modify: `src/psi_agent/channel/feishu/client.py`
+- Modify: `tests/psi_agent/channel/feishu/test_feishu.py`
+- Modify: `src/psi_agent/channel/AGENTS.md`
+- Modify: `docs/superpowers/specs/2026-06-25-feishu-channel.md`（第 12 节）
+
+- [x] `ChannelFeishu` 加 `require_mention`（默认 True）/ `respond_to_mention_all`（默认 False）字段，`run()` 透传给 `run_feishu`
+- [x] `run_feishu` 构造 `lark_channel` 的 `PolicyConfig` 并经 `FeishuChannel(policy=...)` 传入（此前完全未传，只吃库默认值）
+- [x] `_ensure_bot_identity(channel)`：`start_background()` 后 `bot_identity` 为 None 时 `resolve_bot_identity()` 兜底重试一次；成功记 INFO，失败记 WARNING（明确提示群 @ 检测不可用、去后台开机器人能力），自身异常不冒泡
+- [x] `_log_reject(event)`：注册 `channel.on("reject")`，被策略拒的消息按原因（`policy_no_mention` 等）记 DEBUG，失败安全
+- [x] 测试：新字段默认值 / 透传、`PolicyConfig` 正确构造并传入、bot 身份兜底解析 / 解析失败告警 / 异常吞掉、`reject` 回调注册
+- [x] 质量门：`ruff check` / `ruff format --check` / `ty check` / `pytest tests/psi_agent/channel/feishu/`
+- [x] Commit `feat(haitun/feishu): 群聊仅在 @机器人时回复 + bot 身份兜底`（`5ed14634`）；ty 修复 `69470b5b`
+
+---
+
+## 后续增强：群聊上下文与文档读取（2026-07-20，已完成）
+
+**目标**：机器人被 @ 时能读群聊历史上下文及其中的文档 / 文件。设计详见 spec 第 13 节。
+
+**缺口**：`_build_chunks` 只把消息正文发给 agent，agent 不知道自己在哪个群（`chat_id`），即便 workspace 装了 `feishu_message_list` 也无从调用。
+
+**Files:**
+- Modify: `src/psi_agent/channel/feishu/client.py`
+- Modify: `tests/psi_agent/channel/feishu/test_feishu.py`
+- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `src/psi_agent/channel/AGENTS.md`
+- Modify: `docs/superpowers/specs/2026-06-25-feishu-channel.md`（第 13 节）
+
+- [x] `_context_header(ctx)`：在发给 agent 的文本最前注入 `<feishu_context>` 元数据块（chat_id / chat_type / message_id / sender_open_id，可选 sender_name / thread_id）
+- [x] **刻意为之**：header 只含客观协议事实、不含具体 workspace 工具名（channel 与 workspace 工具解耦，遵守微内核理念）。引导 agent 用 chat_id 拉上下文 / 读文档的说明放 workspace 的 `TOOLS.md`
+- [x] header 仅在有真实内容（文本 / 音频 / 资源）时随内容注入；无内容时丢弃 header 返回 `[]`，保持 "unsupported message type" 语义
+- [x] 读取按需：是否调 `feishu_message_list` / `feishu_doc_read` / `feishu_file_download` 由 agent 决策，channel 不预拉（省 token、避免无关内容）
+- [x] 测试：元数据头注入 / 群聊 chat_id 携带（且不含工具名）/ 空消息丢弃 header
+- [x] 质量门：`ruff check` / `ruff format --check` / `ty check` / `pytest tests/psi_agent/channel/feishu/`（24 passed）
+- [x] Commit `feat(haitun/feishu): 向 agent 注入群聊上下文元数据`（`9b1cc9bd`）；解耦 + 文档同步 `740d66b5`

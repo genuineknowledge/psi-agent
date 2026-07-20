@@ -211,3 +211,90 @@ finally:
 
 - 表情不做配置化（明确硬编码 `Typing` / `CrossMark`）。
 - 不实现"内容感知"的多态表情（Hermes issue #14667 方向），仅处理中 / 失败两态。
+
+---
+
+## 12. 群聊 @ 触发与准入策略
+
+**目标**：飞书机器人在群里被 @ 时才用 Haitun Agent 读取消息并回复；单聊照常回复。
+
+### 12.1 底层机制（`lark_channel` 内置）
+
+- `lark_channel` 的 `PolicyGate` 在消息分发前判定准入，只有通过的消息才触发 `on("message")`（进而调用 Haitun Agent），被拒的走 `on("reject")`。
+- 群聊（`chat_type` 为 `group` / `topic`）：`require_mention=True`（默认）时，仅当消息 @机器人（`mentioned_bot`）才通过，否则以 `policy_no_mention` 拒绝。
+- 单聊（`p2p`）：默认 `dm_policy="open"`，全部响应，不受 `require_mention` 影响。
+- `mentioned_bot` 的判定依赖机器人 `open_id` —— 由 `FeishuChannel` 启动时调 `/bot/v3/info` 自动拉取。
+
+### 12.2 psi-agent 侧配置（`ChannelFeishu` / `run_feishu`）
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `require_mention` | `True` | 群聊仅在 @机器人时回复；单聊不受影响。设 `False` 则群里每条消息都回复 |
+| `respond_to_mention_all` | `False` | 是否把 `@所有人` 视为有效 @（默认否，避免 @all 触发机器人） |
+
+`run_feishu` 据此构造 `lark_channel` 的 `PolicyConfig` 并经 `FeishuChannel(policy=...)` 传入（此前完全未传，只吃库默认值）。
+
+### 12.3 bot 身份兜底与可诊断性（`run_feishu`）
+
+**根因防护**：若启动时 `/bot/v3/info` 拉取失败（网络抖动 / 飞书后台未开启"机器人"能力），`bot_open_id` 为 `None` → 群里每条消息 `mentioned_bot=False` → 全被 `require_mention` 拒掉，表现为"群里 @ 了也不回复"。
+
+- `_ensure_bot_identity(channel)`：`start_background()` 后调用；`channel.bot_identity` 为 `None` 时 `await channel.resolve_bot_identity()` 兜底重试一次。成功记 `INFO`（含 open_id / name）；仍失败记 `WARNING`，明确提示"群聊 @机器人 检测将不可用，请确认飞书后台已开启机器人能力"。自身异常绝不冒泡（不拖垮启动）。
+- `_log_reject(event)`：注册为 `channel.on("reject", ...)`，把被策略拒绝的消息按原因（`policy_no_mention` 等）记 `DEBUG`，便于日后"@ 了不回复"排查。失败安全。
+
+### 12.4 文件变更
+
+| 操作 | 文件 | 说明 |
+|------|------|------|
+| 修改 | `psi_agent/channel/feishu/__init__.py` | `ChannelFeishu` 加 `require_mention` / `respond_to_mention_all` 字段并透传 |
+| 修改 | `psi_agent/channel/feishu/client.py` | `run_feishu` 构造 `PolicyConfig` + `_ensure_bot_identity` + `_log_reject` |
+| 修改 | `tests/psi_agent/channel/feishu/test_feishu.py` | policy 透传 / bot 身份兜底 / reject 回调测试 |
+| 修改 | `src/psi_agent/channel/AGENTS.md` | Feishu 约定补「群聊 @ 触发（准入策略）」一条（含刻意为之留痕） |
+
+### 12.5 非目标
+
+- 不暴露更细的 `group_policy` / `dm_policy` / 名单（allowlist / blocklist）等准入维度，仅保留与"@ 触发"直接相关的两个开关。
+
+---
+
+## 13. 群聊上下文与文档读取（消息元数据注入）
+
+**目标**：机器人被 @ 时，能读取群聊上下文（历史消息）以及其中提到的文档 / 文件。
+
+### 13.1 缺口与设计
+
+此前 `_build_chunks` 只把消息正文（`content_text`）发给 agent，agent 不知道自己在哪个群（`chat_id`），即便 workspace 装了 `feishu_message_list` 也无从调用。
+
+`_context_header(ctx)` 在发给 agent 的文本最前面注入一段 `<feishu_context>` 块：
+
+```
+<feishu_context>
+chat_id: oc_xxx
+chat_type: group          # p2p / group / topic
+message_id: om_xxx
+sender_open_id: ou_xxx
+sender_name: 张三          # 可选
+thread_id: omt_xxx        # 可选（话题/回复串）
+</feishu_context>
+```
+
+agent 拿到 `chat_id` 后自行决定是否调 `feishu_message_list(container_id=chat_id)` 拉群历史、对消息中的飞书文档链接调 `feishu_doc_read`、对附件调 `feishu_file_download`。
+
+### 13.2 关键设计约束（刻意为之）
+
+- **channel 与 workspace 工具解耦**：header 只含客观协议事实（chat_id 等），**绝不含具体 workspace 工具名**（遵守微内核理念：框架传协议，功能由 workspace 定义）。"如何用 chat_id 拉上下文"的引导放在 workspace 的 `TOOLS.md`（进入系统提示，agent 可见）。
+- **不破坏 unsupported-type 语义**：header 恒会构造，但仅当存在真实内容（文本 / 音频 / 资源）时才随内容注入；纯元数据（无任何内容）时 `_build_chunks` 丢弃 header 返回 `[]`，使调用方仍回"Unsupported message type"。
+- **按需读取**：文档 / 附件不预拉，由 agent 判断需要时才读，省 token、避免拉入无关内容（消息自带的附件仍按原有逻辑自动下载为 FileChunk）。
+
+### 13.3 文件变更
+
+| 操作 | 文件 | 说明 |
+|------|------|------|
+| 修改 | `psi_agent/channel/feishu/client.py` | 新增 `_context_header`；`_build_chunks` 注入 header 并保持 unsupported-type 语义 |
+| 修改 | `tests/psi_agent/channel/feishu/test_feishu.py` | 元数据头注入 / 群聊 chat_id 携带 / 空消息丢弃 header |
+| 修改 | `examples/haitun-workspace/TOOLS.md` | 常驻引导：群聊里如何用 `feishu_message_list` / `feishu_doc_read` / `feishu_file_download` |
+| 修改 | `src/psi_agent/channel/AGENTS.md` | Feishu 约定补「消息元数据注入（`_context_header`）」一条（含刻意为之留痕） |
+
+### 13.4 非目标
+
+- channel 层不自动预拉群历史或附件（避免耦合与 token 浪费）；是否拉取由 agent 决策。
+- 不解析飞书"分享云文档"卡片为可读 token——最稳的是消息里直接带文档 URL 文本。

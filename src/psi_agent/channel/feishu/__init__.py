@@ -31,6 +31,12 @@ class ChannelFeishu:
     allowed_user_ids: list[str] | None = None
     """Whitelist of open_id/user_id. None = allow all."""
 
+    require_mention: bool = True
+    """Group chats: only reply when the bot is @-mentioned; DMs unaffected. False replies to every group message."""
+
+    respond_to_mention_all: bool = False
+    """Whether to treat @all as a valid mention (default False, so @all does not trigger the bot)."""
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -50,4 +56,6 @@ class ChannelFeishu:
             app_secret=app_secret,
             interval=self.interval,
             allowed_user_ids=self.allowed_user_ids,
+            require_mention=self.require_mention,
+            respond_to_mention_all=self.respond_to_mention_all,
         )
