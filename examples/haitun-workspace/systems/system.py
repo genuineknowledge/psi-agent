@@ -687,7 +687,7 @@ def _build_datetime_section() -> str:
     tz_name = os.environ.get("HAITUN_TIMEZONE", "UTC")
     try:
         now = datetime.now(ZoneInfo(tz_name))
-    except (ZoneInfoNotFoundError, ValueError):
+    except ZoneInfoNotFoundError, ValueError:
         # Unknown tz name: fall back to naive local time and label it
         # honestly so the agent knows the zone is unverified.
         now = datetime.now()
