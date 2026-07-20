@@ -248,6 +248,7 @@ finally:
 | 修改 | `psi_agent/channel/feishu/__init__.py` | `ChannelFeishu` 加 `require_mention` / `respond_to_mention_all` 字段并透传 |
 | 修改 | `psi_agent/channel/feishu/client.py` | `run_feishu` 构造 `PolicyConfig` + `_ensure_bot_identity` + `_log_reject` |
 | 修改 | `tests/psi_agent/channel/feishu/test_feishu.py` | policy 透传 / bot 身份兜底 / reject 回调测试 |
+| 修改 | `src/psi_agent/channel/AGENTS.md` | Feishu 约定补「群聊 @ 触发（准入策略）」一条（含刻意为之留痕） |
 
 ### 12.5 非目标
 
@@ -291,6 +292,7 @@ agent 拿到 `chat_id` 后自行决定是否调 `feishu_message_list(container_i
 | 修改 | `psi_agent/channel/feishu/client.py` | 新增 `_context_header`；`_build_chunks` 注入 header 并保持 unsupported-type 语义 |
 | 修改 | `tests/psi_agent/channel/feishu/test_feishu.py` | 元数据头注入 / 群聊 chat_id 携带 / 空消息丢弃 header |
 | 修改 | `examples/haitun-workspace/TOOLS.md` | 常驻引导：群聊里如何用 `feishu_message_list` / `feishu_doc_read` / `feishu_file_download` |
+| 修改 | `src/psi_agent/channel/AGENTS.md` | Feishu 约定补「消息元数据注入（`_context_header`）」一条（含刻意为之留痕） |
 
 ### 13.4 非目标
 
