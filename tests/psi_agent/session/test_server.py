@@ -13,6 +13,7 @@ from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.protocol import AgentChunk
+from psi_agent.session.server import serve_session
 from psi_agent.session.tool_registry import ToolRegistry
 
 
@@ -223,3 +224,25 @@ async def test_agent_run_raises_produces_error_chunk(tmp_path: Path) -> None:
         assert "boom" in all_text.lower(), f"Expected 'boom' in error, got: {all_text[:300]}"
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_serve_session_app_accepts_large_bodies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The session server app must lift aiohttp's 1 MiB default so big contexts aren't rejected."""
+    captured: dict[str, web.Application] = {}
+
+    class _Site:
+        async def start(self) -> None:
+            pass
+
+    def _capture_site(runner: web.AppRunner, addr: str) -> _Site:
+        captured["app"] = runner.app
+        raise RuntimeError("stop after capture")  # abort before sleep_forever
+
+    monkeypatch.setattr("psi_agent.session.server.create_site", _capture_site)
+
+    agent = SessionAgent(ai_client=AiClient("http://nonexistent/v1"), tool_registry=ToolRegistry())
+    with pytest.raises(RuntimeError, match="stop after capture"):
+        await serve_session(channel_socket="/tmp/ignored.sock", agent=agent)
+    # 100 MiB, matching the gateway and AI-forwarder apps — well above aiohttp's 1 MiB default.
+    assert captured["app"]._client_max_size == 100 * 1024 * 1024
