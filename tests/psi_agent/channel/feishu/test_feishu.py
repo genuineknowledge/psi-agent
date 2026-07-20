@@ -352,7 +352,7 @@ async def test_build_chunks_text_only(monkeypatch, tmp_path):
 
 
 @pytest.mark.anyio
-async def test_build_chunks_group_header_hints_context(monkeypatch, tmp_path):
+async def test_build_chunks_group_header_carries_chat_id(monkeypatch, tmp_path):
     monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
     channel = _fake_channel()
     ctx = SimpleNamespace(
@@ -368,7 +368,9 @@ async def test_build_chunks_group_header_hints_context(monkeypatch, tmp_path):
     header = chunks[0]
     assert isinstance(header, TextChunk)
     assert "chat_type: group" in header.text
-    assert "feishu_message_list" in header.text
+    assert "chat_id: oc_group" in header.text
+    # channel 层保持与 workspace 工具解耦: header 不含具体工具名
+    assert "feishu_message_list" not in header.text
 
 
 @pytest.mark.anyio

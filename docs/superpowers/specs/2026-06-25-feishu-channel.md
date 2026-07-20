@@ -252,3 +252,47 @@ finally:
 ### 12.5 非目标
 
 - 不暴露更细的 `group_policy` / `dm_policy` / 名单（allowlist / blocklist）等准入维度，仅保留与"@ 触发"直接相关的两个开关。
+
+---
+
+## 13. 群聊上下文与文档读取（消息元数据注入）
+
+**目标**：机器人被 @ 时，能读取群聊上下文（历史消息）以及其中提到的文档 / 文件。
+
+### 13.1 缺口与设计
+
+此前 `_build_chunks` 只把消息正文（`content_text`）发给 agent，agent 不知道自己在哪个群（`chat_id`），即便 workspace 装了 `feishu_message_list` 也无从调用。
+
+`_context_header(ctx)` 在发给 agent 的文本最前面注入一段 `<feishu_context>` 块：
+
+```
+<feishu_context>
+chat_id: oc_xxx
+chat_type: group          # p2p / group / topic
+message_id: om_xxx
+sender_open_id: ou_xxx
+sender_name: 张三          # 可选
+thread_id: omt_xxx        # 可选（话题/回复串）
+</feishu_context>
+```
+
+agent 拿到 `chat_id` 后自行决定是否调 `feishu_message_list(container_id=chat_id)` 拉群历史、对消息中的飞书文档链接调 `feishu_doc_read`、对附件调 `feishu_file_download`。
+
+### 13.2 关键设计约束（刻意为之）
+
+- **channel 与 workspace 工具解耦**：header 只含客观协议事实（chat_id 等），**绝不含具体 workspace 工具名**（遵守微内核理念：框架传协议，功能由 workspace 定义）。"如何用 chat_id 拉上下文"的引导放在 workspace 的 `TOOLS.md`（进入系统提示，agent 可见）。
+- **不破坏 unsupported-type 语义**：header 恒会构造，但仅当存在真实内容（文本 / 音频 / 资源）时才随内容注入；纯元数据（无任何内容）时 `_build_chunks` 丢弃 header 返回 `[]`，使调用方仍回"Unsupported message type"。
+- **按需读取**：文档 / 附件不预拉，由 agent 判断需要时才读，省 token、避免拉入无关内容（消息自带的附件仍按原有逻辑自动下载为 FileChunk）。
+
+### 13.3 文件变更
+
+| 操作 | 文件 | 说明 |
+|------|------|------|
+| 修改 | `psi_agent/channel/feishu/client.py` | 新增 `_context_header`；`_build_chunks` 注入 header 并保持 unsupported-type 语义 |
+| 修改 | `tests/psi_agent/channel/feishu/test_feishu.py` | 元数据头注入 / 群聊 chat_id 携带 / 空消息丢弃 header |
+| 修改 | `examples/haitun-workspace/TOOLS.md` | 常驻引导：群聊里如何用 `feishu_message_list` / `feishu_doc_read` / `feishu_file_download` |
+
+### 13.4 非目标
+
+- channel 层不自动预拉群历史或附件（避免耦合与 token 浪费）；是否拉取由 agent 决策。
+- 不解析飞书"分享云文档"卡片为可读 token——最稳的是消息里直接带文档 URL 文本。

@@ -77,9 +77,10 @@ async def _remove_reaction(channel: Any, message_id: str, reaction_id: str) -> N
 def _context_header(ctx: Any) -> str:
     """构造一段飞书消息元数据前缀, 注入到发给 agent 的文本最前面。
 
-    agent 拿到 ``chat_id`` 后即可主动调 ``feishu_message_list`` 拉取本群历史消息
-    作为上下文, 再对其中的飞书文档链接调 ``feishu_doc_read``、附件调
-    ``feishu_file_download``。群聊(group/topic)才提示可拉上下文; 单聊(p2p)不提示。
+    只输出客观的消息元数据(chat_id / chat_type / message_id / sender)——
+    刻意不含任何具体 workspace 工具名, 保持 channel 层与 workspace 工具解耦
+    (遵守微内核理念: 框架只传协议事实, 功能由 workspace 定义)。agent 如何用
+    ``chat_id`` 拉群历史 / 读文档的引导, 放在 workspace 的 TOOLS.md 里。
     """
     chat_type = getattr(ctx, "chat_type", "") or "unknown"
     lines = [
@@ -95,11 +96,6 @@ def _context_header(ctx: Any) -> str:
     thread_id = getattr(ctx, "thread_id", None) or getattr(ctx, "reply_to_message_id", None)
     if thread_id:
         lines.append(f"thread_id: {thread_id}")
-    if chat_type in ("group", "topic"):
-        lines.append(
-            "note: 这是群聊消息。如需群里之前的上下文, 用 feishu_message_list(container_id=chat_id) "
-            "拉取历史消息; 消息中提到的飞书文档链接用 feishu_doc_read 读取正文。"
-        )
     lines.append("</feishu_context>")
     return "\n".join(lines)
 

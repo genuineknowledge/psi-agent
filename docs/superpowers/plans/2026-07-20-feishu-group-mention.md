@@ -89,10 +89,32 @@ reject 事件对象来自 `lark_channel`（`RejectEvent`，含 `message_id` / `r
 
 ---
 
+## 阶段二：读取群聊上下文与文档（后续追加）
+
+**目标**：机器人被 @ 时能读群聊历史上下文及其中的文档 / 文件。
+
+**缺口**：`_build_chunks` 只把消息正文发给 agent，agent 不知道 `chat_id`，无法调
+`feishu_message_list` 拉群历史。
+
+**设计**：
+- `client.py` 新增 `_context_header(ctx)`，在发给 agent 的文本最前注入 `<feishu_context>`
+  元数据块（chat_id / chat_type / message_id / sender_open_id，可选 sender_name / thread_id）。
+- **刻意为之**：header 只含客观协议事实、不含 workspace 工具名（channel 与 workspace 工具解耦，
+  遵守微内核理念）。引导 agent 用 chat_id 拉上下文 / 读文档的说明放 workspace 的 `TOOLS.md`。
+- header 仅在有真实内容时随内容注入；无内容时丢弃 header 返回 `[]`，保持
+  "unsupported message type" 语义。
+- 读取按需：agent 决策是否调 `feishu_message_list` / `feishu_doc_read` / `feishu_file_download`，
+  channel 不预拉（省 token、避免无关内容）。
+
+**文件变更**：`client.py`（`_context_header`）、`test_feishu.py`（3 个新测试）、
+`examples/haitun-workspace/TOOLS.md`（常驻引导）、spec 第 13 节、Channel `AGENTS.md`（新行为留痕）。
+
+---
+
 ## 验证
 
-- `ruff check` + `ruff format --check`（CI 两个都跑）
-- `pytest tests/psi_agent/channel/feishu/`
+- `ruff check` + `ruff format --check` + `ty check`（CI 三个都跑）
+- `pytest tests/psi_agent/channel/feishu/`（本地用 uv .venv，clean env 去掉 PSI_FEISHU_* 环境变量）
 
 ## 完成后
 
