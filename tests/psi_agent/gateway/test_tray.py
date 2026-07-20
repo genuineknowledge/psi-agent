@@ -48,7 +48,7 @@ def test_gateway_tray_init(icon_file: str) -> None:
     tray = GatewayTray("http://127.0.0.1:8888", icon_file)
     assert tray._url == "http://127.0.0.1:8888"
     assert tray._icon_path == icon_file
-    assert tray._stop_event is not None
+    assert tray._q is not None
 
 
 def test_gateway_tray_stop_when_not_started(icon_file: str) -> None:
@@ -56,10 +56,10 @@ def test_gateway_tray_stop_when_not_started(icon_file: str) -> None:
     tray.stop()
 
 
-def test_gateway_tray_quit_callback_sets_stop_event(icon_file: str) -> None:
+def test_gateway_tray_quit_callback_puts_event(icon_file: str) -> None:
     tray = GatewayTray("http://127.0.0.1:8888", icon_file)
-    tray._quit()
-    assert tray._stop_event.is_set()
+    tray._on_quit()
+    assert tray._q.get() == "quit"
 
 
 @pytest.mark.skipif(
