@@ -1498,3 +1498,173 @@ def test_file_download_tool_async_with_docstring() -> None:
     fn = mod.feishu_file_download
     assert inspect.iscoroutinefunction(fn)
     assert (inspect.getdoc(fn) or "").strip()
+
+
+# ── Create documents: docx + wiki nodes + list spaces + append content ────────
+
+
+@pytest.mark.asyncio
+async def test_create_docx_builds_request_and_parses_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"document_id": "doccnXXXX", "title": "T", "revision_id": 1})
+    # Feishu wraps the created doc under data.document
+    cap._data = {"document": {"document_id": "doccnXXXX", "title": "T", "revision_id": 1}}
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_docx_impl("  My Doc  ", "fld123")
+    assert result["ok"] is True
+    assert result["document_id"] == "doccnXXXX"
+    assert result["url"].endswith("/docx/doccnXXXX")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/docx/v1/documents"
+    assert req.body == {"title": "My Doc", "folder_token": "fld123"}
+
+
+@pytest.mark.asyncio
+async def test_create_docx_omits_empty_folder(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"document": {"document_id": "d1"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.create_docx_impl("Title", "")
+    assert cap.request.body == {"title": "Title"}
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_node_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"node": {"node_token": "nodeAAA", "obj_token": "docxBBB", "obj_type": "docx", "space_id": "sp1"}}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_wiki_node_impl("sp1", "Onboarding", "docx", "parentTok")
+    assert result["ok"] is True
+    assert result["node_token"] == "nodeAAA"
+    assert result["obj_token"] == "docxBBB"  # == the docx document_id for writing the body
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/wiki/v2/spaces/:space_id/nodes"
+    assert req.paths["space_id"] == "sp1"
+    assert req.body == {
+        "obj_type": "docx",
+        "node_type": "origin",
+        "parent_node_token": "parentTok",
+        "title": "Onboarding",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_node_upgrades_deprecated_doc_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"node": {"node_token": "n", "obj_token": "o"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.create_wiki_node_impl("sp1", "T", "doc", "")  # 'doc' is deprecated (131010)
+    assert cap.request.body["obj_type"] == "docx"
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_node_requires_space_id() -> None:
+    result = await _impl.create_wiki_node_impl("  ", "T")
+    assert result["ok"] is False
+    assert "space_id" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_list_wiki_spaces_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [{"space_id": "sp1", "name": "KB One", "space_type": "team"}],
+            "page_token": "pt2",
+            "has_more": True,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_wiki_spaces_impl(80, "pt1")  # 80 clamped to 50
+    assert result["ok"] is True
+    assert result["spaces"] == [{"space_id": "sp1", "name": "KB One", "space_type": "team"}]
+    assert result["has_more"] is True
+    q = _qdict(cap.request)
+    assert q.get("page_size") == "50"
+    assert q.get("page_token") == "pt1"
+    assert cap.request.uri == "/open-apis/wiki/v2/spaces"
+
+
+def test_content_to_blocks_maps_headings_and_paragraphs() -> None:
+    content = "# Title\n\nA paragraph.\n## Sub\nAnother line.\n"
+    blocks = _impl._content_to_blocks(content)
+    # blank line skipped → 4 blocks
+    assert [b["block_type"] for b in blocks] == [3, 2, 4, 2]
+    assert blocks[0]["heading1"]["elements"][0]["text_run"]["content"] == "Title"
+    assert blocks[1]["text"]["elements"][0]["text_run"]["content"] == "A paragraph."
+    assert blocks[2]["heading2"]["elements"][0]["text_run"]["content"] == "Sub"
+
+
+def test_content_to_blocks_hash_without_space_is_paragraph() -> None:
+    # "#tag" (no space) is not a heading — stays a plain paragraph
+    blocks = _impl._content_to_blocks("#notaheading")
+    assert blocks[0]["block_type"] == 2
+    assert blocks[0]["text"]["elements"][0]["text_run"]["content"] == "#notaheading"
+
+
+@pytest.mark.asyncio
+async def test_append_doc_content_builds_root_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.append_doc_content_impl("doc1", "# H\nbody")
+    assert result["ok"] is True
+    assert result["added"] == 2
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/docx/v1/documents/:document_id/blocks/:block_id/children"
+    # root block: document_id doubles as block_id
+    assert req.paths["document_id"] == "doc1"
+    assert req.paths["block_id"] == "doc1"
+    assert len(req.body["children"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_append_doc_content_batches_over_50(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[int] = []
+
+    async def fake_invoke(request: Any) -> dict[str, Any]:
+        calls.append(len(request.body["children"]))
+        return {"ok": True, "code": 0, "msg": "", "data": {}}
+
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    content = "\n".join(f"line {i}" for i in range(120))
+    result = await _impl.append_doc_content_impl("doc1", content)
+    assert result["ok"] is True
+    assert result["added"] == 120
+    assert calls == [50, 50, 20]  # batched at the API's 50-child cap
+
+
+@pytest.mark.asyncio
+async def test_append_doc_content_empty_errors() -> None:
+    result = await _impl.append_doc_content_impl("doc1", "\n\n  \n")
+    assert result["ok"] is False
+    assert "empty" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_append_doc_content_requires_document_id() -> None:
+    result = await _impl.append_doc_content_impl("  ", "body")
+    assert result["ok"] is False
+
+
+def test_create_tools_are_async_with_docstrings() -> None:
+    doc_mod = importlib.import_module("feishu_doc")
+    wiki_mod = importlib.import_module("feishu_wiki")
+    for fn in (
+        doc_mod.feishu_doc_create,
+        doc_mod.feishu_doc_append_content,
+        wiki_mod.feishu_wiki_list_spaces,
+        wiki_mod.feishu_wiki_create_doc,
+    ):
+        assert inspect.iscoroutinefunction(fn)
+        assert (inspect.getdoc(fn) or "").strip()
+
+
+@pytest.mark.asyncio
+async def test_wiki_create_doc_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"node": {"node_token": "n1", "obj_token": "d1", "obj_type": "docx"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    wiki_mod = importlib.import_module("feishu_wiki")
+    out = await wiki_mod.feishu_wiki_create_doc("sp1", "Doc")
+    parsed = json.loads(out)
+    assert parsed["ok"] is True
+    assert parsed["obj_token"] == "d1"
