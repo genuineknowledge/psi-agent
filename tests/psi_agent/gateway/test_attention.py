@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import anyio
 import pytest
@@ -15,14 +15,15 @@ async def test_attention_hub_notify_calls_bound_targets() -> None:
     hub = AttentionHub()
     tray = MagicMock()
     webview = MagicMock()
+    webview.send = AsyncMock()
     hub.bind(tray=tray, webview=webview)
 
     await hub.notify()
-    # schedule_notify runs notify_sync on a daemon thread
+    # schedule_notify runs notify_sync on a daemon thread → from_thread.run schedules in event loop
     await anyio.sleep(0.05)
 
     tray.request_attention.assert_called_once()
-    webview.request_attention.assert_called_once()
+    webview.send.assert_called_once_with("flash")
 
 
 @pytest.mark.anyio
