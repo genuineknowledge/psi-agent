@@ -674,24 +674,28 @@ def _build_runtime_info(model: str | None) -> str:
 def _build_datetime_section() -> str:
     """Build the ## Current Date & Time section.
 
-    Reads HAITUN_TIMEZONE (default UTC) for the timezone and
+    Reads TIMEZONE (falling back to the standard TZ) for the timezone and
     HAITUN_KNOWLEDGE_CUTOFF (optional, e.g. "2026-01") for the knowledge
     cutoff anchor. When the cutoff is unset, emit a neutral line rather
     than fabricating a date.
 
-    The displayed time is computed *in* HAITUN_TIMEZONE so the clock and
-    the label always agree — otherwise a UTC container would show UTC
-    wall-clock time under an "Asia/Shanghai" label (or vice versa),
-    silently feeding the agent a time that is off by the UTC offset.
+    The clock and the label are computed from the same source so they
+    always agree — otherwise a UTC container would show UTC wall-clock
+    time under an "Asia/Shanghai" label (or vice versa), silently feeding
+    the agent a time that is off by the UTC offset. When TIMEZONE/TZ is
+    unset or invalid, fall back to the system's local timezone via
+    astimezone(), so no tzdata package is strictly required.
     """
-    tz_name = os.environ.get("HAITUN_TIMEZONE", "UTC")
+    tz_name = os.environ.get("TIMEZONE", "").strip() or os.environ.get("TZ", "").strip()
     try:
-        now = datetime.now(ZoneInfo(tz_name))
+        now = datetime.now(ZoneInfo(tz_name)) if tz_name else datetime.now().astimezone()
     except ZoneInfoNotFoundError, ValueError:
-        # Unknown tz name: fall back to naive local time and label it
+        # Unknown tz name: fall back to system local time and label it
         # honestly so the agent knows the zone is unverified.
-        now = datetime.now()
+        now = datetime.now().astimezone()
         tz_name = f"{tz_name} (unresolved — using system local time)"
+    if not tz_name:
+        tz_name = str(now.tzinfo)
     cutoff = os.environ.get("HAITUN_KNOWLEDGE_CUTOFF", "").strip()
     if cutoff:
         cutoff_line = (

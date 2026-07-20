@@ -372,17 +372,27 @@ async def test_run_one_handles_agent_error() -> None:
 
 
 def test_schedule_tz_unset_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HAITUN_TIMEZONE", raising=False)
+    monkeypatch.delenv("TIMEZONE", raising=False)
+    monkeypatch.delenv("TZ", raising=False)
     assert _schedule_tz() is None
 
 
 def test_schedule_tz_invalid_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HAITUN_TIMEZONE", "Not/AZone")
+    monkeypatch.setenv("TIMEZONE", "Not/AZone")
     assert _schedule_tz() is None
 
 
 def test_schedule_tz_valid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HAITUN_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setenv("TIMEZONE", "Asia/Shanghai")
+    tz = _schedule_tz()
+    assert tz is not None
+    assert str(tz) == "Asia/Shanghai"
+
+
+def test_schedule_tz_falls_back_to_tz_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    """TIMEZONE takes priority; the standard TZ is the fallback."""
+    monkeypatch.delenv("TIMEZONE", raising=False)
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
     tz = _schedule_tz()
     assert tz is not None
     assert str(tz) == "Asia/Shanghai"
@@ -395,7 +405,7 @@ def test_cron_anchored_to_local_timezone(monkeypatch: pytest.MonkeyPatch) -> Non
     the next fire converted back to Asia/Shanghai reads 09:00; the old
     bare-epoch base would land it at 17:00 Shanghai (09:00 UTC).
     """
-    monkeypatch.setenv("HAITUN_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setenv("TIMEZONE", "Asia/Shanghai")
     tz = _schedule_tz()
     assert tz is not None
 
