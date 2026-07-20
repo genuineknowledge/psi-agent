@@ -32,10 +32,10 @@ class ChannelFeishu:
     """Whitelist of open_id/user_id. None = allow all."""
 
     require_mention: bool = True
-    """群聊仅在 @机器人时才回复; 单聊不受影响。关闭则群聊每条消息都回复。"""
+    """Group chats: only reply when the bot is @-mentioned; DMs unaffected. False replies to every group message."""
 
     respond_to_mention_all: bool = False
-    """是否把 @所有人 视为有效 @ (默认否, 避免 @all 触发机器人)。"""
+    """Whether to treat @all as a valid mention (default False, so @all does not trigger the bot)."""
 
     verbose: bool = False
     """Enable DEBUG-level logging."""
