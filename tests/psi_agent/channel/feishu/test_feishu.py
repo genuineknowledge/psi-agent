@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import anyio
 import pytest
+from lark_channel import PolicyConfig
 
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import FileChunk, TextChunk
@@ -253,6 +254,7 @@ async def test_run_feishu_passes_policy_to_channel(monkeypatch):
         tg.cancel_scope.cancel()
 
     policy = captured["policy"]
+    assert isinstance(policy, PolicyConfig)
     assert policy.require_mention is False
     assert policy.respond_to_mention_all is True
     # message + reject handlers both registered
@@ -279,8 +281,10 @@ async def test_run_feishu_defaults_require_mention(monkeypatch):
         await anyio.sleep(0.1)
         tg.cancel_scope.cancel()
 
-    assert captured["policy"].require_mention is True
-    assert captured["policy"].respond_to_mention_all is False
+    policy = captured["policy"]
+    assert isinstance(policy, PolicyConfig)
+    assert policy.require_mention is True
+    assert policy.respond_to_mention_all is False
 
 
 @pytest.mark.anyio
