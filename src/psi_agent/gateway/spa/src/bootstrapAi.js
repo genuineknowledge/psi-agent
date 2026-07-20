@@ -2,15 +2,13 @@ import { api } from './api.js'
 
 /**
  * SPA open-and-use defaults. Gateway only exposes POST /ais — no server-side
- * bootstrap endpoint. Upstream secrets stay on the company proxy (Nginx);
- * the client ships a placeholder Bearer only.
+ * bootstrap. Real upstream key lives only on the company proxy VM
+ * (haitun.addchess.cn); client ships a placeholder Bearer.
  */
 export const DEFAULT_REMOTE_AI = {
   provider: 'openai',
-  model: 'glm-4-flash',
-  // Root company domain (not a haitun.* subdomain). Nginx must expose
-  // OpenAI-compatible chat; any-llm posts to `{base_url}/chat/completions`.
-  base_url: 'https://genuineknowledge.cn',
+  model: 'deepseek-v4-flash-free',
+  base_url: 'https://haitun.addchess.cn',
   api_key: 'haitun-default',
 }
 
