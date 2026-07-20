@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing
 
+import anyio
 import pytest
 
 from psi_agent.gateway._webview import WebViewProcess
@@ -34,7 +35,5 @@ def test_webviewprocess_double_start_raises():
         wv._process = multiprocessing.Process(target=fake_main)
         with pytest.raises(RuntimeError, match="already started"):
             await wv.start()
-
-    import anyio
 
     anyio.run(test)

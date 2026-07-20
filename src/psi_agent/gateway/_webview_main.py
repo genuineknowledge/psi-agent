@@ -1,6 +1,8 @@
 """pywebview subprocess entry point. No psi_agent imports."""
+
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import multiprocessing
 import sys
@@ -56,24 +58,18 @@ def webview_main(
         while True:
             cmd = cmd_q.get()
             if cmd == "show":
-                try:
+                with contextlib.suppress(Exception):
                     window.show()
-                except Exception:
-                    pass
             elif cmd == "destroy":
-                try:
+                with contextlib.suppress(Exception):
                     window.destroy()
-                except Exception:
-                    pass
                 break
             elif cmd == "flash":
-                try:
+                with contextlib.suppress(Exception):
                     native = window.native
                     hwnd = getattr(native, "Handle", None)
                     if hwnd is not None:
                         _flash_hwnd(int(hwnd))
-                except Exception:
-                    pass
 
     t = threading.Thread(target=cmd_loop, daemon=True)
     t.start()

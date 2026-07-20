@@ -1,4 +1,5 @@
 """WebViewProcess — runs pywebview in a subprocess, bridged via anyio streams."""
+
 from __future__ import annotations
 
 import contextlib
@@ -93,7 +94,7 @@ class WebViewProcess:
                 break
             try:
                 await self._send.send(evt)  # type: ignore[union-attr]
-            except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+            except anyio.ClosedResourceError, anyio.BrokenResourceError:
                 break
             if evt == "ready":
                 self._ready_event.set()
@@ -103,7 +104,7 @@ class WebViewProcess:
 
 async def merge(
     *streams: anyio.MemoryObjectReceiveStream[str],
-) -> AsyncGenerator[str, None]:
+) -> AsyncGenerator[str]:
     """Merge multiple MemoryObjectReceiveStreams, yielding items as they arrive."""
     async with anyio.create_task_group() as tg:
         out_send, out_recv = anyio.create_memory_object_stream[str]()

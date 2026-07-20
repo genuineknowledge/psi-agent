@@ -7,6 +7,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any
 
+import anyio
 from loguru import logger
 from PIL import Image, ImageDraw
 
@@ -64,16 +65,13 @@ class AttentionHub:
 
     def notify_sync(self) -> None:
         if self._webview is not None:
-            from anyio import from_thread
 
             async def _send_flash() -> None:
                 with contextlib.suppress(Exception):
                     await self._webview.send("flash")  # type: ignore[union-attr]
 
-            try:
-                from_thread.run(_send_flash)
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                anyio.from_thread.run(_send_flash)
         if self._tray is not None:
             self._tray.request_attention()
         if self._webview is None and self._tray is None:

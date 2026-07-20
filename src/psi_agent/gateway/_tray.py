@@ -1,10 +1,10 @@
 """System tray icon for Gateway. Left-click opens browser or restores webview; right-click shows menu."""
+
 from __future__ import annotations
 
 import contextlib
 import queue
 import threading
-import webbrowser
 from typing import Any
 
 import anyio
@@ -86,7 +86,7 @@ class GatewayTray:
                 break
             try:
                 await self._send_stream.send(evt)  # type: ignore[union-attr]
-            except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+            except anyio.ClosedResourceError, anyio.BrokenResourceError:
                 break
 
     def stop(self) -> None:
