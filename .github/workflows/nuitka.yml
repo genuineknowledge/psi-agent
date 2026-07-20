@@ -41,6 +41,7 @@ jobs:
         --include-package=git
         --include-package=chardet
         --include-package=hikari
+        --include-package=tzdata
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7

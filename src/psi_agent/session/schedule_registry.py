@@ -8,11 +8,14 @@ The public ``schedules`` list remains flat for backward compatibility.
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from contextlib import aclosing
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
 from croniter import croniter
@@ -23,6 +26,24 @@ from psi_agent.session.protocol import AgentChunk
 
 if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent
+
+
+def _schedule_tz() -> ZoneInfo | None:
+    """Resolve the timezone cron schedules are anchored to.
+
+    Reads ``HAITUN_TIMEZONE`` (e.g. ``Asia/Shanghai``). Returns ``None``
+    when unset or invalid, in which case croniter falls back to its
+    default (UTC-based) interpretation of the epoch base — matching the
+    old behaviour so nothing breaks when the variable is absent.
+    """
+    name = os.environ.get("HAITUN_TIMEZONE", "").strip()
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        logger.warning(f"Invalid HAITUN_TIMEZONE {name!r}, falling back to UTC scheduling: {e!r}")
+        return None
 
 
 @dataclass
@@ -166,13 +187,18 @@ class ScheduleRegistry:
         """Perpetual coroutine that fires a schedule on its cron interval."""
         logger.info(f"Schedule runner started: {schedule.name!r} ({schedule.cron!r})")
 
-        cron_iter = croniter(schedule.cron, time.time())
+        # Anchor cron to HAITUN_TIMEZONE so "0 9 * * *" means 9am *local*
+        # time, not 9am UTC. When the tz is unset/invalid, fall back to a
+        # bare epoch base (UTC interpretation), preserving old behaviour.
+        tz = _schedule_tz()
+        base: float | datetime = datetime.now(tz) if tz is not None else time.time()
+        cron_iter = croniter(schedule.cron, base)
 
         try:
             with cancel_scope:
                 while True:
                     try:
-                        next_run = cron_iter.get_next()
+                        next_run = cron_iter.get_next(float)
                         wait = max(0.0, next_run - time.time())
                         await anyio.sleep(wait)
 

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import textwrap
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
 import anyio
 import pytest
+from croniter import croniter
 
 from psi_agent._yaml import parse_yaml_header
-from psi_agent.session.schedule_registry import Schedule, ScheduleEntry, ScheduleRegistry
+from psi_agent.session.schedule_registry import (
+    Schedule,
+    ScheduleEntry,
+    ScheduleRegistry,
+    _schedule_tz,
+)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -359,6 +366,43 @@ async def test_run_one_handles_agent_error() -> None:
     cancel_scope = anyio.CancelScope()
     with anyio.move_on_after(3):
         await ScheduleRegistry._run_one(s, cast(Any, agent), cancel_scope)
+
+
+# ── timezone-aware scheduling ─────────────────────────────────────────────────
+
+
+def test_schedule_tz_unset_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("HAITUN_TIMEZONE", raising=False)
+    assert _schedule_tz() is None
+
+
+def test_schedule_tz_invalid_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAITUN_TIMEZONE", "Not/AZone")
+    assert _schedule_tz() is None
+
+
+def test_schedule_tz_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HAITUN_TIMEZONE", "Asia/Shanghai")
+    tz = _schedule_tz()
+    assert tz is not None
+    assert str(tz) == "Asia/Shanghai"
+
+
+def test_cron_anchored_to_local_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """'0 9 * * *' must fire at 09:00 *local* time, not 09:00 UTC.
+
+    Regression guard for the missed-schedule bug: with the tz applied,
+    the next fire converted back to Asia/Shanghai reads 09:00; the old
+    bare-epoch base would land it at 17:00 Shanghai (09:00 UTC).
+    """
+    monkeypatch.setenv("HAITUN_TIMEZONE", "Asia/Shanghai")
+    tz = _schedule_tz()
+    assert tz is not None
+
+    it = croniter("0 9 * * *", datetime.now(tz))
+    next_local = datetime.fromtimestamp(it.get_next(float), tz)
+    assert next_local.hour == 9
+    assert next_local.minute == 0
 
 
 # ── YAML parse helper ─────────────────────────────────────────────────────────

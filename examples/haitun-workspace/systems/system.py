@@ -40,6 +40,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
 from prompt_sections import (
@@ -673,13 +674,24 @@ def _build_runtime_info(model: str | None) -> str:
 def _build_datetime_section() -> str:
     """Build the ## Current Date & Time section.
 
-    Reads HAITUN_TIMEZONE (default UTC) for the timezone label and
+    Reads HAITUN_TIMEZONE (default UTC) for the timezone and
     HAITUN_KNOWLEDGE_CUTOFF (optional, e.g. "2026-01") for the knowledge
     cutoff anchor. When the cutoff is unset, emit a neutral line rather
     than fabricating a date.
+
+    The displayed time is computed *in* HAITUN_TIMEZONE so the clock and
+    the label always agree — otherwise a UTC container would show UTC
+    wall-clock time under an "Asia/Shanghai" label (or vice versa),
+    silently feeding the agent a time that is off by the UTC offset.
     """
-    tz = os.environ.get("HAITUN_TIMEZONE", "UTC")
-    now = datetime.now()
+    tz_name = os.environ.get("HAITUN_TIMEZONE", "UTC")
+    try:
+        now = datetime.now(ZoneInfo(tz_name))
+    except (ZoneInfoNotFoundError, ValueError):
+        # Unknown tz name: fall back to naive local time and label it
+        # honestly so the agent knows the zone is unverified.
+        now = datetime.now()
+        tz_name = f"{tz_name} (unresolved — using system local time)"
     cutoff = os.environ.get("HAITUN_KNOWLEDGE_CUTOFF", "").strip()
     if cutoff:
         cutoff_line = (
@@ -693,7 +705,7 @@ def _build_datetime_section() -> str:
         )
     return (
         f"## Current Date & Time\nDate: {now.strftime('%Y-%m-%d')}\n"
-        f"Time: {now.strftime('%H:%M:%S')}\nTime zone: {tz}\n{cutoff_line}"
+        f"Time: {now.strftime('%H:%M:%S')}\nTime zone: {tz_name}\n{cutoff_line}"
     )
 
 
