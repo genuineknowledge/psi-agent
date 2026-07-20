@@ -1942,3 +1942,196 @@ async def download_file_impl(source: str, save_path: str, is_url: bool = False) 
     except OSError as exc:
         return _error(f"could not write file: {exc}", path=str(path))
     return {"ok": True, "path": str(path), "bytes": len(data)}
+
+
+# ── Create documents: standalone docx + wiki (knowledge base) nodes ───────────
+#
+# Read tools above only *fetch* content; these create new documents. A wiki doc
+# is a two-layer thing: the wiki *node* (the entry in a knowledge space) wraps an
+# underlying docx whose token is `obj_token` — that token is the docx document_id
+# you pass to `append_doc_content_impl` to fill in the body. So the full flow is
+# list_wiki_spaces → create_wiki_node → append_doc_content.
+
+_DOC_BASE_URL = "https://feishu.cn"
+
+
+def _build_docx_create_request(title: str, folder_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/docx/v1/documents"
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {}
+    if title:
+        body["title"] = title
+    if folder_token:
+        body["folder_token"] = folder_token
+    req.body = body
+    return req
+
+
+async def create_docx_impl(title: str, folder_token: str = "") -> dict[str, Any]:
+    """Create a new standalone docx cloud document. Returns its document_id + URL."""
+    res = await _invoke(_build_docx_create_request(title.strip(), folder_token.strip()))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    doc = data.get("document", {}) if isinstance(data.get("document"), dict) else {}
+    document_id = doc.get("document_id", "")
+    return {
+        "ok": True,
+        "document_id": document_id,
+        "title": doc.get("title", title),
+        "revision_id": doc.get("revision_id"),
+        "url": f"{_DOC_BASE_URL}/docx/{document_id}" if document_id else "",
+    }
+
+
+def _build_wiki_node_create_request(
+    *, space_id: str, obj_type: str, node_type: str, parent_node_token: str, title: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/wiki/v2/spaces/:space_id/nodes"
+    req.paths["space_id"] = space_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {"obj_type": obj_type, "node_type": node_type}
+    if parent_node_token:
+        body["parent_node_token"] = parent_node_token
+    if title:
+        body["title"] = title
+    req.body = body
+    return req
+
+
+async def create_wiki_node_impl(
+    space_id: str, title: str, obj_type: str = "docx", parent_node_token: str = ""
+) -> dict[str, Any]:
+    """Create a node (default: a docx doc) in a wiki space. Returns node_token + obj_token(=document_id)."""
+    if not space_id.strip():
+        return _error("space_id is required. Use feishu_wiki_list_spaces to find it.")
+    # Feishu deprecated `doc`; the API rejects it with error 131010.
+    obj_type = (obj_type or "docx").strip()
+    if obj_type == "doc":
+        obj_type = "docx"
+    res = await _invoke(
+        _build_wiki_node_create_request(
+            space_id=space_id.strip(),
+            obj_type=obj_type,
+            node_type="origin",
+            parent_node_token=parent_node_token.strip(),
+            title=title.strip(),
+        )
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    node = data.get("node", {}) if isinstance(data.get("node"), dict) else {}
+    obj_token = node.get("obj_token", "")
+    return {
+        "ok": True,
+        "node_token": node.get("node_token", ""),
+        "obj_token": obj_token,
+        "obj_type": node.get("obj_type", obj_type),
+        "space_id": node.get("space_id", space_id),
+        "title": node.get("title", title),
+        # For a docx node, obj_token is the document_id — write the body with
+        # feishu_doc_append_content(document_id=obj_token, ...).
+        "url": f"{_DOC_BASE_URL}/wiki/{node.get('node_token', '')}",
+    }
+
+
+def _build_list_spaces_request(page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/wiki/v2/spaces"
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    return req
+
+
+async def list_wiki_spaces_impl(page_size: int = 20, page_token: str = "") -> dict[str, Any]:
+    """List the wiki (knowledge base) spaces the app/user can access. Returns space_id + name."""
+    page_size = max(1, min(int(page_size or 20), 50))
+    res = await _invoke(_build_list_spaces_request(page_size, page_token.strip()))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    spaces = [
+        {"space_id": it.get("space_id", ""), "name": it.get("name", ""), "space_type": it.get("space_type", "")}
+        for it in items
+        if isinstance(it, dict)
+    ]
+    return {
+        "ok": True,
+        "spaces": spaces,
+        "page_token": data.get("page_token", ""),
+        "has_more": bool(data.get("has_more")),
+    }
+
+
+# ── Write body content into a docx ────────────────────────────────────────────
+#
+# The docx block API is rich (tables/images/code/…). We map plain text / light
+# Markdown to the two blocks that cover "write a knowledge-base doc": headings
+# (`# ` → h1 … up to `###### ` → h6, block_type 3..8) and paragraphs (block_type
+# 2). Blank lines are skipped. Children are appended to the document root
+# (block_id == document_id) in batches of <=50 (the API cap).
+
+_HEADING_KEYS = {3: "heading1", 4: "heading2", 5: "heading3", 6: "heading4", 7: "heading5", 8: "heading6"}
+_BLOCKS_BATCH = 50
+
+
+def _line_to_block(line: str) -> dict[str, Any] | None:
+    text = line.rstrip()
+    if not text.strip():
+        return None
+    stripped = text.lstrip()
+    level = 0
+    while level < len(stripped) and stripped[level] == "#":
+        level += 1
+    # "# " .. "###### " → heading blocks (block_type 3..8)
+    if 1 <= level <= 6 and level < len(stripped) and stripped[level] == " ":
+        block_type = 2 + level
+        content = stripped[level + 1 :].strip()
+        key = _HEADING_KEYS[block_type]
+        return {"block_type": block_type, key: {"elements": [{"text_run": {"content": content}}]}}
+    # Everything else → a plain text paragraph (block_type 2)
+    return {"block_type": 2, "text": {"elements": [{"text_run": {"content": text.strip()}}]}}
+
+
+def _content_to_blocks(content: str) -> list[dict[str, Any]]:
+    blocks = [b for b in (_line_to_block(ln) for ln in content.splitlines()) if b is not None]
+    return blocks
+
+
+def _build_blocks_append_request(document_id: str, children: list[dict[str, Any]]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    # Root block: the document_id doubles as the root block_id.
+    req.uri = "/open-apis/docx/v1/documents/:document_id/blocks/:block_id/children"
+    req.paths["document_id"] = document_id
+    req.paths["block_id"] = document_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"children": children}
+    return req
+
+
+async def append_doc_content_impl(document_id: str, content: str) -> dict[str, Any]:
+    """Append text/heading blocks (from plain text or light Markdown) to a docx body."""
+    if not document_id.strip():
+        return _error("document_id is required.")
+    blocks = _content_to_blocks(content or "")
+    if not blocks:
+        return _error("content is empty — nothing to write.")
+    added = 0
+    for start in range(0, len(blocks), _BLOCKS_BATCH):
+        batch = blocks[start : start + _BLOCKS_BATCH]
+        res = await _invoke(_build_blocks_append_request(document_id.strip(), batch))
+        if not res["ok"]:
+            res["added"] = added
+            return res
+        added += len(batch)
+    return {"ok": True, "document_id": document_id.strip(), "added": added}
