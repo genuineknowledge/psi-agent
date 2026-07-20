@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import ctypes
-import sys
+import contextlib
 import threading
 import time
-from ctypes import wintypes
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -14,7 +12,7 @@ from PIL import Image, ImageDraw
 
 if TYPE_CHECKING:
     from psi_agent.gateway._tray import GatewayTray
-    from psi_agent.gateway._webview import GatewayWebView
+    from psi_agent.gateway._webview import WebViewProcess
 
 
 def _make_highlight_image(image: Any) -> Any:
@@ -27,30 +25,6 @@ def _make_highlight_image(image: Any) -> Any:
     for i in range(border):
         draw.rectangle((i, i, w - 1 - i, h - 1 - i), outline=(255, 140, 0, 255))
     return Image.alpha_composite(base, overlay)
-
-
-def _flash_hwnd(hwnd: int) -> None:
-    """Flash a native window on the Windows taskbar (no-op elsewhere)."""
-    if sys.platform != "win32":
-        return
-
-    class FLASHWINFO(ctypes.Structure):
-        _fields_ = [
-            ("cbSize", wintypes.UINT),
-            ("hwnd", wintypes.HWND),
-            ("dwFlags", wintypes.DWORD),
-            ("uCount", wintypes.UINT),
-            ("dwTimeout", wintypes.DWORD),
-        ]
-
-    info = FLASHWINFO()
-    info.cbSize = ctypes.sizeof(FLASHWINFO)
-    info.hwnd = hwnd
-    # FLASHW_TRAY | FLASHW_TIMERNOFG — flash taskbar until window comes foreground.
-    info.dwFlags = 0x02 | 0x0C
-    info.uCount = 5
-    info.dwTimeout = 0
-    ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
 
 
 def pulse_tray_icon(icon: Any, normal_image: Any, highlight_image: Any) -> None:
@@ -75,13 +49,13 @@ class AttentionHub:
 
     def __init__(self) -> None:
         self._tray: GatewayTray | None = None
-        self._webview: GatewayWebView | None = None
+        self._webview: WebViewProcess | None = None
 
     def bind(
         self,
         *,
         tray: GatewayTray | None = None,
-        webview: GatewayWebView | None = None,
+        webview: WebViewProcess | None = None,
     ) -> None:
         if tray is not None:
             self._tray = tray
@@ -90,7 +64,16 @@ class AttentionHub:
 
     def notify_sync(self) -> None:
         if self._webview is not None:
-            self._webview.request_attention()
+            from anyio import from_thread
+
+            async def _send_flash() -> None:
+                with contextlib.suppress(Exception):
+                    await self._webview.send("flash")  # type: ignore[union-attr]
+
+            try:
+                from_thread.run(_send_flash)
+            except Exception:
+                pass
         if self._tray is not None:
             self._tray.request_attention()
         if self._webview is None and self._tray is None:
