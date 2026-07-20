@@ -1226,6 +1226,130 @@ def test_calendar_tool_async_with_docstring() -> None:
     assert (inspect.getdoc(fn) or "").strip()
 
 
+# ── Calendar — list events (read schedule) ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_events_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_events_impl("2026-07-15 09:00", "2026-07-15 18:00", "cal_x")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/calendar/v4/calendars/:calendar_id/events"
+    assert req.paths["calendar_id"] == "cal_x"
+    q = _qdict(req)
+    assert q["start_time"].isdigit() and q["end_time"].isdigit()
+    assert int(q["end_time"]) > int(q["start_time"])
+    assert q["user_id_type"] == "open_id"
+    assert result["ok"] is True and result["calendar_id"] == "cal_x"
+
+
+@pytest.mark.asyncio
+async def test_list_events_uses_primary_when_blank(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _cal_id() -> str:
+        return "cal_primary"
+
+    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _cal_id)
+    cap = _CapturedInvoke({"items": [], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_events_impl("2026-07-15", "2026-07-16")
+    assert cap.request.paths["calendar_id"] == "cal_primary"
+    assert result["calendar_id"] == "cal_primary"
+
+
+@pytest.mark.asyncio
+async def test_list_events_bad_time() -> None:
+    result = await _impl.list_events_impl("nope", "2026-07-15")
+    assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_events_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
+    items = [
+        {
+            "event_id": "ev_1",
+            "summary": "周会",
+            "description": "议题",
+            "start_time": {"timestamp": "1752562800"},
+            "end_time": {"timestamp": "1752566400"},
+            "status": "confirmed",
+        },
+        {
+            "event_id": "ev_2",
+            "summary": "全天",
+            "start_time": {"date": "2026-07-15"},
+            "end_time": {"date": "2026-07-16"},
+        },
+    ]
+    cap = _CapturedInvoke({"items": items, "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_events_impl("2026-07-15", "2026-07-16", "cal_x")
+    assert result["count"] == 2
+    assert result["events"][0]["event_id"] == "ev_1" and result["events"][0]["summary"] == "周会"
+    assert result["events"][0]["is_all_day"] is False
+    assert result["events"][1]["is_all_day"] is True and result["events"][1]["start"] == "2026-07-15"
+
+
+# ── Calendar — create one event per person ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_per_person_one_event_each(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _cal_id() -> str:
+        return "cal_1"
+
+    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _cal_id)
+    # For each person: create event, then add-attendees. 3 people -> 6 pages.
+    paged = _PagedInvoke(
+        [{"event": {"event_id": "ev_a"}}, {}, {"event": {"event_id": "ev_b"}}, {}, {"event": {"event_id": "ev_c"}}, {}]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.create_events_per_person_impl(
+        "值班", "2026-07-15 09:00", "2026-07-15 18:00", "ou_a, ou_b, ou_c"
+    )
+    assert result["ok"] is True
+    assert result["count"] == 3
+    assert [c["open_id"] for c in result["created"]] == ["ou_a", "ou_b", "ou_c"]
+    # each add-attendees request invites exactly that one person
+    att_reqs = [r for r in paged.requests if "attendees" in r.uri]
+    invited = [[a["user_id"] for a in r.body["attendees"]] for r in att_reqs]
+    assert invited == [["ou_a"], ["ou_b"], ["ou_c"]]
+
+
+@pytest.mark.asyncio
+async def test_create_per_person_empty_attendees() -> None:
+    result = await _impl.create_events_per_person_impl("x", "2026-07-15", "2026-07-15", "  ")
+    assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_per_person_partial_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    async def _fake_create(
+        summary: str, start: str, end: str, description: str = "", attendees: str = "", timezone: str = "Asia/Shanghai"
+    ) -> dict[str, Any]:
+        calls["n"] += 1
+        if attendees == "ou_bad":
+            return {"ok": False, "message": "Feishu API error 190002: no permission"}
+        return {"ok": True, "event_id": f"ev_{attendees}"}
+
+    monkeypatch.setattr(_impl, "create_event_impl", _fake_create)
+    result = await _impl.create_events_per_person_impl("值班", "2026-07-15", "2026-07-15", "ou_ok, ou_bad")
+    assert result["ok"] is False
+    assert [c["open_id"] for c in result["created"]] == ["ou_ok"]
+    assert result["failed"][0]["open_id"] == "ou_bad"
+
+
+def test_calendar_read_write_tools_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_calendar")
+    for name in ("feishu_calendar_list_events", "feishu_calendar_create_per_person"):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), name
+
+
 # ── Thread read — clean sender + text extraction ──────────────────────────────
 
 
