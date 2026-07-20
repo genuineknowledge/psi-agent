@@ -19,7 +19,8 @@ Gateway 进程
 ├── GatewayState       — 状态持久化到 state/latest.json
 ├── aiohttp REST Server  — OpenAPI CRUD + Web UI chat
 ├── spa/               — Vue 3 SPA 前端项目 (Vite + SFC)
-├── GatewayWebView     — 原生 webview 窗口 (pywebview)
+├── WebViewProcess     — webview 子进程 wrapper (pywebview)
+├── _webview_main.py   — webview 子进程入口（纯 pywebview，不 import psi_agent）
 ├── GatewayTray        — 系统托盘图标 (pystray)
 └── _openapi.py       — OpenAPI schema 提供
 ```
@@ -40,8 +41,9 @@ Gateway 进程
 | `_history_manager.py` | JSONL 历史读取 |
 | `_workspace_manager.py` | 目录浏览 + 快捷路径列表 + cwd 查询 |
 | `spa/` | Vue 3 SPA 前端项目（Vite + SFC + Composition API），构建输出 `spa/dist/` |
-| `_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数开启，`--icon` 参数指定图标文件，左键打开浏览器或恢复 webview 窗口，右键菜单控制；`request_attention()` 脉冲高亮图标 |
-| `_webview.py` | 原生 webview 窗口（pywebview），`--webview` 参数开启。窗口关闭信号通过 `threading.Event` 传递给主 loop；`request_attention()` 在 Windows 上 FlashWindowEx |
+| `_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数开启，`--icon` 参数指定图标文件，左键/右键菜单通过 `threading.Queue` → anyio MemoryObjectStream 发事件 `"open"` / `"quit"` 给 Gateway 主循环；`request_attention()` 脉冲高亮图标 |
+| `_webview.py` | `WebViewProcess` — pywebview 子进程 wrapper。对外：`async send(cmd)` 发命令、`events` stream 收事件。内部：`multiprocessing.Process` + `multiprocessing.Queue` 桥接；`merge()` 合并多个 MemoryObjectStream |
+| `_webview_main.py` | webview 子进程入口（纯 pywebview + multiprocessing，**不 import psi_agent**），接收 `"show"`/`"destroy"`/`"flash"` 命令，发送 `"ready"`/`"hidden"`/`"closed"` 事件 |
 | `_attention.py` | `AttentionHub`：SPA `POST /ui/attention` → 绑定的 tray/webview 注意力提示（best-effort）。`schedule_notify()` 用 daemon thread 异步触发，**禁止**在 aiohttp handler 里同步等 tray（pystray 可能卡死事件循环） |
 | `_openapi.py` | `GET /openapi.json` schema 生成 |
 
@@ -62,12 +64,15 @@ Gateway 进程
 12. await _do_persist()                                — 初始全量持久化
 13. runner.setup() + create_site(runner, listen) + site.start()
 14. if self.webview and self.icon is None: raise ValueError("--webview requires --icon")
-15. if self.webview: wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon, app_name=self.app_name); wv.start()
+15. if self.webview: wv = WebViewProcess(addr, tray_mode=bool(self.tray)); await wv.start(); tg.start_soon(wv._pump_events)
 16. if self.browser: webbrowser.open(addr)
 17. if self.tray and self.icon is None: raise ValueError("--tray requires --icon")
-18. if self.tray: GatewayTray(addr, self.icon, app_name=self.app_name, on_open=wv.show).start()
-19. try: 三路等待 — tray.wait_stop() / wv.wait_closed() / sleep_forever()
-20. finally: tray.stop()（如有）+ wv.stop()（如有）+ runner.cleanup() + tg.__aexit__()
+18. if self.tray: tray = GatewayTray(addr, self.icon, app_name=self.app_name); tray.start(); tg.start_soon(tray._pump_events)
+19. AttentionHub 绑定 webview/tray，主循环 `async for evt in merge(wv.events, tray.events)`:
+    - `"tray.open"` → `await wv.send("show")`
+    - `"tray.quit"` → `await wv.send("destroy")` + break
+    - `"wv.closed"` → break（有 tray 时 webview 关闭仅隐藏，不会发 closed）
+20. finally: tray.stop()（如有）+ await wv.stop()（如有）+ runner.cleanup() + tg.__aexit__()
 ```
 
 ## 系统托盘 (GatewayTray)
