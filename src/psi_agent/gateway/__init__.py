@@ -15,7 +15,6 @@ from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._session_manager import SessionManager
-from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway._state import GatewayState
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._tray import GatewayTray
@@ -45,8 +44,8 @@ class Gateway:
     icon: str | None = None
     """Path to icon image file (png/jpg/ico). Used as favicon, tray icon (--tray), and webview icon (--webview)."""
 
-    app_name: str = DEFAULT_APP_NAME
-    """Browser tab / webview / tray label. Injected into SPA index.html at serve time."""
+    app_name: str = "控制台"
+    """Browser tab / webview / tray label. Served via GET /title; SPA fetches it to set document.title."""
 
     browser: bool = False
     """Open a browser tab on startup."""

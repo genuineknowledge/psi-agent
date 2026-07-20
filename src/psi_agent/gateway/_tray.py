@@ -11,7 +11,6 @@ from loguru import logger
 from PIL import Image
 
 from psi_agent.gateway._attention import _make_highlight_image, pulse_tray_icon
-from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 
 
 class GatewayTray:
@@ -21,7 +20,7 @@ class GatewayTray:
         self,
         url: str,
         icon_path: str,
-        app_name: str = DEFAULT_APP_NAME,
+        app_name: str = "控制台",
         on_open: Any = None,
     ) -> None:
         self._url = url

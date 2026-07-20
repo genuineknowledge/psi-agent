@@ -23,7 +23,7 @@ Gateway 进程
     └── pystray.Icon.run()
         ├── 左键点击 → webbrowser.open(url)
         └── 右键菜单
-            ├── "打开控制台" → webbrowser.open(url)
+            ├── f"打开 {app_name}" → open_browser 或 restore webview
             └── "退出"       → 设置 stop_event
 ```
 
@@ -42,9 +42,13 @@ class GatewayTray:
         """在独立线程中启动 pystray"""
         image = Image.open(self._icon_path)  # 用户指定图标
         menu = pystray.Menu(
-            pystray.MenuItem("打开控制台", self._open_browser, default=True),
+            pystray.MenuItem(f"打开 {app_name}", self._open_browser, default=True),
             pystray.MenuItem("退出", self._quit),
         )
+        self._icon = pystray.Icon("psi-agent", image, app_name, menu)
+```
+
+> **2026-07 更新**：`app_name` 由 `Gateway.app_name`（CLI `--app-name`）传入，默认 `"控制台"`。托盘 tooltip + 菜单文案均跟随此值。
         self._icon = pystray.Icon("psi-agent", image, "psi-agent", menu)
         self._thread = threading.Thread(target=self._icon.run, daemon=True)
         self._thread.start()

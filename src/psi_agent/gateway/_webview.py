@@ -9,7 +9,6 @@ from typing import Any
 from loguru import logger
 
 from psi_agent.gateway._attention import _flash_hwnd
-from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 
 
 class GatewayWebView:
@@ -25,7 +24,7 @@ class GatewayWebView:
         url: str,
         has_tray: bool = False,
         icon: str | None = None,
-        app_name: str = DEFAULT_APP_NAME,
+        app_name: str = "控制台",
     ) -> None:
         self._url = url
         self._has_tray = has_tray

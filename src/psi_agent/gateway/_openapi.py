@@ -312,6 +312,15 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/title": {
+            "get": {
+                "summary": "Get the application display title",
+                "operationId": "getTitle",
+                "responses": {
+                    "200": {"description": 'Title object (e.g. {"title": "控制台"})'},
+                },
+            },
+        },
     },
     "components": {
         "schemas": {
