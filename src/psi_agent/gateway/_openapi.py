@@ -42,6 +42,50 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/ais/bootstrap": {
+            "post": {
+                "summary": "Bootstrap default AI from remote open-and-use defaults",
+                "operationId": "bootstrapAi",
+                "responses": {
+                    "201": {
+                        "description": "AI created from defaults",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AiInfo"}}},
+                    },
+                    "200": {
+                        "description": "Skipped — AI pool already configured",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "skipped": {"type": "boolean"},
+                                        "reason": {"type": "string"},
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/ais/default-config": {
+            "get": {
+                "summary": "Resolved default AI config (no api_key)",
+                "operationId": "getAiDefaultConfig",
+                "responses": {
+                    "200": {
+                        "description": "Remote open-and-use defaults (no api_key)",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/AiDefaultConfig"},
+                            }
+                        },
+                    },
+                },
+            },
+        },
         "/ais/{ai_id}": {
             "delete": {
                 "summary": "Delete an AI backend",
@@ -333,6 +377,24 @@ OPENAPI_SPEC = {
                     "socket": {"type": "string"},
                     "provider": {"type": "string"},
                     "model": {"type": "string"},
+                },
+            },
+            "AiDefaultConfig": {
+                "type": "object",
+                "properties": {
+                    "label": {"type": "string"},
+                    "provider": {"type": "string"},
+                    "model": {"type": "string"},
+                    "base_url": {"type": "string"},
+                    "source": {
+                        "type": "string",
+                        "enum": ["remote_default"],
+                        "description": "Always remote_default for bootstrap; Hub overrides live in the AI pool",
+                    },
+                    "api_key_configured": {
+                        "type": "boolean",
+                        "description": "Always false for built-in remote default (no local upstream key)",
+                    },
                 },
             },
             "SessionCreateRequest": {

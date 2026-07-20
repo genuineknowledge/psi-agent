@@ -114,6 +114,7 @@ import {
   sessionsForWorkspace,
 } from './sessionList.js'
 import { matchSidebarShortcut } from './shortcuts.js'
+import { ensureDefaultAi } from './bootstrapAi.js'
 import Sidebar from './components/Sidebar.vue'
 import ChatArea from './components/ChatArea.vue'
 import InputBar from './components/InputBar.vue'
@@ -350,9 +351,15 @@ async function openWorkspacePicker() {
 
 async function handleNewSession(workspacePath) {
   if (!ais.value.length) {
-    ui.showAlert('请先到右上角「大模型」连接模型')
-    ui.openHubPanel('models')
-    return
+    await ensureDefaultAi()
+    await refreshAll()
+    if (!ais.value.length) {
+      ui.showAlert(
+        '默认模型接入失败。请检查网络，或在右上角「大模型」中自行连接',
+      )
+      return
+    }
+    if (!selectedAiId.value && ais.value.length) selectedAiId.value = ais.value[0].id
   }
   let path = normalizeWorkspacePath(workspacePath || selectedWorkspacePath.value)
   if (!path) {
@@ -436,8 +443,13 @@ onMounted(async () => {
     await refreshAll()
 
     if (ais.value.length === 0) {
-      ui.openHubPanel('models')
+      await ensureDefaultAi()
+      await refreshAll()
+    }
+
+    if (ais.value.length === 0) {
       loadingEnv.value = false
+      ui.openHubPanel('models')
       return
     }
 
@@ -464,8 +476,10 @@ onMounted(async () => {
     }
 
     loadingEnv.value = false
+    ui.openHubPanel('models')
   } catch (err) {
     loadingEnv.value = false
+    ui.openHubPanel('models')
   }
 })
 </script>

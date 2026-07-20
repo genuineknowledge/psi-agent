@@ -12,6 +12,7 @@ from loguru import logger
 
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
+from psi_agent.gateway._ai_defaults import bootstrap_default_ai
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._session_manager import SessionManager
@@ -103,6 +104,12 @@ class Gateway:
 
             for t in snapshot.get("titles", []):
                 await tm.set(t["id"], t["title"])
+
+            if not await aim.list_all():
+                try:
+                    await bootstrap_default_ai(aim)
+                except Exception as e:
+                    logger.warning(f"Default AI bootstrap failed: {e!r}")
 
             attention = AttentionHub()
             app = await create_app(

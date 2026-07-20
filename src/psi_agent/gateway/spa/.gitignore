@@ -1,2 +1,4 @@
 node_modules/
 dist/
+# VPS-only secret for remote-ai Nginx proxy
+remote-ai/config.env
