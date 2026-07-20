@@ -88,7 +88,7 @@ def _scan_summary(
             }
         )
     # Real languages first, then by code lines descending.
-    languages.sort(key=lambda entry: (entry["is_pseudo_language"], -entry["code"]))
+    languages.sort(key=lambda entry: (entry["is_pseudo_language"], -int(entry["code"])))
 
     total_code = project.total_code_count
     total_doc = project.total_documentation_count

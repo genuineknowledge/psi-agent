@@ -60,14 +60,10 @@
     </section>
 
     <template #actions>
-      <button class="cancel" @click="handleClose">关闭</button>
-      <button
-        v-if="selectedPreset"
-        class="cancel"
-        @click="clearSelection"
-      >换模型</button>
+      <button class="ok" type="button" @click="handleClose">使用免费模型</button>
       <button
         class="ok"
+        type="button"
         :disabled="!canConnect || connecting"
         @click="connect"
       >
@@ -126,11 +122,6 @@ watch(
 function selectPreset(id) {
   if (selectedPresetId.value === id) return
   selectedPresetId.value = id
-  apiKey.value = ''
-}
-
-function clearSelection() {
-  selectedPresetId.value = null
   apiKey.value = ''
 }
 
