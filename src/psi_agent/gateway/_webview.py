@@ -56,6 +56,10 @@ class WebViewProcess:
         if self._cmd_q is not None:
             self._cmd_q.put(cmd)
 
+    def send_sync(self, cmd: str) -> None:
+        """Thread-safe send — usable from non-async contexts (e.g. AttentionHub daemon thread)."""
+        self._cmd_q.put(cmd)
+
     async def stop(self) -> None:
         if self._cmd_q is not None:
             with contextlib.suppress(Exception):
