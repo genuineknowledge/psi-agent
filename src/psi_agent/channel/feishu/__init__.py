@@ -31,6 +31,12 @@ class ChannelFeishu:
     allowed_user_ids: list[str] | None = None
     """Whitelist of open_id/user_id. None = allow all."""
 
+    require_mention: bool = True
+    """群聊仅在 @机器人时才回复; 单聊不受影响。关闭则群聊每条消息都回复。"""
+
+    respond_to_mention_all: bool = False
+    """是否把 @所有人 视为有效 @ (默认否, 避免 @all 触发机器人)。"""
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -50,4 +56,6 @@ class ChannelFeishu:
             app_secret=app_secret,
             interval=self.interval,
             allowed_user_ids=self.allowed_user_ids,
+            require_mention=self.require_mention,
+            respond_to_mention_all=self.respond_to_mention_all,
         )

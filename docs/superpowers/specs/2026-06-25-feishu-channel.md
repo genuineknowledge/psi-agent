@@ -211,3 +211,44 @@ finally:
 
 - 表情不做配置化（明确硬编码 `Typing` / `CrossMark`）。
 - 不实现"内容感知"的多态表情（Hermes issue #14667 方向），仅处理中 / 失败两态。
+
+---
+
+## 12. 群聊 @ 触发与准入策略
+
+**目标**：飞书机器人在群里被 @ 时才用 Haitun Agent 读取消息并回复；单聊照常回复。
+
+### 12.1 底层机制（`lark_channel` 内置）
+
+- `lark_channel` 的 `PolicyGate` 在消息分发前判定准入，只有通过的消息才触发 `on("message")`（进而调用 Haitun Agent），被拒的走 `on("reject")`。
+- 群聊（`chat_type` 为 `group` / `topic`）：`require_mention=True`（默认）时，仅当消息 @机器人（`mentioned_bot`）才通过，否则以 `policy_no_mention` 拒绝。
+- 单聊（`p2p`）：默认 `dm_policy="open"`，全部响应，不受 `require_mention` 影响。
+- `mentioned_bot` 的判定依赖机器人 `open_id` —— 由 `FeishuChannel` 启动时调 `/bot/v3/info` 自动拉取。
+
+### 12.2 psi-agent 侧配置（`ChannelFeishu` / `run_feishu`）
+
+| 字段 | 默认 | 说明 |
+|------|------|------|
+| `require_mention` | `True` | 群聊仅在 @机器人时回复；单聊不受影响。设 `False` 则群里每条消息都回复 |
+| `respond_to_mention_all` | `False` | 是否把 `@所有人` 视为有效 @（默认否，避免 @all 触发机器人） |
+
+`run_feishu` 据此构造 `lark_channel` 的 `PolicyConfig` 并经 `FeishuChannel(policy=...)` 传入（此前完全未传，只吃库默认值）。
+
+### 12.3 bot 身份兜底与可诊断性（`run_feishu`）
+
+**根因防护**：若启动时 `/bot/v3/info` 拉取失败（网络抖动 / 飞书后台未开启"机器人"能力），`bot_open_id` 为 `None` → 群里每条消息 `mentioned_bot=False` → 全被 `require_mention` 拒掉，表现为"群里 @ 了也不回复"。
+
+- `_ensure_bot_identity(channel)`：`start_background()` 后调用；`channel.bot_identity` 为 `None` 时 `await channel.resolve_bot_identity()` 兜底重试一次。成功记 `INFO`（含 open_id / name）；仍失败记 `WARNING`，明确提示"群聊 @机器人 检测将不可用，请确认飞书后台已开启机器人能力"。自身异常绝不冒泡（不拖垮启动）。
+- `_log_reject(event)`：注册为 `channel.on("reject", ...)`，把被策略拒绝的消息按原因（`policy_no_mention` 等）记 `DEBUG`，便于日后"@ 了不回复"排查。失败安全。
+
+### 12.4 文件变更
+
+| 操作 | 文件 | 说明 |
+|------|------|------|
+| 修改 | `psi_agent/channel/feishu/__init__.py` | `ChannelFeishu` 加 `require_mention` / `respond_to_mention_all` 字段并透传 |
+| 修改 | `psi_agent/channel/feishu/client.py` | `run_feishu` 构造 `PolicyConfig` + `_ensure_bot_identity` + `_log_reject` |
+| 修改 | `tests/psi_agent/channel/feishu/test_feishu.py` | policy 透传 / bot 身份兜底 / reject 回调测试 |
+
+### 12.5 非目标
+
+- 不暴露更细的 `group_policy` / `dm_policy` / 名单（allowlist / blocklist）等准入维度，仅保留与"@ 触发"直接相关的两个开关。

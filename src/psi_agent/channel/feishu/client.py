@@ -10,7 +10,7 @@ from typing import Any
 import anyio
 import platformdirs
 from anyio.from_thread import BlockingPortal
-from lark_channel import FeishuChannel
+from lark_channel import FeishuChannel, PolicyConfig
 from lark_channel.api.im.v1.model.create_message_reaction_request import CreateMessageReactionRequest
 from lark_channel.api.im.v1.model.create_message_reaction_request_body import CreateMessageReactionRequestBody
 from lark_channel.api.im.v1.model.delete_message_reaction_request import DeleteMessageReactionRequest
@@ -188,6 +188,49 @@ async def _handle_and_stream(
         logger.error(f"Unhandled error in _handle_and_stream: {e!r}")
 
 
+def _log_reject(event: Any) -> None:
+    """记录被准入策略拒绝的消息 (如群里没 @机器人的普通发言)。
+
+    注册为 channel 的 ``reject`` 回调; 自身异常绝不冒泡, 以免拖垮事件循环。
+    ``policy_no_mention`` 是最常见原因 — 群聊 require_mention 生效但消息没 @机器人。
+    """
+    try:
+        message_id = getattr(event, "message_id", None)
+        reason = getattr(event, "reason", None)
+        logger.debug(f"policy reject message={message_id} reason={reason}")
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"_log_reject failed — {e}")
+
+
+async def _ensure_bot_identity(channel: Any) -> None:
+    """确保机器人 open_id 已解析 — 群聊 @机器人 检测的前置依赖。
+
+    ``FeishuChannel`` 启动时会自动拉取 bot 身份, 但网络抖动或飞书后台未开启
+    "机器人" 能力会导致失败。此时 ``bot_open_id`` 为 None, 策略门会把群里每条
+    消息都判为 "未 @机器人" 而拒绝 (表现为 "群里 @ 了也不回复")。这里在启动后
+    兜底重试一次并给出明确日志。
+    """
+    try:
+        if channel.bot_identity is not None:
+            identity = channel.bot_identity
+        else:
+            identity = await channel.resolve_bot_identity()
+    except Exception as e:
+        logger.warning(f"bot identity resolve failed — {e}")
+        identity = None
+
+    if identity is not None:
+        logger.info(
+            f"Feishu bot identity resolved — open_id={getattr(identity, 'open_id', None)} "
+            f"name={getattr(identity, 'name', None)}"
+        )
+    else:
+        logger.warning(
+            "Feishu bot identity unresolved — 群聊 @机器人 检测将不可用, "
+            "请确认飞书后台已开启机器人能力 (否则群里 @ 也不会触发回复)"
+        )
+
+
 async def run_feishu(
     *,
     session_socket: str,
@@ -195,9 +238,18 @@ async def run_feishu(
     app_secret: str,
     interval: float = 1.0,
     allowed_user_ids: list[str] | None = None,
+    require_mention: bool = True,
+    respond_to_mention_all: bool = False,
 ) -> None:
-    channel = FeishuChannel(app_id=app_id, app_secret=app_secret)
-    logger.debug(f"FeishuChannel created (app_id={app_id})")
+    policy = PolicyConfig(
+        require_mention=require_mention,
+        respond_to_mention_all=respond_to_mention_all,
+    )
+    channel = FeishuChannel(app_id=app_id, app_secret=app_secret, policy=policy)
+    logger.debug(
+        f"FeishuChannel created (app_id={app_id} require_mention={require_mention} "
+        f"respond_to_mention_all={respond_to_mention_all})"
+    )
 
     async with ChannelCore(session_socket, interval=interval) as core, BlockingPortal() as portal:
 
@@ -205,9 +257,11 @@ async def run_feishu(
             portal.start_task_soon(_handle_and_stream, channel, core, allowed_user_ids, ctx)
 
         channel.on("message", _on_message)
+        channel.on("reject", _log_reject)
         try:
             await channel.start_background()
             logger.info(f"Feishu bot started (session={session_socket} interval={interval})")
+            await _ensure_bot_identity(channel)
             await anyio.sleep_forever()
         finally:
             logger.info("Shutting down Feishu bot")
