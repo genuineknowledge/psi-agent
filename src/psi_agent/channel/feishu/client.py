@@ -74,12 +74,45 @@ async def _remove_reaction(channel: Any, message_id: str, reaction_id: str) -> N
         logger.warning(f"failed — {e}")
 
 
+def _context_header(ctx: Any) -> str:
+    """构造一段飞书消息元数据前缀, 注入到发给 agent 的文本最前面。
+
+    agent 拿到 ``chat_id`` 后即可主动调 ``feishu_message_list`` 拉取本群历史消息
+    作为上下文, 再对其中的飞书文档链接调 ``feishu_doc_read``、附件调
+    ``feishu_file_download``。群聊(group/topic)才提示可拉上下文; 单聊(p2p)不提示。
+    """
+    chat_type = getattr(ctx, "chat_type", "") or "unknown"
+    lines = [
+        "<feishu_context>",
+        f"chat_id: {getattr(ctx, 'chat_id', '') or ''}",
+        f"chat_type: {chat_type}",
+        f"message_id: {getattr(ctx, 'message_id', '') or ''}",
+        f"sender_open_id: {getattr(ctx, 'sender_id', '') or ''}",
+    ]
+    sender_name = getattr(ctx, "sender_name", None)
+    if sender_name:
+        lines.append(f"sender_name: {sender_name}")
+    thread_id = getattr(ctx, "thread_id", None) or getattr(ctx, "reply_to_message_id", None)
+    if thread_id:
+        lines.append(f"thread_id: {thread_id}")
+    if chat_type in ("group", "topic"):
+        lines.append(
+            "note: 这是群聊消息。如需群里之前的上下文, 用 feishu_message_list(container_id=chat_id) "
+            "拉取历史消息; 消息中提到的飞书文档链接用 feishu_doc_read 读取正文。"
+        )
+    lines.append("</feishu_context>")
+    return "\n".join(lines)
+
+
 async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
     chunks: list[InputChunk] = []
     downloads_dir = anyio.Path(platformdirs.user_downloads_dir()) / ".psi" / str(date.today())
     await downloads_dir.mkdir(parents=True, exist_ok=True)
     downloads = str(downloads_dir)
     logger.debug(f"downloads_dir={downloads} raw_content_type={ctx.raw_content_type}")
+
+    chunks.append(TextChunk(_context_header(ctx)))
+    header_only = len(chunks)
 
     text = ctx.content_text or ""
     for m in re.finditer(r'<audio\s+key="([^"]+)"', text):
@@ -122,6 +155,12 @@ async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
             chunks.append(FileChunk(str(saved)))
         except Exception as e:
             logger.error(f"resource download failed — {e}")
+
+    if len(chunks) == header_only:
+        # Only the metadata header, no real content (text/audio/resource) —
+        # treat as unsupported so the caller sends "Unsupported message type".
+        logger.debug("no content chunks, dropping header")
+        return []
 
     logger.debug(f"total {len(chunks)} chunk(s)")
     return chunks

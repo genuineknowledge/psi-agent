@@ -334,9 +334,59 @@ def test_log_reject_swallows_and_reads_fields():
 async def test_build_chunks_text_only(monkeypatch, tmp_path):
     monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
     channel = _fake_channel()
-    ctx = SimpleNamespace(content_text="hello world", message_id="om_1", resources=[], raw_content_type="text")
+    ctx = SimpleNamespace(
+        content_text="hello world",
+        message_id="om_1",
+        chat_id="oc_1",
+        chat_type="p2p",
+        sender_id="ou_1",
+        resources=[],
+        raw_content_type="text",
+    )
     chunks = await client._build_chunks(channel, ctx)
-    assert chunks == [TextChunk("hello world")]
+    # First chunk is the feishu metadata header, then the message text.
+    assert len(chunks) == 2
+    assert isinstance(chunks[0], TextChunk)
+    assert "chat_id: oc_1" in chunks[0].text
+    assert chunks[1] == TextChunk("hello world")
+
+
+@pytest.mark.anyio
+async def test_build_chunks_group_header_hints_context(monkeypatch, tmp_path):
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    channel = _fake_channel()
+    ctx = SimpleNamespace(
+        content_text="看看这个",
+        message_id="om_2",
+        chat_id="oc_group",
+        chat_type="group",
+        sender_id="ou_9",
+        resources=[],
+        raw_content_type="text",
+    )
+    chunks = await client._build_chunks(channel, ctx)
+    header = chunks[0]
+    assert isinstance(header, TextChunk)
+    assert "chat_type: group" in header.text
+    assert "feishu_message_list" in header.text
+
+
+@pytest.mark.anyio
+async def test_build_chunks_empty_returns_no_chunks(monkeypatch, tmp_path):
+    """No text/audio/resource -> header dropped, empty list (unsupported type)."""
+    monkeypatch.setattr(client.platformdirs, "user_downloads_dir", lambda: str(tmp_path))
+    channel = _fake_channel()
+    ctx = SimpleNamespace(
+        content_text="",
+        message_id="om_3",
+        chat_id="oc_1",
+        chat_type="p2p",
+        sender_id="ou_1",
+        resources=[],
+        raw_content_type="unknown",
+    )
+    chunks = await client._build_chunks(channel, ctx)
+    assert chunks == []
 
 
 @pytest.mark.anyio

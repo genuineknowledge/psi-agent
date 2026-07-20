@@ -9,3 +9,5 @@ dist/
 *.sock
 .coverage
 /result
+feishu-test.yml
+feishu_run.log
