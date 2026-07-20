@@ -27,7 +27,7 @@
           <div class="nav-section">
             <div class="nav-label">快捷位置</div>
             <button
-              v-for="r in picker.roots"
+              v-for="r in picker.places"
               :key="r.id"
               class="nav-item"
               type="button"

@@ -191,7 +191,7 @@ spa/
 | `AiDialog.vue` | 链接大模型弹窗（高级） | 基于 BaseDialog；provider 自定义下拉（选中回填 base_url）；模型名自定义下拉（替代原生 datalist：↑↓/Enter/Esc 键盘导航 + 输入过滤 + `@mousedown.prevent` 防 blur）；base_url/api_key `@change` 触发 `fetchModels`；无 AI 时 `handleCancel` 拒绝关闭 |
 | `SessDialog.vue` | 创建会话弹窗 | 基于 BaseDialog；确认当前工作区 + 大模型后 emit `create` |
 | `PathPickerDialog.vue` | 路径选择器 | 资源管理器式 UI（左侧快捷位置 + 面包屑 + 列表 + 底部路径确认）；由 `usePathPicker.openPathPicker()` 控制；侧栏「打开工作区」直接调用，无中间 WorkspaceDialog |
-| `usePathPicker.js` | 路径选择 composable | `openPathPicker({ mode, title, initialPath, … }) → Promise<path\|null>`；fetch `/workspace/roots` + `/workspace/browse` |
+| `usePathPicker.js` | 路径选择 composable | `openPathPicker({ mode, title, initialPath, … }) → Promise<path\|null>`；fetch `/workspace/places` + `/workspace/browse` |
 | `FilePreview.vue` | 文件预览抽屉 | `Teleport` 到 `body` 的抽屉面板；按扩展名分派：图片/音视频/SVG 用 Blob URL，`.md` 用 `renderMd`，`.html`/`.htm` 用沙箱 iframe（`sandbox=""` + blob URL，无脚本/无同源），其它代码用 codemirror，csv/pdf/office 懒加载；不解析磁盘路径、不回灌 workspace；MD 预览里 GFM 表与气泡同款 `.md-table-card` 工具栏（点击委托同 `mdTable.js`）；emit `close` |
 | `sendMarkers.js` | 传输标记清理 | `stripTransferMarkers`：展示/历史回放前去掉 `[SEND:…]` **与** `[RECV:…]`（防绝对路径泄露到气泡与复制；附件走 blob chip）。**展示层临时过滤**——服务端 JSONL 仍可能存标记；长期需改 history 投影或协议。`stripSendMarkers` 为同名别名 |
 | `mdTable.js` | 气泡/预览表格工具 | `wrapMdTableHtml` 给 GFM `<table>` 加复制/下载工具栏；`matrixToTsv` / `downloadMatrixXlsx`；`MessageBubble` 与 `FilePreview` MD 预览事件委托处理点击 |

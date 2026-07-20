@@ -13,8 +13,8 @@ export async function api(method, path, body) {
   return await r.json()
 }
 
-export async function fetchWorkspaceRoots() {
-  return api('GET', '/workspace/roots')
+export async function fetchWorkspacePlaces() {
+  return api('GET', '/workspace/places')
 }
 
 export async function browseWorkspace(path, { kind = 'directory', q = '' } = {}) {
