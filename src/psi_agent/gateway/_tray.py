@@ -32,11 +32,11 @@ class GatewayTray:
         self._normal_image: Any = None
         self._highlight_image: Any = None
         self._q: queue.Queue[str] = queue.Queue()
-        self._send_stream: anyio.MemoryObjectSendStream[str] | None = None
-        self._recv_stream: anyio.MemoryObjectReceiveStream[str] | None = None
+        self._send_stream: Any = None
+        self._recv_stream: Any = None
 
     @property
-    def events(self) -> anyio.MemoryObjectReceiveStream[str]:
+    def events(self) -> Any:
         if self._recv_stream is None:
             raise RuntimeError("GatewayTray not started")
         return self._recv_stream
@@ -81,11 +81,11 @@ class GatewayTray:
         """Background task: read from threading.Queue and forward to anyio stream."""
         while True:
             try:
-                evt: str = await anyio.to_thread.run_sync(self._q.get, abandon_on_cancel=True)
+                evt: str = await anyio.to_thread.run_sync(self._q.get, abandon_on_cancel=True)  # ty: ignore
             except anyio.get_cancelled_exc_class():
                 break
             try:
-                await self._send_stream.send(evt)  # type: ignore[union-attr]
+                await self._send_stream.send(evt)
             except anyio.ClosedResourceError, anyio.BrokenResourceError:
                 break
 

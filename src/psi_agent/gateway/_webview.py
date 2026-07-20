@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import multiprocessing
 from collections.abc import AsyncGenerator
+from typing import Any
 
 import anyio
 from loguru import logger
@@ -33,8 +34,8 @@ class WebViewProcess:
         self._app_name = app_name
         self._cmd_q: multiprocessing.Queue = multiprocessing.Queue()
         self._evt_q: multiprocessing.Queue = multiprocessing.Queue()
-        self._send: anyio.MemoryObjectSendStream[str] | None = None
-        self._recv: anyio.MemoryObjectReceiveStream[str] | None = None
+        self._send: Any = None
+        self._recv: Any = None
         self._process: multiprocessing.Process | None = None
         self._ready_event = anyio.Event()
 
@@ -77,7 +78,7 @@ class WebViewProcess:
         logger.info("Gateway webview subprocess stopped")
 
     @property
-    def events(self) -> anyio.MemoryObjectReceiveStream[str]:
+    def events(self) -> Any:
         if self._recv is None:
             raise RuntimeError("WebViewProcess not started — no events stream available")
         return self._recv
@@ -89,11 +90,11 @@ class WebViewProcess:
         """Background task: read from mp.Queue and forward to anyio stream."""
         while True:
             try:
-                evt: str = await anyio.to_thread.run_sync(self._evt_q.get, abandon_on_cancel=True)
+                evt: str = await anyio.to_thread.run_sync(self._evt_q.get, abandon_on_cancel=True)  # ty: ignore
             except anyio.get_cancelled_exc_class():
                 break
             try:
-                await self._send.send(evt)  # type: ignore[union-attr]
+                await self._send.send(evt)
             except anyio.ClosedResourceError, anyio.BrokenResourceError:
                 break
             if evt == "ready":
@@ -103,14 +104,14 @@ class WebViewProcess:
 
 
 async def merge(
-    *streams: anyio.MemoryObjectReceiveStream[str],
+    *streams: Any,
 ) -> AsyncGenerator[str]:
     """Merge multiple MemoryObjectReceiveStreams, yielding items as they arrive."""
     async with anyio.create_task_group() as tg:
         out_send, out_recv = anyio.create_memory_object_stream[str]()
         async with out_send:
 
-            async def _forward(src: anyio.MemoryObjectReceiveStream[str]) -> None:
+            async def _forward(src: Any) -> None:
                 async with src:
                     async for item in src:
                         await out_send.send(item)

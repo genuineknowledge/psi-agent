@@ -68,10 +68,10 @@ class AttentionHub:
 
             async def _send_flash() -> None:
                 with contextlib.suppress(Exception):
-                    await self._webview.send("flash")  # type: ignore[union-attr]
+                    await self._webview.send("flash")  # ty: ignore
 
             with contextlib.suppress(Exception):
-                anyio.from_thread.run(_send_flash)
+                anyio.from_thread.run(_send_flash)  # ty: ignore
         if self._tray is not None:
             self._tray.request_attention()
         if self._webview is None and self._tray is None:

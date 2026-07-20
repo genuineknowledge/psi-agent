@@ -46,7 +46,7 @@ def webview_main(
 
     def on_closing() -> bool:
         if tray_mode:
-            window.hide()
+            window.hide()  # ty: ignore
             evt_q.put("hidden")
             return False
         evt_q.put("closed")
@@ -59,14 +59,14 @@ def webview_main(
             cmd = cmd_q.get()
             if cmd == "show":
                 with contextlib.suppress(Exception):
-                    window.show()
+                    window.show()  # ty: ignore
             elif cmd == "destroy":
                 with contextlib.suppress(Exception):
-                    window.destroy()
+                    window.destroy()  # ty: ignore
                 break
             elif cmd == "flash":
                 with contextlib.suppress(Exception):
-                    native = window.native
+                    native = window.native  # ty: ignore
                     hwnd = getattr(native, "Handle", None)
                     if hwnd is not None:
                         _flash_hwnd(int(hwnd))
