@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from base64 import b64encode
 from contextlib import aclosing, suppress
 from dataclasses import asdict
@@ -106,7 +105,7 @@ async def create_app(
     app.router.add_post("/titles/generate", _generate_title)
     app.router.add_post("/ui/attention", _request_attention)
     app.router.add_get("/workspace/cwd", _get_cwd)
-    app.router.add_get("/workspace/roots", _list_workspace_roots)
+    app.router.add_get("/workspace/places", _list_workspace_places)
     app.router.add_get("/workspace/browse", _browse_workspace)
     app.router.add_get("/sessions/{session_id}/history", _get_history)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
@@ -240,14 +239,14 @@ async def _get_cwd(request: web.Request) -> web.Response:
     return _json({"cwd": wm.get_cwd()})
 
 
-async def _list_workspace_roots(request: web.Request) -> web.Response:
+async def _list_workspace_places(request: web.Request) -> web.Response:
     wm: WorkspaceManager = request.app["wm"]
-    return _json(await wm.list_roots())
+    return _json(await wm.list_places())
 
 
 async def _browse_workspace(request: web.Request) -> web.Response:
     wm: WorkspaceManager = request.app["wm"]
-    path = request.query.get("path") or os.getcwd()
+    path = request.query.get("path") or str(anyio.Path.cwd())
     kind = request.query.get("kind") or "directory"
     q = request.query.get("q") or ""
     try:

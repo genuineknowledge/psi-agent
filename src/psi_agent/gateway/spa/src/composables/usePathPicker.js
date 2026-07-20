@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { browseWorkspace, fetchWorkspaceRoots } from '../api.js'
+import { browseWorkspace, fetchWorkspacePlaces } from '../api.js'
 import { filterPickerEntries } from '../pathPicker.js'
 import { normalizeWorkspacePath } from '../sessionList.js'
 
@@ -15,7 +15,7 @@ const state = reactive({
   currentPath: '',
   selectedPath: '',
   parent: '',
-  roots: [],
+  places: [],
   drives: [],
   entries: [],
   segments: [],
@@ -78,9 +78,9 @@ async function bootstrap(initialPath) {
   state.loading = true
   state.error = ''
   try {
-    const rootsData = await fetchWorkspaceRoots()
-    state.roots = Array.isArray(rootsData.roots) ? rootsData.roots : []
-    state.drives = Array.isArray(rootsData.drives) ? rootsData.drives : []
+    const placesData = await fetchWorkspacePlaces()
+    state.places = Array.isArray(placesData.places) ? placesData.places : []
+    state.drives = Array.isArray(placesData.drives) ? placesData.drives : []
     await loadBrowse(initialPath || undefined)
   } catch (e) {
     state.error = e instanceof Error ? e.message : String(e)

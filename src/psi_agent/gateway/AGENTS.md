@@ -38,7 +38,7 @@ Gateway 进程
 | `server.py` | aiohttp Application + REST handlers |
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取 |
-| `_workspace_manager.py` | 目录浏览 + cwd 查询 |
+| `_workspace_manager.py` | 目录浏览 + 快捷路径列表 + cwd 查询 |
 | `spa/` | Vue 3 SPA 前端项目（Vite + SFC + Composition API），构建输出 `spa/dist/` |
 | `_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数开启，`--icon` 参数指定图标文件，左键打开浏览器或恢复 webview 窗口，右键菜单控制；`request_attention()` 脉冲高亮图标 |
 | `_webview.py` | 原生 webview 窗口（pywebview），`--webview` 参数开启。窗口关闭信号通过 `threading.Event` 传递给主 loop；`request_attention()` 在 Windows 上 FlashWindowEx |
@@ -199,7 +199,8 @@ workspace 中的 history JSONL 不受影响。
 | POST | `/titles` | 设置 session 标题 `{id, title}` |
 | POST | `/titles/generate` | AI 自动生成标题 `{id, user_text, assistant_text}` |
 | POST | `/ui/attention` | 会话在后台完成时闪烁托盘/webview（best-effort，需 `--tray` / `--webview`） |
-| GET | `/workspace/browse` | 浏览目录 `?path=...` |
+| GET | `/workspace/places` | 快捷位置（cwd/home/桌面/文档/下载）与盘符列表 |
+| GET | `/workspace/browse` | 浏览目录 `?path=...&kind=directory|file|all&q=...`，默认 `kind=directory` |
 | GET | `/workspace/cwd` | 获取服务端当前工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--icon` 设置时注册，返回该图标文件） |
@@ -208,7 +209,7 @@ AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
 
 错误响应格式：`{"error": "message"}` + HTTP 状态码（404/400/500）。
 
-**注意**：`GET /workspace/browse` 对 `path` 不加限制，可列举本机任意目录——这是 PathPicker 选 workspace 的预期功能。`GET /workspace/roots` 返回快捷位置与盘符。
+**注意**：`GET /workspace/browse` 对 `path` 不加限制，可列举本机任意目录——这是 PathPicker 选 workspace 的预期功能。`GET /workspace/places` 返回快捷位置与盘符。
 
 ## Web UI Chat 协议
 

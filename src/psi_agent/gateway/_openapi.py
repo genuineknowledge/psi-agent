@@ -267,7 +267,7 @@ OPENAPI_SPEC = {
                 },
             },
         },
-        "/workspace/roots": {
+        "/workspace/places": {
             "get": {
                 "summary": "List quick-access paths and drives for path picker",
                 "operationId": "listWorkspaceRoots",
@@ -289,7 +289,7 @@ OPENAPI_SPEC = {
                     {
                         "name": "kind",
                         "in": "query",
-                        "schema": {"type": "string", "enum": ["directory", "file", "all"]},
+                        "schema": {"type": "string", "enum": ["directory", "file", "all"], "default": "directory"},
                     },
                     {
                         "name": "q",
