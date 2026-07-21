@@ -97,6 +97,20 @@ describe('withTodoProgress', () => {
     ])
     expect(next.steps[1]?.label).toBe('2/2')
     expect(next.steps[1]?.state).toBe('done')
+    expect(next.steps[2]).toEqual({ label: '产出与确认', state: 'done' })
     expect(next.progress).toBe(100)
+  })
+
+  it('keeps output step working while streaming after todos finish', () => {
+    const next = withTodoProgress(
+      baseTask(),
+      [
+        { id: '1', content: 'a', status: 'completed' },
+        { id: '2', content: 'b', status: 'completed' },
+      ],
+      { streaming: true },
+    )
+    expect(next.steps[1]?.state).toBe('done')
+    expect(next.steps[2]).toEqual({ label: '产出与确认', state: 'working' })
   })
 })

@@ -152,6 +152,8 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const historyLoadedRef = useRef<Set<string>>(new Set(["overview"]));
+  /** Invalidate in-flight todo polls so a late streaming refresh cannot reopen 「产出与确认」. */
+  const todoRefreshSeqRef = useRef<Record<string, number>>({});
   const workspaceNorm = workspace.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 
   const cards = useMemo(() => [{ id: "overview", title: OVERVIEW_LABEL }, ...tasks.map((task) => ({ id: task.id, title: task.shortTitle }))], [tasks]);
@@ -175,13 +177,18 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     toastTimer.current = window.setTimeout(() => setToast(null), 2600);
   }, []);
 
-  const refreshTodos = useCallback(async (taskId: string) => {
+  const refreshTodos = useCallback(async (taskId: string, streaming = false) => {
     if (taskId === "overview") return;
+    const seq = (todoRefreshSeqRef.current[taskId] ?? 0) + 1;
+    todoRefreshSeqRef.current[taskId] = seq;
     try {
       const data = await fetchSessionTodos(taskId);
+      if (todoRefreshSeqRef.current[taskId] !== seq) return;
       const todos = Array.isArray(data.todos) ? data.todos : [];
       setTasks((current) =>
-        current.map((task) => (task.id === taskId ? withTodoProgress(task, todos) : task)),
+        current.map((task) =>
+          (task.id === taskId ? withTodoProgress(task, todos, { streaming }) : task),
+        ),
       );
     } catch {
       // Missing file / transient — keep previous steps.
@@ -225,11 +232,12 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   }, [refreshTodos, showToast]);
 
   // While Agent runs, poll todos so middle step updates mid-turn (tool writes file).
+  // Pass streaming=true so 「产出与确认」 stays working until the turn ends.
   useEffect(() => {
     if (!typingCard || typingCard === "overview") return;
-    void refreshTodos(typingCard);
+    void refreshTodos(typingCard, true);
     const id = window.setInterval(() => {
-      void refreshTodos(typingCard);
+      void refreshTodos(typingCard, true);
     }, 2500);
     return () => window.clearInterval(id);
   }, [typingCard, refreshTodos]);
@@ -544,7 +552,8 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     } finally {
       setTypingCard((current) => (current === cardId ? null : current));
       if (abortRef.current === controller) abortRef.current = null;
-      void refreshTodos(cardId);
+      // streaming=false → when todos are N/N, mark 「产出与确认」 done.
+      void refreshTodos(cardId, false);
     }
   };
 

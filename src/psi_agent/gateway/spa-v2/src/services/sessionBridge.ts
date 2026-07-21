@@ -139,12 +139,26 @@ function defaultSteps(status: Task['status']): TaskStep[] {
   ]
 }
 
+export type TodoProgressOpts = {
+  /**
+   * True while the current chat turn is still streaming.
+   * When todos are all done, the right step 「产出与确认」 stays ``working``
+   * until the turn finishes, then becomes ``done``.
+   */
+  streaming?: boolean
+}
+
 /**
  * Map workspace ``todo`` items onto the middle task-card step as ``N/M``.
  * Cancelled items are excluded from the denominator. When the list is empty,
  * keep the default conversation-progress steps.
  */
-export function withTodoProgress(task: Task, todos: SessionTodo[]): Task {
+export function withTodoProgress(
+  task: Task,
+  todos: SessionTodo[],
+  opts?: TodoProgressOpts,
+): Task {
+  const streaming = opts?.streaming === true
   const active = todos.filter((t) => t.status !== 'cancelled')
   if (!active.length) {
     return { ...task, steps: defaultSteps(task.status) }
@@ -172,6 +186,12 @@ export function withTodoProgress(task: Task, todos: SessionTodo[]): Task {
     middleState = 'working'
   }
 
+  let outputState: TaskStep['state'] = 'waiting'
+  if (middleState === 'done') {
+    // Todos finished → produce reply while streaming; mark done when turn ends.
+    outputState = streaming ? 'working' : 'done'
+  }
+
   const steps: TaskStep[] = [
     { label: '理解目标与上下文', state: 'done' },
     {
@@ -181,7 +201,7 @@ export function withTodoProgress(task: Task, todos: SessionTodo[]): Task {
     },
     {
       label: '产出与确认',
-      state: middleState === 'done' ? 'working' : 'waiting',
+      state: outputState,
     },
   ]
 

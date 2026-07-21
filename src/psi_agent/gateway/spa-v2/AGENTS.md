@@ -38,6 +38,7 @@
 - **中**：无 todo 时仍为「与您对话推进」；一旦 Agent 用 ``todo`` tool 写入拆解，中间框显示 **`当前步/总数`**（如 `2/5`），副文案为当前 `in_progress`（或下一 `pending`）项的 `content`。
 - 分母排除 `cancelled`；进度环 `%` 按 `completed / total` 计算。
 - 加载历史后拉一次 todos；对话流式进行中每 ~2.5s 轮询，回合结束再拉一次。
+- 中间步全部 `completed` 后：流式中右侧「产出与确认」为 `working`；**回合结束**（`streaming: false`）标为 `done`，避免回复已出却一直转圈。
 
 ### 对话气泡操作（对齐 spa v1）
 
