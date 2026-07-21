@@ -189,21 +189,16 @@ class ScheduleRegistry:
                             KIND_SCHEDULE_SILENT,
                         )
                         response_kind = (
-                            KIND_SCHEDULE_DISPLAY
-                            if schedule.visibility == "display"
-                            else KIND_SCHEDULE_SILENT
+                            KIND_SCHEDULE_DISPLAY if schedule.visibility == "display" else KIND_SCHEDULE_SILENT
                         )
 
                         async with agent._lock:
                             pending_chunks: list[AgentChunk] = []
-                            async with aclosing(
-                                agent.run(user_msg, response_kind=response_kind)
-                            ) as chunks:
+                            async with aclosing(agent.run(user_msg, response_kind=response_kind)) as chunks:
                                 async for chunk in chunks:
                                     pending_chunks.append(chunk)
                                     logger.debug(
-                                        f"Schedule chunk: content={chunk.content!r}, "
-                                        f"reasoning={chunk.reasoning!r}"
+                                        f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}"
                                     )
                                 # silent → never push into the next Channel turn
                                 if schedule.visibility == "display" and pending_chunks:
@@ -287,16 +282,9 @@ class ScheduleRegistry:
                     continue
 
                 raw_visibility = header.get("visibility", "display")
-                visibility = (
-                    str(raw_visibility).strip().casefold()
-                    if isinstance(raw_visibility, str)
-                    else "display"
-                )
+                visibility = str(raw_visibility).strip().casefold() if isinstance(raw_visibility, str) else "display"
                 if visibility not in {"display", "silent"}:
-                    logger.warning(
-                        f"Invalid visibility {raw_visibility!r} in {task_file!r}, "
-                        f"defaulting to 'display'"
-                    )
+                    logger.warning(f"Invalid visibility {raw_visibility!r} in {task_file!r}, defaulting to 'display'")
                     visibility = "display"
 
                 schedule = Schedule(
@@ -306,9 +294,7 @@ class ScheduleRegistry:
                     visibility=visibility,
                 )
                 files[str_path] = ScheduleEntry(file_hash=file_hash, schedule=schedule, fresh=True)
-                logger.debug(
-                    f"Loaded schedule: {name!r} (cron: {cron!r}, visibility: {visibility!r})"
-                )
+                logger.debug(f"Loaded schedule: {name!r} (cron: {cron!r}, visibility: {visibility!r})")
             except Exception as e:
                 logger.error(f"Failed to load schedule from {task_dir!r}: {e!r}")
                 continue

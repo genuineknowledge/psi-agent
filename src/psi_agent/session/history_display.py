@@ -43,9 +43,7 @@ _LEGACY_ROLE_TO_WIRE: dict[str, str] = {
     "assistant_schedule": "assistant",
 }
 
-_KNOWN_KINDS = frozenset(
-    {KIND_CHAT, KIND_SCHEDULE_SILENT, KIND_SCHEDULE_DISPLAY, KIND_COMPACTED}
-)
+_KNOWN_KINDS = frozenset({KIND_CHAT, KIND_SCHEDULE_SILENT, KIND_SCHEDULE_DISPLAY, KIND_COMPACTED})
 
 # Presentation-only strip of wire transfer markers (Gateway history projection).
 _TRANSFER_MARKER_RE = re.compile(r"\[(?:SEND|RECV):[^\]]*\]")

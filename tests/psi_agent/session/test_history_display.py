@@ -50,18 +50,12 @@ def test_messages_for_ai_rewrites_legacy_schedule_roles() -> None:
 def test_is_displayable_filters_by_kind_whitelist() -> None:
     assert is_displayable_chat_message({"role": "user", "content": "hi", "kind": KIND_CHAT})
     assert is_displayable_chat_message({"role": "assistant", "content": "hey"})  # omit → chat
-    assert not is_displayable_chat_message(
-        {"role": "user", "content": "cron", "kind": KIND_SCHEDULE_SILENT}
-    )
+    assert not is_displayable_chat_message({"role": "user", "content": "cron", "kind": KIND_SCHEDULE_SILENT})
     assert not is_displayable_chat_message(
         {"role": "assistant", "content": "HEARTBEAT_OK", "kind": KIND_SCHEDULE_SILENT}
     )
-    assert is_displayable_chat_message(
-        {"role": "assistant", "content": "日报已生成", "kind": KIND_SCHEDULE_DISPLAY}
-    )
-    assert not is_displayable_chat_message(
-        {"role": "user", "content": "trigger", "kind": KIND_SCHEDULE_DISPLAY}
-    )
+    assert is_displayable_chat_message({"role": "assistant", "content": "日报已生成", "kind": KIND_SCHEDULE_DISPLAY})
+    assert not is_displayable_chat_message({"role": "user", "content": "trigger", "kind": KIND_SCHEDULE_DISPLAY})
     assert not is_displayable_chat_message({"role": "assistant", "content": "HEARTBEAT_OK"})
     assert not is_displayable_chat_message({"role": "tool", "content": "x", "kind": KIND_CHAT})
     assert not is_displayable_chat_message({"role": "assistant", "content": ""})
@@ -69,7 +63,5 @@ def test_is_displayable_filters_by_kind_whitelist() -> None:
 
 def test_strip_transfer_markers() -> None:
     assert strip_transfer_markers("见附件\n[SEND:/tmp/a.html]\n\n") == "见附件"
-    assert (
-        strip_transfer_markers("分析\n[RECV:C:\\Users\\Z\\a.png]") == "分析"
-    )
+    assert strip_transfer_markers("分析\n[RECV:C:\\Users\\Z\\a.png]") == "分析"
     assert strip_transfer_markers("[RECV:/only.png]") == ""
