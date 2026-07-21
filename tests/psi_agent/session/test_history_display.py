@@ -4,6 +4,7 @@ from psi_agent.session.history_display import (
     KIND_CHAT,
     KIND_SCHEDULE_DISPLAY,
     KIND_SCHEDULE_SILENT,
+    extract_send_paths,
     is_displayable_chat_message,
     message_kind,
     messages_for_ai,
@@ -68,8 +69,6 @@ def test_strip_transfer_markers() -> None:
 
 
 def test_extract_send_paths() -> None:
-    from psi_agent.session.history_display import extract_send_paths
-
     assert extract_send_paths("见\n[SEND:/tmp/a.html]\n[SEND: b.md ]") == ["/tmp/a.html", "b.md"]
     assert extract_send_paths("[RECV:/x]") == []
     assert extract_send_paths("") == []

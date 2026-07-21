@@ -14,6 +14,13 @@ import _background_process_registry as _bg
 import _subagent_helpers as _sub
 import anyio
 
+try:
+    from psi_agent.session.runtime_context import get_session_id as _runtime_session_id
+except ImportError:
+
+    def _runtime_session_id() -> str:
+        return ""
+
 
 def _argv_flag(argv: list[str], flag: str) -> str:
     try:
@@ -32,14 +39,9 @@ def current_session_id() -> str:
     back to ``psi-agent session --session-id`` argv when running as a
     standalone Session process.
     """
-    try:
-        from psi_agent.session.runtime_context import get_session_id
-
-        sid = get_session_id().strip()
-        if sid:
-            return sid
-    except ImportError:
-        pass
+    sid = _runtime_session_id().strip()
+    if sid:
+        return sid
     if "session" not in sys.argv:
         return ""
     return _argv_flag(sys.argv, "--session-id")

@@ -17,6 +17,11 @@ def _posix(path: Any) -> str:
     return str(path).replace("\\", "/")
 
 
+def _norm_fs(path: str) -> str:
+    """Case- and separator-normalized path for containment checks (sync helper)."""
+    return os.path.normcase(os.path.normpath(path))
+
+
 def _win32_drives() -> list[str]:
     if not hasattr(ctypes, "windll"):
         return []
@@ -140,8 +145,8 @@ class WorkspaceManager:
         resolved = await file_path.resolve()
         if root.strip():
             root_resolved = await anyio.Path(root.strip()).resolve()
-            root_s = os.path.normcase(os.path.normpath(str(root_resolved)))
-            file_s = os.path.normcase(os.path.normpath(str(resolved)))
+            root_s = _norm_fs(str(root_resolved))
+            file_s = _norm_fs(str(resolved))
             if not (file_s == root_s or file_s.startswith(root_s + os.sep)):
                 raise PermissionError(f"Path outside workspace root: {raw!r}")
         data = await resolved.read_bytes()
