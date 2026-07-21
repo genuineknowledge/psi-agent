@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { historyToChat } from './sessionBridge'
+import { historyToChat, historyToDeliverables } from './sessionBridge'
 
 describe('historyToChat', () => {
   it('maps roles and strips transfer markers', () => {
@@ -27,5 +27,20 @@ describe('historyToChat', () => {
       { role: 'agent', text: '日报' },
       { role: 'user', text: '你好' },
     ])
+  })
+})
+
+describe('historyToDeliverables', () => {
+  it('collects unique basenames and paths from sends', () => {
+    expect(
+      historyToDeliverables([
+        { role: 'assistant', text: 'ok', sends: ['/ws/a.md', '/other/a.md'] },
+        { role: 'assistant', text: '', sends: ['/ws/b.html'] },
+        { role: 'user', text: 'hi', sends: ['/ws/ignore.md'] },
+      ]),
+    ).toEqual({
+      names: ['a.md', 'b.html'],
+      paths: { 'a.md': '/other/a.md', 'b.html': '/ws/b.html' },
+    })
   })
 })

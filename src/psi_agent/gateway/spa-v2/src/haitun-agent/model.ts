@@ -20,7 +20,12 @@ export type Task = {
   eta: string;
   updated: string;
   accent: string;
+  /** All deliverables generated in this session (survives refresh via history ``sends``). */
   deliverables: string[];
+  /** Unacknowledged new deliverables (chest gold); cleared when saved to 成果库. */
+  newDeliverables: string[];
+  /** Basename → absolute/relative path from ``[SEND:]`` (for reload preview). */
+  deliverablePaths: Record<string, string>;
   deliveryState: DeliveryState;
   steps: TaskStep[];
 };

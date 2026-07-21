@@ -507,4 +507,4 @@ npm run build      # → dist/
 Gateway `server.py` 通过 `app.router.add_static('/spa/', str(spa_dist), show_index=False)` 服务。`dist/` 目录需在 Nuitka/PyInstaller 构建前生成。
 
 ### CI
-Nuitka/PyInstaller 工作流中先执行 `npm ci && npm run build`，然后通过 `--include-data-dir`/`--add-data` 将 `dist/` 打包进二进制。
+Nuitka/PyInstaller 工作流中先分别对 `spa/` 与 `spa-v2/` 执行 `npm ci && npm run build`，再通过 `--include-data-dir`/`--add-data` 将两套 `dist/` 打进二进制（缺 spa-v2 时 Gateway 会回退 v1）。

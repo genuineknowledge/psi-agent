@@ -18,7 +18,7 @@ export function TaskRow({
   task: Task;
   active: boolean;
   onSelect: () => void;
-  onOpenArtifact: (task: Task) => void;
+  onOpenArtifact: (task: Task, fileName?: string) => void;
   onDelete?: (task: Task) => void;
 }) {
   return (
@@ -122,7 +122,7 @@ export function TaskCard({
   onDelete,
 }: {
   task: Task;
-  onOpenArtifact: (task: Task) => void;
+  onOpenArtifact: (task: Task, fileName?: string) => void;
   onDelete?: (task: Task) => void;
 }) {
   return (
@@ -187,7 +187,7 @@ export function CompactTaskContext({
   onDelete,
 }: {
   task: Task;
-  onOpenArtifact: (task: Task) => void;
+  onOpenArtifact: (task: Task, fileName?: string) => void;
   onDelete?: (task: Task) => void;
 }) {
   return (

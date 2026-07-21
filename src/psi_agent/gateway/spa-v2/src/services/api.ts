@@ -89,10 +89,18 @@ export type HistoryMessage = {
   text: string
   /** Provenance from Session JSONL (`kind`); omitted for ordinary chat. */
   kind?: string
+  /** ``[SEND:]`` paths extracted before marker strip (assistant turns). */
+  sends?: string[]
 }
 
 export async function fetchHistory(sessionId: string) {
   return api<HistoryMessage[]>('GET', `/sessions/${sessionId}/history`)
+}
+
+export async function readWorkspaceFile(path: string, root = '') {
+  const params = new URLSearchParams({ path })
+  if (root) params.set('root', root)
+  return api<{ name: string; data: string; path: string }>('GET', `/workspace/file?${params.toString()}`)
 }
 
 export async function fetchCwd() {

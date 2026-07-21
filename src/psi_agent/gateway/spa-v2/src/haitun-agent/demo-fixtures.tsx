@@ -22,6 +22,8 @@ export const INITIAL_TASKS: Task[] = [
     updated: "8 分钟前",
     accent: "#ff6b57",
     deliverables: ["灰度发布方案.docx", "首批用户名单.xlsx"],
+    newDeliverables: [],
+    deliverablePaths: {},
     deliveryState: "generating",
     steps: [
       { label: "整理发布目标与成功指标", state: "done" },
@@ -43,6 +45,8 @@ export const INITIAL_TASKS: Task[] = [
     updated: "今天 09:42",
     accent: "#d8a62a",
     deliverables: ["Agent 市场情报周报.pdf", "竞品动态证据表.xlsx", "领导摘要.docx"],
+    newDeliverables: ["Agent 市场情报周报.pdf", "竞品动态证据表.xlsx", "领导摘要.docx"],
+    deliverablePaths: {},
     deliveryState: "ready",
     steps: [
       { label: "采集并去重公开信息", state: "done" },
@@ -64,6 +68,8 @@ export const INITIAL_TASKS: Task[] = [
     updated: "刚刚更新",
     accent: "#007bff",
     deliverables: ["阶段性洞察摘要.pdf"],
+    newDeliverables: ["阶段性洞察摘要.pdf"],
+    deliverablePaths: {},
     deliveryState: "ready",
     steps: [
       { label: "清洗问卷与访谈记录", state: "done" },
@@ -84,6 +90,8 @@ export const INITIAL_TASKS: Task[] = [
     updated: "今天 10:18",
     accent: "#27a06b",
     deliverables: [],
+    newDeliverables: [],
+    deliverablePaths: {},
     deliveryState: "none",
     steps: [
       { label: "提取会议结论与行动项", state: "done" },
@@ -105,6 +113,8 @@ export const INITIAL_TASKS: Task[] = [
     updated: "3 分钟前巡检",
     accent: "#4d8eff",
     deliverables: [],
+    newDeliverables: [],
+    deliverablePaths: {},
     deliveryState: "none",
     steps: [
       { label: "官方产品与发布页", state: "working" },

@@ -20,6 +20,11 @@ export function workspaceLabel(path: string): string {
   return parts[parts.length - 1] || p || '工作区'
 }
 
+export function basenameOf(path: string): string {
+  const n = path.replace(/\\/g, '/').split('/').filter(Boolean)
+  return n[n.length - 1] || path
+}
+
 /**
  * Project Gateway `/history` rows into workspace chat bubbles.
  * Server already whitelists by ``kind``; still strip transfer markers and drop empties
@@ -40,6 +45,32 @@ export function historyToChat(messages: HistoryMessage[]): ChatMessage[] {
   return out
 }
 
+/** Collect session deliverables from history ``sends`` (order preserved, unique by basename). */
+export function historyToDeliverables(messages: HistoryMessage[]): {
+  names: string[]
+  paths: Record<string, string>
+} {
+  const names: string[] = []
+  const paths: Record<string, string> = {}
+  const seen = new Set<string>()
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !Array.isArray(m.sends)) continue
+    for (const raw of m.sends) {
+      if (typeof raw !== 'string' || !raw.trim()) continue
+      const path = raw.trim()
+      const name = basenameOf(path)
+      if (seen.has(name)) {
+        paths[name] = path
+        continue
+      }
+      seen.add(name)
+      names.push(name)
+      paths[name] = path
+    }
+  }
+  return { names, paths }
+}
+
 /** Map a Gateway session + title into the task-card UI model. */
 export function sessionToTask(
   session: SessionInfo,
@@ -50,6 +81,8 @@ export function sessionToTask(
     progress?: number
     deliveryState?: DeliveryState
     deliverables?: string[]
+    newDeliverables?: string[]
+    deliverablePaths?: Record<string, string>
   },
 ): Task {
   const display = title.trim() || '新任务'
@@ -71,6 +104,8 @@ export function sessionToTask(
     updated: '刚刚同步',
     accent,
     deliverables: opts?.deliverables ?? [],
+    newDeliverables: opts?.newDeliverables ?? [],
+    deliverablePaths: opts?.deliverablePaths ?? {},
     deliveryState: opts?.deliveryState ?? 'none',
     steps: defaultSteps(status),
   }
@@ -110,14 +145,49 @@ function hash(s: string): number {
   return h
 }
 
-/** Merge blob filenames into task deliverables without flipping task status. */
-export function withDeliverables(task: Task, names: string[]): Task {
-  const merged = [...new Set([...task.deliverables, ...names.filter(Boolean)])]
-  if (merged.length === task.deliverables.length) return task
+/**
+ * Register deliverable filenames from a live SSE blob turn.
+ * Always accumulates into session ``deliverables`` (historical); marks as ``new`` by default.
+ */
+export function withDeliverables(
+  task: Task,
+  names: string[],
+  opts?: { asNew?: boolean; paths?: Record<string, string> },
+): Task {
+  const incoming = names.filter(Boolean)
+  if (!incoming.length && !opts?.paths) return task
+  const asNew = opts?.asNew !== false
+  const mergedAll = [...new Set([...task.deliverables, ...incoming])]
+  const mergedNew = asNew
+    ? [...new Set([...task.newDeliverables, ...incoming])]
+    : task.newDeliverables
+  const mergedPaths = { ...task.deliverablePaths, ...(opts?.paths ?? {}) }
+  const sameAll = mergedAll.length === task.deliverables.length
+    && mergedAll.every((n, i) => n === task.deliverables[i])
+  const sameNew = mergedNew.length === task.newDeliverables.length
+    && mergedNew.every((n, i) => n === task.newDeliverables[i])
+  const samePaths = Object.keys(mergedPaths).length === Object.keys(task.deliverablePaths).length
+    && Object.entries(mergedPaths).every(([k, v]) => task.deliverablePaths[k] === v)
+  if (sameAll && sameNew && samePaths) return task
+  let deliveryState = task.deliveryState
+  if (asNew && incoming.length) {
+    deliveryState = 'ready'
+  }
   return {
     ...task,
-    deliverables: merged,
-    deliveryState: merged.length ? (task.deliveryState === 'saved' ? 'saved' : 'ready') : 'none',
-    updated: '刚刚收到交付物',
+    deliverables: mergedAll,
+    newDeliverables: mergedNew,
+    deliverablePaths: mergedPaths,
+    deliveryState,
+    updated: asNew ? '刚刚收到交付物' : '已从历史同步交付物',
   }
+}
+
+/** Apply history-derived deliverables without treating them as unread "new". */
+export function withHistoricalDeliverables(
+  task: Task,
+  names: string[],
+  paths: Record<string, string> = {},
+): Task {
+  return withDeliverables(task, names, { asNew: false, paths })
 }

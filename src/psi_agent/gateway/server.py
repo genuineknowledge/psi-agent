@@ -180,6 +180,7 @@ async def create_app(
     app.router.add_get("/workspace/cwd", _get_cwd)
     app.router.add_get("/workspace/places", _list_workspace_places)
     app.router.add_get("/workspace/browse", _browse_workspace)
+    app.router.add_get("/workspace/file", _read_workspace_file)
     app.router.add_get("/sessions/{session_id}/history", _get_history)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
 
@@ -330,6 +331,22 @@ async def _browse_workspace(request: web.Request) -> web.Response:
     try:
         return _json(await wm.browse(path, kind=kind, q=q))
     except (OSError, PermissionError, FileNotFoundError, NotADirectoryError) as e:
+        return _error(str(e), status=400)
+
+
+async def _read_workspace_file(request: web.Request) -> web.Response:
+    wm: WorkspaceManager = request.app["wm"]
+    path = request.query.get("path") or ""
+    root = request.query.get("root") or ""
+    try:
+        return _json(await wm.read_file(path, root=root))
+    except ValueError as e:
+        return _error(str(e), status=400)
+    except FileNotFoundError as e:
+        return _error(str(e), status=404)
+    except PermissionError as e:
+        return _error(str(e), status=403)
+    except (OSError, IsADirectoryError) as e:
         return _error(str(e), status=400)
 
 
