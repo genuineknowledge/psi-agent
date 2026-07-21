@@ -73,3 +73,10 @@ message_id / sender_open_id）。需要群里之前的上下文时：
    删**知识库(wiki)里的文档**：飞书没有独立删 wiki 节点的接口——先 `feishu_wiki_get_node`
    取 `obj_token`+`obj_type`，再 `feishu_drive_delete_file(file_token=obj_token, file_type=obj_type, user_key=...)`。
    删除是不可轻率的操作，动手前先跟用户确认清楚删的是哪一个。
+9. **访问/浏览知识库要带 user_key（读也一样）**：`feishu_wiki_list_spaces` / `feishu_wiki_list_nodes`
+   / `feishu_wiki_get_node` 默认只用机器人 token，而机器人通常不是任何知识库的成员，会返回**空**。
+   要列出/浏览用户能看到的知识库，必须把 `<feishu_context>` 的 `sender_open_id` 作为 `user_key` 传入：
+   `feishu_wiki_list_spaces(user_key=...)` 列库 → `feishu_wiki_list_nodes(space_id, user_key=...)` 列文档
+   → `feishu_wiki_get_node(token, user_key=...)` 拿 obj_token → `feishu_doc_read` 读正文。
+   **不要因为 list_spaces 返回空就说"企业没有知识库"或让用户手动加机器人为协作者**——先带 user_key 重试。
+   未授权时按第 3 步先征得同意再授权。

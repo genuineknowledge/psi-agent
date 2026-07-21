@@ -193,3 +193,25 @@ scope（如 `drive:drive:drive:readonly`），飞书拒绝整个授权页。
   组合（TOOLS.md 第 8 条写清）
 - [x] 测试：DELETE 组装 / 空 token / 非法 type / 文件夹 task_id / user_key 走 UAT / 未授权 need_auth
 - [x] 门禁：`ruff check` + `ruff format --check`（CI 版 ruff 0.15）+ pytest（feishu 145 passed）
+
+## 九、后续增强：wiki 读工具支持 user_key（以用户身份访问知识库，2026-07-21，已完成）
+
+分支 `feishu-delete-file`（与删除功能同分支）。设计规格见 spec 第 11 节。
+
+**根因**：`feishu_wiki_list_spaces` 只用机器人 tenant token，机器人不是任何知识库成员 → 返回空，
+agent 误判"企业没有知识库"。读类 wiki 工具没接 user_key。
+
+**Files:**
+- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
+- Modify: `examples/haitun-workspace/tools/feishu_wiki.py`
+- Modify: `examples/haitun-workspace/tests/test_feishu.py`
+- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 11 节）
+
+- [x] `list_wiki_spaces_impl` / `get_wiki_node_impl` 加 `user_key`，走 `_invoke(..., user_key=...)`
+- [x] 新增 `list_wiki_nodes_impl` + 工具 `feishu_wiki_list_nodes`（`GET /wiki/v2/spaces/:space_id/nodes`，
+  列知识库内文档/页面、可下钻），补上"浏览知识库内容"的缺口
+- [x] 完整读链路：list_spaces(user_key) → list_nodes(space_id, user_key) → get_node(user_key) → doc_read
+- [x] 测试：list_spaces user_key 走 UAT / get_node 转发 user_key / list_nodes 组装 + 必填校验
+- [x] TOOLS.md 第 9 条：访问/浏览知识库带 user_key，list_spaces 空不代表没库，先带 user_key 重试
+- [x] 门禁：`ruff check` + `ruff format --check`（CI 版 ruff 0.15）+ pytest（feishu 149 passed）

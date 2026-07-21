@@ -243,3 +243,26 @@ session→channel 无主动推送的底座缺口，不改内核。**两目录未
 | 修改 | `tools/feishu_drive.py` | 新增 `feishu_drive_delete_file` 工具 |
 | 修改 | `tests/test_feishu.py` | DELETE 请求组装 / 空 token / 非法 type / 文件夹 task_id / user_key 走 UAT / 未授权 need_auth |
 | 修改 | `TOOLS.md` | 第 8 条：删除文档/文件用 `feishu_drive_delete_file`，删 wiki 文档走 get_node→delete_file |
+
+---
+
+## 11. 后续增强：wiki 读工具支持 user_key（能以用户身份访问知识库）
+
+**现象**：`feishu_wiki_list_spaces` 只用机器人 tenant token，机器人不是任何知识库的成员 → 返回空，
+agent 误判"企业没有知识库"或让用户手动把机器人加为协作者。根因是**读类 wiki 工具没接 user_key**。
+
+- `list_wiki_spaces_impl` / `get_wiki_node_impl` 加 `user_key`，走 `_invoke(..., user_key=...)`（UAT）。
+- 新增 `list_wiki_nodes_impl` + 工具 `feishu_wiki_list_nodes(space_id, page_size, page_token,
+  parent_node_token, user_key)`：`GET /wiki/v2/spaces/:space_id/nodes`，列知识库里的文档/页面，可下钻。
+  这补上了"浏览知识库内容"的缺口（此前只能建、不能列内节点）。
+- 完整读链路：`feishu_wiki_list_spaces(user_key)` → `feishu_wiki_list_nodes(space_id, user_key)`
+  → `feishu_wiki_get_node(token, user_key)` → `feishu_doc_read`。
+
+### 11.1 文件变更
+
+| 操作 | 文件 | 说明 |
+|---|---|---|
+| 修改 | `tools/_feishu_impl.py` | `list_wiki_spaces_impl` / `get_wiki_node_impl` 加 `user_key`；新增 `_build_list_wiki_nodes_request` + `list_wiki_nodes_impl` |
+| 修改 | `tools/feishu_wiki.py` | `feishu_wiki_list_spaces` / `feishu_wiki_get_node` 暴露 `user_key`；新增 `feishu_wiki_list_nodes` |
+| 修改 | `tests/test_feishu.py` | list_spaces user_key 走 UAT / get_node 转发 user_key / list_nodes 请求组装 + 必填校验 |
+| 修改 | `TOOLS.md` | 第 9 条：访问/浏览知识库要带 user_key，list_spaces 空不代表没库、先带 user_key 重试 |
