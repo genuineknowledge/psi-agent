@@ -1697,9 +1697,7 @@ async def complete_task_impl(task_guid: str, completed: bool, user_key: str = ""
     import time  # noqa: PLC0415
 
     ts = str(int(time.time() * 1000)) if completed else "0"
-    res = await _invoke(
-        _build_patch_task_request(task_guid, {"completed_at": ts}, ["completed_at"]), user_key=user_key
-    )
+    res = await _invoke(_build_patch_task_request(task_guid, {"completed_at": ts}, ["completed_at"]), user_key=user_key)
     if not res["ok"]:
         return res
     return {"ok": True, "task_guid": task_guid, "completed": completed}
