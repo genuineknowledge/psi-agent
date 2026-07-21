@@ -137,7 +137,7 @@ session→channel 无主动推送的底座缺口，不改内核。**两目录未
 
 ---
 
-## 9. 后续增强：多用户 UAT 隔离 + scope 固定 + 建知识库（2026-07-20）
+## 9. 后续增强：多用户 UAT 隔离 + scope 固定 + 建知识库 + 写入类以用户身份调用（2026-07-20）
 
 **分支**：`feishu-per-user-uat`。场景：公司里每人与 agent 各有对话框，用全局搜索查
 知识库 / 审阅交付物，需每人各自授权、各搜自己可见的文档，互不覆盖。
@@ -181,13 +181,35 @@ session→channel 无主动推送的底座缺口，不改内核。**两目录未
 - 限流约 10 次/分钟（飞书侧）；需 `wiki:space:write_only` 或 `wiki:wiki` scope。
 - 未授权返回 `need_auth=True`，与搜索一致，走「先问再授权」流程。
 
-### 9.5 文件变更
+### 9.6 写入类工具以用户身份调用（修"机器人非协作者"权限不足）
+
+现象：用户用自己的 UAT 建了知识库（库归用户），机器人（tenant token）默认不是协作者，
+往里建文档 / 写正文时权限不足；且机器人应用默认不在组织架构里，无法手动加为协作者。
+
+- 共享 `_invoke(request, user_key=None)` 加可选 `user_key`：传了（非空）就走
+  `_invoke_as_user`（`_get_uat_client` + `_get_valid_uat(user_key)` + `RequestOption
+  .user_access_token`），否则保持原 tenant token 行为（向后兼容）。抽出 `_resp_to_result`
+  统一解析响应。飞书文档节点 / docx / bitable 写入等接口均支持 UAT。
+- **写入类** impl + 工具 wrapper 加 `user_key` 透传：`create_wiki_node` / `create_docx` /
+  `append_doc_content` / bitable(`create_record` / `delete_records` / `clear_table` /
+  `delete_fields`) / task(`create` / `update` / `complete`) / drive 评论(`add_comment` /
+  `reply_comment`)。
+- **刻意不加 UAT**：日历(`primary` 是机器人日历)、消息发送/回复(机器人身份回复才对)、
+  考勤(只读、仅认 tenant)、纯读取类——这些以机器人身份或本就不支持 UAT，强上 UAT 反而错。
+- agent 从 `<feishu_context>.sender_open_id` 取 `user_key`；一条"建库→建文档→写正文"
+  的链路要全程传同一个 `user_key`（都以该用户身份操作,才有权限）。
+
+### 9.7 文件变更
 
 | 操作 | 文件 | 说明 |
 |---|---|---|
-| 修改 | `tools/_feishu_impl.py` | 四函数加 `user_key`；`_norm_user_key`；`_pending_auth_path` 按用户分文件 + 防穿越；新增 `create_wiki_space_impl`（UAT） |
+| 修改 | `tools/_feishu_impl.py` | `_invoke` 加可选 `user_key`(UAT 分支) + `_invoke_as_user` + `_resp_to_result`；`_norm_user_key`；`_pending_auth_path` 按用户分文件 + 防穿越；新增 `create_wiki_space_impl`；写入类 impl 透传 `user_key` |
 | 修改 | `tools/feishu_auth.py` | `feishu_auth_start`（去 `scopes`、固定 scope）/ `feishu_auth_complete` 暴露 `user_key` |
 | 修改 | `tools/feishu_docs.py` | `feishu_docs_search` 暴露 `user_key` |
-| 修改 | `tools/feishu_wiki.py` | 新增 `feishu_wiki_create_space` 工具 |
-| 修改 | `tests/test_feishu.py` | 按用户隔离 / pending 分离且防穿越 / search 转发 user_key / scope 恒为默认值 / 建库(UAT 请求组装、未授权、非法 open_sharing、转发 user_key) 等测试 |
-| 修改 | `TOOLS.md` | 引导 agent 传 `sender_open_id` 作 `user_key`，先问再授权 |
+| 修改 | `tools/feishu_wiki.py` | 新增 `feishu_wiki_create_space`；`feishu_wiki_create_doc` 暴露 `user_key` |
+| 修改 | `tools/feishu_doc.py` | `feishu_doc_create` / `feishu_doc_append_content` 暴露 `user_key` |
+| 修改 | `tools/feishu_bitable.py` | `create_record` / `delete_records` / `clear_table` / `delete_fields` 暴露 `user_key` |
+| 修改 | `tools/feishu_task.py` | `create` / `update` / `complete` 暴露 `user_key` |
+| 修改 | `tools/feishu_drive.py` | `add_comment` / `reply_comment` 暴露 `user_key` |
+| 修改 | `tests/test_feishu.py` | 按用户隔离 / pending 防穿越 / search+建库+建文档节点 转发 user_key / scope 恒为默认值 / `_invoke` 空 user_key 走 tenant、非空走 UAT、未授权 need_auth 等测试；fake `_invoke`/`_CapturedInvoke`/`_PagedInvoke` 接受 `user_key` |
+| 修改 | `TOOLS.md` | 引导 agent 传 `sender_open_id` 作 `user_key`，先问再授权，建文档链路全程同一 `user_key` |

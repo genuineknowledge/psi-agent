@@ -60,5 +60,10 @@ message_id / sender_open_id）。需要群里之前的上下文时：
    `sender_open_id` 作为 `user_key` 传入，使每个人各自授权、各自操作，互不覆盖。同一用户
    多处要传相同的 `user_key`。单聊/单用户场景可留空（共用 `default` 槽）。
 6. **创建知识库也需授权**：`feishu_wiki_create_space(name, description, open_sharing, user_key)`
-   同样只吃 UAT（新库归授权用户所有），未授权时也返回 `need_auth=True`，按第 3 步先征得同意
-   再授权。往**已有**知识库里建文档用 `feishu_wiki_create_doc`（无需 UAT）。
+   只吃 UAT（新库归授权用户所有），未授权时返回 `need_auth=True`，按第 3 步先征得同意再授权。
+7. **往用户自己的库/文档里写，要带 user_key**：如果知识库是用户用自己身份建的（机器人不是协作者，
+   而且机器人应用通常搜不到、加不进协作者），那么在里面建文档、写正文时也要以该用户身份操作——
+   给 `feishu_wiki_create_doc` / `feishu_doc_create` / `feishu_doc_append_content`
+   （以及 bitable 写入、drive 评论、task 创建等写入类工具）传相同的 `user_key`。
+   一条「建库→建文档→写正文」链路要**全程用同一个 user_key**，否则机器人身份没权限。
+   写入类工具未授权时同样返回 `need_auth=True`。

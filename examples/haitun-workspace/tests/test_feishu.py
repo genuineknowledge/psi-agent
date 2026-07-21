@@ -100,8 +100,9 @@ class _CapturedInvoke:
         self.request: Any = None
         self._data = data or {}
 
-    async def __call__(self, request: Any) -> dict[str, Any]:
+    async def __call__(self, request: Any, user_key: str | None = None) -> dict[str, Any]:
         self.request = request
+        self.user_key = user_key
         return {"ok": True, "code": 0, "msg": "", "data": self._data}
 
 
@@ -341,7 +342,7 @@ class _PagedInvoke:
         self.requests: list[Any] = []
         self._pages = list(pages)
 
-    async def __call__(self, request: Any) -> dict[str, Any]:
+    async def __call__(self, request: Any, user_key: str | None = None) -> dict[str, Any]:
         self.requests.append(request)
         page = self._pages.pop(0) if self._pages else {}
         return {"ok": True, "code": 0, "msg": "", "data": page}
@@ -1835,6 +1836,70 @@ async def test_create_wiki_space_forwards_user_key(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_invoke_empty_user_key_uses_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_invoke with no/empty user_key must go through the tenant client, not UAT."""
+    calls: dict[str, Any] = {}
+
+    class _TenantClient:
+        async def arequest(self, request: Any, option: Any = None) -> Any:
+            calls["option"] = option
+            raw = _FakeRaw(json.dumps({"code": 0, "data": {}}).encode())
+            return type("R", (), {"raw": raw, "code": 0, "msg": ""})()
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
+
+    async def _uat_should_not_be_called(user_key: str = "") -> Any:
+        raise AssertionError("UAT path must not run for empty user_key")
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat_should_not_be_called)
+    res = await _impl._invoke(object())  # no user_key
+    assert res["ok"] is True
+    assert calls["option"] is None  # tenant send, no user_access_token option
+
+
+@pytest.mark.asyncio
+async def test_invoke_user_key_routes_through_uat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_invoke with a user_key must attach the user's UAT to the request."""
+    client = _CapturingUatClient({"code": 0, "data": {"ok": 1}})
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
+
+    async def _uat(user_key: str = "") -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    res = await _impl._invoke(object(), user_key="ou_a")
+    assert res["ok"] is True
+    assert client.option.user_access_token == "uat_tok"
+
+
+@pytest.mark.asyncio
+async def test_invoke_user_key_not_authorized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+
+    async def _no_uat(user_key: str = "") -> Any:
+        return None
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _no_uat)
+    res = await _impl._invoke(object(), user_key="ou_a")
+    assert res["ok"] is False
+    assert res.get("need_auth") is True
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_node_forwards_user_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """create_wiki_node_impl must pass user_key down to _invoke."""
+    seen: dict[str, Any] = {}
+
+    async def _fake_invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
+        seen["user_key"] = user_key
+        return {"ok": True, "code": 0, "msg": "", "data": {"node": {"node_token": "n", "obj_token": "o"}}}
+
+    monkeypatch.setattr(_impl, "_invoke", _fake_invoke)
+    await _impl.create_wiki_node_impl("sp1", "T", "docx", "", "ou_zhang")
+    assert seen["user_key"] == "ou_zhang"
+
+
+@pytest.mark.asyncio
 async def test_list_wiki_spaces_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke(
         {
@@ -1891,7 +1956,7 @@ async def test_append_doc_content_builds_root_request(monkeypatch: pytest.Monkey
 async def test_append_doc_content_batches_over_50(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
 
-    async def fake_invoke(request: Any) -> dict[str, Any]:
+    async def fake_invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
         calls.append(len(request.body["children"]))
         return {"ok": True, "code": 0, "msg": "", "data": {}}
 
