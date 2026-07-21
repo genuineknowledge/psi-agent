@@ -486,3 +486,27 @@ git add -A && git commit -m "test(feishu): add dataclass and token validation te
 - [x] 测试：元数据头注入 / 群聊 chat_id 携带（且不含工具名）/ 空消息丢弃 header
 - [x] 质量门：`ruff check` / `ruff format --check` / `ty check` / `pytest tests/psi_agent/channel/feishu/`（24 passed）
 - [x] Commit `feat(haitun/feishu): 向 agent 注入群聊上下文元数据`（`9b1cc9bd`）；解耦 + 文档同步 `740d66b5`
+
+---
+
+## 后续增强：文档评论 @机器人 自动回复（2026-07-21，已完成）
+
+**目标**：飞书文档（doc/docx/sheet/file/wiki）评论区 @机器人 时，连接的 app 用 Haitun Agent 的回答回复该评论。设计详见 spec 第 14 节。此前评论事件被列为非目标（spec 第 10 节），本次实现之。
+
+**缺口**：`lark_channel` SDK 已内置评论事件（`drive.notice.comment_add_v1` → `CommentEvent`，带 `mentioned_bot`）与读写原语（`resolve_comment_target` / `get_comment_context` / `reply_comment`），但 psi-agent 侧只订阅 `message` / `reject`，从未订阅 `comment`。评论事件是经 `FeishuChannel` 长连接**推**来的，workspace 工具（pull）接不到，故订阅这半只能在 channel 层做。
+
+**Files:**
+- Modify: `src/psi_agent/channel/feishu/__init__.py`
+- Modify: `src/psi_agent/channel/feishu/client.py`
+- Modify: `tests/psi_agent/channel/feishu/test_feishu.py`
+- Modify: `src/psi_agent/channel/AGENTS.md`
+- Modify: `docs/superpowers/specs/2026-06-25-feishu-channel.md`（第 10 节非目标更正 + 第 14 节）
+
+- [x] `ChannelFeishu` 加 `respond_to_comments`（默认 True）字段，`run()` 透传给 `run_feishu`；CLI 经 tyro 暴露为 `--respond-to-comments`
+- [x] `run_feishu` 在开关开启时注册 `channel.on("comment", _on_comment)`，回调经 `portal.start_task_soon(_handle_comment, ...)` 调度（与 `_handle_and_stream` 同款异步隔离）
+- [x] `_handle_comment`：仅 `mentioned_bot` 才回复（对齐群聊 `require_mention`）；白名单按 `operator.open_id`；`resolve_comment_target`（不支持记 WARNING 返回）→ `get_comment_context`（`event_reply_id` 透传）→ `_collect_reply` 累积整段（评论 API 不支持流式，`FileChunk` 忽略）→ `reply_comment` 写回；agent 失败回错误文本，异常绝不冒泡
+- [x] `_comment_context_header`：注入 `<feishu_comment_context>`（file_token / file_type / comment_id / operator_open_id / 可选 quote）；**刻意为之** 只含协议事实、不含工具名
+- [x] `_allowed` 首参放宽为 `str | None`（评论 `operator.open_id` 可能为 None）
+- [x] 测试：评论 header / @门槛 / 白名单 / 不支持目标 / agent 失败回错误 / 回复异常吞掉 / comment 订阅开关（enabled 注册、disabled 不注册）
+- [x] 质量门：`ruff check` / `ruff format --check` / `ty check` / `pytest tests/psi_agent/channel/feishu/`（33 passed，需清 `PSI_FEISHU_*` env 避免旧 raise 测试被真 env 干扰）
+- [x] Commit `feat(feishu): 文档评论 @机器人 自动回复`（`559c8ad1`）；ty 修复 `c6542eac`

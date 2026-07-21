@@ -365,6 +365,7 @@ uv run psi-agent channel feishu \
 - Card streaming: `stream.append()` updates Feishu cards incrementally
 - Processing status emoji: `Typing` while processing, removed on completion, `CrossMark` on failure
 - Supports text, images, files, and audio
+- Doc comment replies: `--respond-to-comments` (on by default) — when the bot is @-mentioned in a document comment, reply to that comment with the agent's answer (requires subscribing to `drive.notice.comment_add_v1` in the Feishu console)
 
 ## Example Workspaces
 

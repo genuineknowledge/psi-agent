@@ -365,6 +365,7 @@ uv run psi-agent channel feishu \
 - 卡片流式渲染：`stream.append()` 逐段更新飞书卡片
 - 处理状态表情：处理中显示 `Typing`，完成移除，失败显示 `CrossMark`
 - 支持文本、图片、文件、音频
+- 文档评论回复：`--respond-to-comments`（默认开）文档评论区 @机器人 时，用 agent 的回答回复该评论（需后台订阅 `drive.notice.comment_add_v1`）
 
 ## 示例 Workspace
 
