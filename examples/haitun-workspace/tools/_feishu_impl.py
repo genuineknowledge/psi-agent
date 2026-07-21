@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import pathlib
+import re
 from typing import Any
 
 import anyio
@@ -60,7 +61,14 @@ def _get_client() -> Any:
     return _client
 
 
-async def _invoke(request: Any) -> dict[str, Any]:
+async def _invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
+    """Send a BaseRequest. If ``user_key`` is provided (non-empty), send it as that
+    user (user_access_token) instead of the bot's tenant token — needed for APIs
+    that act on behalf of a user (e.g. writing into a wiki the user owns).
+    ``user_key=None`` (default) keeps the original tenant-token behavior.
+    """
+    if user_key is not None and user_key.strip():
+        return await _invoke_as_user(request, user_key)
     client = _get_client()
     if client is None:
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
@@ -68,7 +76,28 @@ async def _invoke(request: Any) -> dict[str, Any]:
         resp = await client.arequest(request)
     except Exception as exc:  # SDK/transport failure
         return _error(f"Feishu request failed: {type(exc).__name__}: {exc}")
+    return _resp_to_result(resp)
 
+
+async def _invoke_as_user(request: Any, user_key: str) -> dict[str, Any]:
+    """Send a BaseRequest with the user's UAT (resolved by user_key)."""
+    client = _get_uat_client()
+    if client is None:
+        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
+    uat = await _get_valid_uat(user_key)
+    if uat is None or not uat.access_token:
+        return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
+    from lark_channel.core.model import RequestOption  # noqa: PLC0415
+
+    option = RequestOption.builder().user_access_token(uat.access_token).build()
+    try:
+        resp = await client.arequest(request, option)
+    except Exception as exc:  # SDK/transport failure
+        return _error(f"Feishu request failed: {type(exc).__name__}: {exc}")
+    return _resp_to_result(resp)
+
+
+def _resp_to_result(resp: Any) -> dict[str, Any]:
     code = getattr(resp, "code", None)
     msg = getattr(resp, "msg", "") or ""
     data: dict[str, Any] = {}
@@ -98,9 +127,9 @@ async def _invoke(request: Any) -> dict[str, Any]:
     return {"ok": True, "code": 0, "msg": msg, "data": data}
 
 
-async def add_comment_impl(file_token: str, file_type: str, content: str) -> dict[str, Any]:
+async def add_comment_impl(file_token: str, file_type: str, content: str, user_key: str = "") -> dict[str, Any]:
     req = _comment.build_comment_create_request(file_token=file_token, file_type=file_type, content=content)
-    return await _invoke(req)
+    return await _invoke(req, user_key=user_key)
 
 
 async def list_comments_impl(file_token: str, file_type: str, page_size: int, page_token: str) -> dict[str, Any]:
@@ -146,7 +175,7 @@ def _build_reply_create_request(
 
 
 async def reply_comment_impl(
-    file_token: str, file_type: str, comment_id: str, content: str, at_user_id: str
+    file_token: str, file_type: str, comment_id: str, content: str, at_user_id: str, user_key: str = ""
 ) -> dict[str, Any]:
     req = _build_reply_create_request(
         file_token=file_token,
@@ -155,7 +184,7 @@ async def reply_comment_impl(
         content=content,
         at_user_id=at_user_id,
     )
-    return await _invoke(req)
+    return await _invoke(req, user_key=user_key)
 
 
 def _raw_get(uri: str, path_name: str, path_value: str) -> BaseRequest:
@@ -812,10 +841,20 @@ async def start_topic_impl(
 # a UAT, cache it in <workspace>/.psi/feishu/uat.json (plaintext — dev use), and
 # call the search endpoint with a hand-built BaseRequest carrying the UAT.
 
-_UAT_USER_KEY = "default"  # single local user; not multi-tenant
+_UAT_USER_KEY = "default"  # fallback key when a caller does not pass user_key
 _token_store: Any = None
 _uat_client: Any = None
 _DEFAULT_SCOPES = "docs:doc:readonly drive:drive:readonly offline_access"
+
+
+def _norm_user_key(user_key: str = "") -> str:
+    """Normalize a per-user UAT key. Empty falls back to the shared 'default'.
+
+    Callers pass the message sender's ``open_id`` (from the injected
+    ``<feishu_context>``) so each user's authorization is isolated in the token
+    store. Single-user / local dev can leave it empty and share ``default``.
+    """
+    return user_key.strip() or _UAT_USER_KEY
 
 
 def _uat_store_path() -> str:
@@ -826,8 +865,13 @@ def _uat_store_path() -> str:
     return str(d / "uat.json")
 
 
-def _pending_auth_path() -> str:
-    return str(pathlib.Path(_uat_store_path()).parent / "pending_auth.json")
+def _pending_auth_path(user_key: str = "") -> str:
+    """Per-user pending-auth file so concurrent authorizations don't clobber each other."""
+    key = _norm_user_key(user_key)
+    # Keep filenames filesystem-safe: only allow word chars + dash, replace the
+    # rest (incl. path separators and dots, so a crafted open_id can't traverse).
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", key)
+    return str(pathlib.Path(_uat_store_path()).parent / f"pending_auth_{safe}.json")
 
 
 def _get_token_store() -> Any:
@@ -928,7 +972,7 @@ def _uat_from_token_response(payload: dict[str, Any]) -> Any:
     )
 
 
-async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
+async def auth_start_impl(scopes: str = "", user_key: str = "") -> dict[str, Any]:
     """Build the browser authorize URL for the authorization-code flow."""
     creds = _config()
     if creds is None:
@@ -938,7 +982,7 @@ async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
     app_id, _ = creds
     scope_str = scopes or _DEFAULT_SCOPES
     state = os.urandom(8).hex()
-    await anyio.Path(_pending_auth_path()).write_text(json.dumps({"state": state}), encoding="utf-8")
+    await anyio.Path(_pending_auth_path(user_key)).write_text(json.dumps({"state": state}), encoding="utf-8")
     query = urlencode(
         {
             "client_id": app_id,
@@ -958,7 +1002,7 @@ async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
     }
 
 
-async def auth_complete_impl(code: str) -> dict[str, Any]:
+async def auth_complete_impl(code: str, user_key: str = "") -> dict[str, Any]:
     """Exchange the authorization code for a user_access_token and cache it."""
     if not code.strip():
         return _error("No code provided.")
@@ -980,9 +1024,9 @@ async def auth_complete_impl(code: str) -> dict[str, Any]:
     uat = _uat_from_token_response(payload)
     if not uat.access_token:
         return _error("Token exchange returned no access_token.")
-    await _get_token_store().set(_UAT_USER_KEY, uat)
+    await _get_token_store().set(_norm_user_key(user_key), uat)
     with contextlib.suppress(OSError):
-        await anyio.Path(_pending_auth_path()).unlink()
+        await anyio.Path(_pending_auth_path(user_key)).unlink()
     return {
         "ok": True,
         "open_id": uat.open_id or "",
@@ -991,12 +1035,13 @@ async def auth_complete_impl(code: str) -> dict[str, Any]:
     }
 
 
-async def _get_valid_uat() -> Any:
-    """Return a non-expired UAT (refreshing via refresh_token if needed), or None."""
+async def _get_valid_uat(user_key: str = "") -> Any:
+    """Return a non-expired UAT for ``user_key`` (refreshing if needed), or None."""
     from lark_channel.channel.auth.device_flow import uat_needs_refresh  # noqa: PLC0415
 
+    key = _norm_user_key(user_key)
     store = _get_token_store()
-    uat = await store.get(_UAT_USER_KEY)
+    uat = await store.get(key)
     if uat is None:
         return None
     if uat_needs_refresh(uat) and uat.refresh_token:
@@ -1009,7 +1054,7 @@ async def _get_valid_uat() -> Any:
             )
             if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
                 uat = _uat_from_token_response(payload)
-                await store.set(_UAT_USER_KEY, uat)
+                await store.set(key, uat)
     return uat
 
 
@@ -1025,12 +1070,14 @@ def _build_doc_search_request(search_key: str, count: int, offset: int, docs_typ
     return req
 
 
-async def search_docs_impl(search_key: str, count: int, offset: int, docs_types: str) -> dict[str, Any]:
+async def search_docs_impl(
+    search_key: str, count: int, offset: int, docs_types: str, user_key: str = ""
+) -> dict[str, Any]:
     """Search cloud docs by keyword (needs a user_access_token). Returns matched docs."""
     client = _get_uat_client()
     if client is None:
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
-    uat = await _get_valid_uat()
+    uat = await _get_valid_uat(user_key)
     if uat is None or not uat.access_token:
         return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
 
@@ -1068,6 +1115,69 @@ async def search_docs_impl(search_key: str, count: int, offset: int, docs_types:
         "count": len(docs),
         "has_more": bool(data.get("has_more")),
         "total": data.get("total", 0),
+    }
+
+
+def _build_wiki_space_create_request(name: str, description: str, open_sharing: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/wiki/v2/spaces"
+    req.token_types = {AccessTokenType.USER}
+    body: dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if description:
+        body["description"] = description
+    if open_sharing:
+        body["open_sharing"] = open_sharing
+    req.body = body
+    return req
+
+
+async def create_wiki_space_impl(
+    name: str, description: str = "", open_sharing: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """Create a new Feishu wiki space (knowledge base). Needs a user_access_token.
+
+    Feishu's create-space API only accepts a UAT (not the bot's tenant token); the
+    new space is owned by the authorizing user. Returns the new space_id + name.
+    """
+    client = _get_uat_client()
+    if client is None:
+        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
+    uat = await _get_valid_uat(user_key)
+    if uat is None or not uat.access_token:
+        return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
+
+    sharing = open_sharing.strip()
+    if sharing and sharing not in ("open", "closed"):
+        return _error("open_sharing must be 'open' or 'closed' (or empty).")
+    req = _build_wiki_space_create_request(name.strip(), description.strip(), sharing)
+    from lark_channel.core.model import RequestOption  # noqa: PLC0415
+
+    option = RequestOption.builder().user_access_token(uat.access_token).build()
+    try:
+        resp = await client.arequest(req, option)
+    except Exception as exc:
+        return _error(f"Feishu create wiki space failed: {type(exc).__name__}: {exc}")
+
+    body = _parse_resp_body(resp)
+    if body.get("code") not in (0, None):
+        return {
+            "ok": False,
+            "code": body.get("code"),
+            "msg": body.get("msg", ""),
+            "message": f"Feishu API error {body.get('code')}: {body.get('msg', '')}",
+        }
+    data = body.get("data", {}) if isinstance(body.get("data"), dict) else {}
+    space = data.get("space", {}) if isinstance(data.get("space"), dict) else {}
+    space_id = space.get("space_id", "")
+    return {
+        "ok": True,
+        "space_id": space_id,
+        "name": space.get("name", name),
+        "description": space.get("description", description),
+        "url": f"{_DOC_BASE_URL}/wiki/settings/{space_id}" if space_id else "",
     }
 
 
@@ -1185,7 +1295,9 @@ def _build_create_record_request(app_token: str, table_id: str, fields: dict[str
     return req
 
 
-async def create_bitable_record_impl(app_token: str, table_id: str, fields_json: str) -> dict[str, Any]:
+async def create_bitable_record_impl(
+    app_token: str, table_id: str, fields_json: str, user_key: str = ""
+) -> dict[str, Any]:
     """Create one record in a bitable table. fields_json is a JSON object of {column: value}."""
     try:
         fields = json.loads(fields_json)
@@ -1193,7 +1305,7 @@ async def create_bitable_record_impl(app_token: str, table_id: str, fields_json:
         return _error(f"fields_json is not valid JSON: {exc}")
     if not isinstance(fields, dict):
         return _error("fields_json must be a JSON object mapping column names to values.")
-    res = await _invoke(_build_create_record_request(app_token, table_id, fields))
+    res = await _invoke(_build_create_record_request(app_token, table_id, fields), user_key=user_key)
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -1212,7 +1324,9 @@ def _build_batch_delete_records_request(app_token: str, table_id: str, record_id
     return req
 
 
-async def delete_bitable_records_impl(app_token: str, table_id: str, record_ids: str) -> dict[str, Any]:
+async def delete_bitable_records_impl(
+    app_token: str, table_id: str, record_ids: str, user_key: str = ""
+) -> dict[str, Any]:
     """Delete records (rows) by id. record_ids is comma-separated; batches of 500."""
     ids = [r.strip() for r in record_ids.split(",") if r.strip()]
     if not ids:
@@ -1220,19 +1334,21 @@ async def delete_bitable_records_impl(app_token: str, table_id: str, record_ids:
     deleted = 0
     for i in range(0, len(ids), 500):
         batch = ids[i : i + 500]
-        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch))
+        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch), user_key=user_key)
         if not res["ok"]:
             return {**res, "deleted": deleted}
         deleted += len(batch)
     return {"ok": True, "deleted": deleted, "record_ids": ids}
 
 
-async def clear_bitable_table_impl(app_token: str, table_id: str) -> dict[str, Any]:
+async def clear_bitable_table_impl(app_token: str, table_id: str, user_key: str = "") -> dict[str, Any]:
     """Delete ALL records (rows) in a table — pages through every record, then batch-deletes."""
     ids: list[str] = []
     page_token = ""
     while True:
-        res = await _invoke(_build_list_records_request(app_token, table_id, 500, page_token, "", "", ""))
+        res = await _invoke(
+            _build_list_records_request(app_token, table_id, 500, page_token, "", "", ""), user_key=user_key
+        )
         if not res["ok"]:
             return res
         data = res["data"] if isinstance(res["data"], dict) else {}
@@ -1248,7 +1364,7 @@ async def clear_bitable_table_impl(app_token: str, table_id: str) -> dict[str, A
     deleted = 0
     for i in range(0, len(ids), 500):
         batch = ids[i : i + 500]
-        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch))
+        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch), user_key=user_key)
         if not res["ok"]:
             return {**res, "deleted": deleted}
         deleted += len(batch)
@@ -1328,14 +1444,16 @@ def _build_delete_field_request(app_token: str, table_id: str, field_id: str) ->
     return req
 
 
-async def delete_bitable_fields_impl(app_token: str, table_id: str, field_ids: str) -> dict[str, Any]:
+async def delete_bitable_fields_impl(
+    app_token: str, table_id: str, field_ids: str, user_key: str = ""
+) -> dict[str, Any]:
     """Delete fields (columns) by id. field_ids is comma-separated. Primary field cannot be deleted."""
     ids = [f.strip() for f in field_ids.split(",") if f.strip()]
     if not ids:
         return _error("No field_ids provided (comma-separated field ids from feishu_bitable_list_fields).")
     deleted: list[str] = []
     for fid in ids:
-        res = await _invoke(_build_delete_field_request(app_token, table_id, fid))
+        res = await _invoke(_build_delete_field_request(app_token, table_id, fid), user_key=user_key)
         if not res["ok"]:
             return {**res, "deleted": deleted, "failed_field_id": fid}
         deleted.append(fid)
@@ -1463,7 +1581,9 @@ def _build_create_task_request(body: dict[str, Any]) -> BaseRequest:
     return req
 
 
-async def create_task_impl(summary: str, description: str, due: str, assignees: str, followers: str) -> dict[str, Any]:
+async def create_task_impl(
+    summary: str, description: str, due: str, assignees: str, followers: str, user_key: str = ""
+) -> dict[str, Any]:
     """Create a task, optionally with a due date and assignee/follower open_ids."""
     if not summary.strip():
         return _error("Task summary is required.")
@@ -1484,7 +1604,7 @@ async def create_task_impl(summary: str, description: str, due: str, assignees: 
         body["due"] = {"timestamp": due_ms, "is_all_day": False}
     if members:
         body["members"] = members
-    res = await _invoke(_build_create_task_request(body))
+    res = await _invoke(_build_create_task_request(body), user_key=user_key)
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -1548,7 +1668,9 @@ def _build_patch_task_request(task_guid: str, task_fields: dict[str, Any], updat
     return req
 
 
-async def update_task_impl(task_guid: str, summary: str, description: str, due: str) -> dict[str, Any]:
+async def update_task_impl(
+    task_guid: str, summary: str, description: str, due: str, user_key: str = ""
+) -> dict[str, Any]:
     """Update only the provided (non-empty) fields of a task."""
     task_fields: dict[str, Any] = {}
     update_fields: list[str] = []
@@ -1564,18 +1686,18 @@ async def update_task_impl(task_guid: str, summary: str, description: str, due: 
         update_fields.append("due")
     if not update_fields:
         return _error("Nothing to update: provide summary, description, or due.")
-    res = await _invoke(_build_patch_task_request(task_guid, task_fields, update_fields))
+    res = await _invoke(_build_patch_task_request(task_guid, task_fields, update_fields), user_key=user_key)
     if not res["ok"]:
         return res
     return {"ok": True, "task_guid": task_guid, "updated": update_fields}
 
 
-async def complete_task_impl(task_guid: str, completed: bool) -> dict[str, Any]:
+async def complete_task_impl(task_guid: str, completed: bool, user_key: str = "") -> dict[str, Any]:
     """Mark a task complete (completed=True) or reopen it (False)."""
     import time  # noqa: PLC0415
 
     ts = str(int(time.time() * 1000)) if completed else "0"
-    res = await _invoke(_build_patch_task_request(task_guid, {"completed_at": ts}, ["completed_at"]))
+    res = await _invoke(_build_patch_task_request(task_guid, {"completed_at": ts}, ["completed_at"]), user_key=user_key)
     if not res["ok"]:
         return res
     return {"ok": True, "task_guid": task_guid, "completed": completed}
@@ -2094,9 +2216,12 @@ def _build_docx_create_request(title: str, folder_token: str) -> BaseRequest:
     return req
 
 
-async def create_docx_impl(title: str, folder_token: str = "") -> dict[str, Any]:
-    """Create a new standalone docx cloud document. Returns its document_id + URL."""
-    res = await _invoke(_build_docx_create_request(title.strip(), folder_token.strip()))
+async def create_docx_impl(title: str, folder_token: str = "", user_key: str = "") -> dict[str, Any]:
+    """Create a new standalone docx cloud document. Returns its document_id + URL.
+
+    Pass ``user_key`` to create as that user (doc owned by them); empty uses tenant token.
+    """
+    res = await _invoke(_build_docx_create_request(title.strip(), folder_token.strip()), user_key=user_key)
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -2129,9 +2254,13 @@ def _build_wiki_node_create_request(
 
 
 async def create_wiki_node_impl(
-    space_id: str, title: str, obj_type: str = "docx", parent_node_token: str = ""
+    space_id: str, title: str, obj_type: str = "docx", parent_node_token: str = "", user_key: str = ""
 ) -> dict[str, Any]:
-    """Create a node (default: a docx doc) in a wiki space. Returns node_token + obj_token(=document_id)."""
+    """Create a node (default: a docx doc) in a wiki space. Returns node_token + obj_token(=document_id).
+
+    Pass ``user_key`` to act as that user (needed when the wiki space is owned by the
+    user, so the bot isn't a collaborator); empty uses the bot's tenant token.
+    """
     if not space_id.strip():
         return _error("space_id is required. Use feishu_wiki_list_spaces to find it.")
     # Feishu deprecated `doc`; the API rejects it with error 131010.
@@ -2145,7 +2274,8 @@ async def create_wiki_node_impl(
             node_type="origin",
             parent_node_token=parent_node_token.strip(),
             title=title.strip(),
-        )
+        ),
+        user_key=user_key,
     )
     if not res["ok"]:
         return res
@@ -2244,8 +2374,12 @@ def _build_blocks_append_request(document_id: str, children: list[dict[str, Any]
     return req
 
 
-async def append_doc_content_impl(document_id: str, content: str) -> dict[str, Any]:
-    """Append text/heading blocks (from plain text or light Markdown) to a docx body."""
+async def append_doc_content_impl(document_id: str, content: str, user_key: str = "") -> dict[str, Any]:
+    """Append text/heading blocks (from plain text or light Markdown) to a docx body.
+
+    Pass ``user_key`` to write as that user (e.g. into a doc inside a user-owned wiki);
+    empty uses the bot's tenant token.
+    """
     if not document_id.strip():
         return _error("document_id is required.")
     blocks = _content_to_blocks(content or "")
@@ -2254,7 +2388,7 @@ async def append_doc_content_impl(document_id: str, content: str) -> dict[str, A
     added = 0
     for start in range(0, len(blocks), _BLOCKS_BATCH):
         batch = blocks[start : start + _BLOCKS_BATCH]
-        res = await _invoke(_build_blocks_append_request(document_id.strip(), batch))
+        res = await _invoke(_build_blocks_append_request(document_id.strip(), batch), user_key=user_key)
         if not res["ok"]:
             res["added"] = added
             return res

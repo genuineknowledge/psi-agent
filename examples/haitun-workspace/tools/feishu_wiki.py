@@ -54,7 +54,7 @@ async def feishu_wiki_list_spaces(page_size: int = 20, page_token: str = "") -> 
     return _f.dumps_result(await _f.list_wiki_spaces_impl(page_size, page_token))
 
 
-async def feishu_wiki_create_doc(space_id: str, title: str, parent_node_token: str = "") -> str:
+async def feishu_wiki_create_doc(space_id: str, title: str, parent_node_token: str = "", user_key: str = "") -> str:
     """Create a new document (docx node) inside a Feishu/Lark wiki knowledge base.
 
     Creates a wiki node backed by a new docx. Returns the ``node_token`` (the wiki
@@ -66,5 +66,28 @@ async def feishu_wiki_create_doc(space_id: str, title: str, parent_node_token: s
         space_id: The knowledge base space_id (from ``feishu_wiki_list_spaces``).
         title: The document title.
         parent_node_token: Optional parent node token; empty creates a top-level node.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it when the
+            wiki space is owned by that user (so the bot isn't a collaborator) — the
+            node is created as that user. Empty uses the bot's tenant token. Use the
+            same user_key for the follow-up ``feishu_doc_append_content``.
     """
-    return _f.dumps_result(await _f.create_wiki_node_impl(space_id, title, "docx", parent_node_token))
+    return _f.dumps_result(await _f.create_wiki_node_impl(space_id, title, "docx", parent_node_token, user_key))
+
+
+async def feishu_wiki_create_space(name: str, description: str = "", open_sharing: str = "", user_key: str = "") -> str:
+    """Create a new Feishu/Lark wiki space (knowledge base).
+
+    Needs prior user authorization (see ``feishu_auth_start``) — Feishu's create-space
+    API only accepts a user_access_token, and the new space is owned by that user
+    (the bot's app credentials cannot create one). After it succeeds, add documents
+    with ``feishu_wiki_create_doc(space_id, title)``. Rate-limited to ~10/min.
+
+    Args:
+        name: The knowledge base name.
+        description: Optional description.
+        open_sharing: Optional sharing status — "open" or "closed" (empty = Feishu default).
+        user_key: The message sender's open_id (from ``<feishu_context>``), so the space
+            is created as that authorized user. Must match the ``user_key`` used when
+            authorizing. Empty uses the shared ``default`` slot.
+    """
+    return _f.dumps_result(await _f.create_wiki_space_impl(name, description, open_sharing, user_key))

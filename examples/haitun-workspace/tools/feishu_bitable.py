@@ -66,7 +66,7 @@ async def feishu_bitable_list_records(
     )
 
 
-async def feishu_bitable_create_record(app_token: str, table_id: str, fields_json: str) -> str:
+async def feishu_bitable_create_record(app_token: str, table_id: str, fields_json: str, user_key: str = "") -> str:
     """Create one record (row) in a Feishu bitable table.
 
     Args:
@@ -75,11 +75,14 @@ async def feishu_bitable_create_record(app_token: str, table_id: str, fields_jso
         fields_json: A JSON object string mapping column names to values, e.g.
             '{"新人":"张三","Mentor":"李四","反馈内容":"进步明显","评分":4}'.
             Column names must match the table's fields.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to act as
+            that user when the base is user-owned and the bot isn't a collaborator;
+            empty uses the bot's tenant token.
     """
-    return _f.dumps_result(await _f.create_bitable_record_impl(app_token, table_id, fields_json))
+    return _f.dumps_result(await _f.create_bitable_record_impl(app_token, table_id, fields_json, user_key))
 
 
-async def feishu_bitable_delete_records(app_token: str, table_id: str, record_ids: str) -> str:
+async def feishu_bitable_delete_records(app_token: str, table_id: str, record_ids: str, user_key: str = "") -> str:
     """Delete records (rows) from a Feishu bitable table by id.
 
     Use to remove specific rows — e.g. Feishu's default empty rows on a new table.
@@ -89,11 +92,12 @@ async def feishu_bitable_delete_records(app_token: str, table_id: str, record_id
         app_token: The base's app_token.
         table_id: The table's id (from ``feishu_bitable_list_tables``).
         record_ids: Comma-separated record ids to delete, e.g. "recAAA,recBBB".
+        user_key: The sender's open_id; pass it to act as that user (see create_record).
     """
-    return _f.dumps_result(await _f.delete_bitable_records_impl(app_token, table_id, record_ids))
+    return _f.dumps_result(await _f.delete_bitable_records_impl(app_token, table_id, record_ids, user_key))
 
 
-async def feishu_bitable_clear_table(app_token: str, table_id: str) -> str:
+async def feishu_bitable_clear_table(app_token: str, table_id: str, user_key: str = "") -> str:
     """Delete ALL records (rows) in a Feishu bitable table.
 
     Pages through every record and batch-deletes them — useful to wipe a table's
@@ -103,8 +107,9 @@ async def feishu_bitable_clear_table(app_token: str, table_id: str) -> str:
     Args:
         app_token: The base's app_token.
         table_id: The table's id (from ``feishu_bitable_list_tables``).
+        user_key: The sender's open_id; pass it to act as that user (see create_record).
     """
-    return _f.dumps_result(await _f.clear_bitable_table_impl(app_token, table_id))
+    return _f.dumps_result(await _f.clear_bitable_table_impl(app_token, table_id, user_key))
 
 
 async def feishu_bitable_list_fields(app_token: str, table_id: str) -> str:
@@ -121,7 +126,7 @@ async def feishu_bitable_list_fields(app_token: str, table_id: str) -> str:
     return _f.dumps_result(await _f.list_bitable_fields_impl(app_token, table_id))
 
 
-async def feishu_bitable_delete_fields(app_token: str, table_id: str, field_ids: str) -> str:
+async def feishu_bitable_delete_fields(app_token: str, table_id: str, field_ids: str, user_key: str = "") -> str:
     """Delete fields (columns) from a Feishu bitable table by id.
 
     Use to remove Feishu's default empty/placeholder columns. Get field_ids from
@@ -132,5 +137,6 @@ async def feishu_bitable_delete_fields(app_token: str, table_id: str, field_ids:
         app_token: The base's app_token.
         table_id: The table's id (from ``feishu_bitable_list_tables``).
         field_ids: Comma-separated field ids to delete, e.g. "fldAAA,fldBBB".
+        user_key: The sender's open_id; pass it to act as that user (see create_record).
     """
-    return _f.dumps_result(await _f.delete_bitable_fields_impl(app_token, table_id, field_ids))
+    return _f.dumps_result(await _f.delete_bitable_fields_impl(app_token, table_id, field_ids, user_key))

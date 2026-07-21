@@ -18,15 +18,17 @@ if str(TOOLS_DIR) not in sys.path:
 import _feishu_impl as _f
 
 
-async def feishu_drive_add_comment(file_token: str, file_type: str, content: str) -> str:
+async def feishu_drive_add_comment(file_token: str, file_type: str, content: str, user_key: str = "") -> str:
     """Add a top-level (whole-document) comment on a Feishu/Lark document or file.
 
     Args:
         file_token: The file's token (from its URL).
         file_type: File type — one of docx, doc, sheet, bitable, file.
         content: The comment text to post.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to comment
+            as that user when the file is user-owned; empty uses the bot's tenant token.
     """
-    return _f.dumps_result(await _f.add_comment_impl(file_token, file_type, content))
+    return _f.dumps_result(await _f.add_comment_impl(file_token, file_type, content, user_key))
 
 
 async def feishu_drive_list_comments(file_token: str, file_type: str, page_size: int = 50, page_token: str = "") -> str:
@@ -57,7 +59,7 @@ async def feishu_drive_list_comment_replies(
 
 
 async def feishu_drive_reply_comment(
-    file_token: str, file_type: str, comment_id: str, content: str, at_user_id: str = ""
+    file_token: str, file_type: str, comment_id: str, content: str, at_user_id: str = "", user_key: str = ""
 ) -> str:
     """Post a reply on a Feishu comment thread, with an optional @-mention.
 
@@ -67,8 +69,11 @@ async def feishu_drive_reply_comment(
         comment_id: The comment thread's ID to reply under.
         content: The reply text.
         at_user_id: open_id/user_id to @-mention at the start of the reply (optional).
+        user_key: The sender's open_id; pass it to reply as that user (see add_comment).
     """
-    return _f.dumps_result(await _f.reply_comment_impl(file_token, file_type, comment_id, content, at_user_id))
+    return _f.dumps_result(
+        await _f.reply_comment_impl(file_token, file_type, comment_id, content, at_user_id, user_key)
+    )
 
 
 async def feishu_file_download(source: str, save_path: str, is_url: bool = False) -> str:

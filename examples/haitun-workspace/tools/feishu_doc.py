@@ -36,7 +36,7 @@ async def feishu_doc_read(file_type: str, token: str, max_chars: int = 20000) ->
     return _f.dumps_result(await _f.read_doc_impl(file_type, token, max_chars))
 
 
-async def feishu_doc_create(title: str, folder_token: str = "") -> str:
+async def feishu_doc_create(title: str, folder_token: str = "", user_key: str = "") -> str:
     """Create a new (empty) Feishu/Lark docx cloud document.
 
     Creates a standalone document in the cloud drive (not attached to a wiki/
@@ -47,11 +47,13 @@ async def feishu_doc_create(title: str, folder_token: str = "") -> str:
     Args:
         title: The document title (plain text, 1-800 chars).
         folder_token: Optional target folder token; empty places it in the root.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to create
+            the doc as that user (owned by them); empty uses the bot's tenant token.
     """
-    return _f.dumps_result(await _f.create_docx_impl(title, folder_token))
+    return _f.dumps_result(await _f.create_docx_impl(title, folder_token, user_key))
 
 
-async def feishu_doc_append_content(document_id: str, content: str) -> str:
+async def feishu_doc_append_content(document_id: str, content: str, user_key: str = "") -> str:
     """Append body content (headings + paragraphs) to a Feishu/Lark docx document.
 
     Writes into the document created by ``feishu_doc_create`` or the docx behind a
@@ -63,5 +65,8 @@ async def feishu_doc_append_content(document_id: str, content: str) -> str:
     Args:
         document_id: The docx document_id (or a wiki node's obj_token).
         content: The text/Markdown body to append.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to write
+            as that user — required when the doc lives in a user-owned wiki and the
+            bot isn't a collaborator. Empty uses the bot's tenant token.
     """
-    return _f.dumps_result(await _f.append_doc_content_impl(document_id, content))
+    return _f.dumps_result(await _f.append_doc_content_impl(document_id, content, user_key))
