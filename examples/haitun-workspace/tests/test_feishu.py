@@ -637,7 +637,7 @@ class _CapturingUatClient:
 async def test_search_docs_not_authorized(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
 
-    async def _no_uat() -> Any:
+    async def _no_uat(user_key: str = "") -> Any:
         return None
 
     monkeypatch.setattr(_impl, "_get_valid_uat", _no_uat)
@@ -659,7 +659,7 @@ async def test_search_docs_builds_request_and_parses(monkeypatch: pytest.MonkeyP
     client = _CapturingUatClient(body)
     monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
 
-    async def _uat() -> Any:
+    async def _uat(user_key: str = "") -> Any:
         return _FakeUAT()
 
     monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
@@ -682,7 +682,7 @@ async def test_search_docs_api_error_passthrough(monkeypatch: pytest.MonkeyPatch
     client = _CapturingUatClient({"code": 99991663, "msg": "permission denied", "data": {}})
     monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
 
-    async def _uat() -> Any:
+    async def _uat(user_key: str = "") -> Any:
         return _FakeUAT()
 
     monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
@@ -695,7 +695,7 @@ async def test_search_docs_api_error_passthrough(monkeypatch: pytest.MonkeyPatch
 async def test_auth_start_builds_authorize_url(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
-    monkeypatch.setattr(_impl, "_pending_auth_path", lambda: str(tmp_path / "pending.json"))
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "pending.json"))
     result = await _impl.auth_start_impl("")
     assert result["ok"] is True
     parsed = urlparse(result["authorize_url"])
@@ -717,7 +717,7 @@ def test_extract_code_from_url_or_bare() -> None:
 async def test_auth_complete_exchanges_code(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
     monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
-    monkeypatch.setattr(_impl, "_pending_auth_path", lambda: str(tmp_path / "pending.json"))
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "pending.json"))
 
     stored: dict[str, Any] = {}
 
@@ -753,6 +753,68 @@ async def test_auth_complete_exchanges_code(monkeypatch: pytest.MonkeyPatch, tmp
     assert exchange[1]["grant_type"] == "authorization_code"
     assert exchange[1]["code"] == "THECODE"
     assert stored["uat"].access_token == "u-tok"
+
+
+def test_norm_user_key_empty_falls_back_to_default() -> None:
+    assert _impl._norm_user_key("") == "default"
+    assert _impl._norm_user_key("   ") == "default"
+    assert _impl._norm_user_key("ou_abc") == "ou_abc"
+
+
+def test_pending_auth_path_is_per_user() -> None:
+    a = _impl._pending_auth_path("ou_a")
+    b = _impl._pending_auth_path("ou_b")
+    default = _impl._pending_auth_path("")
+    assert a != b
+    assert a != default
+    # unsafe chars in an open_id must not escape the feishu dir
+    weird = _impl._pending_auth_path("../../etc/x")
+    assert "pending_auth_" in weird
+    assert ".." not in Path(weird).name
+
+
+@pytest.mark.asyncio
+async def test_uat_isolated_per_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two users' tokens live under separate keys and never overwrite each other."""
+
+    class _MultiStore:
+        def __init__(self) -> None:
+            self.data: dict[str, Any] = {}
+
+        async def get(self, key: str) -> Any:
+            return self.data.get(key)
+
+        async def set(self, key: str, val: Any) -> None:
+            self.data[key] = val
+
+    store = _MultiStore()
+    monkeypatch.setattr(_impl, "_get_token_store", lambda: store)
+
+    await store.set("ou_a", _FakeUAT("tok_a"))
+    await store.set("ou_b", _FakeUAT("tok_b"))
+
+    uat_a = await _impl._get_valid_uat("ou_a")
+    uat_b = await _impl._get_valid_uat("ou_b")
+    assert uat_a.access_token == "tok_a"
+    assert uat_b.access_token == "tok_b"
+    # storing a third user leaves the first two intact
+    assert set(store.data) == {"ou_a", "ou_b"}
+
+
+@pytest.mark.asyncio
+async def test_search_docs_forwards_user_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """search_docs_impl must resolve the UAT for the passed user_key."""
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+    seen: dict[str, str] = {}
+
+    async def _capture(user_key: str = "") -> Any:
+        seen["user_key"] = user_key
+        return None  # None -> need_auth, enough to assert the key was forwarded
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _capture)
+    result = await _impl.search_docs_impl("周报", 20, 0, "", "ou_zhang")
+    assert seen["user_key"] == "ou_zhang"
+    assert result.get("need_auth") is True
 
 
 def test_search_auth_tools_async_with_docstrings() -> None:

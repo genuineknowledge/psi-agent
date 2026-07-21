@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import pathlib
+import re
 from typing import Any
 
 import anyio
@@ -812,10 +813,20 @@ async def start_topic_impl(
 # a UAT, cache it in <workspace>/.psi/feishu/uat.json (plaintext — dev use), and
 # call the search endpoint with a hand-built BaseRequest carrying the UAT.
 
-_UAT_USER_KEY = "default"  # single local user; not multi-tenant
+_UAT_USER_KEY = "default"  # fallback key when a caller does not pass user_key
 _token_store: Any = None
 _uat_client: Any = None
 _DEFAULT_SCOPES = "docs:doc:readonly drive:drive:readonly offline_access"
+
+
+def _norm_user_key(user_key: str = "") -> str:
+    """Normalize a per-user UAT key. Empty falls back to the shared 'default'.
+
+    Callers pass the message sender's ``open_id`` (from the injected
+    ``<feishu_context>``) so each user's authorization is isolated in the token
+    store. Single-user / local dev can leave it empty and share ``default``.
+    """
+    return user_key.strip() or _UAT_USER_KEY
 
 
 def _uat_store_path() -> str:
@@ -826,8 +837,13 @@ def _uat_store_path() -> str:
     return str(d / "uat.json")
 
 
-def _pending_auth_path() -> str:
-    return str(pathlib.Path(_uat_store_path()).parent / "pending_auth.json")
+def _pending_auth_path(user_key: str = "") -> str:
+    """Per-user pending-auth file so concurrent authorizations don't clobber each other."""
+    key = _norm_user_key(user_key)
+    # Keep filenames filesystem-safe: only allow word chars + dash, replace the
+    # rest (incl. path separators and dots, so a crafted open_id can't traverse).
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", key)
+    return str(pathlib.Path(_uat_store_path()).parent / f"pending_auth_{safe}.json")
 
 
 def _get_token_store() -> Any:
@@ -928,7 +944,7 @@ def _uat_from_token_response(payload: dict[str, Any]) -> Any:
     )
 
 
-async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
+async def auth_start_impl(scopes: str = "", user_key: str = "") -> dict[str, Any]:
     """Build the browser authorize URL for the authorization-code flow."""
     creds = _config()
     if creds is None:
@@ -938,7 +954,7 @@ async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
     app_id, _ = creds
     scope_str = scopes or _DEFAULT_SCOPES
     state = os.urandom(8).hex()
-    await anyio.Path(_pending_auth_path()).write_text(json.dumps({"state": state}), encoding="utf-8")
+    await anyio.Path(_pending_auth_path(user_key)).write_text(json.dumps({"state": state}), encoding="utf-8")
     query = urlencode(
         {
             "client_id": app_id,
@@ -958,7 +974,7 @@ async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
     }
 
 
-async def auth_complete_impl(code: str) -> dict[str, Any]:
+async def auth_complete_impl(code: str, user_key: str = "") -> dict[str, Any]:
     """Exchange the authorization code for a user_access_token and cache it."""
     if not code.strip():
         return _error("No code provided.")
@@ -980,9 +996,9 @@ async def auth_complete_impl(code: str) -> dict[str, Any]:
     uat = _uat_from_token_response(payload)
     if not uat.access_token:
         return _error("Token exchange returned no access_token.")
-    await _get_token_store().set(_UAT_USER_KEY, uat)
+    await _get_token_store().set(_norm_user_key(user_key), uat)
     with contextlib.suppress(OSError):
-        await anyio.Path(_pending_auth_path()).unlink()
+        await anyio.Path(_pending_auth_path(user_key)).unlink()
     return {
         "ok": True,
         "open_id": uat.open_id or "",
@@ -991,12 +1007,13 @@ async def auth_complete_impl(code: str) -> dict[str, Any]:
     }
 
 
-async def _get_valid_uat() -> Any:
-    """Return a non-expired UAT (refreshing via refresh_token if needed), or None."""
+async def _get_valid_uat(user_key: str = "") -> Any:
+    """Return a non-expired UAT for ``user_key`` (refreshing if needed), or None."""
     from lark_channel.channel.auth.device_flow import uat_needs_refresh  # noqa: PLC0415
 
+    key = _norm_user_key(user_key)
     store = _get_token_store()
-    uat = await store.get(_UAT_USER_KEY)
+    uat = await store.get(key)
     if uat is None:
         return None
     if uat_needs_refresh(uat) and uat.refresh_token:
@@ -1009,7 +1026,7 @@ async def _get_valid_uat() -> Any:
             )
             if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
                 uat = _uat_from_token_response(payload)
-                await store.set(_UAT_USER_KEY, uat)
+                await store.set(key, uat)
     return uat
 
 
@@ -1025,12 +1042,14 @@ def _build_doc_search_request(search_key: str, count: int, offset: int, docs_typ
     return req
 
 
-async def search_docs_impl(search_key: str, count: int, offset: int, docs_types: str) -> dict[str, Any]:
+async def search_docs_impl(
+    search_key: str, count: int, offset: int, docs_types: str, user_key: str = ""
+) -> dict[str, Any]:
     """Search cloud docs by keyword (needs a user_access_token). Returns matched docs."""
     client = _get_uat_client()
     if client is None:
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
-    uat = await _get_valid_uat()
+    uat = await _get_valid_uat(user_key)
     if uat is None or not uat.access_token:
         return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
 
