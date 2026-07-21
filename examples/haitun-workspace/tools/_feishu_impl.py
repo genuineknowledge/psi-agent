@@ -2197,33 +2197,21 @@ async def _download_url_bytes(url: str) -> tuple[bytes | None, str]:
     return resp.content, ""
 
 
-def _build_file_download_request(file_token: str) -> BaseRequest:
-    # Downloads a standalone cloud-space *file* resource (PDF, uploaded file, etc.).
-    # Different from medias (which downloads *素材* embedded inside a cloud doc).
-    req = BaseRequest()
-    req.http_method = HttpMethod.GET
-    req.uri = "/open-apis/drive/v1/files/:file_token/download"
-    req.paths["file_token"] = file_token
-    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
-    return req
-
-
-async def _download_bytes(request: BaseRequest, user_key: str = "") -> tuple[bytes | None, str]:
-    """Send a download BaseRequest and return its raw bytes. Empty user_key falls back
-    to the single cached user (single-user setups), then tenant token."""
-    eff = _effective_user_key(user_key)
-    if eff:
+async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
+    # user_key non-empty → download as that user (UAT), so we can fetch files the
+    # user can see but the bot can't (e.g. a PDF in the user's wiki/drive).
+    if user_key.strip():
         client = _get_uat_client()
         if client is None:
             return None, "Feishu app not configured."
-        uat = await _get_valid_uat(eff)
+        uat = await _get_valid_uat(user_key)
         if uat is None or not uat.access_token:
             return None, "Not authorized. Call feishu_auth_start then feishu_auth_complete first. (need_auth)"
         from lark_channel.core.model import RequestOption  # noqa: PLC0415
 
         option = RequestOption.builder().user_access_token(uat.access_token).build()
         try:
-            resp = await client.arequest(request, option)
+            resp = await client.arequest(_build_media_download_request(file_token), option)
         except Exception as exc:  # SDK/transport failure
             return None, f"{type(exc).__name__}: {exc}"
     else:
@@ -2231,7 +2219,7 @@ async def _download_bytes(request: BaseRequest, user_key: str = "") -> tuple[byt
         if client is None:
             return None, "Feishu app not configured."
         try:
-            resp = await client.arequest(request)
+            resp = await client.arequest(_build_media_download_request(file_token))
         except Exception as exc:  # SDK/transport failure
             return None, f"{type(exc).__name__}: {exc}"
     raw = getattr(resp, "raw", None)
@@ -2249,43 +2237,15 @@ async def _download_bytes(request: BaseRequest, user_key: str = "") -> tuple[byt
     return data, ""
 
 
-async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
-    return await _download_bytes(_build_media_download_request(file_token), user_key)
+async def download_file_impl(source: str, save_path: str, is_url: bool = False, user_key: str = "") -> dict[str, Any]:
+    """Download a Feishu file to disk. is_url=True treats source as a direct URL, else a media file_token.
 
-
-async def _download_file_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
-    return await _download_bytes(_build_file_download_request(file_token), user_key)
-
-
-async def download_file_impl(
-    source: str, save_path: str, is_url: bool = False, user_key: str = "", source_type: str = "auto"
-) -> dict[str, Any]:
-    """Download a Feishu file to disk.
-
-    - ``is_url=True``: ``source`` is a direct URL (e.g. approval attachment).
-    - ``is_url=False``: ``source`` is a token. ``source_type`` picks the endpoint:
-      "file" = cloud-space file (PDF/uploaded file, /drive/v1/files), "media" = 素材
-      embedded in a doc (/drive/v1/medias), "auto" (default) = try files then media.
-
-    ``user_key`` (is_url=False) downloads as that user; empty falls back to the single
-    cached user (single-user setups), then tenant token.
+    Pass ``user_key`` (only used when is_url=False) to download as that user — needed for
+    files the user can see but the bot can't (e.g. a PDF in the user's wiki/drive).
     """
     if not source or not save_path:
         return _error("source and save_path are required.")
-    if is_url:
-        data, err = await _download_url_bytes(source)
-    else:
-        st = (source_type or "auto").strip().lower()
-        if st == "media":
-            data, err = await _download_media_bytes(source, user_key)
-        elif st == "file":
-            data, err = await _download_file_bytes(source, user_key)
-        else:  # auto: cloud-space file first (covers PDFs/uploads), fall back to media
-            data, err = await _download_file_bytes(source, user_key)
-            if data is None and "need_auth" not in (err or ""):
-                data2, err2 = await _download_media_bytes(source, user_key)
-                if data2 is not None:
-                    data, err = data2, err2
+    data, err = await (_download_url_bytes(source) if is_url else _download_media_bytes(source, user_key))
     if data is None:
         extra = {"need_auth": True} if "need_auth" in (err or "") else {}
         return _error(err or "download failed", source=source, **extra)
