@@ -76,10 +76,12 @@ class Conversation:
 
     # -- mutation --------------------------------------------------------------
 
-    def add(self, msg: dict[str, Any]) -> None:
+    def add(self, msg: dict[str, Any], *, kind: str | None = None) -> None:
         """Append a message to history.  Automatically snapshots on the
         first mutation after creation / ``commit`` / ``rollback``."""
         self._begin_if_needed()
+        if kind is not None:
+            msg["kind"] = kind
         self.messages.append(msg)
 
     def replace_system(self, content: str) -> None:

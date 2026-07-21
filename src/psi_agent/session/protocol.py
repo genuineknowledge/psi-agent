@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
@@ -125,3 +125,15 @@ class AiDelta:
     reasoning: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
     finish_reason: str | None = None
+
+
+Kind = Literal["chat", "schedule.display", "schedule.silent", "compacted"]
+
+KIND_CHAT: Kind = "chat"
+KIND_SCHEDULE_DISPLAY: Kind = "schedule.display"
+KIND_SCHEDULE_SILENT: Kind = "schedule.silent"
+KIND_COMPACTED: Kind = "compacted"
+
+
+def kind_or_chat(msg: dict[str, Any]) -> Kind:
+    return msg.get("kind", "chat")
