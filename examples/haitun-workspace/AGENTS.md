@@ -27,9 +27,29 @@ user profile, and bootstrap files all live at the workspace root:
 | `HEARTBEAT.md` | Dynamic context, re-read every turn (below the cache boundary). |
 | `AGENTS.md` | This file; also loaded as a bootstrap context file. |
 
-## Environment variables (optional)
+## Remote Fusion Memory configuration
 
-All are optional and only affect the dynamic suffix / runtime line:
+These optional launcher settings connect Haitun to an operator-provisioned remote Fusion Memory
+MCP Streamable HTTP service. The bearer token is the only source of user identity: the same user
+shares memory across sessions and workspaces by default, while different users/tokens are
+isolated. Workspace and session IDs are context only, never client-supplied user identity. Keep
+the token in deployment-managed secrets; never commit or log it. Haitun consumes this MCP service
+only and must not use legacy REST routes.
+
+| Variable | Purpose |
+|---|---|
+| `FUSION_MEMORY_MCP_URL` | Remote Fusion Memory MCP Streamable HTTP endpoint; TLS is terminated by its reverse proxy. |
+| `FUSION_MEMORY_TOKEN` | Operator-issued bearer token for Fusion Memory. Keep it in deployment-managed secrets; never commit or log it. |
+| `FUSION_MEMORY_WORKSPACE_ID` | Memory workspace context (defaults to `haitun`). |
+| `FUSION_MEMORY_SESSION_ID` | Optional memory session context supplied by the launcher. |
+
+Before calling any memory tool, obtain the user's explicit consent. Server provisioning and token
+creation are operator actions.
+
+## Runtime display and service credentials
+
+The following optional variables either change runtime display metadata or enable their named
+service tools:
 
 | Variable | Purpose |
 |---|---|
@@ -101,6 +121,16 @@ All are optional and only affect the dynamic suffix / runtime line:
 -（已移除）原 30 分钟 `heartbeat` schedule；勿重新添加除非明确要求定期背景负载。
 
 ## Prerequisites
+
+- **Fusion Memory**: Haitun only consumes an operator-provisioned remote MCP
+  Streamable HTTP service. The bearer token defines user identity: the same
+  user shares memory across sessions and workspaces, while different users are
+  isolated. Workspace/session IDs are context, never user identity. The
+  operator creates tokens, terminates TLS at the reverse proxy, and supervises
+  MCP/model/history services with `systemd` for SSH-disconnect resilience and
+  restart after failure. Do not commit or log `FUSION_MEMORY_TOKEN`; do not
+  create a local memory service or use another public memory transport. Follow
+  the consent policy before calling any memory tool.
 
 - **Fusion Flow**: Node.js / `npm` / `npx`. First use: `cd skills/fusion-flow && npm install`.
 - **Serper search**: install psi-agent with the `mcp` extra and have `uvx` available.

@@ -40,6 +40,39 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 - **Serper search** needs psi-agent installed with the `mcp` extra and `uvx` on PATH.
 - Never put API keys in this workspace or in generated `.flow.ts` / `.env` files.
 
+## Fusion Memory
+
+Haitun consumes an operator-provisioned Fusion Memory MCP service over
+**Streamable HTTP**. Configure the launcher or deployment secret store with:
+
+```bash
+export FUSION_MEMORY_MCP_URL="https://memory.example.com/mcp"
+export FUSION_MEMORY_TOKEN="<operator-issued-bearer-token>"
+export FUSION_MEMORY_WORKSPACE_ID="haitun"
+export FUSION_MEMORY_SESSION_ID="<current-session-id>"
+```
+
+`FUSION_MEMORY_MCP_URL` is the remote endpoint; TLS is terminated by its
+reverse proxy. `FUSION_MEMORY_TOKEN` authenticates to the MCP service and must
+never be committed, logged, printed, or placed in workspace files. Workspace
+and session IDs provide request context only.
+
+The bearer token defines the user identity. Memory is shared across sessions
+and workspaces belonging to the same user. Different users, including users
+with different tokens, are isolated. Haitun never accepts a client-provided
+user ID for memory scope.
+
+The service operator owns provisioning, token creation and revocation, reverse
+proxy configuration, and service storage. The operator also supervises the MCP,
+model, and history services with `systemd` so they survive SSH disconnects and
+restart after process failures. Haitun only consumes the remote service; it
+does not create local memory services or fall back to another transport.
+
+Before calling any memory tool, follow the workspace consent policy. Without
+required consent or when the remote service is unavailable, continue without
+durable memory. See `skills/fusion-memory-setup/SKILL.md` for configuration and
+operator health guidance.
+
 ## Smoke test
 
 ```bash
