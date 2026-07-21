@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from pathlib import Path
@@ -51,6 +52,7 @@ class SessionAgent:
         schedule_registry: ScheduleRegistry | None = None,
         system_prompt: SystemPrompt | None = None,
         max_tool_rounds: int = 128,
+        workspace_path: Path | None = None,
     ) -> None:
         self._ai_client = ai_client
         self._channel_adapter = channel_adapter or ChannelAdapter()
@@ -60,6 +62,14 @@ class SessionAgent:
         self._system_prompt = system_prompt or SystemPrompt()
         self._max_tool_rounds = max_tool_rounds
         self._lock = anyio.Lock()
+        # Per-conversation multiplexing (multi-tenant): when a request carries a
+        # conversation key (e.g. a Feishu chat_id), each key gets its own isolated
+        # Conversation/history + lock. Empty key uses the default `_conversation`
+        # (cli/gateway/telegram behavior unchanged). Needs workspace_path to load
+        # per-key history; None disables multiplexing (single-conversation mode).
+        self._workspace_path = workspace_path
+        self._conversations: dict[str, Conversation] = {}
+        self._conv_locks: dict[str, anyio.Lock] = {}
 
     # -- factory --------------------------------------------------------------
 
@@ -86,6 +96,7 @@ class SessionAgent:
             schedule_registry=schedule_registry,
             system_prompt=system_prompt,
             max_tool_rounds=max_tool_rounds,
+            workspace_path=workspace_path,
         )
 
     # -- delegation -----------------------------------------------------------
@@ -96,6 +107,23 @@ class SessionAgent:
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
         self._conversation.stash(chunks)
+
+    async def _conversation_for(self, key: str) -> Conversation:
+        """Return the Conversation for a routing key (multi-tenant).
+
+        Empty key, or no workspace_path (single-conversation mode), returns the
+        default conversation. Otherwise each key lazily gets its own isolated
+        Conversation backed by ``histories/{sanitized_key}.jsonl``.
+        """
+        key = (key or "").strip()
+        if not key or self._workspace_path is None:
+            return self._conversation
+        safe = re.sub(r"[^A-Za-z0-9_-]", "_", key)
+        conv = self._conversations.get(safe)
+        if conv is None:
+            conv = await Conversation.from_workspace(self._workspace_path, safe)
+            self._conversations[safe] = conv
+        return conv
 
     async def reload_tools(self) -> dict[str, str]:
         return await self._tool_registry.refresh()
@@ -164,35 +192,41 @@ class SessionAgent:
         turn_response_kind = response_kind if response_kind is not None else user_kind
         user_message = with_kind(user_message, user_kind)
 
+        # Sender identity + per-conversation routing (multi-tenant). Consumed
+        # here, never forwarded to the AI.
+        sender_open_id = ""
+        conversation_key = ""
+        if extra_params:
+            sender_open_id = str(extra_params.pop("x_feishu_sender_open_id", "") or "")
+            conversation_key = str(extra_params.pop("x_conversation_key", "") or "").strip()
+
+        conv = await self._conversation_for(conversation_key)
+
         # Gateway embeds many Sessions in one process — bind this turn so
         # workspace tools (todo, …) do not fall back to session_id "default".
-        with session_id_scope(self._conversation.session_id):
-            async with self._conversation:
-                # Sender identity (e.g. Feishu open_id) for binding tool calls to the
-                # message sender — multi-tenant. Consumed here, not forwarded to the AI.
-                sender_open_id = ""
-                if extra_params:
-                    sender_open_id = str(extra_params.pop("x_feishu_sender_open_id", "") or "")
-
+        # For a per-key conversation this is that key's own session_id, so each
+        # Feishu chat keeps its workspace tool state isolated too.
+        with session_id_scope(conv.session_id):
+            async with conv:
                 # reload tools and schedules from workspace (incremental hash-based)
                 await self._tool_registry.refresh()
                 await self._schedule_registry.refresh()
 
                 # system prompt (lazy + optional rebuild)
-                await self._system_prompt.ensure(self._conversation)
+                await self._system_prompt.ensure(conv)
 
                 # peek pending schedule chunks — yield first, clear only after yield
                 # (only schedule.display results are stashed; silent never enters pending)
-                pending = self._conversation.peek_pending()
+                pending = conv.peek_pending()
                 if pending:
                     logger.info(f"Yielding {len(pending)} pending schedule chunk(s)")
                     for chunk in pending:
                         yield chunk
-                    self._conversation.clear_pending()
+                    conv.clear_pending()
 
-                self._conversation.add(user_message)
-                await self._conversation.commit()
-                logger.debug(f"History now has {len(self._conversation.messages)} messages")
+                conv.add(user_message)
+                await conv.commit()
+                logger.debug(f"History now has {len(conv.messages)} messages")
 
                 for _round in range(self._max_tool_rounds):
                     logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
@@ -209,7 +243,7 @@ class SessionAgent:
                         for t in self._tool_registry.tools.values()
                     ]
 
-                    ai_messages = messages_for_ai(self._conversation.messages)
+                    ai_messages = messages_for_ai(conv.messages)
                     request_body: dict[str, Any] = {
                         "messages": ai_messages,
                         "tools": tool_defs,
@@ -280,8 +314,8 @@ class SessionAgent:
                                         assistant_msg["content"] = accumulated_content
                                     if accumulated_reasoning:
                                         assistant_msg["reasoning"] = accumulated_reasoning
-                                    self._conversation.add(with_kind(assistant_msg, turn_response_kind))
-                                await self._conversation.commit()
+                                    conv.add(with_kind(assistant_msg, turn_response_kind))
+                                await conv.commit()
                                 await self._schedule_registry.refresh()
                                 return
 
@@ -294,7 +328,7 @@ class SessionAgent:
                                     assistant_msg["content"] = accumulated_content
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
-                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                                conv.add(with_kind(assistant_msg, turn_response_kind))
 
                                 # pre-compute args + yield tool-call intent
                                 tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
@@ -356,7 +390,7 @@ class SessionAgent:
                                 for i, tc, func_name, _args in tool_args:
                                     result = results[i]
                                     yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:1000]}]")
-                                    self._conversation.add(
+                                    conv.add(
                                         with_kind(
                                             {
                                                 "role": "tool",
@@ -367,7 +401,7 @@ class SessionAgent:
                                             turn_response_kind,
                                         )
                                     )
-                                await self._conversation.commit()
+                                await conv.commit()
 
                                 break
 
@@ -382,17 +416,17 @@ class SessionAgent:
                                 assistant_msg["content"] = accumulated_content
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
-                            self._conversation.add(with_kind(assistant_msg, turn_response_kind))
-                        await self._conversation.commit()
+                            conv.add(with_kind(assistant_msg, turn_response_kind))
+                        await conv.commit()
                         return
 
                 else:
                     logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
-                    self._conversation.add(
+                    conv.add(
                         with_kind(
                             {"role": "assistant", "content": "[Max tool rounds reached]"},
                             turn_response_kind,
                         )
                     )
-                    await self._conversation.commit()
+                    await conv.commit()
                     yield AgentChunk(content="[Max tool rounds reached]")

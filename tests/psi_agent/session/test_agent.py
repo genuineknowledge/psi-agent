@@ -466,6 +466,54 @@ async def test_agent_no_inject_without_sender(tmp_path: Path) -> None:
     assert seen["user_key"] == ""
 
 
+async def _run_simple(agent: SessionAgent, content: str, extra: dict | None) -> None:
+    async for _ in agent.run({"role": "user", "content": content}, extra):
+        pass
+
+
+@pytest.mark.anyio
+async def test_agent_conversation_key_isolates_history(tmp_path: Path) -> None:
+    """Different conversation keys → separate histories; same key accumulates."""
+    handler = await _make_inline_ai_handler([_stop("a1"), _stop("b1"), _stop("a2"), _stop("nokey")])
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        (tmp_path / "histories").mkdir(exist_ok=True)
+        agent = SessionAgent(ai_client=AiClient(f"http://127.0.0.1:{port}"), workspace_path=tmp_path)
+
+        await _run_simple(agent, "hello A", {"x_conversation_key": "oc_chatA"})
+        await _run_simple(agent, "hello B", {"x_conversation_key": "oc_chatB"})
+        await _run_simple(agent, "more A", {"x_conversation_key": "oc_chatA"})
+
+        conv_a = agent._conversations["oc_chatA"]
+        conv_b = agent._conversations["oc_chatB"]
+        assert conv_a is not conv_b
+        a_texts = [str(m.get("content", "")) for m in conv_a.messages]
+        b_texts = [str(m.get("content", "")) for m in conv_b.messages]
+        # A has its two turns, not B's
+        assert any("hello A" in t for t in a_texts) and any("more A" in t for t in a_texts)
+        assert not any("hello B" in t for t in a_texts)
+        assert any("hello B" in t for t in b_texts)
+        assert not any("hello A" in t for t in b_texts)
+        # each chat has its own history file
+        assert (tmp_path / "histories" / "oc_chatA.jsonl").exists()
+        assert (tmp_path / "histories" / "oc_chatB.jsonl").exists()
+
+        # no key → default conversation, not mixed with the per-chat ones
+        await _run_simple(agent, "nokey msg", None)
+        assert any("nokey msg" in str(m.get("content", "")) for m in agent._conversation.messages)
+        assert not any("nokey msg" in str(m.get("content", "")) for m in conv_a.messages)
+    finally:
+        await runner.cleanup()
+
+
 # --- Additional edge case tests ---
 
 

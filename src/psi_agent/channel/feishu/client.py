@@ -194,9 +194,14 @@ async def _handle_and_stream(
             logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
 
             async def _produce(stream: Any) -> None:
-                # Pass the sender's open_id so the session can bind tool calls
-                # (feishu_* user_key) to this user's identity — multi-tenant.
-                extra = {"x_feishu_sender_open_id": getattr(ctx, "sender_id", "") or ""}
+                # Multi-tenant: pass the sender's open_id so the session binds tool
+                # calls (feishu_* user_key) to this user's identity, and the chat_id
+                # as the conversation key so each chat (a DM or a group) gets its own
+                # isolated history.
+                extra = {
+                    "x_feishu_sender_open_id": getattr(ctx, "sender_id", "") or "",
+                    "x_conversation_key": getattr(ctx, "chat_id", "") or "",
+                }
                 async with aclosing(core.post(chunks, extra)) as gen:
                     async for chunk in gen:
                         if isinstance(chunk, TextChunk):
