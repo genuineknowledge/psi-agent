@@ -127,7 +127,7 @@ pyproject / nuitka / pyinstaller。
 
 > 注：原“不做多用户 UAT”已在第七节落地（按 `user_key` 隔离）。
 
-## 七、后续增强：多用户 UAT 隔离 + scope 固定 + 建知识库 + 写入类以用户身份调用（2026-07-20，已完成）
+## 七、后续增强：多用户 UAT 隔离 + scope 固定 + 建知识库 + 写入类以用户身份调用 + 一步建带内容文档（2026-07-20，已完成）
 
 分支 `feishu-per-user-uat`。设计规格见 spec 第 9 节。场景：公司里每人与 agent 各有对话框，
 用全局搜索查知识库 / 审阅交付物，需每人各自授权、各搜自己可见的文档，互不覆盖。
@@ -162,13 +162,16 @@ scope（如 `drive:drive:drive:readonly`），飞书拒绝整个授权页。
   抽 `_resp_to_result`；写入类 impl+wrapper 透传 `user_key`（wiki 建文档节点 / docx 建+写正文 /
   bitable 增删记录字段清表 / task 建改完成 / drive 评论回复）。修"机器人非知识库协作者→建文档权限不足"。
   刻意不给日历/消息/考勤/只读类加 UAT
+- [x] 一步建带内容文档（修"空节点"）：`create_wiki_doc_with_content_impl` + 工具
+  `feishu_wiki_create_doc_with_content`，一次调用内部建节点 + 写正文；正文写入失败仍回报
+  `node_token`/`obj_token`（`body_written=False`，不静默留空壳），空正文按成功处理。TOOLS.md 引导优先用它
 - [x] 测试：UAT 按 key 隔离不覆盖、pending 分离且防穿越、search+建库+建文档节点 转发 user_key、
   `_norm_user_key` 回落、authorize_url 的 scope 恰为默认值且不含编造 scope、wrapper 无 scopes 参数、
   建库(UAT 请求组装 / 未授权 / 非法 open_sharing)、`_invoke` 空 user_key 走 tenant / 非空走 UAT / 未授权 need_auth；
   fake `_invoke`/`_CapturedInvoke`/`_PagedInvoke` 接受 `user_key`
 - [x] `TOOLS.md`：引导 agent 传 `sender_open_id` 作 `user_key`，先问再授权，建文档链路全程同一 `user_key`
-- [x] 门禁：`ruff check` + `ruff format --check` + pytest（feishu 138 passed）
+- [x] 门禁：`ruff check` + `ruff format --check`（用 CI 版 ruff 0.15）+ pytest（feishu 142 passed）
 - [x] Commit `feat(haitun/feishu): 飞书全局搜索 UAT 按用户隔离`（`c1c44e9f`）；scope 修复 `721b9fe0`；
-  建库工具 `0a76240f`；写入类以用户身份调用（本次）
+  建库工具 `0a76240f`；写入类以用户身份调用 `afbc9ea8`；一步建带内容文档（本次）
 
 **仍未做（诚实边界）**：OAuth 回调仍手动回传 code；UAT 仍明文存；`auth_complete` 不校验 CSRF state。

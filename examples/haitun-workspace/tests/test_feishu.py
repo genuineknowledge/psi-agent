@@ -1776,6 +1776,77 @@ async def test_create_wiki_node_requires_space_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_wiki_doc_with_content_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_node(space_id, title, obj_type="docx", parent="", user_key="") -> dict[str, Any]:
+        return {"ok": True, "node_token": "nodeX", "obj_token": "docX", "space_id": space_id, "title": title}
+
+    appended: dict[str, Any] = {}
+
+    async def _fake_append(document_id, content, user_key="") -> dict[str, Any]:
+        appended["document_id"] = document_id
+        appended["user_key"] = user_key
+        return {"ok": True, "document_id": document_id, "added": 3}
+
+    monkeypatch.setattr(_impl, "create_wiki_node_impl", _fake_node)
+    monkeypatch.setattr(_impl, "append_doc_content_impl", _fake_append)
+    result = await _impl.create_wiki_doc_with_content_impl("sp1", "T", "# H\nbody\nmore", user_key="ou_a")
+    assert result["ok"] is True
+    assert result["body_written"] is True
+    assert result["added"] == 3
+    assert result["node_token"] == "nodeX"
+    # body written into the node's docx, as the same user
+    assert appended["document_id"] == "docX"
+    assert appended["user_key"] == "ou_a"
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_doc_with_content_body_fails_returns_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_node(space_id, title, obj_type="docx", parent="", user_key="") -> dict[str, Any]:
+        return {"ok": True, "node_token": "nodeX", "obj_token": "docX"}
+
+    async def _fake_append(document_id, content, user_key="") -> dict[str, Any]:
+        return {"ok": False, "message": "boom", "added": 0}
+
+    monkeypatch.setattr(_impl, "create_wiki_node_impl", _fake_node)
+    monkeypatch.setattr(_impl, "append_doc_content_impl", _fake_append)
+    result = await _impl.create_wiki_doc_with_content_impl("sp1", "T", "body")
+    assert result["ok"] is False
+    assert result["body_written"] is False
+    # the half-created node is still surfaced so nothing is silently blank
+    assert result["node_token"] == "nodeX"
+    assert result["obj_token"] == "docX"
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_doc_with_content_empty_body_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_node(space_id, title, obj_type="docx", parent="", user_key="") -> dict[str, Any]:
+        return {"ok": True, "node_token": "nodeX", "obj_token": "docX"}
+
+    async def _fail_append(document_id, content, user_key="") -> dict[str, Any]:
+        raise AssertionError("append must not be called for empty content")
+
+    monkeypatch.setattr(_impl, "create_wiki_node_impl", _fake_node)
+    monkeypatch.setattr(_impl, "append_doc_content_impl", _fail_append)
+    result = await _impl.create_wiki_doc_with_content_impl("sp1", "T", "\n  \n")
+    assert result["ok"] is True
+    assert result["added"] == 0
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_doc_with_content_node_fails_short_circuits(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_node(space_id, title, obj_type="docx", parent="", user_key="") -> dict[str, Any]:
+        return {"ok": False, "message": "no space"}
+
+    async def _fail_append(document_id, content, user_key="") -> dict[str, Any]:
+        raise AssertionError("append must not be called when node creation fails")
+
+    monkeypatch.setattr(_impl, "create_wiki_node_impl", _fake_node)
+    monkeypatch.setattr(_impl, "append_doc_content_impl", _fail_append)
+    result = await _impl.create_wiki_doc_with_content_impl("", "T", "body")
+    assert result["ok"] is False
+
+
+@pytest.mark.asyncio
 async def test_create_wiki_space_builds_uat_request(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _CapturingUatClient({"code": 0, "data": {"space": {"space_id": "spNEW", "name": "团队库"}}})
     monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)

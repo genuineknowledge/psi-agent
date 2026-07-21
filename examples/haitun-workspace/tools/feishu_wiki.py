@@ -74,6 +74,32 @@ async def feishu_wiki_create_doc(space_id: str, title: str, parent_node_token: s
     return _f.dumps_result(await _f.create_wiki_node_impl(space_id, title, "docx", parent_node_token, user_key))
 
 
+async def feishu_wiki_create_doc_with_content(
+    space_id: str, title: str, content: str, parent_node_token: str = "", user_key: str = ""
+) -> str:
+    """Create a wiki document AND write its body in ONE call (preferred over create+append).
+
+    Prefer this over calling ``feishu_wiki_create_doc`` then ``feishu_doc_append_content``
+    separately — doing it in two steps risks leaving an empty node if the second call
+    fails or is skipped. This creates the docx node and writes the body together;
+    if the body write fails, the response still returns the created ``node_token`` /
+    ``obj_token`` plus an error (so nothing is silently left blank) — retry the body
+    with ``feishu_doc_append_content(document_id=obj_token, ..., user_key=...)``.
+
+    Args:
+        space_id: The knowledge base space_id (from ``feishu_wiki_list_spaces``).
+        title: The document title.
+        content: The body as plain text or light Markdown (``# ``..``###### `` headings,
+            other non-blank lines become paragraphs). Empty content creates an empty doc.
+        parent_node_token: Optional parent node token; empty creates a top-level node.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it when the
+            wiki space is user-owned (bot isn't a collaborator); empty uses tenant token.
+    """
+    return _f.dumps_result(
+        await _f.create_wiki_doc_with_content_impl(space_id, title, content, parent_node_token, user_key)
+    )
+
+
 async def feishu_wiki_create_space(name: str, description: str = "", open_sharing: str = "", user_key: str = "") -> str:
     """Create a new Feishu/Lark wiki space (knowledge base).
 
