@@ -25,7 +25,7 @@ _EMOJI_PROCESSING = "Typing"
 _EMOJI_FAILED = "CrossMark"
 
 
-def _allowed(sender_id: str, allowed_ids: list[str] | None) -> bool:
+def _allowed(sender_id: str | None, allowed_ids: list[str] | None) -> bool:
     if allowed_ids is None:
         return True
     return sender_id in allowed_ids
