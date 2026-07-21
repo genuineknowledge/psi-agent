@@ -78,6 +78,5 @@ class AttentionHub:
         threading.Thread(target=self.notify_sync, name="ui-attention", daemon=True).start()
 
     async def notify(self) -> None:
-        # Return immediately; icon pulse / FlashWindowEx run on a daemon thread.
-        # Do not await anyio.lowlevel.checkpoint() — ty cannot resolve that attribute.
+        # Fire-and-forget via daemon thread; tray pulse / webview flash are best-effort sync calls.
         self.schedule_notify()
