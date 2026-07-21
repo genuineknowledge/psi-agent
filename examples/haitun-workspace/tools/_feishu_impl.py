@@ -766,9 +766,13 @@ async def decide_approval_task_impl(
 # + obj_type so the agent can then read it (docx/doc/sheet via read_doc_impl).
 
 
-async def get_wiki_node_impl(token: str) -> dict[str, Any]:
-    """Resolve a wiki node token to its underlying document (obj_token + obj_type)."""
-    res = await _invoke(_wiki_node.build_wiki_node_get_request(token=token))
+async def get_wiki_node_impl(token: str, user_key: str = "") -> dict[str, Any]:
+    """Resolve a wiki node token to its underlying document (obj_token + obj_type).
+
+    Pass ``user_key`` to resolve as that user (needed when the wiki is user-owned and
+    the bot isn't a member); empty uses the bot's tenant token.
+    """
+    res = await _invoke(_wiki_node.build_wiki_node_get_request(token=token), user_key=user_key)
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -2382,10 +2386,14 @@ def _build_list_spaces_request(page_size: int, page_token: str) -> BaseRequest:
     return req
 
 
-async def list_wiki_spaces_impl(page_size: int = 20, page_token: str = "") -> dict[str, Any]:
-    """List the wiki (knowledge base) spaces the app/user can access. Returns space_id + name."""
+async def list_wiki_spaces_impl(page_size: int = 20, page_token: str = "", user_key: str = "") -> dict[str, Any]:
+    """List the wiki (knowledge base) spaces the app/user can access. Returns space_id + name.
+
+    Pass ``user_key`` to list the spaces THAT USER can see (the bot's own tenant token
+    only sees spaces the bot was added to — usually none); empty uses the bot token.
+    """
     page_size = max(1, min(int(page_size or 20), 50))
-    res = await _invoke(_build_list_spaces_request(page_size, page_token.strip()))
+    res = await _invoke(_build_list_spaces_request(page_size, page_token.strip()), user_key=user_key)
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -2398,6 +2406,61 @@ async def list_wiki_spaces_impl(page_size: int = 20, page_token: str = "") -> di
     return {
         "ok": True,
         "spaces": spaces,
+        "page_token": data.get("page_token", ""),
+        "has_more": bool(data.get("has_more")),
+    }
+
+
+def _build_list_wiki_nodes_request(
+    space_id: str, page_size: int, page_token: str, parent_node_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/wiki/v2/spaces/:space_id/nodes"
+    req.paths["space_id"] = space_id
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    if parent_node_token:
+        req.add_query("parent_node_token", parent_node_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_wiki_nodes_impl(
+    space_id: str, page_size: int = 50, page_token: str = "", parent_node_token: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """List the child nodes (documents/pages) of a wiki space (or under a parent node).
+
+    Pass ``user_key`` to browse as that user (the bot's tenant token only sees spaces
+    it was added to); empty uses the bot token. ``parent_node_token`` empty lists the
+    space's top level; set it to drill into a node's children.
+    """
+    if not space_id.strip():
+        return _error("space_id is required. Use feishu_wiki_list_spaces to find it.")
+    page_size = max(1, min(int(page_size or 50), 50))
+    res = await _invoke(
+        _build_list_wiki_nodes_request(space_id.strip(), page_size, page_token.strip(), parent_node_token.strip()),
+        user_key=user_key,
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    nodes = [
+        {
+            "node_token": it.get("node_token", ""),
+            "obj_token": it.get("obj_token", ""),
+            "obj_type": it.get("obj_type", ""),
+            "title": it.get("title", ""),
+            "has_child": bool(it.get("has_child")),
+        }
+        for it in items
+        if isinstance(it, dict)
+    ]
+    return {
+        "ok": True,
+        "nodes": nodes,
         "page_token": data.get("page_token", ""),
         "has_more": bool(data.get("has_more")),
     }

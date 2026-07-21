@@ -535,7 +535,7 @@ async def test_get_wiki_node_builds_request(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.asyncio
 async def test_get_wiki_node_error_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _fake(_req: Any) -> dict[str, Any]:
+    async def _fake(_req: Any, user_key: str | None = None) -> dict[str, Any]:
         return {"ok": False, "code": 131006, "msg": "node not found", "message": "Feishu API error 131006"}
 
     monkeypatch.setattr(_impl, "_invoke", _fake)
@@ -2063,6 +2063,72 @@ async def test_list_wiki_spaces_paginates(monkeypatch: pytest.MonkeyPatch) -> No
     assert q.get("page_size") == "50"
     assert q.get("page_token") == "pt1"
     assert cap.request.uri == "/open-apis/wiki/v2/spaces"
+
+
+@pytest.mark.asyncio
+async def test_list_wiki_spaces_user_key_routes_through_uat(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _CapturingUatClient({"code": 0, "data": {"items": [{"space_id": "sp1", "name": "我的库"}]}})
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
+
+    async def _uat(user_key: str = "") -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    result = await _impl.list_wiki_spaces_impl(20, "", "ou_a")
+    assert result["ok"] is True
+    assert result["spaces"][0]["space_id"] == "sp1"
+    assert client.option.user_access_token == "uat_tok"
+
+
+@pytest.mark.asyncio
+async def test_get_wiki_node_forwards_user_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    async def _fake_invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
+        seen["user_key"] = user_key
+        return {"ok": True, "code": 0, "msg": "", "data": {"node": {"obj_token": "o", "obj_type": "docx"}}}
+
+    monkeypatch.setattr(_impl, "_invoke", _fake_invoke)
+    await _impl.get_wiki_node_impl("nodeTok", "ou_zhang")
+    assert seen["user_key"] == "ou_zhang"
+
+
+@pytest.mark.asyncio
+async def test_list_wiki_nodes_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [
+                {"node_token": "n1", "obj_token": "o1", "obj_type": "docx", "title": "入职手册", "has_child": True}
+            ],
+            "page_token": "pt2",
+            "has_more": True,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_wiki_nodes_impl("sp1", 80, "pt1", "parentTok")  # 80 clamped to 50
+    assert result["ok"] is True
+    assert result["nodes"][0] == {
+        "node_token": "n1",
+        "obj_token": "o1",
+        "obj_type": "docx",
+        "title": "入职手册",
+        "has_child": True,
+    }
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/wiki/v2/spaces/:space_id/nodes"
+    assert req.paths["space_id"] == "sp1"
+    q = _qdict(req)
+    assert q.get("page_size") == "50"
+    assert q.get("page_token") == "pt1"
+    assert q.get("parent_node_token") == "parentTok"
+
+
+@pytest.mark.asyncio
+async def test_list_wiki_nodes_requires_space_id() -> None:
+    result = await _impl.list_wiki_nodes_impl("  ")
+    assert result["ok"] is False
+    assert "space_id" in result["message"]
 
 
 def test_content_to_blocks_maps_headings_and_paragraphs() -> None:

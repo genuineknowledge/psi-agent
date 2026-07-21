@@ -25,7 +25,7 @@ if str(TOOLS_DIR) not in sys.path:
 import _feishu_impl as _f
 
 
-async def feishu_wiki_get_node(token: str) -> str:
+async def feishu_wiki_get_node(token: str, user_key: str = "") -> str:
     """Resolve a wiki node token to its underlying document.
 
     Given the token from a wiki URL (e.g. ``NFOnwDvrPiVjs5k0xXxchuwWnru`` in
@@ -35,11 +35,13 @@ async def feishu_wiki_get_node(token: str) -> str:
 
     Args:
         token: The wiki node token (the segment after ``/wiki/`` in the URL).
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to resolve
+            as that user (the bot often can't see user-owned wikis); empty uses tenant token.
     """
-    return _f.dumps_result(await _f.get_wiki_node_impl(token))
+    return _f.dumps_result(await _f.get_wiki_node_impl(token, user_key))
 
 
-async def feishu_wiki_list_spaces(page_size: int = 20, page_token: str = "") -> str:
+async def feishu_wiki_list_spaces(page_size: int = 20, page_token: str = "", user_key: str = "") -> str:
     """List the Feishu/Lark wiki (knowledge base) spaces the app/user can access.
 
     Returns each space's ``space_id`` and ``name``. You need a ``space_id`` before
@@ -50,8 +52,32 @@ async def feishu_wiki_list_spaces(page_size: int = 20, page_token: str = "") -> 
     Args:
         page_size: Items per page (1-50, default 20).
         page_token: Token from a previous page; empty for the first page.
+        user_key: The sender's open_id (from ``<feishu_context>``). **Pass it to list the
+            spaces THAT USER can see** — the bot's own token only sees spaces the bot was
+            added to (usually none, returns empty). Empty uses the bot's tenant token.
     """
-    return _f.dumps_result(await _f.list_wiki_spaces_impl(page_size, page_token))
+    return _f.dumps_result(await _f.list_wiki_spaces_impl(page_size, page_token, user_key))
+
+
+async def feishu_wiki_list_nodes(
+    space_id: str, page_size: int = 50, page_token: str = "", parent_node_token: str = "", user_key: str = ""
+) -> str:
+    """List the documents/pages inside a wiki knowledge base (browse its contents).
+
+    Returns each node's ``node_token`` / ``obj_token`` / ``obj_type`` / ``title`` /
+    ``has_child``. Read a doc with ``feishu_doc_read(obj_type, obj_token)``; drill into
+    a node's children by passing its ``node_token`` as ``parent_node_token``.
+
+    Args:
+        space_id: The knowledge base space_id (from ``feishu_wiki_list_spaces``).
+        page_size: Items per page (1-50, default 50).
+        page_token: Token from a previous page; empty for the first page.
+        parent_node_token: Empty lists the space's top level; set to a node_token to
+            list that node's children.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to browse as
+            that user (the bot often isn't a member); empty uses the bot's tenant token.
+    """
+    return _f.dumps_result(await _f.list_wiki_nodes_impl(space_id, page_size, page_token, parent_node_token, user_key))
 
 
 async def feishu_wiki_create_doc(space_id: str, title: str, parent_node_token: str = "", user_key: str = "") -> str:
