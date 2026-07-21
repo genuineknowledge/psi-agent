@@ -62,13 +62,15 @@ def _get_client() -> Any:
 
 
 async def _invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
-    """Send a BaseRequest. If ``user_key`` is provided (non-empty), send it as that
-    user (user_access_token) instead of the bot's tenant token — needed for APIs
-    that act on behalf of a user (e.g. writing into a wiki the user owns).
-    ``user_key=None`` (default) keeps the original tenant-token behavior.
+    """Send a BaseRequest. If a user identity is available (``user_key`` passed, or a
+    single cached user as fallback), send it as that user (user_access_token) instead
+    of the bot's tenant token — needed for APIs that act on behalf of a user (reading
+    a wiki the user owns, listing the user's knowledge bases, etc.). If no user
+    identity is available, use the bot's tenant token.
     """
-    if user_key is not None and user_key.strip():
-        return await _invoke_as_user(request, user_key)
+    eff = _effective_user_key(user_key)
+    if eff:
+        return await _invoke_as_user(request, eff)
     client = _get_client()
     if client is None:
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
@@ -869,6 +871,41 @@ def _uat_store_path() -> str:
     return str(d / "uat.json")
 
 
+def _sole_cached_user_key() -> str:
+    """If exactly one real user (an open_id, not the shared 'default') has a cached
+    UAT, return its key; otherwise "". Enables a single-user fallback so read/write
+    tools act as the authorized user even when the LLM forgets to pass user_key.
+    """
+    try:
+        path = pathlib.Path(_uat_store_path())
+        if not path.exists():
+            return ""
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    keys = [k for k in raw if k and k != _UAT_USER_KEY]
+    return keys[0] if len(keys) == 1 else ""
+
+
+def _effective_user_key(user_key: str | None = "") -> str:
+    """The user_key to actually use: the caller's value if given, else empty.
+
+    Multi-tenant is the default: with no explicit user_key we do NOT guess an identity
+    (using the wrong user's UAT could leak another person's data). In multi-tenant the
+    session already injects the message sender's open_id as user_key.
+
+    Single-user / local dev can opt into the "sole cached user" fallback by setting
+    ``PSI_FEISHU_SINGLE_USER=1``.
+    """
+    if user_key and user_key.strip():
+        return user_key.strip()
+    if os.environ.get("PSI_FEISHU_SINGLE_USER", "").strip().lower() in ("1", "true", "yes"):
+        return _sole_cached_user_key()
+    return ""
+
+
 def _pending_auth_path(user_key: str = "") -> str:
     """Per-user pending-auth file so concurrent authorizations don't clobber each other."""
     key = _norm_user_key(user_key)
@@ -1040,10 +1077,14 @@ async def auth_complete_impl(code: str, user_key: str = "") -> dict[str, Any]:
 
 
 async def _get_valid_uat(user_key: str = "") -> Any:
-    """Return a non-expired UAT for ``user_key`` (refreshing if needed), or None."""
+    """Return a non-expired UAT for ``user_key`` (refreshing if needed), or None.
+
+    Empty ``user_key`` falls back to the single cached user (single-user setups),
+    then to the shared 'default' slot.
+    """
     from lark_channel.channel.auth.device_flow import uat_needs_refresh  # noqa: PLC0415
 
-    key = _norm_user_key(user_key)
+    key = _effective_user_key(user_key) or _norm_user_key(user_key)
     store = _get_token_store()
     uat = await store.get(key)
     if uat is None:
@@ -2156,21 +2197,33 @@ async def _download_url_bytes(url: str) -> tuple[bytes | None, str]:
     return resp.content, ""
 
 
-async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
-    # user_key non-empty → download as that user (UAT), so we can fetch files the
-    # user can see but the bot can't (e.g. a PDF in the user's wiki/drive).
-    if user_key.strip():
+def _build_file_download_request(file_token: str) -> BaseRequest:
+    # Downloads a standalone cloud-space *file* resource (PDF, uploaded file, etc.).
+    # Different from medias (which downloads *素材* embedded inside a cloud doc).
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/drive/v1/files/:file_token/download"
+    req.paths["file_token"] = file_token
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def _download_bytes(request: BaseRequest, user_key: str = "") -> tuple[bytes | None, str]:
+    """Send a download BaseRequest and return its raw bytes. Empty user_key falls back
+    to the single cached user (single-user setups), then tenant token."""
+    eff = _effective_user_key(user_key)
+    if eff:
         client = _get_uat_client()
         if client is None:
             return None, "Feishu app not configured."
-        uat = await _get_valid_uat(user_key)
+        uat = await _get_valid_uat(eff)
         if uat is None or not uat.access_token:
             return None, "Not authorized. Call feishu_auth_start then feishu_auth_complete first. (need_auth)"
         from lark_channel.core.model import RequestOption  # noqa: PLC0415
 
         option = RequestOption.builder().user_access_token(uat.access_token).build()
         try:
-            resp = await client.arequest(_build_media_download_request(file_token), option)
+            resp = await client.arequest(request, option)
         except Exception as exc:  # SDK/transport failure
             return None, f"{type(exc).__name__}: {exc}"
     else:
@@ -2178,7 +2231,7 @@ async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[by
         if client is None:
             return None, "Feishu app not configured."
         try:
-            resp = await client.arequest(_build_media_download_request(file_token))
+            resp = await client.arequest(request)
         except Exception as exc:  # SDK/transport failure
             return None, f"{type(exc).__name__}: {exc}"
     raw = getattr(resp, "raw", None)
@@ -2196,15 +2249,43 @@ async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[by
     return data, ""
 
 
-async def download_file_impl(source: str, save_path: str, is_url: bool = False, user_key: str = "") -> dict[str, Any]:
-    """Download a Feishu file to disk. is_url=True treats source as a direct URL, else a media file_token.
+async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
+    return await _download_bytes(_build_media_download_request(file_token), user_key)
 
-    Pass ``user_key`` (only used when is_url=False) to download as that user — needed for
-    files the user can see but the bot can't (e.g. a PDF in the user's wiki/drive).
+
+async def _download_file_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
+    return await _download_bytes(_build_file_download_request(file_token), user_key)
+
+
+async def download_file_impl(
+    source: str, save_path: str, is_url: bool = False, user_key: str = "", source_type: str = "auto"
+) -> dict[str, Any]:
+    """Download a Feishu file to disk.
+
+    - ``is_url=True``: ``source`` is a direct URL (e.g. approval attachment).
+    - ``is_url=False``: ``source`` is a token. ``source_type`` picks the endpoint:
+      "file" = cloud-space file (PDF/uploaded file, /drive/v1/files), "media" = 素材
+      embedded in a doc (/drive/v1/medias), "auto" (default) = try files then media.
+
+    ``user_key`` (is_url=False) downloads as that user; empty falls back to the single
+    cached user (single-user setups), then tenant token.
     """
     if not source or not save_path:
         return _error("source and save_path are required.")
-    data, err = await (_download_url_bytes(source) if is_url else _download_media_bytes(source, user_key))
+    if is_url:
+        data, err = await _download_url_bytes(source)
+    else:
+        st = (source_type or "auto").strip().lower()
+        if st == "media":
+            data, err = await _download_media_bytes(source, user_key)
+        elif st == "file":
+            data, err = await _download_file_bytes(source, user_key)
+        else:  # auto: cloud-space file first (covers PDFs/uploads), fall back to media
+            data, err = await _download_file_bytes(source, user_key)
+            if data is None and "need_auth" not in (err or ""):
+                data2, err2 = await _download_media_bytes(source, user_key)
+                if data2 is not None:
+                    data, err = data2, err2
     if data is None:
         extra = {"need_auth": True} if "need_auth" in (err or "") else {}
         return _error(err or "download failed", source=source, **extra)

@@ -4,6 +4,7 @@ import json
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass
+from typing import Any
 
 import aiohttp
 import anyio
@@ -37,7 +38,7 @@ class ChannelCore:
         with anyio.CancelScope(shield=True):
             await self._session.close()
 
-    async def post(self, chunks: list[InputChunk]) -> AsyncGenerator[OutputChunk]:
+    async def post(self, chunks: list[InputChunk], extra: dict[str, Any] | None = None) -> AsyncGenerator[OutputChunk]:
         logger.debug(
             f"{len(chunks)} chunk(s) — "
             f"FileChunks={sum(1 for c in chunks if isinstance(c, FileChunk))} "
@@ -46,6 +47,13 @@ class ChannelCore:
 
         content = encode_input(chunks)
         body = {"messages": [{"role": "user", "content": content}], "stream": True}
+        # Extra channel-supplied fields (e.g. sender identity) ride alongside
+        # messages; the session passes unknown params through. Never override
+        # the reserved keys.
+        if extra:
+            for k, v in extra.items():
+                if k not in ("messages", "stream") and v is not None:
+                    body[k] = v
 
         buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()

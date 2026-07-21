@@ -4,6 +4,7 @@ import json
 import socket as _s
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import anyio
 import pytest
@@ -379,6 +380,90 @@ async def test_agent_tool_returns_int(tmp_path: Path) -> None:
         assert "42" in reasoning
     finally:
         await runner.cleanup()
+
+
+async def _run_tool_capturing_user_key(
+    tmp_path: Path, tool_args: str, tool_func: Any, has_user_key_param: bool, extra_params: dict | None
+) -> None:
+    """Drive one tool call and return what the tool received. tool_func records into `seen`."""
+    handler = await _make_inline_ai_handler([_tc("probe", tool_args), _stop("done")])
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    try:
+        props = {"user_key": {"type": "string"}} if has_user_key_param else {}
+        tf = ToolFunction(
+            name="probe", description="X", parameters={"type": "object", "properties": props, "required": []}
+        )
+        agent = SessionAgent(
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(
+                files={"__test__": FileEntry(file_hash="", tools={"probe": tf}, funcs={"probe": tool_func})}
+            ),
+        )
+        async for _ in agent.run({"role": "user", "content": "t"}, extra_params):
+            pass
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_injects_sender_as_user_key(tmp_path: Path) -> None:
+    """When a tool declares user_key and the LLM omits it, the sender open_id is injected."""
+    seen: dict[str, Any] = {}
+
+    async def probe(user_key: str = "") -> str:
+        seen["user_key"] = user_key
+        return "ok"
+
+    await _run_tool_capturing_user_key(tmp_path, "{}", probe, True, {"x_feishu_sender_open_id": "ou_sender"})
+    assert seen["user_key"] == "ou_sender"
+
+
+@pytest.mark.anyio
+async def test_agent_does_not_override_explicit_user_key(tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    async def probe(user_key: str = "") -> str:
+        seen["user_key"] = user_key
+        return "ok"
+
+    await _run_tool_capturing_user_key(
+        tmp_path, '{"user_key": "ou_explicit"}', probe, True, {"x_feishu_sender_open_id": "ou_sender"}
+    )
+    assert seen["user_key"] == "ou_explicit"
+
+
+@pytest.mark.anyio
+async def test_agent_no_inject_when_tool_lacks_user_key(tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    async def probe() -> str:
+        seen["called"] = True
+        return "ok"
+
+    # tool has no user_key param → must not crash by injecting an unexpected kwarg
+    await _run_tool_capturing_user_key(tmp_path, "{}", probe, False, {"x_feishu_sender_open_id": "ou_sender"})
+    assert seen.get("called") is True
+
+
+@pytest.mark.anyio
+async def test_agent_no_inject_without_sender(tmp_path: Path) -> None:
+    seen: dict[str, Any] = {}
+
+    async def probe(user_key: str = "") -> str:
+        seen["user_key"] = user_key
+        return "ok"
+
+    # no sender in extra_params → user_key stays empty (tenant behavior)
+    await _run_tool_capturing_user_key(tmp_path, "{}", probe, True, None)
+    assert seen["user_key"] == ""
 
 
 # --- Additional edge case tests ---

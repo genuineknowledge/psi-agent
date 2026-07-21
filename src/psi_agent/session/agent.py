@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
@@ -167,6 +168,12 @@ class SessionAgent:
         # workspace tools (todo, …) do not fall back to session_id "default".
         with session_id_scope(self._conversation.session_id):
             async with self._conversation:
+                # Sender identity (e.g. Feishu open_id) for binding tool calls to the
+                # message sender — multi-tenant. Consumed here, not forwarded to the AI.
+                sender_open_id = ""
+                if extra_params:
+                    sender_open_id = str(extra_params.pop("x_feishu_sender_open_id", "") or "")
+
                 # reload tools and schedules from workspace (incremental hash-based)
                 await self._tool_registry.refresh()
                 await self._schedule_registry.refresh()
@@ -320,6 +327,16 @@ class SessionAgent:
                                         r[idx] = f"Error: Tool '{fn}' not found"
                                         logger.error(f"Tool not found: {fn!r}")
                                     else:
+                                        # Multi-tenant: if the tool declares a `user_key` param and the
+                                        # LLM did not supply a non-empty one, bind it to the message
+                                        # sender's identity (e.g. Feishu open_id) so the tool acts as
+                                        # that user. Never override an explicit non-empty value.
+                                        if sender_open_id and not str(a.get("user_key") or "").strip():
+                                            try:
+                                                if "user_key" in inspect.signature(func).parameters:
+                                                    a = {**a, "user_key": sender_open_id}
+                                            except ValueError, TypeError:
+                                                pass
                                         try:
                                             raw = await func(**a)
                                             r[idx] = str(raw)

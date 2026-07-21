@@ -194,7 +194,10 @@ async def _handle_and_stream(
             logger.debug(f"posting {len(chunks)} chunk(s) to ChannelCore")
 
             async def _produce(stream: Any) -> None:
-                async with aclosing(core.post(chunks)) as gen:
+                # Pass the sender's open_id so the session can bind tool calls
+                # (feishu_* user_key) to this user's identity — multi-tenant.
+                extra = {"x_feishu_sender_open_id": getattr(ctx, "sender_id", "") or ""}
+                async with aclosing(core.post(chunks, extra)) as gen:
                     async for chunk in gen:
                         if isinstance(chunk, TextChunk):
                             await stream.append(chunk.text)

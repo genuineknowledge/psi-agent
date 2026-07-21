@@ -76,6 +76,7 @@ class _FakeClient:
 
 @pytest.mark.asyncio
 async def test_invoke_success_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")  # isolate from real UAT cache
     body = json.dumps({"code": 0, "msg": "ok", "data": {"x": 1}}).encode()
     monkeypatch.setattr(_impl, "_get_client", lambda: _FakeClient(_FakeResp(0, "ok", body)))
     result = await _impl._invoke(object())
@@ -84,6 +85,7 @@ async def test_invoke_success_normalizes(monkeypatch: pytest.MonkeyPatch) -> Non
 
 @pytest.mark.asyncio
 async def test_invoke_error_passes_through_code_msg(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")  # isolate from real UAT cache
     body = json.dumps({"code": 99991672, "msg": "permission denied", "data": {}}).encode()
     monkeypatch.setattr(_impl, "_get_client", lambda: _FakeClient(_FakeResp(99991672, "permission denied", body)))
     result = await _impl._invoke(object())
@@ -1662,6 +1664,7 @@ def test_approval_list_instances_tool_async_with_docstring() -> None:
 
 @pytest.mark.asyncio
 async def test_download_file_via_media_token(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")
     captured: dict[str, Any] = {}
 
     class _Client:
@@ -1672,7 +1675,7 @@ async def test_download_file_via_media_token(monkeypatch: pytest.MonkeyPatch, tm
 
     monkeypatch.setattr(_impl, "_get_client", lambda: _Client())
     dest = tmp_path / "sub" / "receipt.png"
-    result = await _impl.download_file_impl("media_tok", str(dest), False)
+    result = await _impl.download_file_impl("media_tok", str(dest), False, "", "media")
     assert result["ok"] is True
     assert captured["uri"].endswith("/drive/v1/medias/:file_token/download")
     assert captured["token"] == "media_tok"
@@ -1728,7 +1731,7 @@ async def test_download_media_with_user_key_uses_uat(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
     dest = tmp_path / "章程.pdf"
-    result = await _impl.download_file_impl("media_tok", str(dest), False, "ou_a")
+    result = await _impl.download_file_impl("media_tok", str(dest), False, "ou_a", "media")
     assert result["ok"] is True
     assert dest.read_bytes() == b"PDFBYTES"
     assert captured["uri"].endswith("/drive/v1/medias/:file_token/download")
@@ -1750,6 +1753,7 @@ async def test_download_media_user_key_not_authorized(monkeypatch: pytest.Monkey
 
 @pytest.mark.asyncio
 async def test_download_media_empty_user_key_uses_tenant(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")  # no single-user fallback
     captured: dict[str, Any] = {}
 
     class _TenantClient:
@@ -1763,9 +1767,68 @@ async def test_download_media_empty_user_key_uses_tenant(monkeypatch: pytest.Mon
         raise AssertionError("UAT path must not run for empty user_key")
 
     monkeypatch.setattr(_impl, "_get_valid_uat", _uat_should_not_run)
-    result = await _impl.download_file_impl("media_tok", str(tmp_path / "y.bin"), False, "")
+    result = await _impl.download_file_impl("media_tok", str(tmp_path / "y.bin"), False, "", "media")
     assert result["ok"] is True
     assert captured["uri"].endswith("/drive/v1/medias/:file_token/download")
+
+
+@pytest.mark.asyncio
+async def test_download_file_uses_files_endpoint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")
+    captured: dict[str, Any] = {}
+
+    class _TenantClient:
+        async def arequest(self, req: Any) -> Any:
+            captured["uri"] = req.uri
+            return _FakeResp(None, "", b"%PDF-1.7 data")
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
+    result = await _impl.download_file_impl("VBe3token", str(tmp_path / "c.pdf"), False, "", "file")
+    assert result["ok"] is True
+    assert captured["uri"].endswith("/drive/v1/files/:file_token/download")
+    assert (tmp_path / "c.pdf").read_bytes() == b"%PDF-1.7 data"
+
+
+@pytest.mark.asyncio
+async def test_download_auto_falls_back_files_then_media(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")
+    seen: list[str] = []
+
+    class _Client:
+        async def arequest(self, req: Any) -> Any:
+            seen.append(req.uri)
+            # files endpoint returns empty, media endpoint returns bytes
+            if req.uri.endswith("/files/:file_token/download"):
+                return _FakeResp(None, "", b"")
+            return _FakeResp(None, "", b"MEDIA")
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _Client())
+    result = await _impl.download_file_impl("tok", str(tmp_path / "z.bin"), False, "", "auto")
+    assert result["ok"] is True
+    assert any("/files/" in u for u in seen) and any("/medias/" in u for u in seen)
+    assert (tmp_path / "z.bin").read_bytes() == b"MEDIA"
+
+
+@pytest.mark.asyncio
+async def test_download_file_user_key_uses_uat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class _UatClient:
+        async def arequest(self, req: Any, option: Any = None) -> Any:
+            captured["uri"] = req.uri
+            captured["option"] = option
+            return _FakeResp(None, "", b"%PDF-1.7")
+
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: _UatClient())
+
+    async def _uat(user_key: str = "") -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    result = await _impl.download_file_impl("tok", str(tmp_path / "c.pdf"), False, "ou_a", "file")
+    assert result["ok"] is True
+    assert captured["uri"].endswith("/drive/v1/files/:file_token/download")
+    assert captured["option"].user_access_token == "uat_tok"
 
 
 @pytest.mark.asyncio
@@ -2040,7 +2103,8 @@ async def test_create_wiki_space_forwards_user_key(monkeypatch: pytest.MonkeyPat
 
 @pytest.mark.asyncio
 async def test_invoke_empty_user_key_uses_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_invoke with no/empty user_key must go through the tenant client, not UAT."""
+    """_invoke with empty user_key AND no cached user must go through tenant, not UAT."""
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")  # no single-user fallback
     calls: dict[str, Any] = {}
 
     class _TenantClient:
