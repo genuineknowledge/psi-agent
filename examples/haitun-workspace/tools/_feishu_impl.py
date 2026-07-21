@@ -2338,6 +2338,39 @@ async def create_wiki_node_impl(
     }
 
 
+async def create_wiki_doc_with_content_impl(
+    space_id: str, title: str, content: str, parent_node_token: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """Create a wiki docx node AND write its body in one call (atomic-ish).
+
+    Avoids the "empty node" failure of doing create + append as two separate LLM
+    tool calls: creates the node, then appends the body. If the body write fails,
+    the node_token/obj_token are returned alongside the error (so the half-created
+    node can be found or retried), rather than leaving a silent empty page.
+    """
+    node = await create_wiki_node_impl(space_id, title, "docx", parent_node_token, user_key)
+    if not node["ok"]:
+        return node
+    obj_token = node.get("obj_token", "")
+    # No body requested (or only blank lines): return the node as-is, not an error.
+    if not _content_to_blocks(content or ""):
+        return {**node, "added": 0, "note": "no body content — created an empty doc"}
+    if not obj_token:
+        return {**node, "ok": False, "message": "node created but obj_token missing — cannot write body"}
+    written = await append_doc_content_impl(obj_token, content, user_key)
+    if not written["ok"]:
+        # Surface the node so the caller knows a doc exists and can retry the body.
+        return {
+            **node,
+            "ok": False,
+            "body_written": False,
+            "added": written.get("added", 0),
+            "message": f"Node created but writing body failed: {written.get('message', '')}",
+            **({"need_auth": True} if written.get("need_auth") else {}),
+        }
+    return {**node, "body_written": True, "added": written.get("added", 0)}
+
+
 def _build_list_spaces_request(page_size: int, page_token: str) -> BaseRequest:
     req = BaseRequest()
     req.http_method = HttpMethod.GET
