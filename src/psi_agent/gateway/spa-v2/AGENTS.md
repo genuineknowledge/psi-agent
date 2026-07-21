@@ -17,6 +17,9 @@
 | 账户区 | 头像菜单合一 | 头像菜单仅资料/登录；**模型池**与**设置**为侧栏独立快捷入口 |
 | 默认工作区 | 无 / 必须先选 | 无记忆时用 Gateway **cwd**（从 haitun-workspace 启动即该目录）；遗留字面量 `workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 选择页；**浏览**按钮走 `/workspace/places` + `/browse`（对齐 v1） |
+| 顶栏新建 | — | 右上角「新建任务」+ 侧栏同入口（`⌘/Ctrl N`） |
+
+设置弹窗暂时只保留**切换工作区**（真实功能）；通知/交付位置等占位项已去掉，避免空壳菜单。
 | 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
 | 消息操作栏 | 助手：赞/踩/复制/重新生成；用户：复制 + 失败重试 | 同左（`FocusChatThread`）；feedback 仅内存态，刷新历史后不保留 |
 | 停止生成 | 输入栏 Send ↔ Stop 切换 | 同左：流式时发送键变为停止（`abortRef.abort()`） |
@@ -25,20 +28,29 @@
 
 ```text
 任务卡          ↔  Gateway Session（同 workspace）
-新建任务        ↔  POST /sessions + POST /titles + 首条 chat SSE
+新建任务        ↔  POST /sessions + POST /titles + 首条 chat SSE；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
 任务历史文案    ↔  GET /sessions/{id}/history
 任务卡中间步 N/M ↔  GET /sessions/{id}/todos（workspace ``todo`` tool → `.psi/todos/{id}.json`）
 打开即用 AI     ↔  空池先开模型面板；「免费」清空配置；对话时惰性 POST `/ais`（远程默认）
 ```
 
-### 任务卡三步进度与 todo
+**模型选择（防踩坑）**：启动 / 新建任务不盲选 `ais[0]`。池里若已有真实 key，会清掉残留的 `haitun-default` 占位项，并优先用户选中（localStorage）的 AI；仅空池才走免费远程。Session 创建时固定 `ai_id`——已绑坏 AI 的旧任务需新建。
 
-- 左：固定「理解目标与上下文」；右：固定「产出与确认」。
-- **中**：无 todo 时仍为「与您对话推进」；一旦 Agent 用 ``todo`` tool 写入拆解，中间框显示 **`当前步/总数`**（如 `2/5`），副文案为当前 `in_progress`（或下一 `pending`）项的 `content`。
-- 分母排除 `cancelled`；进度环 `%` 按 `completed / total` 计算。
-- 加载历史后拉一次 todos；对话流式进行中每 ~2.5s 轮询，回合结束再拉一次。
-- 中间步全部 `completed` 后：流式中右侧「产出与确认」为 `working`；**回合结束**（`streaming: false`）标为 `done`，避免回复已出却一直转圈。
+### 任务卡三步进度（分层）
+
+上层只判定生命周期阶段，下层再填推进细节：
+
+| 层 | 职责 |
+|----|------|
+| **阶段** `phase` | `advance` 推进 → `deliver` 产出与确认 → `done` 本轮完成（`taskProgress.resolveTaskProgress`） |
+| **推进细节** | 有 workspace `todo` → 中间步 `N/M` + 当前项文案；**无 todo** → 中间步固定「推进中」 |
+| **投影** | `applyTaskProgress` 唯一写入口，生成 `steps` / `progress` / `updated` |
+
+- 流式中：无 todo 保持 `advance`+「推进中」；todo 全部完成则进入 `deliver`（右侧「产出与确认」working）。
+- 回合成功结束：`turnSettled=true` → `done`，三步全勾；有交付物进度 100%。
+- 加载历史若已有 assistant 回复，同样 `withCompletedTurn` 投影为 `done`。
+- 空 todo 轮询**不会**把已 `done` 的卡打回推进中（保留 `turnSettled`）。
 
 ### 对话气泡操作（对齐 spa v1）
 

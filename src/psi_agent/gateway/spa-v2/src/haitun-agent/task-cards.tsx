@@ -1,12 +1,46 @@
 import {
   AlertCircle,
-  ArrowRight,
   Check,
   Trash2,
 } from "lucide-react";
-import type { CSSProperties } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 import { DELIVERY_LABEL, OVERVIEW_LABEL, PENDING_LABEL, type Task } from "./model";
 import { ProgressRing, TreasureButton, TreasureVisual } from "./primitives";
+
+/** Local calendar day as ``M 月 D 日`` (zh-CN overview eyebrow). */
+export function formatOverviewDay(date: Date = new Date()): string {
+  return `${date.getMonth() + 1} 月 ${date.getDate()} 日`;
+}
+
+/** Re-render when the local calendar day changes (checks every minute + at midnight). */
+function useLiveOverviewDay(): string {
+  const [label, setLabel] = useState(() => formatOverviewDay());
+
+  useEffect(() => {
+    const sync = () => setLabel(formatOverviewDay());
+    sync();
+
+    const minuteId = window.setInterval(sync, 60_000);
+    const now = new Date();
+    const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+    const midnightId = window.setTimeout(() => {
+      sync();
+    }, Math.max(1000, nextMidnight.getTime() - now.getTime()));
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") sync();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      window.clearInterval(minuteId);
+      window.clearTimeout(midnightId);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  return label;
+}
 
 export function TaskRow({
   task,
@@ -57,7 +91,8 @@ export function TaskRow({
   );
 }
 
-export function OverviewCard({ tasks, onHandleNext }: { tasks: Task[]; onHandleNext: () => void }) {
+export function OverviewCard({ tasks }: { tasks: Task[] }) {
+  const dayLabel = useLiveOverviewDay();
   const finiteTasks = tasks.filter((task) => task.status !== "continuous");
   const overall = Math.round(finiteTasks.reduce((sum, task) => sum + task.progress, 0) / Math.max(finiteTasks.length, 1));
   const working = tasks.filter((task) => ["working", "continuous"].includes(task.status)).length;
@@ -76,7 +111,7 @@ export function OverviewCard({ tasks, onHandleNext }: { tasks: Task[]; onHandleN
         </div>
       </div>
       <header className="card-header">
-        <span className="eyebrow">{OVERVIEW_LABEL} · 7 月 17 日</span>
+        <span className="eyebrow">{OVERVIEW_LABEL} · {dayLabel}</span>
       </header>
 
       <div className="overview-hero">
@@ -100,17 +135,6 @@ export function OverviewCard({ tasks, onHandleNext }: { tasks: Task[]; onHandleN
           <span className="metric-icon treasure-metric"><TreasureVisual state="ready" size="mini" /></span>
           <div><strong>{newDeliveries}</strong><span>{DELIVERY_LABEL}</span></div>
         </div>
-      </div>
-
-      <div className="overview-bottom">
-        <div>
-          <span className="section-label">下一步</span>
-          <strong>确认首批灰度体验名单</strong>
-          <span>预计占用您 2 分钟</span>
-        </div>
-        <button type="button" className="primary-inline" onClick={onHandleNext}>
-          去处理 <ArrowRight size={16} />
-        </button>
       </div>
     </article>
   );
@@ -200,14 +224,12 @@ export function CompactTaskContext({
 
 export function CompactOverviewContext({
   tasks,
-  onHandleNext,
 }: {
   tasks: Task[];
-  onHandleNext: () => void;
 }) {
   return (
     <div className="compact-card-shell">
-      <OverviewCard tasks={tasks} onHandleNext={onHandleNext} />
+      <OverviewCard tasks={tasks} />
     </div>
   );
 }

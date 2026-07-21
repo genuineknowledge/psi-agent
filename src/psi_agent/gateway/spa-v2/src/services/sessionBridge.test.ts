@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { Task } from '../haitun-agent/model'
-import { historyToChat, historyToDeliverables, withTodoProgress } from './sessionBridge'
+import {
+  historyToChat,
+  historyToDeliverables,
+  withCompletedTurn,
+  withDeliverables,
+  withTodoProgress,
+} from './sessionBridge'
 
 const baseTask = (): Task => ({
   id: 's1',
@@ -18,9 +24,11 @@ const baseTask = (): Task => ({
   newDeliverables: [],
   deliverablePaths: {},
   deliveryState: 'none',
+  turnSettled: false,
+  todoItems: [],
   steps: [
     { label: '理解目标与上下文', state: 'done' },
-    { label: '与您对话推进', state: 'working' },
+    { label: '推进中', state: 'working' },
     { label: '产出与确认', state: 'waiting' },
   ],
 })
@@ -69,19 +77,25 @@ describe('historyToDeliverables', () => {
   })
 })
 
-describe('withTodoProgress', () => {
-  it('keeps default middle step when todos empty', () => {
-    const next = withTodoProgress(baseTask(), [])
-    expect(next.steps[1]?.label).toBe('与您对话推进')
+describe('withTodoProgress (via layered resolver)', () => {
+  it('streaming without todos → 推进中', () => {
+    const next = withTodoProgress(baseTask(), [], { streaming: true, turnSettled: false })
+    expect(next.phase).toBe('advance')
+    expect(next.steps[1]?.label).toBe('推进中')
   })
 
-  it('maps in_progress index to N/M and content detail', () => {
-    const next = withTodoProgress(baseTask(), [
-      { id: '1', content: '调研', status: 'completed' },
-      { id: '2', content: '写方案', status: 'in_progress' },
-      { id: '3', content: '评审', status: 'pending' },
-      { id: 'x', content: '废弃', status: 'cancelled' },
-    ])
+  it('maps todo in_progress to N/M', () => {
+    const next = withTodoProgress(
+      baseTask(),
+      [
+        { id: '1', content: '调研', status: 'completed' },
+        { id: '2', content: '写方案', status: 'in_progress' },
+        { id: '3', content: '评审', status: 'pending' },
+        { id: 'x', content: '废弃', status: 'cancelled' },
+      ],
+      { streaming: true, turnSettled: false },
+    )
+    expect(next.phase).toBe('advance')
     expect(next.steps[1]).toEqual({
       label: '2/3',
       state: 'working',
@@ -90,27 +104,27 @@ describe('withTodoProgress', () => {
     expect(next.progress).toBe(33)
   })
 
-  it('shows total/total when all completed', () => {
-    const next = withTodoProgress(baseTask(), [
-      { id: '1', content: 'a', status: 'completed' },
-      { id: '2', content: 'b', status: 'completed' },
-    ])
-    expect(next.steps[1]?.label).toBe('2/2')
-    expect(next.steps[1]?.state).toBe('done')
-    expect(next.steps[2]).toEqual({ label: '产出与确认', state: 'done' })
-    expect(next.progress).toBe(100)
-  })
-
-  it('keeps output step working while streaming after todos finish', () => {
+  it('all todos done while streaming → deliver', () => {
     const next = withTodoProgress(
       baseTask(),
       [
         { id: '1', content: 'a', status: 'completed' },
         { id: '2', content: 'b', status: 'completed' },
       ],
-      { streaming: true },
+      { streaming: true, turnSettled: false },
     )
-    expect(next.steps[1]?.state).toBe('done')
-    expect(next.steps[2]).toEqual({ label: '产出与确认', state: 'working' })
+    expect(next.phase).toBe('deliver')
+    expect(next.steps[2]?.state).toBe('working')
+  })
+})
+
+describe('withCompletedTurn', () => {
+  it('settles to done and keeps deliverable progress', () => {
+    const withFile = withDeliverables(baseTask(), ['game.html'], { streaming: true })
+    const next = withCompletedTurn(withFile, { summary: '已交付智斗游戏 HTML' })
+    expect(next.phase).toBe('done')
+    expect(next.turnSettled).toBe(true)
+    expect(next.steps.every((s) => s.state === 'done')).toBe(true)
+    expect(next.progress).toBe(100)
   })
 })

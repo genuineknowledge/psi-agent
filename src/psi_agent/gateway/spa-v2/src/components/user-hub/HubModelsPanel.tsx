@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Bot } from 'lucide-react'
 import type { AiInfo } from '../../services/api'
 import { createAi, listAis } from '../../services/api'
-import { clearAiPool } from '../../services/bootstrapAi'
+import { clearAiPool, purgePlaceholderAis, writeStoredAiId } from '../../services/bootstrapAi'
 import {
   getModelPreset,
   MODEL_PRESETS,
@@ -56,11 +56,14 @@ export default function HubModelsPanel({
     if (!preset || !apiKey.trim() || connecting) return
     setConnecting(true)
     try {
+      // Connecting a real key: drop leftover free placeholders so they cannot stay ais[0].
+      await purgePlaceholderAis()
       const info = await createAi(presetToAiPayload(preset, apiKey))
       const list = await listAis()
       setAis(list)
       onAisChanged?.(list)
       onSelectAi(info.id)
+      writeStoredAiId(info.id)
       onToast?.(`${preset.label} 已连接`)
       onClose()
     } catch (e) {

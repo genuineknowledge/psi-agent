@@ -10,7 +10,7 @@ import {
   Sparkles,
   Zap,
 } from "lucide-react";
-import type { FocusHistoryItem, InboxItem, Task } from "./model";
+import type { FocusHistoryItem, Task } from "./model";
 import { ProgressRing, TreasureVisual } from "./primitives";
 
 function FocusHistoryIcon({ item, task }: { item: FocusHistoryItem; task: Task | null }) {
@@ -36,21 +36,26 @@ function deliveryFileDescription(fileName: string) {
 export function TaskFocusDetails({
   task,
   tasks,
-  inboxItems,
   onOpenArtifact,
 }: {
   task: Task | null;
   tasks: Task[];
-  inboxItems: InboxItem[];
   onOpenArtifact: (task: Task, fileName?: string) => void;
 }) {
   const workingStep = task?.steps.find((step) => step.state === "working");
-  const activeStep = workingStep
-    ? (workingStep.detail?.trim()
-      ? `${workingStep.label} · ${workingStep.detail.trim()}`
-      : workingStep.label)
-    : (task?.status === "completed" ? "全部执行步骤已完成" : "等待下一步");
-  const taskNotices = task ? inboxItems.filter((item) => item.taskId === task.id) : inboxItems;
+  const activeStep = task?.phase === "done"
+    ? "全部执行步骤已完成"
+    : task?.phase === "deliver"
+      ? "产出与确认"
+      : task?.phase === "advance"
+        ? (workingStep?.detail?.trim()
+          ? `${workingStep.label} · ${workingStep.detail.trim()}`
+          : (workingStep?.label || "推进中"))
+        : workingStep
+          ? (workingStep.detail?.trim()
+            ? `${workingStep.label} · ${workingStep.detail.trim()}`
+            : workingStep.label)
+          : (task?.status === "completed" ? "全部执行步骤已完成" : "等待下一步");
   const historyItems: FocusHistoryItem[] = [
     ...(task ? [{
       id: `status-${task.id}`,
@@ -58,20 +63,13 @@ export function TaskFocusDetails({
       title: `${task.statusLabel} · ${task.progress}%`,
       detail: task.summary,
       time: task.updated,
-    }] : tasks.slice(0, Math.max(0, 3 - taskNotices.length)).map((item) => ({
+    }] : tasks.slice(0, 3).map((item) => ({
       id: `status-${item.id}`,
       kind: "status" as const,
       title: `${item.shortTitle} · ${item.statusLabel}`,
       detail: item.summary,
       time: item.updated,
     }))),
-    ...taskNotices.map((item) => ({
-      id: `notice-${item.id}`,
-      kind: item.kind,
-      title: item.title,
-      detail: item.detail,
-      time: item.time,
-    })),
   ].slice(0, 8);
 
   const finiteTasks = tasks.filter((item) => item.status !== "continuous");

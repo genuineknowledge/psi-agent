@@ -1,6 +1,4 @@
 import {
-  AlertCircle,
-  Bell,
   CheckCircle2,
   ChevronRight,
   Download,
@@ -20,8 +18,8 @@ import {
   findDeliverableFile,
 } from "../utils/filePreviewUtils";
 import { mobileHaptic, prefersReducedMotion } from "./client-feedback";
-import type { ChatFile, InboxItem, Task } from "./model";
-import { ProgressRing, TreasureVisual } from "./primitives";
+import type { ChatFile, Task } from "./model";
+import { TreasureVisual } from "./primitives";
 
 function fileIcon(name: string) {
   const n = name.toLowerCase();
@@ -257,51 +255,6 @@ export function ArtifactDrawer({
     </div>
   );
 }
-export function InboxDrawer({
-  items,
-  tasks,
-  onClose,
-  onMarkAllRead,
-  onOpenItem,
-}: {
-  items: InboxItem[];
-  tasks: Task[];
-  onClose: () => void;
-  onMarkAllRead: () => void;
-  onOpenItem: (item: InboxItem) => void;
-}) {
-  const unread = items.filter((item) => item.unread).length;
-  return (
-    <div className="drawer-layer inbox-layer" role="dialog" aria-modal="true" aria-label="收件箱">
-      <button className="drawer-backdrop" type="button" onClick={onClose} aria-label="关闭收件箱" />
-      <aside className="inbox-drawer">
-        <header className="inbox-header">
-          <div><span className="eyebrow">任务动态</span><h2>收件箱</h2></div>
-          <div>
-            <button type="button" onClick={onMarkAllRead} disabled={!unread}>全部标为已读</button>
-            <button type="button" className="icon-button" onClick={onClose} aria-label="关闭收件箱"><X size={19} /></button>
-          </div>
-        </header>
-        <div className="inbox-summary"><Bell size={15} /><span>{unread ? `${unread} 条未读动态` : "所有动态均已读"}</span></div>
-        <div className="inbox-list">
-          {items.map((item) => {
-            const task = tasks.find((candidate) => candidate.id === item.taskId);
-            return (
-              <button type="button" className={`inbox-item ${item.unread ? "unread" : ""}`} key={item.id} onClick={() => onOpenItem(item)}>
-                <span className={`inbox-kind ${item.kind}`}>
-                  {item.kind === "attention" ? <AlertCircle size={17} /> : item.kind === "delivery" ? <TreasureVisual state="ready" size="mini" /> : <ProgressRing value={task?.progress ?? 0} size="sm" showValue={false} />}
-                </span>
-                <span className="inbox-copy"><strong>{item.title}</strong><span>{item.detail}</span><em>{task?.shortTitle} · {item.time}</em></span>
-                {item.unread && <i className="unread-dot" />}
-                <ChevronRight size={16} />
-              </button>
-            );
-          })}
-        </div>
-      </aside>
-    </div>
-  );
-}
 
 export function SidebarSettings({
   notificationsEnabled,
@@ -322,7 +275,7 @@ export function SidebarSettings({
     <div className="settings-popover" role="menu" aria-label="HaiTun Agent 设置">
       <header><span><Settings2 size={15} /> 设置</span><button type="button" onClick={onClose} aria-label="关闭设置"><X size={14} /></button></header>
       <button type="button" className="settings-toggle" onClick={onToggleNotifications} role="menuitem">
-        <span><strong>通知与提醒</strong><em>任务动态进入收件箱</em></span><i className={notificationsEnabled ? "on" : ""} />
+        <span><strong>通知与提醒</strong><em>任务状态更新时提醒</em></span><i className={notificationsEnabled ? "on" : ""} />
       </button>
       <button type="button" className="settings-toggle" onClick={onToggleHaptics} role="menuitem">
         <span><strong>动效与触觉反馈</strong><em>金币动画与手机轻震</em></span><i className={hapticsEnabled ? "on" : ""} />

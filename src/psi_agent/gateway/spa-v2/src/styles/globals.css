@@ -8,23 +8,23 @@
 
 :root {
   --brand-rgb: 0, 123, 255;
-  --brand-50: #f3f8ff;
-  --brand-100: #e7f2ff;
-  --brand-200: #c9e3ff;
-  --brand-300: #8fc8ff;
-  --brand-400: #2e9eff;
+  --brand-50: #f2f7ff;
+  --brand-100: #e6f0ff;
+  --brand-200: #c5dcff;
+  --brand-300: #7eb6ff;
+  --brand-400: #3d9aff;
   --brand-500: #007bff;
-  --brand-600: #006ae6;
-  --brand-700: #0057bd;
-  --brand-800: #084383;
-  --navy-950: #06172b;
-  --navy-900: #09213c;
-  --navy-800: #102d50;
-  --ink: #10233c;
-  --ink-soft: #5b6e85;
-  --canvas: #f2f7fd;
+  --brand-600: #0066d6;
+  --brand-700: #0050ad;
+  --brand-800: #0a3d82;
+  --navy-950: #001033;
+  --navy-900: #001a4d;
+  --navy-800: #002e7a;
+  --ink: #0c2340;
+  --ink-soft: #5a7190;
+  --canvas: #f0f6ff;
   --paper: #ffffff;
-  --line: rgba(11, 47, 91, 0.11);
+  --line: rgba(0, 70, 160, 0.12);
   --ocean: var(--brand-500);
   --ocean-light: var(--brand-400);
   --coral: #ff6b57;
@@ -74,8 +74,8 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: 292px minmax(0, 1fr);
   background:
-    radial-gradient(circle at 78% 9%, rgba(var(--brand-rgb), 0.11), transparent 31%),
-    linear-gradient(135deg, #f6f9ff 0%, #eaf3fe 100%);
+    radial-gradient(circle at 78% 9%, rgba(var(--brand-rgb), 0.14), transparent 32%),
+    linear-gradient(135deg, #f4f8ff 0%, #e4efff 55%, #dce9ff 100%);
   background-color: var(--canvas);
   overflow: hidden;
   transition: grid-template-columns 320ms cubic-bezier(0.22, 0.85, 0.24, 1);
@@ -93,13 +93,14 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   padding: 20px 18px 16px;
-  color: #e9f1ef;
+  color: #e8f2ff;
   background:
-    radial-gradient(circle at 18% 0%, rgba(var(--brand-rgb), 0.22), transparent 31%),
-    linear-gradient(180deg, var(--navy-900) 0%, var(--navy-950) 100%);
+    radial-gradient(circle at 16% -4%, rgba(var(--brand-rgb), 0.55), transparent 36%),
+    radial-gradient(circle at 100% 72%, rgba(var(--brand-rgb), 0.22), transparent 42%),
+    linear-gradient(175deg, #003d99 0%, var(--navy-900) 42%, var(--navy-950) 100%);
   background-color: var(--navy-950);
-  border-right: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: 16px 0 50px rgba(10, 25, 33, 0.07);
+  border-right: 1px solid rgba(143, 200, 255, 0.1);
+  box-shadow: 16px 0 50px rgba(0, 40, 110, 0.18);
   transition: transform 320ms cubic-bezier(0.22, 0.85, 0.24, 1), opacity 180ms ease;
 }
 
@@ -150,16 +151,20 @@ textarea:focus-visible {
   place-items: start center;
   padding-top: 18px;
   color: #c5d4e2;
-  background: linear-gradient(180deg, var(--navy-900) 0%, var(--navy-950) 100%);
+  background:
+    radial-gradient(circle at 50% 0%, rgba(var(--brand-rgb), 0.35), transparent 50%),
+    linear-gradient(180deg, #003d99 0%, var(--navy-900) 45%, var(--navy-950) 100%);
   border: 0;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: 1px solid rgba(143, 200, 255, 0.1);
   cursor: pointer;
   transition: background 160ms ease, color 160ms ease;
 }
 
 .sidebar-expand-rail:hover {
   color: #fff;
-  background: #12365c;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(var(--brand-rgb), 0.5), transparent 55%),
+    linear-gradient(180deg, #0047b3 0%, var(--navy-800) 100%);
 }
 
 /* grid columns for collapsed state are set on .app-shell.sidebar-collapsed above */
@@ -345,14 +350,14 @@ textarea:focus-visible {
   align-items: center;
   gap: 10px;
   padding: 0 13px;
-  color: #f2fffc;
-  background: linear-gradient(135deg, #178f82, #0b6f72);
-  border: 1px solid rgba(123, 236, 212, 0.16);
+  color: #f2f7ff;
+  background: linear-gradient(135deg, var(--brand-400), var(--brand-600));
+  border: 1px solid rgba(143, 200, 255, 0.28);
   border-radius: 12px;
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
-  box-shadow: 0 10px 25px rgba(0, 91, 88, 0.24), inset 0 1px rgba(255, 255, 255, 0.15);
+  box-shadow: 0 10px 25px rgba(0, 80, 200, 0.28), inset 0 1px rgba(255, 255, 255, 0.18);
   transition: transform 180ms ease, filter 180ms ease;
 }
 
@@ -363,7 +368,7 @@ textarea:focus-visible {
 
 .new-task-button > span {
   margin-left: auto;
-  color: rgba(226, 255, 249, 0.53);
+  color: rgba(226, 240, 255, 0.7);
   font-size: 10px;
   font-weight: 500;
 }
@@ -981,11 +986,11 @@ textarea:focus-visible {
   align-items: center;
   gap: 7px;
   padding: 0 13px;
-  color: #effffb;
-  background: linear-gradient(140deg, #178f82, #0a6f70);
-  border: 1px solid rgba(16, 113, 105, 0.46);
+  color: #eff6ff;
+  background: linear-gradient(140deg, var(--brand-400), var(--brand-600));
+  border: 1px solid rgba(var(--brand-rgb), 0.42);
   border-radius: 11px;
-  box-shadow: 0 7px 18px rgba(9, 104, 98, 0.16), inset 0 1px rgba(255, 255, 255, 0.16);
+  box-shadow: 0 7px 18px rgba(0, 90, 200, 0.22), inset 0 1px rgba(255, 255, 255, 0.18);
   font-size: 10px;
   font-weight: 750;
   cursor: pointer;
@@ -1100,7 +1105,7 @@ textarea:focus-visible {
 }
 
 .card-arrow:hover {
-  color: #0b7f76;
+  color: var(--brand-600);
   background: #fff;
   transform: translateX(-2px);
 }
@@ -1128,7 +1133,7 @@ textarea:focus-visible {
 
 .card-transition-frame {
   position: relative;
-  height: var(--card-frame-height, clamp(500px, 68dvh, 700px));
+  height: var(--card-frame-height, clamp(640px, 86dvh, 920px));
   min-height: 0;
   perspective: 1200px;
 }
@@ -1186,19 +1191,22 @@ textarea:focus-visible {
 
 .overview-card {
   height: auto;
-  color: #f4f8f5;
-  border-color: rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  color: #f2f7ff;
+  border-color: rgba(143, 200, 255, 0.14);
   background:
-    radial-gradient(circle at 86% 14%, rgba(70, 202, 172, 0.36), transparent 28%),
-    radial-gradient(circle at 12% 105%, rgba(38, 114, 122, 0.62), transparent 34%),
-    linear-gradient(145deg, #142c38 0%, #0e2630 45%, #102331 100%);
-  box-shadow: 0 28px 70px rgba(9, 38, 44, 0.22), inset 0 1px rgba(255, 255, 255, 0.1);
+    radial-gradient(circle at 86% 14%, rgba(var(--brand-rgb), 0.48), transparent 30%),
+    radial-gradient(circle at 12% 105%, rgba(0, 80, 210, 0.5), transparent 36%),
+    linear-gradient(145deg, #001a4d 0%, #002e7a 42%, #0047b3 100%);
+  box-shadow: 0 28px 72px rgba(0, 45, 120, 0.28), inset 0 1px rgba(255, 255, 255, 0.12);
 }
 
 .card-orbit {
   position: absolute;
   pointer-events: none;
-  border: 1px solid rgba(122, 234, 208, 0.12);
+  border: 1px solid rgba(143, 200, 255, 0.18);
   border-radius: 999px;
 }
 
@@ -1233,7 +1241,7 @@ textarea:focus-visible {
   text-transform: uppercase;
 }
 
-.overview-card .eyebrow { color: rgba(219, 243, 237, 0.58); }
+.overview-card .eyebrow { color: rgba(198, 224, 255, 0.72); }
 
 .overview-card .overall-dial {
   position: absolute;
@@ -1340,7 +1348,8 @@ textarea:focus-visible {
   z-index: 1;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  margin-top: clamp(22px, 4.2dvh, 42px);
+  margin-top: auto;
+  padding-top: clamp(22px, 4.2dvh, 42px);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.045);
@@ -1368,27 +1377,12 @@ textarea:focus-visible {
   background: rgba(255, 103, 83, 0.12);
 }
 
-.metric-icon.working { color: #79ddc5; background: rgba(69, 208, 177, 0.11); }
+.metric-icon.working { color: var(--brand-300); background: rgba(var(--brand-rgb), 0.14); }
 .metric-cell.review .metric-icon { color: #efd277; background: rgba(226, 177, 53, 0.12); }
 
 .metric-cell > div { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
 .metric-cell strong { font-size: 20px; }
 .metric-cell > div > span { color: #8ea5a5; font-size: 11px; white-space: nowrap; }
-
-.overview-bottom {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: clamp(22px, 4.2dvh, 42px);
-}
-
-.overview-bottom > div {
-  display: grid;
-  gap: 4px;
-}
 
 .section-label {
   color: #8b999f;
@@ -1396,24 +1390,6 @@ textarea:focus-visible {
   font-weight: 750;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.overview-bottom strong { font-size: 14px; }
-.overview-bottom > div > span:last-child { color: #829496; font-size: 11px; }
-
-.primary-inline {
-  height: 38px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 15px;
-  border: 1px solid rgba(113, 226, 201, 0.18);
-  border-radius: 11px;
-  color: #dffaf3;
-  background: rgba(80, 209, 179, 0.1);
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
 }
 
 .task-card {
@@ -3344,13 +3320,6 @@ textarea:focus-visible {
   .metric-cell > div > span { font-size: 8px; }
   .metric-icon { width: 25px; height: 25px; border-radius: 8px; }
 
-  .overview-bottom {
-    margin-top: 22px;
-  }
-
-  .overview-bottom strong { max-width: 190px; font-size: 10px; }
-  .primary-inline { padding-inline: 10px; }
-
   .task-title-block { margin-top: 22px; }
   .task-title-block h1 { font-size: clamp(23px, 6.7vw, 30px); line-height: 1.22; }
   .task-title-block p { margin-top: 10px; font-size: 10px; line-height: 1.62; }
@@ -3464,7 +3433,6 @@ textarea:focus-visible {
   .task-steps { margin-top: 12px; }
   .task-step { min-height: 64px; }
   .task-card-footer { padding-top: 8px; }
-  .overview-bottom { margin-top: 15px; }
   .context-chat { min-height: 108px; }
   .latest-message { height: 28px; }
 }
@@ -3537,21 +3505,20 @@ textarea:focus-visible {
 
 .overview-card {
   background:
-    radial-gradient(circle at 86% 14%, rgba(var(--brand-rgb), 0.38), transparent 28%),
-    radial-gradient(circle at 12% 105%, rgba(36, 91, 165, 0.56), transparent 35%),
-    linear-gradient(145deg, #071a31 0%, #092440 46%, #0a2b52 100%);
-  box-shadow: 0 28px 72px rgba(2, 35, 72, 0.26), inset 0 1px rgba(255, 255, 255, 0.11);
+    radial-gradient(circle at 86% 14%, rgba(var(--brand-rgb), 0.5), transparent 30%),
+    radial-gradient(circle at 12% 105%, rgba(0, 90, 220, 0.45), transparent 36%),
+    linear-gradient(145deg, #001033 0%, #001a4d 28%, #003d99 68%, #007bff 118%);
+  box-shadow: 0 28px 72px rgba(0, 40, 110, 0.3), inset 0 1px rgba(255, 255, 255, 0.14);
 }
 
-.card-orbit { border-color: rgba(143, 200, 255, 0.16); }
-.live-label { color: var(--brand-300); }
-.live-label > span { background: var(--brand-400); box-shadow: 0 0 0 4px rgba(var(--brand-rgb), 0.12), 0 0 12px rgba(var(--brand-rgb), 0.62); }
-.overall-dial { background: conic-gradient(var(--brand-400) var(--progress), rgba(255, 255, 255, 0.1) 0); box-shadow: 0 15px 34px rgba(0, 0, 0, 0.18), inset 0 0 24px rgba(var(--brand-rgb), 0.16); }
-.overall-dial::before { background: rgba(6, 30, 57, 0.97); }
-.primary-inline { color: #e7f3ff; border-color: rgba(143, 200, 255, 0.24); background: rgba(var(--brand-rgb), 0.14); }
-.metric-icon.working { color: var(--brand-300); background: rgba(var(--brand-rgb), 0.12); }
+.card-orbit { border-color: rgba(143, 200, 255, 0.2); }
+.live-label { color: var(--brand-200); }
+.live-label > span { background: var(--brand-400); box-shadow: 0 0 0 4px rgba(var(--brand-rgb), 0.14), 0 0 12px rgba(var(--brand-rgb), 0.7); }
+.overall-dial { background: conic-gradient(var(--brand-400) var(--progress), rgba(255, 255, 255, 0.12) 0); box-shadow: 0 15px 34px rgba(0, 40, 100, 0.22), inset 0 0 24px rgba(var(--brand-rgb), 0.22); }
+.overall-dial::before { background: rgba(0, 26, 77, 0.96); }
+.metric-icon.working { color: var(--brand-200); background: rgba(var(--brand-rgb), 0.16); }
 .metric-icon.working .progress-ring { width: 25px; height: 25px; }
-.metric-icon.working .progress-ring::after { background: #11365c; }
+.metric-icon.working .progress-ring::after { background: #00285c; }
 .metric-cell.delivery .metric-icon { background: rgba(226, 177, 53, 0.12); }
 .treasure-metric { overflow: visible; }
 
@@ -3743,9 +3710,10 @@ textarea:focus-visible {
 .card-chat-unit-layer { position: absolute; z-index: 2; inset: 0; min-width: 0; transition: transform 260ms cubic-bezier(0.22, 0.85, 0.24, 1); }
 .card-chat-unit-layer.dragging { transition: none; cursor: grabbing; }
 .card-chat-unit {
-  --card-frame-height: clamp(500px, 68dvh, 700px);
+  --card-frame-height: clamp(640px, 86dvh, 920px);
+  --card-face-height: clamp(400px, 48dvh, 520px);
   --chat-strip-height: 156px;
-  --focus-height: clamp(580px, 72dvh, 760px);
+  --focus-height: clamp(720px, 88dvh, 960px);
   height: 100%;
   min-width: 0;
   min-height: 0;
@@ -3888,13 +3856,20 @@ textarea:focus-visible {
 }
 
 .card-chat-unit:not(.chat-expanded) .card-transition-frame {
-  height: auto;
+  height: var(--card-face-height);
 }
 
 .card-chat-unit:not(.chat-expanded) .card-swipe-surface {
   position: relative;
   inset: auto;
-  height: auto;
+  height: 100%;
+}
+
+.card-chat-unit:not(.chat-expanded) .focus-card {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .card-chat-unit:not(.chat-expanded) .context-chat {

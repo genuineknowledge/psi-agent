@@ -1,6 +1,7 @@
-import type { ChatMessage, DeliveryState, Task, TaskStep } from '../haitun-agent/model'
+import type { ChatMessage, DeliveryState, Task } from '../haitun-agent/model'
 import type { HistoryMessage, SessionInfo, SessionTodo } from './api'
 import { stripTransferMarkers } from './sendMarkers'
+import { applyTaskProgress } from './taskProgress'
 
 const ACCENTS = ['#007bff', '#27a06b', '#d8a62a', '#ff6b57', '#4d8eff', '#7c5cfc']
 
@@ -87,9 +88,8 @@ export function sessionToTask(
 ): Task {
   const display = title.trim() || '新任务'
   const accent = ACCENTS[Math.abs(hash(session.id)) % ACCENTS.length]
-  const progress = opts?.progress ?? 12
   const status = opts?.status ?? 'working'
-  return {
+  const base: Task = {
     id: session.id,
     title: display,
     shortTitle: shortTitleOf(display),
@@ -97,7 +97,7 @@ export function sessionToTask(
     summary:
       opts?.summary
       ?? '任务已接入 Gateway Session。在下方对话中继续推进，Agent 会真实执行工具并回复。',
-    progress,
+    progress: opts?.progress ?? 8,
     status,
     statusLabel: statusLabelFor(status),
     eta: status === 'completed' ? '已完成' : '进行中',
@@ -107,8 +107,15 @@ export function sessionToTask(
     newDeliverables: opts?.newDeliverables ?? [],
     deliverablePaths: opts?.deliverablePaths ?? {},
     deliveryState: opts?.deliveryState ?? 'none',
-    steps: defaultSteps(status),
+    steps: [],
+    turnSettled: status === 'completed',
+    todoItems: [],
   }
+  return applyTaskProgress(base, {
+    streaming: false,
+    turnSettled: base.turnSettled,
+    todos: [],
+  })
 }
 
 function statusLabelFor(status: Task['status']): string {
@@ -124,94 +131,39 @@ function statusLabelFor(status: Task['status']): string {
   }
 }
 
-function defaultSteps(status: Task['status']): TaskStep[] {
-  if (status === 'completed') {
-    return [
-      { label: '理解目标', state: 'done' },
-      { label: '执行与交付', state: 'done' },
-      { label: '收尾', state: 'done' },
-    ]
-  }
-  return [
-    { label: '理解目标与上下文', state: 'done' },
-    { label: '与您对话推进', state: 'working' },
-    { label: '产出与确认', state: 'waiting' },
-  ]
-}
-
 export type TodoProgressOpts = {
-  /**
-   * True while the current chat turn is still streaming.
-   * When todos are all done, the right step 「产出与确认」 stays ``working``
-   * until the turn finishes, then becomes ``done``.
-   */
   streaming?: boolean
+  turnSettled?: boolean
+  summary?: string
 }
 
 /**
- * Map workspace ``todo`` items onto the middle task-card step as ``N/M``.
- * Cancelled items are excluded from the denominator. When the list is empty,
- * keep the default conversation-progress steps.
+ * Re-project card steps from todos + turn lifecycle (delegates to ``applyTaskProgress``).
  */
 export function withTodoProgress(
   task: Task,
   todos: SessionTodo[],
   opts?: TodoProgressOpts,
 ): Task {
-  const streaming = opts?.streaming === true
-  const active = todos.filter((t) => t.status !== 'cancelled')
-  if (!active.length) {
-    return { ...task, steps: defaultSteps(task.status) }
-  }
+  return applyTaskProgress(task, {
+    todos,
+    streaming: opts?.streaming === true,
+    turnSettled: opts?.turnSettled,
+    summary: opts?.summary,
+  })
+}
 
-  const total = active.length
-  const completed = active.filter((t) => t.status === 'completed').length
-  const inProgIdx = active.findIndex((t) => t.status === 'in_progress')
-  let current: number
-  let detail: string | undefined
-  let middleState: TaskStep['state']
-
-  if (inProgIdx >= 0) {
-    current = inProgIdx + 1
-    detail = active[inProgIdx]?.content
-    middleState = 'working'
-  } else if (completed >= total) {
-    current = total
-    detail = undefined
-    middleState = 'done'
-  } else {
-    const nextIdx = active.findIndex((t) => t.status === 'pending')
-    current = nextIdx >= 0 ? nextIdx + 1 : Math.min(completed + 1, total)
-    detail = nextIdx >= 0 ? active[nextIdx]?.content : undefined
-    middleState = 'working'
-  }
-
-  let outputState: TaskStep['state'] = 'waiting'
-  if (middleState === 'done') {
-    // Todos finished → produce reply while streaming; mark done when turn ends.
-    outputState = streaming ? 'working' : 'done'
-  }
-
-  const steps: TaskStep[] = [
-    { label: '理解目标与上下文', state: 'done' },
-    {
-      label: `${current}/${total}`,
-      state: middleState,
-      detail,
-    },
-    {
-      label: '产出与确认',
-      state: outputState,
-    },
-  ]
-
-  const progress = Math.round((completed / total) * 100)
-  return {
-    ...task,
-    steps,
-    progress: Number.isFinite(progress) ? progress : task.progress,
-    updated: '已从 todo 同步进度',
-  }
+/** Mark turn settled and project 「done」 (or keep deliver if still streaming). */
+export function withCompletedTurn(
+  task: Task,
+  opts?: { summary?: string; streaming?: boolean },
+): Task {
+  return applyTaskProgress(task, {
+    turnSettled: true,
+    streaming: opts?.streaming === true,
+    summary: opts?.summary,
+    todos: task.todoItems,
+  })
 }
 
 function hash(s: string): number {
@@ -227,7 +179,7 @@ function hash(s: string): number {
 export function withDeliverables(
   task: Task,
   names: string[],
-  opts?: { asNew?: boolean; paths?: Record<string, string> },
+  opts?: { asNew?: boolean; paths?: Record<string, string>; streaming?: boolean },
 ): Task {
   const incoming = names.filter(Boolean)
   if (!incoming.length && !opts?.paths) return task
@@ -248,7 +200,7 @@ export function withDeliverables(
   if (asNew && incoming.length) {
     deliveryState = 'ready'
   }
-  return {
+  const next: Task = {
     ...task,
     deliverables: mergedAll,
     newDeliverables: mergedNew,
@@ -256,6 +208,13 @@ export function withDeliverables(
     deliveryState,
     updated: asNew ? '刚刚收到交付物' : '已从历史同步交付物',
   }
+  // Re-project phase so mid-stream blobs can surface 「产出与确认」 when appropriate.
+  return applyTaskProgress(next, {
+    streaming: opts?.streaming === true,
+    turnSettled: next.turnSettled,
+    todos: next.todoItems,
+    hasDeliverables: true,
+  })
 }
 
 /** Apply history-derived deliverables without treating them as unread "new". */

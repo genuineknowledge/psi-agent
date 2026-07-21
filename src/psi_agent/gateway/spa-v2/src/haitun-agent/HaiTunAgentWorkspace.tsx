@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Grid2X2,
   History,
-  Inbox,
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
@@ -34,7 +33,6 @@ import {
   type CardTransition,
   type ChatFile,
   type ChatMessage,
-  type InboxItem,
   type MainView,
   type MessageFeedback,
   type SidebarPanel,
@@ -54,13 +52,12 @@ import {
   fetchHistory,
   fetchSessionTodos,
   generateTitle,
-  listAis,
   listSessions,
   listTitles,
   setTitle,
   type AiInfo,
 } from "../services/api";
-import { ensureDefaultAi } from "../services/bootstrapAi";
+import { ensureDefaultAi, pickPreferredAi, purgePlaceholderAis, writeStoredAiId } from "../services/bootstrapAi";
 import { filesToChatFiles } from "../services/chatFiles";
 import { streamSessionChat } from "../services/chatStream";
 import {
@@ -70,6 +67,7 @@ import {
   titleFromPrompt,
   withDeliverables,
   withHistoricalDeliverables,
+  withCompletedTurn,
   withTodoProgress,
 } from "../services/sessionBridge";
 
@@ -95,7 +93,7 @@ import {
 import { TaskFocusDetails } from "./task-focus-details";
 import { FocusChatThread } from "./focus-chat-thread";
 
-import { ArtifactDrawer, InboxDrawer } from "./workspace-overlays";
+import { ArtifactDrawer } from "./workspace-overlays";
 
 import { NewTaskWorkspace, TemplateLibrary } from "./secondary-views";
 import UserHub from "../components/user-hub/UserHub";
@@ -140,10 +138,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const [globalSearch, setGlobalSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [templateSearchSeed, setTemplateSearchSeed] = useState("");
-  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
-  const [inboxOpen, setInboxOpen] = useState(false);
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const dragOrigin = useRef<number | null>(null);
   const transitionTimer = useRef<number | null>(null);
   const toastTimer = useRef<number | null>(null);
@@ -162,7 +156,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const currentChatDraft = chatDrafts[currentCard.id] ?? "";
   const pendingTasks = tasks.filter((task) => task.status === "attention");
   const deliveryTasks = tasks.filter((task) => task.newDeliverables.length > 0);
-  const unreadCount = notificationsEnabled ? inboxItems.filter((item) => item.unread).length : 0;
   const normalizedSearch = globalSearch.trim().toLocaleLowerCase("zh-CN");
   const taskSearchResults = normalizedSearch
     ? tasks.filter((task) => `${task.title}${task.shortTitle}${task.category}${task.summary}${task.statusLabel}${task.deliverables.join(" ")}`.toLocaleLowerCase("zh-CN").includes(normalizedSearch)).slice(0, 4)
@@ -186,9 +179,14 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       if (todoRefreshSeqRef.current[taskId] !== seq) return;
       const todos = Array.isArray(data.todos) ? data.todos : [];
       setTasks((current) =>
-        current.map((task) =>
-          (task.id === taskId ? withTodoProgress(task, todos, { streaming }) : task),
-        ),
+        current.map((task) => {
+          if (task.id !== taskId) return task;
+          return withTodoProgress(task, todos, {
+            streaming,
+            // Starting a stream clears settled; idle poll keeps prior settled flag.
+            turnSettled: streaming ? false : task.turnSettled,
+          });
+        }),
       );
     } catch {
       // Missing file / transient — keep previous steps.
@@ -213,12 +211,13 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
           if (chat.length) {
             const lastAgent = [...chat].reverse().find((m) => m.role === "agent");
             if (lastAgent) {
-              next = {
-                ...next,
-                summary: lastAgent.text.slice(0, 120) + (lastAgent.text.length > 120 ? "…" : ""),
-                updated: names.length ? "已从历史同步交付物" : "已从历史同步",
-                progress: Math.min(96, Math.max(next.progress, 20 + chat.length * 4)),
-              };
+              next = withCompletedTurn(
+                {
+                  ...next,
+                  summary: lastAgent.text.slice(0, 120) + (lastAgent.text.length > 120 ? "…" : ""),
+                  updated: names.length ? "已从历史同步交付物" : "已从历史同步",
+                },
+              );
             }
           }
           return next;
@@ -262,15 +261,19 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       setOpenModelsOnce(false);
       try {
         // Empty pool → open models panel. Do NOT POST free defaults on boot.
-        const ais = await listAis();
+        // Drop leftover haitun-default entries when the user already has a real key.
+        let ais = await purgePlaceholderAis();
         if (cancelled) return;
         if (!Array.isArray(ais) || ais.length === 0) {
           setAiId(null);
+          writeStoredAiId(null);
           setOpenModelsOnce(true);
           setBootReady(true);
           return;
         }
-        setAiId(ais[0].id);
+        const preferred = pickPreferredAi(ais, null);
+        setAiId(preferred?.id ?? null);
+        if (preferred?.id) writeStoredAiId(preferred.id);
         const [sessions, titles] = await Promise.all([listSessions(), listTitles()]);
         if (cancelled) return;
         const inWs = sessions.filter((s) => {
@@ -282,7 +285,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
         historyLoadedRef.current = new Set(["overview"]);
         setMessages({ overview: [OVERVIEW_WELCOME] });
         setCurrentIndex(0);
-        setInboxItems([]);
       } catch (e) {
         if (!cancelled) {
           showToast(e instanceof Error ? e.message : "连接 Gateway 失败");
@@ -389,7 +391,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       delete next[task.id];
       return next;
     });
-    setInboxItems((current) => current.filter((item) => item.taskId !== task.id));
     if (artifactTask?.id === task.id) closeArtifact();
 
     const deletedIndex = tasks.findIndex((item) => item.id === task.id);
@@ -447,6 +448,16 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     const controller = new AbortController();
     abortRef.current = controller;
     const userVisible = titleSource ?? (text.trim() || "附件");
+    let turnOk = false;
+    let replySummary = "";
+    // Enter advance phase for this turn (layer-1); todos refine the middle label.
+    setTasks((current) =>
+      current.map((task) =>
+        (task.id === cardId
+          ? withTodoProgress(task, task.todoItems ?? [], { streaming: true, turnSettled: false })
+          : task),
+      ),
+    );
 
     try {
       const { text: full, blobs } = await streamSessionChat(
@@ -458,7 +469,11 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
           onText: (delta) => appendStreamingAgent(cardId, delta),
           onBlob: (name, data) => {
             setTasks((current) =>
-              current.map((task) => (task.id === cardId ? withDeliverables(task, [name]) : task)),
+              current.map((task) =>
+                (task.id === cardId
+                  ? withDeliverables(task, [name], { streaming: true })
+                  : task),
+              ),
             );
             setMessages((current) => {
               const list = [...(current[cardId] ?? [])];
@@ -474,6 +489,8 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
           },
         },
       );
+      turnOk = true;
+      replySummary = full.trim();
       if (!full.trim()) {
         setMessages((current) => {
           const list = [...(current[cardId] ?? [])];
@@ -487,7 +504,9 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       if (blobs.length) {
         setTasks((current) =>
           current.map((task) =>
-            task.id === cardId ? withDeliverables(task, blobs.map((b) => b.name)) : task,
+            (task.id === cardId
+              ? withDeliverables(task, blobs.map((b) => b.name), { streaming: false })
+              : task),
           ),
         );
       }
@@ -530,7 +549,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       const err = e instanceof Error ? e.message : String(e);
       setMessages((current) => {
         const list = [...(current[cardId] ?? [])];
-        // Mark preceding user turn failed (spa v1 parity) so retry appears.
         for (let i = list.length - 1; i >= 0; i--) {
           if (list[i]?.role === "user") {
             list[i] = { ...list[i]!, failed: true, failedReason: "error" };
@@ -552,8 +570,17 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     } finally {
       setTypingCard((current) => (current === cardId ? null : current));
       if (abortRef.current === controller) abortRef.current = null;
-      // streaming=false → when todos are N/N, mark 「产出与确认」 done.
-      void refreshTodos(cardId, false);
+      void (async () => {
+        await refreshTodos(cardId, false);
+        if (!turnOk) return;
+        setTasks((current) =>
+          current.map((task) =>
+            (task.id === cardId
+              ? withCompletedTurn(task, { summary: replySummary || undefined })
+              : task),
+          ),
+        );
+      })();
     }
   };
 
@@ -703,20 +730,29 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   };
 
   const createTask = async (description: string, category: string) => {
-    let resolvedAiId = aiId;
+    // Always re-resolve against the live pool so leftover haitun-default never wins.
+    const ais = await purgePlaceholderAis();
+    let resolvedAiId = pickPreferredAi(ais, aiId)?.id ?? null;
     if (!resolvedAiId) {
       // Empty pool (free mode) → resolve remote defaults only when a task needs an AI.
-      const ai = await ensureDefaultAi();
+      const ai = await ensureDefaultAi(aiId);
       if (!ai?.id) {
         showToast("没有可用 AI，请先在大模型中连接，或检查免费模型网络");
         setOpenModelsOnce(true);
         throw new Error("no ai");
       }
       resolvedAiId = ai.id;
-      setAiId(ai.id);
     }
+    setAiId(resolvedAiId);
+    writeStoredAiId(resolvedAiId);
     const title = titleFromPrompt(description);
-    const session = await createSession(resolvedAiId, workspace);
+    let session;
+    try {
+      session = await createSession(resolvedAiId, workspace);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "创建任务失败");
+      throw e;
+    }
     await setTitle(session.id, title).catch(() => {});
     const newTask = {
       ...sessionToTask(session, title, {
@@ -771,9 +807,17 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   };
 
   const viewCreatedTask = (task: Task) => {
-    setMainView("workspace");
+    // Prefer task id; fall back to "just appended" index (same as overview quick-create).
     const index = tasks.findIndex((item) => item.id === task.id);
-    goTo(index >= 0 ? index + 1 : tasks.length + 1);
+    const nextIndex = index >= 0 ? index + 1 : tasks.length + 1;
+    setMainView("workspace");
+    setSidebarOpen(false);
+    setSearchOpen(false);
+    setGlobalSearch("");
+    setCurrentIndex(nextIndex);
+    setDragX(0);
+    setCardTransition(null);
+    setChatExpanded(true);
   };
 
   const useTemplate = (template: TaskTemplate) => {
@@ -825,21 +869,9 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     window.setTimeout(() => setToast(null), 2600);
   };
 
-  const openInboxItem = (item: InboxItem) => {
-    setInboxItems((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, unread: false } : candidate));
-    setInboxOpen(false);
-    const task = tasks.find((candidate) => candidate.id === item.taskId);
-    if (!task) return;
-    if (item.kind === "delivery" && (task.newDeliverables.length > 0 || task.deliverables.length > 0)) {
-      openArtifact(task, undefined, task.newDeliverables.length ? "new" : "history");
-      return;
-    }
-    selectTask(task);
-  };
-
   useEffect(() => {
-    document.documentElement.dataset.haptics = hapticsEnabled ? "on" : "off";
-  }, [hapticsEnabled]);
+    document.documentElement.dataset.haptics = "on";
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -860,10 +892,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
         if (event.key === "Escape") {
           closeArtifact();
         }
-        return;
-      }
-      if (inboxOpen) {
-        if (event.key === "Escape") setInboxOpen(false);
         return;
       }
       if (searchOpen && event.key === "Escape") {
@@ -889,7 +917,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [artifactTask, chatExpanded, collapseChat, currentIndex, goHome, goTo, inboxOpen, mainView, newTaskReturnView, openNewTask, searchOpen]);
+  }, [artifactTask, chatExpanded, collapseChat, currentIndex, goHome, goTo, mainView, newTaskReturnView, openNewTask, searchOpen]);
 
   useEffect(() => () => {
     if (transitionTimer.current) window.clearTimeout(transitionTimer.current);
@@ -899,7 +927,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const visibleSidebarTasks = sidebarPanel === "pending" ? pendingTasks : sidebarPanel === "deliveries" ? deliveryTasks : tasks;
   const renderCardAt = (index: number) => {
     const task = index === 0 ? null : tasks[index - 1];
-    return task ? <TaskCard task={task} onOpenArtifact={openArtifact} onDelete={deleteTask} /> : <OverviewCard tasks={tasks} onHandleNext={() => pendingTasks[0] && selectTask(pendingTasks[0])} />;
+    return task ? <TaskCard task={task} onOpenArtifact={openArtifact} onDelete={deleteTask} /> : <OverviewCard tasks={tasks} />;
   };
 
   const renderTaskUnit = (index: number, interactive: boolean, visualExpanded = false) => {
@@ -946,7 +974,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
                   <TaskFocusDetails
                     task={unitTask}
                     tasks={tasks}
-                    inboxItems={inboxItems}
                     onOpenArtifact={openArtifact}
                   />
                 </div>
@@ -955,7 +982,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
               ) : (
                 <CompactOverviewContext
                   tasks={tasks}
-                  onHandleNext={() => pendingTasks[0] && selectTask(pendingTasks[0])}
                 />
               )}
             </div>
@@ -1007,20 +1033,9 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
             </div>
             <div className="quick-actions">
               {expanded && (
-                <>
-                  <button
-                    type="button"
-                    className="chat-top-icon"
-                    onClick={() => setInboxOpen(true)}
-                    aria-label={`收件箱，${unreadCount} 条未读`}
-                  >
-                    <Inbox size={16} />
-                    {unreadCount > 0 && <span className="button-badge">{unreadCount}</span>}
-                  </button>
-                  <button type="button" className="chat-collapse" onClick={collapseChat}>
-                    <ChevronDown size={13} /> 收起
-                  </button>
-                </>
+                <button type="button" className="chat-collapse" onClick={collapseChat}>
+                  <ChevronDown size={13} /> 收起
+                </button>
               )}
               {!expanded && QUICK_ACTIONS.map((action) => (
                 <button
@@ -1287,11 +1302,10 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
         <div className="sidebar-account">
           <UserHub
             selectedAiId={aiId}
-            onSelectAi={(id) => setAiId(id)}
-            notificationsEnabled={notificationsEnabled}
-            hapticsEnabled={hapticsEnabled}
-            onToggleNotifications={() => setNotificationsEnabled((current) => !current)}
-            onToggleHaptics={() => setHapticsEnabled((current) => !current)}
+            onSelectAi={(id) => {
+              setAiId(id);
+              writeStoredAiId(id);
+            }}
             workspace={workspace}
             onChangeWorkspace={onChangeWorkspace}
             onToast={showToast}
@@ -1300,9 +1314,12 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
             onAisChanged={(ais: AiInfo[]) => {
               if (ais.length === 0) {
                 setAiId(null);
+                writeStoredAiId(null);
                 return;
               }
-              if (!aiId || !ais.some((a) => a.id === aiId)) setAiId(ais[0].id);
+              const preferred = pickPreferredAi(ais, aiId);
+              setAiId(preferred?.id ?? null);
+              if (preferred?.id) writeStoredAiId(preferred.id);
             }}
           />
         </div>
@@ -1333,7 +1350,9 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
           </div>
           {!chatExpanded && (
             <div className="stage-actions">
-              <button type="button" className="icon-button" onClick={() => setInboxOpen(true)} aria-label={`收件箱，${unreadCount} 条未读`}><Inbox size={18} />{unreadCount > 0 && <span className="button-badge">{unreadCount}</span>}</button>
+              <button type="button" className="topbar-create-button" onClick={() => openNewTask()}>
+                <Plus size={15} /> 新建任务
+              </button>
             </div>
           )}
         </header>
@@ -1397,15 +1416,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
           onClose={closeArtifact}
           onSave={saveArtifact}
           onRevise={reviseArtifact}
-        />
-      )}
-      {inboxOpen && (
-        <InboxDrawer
-          items={inboxItems}
-          tasks={tasks}
-          onClose={() => setInboxOpen(false)}
-          onMarkAllRead={() => setInboxItems((current) => current.map((item) => ({ ...item, unread: false })))}
-          onOpenItem={openInboxItem}
         />
       )}
       {toast && <div className="toast" role="status" aria-live="polite"><Check size={16} /> {toast}</div>}

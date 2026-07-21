@@ -2,7 +2,6 @@ import { FileText, Grid2X2, Layers3, MessageCircle, Search, Zap } from "lucide-r
 import {
   PENDING_LABEL,
   type ChatMessage,
-  type InboxItem,
   type Task,
   type TaskTemplate,
 } from "./model";
@@ -144,36 +143,6 @@ export const INITIAL_MESSAGES: Record<string, ChatMessage[]> = {
     { role: "agent", text: "监测正常。本轮没有达到推送阈值的新信号。" },
   ],
 };
-
-export const INITIAL_INBOX: InboxItem[] = [
-  {
-    id: "notice-launch",
-    taskId: "launch-brief",
-    title: "需要您确认首批邀请名单",
-    detail: "确认后将继续生成执行排期与邀约物料。",
-    kind: "attention",
-    time: "8 分钟前",
-    unread: true,
-  },
-  {
-    id: "notice-feedback",
-    taskId: "feedback-study",
-    title: "阶段性洞察摘要已生成",
-    detail: "任务仍在运行，您现在就可以查看阶段交付物。",
-    kind: "delivery",
-    time: "12 分钟前",
-    unread: true,
-  },
-  {
-    id: "notice-monitor",
-    taskId: "competitor-watch",
-    title: "持续监测完成一轮巡检",
-    detail: "本轮没有达到推送阈值的新增信号。",
-    kind: "update",
-    time: "今天 09:30",
-    unread: false,
-  },
-];
 
 export const QUICK_ACTIONS = ["查看当前阻塞", "催一下进度", "先给我结论"];
 

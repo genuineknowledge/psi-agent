@@ -15,10 +15,6 @@ export type HubPanel = 'profile' | 'models' | 'login' | 'settings' | 'advanced' 
 type Props = {
   selectedAiId: string | null
   onSelectAi: (id: string | null) => void
-  notificationsEnabled: boolean
-  hapticsEnabled: boolean
-  onToggleNotifications: () => void
-  onToggleHaptics: () => void
   workspace?: string
   onChangeWorkspace?: () => void
   onToast?: (message: string) => void
@@ -35,10 +31,6 @@ type Props = {
 export default function UserHub({
   selectedAiId,
   onSelectAi,
-  notificationsEnabled,
-  hapticsEnabled,
-  onToggleNotifications,
-  onToggleHaptics,
   workspace,
   onChangeWorkspace,
   onToast,
@@ -78,6 +70,10 @@ export default function UserHub({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      if (panel === 'advanced') {
+        setPanel('models')
+        return
+      }
       if (panel) {
         setPanel(null)
         return
@@ -177,15 +173,11 @@ export default function UserHub({
         onClose={() => setPanel(null)}
         workspace={workspace}
         onChangeWorkspace={onChangeWorkspace}
-        notificationsEnabled={notificationsEnabled}
-        hapticsEnabled={hapticsEnabled}
-        onToggleNotifications={onToggleNotifications}
-        onToggleHaptics={onToggleHaptics}
-        onAction={onToast}
       />
       <HubAdvancedPanel
         show={panel === 'advanced'}
         onClose={() => setPanel(null)}
+        onBackToModels={() => setPanel('models')}
         onSelectAi={onSelectAi}
         onToast={onToast}
         onAisChanged={(ais) => {
