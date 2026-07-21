@@ -199,7 +199,7 @@ scope（如 `drive:drive:drive:readonly`），飞书拒绝整个授权页。
 
 ## 九、后续增强：wiki 读工具支持 user_key（以用户身份访问知识库，2026-07-21，已完成）
 
-分支 `feishu-delete-file`（与删除功能同分支）。设计规格见 spec 第 11 节。
+分支 `feishu-wiki-read-userkey`。设计规格见 spec 第 11 节。
 
 **根因**：`feishu_wiki_list_spaces` 只用机器人 tenant token，机器人不是任何知识库成员 → 返回空，
 agent 误判"企业没有知识库"。读类 wiki 工具没接 user_key。
@@ -218,3 +218,26 @@ agent 误判"企业没有知识库"。读类 wiki 工具没接 user_key。
 - [x] 测试：list_spaces user_key 走 UAT / get_node 转发 user_key / list_nodes 组装 + 必填校验
 - [x] TOOLS.md 第 9 条：访问/浏览知识库带 user_key，list_spaces 空不代表没库，先带 user_key 重试
 - [x] 门禁：`ruff check` + `ruff format --check`（CI 版 ruff 0.15）+ pytest（feishu 149 passed）
+
+## 十、后续增强：文件下载支持 user_key（读知识库里的 PDF/附件，2026-07-21，已完成）
+
+分支 `feishu-download-userkey`。设计规格见 spec 第 12 节。
+
+**根因**：agent 能在知识库搜到 PDF 但下不下来——`feishu_file_download`(media 下载)写死机器人
+token，用户知识库里的文件机器人无权限。读类工具没接 user_key（与 list_spaces 同病）。
+
+**Files:**
+- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
+- Modify: `examples/haitun-workspace/tools/feishu_drive.py`
+- Modify: `examples/haitun-workspace/tests/test_feishu.py`
+- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 12 节）
+
+- [x] `_download_media_bytes` / `download_file_impl` 加 `user_key`：非空走 UAT
+  (`_get_uat_client` + `_get_valid_uat` + `RequestOption.user_access_token`)，否则 tenant；
+  未授权返回 need_auth；is_url=True 直链不受影响
+- [x] 工具 `feishu_file_download` 暴露 `user_key`
+- [x] 读 PDF 走既有 `ocr-and-documents` 技能(PyMuPDF)，链路 get_node→download(user_key)→ocr
+- [x] 测试：media 下载 user_key 走 UAT / 未授权 need_auth / 空 user_key 走 tenant
+- [x] TOOLS.md 第 10 条：读知识库 PDF/附件的完整流程，下载失败先确认带 user_key
+- [x] 门禁：`ruff check` + `ruff format --check`（CI 版 ruff 0.15）+ pytest（feishu 152 passed）
