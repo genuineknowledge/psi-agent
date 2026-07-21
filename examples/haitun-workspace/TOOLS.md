@@ -72,3 +72,9 @@ message_id / sender_open_id）。需要群里之前的上下文时：
    它一次调用完成「建节点 + 写正文」，避免分两步（先 `feishu_wiki_create_doc` 再
    `feishu_doc_append_content`）时因第二步失败/漏调而留下**空文档**。若正文写入失败，它会连
    `node_token`/`obj_token` 一并回报，可用相同 `user_key` 调 `feishu_doc_append_content` 补写。
+8. **删除文档/文件**：用 `feishu_drive_delete_file(file_token, file_type, user_key)`——删除进
+   **回收站可恢复**。file_type 是 docx/doc/sheet/bitable/mindnote/slides/file/folder/shortcut。
+   删用户自己的文件/库里的东西要带 `user_key`（须是所有者或对父文件夹有编辑权）。
+   删**知识库(wiki)里的文档**：飞书没有独立删 wiki 节点的接口——先 `feishu_wiki_get_node`
+   取 `obj_token`+`obj_type`，再 `feishu_drive_delete_file(file_token=obj_token, file_type=obj_type, user_key=...)`。
+   删除是不可轻率的操作，动手前先跟用户确认清楚删的是哪一个。

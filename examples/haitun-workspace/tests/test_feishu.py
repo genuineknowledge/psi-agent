@@ -1711,6 +1711,81 @@ def test_file_download_tool_async_with_docstring() -> None:
     assert (inspect.getdoc(fn) or "").strip()
 
 
+@pytest.mark.asyncio
+async def test_delete_file_builds_delete_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"task_id": ""})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.delete_file_impl("doccnX", "docx")
+    assert result["ok"] is True
+    assert result["file_token"] == "doccnX"
+    assert result["type"] == "docx"
+    req = cap.request
+    assert req.http_method.name == "DELETE"
+    assert req.uri == "/open-apis/drive/v1/files/:file_token"
+    assert req.paths["file_token"] == "doccnX"
+    assert _impl.AccessTokenType.USER in req.token_types
+    # empty user_key -> tenant path (no user_key forwarded)
+    assert cap.user_key in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_delete_file_requires_token() -> None:
+    result = await _impl.delete_file_impl("  ", "docx")
+    assert result["ok"] is False
+    assert "file_token" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_delete_file_rejects_bad_type() -> None:
+    result = await _impl.delete_file_impl("doccnX", "video")
+    assert result["ok"] is False
+    assert "file_type" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_delete_file_folder_returns_task_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"task_id": "tsk_123"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.delete_file_impl("fldrX", "folder")
+    assert result["ok"] is True
+    assert result["task_id"] == "tsk_123"
+
+
+@pytest.mark.asyncio
+async def test_delete_file_user_key_routes_through_uat(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _CapturingUatClient({"code": 0, "data": {}})
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
+
+    async def _uat(user_key: str = "") -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    result = await _impl.delete_file_impl("doccnX", "docx", "ou_a")
+    assert result["ok"] is True
+    assert client.option.user_access_token == "uat_tok"
+    assert client.request.http_method.name == "DELETE"
+
+
+@pytest.mark.asyncio
+async def test_delete_file_user_key_not_authorized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+
+    async def _no_uat(user_key: str = "") -> Any:
+        return None
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _no_uat)
+    result = await _impl.delete_file_impl("doccnX", "docx", "ou_a")
+    assert result["ok"] is False
+    assert result.get("need_auth") is True
+
+
+def test_delete_file_tool_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_drive")
+    fn = mod.feishu_drive_delete_file
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()
+
+
 # ── Create documents: docx + wiki nodes + list spaces + append content ────────
 
 

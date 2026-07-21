@@ -226,3 +226,35 @@ session→channel 无主动推送的底座缺口，不改内核。**两目录未
 | 修改 | `tools/feishu_drive.py` | `add_comment` / `reply_comment` 暴露 `user_key` |
 | 修改 | `tests/test_feishu.py` | 按用户隔离 / pending 防穿越 / 转发 user_key / scope 恒为默认值 / `_invoke` tenant·UAT·need_auth / 原子建文档(成功·正文失败回报 node·空正文·建节点失败短路) 等测试；fake `_invoke`/`_CapturedInvoke`/`_PagedInvoke` 接受 `user_key` |
 | 修改 | `TOOLS.md` | 引导 agent 传 `sender_open_id` 作 `user_key`、先问再授权、建文档链路全程同一 `user_key`、优先用一步到位建文档工具 |
+| 修改 | `tests/test_feishu.py` | 按用户隔离 / pending 防穿越 / search+建库+建文档节点 转发 user_key / scope 恒为默认值 / `_invoke` 空 user_key 走 tenant、非空走 UAT、未授权 need_auth 等测试；fake `_invoke`/`_CapturedInvoke`/`_PagedInvoke` 接受 `user_key` |
+| 修改 | `TOOLS.md` | 引导 agent 传 `sender_open_id` 作 `user_key`，先问再授权，建文档链路全程同一 `user_key` |
+
+---
+
+## 10. 后续增强：删除云文档/文件（复用 user_key）
+
+**目标**：给 agent 加删除飞书文档/文件能力，与其它写入类工具一致——先用用户身份(UAT,
+`user_key`)，未传则回退机器人 tenant token。
+
+- 接口 `DELETE /open-apis/drive/v1/files/:file_token?type=...`，**tenant / user token 都支持**，
+  scope `drive:drive` 或 `space:document:delete`。删除进**回收站(可恢复)**；删文件夹异步返回 task_id。
+- `_build_delete_file_request(file_token, file_type)` + `delete_file_impl(file_token, file_type, user_key="")`：
+  校验 file_token 非空、file_type ∈ {file, docx, doc, sheet, bitable, mindnote, slides, folder, shortcut}；
+  走共享 `_invoke(..., user_key=user_key)`（非空→UAT）；成功回 `{file_token, type, task_id?}`。
+- 工具 `feishu_drive_delete_file(file_token, file_type, user_key)`。
+- **删 wiki 里的文档（刻意为之）**：飞书 wiki v2 **无**独立删节点 API，删知识库文档 = 删其底层
+  docx——`feishu_wiki_get_node(token)` 取 `obj_token`/`obj_type` → `feishu_drive_delete_file`。不新增
+  "删 wiki 节点"工具，靠组合覆盖，TOOLS.md 写清这条路径。
+
+### 10.1 非目标
+- 不做彻底删除（接口本就是删到回收站，可恢复）。
+- 不做文件夹删除的异步 task 状态轮询（仅透传 task_id）。
+
+### 10.2 文件变更
+
+| 操作 | 文件 | 说明 |
+|---|---|---|
+| 修改 | `tools/_feishu_impl.py` | 新增 `_build_delete_file_request` + `delete_file_impl(user_key)`（走 `_invoke` UAT/tenant） |
+| 修改 | `tools/feishu_drive.py` | 新增 `feishu_drive_delete_file` 工具 |
+| 修改 | `tests/test_feishu.py` | DELETE 请求组装 / 空 token / 非法 type / 文件夹 task_id / user_key 走 UAT / 未授权 need_auth |
+| 修改 | `TOOLS.md` | 第 8 条：删除文档/文件用 `feishu_drive_delete_file`，删 wiki 文档走 get_node→delete_file |

@@ -2191,6 +2191,49 @@ async def download_file_impl(source: str, save_path: str, is_url: bool = False) 
     return {"ok": True, "path": str(path), "bytes": len(data)}
 
 
+# ── Delete a cloud file / document (to trash) ─────────────────────────────────
+#
+# DELETE /drive/v1/files/:file_token?type=... moves the file to the recycle bin
+# (recoverable). Works with tenant OR user token; deleting inside a user-owned
+# wiki needs the user's UAT (pass user_key). To delete a *wiki* doc: resolve the
+# node with get_wiki_node_impl → obj_token/obj_type, then delete that.
+
+_DELETABLE_FILE_TYPES = {"file", "docx", "doc", "sheet", "bitable", "mindnote", "slides", "folder", "shortcut"}
+
+
+def _build_delete_file_request(file_token: str, file_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.DELETE
+    req.uri = "/open-apis/drive/v1/files/:file_token"
+    req.paths["file_token"] = file_token
+    req.add_query("type", file_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def delete_file_impl(file_token: str, file_type: str, user_key: str = "") -> dict[str, Any]:
+    """Delete a cloud file/document (moves it to the recycle bin — recoverable).
+
+    Pass ``user_key`` to delete as that user (required when the file/wiki is owned by
+    the user and the bot isn't a collaborator); empty uses the bot's tenant token.
+    """
+    token = file_token.strip()
+    if not token:
+        return _error("file_token is required.")
+    ftype = file_type.strip()
+    if ftype not in _DELETABLE_FILE_TYPES:
+        return _error(f"file_type must be one of {sorted(_DELETABLE_FILE_TYPES)}, got {ftype!r}.")
+    res = await _invoke(_build_delete_file_request(token, ftype), user_key=user_key)
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    out: dict[str, Any] = {"ok": True, "file_token": token, "type": ftype}
+    # Folder deletion is async and returns a task_id — surface it for status polling.
+    if data.get("task_id"):
+        out["task_id"] = data["task_id"]
+    return out
+
+
 # ── Create documents: standalone docx + wiki (knowledge base) nodes ───────────
 #
 # Read tools above only *fetch* content; these create new documents. A wiki doc
