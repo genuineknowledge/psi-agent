@@ -1,12 +1,19 @@
-/* User Hub — sidebar avatar menu + panels (spa v1 UserHub parity) */
+/* User Hub — sidebar account + model/settings shortcuts */
 
 .user-hub {
   position: relative;
   width: 100%;
 }
 
+.user-hub-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .user-hub-trigger {
-  width: 100%;
+  min-width: 0;
+  flex: 1;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -21,6 +28,52 @@
 
 .user-hub-trigger:hover {
   background: rgba(var(--brand-rgb), 0.1);
+}
+
+.user-hub-shortcuts {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding-right: 4px;
+}
+
+.user-hub-shortcut {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  color: #9eb3c6;
+  background: transparent;
+  cursor: pointer;
+}
+
+.user-hub-shortcut:hover,
+.user-hub-shortcut.active {
+  color: #eaf4ff;
+  background: rgba(var(--brand-rgb), 0.16);
+}
+
+.user-hub-shortcut-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: var(--brand-500);
+  color: #fff;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .user-hub-avatar {
@@ -124,17 +177,17 @@
 
 .user-hub-menu-badge {
   margin-left: auto;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: grid;
+  place-items: center;
   border-radius: 999px;
-  background: rgba(var(--brand-rgb), 0.22);
-  color: #9fd0ff;
+  background: rgba(var(--brand-rgb), 0.35);
+  color: #eaf4ff;
   font-size: 11px;
   font-style: normal;
   font-weight: 700;
-  display: inline-grid;
-  place-items: center;
 }
 
 /* Dialog */
@@ -545,6 +598,49 @@
 .hub-settings-toggle i.on::after {
   transform: translateX(18px);
   background: var(--brand-500);
+}
+
+.hub-settings-workspace {
+  justify-content: flex-start;
+}
+
+.hub-settings-workspace-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border-radius: 10px;
+  color: var(--brand-600);
+  background: rgba(var(--brand-rgb), 0.12);
+}
+
+.hub-settings-workspace > span:nth-of-type(2) {
+  flex: 1;
+  min-width: 0;
+}
+
+.hub-settings-workspace em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hub-settings-row-chevron {
+  flex-shrink: 0;
+  color: var(--ink-soft);
+  margin-left: auto;
+}
+
+.hub-settings-workspace-path {
+  margin: -2px 0 10px;
+  padding: 0 4px 0 54px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hub-settings-foot {

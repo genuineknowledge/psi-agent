@@ -2,6 +2,7 @@ import {
   AlertCircle,
   ArrowRight,
   Check,
+  Trash2,
 } from "lucide-react";
 import type { CSSProperties } from "react";
 import { DELIVERY_LABEL, OVERVIEW_LABEL, PENDING_LABEL, type Task } from "./model";
@@ -12,11 +13,13 @@ export function TaskRow({
   active,
   onSelect,
   onOpenArtifact,
+  onDelete,
 }: {
   task: Task;
   active: boolean;
   onSelect: () => void;
   onOpenArtifact: (task: Task) => void;
+  onDelete?: (task: Task) => void;
 }) {
   return (
     <div className={`task-row ${active ? "active" : ""}`}>
@@ -33,7 +36,23 @@ export function TaskRow({
           <strong>{task.title}</strong>
         </span>
       </button>
-      <TreasureButton task={task} onOpen={onOpenArtifact} compact />
+      <div className="task-row-actions">
+        {onDelete && (
+          <button
+            type="button"
+            className="task-row-delete"
+            title="删除任务"
+            aria-label={`删除任务：${task.title}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete(task);
+            }}
+          >
+            <Trash2 size={14} />
+          </button>
+        )}
+        <TreasureButton task={task} onOpen={onOpenArtifact} compact />
+      </div>
     </div>
   );
 }
@@ -97,7 +116,15 @@ export function OverviewCard({ tasks, onHandleNext }: { tasks: Task[]; onHandleN
   );
 }
 
-export function TaskCard({ task, onOpenArtifact }: { task: Task; onOpenArtifact: (task: Task) => void }) {
+export function TaskCard({
+  task,
+  onOpenArtifact,
+  onDelete,
+}: {
+  task: Task;
+  onOpenArtifact: (task: Task) => void;
+  onDelete?: (task: Task) => void;
+}) {
   return (
     <article className="focus-card task-card" style={{ "--task-accent": task.accent } as CSSProperties}>
       <div className="task-accent-line" />
@@ -113,7 +140,20 @@ export function TaskCard({ task, onOpenArtifact }: { task: Task; onOpenArtifact:
       </div>
 
       <div className="task-title-block">
-        <h1>{task.title}</h1>
+        <div className="task-title-row">
+          <h1>{task.title}</h1>
+          {onDelete && (
+            <button
+              type="button"
+              className="task-card-delete"
+              title="删除任务"
+              aria-label={`删除任务：${task.title}`}
+              onClick={() => onDelete(task)}
+            >
+              <Trash2 size={16} />
+            </button>
+          )}
+        </div>
         <p>{task.summary}</p>
       </div>
 
@@ -141,10 +181,18 @@ export function TaskCard({ task, onOpenArtifact }: { task: Task; onOpenArtifact:
   );
 }
 
-export function CompactTaskContext({ task, onOpenArtifact }: { task: Task; onOpenArtifact: (task: Task) => void }) {
+export function CompactTaskContext({
+  task,
+  onOpenArtifact,
+  onDelete,
+}: {
+  task: Task;
+  onOpenArtifact: (task: Task) => void;
+  onDelete?: (task: Task) => void;
+}) {
   return (
     <div className="compact-card-shell">
-      <TaskCard task={task} onOpenArtifact={onOpenArtifact} />
+      <TaskCard task={task} onOpenArtifact={onOpenArtifact} onDelete={onDelete} />
     </div>
   );
 }

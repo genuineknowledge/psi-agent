@@ -103,6 +103,31 @@ export async function fetchWorkspaceRoots() {
   return api<{ roots: { path: string; label?: string }[] } | string[]>('GET', '/workspace/roots')
 }
 
+export type WorkspacePlace = { id: string; label: string; path: string }
+export type WorkspaceDrive = { label: string; path: string }
+export type BrowseEntry = { name: string; path: string; kind: 'directory' | 'file' | string }
+export type BrowseResult = {
+  path: string
+  parent?: string
+  segments?: { name: string; path: string }[]
+  entries?: BrowseEntry[]
+}
+
+export async function fetchWorkspacePlaces() {
+  return api<{ places: WorkspacePlace[]; drives: WorkspaceDrive[] }>('GET', '/workspace/places')
+}
+
+export async function browseWorkspace(
+  path: string,
+  opts: { kind?: 'directory' | 'file' | 'all'; q?: string } = {},
+) {
+  const params = new URLSearchParams()
+  if (path) params.set('path', path)
+  params.set('kind', opts.kind || 'directory')
+  if (opts.q) params.set('q', opts.q)
+  return api<BrowseResult>('GET', `/workspace/browse?${params.toString()}`)
+}
+
 export async function streamChat(
   sessionId: string,
   formData: FormData,

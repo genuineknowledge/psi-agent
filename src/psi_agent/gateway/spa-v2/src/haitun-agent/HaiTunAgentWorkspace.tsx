@@ -47,6 +47,7 @@ import {
 import { mobileHaptic, prefersReducedMotion } from "./client-feedback";
 import {
   createSession,
+  deleteSession,
   fetchHistory,
   generateTitle,
   listAis,
@@ -91,6 +92,7 @@ import { ArtifactDrawer, InboxDrawer } from "./workspace-overlays";
 import { NewTaskWorkspace, TemplateLibrary } from "./secondary-views";
 import UserHub from "../components/user-hub/UserHub";
 import type { AiInfo } from "../services/api";
+import { collectDeliverableFiles } from "../utils/filePreviewUtils";
 
 type Props = {
   workspace: string;
@@ -293,6 +295,57 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     goTo(0);
   }, [goTo]);
 
+  const deleteTask = useCallback(async (task: Task) => {
+    const ok = window.confirm(`确认删除任务「${task.title}」？\n删除后 Session 与对话历史将无法恢复。`);
+    if (!ok) return;
+
+    if (typingCard === task.id) {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setTypingCard(null);
+    }
+
+    try {
+      await deleteSession(task.id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // 404: already gone on server — still clear local UI
+      if (!/404|not found/i.test(msg)) {
+        showToast(`删除失败：${msg}`);
+        return;
+      }
+    }
+
+    historyLoadedRef.current.delete(task.id);
+    setTasks((current) => current.filter((item) => item.id !== task.id));
+    setMessages((current) => {
+      const next = { ...current };
+      delete next[task.id];
+      return next;
+    });
+    setChatDrafts((current) => {
+      const next = { ...current };
+      delete next[task.id];
+      return next;
+    });
+    setChatAttachments((current) => {
+      const next = { ...current };
+      delete next[task.id];
+      return next;
+    });
+    setInboxItems((current) => current.filter((item) => item.taskId !== task.id));
+    if (artifactTask?.id === task.id) setArtifactTask(null);
+
+    const deletedIndex = tasks.findIndex((item) => item.id === task.id);
+    if (deletedIndex >= 0 && currentIndex === deletedIndex + 1) {
+      goHome();
+    } else if (deletedIndex >= 0 && currentIndex > deletedIndex + 1) {
+      setCurrentIndex((i) => Math.max(0, i - 1));
+    }
+
+    showToast(`已删除任务「${task.shortTitle}」`);
+  }, [artifactTask?.id, currentIndex, goHome, showToast, tasks, typingCard]);
+
   const openNewTask = useCallback((draft = "", category = "自由任务", returnView: MainView = "workspace") => {
     collapseChat();
     setNewTaskDraft(draft);
@@ -317,7 +370,8 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       const list = [...(current[cardId] ?? [])];
       const last = list[list.length - 1];
       if (last?.role === "agent") {
-        list[list.length - 1] = { role: "agent", text: last.text + delta };
+        // Preserve files: blob may arrive before more text deltas.
+        list[list.length - 1] = { ...last, text: last.text + delta };
       } else {
         list.push({ role: "agent", text: delta });
       }
@@ -386,7 +440,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
           const list = [...(current[cardId] ?? [])];
           const last = list[list.length - 1];
           if (last?.role === "agent" && !last.text.trim() && !(last.files?.length)) {
-            list[list.length - 1] = { role: "agent", text: "（本轮无文本回复；若正在跑工具，请稍候在历史中查看。）" };
+            list[list.length - 1] = { ...last, text: "（本轮无文本回复；若正在跑工具，请稍候在历史中查看。）" };
           }
           return { ...current, [cardId]: list };
         });
@@ -419,7 +473,10 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
         const list = [...(current[cardId] ?? [])];
         const last = list[list.length - 1];
         if (last?.role === "agent") {
-          list[list.length - 1] = { role: "agent", text: last.text || `[错误] ${err}` };
+          list[list.length - 1] = {
+            ...last,
+            text: last.text || `[错误] ${err}`,
+          };
         } else {
           list.push({ role: "agent", text: `[错误] ${err}` });
         }
@@ -577,8 +634,11 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
         setMessages((current) => {
           const list = [...(current[newTask.id] ?? [])];
           const last = list[list.length - 1];
-          if (last?.role === "agent") list[list.length - 1] = { role: "agent", text: `[错误] ${err}` };
-          else list.push({ role: "agent", text: `[错误] ${err}` });
+          if (last?.role === "agent") {
+            list[list.length - 1] = { ...last, text: last.text || `[错误] ${err}` };
+          } else {
+            list.push({ role: "agent", text: `[错误] ${err}` });
+          }
           return { ...current, [newTask.id]: list };
         });
         showToast(err);
@@ -741,7 +801,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const visibleSidebarTasks = sidebarPanel === "pending" ? pendingTasks : sidebarPanel === "deliveries" ? deliveryTasks : tasks;
   const renderCardAt = (index: number) => {
     const task = index === 0 ? null : tasks[index - 1];
-    return task ? <TaskCard task={task} onOpenArtifact={setArtifactTask} /> : <OverviewCard tasks={tasks} onHandleNext={() => pendingTasks[0] && selectTask(pendingTasks[0])} />;
+    return task ? <TaskCard task={task} onOpenArtifact={setArtifactTask} onDelete={deleteTask} /> : <OverviewCard tasks={tasks} onHandleNext={() => pendingTasks[0] && selectTask(pendingTasks[0])} />;
   };
 
   const renderTaskUnit = (index: number, interactive: boolean, visualExpanded = false) => {
@@ -793,7 +853,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
                   />
                 </div>
               ) : unitTask ? (
-                <CompactTaskContext task={unitTask} onOpenArtifact={setArtifactTask} />
+                <CompactTaskContext task={unitTask} onOpenArtifact={setArtifactTask} onDelete={interactive ? deleteTask : undefined} />
               ) : (
                 <CompactOverviewContext
                   tasks={tasks}
@@ -850,17 +910,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
             <div className="quick-actions">
               {expanded && (
                 <>
-                  {onChangeWorkspace && (
-                    <button
-                      type="button"
-                      className="chat-top-icon"
-                      onClick={onChangeWorkspace}
-                      aria-label="切换工作区"
-                      title="切换工作区"
-                    >
-                      <Grid2X2 size={16} />
-                    </button>
-                  )}
                   <button
                     type="button"
                     className="chat-top-icon"
@@ -987,6 +1036,10 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     );
   };
 
+  const liveArtifactTask = artifactTask
+    ? (tasks.find((t) => t.id === artifactTask.id) ?? artifactTask)
+    : null;
+
   return (
     <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} data-main-view={mainView}>
       {!bootReady && (
@@ -1100,6 +1153,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
                   active={currentTask?.id === task.id}
                   onSelect={() => selectTask(task)}
                   onOpenArtifact={setArtifactTask}
+                  onDelete={deleteTask}
                 />
               ))}
             </div>
@@ -1119,6 +1173,8 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
             hapticsEnabled={hapticsEnabled}
             onToggleNotifications={() => setNotificationsEnabled((current) => !current)}
             onToggleHaptics={() => setHapticsEnabled((current) => !current)}
+            workspace={workspace}
+            onChangeWorkspace={onChangeWorkspace}
             onToast={showToast}
             openModelsOnMount={bootReady && openModelsOnce}
             onModelsAutoOpened={() => setOpenModelsOnce(false)}
@@ -1158,11 +1214,6 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
           </div>
           {!chatExpanded && (
             <div className="stage-actions">
-              {onChangeWorkspace && (
-                <button type="button" className="icon-button" onClick={onChangeWorkspace} aria-label="切换工作区" title="切换工作区">
-                  <Grid2X2 size={18} />
-                </button>
-              )}
               <button type="button" className="icon-button" onClick={() => setInboxOpen(true)} aria-label={`收件箱，${unreadCount} 条未读`}><Inbox size={18} />{unreadCount > 0 && <span className="button-badge">{unreadCount}</span>}</button>
             </div>
           )}
@@ -1214,13 +1265,19 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
         )}
       </main>
 
-      {artifactTask && (
+      {liveArtifactTask && (
         <ArtifactDrawer
-          task={artifactTask}
+          task={liveArtifactTask}
+          files={collectDeliverableFiles(
+            liveArtifactTask.deliverables,
+            messages[liveArtifactTask.id] ?? [],
+          )}
           onClose={() => setArtifactTask(null)}
           onSave={saveArtifact}
           onRevise={reviseArtifact}
-          onDownload={(fileName) => showToast(`${fileName} 已准备下载（演示）`)}
+          onDownload={(fileName) =>
+            showToast(`${fileName} 暂无附件数据，无法下载（刷新后需重新交付）`)
+          }
         />
       )}
       {inboxOpen && (

@@ -44,3 +44,17 @@ async def test_history_filters_roles_kind_and_markers(tmp_path: str) -> None:
         {"role": "assistant", "text": "\u65e5\u62a5", "kind": "schedule.display"},
         {"role": "user", "text": "\u770b\u56fe"},
     ]
+
+
+@pytest.mark.anyio
+async def test_history_delete_removes_file(tmp_path: str) -> None:
+    hm = HistoryManager()
+    hist_dir = anyio.Path(str(tmp_path)) / "histories"
+    await hist_dir.mkdir(parents=True)
+    path = hist_dir / "s-del.jsonl"
+    await path.write_text('{"role": "user", "content": "x", "kind": "chat"}\n', encoding="utf-8")
+    assert await path.exists()
+    await hm.delete(str(tmp_path), "s-del")
+    assert not await path.exists()
+    # Missing file is fine
+    await hm.delete(str(tmp_path), "s-del")

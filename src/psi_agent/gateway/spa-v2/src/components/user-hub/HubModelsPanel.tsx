@@ -95,7 +95,7 @@ export default function HubModelsPanel({
       onClose={onClose}
       title={(
         <div className="hub-models-title">
-          <span>大模型</span>
+          <span>模型池</span>
           <button
             type="button"
             className="hub-link"

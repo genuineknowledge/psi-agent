@@ -169,7 +169,9 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 
 Session 运行时 crash 时，`_run_session` 的 except 块从 `_entries` 中移除该 entry 并调用 `_persist`。
 
-workspace 中的 history JSONL 不受影响。
+REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
+- 删除 workspace 下 ``histories/{id}.jsonl``（``HistoryManager.delete``，文件不存在则忽略）
+- 清除 ``TitleManager`` 中该会话标题
 
 **注意（有意为之）**：删除 AI **不会**级联删除依赖它的 Session。被删 AI 的 socket 失效后，挂在其上的 Session 仍存活但不可用——由前端负责不再访问这类失效 Session，后端不做级联清理。
 
@@ -193,7 +195,7 @@ workspace 中的 history JSONL 不受影响。
 | DELETE | `/ais/{ai_id}` | 删除 AI（200/404） |
 | GET | `/ais` | 列出所有 AI |
 | POST | `/sessions` | 创建 Session（201） |
-| DELETE | `/sessions/{session_id}` | 删除 Session（200/404） |
+| DELETE | `/sessions/{session_id}` | 删除 Session + history JSONL + 标题（200/404） |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI chat（SSE） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史（``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`） |

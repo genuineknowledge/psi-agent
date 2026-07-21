@@ -244,9 +244,14 @@ async def _create_session(request: web.Request) -> web.Response:
 
 async def _delete_session(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
+    hm: HistoryManager = request.app["hm"]
+    tm: TitleManager = request.app["tm"]
     session_id = request.match_info["session_id"]
     try:
+        workspace = sm.get_workspace(session_id)
         await sm.delete(session_id)
+        await hm.delete(workspace, session_id)
+        await tm.delete(session_id)
         return _json({"id": session_id, "status": "stopped"})
     except LookupError as e:
         return _error(str(e), status=404)

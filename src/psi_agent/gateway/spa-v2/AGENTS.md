@@ -13,8 +13,11 @@
 | 技术栈 | Vue 3 + Pinia | React 19 + Vite |
 | base | `/spa/` | `/spa-v2/` |
 | 对话 | Gateway SSE | 同左（同一套 API） |
-| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 会写入 `deliverables` |
-| 模板/收件箱 | Hub / 侧栏 | 模板仍为本地 Mock；收件箱暂空（无独立通知 API） |
+| 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染 MD/HTML/图片/文本（无 blob 时明确空态，非占位纸面） |
+| 账户区 | 头像菜单合一 | 头像菜单仅资料/登录；**模型池**与**设置**为侧栏独立快捷入口 |
+| 默认工作区 | 无 / 必须先选 | 无记忆时用 Gateway **cwd**（从 haitun-workspace 启动即该目录）；遗留字面量 `workspace` 会忽略 |
+| 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 选择页；**浏览**按钮走 `/workspace/places` + `/browse`（对齐 v1） |
+| 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
 
 ## 映射
 
@@ -33,6 +36,10 @@
 - 气泡渲染同样 `stripTransferMarkers`（与 v1 一致）。
 
 任务 `status` / `deliveryState` 仍是前端展示字段（Gateway 尚无 Task/Delivery 资源）；`blob` 到达时会把文件名并入宝箱，不自动把任务标为已完成。
+
+交付物抽屉预览依赖本会话消息上的 SSE `blob`（base64）。流式追加文本时必须保留 `message.files`，否则 `[SEND:]` 先于后续 content 到达时附件会被冲掉，宝箱只剩文件名、预览空态。
+
+**暂缓**：`/history` 不带回附件。刷新后需重新 `[SEND:]` 才能再预览——附件持久化以后再做。
 
 ## 本地开发
 

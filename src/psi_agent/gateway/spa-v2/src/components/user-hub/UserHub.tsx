@@ -19,6 +19,8 @@ type Props = {
   hapticsEnabled: boolean
   onToggleNotifications: () => void
   onToggleHaptics: () => void
+  workspace?: string
+  onChangeWorkspace?: () => void
   onToast?: (message: string) => void
   onAisChanged?: (ais: AiInfo[]) => void
   /** Open models panel on first mount (e.g. empty AI pool). */
@@ -28,8 +30,7 @@ type Props = {
 }
 
 /**
- * spa v1 UserHub 等价物：点头像弹出菜单 → 资料 / 大模型 / 登录 / 设置。
- * 挂在侧栏左下角账户区（不再使用三点菜单）。
+ * 侧栏账户区：头像菜单（资料 / 登录）与模型池、设置分入口。
  */
 export default function UserHub({
   selectedAiId,
@@ -38,6 +39,8 @@ export default function UserHub({
   hapticsEnabled,
   onToggleNotifications,
   onToggleHaptics,
+  workspace,
+  onChangeWorkspace,
   onToast,
   onAisChanged,
   openModelsOnMount = false,
@@ -95,37 +98,54 @@ export default function UserHub({
 
   return (
     <div className="user-hub" ref={rootRef}>
-      <button
-        type="button"
-        className="user-hub-trigger"
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        title={`${displayName} — 用户菜单`}
-        onClick={() => setMenuOpen((v) => !v)}
-      >
-        <span className="account-avatar user-hub-avatar">
-          {userAvatar ? <img src={userAvatar} alt="" /> : initial || 'U'}
-        </span>
-        <span className="user-hub-meta">
-          <strong>{displayName}</strong>
-          <span><i /> Agent 在线</span>
-        </span>
-      </button>
+      <div className="user-hub-row">
+        <button
+          type="button"
+          className="user-hub-trigger"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          title={`${displayName} — 账户`}
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          <span className="account-avatar user-hub-avatar">
+            {userAvatar ? <img src={userAvatar} alt="" /> : initial || 'U'}
+          </span>
+          <span className="user-hub-meta">
+            <strong>{displayName}</strong>
+            <span><i /> Agent 在线</span>
+          </span>
+        </button>
+
+        <div className="user-hub-shortcuts" role="toolbar" aria-label="模型与设置">
+          <button
+            type="button"
+            className={`user-hub-shortcut${panel === 'models' || panel === 'advanced' ? ' active' : ''}`}
+            title="模型池"
+            aria-label={`模型池${aiCount > 0 ? `，${aiCount} 个` : ''}`}
+            onClick={() => openPanel('models')}
+          >
+            <Bot size={16} />
+            {aiCount > 0 ? <em className="user-hub-shortcut-badge">{aiCount}</em> : null}
+          </button>
+          <button
+            type="button"
+            className={`user-hub-shortcut${panel === 'settings' ? ' active' : ''}`}
+            title="设置"
+            aria-label="设置"
+            onClick={() => openPanel('settings')}
+          >
+            <Settings2 size={16} />
+          </button>
+        </div>
+      </div>
 
       {menuOpen && (
         <div className="user-hub-menu" role="menu">
           <button type="button" role="menuitem" onClick={() => openPanel('profile')}>
             <UserRound size={15} /> 我的资料
           </button>
-          <button type="button" role="menuitem" onClick={() => openPanel('models')}>
-            <Bot size={15} /> 大模型
-            {aiCount > 0 ? <em className="user-hub-menu-badge">{aiCount}</em> : null}
-          </button>
           <button type="button" role="menuitem" onClick={() => openPanel('login')}>
             <LogIn size={15} /> 登录 <span className="muted">本地</span>
-          </button>
-          <button type="button" role="menuitem" onClick={() => openPanel('settings')}>
-            <Settings2 size={15} /> 设置
           </button>
         </div>
       )}
@@ -155,6 +175,8 @@ export default function UserHub({
       <HubSettingsPanel
         show={panel === 'settings'}
         onClose={() => setPanel(null)}
+        workspace={workspace}
+        onChangeWorkspace={onChangeWorkspace}
         notificationsEnabled={notificationsEnabled}
         hapticsEnabled={hapticsEnabled}
         onToggleNotifications={onToggleNotifications}

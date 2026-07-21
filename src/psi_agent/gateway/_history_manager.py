@@ -50,3 +50,14 @@ class HistoryManager:
             messages.append(row)
         logger.debug(f"History for session {session_id!r}: {len(messages)} displayable message(s)")
         return messages
+
+    async def delete(self, workspace: str, session_id: str) -> None:
+        """Remove ``histories/{session_id}.jsonl`` if present (best-effort)."""
+        path = anyio.Path(workspace) / "histories" / f"{session_id}.jsonl"
+        try:
+            await path.unlink()
+            logger.info(f"Deleted history file for session {session_id!r} at {path!r}")
+        except FileNotFoundError:
+            logger.debug(f"No history file to delete for session {session_id!r} at {path!r}")
+        except OSError as e:
+            logger.warning(f"Failed to delete history for session {session_id!r}: {e!r}")

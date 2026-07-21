@@ -12,31 +12,59 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArtifactFileBody } from "../components/ArtifactFileBody";
+import {
+  downloadChatFile,
+  findDeliverableFile,
+} from "../utils/filePreviewUtils";
 import { mobileHaptic, prefersReducedMotion } from "./client-feedback";
-import type { InboxItem, Task } from "./model";
+import type { ChatFile, InboxItem, Task } from "./model";
 import { ProgressRing, TreasureVisual } from "./primitives";
+
+function fileIcon(name: string) {
+  const n = name.toLowerCase();
+  if (n.endsWith(".xlsx") || n.endsWith(".xls") || n.endsWith(".csv")) return <Grid2X2 size={17} />;
+  if (n.endsWith(".pdf") || n.endsWith(".md") || n.endsWith(".markdown") || n.endsWith(".txt")) {
+    return <FileText size={17} />;
+  }
+  return <FileArchive size={17} />;
+}
 
 export function ArtifactDrawer({
   task,
+  files = [],
   onClose,
   onSave,
   onRevise,
   onDownload,
 }: {
   task: Task;
+  /** Live SSE blob payloads keyed by deliverable basename (may be empty after reload). */
+  files?: ChatFile[];
   onClose: () => void;
   onSave: (task: Task) => void;
   onRevise: (task: Task) => void;
-  onDownload: (fileName: string) => void;
+  onDownload?: (fileName: string) => void;
 }) {
   const [selectedFile, setSelectedFile] = useState(0);
   const [accepting, setAccepting] = useState(false);
   const acceptTimer = useRef<number | null>(null);
   const empty = task.deliverables.length === 0;
+
+  useEffect(() => {
+    setSelectedFile((i) => Math.min(i, Math.max(0, task.deliverables.length - 1)));
+  }, [task.deliverables]);
+
   useEffect(() => () => {
     if (acceptTimer.current) window.clearTimeout(acceptTimer.current);
   }, []);
+
+  const selectedName = task.deliverables[selectedFile] ?? "";
+  const selectedBlob = useMemo(
+    () => (selectedName ? findDeliverableFile(selectedName, files) : undefined),
+    [selectedName, files],
+  );
 
   const acceptWithCelebration = () => {
     if (accepting || empty) return;
@@ -46,6 +74,14 @@ export function ArtifactDrawer({
       () => onSave(task),
       prefersReducedMotion() ? 30 : 820,
     );
+  };
+
+  const handleDownload = () => {
+    if (selectedBlob) {
+      downloadChatFile(selectedBlob);
+      return;
+    }
+    onDownload?.(selectedName);
   };
 
   return (
@@ -82,7 +118,7 @@ export function ArtifactDrawer({
                   key={file}
                   onClick={() => setSelectedFile(index)}
                 >
-                  {file.endsWith(".xlsx") ? <Grid2X2 size={17} /> : file.endsWith(".pdf") ? <FileText size={17} /> : <FileArchive size={17} />}
+                  {fileIcon(file)}
                   <span>{file}</span>
                   <ChevronRight size={15} />
                 </button>
@@ -91,21 +127,30 @@ export function ArtifactDrawer({
 
             <div className="document-preview">
               <div className="document-toolbar">
-                <span>预览 · 第 1 / 8 页</span>
-                <button type="button" onClick={() => onDownload(task.deliverables[selectedFile])} aria-label={`下载 ${task.deliverables[selectedFile]}`}><Download size={16} /></button>
+                <span className="document-toolbar-label" title={selectedName}>
+                  预览 · {selectedName || "未选择"}
+                </span>
+                <button
+                  type="button"
+                  disabled={!selectedBlob && !onDownload}
+                  onClick={handleDownload}
+                  aria-label={`下载 ${selectedName}`}
+                >
+                  <Download size={16} />
+                </button>
               </div>
-              <div className="paper-sheet">
-                <span className="paper-brand">HAITUN AGENT</span>
-                <h3>{task.deliverables[selectedFile]?.replace(/\.(pdf|docx|xlsx)$/i, "")}</h3>
-                <p>执行摘要 · 2026 年 7 月 16 日</p>
-                <div className="paper-rule" />
-                <strong>核心结论</strong>
-                <div className="paper-lines"><span /><span /><span /></div>
-                <div className="paper-chart">
-                  <span style={{ height: "38%" }} /><span style={{ height: "58%" }} /><span style={{ height: "76%" }} /><span style={{ height: "64%" }} /><span style={{ height: "88%" }} />
+              {selectedBlob ? (
+                <ArtifactFileBody key={`${selectedBlob.name}:${selectedBlob.data.slice(0, 32)}`} file={selectedBlob} />
+              ) : (
+                <div className="artifact-preview-missing">
+                  <FileText size={28} />
+                  <strong>暂无文件内容可预览</strong>
+                  <p>
+                    本会话尚未收到该文件的附件数据（例如刷新后历史不带回 blob）。
+                    请让 Agent 再次通过 <code>[SEND:]</code> 交付，或从对话气泡中打开预览。
+                  </p>
                 </div>
-                <div className="paper-caption">关键指标与趋势概览</div>
-              </div>
+              )}
             </div>
 
             <footer className="drawer-footer">
