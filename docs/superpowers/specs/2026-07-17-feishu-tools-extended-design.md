@@ -137,7 +137,7 @@ session→channel 无主动推送的底座缺口，不改内核。**两目录未
 
 ---
 
-## 9. 后续增强：多用户 UAT 隔离 + scope 固定（2026-07-20）
+## 9. 后续增强：多用户 UAT 隔离 + scope 固定 + 建知识库（2026-07-20）
 
 **分支**：`feishu-per-user-uat`。场景：公司里每人与 agent 各有对话框，用全局搜索查
 知识库 / 审阅交付物，需每人各自授权、各搜自己可见的文档，互不覆盖。
@@ -169,12 +169,25 @@ session→channel 无主动推送的底座缺口，不改内核。**两目录未
 - UAT 仍明文存（`FileTokenStore` 本就 dev-only，会告警）；生产需自定义 TokenStore。
 - `auth_complete_impl` 不校验 CSRF state（沿用既有行为，仅把 pending 文件按用户分开）。
 
-### 9.4 文件变更
+### 9.4 创建知识库（wiki space，复用 UAT）
+
+此前 wiki 工具只能往**已有**知识库里建文档（`feishu_wiki_create_doc`），不能建**新**知识库。
+
+- `feishu_wiki_create_space(name, description, open_sharing, user_key)` →
+  `POST /open-apis/wiki/v2/spaces`。**该接口只吃 UAT（不支持 tenant token）**，新库归授权
+  用户所有——正好复用 §9.1 的 UAT 按用户隔离机制（`_get_uat_client` + `_get_valid_uat(user_key)`
+  + `RequestOption.user_access_token`，与 `feishu_docs_search` 同款）。
+- `open_sharing` 仅接受 `open` / `closed`（或空），impl 侧校验非法值直接报错，不打 API。
+- 限流约 10 次/分钟（飞书侧）；需 `wiki:space:write_only` 或 `wiki:wiki` scope。
+- 未授权返回 `need_auth=True`，与搜索一致，走「先问再授权」流程。
+
+### 9.5 文件变更
 
 | 操作 | 文件 | 说明 |
 |---|---|---|
-| 修改 | `tools/_feishu_impl.py` | 四函数加 `user_key`；`_norm_user_key`；`_pending_auth_path` 按用户分文件 + 防穿越 |
+| 修改 | `tools/_feishu_impl.py` | 四函数加 `user_key`；`_norm_user_key`；`_pending_auth_path` 按用户分文件 + 防穿越；新增 `create_wiki_space_impl`（UAT） |
 | 修改 | `tools/feishu_auth.py` | `feishu_auth_start`（去 `scopes`、固定 scope）/ `feishu_auth_complete` 暴露 `user_key` |
 | 修改 | `tools/feishu_docs.py` | `feishu_docs_search` 暴露 `user_key` |
-| 修改 | `tests/test_feishu.py` | 按用户隔离 / pending 分离且防穿越 / search 转发 user_key / scope 恒为默认值 等测试 |
+| 修改 | `tools/feishu_wiki.py` | 新增 `feishu_wiki_create_space` 工具 |
+| 修改 | `tests/test_feishu.py` | 按用户隔离 / pending 分离且防穿越 / search 转发 user_key / scope 恒为默认值 / 建库(UAT 请求组装、未授权、非法 open_sharing、转发 user_key) 等测试 |
 | 修改 | `TOOLS.md` | 引导 agent 传 `sender_open_id` 作 `user_key`，先问再授权 |

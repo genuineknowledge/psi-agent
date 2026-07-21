@@ -56,6 +56,9 @@ message_id / sender_open_id）。需要群里之前的上下文时：
 4. **识别「未授权」信号**：`feishu_docs_search` 未授权时返回 `need_auth=True` /
    `"Not authorized..."`。**收到这个信号时，不要反复重试搜索**，而是按第 3 步询问用户是否授权。
 5. **按用户隔离（多人场景）**：调 `feishu_auth_start` / `feishu_auth_complete` /
-   `feishu_docs_search` 时，把 `<feishu_context>` 里的 `sender_open_id` 作为 `user_key`
-   传入，使每个人各自授权、各搜自己能看到的文档，互不覆盖。同一用户三处要传相同的
-   `user_key`。单聊/单用户场景可留空（共用 `default` 槽）。
+   `feishu_docs_search` / `feishu_wiki_create_space` 时，把 `<feishu_context>` 里的
+   `sender_open_id` 作为 `user_key` 传入，使每个人各自授权、各自操作，互不覆盖。同一用户
+   多处要传相同的 `user_key`。单聊/单用户场景可留空（共用 `default` 槽）。
+6. **创建知识库也需授权**：`feishu_wiki_create_space(name, description, open_sharing, user_key)`
+   同样只吃 UAT（新库归授权用户所有），未授权时也返回 `need_auth=True`，按第 3 步先征得同意
+   再授权。往**已有**知识库里建文档用 `feishu_wiki_create_doc`（无需 UAT）。

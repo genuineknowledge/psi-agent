@@ -127,7 +127,7 @@ pyproject / nuitka / pyinstaller。
 
 > 注：原“不做多用户 UAT”已在第七节落地（按 `user_key` 隔离）。
 
-## 七、后续增强：多用户 UAT 隔离 + scope 固定（2026-07-20，已完成）
+## 七、后续增强：多用户 UAT 隔离 + scope 固定 + 建知识库（2026-07-20，已完成）
 
 分支 `feishu-per-user-uat`。设计规格见 spec 第 9 节。场景：公司里每人与 agent 各有对话框，
 用全局搜索查知识库 / 审阅交付物，需每人各自授权、各搜自己可见的文档，互不覆盖。
@@ -141,6 +141,7 @@ scope（如 `drive:drive:drive:readonly`），飞书拒绝整个授权页。
 - Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
 - Modify: `examples/haitun-workspace/tools/feishu_auth.py`
 - Modify: `examples/haitun-workspace/tools/feishu_docs.py`
+- Modify: `examples/haitun-workspace/tools/feishu_wiki.py`
 - Modify: `examples/haitun-workspace/tests/test_feishu.py`
 - Modify: `examples/haitun-workspace/TOOLS.md`
 - Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 9 节）
@@ -151,10 +152,15 @@ scope（如 `drive:drive:drive:readonly`），飞书拒绝整个授权页。
   正则清洗非 `[A-Za-z0-9_-]` 防路径穿越
 - [x] `feishu_auth_start` 去掉 `scopes` 参数（LLM 碰不到），wrapper 恒传空 → impl 回落固定
   `_DEFAULT_SCOPES`（docs:doc:readonly drive:drive:readonly offline_access）
+- [x] `create_wiki_space_impl` + `feishu_wiki_create_space(name, description, open_sharing, user_key)`：
+  `POST /wiki/v2/spaces`（**只吃 UAT**），复用按用户隔离；`open_sharing` 仅 open/closed；未授权 need_auth
 - [x] 测试：UAT 按 key 隔离不覆盖、pending 分离且防穿越、search 转发 user_key、`_norm_user_key`
-  回落、authorize_url 的 scope 恰为默认值且不含编造 scope、wrapper 无 scopes 参数
+  回落、authorize_url 的 scope 恰为默认值且不含编造 scope、wrapper 无 scopes 参数、
+  建库(UAT 请求组装 / 未授权 / 非法 open_sharing / 转发 user_key)
 - [x] `TOOLS.md`：引导 agent 传 `sender_open_id` 作 `user_key`，先问再授权
-- [x] 门禁：`ruff check` + `ruff format --check` + pytest（feishu 130 passed）
-- [x] Commit `feat(haitun/feishu): 飞书全局搜索 UAT 按用户隔离`（`c1c44e9f`）；scope 修复 `721b9fe0`
+- [x] 门禁：`ruff check` + `ruff format --check` + pytest（feishu 134 passed）
+- [x] Commit `feat(haitun/feishu): 飞书全局搜索 UAT 按用户隔离`（`c1c44e9f`）；scope 修复 `721b9fe0`；建库工具（本次）
+
+**仍未做（诚实边界）**：OAuth 回调仍手动回传 code；UAT 仍明文存；`auth_complete` 不校验 CSRF state。
 
 **仍未做（诚实边界）**：OAuth 回调仍手动回传 code；UAT 仍明文存；`auth_complete` 不校验 CSRF state。

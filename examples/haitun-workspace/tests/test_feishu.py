@@ -1775,6 +1775,66 @@ async def test_create_wiki_node_requires_space_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_wiki_space_builds_uat_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _CapturingUatClient({"code": 0, "data": {"space": {"space_id": "spNEW", "name": "团队库"}}})
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
+
+    async def _uat(user_key: str = "") -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    result = await _impl.create_wiki_space_impl("团队库", "描述", "closed", "ou_a")
+    req = client.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/wiki/v2/spaces"
+    assert _impl.AccessTokenType.USER in req.token_types
+    assert req.body == {"name": "团队库", "description": "描述", "open_sharing": "closed"}
+    assert client.option.user_access_token == "uat_tok"
+    assert result["ok"] is True
+    assert result["space_id"] == "spNEW"
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_space_not_authorized(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+
+    async def _no_uat(user_key: str = "") -> Any:
+        return None
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _no_uat)
+    result = await _impl.create_wiki_space_impl("团队库")
+    assert result["ok"] is False
+    assert result.get("need_auth") is True
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_space_rejects_bad_open_sharing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+
+    async def _uat(user_key: str = "") -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    result = await _impl.create_wiki_space_impl("团队库", "", "public")
+    assert result["ok"] is False
+    assert "open_sharing" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_wiki_space_forwards_user_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+    seen: dict[str, str] = {}
+
+    async def _capture(user_key: str = "") -> Any:
+        seen["user_key"] = user_key
+        return None
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _capture)
+    await _impl.create_wiki_space_impl("团队库", user_key="ou_zhang")
+    assert seen["user_key"] == "ou_zhang"
+
+
+@pytest.mark.asyncio
 async def test_list_wiki_spaces_paginates(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke(
         {

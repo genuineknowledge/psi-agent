@@ -1090,6 +1090,69 @@ async def search_docs_impl(
     }
 
 
+def _build_wiki_space_create_request(name: str, description: str, open_sharing: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/wiki/v2/spaces"
+    req.token_types = {AccessTokenType.USER}
+    body: dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if description:
+        body["description"] = description
+    if open_sharing:
+        body["open_sharing"] = open_sharing
+    req.body = body
+    return req
+
+
+async def create_wiki_space_impl(
+    name: str, description: str = "", open_sharing: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """Create a new Feishu wiki space (knowledge base). Needs a user_access_token.
+
+    Feishu's create-space API only accepts a UAT (not the bot's tenant token); the
+    new space is owned by the authorizing user. Returns the new space_id + name.
+    """
+    client = _get_uat_client()
+    if client is None:
+        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
+    uat = await _get_valid_uat(user_key)
+    if uat is None or not uat.access_token:
+        return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
+
+    sharing = open_sharing.strip()
+    if sharing and sharing not in ("open", "closed"):
+        return _error("open_sharing must be 'open' or 'closed' (or empty).")
+    req = _build_wiki_space_create_request(name.strip(), description.strip(), sharing)
+    from lark_channel.core.model import RequestOption  # noqa: PLC0415
+
+    option = RequestOption.builder().user_access_token(uat.access_token).build()
+    try:
+        resp = await client.arequest(req, option)
+    except Exception as exc:
+        return _error(f"Feishu create wiki space failed: {type(exc).__name__}: {exc}")
+
+    body = _parse_resp_body(resp)
+    if body.get("code") not in (0, None):
+        return {
+            "ok": False,
+            "code": body.get("code"),
+            "msg": body.get("msg", ""),
+            "message": f"Feishu API error {body.get('code')}: {body.get('msg', '')}",
+        }
+    data = body.get("data", {}) if isinstance(body.get("data"), dict) else {}
+    space = data.get("space", {}) if isinstance(data.get("space"), dict) else {}
+    space_id = space.get("space_id", "")
+    return {
+        "ok": True,
+        "space_id": space_id,
+        "name": space.get("name", name),
+        "description": space.get("description", description),
+        "url": f"{_DOC_BASE_URL}/wiki/settings/{space_id}" if space_id else "",
+    }
+
+
 def _parse_resp_body(resp: Any) -> dict[str, Any]:
     """Extract the JSON body dict from an SDK BaseResponse (raw.content bytes)."""
     raw = getattr(resp, "raw", None)

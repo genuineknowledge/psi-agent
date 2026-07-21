@@ -68,3 +68,22 @@ async def feishu_wiki_create_doc(space_id: str, title: str, parent_node_token: s
         parent_node_token: Optional parent node token; empty creates a top-level node.
     """
     return _f.dumps_result(await _f.create_wiki_node_impl(space_id, title, "docx", parent_node_token))
+
+
+async def feishu_wiki_create_space(name: str, description: str = "", open_sharing: str = "", user_key: str = "") -> str:
+    """Create a new Feishu/Lark wiki space (knowledge base).
+
+    Needs prior user authorization (see ``feishu_auth_start``) — Feishu's create-space
+    API only accepts a user_access_token, and the new space is owned by that user
+    (the bot's app credentials cannot create one). After it succeeds, add documents
+    with ``feishu_wiki_create_doc(space_id, title)``. Rate-limited to ~10/min.
+
+    Args:
+        name: The knowledge base name.
+        description: Optional description.
+        open_sharing: Optional sharing status — "open" or "closed" (empty = Feishu default).
+        user_key: The message sender's open_id (from ``<feishu_context>``), so the space
+            is created as that authorized user. Must match the ``user_key`` used when
+            authorizing. Empty uses the shared ``default`` slot.
+    """
+    return _f.dumps_result(await _f.create_wiki_space_impl(name, description, open_sharing, user_key))
