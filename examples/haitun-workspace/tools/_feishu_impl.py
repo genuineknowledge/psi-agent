@@ -112,7 +112,7 @@ def _resp_to_result(resp: Any) -> dict[str, Any]:
                     code = body.get("code")
                 if not msg:
                     msg = body.get("msg", "") or ""
-        except (ValueError, UnicodeDecodeError):
+        except ValueError, UnicodeDecodeError:
             pass
 
     ok = code == 0
