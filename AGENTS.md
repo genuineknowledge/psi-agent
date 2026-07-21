@@ -103,7 +103,8 @@ src/
         ├── _workspace_manager.py   # 目录浏览
         ├── _openapi.py             # OpenAPI schema 生成
         ├── _tray.py                # 系统托盘图标 (pystray)
-        ├── _webview.py            # 原生 webview 窗口 (pywebview)
+        ├── _webview.py            # webview 子进程 wrapper (pywebview)
+        ├── _webview_main.py       # webview 子进程入口（纯 pywebview，不 import psi_agent）
         └── spa/                    # Vue 3 SPA 前端（Vite + SFC）
 ```
 
@@ -230,11 +231,13 @@ async def handler(request):
 - **ruff**: `select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]`
 - **ty**: 全局 `ty check .`
 - **per-file-ignores**: **零条**。所有代码通过自身符合规则，不靠抑制
-- **核心代码（`src/` + `tests/`）仅 7 处 ty:ignore**（无法避免）：
-  - `tests/integration/conftest.py:112` — pytest async generator fixture 的返回类型局限（`yield` 导致函数被推断为 AsyncGenerator，与标注的 MockAIServer 冲突）
-  - `src/psi_agent/gateway/server.py:257` — `anyio.to_thread.run_sync(file_field.file.read)` 返回类型 Any，ty 无法推断
-  - `src/psi_agent/gateway/__init__.py:152,167,169`（3 处）— `anyio.to_thread.run_sync(webbrowser.open, ...)` / `anyio.to_thread.run_sync(tray.wait_stop, ...)` / `anyio.to_thread.run_sync(wv.wait_closed, ...)` 同上
-  - `src/psi_agent/gateway/_webview.py:40`（1 处）— `events.closing` 无法解析，因 webview 由 `__import__("webview")` 动态导入
+- **核心代码（`src/` + `tests/`）共 11 行 ty:ignore**（无法避免的第三方类型局限）：
+  - `tests/integration/conftest.py:112` — pytest async generator fixture 的返回类型局限
+  - `src/psi_agent/gateway/server.py:334` — `anyio.to_thread.run_sync(file_field.file.read)` 返回类型 Any，ty 无法推断
+  - `src/psi_agent/gateway/__init__.py:166` — `anyio.to_thread.run_sync(webbrowser.open, ...)` 同上
+  - `src/psi_agent/gateway/_tray.py:84` — `anyio.to_thread.run_sync(self._q.get, ...)` 同上
+  - `src/psi_agent/gateway/_webview.py:97` — `anyio.to_thread.run_sync(self._evt_q.get, ...)` 同上
+  - `src/psi_agent/gateway/_webview_main.py:49,55,62,65,69`（5 处）— `__import__("webview")` 返回 Window 类型 ty 无法推导具体成员
   - `src/psi_agent/channel/cli/client.py:16` — `anyio.to_thread.run_sync(sys.stdin.read)` 同上
 - **例外**：`examples/` 下的示例 workspace（如 `a-serper-mcp-workspace/tools/_mcp.py`）含若干 `# ty: ignore`（动态 MCP 工具的运行时签名构造），属示例代码，不计入上述核心约定。
 

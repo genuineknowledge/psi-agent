@@ -18,11 +18,10 @@ async def test_attention_hub_notify_calls_bound_targets() -> None:
     hub.bind(tray=tray, webview=webview)
 
     await hub.notify()
-    # schedule_notify runs notify_sync on a daemon thread
     await anyio.sleep(0.05)
 
     tray.request_attention.assert_called_once()
-    webview.request_attention.assert_called_once()
+    webview.send_sync.assert_called_once_with("flash")
 
 
 @pytest.mark.anyio

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import queue
 import threading
-import webbrowser
 from typing import Any
 
+import anyio
 from loguru import logger
 from PIL import Image
 
@@ -15,29 +16,41 @@ from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 
 
 class GatewayTray:
-    """System tray icon that provides quick access to Gateway Web Console."""
+    """System tray icon. Emits "open" and "quit" events on its `events` stream."""
 
     def __init__(
         self,
         url: str,
         icon_path: str,
         app_name: str = DEFAULT_APP_NAME,
-        on_open: Any = None,
     ) -> None:
         self._url = url
         self._icon_path = icon_path
         self._app_name = app_name
-        self._on_open = on_open if on_open is not None else self._open_browser
-        self._stop_event = threading.Event()
         self._icon: Any = None
         self._thread: threading.Thread | None = None
         self._normal_image: Any = None
         self._highlight_image: Any = None
+        self._q: queue.Queue[str] = queue.Queue()
+        self._send_stream: Any = None
+        self._recv_stream: Any = None
+
+    @property
+    def events(self) -> Any:
+        if self._recv_stream is None:
+            raise RuntimeError("GatewayTray not started")
+        return self._recv_stream
 
     def start(self) -> None:
-        """Start the system tray icon in a background daemon thread."""
+        """Start the system tray icon in a background daemon thread.
+
+        Must be called from an async context. Events will be pumped to the stream
+        by a background task that must be spawned separately (see _pump_events).
+        """
         if self._thread is not None:
             raise RuntimeError("GatewayTray already started")
+
+        self._send_stream, self._recv_stream = anyio.create_memory_object_stream[str](max_buffer_size=10)
 
         pystray = __import__("pystray")
 
@@ -52,7 +65,7 @@ class GatewayTray:
         try:
             menu = pystray.Menu(
                 pystray.MenuItem(f"打开 {self._app_name}", self._on_open, default=True),
-                pystray.MenuItem("退出", self._quit),
+                pystray.MenuItem("退出", self._on_quit),
             )
             self._icon = pystray.Icon("psi-agent", image, self._app_name, menu)
         except Exception as e:
@@ -63,6 +76,18 @@ class GatewayTray:
         self._thread = threading.Thread(target=self._icon.run, daemon=True)
         self._thread.start()
         logger.info("Gateway system tray icon started")
+
+    async def _pump_events(self) -> None:
+        """Background task: read from threading.Queue and forward to anyio stream."""
+        while True:
+            try:
+                evt: str = await anyio.to_thread.run_sync(self._q.get, abandon_on_cancel=True)  # ty: ignore
+            except anyio.get_cancelled_exc_class():
+                break
+            try:
+                await self._send_stream.send(evt)
+            except anyio.ClosedResourceError, anyio.BrokenResourceError:
+                break
 
     def stop(self) -> None:
         """Stop the tray icon and wait for its thread to finish."""
@@ -79,22 +104,17 @@ class GatewayTray:
         """True if the tray icon thread is alive."""
         return self._thread is not None and self._thread.is_alive()
 
-    def wait_stop(self) -> None:
-        """Block (in a worker thread) until the user requests quit via the tray menu."""
-        self._stop_event.wait()
-
     def request_attention(self) -> None:
         """Pulse tray icon (+ Windows balloon) to draw attention (best-effort)."""
         if self._icon is None or self._normal_image is None or self._highlight_image is None:
             return
         logger.info("Tray attention pulse starting")
         with contextlib.suppress(Exception):
-            # Visible even when icon swap is hard to notice on Windows.
             self._icon.notify("有对话已完成", self._app_name)
         pulse_tray_icon(self._icon, self._normal_image, self._highlight_image)
 
-    def _open_browser(self, icon: Any = None) -> None:
-        webbrowser.open(self._url)
+    def _on_open(self, icon: Any = None) -> None:
+        self._q.put("open")
 
-    def _quit(self, icon: Any = None) -> None:
-        self._stop_event.set()
+    def _on_quit(self, icon: Any = None) -> None:
+        self._q.put("quit")
