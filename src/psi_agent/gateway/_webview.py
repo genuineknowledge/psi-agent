@@ -37,7 +37,6 @@ class WebViewProcess:
         self._send: Any = None
         self._recv: Any = None
         self._process: multiprocessing.Process | None = None
-        self._ready_event = anyio.Event()
 
     async def start(self) -> None:
         if self._process is not None:
@@ -58,7 +57,8 @@ class WebViewProcess:
 
     def send_sync(self, cmd: str) -> None:
         """Thread-safe send — usable from non-async contexts (e.g. AttentionHub daemon thread)."""
-        self._cmd_q.put(cmd)
+        if self._cmd_q is not None:
+            self._cmd_q.put(cmd)
 
     async def stop(self) -> None:
         if self._cmd_q is not None:
@@ -101,8 +101,6 @@ class WebViewProcess:
                 await self._send.send(evt)
             except anyio.ClosedResourceError, anyio.BrokenResourceError:
                 break
-            if evt == "ready":
-                self._ready_event.set()
             if evt == "closed":
                 break
 

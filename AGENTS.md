@@ -103,7 +103,8 @@ src/
         ├── _workspace_manager.py   # 目录浏览
         ├── _openapi.py             # OpenAPI schema 生成
         ├── _tray.py                # 系统托盘图标 (pystray)
-        ├── _webview.py            # 原生 webview 窗口 (pywebview)
+        ├── _webview.py            # webview 子进程 wrapper (pywebview)
+        ├── _webview_main.py       # webview 子进程入口（纯 pywebview，不 import psi_agent）
         └── spa/                    # Vue 3 SPA 前端（Vite + SFC）
 ```
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import webbrowser
+from contextlib import aclosing
 from dataclasses import dataclass
 
 import anyio
@@ -184,20 +185,22 @@ class Gateway:
 
                 try:
                     if wv is not None and tray is not None and tray.is_running():
-                        async for evt in merge(wv.events, tray.events):
-                            match evt:
-                                case "tray.open":
-                                    await wv.send("show")
-                                case "tray.quit":
-                                    await wv.send("destroy")
-                                    break
-                                case "wv.closed":
-                                    break
+                        async with aclosing(merge(wv.events, tray.events)) as stream:
+                            async for evt in stream:
+                                match evt:
+                                    case "tray.open":
+                                        await wv.send("show")
+                                    case "tray.quit":
+                                        await wv.send("destroy")
+                                        break
+                                    case "wv.closed":
+                                        break
                     elif wv is not None:
-                        async for evt in merge(wv.events):
-                            match evt:
-                                case "wv.closed":
-                                    break
+                        async with aclosing(merge(wv.events)) as stream:
+                            async for evt in stream:
+                                match evt:
+                                    case "wv.closed":
+                                        break
                     else:
                         await anyio.sleep_forever()
                 finally:
