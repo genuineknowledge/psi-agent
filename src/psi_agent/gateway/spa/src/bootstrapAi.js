@@ -3,12 +3,12 @@ import { api } from './api.js'
 /**
  * SPA open-and-use defaults. Gateway only exposes POST /ais — no server-side
  * bootstrap. Real upstream key lives only on the company proxy VM
- * (haitun.addchess.cn); client ships a placeholder Bearer.
+ * (misakamikoto.genuineknowledge.cn); client ships a placeholder Bearer.
  */
 export const DEFAULT_REMOTE_AI = {
   provider: 'openai',
   model: 'deepseek-v4-flash-free',
-  base_url: 'https://haitun.addchess.cn',
+  base_url: 'https://misakamikoto.genuineknowledge.cn',
   api_key: 'haitun-default',
 }
 
