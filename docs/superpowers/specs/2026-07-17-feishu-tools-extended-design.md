@@ -48,7 +48,7 @@
 `open.feishu.cn/open-apis/authen/v1/access_token`（用 app_access_token 换 UAT）→
 `/authen/v1/refresh_access_token` 刷新。app_access_token 来自
 `/auth/v3/app_access_token/internal`。UAT 明文存 `<workspace>/.psi/feishu/uat.json`
-（`.psi/` 已 gitignore）。
+（`.psi/` 已 gitignore），**按 `user_key`（用户 open_id）分槽存储**，多人授权互不覆盖（见 §9）。
 
 ---
 
@@ -85,9 +85,11 @@
 
 | 工具 | 端点 / 要点 |
 |---|---|
-| `feishu_auth_start(scopes)` | 拼 `accounts.feishu.cn/.../authorize` URL，state 存 pending |
-| `feishu_auth_complete(code)` | app_access_token 换 UAT，存 FileTokenStore；支持粘整段 URL |
-| `feishu_docs_search(search_key, count, offset, docs_types)` | `POST /suite/docs-api/search/object`（`token_types={USER}`） |
+| `feishu_auth_start(user_key)` | 拼 `accounts.feishu.cn/.../authorize` URL，state 存 pending。**scope 固定不暴露给 LLM**（见 §9.2） |
+| `feishu_auth_complete(code, user_key)` | app_access_token 换 UAT，按 `user_key` 存 FileTokenStore；支持粘整段 URL |
+| `feishu_docs_search(search_key, count, offset, docs_types, user_key)` | `POST /suite/docs-api/search/object`（`token_types={USER}`）；以 `user_key` 对应用户身份搜索 |
+
+`user_key` = 消息发送者 open_id（来自 channel 注入的 `<feishu_context>.sender_open_id`）；空则回落 `default`。详见 §9。
 
 ### 5.5 审批 / 单据下载 / 通讯录（tenant，报告闭环）
 
@@ -128,5 +130,51 @@ session→channel 无主动推送的底座缺口，不改内核。**两目录未
 ## 8. 非目标（YAGNI）
 
 不做代打卡；不做任务 members/reminders/tasklist 增改；不做评论删除/解决；不做 bitable
-记录删改/字段管理；不做多用户 UAT；不做 session 主动推送 / channel 轮询；不在 API 层改
+记录删改/字段管理；不做 session 主动推送 / channel 轮询；不在 API 层改
 飞书审批流定义（“设条件”靠 agent 作为审批人校验）。
+
+> 注：原“不做多用户 UAT”已在 §9 落地（按 `user_key` 隔离）。仍未做的相关项见 §9.3。
+
+---
+
+## 9. 后续增强：多用户 UAT 隔离 + scope 固定（2026-07-20）
+
+**分支**：`feishu-per-user-uat`。场景：公司里每人与 agent 各有对话框，用全局搜索查
+知识库 / 审阅交付物，需每人各自授权、各搜自己可见的文档，互不覆盖。
+
+### 9.1 按用户隔离 UAT
+
+- 此前 UAT 存储 key 写死常量 `"default"`，多人授权互相覆盖。底层 lark SDK 的
+  `FileTokenStore` 本就支持一个 JSON 多 user key，只是没用上。
+- `auth_start_impl` / `auth_complete_impl` / `_get_valid_uat` / `search_docs_impl` 加
+  `user_key` 参数；三个对外工具（`feishu_auth_start` / `feishu_auth_complete` /
+  `feishu_docs_search`）暴露 `user_key`。
+- `_norm_user_key(user_key)`：空 → `"default"`（向后兼容单用户 / 本地 dev）。
+- `_pending_auth_path(user_key)` 按用户分文件（正则清洗非 `[A-Za-z0-9_-]` 字符，防路径
+  穿越），避免并发授权互相清掉对方的 pending 文件。
+- **工具本身不知道调用者身份**（纯函数），故 `user_key` 必须作显式参数：agent 从 channel
+  注入的 `<feishu_context>.sender_open_id` 取值传入，同一用户三处工具须传相同 `user_key`。
+
+### 9.2 scope 固定，不暴露给 LLM（修 20043）
+
+- 现象：agent 调 `feishu_auth_start` 时自行编造无效 scope（如 `drive:drive:drive:readonly`），
+  飞书授权页报错 20043 拒绝整个授权。
+- 修复：`feishu_auth_start` 工具签名**去掉 `scopes`**，LLM 碰不到；wrapper 恒传空串，由
+  impl 回落到固定 `_DEFAULT_SCOPES = "docs:doc:readonly drive:drive:readonly offline_access"`。
+  impl 仍保留 `scopes` 参数供内部 / 测试。该组 scope 仍需在飞书后台权限管理开通并发版。
+
+### 9.3 仍未做（诚实边界）
+
+- OAuth 回调仍需用户手动从地址栏回传 code（无自动回调服务）。
+- UAT 仍明文存（`FileTokenStore` 本就 dev-only，会告警）；生产需自定义 TokenStore。
+- `auth_complete_impl` 不校验 CSRF state（沿用既有行为，仅把 pending 文件按用户分开）。
+
+### 9.4 文件变更
+
+| 操作 | 文件 | 说明 |
+|---|---|---|
+| 修改 | `tools/_feishu_impl.py` | 四函数加 `user_key`；`_norm_user_key`；`_pending_auth_path` 按用户分文件 + 防穿越 |
+| 修改 | `tools/feishu_auth.py` | `feishu_auth_start`（去 `scopes`、固定 scope）/ `feishu_auth_complete` 暴露 `user_key` |
+| 修改 | `tools/feishu_docs.py` | `feishu_docs_search` 暴露 `user_key` |
+| 修改 | `tests/test_feishu.py` | 按用户隔离 / pending 分离且防穿越 / search 转发 user_key / scope 恒为默认值 等测试 |
+| 修改 | `TOOLS.md` | 引导 agent 传 `sender_open_id` 作 `user_key`，先问再授权 |

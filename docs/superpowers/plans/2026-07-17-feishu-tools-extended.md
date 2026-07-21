@@ -73,14 +73,16 @@
 
 - 关键坑：搜索接口 `POST /suite/docs-api/search/object` **只吃 UAT**；且**国内版飞书无
   设备流**（v2 端点 404），改用**授权码流 + 手动粘贴 code**。
-- `feishu_auth_start(scopes)` — 拼 `accounts.feishu.cn/open-apis/authen/v1/authorize` URL
+- `feishu_auth_start(user_key)` — 拼 `accounts.feishu.cn/open-apis/authen/v1/authorize` URL
   （client_id/redirect_uri/response_type=code/scope/state），state 存 pending。
-- `feishu_auth_complete(code)` — 取 app_access_token（`/auth/v3/app_access_token/internal`）
-  → `POST /authen/v1/access_token` 换 UAT → 存 FileTokenStore；支持粘整段 URL 抠 code；
+  **scope 固定、不作参数暴露给 LLM**（后续增强，见第七节）。
+- `feishu_auth_complete(code, user_key)` — 取 app_access_token（`/auth/v3/app_access_token/internal`）
+  → `POST /authen/v1/access_token` 换 UAT → 按 `user_key` 存 FileTokenStore；支持粘整段 URL 抠 code；
   刷新走 `/authen/v1/refresh_access_token`。
-- `feishu_docs_search(search_key, count, offset, docs_types)` — `token_types={USER}`；
-  搜到的是**授权用户可见范围**的文档，非全局。
-- UAT+refresh_token 明文存 `<workspace>/.psi/feishu/uat.json`（`.psi/` 已 gitignore）。
+- `feishu_docs_search(search_key, count, offset, docs_types, user_key)` — `token_types={USER}`；
+  搜到的是**授权用户可见范围**的文档，非全局。`user_key` 对应搜哪个用户的可见范围。
+- UAT+refresh_token 明文存 `<workspace>/.psi/feishu/uat.json`（`.psi/` 已 gitignore），
+  **按 `user_key`（用户 open_id）分槽**，多人互不覆盖（后续增强，见第七节）。
 - 用户侧：注册 redirect_uri（如 `http://localhost/`）+ scope `docs:doc:readonly`/
   `drive:drive:readonly` + `offline_access`，真机走一次授权。
 
@@ -120,5 +122,39 @@ pyproject / nuitka / pyinstaller。
 ## 六、非目标（YAGNI，跨域汇总）
 
 不做代打卡；不做任务 members/reminders/tasklist 增改；不做评论删除/解决；不做 bitable
-记录删改/字段管理；不做多用户 UAT；不做 session 主动推送 / channel 轮询；不在 API 层改
+记录删改/字段管理；不做 session 主动推送 / channel 轮询；不在 API 层改
 飞书审批流定义（“设条件”靠 agent 作为审批人校验）。
+
+> 注：原“不做多用户 UAT”已在第七节落地（按 `user_key` 隔离）。
+
+## 七、后续增强：多用户 UAT 隔离 + scope 固定（2026-07-20，已完成）
+
+分支 `feishu-per-user-uat`。设计规格见 spec 第 9 节。场景：公司里每人与 agent 各有对话框，
+用全局搜索查知识库 / 审阅交付物，需每人各自授权、各搜自己可见的文档，互不覆盖。
+
+**根因（多人授权互相覆盖）**：UAT 存储 key 写死常量 `"default"`。底层 `FileTokenStore`
+本就支持一个 JSON 多 user key，只是没用上。
+**根因（授权页报错 20043）**：`feishu_auth_start` 把 `scopes` 暴露给 LLM，模型编造无效
+scope（如 `drive:drive:drive:readonly`），飞书拒绝整个授权页。
+
+**Files:**
+- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
+- Modify: `examples/haitun-workspace/tools/feishu_auth.py`
+- Modify: `examples/haitun-workspace/tools/feishu_docs.py`
+- Modify: `examples/haitun-workspace/tests/test_feishu.py`
+- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 9 节）
+
+- [x] `auth_start_impl` / `auth_complete_impl` / `_get_valid_uat` / `search_docs_impl` 加 `user_key`；
+  三个对外工具暴露 `user_key`（用户 open_id，来自 `<feishu_context>.sender_open_id`，同一用户三处一致）
+- [x] `_norm_user_key`（空 → `default`，向后兼容）；`_pending_auth_path(user_key)` 按用户分文件 +
+  正则清洗非 `[A-Za-z0-9_-]` 防路径穿越
+- [x] `feishu_auth_start` 去掉 `scopes` 参数（LLM 碰不到），wrapper 恒传空 → impl 回落固定
+  `_DEFAULT_SCOPES`（docs:doc:readonly drive:drive:readonly offline_access）
+- [x] 测试：UAT 按 key 隔离不覆盖、pending 分离且防穿越、search 转发 user_key、`_norm_user_key`
+  回落、authorize_url 的 scope 恰为默认值且不含编造 scope、wrapper 无 scopes 参数
+- [x] `TOOLS.md`：引导 agent 传 `sender_open_id` 作 `user_key`，先问再授权
+- [x] 门禁：`ruff check` + `ruff format --check` + pytest（feishu 130 passed）
+- [x] Commit `feat(haitun/feishu): 飞书全局搜索 UAT 按用户隔离`（`c1c44e9f`）；scope 修复 `721b9fe0`
+
+**仍未做（诚实边界）**：OAuth 回调仍手动回传 code；UAT 仍明文存；`auth_complete` 不校验 CSRF state。
