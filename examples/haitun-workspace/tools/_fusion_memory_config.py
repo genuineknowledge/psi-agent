@@ -1,72 +1,97 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
-FUSION_MEMORY_DEFAULT_BASE_URL = "http://127.0.0.1:8700"
-FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS = 30.0
-FUSION_MEMORY_MIN_TIMEOUT_SECONDS = 0.1
-FUSION_MEMORY_MAX_TIMEOUT_SECONDS = 120.0
-
-DEFAULT_BASE_URL = FUSION_MEMORY_DEFAULT_BASE_URL
-DEFAULT_TIMEOUT_SECONDS = FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
-MIN_TIMEOUT_SECONDS = FUSION_MEMORY_MIN_TIMEOUT_SECONDS
-MAX_TIMEOUT_SECONDS = FUSION_MEMORY_MAX_TIMEOUT_SECONDS
+DEFAULT_TIMEOUT_SECONDS = 30.0
+MIN_TIMEOUT_SECONDS = 0.1
+MAX_TIMEOUT_SECONDS = 120.0
+DEFAULT_MAX_RETRIES = 2
+MIN_MAX_RETRIES = 0
+MAX_MAX_RETRIES = 5
 
 
 @dataclass(frozen=True)
-class FusionMemoryConfig:
-    base_url: str
-    timeout_seconds: float
+class MemoryMcpConfig:
+    url: str
+    token: str = field(repr=False)
     workspace_id: str
-    user_id: str
-    agent_id: str
     session_id: str | None
-    app_id: str = "haitun"
-
-    @property
-    def allow_cross_session(self) -> bool:
-        return self.session_id in {None, ""}
-
-    @property
-    def scope(self) -> dict[str, Any]:
-        return {
-            "workspace_id": self.workspace_id,
-            "user_id": self.user_id,
-            "agent_id": self.agent_id,
-            "session_id": self.session_id or None,
-            "app_id": self.app_id,
-        }
+    timeout_seconds: float
+    max_retries: int
 
 
-def _clamp_timeout(raw: str | None) -> float:
-    if raw is None:
-        return FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
+def _clamp_float(raw: str | None, *, default: float, minimum: float, maximum: float) -> float:
     try:
-        value = float(raw)
+        value = float(raw) if raw is not None else default
     except TypeError, ValueError:
-        return FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
-    if value <= 0:
-        return FUSION_MEMORY_DEFAULT_TIMEOUT_SECONDS
-    return max(FUSION_MEMORY_MIN_TIMEOUT_SECONDS, min(FUSION_MEMORY_MAX_TIMEOUT_SECONDS, value))
+        return default
+    return max(minimum, min(maximum, value))
 
 
-def build_fusion_memory_config(env: Mapping[str, str] | None = None) -> FusionMemoryConfig:
-    env = os.environ if env is None else env
-    return FusionMemoryConfig(
-        base_url=(env.get("PSI_MEMORY_BASE_URL") or FUSION_MEMORY_DEFAULT_BASE_URL).rstrip("/"),
-        timeout_seconds=_clamp_timeout(env.get("PSI_MEMORY_TIMEOUT_SECONDS")),
-        workspace_id=env.get("PSI_MEMORY_WORKSPACE_ID") or "haitun",
-        user_id=env.get("PSI_MEMORY_USER_ID") or env.get("USER") or env.get("USERNAME") or "user",
-        agent_id=env.get("PSI_MEMORY_AGENT_ID") or "haitun",
-        session_id=env.get("PSI_MEMORY_SESSION_ID") or None,
+def _clamp_int(raw: str | None, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(raw) if raw is not None else default
+    except TypeError, ValueError:
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def validate_mcp_url(raw: str) -> str:
+    url = raw.strip()
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+        _ = parts.port
+    except (TypeError, UnicodeError, ValueError) as exc:
+        raise ValueError("FUSION_MEMORY_MCP_URL is invalid") from exc
+    if not hostname or parts.path != "/mcp":
+        raise ValueError("FUSION_MEMORY_MCP_URL must use exact path /mcp")
+    if parts.username is not None or parts.password is not None or parts.query or parts.fragment:
+        raise ValueError("FUSION_MEMORY_MCP_URL must not contain credentials, query, or fragment")
+    if parts.scheme == "https":
+        return url
+    if parts.scheme == "http" and _is_loopback_host(hostname):
+        return url
+    raise ValueError("FUSION_MEMORY_MCP_URL must use HTTPS except for loopback development")
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def build_memory_config(env: Mapping[str, str] | None = None) -> MemoryMcpConfig:
+    values = os.environ if env is None else env
+    return MemoryMcpConfig(
+        url=validate_mcp_url(values.get("FUSION_MEMORY_MCP_URL") or ""),
+        token=(values.get("FUSION_MEMORY_TOKEN") or "").strip(),
+        workspace_id=(values.get("FUSION_MEMORY_WORKSPACE_ID") or "haitun").strip() or "haitun",
+        session_id=(values.get("FUSION_MEMORY_SESSION_ID") or "").strip() or None,
+        timeout_seconds=_clamp_float(
+            values.get("FUSION_MEMORY_MCP_TIMEOUT_SECONDS"),
+            default=DEFAULT_TIMEOUT_SECONDS,
+            minimum=MIN_TIMEOUT_SECONDS,
+            maximum=MAX_TIMEOUT_SECONDS,
+        ),
+        max_retries=_clamp_int(
+            values.get("FUSION_MEMORY_MCP_MAX_RETRIES"),
+            default=DEFAULT_MAX_RETRIES,
+            minimum=MIN_MAX_RETRIES,
+            maximum=MAX_MAX_RETRIES,
+        ),
     )
 
 
-FUSION_MEMORY_CONFIG = build_fusion_memory_config()
-
-MemoryConfig = FusionMemoryConfig
-build_memory_config = build_fusion_memory_config
-CONFIG = FUSION_MEMORY_CONFIG
+CONFIG = build_memory_config()
+FUSION_MEMORY_CONFIG = CONFIG
+MemoryConfig = MemoryMcpConfig

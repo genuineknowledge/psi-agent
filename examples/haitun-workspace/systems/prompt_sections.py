@@ -366,23 +366,27 @@ You have access to Fusion Memory tool entry points through these workspace tools
 - `memory_search`: retrieve raw evidence by keyword.
 - `memory_answer_context`: retrieve a query-grounded context pack before answering questions about user history, preferences, or prior context.
 
-These tools provide durable semantic memory only after Fusion Memory persistence is usable.
-Use `memory_answer_context` when answering questions that depend on prior context, user preferences, or remembered project facts.
-Use `memory_search` when you need raw supporting evidence.
-Use `memory_add` only for durable, reusable facts, not transient conversation details.
+Fusion Memory is a remote MCP Streamable HTTP service configured with
+`FUSION_MEMORY_MCP_URL` and `FUSION_MEMORY_TOKEN`; TLS is terminated by the
+service's reverse proxy. `FUSION_MEMORY_WORKSPACE_ID` and
+`FUSION_MEMORY_SESSION_ID` provide context for the current request. The bearer
+token alone determines user identity: the same user shares memory across
+sessions and workspaces, and different users are isolated. Never trust a
+client-provided user ID.
 
-Fusion Memory persistence is usable only when the Fusion Memory service is reachable and the current session passive sync process is running.
-When persistence is not usable, be explicit about the consequences: you can still use the current conversation and workspace files such as USER.md, SESSION.md, and HEARTBEAT.md, but you cannot write to or search durable semantic memory, cannot reliably recall user preferences, project facts, or decisions across new sessions, and memory tool calls may fail or report unavailable.
+Before any memory tool call, follow the workspace consent policy. If consent is
+required and unknown or denied, do not call memory tools; continue without
+durable memory. After consent, use `memory_answer_context` for relevant prior
+context, `memory_search` for raw evidence, and `memory_add` only for durable,
+reusable facts rather than transient conversation details.
 
-At the start of each new interactive session, before ordinary task work and before the first use of Fusion Memory, check whether Fusion Memory persistence is already enabled and usable.
-If the service is reachable and passive sync is running, do not ask again.
-Do not interrupt first-run onboarding: if BOOTSTRAP.md is present or you are following Bootstrap Pending, include a short memory status note with the consequences above, but do not ask the user whether to enable memory in that first reply.
-After bootstrap/onboarding is complete, remind the user once if persistence is not usable or no prior user consent is known, then ask whether to configure Fusion Memory persistent memory or continue without it.
-Do not wait for the first memory tool call.
-If the user agrees or explicitly asks to configure long-term memory, read `skills/fusion-memory-setup/SKILL.md` and follow it to initialize, start, check the Fusion Memory service, and start and verify passive sync. If that skill is missing, explain that the setup skill is not present in this workspace and continue without pretending memory is configured.
-When starting Fusion Memory on Windows, run the finite Fusion Memory CLI commands (`fusion-memory start --json` and `fusion-memory sync-haitun-history --background --json`) and let them return; the CLI creates the hidden/no-window service and watcher internally; do not use pwsh, powershell.exe, PowerShell jobs, or shell backgrounding to keep those memory processes alive.
-If the user declines, continue without memory and do not call Fusion Memory tools.
-If a memory tool reports that Fusion Memory is unavailable, continue without memory and tell the user to run `fusion-memory doctor`.\
+If the remote MCP service is unavailable or its required configuration is
+missing, say that durable memory is unavailable and continue with the current
+conversation and workspace files. Do not provision a service, create a token,
+or attempt a local fallback. The service operator owns provisioning, token
+creation, reverse-proxy TLS, and `systemd` supervision of the MCP, model, and
+history services. Read `skills/fusion-memory-setup/SKILL.md` for approved
+configuration and recovery guidance.\
 """
 
 SESSION_MANAGEMENT_SECTION = """\
