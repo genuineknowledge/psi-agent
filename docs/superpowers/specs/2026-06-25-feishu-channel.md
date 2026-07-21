@@ -326,9 +326,9 @@ CLI 经 tyro 自动暴露为 `--respond-to-comments` / `--no-respond-to-comments
 1. **触发门槛**：仅当 `event.mentioned_bot` 为真才回复（与群聊 `require_mention` 语义一致，避免文档里每条评论都触发），否则记 DEBUG 跳过。
 2. **白名单**：按 `event.operator.open_id` 走 `_allowed`（与消息白名单同一函数；`open_id` 可能为 `None`，故 `_allowed` 首参放宽为 `str | None`）。
 3. `resolve_comment_target` → 目标不支持（`supported=False`）记 WARNING 返回。
-4. `get_comment_context`（`event_reply_id` 透传，使回复挂到被 @ 的那条 reply）。
+4. `get_comment_context`。
 5. 组 chunks（`_comment_context_header` + `question`；`question` 为空记 WARNING 仍继续）喂 `core.post()`，**`_collect_reply` 累积成整段文本**——评论 API 是一次性写入，不支持 IM 卡片式增量流式；`FileChunk` 评论区无处安放，记 DEBUG 忽略。
-6. `channel.reply_comment(ctx, reply_text)` 写回该评论。agent 调用失败时把错误文本回复到评论；空回复兜底为 `(no response)`。
+6. **回复前强制 `ctx.is_whole = True`**，再 `channel.reply_comment(ctx, reply_text)`（详见 14.7 数据安全）。agent 调用失败时把错误文本回复到评论；空回复兜底为 `(no response)`。
 
 ### 14.4 消息元数据注入（`_comment_context_header`）
 
@@ -349,3 +349,16 @@ CLI 经 tyro 自动暴露为 `--respond-to-comments` / `--no-respond-to-comments
 - 不做评论的流式增量回复（评论 API 一次性写入，累积成整段）。
 - 评论区不回发文件（`FileChunk` 忽略）。
 - 不主动读取文档全文——由 agent 拿 `file_token` 自行决策（省 token）。
+
+### 14.7 数据安全：为何一律新建评论（刻意为之）
+
+SDK `reply_comment(context, content)` 按 `context.is_whole` 分两条路：
+
+| `is_whole` | SDK 行为 | 语义 |
+|-----------|---------|------|
+| `True` | `POST /drive/v1/files/:file_token/comments` | 新建一条整条评论（安全） |
+| `False` | `PUT /drive/v1/files/:file_token/comments/:comment_id/replies/:reply_id` | **更新覆盖**某条 reply |
+
+`False` 分支里 `reply_id = context.target_reply_id`，而 `get_comment_context` 在传入 `event_reply_id` 时返回的正是**用户 @机器人 的那条 reply**。飞书官方文档确认该 PUT 是"更新云文档中某条回复的内容"（覆盖，非追加）——若照默认路径,机器人的回答会**抹掉用户 @机器人 的原始评论**（数据丢失）。
+
+SDK 未提供"在已有评论下无损追加一条 reply"的接口（只有 create 整条评论 与 update 覆盖 reply 两个 builder）。故 `_handle_comment` 在调用前**强制 `ctx.is_whole = True`**，锁定安全的 POST-create 路径。代价：机器人的回复另起一条评论，不挂在用户那条评论线程下；换取零数据丢失。这是有意取舍，勿回退。

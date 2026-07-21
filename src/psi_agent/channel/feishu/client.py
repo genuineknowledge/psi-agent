@@ -321,6 +321,15 @@ async def _handle_comment(
         if not reply_text:
             reply_text = "(no response)"
 
+        # 一律新建评论, 绝不覆盖用户的原评论。
+        #
+        # SDK `reply_comment` 对 `is_whole=False`(锚定文字的评论)走
+        # PUT .../replies/:reply_id —— 那是"更新覆盖"某条 reply, 且
+        # `target_reply_id` 恰是用户 @机器人 的那条 reply, 会把用户原话
+        # 抹掉(数据丢失)。SDK 未提供"在已有评论下无损追加 reply"的接口,
+        # 故强制走 `is_whole=True` 分支(POST .../comments 新建整条评论),
+        # 代价是回复另起一条评论而非挂在原线程下, 但零数据丢失。
+        ctx.is_whole = True
         await channel.reply_comment(ctx, reply_text)
         logger.debug(f"comment {event.comment_id} replied ({len(reply_text)} chars)")
     except Exception as e:

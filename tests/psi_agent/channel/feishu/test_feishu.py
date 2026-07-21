@@ -462,10 +462,28 @@ async def test_handle_comment_replies_with_agent_answer(monkeypatch, tmp_path):
 
     channel.resolve_comment_target.assert_awaited_once()
     channel.get_comment_context.assert_awaited_once()
-    # event_reply_id 透传, 使回复挂到被@的那条 reply 上
-    assert channel.get_comment_context.call_args.kwargs["event_reply_id"] == "re_1"
     channel.reply_comment.assert_awaited_once()
     assert channel.reply_comment.call_args.args[1] == "改成这样"
+    # 数据安全: 回复前强制 is_whole=True, 使 SDK 走 POST 新建评论而非
+    # PUT 覆盖用户那条 @机器人 的 reply(否则会抹掉用户原评论)
+    replied_ctx = channel.reply_comment.call_args.args[0]
+    assert replied_ctx.is_whole is True
+
+
+@pytest.mark.anyio
+async def test_handle_comment_never_overwrites_user_reply(monkeypatch, tmp_path):
+    """回归: 即便 get_comment_context 返回 is_whole=False(锚定评论),
+    _handle_comment 也必须把 ctx.is_whole 置 True 再回复, 确保 SDK 走
+    新建评论(POST)而非覆盖 reply(PUT)。"""
+    monkeypatch.setattr(client, "_collect_reply", AsyncMock(return_value="answer"))
+    channel = _comment_channel()  # ctx.is_whole 默认 False
+    assert channel.get_comment_context.return_value.is_whole is False
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+
+    await _handle_comment(channel, core, None, _comment_event())
+
+    replied_ctx = channel.reply_comment.call_args.args[0]
+    assert replied_ctx.is_whole is True
 
 
 @pytest.mark.anyio
