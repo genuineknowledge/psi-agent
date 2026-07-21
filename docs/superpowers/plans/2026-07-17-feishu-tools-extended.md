@@ -172,3 +172,24 @@ scope（如 `drive:drive:drive:readonly`），飞书拒绝整个授权页。
   建库工具 `0a76240f`；写入类以用户身份调用（本次）
 
 **仍未做（诚实边界）**：OAuth 回调仍手动回传 code；UAT 仍明文存；`auth_complete` 不校验 CSRF state。
+
+## 八、后续增强：删除云文档/文件（2026-07-21，已完成）
+
+分支 `feishu-delete-file`。设计规格见 spec 第 10 节。给 agent 加删除飞书文档/文件能力，
+与其它写入类一致：先用用户身份(UAT, `user_key`)，未传回退机器人 tenant token。
+
+**Files:**
+- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
+- Modify: `examples/haitun-workspace/tools/feishu_drive.py`
+- Modify: `examples/haitun-workspace/tests/test_feishu.py`
+- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 10 节）
+
+- [x] `_build_delete_file_request` + `delete_file_impl(file_token, file_type, user_key="")`：
+  `DELETE /drive/v1/files/:file_token?type=...`（tenant/user 都支持），走 `_invoke` UAT/tenant；
+  校验 token 非空、type 合法；删除进回收站；文件夹异步返回 task_id 透传
+- [x] 工具 `feishu_drive_delete_file(file_token, file_type, user_key)`
+- [x] 删 wiki 文档：飞书无独立删节点 API，靠 `feishu_wiki_get_node` → `feishu_drive_delete_file`
+  组合（TOOLS.md 第 8 条写清）
+- [x] 测试：DELETE 组装 / 空 token / 非法 type / 文件夹 task_id / user_key 走 UAT / 未授权 need_auth
+- [x] 门禁：`ruff check` + `ruff format --check`（CI 版 ruff 0.15）+ pytest（feishu 145 passed）

@@ -67,3 +67,9 @@ message_id / sender_open_id）。需要群里之前的上下文时：
    （以及 bitable 写入、drive 评论、task 创建等写入类工具）传相同的 `user_key`。
    一条「建库→建文档→写正文」链路要**全程用同一个 user_key**，否则机器人身份没权限。
    写入类工具未授权时同样返回 `need_auth=True`。
+8. **删除文档/文件**：用 `feishu_drive_delete_file(file_token, file_type, user_key)`——删除进
+   **回收站可恢复**。file_type 是 docx/doc/sheet/bitable/mindnote/slides/file/folder/shortcut。
+   删用户自己的文件/库里的东西要带 `user_key`（须是所有者或对父文件夹有编辑权）。
+   删**知识库(wiki)里的文档**：飞书没有独立删 wiki 节点的接口——先 `feishu_wiki_get_node`
+   取 `obj_token`+`obj_type`，再 `feishu_drive_delete_file(file_token=obj_token, file_type=obj_type, user_key=...)`。
+   删除是不可轻率的操作，动手前先跟用户确认清楚删的是哪一个。
