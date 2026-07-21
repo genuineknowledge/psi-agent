@@ -69,6 +69,10 @@ async def _handle_spa(request: web.Request) -> web.HTTPFound:
     raise web.HTTPFound("/spa/index.html")
 
 
+async def _handle_spa_v2(request: web.Request) -> web.HTTPFound:
+    raise web.HTTPFound("/spa-v2/index.html")
+
+
 async def _handle_openapi(request: web.Request) -> web.Response:
     return web.Response(text=render_openapi(), content_type="application/json")
 
@@ -78,6 +82,21 @@ async def _handle_spa_index(request: web.Request) -> web.Response:
     template = await read_spa_index_template()
     if template is None:
         return _error("SPA index.html not found", status=404)
+    body = inject_app_name(template, app_name)
+    return web.Response(text=body, content_type="text/html", charset="utf-8")
+
+
+async def _handle_spa_v2_index(request: web.Request) -> web.Response:
+    app_name: str = request.app["app_name"]
+    base = anyio.Path(__file__).parent / "spa-v2"
+    template: str | None = None
+    for rel in ("dist/index.html", "index.html"):
+        path = base / rel
+        if await path.is_file():
+            template = await path.read_text(encoding="utf-8")
+            break
+    if template is None:
+        return _error("SPA v2 index.html not found", status=404)
     body = inject_app_name(template, app_name)
     return web.Response(text=body, content_type="text/html", charset="utf-8")
 
@@ -128,12 +147,22 @@ async def create_app(
     app["attention"] = attention if attention is not None else AttentionHub()
 
     spa_dist = anyio.Path(__file__).parent / "spa" / "dist"
+    spa_v2_dist = anyio.Path(__file__).parent / "spa-v2" / "dist"
     app.router.add_get("/spa/index.html", _handle_spa_index)
     if await spa_dist.exists():
         app.router.add_static("/spa/", str(spa_dist), show_index=False)
-    app.router.add_get("/", _handle_spa)
     app.router.add_get("/spa", _handle_spa)
     app.router.add_get("/spa/", _handle_spa)
+
+    app.router.add_get("/spa-v2/index.html", _handle_spa_v2_index)
+    if await spa_v2_dist.exists():
+        app.router.add_static("/spa-v2/", str(spa_v2_dist), show_index=False)
+        logger.info(f"SPA v2 (default) enabled, serving {spa_v2_dist}")
+        app.router.add_get("/", _handle_spa_v2)
+        app.router.add_get("/spa-v2", _handle_spa_v2)
+        app.router.add_get("/spa-v2/", _handle_spa_v2)
+    else:
+        app.router.add_get("/", _handle_spa)
     if favicon_path is not None:
         logger.info(f"Favicon enabled, serving {favicon_path!r} at /favicon.ico")
         app.router.add_get("/favicon.ico", _handle_favicon)
@@ -215,9 +244,14 @@ async def _create_session(request: web.Request) -> web.Response:
 
 async def _delete_session(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
+    hm: HistoryManager = request.app["hm"]
+    tm: TitleManager = request.app["tm"]
     session_id = request.match_info["session_id"]
     try:
+        workspace = sm.get_workspace(session_id)
         await sm.delete(session_id)
+        await hm.delete(workspace, session_id)
+        await tm.delete(session_id)
         return _json({"id": session_id, "status": "stopped"})
     except LookupError as e:
         return _error(str(e), status=404)

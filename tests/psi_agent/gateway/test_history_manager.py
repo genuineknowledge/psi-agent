@@ -13,19 +13,24 @@ async def test_history_missing_file_returns_empty(tmp_path: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_history_filters_roles_and_content(tmp_path: str) -> None:
+async def test_history_filters_roles_kind_and_markers(tmp_path: str) -> None:
     hm = HistoryManager()
     hist_dir = anyio.Path(str(tmp_path)) / "histories"
     await hist_dir.mkdir(parents=True)
     content = "\n".join(
         [
             '{"role": "system", "content": "sys"}',
-            '{"role": "user", "content": "hi"}',
-            '{"role": "assistant", "content": "\u4f60\u597d"}',
+            '{"role": "user", "content": "hi", "kind": "chat"}',
+            '{"role": "assistant", "content": "\u4f60\u597d", "kind": "chat"}',
+            '{"role": "user", "content": "# Heartbeat Task", "kind": "schedule.silent"}',
+            '{"role": "assistant", "content": "HEARTBEAT_OK", "kind": "schedule.silent"}',
+            '{"role": "assistant", "content": "\u65e5\u62a5", "kind": "schedule.display"}',
+            '{"role": "user", "content": "\u770b\u56fe\\n[RECV:/tmp/a.png]", "kind": "chat"}',
             '{"role": "tool", "content": "ignored"}',
             "not json",
             '{"role": "assistant", "content": ["multimodal"]}',
             '{"role": "assistant"}',
+            '{"role": "assistant", "content": "HEARTBEAT_OK"}',
             "",
         ]
     )
@@ -36,4 +41,20 @@ async def test_history_filters_roles_and_content(tmp_path: str) -> None:
     assert result == [
         {"role": "user", "text": "hi"},
         {"role": "assistant", "text": "\u4f60\u597d"},
+        {"role": "assistant", "text": "\u65e5\u62a5", "kind": "schedule.display"},
+        {"role": "user", "text": "\u770b\u56fe"},
     ]
+
+
+@pytest.mark.anyio
+async def test_history_delete_removes_file(tmp_path: str) -> None:
+    hm = HistoryManager()
+    hist_dir = anyio.Path(str(tmp_path)) / "histories"
+    await hist_dir.mkdir(parents=True)
+    path = hist_dir / "s-del.jsonl"
+    await path.write_text('{"role": "user", "content": "x", "kind": "chat"}\n', encoding="utf-8")
+    assert await path.exists()
+    await hm.delete(str(tmp_path), "s-del")
+    assert not await path.exists()
+    # Missing file is fine
+    await hm.delete(str(tmp_path), "s-del")

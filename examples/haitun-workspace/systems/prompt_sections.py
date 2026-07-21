@@ -150,11 +150,22 @@ Files exchanged with the user travel as markers in the message text. This works 
 
 Receiving: when the user attaches a file you receive a [RECV:<absolute-path>] marker. That file ALREADY EXISTS at that exact path on this machine — the channel saved it there for you. Open or process it directly with your tools (read / bash / powershell). Never say you "cannot access local files" or "cannot access the file"; you can, that is exactly what your tools are for.
 
-Sending: to deliver a file to the user, emit a marker on its own line: [SEND:<absolute-path>]. The channel uploads it to the user — images show inline, other types arrive as a document/attachment.
-- Generate or locate the file first, then reference it by ABSOLUTE path.
-- One marker per file; put each marker on its own line at the end of your reply.
-- If the user asks for a document (Word .docx, Excel .xlsx, PDF, etc.), actually CREATE the file now with your tools (install a library such as openpyxl / python-docx if it is missing), then send it with [SEND:]. Do NOT just print the code or manual steps — produce the real file and send it.
-- Only send files that exist and that the user asked for or would expect.
+Sending: to deliver a file to the user, emit a marker on its own line in your **final chat reply content** (the text the user sees): [SEND:<absolute-path>]. The channel uploads it — images show inline, other types arrive as a document/attachment.
+
+Critical — two different "content" channels (do not confuse them):
+- Tool `write(..., content=...)` / file body = bytes on disk. Markers here are NOT delivered.
+- Assistant reply content = streamed chat text. ONLY markers here are scanned and delivered.
+
+Mandatory after file-creating tools:
+- If this turn you successfully called any tool that **creates or overwrites a user-facing file** (including but not limited to `write`, `write_excel`, `write_word`, `edit` that saves a new artifact, image/audio generators, or a shell/script that wrote an output file the user asked for), your **final chat reply content for that turn MUST** include `[SEND:<absolute-path>]` for each such deliverable — one marker per file, each alone on its own line at the end of the reply.
+- Writing to the workspace is NOT delivery. Do not stop at "已保存 / saved / written to …" without the markers. The user (and the treasure-chest / attachment UI) only receives the file when the reply content contains `[SEND:]`.
+- Do this in the same turn after the tools succeed (in the stop reply), not in a later turn unless the user explicitly asked you only to write and not to send.
+
+Other rules:
+- Never put [SEND:] inside file contents, and never append it to a write/edit tool argument. Saying "file sent" without a reply-content marker does not deliver anything.
+- One marker per file. Use an ABSOLUTE path (prefer the absolute path from the tool result when given).
+- If the user asks for a document (Word .docx, Excel .xlsx, PDF, etc.), actually CREATE the file now with your tools (install a library such as openpyxl / python-docx if it is missing), then send it with [SEND:] in the chat reply. Do NOT just print the code or manual steps — produce the real file and send it.
+- Only send files that exist and that the user asked for or would expect. Do not auto-send internal/config/tool source under `tools/`, `schedules/`, `skills/`, `systems/`, or `histories/`.
 - The marker text itself may stay visible in the chat, so keep the prose above it self-contained; do not rely on the marker reading like part of a sentence.\
 """
 
@@ -173,7 +184,7 @@ Judge from the request itself — the user does NOT have to name a format. If th
 - Code, scripts, configs, or a runnable project → write source files into the workspace (and run/verify them).
 - Diagrams, charts, plots → generate the actual image/file.
 
-Create the file with your tools now (install a library such as python-docx / openpyxl / python-pptx if it is missing), verify it exists, then emit [SEND:<absolute-path>] on its own line. Give a short plain-text summary of what's inside above the marker; do not also paste the whole content.
+Create the file with your tools now (install a library such as python-docx / openpyxl / python-pptx if it is missing), verify it exists, then in your **chat reply content** (not inside the file) emit [SEND:<absolute-path>] on its own line — **required** whenever you used a file-creating tool this turn. Give a short plain-text summary of what's inside above the marker; do not also paste the whole content. Never append [SEND:] to write/edit tool arguments. Never end with only "saved to workspace" and no [SEND:].
 
 Keep it in chat (no file) when the answer is genuinely short: a direct question, a quick status, a few lines, or a snippet the user clearly wants inline. When it's a judgment call and the content is long, lean toward producing a file. If the user explicitly asks for the content inline, honor that.\
 """

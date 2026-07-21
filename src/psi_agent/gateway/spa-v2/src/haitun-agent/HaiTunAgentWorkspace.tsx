@@ -1,0 +1,1311 @@
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Grid2X2,
+  History,
+  Inbox,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Paperclip,
+  Plus,
+  Search,
+  Send,
+  SquareStack,
+  X,
+} from "lucide-react";
+import {
+  FormEvent,
+  PointerEvent as ReactPointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import {
+  DELIVERY_LABEL,
+  OVERVIEW_LABEL,
+  PENDING_LABEL,
+  type CardTransition,
+  type ChatFile,
+  type ChatMessage,
+  type InboxItem,
+  type MainView,
+  type MessageFeedback,
+  type SidebarPanel,
+  type Task,
+  type TaskTemplate,
+} from "./model";
+
+import {
+  INITIAL_TEMPLATES,
+  QUICK_ACTIONS,
+} from "./demo-fixtures";
+
+import { mobileHaptic, prefersReducedMotion } from "./client-feedback";
+import {
+  createSession,
+  deleteSession,
+  fetchHistory,
+  generateTitle,
+  listAis,
+  listSessions,
+  listTitles,
+  setTitle,
+  type AiInfo,
+} from "../services/api";
+import { ensureDefaultAi } from "../services/bootstrapAi";
+import { filesToChatFiles } from "../services/chatFiles";
+import { streamSessionChat } from "../services/chatStream";
+import {
+  historyToChat,
+  sessionToTask,
+  titleFromPrompt,
+  withDeliverables,
+} from "../services/sessionBridge";
+
+const OVERVIEW_WELCOME: ChatMessage = {
+  role: "agent",
+  text: "工作区已连接 Gateway。新建任务或从侧栏打开历史 Session，即可与 Agent 真实对话。",
+};
+
+import {
+  AgentMark,
+  BrandLogo,
+  TreasureVisual,
+} from "./primitives";
+
+import {
+  CompactOverviewContext,
+  CompactTaskContext,
+  OverviewCard,
+  TaskCard,
+  TaskRow,
+} from "./task-cards";
+
+import { TaskFocusDetails } from "./task-focus-details";
+import { FocusChatThread } from "./focus-chat-thread";
+
+import { ArtifactDrawer, InboxDrawer } from "./workspace-overlays";
+
+import { NewTaskWorkspace, TemplateLibrary } from "./secondary-views";
+import UserHub from "../components/user-hub/UserHub";
+import { collectDeliverableFiles } from "../utils/filePreviewUtils";
+
+type Props = {
+  workspace: string;
+  onChangeWorkspace?: () => void;
+};
+
+export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: Props) {
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [templates, setTemplates] = useState<TaskTemplate[]>(INITIAL_TEMPLATES);
+  const [aiId, setAiId] = useState<string | null>(null);
+  const [bootReady, setBootReady] = useState(false);
+  /** Only open Hub models when no AI is available after open-and-use (not on every refresh). */
+  const [openModelsOnce, setOpenModelsOnce] = useState(false);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>(null);
+  const [artifactTask, setArtifactTask] = useState<Task | null>(null);
+  const [mainView, setMainView] = useState<MainView>("workspace");
+  const [newTaskReturnView, setNewTaskReturnView] = useState<MainView>("workspace");
+  const [newTaskSession, setNewTaskSession] = useState(0);
+  const [newTaskDraft, setNewTaskDraft] = useState("");
+  const [newTaskCategory, setNewTaskCategory] = useState("自由任务");
+  const [messages, setMessages] = useState<Record<string, ChatMessage[]>>({
+    overview: [OVERVIEW_WELCOME],
+  });
+  const [chatDrafts, setChatDrafts] = useState<Record<string, string>>({});
+  const [chatAttachments, setChatAttachments] = useState<Record<string, File[]>>({});
+  const [chatExpanded, setChatExpanded] = useState(false);
+  const [contextPanelCollapsed, setContextPanelCollapsed] = useState(false);
+  const [typingCard, setTypingCard] = useState<string | null>(null);
+  const [dragX, setDragX] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [cardTransition, setCardTransition] = useState<CardTransition | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [templateSearchSeed, setTemplateSearchSeed] = useState("");
+  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
+  const [hapticsEnabled, setHapticsEnabled] = useState(true);
+  const dragOrigin = useRef<number | null>(null);
+  const transitionTimer = useRef<number | null>(null);
+  const toastTimer = useRef<number | null>(null);
+  const globalSearchRef = useRef<HTMLInputElement | null>(null);
+  const activeChatInputRef = useRef<HTMLInputElement | null>(null);
+  const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const historyLoadedRef = useRef<Set<string>>(new Set(["overview"]));
+  const workspaceNorm = workspace.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+
+  const cards = useMemo(() => [{ id: "overview", title: OVERVIEW_LABEL }, ...tasks.map((task) => ({ id: task.id, title: task.shortTitle }))], [tasks]);
+  const currentTask = currentIndex === 0 ? null : tasks[currentIndex - 1];
+  const currentCard = cards[currentIndex] ?? cards[0];
+  const currentChatDraft = chatDrafts[currentCard.id] ?? "";
+  const pendingTasks = tasks.filter((task) => task.status === "attention");
+  const deliveryTasks = tasks.filter((task) => task.deliveryState === "ready");
+  const unreadCount = notificationsEnabled ? inboxItems.filter((item) => item.unread).length : 0;
+  const normalizedSearch = globalSearch.trim().toLocaleLowerCase("zh-CN");
+  const taskSearchResults = normalizedSearch
+    ? tasks.filter((task) => `${task.title}${task.shortTitle}${task.category}${task.summary}${task.statusLabel}${task.deliverables.join(" ")}`.toLocaleLowerCase("zh-CN").includes(normalizedSearch)).slice(0, 4)
+    : [];
+  const templateSearchResults = normalizedSearch
+    ? templates.filter((template) => `${template.title}${template.category}${template.description}${template.starterPrompt}${template.deliverables.join(" ")}`.toLocaleLowerCase("zh-CN").includes(normalizedSearch)).slice(0, 4)
+    : [];
+
+  const showToast = useCallback((message: string) => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast(message);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2600);
+  }, []);
+
+  const ensureHistory = useCallback(async (taskId: string) => {
+    if (taskId === "overview" || historyLoadedRef.current.has(taskId)) return;
+    historyLoadedRef.current.add(taskId);
+    try {
+      const hist = await fetchHistory(taskId);
+      const chat = historyToChat(hist);
+      setMessages((current) => ({
+        ...current,
+        [taskId]: chat.length ? chat : (current[taskId] ?? []),
+      }));
+      if (chat.length) {
+        const lastAgent = [...chat].reverse().find((m) => m.role === "agent");
+        if (lastAgent) {
+          setTasks((current) =>
+            current.map((task) =>
+              task.id === taskId
+                ? {
+                    ...task,
+                    summary: lastAgent.text.slice(0, 120) + (lastAgent.text.length > 120 ? "…" : ""),
+                    updated: "已从历史同步",
+                    progress: Math.min(96, Math.max(task.progress, 20 + chat.length * 4)),
+                  }
+                : task,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      historyLoadedRef.current.delete(taskId);
+      showToast(e instanceof Error ? e.message : "加载历史失败");
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    let cancelled = false;
+    ;(async () => {
+      setBootReady(false);
+      setOpenModelsOnce(false);
+      try {
+        // Empty pool → open models panel. Do NOT POST free defaults on boot.
+        const ais = await listAis();
+        if (cancelled) return;
+        if (!Array.isArray(ais) || ais.length === 0) {
+          setAiId(null);
+          setOpenModelsOnce(true);
+          setBootReady(true);
+          return;
+        }
+        setAiId(ais[0].id);
+        const [sessions, titles] = await Promise.all([listSessions(), listTitles()]);
+        if (cancelled) return;
+        const inWs = sessions.filter((s) => {
+          const w = (s.workspace || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+          return !w || w === workspaceNorm;
+        });
+        const mapped = inWs.map((s) => sessionToTask(s, titles[s.id] || "新任务"));
+        setTasks(mapped);
+        historyLoadedRef.current = new Set(["overview"]);
+        setMessages({ overview: [OVERVIEW_WELCOME] });
+        setCurrentIndex(0);
+        setInboxItems([]);
+      } catch (e) {
+        if (!cancelled) {
+          showToast(e instanceof Error ? e.message : "连接 Gateway 失败");
+          setOpenModelsOnce(true);
+        }
+      } finally {
+        if (!cancelled) setBootReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      abortRef.current?.abort();
+    };
+  }, [workspaceNorm, showToast]);
+
+  const collapseChat = useCallback(() => {
+    setChatExpanded(false);
+    setContextPanelCollapsed(false);
+    activeChatInputRef.current?.blur();
+  }, []);
+
+  const goTo = useCallback((index: number, animate = true) => {
+    const next = Math.max(0, Math.min(index, cards.length - 1));
+    const fromExpanded = chatExpanded;
+    collapseChat();
+    if (next === currentIndex) {
+      setDragX(0);
+      return;
+    }
+    if (transitionTimer.current) window.clearTimeout(transitionTimer.current);
+    if (animate && !prefersReducedMotion()) {
+      setCardTransition({
+        from: currentIndex,
+        direction: next > currentIndex ? "next" : "previous",
+        token: Date.now(),
+        fromExpanded,
+      });
+      transitionTimer.current = window.setTimeout(() => setCardTransition(null), 470);
+    } else {
+      setCardTransition(null);
+    }
+    setCurrentIndex(next);
+    setDragX(0);
+    const card = cards[next];
+    if (card && card.id !== "overview") void ensureHistory(card.id);
+  }, [cards, chatExpanded, collapseChat, currentIndex, ensureHistory]);
+
+  const selectTask = (task: Task) => {
+    const index = tasks.findIndex((item) => item.id === task.id);
+    if (index >= 0) goTo(index + 1);
+    setMainView("workspace");
+    setSidebarOpen(false);
+    setSearchOpen(false);
+    setGlobalSearch("");
+  };
+
+  const togglePanel = (panel: SidebarPanel) => {
+    setSidebarPanel((current) => (current === panel ? null : panel));
+    setSidebarOpen(true);
+  };
+
+  const goHome = useCallback(() => {
+    setMainView("workspace");
+    setSidebarPanel(null);
+    setSidebarOpen(false);
+    goTo(0);
+  }, [goTo]);
+
+  const deleteTask = useCallback(async (task: Task) => {
+    const ok = window.confirm(`确认删除任务「${task.title}」？\n删除后 Session 与对话历史将无法恢复。`);
+    if (!ok) return;
+
+    if (typingCard === task.id) {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setTypingCard(null);
+    }
+
+    try {
+      await deleteSession(task.id);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // 404: already gone on server — still clear local UI
+      if (!/404|not found/i.test(msg)) {
+        showToast(`删除失败：${msg}`);
+        return;
+      }
+    }
+
+    historyLoadedRef.current.delete(task.id);
+    setTasks((current) => current.filter((item) => item.id !== task.id));
+    setMessages((current) => {
+      const next = { ...current };
+      delete next[task.id];
+      return next;
+    });
+    setChatDrafts((current) => {
+      const next = { ...current };
+      delete next[task.id];
+      return next;
+    });
+    setChatAttachments((current) => {
+      const next = { ...current };
+      delete next[task.id];
+      return next;
+    });
+    setInboxItems((current) => current.filter((item) => item.taskId !== task.id));
+    if (artifactTask?.id === task.id) setArtifactTask(null);
+
+    const deletedIndex = tasks.findIndex((item) => item.id === task.id);
+    if (deletedIndex >= 0 && currentIndex === deletedIndex + 1) {
+      goHome();
+    } else if (deletedIndex >= 0 && currentIndex > deletedIndex + 1) {
+      setCurrentIndex((i) => Math.max(0, i - 1));
+    }
+
+    showToast(`已删除任务「${task.shortTitle}」`);
+  }, [artifactTask?.id, currentIndex, goHome, showToast, tasks, typingCard]);
+
+  const openNewTask = useCallback((draft = "", category = "自由任务", returnView: MainView = "workspace") => {
+    collapseChat();
+    setNewTaskDraft(draft);
+    setNewTaskCategory(category);
+    setNewTaskReturnView(returnView);
+    setNewTaskSession((current) => current + 1);
+    setMainView("new-task");
+    setSidebarPanel(null);
+    setSidebarOpen(false);
+  }, [collapseChat]);
+
+  const openTemplates = useCallback(() => {
+    collapseChat();
+    setTemplateSearchSeed("");
+    setMainView("templates");
+    setSidebarPanel(null);
+    setSidebarOpen(false);
+  }, [collapseChat]);
+
+  const appendStreamingAgent = (cardId: string, delta: string) => {
+    setMessages((current) => {
+      const list = [...(current[cardId] ?? [])];
+      const last = list[list.length - 1];
+      if (last?.role === "agent") {
+        // Preserve files: blob may arrive before more text deltas.
+        list[list.length - 1] = { ...last, text: last.text + delta };
+      } else {
+        list.push({ role: "agent", text: delta });
+      }
+      return { ...current, [cardId]: list };
+    });
+  };
+
+  /** Stream one turn; caller must already append user + empty agent (or replace agent stub). */
+  const runChatTurn = async (
+    cardId: string,
+    text: string,
+    files: Array<File | ChatFile> = [],
+    titleSource?: string,
+  ) => {
+    setTypingCard(cardId);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const userVisible = titleSource ?? (text.trim() || "附件");
+
+    try {
+      const { text: full, blobs } = await streamSessionChat(
+        cardId,
+        text,
+        files,
+        controller.signal,
+        {
+          onText: (delta) => appendStreamingAgent(cardId, delta),
+          onBlob: (name, data) => {
+            setTasks((current) =>
+              current.map((task) => (task.id === cardId ? withDeliverables(task, [name]) : task)),
+            );
+            setMessages((current) => {
+              const list = [...(current[cardId] ?? [])];
+              const last = list[list.length - 1];
+              if (last?.role === "agent") {
+                list[list.length - 1] = {
+                  ...last,
+                  files: [...(last.files ?? []), { name, data }],
+                };
+              }
+              return { ...current, [cardId]: list };
+            });
+          },
+        },
+      );
+      if (!full.trim()) {
+        setMessages((current) => {
+          const list = [...(current[cardId] ?? [])];
+          const last = list[list.length - 1];
+          if (last?.role === "agent" && !last.text.trim() && !(last.files?.length)) {
+            list[list.length - 1] = { ...last, text: "（本轮无文本回复；若正在跑工具，请稍候在历史中查看。）" };
+          }
+          return { ...current, [cardId]: list };
+        });
+      }
+      if (blobs.length) {
+        setTasks((current) =>
+          current.map((task) =>
+            task.id === cardId ? withDeliverables(task, blobs.map((b) => b.name)) : task,
+          ),
+        );
+      }
+      const title = tasks.find((t) => t.id === cardId)?.title;
+      if (!title || title === "新任务") {
+        void generateTitle(cardId, userVisible, full.slice(0, 400)).then((res) => {
+          if (res?.title) {
+            setTasks((current) =>
+              current.map((task) =>
+                task.id === cardId
+                  ? { ...task, title: res.title!, shortTitle: res.title!.slice(0, 10) + (res.title!.length > 10 ? "…" : "") }
+                  : task,
+              ),
+            );
+          }
+        }).catch(() => {});
+      }
+    } catch (e) {
+      if ((e as Error).name === "AbortError") return;
+      const err = e instanceof Error ? e.message : String(e);
+      setMessages((current) => {
+        const list = [...(current[cardId] ?? [])];
+        // Mark preceding user turn failed (spa v1 parity) so retry appears.
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i]?.role === "user") {
+            list[i] = { ...list[i]!, failed: true, failedReason: "error" };
+            break;
+          }
+        }
+        const last = list[list.length - 1];
+        if (last?.role === "agent") {
+          list[list.length - 1] = {
+            ...last,
+            text: last.text || `[错误] ${err}`,
+          };
+        } else {
+          list.push({ role: "agent", text: `[错误] ${err}` });
+        }
+        return { ...current, [cardId]: list };
+      });
+      showToast(err);
+    } finally {
+      setTypingCard((current) => (current === cardId ? null : current));
+      if (abortRef.current === controller) abortRef.current = null;
+    }
+  };
+
+  const sendMessage = async (text: string, cardId = currentCard.id, files: File[] = []) => {
+    const clean = text.trim();
+    const pendingFiles = files.length ? files : (chatAttachments[cardId] ?? []);
+    if (!clean && !pendingFiles.length) return;
+    const userVisible = clean || `已上传：${pendingFiles.map((file) => file.name).join("、")}`;
+    if (cardId === "overview") {
+      setMessages((current) => ({
+        ...current,
+        overview: [
+          ...(current.overview ?? []),
+          { role: "user", text: userVisible },
+          { role: "agent", text: "请先新建任务或打开历史任务；总览卡片不直接调用模型。" },
+        ],
+      }));
+      setChatDrafts((current) => ({ ...current, overview: "" }));
+      setChatAttachments((current) => ({ ...current, overview: [] }));
+      return;
+    }
+
+    const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
+    setMessages((current) => ({
+      ...current,
+      [cardId]: [
+        ...(current[cardId] ?? []),
+        { role: "user", text: userVisible, files: storedFiles.length ? storedFiles : undefined },
+        { role: "agent", text: "" },
+      ],
+    }));
+    setChatDrafts((current) => ({ ...current, [cardId]: "" }));
+    setChatAttachments((current) => ({ ...current, [cardId]: [] }));
+    await runChatTurn(cardId, clean, pendingFiles, userVisible);
+  };
+
+  const setMessageFeedback = (cardId: string, index: number, kind: Exclude<MessageFeedback, "">) => {
+    setMessages((current) => {
+      const list = [...(current[cardId] ?? [])];
+      const msg = list[index];
+      if (!msg || msg.role !== "agent") return current;
+      list[index] = { ...msg, feedback: msg.feedback === kind ? "" : kind };
+      return { ...current, [cardId]: list };
+    });
+  };
+
+  const regenerateAgentMessage = async (cardId: string, agentIndex: number) => {
+    if (typingCard === cardId || cardId === "overview") return;
+    const list = messages[cardId] ?? [];
+    const agent = list[agentIndex];
+    if (!agent || agent.role !== "agent") return;
+    let userIndex = -1;
+    for (let i = agentIndex - 1; i >= 0; i--) {
+      if (list[i]?.role === "user") {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex < 0) return;
+    const userMsg = list[userIndex]!;
+    const text = userMsg.text;
+    const files = userMsg.files ?? [];
+    setMessages((current) => {
+      const next = [...(current[cardId] ?? [])];
+      next.splice(agentIndex, 1, { role: "agent", text: "" });
+      if (next[userIndex]?.role === "user") {
+        next[userIndex] = { ...next[userIndex]!, failed: false, failedReason: undefined };
+      }
+      return { ...current, [cardId]: next };
+    });
+    await runChatTurn(cardId, text, files, text);
+  };
+
+  const retryFailedMessage = async (cardId: string, userIndex: number) => {
+    if (typingCard === cardId || cardId === "overview") return;
+    const list = messages[cardId] ?? [];
+    const userMsg = list[userIndex];
+    if (!userMsg || userMsg.role !== "user" || !userMsg.failed) return;
+    const text = userMsg.text;
+    const files = userMsg.files ?? [];
+    setMessages((current) => {
+      const next = [...(current[cardId] ?? [])];
+      const after = next[userIndex + 1];
+      const removeCount = after?.role === "agent" ? 2 : 1;
+      next.splice(userIndex, removeCount, { role: "user", text, files }, { role: "agent", text: "" });
+      return { ...current, [cardId]: next };
+    });
+    await runChatTurn(cardId, text, files, text);
+  };
+
+  const handleChatSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    const files = chatAttachments[currentCard.id] ?? [];
+    if (!currentChatDraft.trim() && !files.length) return;
+    if (!chatExpanded) setChatExpanded(true);
+    void sendMessage(currentChatDraft, currentCard.id, files);
+  };
+
+  const addChatAttachments = (cardId: string, fileList: FileList | null) => {
+    if (!fileList?.length) return;
+    const next = Array.from(fileList);
+    setChatAttachments((current) => ({
+      ...current,
+      [cardId]: [...(current[cardId] ?? []), ...next],
+    }));
+  };
+
+  const removeChatAttachment = (cardId: string, index: number) => {
+    setChatAttachments((current) => ({
+      ...current,
+      [cardId]: (current[cardId] ?? []).filter((_, i) => i !== index),
+    }));
+  };
+
+  const expandChatFromStrip = () => {
+    if (!chatExpanded) setChatExpanded(true);
+  };
+
+  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("button, input, textarea, a")) return;
+    dragOrigin.current = event.clientX;
+    setIsDragging(true);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+
+  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragOrigin.current === null) return;
+    setDragX(Math.max(-120, Math.min(120, event.clientX - dragOrigin.current)));
+  };
+
+  const handlePointerUp = () => {
+    if (dragX < -58) {
+      mobileHaptic(8);
+      goTo(currentIndex + 1);
+    } else if (dragX > 58) {
+      mobileHaptic(8);
+      goTo(currentIndex - 1);
+    }
+    else setDragX(0);
+    dragOrigin.current = null;
+    setIsDragging(false);
+  };
+
+  const createTask = async (description: string, category: string) => {
+    let resolvedAiId = aiId;
+    if (!resolvedAiId) {
+      // Empty pool (free mode) → resolve remote defaults only when a task needs an AI.
+      const ai = await ensureDefaultAi();
+      if (!ai?.id) {
+        showToast("没有可用 AI，请先在大模型中连接，或检查免费模型网络");
+        setOpenModelsOnce(true);
+        throw new Error("no ai");
+      }
+      resolvedAiId = ai.id;
+      setAiId(ai.id);
+    }
+    const title = titleFromPrompt(description);
+    const session = await createSession(resolvedAiId, workspace);
+    await setTitle(session.id, title).catch(() => {});
+    const newTask = {
+      ...sessionToTask(session, title, {
+        summary: `Agent 已收到任务描述：“${description.slice(0, 58)}${description.length > 58 ? "…" : ""}”`,
+        status: "working",
+        progress: 8,
+      }),
+      category: category || "自由任务",
+    };
+    historyLoadedRef.current.add(session.id);
+    setTasks((current) => [...current, newTask]);
+    setMessages((current) => ({
+      ...current,
+      [newTask.id]: [
+        { role: "user", text: description },
+        { role: "agent", text: "" },
+      ],
+    }));
+    setToast("新任务已创建，正在请求 Agent…");
+    window.setTimeout(() => setToast(null), 2600);
+
+    void runChatTurn(newTask.id, description, [], description);
+
+    return newTask;
+  };
+
+  /** Preset chip → expand focus chat, then same path as a typed send (stream in FocusChatThread). */
+  const sendQuickAction = async (action: string, cardId: string) => {
+    const clean = action.trim();
+    if (!clean) return;
+    if (typingCard === cardId) return;
+
+    if (cardId === "overview") {
+      // Overview has no Session — create a task and jump into its dialog.
+      const nextIndex = tasks.length + 1;
+      try {
+        await createTask(clean, "自由任务");
+        setMainView("workspace");
+        setSidebarOpen(false);
+        setSearchOpen(false);
+        setCurrentIndex(nextIndex);
+        setDragX(0);
+        setChatExpanded(true);
+      } catch {
+        // createTask already toasted
+      }
+      return;
+    }
+
+    if (!chatExpanded) setChatExpanded(true);
+    await sendMessage(clean, cardId);
+  };
+
+  const viewCreatedTask = (task: Task) => {
+    setMainView("workspace");
+    const index = tasks.findIndex((item) => item.id === task.id);
+    goTo(index >= 0 ? index + 1 : tasks.length + 1);
+  };
+
+  const useTemplate = (template: TaskTemplate) => {
+    openNewTask(template.starterPrompt, template.category, "templates");
+  };
+
+  const createTemplate = (title: string, category: string, prompt: string) => {
+    setTemplates((current) => [
+      ...current,
+      {
+        id: `template-${Date.now()}`,
+        title,
+        category,
+        description: "由您沉淀的可复用任务模板。",
+        starterPrompt: prompt,
+        deliverables: ["按任务生成交付物"],
+        cadence: "自定义",
+        icon: SquareStack,
+      },
+    ]);
+    setToast("新模板已保存到模板库");
+    window.setTimeout(() => setToast(null), 2400);
+  };
+
+  const saveArtifact = (task: Task) => {
+    setTasks((current) => current.map((item) => item.id === task.id
+      ? { ...item, deliveryState: "saved", updated: "刚刚保存交付物" }
+      : item));
+    setMessages((current) => ({
+      ...current,
+      [task.id]: [...(current[task.id] ?? []), { role: "agent", text: "交付物已保存到成果库。任务状态保持不变，您仍可基于本次成果继续迭代。" }],
+    }));
+    setArtifactTask(null);
+    setToast("交付物已保存到成果库");
+    window.setTimeout(() => setToast(null), 2600);
+  };
+
+  const reviseArtifact = (task: Task) => {
+    setTasks((current) => current.map((item) => item.id === task.id
+      ? { ...item, status: "working", statusLabel: "按意见修改中", deliveryState: "generating", progress: Math.min(item.progress, 92), updated: "刚刚收到修改要求" }
+      : item));
+    setArtifactTask(null);
+    setToast("修改要求已发送，任务重新开始推进");
+    window.setTimeout(() => setToast(null), 2600);
+  };
+
+  const openInboxItem = (item: InboxItem) => {
+    setInboxItems((current) => current.map((candidate) => candidate.id === item.id ? { ...candidate, unread: false } : candidate));
+    setInboxOpen(false);
+    const task = tasks.find((candidate) => candidate.id === item.taskId);
+    if (!task) return;
+    if (item.kind === "delivery" && ["ready", "saved"].includes(task.deliveryState)) {
+      setArtifactTask(task);
+      return;
+    }
+    selectTask(task);
+  };
+
+  useEffect(() => {
+    document.documentElement.dataset.haptics = hapticsEnabled ? "on" : "off";
+  }, [hapticsEnabled]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setSidebarCollapsed(false);
+        setSidebarOpen(true);
+        setSearchOpen(true);
+        window.setTimeout(() => globalSearchRef.current?.focus(), 50);
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        openNewTask();
+        return;
+      }
+      if (artifactTask) {
+        if (event.key === "Escape") {
+          setArtifactTask(null);
+        }
+        return;
+      }
+      if (inboxOpen) {
+        if (event.key === "Escape") setInboxOpen(false);
+        return;
+      }
+      if (searchOpen && event.key === "Escape") {
+        setSearchOpen(false);
+        return;
+      }
+      if (chatExpanded && event.key === "Escape") {
+        collapseChat();
+        return;
+      }
+      const target = event.target as HTMLElement;
+      if (["INPUT", "TEXTAREA"].includes(target.tagName)) return;
+      if (mainView !== "workspace") {
+        if (event.key === "Escape") {
+          if (mainView === "new-task") setMainView(newTaskReturnView);
+          else goHome();
+        }
+        return;
+      }
+      if (event.key === "ArrowLeft") goTo(currentIndex - 1);
+      if (event.key === "ArrowRight") goTo(currentIndex + 1);
+      if (event.key === "Escape") setSidebarOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [artifactTask, chatExpanded, collapseChat, currentIndex, goHome, goTo, inboxOpen, mainView, newTaskReturnView, openNewTask, searchOpen]);
+
+  useEffect(() => () => {
+    if (transitionTimer.current) window.clearTimeout(transitionTimer.current);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+  }, []);
+
+  const visibleSidebarTasks = sidebarPanel === "pending" ? pendingTasks : sidebarPanel === "deliveries" ? deliveryTasks : tasks;
+  const renderCardAt = (index: number) => {
+    const task = index === 0 ? null : tasks[index - 1];
+    return task ? <TaskCard task={task} onOpenArtifact={setArtifactTask} onDelete={deleteTask} /> : <OverviewCard tasks={tasks} onHandleNext={() => pendingTasks[0] && selectTask(pendingTasks[0])} />;
+  };
+
+  const renderTaskUnit = (index: number, interactive: boolean, visualExpanded = false) => {
+    const unitCard = cards[index] ?? cards[0];
+    const unitTask = index === 0 ? null : tasks[index - 1];
+    const unitMessages = messages[unitCard.id] ?? [];
+    const unitDraft = chatDrafts[unitCard.id] ?? "";
+    const expanded = interactive ? chatExpanded : visualExpanded;
+
+    return (
+      <div className={`card-chat-unit ${expanded ? "chat-expanded" : ""} ${expanded && contextPanelCollapsed ? "context-collapsed" : ""}`}>
+        <div className="mobile-card-peek" aria-hidden="true" />
+        <div className="card-chat-pair">
+        <div className="task-context-stack">
+          {expanded && interactive && (
+            <div className="context-panel-toolbar">
+              <button
+                type="button"
+                className="context-panel-toggle"
+                onClick={() => setContextPanelCollapsed(true)}
+                aria-label="收起任务卡片栏"
+                aria-expanded={!contextPanelCollapsed}
+              >
+                <PanelLeftClose size={15} />
+              </button>
+              <span className="context-panel-toolbar-label">任务卡片</span>
+            </div>
+          )}
+          <div className="card-transition-frame">
+            <div
+              className={`card-swipe-surface ${interactive && isDragging ? "dragging" : ""}`}
+              onPointerDown={interactive ? handlePointerDown : undefined}
+              onPointerMove={interactive ? handlePointerMove : undefined}
+              onPointerUp={interactive ? handlePointerUp : undefined}
+              onPointerCancel={interactive ? handlePointerUp : undefined}
+              aria-hidden={expanded || undefined}
+              inert={expanded ? true : undefined}
+            >
+              {renderCardAt(index)}
+            </div>
+            <div className="compact-card-layer" aria-hidden={!expanded} inert={!expanded ? true : undefined}>
+              {expanded ? (
+                <div className="compact-card-shell focus-info-shell">
+                  <TaskFocusDetails
+                    task={unitTask}
+                    tasks={tasks}
+                    inboxItems={inboxItems}
+                    onOpenArtifact={setArtifactTask}
+                  />
+                </div>
+              ) : unitTask ? (
+                <CompactTaskContext task={unitTask} onOpenArtifact={setArtifactTask} onDelete={interactive ? deleteTask : undefined} />
+              ) : (
+                <CompactOverviewContext
+                  tasks={tasks}
+                  onHandleNext={() => pendingTasks[0] && selectTask(pendingTasks[0])}
+                />
+              )}
+            </div>
+          </div>
+
+          {!expanded && (
+            <div className="card-pagination" aria-label="卡片分页">
+              <span className="swipe-hint"><ArrowLeft size={12} /> 整体滑动切换 <ArrowRight size={12} /></span>
+              <div>
+                {cards.map((card, cardIndex) => (
+                  <button
+                    key={card.id}
+                    type="button"
+                    className={index === cardIndex ? "active" : ""}
+                    onClick={() => interactive && goTo(cardIndex)}
+                    disabled={!interactive}
+                    aria-label={`切换到${card.title}`}
+                  />
+                ))}
+              </div>
+              <span>{String(index + 1).padStart(2, "0")} / {String(cards.length).padStart(2, "0")}</span>
+            </div>
+          )}
+        </div>
+
+        <section
+          className="context-chat"
+          aria-label={`关于${unitCard.title}的对话`}
+          onClick={(event) => {
+            if (!interactive || expanded) return;
+            if ((event.target as HTMLElement).closest("[data-attach-control], button, a")) return;
+            setChatExpanded(true);
+          }}
+        >
+          <div className="chat-context-row">
+            <div>
+              {expanded && interactive && contextPanelCollapsed && (
+                <button
+                  type="button"
+                  className="context-panel-toggle context-panel-toggle-in-chat"
+                  onClick={() => setContextPanelCollapsed(false)}
+                  aria-label="展开任务卡片栏"
+                  aria-expanded={false}
+                >
+                  <PanelLeftOpen size={15} />
+                </button>
+              )}
+              <AgentMark /><span>{expanded ? "任务工作区" : "关于"} <strong>{unitCard.title}</strong>{!expanded && " 的对话"}</span>
+            </div>
+            <div className="quick-actions">
+              {expanded && (
+                <>
+                  <button
+                    type="button"
+                    className="chat-top-icon"
+                    onClick={() => setInboxOpen(true)}
+                    aria-label={`收件箱，${unreadCount} 条未读`}
+                  >
+                    <Inbox size={16} />
+                    {unreadCount > 0 && <span className="button-badge">{unreadCount}</span>}
+                  </button>
+                  <button type="button" className="chat-collapse" onClick={collapseChat}>
+                    <ChevronDown size={13} /> 收起
+                  </button>
+                </>
+              )}
+              {!expanded && QUICK_ACTIONS.map((action) => (
+                <button
+                  type="button"
+                  key={action}
+                  disabled={!interactive || typingCard === unitCard.id}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (!interactive || typingCard === unitCard.id) return;
+                    void sendQuickAction(action, unitCard.id);
+                  }}
+                >
+                  {action}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {expanded && (
+            <FocusChatThread
+              messages={unitMessages}
+              typing={typingCard === unitCard.id}
+              title={unitCard.title}
+              onFeedback={(index, kind) => setMessageFeedback(unitCard.id, index, kind)}
+              onRegenerate={(index) => void regenerateAgentMessage(unitCard.id, index)}
+              onRetry={(index) => void retryFailedMessage(unitCard.id, index)}
+            />
+          )}
+
+          {!expanded && <div className="latest-message">
+            {unitMessages.slice(-1).map((message, messageIndex) => (
+              <span key={`${message.role}-${messageIndex}`} className={message.role}>{message.text}</span>
+            ))}
+            {typingCard === unitCard.id && <span className="typing"><i /><i /><i /></span>}
+          </div>}
+
+          {(chatAttachments[unitCard.id] ?? []).length > 0 && (
+            <div className="chat-pending-files" data-attach-control>
+              {(chatAttachments[unitCard.id] ?? []).map((file, index) => (
+                <span className="chat-pending-chip" key={`${file.name}-${file.size}-${index}`}>
+                  <Paperclip size={13} />
+                  <em>{file.name}</em>
+                  <button
+                    type="button"
+                    data-attach-control
+                    disabled={!interactive}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (interactive) removeChatAttachment(unitCard.id, index);
+                    }}
+                    aria-label={`移除 ${file.name}`}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <form
+            onSubmit={interactive ? handleChatSubmit : (event) => event.preventDefault()}
+            onClick={(event) => {
+              if (!interactive || expanded) return;
+              if ((event.target as HTMLElement).closest("[data-attach-control]")) return;
+              expandChatFromStrip();
+            }}
+          >
+            <button
+              type="button"
+              className="chat-attach-button"
+              data-attach-control
+              disabled={!interactive}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (interactive) attachInputRef.current?.click();
+              }}
+              aria-label="添加附件"
+            >
+              <Paperclip size={20} />
+            </button>
+            <input
+              ref={interactive ? attachInputRef : undefined}
+              data-attach-control
+              type="file"
+              multiple
+              hidden
+              onChange={(event) => {
+                if (!interactive) return;
+                addChatAttachments(unitCard.id, event.target.files);
+                event.target.value = "";
+              }}
+            />
+            <input
+              ref={interactive ? activeChatInputRef : undefined}
+              value={unitDraft}
+              onChange={(event) => interactive && setChatDrafts((current) => ({ ...current, [unitCard.id]: event.target.value }))}
+              onFocus={() => interactive && setChatExpanded(true)}
+              placeholder={`告诉 Agent 如何继续「${unitCard.title}」…`}
+              aria-label="对话内容"
+              readOnly={!interactive}
+            />
+            <button
+              type="submit"
+              className="send-button"
+              disabled={!interactive || (!unitDraft.trim() && !(chatAttachments[unitCard.id] ?? []).length)}
+              aria-label="发送"
+            >
+              <Send size={16} />
+            </button>
+          </form>
+        </section>
+        </div>
+      </div>
+    );
+  };
+
+  const liveArtifactTask = artifactTask
+    ? (tasks.find((t) => t.id === artifactTask.id) ?? artifactTask)
+    : null;
+
+  return (
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`} data-main-view={mainView}>
+      {!bootReady && (
+        <div className="workspace-gate" aria-busy="true">
+          <div className="workspace-gate-card">
+            <BrandLogo size="hero" />
+            <p>正在连接 Gateway…</p>
+          </div>
+        </div>
+      )}
+      <button
+        type="button"
+        className={`mobile-sidebar-scrim ${sidebarOpen ? "visible" : ""}`}
+        onClick={() => setSidebarOpen(false)}
+        aria-label="关闭侧边栏"
+      />
+
+      <aside id="main-sidebar" className={`sidebar ${sidebarOpen ? "open" : ""}`}>
+        <div className="sidebar-topline">
+          <div className="signal-controls" aria-label="任务提醒">
+            <button type="button" className={sidebarPanel === "pending" ? "active" : ""} onClick={() => togglePanel("pending")}>
+              <span className="signal-orb red"><span>{pendingTasks.length}</span></span>
+              <span>{PENDING_LABEL}</span>
+            </button>
+            <button type="button" className={sidebarPanel === "deliveries" ? "active" : ""} onClick={() => togglePanel("deliveries")}>
+              <span className="signal-treasure"><TreasureVisual state="ready" size="mini" /><span>{deliveryTasks.length}</span></span>
+              <span>{DELIVERY_LABEL}</span>
+            </button>
+          </div>
+          <div className="sidebar-topline-actions">
+            <button
+              type="button"
+              className="sidebar-collapse-btn desktop-only"
+              onClick={() => setSidebarCollapsed(true)}
+              aria-label="收起左侧边栏"
+              aria-controls="main-sidebar"
+            >
+              <PanelLeftClose size={16} />
+            </button>
+            <button type="button" className="mobile-close" onClick={() => setSidebarOpen(false)} aria-label="收起侧边栏"><X size={18} /></button>
+          </div>
+        </div>
+
+        <button type="button" className="brand-block" onClick={goHome} aria-label={`返回 HaiTun Agent ${OVERVIEW_LABEL}`}>
+          <BrandLogo />
+          <div><strong>HaiTun</strong><span>Agent</span></div>
+        </button>
+
+        <button type="button" className="new-task-button" onClick={() => openNewTask()}>
+          <Plus size={18} /> 新建任务 <span>⌘ / Ctrl N</span>
+        </button>
+
+        <div className={`global-search ${searchOpen ? "open" : ""}`}>
+          <label>
+            <Search size={15} />
+            <input
+              ref={globalSearchRef}
+              value={globalSearch}
+              onFocus={() => setSearchOpen(true)}
+              onChange={(event) => { setGlobalSearch(event.target.value); setSearchOpen(true); }}
+              placeholder="搜索任务或模板"
+              aria-label="全局搜索任务或模板"
+            />
+            <kbd>⌘ K</kbd>
+          </label>
+          {searchOpen && normalizedSearch && (
+            <div className="global-search-results">
+              {taskSearchResults.length > 0 && <span className="search-group-title">历史任务</span>}
+              {taskSearchResults.map((task) => (
+                <button type="button" key={task.id} onClick={() => selectTask(task)}>
+                  <History size={14} /><span><strong>{task.shortTitle}</strong><em>{task.category} · {task.statusLabel}</em></span><ChevronRight size={13} />
+                </button>
+              ))}
+              {templateSearchResults.length > 0 && <span className="search-group-title">任务模板</span>}
+              {templateSearchResults.map((template) => (
+                <button type="button" key={template.id} onClick={() => {
+                  setTemplateSearchSeed(template.title);
+                  setMainView("templates");
+                  setSidebarPanel(null);
+                  setSidebarOpen(false);
+                  setSearchOpen(false);
+                }}>
+                  <SquareStack size={14} /><span><strong>{template.title}</strong><em>{template.category} · 进入模板库查看</em></span><ChevronRight size={13} />
+                </button>
+              ))}
+              {!taskSearchResults.length && !templateSearchResults.length && <div className="search-empty">没有找到匹配的任务或模板</div>}
+            </div>
+          )}
+        </div>
+
+        <nav className="primary-nav" aria-label="主导航">
+          <button type="button" className={mainView === "workspace" && currentIndex === 0 && !sidebarPanel ? "active" : ""} onClick={goHome}>
+            <Grid2X2 size={18} /> {OVERVIEW_LABEL} <ChevronRight size={15} />
+          </button>
+          <button type="button" className={mainView === "workspace" && (sidebarPanel === "history" || sidebarPanel === "pending" || sidebarPanel === "deliveries") ? "active" : ""} onClick={() => { setMainView("workspace"); setSidebarPanel((current) => current === "history" ? null : "history"); }}>
+            <History size={18} /> 历史任务 {(sidebarPanel === "history" || sidebarPanel === "pending" || sidebarPanel === "deliveries") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          </button>
+
+          <div className={`sidebar-task-panel ${sidebarPanel ? "visible" : ""}`}>
+            <div className="panel-heading">
+              <span>
+                {sidebarPanel === "pending" ? PENDING_LABEL : sidebarPanel === "deliveries" ? DELIVERY_LABEL : "最近任务"}
+              </span>
+              <em>{visibleSidebarTasks.length}</em>
+            </div>
+            <div className="task-list">
+              {visibleSidebarTasks.map((task) => (
+                <TaskRow
+                  key={task.id}
+                  task={task}
+                  active={currentTask?.id === task.id}
+                  onSelect={() => selectTask(task)}
+                  onOpenArtifact={setArtifactTask}
+                  onDelete={deleteTask}
+                />
+              ))}
+            </div>
+          </div>
+
+          <button type="button" className={mainView === "templates" ? "active" : ""} onClick={openTemplates}>
+            <SquareStack size={18} /> 任务模板 <ChevronRight size={15} />
+          </button>
+        </nav>
+
+        <div className="sidebar-spacer" />
+        <div className="sidebar-account">
+          <UserHub
+            selectedAiId={aiId}
+            onSelectAi={(id) => setAiId(id)}
+            notificationsEnabled={notificationsEnabled}
+            hapticsEnabled={hapticsEnabled}
+            onToggleNotifications={() => setNotificationsEnabled((current) => !current)}
+            onToggleHaptics={() => setHapticsEnabled((current) => !current)}
+            workspace={workspace}
+            onChangeWorkspace={onChangeWorkspace}
+            onToast={showToast}
+            openModelsOnMount={bootReady && openModelsOnce}
+            onModelsAutoOpened={() => setOpenModelsOnce(false)}
+            onAisChanged={(ais: AiInfo[]) => {
+              if (ais.length === 0) {
+                setAiId(null);
+                return;
+              }
+              if (!aiId || !ais.some((a) => a.id === aiId)) setAiId(ais[0].id);
+            }}
+          />
+        </div>
+      </aside>
+
+      {sidebarCollapsed && (
+        <button
+          type="button"
+          className="sidebar-expand-rail"
+          onClick={() => setSidebarCollapsed(false)}
+          aria-label="展开左侧边栏"
+          aria-controls="main-sidebar"
+          aria-expanded={false}
+        >
+          <PanelLeftOpen size={16} />
+        </button>
+      )}
+
+      <main className={`main-stage ${chatExpanded ? "chat-focus-mode" : ""}`}>
+        <header className={`stage-topbar ${chatExpanded ? "stage-topbar-focus" : ""}`}>
+          <div className="stage-leading-actions">
+            <button type="button" className="mobile-menu-button" onClick={() => setSidebarOpen(true)} aria-label="展开侧边栏" aria-controls="main-sidebar" aria-expanded={sidebarOpen}><Menu size={21} /></button>
+            {mainView !== "workspace" && (
+              <button type="button" className="view-back-button" onClick={() => setMainView(mainView === "new-task" ? newTaskReturnView : "workspace")} aria-label="返回上一页">
+                <ArrowLeft size={17} /><span>{mainView === "new-task" && newTaskReturnView === "templates" ? "返回模板库" : `返回${OVERVIEW_LABEL}`}</span>
+              </button>
+            )}
+          </div>
+          {!chatExpanded && (
+            <div className="stage-actions">
+              <button type="button" className="icon-button" onClick={() => setInboxOpen(true)} aria-label={`收件箱，${unreadCount} 条未读`}><Inbox size={18} />{unreadCount > 0 && <span className="button-badge">{unreadCount}</span>}</button>
+            </div>
+          )}
+        </header>
+
+        {mainView === "workspace" && (
+          <section className={`card-stage ${chatExpanded ? "chat-focus-stage" : ""}`} aria-label="任务卡片">
+            {!chatExpanded && (
+              <button type="button" className="card-arrow previous" onClick={() => goTo(currentIndex - 1)} disabled={currentIndex === 0} aria-label="上一张卡片"><ArrowLeft size={20} /></button>
+            )}
+
+            <div className="task-unit-frame">
+              {cardTransition && (
+                <div key={`exit-${cardTransition.token}`} className={`card-chat-unit-layer card-motion-exit ${cardTransition.direction}`} aria-hidden="true" inert>
+                  {renderTaskUnit(cardTransition.from, false, cardTransition.fromExpanded)}
+                </div>
+              )}
+              <div
+                key={`current-${currentCard.id}`}
+                className={`card-chat-unit-layer ${isDragging ? "dragging" : ""} ${cardTransition ? `card-motion-enter ${cardTransition.direction}` : ""}`}
+                style={{ transform: `translateX(${dragX}px) rotate(${dragX * 0.012}deg)` }}
+              >
+                {renderTaskUnit(currentIndex, true)}
+              </div>
+            </div>
+
+            {!chatExpanded && (
+              <button type="button" className="card-arrow next" onClick={() => goTo(currentIndex + 1)} disabled={currentIndex === cards.length - 1} aria-label="下一张卡片"><ArrowRight size={20} /></button>
+            )}
+          </section>
+        )}
+
+        {mainView === "new-task" && (
+          <NewTaskWorkspace
+            key={newTaskSession}
+            draft={newTaskDraft}
+            category={newTaskCategory}
+            setDraft={setNewTaskDraft}
+            setCategory={setNewTaskCategory}
+            onBack={() => setMainView(newTaskReturnView)}
+            onOpenTemplates={openTemplates}
+            onCreate={createTask}
+            onViewTask={viewCreatedTask}
+          />
+        )}
+
+        {mainView === "templates" && (
+          <TemplateLibrary key={templateSearchSeed || "all-templates"} templates={templates} initialSearch={templateSearchSeed} onBack={goHome} onUseTemplate={useTemplate} onCreateTemplate={createTemplate} />
+        )}
+      </main>
+
+      {liveArtifactTask && (
+        <ArtifactDrawer
+          task={liveArtifactTask}
+          files={collectDeliverableFiles(
+            liveArtifactTask.deliverables,
+            messages[liveArtifactTask.id] ?? [],
+          )}
+          onClose={() => setArtifactTask(null)}
+          onSave={saveArtifact}
+          onRevise={reviseArtifact}
+          onDownload={(fileName) =>
+            showToast(`${fileName} 暂无附件数据，无法下载（刷新后需重新交付）`)
+          }
+        />
+      )}
+      {inboxOpen && (
+        <InboxDrawer
+          items={inboxItems}
+          tasks={tasks}
+          onClose={() => setInboxOpen(false)}
+          onMarkAllRead={() => setInboxItems((current) => current.map((item) => ({ ...item, unread: false })))}
+          onOpenItem={openInboxItem}
+        />
+      )}
+      {toast && <div className="toast" role="status" aria-live="polite"><Check size={16} /> {toast}</div>}
+    </div>
+  );
+}
