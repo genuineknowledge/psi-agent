@@ -89,10 +89,40 @@ export type HistoryMessage = {
   text: string
   /** Provenance from Session JSONL (`kind`); omitted for ordinary chat. */
   kind?: string
+  /** ``[SEND:]`` paths extracted before marker strip (assistant turns). */
+  sends?: string[]
 }
 
 export async function fetchHistory(sessionId: string) {
   return api<HistoryMessage[]>('GET', `/sessions/${sessionId}/history`)
+}
+
+export type SessionTodo = {
+  id: string
+  content: string
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled' | string
+}
+
+export type SessionTodosResponse = {
+  todos: SessionTodo[]
+  summary: {
+    total: number
+    pending: number
+    in_progress: number
+    completed: number
+    cancelled: number
+  }
+}
+
+/** Workspace ``.psi/todos/{sessionId}.json`` via the ``todo`` tool. */
+export async function fetchSessionTodos(sessionId: string) {
+  return api<SessionTodosResponse>('GET', `/sessions/${sessionId}/todos`)
+}
+
+export async function readWorkspaceFile(path: string, root = '') {
+  const params = new URLSearchParams({ path })
+  if (root) params.set('root', root)
+  return api<{ name: string; data: string; path: string }>('GET', `/workspace/file?${params.toString()}`)
 }
 
 export async function fetchCwd() {

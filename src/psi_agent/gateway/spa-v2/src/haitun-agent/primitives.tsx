@@ -86,14 +86,20 @@ export function TreasureButton({
     if (openTimer.current) window.clearTimeout(openTimer.current);
   }, []);
 
-  const hasFiles = task.deliverables.length > 0;
-  /** Gold only when there are real deliverables; otherwise black chest. */
-  const visualState: DeliveryState = hasFiles
+  const hasNew = task.newDeliverables.length > 0;
+  const hasHistorical = task.deliverables.length > 0;
+  /** Gold only for unread new deliverables; historical-only stays gray but openable. */
+  const visualState: DeliveryState = hasNew
     ? (task.deliveryState === "saved" ? "saved" : "ready")
     : "none";
 
   const openTreasure = () => {
     if (opening) return;
+    // Empty / historical-only: open drawer without coin burst.
+    if (!hasNew) {
+      onOpen(task);
+      return;
+    }
     setOpening(true);
     mobileHaptic(12);
     openTimer.current = window.setTimeout(() => {
@@ -105,13 +111,25 @@ export function TreasureButton({
   return (
     <button
       type="button"
-      className={`treasure-button ${hasFiles ? "ready" : "locked"} ${task.deliveryState === "saved" ? "settled" : ""} ${compact ? "compact" : ""} ${opening ? "opening" : ""}`}
+      className={`treasure-button ${hasNew ? "ready" : hasHistorical ? "historical" : "locked"} ${task.deliveryState === "saved" ? "settled" : ""} ${compact ? "compact" : ""} ${opening ? "opening" : ""}`}
       onClick={(event) => {
         event.stopPropagation();
         openTreasure();
       }}
-      aria-label={hasFiles ? `打开 ${task.shortTitle} 的交付物` : `查看 ${task.shortTitle} 的交付物（暂无）`}
-      title={hasFiles ? (task.deliveryState === "saved" ? "已保存到成果库，点击查看" : "新交付物已就绪，点击查看") : "暂时没有新的交付物，点击查看"}
+      aria-label={
+        hasNew
+          ? `打开 ${task.shortTitle} 的新交付物`
+          : hasHistorical
+            ? `查看 ${task.shortTitle} 的历史交付物`
+            : `查看 ${task.shortTitle} 的交付物（暂无）`
+      }
+      title={
+        hasNew
+          ? (task.deliveryState === "saved" ? "已保存到成果库，点击查看" : "新交付物已就绪，点击查看")
+          : hasHistorical
+            ? "查看本会话历史交付物"
+            : "暂时没有交付物，点击查看"
+      }
     >
       <TreasureVisual state={visualState} size={compact ? "compact" : "card"} opening={opening} />
     </button>

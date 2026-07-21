@@ -14,6 +14,7 @@ import {
   Plus,
   Search,
   Send,
+  Square,
   SquareStack,
   X,
 } from "lucide-react";
@@ -51,6 +52,7 @@ import {
   createSession,
   deleteSession,
   fetchHistory,
+  fetchSessionTodos,
   generateTitle,
   listAis,
   listSessions,
@@ -63,9 +65,12 @@ import { filesToChatFiles } from "../services/chatFiles";
 import { streamSessionChat } from "../services/chatStream";
 import {
   historyToChat,
+  historyToDeliverables,
   sessionToTask,
   titleFromPrompt,
   withDeliverables,
+  withHistoricalDeliverables,
+  withTodoProgress,
 } from "../services/sessionBridge";
 
 const OVERVIEW_WELCOME: ChatMessage = {
@@ -113,6 +118,8 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>(null);
   const [artifactTask, setArtifactTask] = useState<Task | null>(null);
+  const [artifactListMode, setArtifactListMode] = useState<"new" | "history">("new");
+  const [artifactInitialFile, setArtifactInitialFile] = useState<string | undefined>(undefined);
   const [mainView, setMainView] = useState<MainView>("workspace");
   const [newTaskReturnView, setNewTaskReturnView] = useState<MainView>("workspace");
   const [newTaskSession, setNewTaskSession] = useState(0);
@@ -152,7 +159,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const currentCard = cards[currentIndex] ?? cards[0];
   const currentChatDraft = chatDrafts[currentCard.id] ?? "";
   const pendingTasks = tasks.filter((task) => task.status === "attention");
-  const deliveryTasks = tasks.filter((task) => task.deliveryState === "ready");
+  const deliveryTasks = tasks.filter((task) => task.newDeliverables.length > 0);
   const unreadCount = notificationsEnabled ? inboxItems.filter((item) => item.unread).length : 0;
   const normalizedSearch = globalSearch.trim().toLocaleLowerCase("zh-CN");
   const taskSearchResults = normalizedSearch
@@ -168,38 +175,77 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     toastTimer.current = window.setTimeout(() => setToast(null), 2600);
   }, []);
 
+  const refreshTodos = useCallback(async (taskId: string) => {
+    if (taskId === "overview") return;
+    try {
+      const data = await fetchSessionTodos(taskId);
+      const todos = Array.isArray(data.todos) ? data.todos : [];
+      setTasks((current) =>
+        current.map((task) => (task.id === taskId ? withTodoProgress(task, todos) : task)),
+      );
+    } catch {
+      // Missing file / transient — keep previous steps.
+    }
+  }, []);
+
   const ensureHistory = useCallback(async (taskId: string) => {
     if (taskId === "overview" || historyLoadedRef.current.has(taskId)) return;
     historyLoadedRef.current.add(taskId);
     try {
       const hist = await fetchHistory(taskId);
       const chat = historyToChat(hist);
+      const { names, paths } = historyToDeliverables(hist);
       setMessages((current) => ({
         ...current,
         [taskId]: chat.length ? chat : (current[taskId] ?? []),
       }));
-      if (chat.length) {
-        const lastAgent = [...chat].reverse().find((m) => m.role === "agent");
-        if (lastAgent) {
-          setTasks((current) =>
-            current.map((task) =>
-              task.id === taskId
-                ? {
-                    ...task,
-                    summary: lastAgent.text.slice(0, 120) + (lastAgent.text.length > 120 ? "…" : ""),
-                    updated: "已从历史同步",
-                    progress: Math.min(96, Math.max(task.progress, 20 + chat.length * 4)),
-                  }
-                : task,
-            ),
-          );
-        }
-      }
+      setTasks((current) =>
+        current.map((task) => {
+          if (task.id !== taskId) return task;
+          let next = names.length ? withHistoricalDeliverables(task, names, paths) : task;
+          if (chat.length) {
+            const lastAgent = [...chat].reverse().find((m) => m.role === "agent");
+            if (lastAgent) {
+              next = {
+                ...next,
+                summary: lastAgent.text.slice(0, 120) + (lastAgent.text.length > 120 ? "…" : ""),
+                updated: names.length ? "已从历史同步交付物" : "已从历史同步",
+                progress: Math.min(96, Math.max(next.progress, 20 + chat.length * 4)),
+              };
+            }
+          }
+          return next;
+        }),
+      );
+      await refreshTodos(taskId);
     } catch (e) {
       historyLoadedRef.current.delete(taskId);
       showToast(e instanceof Error ? e.message : "加载历史失败");
     }
-  }, [showToast]);
+  }, [refreshTodos, showToast]);
+
+  // While Agent runs, poll todos so middle step updates mid-turn (tool writes file).
+  useEffect(() => {
+    if (!typingCard || typingCard === "overview") return;
+    void refreshTodos(typingCard);
+    const id = window.setInterval(() => {
+      void refreshTodos(typingCard);
+    }, 2500);
+    return () => window.clearInterval(id);
+  }, [typingCard, refreshTodos]);
+
+  const openArtifact = useCallback((task: Task, fileName?: string, listMode?: "new" | "history") => {
+    const mode = listMode
+      ?? (fileName ? "history" : (task.newDeliverables.length ? "new" : "history"));
+    setArtifactListMode(mode);
+    setArtifactInitialFile(fileName);
+    setArtifactTask(task);
+  }, []);
+
+  const closeArtifact = useCallback(() => {
+    setArtifactTask(null);
+    setArtifactInitialFile(undefined);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -336,7 +382,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       return next;
     });
     setInboxItems((current) => current.filter((item) => item.taskId !== task.id));
-    if (artifactTask?.id === task.id) setArtifactTask(null);
+    if (artifactTask?.id === task.id) closeArtifact();
 
     const deletedIndex = tasks.findIndex((item) => item.id === task.id);
     if (deletedIndex >= 0 && currentIndex === deletedIndex + 1) {
@@ -452,7 +498,27 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
         }).catch(() => {});
       }
     } catch (e) {
-      if ((e as Error).name === "AbortError") return;
+      if ((e as Error).name === "AbortError") {
+        setMessages((current) => {
+          const list = [...(current[cardId] ?? [])];
+          for (let i = list.length - 1; i >= 0; i--) {
+            if (list[i]?.role === "user") {
+              list[i] = { ...list[i]!, failed: true, failedReason: "stopped" };
+              break;
+            }
+          }
+          const last = list[list.length - 1];
+          if (last?.role === "agent") {
+            list[list.length - 1] = {
+              ...last,
+              stopped: true,
+              text: last.text.trim() || "（已停止）",
+            };
+          }
+          return { ...current, [cardId]: list };
+        });
+        return;
+      }
       const err = e instanceof Error ? e.message : String(e);
       setMessages((current) => {
         const list = [...(current[cardId] ?? [])];
@@ -478,8 +544,13 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     } finally {
       setTypingCard((current) => (current === cardId ? null : current));
       if (abortRef.current === controller) abortRef.current = null;
+      void refreshTodos(cardId);
     }
   };
+
+  const stopChat = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   const sendMessage = async (text: string, cardId = currentCard.id, files: File[] = []) => {
     const clean = text.trim();
@@ -720,13 +791,18 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
 
   const saveArtifact = (task: Task) => {
     setTasks((current) => current.map((item) => item.id === task.id
-      ? { ...item, deliveryState: "saved", updated: "刚刚保存交付物" }
+      ? {
+          ...item,
+          newDeliverables: [],
+          deliveryState: "saved",
+          updated: "刚刚保存交付物",
+        }
       : item));
     setMessages((current) => ({
       ...current,
-      [task.id]: [...(current[task.id] ?? []), { role: "agent", text: "交付物已保存到成果库。任务状态保持不变，您仍可基于本次成果继续迭代。" }],
+      [task.id]: [...(current[task.id] ?? []), { role: "agent", text: "交付物已保存到成果库。本会话历史交付物仍保留，您仍可基于本次成果继续迭代。" }],
     }));
-    setArtifactTask(null);
+    closeArtifact();
     setToast("交付物已保存到成果库");
     window.setTimeout(() => setToast(null), 2600);
   };
@@ -735,7 +811,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     setTasks((current) => current.map((item) => item.id === task.id
       ? { ...item, status: "working", statusLabel: "按意见修改中", deliveryState: "generating", progress: Math.min(item.progress, 92), updated: "刚刚收到修改要求" }
       : item));
-    setArtifactTask(null);
+    closeArtifact();
     setToast("修改要求已发送，任务重新开始推进");
     window.setTimeout(() => setToast(null), 2600);
   };
@@ -745,8 +821,8 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     setInboxOpen(false);
     const task = tasks.find((candidate) => candidate.id === item.taskId);
     if (!task) return;
-    if (item.kind === "delivery" && ["ready", "saved"].includes(task.deliveryState)) {
-      setArtifactTask(task);
+    if (item.kind === "delivery" && (task.newDeliverables.length > 0 || task.deliverables.length > 0)) {
+      openArtifact(task, undefined, task.newDeliverables.length ? "new" : "history");
       return;
     }
     selectTask(task);
@@ -773,7 +849,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       }
       if (artifactTask) {
         if (event.key === "Escape") {
-          setArtifactTask(null);
+          closeArtifact();
         }
         return;
       }
@@ -814,7 +890,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const visibleSidebarTasks = sidebarPanel === "pending" ? pendingTasks : sidebarPanel === "deliveries" ? deliveryTasks : tasks;
   const renderCardAt = (index: number) => {
     const task = index === 0 ? null : tasks[index - 1];
-    return task ? <TaskCard task={task} onOpenArtifact={setArtifactTask} onDelete={deleteTask} /> : <OverviewCard tasks={tasks} onHandleNext={() => pendingTasks[0] && selectTask(pendingTasks[0])} />;
+    return task ? <TaskCard task={task} onOpenArtifact={openArtifact} onDelete={deleteTask} /> : <OverviewCard tasks={tasks} onHandleNext={() => pendingTasks[0] && selectTask(pendingTasks[0])} />;
   };
 
   const renderTaskUnit = (index: number, interactive: boolean, visualExpanded = false) => {
@@ -862,11 +938,11 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
                     task={unitTask}
                     tasks={tasks}
                     inboxItems={inboxItems}
-                    onOpenArtifact={setArtifactTask}
+                    onOpenArtifact={openArtifact}
                   />
                 </div>
               ) : unitTask ? (
-                <CompactTaskContext task={unitTask} onOpenArtifact={setArtifactTask} onDelete={interactive ? deleteTask : undefined} />
+                <CompactTaskContext task={unitTask} onOpenArtifact={openArtifact} onDelete={interactive ? deleteTask : undefined} />
               ) : (
                 <CompactOverviewContext
                   tasks={tasks}
@@ -1037,14 +1113,32 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
               aria-label="对话内容"
               readOnly={!interactive}
             />
-            <button
-              type="submit"
-              className="send-button"
-              disabled={!interactive || (!unitDraft.trim() && !(chatAttachments[unitCard.id] ?? []).length)}
-              aria-label="发送"
-            >
-              <Send size={16} />
-            </button>
+            {typingCard === unitCard.id ? (
+              <button
+                type="button"
+                className="send-button stop-button"
+                data-attach-control
+                disabled={!interactive}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (interactive) stopChat();
+                }}
+                aria-label="停止生成"
+                title="停止生成"
+              >
+                <Square size={14} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="send-button"
+                disabled={!interactive || (!unitDraft.trim() && !(chatAttachments[unitCard.id] ?? []).length)}
+                aria-label="发送"
+                title="发送"
+              >
+                <Send size={16} />
+              </button>
+            )}
           </form>
         </section>
         </div>
@@ -1168,7 +1262,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
                   task={task}
                   active={currentTask?.id === task.id}
                   onSelect={() => selectTask(task)}
-                  onOpenArtifact={setArtifactTask}
+                  onOpenArtifact={openArtifact}
                   onDelete={deleteTask}
                 />
               ))}
@@ -1284,16 +1378,16 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       {liveArtifactTask && (
         <ArtifactDrawer
           task={liveArtifactTask}
+          listMode={artifactListMode}
+          initialFile={artifactInitialFile}
+          workspaceRoot={workspace}
           files={collectDeliverableFiles(
             liveArtifactTask.deliverables,
             messages[liveArtifactTask.id] ?? [],
           )}
-          onClose={() => setArtifactTask(null)}
+          onClose={closeArtifact}
           onSave={saveArtifact}
           onRevise={reviseArtifact}
-          onDownload={(fileName) =>
-            showToast(`${fileName} 暂无附件数据，无法下载（刷新后需重新交付）`)
-          }
         />
       )}
       {inboxOpen && (

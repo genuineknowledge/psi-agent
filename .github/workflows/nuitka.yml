@@ -26,6 +26,7 @@ jobs:
         --output-filename=psi-agent
         --assume-yes-for-downloads
         --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist
+        --include-data-dir=src/psi_agent/gateway/spa-v2/dist=psi_agent/gateway/spa-v2/dist
         --include-package=any_llm
         --include-package=mcp
         --include-package=serper_mcp_server
@@ -55,6 +56,10 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - run: npm run build
         working-directory: src/psi_agent/gateway/spa
+      - run: npm ci
+        working-directory: src/psi_agent/gateway/spa-v2
+      - run: npm run build
+        working-directory: src/psi_agent/gateway/spa-v2
       - shell: bash
         run: uv run python -m nuitka $NUITKA_COMMON_FLAGS src/psi_agent/cli.py
         if: matrix.os == 'ubuntu-latest'

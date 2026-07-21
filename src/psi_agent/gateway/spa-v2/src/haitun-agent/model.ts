@@ -6,6 +6,8 @@ export type DeliveryState = "none" | "generating" | "ready" | "saved";
 export type TaskStep = {
   label: string;
   state: "done" | "working" | "waiting";
+  /** Secondary text (e.g. current todo content under ``2/5``). */
+  detail?: string;
 };
 
 export type Task = {
@@ -20,7 +22,12 @@ export type Task = {
   eta: string;
   updated: string;
   accent: string;
+  /** All deliverables generated in this session (survives refresh via history ``sends``). */
   deliverables: string[];
+  /** Unacknowledged new deliverables (chest gold); cleared when saved to 成果库. */
+  newDeliverables: string[];
+  /** Basename → absolute/relative path from ``[SEND:]`` (for reload preview). */
+  deliverablePaths: Record<string, string>;
   deliveryState: DeliveryState;
   steps: TaskStep[];
 };

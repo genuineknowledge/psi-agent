@@ -47,6 +47,7 @@ _KNOWN_KINDS = frozenset({KIND_CHAT, KIND_SCHEDULE_SILENT, KIND_SCHEDULE_DISPLAY
 
 # Presentation-only strip of wire transfer markers (Gateway history projection).
 _TRANSFER_MARKER_RE = re.compile(r"\[(?:SEND|RECV):[^\]]*\]")
+_SEND_PATH_RE = re.compile(r"\[SEND:([^\]]*)\]")
 
 
 def normalize_kind(raw: object) -> str:
@@ -127,6 +128,18 @@ def strip_transfer_markers(text: str) -> str:
     """Remove ``[SEND:…]`` / ``[RECV:…]`` from display text (Gateway projection)."""
     cleaned = _TRANSFER_MARKER_RE.sub("", text)
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def extract_send_paths(text: str) -> list[str]:
+    """Return ``[SEND:…]`` paths in order (stripped); empty / whitespace skipped."""
+    if not isinstance(text, str) or not text:
+        return []
+    out: list[str] = []
+    for match in _SEND_PATH_RE.finditer(text):
+        path = match.group(1).strip()
+        if path:
+            out.append(path)
+    return out
 
 
 def is_displayable_chat_message(msg: dict[str, Any]) -> bool:

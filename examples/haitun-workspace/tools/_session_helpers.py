@@ -26,7 +26,20 @@ def _argv_flag(argv: list[str], flag: str) -> str:
 
 
 def current_session_id() -> str:
-    """Session id from this process argv, when running as ``psi-agent session``."""
+    """Session id for the active turn.
+
+    Prefer the ContextVar set by ``SessionAgent`` (Gateway in-process). Fall
+    back to ``psi-agent session --session-id`` argv when running as a
+    standalone Session process.
+    """
+    try:
+        from psi_agent.session.runtime_context import get_session_id
+
+        sid = get_session_id().strip()
+        if sid:
+            return sid
+    except ImportError:
+        pass
     if "session" not in sys.argv:
         return ""
     return _argv_flag(sys.argv, "--session-id")

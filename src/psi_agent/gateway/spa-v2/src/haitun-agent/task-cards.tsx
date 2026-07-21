@@ -18,7 +18,7 @@ export function TaskRow({
   task: Task;
   active: boolean;
   onSelect: () => void;
-  onOpenArtifact: (task: Task) => void;
+  onOpenArtifact: (task: Task, fileName?: string) => void;
   onDelete?: (task: Task) => void;
 }) {
   return (
@@ -122,7 +122,7 @@ export function TaskCard({
   onDelete,
 }: {
   task: Task;
-  onOpenArtifact: (task: Task) => void;
+  onOpenArtifact: (task: Task, fileName?: string) => void;
   onDelete?: (task: Task) => void;
 }) {
   return (
@@ -158,14 +158,15 @@ export function TaskCard({
       </div>
 
       <div className="task-steps">
-        {task.steps.map((step) => (
-          <div className={`task-step ${step.state}`} key={step.label}>
+        {task.steps.map((step, index) => (
+          <div className={`task-step ${step.state}`} key={`${index}-${step.label}`}>
             <span className="step-marker">
               {step.state === "done" ? <Check size={16} /> : step.state === "working" ? <span /> : null}
             </span>
             <span className="task-step-label">
               {step.label}
-              {step.state === "working" && <em>进行中</em>}
+              {step.state === "working" && <em>{step.detail?.trim() || "进行中"}</em>}
+              {step.state === "done" && step.detail?.trim() ? <em>{step.detail.trim()}</em> : null}
             </span>
           </div>
         ))}
@@ -187,7 +188,7 @@ export function CompactTaskContext({
   onDelete,
 }: {
   task: Task;
-  onOpenArtifact: (task: Task) => void;
+  onOpenArtifact: (task: Task, fileName?: string) => void;
   onDelete?: (task: Task) => void;
 }) {
   return (

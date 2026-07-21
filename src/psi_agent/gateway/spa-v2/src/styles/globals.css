@@ -1998,6 +1998,17 @@ textarea:focus-visible {
 }
 .context-chat form .send-button:disabled { opacity: 0.28; cursor: default; box-shadow: none; }
 
+.context-chat form .send-button.stop-button {
+  color: #fff;
+  background: #d64545;
+  box-shadow: 0 1px 3px rgba(180, 40, 40, 0.22);
+}
+
+.context-chat form .send-button.stop-button:hover:not(:disabled) {
+  filter: brightness(1.06);
+  transform: scale(1.05);
+}
+
 .chat-pending-files {
   display: flex;
   flex-wrap: wrap;
