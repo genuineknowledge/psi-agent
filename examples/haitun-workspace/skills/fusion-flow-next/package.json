@@ -1,0 +1,20 @@
+{
+  "name": "fusion-flow-next",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "grammar:generate": "antlr-ng -Dlanguage=TypeScript -l false -v true --exact-output-dir -o generated -- grammar/FusionFlow.g4",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "antlr4ng": "3.0.16"
+  },
+  "devDependencies": {
+    "antlr-ng": "1.0.10",
+    "typescript": "^5.6.0"
+  }
+}
