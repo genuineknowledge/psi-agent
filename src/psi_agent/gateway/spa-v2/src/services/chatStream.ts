@@ -1,4 +1,5 @@
 import { streamChat } from './api'
+import { appendChatFilesToFormData } from './chatFiles'
 import { readSSE } from './sse'
 import type { ChatFile } from '../haitun-agent/model'
 
@@ -13,7 +14,7 @@ export type StreamHandlers = {
 export async function streamSessionChat(
   sessionId: string,
   text: string,
-  files: File[] = [],
+  files: Array<File | ChatFile> = [],
   signal?: AbortSignal,
   handlers: StreamHandlers = {},
 ): Promise<{ text: string; blobs: ChatFile[] }> {
@@ -21,7 +22,7 @@ export async function streamSessionChat(
   const chunks: { type: string; text?: string }[] = []
   if (text.trim()) chunks.push({ type: 'text', text: text.trim() })
   fd.append('chunks', JSON.stringify(chunks))
-  for (const f of files) fd.append('file', f, f.name)
+  appendChatFilesToFormData(fd, files)
 
   let full = ''
   const blobs: ChatFile[] = []

@@ -18,6 +18,7 @@
 | 默认工作区 | 无 / 必须先选 | 无记忆时用 Gateway **cwd**（从 haitun-workspace 启动即该目录）；遗留字面量 `workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 选择页；**浏览**按钮走 `/workspace/places` + `/browse`（对齐 v1） |
 | 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
+| 消息操作栏 | 助手：赞/踩/复制/重新生成；用户：复制 + 失败重试 | 同左（`FocusChatThread`）；feedback 仅内存态，刷新历史后不保留 |
 
 ## 映射
 
@@ -28,6 +29,13 @@
 任务历史文案    ↔  GET /sessions/{id}/history
 打开即用 AI     ↔  空池先开模型面板；「免费」清空配置；对话时惰性 POST `/ais`（远程默认）
 ```
+
+### 对话气泡操作（对齐 spa v1）
+
+- **用户消息**：悬停显示复制；发送失败（`failed`）时显示重试（重新 POST 该轮）。
+- **助手消息**：完整回复结束后显示操作栏——点赞 / 点踩（互斥切换）、重新生成（丢掉该助手气泡并用上一条用户消息重跑 SSE）、复制。
+- SSE `reasoning` 故意不渲染（与 v1 一致：不拆多气泡、不展示 thinking 流）。
+- 流式进行中不显示助手操作栏。
 
 ### 历史展示隔离（对齐敲定协议 / spa v1）
 

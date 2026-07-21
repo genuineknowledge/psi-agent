@@ -31,10 +31,22 @@ export type ChatFile = {
   data: string
 }
 
+export type MessageFeedback = "up" | "down" | "";
+
+/** Why a user turn failed (parity with spa v1 `failedReason`). */
+export type FailedReason = "error" | "stopped" | "incomplete";
+
 export type ChatMessage = {
   role: "agent" | "user";
   text: string;
   files?: ChatFile[];
+  /** Local-only: like / dislike on agent replies (spa v1 parity). */
+  feedback?: MessageFeedback;
+  /** User turn did not get a complete agent reply. */
+  failed?: boolean;
+  failedReason?: FailedReason;
+  /** Agent reply was aborted mid-stream. */
+  stopped?: boolean;
 };
 
 export type SidebarPanel = "pending" | "deliveries" | "history" | null;

@@ -31,9 +31,11 @@ import {
   OVERVIEW_LABEL,
   PENDING_LABEL,
   type CardTransition,
+  type ChatFile,
   type ChatMessage,
   type InboxItem,
   type MainView,
+  type MessageFeedback,
   type SidebarPanel,
   type Task,
   type TaskTemplate,
@@ -57,6 +59,7 @@ import {
   type AiInfo,
 } from "../services/api";
 import { ensureDefaultAi } from "../services/bootstrapAi";
+import { filesToChatFiles } from "../services/chatFiles";
 import { streamSessionChat } from "../services/chatStream";
 import {
   historyToChat,
@@ -91,7 +94,6 @@ import { ArtifactDrawer, InboxDrawer } from "./workspace-overlays";
 
 import { NewTaskWorkspace, TemplateLibrary } from "./secondary-views";
 import UserHub from "../components/user-hub/UserHub";
-import type { AiInfo } from "../services/api";
 import { collectDeliverableFiles } from "../utils/filePreviewUtils";
 
 type Props = {
@@ -379,41 +381,24 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     });
   };
 
-  const sendMessage = async (text: string, cardId = currentCard.id, files: File[] = []) => {
-    const clean = text.trim();
-    const pendingFiles = files.length ? files : (chatAttachments[cardId] ?? []);
-    if (!clean && !pendingFiles.length) return;
-    const userVisible = clean || `已上传：${pendingFiles.map((file) => file.name).join("、")}`;
-    if (cardId === "overview") {
-      setMessages((current) => ({
-        ...current,
-        overview: [
-          ...(current.overview ?? []),
-          { role: "user", text: userVisible },
-          { role: "agent", text: "请先新建任务或打开历史任务；总览卡片不直接调用模型。" },
-        ],
-      }));
-      setChatDrafts((current) => ({ ...current, overview: "" }));
-      setChatAttachments((current) => ({ ...current, overview: [] }));
-      return;
-    }
-
-    setMessages((current) => ({
-      ...current,
-      [cardId]: [...(current[cardId] ?? []), { role: "user", text: userVisible }, { role: "agent", text: "" }],
-    }));
-    setChatDrafts((current) => ({ ...current, [cardId]: "" }));
-    setChatAttachments((current) => ({ ...current, [cardId]: [] }));
+  /** Stream one turn; caller must already append user + empty agent (or replace agent stub). */
+  const runChatTurn = async (
+    cardId: string,
+    text: string,
+    files: Array<File | ChatFile> = [],
+    titleSource?: string,
+  ) => {
     setTypingCard(cardId);
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    const userVisible = titleSource ?? (text.trim() || "附件");
 
     try {
       const { text: full, blobs } = await streamSessionChat(
         cardId,
-        clean,
-        pendingFiles,
+        text,
+        files,
         controller.signal,
         {
           onText: (delta) => appendStreamingAgent(cardId, delta),
@@ -471,6 +456,13 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       const err = e instanceof Error ? e.message : String(e);
       setMessages((current) => {
         const list = [...(current[cardId] ?? [])];
+        // Mark preceding user turn failed (spa v1 parity) so retry appears.
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i]?.role === "user") {
+            list[i] = { ...list[i]!, failed: true, failedReason: "error" };
+            break;
+          }
+        }
         const last = list[list.length - 1];
         if (last?.role === "agent") {
           list[list.length - 1] = {
@@ -487,6 +479,93 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       setTypingCard((current) => (current === cardId ? null : current));
       if (abortRef.current === controller) abortRef.current = null;
     }
+  };
+
+  const sendMessage = async (text: string, cardId = currentCard.id, files: File[] = []) => {
+    const clean = text.trim();
+    const pendingFiles = files.length ? files : (chatAttachments[cardId] ?? []);
+    if (!clean && !pendingFiles.length) return;
+    const userVisible = clean || `已上传：${pendingFiles.map((file) => file.name).join("、")}`;
+    if (cardId === "overview") {
+      setMessages((current) => ({
+        ...current,
+        overview: [
+          ...(current.overview ?? []),
+          { role: "user", text: userVisible },
+          { role: "agent", text: "请先新建任务或打开历史任务；总览卡片不直接调用模型。" },
+        ],
+      }));
+      setChatDrafts((current) => ({ ...current, overview: "" }));
+      setChatAttachments((current) => ({ ...current, overview: [] }));
+      return;
+    }
+
+    const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
+    setMessages((current) => ({
+      ...current,
+      [cardId]: [
+        ...(current[cardId] ?? []),
+        { role: "user", text: userVisible, files: storedFiles.length ? storedFiles : undefined },
+        { role: "agent", text: "" },
+      ],
+    }));
+    setChatDrafts((current) => ({ ...current, [cardId]: "" }));
+    setChatAttachments((current) => ({ ...current, [cardId]: [] }));
+    await runChatTurn(cardId, clean, pendingFiles, userVisible);
+  };
+
+  const setMessageFeedback = (cardId: string, index: number, kind: Exclude<MessageFeedback, "">) => {
+    setMessages((current) => {
+      const list = [...(current[cardId] ?? [])];
+      const msg = list[index];
+      if (!msg || msg.role !== "agent") return current;
+      list[index] = { ...msg, feedback: msg.feedback === kind ? "" : kind };
+      return { ...current, [cardId]: list };
+    });
+  };
+
+  const regenerateAgentMessage = async (cardId: string, agentIndex: number) => {
+    if (typingCard === cardId || cardId === "overview") return;
+    const list = messages[cardId] ?? [];
+    const agent = list[agentIndex];
+    if (!agent || agent.role !== "agent") return;
+    let userIndex = -1;
+    for (let i = agentIndex - 1; i >= 0; i--) {
+      if (list[i]?.role === "user") {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex < 0) return;
+    const userMsg = list[userIndex]!;
+    const text = userMsg.text;
+    const files = userMsg.files ?? [];
+    setMessages((current) => {
+      const next = [...(current[cardId] ?? [])];
+      next.splice(agentIndex, 1, { role: "agent", text: "" });
+      if (next[userIndex]?.role === "user") {
+        next[userIndex] = { ...next[userIndex]!, failed: false, failedReason: undefined };
+      }
+      return { ...current, [cardId]: next };
+    });
+    await runChatTurn(cardId, text, files, text);
+  };
+
+  const retryFailedMessage = async (cardId: string, userIndex: number) => {
+    if (typingCard === cardId || cardId === "overview") return;
+    const list = messages[cardId] ?? [];
+    const userMsg = list[userIndex];
+    if (!userMsg || userMsg.role !== "user" || !userMsg.failed) return;
+    const text = userMsg.text;
+    const files = userMsg.files ?? [];
+    setMessages((current) => {
+      const next = [...(current[cardId] ?? [])];
+      const after = next[userIndex + 1];
+      const removeCount = after?.role === "agent" ? 2 : 1;
+      next.splice(userIndex, removeCount, { role: "user", text, files }, { role: "agent", text: "" });
+      return { ...current, [cardId]: next };
+    });
+    await runChatTurn(cardId, text, files, text);
   };
 
   const handleChatSubmit = (event: FormEvent) => {
@@ -579,73 +658,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     setToast("新任务已创建，正在请求 Agent…");
     window.setTimeout(() => setToast(null), 2600);
 
-    // Fire-and-forget first turn against Gateway Session
-    setTypingCard(newTask.id);
-    const controller = new AbortController();
-    abortRef.current = controller;
-    void streamSessionChat(newTask.id, description, [], controller.signal, {
-      onText: (delta) => appendStreamingAgent(newTask.id, delta),
-      onBlob: (name, data) => {
-        setTasks((current) =>
-          current.map((task) => (task.id === newTask.id ? withDeliverables(task, [name]) : task)),
-        );
-        setMessages((current) => {
-          const list = [...(current[newTask.id] ?? [])];
-          const last = list[list.length - 1];
-          if (last?.role === "agent") {
-            list[list.length - 1] = {
-              ...last,
-              files: [...(last.files ?? []), { name, data }],
-            };
-          }
-          return { ...current, [newTask.id]: list };
-        });
-      },
-    })
-      .then(({ text: full, blobs }) => {
-        if (blobs.length) {
-          setTasks((current) =>
-            current.map((task) =>
-              task.id === newTask.id ? withDeliverables(task, blobs.map((b) => b.name)) : task,
-            ),
-          );
-        }
-        void generateTitle(newTask.id, description, full.slice(0, 400))
-          .then((res) => {
-            if (res?.title) {
-              setTasks((current) =>
-                current.map((task) =>
-                  task.id === newTask.id
-                    ? {
-                        ...task,
-                        title: res.title!,
-                        shortTitle: res.title!.slice(0, 10) + (res.title!.length > 10 ? "…" : ""),
-                      }
-                    : task,
-                ),
-              );
-            }
-          })
-          .catch(() => {});
-      })
-      .catch((e) => {
-        if ((e as Error).name === "AbortError") return;
-        const err = e instanceof Error ? e.message : String(e);
-        setMessages((current) => {
-          const list = [...(current[newTask.id] ?? [])];
-          const last = list[list.length - 1];
-          if (last?.role === "agent") {
-            list[list.length - 1] = { ...last, text: last.text || `[错误] ${err}` };
-          } else {
-            list.push({ role: "agent", text: `[错误] ${err}` });
-          }
-          return { ...current, [newTask.id]: list };
-        });
-        showToast(err);
-      })
-      .finally(() => {
-        setTypingCard((current) => (current === newTask.id ? null : current));
-      });
+    void runChatTurn(newTask.id, description, [], description);
 
     return newTask;
   };
@@ -946,6 +959,9 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
               messages={unitMessages}
               typing={typingCard === unitCard.id}
               title={unitCard.title}
+              onFeedback={(index, kind) => setMessageFeedback(unitCard.id, index, kind)}
+              onRegenerate={(index) => void regenerateAgentMessage(unitCard.id, index)}
+              onRetry={(index) => void retryFailedMessage(unitCard.id, index)}
             />
           )}
 

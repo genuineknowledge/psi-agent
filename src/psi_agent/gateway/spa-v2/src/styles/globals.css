@@ -4295,6 +4295,93 @@ textarea:focus-visible {
   padding: 10px 16px;
 }
 
+/* Message actions (spa v1 parity: copy / like / dislike / regenerate / retry) */
+.focus-chat-bubble-wrap {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  max-width: 100%;
+}
+.focus-chat-msg.user .focus-chat-bubble-wrap {
+  flex-direction: row-reverse;
+}
+.focus-chat-side-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  margin-top: 2px;
+}
+.focus-chat-copy-btn,
+.focus-chat-retry-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: #7a8b9c;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.focus-chat-bubble-wrap:hover .focus-chat-copy-btn,
+.focus-chat-copy-btn:focus-visible,
+.focus-chat-side-actions.has-retry .focus-chat-copy-btn,
+.focus-chat-retry-btn {
+  opacity: 1;
+}
+.focus-chat-copy-btn:hover,
+.focus-chat-retry-btn:hover:not(:disabled) {
+  background: rgba(11, 47, 91, 0.06);
+  color: #1f3348;
+}
+.focus-chat-retry-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+@media (hover: none) {
+  .focus-chat-copy-btn {
+    opacity: 1;
+  }
+}
+.focus-chat-msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0 0 2px;
+}
+.focus-chat-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: #7a8b9c;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.focus-chat-action-btn:hover:not(:disabled) {
+  background: rgba(11, 47, 91, 0.06);
+  color: #1f3348;
+}
+.focus-chat-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.focus-chat-action-btn.active {
+  color: var(--brand-600);
+}
+
 /* Agent MD content (v1 parity) */
 .focus-chat-bubble p { margin: 0 0 0.65em; color: inherit; word-break: break-word; }
 .focus-chat-bubble p:last-child { margin-bottom: 0; }
