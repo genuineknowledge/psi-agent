@@ -704,8 +704,32 @@ async def test_auth_start_builds_authorize_url(monkeypatch: pytest.MonkeyPatch, 
     assert q["client_id"] == ["cli_x"]
     assert q["response_type"] == ["code"]
     assert "offline_access" in q["scope"][0]
+    # scope must be exactly the fixed default — no fabricated/invalid scope
+    # (e.g. "drive:drive:drive:readonly") that Feishu rejects with error 20043
+    assert q["scope"][0] == _impl._DEFAULT_SCOPES
+    assert "drive:drive:drive" not in q["scope"][0]
     # state persisted for CSRF check
     assert json.loads((tmp_path / "pending.json").read_text())["state"] == q["state"][0]
+
+
+@pytest.mark.asyncio
+async def test_auth_start_wrapper_ignores_llm_scopes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The feishu_auth_start tool exposes no scopes arg — LLM can't inject a bad scope."""
+    auth_mod = importlib.import_module("feishu_auth")
+    params = inspect.signature(auth_mod.feishu_auth_start).parameters
+    assert "scopes" not in params
+    assert list(params) == ["user_key"]
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_start(scopes: str = "", user_key: str = "") -> dict[str, Any]:
+        captured["scopes"] = scopes
+        return {"ok": True, "authorize_url": "x"}
+
+    monkeypatch.setattr(auth_mod._f, "auth_start_impl", _fake_start)
+    await auth_mod.feishu_auth_start("ou_a")
+    # wrapper always passes empty scopes -> impl uses the fixed default
+    assert captured["scopes"] == ""
 
 
 def test_extract_code_from_url_or_bare() -> None:
