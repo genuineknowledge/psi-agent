@@ -92,3 +92,25 @@ async def feishu_file_download(source: str, save_path: str, is_url: bool = False
         is_url: True if source is a direct URL, False if it is a media file_token.
     """
     return _f.dumps_result(await _f.download_file_impl(source, save_path, is_url))
+
+
+async def feishu_drive_delete_file(file_token: str, file_type: str, user_key: str = "") -> str:
+    """Delete a Feishu/Lark cloud file or document (moves it to the recycle bin).
+
+    The delete is recoverable (goes to trash, not permanent). The caller must be the
+    file's owner, or hold edit/full-access on its parent folder — so for a file the
+    user owns, pass their ``user_key`` to delete as that user.
+
+    To delete a document that lives inside a wiki knowledge base: first resolve it
+    with ``feishu_wiki_get_node(token)`` to get ``obj_token`` + ``obj_type``, then
+    call this with ``file_token=obj_token`` and ``file_type=obj_type`` (Feishu has no
+    standalone "delete wiki node" API — deleting the underlying doc removes it).
+
+    Args:
+        file_token: The file/document token (from its URL), or a wiki node's obj_token.
+        file_type: One of file, docx, doc, sheet, bitable, mindnote, slides, folder,
+            shortcut. Deleting a folder is async and returns a task_id.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to delete as
+            that user (needed for user-owned files/wikis); empty uses the bot's tenant token.
+    """
+    return _f.dumps_result(await _f.delete_file_impl(file_token, file_type, user_key))
