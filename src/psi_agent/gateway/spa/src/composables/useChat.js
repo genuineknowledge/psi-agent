@@ -123,7 +123,17 @@ function setSessionAbortController(sid, controller) {
 
 function addMessage(sid, role, id) {
   const list = getMessagesList(sid)
-  const m = { id, role, text: '', html: '', files: [], stopped: false, failed: false }
+  const m = {
+    id,
+    role,
+    text: '',
+    html: '',
+    files: [],
+    stopped: false,
+    failed: false,
+    reasoning: '',
+    reasoningOpen: role === 'assistant',
+  }
   list.push(m)
   mirrorVisibleMessages(sid, list)
   if (isVisibleChatKey(sid)) {
@@ -135,7 +145,17 @@ function addMessage(sid, role, id) {
 function addAssistantAfter(sid, userMsg) {
   const list = getMessagesList(sid)
   const idx = list.indexOf(userMsg)
-  const m = { id: `a-${Date.now()}`, role: 'assistant', text: '', html: '', files: [], stopped: false, failed: false }
+  const m = {
+    id: `a-${Date.now()}`,
+    role: 'assistant',
+    text: '',
+    html: '',
+    files: [],
+    stopped: false,
+    failed: false,
+    reasoning: '',
+    reasoningOpen: true,
+  }
   if (idx >= 0) {
     list.splice(idx + 1, 0, m)
   } else {
@@ -237,21 +257,36 @@ async function runChatTurn(sid, { userMsg, text, files }) {
       for await (const chunkData of readSSE(reader)) {
         if (chunkData.type === 'text' && chunkData.text !== undefined) {
           asst = ensureStreamingAssistant(sid, userMsg, asst)
+          const hadText = !!(asst.text && asst.text.trim())
           asst.text += chunkData.text
           asst.html = renderMd(stripTransferMarkers(asst.text))
+          // First visible reply token: collapse the thinking panel (A+B default).
+          if (!hadText && asst.text.trim()) {
+            asst.reasoningOpen = false
+          }
         } else if (chunkData.type === 'blob') {
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.files.push({ name: chunkData.name, data: chunkData.data })
           // SEND path succeeded as a chip — hide leftover markers from bubble text.
           asst.html = renderMd(stripTransferMarkers(asst.text))
+          asst.reasoningOpen = false
         } else if (chunkData.type === 'error') {
           streamError = true
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.text += '\n[Error: ' + chunkData.error + ']'
           asst.html = renderMd(stripTransferMarkers(asst.text))
         } else if (chunkData.type === 'reasoning') {
-          // Thinking + tool markers arrive as reasoning. Do not start a new
-          // bubble — keep one assistant message for the whole user turn.
+          // Thinking + tool markers: one assistant bubble; accumulate for the panel.
+          asst = ensureStreamingAssistant(sid, userMsg, asst)
+          const piece = typeof chunkData.text === 'string' ? chunkData.text : ''
+          if (piece) {
+            const wasEmpty = !(asst.reasoning && asst.reasoning.trim())
+            asst.reasoning = (asst.reasoning || '') + piece
+            // Open on first reasoning token while waiting for visible content.
+            if (wasEmpty && !asst.text?.trim() && !(asst.files && asst.files.length)) {
+              asst.reasoningOpen = true
+            }
+          }
         }
         if (isVisibleChatKey(sid)) {
           mirrorVisibleMessages(sid, getMessagesList(sid))
@@ -273,12 +308,16 @@ async function runChatTurn(sid, { userMsg, text, files }) {
     const asstIdx = asst ? msgs.indexOf(asst) : -1
     if (asstIdx >= 0) {
       const stub = msgs[asstIdx]
-      if (!stub.text && !stub.files.length) {
+      const hasReasoning = !!(stub.reasoning && String(stub.reasoning).trim())
+      if (!stub.text && !stub.files.length && !hasReasoning) {
         msgs.splice(asstIdx, 1)
         if (asst === stub) asst = null
       } else if (stub.text) {
         stub.text = stripTransferMarkers(stub.text)
         stub.html = renderMd(stub.text)
+      }
+      if (asst && hasReasoning && asst.text?.trim()) {
+        asst.reasoningOpen = false
       }
     }
 

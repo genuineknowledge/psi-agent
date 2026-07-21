@@ -26,14 +26,28 @@
               <span class="material-symbols-outlined" aria-hidden="true">replay</span>
             </button>
           </div>
-          <ThinkingBubble v-if="isStreamingTarget && !hasVisibleContent" />
-          <div v-else class="bubble">
-            <div
-              v-if="msg.text"
-              class="bubble-content"
-              v-html="msg.html"
-              @click="onBubbleClick"
-            ></div>
+          <div class="bubble-stack">
+            <ThinkingBubble
+              v-if="showReasoningPanel"
+              :text="msg.reasoning || ''"
+              :open="!!msg.reasoningOpen"
+              :streaming="isStreamingTarget"
+              @update:open="onReasoningOpen"
+            />
+            <div v-if="hasVisibleContent" class="bubble">
+              <div
+                v-if="msg.text"
+                class="bubble-content"
+                v-html="msg.html"
+                @click="onBubbleClick"
+              ></div>
+            </div>
+            <ThinkingBubble
+              v-else-if="isStreamingTarget && !showReasoningPanel"
+              :text="''"
+              :open="false"
+              :streaming="true"
+            />
           </div>
         </div>
         <div
@@ -112,6 +126,7 @@ import { useChatStore } from '../stores/chat.js'
 import { resendFailedMessage, regenerateAssistantMessage } from '../composables/useChat.js'
 import FilePreview from './FilePreview.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
+import { hasReasoningText } from '../reasoningStatus.js'
 import { FAILED_REASON_LABEL } from '../messageTurn.js'
 import {
   downloadMatrixXlsx,
@@ -149,6 +164,12 @@ const hasVisibleContent = computed(() => {
   const hasFiles = Array.isArray(props.msg.files) && props.msg.files.length > 0
   return !!text || hasFiles
 })
+
+const showReasoningPanel = computed(() => hasReasoningText(props.msg))
+
+function onReasoningOpen(next) {
+  props.msg.reasoningOpen = !!next
+}
 
 const userInitial = computed(() =>
   userName.value ? userName.value.trim().charAt(0).toUpperCase() : ''
@@ -344,6 +365,15 @@ async function retryMessage() {
   display: flex;
   align-items: flex-start;
   gap: 4px;
+  max-width: 100%;
+}
+
+.bubble-stack {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   max-width: 100%;
 }
 

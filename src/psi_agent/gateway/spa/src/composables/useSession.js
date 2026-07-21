@@ -288,6 +288,8 @@ export async function selectSession(id) {
             failed: local ? local.failed || false : false,
             failedReason: local?.failedReason || '',
             feedback: local?.feedback || '',
+            reasoning: local?.reasoning || '',
+            reasoningOpen: false,
           })
         })
         if (localHist.length > built.length) {
@@ -302,6 +304,8 @@ export async function selectSession(id) {
               failed: h.failed || false,
               failedReason: h.failedReason || '',
               feedback: h.feedback || '',
+              reasoning: h.reasoning || '',
+              reasoningOpen: false,
             })
           }
         }
@@ -317,6 +321,8 @@ export async function selectSession(id) {
           failed: h.failed || false,
           failedReason: h.failedReason || '',
           feedback: h.feedback || '',
+          reasoning: h.reasoning || '',
+          reasoningOpen: false,
         })
       })
     }
