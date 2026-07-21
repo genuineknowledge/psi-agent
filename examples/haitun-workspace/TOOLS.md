@@ -67,3 +67,8 @@ message_id / sender_open_id）。需要群里之前的上下文时：
    （以及 bitable 写入、drive 评论、task 创建等写入类工具）传相同的 `user_key`。
    一条「建库→建文档→写正文」链路要**全程用同一个 user_key**，否则机器人身份没权限。
    写入类工具未授权时同样返回 `need_auth=True`。
+8. **建带内容的 wiki 文档，优先用一步到位工具**：要在知识库里新建一篇**有正文**的文档，
+   优先用 `feishu_wiki_create_doc_with_content(space_id, title, content, parent_node_token, user_key)`——
+   它一次调用完成「建节点 + 写正文」，避免分两步（先 `feishu_wiki_create_doc` 再
+   `feishu_doc_append_content`）时因第二步失败/漏调而留下**空文档**。若正文写入失败，它会连
+   `node_token`/`obj_token` 一并回报，可用相同 `user_key` 调 `feishu_doc_append_content` 补写。
