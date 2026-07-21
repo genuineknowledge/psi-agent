@@ -1742,6 +1742,63 @@ def test_file_download_tool_async_with_docstring() -> None:
 
 
 @pytest.mark.asyncio
+async def test_download_media_with_user_key_uses_uat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class _UatClient:
+        async def arequest(self, req: Any, option: Any = None) -> Any:
+            captured["uri"] = req.uri
+            captured["option"] = option
+            return _FakeResp(None, "", b"PDFBYTES")
+
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: _UatClient())
+
+    async def _uat(user_key: str = "") -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    dest = tmp_path / "章程.pdf"
+    result = await _impl.download_file_impl("media_tok", str(dest), False, "ou_a")
+    assert result["ok"] is True
+    assert dest.read_bytes() == b"PDFBYTES"
+    assert captured["uri"].endswith("/drive/v1/medias/:file_token/download")
+    assert captured["option"].user_access_token == "uat_tok"
+
+
+@pytest.mark.asyncio
+async def test_download_media_user_key_not_authorized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+
+    async def _no_uat(user_key: str = "") -> Any:
+        return None
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _no_uat)
+    result = await _impl.download_file_impl("media_tok", str(tmp_path / "x.pdf"), False, "ou_a")
+    assert result["ok"] is False
+    assert result.get("need_auth") is True
+
+
+@pytest.mark.asyncio
+async def test_download_media_empty_user_key_uses_tenant(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured: dict[str, Any] = {}
+
+    class _TenantClient:
+        async def arequest(self, req: Any) -> Any:  # no option arg → tenant path
+            captured["uri"] = req.uri
+            return _FakeResp(None, "", b"BYTES")
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
+
+    async def _uat_should_not_run(user_key: str = "") -> Any:
+        raise AssertionError("UAT path must not run for empty user_key")
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat_should_not_run)
+    result = await _impl.download_file_impl("media_tok", str(tmp_path / "y.bin"), False, "")
+    assert result["ok"] is True
+    assert captured["uri"].endswith("/drive/v1/medias/:file_token/download")
+
+
+@pytest.mark.asyncio
 async def test_delete_file_builds_delete_request(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke({"task_id": ""})
     monkeypatch.setattr(_impl, "_invoke", cap)

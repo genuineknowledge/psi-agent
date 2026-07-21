@@ -76,7 +76,7 @@ async def feishu_drive_reply_comment(
     )
 
 
-async def feishu_file_download(source: str, save_path: str, is_url: bool = False) -> str:
+async def feishu_file_download(source: str, save_path: str, is_url: bool = False, user_key: str = "") -> str:
     """Download a Feishu file/attachment to a local path.
 
     Two sources:
@@ -86,12 +86,20 @@ async def feishu_file_download(source: str, save_path: str, is_url: bool = False
       URLs valid only ~12 hours — pass them here and download promptly. If the link
       has expired, re-read the approval instance for a fresh URL.
 
+    To read a PDF/attachment that lives in the user's wiki or drive: resolve it
+    (e.g. ``feishu_wiki_get_node(token, user_key)`` → obj_token), download here with
+    ``user_key`` so it's fetched as that user, then extract text with the
+    ``ocr-and-documents`` skill (PyMuPDF).
+
     Args:
         source: A drive media file_token, or a direct URL when is_url=True.
         save_path: Local filesystem path to write the file to (parent dirs are created).
         is_url: True if source is a direct URL, False if it is a media file_token.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it (is_url=False)
+            to download as that user — needed for files the bot can't see; empty uses
+            the bot's tenant token. Ignored for direct-URL downloads.
     """
-    return _f.dumps_result(await _f.download_file_impl(source, save_path, is_url))
+    return _f.dumps_result(await _f.download_file_impl(source, save_path, is_url, user_key))
 
 
 async def feishu_drive_delete_file(file_token: str, file_type: str, user_key: str = "") -> str:

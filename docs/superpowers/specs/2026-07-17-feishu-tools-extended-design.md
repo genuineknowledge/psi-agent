@@ -281,3 +281,30 @@ agent 误判"企业没有知识库"或让用户手动把机器人加为协作者
 | 修改 | `tools/feishu_wiki.py` | `feishu_wiki_list_spaces` / `feishu_wiki_get_node` 暴露 `user_key`；新增 `feishu_wiki_list_nodes` |
 | 修改 | `tests/test_feishu.py` | list_spaces user_key 走 UAT / get_node 转发 user_key / list_nodes 请求组装 + 必填校验 |
 | 修改 | `TOOLS.md` | 第 9 条：访问/浏览知识库要带 user_key，list_spaces 空不代表没库、先带 user_key 重试 |
+
+---
+
+## 12. 后续增强：文件下载支持 user_key（读知识库里的 PDF/附件）
+
+**现象**：用户问"企业章程",agent 已能在知识库搜到那份 `章程.pdf`,但**下载失败** → 只能让用户
+手动复制粘贴。根因:`feishu_file_download`(media 下载)写死机器人 tenant token,而该 PDF 在用户
+的知识库/云盘、机器人无权限。与 `list_spaces` 返回空同类——读类工具没接 user_key。
+
+- `_download_media_bytes(file_token, user_key="")`:user_key 非空时用 `_get_uat_client()` +
+  `_get_valid_uat(user_key)` + `RequestOption.user_access_token`(与 `_invoke_as_user` 同款)以用户身份
+  下载;否则维持 tenant client。未授权返回带 need_auth 的错误。`_build_media_download_request` 的
+  token_types 已含 USER。
+- `download_file_impl(source, save_path, is_url=False, user_key="")`:仅 is_url=False(media token)
+  时透传 user_key;is_url=True(直链)不需 token、不受影响。
+- 工具 `feishu_file_download` 暴露 `user_key`。
+- **读 PDF 本就有解**:下载后用 `ocr-and-documents` 技能(PyMuPDF 核心依赖)抽文本。完整链路:
+  `feishu_wiki_get_node(user_key)` → `feishu_file_download(..., user_key)` → ocr 抽文本。
+
+### 12.1 文件变更
+
+| 操作 | 文件 | 说明 |
+|---|---|---|
+| 修改 | `tools/_feishu_impl.py` | `_download_media_bytes` / `download_file_impl` 加 `user_key`(media 下载走 UAT/tenant) |
+| 修改 | `tools/feishu_drive.py` | `feishu_file_download` 暴露 `user_key` |
+| 修改 | `tests/test_feishu.py` | media 下载 user_key 走 UAT / 未授权 need_auth / 空 user_key 走 tenant |
+| 修改 | `TOOLS.md` | 第 10 条:读知识库 PDF/附件 = get_node→download(带 user_key)→ocr 抽文本 |

@@ -2189,14 +2189,31 @@ async def _download_url_bytes(url: str) -> tuple[bytes | None, str]:
     return resp.content, ""
 
 
-async def _download_media_bytes(file_token: str) -> tuple[bytes | None, str]:
-    client = _get_client()
-    if client is None:
-        return None, "Feishu app not configured."
-    try:
-        resp = await client.arequest(_build_media_download_request(file_token))
-    except Exception as exc:  # SDK/transport failure
-        return None, f"{type(exc).__name__}: {exc}"
+async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
+    # user_key non-empty → download as that user (UAT), so we can fetch files the
+    # user can see but the bot can't (e.g. a PDF in the user's wiki/drive).
+    if user_key.strip():
+        client = _get_uat_client()
+        if client is None:
+            return None, "Feishu app not configured."
+        uat = await _get_valid_uat(user_key)
+        if uat is None or not uat.access_token:
+            return None, "Not authorized. Call feishu_auth_start then feishu_auth_complete first. (need_auth)"
+        from lark_channel.core.model import RequestOption  # noqa: PLC0415
+
+        option = RequestOption.builder().user_access_token(uat.access_token).build()
+        try:
+            resp = await client.arequest(_build_media_download_request(file_token), option)
+        except Exception as exc:  # SDK/transport failure
+            return None, f"{type(exc).__name__}: {exc}"
+    else:
+        client = _get_client()
+        if client is None:
+            return None, "Feishu app not configured."
+        try:
+            resp = await client.arequest(_build_media_download_request(file_token))
+        except Exception as exc:  # SDK/transport failure
+            return None, f"{type(exc).__name__}: {exc}"
     raw = getattr(resp, "raw", None)
     content = getattr(raw, "content", None) if raw is not None else None
     if not content:
@@ -2212,13 +2229,18 @@ async def _download_media_bytes(file_token: str) -> tuple[bytes | None, str]:
     return data, ""
 
 
-async def download_file_impl(source: str, save_path: str, is_url: bool = False) -> dict[str, Any]:
-    """Download a Feishu file to disk. is_url=True treats source as a direct URL, else a media file_token."""
+async def download_file_impl(source: str, save_path: str, is_url: bool = False, user_key: str = "") -> dict[str, Any]:
+    """Download a Feishu file to disk. is_url=True treats source as a direct URL, else a media file_token.
+
+    Pass ``user_key`` (only used when is_url=False) to download as that user — needed for
+    files the user can see but the bot can't (e.g. a PDF in the user's wiki/drive).
+    """
     if not source or not save_path:
         return _error("source and save_path are required.")
-    data, err = await (_download_url_bytes(source) if is_url else _download_media_bytes(source))
+    data, err = await (_download_url_bytes(source) if is_url else _download_media_bytes(source, user_key))
     if data is None:
-        return _error(err or "download failed", source=source)
+        extra = {"need_auth": True} if "need_auth" in (err or "") else {}
+        return _error(err or "download failed", source=source, **extra)
     path = pathlib.Path(save_path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
