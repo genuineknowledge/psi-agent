@@ -210,12 +210,7 @@ OPENAPI_SPEC = {
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": (
-                            "Object with todos[] "
-                            "({id, content, status}) and summary counts"
-                        )
-                    },
+                    "200": {"description": ("Object with todos[] ({id, content, status}) and summary counts")},
                     "404": {"$ref": "#/components/responses/Error"},
                 },
             },

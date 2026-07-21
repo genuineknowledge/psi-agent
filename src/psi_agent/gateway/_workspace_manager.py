@@ -153,4 +153,3 @@ class WorkspaceManager:
         name = resolved.name
         logger.debug(f"Read workspace file {str(resolved)!r} ({len(data)} bytes)")
         return {"name": name, "data": base64.b64encode(data).decode(), "path": _posix(resolved)}
-

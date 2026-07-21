@@ -48,7 +48,8 @@ class HistoryManager:
             if not cleaned and sends:
                 if messages and messages[-1].get("role") == "assistant":
                     prev = messages[-1]
-                    prev_sends = list(prev.get("sends") or [])
+                    prev_raw = prev.get("sends")
+                    prev_sends = list(prev_raw) if isinstance(prev_raw, list) else []
                     prev_sends.extend(sends)
                     prev["sends"] = prev_sends
                 else:
