@@ -100,6 +100,29 @@ def _context_header(ctx: Any) -> str:
     return "\n".join(lines)
 
 
+def _comment_context_header(event: Any, ctx: Any) -> str:
+    """构造文档评论的元数据前缀, 注入到发给 agent 的问题文本最前面。
+
+    与 ``_context_header`` 同理: 只输出客观协议事实 (file_token / file_type /
+    comment_id / operator / quote), 刻意不含任何 workspace 工具名, 保持 channel
+    层与 workspace 工具解耦。agent 如何用 file_token 读文档全文的引导放在
+    workspace 的 TOOLS.md 里。``quote`` 是评论锚定的原文片段 (全文评论时为空)。
+    """
+    operator = getattr(event, "operator", None)
+    lines = [
+        "<feishu_comment_context>",
+        f"file_token: {getattr(event, 'file_token', '') or ''}",
+        f"file_type: {getattr(event, 'file_type', '') or ''}",
+        f"comment_id: {getattr(event, 'comment_id', '') or ''}",
+        f"operator_open_id: {getattr(operator, 'open_id', '') or ''}",
+    ]
+    quote = getattr(ctx, "quote", "") or ""
+    if quote:
+        lines.append(f"quote: {quote}")
+    lines.append("</feishu_comment_context>")
+    return "\n".join(lines)
+
+
 async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
     chunks: list[InputChunk] = []
     downloads_dir = anyio.Path(platformdirs.user_downloads_dir()) / ".psi" / str(date.today())
@@ -223,6 +246,87 @@ async def _handle_and_stream(
         logger.error(f"Unhandled error in _handle_and_stream: {e!r}")
 
 
+async def _collect_reply(core: ChannelCore, chunks: list[InputChunk]) -> str:
+    """把 agent 的流式回复累积成单个字符串。
+
+    文档评论 API 是一次性写入 (不支持像 IM 卡片那样的增量流式), 故这里把所有
+    ``TextChunk`` 拼成一段完整文本再回复。``FileChunk`` 在评论区无处安放, 记
+    DEBUG 后忽略 (评论只接受纯文本)。
+    """
+    parts: list[str] = []
+    async with aclosing(core.post(chunks)) as gen:
+        async for chunk in gen:
+            if isinstance(chunk, TextChunk):
+                parts.append(chunk.text)
+            elif isinstance(chunk, FileChunk):
+                logger.debug(f"comment reply ignoring FileChunk ({chunk.path})")
+    return "".join(parts).strip()
+
+
+async def _handle_comment(
+    channel: Any,
+    core: ChannelCore,
+    allowed_ids: list[str] | None,
+    event: Any,
+) -> None:
+    """处理文档评论 @机器人 事件 — 解析目标 → 取问题 → 喂 agent → 回复该评论。
+
+    注册为 channel 的 ``comment`` 回调 (经 ``start_task_soon`` 调度), 与
+    ``_handle_and_stream`` 一样绝不让异常冒泡, 以免拖垮事件循环。
+
+    门槛: 仅当评论明确 @了机器人 (``mentioned_bot``) 才回复 — 与群聊
+    ``require_mention`` 语义一致, 避免文档里每条评论都触发。回复写回被@的那条
+    评论线程 (SDK ``reply_comment``: 全文评论新建评论, 锚定评论新增回复)。
+    """
+    try:
+        if not getattr(event, "mentioned_bot", False):
+            logger.debug(f"comment {getattr(event, 'comment_id', '?')} did not mention bot, skipping")
+            return
+
+        operator = getattr(event, "operator", None)
+        operator_open_id = getattr(operator, "open_id", None)
+        if not _allowed(operator_open_id, allowed_ids):
+            logger.debug(f"comment operator {operator_open_id} blocked by whitelist")
+            return
+
+        logger.debug(f"comment file_token={event.file_token} file_type={event.file_type} comment_id={event.comment_id}")
+
+        target = await channel.resolve_comment_target(file_token=event.file_token, file_type=event.file_type)
+        if not getattr(target, "supported", False):
+            logger.warning(
+                f"comment target unsupported (file_type={event.file_type} "
+                f"reason={getattr(target, 'reason', None)}) — cannot reply"
+            )
+            return
+
+        ctx = await channel.get_comment_context(
+            target=target,
+            comment_id=event.comment_id,
+            event_reply_id=getattr(event, "reply_id", None),
+        )
+
+        question = getattr(ctx, "question", "") or ""
+        chunks: list[InputChunk] = [TextChunk(_comment_context_header(event, ctx))]
+        if question:
+            chunks.append(TextChunk(question))
+        else:
+            logger.warning(f"comment {event.comment_id} has empty question text")
+
+        try:
+            reply_text = await _collect_reply(core, chunks)
+        except Exception as e:
+            logger.error(f"comment agent call failed — {e!r}")
+            reply_text = f"Error processing comment: {e}"
+
+        if not reply_text:
+            reply_text = "(no response)"
+
+        await channel.reply_comment(ctx, reply_text)
+        logger.debug(f"comment {event.comment_id} replied ({len(reply_text)} chars)")
+    except Exception as e:
+        logger.error(f"Unhandled error in _handle_comment: {e!r}")
+
+
 def _log_reject(event: Any) -> None:
     """记录被准入策略拒绝的消息 (如群里没 @机器人的普通发言)。
 
@@ -275,6 +379,7 @@ async def run_feishu(
     allowed_user_ids: list[str] | None = None,
     require_mention: bool = True,
     respond_to_mention_all: bool = False,
+    respond_to_comments: bool = True,
 ) -> None:
     policy = PolicyConfig(
         require_mention=require_mention,
@@ -291,8 +396,14 @@ async def run_feishu(
         async def _on_message(ctx: Any) -> None:
             portal.start_task_soon(_handle_and_stream, channel, core, allowed_user_ids, ctx)
 
+        async def _on_comment(event: Any) -> None:
+            portal.start_task_soon(_handle_comment, channel, core, allowed_user_ids, event)
+
         channel.on("message", _on_message)
         channel.on("reject", _log_reject)
+        if respond_to_comments:
+            channel.on("comment", _on_comment)
+            logger.debug("comment subscription enabled (@bot in doc comments triggers reply)")
         try:
             await channel.start_background()
             logger.info(f"Feishu bot started (session={session_socket} interval={interval})")
