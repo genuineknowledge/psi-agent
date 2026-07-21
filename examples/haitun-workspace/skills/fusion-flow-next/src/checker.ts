@@ -1,4 +1,5 @@
-import type { CheckResult, WorkflowCoreIR } from "./types.js";
+import type { Workflow } from "./core-ir.js";
+import type { CheckResult } from "./types.js";
 
 /**
  * Checks successfully parsed Workflow Core IR. The current stub throws only
@@ -15,7 +16,7 @@ import type { CheckResult, WorkflowCoreIR } from "./types.js";
  *
  * This boundary must not parse source, emit TypeScript, or execute workflows.
  */
-export function checkWorkflow(coreIR: WorkflowCoreIR): CheckResult {
+export function checkWorkflow(coreIR: Workflow): CheckResult {
   void coreIR;
   throw new Error("FusionFlow Next checker is not implemented.");
 }

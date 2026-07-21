@@ -1,3 +1,5 @@
+import type { Workflow } from "./core-ir.js";
+
 /**
  * A source location.
  *
@@ -25,22 +27,9 @@ export interface Diagnostic {
   readonly designReference?: string;
 }
 
-declare const workflowCoreIRBrand: unique symbol;
-
-/**
- * Opaque placeholder for the KEDispatcher-aligned Workflow Core IR.
- *
- * This PR deliberately leaves the concrete Core IR schema undefined. A
- * follow-up PR will replace this brand with the shared Core IR contract,
- * including the required workflow and list extensions.
- */
-export type WorkflowCoreIR = {
-  readonly [workflowCoreIRBrand]: true;
-};
-
 export interface ParseResult {
   /** Non-null exactly when this phase produced no error diagnostics. */
-  readonly coreIR: WorkflowCoreIR | null;
+  readonly coreIR: Workflow | null;
   /** Parser diagnostics only; callers combine phase results when needed. */
   readonly diagnostics: readonly Diagnostic[];
 }
@@ -50,7 +39,7 @@ export interface ParseResult {
  * parse failures never produce CheckResult.
  */
 export interface CheckResult {
-  readonly coreIR: WorkflowCoreIR;
+  readonly coreIR: Workflow;
   /** Checker diagnostics only; parser diagnostics are not repeated here. */
   readonly diagnostics: readonly Diagnostic[];
   /**
