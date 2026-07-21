@@ -76,6 +76,7 @@ class _FakeClient:
 
 @pytest.mark.asyncio
 async def test_invoke_success_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")  # isolate from real UAT cache
     body = json.dumps({"code": 0, "msg": "ok", "data": {"x": 1}}).encode()
     monkeypatch.setattr(_impl, "_get_client", lambda: _FakeClient(_FakeResp(0, "ok", body)))
     result = await _impl._invoke(object())
@@ -84,6 +85,7 @@ async def test_invoke_success_normalizes(monkeypatch: pytest.MonkeyPatch) -> Non
 
 @pytest.mark.asyncio
 async def test_invoke_error_passes_through_code_msg(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")  # isolate from real UAT cache
     body = json.dumps({"code": 99991672, "msg": "permission denied", "data": {}}).encode()
     monkeypatch.setattr(_impl, "_get_client", lambda: _FakeClient(_FakeResp(99991672, "permission denied", body)))
     result = await _impl._invoke(object())
@@ -784,6 +786,34 @@ def test_norm_user_key_empty_falls_back_to_default() -> None:
     assert _impl._norm_user_key("") == "default"
     assert _impl._norm_user_key("   ") == "default"
     assert _impl._norm_user_key("ou_abc") == "ou_abc"
+
+
+def test_effective_user_key_explicit_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # explicit user_key is always used verbatim, regardless of cache
+    monkeypatch.setattr(_impl, "_uat_store_path", lambda: str(tmp_path / "uat.json"))
+    (tmp_path / "uat.json").write_text(json.dumps({"ou_cached": {}}), encoding="utf-8")
+    assert _impl._effective_user_key("ou_explicit") == "ou_explicit"
+
+
+def test_effective_user_key_falls_back_to_sole_cached(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(_impl, "_uat_store_path", lambda: str(tmp_path / "uat.json"))
+    # exactly one real user cached (ignoring the shared 'default') → empty falls back to it
+    (tmp_path / "uat.json").write_text(json.dumps({"ou_only": {}, "default": {}}), encoding="utf-8")
+    assert _impl._sole_cached_user_key() == "ou_only"
+    assert _impl._effective_user_key("") == "ou_only"
+    assert _impl._effective_user_key("   ") == "ou_only"
+
+
+def test_effective_user_key_no_fallback_when_ambiguous_or_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(_impl, "_uat_store_path", lambda: str(tmp_path / "uat.json"))
+    # no cache file → no fallback
+    assert _impl._effective_user_key("") == ""
+    # two real users → ambiguous, no fallback (avoid acting as the wrong person)
+    (tmp_path / "uat.json").write_text(json.dumps({"ou_a": {}, "ou_b": {}}), encoding="utf-8")
+    assert _impl._sole_cached_user_key() == ""
+    assert _impl._effective_user_key("") == ""
 
 
 def test_pending_auth_path_is_per_user() -> None:
@@ -1983,7 +2013,8 @@ async def test_create_wiki_space_forwards_user_key(monkeypatch: pytest.MonkeyPat
 
 @pytest.mark.asyncio
 async def test_invoke_empty_user_key_uses_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_invoke with no/empty user_key must go through the tenant client, not UAT."""
+    """_invoke with empty user_key AND no cached user must go through tenant, not UAT."""
+    monkeypatch.setattr(_impl, "_sole_cached_user_key", lambda: "")  # no single-user fallback
     calls: dict[str, Any] = {}
 
     class _TenantClient:

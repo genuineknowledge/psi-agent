@@ -62,13 +62,15 @@ def _get_client() -> Any:
 
 
 async def _invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
-    """Send a BaseRequest. If ``user_key`` is provided (non-empty), send it as that
-    user (user_access_token) instead of the bot's tenant token — needed for APIs
-    that act on behalf of a user (e.g. writing into a wiki the user owns).
-    ``user_key=None`` (default) keeps the original tenant-token behavior.
+    """Send a BaseRequest. If a user identity is available (``user_key`` passed, or a
+    single cached user as fallback), send it as that user (user_access_token) instead
+    of the bot's tenant token — needed for APIs that act on behalf of a user (reading
+    a wiki the user owns, listing the user's knowledge bases, etc.). If no user
+    identity is available, use the bot's tenant token.
     """
-    if user_key is not None and user_key.strip():
-        return await _invoke_as_user(request, user_key)
+    eff = _effective_user_key(user_key)
+    if eff:
+        return await _invoke_as_user(request, eff)
     client = _get_client()
     if client is None:
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
@@ -869,6 +871,33 @@ def _uat_store_path() -> str:
     return str(d / "uat.json")
 
 
+def _sole_cached_user_key() -> str:
+    """If exactly one real user (an open_id, not the shared 'default') has a cached
+    UAT, return its key; otherwise "". Enables a single-user fallback so read/write
+    tools act as the authorized user even when the LLM forgets to pass user_key.
+    """
+    try:
+        path = pathlib.Path(_uat_store_path())
+        if not path.exists():
+            return ""
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except OSError, ValueError:
+        return ""
+    if not isinstance(raw, dict):
+        return ""
+    keys = [k for k in raw if k and k != _UAT_USER_KEY]
+    return keys[0] if len(keys) == 1 else ""
+
+
+def _effective_user_key(user_key: str | None = "") -> str:
+    """The user_key to actually use: the caller's value if given, else the single
+    cached user (single-user fallback). Empty means 'no user identity → tenant token'.
+    """
+    if user_key and user_key.strip():
+        return user_key.strip()
+    return _sole_cached_user_key()
+
+
 def _pending_auth_path(user_key: str = "") -> str:
     """Per-user pending-auth file so concurrent authorizations don't clobber each other."""
     key = _norm_user_key(user_key)
@@ -1040,10 +1069,14 @@ async def auth_complete_impl(code: str, user_key: str = "") -> dict[str, Any]:
 
 
 async def _get_valid_uat(user_key: str = "") -> Any:
-    """Return a non-expired UAT for ``user_key`` (refreshing if needed), or None."""
+    """Return a non-expired UAT for ``user_key`` (refreshing if needed), or None.
+
+    Empty ``user_key`` falls back to the single cached user (single-user setups),
+    then to the shared 'default' slot.
+    """
     from lark_channel.channel.auth.device_flow import uat_needs_refresh  # noqa: PLC0415
 
-    key = _norm_user_key(user_key)
+    key = _effective_user_key(user_key) or _norm_user_key(user_key)
     store = _get_token_store()
     uat = await store.get(key)
     if uat is None:
