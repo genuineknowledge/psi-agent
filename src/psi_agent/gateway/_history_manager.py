@@ -5,6 +5,13 @@ import json
 import anyio
 from loguru import logger
 
+from psi_agent.session.history_display import (
+    is_displayable_chat_message,
+    message_kind,
+    strip_transfer_markers,
+    wire_role,
+)
+
 
 class HistoryManager:
     async def get(self, workspace: str, session_id: str) -> list[dict[str, str]]:
@@ -27,11 +34,19 @@ class HistoryManager:
                 continue
             if not isinstance(msg, dict):
                 continue
-            role = msg.get("role", "")
-            if role not in ("user", "assistant"):
+            if not is_displayable_chat_message(msg):
                 continue
+            role = wire_role(msg.get("role"))
             text = msg.get("content", "")
-            if isinstance(text, str) and text:
-                messages.append({"role": role, "text": text})
+            if role not in ("user", "assistant") or not isinstance(text, str):
+                continue
+            cleaned = strip_transfer_markers(text)
+            if not cleaned:
+                continue
+            row: dict[str, str] = {"role": role, "text": cleaned}
+            kind = message_kind(msg)
+            if kind != "chat":
+                row["kind"] = kind
+            messages.append(row)
         logger.debug(f"History for session {session_id!r}: {len(messages)} displayable message(s)")
         return messages

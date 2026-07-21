@@ -19,6 +19,11 @@ from croniter import croniter
 from loguru import logger
 
 from psi_agent._yaml import parse_yaml_header
+from psi_agent.session.history_display import (
+    KIND_SCHEDULE_DISPLAY,
+    KIND_SCHEDULE_SILENT,
+    with_kind,
+)
 from psi_agent.session.protocol import AgentChunk
 
 if TYPE_CHECKING:
@@ -32,6 +37,8 @@ class Schedule:
     name: str
     cron: str
     task_content: str
+    # Finalized protocol: display | silent (default display for backward compat).
+    visibility: str = "display"
 
 
 # ── ScheduleEntry — per-file storage unit ─────────────────────────────────────
@@ -177,20 +184,40 @@ class ScheduleRegistry:
                         await anyio.sleep(wait)
 
                         logger.info(f"Schedule triggered: {schedule.name!r}")
-                        msg = {"role": "user", "content": schedule.task_content}
+                        user_msg = with_kind(
+                            {"role": "user", "content": schedule.task_content},
+                            KIND_SCHEDULE_SILENT,
+                        )
+                        response_kind = (
+                            KIND_SCHEDULE_DISPLAY
+                            if schedule.visibility == "display"
+                            else KIND_SCHEDULE_SILENT
+                        )
 
                         async with agent._lock:
                             pending_chunks: list[AgentChunk] = []
-                            async with aclosing(agent.run(msg)) as chunks:
+                            async with aclosing(
+                                agent.run(user_msg, response_kind=response_kind)
+                            ) as chunks:
                                 async for chunk in chunks:
                                     pending_chunks.append(chunk)
                                     logger.debug(
-                                        f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}"
+                                        f"Schedule chunk: content={chunk.content!r}, "
+                                        f"reasoning={chunk.reasoning!r}"
                                     )
-                                agent.set_pending_schedule_chunks(pending_chunks)
-                                logger.info(
-                                    f"Schedule {schedule.name!r} response stored ({len(pending_chunks)} chunks)"
-                                )
+                                # silent → never push into the next Channel turn
+                                if schedule.visibility == "display" and pending_chunks:
+                                    agent.set_pending_schedule_chunks(pending_chunks)
+                                    logger.info(
+                                        f"Schedule {schedule.name!r} response stored "
+                                        f"({len(pending_chunks)} chunks, visibility=display)"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Schedule {schedule.name!r} completed "
+                                        f"(visibility={schedule.visibility!r}, "
+                                        f"chunks={len(pending_chunks)}, not pending)"
+                                    )
                     except Exception as e:
                         logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
         finally:
@@ -259,9 +286,29 @@ class ScheduleRegistry:
                     logger.error(f"Invalid cron expression for schedule {name!r}: {e!r}")
                     continue
 
-                schedule = Schedule(name=str(name), cron=str(cron), task_content=body.strip())
+                raw_visibility = header.get("visibility", "display")
+                visibility = (
+                    str(raw_visibility).strip().casefold()
+                    if isinstance(raw_visibility, str)
+                    else "display"
+                )
+                if visibility not in {"display", "silent"}:
+                    logger.warning(
+                        f"Invalid visibility {raw_visibility!r} in {task_file!r}, "
+                        f"defaulting to 'display'"
+                    )
+                    visibility = "display"
+
+                schedule = Schedule(
+                    name=str(name),
+                    cron=str(cron),
+                    task_content=body.strip(),
+                    visibility=visibility,
+                )
                 files[str_path] = ScheduleEntry(file_hash=file_hash, schedule=schedule, fresh=True)
-                logger.debug(f"Loaded schedule: {name!r} (cron: {cron!r})")
+                logger.debug(
+                    f"Loaded schedule: {name!r} (cron: {cron!r}, visibility: {visibility!r})"
+                )
             except Exception as e:
                 logger.error(f"Failed to load schedule from {task_dir!r}: {e!r}")
                 continue

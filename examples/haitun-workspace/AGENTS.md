@@ -98,7 +98,8 @@ All are optional and only affect the dynamic suffix / runtime line:
 
 - Use `schedule_manage` to add / list / view / update / delete tasks instead of editing
   `schedules/<name>/TASK.md` by hand.
--（已移除）原 30 分钟 `heartbeat` schedule；勿重新添加除非明确要求定期背景负载。
+- `schedules/heartbeat/` uses `visibility: silent` so HEARTBEAT turns stay out of Web Console
+  history and are not injected into the next chat SSE.
 
 ## Prerequisites
 

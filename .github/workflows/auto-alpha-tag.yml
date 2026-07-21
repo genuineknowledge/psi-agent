@@ -85,6 +85,10 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - run: npm run build
         working-directory: src/psi_agent/gateway/spa
+      - run: npm ci
+        working-directory: src/psi_agent/gateway/spa-v2
+      - run: npm run build
+        working-directory: src/psi_agent/gateway/spa-v2
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"

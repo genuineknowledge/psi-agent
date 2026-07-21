@@ -13,6 +13,11 @@ from loguru import logger
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
+from psi_agent.session.history_display import (
+    message_kind,
+    messages_for_ai,
+    with_kind,
+)
 from psi_agent.session.protocol import AgentChunk, AgentError
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
@@ -135,7 +140,11 @@ class SessionAgent:
     # -- agent loop -----------------------------------------------------------
 
     async def run(
-        self, user_message: dict[str, Any], extra_params: dict[str, Any] | None = None
+        self,
+        user_message: dict[str, Any],
+        extra_params: dict[str, Any] | None = None,
+        *,
+        response_kind: str | None = None,
     ) -> AsyncGenerator[AgentChunk]:
         """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``.
 
@@ -143,7 +152,16 @@ class SessionAgent:
         failure the snapshot is restored so that memory and disk
         remain synchronised — the caller can safely retry the same
         user message.
+
+        ``response_kind`` stamps assistant/tool rows for this turn
+        (schedule runners pass ``schedule.display`` / ``schedule.silent``).
+        When omitted, assistant/tool rows inherit the user message's ``kind``
+        (Channel turns default to ``chat``).
         """
+        user_kind = message_kind(user_message)
+        turn_response_kind = response_kind if response_kind is not None else user_kind
+        user_message = with_kind(user_message, user_kind)
+
         async with self._conversation:
             # reload tools and schedules from workspace (incremental hash-based)
             await self._tool_registry.refresh()
@@ -153,6 +171,7 @@ class SessionAgent:
             await self._system_prompt.ensure(self._conversation)
 
             # peek pending schedule chunks — yield first, clear only after yield
+            # (only schedule.display results are stashed; silent never enters pending)
             pending = self._conversation.peek_pending()
             if pending:
                 logger.info(f"Yielding {len(pending)} pending schedule chunk(s)")
@@ -179,8 +198,9 @@ class SessionAgent:
                     for t in self._tool_registry.tools.values()
                 ]
 
+                ai_messages = messages_for_ai(self._conversation.messages)
                 request_body: dict[str, Any] = {
-                    "messages": self._conversation.messages,
+                    "messages": ai_messages,
                     "tools": tool_defs,
                     "stream": True,
                 }
@@ -191,7 +211,7 @@ class SessionAgent:
                     request_body |= extra_params
 
                 logger.info("Sending request to AI via AiClient")
-                logger.debug(f"Request messages count: {len(self._conversation.messages)}, tools: {len(tool_defs)}")
+                logger.debug(f"Request messages count: {len(ai_messages)}, tools: {len(tool_defs)}")
 
                 finish_reason: str | None = None
                 accumulated_tool_calls: dict[int, dict[str, Any]] = {}
@@ -249,7 +269,7 @@ class SessionAgent:
                                     assistant_msg["content"] = accumulated_content
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
-                                self._conversation.add(assistant_msg)
+                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
                             await self._conversation.commit()
                             await self._schedule_registry.refresh()
                             return
@@ -263,7 +283,7 @@ class SessionAgent:
                                 assistant_msg["content"] = accumulated_content
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
-                            self._conversation.add(assistant_msg)
+                            self._conversation.add(with_kind(assistant_msg, turn_response_kind))
 
                             # pre-compute args + yield tool-call intent
                             tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
@@ -316,12 +336,15 @@ class SessionAgent:
                                 result = results[i]
                                 yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:1000]}]")
                                 self._conversation.add(
-                                    {
-                                        "role": "tool",
-                                        "tool_call_id": tc.get("id", ""),
-                                        "name": func_name,
-                                        "content": str(result),
-                                    }
+                                    with_kind(
+                                        {
+                                            "role": "tool",
+                                            "tool_call_id": tc.get("id", ""),
+                                            "name": func_name,
+                                            "content": str(result),
+                                        },
+                                        turn_response_kind,
+                                    )
                                 )
                             await self._conversation.commit()
 
@@ -338,12 +361,17 @@ class SessionAgent:
                             assistant_msg["content"] = accumulated_content
                         if accumulated_reasoning:
                             assistant_msg["reasoning"] = accumulated_reasoning
-                        self._conversation.add(assistant_msg)
+                        self._conversation.add(with_kind(assistant_msg, turn_response_kind))
                     await self._conversation.commit()
                     return
 
             else:
                 logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
-                self._conversation.add({"role": "assistant", "content": "[Max tool rounds reached]"})
+                self._conversation.add(
+                    with_kind(
+                        {"role": "assistant", "content": "[Max tool rounds reached]"},
+                        turn_response_kind,
+                    )
+                )
                 await self._conversation.commit()
                 yield AgentChunk(content="[Max tool rounds reached]")

@@ -39,7 +39,8 @@ Gateway 进程
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取 |
 | `_workspace_manager.py` | 目录浏览 + 快捷路径列表 + cwd 查询 |
-| `spa/` | Vue 3 SPA 前端项目（Vite + SFC + Composition API），构建输出 `spa/dist/` |
+| `spa/` | Vue 3 SPA v1（对话气泡），构建输出 `spa/dist/`；路径 `/spa/` |
+| `spa-v2/` | React SPA v2（任务工作台 + 宝箱），构建输出 `spa-v2/dist/`；**默认** `GET /` → `/spa-v2/`（无 dist 时回退 v1） |
 | `_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数开启，`--icon` 参数指定图标文件，左键打开浏览器或恢复 webview 窗口，右键菜单控制；`request_attention()` 脉冲高亮图标 |
 | `_webview.py` | 原生 webview 窗口（pywebview），`--webview` 参数开启。窗口关闭信号通过 `threading.Event` 传递给主 loop；`request_attention()` 在 Windows 上 FlashWindowEx |
 | `_attention.py` | `AttentionHub`：SPA `POST /ui/attention` → 绑定的 tray/webview 注意力提示（best-effort）。`schedule_notify()` 用 daemon thread 异步触发，**禁止**在 aiohttp handler 里同步等 tray（pystray 可能卡死事件循环） |
@@ -121,13 +122,14 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 **`_persist` 回调**：构造函数参数，默认 no-op。Gateway.run() 在恢复完成后注入 persist 闭包（快照所有 manager → state.save），每次 create/delete/crash 后调用。
 
 **create(provider, model, api_key, base_url, *, id="") 流程**：
-1. 获取 lock，断言不重复
-2. `_socket_path(prefix, "ais", ai_id)` 生成 socket 路径
-3. `_ensure_socket_dir(socket)` 创建父目录（anyio 异步）
-4. 构造 `Ai(...)`（传入 api_key + base_url），创建 `CancelScope`，`task_group.start_soon`
-5. 存入 `_entries`
-6. `_wait_socket(socket)` 轮询等待 socket 出现
-7. 成功后调用 `_persist`，返回 `AiInfo`
+1. 获取 lock
+2. 若已有 **完全相同** 的配置（`provider`/`model`/`api_key`/`base_url`，base_url 忽略尾部 `/`），先停掉旧实例再创建；无显式 `id` 时复用旧 `ai_id`（避免 session 悬空）。显式 `id` 已存在且配置不同 → `ValueError`
+3. `_socket_path(prefix, "ais", ai_id)` 生成 socket 路径
+4. `_ensure_socket_dir(socket)` 创建父目录（anyio 异步）
+5. 构造 `Ai(...)`（传入 api_key + base_url），创建 `CancelScope`，`task_group.start_soon`
+6. 存入 `_entries`
+7. `_wait_socket(socket)` 轮询等待 socket 出现
+8. 成功后调用 `_persist`，返回 `AiInfo`
    失败则 rollback：pop entry + cancel scope + remove socket + 调用 `_persist`
 
 **delete(ai_id) 流程**：
@@ -194,7 +196,7 @@ workspace 中的 history JSONL 不受影响。
 | DELETE | `/sessions/{session_id}` | 删除 Session（200/404） |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI chat（SSE） |
-| GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/history` | 获取会话历史（``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`） |
 | GET | `/titles` | 获取所有 session 标题 |
 | POST | `/titles` | 设置 session 标题 `{id, title}` |
 | POST | `/titles/generate` | AI 自动生成标题 `{id, user_text, assistant_text}` |
@@ -239,9 +241,17 @@ data: [DONE]
 
 ## Web Console (SPA)
 
-Web 控制台是一个 Vue 3 SPA 项目（Vite + SFC + Composition API），构建产物 `spa/dist/` 由 Gateway 以静态文件方式服务。`GET /` 重定向到 `/spa/index.html`。
+Gateway 提供两套 Web 控制台：
 
-### 技术栈
+| | `spa/`（v1） | `spa-v2/`（v2，默认） |
+|--|--|--|
+| 技术 | Vue 3 + Pinia | React 19 + Vite |
+| 路由 | `/spa/` | `/spa-v2/` |
+| 产品 | 会话气泡 | 任务卡 + 交付物宝箱 |
+
+构建产物分别为 `spa/dist/`、`spa-v2/dist/`，由 Gateway 静态服务。**有 `spa-v2/dist` 时** `GET /` 重定向到 `/spa-v2/index.html`；否则回退 `/spa/index.html`。设计细节见各自目录下的 `AGENTS.md`。
+
+### 技术栈（v1 概要）
 
 | 资源 | 版本锁定 | 用途 |
 |------|----------|------|

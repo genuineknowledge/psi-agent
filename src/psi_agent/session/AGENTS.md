@@ -161,20 +161,33 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
     croniter.get_next()         ← 计算下次触发时间
     await anyio.sleep(触发时间 - now) ← 睡到触发
     async with agent._lock:       ← 等当前请求完成
-      调用 agent.run(msg)       ← AI 处理
-      流式结果追加到 pending_chunks (list[AgentChunk])
-      agent.set_pending_schedule_chunks(chunks)
-      ↓
-    下次 channel 请求到达时：
-      SessionAgent.run() 开头先 yield 所有 _pending_schedule_chunks
-      然后正常处理当前 channel 消息
+      user = {role:user, content:TASK.md, kind:schedule.silent}  ← user 始终 silent
+      response_kind = schedule.display | schedule.silent         ← 由 TASK.md visibility 决定
+      agent.run(user, response_kind=...)
+      ← 整轮写入 JSONL（user/assistant/tool 均带 kind）
+      ← 仅 visibility=display 时 stash pending，下次 Channel POST 开头 yield
+      ← visibility=silent（如 heartbeat）不注入下一轮 SSE
 ```
 
 关键点：
-- Schedule 是纯配置数据类（`name, cron, task_content`），cron 状态由 `run_one_schedule` 维护
+- Schedule 配置：`name, cron, task_content, visibility`（`display`/`silent`，缺省 `display`）
+- **``kind`` 字段**（敲定协议）：OpenAI ``role`` 不变；用正交字段区分对话来源。Gateway ``/history`` 只返回 ``is_displayable_chat_message``（``kind=chat`` 的 user/assistant，以及 ``kind=schedule.display`` 的 assistant）。AI 请求经 ``messages_for_ai`` 剥掉 ``kind``/遗留 ``chat_type``
+- ``visibility: silent`` 的 schedule（heartbeat）结果永不 pending、永不展示
+- ``visibility: display`` 的 schedule 结果可进 history，并通过 pending 随下次 ``POST /chat`` 带回（``/events/schedule`` 推送通道仍待定）
 - Schedule 响应的 content 和 reasoning 各自存在于各自的消息周期，不会交错
 - 多个 schedule 可以并发 sleep，但通过 lock 串行触发
 - 每个 schedule 在加载时独立处理——IO 错误、YAML 解析问题、cron 验证失败都只跳过该 schedule
+
+### History 展示白名单（``history_display.py``）
+
+| kind | 展示 |
+|------|------|
+| `chat` | user/assistant 非空 content |
+| `schedule.display` | 仅 assistant |
+| `schedule.silent` / `compacted` | 否 |
+| 遗留 `chat_type=schedule` / `*_schedule` role | 视为 silent |
+
+Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记。
 
 ## History 持久化
 
