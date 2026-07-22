@@ -13,6 +13,7 @@ from psi_agent.channel.feishu import ChannelFeishu
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.telegram import ChannelTelegram
 from psi_agent.gateway import Gateway
+from psi_agent.router import Router
 from psi_agent.session import Session
 
 ChannelGroup = Annotated[
@@ -23,9 +24,11 @@ ChannelGroup = Annotated[
     conf.subcommand(name="channel", description="User interface channels"),
 ]
 
+Command = Run | Ai | Session | ChannelGroup | Gateway | Router
+
 
 def main() -> None:
-    cmd = tyro.cli(Run | Ai | Session | ChannelGroup | Gateway)
+    cmd = tyro.cli(Command)
     anyio.run(cmd.run)
 
 
