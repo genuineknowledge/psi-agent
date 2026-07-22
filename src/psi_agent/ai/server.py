@@ -35,6 +35,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     body.pop("model", None)
     body.pop("api_key", None)
     body.pop("api_base", None)
+    body.pop("routing", None)
     logger.debug(f"Body keys to passthrough: {list(body)}")
 
     response = web.StreamResponse(

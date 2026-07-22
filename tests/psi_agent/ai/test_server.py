@@ -44,9 +44,14 @@ class _TrackingStream:
 
 
 async def _serve_handler(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream: _TrackingStream
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stream: _TrackingStream,
+    received_provider_kwargs: dict[str, Any] | None = None,
 ) -> tuple[web.AppRunner, str]:
     async def fake_acompletion(**kwargs: Any) -> _TrackingStream:
+        if received_provider_kwargs is not None:
+            received_provider_kwargs.update(kwargs)
         return stream
 
     monkeypatch.setattr("psi_agent.ai.server.acompletion", fake_acompletion)
@@ -103,3 +108,36 @@ async def test_upstream_stream_closed_after_error(tmp_path: Path, monkeypatch: p
         assert stream.closed is True
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_handler_strips_internal_routing_before_calling_the_external_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provider-facing calls must never receive the Router's Session metadata."""
+
+    received_provider_kwargs: dict[str, Any] = {}
+    stream = _TrackingStream([_FakeChunk()])
+    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream, received_provider_kwargs)
+    connector = UnixConnector(path=socket_path)
+    try:
+        async with (
+            ClientSession(connector=connector) as session,
+            session.post(
+                "http://localhost/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "routing": {"session_id": "private-session"},
+                    "temperature": 0.2,
+                },
+            ) as response,
+        ):
+            assert response.status == 200
+            async for _ in response.content:
+                pass
+    finally:
+        await runner.cleanup()
+
+    assert "routing" not in received_provider_kwargs
+    assert received_provider_kwargs["temperature"] == 0.2
