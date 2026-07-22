@@ -303,6 +303,8 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| POST | `/feishu/route` | Idempotently route a Feishu open_id to its dedicated Session (spawn on first use) |
+| GET | `/feishu/routes` | List Feishu open_id → Session routes |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
@@ -366,6 +368,7 @@ uv run psi-agent channel feishu \
 - Processing status emoji: `Typing` while processing, removed on completion, `CrossMark` on failure
 - Supports text, images, files, and audio
 - Doc comment replies: `--respond-to-comments` (on by default) — when the bot is @-mentioned in a document comment, reply to that comment with the agent's answer (requires subscribing to `drive.notice.comment_add_v1` in the Feishu console)
+- Per-user isolated sessions: with `--gateway-url http://127.0.0.1:8080`, on each Feishu user's first message the Gateway idempotently spawns a dedicated Session keyed by their open_id (isolated workspace subdir and history), giving one bot per-user isolated conversations. The mounted AI and workspace parent dir are set via the Gateway's `--feishu-ai-id` / `--feishu-workspace-root`. Without `--gateway-url` all users share `--session-socket` (unchanged behavior). Falls back to the shared socket if the Gateway is unreachable
 
 ## Example Workspaces
 

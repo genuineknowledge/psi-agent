@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import partial
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import anyio
@@ -635,7 +636,7 @@ class _FakeHttp:
 @pytest.mark.anyio
 async def test_gateway_route_provider_caches_socket() -> None:
     http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/feishu-ou_1.sock"})])
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000/", http)  # type: ignore[arg-type]
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000/", cast("Any", http))
 
     socket1 = await provider.ensure("ou_1")
     assert socket1 == "/tmp/feishu-ou_1.sock"
@@ -655,7 +656,7 @@ async def test_gateway_route_provider_raises_on_failure_and_does_not_cache() -> 
             _FakeResp(201, {"channel_socket": "/tmp/ok.sock"}),
         ]
     )
-    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", http)  # type: ignore[arg-type]
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", cast("Any", http))
 
     with pytest.raises(RuntimeError, match="feishu/route failed"):
         await provider.ensure("ou_1")
