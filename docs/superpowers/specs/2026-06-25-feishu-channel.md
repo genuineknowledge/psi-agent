@@ -308,7 +308,7 @@ agent 拿到 `chat_id` 后自行决定是否调 `feishu_message_list(container_i
 ### 14.1 底层机制（`lark_channel` 内置）
 
 - 评论区 @机器人 会推送 `drive.notice.comment_add_v1` 事件，SDK 归一化为 `CommentEvent`（`file_token` / `file_type` / `comment_id` / `reply_id` / `operator` / `mentioned_bot`），经 `channel.on("comment", ...)` 分发。
-- SDK 提供评论读写原语：`resolve_comment_target(file_token, file_type)` → `CommentTarget`（支持 doc/docx/sheet/file，wiki 经节点解析为底层 obj_token）；`get_comment_context(target, comment_id, event_reply_id)` → `CommentContext`（含 `question` 问题文本 + `quote` 锚定原文 + `is_whole` + `target_reply_id`）；`reply_comment(context, content)`（全文评论新建评论，锚定评论对 `target_reply_id` 新增回复）。
+- SDK 提供评论读写原语：`resolve_comment_target(file_token, file_type)` → `CommentTarget`（支持 doc/docx/sheet/file，wiki 经节点解析为底层 obj_token）；`get_comment_context(target, comment_id, event_reply_id)` → `CommentContext`（含 `question` 问题文本 + `quote` 锚定原文 + `is_whole` + `target_reply_id`）；`reply_comment(context, content)`（全文评论走 POST 新建评论，非全文评论走 PUT **更新覆盖** `target_reply_id`——本 PR 为避免覆盖用户原评论而一律强制走前者，详见 14.7）。
 - psi-agent 侧此前只订阅 `message` / `reject`，从未订阅 `comment`——这是全部缺口。
 
 ### 14.2 psi-agent 侧配置（`ChannelFeishu` / `run_feishu`）

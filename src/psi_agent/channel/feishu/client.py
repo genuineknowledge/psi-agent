@@ -269,14 +269,17 @@ async def _handle_comment(
     allowed_ids: list[str] | None,
     event: Any,
 ) -> None:
-    """处理文档评论 @机器人 事件 — 解析目标 → 取问题 → 喂 agent → 回复该评论。
+    """处理文档评论 @机器人 事件 — 解析目标 → 取问题 → 喂 agent → 新建评论回复。
 
     注册为 channel 的 ``comment`` 回调 (经 ``start_task_soon`` 调度), 与
     ``_handle_and_stream`` 一样绝不让异常冒泡, 以免拖垮事件循环。
 
     门槛: 仅当评论明确 @了机器人 (``mentioned_bot``) 才回复 — 与群聊
-    ``require_mention`` 语义一致, 避免文档里每条评论都触发。回复写回被@的那条
-    评论线程 (SDK ``reply_comment``: 全文评论新建评论, 锚定评论新增回复)。
+    ``require_mention`` 语义一致, 避免文档里每条评论都触发。
+
+    回复**一律新建独立评论**(强制 ``ctx.is_whole = True``), 不挂在原评论线程下:
+    SDK ``reply_comment`` 对非全文评论走 PUT 覆盖用户那条 @机器人 的 reply
+    (数据丢失), 详见下方回复处的注释。
     """
     try:
         if not getattr(event, "mentioned_bot", False):
