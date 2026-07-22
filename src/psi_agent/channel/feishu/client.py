@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from contextlib import aclosing
+from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack, aclosing
 from datetime import date
 from typing import Any
 
@@ -29,6 +30,59 @@ def _allowed(sender_id: str | None, allowed_ids: list[str] | None) -> bool:
     if allowed_ids is None:
         return True
     return sender_id in allowed_ids
+
+
+_SOCKET_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_open_id(open_id: str) -> str:
+    """把 open_id 净化成安全的 socket/pipe/path 段。
+
+    飞书 open_id 本身即 ``[A-Za-z0-9_]``, 对其是恒等变换; 仅作防御层, 兜住
+    union_id/user_id 等意外字符。外部预拉起 session 的 launcher 须套用同一规则,
+    否则派生路径对不上、``post()`` 时连不上。
+    """
+    return _SOCKET_UNSAFE.sub("_", open_id)
+
+
+def _derive_socket(open_id: str, *, route_template: str | None, fallback: str) -> str:
+    """按 open_id 派生 per-user session socket; 无模板或 open_id 空时回退 ``fallback``。
+
+    模板只做字符串替换, 不关心传输种类 —— ``ChannelCore`` 内部的
+    ``resolve_connector_and_endpoint`` 会按前缀自动分流 Unix/TCP/命名管道。
+    """
+    if not route_template or not open_id:
+        return fallback
+    return route_template.replace("{open_id}", _sanitize_open_id(open_id))
+
+
+class _CoreRegistry:
+    """按 socket 路径缓存并复用 ``ChannelCore``; 懒创建、并发安全、随 stack 统一关闭。
+
+    ``ChannelCore.__aenter__`` 仅建 connector + ``ClientSession``(socket 是懒连接,
+    缺失只在 ``post()`` 时报错), 但 ``stack.enter_async_context(...)`` 构成挂起点:
+    两个经 ``portal.start_task_soon`` 并发进来的同用户消息可能都 miss 缓存并各建一个
+    core → 泄露一个 ``ClientSession``。用 double-checked 锁消除此竞态。创建罕见且全程
+    无网络, 故单把全局锁足够。所有 core 进同一 ``AsyncExitStack``, 退出时逐个 shielded 关闭。
+    """
+
+    def __init__(self, interval: float, stack: AsyncExitStack) -> None:
+        self._interval = interval
+        self._stack = stack
+        self._cores: dict[str, ChannelCore] = {}
+        self._lock = anyio.Lock()
+
+    async def get(self, socket: str) -> ChannelCore:
+        core = self._cores.get(socket)  # 快路径(无 await, dict 读原子)
+        if core is not None:
+            return core
+        async with self._lock:  # 慢路径: double-checked
+            core = self._cores.get(socket)
+            if core is None:
+                core = await self._stack.enter_async_context(ChannelCore(socket, interval=self._interval))
+                self._cores[socket] = core
+                logger.debug(f"created ChannelCore for socket={socket!r} (total={len(self._cores)})")
+            return core
 
 
 async def _send_file(channel: Any, chat_id: str, path: str) -> None:
@@ -187,7 +241,7 @@ async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
 
 async def _handle_and_stream(
     channel: Any,
-    core: ChannelCore,
+    resolve_core: Callable[[str], Awaitable[ChannelCore]],
     allowed_ids: list[str] | None,
     ctx: Any,
 ) -> None:
@@ -195,7 +249,9 @@ async def _handle_and_stream(
         logger.debug(f"sender {ctx.sender_id} blocked by whitelist")
         return
 
-    logger.debug(f"sender={ctx.sender_id} chat={ctx.chat_id}")
+    # 白名单通过后才解析 core, 被拦用户不建连接 (防非白名单 open_id 刷出大量 ClientSession)
+    core = await resolve_core(ctx.sender_id)
+    logger.debug(f"sender={ctx.sender_id} chat={ctx.chat_id} socket={core.session_socket}")
 
     reaction_id = await _add_reaction(channel, ctx.message_id, _EMOJI_PROCESSING)
     failed = False
@@ -265,7 +321,7 @@ async def _collect_reply(core: ChannelCore, chunks: list[InputChunk]) -> str:
 
 async def _handle_comment(
     channel: Any,
-    core: ChannelCore,
+    resolve_core: Callable[[str | None], Awaitable[ChannelCore]],
     allowed_ids: list[str] | None,
     event: Any,
 ) -> None:
@@ -291,6 +347,10 @@ async def _handle_comment(
         if not _allowed(operator_open_id, allowed_ids):
             logger.debug(f"comment operator {operator_open_id} blocked by whitelist")
             return
+
+        # 白名单通过后才解析 core, 被拦用户不建连接 (与 _handle_and_stream 同款);
+        # 按评论发起者 open_id 路由到其 per-user session。
+        core = await resolve_core(operator_open_id)
 
         logger.debug(f"comment file_token={event.file_token} file_type={event.file_type} comment_id={event.comment_id}")
 
@@ -392,6 +452,7 @@ async def run_feishu(
     require_mention: bool = True,
     respond_to_mention_all: bool = False,
     respond_to_comments: bool = True,
+    route_template: str | None = None,
 ) -> None:
     policy = PolicyConfig(
         require_mention=require_mention,
@@ -400,16 +461,26 @@ async def run_feishu(
     channel = FeishuChannel(app_id=app_id, app_secret=app_secret, policy=policy)
     logger.debug(
         f"FeishuChannel created (app_id={app_id} require_mention={require_mention} "
-        f"respond_to_mention_all={respond_to_mention_all})"
+        f"respond_to_mention_all={respond_to_mention_all} route_template={route_template!r})"
     )
+    if route_template and "{open_id}" not in route_template:
+        logger.warning("route_template 不含 {open_id} 占位符, 所有用户将路由到同一 socket")
 
-    async with ChannelCore(session_socket, interval=interval) as core, BlockingPortal() as portal:
+    # AsyncExitStack 持有所有 per-user ChannelCore; 与 portal 的进出顺序:
+    # portal 后进先出、先于 stack 关闭, 保证在飞的 handler 仍能用到活着的 core,
+    # 与旧版 "core 在 stop_background 之后才关" 的取消安全性等价。
+    async with AsyncExitStack() as stack, BlockingPortal() as portal:
+        registry = _CoreRegistry(interval, stack)
+
+        async def resolve_core(open_id: str) -> ChannelCore:
+            socket = _derive_socket(open_id, route_template=route_template, fallback=session_socket)
+            return await registry.get(socket)
 
         async def _on_message(ctx: Any) -> None:
-            portal.start_task_soon(_handle_and_stream, channel, core, allowed_user_ids, ctx)
+            portal.start_task_soon(_handle_and_stream, channel, resolve_core, allowed_user_ids, ctx)
 
         async def _on_comment(event: Any) -> None:
-            portal.start_task_soon(_handle_comment, channel, core, allowed_user_ids, event)
+            portal.start_task_soon(_handle_comment, channel, resolve_core, allowed_user_ids, event)
 
         channel.on("message", _on_message)
         channel.on("reject", _log_reject)

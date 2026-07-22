@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -16,16 +17,29 @@ from psi_agent.channel.feishu.client import (
     _EMOJI_PROCESSING,
     _add_reaction,
     _comment_context_header,
+    _CoreRegistry,
+    _derive_socket,
     _handle_and_stream,
     _handle_comment,
     _remove_reaction,
+    _sanitize_open_id,
     run_feishu,
 )
+
+
+def _const_resolver(core: ChannelCore):
+    """把单个 core 包成 _handle_and_stream 期望的 async resolver。"""
+
+    async def _resolve(_open_id: str) -> ChannelCore:
+        return core
+
+    return _resolve
 
 
 def test_channel_feishu_defaults():
     cf = ChannelFeishu(session_socket="/tmp/feishu.sock")
     assert cf.session_socket == "/tmp/feishu.sock"
+    assert cf.route_template is None
     assert cf.app_id == ""
     assert cf.app_secret == ""
     assert cf.interval == 1.0
@@ -124,7 +138,7 @@ async def test_handle_success_removes_typing_no_crossmark(monkeypatch, tmp_path)
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
     ctx = SimpleNamespace(sender_id="ou_1", chat_id="oc_1", message_id="om_1")
 
-    await _handle_and_stream(channel, core, None, ctx)
+    await _handle_and_stream(channel, _const_resolver(core), None, ctx)
 
     acreate = channel.client.im.v1.message_reaction.acreate
     adelete = channel.client.im.v1.message_reaction.adelete
@@ -144,7 +158,7 @@ async def test_handle_failure_replaces_with_crossmark(monkeypatch, tmp_path):
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
     ctx = SimpleNamespace(sender_id="ou_1", chat_id="oc_1", message_id="om_1")
 
-    await _handle_and_stream(channel, core, None, ctx)
+    await _handle_and_stream(channel, _const_resolver(core), None, ctx)
 
     acreate = channel.client.im.v1.message_reaction.acreate
     adelete = channel.client.im.v1.message_reaction.adelete
@@ -166,7 +180,7 @@ async def test_handle_swallows_error_when_notification_also_fails(monkeypatch, t
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
     ctx = SimpleNamespace(sender_id="ou_1", chat_id="oc_1", message_id="om_1")
 
-    await _handle_and_stream(channel, core, None, ctx)
+    await _handle_and_stream(channel, _const_resolver(core), None, ctx)
 
     acreate = channel.client.im.v1.message_reaction.acreate
     emojis = [c.args[0].request_body.reaction_type.emoji_type for c in acreate.call_args_list]
@@ -458,7 +472,7 @@ async def test_handle_comment_replies_with_agent_answer(monkeypatch, tmp_path):
     channel = _comment_channel()
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _const_resolver(core), None, _comment_event())
 
     channel.resolve_comment_target.assert_awaited_once()
     channel.get_comment_context.assert_awaited_once()
@@ -480,7 +494,7 @@ async def test_handle_comment_never_overwrites_user_reply(monkeypatch, tmp_path)
     assert channel.get_comment_context.return_value.is_whole is False
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _const_resolver(core), None, _comment_event())
 
     replied_ctx = channel.reply_comment.call_args.args[0]
     assert replied_ctx.is_whole is True
@@ -491,7 +505,7 @@ async def test_handle_comment_skips_when_not_mentioned(tmp_path):
     channel = _comment_channel()
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event(mentioned_bot=False))
+    await _handle_comment(channel, _const_resolver(core), None, _comment_event(mentioned_bot=False))
 
     channel.resolve_comment_target.assert_not_awaited()
     channel.reply_comment.assert_not_awaited()
@@ -502,7 +516,7 @@ async def test_handle_comment_respects_whitelist(tmp_path):
     channel = _comment_channel()
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, ["ou_allowed"], _comment_event(operator_open_id="ou_blocked"))
+    await _handle_comment(channel, _const_resolver(core), ["ou_allowed"], _comment_event(operator_open_id="ou_blocked"))
 
     channel.resolve_comment_target.assert_not_awaited()
     channel.reply_comment.assert_not_awaited()
@@ -514,7 +528,7 @@ async def test_handle_comment_skips_unsupported_target(monkeypatch, tmp_path):
     channel = _comment_channel(supported=False)
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _const_resolver(core), None, _comment_event())
 
     channel.get_comment_context.assert_not_awaited()
     channel.reply_comment.assert_not_awaited()
@@ -526,7 +540,7 @@ async def test_handle_comment_replies_error_on_agent_failure(monkeypatch, tmp_pa
     channel = _comment_channel()
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _const_resolver(core), None, _comment_event())
 
     channel.reply_comment.assert_awaited_once()
     assert "agent boom" in channel.reply_comment.call_args.args[1]
@@ -541,7 +555,7 @@ async def test_handle_comment_swallows_reply_error(monkeypatch, tmp_path):
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
     # Must not raise.
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _const_resolver(core), None, _comment_event())
 
 
 @pytest.mark.anyio
@@ -590,3 +604,198 @@ async def test_run_feishu_skips_comment_when_disabled(monkeypatch):
     assert "comment" not in registered
     # message/reject 仍然注册
     assert "message" in registered
+
+
+# ---- per-user socket routing ----
+
+
+def test_sanitize_open_id_identity_for_safe_ids():
+    # 飞书 open_id 字符集 [A-Za-z0-9_], 净化是恒等变换
+    assert _sanitize_open_id("ou_abc123") == "ou_abc123"
+
+
+def test_sanitize_open_id_replaces_unsafe_chars():
+    assert _sanitize_open_id("ou/ab c:d\\e") == "ou_ab_c_d_e"
+
+
+def test_derive_socket_unix_template():
+    assert (
+        _derive_socket("ou_1", route_template="/tmp/psi/session/{open_id}.sock", fallback="/tmp/shared.sock")
+        == "/tmp/psi/session/ou_1.sock"
+    )
+
+
+def test_derive_socket_windows_pipe_template():
+    assert (
+        _derive_socket("ou_1", route_template=r"\\.\pipe\psi\session\{open_id}", fallback="/tmp/shared.sock")
+        == r"\\.\pipe\psi\session\ou_1"
+    )
+
+
+def test_derive_socket_tcp_template():
+    assert (
+        _derive_socket("ou_1", route_template="http://127.0.0.1:9000/{open_id}", fallback="/tmp/shared.sock")
+        == "http://127.0.0.1:9000/ou_1"
+    )
+
+
+def test_derive_socket_no_template_falls_back():
+    assert _derive_socket("ou_1", route_template=None, fallback="/tmp/shared.sock") == "/tmp/shared.sock"
+
+
+def test_derive_socket_empty_open_id_falls_back():
+    assert (
+        _derive_socket("", route_template="/tmp/psi/session/{open_id}.sock", fallback="/tmp/shared.sock")
+        == "/tmp/shared.sock"
+    )
+
+
+def test_derive_socket_sanitizes_unsafe_open_id():
+    assert (
+        _derive_socket("ou/x", route_template="/tmp/psi/session/{open_id}.sock", fallback="/tmp/shared.sock")
+        == "/tmp/psi/session/ou_x.sock"
+    )
+
+
+@pytest.mark.anyio
+async def test_core_registry_reuses_and_isolates(tmp_path):
+    async with AsyncExitStack() as stack:
+        reg = _CoreRegistry(1.0, stack)
+        a1 = await reg.get(str(tmp_path / "a.sock"))
+        a2 = await reg.get(str(tmp_path / "a.sock"))
+        b = await reg.get(str(tmp_path / "b.sock"))
+        assert a1 is a2  # 同 socket 复用
+        assert a1 is not b  # 不同 socket 隔离
+
+
+@pytest.mark.anyio
+async def test_core_registry_concurrent_get_creates_one(tmp_path):
+    """并发 get 同一 socket 只建一个实例(验证 double-checked 锁)。"""
+    socket = str(tmp_path / "a.sock")
+    results: list[ChannelCore] = []
+    async with AsyncExitStack() as stack:
+        reg = _CoreRegistry(1.0, stack)
+
+        async def _grab() -> None:
+            results.append(await reg.get(socket))
+
+        async with anyio.create_task_group() as tg:
+            for _ in range(5):
+                tg.start_soon(_grab)
+
+        assert len({id(c) for c in results}) == 1
+
+
+@pytest.mark.anyio
+async def test_core_registry_closes_all_on_exit(tmp_path):
+    async with AsyncExitStack() as stack:
+        reg = _CoreRegistry(1.0, stack)
+        core = await reg.get(str(tmp_path / "a.sock"))
+    # stack 退出后 ChannelCore.__aexit__ 已关闭 aiohttp session
+    assert core._session.closed is True
+
+
+@pytest.mark.anyio
+async def test_handle_skips_resolver_for_blocked_sender():
+    """白名单校验在解析 core 之前, 被拦用户绝不触发 core 创建。"""
+    channel = _fake_channel()
+
+    async def _boom(_open_id: str) -> ChannelCore:
+        raise AssertionError("resolver must not be called for blocked sender")
+
+    ctx = SimpleNamespace(sender_id="ou_bad", chat_id="oc_1", message_id="om_1")
+    await _handle_and_stream(channel, _boom, ["ou_good"], ctx)
+    channel.client.im.v1.message_reaction.acreate.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_run_feishu_routes_distinct_senders_to_distinct_cores(monkeypatch, tmp_path):
+    """route_template 生效时, 不同 open_id 经 resolve_core 拿到不同 socket 的 core;
+    同一 open_id 复用同一 core。捕获 run_feishu 注册的 _on_message 直接驱动。"""
+    channel = MagicMock()
+    channel.on = MagicMock()
+    channel.start_background = AsyncMock()
+    channel.stop_background = AsyncMock()
+    channel.bot_identity = SimpleNamespace(open_id="ou_bot", name="Haitun")
+
+    captured_handler: dict[str, object] = {}
+    resolved: list[ChannelCore] = []
+
+    def _on(event: str, cb: object) -> None:
+        if event == "message":
+            captured_handler["cb"] = cb
+
+    channel.on = MagicMock(side_effect=_on)
+
+    class _CapturePortal(_FakePortal):
+        def start_task_soon(self, func, ch, resolve_core, allowed, ctx, **kw) -> None:  # type: ignore[override]
+            resolved.append(resolve_core)
+
+    monkeypatch.setattr(client, "FeishuChannel", lambda **kw: channel)
+    monkeypatch.setattr(client, "BlockingPortal", lambda: _CapturePortal())
+
+    template = str(tmp_path / "session" / "{open_id}.sock")
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(
+            partial(
+                run_feishu,
+                session_socket=str(tmp_path / "shared.sock"),
+                app_id="a",
+                app_secret="s",
+                route_template=template,
+            )
+        )
+        await anyio.sleep(0.1)
+        cb = captured_handler["cb"]
+        await cb(SimpleNamespace(sender_id="ou_1"))
+        await cb(SimpleNamespace(sender_id="ou_2"))
+        await cb(SimpleNamespace(sender_id="ou_1"))
+        resolve_core = resolved[0]
+        c1 = await resolve_core("ou_1")
+        c2 = await resolve_core("ou_2")
+        c1b = await resolve_core("ou_1")
+        tg.cancel_scope.cancel()
+
+    assert c1.session_socket == str(tmp_path / "session" / "ou_1.sock")
+    assert c2.session_socket == str(tmp_path / "session" / "ou_2.sock")
+    assert c1 is c1b
+    assert c1 is not c2
+
+
+@pytest.mark.anyio
+async def test_run_feishu_no_template_shares_single_core(monkeypatch, tmp_path):
+    """route_template=None 时任意 sender 都路由到共享 session_socket。"""
+    channel = MagicMock()
+    channel.start_background = AsyncMock()
+    channel.stop_background = AsyncMock()
+    channel.bot_identity = SimpleNamespace(open_id="ou_bot", name="Haitun")
+
+    captured_handler: dict[str, object] = {}
+    resolved: list[ChannelCore] = []
+
+    def _on(event: str, cb: object) -> None:
+        if event == "message":
+            captured_handler["cb"] = cb
+
+    channel.on = MagicMock(side_effect=_on)
+
+    class _CapturePortal(_FakePortal):
+        def start_task_soon(self, func, ch, resolve_core, allowed, ctx, **kw) -> None:  # type: ignore[override]
+            resolved.append(resolve_core)
+
+    monkeypatch.setattr(client, "FeishuChannel", lambda **kw: channel)
+    monkeypatch.setattr(client, "BlockingPortal", lambda: _CapturePortal())
+
+    shared = str(tmp_path / "shared.sock")
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(partial(run_feishu, session_socket=shared, app_id="a", app_secret="s"))
+        await anyio.sleep(0.1)
+        cb = captured_handler["cb"]
+        await cb(SimpleNamespace(sender_id="ou_1"))
+        resolve_core = resolved[0]
+        c1 = await resolve_core("ou_1")
+        c2 = await resolve_core("ou_2")
+        tg.cancel_scope.cancel()
+
+    assert c1.session_socket == shared
+    assert c1 is c2
