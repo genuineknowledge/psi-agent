@@ -163,6 +163,7 @@ class SessionAgent:
         turn_response_kind = response_kind if response_kind is not None else user_kind
         user_message = with_kind(user_message, user_kind)
 
+<<<<<<< Updated upstream
         # Gateway embeds many Sessions in one process — bind this turn so
         # workspace tools (todo, …) do not fall back to session_id "default".
         with session_id_scope(self._conversation.session_id):
@@ -170,6 +171,10 @@ class SessionAgent:
                 # reload tools and schedules from workspace (incremental hash-based)
                 await self._tool_registry.refresh()
                 await self._schedule_registry.refresh()
+=======
+            # system prompt (lazy + optional rebuild)
+            await self._system_prompt.ensure(self._conversation, user_message)
+>>>>>>> Stashed changes
 
                 # system prompt (lazy + optional rebuild)
                 await self._system_prompt.ensure(self._conversation)
@@ -229,6 +234,7 @@ class SessionAgent:
                                 f"finish_reason={delta.finish_reason!r}, "
                                 f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
                             )
+<<<<<<< Updated upstream
                             if delta.content:
                                 yield AgentChunk(content=delta.content)
                                 accumulated_content += delta.content
@@ -288,6 +294,19 @@ class SessionAgent:
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
                                 self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+=======
+                            assistant_msg: dict[str, Any] = {"role": "assistant"}
+                            if accumulated_content:
+                                assistant_msg["content"] = accumulated_content
+                            if accumulated_reasoning:
+                                assistant_msg["reasoning"] = accumulated_reasoning
+                            if accumulated_content or accumulated_reasoning:
+                                self._conversation.add(assistant_msg)
+                            await self._conversation.commit()
+                            await self._system_prompt.run_after_turn(user_message, assistant_msg)
+                            await self._schedule_registry.refresh()
+                            return
+>>>>>>> Stashed changes
 
                                 # pre-compute args + yield tool-call intent
                                 tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []

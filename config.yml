@@ -1,0 +1,16 @@
+- type: ai
+  provider: deepseek
+  session_socket: http://127.0.0.1:8080        # AI 监听 TCP 8080
+  model: deepseek-chat
+  api_key: sk-51e803ad2cd84f1f80e0c3f9a9c95c2d
+  base_url: https://api.deepseek.com/v1
+
+- type: session
+  workspace: ./examples/haitun-workspace
+  session_id: mytest
+  channel_socket: http://127.0.0.1:8081        # Session 监听 TCP 8081
+  ai_socket: http://127.0.0.1:8080
+
+- type: channel
+  name: repl
+  session_socket: http://127.0.0.1:8081

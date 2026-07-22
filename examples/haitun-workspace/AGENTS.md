@@ -65,6 +65,7 @@ service tools:
 
 | Tool | Notes |
 |---|---|
+| `profile_update` | Manually update the topic-aware learner profile; normal successful turns are aggregated automatically by `system_after_turn`. The profile stores per-knowledge-point dimensions/signals/counts, never raw turn transcripts. |
 | `bash` | Shell commands (anyio, Windows-aware bash detection). On Windows the installer bundles MSYS2 at `{app}\msys64`, added to PATH by the launcher, so bash works out-of-the-box. |
 | `powershell` | Windows-native shell. |
 | `read` / `write` / `edit` | Async file ops. |
@@ -149,12 +150,14 @@ service tools:
 
 ## ⚠️ Intentionally-kept un-wired code (future extension)
 
-psi-agent's session loader only ever calls `system_prompt_builder()` (and an optional
-`system_prompt_rebuild_checker()`), loads `tools/*.py`, and runs `schedules/*/TASK.md`. The
+psi-agent's session loader calls `system_prompt_builder()`, optional
+`system_prompt_rebuild_checker()`, and optional `system_after_turn()`, loads `tools/*.py`,
+and runs `schedules/*/TASK.md`. The
 following are deliberately included as **future-extension hooks** and are **NOT** invoked by
 the current framework — do not "clean them up" as dead code:
 
-- `systems/system.py`: `System.compact_history()`, `System.after_turn()`, and the
+- `systems/system.py`: `System.compact_history()`, `System.after_turn()` (distinct from the
+  wired module-level `system_after_turn()`), and the
   `_run_self_evolution_review` / self-evolution helpers.
 - `systems/curator.py`, `systems/background_review.py`, `systems/threat_patterns.py`,
   `systems/prompt_constants.py` — standalone modules from the hermes-style design, kept for

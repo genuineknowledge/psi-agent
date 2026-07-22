@@ -11,14 +11,15 @@ This merges three ideas into one workspace:
   fully merged from the fusion-flow workspace.
 * A fixed Haitun agent persona, always stated in the system prompt.
 
-Only ``system_prompt_builder()`` (and optionally ``system_prompt_rebuild_checker``)
-is invoked by psi-agent's session loader.  ``compact_history`` / ``after_turn`` /
-the self-evolution helpers below are **intentionally kept but currently un-wired**
+``system_prompt_builder()`` and ``system_after_turn()`` are invoked by psi-agent's
+session loader.  ``compact_history`` / ``System.after_turn`` / the self-evolution
+helpers below are **intentionally kept but currently un-wired**
 - they are future-extension hooks (see AGENTS.md).  Do not delete them as "dead
 code"; they exist on purpose.
 """
 
 from __future__ import annotations
+
 
 import sys
 import os as _os
@@ -29,8 +30,14 @@ _THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
+# Also add the workspace tools directory so _user_profile can be imported
+_TOOLS_DIR = _os.path.join(_os.path.dirname(_THIS_DIR), "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
 import contextlib
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -962,7 +969,12 @@ hand-copying the key.
 
 Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files."""
 
-    async def build_system_prompt(self, model: str | None = None, tool_names: list[str] | None = None) -> str:
+    async def build_system_prompt(
+        self,
+        model: str | None = None,
+        tool_names: list[str] | None = None,
+        user_text: str = "",
+    ) -> str:
         ws = self._workspace_dir
         tools = tool_names or await _scan_tool_names(ws)
 
@@ -974,7 +986,11 @@ Never write API keys into this workspace, generated `.flow.ts` files, or committ
         bootstrap = await _build_bootstrap_files(ws)
         global_agents_md = await _build_global_agents_md()
 
-        stable_parts: list[str] = [identity, "", LANGUAGE_LOCALIZATION_SECTION]
+        stable_parts: list[str] = [
+            identity,
+            "",
+            LANGUAGE_LOCALIZATION_SECTION,
+        ]
 
         help_skill_md = ws / "skills" / HELP_SKILL_NAME / "SKILL.md"
         if await help_skill_md.exists():
@@ -1081,6 +1097,40 @@ Never write API keys into this workspace, generated `.flow.ts` files, or committ
             dynamic_parts += [dynamic_ctx, ""]
 
         dynamic_parts += [_build_datetime_section(), ""]
+
+        # ---------- 注入学习画像与教练规则 ----------
+        try:
+            up = importlib.import_module("_user_profile")
+            profile = await up.get_profile(str(ws))
+            _topic_key, topic = profile.get_topic(user_text)
+            dimensions = topic["dimensions"]
+            hint = profile.teaching_hint(topic)
+            ask_socratic = topic["turns"] > 0 and (topic["turns"] + 1) % 3 == 0
+            ask_breakout = topic["turns"] >= 4 and dimensions["familiarity"] > 0.5
+            socratic_rule = "本轮必须在结尾提出一个检验理解的问题" if ask_socratic else "本轮不强制提问"
+            breakout_rule = "本轮必须提出一个相邻知识点或更高层问题" if ask_breakout else "当前轮次或熟悉度尚未触发"
+            profile_text = (
+                "## 当前知识点学习画像 (每轮从持久化画像重新读取)\n"
+                f"- 当前知识点: {topic['label']}\n"
+                f"- 该知识点累计轮次: {topic['turns']}\n"
+                f"- 深度偏好: {dimensions['depth']:.2f} (0=框架概览, 1=系统推导)\n"
+                f"- 目标导向: {dimensions['goal']:.2f} (0=兴趣, 1=决策)\n"
+                f"- 领域熟悉度: {dimensions['familiarity']:.2f} (0=新手, 1=专家)\n"
+                f"- 教学指令: {hint}\n"
+            )
+            supervisor_rules = (
+                "## 基于当前知识点画像的学习监督规则\n"
+                "1. 确定性标记: 事实断言使用 `[已确认]` / `[推断]` / `[需验证]`, 不要把推断写成事实。\n"
+                "2. 反例注入: 每个核心概念至少给一个简短反例或边界场景; 深度偏好低时只用一句话。\n"
+                f"3. 苏格拉底提问: {socratic_rule}。\n"
+                f"4. 破圈问题: {breakout_rule}。\n"
+                "5. 画像匹配: 严格按照上方 `教学指令` 控制术语解释、篇幅、推导深度和决策信息比例。\n"
+            )
+            dynamic_parts += [profile_text, supervisor_rules]
+        except Exception as exc:
+            logger.warning("Failed to inject learner profile: %r", exc, exc_info=True)
+        # ------------------------------------------------
+
         dynamic_parts.append(_build_runtime_info(model))
 
         while dynamic_parts and dynamic_parts[-1] == "":
@@ -1208,7 +1258,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or committ
         )
 
 
-async def system_prompt_builder() -> str:
+async def system_prompt_builder(user_message: dict[str, Any] | None = None) -> str:
     """Module-level entry point used by the psi-agent session loader.
 
     The loader looks up an async ``system_prompt_builder`` attribute in this
@@ -1216,7 +1266,27 @@ async def system_prompt_builder() -> str:
     this file's location and delegate to the ``System`` class.
     """
     workspace_dir = anyio.Path(__file__).parent.parent
-    return await System(workspace_dir).build_system_prompt()
+    content = user_message.get("content") if isinstance(user_message, dict) else ""
+    user_text = content if isinstance(content, str) else ""
+    return await System(workspace_dir).build_system_prompt(user_text=user_text)
+
+
+async def system_prompt_rebuild_checker(_user_message: dict[str, Any] | None = None) -> bool:
+    """Rebuild every turn so the current topic receives its latest profile."""
+    return True
+
+
+async def system_after_turn(user_message: dict[str, Any], assistant_message: dict[str, Any]) -> None:
+    """Persist the learner profile after each successful final response."""
+    up = importlib.import_module("_user_profile")
+    profile = await up.get_profile()
+    user_text = user_message.get("content")
+    assistant_text = assistant_message.get("content")
+    profile.update(
+        user_text if isinstance(user_text, str) else "",
+        assistant_text if isinstance(assistant_text, str) else "",
+    )
+    await profile.save()
 
 
 if __name__ == "__main__":

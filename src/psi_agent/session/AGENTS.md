@@ -24,8 +24,9 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - 所有手动模块加载使用 `原名_session_id_文件hash` 作为 module name（tool 和 system prompt 均用 `compile` + `exec` 避免 importlib bytecode 缓存），确保同进程多 session 隔离
 - `SessionAgent.create()` 完成所有初始化——`__init__.py` 只做入口编排
 - Tool 加载：`compile(source)` + `exec(module.__dict__)` 避免 importlib 的 bytecode 缓存导致刷新时读到旧文件内容
-- System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）
-- 后续请求可调用 `system_prompt_rebuild_checker()`（如果定义），返回 True 则重建 system prompt
+- System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）；builder 可选接收当前 `user_message`
+- 后续请求可调用 `system_prompt_rebuild_checker()`（如果定义）；checker 同样可选接收当前 `user_message`，返回 True 则重建 system prompt
+- 成功的最终回复提交后调用 `system_after_turn(user_message, assistant_message)`（如果定义）；hook 异常记录 WARNING，不回滚已提交的回复
 
 ## Agent Loop 逻辑
 
@@ -42,7 +43,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
    - reasoning → `yield AgentChunk(reasoning=...)` 给 ChannelAdapter
    - tool_calls → 累积（按 index 拼接 partial JSON）
     - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 4
-    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry（本轮 tool 可能修改了 schedule 文件）→ 释放锁
+    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + system after-turn hook + 刷新 schedule registry（本轮 tool 可能修改了 schedule 文件）→ 释放锁
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
    - 任何未捕获异常 → 回滚到快照 → 向上传播
 6. 最多 `max_tool_rounds` 轮 tool call，达到上限时追加关闭 assistant 消息 + commit
