@@ -10,9 +10,7 @@ from psi_agent.router.prompts import (
 
 
 def test_merge_upstream_descriptions_combines_duplicate_socket_entries() -> None:
-    descriptions = merge_upstream_descriptions(
-        [("sock-a", "research"), ("sock-a", "writing"), ("sock-b", "coding")]
-    )
+    descriptions = merge_upstream_descriptions([("sock-a", "research"), ("sock-a", "writing"), ("sock-b", "coding")])
 
     assert descriptions == [("sock-a", "research; writing"), ("sock-b", "coding")]
 

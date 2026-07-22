@@ -36,7 +36,8 @@ def build_planning_messages(
         {
             "role": "user",
             "content": (
-                "Plan this request as exactly three complementary subtasks. Configured backend sockets and capabilities are:\n"
+                "Plan this request as exactly three complementary subtasks. "
+                "Configured backend sockets and capabilities are:\n"
                 f"{_socket_catalog(upstream)}\n\n"
                 "Return JSON only in this exact shape: "
                 '{"tasks":[{"subtask":"...","socket":"..."},{"subtask":"...","socket":"..."},'

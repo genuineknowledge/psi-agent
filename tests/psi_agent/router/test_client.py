@@ -73,7 +73,7 @@ async def test_complete_accumulates_fragmented_tool_calls_in_numeric_index_order
                                 "index": 0,
                                 "id": "a",
                                 "type": "function",
-                                "function": {"name": "alpha", "arguments": "{\"x\":"},
+                                "function": {"name": "alpha", "arguments": '{"x":'},
                             },
                         ]
                     }
@@ -258,8 +258,7 @@ async def test_stream_raw_strips_internal_routing_and_model(monkeypatch: pytest.
         "model": "private-model",
     }
     chunks = [
-        chunk
-        async for chunk in RouterClient().stream_raw(socket="http://127.0.0.1:8080", body=body, timeout=None)
+        chunk async for chunk in RouterClient().stream_raw(socket="http://127.0.0.1:8080", body=body, timeout=None)
     ]
 
     assert chunks == [b"data: done\n\n"]

@@ -65,7 +65,11 @@ class RouterConfig:
             validated_upstream.append((socket, description))
         object.__setattr__(self, "upstream", tuple(validated_upstream))
 
-        if not isinstance(self.max_tool_rounds, int) or isinstance(self.max_tool_rounds, bool) or self.max_tool_rounds <= 0:
+        if (
+            not isinstance(self.max_tool_rounds, int)
+            or isinstance(self.max_tool_rounds, bool)
+            or self.max_tool_rounds <= 0
+        ):
             raise ValueError("max_tool_rounds must be a positive integer")
         for name in ("router_timeout", "branch_timeout", "aggregate_timeout"):
             value = getattr(self, name)

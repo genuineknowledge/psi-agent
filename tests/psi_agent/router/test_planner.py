@@ -64,7 +64,8 @@ def test_parse_plan_rejects_extra_root_or_task_keys(content: str) -> None:
 
 def test_parse_plan_strips_subtask_and_socket_before_mapping() -> None:
     tasks = parse_plan(
-        '{"tasks":[{"subtask":" one ","socket":" a "},{"subtask":" two ","socket":" a "},{"subtask":" three ","socket":" a "}]}',
+        '{"tasks":[{"subtask":" one ","socket":" a "},'
+        '{"subtask":" two ","socket":" a "},{"subtask":" three ","socket":" a "}]}',
         allowed_sockets={"a"},
     )
 
