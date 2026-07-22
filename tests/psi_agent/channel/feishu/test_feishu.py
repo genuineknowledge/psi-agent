@@ -15,7 +15,9 @@ from psi_agent.channel.feishu.client import (
     _EMOJI_FAILED,
     _EMOJI_PROCESSING,
     _add_reaction,
+    _comment_context_header,
     _handle_and_stream,
+    _handle_comment,
     _remove_reaction,
     run_feishu,
 )
@@ -30,6 +32,7 @@ def test_channel_feishu_defaults():
     assert cf.allowed_user_ids is None
     assert cf.require_mention is True
     assert cf.respond_to_mention_all is False
+    assert cf.respond_to_comments is True
     assert cf.verbose is False
 
 
@@ -401,3 +404,189 @@ async def test_build_chunks_with_resource(monkeypatch, tmp_path):
     chunks = await client._build_chunks(channel, ctx)
     assert any(isinstance(c, FileChunk) for c in chunks)
     channel.download_resource_to_file.assert_awaited_once()
+
+
+# --------------------------------------------------------------------------
+# Document comment handling (@bot in doc comments -> reply on the comment)
+# --------------------------------------------------------------------------
+
+
+def _comment_event(*, mentioned_bot=True, operator_open_id="ou_1", reply_id="re_1") -> SimpleNamespace:
+    return SimpleNamespace(
+        file_token="doccnXXX",
+        file_type="docx",
+        comment_id="cmt_1",
+        reply_id=reply_id,
+        operator=SimpleNamespace(open_id=operator_open_id, user_id="u_1", union_id="on_1"),
+        mentioned_bot=mentioned_bot,
+    )
+
+
+def _comment_channel(*, supported=True) -> MagicMock:
+    channel = MagicMock()
+    target = SimpleNamespace(file_token="doccnXXX", file_type="docx", supported=supported, reason=None)
+    ctx = SimpleNamespace(
+        target=target,
+        comment_id="cmt_1",
+        question="机器人这段怎么改?",
+        quote="原文片段",
+        is_whole=False,
+        target_reply_id="re_1",
+    )
+    channel.resolve_comment_target = AsyncMock(return_value=target)
+    channel.get_comment_context = AsyncMock(return_value=ctx)
+    channel.reply_comment = AsyncMock()
+    return channel
+
+
+def test_comment_context_header_has_facts_no_tool_names():
+    event = _comment_event()
+    ctx = SimpleNamespace(quote="原文片段")
+    header = _comment_context_header(event, ctx)
+    assert "file_token: doccnXXX" in header
+    assert "file_type: docx" in header
+    assert "comment_id: cmt_1" in header
+    assert "operator_open_id: ou_1" in header
+    assert "quote: 原文片段" in header
+    # channel 层与 workspace 工具解耦: header 不含具体工具名
+    assert "feishu" not in header.replace("feishu_comment_context", "")
+
+
+@pytest.mark.anyio
+async def test_handle_comment_replies_with_agent_answer(monkeypatch, tmp_path):
+    monkeypatch.setattr(client, "_collect_reply", AsyncMock(return_value="改成这样"))
+    channel = _comment_channel()
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+
+    await _handle_comment(channel, core, None, _comment_event())
+
+    channel.resolve_comment_target.assert_awaited_once()
+    channel.get_comment_context.assert_awaited_once()
+    channel.reply_comment.assert_awaited_once()
+    assert channel.reply_comment.call_args.args[1] == "改成这样"
+    # 数据安全: 回复前强制 is_whole=True, 使 SDK 走 POST 新建评论而非
+    # PUT 覆盖用户那条 @机器人 的 reply(否则会抹掉用户原评论)
+    replied_ctx = channel.reply_comment.call_args.args[0]
+    assert replied_ctx.is_whole is True
+
+
+@pytest.mark.anyio
+async def test_handle_comment_never_overwrites_user_reply(monkeypatch, tmp_path):
+    """回归: 即便 get_comment_context 返回 is_whole=False(锚定评论),
+    _handle_comment 也必须把 ctx.is_whole 置 True 再回复, 确保 SDK 走
+    新建评论(POST)而非覆盖 reply(PUT)。"""
+    monkeypatch.setattr(client, "_collect_reply", AsyncMock(return_value="answer"))
+    channel = _comment_channel()  # ctx.is_whole 默认 False
+    assert channel.get_comment_context.return_value.is_whole is False
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+
+    await _handle_comment(channel, core, None, _comment_event())
+
+    replied_ctx = channel.reply_comment.call_args.args[0]
+    assert replied_ctx.is_whole is True
+
+
+@pytest.mark.anyio
+async def test_handle_comment_skips_when_not_mentioned(tmp_path):
+    channel = _comment_channel()
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+
+    await _handle_comment(channel, core, None, _comment_event(mentioned_bot=False))
+
+    channel.resolve_comment_target.assert_not_awaited()
+    channel.reply_comment.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_handle_comment_respects_whitelist(tmp_path):
+    channel = _comment_channel()
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+
+    await _handle_comment(channel, core, ["ou_allowed"], _comment_event(operator_open_id="ou_blocked"))
+
+    channel.resolve_comment_target.assert_not_awaited()
+    channel.reply_comment.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_handle_comment_skips_unsupported_target(monkeypatch, tmp_path):
+    monkeypatch.setattr(client, "_collect_reply", AsyncMock(return_value="x"))
+    channel = _comment_channel(supported=False)
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+
+    await _handle_comment(channel, core, None, _comment_event())
+
+    channel.get_comment_context.assert_not_awaited()
+    channel.reply_comment.assert_not_awaited()
+
+
+@pytest.mark.anyio
+async def test_handle_comment_replies_error_on_agent_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(client, "_collect_reply", AsyncMock(side_effect=RuntimeError("agent boom")))
+    channel = _comment_channel()
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+
+    await _handle_comment(channel, core, None, _comment_event())
+
+    channel.reply_comment.assert_awaited_once()
+    assert "agent boom" in channel.reply_comment.call_args.args[1]
+
+
+@pytest.mark.anyio
+async def test_handle_comment_swallows_reply_error(monkeypatch, tmp_path):
+    """_handle_comment runs as a start_task_soon task, so it must never propagate."""
+    monkeypatch.setattr(client, "_collect_reply", AsyncMock(return_value="ok"))
+    channel = _comment_channel()
+    channel.reply_comment = AsyncMock(side_effect=RuntimeError("reply boom"))
+    core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
+
+    # Must not raise.
+    await _handle_comment(channel, core, None, _comment_event())
+
+
+@pytest.mark.anyio
+async def test_run_feishu_registers_comment_when_enabled(monkeypatch):
+    channel = MagicMock()
+    channel.on = MagicMock()
+    channel.start_background = AsyncMock()
+    channel.stop_background = AsyncMock()
+    channel.bot_identity = SimpleNamespace(open_id="ou_bot", name="Haitun")
+    monkeypatch.setattr(client, "FeishuChannel", lambda **kw: channel)
+    monkeypatch.setattr(client, "BlockingPortal", lambda: _FakePortal())
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(partial(run_feishu, session_socket="/tmp/x.sock", app_id="a", app_secret="s"))
+        await anyio.sleep(0.1)
+        tg.cancel_scope.cancel()
+
+    registered = {c.args[0] for c in channel.on.call_args_list}
+    assert "comment" in registered
+
+
+@pytest.mark.anyio
+async def test_run_feishu_skips_comment_when_disabled(monkeypatch):
+    channel = MagicMock()
+    channel.on = MagicMock()
+    channel.start_background = AsyncMock()
+    channel.stop_background = AsyncMock()
+    channel.bot_identity = SimpleNamespace(open_id="ou_bot", name="Haitun")
+    monkeypatch.setattr(client, "FeishuChannel", lambda **kw: channel)
+    monkeypatch.setattr(client, "BlockingPortal", lambda: _FakePortal())
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(
+            partial(
+                run_feishu,
+                session_socket="/tmp/x.sock",
+                app_id="a",
+                app_secret="s",
+                respond_to_comments=False,
+            )
+        )
+        await anyio.sleep(0.1)
+        tg.cancel_scope.cancel()
+
+    registered = {c.args[0] for c in channel.on.call_args_list}
+    assert "comment" not in registered
+    # message/reject 仍然注册
+    assert "message" in registered

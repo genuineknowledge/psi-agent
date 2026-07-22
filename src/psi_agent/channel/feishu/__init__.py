@@ -37,6 +37,9 @@ class ChannelFeishu:
     respond_to_mention_all: bool = False
     """Whether to treat @all as a valid mention (default False, so @all does not trigger the bot)."""
 
+    respond_to_comments: bool = True
+    """Doc comments: reply when the bot is @-mentioned in a comment. False disables comment subscription."""
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -58,4 +61,5 @@ class ChannelFeishu:
             allowed_user_ids=self.allowed_user_ids,
             require_mention=self.require_mention,
             respond_to_mention_all=self.respond_to_mention_all,
+            respond_to_comments=self.respond_to_comments,
         )
