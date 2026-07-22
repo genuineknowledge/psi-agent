@@ -20,24 +20,27 @@ def _copy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [dict(message) for message in messages if isinstance(message, dict)]
 
 
-def _descriptions(upstream: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> str:
-    return "\n".join(f"- {description}" for _, description in merge_upstream_descriptions(upstream))
+def _socket_catalog(upstream: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> str:
+    return "\n".join(
+        f'- socket "{socket}": {description}' for socket, description in merge_upstream_descriptions(upstream)
+    )
 
 
 def build_planning_messages(
     *, messages: list[dict[str, Any]], upstream: list[tuple[str, str]] | tuple[tuple[str, str], ...]
 ) -> list[dict[str, Any]]:
-    """Ask the planning model for exactly three description-selected subtasks."""
+    """Ask the planning model for exactly three socket-selected subtasks."""
 
     result = _copy_messages(messages)
     result.append(
         {
             "role": "user",
             "content": (
-                "Plan this request as exactly three complementary subtasks. Available backend capabilities are:\n"
-                f"{_descriptions(upstream)}\n\n"
-                "Return JSON only: an array of exactly three objects, each with string keys "
-                '"subtask" and "description". The description must exactly match one available capability.'
+                "Plan this request as exactly three complementary subtasks. Configured backend sockets and capabilities are:\n"
+                f"{_socket_catalog(upstream)}\n\n"
+                "Return JSON only in this exact shape: "
+                '{"tasks":[{"subtask":"...","socket":"..."},{"subtask":"...","socket":"..."},'
+                '{"subtask":"...","socket":"..."}]}. Each socket must exactly match one configured socket.'
             ),
         }
     )
@@ -58,9 +61,10 @@ def build_repair_messages(
             "role": "user",
             "content": (
                 "Your prior routing plan was invalid:\n"
-                f"{invalid_plan}\n\nAvailable backend capabilities are:\n{_descriptions(upstream)}\n\n"
-                "Repair it. Return JSON only: an array of exactly three objects, each with string keys "
-                '"subtask" and "description". The description must exactly match one available capability.'
+                f"{invalid_plan}\n\nConfigured backend sockets and capabilities are:\n{_socket_catalog(upstream)}\n\n"
+                "Repair it. Return JSON only in this exact shape: "
+                '{"tasks":[{"subtask":"...","socket":"..."},{"subtask":"...","socket":"..."},'
+                '{"subtask":"...","socket":"..."}]}. Each socket must exactly match one configured socket.'
             ),
         }
     )

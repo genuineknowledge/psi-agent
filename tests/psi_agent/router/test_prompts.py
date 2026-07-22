@@ -17,7 +17,7 @@ def test_merge_upstream_descriptions_combines_duplicate_socket_entries() -> None
     assert descriptions == [("sock-a", "research; writing"), ("sock-b", "coding")]
 
 
-def test_planning_prompt_exposes_descriptions_without_socket_addresses() -> None:
+def test_planning_prompt_exposes_configured_socket_description_catalog_and_strict_schema() -> None:
     messages = build_planning_messages(
         messages=[{"role": "user", "content": "Investigate the incident"}],
         upstream=[("sock-a", "research"), ("sock-a", "writing")],
@@ -26,11 +26,14 @@ def test_planning_prompt_exposes_descriptions_without_socket_addresses() -> None
     assert messages[:-1] == [{"role": "user", "content": "Investigate the incident"}]
     assert "research" in messages[-1]["content"]
     assert "writing" in messages[-1]["content"]
-    assert "sock-a" not in messages[-1]["content"]
+    assert "sock-a" in messages[-1]["content"]
+    assert '"tasks"' in messages[-1]["content"]
+    assert '"socket"' in messages[-1]["content"]
+    assert '"description"' not in messages[-1]["content"]
     assert "exactly three" in messages[-1]["content"].lower()
 
 
-def test_repair_prompt_includes_invalid_answer_and_socket_descriptions_only() -> None:
+def test_repair_prompt_includes_invalid_answer_and_configured_socket_schema() -> None:
     messages = build_repair_messages(
         original_messages=[{"role": "user", "content": "Investigate"}],
         invalid_plan="not JSON",
@@ -40,7 +43,10 @@ def test_repair_prompt_includes_invalid_answer_and_socket_descriptions_only() ->
     content = messages[-1]["content"]
     assert "not JSON" in content
     assert "research" in content
-    assert "sock-a" not in content
+    assert "sock-a" in content
+    assert '"tasks"' in content
+    assert '"socket"' in content
+    assert '"description"' not in content
     assert "JSON" in content
 
 
