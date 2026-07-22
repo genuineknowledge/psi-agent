@@ -99,6 +99,33 @@ def _build_command(npx: str, port: int) -> list[str]:
     return cmd
 
 
+def _build_env() -> dict[str, str]:
+    """Child env for the MCP server, with the browser-reaping heartbeat disabled.
+
+    Playwright MCP runs a server-side heartbeat: each HTTP session pings its client
+    every 3s and, on a ~5s ping timeout, calls ``server.close()`` -> disposes the
+    session -> decrements the shared client count. When the count hits zero the server
+    **closes the whole browser** (verified against playwright-core's browserFactory:
+    ``disposed`` -> ``close browser``).
+
+    Our :mod:`_mcp` bridge opens a *fresh* HTTP connection per tool call and drops it
+    right after, so between calls — and after a task finishes — there is no connected
+    client. The heartbeat then reaps the last session within ~5-15s and tears the
+    browser down, even though nobody called ``browser_close``. The user sees a page
+    they were mid-way through (e.g. a login/QR screen) vanish on its own.
+
+    Setting ``PLAYWRIGHT_MCP_PING_TIMEOUT_MS=0`` disables the heartbeat entirely
+    (``if (timeout <= 0) return`` in startHeartbeat), so an idle browser is kept open
+    until we explicitly tear the server down at interpreter exit (:func:`_shutdown`).
+    Verified with a connect-per-call probe: with the heartbeat on the page became
+    ``about:blank`` after ~15s idle; with it off the page survived 15/30/45s idles.
+    Overridable via the same env var if a deployment needs the old reaping behaviour.
+    """
+    env = dict(os.environ)
+    env.setdefault("PLAYWRIGHT_MCP_PING_TIMEOUT_MS", "0")
+    return env
+
+
 def _wait_until_listening(proc: subprocess.Popen[str], port: int) -> str:
     """Block until the server prints its listening banner; return the endpoint URL.
 
@@ -164,6 +191,7 @@ def ensure_server() -> str:
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
+                env=_build_env(),
                 cwd=os.environ.get("WORKSPACE_DIR") or None,
                 creationflags=creationflags,
                 start_new_session=start_new_session,
