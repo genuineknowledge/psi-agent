@@ -23,6 +23,15 @@ from psi_agent.channel.feishu.client import (
 )
 
 
+def _resolver(core: ChannelCore):
+    """把固定 core 包成 resolve_core(open_id) 回调 (handler 现按 open_id 解析 core)。"""
+
+    async def _resolve(open_id: str | None) -> ChannelCore:
+        return core
+
+    return _resolve
+
+
 def test_channel_feishu_defaults():
     cf = ChannelFeishu(session_socket="/tmp/feishu.sock")
     assert cf.session_socket == "/tmp/feishu.sock"
@@ -124,7 +133,7 @@ async def test_handle_success_removes_typing_no_crossmark(monkeypatch, tmp_path)
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
     ctx = SimpleNamespace(sender_id="ou_1", chat_id="oc_1", message_id="om_1")
 
-    await _handle_and_stream(channel, core, None, ctx)
+    await _handle_and_stream(channel, _resolver(core), None, ctx)
 
     acreate = channel.client.im.v1.message_reaction.acreate
     adelete = channel.client.im.v1.message_reaction.adelete
@@ -144,7 +153,7 @@ async def test_handle_failure_replaces_with_crossmark(monkeypatch, tmp_path):
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
     ctx = SimpleNamespace(sender_id="ou_1", chat_id="oc_1", message_id="om_1")
 
-    await _handle_and_stream(channel, core, None, ctx)
+    await _handle_and_stream(channel, _resolver(core), None, ctx)
 
     acreate = channel.client.im.v1.message_reaction.acreate
     adelete = channel.client.im.v1.message_reaction.adelete
@@ -166,7 +175,7 @@ async def test_handle_swallows_error_when_notification_also_fails(monkeypatch, t
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
     ctx = SimpleNamespace(sender_id="ou_1", chat_id="oc_1", message_id="om_1")
 
-    await _handle_and_stream(channel, core, None, ctx)
+    await _handle_and_stream(channel, _resolver(core), None, ctx)
 
     acreate = channel.client.im.v1.message_reaction.acreate
     emojis = [c.args[0].request_body.reaction_type.emoji_type for c in acreate.call_args_list]
@@ -458,7 +467,7 @@ async def test_handle_comment_replies_with_agent_answer(monkeypatch, tmp_path):
     channel = _comment_channel()
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _resolver(core), None, _comment_event())
 
     channel.resolve_comment_target.assert_awaited_once()
     channel.get_comment_context.assert_awaited_once()
@@ -480,7 +489,7 @@ async def test_handle_comment_never_overwrites_user_reply(monkeypatch, tmp_path)
     assert channel.get_comment_context.return_value.is_whole is False
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _resolver(core), None, _comment_event())
 
     replied_ctx = channel.reply_comment.call_args.args[0]
     assert replied_ctx.is_whole is True
@@ -491,7 +500,7 @@ async def test_handle_comment_skips_when_not_mentioned(tmp_path):
     channel = _comment_channel()
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event(mentioned_bot=False))
+    await _handle_comment(channel, _resolver(core), None, _comment_event(mentioned_bot=False))
 
     channel.resolve_comment_target.assert_not_awaited()
     channel.reply_comment.assert_not_awaited()
@@ -502,7 +511,7 @@ async def test_handle_comment_respects_whitelist(tmp_path):
     channel = _comment_channel()
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, ["ou_allowed"], _comment_event(operator_open_id="ou_blocked"))
+    await _handle_comment(channel, _resolver(core), ["ou_allowed"], _comment_event(operator_open_id="ou_blocked"))
 
     channel.resolve_comment_target.assert_not_awaited()
     channel.reply_comment.assert_not_awaited()
@@ -514,7 +523,7 @@ async def test_handle_comment_skips_unsupported_target(monkeypatch, tmp_path):
     channel = _comment_channel(supported=False)
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _resolver(core), None, _comment_event())
 
     channel.get_comment_context.assert_not_awaited()
     channel.reply_comment.assert_not_awaited()
@@ -526,7 +535,7 @@ async def test_handle_comment_replies_error_on_agent_failure(monkeypatch, tmp_pa
     channel = _comment_channel()
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _resolver(core), None, _comment_event())
 
     channel.reply_comment.assert_awaited_once()
     assert "agent boom" in channel.reply_comment.call_args.args[1]
@@ -541,7 +550,7 @@ async def test_handle_comment_swallows_reply_error(monkeypatch, tmp_path):
     core = ChannelCore(session_socket=str(tmp_path / "x.sock"))
 
     # Must not raise.
-    await _handle_comment(channel, core, None, _comment_event())
+    await _handle_comment(channel, _resolver(core), None, _comment_event())
 
 
 @pytest.mark.anyio
@@ -590,3 +599,67 @@ async def test_run_feishu_skips_comment_when_disabled(monkeypatch):
     assert "comment" not in registered
     # message/reject 仍然注册
     assert "message" in registered
+
+
+class _FakeResp:
+    def __init__(self, status: int, payload: dict | None = None, text: str = "") -> None:
+        self.status = status
+        self._payload = payload or {}
+        self._text = text
+
+    async def __aenter__(self) -> _FakeResp:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def json(self) -> dict:
+        return self._payload
+
+    async def text(self) -> str:
+        return self._text
+
+
+class _FakeHttp:
+    """记录 POST 调用次数, 按序返回预置响应。"""
+
+    def __init__(self, responses: list[_FakeResp]) -> None:
+        self._responses = responses
+        self.post_calls: list[dict] = []
+
+    def post(self, url: str, json: dict, timeout: object) -> _FakeResp:
+        self.post_calls.append({"url": url, "json": json})
+        return self._responses.pop(0)
+
+
+@pytest.mark.anyio
+async def test_gateway_route_provider_caches_socket() -> None:
+    http = _FakeHttp([_FakeResp(201, {"channel_socket": "/tmp/feishu-ou_1.sock"})])
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000/", http)  # type: ignore[arg-type]
+
+    socket1 = await provider.ensure("ou_1")
+    assert socket1 == "/tmp/feishu-ou_1.sock"
+    # 二次命中缓存, 不再打 Gateway。
+    socket2 = await provider.ensure("ou_1")
+    assert socket2 == socket1
+    assert len(http.post_calls) == 1
+    assert http.post_calls[0]["url"] == "http://127.0.0.1:9000/feishu/route"
+    assert http.post_calls[0]["json"] == {"open_id": "ou_1"}
+
+
+@pytest.mark.anyio
+async def test_gateway_route_provider_raises_on_failure_and_does_not_cache() -> None:
+    http = _FakeHttp(
+        [
+            _FakeResp(500, text="boom"),
+            _FakeResp(201, {"channel_socket": "/tmp/ok.sock"}),
+        ]
+    )
+    provider = client._GatewayRouteProvider("http://127.0.0.1:9000", http)  # type: ignore[arg-type]
+
+    with pytest.raises(RuntimeError, match="feishu/route failed"):
+        await provider.ensure("ou_1")
+    # 失败不写缓存, 下条消息重试成功。
+    socket = await provider.ensure("ou_1")
+    assert socket == "/tmp/ok.sock"
+    assert len(http.post_calls) == 2

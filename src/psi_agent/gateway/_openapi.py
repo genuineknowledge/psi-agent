@@ -179,6 +179,44 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/feishu/route": {
+            "post": {
+                "summary": "Route a Feishu open_id to its dedicated Session (spawn on first use)",
+                "operationId": "feishuRoute",
+                "requestBody": {
+                    "required": True,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FeishuRouteRequest"}}},
+                },
+                "responses": {
+                    "201": {
+                        "description": "Routed",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FeishuRoute"}}},
+                    },
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/feishu/routes": {
+            "get": {
+                "summary": "List all Feishu open_id -> Session routes",
+                "operationId": "listFeishuRoutes",
+                "responses": {
+                    "200": {
+                        "description": "List of routes",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {"$ref": "#/components/schemas/FeishuRouteEntry"},
+                                }
+                            }
+                        },
+                    },
+                },
+            },
+        },
         "/sessions/{session_id}/history": {
             "get": {
                 "summary": "Get session conversation history",
@@ -372,6 +410,36 @@ OPENAPI_SPEC = {
                     "ai_id": {"type": "string"},
                     "workspace": {"type": "string"},
                     "channel_socket": {"type": "string"},
+                },
+            },
+            "FeishuRouteRequest": {
+                "type": "object",
+                "required": ["open_id"],
+                "properties": {
+                    "open_id": {"type": "string"},
+                    "ai_id": {
+                        "type": "string",
+                        "description": "Optional, overrides Gateway --feishu-ai-id",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": "Optional, defaults to <feishu_workspace_root>/<open_id>",
+                    },
+                },
+            },
+            "FeishuRoute": {
+                "type": "object",
+                "properties": {
+                    "open_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "channel_socket": {"type": "string"},
+                },
+            },
+            "FeishuRouteEntry": {
+                "type": "object",
+                "properties": {
+                    "open_id": {"type": "string"},
+                    "session_id": {"type": "string"},
                 },
             },
             "DeleteResponse": {
