@@ -3,9 +3,20 @@ import type { LucideIcon } from "lucide-react";
 export type TaskStatus = "working" | "attention" | "completed" | "continuous";
 export type DeliveryState = "none" | "generating" | "ready" | "saved";
 
+/** Upper-level card lifecycle — see ``taskProgress.resolveTaskProgress``. */
+export type TaskPhase = "advance" | "deliver" | "done";
+
 export type TaskStep = {
   label: string;
   state: "done" | "working" | "waiting";
+  /** Secondary text (e.g. current todo content under ``2/5``). */
+  detail?: string;
+};
+
+export type TaskTodoItem = {
+  id: string;
+  content: string;
+  status: string;
 };
 
 export type Task = {
@@ -20,9 +31,20 @@ export type Task = {
   eta: string;
   updated: string;
   accent: string;
+  /** All deliverables generated in this session (survives refresh via history ``sends``). */
   deliverables: string[];
+  /** Unacknowledged new deliverables (chest gold); cleared when saved to 成果库. */
+  newDeliverables: string[];
+  /** Basename → absolute/relative path from ``[SEND:]`` (for reload preview). */
+  deliverablePaths: Record<string, string>;
   deliveryState: DeliveryState;
   steps: TaskStep[];
+  /** Layer-1 phase from ``applyTaskProgress`` (advance / deliver / done). */
+  phase?: TaskPhase;
+  /** True after a successful agent turn (or history rehydrate with a reply). */
+  turnSettled?: boolean;
+  /** Last fetched workspace todos — feed for phase resolver. */
+  todoItems?: TaskTodoItem[];
 };
 
 export type ChatFile = {
@@ -51,16 +73,6 @@ export type ChatMessage = {
 
 export type SidebarPanel = "pending" | "deliveries" | "history" | null;
 export type MainView = "workspace" | "new-task" | "templates";
-
-export type InboxItem = {
-  id: string;
-  taskId: string;
-  title: string;
-  detail: string;
-  kind: "attention" | "delivery" | "update";
-  time: string;
-  unread: boolean;
-};
 
 export type TaskTemplate = {
   id: string;

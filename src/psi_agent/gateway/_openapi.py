@@ -197,6 +197,24 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/sessions/{session_id}/todos": {
+            "get": {
+                "summary": "Get session todo list (workspace .psi/todos)",
+                "operationId": "getTodos",
+                "parameters": [
+                    {
+                        "name": "session_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
+                ],
+                "responses": {
+                    "200": {"description": ("Object with todos[] ({id, content, status}) and summary counts")},
+                    "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
         "/titles": {
             "get": {
                 "summary": "List all session titles",

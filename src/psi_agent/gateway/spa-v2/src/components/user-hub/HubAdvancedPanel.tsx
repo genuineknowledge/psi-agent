@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createAi, listAis, type AiInfo } from '../../services/api'
+import { purgePlaceholderAis, writeStoredAiId } from '../../services/bootstrapAi'
 import { PROVIDERS } from '../../services/providers'
 import HubDialog from './HubDialog'
 
 type Props = {
   show: boolean
   onClose: () => void
+  onBackToModels?: () => void
   onSelectAi: (id: string) => void
   onToast?: (message: string) => void
   onAisChanged?: (ais: AiInfo[]) => void
@@ -15,6 +17,7 @@ type Props = {
 export default function HubAdvancedPanel({
   show,
   onClose,
+  onBackToModels,
   onSelectAi,
   onToast,
   onAisChanged,
@@ -50,6 +53,7 @@ export default function HubAdvancedPanel({
     if (!apiKey.trim() || !model.trim() || !baseUrl.trim() || connecting) return
     setConnecting(true)
     try {
+      await purgePlaceholderAis()
       const info = await createAi({
         provider,
         model: model.trim(),
@@ -59,6 +63,7 @@ export default function HubAdvancedPanel({
       const list = await listAis()
       onAisChanged?.(list)
       onSelectAi(info.id)
+      writeStoredAiId(info.id)
       onToast?.('大模型已连接')
       onClose()
     } catch (e) {
@@ -76,15 +81,30 @@ export default function HubAdvancedPanel({
     onClose()
   }
 
+  const backToModels = () => {
+    if (onBackToModels) {
+      onBackToModels()
+      return
+    }
+    handleClose()
+  }
+
   return (
     <HubDialog
       show={show}
-      title="链接大模型"
+      title={(
+        <div className="hub-models-title">
+          <span>链接大模型</span>
+          <button type="button" className="hub-link" onClick={backToModels}>
+            返回模型池
+          </button>
+        </div>
+      )}
       width={480}
       onClose={handleClose}
       actions={(
         <>
-          <button type="button" className="hub-btn ghost" onClick={handleClose}>取消</button>
+          <button type="button" className="hub-btn ghost" onClick={backToModels}>返回模型池</button>
           <button
             type="button"
             className="hub-btn primary"

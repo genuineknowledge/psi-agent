@@ -17,6 +17,7 @@ jobs:
         --name psi-agent
         --distpath pyinstaller-dist
         --add-data src/psi_agent/gateway/spa/dist:psi_agent/gateway/spa/dist
+        --add-data src/psi_agent/gateway/spa-v2/dist:psi_agent/gateway/spa-v2/dist
         --collect-submodules any_llm
         --collect-submodules mcp
         --collect-submodules serper_mcp_server
@@ -47,6 +48,10 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - run: npm run build
         working-directory: src/psi_agent/gateway/spa
+      - run: npm ci
+        working-directory: src/psi_agent/gateway/spa-v2
+      - run: npm run build
+        working-directory: src/psi_agent/gateway/spa-v2
       - shell: bash
         run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS src/psi_agent/cli.py
       - uses: actions/upload-artifact@v7

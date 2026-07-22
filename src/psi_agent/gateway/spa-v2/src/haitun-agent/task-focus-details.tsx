@@ -10,7 +10,7 @@ import {
   Sparkles,
   Zap,
 } from "lucide-react";
-import type { FocusHistoryItem, InboxItem, Task } from "./model";
+import type { FocusHistoryItem, Task } from "./model";
 import { ProgressRing, TreasureVisual } from "./primitives";
 
 function FocusHistoryIcon({ item, task }: { item: FocusHistoryItem; task: Task | null }) {
@@ -36,16 +36,26 @@ function deliveryFileDescription(fileName: string) {
 export function TaskFocusDetails({
   task,
   tasks,
-  inboxItems,
   onOpenArtifact,
 }: {
   task: Task | null;
   tasks: Task[];
-  inboxItems: InboxItem[];
-  onOpenArtifact: (task: Task) => void;
+  onOpenArtifact: (task: Task, fileName?: string) => void;
 }) {
-  const activeStep = task?.steps.find((step) => step.state === "working")?.label ?? (task?.status === "completed" ? "全部执行步骤已完成" : "等待下一步");
-  const taskNotices = task ? inboxItems.filter((item) => item.taskId === task.id) : inboxItems;
+  const workingStep = task?.steps.find((step) => step.state === "working");
+  const activeStep = task?.phase === "done"
+    ? "全部执行步骤已完成"
+    : task?.phase === "deliver"
+      ? "产出与确认"
+      : task?.phase === "advance"
+        ? (workingStep?.detail?.trim()
+          ? `${workingStep.label} · ${workingStep.detail.trim()}`
+          : (workingStep?.label || "推进中"))
+        : workingStep
+          ? (workingStep.detail?.trim()
+            ? `${workingStep.label} · ${workingStep.detail.trim()}`
+            : workingStep.label)
+          : (task?.status === "completed" ? "全部执行步骤已完成" : "等待下一步");
   const historyItems: FocusHistoryItem[] = [
     ...(task ? [{
       id: `status-${task.id}`,
@@ -53,38 +63,32 @@ export function TaskFocusDetails({
       title: `${task.statusLabel} · ${task.progress}%`,
       detail: task.summary,
       time: task.updated,
-    }] : tasks.slice(0, Math.max(0, 3 - taskNotices.length)).map((item) => ({
+    }] : tasks.slice(0, 3).map((item) => ({
       id: `status-${item.id}`,
       kind: "status" as const,
       title: `${item.shortTitle} · ${item.statusLabel}`,
       detail: item.summary,
       time: item.updated,
     }))),
-    ...taskNotices.map((item) => ({
-      id: `notice-${item.id}`,
-      kind: item.kind,
-      title: item.title,
-      detail: item.detail,
-      time: item.time,
-    })),
   ].slice(0, 8);
 
   const finiteTasks = tasks.filter((item) => item.status !== "continuous");
   const overall = Math.round(finiteTasks.reduce((sum, item) => sum + item.progress, 0) / Math.max(finiteTasks.length, 1));
+  // Historical = all session deliverables (not only "new"/ready).
   const historicalDeliveryTasks = task
     ? (task.deliverables.length ? [task] : [])
-    : tasks.filter((item) => ["ready", "saved"].includes(item.deliveryState) && item.deliverables.length);
+    : tasks.filter((item) => item.deliverables.length);
   const generatingTasks = task
     ? []
-    : tasks.filter((item) => item.deliveryState === "generating" && item.deliverables.length);
+    : tasks.filter((item) => item.deliveryState === "generating");
   const historicalFileCount = historicalDeliveryTasks.reduce((sum, item) => sum + item.deliverables.length, 0);
   const emptyDeliveryCopy = !task
-    ? "还没有历史交付物，任务产出文件后会集中显示在这里。"
+    ? "还没有历史交付物；Agent 通过 [SEND:] 交付文件后，会按会话累计显示在这里。"
     : task.status === "completed"
-      ? "该任务已完成，无文件交付物。完成结果已记录在任务历史中。"
+      ? "该任务会话尚无文件交付物。完成结果已记录在任务历史中。"
       : task.status === "continuous"
-        ? "本轮暂无交付物，达到推送阈值后会生成并保留在这里。"
-        : "尚未形成阶段交付物；生成后会直接出现在当前页面。";
+        ? "本会话暂无交付物，Agent 交付文件后会保留在这里。"
+        : "本会话尚未形成交付物；生成后会累计出现在这里（刷新后仍保留列表）。";
 
   return (
     <div className="focus-detail-panel">
@@ -105,11 +109,17 @@ export function TaskFocusDetails({
       <section className="focus-execution-path" aria-label={task ? "任务执行路径" : "任务状态列表"}>
         <header><span><Zap size={13} />{task ? "执行路径" : "任务运行状态"}</span><em>新要求会追加到当前上下文，不覆盖既有结果</em></header>
         <div>
-          {(task ? task.steps : tasks.slice(0, 4).map((item) => ({ label: item.shortTitle, state: item.status === "completed" ? "done" as const : item.status === "attention" ? "waiting" as const : "working" as const }))).map((step) => (
-            <span className={step.state} key={step.label}>
+          {(task ? task.steps : tasks.slice(0, 4).map((item) => ({ label: item.shortTitle, state: item.status === "completed" ? "done" as const : item.status === "attention" ? "waiting" as const : "working" as const, detail: undefined as string | undefined }))).map((step, index) => (
+            <span className={step.state} key={`${index}-${step.label}`}>
               <i>{step.state === "done" ? <Check size={10} /> : null}</i>
               <strong>{step.label}</strong>
-              <em>{step.state === "done" ? "已完成" : step.state === "working" ? "进行中" : "待推进"}</em>
+              <em>
+                {step.state === "done"
+                  ? "已完成"
+                  : step.state === "working"
+                    ? (step.detail?.trim() || "进行中")
+                    : "待推进"}
+              </em>
             </span>
           ))}
         </div>
@@ -136,20 +146,27 @@ export function TaskFocusDetails({
           {historicalDeliveryTasks.length ? (
             <div className="focus-delivery-groups">
               {historicalDeliveryTasks.map((owner) => {
-                const openable = ["ready", "saved"].includes(owner.deliveryState);
+                const hasNew = owner.newDeliverables.length > 0;
                 const stateCopy = owner.deliveryState === "saved"
-                  ? "已保存到成果库"
-                  : owner.deliveryState === "ready"
-                    ? owner.status === "completed" ? "可查看 · 任务已完成" : "阶段交付 · 任务仍在继续"
-                    : "预计交付 · 正在生成";
+                  ? "历史交付 · 已保存过成果库"
+                  : hasNew
+                    ? "含未确认的新交付物"
+                    : owner.deliverables.length
+                      ? "本会话历史交付物"
+                      : "预计交付 · 正在生成";
                 return (
                   <div className="focus-delivery-group" key={owner.id}>
                     {!task && <span className="focus-delivery-owner">{owner.shortTitle}</span>}
                     {owner.deliverables.map((file) => (
-                      <button type="button" key={file} disabled={!openable} onClick={() => openable && onOpenArtifact(owner)} aria-label={`${openable ? "查看" : "等待生成"}${file}`}>
+                      <button
+                        type="button"
+                        key={file}
+                        onClick={() => onOpenArtifact(owner, file)}
+                        aria-label={`查看历史交付物 ${file}`}
+                      >
                         <span className="focus-file-preview" aria-hidden="true"><FileText size={15} /><i /><i /><i /></span>
                         <span className="focus-file-copy"><strong>{file}</strong><em>{stateCopy} · {owner.updated}</em><small>{deliveryFileDescription(file)}</small></span>
-                        {openable ? <ChevronRight size={15} /> : <TreasureVisual state={owner.deliveryState} size="mini" />}
+                        <ChevronRight size={15} />
                       </button>
                     ))}
                   </div>

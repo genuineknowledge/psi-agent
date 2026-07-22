@@ -26,6 +26,8 @@ async def test_history_filters_roles_kind_and_markers(tmp_path: str) -> None:
             '{"role": "assistant", "content": "HEARTBEAT_OK", "kind": "schedule.silent"}',
             '{"role": "assistant", "content": "\u65e5\u62a5", "kind": "schedule.display"}',
             '{"role": "user", "content": "\u770b\u56fe\\n[RECV:/tmp/a.png]", "kind": "chat"}',
+            '{"role": "assistant", "content": "\u597d\\n[SEND:/ws/out.md]", "kind": "chat"}',
+            '{"role": "assistant", "content": "[SEND:/ws/only.html]", "kind": "chat"}',
             '{"role": "tool", "content": "ignored"}',
             "not json",
             '{"role": "assistant", "content": ["multimodal"]}',
@@ -43,6 +45,7 @@ async def test_history_filters_roles_kind_and_markers(tmp_path: str) -> None:
         {"role": "assistant", "text": "\u4f60\u597d"},
         {"role": "assistant", "text": "\u65e5\u62a5", "kind": "schedule.display"},
         {"role": "user", "text": "\u770b\u56fe"},
+        {"role": "assistant", "text": "\u597d", "sends": ["/ws/out.md", "/ws/only.html"]},
     ]
 
 

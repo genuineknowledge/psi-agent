@@ -16,6 +16,7 @@ Gateway 进程
 ├── WorkspaceManager   — 目录浏览
 ├── ChatManager        — SSE 流式对话管理
 ├── HistoryManager     — JSONL 历史读取
+├── TodoManager        — 会话 todo 列表只读（workspace `.psi/todos/`）
 ├── GatewayState       — 状态持久化到 state/latest.json
 ├── aiohttp REST Server  — OpenAPI CRUD + Web UI chat
 ├── spa/               — Vue 3 SPA 前端项目 (Vite + SFC)
@@ -38,6 +39,7 @@ Gateway 进程
 | `server.py` | aiohttp Application + REST handlers |
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
 | `_history_manager.py` | JSONL 历史读取 |
+| `_todo_manager.py` | 会话 todo 列表读取（workspace ``.psi/todos/{session_id}.json``，由 workspace ``todo`` tool 写入） |
 | `_workspace_manager.py` | 目录浏览 + 快捷路径列表 + cwd 查询 |
 | `spa/` | Vue 3 SPA v1（对话气泡），构建输出 `spa/dist/`；路径 `/spa/` |
 | `spa-v2/` | React SPA v2（任务工作台 + 宝箱），构建输出 `spa-v2/dist/`；**默认** `GET /` → `/spa-v2/`（无 dist 时回退 v1） |
@@ -173,6 +175,15 @@ REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
 - 删除 workspace 下 ``histories/{id}.jsonl``（``HistoryManager.delete``，文件不存在则忽略）
 - 清除 ``TitleManager`` 中该会话标题
 
+## TodoManager
+
+只读：从 session workspace 读取 Agent ``todo`` tool 写入的清单。
+
+- 路径：``{workspace}/.psi/todos/{session_id}.json``
+- ``get(workspace, session_id)`` → ``{todos: [{id, content, status}], summary: {total, pending, in_progress, completed, cancelled}}``
+- 文件缺失 / JSON 损坏 → 空列表（不 404；路由层仅在 session 不存在时 404）
+- spa-v2 任务卡中间步据此显示 ``N/M``（当前步/总数）
+
 **注意（有意为之）**：删除 AI **不会**级联删除依赖它的 Session。被删 AI 的 socket 失效后，挂在其上的 Session 仍存活但不可用——由前端负责不再访问这类失效 Session，后端不做级联清理。
 
 ## TitleManager
@@ -198,14 +209,16 @@ REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
 | DELETE | `/sessions/{session_id}` | 删除 Session + history JSONL + 标题（200/404） |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI chat（SSE） |
-| GET | `/sessions/{session_id}/history` | 获取会话历史（``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`） |
+| GET | `/sessions/{session_id}/history` | 获取会话历史（``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`；assistant 行另附 ``sends`` 路径列表供交付物重水合） |
+| GET | `/sessions/{session_id}/todos` | 读取 workspace ``.psi/todos/{session_id}.json``（``todo`` tool 写入）；返回 ``{todos, summary}``，文件缺失则为空列表 |
+| GET | `/workspace/cwd` | Gateway 进程当前工作目录 |
+| GET | `/workspace/places` | PathPicker 快捷位置（cwd / home / desktop / documents / downloads）+ 盘符 |
+| GET | `/workspace/browse` | 浏览目录 `?path=...&kind=directory|file|all&q=...`，默认 `kind=directory` |
+| GET | `/workspace/file` | 读取文件为 base64（`?path=...&root=...`）；``root`` 非空时路径须落在该目录下 |
 | GET | `/titles` | 获取所有 session 标题 |
 | POST | `/titles` | 设置 session 标题 `{id, title}` |
 | POST | `/titles/generate` | AI 自动生成标题 `{id, user_text, assistant_text}` |
 | POST | `/ui/attention` | 会话在后台完成时闪烁托盘/webview（best-effort，需 `--tray` / `--webview`） |
-| GET | `/workspace/places` | 快捷位置（cwd/home/桌面/文档/下载）与盘符列表 |
-| GET | `/workspace/browse` | 浏览目录 `?path=...&kind=directory|file|all&q=...`，默认 `kind=directory` |
-| GET | `/workspace/cwd` | 获取服务端当前工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--icon` 设置时注册，返回该图标文件） |
 
@@ -252,6 +265,8 @@ Gateway 提供两套 Web 控制台：
 | 产品 | 会话气泡 | 任务卡 + 交付物宝箱 |
 
 构建产物分别为 `spa/dist/`、`spa-v2/dist/`，由 Gateway 静态服务。**有 `spa-v2/dist` 时** `GET /` 重定向到 `/spa-v2/index.html`；否则回退 `/spa/index.html`。设计细节见各自目录下的 `AGENTS.md`。
+
+CI 打包（PyInstaller / Nuitka）会分别 `npm ci && npm run build` 两个前端，并用 `--add-data` / `--include-data-dir` 同时打进 `spa/dist` 与 `spa-v2/dist`，安装包默认打开即为 v2。
 
 ### 技术栈（v1 概要）
 

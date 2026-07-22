@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { type FormEvent, useRef, useState } from "react";
 import { NEW_TASK_PRESETS } from "./demo-fixtures";
-import { OVERVIEW_LABEL, type ChatMessage, type Task, type TaskTemplate } from "./model";
+import { OVERVIEW_LABEL, type Task, type TaskTemplate } from "./model";
 import { AgentMark, BrandLogo } from "./primitives";
 
 export function NewTaskWorkspace({
@@ -36,9 +36,7 @@ export function NewTaskWorkspace({
   onCreate: (title: string, category: string) => Task | Promise<Task>;
   onViewTask: (task: Task) => void;
 }) {
-  const [conversation, setConversation] = useState<ChatMessage[]>([]);
   const [typing, setTyping] = useState(false);
-  const [createdTask, setCreatedTask] = useState<Task | null>(null);
   const [attachmentName, setAttachmentName] = useState("");
   const attachmentRef = useRef<HTMLInputElement | null>(null);
 
@@ -47,38 +45,21 @@ export function NewTaskWorkspace({
     const clean = draft.trim();
     if (!clean || typing) return;
 
-    setConversation((current) => [...current, { role: "user", text: clean }]);
     setDraft("");
     setTyping(true);
 
     try {
-      if (!createdTask) {
-        const task = await onCreate(clean, category);
-        setCreatedTask(task);
-        setConversation((current) => [
-          ...current,
-          { role: "agent", text: "任务已创建，Agent 正在处理。您可以继续补充，或打开任务卡查看流式回复。" },
-        ]);
-      } else {
-        // Follow-ups happen on the task card (Gateway session); nudge the user there.
-        setConversation((current) => [
-          ...current,
-          { role: "agent", text: "请打开任务卡继续对话——后续消息会写入同一 Gateway Session。" },
-        ]);
-      }
-    } catch (e) {
-      const err = e instanceof Error ? e.message : String(e);
-      setConversation((current) => [
-        ...current,
-        { role: "agent", text: `创建失败：${err}` },
-      ]);
-    } finally {
+      // First message creates the Session and jumps into split focus (left context + right chat).
+      const task = await onCreate(clean, category);
+      onViewTask(task);
+    } catch {
+      setDraft(clean);
       setTyping(false);
     }
   };
 
   return (
-    <section className={`new-task-workspace ${createdTask ? "conversation-mode" : ""}`} aria-label="新建任务对话">
+    <section className="new-task-workspace" aria-label="新建任务对话">
       <div className="new-task-ambient one" />
       <div className="new-task-ambient two" />
 
@@ -90,23 +71,17 @@ export function NewTaskWorkspace({
 
         <div className="new-task-greeting">
           <span className="eyebrow">新建任务</span>
-          <h1>{createdTask ? "任务已经开始推进" : "有什么可以帮您？"}</h1>
-          <p>{createdTask ? "您可以继续补充要求，或者先去查看任务卡。" : "描述希望得到的结果、截止时间，以及手头已有的材料。"}</p>
+          <h1>有什么可以帮您？</h1>
+          <p>描述希望得到的结果、截止时间，以及手头已有的材料。发送后会进入任务分屏继续对话。</p>
         </div>
 
-        {conversation.length > 0 && (
+        {typing && (
           <div className="new-task-conversation" aria-live="polite">
-            {conversation.map((message, index) => (
-              <div className={`new-task-message ${message.role}`} key={`${message.role}-${index}`}>
-                {message.role === "agent" && <AgentMark />}
-                <p>{message.text}</p>
-              </div>
-            ))}
-            {typing && <div className="new-task-message agent"><AgentMark /><span className="typing"><i /><i /><i /></span></div>}
+            <div className="new-task-message agent"><AgentMark /><span className="typing"><i /><i /><i /></span></div>
           </div>
         )}
 
-        {!createdTask && (
+        {!typing && (
           <div className="new-task-presets">
             {NEW_TASK_PRESETS.map((preset) => {
               const Icon = preset.icon;
@@ -137,12 +112,13 @@ export function NewTaskWorkspace({
                 event.currentTarget.form?.requestSubmit();
               }
             }}
-            placeholder={createdTask ? "继续补充要求…" : "描述一个任务，Agent 会先与您确认目标…"}
+            placeholder="描述一个任务，发送后进入分屏与 Agent 对话…"
             aria-label="描述新任务"
             autoFocus
+            disabled={typing}
           />
           <div className="new-task-composer-actions">
-            <button type="button" className="composer-attachment" onClick={() => attachmentRef.current?.click()} aria-label="添加附件"><Paperclip size={18} /></button>
+            <button type="button" className="composer-attachment" onClick={() => attachmentRef.current?.click()} aria-label="添加附件" disabled={typing}><Paperclip size={18} /></button>
             <input
               ref={attachmentRef}
               type="file"
@@ -152,20 +128,14 @@ export function NewTaskWorkspace({
                 setAttachmentName(file?.name ?? "");
               }}
             />
-            <span><Zap size={13} /> {attachmentName ? `已添加：${attachmentName}` : createdTask ? "打开任务卡可继续对话与传附件" : "发送后创建 Gateway Session 并开始执行"}</span>
+            <span><Zap size={13} /> {attachmentName ? `已添加：${attachmentName}` : typing ? "正在创建任务…" : "发送后创建 Session 并进入分屏"}</span>
             <button type="submit" className="composer-send" disabled={!draft.trim() || typing} aria-label="发送任务描述"><Send size={17} /></button>
           </div>
         </form>
 
         <div className="new-task-secondary-actions">
-          {createdTask ? (
-            <button type="button" className="view-created-task" onClick={() => onViewTask(createdTask)}>
-              查看任务卡 <ArrowRight size={16} />
-            </button>
-          ) : (
-            <button type="button" onClick={onOpenTemplates}><SquareStack size={15} /> 从任务模板开始</button>
-          )}
-          <button type="button" onClick={onBack}><ArrowLeft size={15} /> 返回{OVERVIEW_LABEL}</button>
+          <button type="button" onClick={onOpenTemplates} disabled={typing}><SquareStack size={15} /> 从任务模板开始</button>
+          <button type="button" onClick={onBack} disabled={typing}><ArrowLeft size={15} /> 返回{OVERVIEW_LABEL}</button>
         </div>
       </div>
     </section>

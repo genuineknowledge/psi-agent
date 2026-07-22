@@ -19,6 +19,7 @@ from psi_agent.gateway._openapi import render_openapi
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME, inject_app_name, read_spa_index_template
 from psi_agent.gateway._title_manager import TitleManager
+from psi_agent.gateway._todo_manager import TodoManager
 from psi_agent.gateway._workspace_manager import WorkspaceManager
 
 # Browser fetch often dies during multi-minute tool silence; SSE comments keep it open.
@@ -142,6 +143,7 @@ async def create_app(
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
     app["hm"] = HistoryManager()
+    app["todom"] = TodoManager()
     app["favicon_path"] = favicon_path
     app["app_name"] = app_name
     app["attention"] = attention if attention is not None else AttentionHub()
@@ -180,7 +182,9 @@ async def create_app(
     app.router.add_get("/workspace/cwd", _get_cwd)
     app.router.add_get("/workspace/places", _list_workspace_places)
     app.router.add_get("/workspace/browse", _browse_workspace)
+    app.router.add_get("/workspace/file", _read_workspace_file)
     app.router.add_get("/sessions/{session_id}/history", _get_history)
+    app.router.add_get("/sessions/{session_id}/todos", _get_todos)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
 
     return app
@@ -333,6 +337,22 @@ async def _browse_workspace(request: web.Request) -> web.Response:
         return _error(str(e), status=400)
 
 
+async def _read_workspace_file(request: web.Request) -> web.Response:
+    wm: WorkspaceManager = request.app["wm"]
+    path = request.query.get("path") or ""
+    root = request.query.get("root") or ""
+    try:
+        return _json(await wm.read_file(path, root=root))
+    except ValueError as e:
+        return _error(str(e), status=400)
+    except FileNotFoundError as e:
+        return _error(str(e), status=404)
+    except PermissionError as e:
+        return _error(str(e), status=403)
+    except (OSError, IsADirectoryError) as e:
+        return _error(str(e), status=400)
+
+
 async def _get_history(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
     hm: HistoryManager = request.app["hm"]
@@ -343,6 +363,18 @@ async def _get_history(request: web.Request) -> web.Response:
         return _error(f"Session '{session_id}' not found", status=404)
     messages = await hm.get(workspace, session_id)
     return _json(messages)
+
+
+async def _get_todos(request: web.Request) -> web.Response:
+    """Read workspace ``.psi/todos/{session_id}.json`` written by the ``todo`` tool."""
+    sm: SessionManager = request.app["sm"]
+    todom: TodoManager = request.app["todom"]
+    session_id = request.match_info["session_id"]
+    try:
+        workspace = sm.get_workspace(session_id)
+    except LookupError:
+        return _error(f"Session '{session_id}' not found", status=404)
+    return _json(await todom.get(workspace, session_id))
 
 
 async def _handle_chat(request: web.Request) -> web.StreamResponse:
