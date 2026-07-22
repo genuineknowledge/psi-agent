@@ -8,6 +8,7 @@ from contextlib import AsyncExitStack, aclosing
 from datetime import date
 from typing import Any
 
+import aiohttp
 import anyio
 import platformdirs
 from anyio.from_thread import BlockingPortal
@@ -85,6 +86,71 @@ class _CoreRegistry:
                 self._cores[socket] = core
                 logger.debug(f"created ChannelCore for socket={socket!r} (total={len(self._cores)})")
             return core
+
+
+_GATEWAY_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
+
+class _GatewaySessionProvider:
+    """给 open_id → 幂等返回其 Gateway session 的 ``channel_socket``; 面向动态任意用户。
+
+    首次见到某 open_id 时经 Gateway REST ``POST /sessions`` (``id=open_id``) 开通一个独立
+    session, 拿回 ``channel_socket`` 缓存复用; 复用现有 ``SessionManager`` 生命周期, channel
+    只连接不 spawn、退出时也不删。并发安全同 ``_CoreRegistry``: 快路径 dict 读 + 慢路径
+    ``anyio.Lock`` double-checked, 同一 open_id 的并发消息串行到一次 provision。provision
+    失败向上抛(由调用方回退共享 socket), 且**不写缓存**, 下条消息会重试 Gateway。
+    """
+
+    def __init__(self, base_url: str, ai_id: str, http: aiohttp.ClientSession) -> None:
+        self._base = base_url.rstrip("/")
+        self._ai_id = ai_id
+        self._http = http
+        self._sockets: dict[str, str] = {}  # open_id(净化后) -> channel_socket
+        self._lock = anyio.Lock()
+
+    async def ensure(self, open_id: str) -> str:
+        sid = _sanitize_open_id(open_id)
+        hit = self._sockets.get(sid)  # 快路径
+        if hit is not None:
+            return hit
+        async with self._lock:  # 慢路径: double-checked
+            hit = self._sockets.get(sid)
+            if hit is not None:
+                return hit
+            socket = await self._provision(sid)
+            self._sockets[sid] = socket
+            logger.debug(f"provisioned session for open_id={sid!r} -> socket={socket!r}")
+            return socket
+
+    async def _provision(self, sid: str) -> str:
+        """POST /sessions 创建 (幂等: 400 already-exists 时 GET 取回)。返回 channel_socket。"""
+        async with self._http.post(
+            f"{self._base}/sessions",
+            json={"ai_id": self._ai_id, "id": sid},
+            timeout=_GATEWAY_TIMEOUT,
+        ) as resp:
+            if resp.status == 201:
+                data = await resp.json()
+                return str(data["channel_socket"])
+            body = await resp.text()
+            if resp.status == 400 and "already exists" in body:
+                logger.debug(f"session {sid!r} already exists, fetching socket via GET")
+                return await self._fetch_socket(sid)
+            raise RuntimeError(f"Gateway POST /sessions failed (status={resp.status}): {body}")
+
+    async def _fetch_socket(self, sid: str) -> str:
+        """GET /sessions 按 id 取回已存在 session 的 channel_socket。
+
+        刻意用 GET 而非本地重算 socket 路径 —— Gateway 是 socket 命名的唯一权威。
+        """
+        async with self._http.get(f"{self._base}/sessions", timeout=_GATEWAY_TIMEOUT) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"Gateway GET /sessions failed (status={resp.status})")
+            sessions = await resp.json()
+        for item in sessions:
+            if item.get("id") == sid:
+                return str(item["channel_socket"])
+        raise RuntimeError(f"session {sid!r} not found in GET /sessions")
 
 
 async def _send_file(channel: Any, chat_id: str, path: str) -> None:
@@ -455,6 +521,8 @@ async def run_feishu(
     respond_to_mention_all: bool = False,
     respond_to_comments: bool = True,
     route_template: str | None = None,
+    gateway_url: str | None = None,
+    ai_id: str = "",
 ) -> None:
     policy = PolicyConfig(
         require_mention=require_mention,
@@ -463,19 +531,38 @@ async def run_feishu(
     channel = FeishuChannel(app_id=app_id, app_secret=app_secret, policy=policy)
     logger.debug(
         f"FeishuChannel created (app_id={app_id} require_mention={require_mention} "
-        f"respond_to_mention_all={respond_to_mention_all} route_template={route_template!r})"
+        f"respond_to_mention_all={respond_to_mention_all} route_template={route_template!r} "
+        f"gateway_url={gateway_url!r})"
     )
     if route_template and "{open_id}" not in route_template:
         logger.warning("route_template 不含 {open_id} 占位符, 所有用户将路由到同一 socket")
+    if gateway_url and route_template:
+        logger.warning("gateway_url 与 route_template 同时设置, 采用 gateway 模式, route_template 被忽略")
 
-    # AsyncExitStack 持有所有 per-user ChannelCore; 与 portal 的进出顺序:
-    # portal 后进先出、先于 stack 关闭, 保证在飞的 handler 仍能用到活着的 core,
+    # AsyncExitStack 持有所有 per-user ChannelCore + Gateway REST 的 http session; 与 portal 的进出
+    # 顺序: portal 后进先出、先于 stack 关闭, 保证在飞的 handler 仍能用到活着的 core / http,
     # 与旧版 "core 在 stop_background 之后才关" 的取消安全性等价。
     async with AsyncExitStack() as stack, BlockingPortal() as portal:
         registry = _CoreRegistry(interval, stack)
 
+        provider: _GatewaySessionProvider | None = None
+        if gateway_url:
+            http = await stack.enter_async_context(aiohttp.ClientSession())
+            provider = _GatewaySessionProvider(gateway_url, ai_id, http)
+
         async def resolve_core(open_id: str | None) -> ChannelCore:
-            socket = _derive_socket(open_id, route_template=route_template, fallback=session_socket)
+            socket = session_socket  # 默认兜底(open_id 为 None 也走这)
+            if provider is not None and open_id:
+                try:
+                    socket = await provider.ensure(open_id)
+                except Exception as e:  # gateway 不可达 / 创建失败 → 回退共享 socket
+                    logger.warning(
+                        f"Gateway provision failed for open_id={open_id!r}, "
+                        f"falling back to shared socket {session_socket!r} — {e!r}"
+                    )
+                    socket = session_socket
+            elif open_id:  # 无 gateway → 原 template 路径
+                socket = _derive_socket(open_id, route_template=route_template, fallback=session_socket)
             return await registry.get(socket)
 
         async def _on_message(ctx: Any) -> None:

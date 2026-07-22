@@ -21,6 +21,7 @@ from psi_agent.channel.feishu.client import (
     _comment_context_header,
     _CoreRegistry,
     _derive_socket,
+    _GatewaySessionProvider,
     _handle_and_stream,
     _handle_comment,
     _remove_reaction,
@@ -42,6 +43,8 @@ def test_channel_feishu_defaults():
     cf = ChannelFeishu(session_socket="/tmp/feishu.sock")
     assert cf.session_socket == "/tmp/feishu.sock"
     assert cf.route_template is None
+    assert cf.gateway_url is None
+    assert cf.ai_id == ""
     assert cf.app_id == ""
     assert cf.app_secret == ""
     assert cf.interval == 1.0
@@ -809,3 +812,297 @@ async def test_run_feishu_no_template_shares_single_core(monkeypatch, tmp_path):
 
     assert c1.session_socket == shared
     assert c1 is c2
+
+
+# ---- Gateway session auto-provisioning ----
+
+
+class _FakeResp:
+    """最小 aiohttp 响应替身: 支持 async with, .status, .json(), .text()。"""
+
+    def __init__(self, status: int, *, json_body: Any = None, text_body: str = "") -> None:
+        self.status = status
+        self._json = json_body
+        self._text = text_body
+
+    async def __aenter__(self) -> _FakeResp:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def json(self) -> Any:
+        return self._json
+
+    async def text(self) -> str:
+        return self._text
+
+
+class _FakeHttp:
+    """记录 POST/GET 调用的 aiohttp.ClientSession 替身。
+
+    ``post_responses`` / ``get_responses`` 是按调用次序弹出的响应队列。
+    """
+
+    def __init__(self, post_responses: list[_FakeResp], get_responses: list[_FakeResp] | None = None) -> None:
+        self._posts = list(post_responses)
+        self._gets = list(get_responses or [])
+        self.post_calls: list[dict[str, Any]] = []
+        self.get_calls: list[str] = []
+
+    def post(self, url: str, *, json: Any = None, timeout: Any = None) -> _FakeResp:
+        self.post_calls.append({"url": url, "json": json})
+        return self._posts.pop(0)
+
+    def get(self, url: str, *, timeout: Any = None) -> _FakeResp:
+        self.get_calls.append(url)
+        return self._gets.pop(0)
+
+    async def __aenter__(self) -> _FakeHttp:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+
+def _provider(http: _FakeHttp, ai_id: str = "ai-1", base: str = "http://gw") -> _GatewaySessionProvider:
+    return _GatewaySessionProvider(base, ai_id, cast("Any", http))
+
+
+def _patch_gateway_http(monkeypatch: Any, http: _FakeHttp) -> None:
+    """把 run_feishu 里的 aiohttp.ClientSession() 换成假 gateway http。
+
+    run_feishu 用无参 ``aiohttp.ClientSession()`` 建 REST 客户端, 而 ChannelCore 用
+    带 ``connector=`` 的调用建自己的 session —— 二者共用同一个 ``aiohttp.ClientSession``
+    符号。这里按是否传 ``connector`` 区分: 无 connector 返回假 gateway http, 有则委托
+    真实类, 避免污染 ChannelCore 的懒连接。
+    """
+    real = client.aiohttp.ClientSession
+
+    def _factory(*args: Any, **kwargs: Any) -> Any:
+        if "connector" in kwargs:
+            return real(*args, **kwargs)
+        return http
+
+    monkeypatch.setattr(client.aiohttp, "ClientSession", _factory)
+
+
+@pytest.mark.anyio
+async def test_provider_new_open_id_posts_and_caches():
+    http = _FakeHttp([_FakeResp(201, json_body={"id": "ou_1", "channel_socket": "/tmp/ch/ou_1.sock"})])
+    prov = _provider(http)
+    sock = await prov.ensure("ou_1")
+    assert sock == "/tmp/ch/ou_1.sock"
+    # 第二次命中缓存, 不再 POST
+    sock2 = await prov.ensure("ou_1")
+    assert sock2 == "/tmp/ch/ou_1.sock"
+    assert len(http.post_calls) == 1
+    assert http.post_calls[0]["json"] == {"ai_id": "ai-1", "id": "ou_1"}
+
+
+@pytest.mark.anyio
+async def test_provider_already_exists_fetches_via_get():
+    http = _FakeHttp(
+        post_responses=[_FakeResp(400, text_body='{"error": "Session \'ou_1\' already exists"}')],
+        get_responses=[
+            _FakeResp(
+                200,
+                json_body=[
+                    {"id": "other", "channel_socket": "/x"},
+                    {"id": "ou_1", "channel_socket": "/tmp/ch/ou_1.sock"},
+                ],
+            )
+        ],
+    )
+    prov = _provider(http)
+    sock = await prov.ensure("ou_1")
+    assert sock == "/tmp/ch/ou_1.sock"
+    assert len(http.get_calls) == 1
+
+
+@pytest.mark.anyio
+async def test_provider_bad_request_raises():
+    # 400 但非 already-exists (如 ai_id 缺失) → 抛, 由调用方回退
+    http = _FakeHttp([_FakeResp(400, text_body='{"error": "missing ai_id"}')])
+    prov = _provider(http)
+    with pytest.raises(RuntimeError, match="POST /sessions failed"):
+        await prov.ensure("ou_1")
+
+
+@pytest.mark.anyio
+async def test_provider_unknown_ai_id_raises():
+    http = _FakeHttp([_FakeResp(404, text_body='{"error": "AI not found"}')])
+    prov = _provider(http)
+    with pytest.raises(RuntimeError, match="POST /sessions failed"):
+        await prov.ensure("ou_1")
+
+
+@pytest.mark.anyio
+async def test_provider_not_found_in_get_raises():
+    http = _FakeHttp(
+        post_responses=[_FakeResp(400, text_body="already exists")],
+        get_responses=[_FakeResp(200, json_body=[{"id": "other", "channel_socket": "/x"}])],
+    )
+    prov = _provider(http)
+    with pytest.raises(RuntimeError, match="not found"):
+        await prov.ensure("ou_1")
+
+
+@pytest.mark.anyio
+async def test_provider_failure_not_cached():
+    # 首次失败不写缓存, 下条消息重试 gateway (第二次给成功响应)
+    http = _FakeHttp(
+        [
+            _FakeResp(500, text_body="boom"),
+            _FakeResp(201, json_body={"id": "ou_1", "channel_socket": "/tmp/ch/ou_1.sock"}),
+        ]
+    )
+    prov = _provider(http)
+    with pytest.raises(RuntimeError):
+        await prov.ensure("ou_1")
+    sock = await prov.ensure("ou_1")
+    assert sock == "/tmp/ch/ou_1.sock"
+    assert len(http.post_calls) == 2
+
+
+@pytest.mark.anyio
+async def test_provider_sanitizes_open_id_in_request():
+    http = _FakeHttp([_FakeResp(201, json_body={"id": "ou_x", "channel_socket": "/s"})])
+    prov = _provider(http)
+    await prov.ensure("ou/x")
+    assert http.post_calls[0]["json"]["id"] == "ou_x"
+
+
+@pytest.mark.anyio
+async def test_provider_concurrent_same_open_id_posts_once():
+    http = _FakeHttp([_FakeResp(201, json_body={"id": "ou_1", "channel_socket": "/tmp/ch/ou_1.sock"})])
+    prov = _provider(http)
+    results: list[str] = []
+
+    async def _grab() -> None:
+        results.append(await prov.ensure("ou_1"))
+
+    async with anyio.create_task_group() as tg:
+        for _ in range(5):
+            tg.start_soon(_grab)
+
+    assert len(http.post_calls) == 1
+    assert set(results) == {"/tmp/ch/ou_1.sock"}
+
+
+@pytest.mark.anyio
+async def test_run_raises_when_gateway_url_without_ai_id(monkeypatch):
+    monkeypatch.delenv("PSI_FEISHU_APP_ID", raising=False)
+    monkeypatch.delenv("PSI_FEISHU_APP_SECRET", raising=False)
+    cf = ChannelFeishu(session_socket="/tmp/feishu.sock", app_id="a", app_secret="s", gateway_url="http://gw")
+    with pytest.raises(ValueError, match="ai_id"):
+        await cf.run()
+
+
+@pytest.mark.anyio
+async def test_run_feishu_gateway_mode_provisions_per_user_socket(monkeypatch, tmp_path):
+    """gateway 模式: resolve_core 经 Gateway 为每个 open_id 拿回独立 channel_socket。"""
+    channel = MagicMock()
+    channel.start_background = AsyncMock()
+    channel.stop_background = AsyncMock()
+    channel.bot_identity = SimpleNamespace(open_id="ou_bot", name="Haitun")
+
+    captured_handler: dict[str, Callable[[Any], Awaitable[None]]] = {}
+    resolved: list[Callable[[str | None], Awaitable[ChannelCore]]] = []
+
+    def _on(event: str, cb: Callable[[Any], Awaitable[None]]) -> None:
+        if event == "message":
+            captured_handler["cb"] = cb
+
+    channel.on = MagicMock(side_effect=_on)
+
+    class _CapturePortal(_FakePortal):
+        def start_task_soon(self, *args: object, **kwargs: object) -> None:
+            resolved.append(cast("Callable[[str | None], Awaitable[ChannelCore]]", args[2]))
+
+    a = str(tmp_path / "ou_1.sock")
+    b = str(tmp_path / "ou_2.sock")
+    http = _FakeHttp(
+        [
+            _FakeResp(201, json_body={"id": "ou_1", "channel_socket": a}),
+            _FakeResp(201, json_body={"id": "ou_2", "channel_socket": b}),
+        ]
+    )
+    monkeypatch.setattr(client, "FeishuChannel", lambda **kw: channel)
+    monkeypatch.setattr(client, "BlockingPortal", lambda: _CapturePortal())
+    _patch_gateway_http(monkeypatch, http)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(
+            partial(
+                run_feishu,
+                session_socket=str(tmp_path / "shared.sock"),
+                app_id="a",
+                app_secret="s",
+                gateway_url="http://gw",
+                ai_id="ai-1",
+            )
+        )
+        await anyio.sleep(0.1)
+        resolve_core = resolved[0] if resolved else None
+        assert resolve_core is None  # 尚无消息, 未捕获 resolver
+        cb = captured_handler["cb"]
+        await cb(SimpleNamespace(sender_id="ou_1"))
+        resolve_core = resolved[0]
+        c1 = await resolve_core("ou_1")
+        c2 = await resolve_core("ou_2")
+        c1b = await resolve_core("ou_1")
+        tg.cancel_scope.cancel()
+
+    assert c1.session_socket == a
+    assert c2.session_socket == b
+    assert c1 is c1b
+    assert c1 is not c2
+
+
+@pytest.mark.anyio
+async def test_run_feishu_gateway_unreachable_falls_back_to_shared(monkeypatch, tmp_path):
+    """Gateway 创建失败时 resolve_core 回退共享 session_socket, 用户仍有回复。"""
+    channel = MagicMock()
+    channel.start_background = AsyncMock()
+    channel.stop_background = AsyncMock()
+    channel.bot_identity = SimpleNamespace(open_id="ou_bot", name="Haitun")
+
+    captured_handler: dict[str, Callable[[Any], Awaitable[None]]] = {}
+    resolved: list[Callable[[str | None], Awaitable[ChannelCore]]] = []
+
+    def _on(event: str, cb: Callable[[Any], Awaitable[None]]) -> None:
+        if event == "message":
+            captured_handler["cb"] = cb
+
+    channel.on = MagicMock(side_effect=_on)
+
+    class _CapturePortal(_FakePortal):
+        def start_task_soon(self, *args: object, **kwargs: object) -> None:
+            resolved.append(cast("Callable[[str | None], Awaitable[ChannelCore]]", args[2]))
+
+    http = _FakeHttp([_FakeResp(500, text_body="boom")])
+    monkeypatch.setattr(client, "FeishuChannel", lambda **kw: channel)
+    monkeypatch.setattr(client, "BlockingPortal", lambda: _CapturePortal())
+    _patch_gateway_http(monkeypatch, http)
+
+    shared = str(tmp_path / "shared.sock")
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(
+            partial(
+                run_feishu,
+                session_socket=shared,
+                app_id="a",
+                app_secret="s",
+                gateway_url="http://gw",
+                ai_id="ai-1",
+            )
+        )
+        await anyio.sleep(0.1)
+        cb = captured_handler["cb"]
+        await cb(SimpleNamespace(sender_id="ou_1"))
+        resolve_core = resolved[0]
+        c1 = await resolve_core("ou_1")
+        tg.cancel_scope.cancel()
+
+    assert c1.session_socket == shared
