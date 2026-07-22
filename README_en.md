@@ -366,6 +366,7 @@ uv run psi-agent channel feishu \
 - Processing status emoji: `Typing` while processing, removed on completion, `CrossMark` on failure
 - Supports text, images, files, and audio
 - Doc comment replies: `--respond-to-comments` (on by default) — when the bot is @-mentioned in a document comment, reply to that comment with the agent's answer (requires subscribing to `drive.notice.comment_add_v1` in the Feishu console)
+- Per-user isolated sessions: with `--route-template` (containing the `{open_id}` placeholder; unset by default), each Feishu user is routed to its own session socket derived from their open_id, getting an isolated conversation/history; unset means everyone shares `--session-socket`. The per-user session processes must be pre-started externally (the channel only connects, it does not spawn), and their names must line up with the derived path. Example: `--route-template "./sessions/{open_id}.sock"`
 
 ## Example Workspaces
 

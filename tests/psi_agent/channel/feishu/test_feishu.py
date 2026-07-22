@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from functools import partial
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import anyio
@@ -30,7 +32,7 @@ from psi_agent.channel.feishu.client import (
 def _const_resolver(core: ChannelCore):
     """把单个 core 包成 _handle_and_stream 期望的 async resolver。"""
 
-    async def _resolve(_open_id: str) -> ChannelCore:
+    async def _resolve(_open_id: str | None) -> ChannelCore:
         return core
 
     return _resolve
@@ -650,6 +652,14 @@ def test_derive_socket_empty_open_id_falls_back():
     )
 
 
+def test_derive_socket_none_open_id_falls_back():
+    # lark message context sender_id 是 Optional[str], None 时回退共享 socket
+    assert (
+        _derive_socket(None, route_template="/tmp/psi/session/{open_id}.sock", fallback="/tmp/shared.sock")
+        == "/tmp/shared.sock"
+    )
+
+
 def test_derive_socket_sanitizes_unsafe_open_id():
     assert (
         _derive_socket("ou/x", route_template="/tmp/psi/session/{open_id}.sock", fallback="/tmp/shared.sock")
@@ -700,7 +710,7 @@ async def test_handle_skips_resolver_for_blocked_sender():
     """白名单校验在解析 core 之前, 被拦用户绝不触发 core 创建。"""
     channel = _fake_channel()
 
-    async def _boom(_open_id: str) -> ChannelCore:
+    async def _boom(_open_id: str | None) -> ChannelCore:
         raise AssertionError("resolver must not be called for blocked sender")
 
     ctx = SimpleNamespace(sender_id="ou_bad", chat_id="oc_1", message_id="om_1")
@@ -718,18 +728,18 @@ async def test_run_feishu_routes_distinct_senders_to_distinct_cores(monkeypatch,
     channel.stop_background = AsyncMock()
     channel.bot_identity = SimpleNamespace(open_id="ou_bot", name="Haitun")
 
-    captured_handler: dict[str, object] = {}
-    resolved: list[ChannelCore] = []
+    captured_handler: dict[str, Callable[[Any], Awaitable[None]]] = {}
+    resolved: list[Callable[[str | None], Awaitable[ChannelCore]]] = []
 
-    def _on(event: str, cb: object) -> None:
+    def _on(event: str, cb: Callable[[Any], Awaitable[None]]) -> None:
         if event == "message":
             captured_handler["cb"] = cb
 
     channel.on = MagicMock(side_effect=_on)
 
     class _CapturePortal(_FakePortal):
-        def start_task_soon(self, func, ch, resolve_core, allowed, ctx, **kw) -> None:  # type: ignore[override]
-            resolved.append(resolve_core)
+        def start_task_soon(self, *args: object, **kwargs: object) -> None:
+            resolved.append(cast("Callable[[str | None], Awaitable[ChannelCore]]", args[2]))
 
     monkeypatch.setattr(client, "FeishuChannel", lambda **kw: channel)
     monkeypatch.setattr(client, "BlockingPortal", lambda: _CapturePortal())
@@ -770,18 +780,18 @@ async def test_run_feishu_no_template_shares_single_core(monkeypatch, tmp_path):
     channel.stop_background = AsyncMock()
     channel.bot_identity = SimpleNamespace(open_id="ou_bot", name="Haitun")
 
-    captured_handler: dict[str, object] = {}
-    resolved: list[ChannelCore] = []
+    captured_handler: dict[str, Callable[[Any], Awaitable[None]]] = {}
+    resolved: list[Callable[[str | None], Awaitable[ChannelCore]]] = []
 
-    def _on(event: str, cb: object) -> None:
+    def _on(event: str, cb: Callable[[Any], Awaitable[None]]) -> None:
         if event == "message":
             captured_handler["cb"] = cb
 
     channel.on = MagicMock(side_effect=_on)
 
     class _CapturePortal(_FakePortal):
-        def start_task_soon(self, func, ch, resolve_core, allowed, ctx, **kw) -> None:  # type: ignore[override]
-            resolved.append(resolve_core)
+        def start_task_soon(self, *args: object, **kwargs: object) -> None:
+            resolved.append(cast("Callable[[str | None], Awaitable[ChannelCore]]", args[2]))
 
     monkeypatch.setattr(client, "FeishuChannel", lambda **kw: channel)
     monkeypatch.setattr(client, "BlockingPortal", lambda: _CapturePortal())

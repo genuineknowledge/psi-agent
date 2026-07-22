@@ -45,9 +45,11 @@ def _sanitize_open_id(open_id: str) -> str:
     return _SOCKET_UNSAFE.sub("_", open_id)
 
 
-def _derive_socket(open_id: str, *, route_template: str | None, fallback: str) -> str:
+def _derive_socket(open_id: str | None, *, route_template: str | None, fallback: str) -> str:
     """按 open_id 派生 per-user session socket; 无模板或 open_id 空时回退 ``fallback``。
 
+    ``open_id`` 允许为 None —— lark 的 message context ``sender_id`` 类型是
+    ``Optional[str]`` (某些消息类型无发送者), 此时回退共享 ``fallback``。
     模板只做字符串替换, 不关心传输种类 —— ``ChannelCore`` 内部的
     ``resolve_connector_and_endpoint`` 会按前缀自动分流 Unix/TCP/命名管道。
     """
@@ -241,7 +243,7 @@ async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
 
 async def _handle_and_stream(
     channel: Any,
-    resolve_core: Callable[[str], Awaitable[ChannelCore]],
+    resolve_core: Callable[[str | None], Awaitable[ChannelCore]],
     allowed_ids: list[str] | None,
     ctx: Any,
 ) -> None:
@@ -472,7 +474,7 @@ async def run_feishu(
     async with AsyncExitStack() as stack, BlockingPortal() as portal:
         registry = _CoreRegistry(interval, stack)
 
-        async def resolve_core(open_id: str) -> ChannelCore:
+        async def resolve_core(open_id: str | None) -> ChannelCore:
             socket = _derive_socket(open_id, route_template=route_template, fallback=session_socket)
             return await registry.get(socket)
 

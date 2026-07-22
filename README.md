@@ -366,6 +366,7 @@ uv run psi-agent channel feishu \
 - 处理状态表情：处理中显示 `Typing`，完成移除，失败显示 `CrossMark`
 - 支持文本、图片、文件、音频
 - 文档评论回复：`--respond-to-comments`（默认开）文档评论区 @机器人 时，用 agent 的回答回复该评论（需后台订阅 `drive.notice.comment_add_v1`）
+- 按用户独立会话：`--route-template`（含 `{open_id}` 占位符，默认不设）时每个飞书用户按 open_id 派生各自独立的 session socket，获得隔离的会话/历史；不设则全体共用 `--session-socket`。per-user session 进程需外部预先拉起（channel 只连接不 spawn），命名须与派生路径对齐。例：`--route-template "./sessions/{open_id}.sock"`
 
 ## 示例 Workspace
 
