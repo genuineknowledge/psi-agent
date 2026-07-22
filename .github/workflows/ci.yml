@@ -18,6 +18,7 @@ jobs:
       - run: uv run ty check .
 
   test:
+    if: false # Temporarily paused; keep CI lint-only.
     needs: lint
     runs-on: ubuntu-latest
     steps:

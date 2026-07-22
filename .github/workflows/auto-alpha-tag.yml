@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   auto-tag:
+    if: false # Temporarily paused; keep CI lint-only.
     runs-on: ubuntu-latest
     outputs:
       tag-name: ${{ steps.create-tag.outputs.tag-name }}

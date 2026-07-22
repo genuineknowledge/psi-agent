@@ -6,6 +6,7 @@ on:
 
 jobs:
   pyinstaller:
+    if: false # Temporarily paused; keep CI lint-only.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
