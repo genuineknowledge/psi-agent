@@ -1098,39 +1098,6 @@ Never write API keys into this workspace, generated `.flow.ts` files, or committ
 
         dynamic_parts += [_build_datetime_section(), ""]
 
-        # ---------- 注入学习画像与教练规则 ----------
-        try:
-            up = importlib.import_module("_user_profile")
-            profile = await up.get_profile(str(ws))
-            _topic_key, topic = profile.get_topic(user_text)
-            dimensions = topic["dimensions"]
-            hint = profile.teaching_hint(topic)
-            ask_socratic = topic["turns"] > 0 and (topic["turns"] + 1) % 3 == 0
-            ask_breakout = topic["turns"] >= 4 and dimensions["familiarity"] > 0.5
-            socratic_rule = "本轮必须在结尾提出一个检验理解的问题" if ask_socratic else "本轮不强制提问"
-            breakout_rule = "本轮必须提出一个相邻知识点或更高层问题" if ask_breakout else "当前轮次或熟悉度尚未触发"
-            profile_text = (
-                "## 当前知识点学习画像 (每轮从持久化画像重新读取)\n"
-                f"- 当前知识点: {topic['label']}\n"
-                f"- 该知识点累计轮次: {topic['turns']}\n"
-                f"- 深度偏好: {dimensions['depth']:.2f} (0=框架概览, 1=系统推导)\n"
-                f"- 目标导向: {dimensions['goal']:.2f} (0=兴趣, 1=决策)\n"
-                f"- 领域熟悉度: {dimensions['familiarity']:.2f} (0=新手, 1=专家)\n"
-                f"- 教学指令: {hint}\n"
-            )
-            supervisor_rules = (
-                "## 基于当前知识点画像的学习监督规则\n"
-                "1. 确定性标记: 事实断言使用 `[已确认]` / `[推断]` / `[需验证]`, 不要把推断写成事实。\n"
-                "2. 反例注入: 每个核心概念至少给一个简短反例或边界场景; 深度偏好低时只用一句话。\n"
-                f"3. 苏格拉底提问: {socratic_rule}。\n"
-                f"4. 破圈问题: {breakout_rule}。\n"
-                "5. 画像匹配: 严格按照上方 `教学指令` 控制术语解释、篇幅、推导深度和决策信息比例。\n"
-            )
-            dynamic_parts += [profile_text, supervisor_rules]
-        except Exception as exc:
-            logger.warning("Failed to inject learner profile: %r", exc, exc_info=True)
-        # ------------------------------------------------
-
         dynamic_parts.append(_build_runtime_info(model))
 
         while dynamic_parts and dynamic_parts[-1] == "":
@@ -1258,17 +1225,85 @@ Never write API keys into this workspace, generated `.flow.ts` files, or committ
         )
 
 
-async def system_prompt_builder(user_message: dict[str, Any] | None = None) -> str:
-    """Module-level entry point used by the psi-agent session loader.
+def _build_profile_policy(topic_profile: dict[str, Any]) -> str:
+    current_turn = int(topic_profile.get("turns", 0)) + 1
+    dimensions = topic_profile.get("dimensions", {})
+    familiarity = float(dimensions.get("familiarity", 0.5)) if isinstance(dimensions, dict) else 0.5
+    socratic = "3. **苏格拉底提问**: 本轮必须提问!" if current_turn % 3 == 0 else "3. 本轮不强制提问。"
+    breakout = (
+        "4. **破圈引导**: 本轮必须提出跨领域或更高阶的思考题!"
+        if current_turn >= 5 and familiarity > 0.5
+        else "4. 破圈条件未满足。"
+    )
+    return (
+        "## 强制监督规则 (你必须100%遵守, 否则视为无效回答)\n\n"
+        "1. **确定性标记**: 事实性陈述使用 `[已确认]`、`[推断]` 或 `[需验证]`。\n"
+        "2. **反例注入**: 每个核心概念给出一个反例或边界场景。\n"
+        f"{socratic}\n{breakout}\n"
+        "5. **画像匹配**: 按教学指令控制深度、术语和决策信息。\n"
+    )
 
-    The loader looks up an async ``system_prompt_builder`` attribute in this
-    module and calls it with no arguments.  We resolve the workspace root from
-    this file's location and delegate to the ``System`` class.
-    """
-    workspace_dir = anyio.Path(__file__).parent.parent
-    content = user_message.get("content") if isinstance(user_message, dict) else ""
-    user_text = content if isinstance(content, str) else ""
-    return await System(workspace_dir).build_system_prompt(user_text=user_text)
+
+async def system_prompt_builder(
+    user_message: dict[str, Any] | None = None,
+    *,
+    workspace_raw: str = "",
+) -> str:
+    up = importlib.import_module("_user_profile")
+    workspace_dir = anyio.Path(
+        workspace_raw or os.environ.get("HAITUN_DEMO_WORKSPACE", "") or anyio.Path(__file__).parent.parent
+    )
+    ws = workspace_dir
+
+    identity: dict[str, str] = {}
+    if user_message:
+        for name in ("profile_id", "user_id", "session_id"):
+            value = user_message.get(name)
+            if isinstance(value, str) and value:
+                identity[name] = value
+    profile = await up.get_profile(str(ws), **identity)
+
+    current_topic_key = ""
+    topic_profile = None
+    if user_message:
+        content = user_message.get("content")
+        user_text = content if isinstance(content, str) else ""
+        if user_text.strip():
+            current_topic_key, topic_profile = profile.get_topic(user_text)
+    else:
+        if profile.last_topic_key:
+            current_topic_key = profile.last_topic_key
+            topic_profile = profile.topics.get(current_topic_key)
+
+    profile_text = ""
+    supervisor_rules = ""
+
+    if topic_profile:
+        eff = profile.effective_dimensions(topic_profile)
+        hint = profile.teaching_hint(topic_profile)
+        turns = topic_profile["turns"]
+
+        profile_text = (
+            "## 当前知识点学习画像 (每轮从持久化画像重新读取)\n"
+            f"- 当前知识点: {topic_profile['label']}\n"
+            f"- 累计轮次: {turns}\n"
+            f"- 深度: {eff['depth']:.2f} (0=框架概览, 1=系统推导)\n"
+            f"- 目标: {eff['goal']:.2f} (0=兴趣, 1=决策)\n"
+            f"- 熟悉度: {eff['familiarity']:.2f} (0=新手, 1=专家)\n"
+            f"- 教学指令: {hint}\n"
+        )
+
+        supervisor_rules = _build_profile_policy(topic_profile)
+
+    # 基础提示
+    base_prompt = await System(workspace_dir).build_system_prompt()
+
+    boundary = "<!-- HAITUN_CACHE_BOUNDARY -->"
+    if boundary in base_prompt:
+        idx = base_prompt.find(boundary) + len(boundary)
+        return base_prompt[:idx] + "\n" + profile_text + "\n" + supervisor_rules + "\n" + base_prompt[idx:]
+    else:
+        return base_prompt + "\n" + profile_text + "\n" + supervisor_rules
 
 
 async def system_prompt_rebuild_checker(_user_message: dict[str, Any] | None = None) -> bool:
@@ -1276,17 +1311,36 @@ async def system_prompt_rebuild_checker(_user_message: dict[str, Any] | None = N
     return True
 
 
-async def system_after_turn(user_message: dict[str, Any], assistant_message: dict[str, Any]) -> None:
-    """Persist the learner profile after each successful final response."""
+async def system_after_turn(
+    user_message: dict[str, Any],
+    assistant_message: dict[str, Any],
+    *,
+    workspace_raw: str = "",
+) -> None:
     up = importlib.import_module("_user_profile")
-    profile = await up.get_profile()
+    workspace_dir = anyio.Path(
+        workspace_raw or os.environ.get("HAITUN_DEMO_WORKSPACE", "") or anyio.Path(__file__).parent.parent
+    )
+    identity = {
+        name: value
+        for name in ("profile_id", "user_id", "session_id")
+        if isinstance((value := user_message.get(name)), str) and value
+    }
+    profile = await up.get_profile(str(workspace_dir), **identity)
+
     user_text = user_message.get("content")
     assistant_text = assistant_message.get("content")
-    profile.update(
-        user_text if isinstance(user_text, str) else "",
-        assistant_text if isinstance(assistant_text, str) else "",
-    )
-    await profile.save()
+
+    if not isinstance(user_text, str):
+        user_text = ""
+    if not isinstance(assistant_text, str):
+        assistant_text = ""
+
+    try:
+        await profile.record_turn(user_text, assistant_text)
+        logger.debug("Learning profile updated (after-turn).")
+    except Exception as exc:
+        logger.warning("Failed to update learner profile: %r", exc, exc_info=True)
 
 
 if __name__ == "__main__":

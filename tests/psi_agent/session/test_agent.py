@@ -118,7 +118,108 @@ async def test_agent_runs_after_turn_hook_on_stop(tmp_path: Path) -> None:
         )
         _ = [chunk async for chunk in agent.run(user)]
 
-        assert calls == [(user, {"role": "assistant", "content": "final reply"})]
+        hook_user = {**user, "session_id": ""}
+        assert calls == [(hook_user, {"role": "assistant", "content": "final reply"})]
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_passes_current_message_and_fallback_session_id_to_system_hooks(tmp_path: Path) -> None:
+    builder_messages: list[dict] = []
+    after_turn_calls: list[tuple[dict, dict]] = []
+    ai_requests: list[dict] = []
+
+    async def builder(user_message: dict) -> str:
+        builder_messages.append(user_message)
+        return "system"
+
+    async def after_turn(user_message: dict, assistant_message: dict) -> None:
+        after_turn_calls.append((user_message, assistant_message))
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        ai_requests.append(await request.json())
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content="final reply", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    await anyio.Path(tmp_path / "histories").mkdir()
+    conversation = Conversation(path=tmp_path / "histories" / "session-42.jsonl")
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            conversation=conversation,
+            system_prompt=SystemPrompt(builder=builder, after_turn=after_turn),
+        )
+        _ = [chunk async for chunk in agent.run({"role": "user", "content": "question"})]
+
+        hook_user = {"role": "user", "content": "question", "session_id": "session-42"}
+        assert builder_messages == [hook_user]
+        assert after_turn_calls == [(hook_user, {"role": "assistant", "content": "final reply"})]
+        assert all("session_id" not in message for message in conversation.messages)
+        assert all("session_id" not in message for message in ai_requests[0]["messages"])
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_reserves_explicit_identity_metadata_for_system_hooks(tmp_path: Path) -> None:
+    checker_messages: list[dict] = []
+    after_turn_calls: list[tuple[dict, dict]] = []
+    ai_requests: list[dict] = []
+
+    async def checker(user_message: dict) -> bool:
+        checker_messages.append(user_message)
+        return False
+
+    async def after_turn(user_message: dict, assistant_message: dict) -> None:
+        after_turn_calls.append((user_message, assistant_message))
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        ai_requests.append(await request.json())
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    await anyio.Path(tmp_path / "histories").mkdir()
+    conversation = Conversation(
+        messages=[{"role": "system", "content": "existing"}],
+        path=tmp_path / "histories" / "fallback-session.jsonl",
+    )
+    identity = {"profile_id": "profile-7", "user_id": "user-8", "channel": "telegram"}
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            conversation=conversation,
+            system_prompt=SystemPrompt(checker=checker, after_turn=after_turn),
+        )
+        _ = [
+            chunk
+            async for chunk in agent.run(
+                {"role": "user", "content": "question"},
+                {**identity, "temperature": 0.25},
+            )
+        ]
+
+        hook_user = {
+            "role": "user",
+            "content": "question",
+            "session_id": "fallback-session",
+            **identity,
+        }
+        assert checker_messages == [hook_user]
+        assert after_turn_calls == [(hook_user, {"role": "assistant"})]
+        assert ai_requests[0]["temperature"] == 0.25
+        assert all(key not in ai_requests[0] for key in (*identity, "session_id"))
+        assert all(all(key not in message for key in (*identity, "session_id")) for message in conversation.messages)
     finally:
         await mock_server.cleanup()
 

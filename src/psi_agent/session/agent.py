@@ -159,11 +159,18 @@ class SessionAgent:
         When omitted, assistant/tool rows inherit the user message's ``kind``
         (Channel turns default to ``chat``).
         """
+        hook_message = dict(user_message)
+        hook_message["session_id"] = self._conversation.session_id
+        request_params = dict(extra_params or {})
+        for identity_key in ("profile_id", "user_id", "channel"):
+            identity_value = request_params.pop(identity_key, None)
+            if identity_value is not None:
+                hook_message[identity_key] = identity_value
+
         user_kind = message_kind(user_message)
         turn_response_kind = response_kind if response_kind is not None else user_kind
         user_message = with_kind(user_message, user_kind)
 
-<<<<<<< Updated upstream
         # Gateway embeds many Sessions in one process — bind this turn so
         # workspace tools (todo, …) do not fall back to session_id "default".
         with session_id_scope(self._conversation.session_id):
@@ -171,13 +178,9 @@ class SessionAgent:
                 # reload tools and schedules from workspace (incremental hash-based)
                 await self._tool_registry.refresh()
                 await self._schedule_registry.refresh()
-=======
-            # system prompt (lazy + optional rebuild)
-            await self._system_prompt.ensure(self._conversation, user_message)
->>>>>>> Stashed changes
 
                 # system prompt (lazy + optional rebuild)
-                await self._system_prompt.ensure(self._conversation)
+                await self._system_prompt.ensure(self._conversation, hook_message)
 
                 # peek pending schedule chunks — yield first, clear only after yield
                 # (only schedule.display results are stashed; silent never enters pending)
@@ -213,11 +216,11 @@ class SessionAgent:
                         "tools": tool_defs,
                         "stream": True,
                     }
-                    if extra_params:
-                        extra_params.pop("messages", None)
-                        extra_params.pop("tools", None)
-                        extra_params.pop("stream", None)
-                        request_body |= extra_params
+                    if request_params:
+                        request_params.pop("messages", None)
+                        request_params.pop("tools", None)
+                        request_params.pop("stream", None)
+                        request_body |= request_params
 
                     logger.info("Sending request to AI via AiClient")
                     logger.debug(f"Request messages count: {len(ai_messages)}, tools: {len(tool_defs)}")
@@ -234,7 +237,6 @@ class SessionAgent:
                                 f"finish_reason={delta.finish_reason!r}, "
                                 f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
                             )
-<<<<<<< Updated upstream
                             if delta.content:
                                 yield AgentChunk(content=delta.content)
                                 accumulated_content += delta.content
@@ -273,14 +275,15 @@ class SessionAgent:
                                     f"Stop: content={len(accumulated_content)} chars, "
                                     f"reasoning={len(accumulated_reasoning)} chars"
                                 )
+                                assistant_msg: dict[str, Any] = {"role": "assistant"}
+                                if accumulated_content:
+                                    assistant_msg["content"] = accumulated_content
+                                if accumulated_reasoning:
+                                    assistant_msg["reasoning"] = accumulated_reasoning
                                 if accumulated_content or accumulated_reasoning:
-                                    assistant_msg: dict[str, Any] = {"role": "assistant"}
-                                    if accumulated_content:
-                                        assistant_msg["content"] = accumulated_content
-                                    if accumulated_reasoning:
-                                        assistant_msg["reasoning"] = accumulated_reasoning
                                     self._conversation.add(with_kind(assistant_msg, turn_response_kind))
                                 await self._conversation.commit()
+                                await self._system_prompt.run_after_turn(hook_message, assistant_msg)
                                 await self._schedule_registry.refresh()
                                 return
 
@@ -294,19 +297,6 @@ class SessionAgent:
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
                                 self._conversation.add(with_kind(assistant_msg, turn_response_kind))
-=======
-                            assistant_msg: dict[str, Any] = {"role": "assistant"}
-                            if accumulated_content:
-                                assistant_msg["content"] = accumulated_content
-                            if accumulated_reasoning:
-                                assistant_msg["reasoning"] = accumulated_reasoning
-                            if accumulated_content or accumulated_reasoning:
-                                self._conversation.add(assistant_msg)
-                            await self._conversation.commit()
-                            await self._system_prompt.run_after_turn(user_message, assistant_msg)
-                            await self._schedule_registry.refresh()
-                            return
->>>>>>> Stashed changes
 
                                 # pre-compute args + yield tool-call intent
                                 tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
