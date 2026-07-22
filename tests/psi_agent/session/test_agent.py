@@ -41,7 +41,6 @@ class MockAIServer:
     """Helper to create and cleanup a mock AI Unix socket server."""
 
     def __init__(self, tmp_path: Path) -> None:
-        self.socket_path = tmp_path / "ai.sock"
         self._runner: web.AppRunner | None = None
         self._app: web.Application | None = None
 
@@ -50,9 +49,11 @@ class MockAIServer:
         self._app.router.add_post("/chat/completions", handler)
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        site = web.UnixSite(self._runner, str(self.socket_path))
+        sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        site = web.SockSite(self._runner, sock)
         await site.start()
-        return str(self.socket_path)
+        return f"http://127.0.0.1:{sock.getsockname()[1]}"
 
     async def cleanup(self) -> None:
         if self._runner:
