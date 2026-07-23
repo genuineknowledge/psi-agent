@@ -1,6 +1,6 @@
 ---
 name: fusion-memory-setup
-description: Use before first using Fusion Memory tools or when the remote MCP service is unavailable.
+description: Use when configuring or diagnosing the operator-managed Fusion Memory MCP connection.
 ---
 
 # Fusion Memory MCP Setup
@@ -10,24 +10,34 @@ Fusion Memory server, database, model, or HTTP memory API.
 
 ## Configure
 
-The operator must provide a Streamable HTTP MCP endpoint and a bearer token
-before the first memory call:
+For multi-user Feishu deployments, the process starter must provide a
+Streamable HTTP MCP endpoint and token-map path before starting the Agent:
 
 ```bash
 export FUSION_MEMORY_MCP_URL="https://memory.example.com/mcp"
-export FUSION_MEMORY_TOKEN="<operator-issued-token>"
-export FUSION_MEMORY_WORKSPACE_ID="fusion-memory"
-export FUSION_MEMORY_SESSION_ID="<current-session-id>"
+export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 ```
 
 `FUSION_MEMORY_MCP_URL` must be exactly `/mcp`. HTTPS is required for remote
-hosts; HTTP is accepted only for loopback development. The token determines
-the user identity. The server shares memory across that user's sessions and
-workspaces, while tokens for different users remain isolated.
+hosts; HTTP is accepted only for loopback development. The map is a JSON object
+keyed by Feishu `open_id`; each entry requires a non-empty `token` and
+`workspace_id`. Keep it outside the workspace and source control.
 
-Never commit, print, or log the token. `FUSION_MEMORY_MCP_TIMEOUT_SECONDS`
+Map membership enables automatic durable memory. On the mapped user's first
+message, the workspace initiates `memory_health` and starts passive history
+sync. The bearer token determines user identity, so the same user shares memory
+across Sessions while different users remain isolated. Unknown users can chat
+but receive no bearer token or durable memory.
+
+Never commit, print, return, or log a token. Do not derive authentication from
+model-visible `<feishu_context>`. `FUSION_MEMORY_MCP_TIMEOUT_SECONDS`
 defaults to 30 seconds and is clamped to `0.1..120`; retryable reads and
 idempotent writes reconnect automatically after transport failures.
+
+When `FUSION_MEMORY_TOKEN_MAP_FILE` is absent, legacy single-user
+`FUSION_MEMORY_TOKEN`, `FUSION_MEMORY_WORKSPACE_ID`, and
+`FUSION_MEMORY_SESSION_ID` configuration remains supported. Map mode never
+falls back to the legacy shared token.
 
 ## Verify
 
@@ -47,11 +57,15 @@ If the endpoint or token is missing, or a tool returns a structured
 conversation without durable memory and report the safe error. Do not mint a
 token, weaken TLS, or start a local fallback service from this workspace.
 
-## Tool Policy
+## Runtime Policy
 
 - Use `memory_add` for durable preferences, facts, decisions, and corrections.
 - Use `memory_search` for raw evidence when prior context is relevant.
 - Use `memory_answer_context` for query-grounded context before answering
   questions about the user's history or preferences.
-- Do not add transient conversation turns as explicit facts; history sync is a
-  separate operator-managed service when enabled.
+- Use `memory_health` to verify the current mapped user's authenticated MCP
+  connectivity.
+- Completed conversation turns are persisted automatically by the workspace's
+  passive writer; do not duplicate transient turns with explicit `memory_add`.
+- Do not edit `.env`, ask a user to provide a token, mint credentials, or start
+  a local Memory service. The process starter owns the token-map path.

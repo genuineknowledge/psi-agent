@@ -23,7 +23,7 @@ new test file is committed.
 
 ## Configuration
 
-Add the optional launcher variable:
+The process starter manually configures this optional variable:
 
 ```text
 FUSION_MEMORY_TOKEN_MAP_FILE=/path/to/operator-managed-memory-tokens.json
@@ -33,7 +33,7 @@ The MCP endpoint remains process-level configuration through
 `FUSION_MEMORY_MCP_URL`. TLS configuration such as `SSL_CERT_FILE` also remains
 deployment-managed.
 
-The launcher must configure `FUSION_MEMORY_TOKEN_MAP_FILE` before starting the
+The process starter must configure `FUSION_MEMORY_TOKEN_MAP_FILE` before starting the
 HaiTun process. Changing the file path itself requires a process restart;
 changing entries inside the configured file is detected by the runtime cache
 without restarting HaiTun.

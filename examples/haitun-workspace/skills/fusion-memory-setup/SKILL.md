@@ -1,6 +1,6 @@
 ---
 name: fusion-memory-setup
-description: Use before first using Fusion Memory tools or when a remote Fusion Memory MCP tool reports unavailable.
+description: Use when configuring or diagnosing the operator-managed Fusion Memory MCP connection.
 ---
 
 # Fusion Memory Remote MCP Setup
@@ -11,41 +11,41 @@ start, configure, or create tokens for a local memory service.
 
 ## Required Configuration
 
-Set these values in the process environment or a deployment-managed secret
-store before starting Haitun:
+For multi-user Feishu deployments, the process starter manually sets these
+values before starting Haitun:
 
 ```bash
 export FUSION_MEMORY_MCP_URL="https://memory.example.com/mcp"
-export FUSION_MEMORY_TOKEN="<operator-issued-bearer-token>"
-export FUSION_MEMORY_WORKSPACE_ID="haitun"
-export FUSION_MEMORY_SESSION_ID="<current-session-id>"
+export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 ```
 
 - `FUSION_MEMORY_MCP_URL` is the remote MCP Streamable HTTP endpoint. TLS is
   terminated by the service's reverse proxy.
-- `FUSION_MEMORY_TOKEN` is a bearer token issued and managed by the service
-  operator. Never commit it, log it, echo it, or put it in generated files.
-- `FUSION_MEMORY_WORKSPACE_ID` identifies the Haitun workspace context. It
-  defaults to `haitun` when omitted.
-- `FUSION_MEMORY_SESSION_ID` identifies the current session context and may be
-  omitted when the launcher does not provide one.
+- `FUSION_MEMORY_TOKEN_MAP_FILE` points to an operator-owned JSON object keyed
+  by Feishu `open_id`. Each entry requires `token` and `workspace_id` strings.
+  Keep the file outside the workspace and source control.
 
-The bearer token, not a client-supplied user identifier, determines the user
-identity. Memory is shared across sessions and workspaces for the same user;
-different users, including users represented by different tokens, are isolated.
+Map membership enables durable memory. On a mapped user's first message after
+startup, Haitun initiates authenticated `memory_health` and starts passive
+history persistence for the trusted `feishu-<open_id>` Session. The bearer
+token, not model-visible `<feishu_context>`, determines user identity. The same
+token shares memory across Sessions; different tokens remain isolated.
 
-## Consent And Use
+Users absent from the map can continue chatting but receive no bearer token,
+connector, passive writer, checkpoint, or durable memory. In map mode there is
+no fallback to `FUSION_MEMORY_TOKEN`. When the map variable is absent, the
+legacy single-user token/workspace/session variables remain compatible.
 
-Before the first memory tool call, follow the workspace consent policy. When
-consent is required and has not been granted, do not call `memory_add`,
-`memory_search`, or `memory_answer_context`; continue without durable memory.
-After consent, use `memory_add` only for durable, reusable facts and use the
-search/context tools only when previous user information is relevant.
+## Use
 
-If either the endpoint or token is absent, or a memory tool reports that the
-remote service is unavailable, explain that durable memory is unavailable and
-continue with the current conversation and workspace files. Do not attempt a
-local fallback.
+Use `memory_health` for an explicit connectivity check, `memory_add` only for
+durable reusable facts, and the search/context tools when previous information
+is relevant. Completed conversation turns are already written passively; do
+not duplicate transient turns with explicit `memory_add`.
+
+If the current user is not mapped or the remote service is unavailable,
+continue with the current conversation and workspace files. Do not edit `.env`,
+ask for a token, attempt a local fallback, or block the user's chat response.
 
 ## Operator Responsibilities
 
@@ -63,8 +63,8 @@ systemctl --user status 'fusion-memory-history-sync@<instance>.service'
 systemctl --user status fusion-memory-health.timer
 ```
 
-Use deployment-managed secrets for the token. Do not paste token values into
-shell history, tickets, chat, logs, source control, or the workspace `.env`.
+Use deployment-managed secrets for the token map. Do not paste token values
+into shell history, tickets, chat, logs, source control, or workspace files.
 
 ## Recovery
 

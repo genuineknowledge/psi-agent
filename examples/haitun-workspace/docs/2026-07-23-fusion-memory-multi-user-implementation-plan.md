@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: process environment and a trusted Session ID such as `feishu-ou_example`.
-- Produces: `resolve_memory_config(session_id: str, config: MemoryMcpConfig = CONFIG) -> ResolvedMemoryConfig` and `MemoryConfigError(code: str, message: str)`.
+- Produces: `async resolve_memory_config(session_id: str, config: MemoryMcpConfig = CONFIG) -> ResolvedMemoryConfig` and `MemoryConfigError(code: str, message: str)`.
 
 - [ ] **Step 1: Write the failing credential-resolution harness**
 
@@ -77,6 +77,8 @@
 **Files:**
 - Modify: `examples/fusion-memory-workspace/tools/_fusion_memory_mcp.py`
 - Modify: `examples/haitun-workspace/tools/_fusion_memory_mcp.py`
+- Create: `examples/fusion-memory-workspace/tools/_fusion_memory_history.py`
+- Create: `examples/haitun-workspace/tools/_fusion_memory_history.py`
 - Create: `examples/fusion-memory-workspace/tools/memory_health.py`
 - Create: `examples/haitun-workspace/tools/memory_health.py`
 - Temporary test: `/tmp/fusion_memory_multi_user_harness.py`
