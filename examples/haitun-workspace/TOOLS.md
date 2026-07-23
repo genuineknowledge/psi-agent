@@ -91,3 +91,9 @@ message_id / sender_open_id）。需要群里之前的上下文时：
     身份下载。流程：`feishu_wiki_get_node(token, user_key)` 拿 `obj_token` → `feishu_file_download`
     (带 user_key) 存到本地 → 用 `ocr-and-documents` 技能（PyMuPDF）抽文本。**下载失败不要直接让用户
     手动复制粘贴，先确认带了 user_key**；未授权时按第 3 步先征得同意再授权。
+11. **代员工提交审批（自助办事）**：员工私聊说要请假/报销等，按 [`feishu-self-service-agent`] 技能代其提交。
+    先 `feishu_approval_get_definition(approval_code)` 读表单模板（要填哪些字段/类型/必填），把员工口语
+    补齐成合规表单，再 `feishu_approval_create(approval_code, form_json, applicant_open_id=<sender_open_id>)`。
+    **申请人身份靠 `applicant_open_id` 指定**——传 `<feishu_context>` 的 `sender_open_id`，单子即记在员工
+    本人名下；用机器人 tenant token 提交即可，**这一步不需要员工单独授权 UAT**（区别于文档搜索/知识库）。
+    提交是对外动作，按 [`admin-finance-governance`] 先把拼好的表单给员工确认再提交；缺字段就问，绝不编造。
