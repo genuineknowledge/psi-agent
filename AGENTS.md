@@ -229,6 +229,7 @@ async def handler(request):
 
 - **ruff**: `select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]`
 - **ty**: 全局 `ty check .`
+- **嵌套 Python 包**: `fusion-flow-next` 保持在示例 skill 内，通过 `tool.ty.environment.extra-paths` 纳入全局模块解析，不单独增加打包脚手架
 - **per-file-ignores**: **零条**。所有代码通过自身符合规则，不靠抑制
 - **核心代码（`src/` + `tests/`）仅 7 处 ty:ignore**（无法避免）：
   - `tests/integration/conftest.py:112` — pytest async generator fixture 的返回类型局限（`yield` 导致函数被推断为 AsyncGenerator，与标注的 MockAIServer 冲突）
