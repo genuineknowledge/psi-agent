@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import re
-from contextlib import aclosing
+from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack, aclosing
 from datetime import date
 from typing import Any
 
+import aiohttp
 import anyio
 import platformdirs
 from anyio.from_thread import BlockingPortal
@@ -29,6 +31,81 @@ def _allowed(sender_id: str | None, allowed_ids: list[str] | None) -> bool:
     if allowed_ids is None:
         return True
     return sender_id in allowed_ids
+
+
+class _CoreRegistry:
+    """按 socket 路径缓存并复用 ``ChannelCore``; 懒创建、并发安全、随 stack 统一关闭。
+
+    ``ChannelCore.__aenter__`` 仅建 connector + ``ClientSession``(socket 是懒连接, 缺失只在
+    ``post()`` 时报错), 但 ``stack.enter_async_context(...)`` 构成挂起点: 两个经
+    ``portal.start_task_soon`` 并发进来的同用户消息可能都 miss 缓存并各建一个 core → 泄露一个
+    ``ClientSession``。用 double-checked 锁消除此竞态。创建罕见且全程无网络, 单把全局锁足够。
+    所有 core 进同一 ``AsyncExitStack``, 退出时逐个 shielded 关闭。
+    """
+
+    def __init__(self, interval: float, stack: AsyncExitStack) -> None:
+        self._interval = interval
+        self._stack = stack
+        self._cores: dict[str, ChannelCore] = {}
+        self._lock = anyio.Lock()
+
+    async def get(self, socket: str) -> ChannelCore:
+        core = self._cores.get(socket)  # 快路径(无 await, dict 读原子)
+        if core is not None:
+            return core
+        async with self._lock:  # 慢路径: double-checked
+            core = self._cores.get(socket)
+            if core is None:
+                core = await self._stack.enter_async_context(ChannelCore(socket, interval=self._interval))
+                self._cores[socket] = core
+                logger.debug(f"created ChannelCore for socket={socket!r} (total={len(self._cores)})")
+            return core
+
+
+_GATEWAY_TIMEOUT = aiohttp.ClientTimeout(total=10)
+
+
+class _GatewayRouteProvider:
+    """给 open_id → 幂等返回其 Gateway session 的 ``channel_socket``; 面向动态任意用户。
+
+    路由决策权归 **Gateway** —— 首次见到某 open_id 时经 Gateway REST ``POST /feishu/route``
+    (``FeishuManager`` 按需 spawn 独立 Session, ``ai_id``/``workspace`` 由 Gateway 侧配置决定),
+    拿回 ``channel_socket`` 缓存复用; channel 只连接不 spawn、退出时也不删。并发安全: 快路径
+    dict 读 + 慢路径 ``anyio.Lock`` double-checked, 同一 open_id 的并发消息串行到一次路由。
+    路由失败向上抛(由调用方回退共享 socket), 且**不写缓存**, 下条消息会重试 Gateway。
+    """
+
+    def __init__(self, base_url: str, http: aiohttp.ClientSession) -> None:
+        self._base = base_url.rstrip("/")
+        self._http = http
+        self._sockets: dict[str, str] = {}  # open_id -> channel_socket
+        self._lock = anyio.Lock()
+
+    async def ensure(self, open_id: str) -> str:
+        hit = self._sockets.get(open_id)  # 快路径
+        if hit is not None:
+            return hit
+        async with self._lock:  # 慢路径: double-checked
+            hit = self._sockets.get(open_id)
+            if hit is not None:
+                return hit
+            socket = await self._route(open_id)
+            self._sockets[open_id] = socket
+            logger.debug(f"routed open_id={open_id!r} -> socket={socket!r}")
+            return socket
+
+    async def _route(self, open_id: str) -> str:
+        """POST /feishu/route 拿回该 open_id 的 channel_socket (Gateway 幂等 spawn/复用)。"""
+        async with self._http.post(
+            f"{self._base}/feishu/route",
+            json={"open_id": open_id},
+            timeout=_GATEWAY_TIMEOUT,
+        ) as resp:
+            if resp.status == 201:
+                data = await resp.json()
+                return str(data["channel_socket"])
+            body = await resp.text()
+            raise RuntimeError(f"Gateway POST /feishu/route failed (status={resp.status}): {body}")
 
 
 async def _send_file(channel: Any, chat_id: str, path: str) -> None:
@@ -187,7 +264,7 @@ async def _build_chunks(channel: Any, ctx: Any) -> list[InputChunk]:
 
 async def _handle_and_stream(
     channel: Any,
-    core: ChannelCore,
+    resolve_core: Callable[[str | None], Awaitable[ChannelCore]],
     allowed_ids: list[str] | None,
     ctx: Any,
 ) -> None:
@@ -195,7 +272,10 @@ async def _handle_and_stream(
         logger.debug(f"sender {ctx.sender_id} blocked by whitelist")
         return
 
-    logger.debug(f"sender={ctx.sender_id} chat={ctx.chat_id}")
+    # 白名单通过后才解析 core, 被拦用户不建连接 (防非白名单 open_id 刷出大量 ClientSession)。
+    # 按发送者 open_id 路由到其 per-user session。
+    core = await resolve_core(ctx.sender_id)
+    logger.debug(f"sender={ctx.sender_id} chat={ctx.chat_id} socket={core.session_socket}")
 
     reaction_id = await _add_reaction(channel, ctx.message_id, _EMOJI_PROCESSING)
     failed = False
@@ -265,7 +345,7 @@ async def _collect_reply(core: ChannelCore, chunks: list[InputChunk]) -> str:
 
 async def _handle_comment(
     channel: Any,
-    core: ChannelCore,
+    resolve_core: Callable[[str | None], Awaitable[ChannelCore]],
     allowed_ids: list[str] | None,
     event: Any,
 ) -> None:
@@ -291,6 +371,10 @@ async def _handle_comment(
         if not _allowed(operator_open_id, allowed_ids):
             logger.debug(f"comment operator {operator_open_id} blocked by whitelist")
             return
+
+        # 白名单通过后才解析 core, 被拦用户不建连接 (与 _handle_and_stream 同款);
+        # 按评论发起者 open_id 路由到其 per-user session。
+        core = await resolve_core(operator_open_id)
 
         logger.debug(f"comment file_token={event.file_token} file_type={event.file_type} comment_id={event.comment_id}")
 
@@ -392,6 +476,7 @@ async def run_feishu(
     require_mention: bool = True,
     respond_to_mention_all: bool = False,
     respond_to_comments: bool = True,
+    gateway_url: str | None = None,
 ) -> None:
     policy = PolicyConfig(
         require_mention=require_mention,
@@ -400,16 +485,38 @@ async def run_feishu(
     channel = FeishuChannel(app_id=app_id, app_secret=app_secret, policy=policy)
     logger.debug(
         f"FeishuChannel created (app_id={app_id} require_mention={require_mention} "
-        f"respond_to_mention_all={respond_to_mention_all})"
+        f"respond_to_mention_all={respond_to_mention_all} gateway_url={gateway_url!r})"
     )
 
-    async with ChannelCore(session_socket, interval=interval) as core, BlockingPortal() as portal:
+    # AsyncExitStack 持有所有 per-user ChannelCore + Gateway REST 的 http session; 与 portal 的进出
+    # 顺序: portal 后进先出、先于 stack 关闭, 保证在飞的 handler 仍能用到活着的 core / http,
+    # 与旧版 "core 在 stop_background 之后才关" 的取消安全性等价。
+    async with AsyncExitStack() as stack, BlockingPortal() as portal:
+        registry = _CoreRegistry(interval, stack)
+
+        provider: _GatewayRouteProvider | None = None
+        if gateway_url:
+            http = await stack.enter_async_context(aiohttp.ClientSession())
+            provider = _GatewayRouteProvider(gateway_url, http)
+
+        async def resolve_core(open_id: str | None) -> ChannelCore:
+            socket = session_socket  # 默认兜底 (open_id 为 None、无 gateway、或路由失败都走这)
+            if provider is not None and open_id:
+                try:
+                    socket = await provider.ensure(open_id)
+                except Exception as e:  # gateway 不可达 / 路由失败 → 回退共享 socket
+                    logger.warning(
+                        f"Gateway route failed for open_id={open_id!r}, "
+                        f"falling back to shared socket {session_socket!r} — {e!r}"
+                    )
+                    socket = session_socket
+            return await registry.get(socket)
 
         async def _on_message(ctx: Any) -> None:
-            portal.start_task_soon(_handle_and_stream, channel, core, allowed_user_ids, ctx)
+            portal.start_task_soon(_handle_and_stream, channel, resolve_core, allowed_user_ids, ctx)
 
         async def _on_comment(event: Any) -> None:
-            portal.start_task_soon(_handle_comment, channel, core, allowed_user_ids, event)
+            portal.start_task_soon(_handle_comment, channel, resolve_core, allowed_user_ids, event)
 
         channel.on("message", _on_message)
         channel.on("reject", _log_reject)
