@@ -57,6 +57,15 @@ class Gateway:
     tray: bool = False
     """Show a system tray icon (requires --icon)."""
 
+    feishu_ai_id: str = ""
+    """飞书用户 Session 默认挂载的 AI 实例 id。飞书 channel 经 ``POST /feishu/route`` 按需为
+    每个飞书用户 spawn 独立 Session 时用它作缺省 AI (请求体也可逐次覆盖 ``ai_id``)。空 = 未配,
+    此时若请求也不带 ``ai_id`` 则 ``/feishu/route`` 返回 400。"""
+
+    feishu_workspace_root: str = ""
+    """飞书各用户独立 workspace 的父目录。每个 open_id 得到 ``<root>/<open_id>`` 子目录, 文件/历史
+    互相隔离。空 = 以 Gateway 进程 cwd 为父目录。"""
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -112,6 +121,8 @@ class Gateway:
                 favicon_path=self.icon,
                 app_name=self.app_name,
                 attention=attention,
+                feishu_ai_id=self.feishu_ai_id,
+                feishu_workspace_root=self.feishu_workspace_root,
             )
 
             async def _do_persist() -> None:
