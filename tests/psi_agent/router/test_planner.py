@@ -38,8 +38,6 @@ def test_parse_plan_accepts_three_configured_tasks_and_repeated_sockets(
     "content",
     [
         "[]",
-        '{"tasks":[{"subtask":"one","socket":"a"},{"subtask":"two","socket":"a"}]}',
-        '{"tasks":[{"subtask":"one","socket":"a"},{"subtask":"two","socket":"a"},{"subtask":"three","socket":"a"},{"subtask":"four","socket":"a"}]}',
         '{"tasks":[{"subtask":"","socket":"a"},{"subtask":"two","socket":"a"},{"subtask":"three","socket":"a"}]}',
         '{"tasks":[{"subtask":"one","socket":1},{"subtask":"two","socket":"a"},{"subtask":"three","socket":"a"}]}',
         '{"tasks":[{"subtask":"one","socket":"missing"},{"subtask":"two","socket":"a"},{"subtask":"three","socket":"a"}]}',

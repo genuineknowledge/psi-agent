@@ -1,11 +1,11 @@
-"""Strict three-task planning with one format-repair request."""
+"""Strict socket-aware task planning with one format-repair request."""
 
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from psi_agent.router.client import UpstreamResult
 from psi_agent.router.prompts import build_planning_messages, build_repair_messages
@@ -23,8 +23,8 @@ class _CompletionClient(Protocol):
 _JSON_FENCE = re.compile(r"^```(?:json)?\s*\n(?P<content>[\s\S]*?)\n```$", re.IGNORECASE)
 
 
-def parse_plan(content: str, *, allowed_sockets: set[str]) -> tuple[PlannedTask, PlannedTask, PlannedTask]:
-    """Decode and validate a planner response without accepting invented sockets."""
+def parse_plan(content: str, *, allowed_sockets: set[str]) -> tuple[PlannedTask, ...]:
+    """Decode a dynamically sized plan without accepting invented sockets."""
 
     candidate = content.strip()
     match = _JSON_FENCE.match(candidate)
@@ -39,8 +39,8 @@ def parse_plan(content: str, *, allowed_sockets: set[str]) -> tuple[PlannedTask,
     if set(decoded) != {"tasks"}:
         raise PlanValidationError("Planner output root must contain only the tasks key")
     raw_tasks = decoded.get("tasks")
-    if not isinstance(raw_tasks, list) or len(raw_tasks) != 3:
-        raise PlanValidationError("Planner output must contain exactly three tasks")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise PlanValidationError("Planner output must contain at least one task")
 
     tasks: list[PlannedTask] = []
     for index, raw_task in enumerate(raw_tasks, start=1):
@@ -59,19 +59,19 @@ def parse_plan(content: str, *, allowed_sockets: set[str]) -> tuple[PlannedTask,
         if socket not in allowed_sockets:
             raise PlanValidationError(f"Planner task {index} selected an unconfigured socket")
         tasks.append(PlannedTask(subtask=subtask, socket=socket))
-    return cast(tuple[PlannedTask, PlannedTask, PlannedTask], tuple(tasks))
+    return tuple(tasks)
 
 
 @dataclass
 class Planner:
-    """Ask the Router planning backend for three validated serial subtasks."""
+    """Ask the Router planning backend for validated socket-selected subtasks."""
 
     client: _CompletionClient
     router_socket: str
     upstream: tuple[tuple[str, str], ...] | list[tuple[str, str]]
     timeout: float | None
 
-    async def plan(self, *, messages: list[dict[str, Any]]) -> tuple[PlannedTask, PlannedTask, PlannedTask]:
+    async def plan(self, *, messages: list[dict[str, Any]]) -> tuple[PlannedTask, ...]:
         """Return a valid plan, allowing one request solely to repair its structure."""
 
         result = await self.client.complete(

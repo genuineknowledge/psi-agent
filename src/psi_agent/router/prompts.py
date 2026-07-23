@@ -29,19 +29,19 @@ def _socket_catalog(upstream: list[tuple[str, str]] | tuple[tuple[str, str], ...
 def build_planning_messages(
     *, messages: list[dict[str, Any]], upstream: list[tuple[str, str]] | tuple[tuple[str, str], ...]
 ) -> list[dict[str, Any]]:
-    """Ask the planning model for exactly three socket-selected subtasks."""
+    """Ask the planning model to choose an appropriate number of socket-selected subtasks."""
 
     result = _copy_messages(messages)
     result.append(
         {
             "role": "user",
             "content": (
-                "Plan this request as exactly three complementary subtasks. "
+                "Plan this request by decomposing it into the smallest useful set of complementary subtasks. "
                 "Configured backend sockets and capabilities are:\n"
                 f"{_socket_catalog(upstream)}\n\n"
                 "Return JSON only in this exact shape: "
-                '{"tasks":[{"subtask":"...","socket":"..."},{"subtask":"...","socket":"..."},'
-                '{"subtask":"...","socket":"..."}]}. Each socket must exactly match one configured socket.'
+                '{"tasks":[{"subtask":"...","socket":"..."}]}. '
+                "Use one or more tasks as appropriate. Each socket must exactly match one configured socket."
             ),
         }
     )
@@ -64,8 +64,8 @@ def build_repair_messages(
                 "Your prior routing plan was invalid:\n"
                 f"{invalid_plan}\n\nConfigured backend sockets and capabilities are:\n{_socket_catalog(upstream)}\n\n"
                 "Repair it. Return JSON only in this exact shape: "
-                '{"tasks":[{"subtask":"...","socket":"..."},{"subtask":"...","socket":"..."},'
-                '{"subtask":"...","socket":"..."}]}. Each socket must exactly match one configured socket.'
+                '{"tasks":[{"subtask":"...","socket":"..."}]}. '
+                "Use one or more tasks as appropriate. Each socket must exactly match one configured socket."
             ),
         }
     )

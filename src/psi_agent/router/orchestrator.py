@@ -31,7 +31,7 @@ class _CompletionClient(Protocol):
 
 
 class _TaskPlanner(Protocol):
-    async def plan(self, *, messages: list[dict[str, Any]]) -> tuple[PlannedTask, PlannedTask, PlannedTask]: ...
+    async def plan(self, *, messages: list[dict[str, Any]]) -> tuple[PlannedTask, ...]: ...
 
 
 class Orchestrator:
@@ -59,22 +59,23 @@ class Orchestrator:
         self.runs: dict[str, RoutingRun] = {}
 
     async def process(self, *, body: dict[str, Any]) -> UpstreamResult:
-        """Fan out one Session round to every configured upstream concurrently."""
+        """Plan a round, execute selected subtasks, then aggregate through router_socket."""
         messages = self._messages(body)
         tools = self._tools(body)
-        request_bodies = [
-            self._completion_body(request_body=body, messages=messages, tools=tools)
-            for _socket, _description in self.config.upstream
-        ]
-        results: list[UpstreamResult | None] = [None] * len(request_bodies)
+        plan = await self.planner.plan(messages=messages)
+        results: list[UpstreamResult | None] = [None] * len(plan)
         errors: list[Exception] = []
 
         async def invoke(index: int, socket: str) -> None:
             try:
                 logger.info(f"Router dispatching round to upstream[{index}] socket={socket!r}")
+                branch_messages = build_branch_messages(
+                    original_messages=messages, subtask=plan[index].subtask, prior_answers=[]
+                )
+                request_body = self._completion_body(request_body=body, messages=branch_messages, tools=tools)
                 results[index] = await self.client.complete(
                     socket=socket,
-                    body=request_bodies[index],
+                    body=request_body,
                     timeout=self.config.branch_timeout,
                 )
             except Exception as exc:
@@ -82,7 +83,8 @@ class Orchestrator:
                 errors.append(exc)
 
         async with anyio.create_task_group() as tg:
-            for index, (socket, _description) in enumerate(self.config.upstream):
+            for index, task in enumerate(plan):
+                socket = task.socket
                 tg.start_soon(invoke, index, socket)
 
         successful = [result for result in results if result is not None]
@@ -90,17 +92,17 @@ class Orchestrator:
         if not successful:
             raise OrchestrationError("All configured upstreams failed") from (errors[0] if errors else None)
 
-        content = "\n".join(result.content for result in successful if result.content.strip())
-        reasoning = "\n".join(result.reasoning for result in successful if result.reasoning.strip())
-        calls: list[dict[str, Any]] = []
-        seen_ids: set[str] = set()
-        for result in successful:
-            for call in result.tool_calls:
-                call_id = call.get("id")
-                if not isinstance(call_id, str) or not call_id or call_id in seen_ids:
-                    continue
-                seen_ids.add(call_id)
-                calls.append(deepcopy(call))
+        aggregate_input = [(plan[index].subtask, result.content) for index, result in enumerate(results) if result]
+        aggregate = await self.client.complete(
+            socket=self.config.router_socket,
+            body={
+                "messages": build_aggregation_messages(original_messages=messages, answers=aggregate_input),
+                "tools": tools,
+                "stream": True,
+            },
+            timeout=self.config.aggregate_timeout,
+        )
+        content, reasoning, calls = aggregate.content, aggregate.reasoning, aggregate.tool_calls
         finish = "tool_calls" if calls else "stop"
         logger.info(
             f"Router aggregate result: finish_reason={finish}, content={content!r}, "
