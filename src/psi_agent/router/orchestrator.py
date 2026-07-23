@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any, Protocol
-from uuid import uuid4
 
 import anyio
 from loguru import logger
@@ -60,47 +59,48 @@ class Orchestrator:
         self.runs: dict[str, RoutingRun] = {}
 
     async def process(self, *, body: dict[str, Any]) -> UpstreamResult:
-        """Start or continue the run selected by ``routing.session_id``."""
-
-        session_id = self._session_id(body)
+        """Fan out one Session round to every configured upstream concurrently."""
         messages = self._messages(body)
         tools = self._tools(body)
-        now = anyio.current_time()
-        run = self.runs.get(session_id)
-        if run is not None and now - run.last_active_at > self.config.run_ttl:
-            logger.warning(f"Router run expired for Session {session_id!r}")
-            self.runs.pop(session_id, None)
-            raise OrchestrationError("Routing run expired while waiting for continuation")
+        request_bodies = [
+            self._completion_body(request_body=body, messages=messages, tools=tools)
+            for _socket, _description in self.config.upstream
+        ]
+        results: list[UpstreamResult | None] = [None] * len(request_bodies)
+        errors: list[Exception] = []
 
-        keep_run = False
-        try:
-            if run is None:
-                if messages and messages[-1].get("role") == "tool":
-                    raise OrchestrationError("No active routing run exists for this tool continuation")
-                tasks = await self.planner.plan(messages=messages)
-                branches = [BranchState.from_task(task) for task in tasks]
-                run = RoutingRun.create(
-                    run_id=uuid4().hex,
-                    session_id=session_id,
-                    original_messages=deepcopy(messages),
-                    tools=deepcopy(tools),
-                    branches=branches,
-                    last_active_at=now,
+        async def invoke(index: int, socket: str) -> None:
+            try:
+                results[index] = await self.client.complete(
+                    socket=socket,
+                    body=request_bodies[index],
+                    timeout=self.config.branch_timeout,
                 )
-                self.runs[session_id] = run
-                logger.info(f"Created Router run {run.run_id} for Session {session_id!r}")
-            else:
-                self._accept_tool_results(run=run, messages=messages)
-                run.last_active_at = now
+            except Exception as exc:
+                logger.warning(f"Upstream {socket!r} failed: {exc}")
+                errors.append(exc)
 
-            result = await self._advance(run=run, request_body=body)
-            keep_run = result.finish_reason == "tool_calls"
-            return result
-        finally:
-            if run is not None and not keep_run and self.runs.get(session_id) is run:
-                if run.status is not RoutingStatus.COMPLETED:
-                    run.status = RoutingStatus.FAILED
-                self.runs.pop(session_id, None)
+        async with anyio.create_task_group() as tg:
+            for index, (socket, _description) in enumerate(self.config.upstream):
+                tg.start_soon(invoke, index, socket)
+
+        successful = [result for result in results if result is not None]
+        if not successful:
+            raise OrchestrationError("All configured upstreams failed") from (errors[0] if errors else None)
+
+        content = "\n".join(result.content for result in successful if result.content.strip())
+        reasoning = "\n".join(result.reasoning for result in successful if result.reasoning.strip())
+        calls: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for result in successful:
+            for call in result.tool_calls:
+                call_id = call.get("id")
+                if not isinstance(call_id, str) or not call_id or call_id in seen_ids:
+                    continue
+                seen_ids.add(call_id)
+                calls.append(deepcopy(call))
+        finish = "tool_calls" if calls else "stop"
+        return UpstreamResult(content=content, reasoning=reasoning, tool_calls=calls, finish_reason=finish)
 
     def discard(self, session_id: str) -> None:
         """Forget one run before a server-side default fallback."""
