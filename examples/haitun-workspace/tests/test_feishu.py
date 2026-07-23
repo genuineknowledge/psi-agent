@@ -2415,3 +2415,219 @@ async def test_wiki_create_doc_tool_returns_json(monkeypatch: pytest.MonkeyPatch
     parsed = json.loads(out)
     assert parsed["ok"] is True
     assert parsed["obj_token"] == "d1"
+
+
+# ── Drive permission impl tests (公开 / 差异化访问) ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_add_permission_member_builds_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"member": {"member_id": "od_dept"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.add_permission_member_impl(
+        "tok", "docx", "od_dept", perm="view", member_type="opendepartmentid", member_kind="department"
+    )
+    assert result["ok"] is True
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri.endswith("/permissions/:token/members")
+    assert req.paths["token"] == "tok"
+    assert _qdict(req).get("type") == "docx"
+    assert req.body["member_id"] == "od_dept"
+    assert req.body["perm"] == "view"
+    assert req.body["type"] == "department"
+
+
+@pytest.mark.asyncio
+async def test_add_permission_member_rejects_bad_perm() -> None:
+    result = await _impl.add_permission_member_impl("tok", "docx", "u1", perm="admin")
+    assert result["ok"] is False
+    assert "perm must be" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_add_permission_member_rejects_bad_member_type() -> None:
+    result = await _impl.add_permission_member_impl("tok", "docx", "u1", member_type="badtype")
+    assert result["ok"] is False
+    assert "member_type must be" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_list_permission_members_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"member_id": "u1", "member_type": "openid", "perm": "view", "type": "user"}]})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_permission_members_impl("tok", "docx")
+    assert result["ok"] is True
+    assert result["member_total"] == 1
+    assert result["members"][0]["member_id"] == "u1"
+    assert cap.request.http_method.name == "GET"
+
+
+@pytest.mark.asyncio
+async def test_delete_permission_member_builds_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.delete_permission_member_impl("tok", "docx", "u1")
+    assert result["ok"] is True
+    req = cap.request
+    assert req.http_method.name == "DELETE"
+    assert req.paths["member_id"] == "u1"
+    assert _qdict(req).get("member_type") == "openid"
+
+
+def test_permission_tools_are_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_permission")
+    for name in ("feishu_permission_add_member", "feishu_permission_list_members", "feishu_permission_remove_member"):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"
+
+
+# ── Bitable role impl tests (一份资料按角色显示不同内容) ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_role_builds_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"role": {"role_id": "r1", "role_name": "读者"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_bitable_role_impl("app1", "读者", '[{"table_id": "tbl1", "table_perm": 1}]')
+    assert result["ok"] is True
+    assert result["role_id"] == "r1"
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.paths["app_token"] == "app1"
+    assert req.body["role_name"] == "读者"
+    assert req.body["table_roles"][0]["table_id"] == "tbl1"
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_role_rejects_bad_json() -> None:
+    result = await _impl.create_bitable_role_impl("app1", "读者", "{not json")
+    assert result["ok"] is False
+    assert "not valid JSON" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_role_requires_array() -> None:
+    result = await _impl.create_bitable_role_impl("app1", "读者", '{"table_id": "tbl1"}')
+    assert result["ok"] is False
+    assert "JSON array" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_list_bitable_roles_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"role_id": "r1", "role_name": "读者", "table_roles": []}], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_bitable_roles_impl("app1")
+    assert result["ok"] is True
+    assert result["roles"][0]["role_id"] == "r1"
+
+
+@pytest.mark.asyncio
+async def test_add_bitable_role_member_builds_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.add_bitable_role_member_impl("app1", "r1", "u1")
+    assert result["ok"] is True
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.paths["role_id"] == "r1"
+    assert req.body["member_id"] == "u1"
+    assert _qdict(req).get("member_id_type") == "open_id"
+
+
+def test_bitable_role_tools_are_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_bitable")
+    for name in ("feishu_bitable_create_role", "feishu_bitable_list_roles", "feishu_bitable_add_role_member"):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"
+
+
+# ── eLearning impl tests (查每人学习记录) ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_course_registrations_builds_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"user_id": "u1", "status": "completed"}], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_course_registrations_impl(user_ids="u1,u2", page_size=50)
+    assert result["ok"] is True
+    assert result["registrations"][0]["status"] == "completed"
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri.endswith("/elearning/v2/course_registrations")
+    # user_ids repeated as multiple query params
+    user_id_vals = [v for (k, v) in req.queries if k == "user_ids"]
+    assert user_id_vals == ["u1", "u2"]
+    assert _qdict(req).get("page_size") == "50"
+
+
+@pytest.mark.asyncio
+async def test_list_course_registrations_no_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_course_registrations_impl()
+    assert result["ok"] is True
+    assert [v for (k, v) in cap.request.queries if k == "user_ids"] == []
+
+
+def test_elearning_tool_is_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_elearning")
+    fn = mod.feishu_elearning_list_registrations
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()
+
+
+# ── Drive media upload impl tests (视频证据上传) ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_upload_media_builds_multipart(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    f = tmp_path / "proof.mp4"
+    f.write_bytes(b"video-bytes")
+    cap = _CapturedInvoke({"file_token": "media1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.upload_media_impl(str(f), parent_type="explorer", parent_node="fldrtok")
+    assert result["ok"] is True
+    assert result["file_token"] == "media1"
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri.endswith("/drive/v1/medias/upload_all")
+    assert req.files is not None and "file" in req.files
+    assert req.files["file"][0] == "proof.mp4"
+    assert req.body["parent_node"] == "fldrtok"
+    assert req.body["size"] == str(len(b"video-bytes"))
+
+
+@pytest.mark.asyncio
+async def test_upload_media_missing_file() -> None:
+    result = await _impl.upload_media_impl("/no/such/file.mp4", parent_node="fldrtok")
+    assert result["ok"] is False
+    assert "file not found" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_upload_media_requires_parent_node(tmp_path: Path) -> None:
+    f = tmp_path / "x.txt"
+    f.write_bytes(b"hi")
+    result = await _impl.upload_media_impl(str(f), parent_node="")
+    assert result["ok"] is False
+    assert "parent_node is required" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_upload_media_rejects_oversize(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    f = tmp_path / "big.mp4"
+    f.write_bytes(b"x")
+    monkeypatch.setattr(_impl, "_UPLOAD_ALL_MAX_BYTES", 0)
+    result = await _impl.upload_media_impl(str(f), parent_node="fldrtok")
+    assert result["ok"] is False
+    assert "20MB" in result["message"]
+
+
+def test_drive_upload_tool_is_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_drive")
+    fn = mod.feishu_drive_upload
+    assert inspect.iscoroutinefunction(fn)
+    assert (inspect.getdoc(fn) or "").strip()
