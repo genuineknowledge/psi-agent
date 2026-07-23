@@ -7,6 +7,21 @@ from .contracts import (
     SourcePosition,
     SourceSpan,
 )
+from .core_ir import (
+    Assertion,
+    CompoundTerm,
+    Concept,
+    ConnectiveFormula,
+    Constant,
+    Formula,
+    IfTerm,
+    ListTerm,
+    LogicalConnective,
+    Operator,
+    Term,
+    Workflow,
+    WorkflowFile,
+)
 from .parser import parse_workflow
 from .planning import (
     PlannedStep,
@@ -16,15 +31,28 @@ from .planning import (
 )
 
 __all__ = [
+    "Assertion",
     "CheckResult",
+    "CompoundTerm",
+    "Concept",
+    "ConnectiveFormula",
+    "Constant",
     "Diagnostic",
     "DiagnosticSeverity",
+    "Formula",
+    "IfTerm",
+    "ListTerm",
+    "LogicalConnective",
+    "Operator",
     "ParseResult",
     "PlannedStep",
     "PlannedSyntax",
     "PlanningCheckResult",
     "SourcePosition",
     "SourceSpan",
+    "Term",
+    "Workflow",
+    "WorkflowFile",
     "check_planned_steps",
     "check_workflow",
     "parse_workflow",

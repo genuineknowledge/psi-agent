@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from .contracts import CheckResult
+from .core_ir import WorkflowFile
 
 
-def check_workflow(core_ir: object) -> CheckResult:
+def check_workflow(core_ir: WorkflowFile) -> CheckResult:
     """Validate workflow semantics without parsing, compiling, or executing.
 
     The checker owns operator contracts and arity, duplicates, reference

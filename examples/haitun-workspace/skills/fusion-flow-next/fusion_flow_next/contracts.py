@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from .core_ir import WorkflowFile
+
 type DiagnosticSeverity = Literal["error", "warning"]
 
 
@@ -42,7 +44,7 @@ class Diagnostic:
 class ParseResult:
     """Parser-only result; ``core_ir`` exists exactly when parsing has no errors."""
 
-    core_ir: object | None
+    core_ir: WorkflowFile | None
     diagnostics: tuple[Diagnostic, ...]
 
 
@@ -50,5 +52,5 @@ class ParseResult:
 class CheckResult:
     """Checker-only result created from Core IR produced by a successful parse."""
 
-    core_ir: object
+    core_ir: WorkflowFile
     diagnostics: tuple[Diagnostic, ...]
