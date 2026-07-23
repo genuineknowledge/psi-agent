@@ -209,3 +209,18 @@ Session 支持将对话历史持久化到 `workspace/histories/{session_id}.json
 ### peek_pending / clear_pending 安全机制
 
 `Conversation.peek_pending()` 返回 pending chunks 的副本但**不清空** buffer——调用方在 yield 全部成功后显式调用 `clear_pending()`。这保证 channel 断开时 pending schedule chunks 不会永久丢失，下次请求会重新 push。
+
+### Kind 字段
+
+每条消息可以携带一个可选的 `kind` 字段，标识消息的类型。类型定义于 `protocol.py` 中的 `Kind` 字面量类型：
+
+| 值 | 语义 | 使用场景 |
+|---|------|---------|
+| `"chat"` | 普通对话消息 | 默认值。旧 JSONL 中没有 `kind` 字段的消息等价于 `"chat"` |
+| `"schedule.display"` | 会展示给用户的定时任务 | schedule 触发的、需要用户可见的响应 |
+| `"schedule.silent"` | 静默定时任务 | schedule 触发的后台任务，不打扰用户 |
+| `"compacted"` | 历史压缩摘要 | 长对话上下文压缩后产生的摘要消息 |
+
+`Conversation.add(msg, kind=...)` 在接受 `kind` 参数时写入消息 dict；未传时消息不携带该字段。
+
+**向后兼容**：旧 JSONL 文件中没有 `kind` 字段的消息，通过 `kind_or_chat(msg)` 助手函数统一返回 `"chat"`，保证旧数据平滑迁移。
