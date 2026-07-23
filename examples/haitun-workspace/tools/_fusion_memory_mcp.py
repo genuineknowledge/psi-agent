@@ -384,6 +384,12 @@ class MemoryMcpRouter:
 
     async def activate_current_session(self, workspace_root: Any) -> dict[str, Any]:
         session_id = get_session_id().strip()
+        if not session_id:
+            return _error(
+                "memory_user_not_configured",
+                "Fusion Memory activation requires a trusted Session context",
+                False,
+            )
         try:
             await resolve_memory_config(session_id, self._config)
         except MemoryConfigError as exc:
