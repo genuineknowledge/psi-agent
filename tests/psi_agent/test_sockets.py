@@ -96,8 +96,14 @@ async def test_resolve_unix_path_on_windows_raises_clear_error(monkeypatch: pyte
 
 
 @pytest.mark.anyio
-async def test_resolve_named_pipe_on_windows_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("psi_agent._sockets.sys.platform", "win32")
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="aiohttp.NamedPipeConnector requires a Windows ProactorEventLoop to construct",
+)
+async def test_resolve_named_pipe_on_windows_ok() -> None:
+    # A well-formed named-pipe address must take the pipe branch (not the Unix
+    # guard) and build a NamedPipeConnector. Only meaningful on Windows, where
+    # NamedPipeConnector can actually be instantiated.
     connector, endpoint = resolve_connector_and_endpoint("\\\\.\\pipe\\psi\\channels\\abc")
     try:
         assert isinstance(connector, aiohttp.NamedPipeConnector)
