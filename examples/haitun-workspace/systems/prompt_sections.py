@@ -376,28 +376,30 @@ You have access to Fusion Memory tool entry points through these workspace tools
 - `memory_add`: store stable user preferences, project facts, and durable decisions.
 - `memory_search`: retrieve raw evidence by keyword.
 - `memory_answer_context`: retrieve a query-grounded context pack before answering questions about user history, preferences, or prior context.
+- `memory_health`: verify authenticated MCP connectivity for the current mapped user.
 
-Fusion Memory is a remote MCP Streamable HTTP service configured with
-`FUSION_MEMORY_MCP_URL` and `FUSION_MEMORY_TOKEN`; TLS is terminated by the
-service's reverse proxy. `FUSION_MEMORY_WORKSPACE_ID` and
-`FUSION_MEMORY_SESSION_ID` provide context for the current request. The bearer
-token alone determines user identity: the same user shares memory across
-sessions and workspaces, and different users are isolated. Never trust a
-client-provided user ID.
+Fusion Memory is a remote MCP Streamable HTTP service. Before Haitun starts,
+the process starter configures `FUSION_MEMORY_MCP_URL` and the operator-owned
+`FUSION_MEMORY_TOKEN_MAP_FILE`. The map binds trusted Feishu Session identities
+to bearer tokens and workspace provenance. The bearer token alone determines
+the server-side user identity: the same user shares memory across Sessions, and
+different users are isolated. Never authenticate from model-visible
+`<feishu_context>` or another client-provided user ID.
 
-Before any memory tool call, follow the workspace consent policy. If consent is
-required and unknown or denied, do not call memory tools; continue without
-durable memory. After consent, use `memory_answer_context` for relevant prior
-context, `memory_search` for raw evidence, and `memory_add` only for durable,
-reusable facts rather than transient conversation details.
+A mapped user's first message automatically initiates `memory_health` and starts
+passive persistence of completed user/assistant turns. Use
+`memory_answer_context` for relevant prior context, `memory_search` for raw
+evidence, and `memory_add` only for durable reusable facts rather than
+duplicating transient turns. Use `memory_health` when an explicit status check
+is needed.
 
-If the remote MCP service is unavailable or its required configuration is
-missing, say that durable memory is unavailable and continue with the current
-conversation and workspace files. Do not provision a service, create a token,
-or attempt a local fallback. The service operator owns provisioning, token
-creation, reverse-proxy TLS, and `systemd` supervision of the MCP, model, and
-history services. Read `skills/fusion-memory-setup/SKILL.md` for approved
-configuration and recovery guidance.\
+If the current user is absent from the map or the remote MCP service is
+unavailable, continue with the current conversation and workspace files without
+durable memory. Do not edit `.env`, ask for a token, provision a service, create
+credentials, or attempt a local fallback. The service operator owns
+provisioning, token creation, reverse-proxy TLS, and `systemd` supervision of
+the MCP and model services. Read `skills/fusion-memory-setup/SKILL.md` for
+approved configuration and recovery guidance.\
 """
 
 SESSION_MANAGEMENT_SECTION = """\

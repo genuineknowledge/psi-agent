@@ -29,22 +29,36 @@ user profile, and bootstrap files all live at the workspace root:
 
 ## Remote Fusion Memory configuration
 
-These optional launcher settings connect Haitun to an operator-provisioned remote Fusion Memory
-MCP Streamable HTTP service. The bearer token is the only source of user identity: the same user
-shares memory across sessions and workspaces by default, while different users/tokens are
-isolated. Workspace and session IDs are context only, never client-supplied user identity. Keep
-the token in deployment-managed secrets; never commit or log it. Haitun consumes this MCP service
-only and must not use legacy REST routes.
+These process-start settings connect Haitun to an operator-provisioned remote Fusion Memory MCP
+Streamable HTTP service. For multi-user Feishu routing, the starter manually configures one token
+map outside the workspace. The bearer token is the only source of server-side user identity: the
+same token shares memory across Sessions, while different tokens are isolated. Workspace and
+Session IDs are provenance only. Keep tokens in deployment-managed secrets; never commit or log
+them. Haitun consumes this MCP service only and must not use legacy REST routes.
 
 | Variable | Purpose |
 |---|---|
 | `FUSION_MEMORY_MCP_URL` | Remote Fusion Memory MCP Streamable HTTP endpoint; TLS is terminated by its reverse proxy. |
-| `FUSION_MEMORY_TOKEN` | Operator-issued bearer token for Fusion Memory. Keep it in deployment-managed secrets; never commit or log it. |
-| `FUSION_MEMORY_WORKSPACE_ID` | Memory workspace context (defaults to `haitun`). |
-| `FUSION_MEMORY_SESSION_ID` | Optional memory session context supplied by the launcher. |
+| `FUSION_MEMORY_TOKEN_MAP_FILE` | Absolute path to the operator-owned JSON map keyed by Feishu `open_id`; each entry requires `token`, while empty or omitted `workspace_id` defaults to `haitun`. |
+| `FUSION_MEMORY_TOKEN` | Legacy single-user bearer token, used only when no token-map path is configured. |
+| `FUSION_MEMORY_WORKSPACE_ID` | Legacy single-user workspace provenance (defaults to `haitun`). |
+| `FUSION_MEMORY_SESSION_ID` | Optional legacy single-user Session provenance. |
 
-Before calling any memory tool, obtain the user's explicit consent. Server provisioning and token
-creation are operator actions.
+Token-map membership enables automatic durable memory. On each mapped user's first message after
+process startup, `system_prompt_builder()` or `system_prompt_rebuild_checker()` idempotently starts
+authenticated MCP health checking and that Session's passive JSONL writer. Unknown users can chat
+but receive no bearer token, connector, writer, checkpoint, or durable memory. Map mode never falls
+back to the legacy shared token. Duplicate token assignments reject the map. Removing an entry
+stops that Session's watcher and closes its cached client. Passive persistence accepts only completed
+ordinary chat turns, excludes schedule/heartbeat/compaction rows, and skips unchanged history files.
+Validated maps are cached by file signature. Each active turn renews a five-minute watcher lease;
+idle watcher/client resources are reclaimed and restart on the next message. Server provisioning
+and token creation remain operator actions.
+
+This is a trusted-runtime boundary: the Feishu Channel, Gateway, Session runtime and management
+tools, host shell, and token-map file must be trusted. `feishu-<open_id>` is not a cryptographic
+principal. Strong isolation from forged Session IDs or workspace code that can read the complete
+map requires core authorization and a privileged credential broker outside this workspace.
 
 ## Runtime display and service credentials
 
@@ -74,6 +88,7 @@ service tools:
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
 | `flow_manage` | CRUD + promote on Fusion Flow assets under `flows/`. |
 | `schedule_manage` | CRUD on `schedules/<name>/TASK.md` (cron + task body); validates the cron expression. |
+| `memory_add` / `memory_search` / `memory_answer_context` / `memory_health` | Per-Session routed Fusion Memory MCP tools. Authentication comes only from the trusted runtime Session and operator token map. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
 | `x_search` (`x_search.py` + `_x_search_impl.py`) | Search recent public posts on X (Twitter) via the X API v2 recent-search endpoint (last ~7 days). `x_search(query, max_results, sort_order)` supports X search operators (`from:`, `#tag`, `"phrase"`, `lang:`, `-is:retweet`). Uses `aiohttp` (already a core dep), no extra packages. Requires `X_BEARER_TOKEN` (X API v2 App-only OAuth 2.0 bearer token). |
 | `browser` (`browser.py` + `_browser_impl.py` + `_mcp.py`) | Browser automation via Playwright MCP driving the system browser (Edge). Tools surface as `browser_*` (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press_key`, `browser_navigate_back`, `browser_console_messages`, `browser_handle_dialog`, `browser_take_screenshot`, …). One long-lived `npx @playwright/mcp` server with `--shared-browser-context` keeps page state across calls. Requires Node.js/`npx`. |
@@ -129,14 +144,14 @@ service tools:
 ## Prerequisites
 
 - **Fusion Memory**: Haitun only consumes an operator-provisioned remote MCP
-  Streamable HTTP service. The bearer token defines user identity: the same
-  user shares memory across sessions and workspaces, while different users are
-  isolated. Workspace/session IDs are context, never user identity. The
-  operator creates tokens, terminates TLS at the reverse proxy, and supervises
-  MCP/model/history services with `systemd` for SSH-disconnect resilience and
-  restart after failure. Do not commit or log `FUSION_MEMORY_TOKEN`; do not
-  create a local memory service or use another public memory transport. Follow
-  the consent policy before calling any memory tool.
+  Streamable HTTP service. The process starter supplies the token-map path; the
+  bearer token defines user identity, while workspace/Session values are only
+  provenance. The operator creates tokens, terminates TLS at the reverse proxy,
+  and supervises MCP/model services with `systemd` for SSH-disconnect resilience
+  and restart after failure. The workspace itself starts one passive writer per
+  mapped Session and retries outages without blocking chat. Never commit or log
+  a token or token map; do not authenticate from `<feishu_context>`, create a
+  local memory service, or use another public memory transport.
 
 - **Fusion Flow**: Node.js / `npm` / `npx`. First use: `cd skills/fusion-flow && npm install`.
 - **Serper search**: install psi-agent with the `mcp` extra and have `uvx` available.

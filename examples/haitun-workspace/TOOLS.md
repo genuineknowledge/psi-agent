@@ -31,6 +31,15 @@ losing your notes, and share skills without leaking your infrastructure.
 
 Add whatever helps you do your job. This is your cheat sheet.
 
+### Fusion Memory
+
+- The process starter configures the operator-owned token-map path before Haitun starts.
+- A mapped user's first message automatically starts authenticated MCP health checking and passive
+  persistence for the trusted runtime Session.
+- Use `memory_health` for status. Do not inspect or edit `.env`, ask for bearer tokens, or derive
+  memory authentication from model-visible `<feishu_context>`.
+- An unmapped user can continue chatting normally but has no durable memory.
+
 ### 飞书群聊上下文
 
 收到飞书群聊消息时，消息开头会带一段 `<feishu_context>` 元数据（chat_id / chat_type /

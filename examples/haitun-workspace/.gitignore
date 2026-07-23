@@ -1,6 +1,9 @@
 # psi-agent session history
 histories/
 
+# Fusion Memory passive-writer checkpoints
+.fusion-memory/
+
 # gateway runtime state (contains AI api_key snapshots — never commit)
 state/
 
