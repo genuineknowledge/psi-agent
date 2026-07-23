@@ -230,6 +230,7 @@ async def handler(request):
 - **ruff**: `select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]`
 - **ty**: 全局 `ty check .`
 - **嵌套 Python 包**: `fusion-flow-next` 保持在示例 skill 内，通过 `tool.ty.environment.extra-paths` 纳入全局模块解析，不单独增加打包脚手架
+- **ANTLR 生成文件**: `fusion-flow-next/fusion_flow_next/generated/` 仅提交 ANTLR 4.13.2 生成的运行时 Python lexer/parser；`.interp`、`.tokens` 和未使用的 visitor 不提交。仅对这个目录关闭 Ruff、ty 和 Git whitespace 检查；手写代码仍保持零抑制。CI 固定 tool JAR 的 SHA-256 并重生成对比，运行时 import 测试负责验证可用性
 - **per-file-ignores**: **零条**。所有代码通过自身符合规则，不靠抑制
 - **核心代码（`src/` + `tests/`）仅 7 处 ty:ignore**（无法避免）：
   - `tests/integration/conftest.py:112` — pytest async generator fixture 的返回类型局限（`yield` 导致函数被推断为 AsyncGenerator，与标注的 MockAIServer 冲突）

@@ -9,6 +9,7 @@ or workspace tools, so existing `.flow.ts` behavior is unchanged.
 
 - `grammar/FusionFlow.g4`: the syntax grammar; ordinary preset/external-operator arity remains checker-owned.
 - `test/grammar-contract.mjs`: preset-operator signature-comment contract check for the grammar.
+- `fusion_flow_next/generated/`: committed ANTLR 4.13.2 Python lexer and parser generated from the grammar.
 - `fusion_flow_next/contracts.py`: diagnostics and parse/check phase results.
 - `fusion_flow_next/core_ir.py`: immutable Workflow Core IR shared by compiler phases.
 - `fusion_flow_next/parser.py`: parser facade and Workflow Core IR output boundary.
@@ -27,7 +28,7 @@ The language contract now covers file-level identity declarations, assertions, `
 
 For a compact, readable BNF and consistency with KEDispatcher, preset operators remain syntax sugar over the same flexible call rule instead of receiving separate arity-constrained grammar productions. After syntax parsing, the checker/catalog validates their arity and types. Because that information is intentionally not encoded structurally in the BNF, every preset operator in `FusionFlow.g4` documents its parameter types, return type, and explicit arity for human and agent readers; the grammar contract test enforces this documentation invariant.
 
-The generated parser is still not committed or wired into the Python parser facade. `WorkflowFile` retains global declarations and multiple workflow blocks, while `IfTerm` retains conditional terms without approximation. Operator registration and arity, catalog type compatibility, workflow legality, and backend support remain static-checker responsibilities.
+The generated Python lexer and parser are committed under `fusion_flow_next/generated/`, but are not yet wired into the Python parser facade. `WorkflowFile` retains global declarations and multiple workflow blocks, while `IfTerm` retains conditional terms without approximation. Operator registration and arity, catalog type compatibility, workflow legality, and backend support remain static-checker responsibilities.
 
 The Core IR contains catalog-owned `Concept` and `Operator` references, typed constants, recursive compound and conditional terms, ordered list terms, assertions, and `NOT`/`AND`/`OR` formulas. `WorkflowFile` stores declarations and ordered workflow blocks; each `Workflow` stores one syntax-level block name with its assertions. The workflow does not redeclare concepts or operators.
 
@@ -44,6 +45,16 @@ a prompt switch, or runner changes until the parser, checker, and compiler have
 real implementations and runnable checks.
 
 Integrate in this order: generated parser -> real functions and checks -> inactive or opt-in Haitun checker tool -> prompt opt-in -> replace legacy only after migration is complete. Existing `fusion-flow` remains the source of truth until the final migration.
+
+## Regenerating the Python parser
+
+Run ANTLR 4.13.2 from this directory:
+
+```powershell
+java -jar antlr-4.13.2-complete.jar -Dlanguage=Python3 -no-listener -Xexact-output-dir -o fusion_flow_next/generated grammar/FusionFlow.g4
+```
+
+Commit only `FusionFlowLexer.py` and `FusionFlowParser.py`; the generated `.interp` and `.tokens` metadata is not needed at runtime. CI pins the tool JAR by SHA-256, regenerates both Python files, and rejects drift. Grammar tests verify the committed runtime file set and importability. Ruff, ty, and Git whitespace exclusions apply only to the generated directory.
 
 ## Suggested work split
 
