@@ -2,6 +2,41 @@
 
 本文档面向后续开发者（人或 AI Agent），说明 psi-agent 的设计思路、代码结构、开发约定以及我们在开发过程中沉淀的最佳实践。
 
+## 本地并行开发：推荐用 `git worktree`
+
+后续开发者规划工作结构时，**优先用 Git worktree 开多个工作目录**，而不是复制整份仓库。多棵树共用**同一份 Git 历史**；未提交的工作区文件彼此独立、不自动同步。详见同目录 `WORKTREE.md`（本节约入口）。
+
+### 建议的三棵树分工
+
+| 角色 | 典型路径示例 | 典型分支 | 做什么 |
+|------|--------------|----------|--------|
+| 前端施工 | `…/Haitun develop` 或 `…-spa` | `feat/…`（只动 spa） | 只改 `src/psi_agent/gateway/spa-v2/`（及必要的 Gateway 壳） |
+| 后端 / workspace 施工 | `…-workspace` 或功能向 `…-feat` | 另一条 `feat/…` | 只改 `examples/haitun-workspace/`、Session/Gateway 服务端等 |
+| 参谋 / 结构讨论 | `…-arch` 或干净 `…-main` | `main`（只读为主）或 `chore/…` | 读代码、谈架构、写方案；尽量少改业务代码 |
+
+本机当前约定示例（路径可按机器调整，角色建议保持）：
+
+- `D:/Haitun develop` — 功能施工（当前功能分支）
+- `D:/Haitun-develop-main` — 干净 `main`
+- `D:/Haitun-develop-arch` — 结构讨论 / 流程约定
+
+### 必须遵守
+
+1. **一分支同时只挂一棵树**：这里的「分支」是 Git branch（如 `main`、`feat/xxx`），不是 Cursor 窗口名。
+2. **切换树 = 打开另一个文件夹 / 另一个编辑器窗口**，不是在同一目录里靠 `git checkout` 硬切施工现场。
+3. **两个 Agent 默认可各开一窗、各管一棵树**；默认看不见对方未提交改动。对齐接口或合并时，用 **commit / fetch / 分支**（或由人转述契约）交接。
+4. **日常按目录隔离**；**前后端对接**时再通过 Git 用稳定快照联调，不必让两个 Agent 时刻互读脏工作区。
+5. `git worktree list` 查看；`git worktree remove <路径>` 删除（先收拾未提交改动）。
+
+```bash
+git worktree list
+git fetch origin
+git worktree add -b feat/your-topic ../Haitun-develop-spa origin/main
+git worktree remove ../Haitun-develop-spa
+```
+
+**一句话**：树是目录上的多张办公桌，分支是 Git 账本上的线；历史联动，工作区独立；施工与参谋分开，对接靠 Git。
+
 ## 设计理念
 
 psi-agent 是一个**微内核**式的 agent 框架。核心理念是：
