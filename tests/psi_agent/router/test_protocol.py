@@ -64,7 +64,7 @@ def test_router_config_is_immutable() -> None:
     config = _config()
 
     with pytest.raises(FrozenInstanceError):
-        config.default_socket = "other.sock"
+        object.__setattr__(config, "default_socket", "other.sock")
 
 
 def test_router_config_rejects_default_socket_matching_session_socket() -> None:

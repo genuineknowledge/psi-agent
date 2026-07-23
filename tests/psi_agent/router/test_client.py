@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
 from aiohttp import web
@@ -9,14 +9,14 @@ from aiohttp import web
 from psi_agent.router.client import RouterClient, RouterUpstreamError
 
 
-async def _serve(handler: web.Handler) -> AsyncIterator[str]:
+async def _serve(handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> AsyncIterator[str]:
     app = web.Application()
     app.router.add_post("/chat/completions", handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
-    sockets = site._server.sockets if site._server is not None else []
+    sockets = getattr(site._server, "sockets", []) if site._server is not None else []
     assert sockets
     port = sockets[0].getsockname()[1]
     try:

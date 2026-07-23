@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -87,7 +87,7 @@ async def test_router_run_builds_config_and_orchestrator_then_serves(monkeypatch
 
     assert configured == [True]
     assert len(served) == 1
-    config, orchestrator = served[0]
+    config, orchestrator = cast(tuple[Any, Any], served[0])
     assert config.session_socket == "router.sock"
     assert config.router_socket == "planner.sock"
     assert config.default_socket == "default.sock"
@@ -121,10 +121,11 @@ async def test_router_run_accepts_supported_transport_addresses(monkeypatch: pyt
         )
     ).run()
 
-    assert served[0].session_socket == "http://127.0.0.1:8000"
-    assert served[0].router_socket == r"\\.\pipe\planner"
-    assert served[0].default_socket == "https://default.example"
-    assert served[0].upstream == (("http://127.0.0.1:8100", "research"),)
+    config = cast(Any, served[0])
+    assert config.session_socket == "http://127.0.0.1:8000"
+    assert config.router_socket == r"\\.\pipe\planner"
+    assert config.default_socket == "https://default.example"
+    assert config.upstream == (("http://127.0.0.1:8100", "research"),)
 
 
 def test_router_is_exported_with_its_server_function() -> None:

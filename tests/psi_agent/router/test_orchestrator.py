@@ -62,6 +62,7 @@ async def test_fanout_starts_all_upstreams_before_completion() -> None:
 
         tg.start_soon(run)
         with anyio.fail_after(1):
+            assert client.all_started is not None
             await client.all_started.wait()
         release.set()
     assert result_holder[0].content == "a\nb\nc"
