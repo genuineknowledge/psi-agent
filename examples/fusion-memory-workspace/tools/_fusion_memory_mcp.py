@@ -19,8 +19,10 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
+from psi_agent.session.runtime_context import get_session_id
+
 TOOLS_DIR = Path(__file__).resolve().parent
-READ_TOOLS = frozenset({"memory_search", "memory_answer_context"})
+READ_TOOLS = frozenset({"memory_search", "memory_answer_context", "memory_health"})
 
 
 def _load_sibling_module(name: str) -> tuple[str, dict[str, Any]]:
@@ -38,7 +40,10 @@ def _load_sibling_module(name: str) -> tuple[str, dict[str, Any]]:
 
 _, _config_module = _load_sibling_module("_fusion_memory_config")
 MemoryMcpConfig = _config_module["MemoryMcpConfig"]
+MemoryConfigError = _config_module["MemoryConfigError"]
+ResolvedMemoryConfig = _config_module["ResolvedMemoryConfig"]
 CONFIG = _config_module["CONFIG"]
+resolve_memory_config = _config_module["resolve_memory_config"]
 validate_mcp_url = _config_module["validate_mcp_url"]
 
 
@@ -67,7 +72,7 @@ class MemoryMcpClient:
         connector: Callable[..., Any] | None = None,
     ) -> None:
         self.url = validate_mcp_url(url)
-        self.token = token.strip()
+        self._token = token.strip()
         self.workspace_id = workspace_id or "fusion-memory"
         self.session_id = session_id or None
         self.timeout_seconds = max(0.1, min(120.0, float(timeout_seconds)))
@@ -83,7 +88,7 @@ class MemoryMcpClient:
         self._closed = False
 
     async def call_tool(self, name: str, arguments: dict[str, Any], *, retryable: bool) -> dict[str, Any]:
-        if not self.url or not self.token:
+        if not self.url or not self._token:
             missing = "url" if not self.url else "token"
             return _error("configuration_error", f"FUSION_MEMORY_MCP_{missing.upper()} is not configured", False)
         with self._thread_lock:
@@ -264,7 +269,7 @@ class MemoryMcpClient:
 
     def _headers(self) -> dict[str, str]:
         headers = {
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": f"Bearer {self._token}",
             "X-Fusion-Memory-Workspace": self.workspace_id,
         }
         if self.session_id:
@@ -284,7 +289,7 @@ async def _production_connector(url: str, headers: dict[str, str], timeout_secon
 
 
 def _has_idempotency_key(arguments: dict[str, Any]) -> bool:
-    return any(arguments.get(key) for key in ("idempotency_key", "idempotencyKey"))
+    return any(arguments.get(key) for key in ("idempotency_key", "idempotencyKey", "batch_id"))
 
 
 def _normalize_result(result: Any) -> dict[str, Any]:
@@ -316,11 +321,92 @@ def _error(code: str, message: str, retryable: bool) -> dict[str, Any]:
     return {"ok": False, "error": {"code": code, "message": message, "retryable": retryable}}
 
 
-CLIENT = MemoryMcpClient(
-    CONFIG.url,
-    CONFIG.token,
-    CONFIG.workspace_id,
-    CONFIG.session_id,
-    CONFIG.timeout_seconds,
-    CONFIG.max_retries,
-)
+@dataclass(frozen=True)
+class _ClientKey:
+    identity_key: str
+    token_digest: str
+    url: str
+    workspace_id: str
+    session_id: str | None
+
+
+class MemoryMcpRouter:
+    """Resolve trusted Session credentials before selecting an MCP client."""
+
+    def __init__(
+        self,
+        config: Any,
+        *,
+        connector: Callable[..., Any] | None = None,
+    ) -> None:
+        self._config = config
+        self._connector = connector
+        self._clients: dict[_ClientKey, MemoryMcpClient] = {}
+        self._session_keys: dict[str, _ClientKey] = {}
+        self._lock = threading.RLock()
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], *, retryable: bool) -> dict[str, Any]:
+        return await self.call_tool_for_session(get_session_id(), name, arguments, retryable=retryable)
+
+    async def call_tool_for_session(
+        self,
+        session_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        retryable: bool,
+    ) -> dict[str, Any]:
+        try:
+            resolved = await resolve_memory_config(session_id, self._config)
+        except MemoryConfigError as exc:
+            return _error(exc.code, str(exc), False)
+
+        client, stale_client = self._client_for(session_id, resolved)
+        if stale_client is not None:
+            await stale_client.close()
+        return await client.call_tool(name, arguments, retryable=retryable)
+
+    async def close(self) -> None:
+        with self._lock:
+            clients = list(self._clients.values())
+            self._clients.clear()
+            self._session_keys.clear()
+        async with anyio.create_task_group() as task_group:
+            for client in clients:
+                task_group.start_soon(client.close)
+
+    def _client_for(
+        self,
+        trusted_session_id: str,
+        resolved: Any,
+    ) -> tuple[MemoryMcpClient, MemoryMcpClient | None]:
+        route_key = trusted_session_id.strip() or resolved.session_id or resolved.identity_key
+        key = _ClientKey(
+            identity_key=resolved.identity_key,
+            token_digest=hashlib.sha256(resolved.token.encode()).hexdigest(),
+            url=resolved.url,
+            workspace_id=resolved.workspace_id,
+            session_id=resolved.session_id,
+        )
+        with self._lock:
+            stale_client = None
+            previous_key = self._session_keys.get(route_key)
+            if previous_key is not None and previous_key != key:
+                stale_client = self._clients.pop(previous_key, None)
+            client = self._clients.get(key)
+            if client is None:
+                client = MemoryMcpClient(
+                    resolved.url,
+                    resolved.token,
+                    resolved.workspace_id,
+                    resolved.session_id,
+                    resolved.timeout_seconds,
+                    resolved.max_retries,
+                    connector=self._connector,
+                )
+                self._clients[key] = client
+            self._session_keys[route_key] = key
+        return client, stale_client
+
+
+CLIENT = MemoryMcpRouter(CONFIG)
