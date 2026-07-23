@@ -492,9 +492,111 @@ async def test_decide_reject_uses_reject_endpoint(monkeypatch: pytest.MonkeyPatc
     assert result["action"] == "reject"
 
 
+@pytest.mark.asyncio
+async def test_get_approval_definition_parses_form_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "approval_name": "请假",
+            "status": "ACTIVE",
+            "form": '[{"id":"w1","custom_id":"leave_type","name":"假别","type":"radioV2","required":true},'
+            '{"id":"w2","name":"事由","type":"textarea"}]',
+            "node_list": [{"name": "直属主管", "node_id": "n1", "node_type": "AND"}],
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_approval_definition_impl("appr1")
+    q = _qdict(cap.request)
+    assert cap.request.http_method.name == "GET"
+    assert cap.request.paths["approval_code"] == "appr1"
+    assert cap.request.uri.endswith("/approval/v4/approvals/:approval_code")
+    assert q.get("user_id_type") == "open_id"
+    assert result["approval_name"] == "请假"
+    fields = result["form"]
+    assert fields[0] == {
+        "id": "w1",
+        "custom_id": "leave_type",
+        "name": "假别",
+        "type": "radioV2",
+        "required": True,
+    }
+    assert fields[1]["required"] is False
+    assert result["node_list"][0]["node_id"] == "n1"
+
+
+@pytest.mark.asyncio
+async def test_get_approval_definition_requires_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_approval_definition_impl("")
+    assert result["ok"] is False
+    assert cap.request is None  # never called Feishu
+
+
+@pytest.mark.asyncio
+async def test_create_instance_builds_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"instance_code": "inst_new"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_approval_instance_impl(
+        "appr1",
+        '[{"id":"w1","type":"input","value":"年假"}]',
+        applicant_open_id="ou_emp",
+        title="张三的请假",
+    )
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri.endswith("/approval/v4/instances")
+    assert req.body["approval_code"] == "appr1"
+    assert req.body["open_id"] == "ou_emp"
+    assert "user_id" not in req.body
+    assert req.body["title"] == "张三的请假"
+    assert json.loads(req.body["form"]) == [{"id": "w1", "type": "input", "value": "年假"}]
+    assert result["instance_code"] == "inst_new"
+
+
+@pytest.mark.asyncio
+async def test_create_instance_passes_node_approvers_and_user_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"instance_code": "inst_new"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.create_approval_instance_impl(
+        "appr1",
+        "[]",
+        applicant_open_id="ou_emp",
+        node_approver_open_id_list_json='[{"key":"n1","value":["ou_boss"]}]',
+        user_key="ou_emp",
+    )
+    assert cap.request.body["node_approver_open_id_list"] == [{"key": "n1", "value": ["ou_boss"]}]
+    assert cap.user_key == "ou_emp"
+
+
+@pytest.mark.asyncio
+async def test_create_instance_requires_applicant(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_approval_instance_impl("appr1", "[]")
+    assert result["ok"] is False
+    assert cap.request is None
+
+
+@pytest.mark.asyncio
+async def test_create_instance_rejects_bad_form_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    bad = await _impl.create_approval_instance_impl("appr1", "{not json", applicant_open_id="ou_emp")
+    assert bad["ok"] is False
+    not_list = await _impl.create_approval_instance_impl("appr1", '{"id":"w1"}', applicant_open_id="ou_emp")
+    assert not_list["ok"] is False
+    assert cap.request is None
+
+
 def test_approval_tools_are_async_with_docstrings() -> None:
     mod = importlib.import_module("feishu_approval")
-    for name in ("feishu_approval_list_tasks", "feishu_approval_get", "feishu_approval_decide"):
+    for name in (
+        "feishu_approval_list_tasks",
+        "feishu_approval_get",
+        "feishu_approval_decide",
+        "feishu_approval_get_definition",
+        "feishu_approval_create",
+    ):
         fn = getattr(mod, name)
         assert inspect.iscoroutinefunction(fn), name
         assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"
