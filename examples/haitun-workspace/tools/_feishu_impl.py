@@ -2457,6 +2457,66 @@ async def list_department_members_impl(
     }
 
 
+# ── Contact — batch user detail (contact info: mobile / email / job title) ─────
+#
+# find_by_department only gives name + ids. To hand someone a colleague's contact
+# details (so an employee stuck on a blocker can reach the right owner), fetch the
+# full user records via the batch endpoint: mobile, email, job title, department.
+# Tenant token works; the app's 通讯录权限范围 must cover the users, and reading
+# mobile/email needs the corresponding contact scopes (see feishu_contact tool).
+
+
+def _build_batch_users_request(user_ids: list[str], user_id_type: str, department_id_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/contact/v3/users/batch"
+    for uid in user_ids:
+        req.add_query("user_ids", uid)
+    req.add_query("user_id_type", user_id_type)
+    req.add_query("department_id_type", department_id_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_users_batch_impl(
+    user_ids: str,
+    user_id_type: str = "open_id",
+    department_id_type: str = "open_department_id",
+) -> dict[str, Any]:
+    """Fetch full user records (contact details) for up to 50 ids in one call.
+
+    Returns [{open_id, user_id, name, mobile, email, enterprise_email, job_title,
+    department_ids, leader_user_id}] — the info needed to hand someone a colleague's
+    contact details. mobile/email are only populated if the app has the matching
+    contact scopes and 通讯录权限范围 covers the user.
+    """
+    ids = [uid.strip() for uid in user_ids.split(",") if uid.strip()]
+    if not ids:
+        return _error("user_ids is required (comma-separated ids).")
+    if len(ids) > 50:
+        return _error("Feishu allows at most 50 user_ids per batch call.")
+    res = await _invoke(_build_batch_users_request(ids, user_id_type, department_id_type))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    users: list[dict[str, Any]] = []
+    for it in data.get("items", []) if isinstance(data.get("items"), list) else []:
+        users.append(
+            {
+                "open_id": it.get("open_id", ""),
+                "user_id": it.get("user_id", ""),
+                "name": it.get("name", ""),
+                "mobile": it.get("mobile", ""),
+                "email": it.get("email", ""),
+                "enterprise_email": it.get("enterprise_email", ""),
+                "job_title": it.get("job_title", ""),
+                "department_ids": it.get("department_ids", []),
+                "leader_user_id": it.get("leader_user_id", ""),
+            }
+        )
+    return {"ok": True, "user_id_type": user_id_type, "users": users, "count": len(users)}
+
+
 # ── Drive — download a file/attachment to disk ────────────────────────────────
 #
 # Two sources: a drive media file_token (goes through the medias endpoint), or a

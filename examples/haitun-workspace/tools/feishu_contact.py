@@ -4,10 +4,14 @@ Get the roster (user ids + names) for a department, or the whole organization
 from the root department "0". This gives the agent the ``user_id`` list needed to
 batch-query attendance and compute payroll.
 
+Also resolve a person's contact details (mobile / email / job title) by id, so an
+employee stuck on a blocker can be handed the right owner's way to reach them.
+
 Requires the app's 通讯录权限范围 to cover the members you want to see, the
 ``contact:contact.base:readonly`` scope (plus ``contact:user.employee_id:readonly``
-for the ``user_id``/employee-id field), and ``PSI_FEISHU_APP_ID`` /
-``PSI_FEISHU_APP_SECRET``.
+for the ``user_id``/employee-id field). Reading ``mobile`` / ``email`` also needs
+``contact:user.phone:readonly`` / ``contact:user.email:readonly`` (empty otherwise).
+Set ``PSI_FEISHU_APP_ID`` / ``PSI_FEISHU_APP_SECRET``.
 """
 
 from __future__ import annotations
@@ -43,3 +47,24 @@ async def feishu_department_members(
     return _f.dumps_result(
         await _f.list_department_members_impl(department_id, department_id_type, user_id_type, recursive)
     )
+
+
+async def feishu_user_get(
+    user_ids: str,
+    user_id_type: str = "open_id",
+    department_id_type: str = "open_department_id",
+) -> str:
+    """Get colleagues' contact details (mobile, email, job title) by id, up to 50 at once.
+
+    Use this to hand someone a way to reach the right person — e.g. after finding who
+    owns a blocked area, look up that owner's phone/email here so you can share it.
+    Returns per user ``{open_id, user_id, name, mobile, email, enterprise_email,
+    job_title, department_ids, leader_user_id}``. ``mobile``/``email`` come back empty
+    unless the app has the phone/email contact scopes and the 通讯录权限范围 covers them.
+
+    Args:
+        user_ids: Comma-separated ids (max 50), in the form given by user_id_type.
+        user_id_type: Id form of user_ids — open_id (default), union_id, or user_id.
+        department_id_type: Id form for returned department_ids — open_department_id (default) or department_id.
+    """
+    return _f.dumps_result(await _f.get_users_batch_impl(user_ids, user_id_type, department_id_type))

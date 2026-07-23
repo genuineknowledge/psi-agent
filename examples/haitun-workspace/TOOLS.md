@@ -97,3 +97,12 @@ message_id / sender_open_id）。需要群里之前的上下文时：
     **申请人身份靠 `applicant_open_id` 指定**——传 `<feishu_context>` 的 `sender_open_id`，单子即记在员工
     本人名下；用机器人 tenant token 提交即可，**这一步不需要员工单独授权 UAT**（区别于文档搜索/知识库）。
     提交是对外动作，按 [`admin-finance-governance`] 先把拼好的表单给员工确认再提交；缺字段就问，绝不编造。
+12. **卡点找人（判定归属 + 给联系方式）**：员工私聊说"工作上卡在某个点了"，按 [`feishu-blocker-routing`]
+    技能给他指路。先读一张**职责归属多维表格**（业务领域/职责 → 负责人 open_id）
+    `feishu_bitable_list_records(app_token, table_id)` 把卡点匹配到负责人，再用
+    `feishu_user_get(user_ids=<负责人 open_id>)` 取其**联系方式**（`mobile`/`email`/`enterprise_email`/
+    `job_title`），回员工"①这归谁负责 ②去找谁 ③怎么联系"。台账里存的是姓名不是 open_id 时，先
+    `feishu_department_members(recursive=True)` 或 `feishu_chat_find_member` 按名反查 open_id。
+    **联系方式只在私聊回给来问的本人，不群发**；`mobile`/`email` 读到空多是缺
+    `contact:user.phone:readonly`/`contact:user.email:readonly` 或通讯录权限范围没覆盖，**如实说明**并
+    退回到"在飞书里 @他"，不编号码；台账查不到归属就如实说查不到，别硬安负责人。
