@@ -106,3 +106,8 @@ message_id / sender_open_id）。需要群里之前的上下文时：
     **联系方式只在私聊回给来问的本人，不群发**；`mobile`/`email` 读到空多是缺
     `contact:user.phone:readonly`/`contact:user.email:readonly` 或通讯录权限范围没覆盖，**如实说明**并
     退回到"在飞书里 @他"，不编号码；台账查不到归属就如实说查不到，别硬安负责人。
+13. **代人带话/转达（署名，不发裸气泡）**：当用户让你替他给别人捎句话（"帮我给张三带句话：…"
+    "转告李四…"）时，用 `feishu_message_send(receive_id=<对方>, text=<原话>, on_behalf_of=<sender_open_id>)`——
+    传 `<feishu_context>` 的 `sender_open_id` 作为 `on_behalf_of`，收件人会看到「张三给你发了一条消息：「…」」
+    这样清楚是谁托带的，**而不是机器人自己冒出来一句裸消息**。姓名由 open_id 自动解析，解析不到才回退
+    成 open_id 本身。**只有代他人转达时才传 `on_behalf_of`**；机器人自己发的通知/看板/播报不要传（保持无前缀）。

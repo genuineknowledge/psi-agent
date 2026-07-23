@@ -335,8 +335,42 @@ def _build_send_message_request(receive_id: str, receive_id_type: str, msg_type:
     return req
 
 
-async def send_message_impl(receive_id: str, text: str, receive_id_type: str) -> dict[str, Any]:
-    """Send a text message to a chat/user. Returns message_id + thread_id (thread_id is the topic root)."""
+async def _resolve_sender_name(open_id: str) -> str:
+    """把发起人 open_id 解析成真实姓名, 供「代人带话」前缀用。
+
+    复用 ``get_users_batch_impl`` 取 ``name``; 查名失败 / 取空 / 非 open_id 一律
+    回退成传入值本身——绝不因查名失败而让消息发不出去 (转达失败比署名不全更糟)。
+    """
+    open_id = (open_id or "").strip()
+    if not open_id:
+        return ""
+    try:
+        res = await get_users_batch_impl(open_id, user_id_type="open_id")
+    except Exception:
+        return open_id
+    if not res.get("ok"):
+        return open_id
+    users = res.get("users") or []
+    if users and isinstance(users[0], dict):
+        name = (users[0].get("name") or "").strip()
+        if name:
+            return name
+    return open_id
+
+
+async def send_message_impl(receive_id: str, text: str, receive_id_type: str, on_behalf_of: str = "") -> dict[str, Any]:
+    """Send a text message to a chat/user. Returns message_id + thread_id (thread_id is the topic root).
+
+    When ``on_behalf_of`` (发起人的 open_id) is given, the bot is relaying someone
+    else's words, so the text is wrapped with a "{姓名}给你发了一条消息" attribution
+    prefix — the recipient sees who it is from instead of a bare bubble authored by
+    the bot. Name is resolved from the open_id; falls back to the raw open_id if
+    unresolvable.
+    """
+    if on_behalf_of.strip():
+        sender = await _resolve_sender_name(on_behalf_of)
+        if sender:
+            text = f"{sender}给你发了一条消息：「{text}」"  # noqa: RUF001
     content = json.dumps({"text": text}, ensure_ascii=False)
     res = await _invoke(_build_send_message_request(receive_id, receive_id_type, "text", content))
     if not res["ok"]:

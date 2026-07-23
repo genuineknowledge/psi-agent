@@ -42,19 +42,29 @@ async def feishu_topic_start(
     return _f.dumps_result(await _f.start_topic_impl(chat_id, text, at_open_ids, at_all))
 
 
-async def feishu_message_send(receive_id: str, text: str, receive_id_type: str = "chat_id") -> str:
+async def feishu_message_send(
+    receive_id: str, text: str, receive_id_type: str = "chat_id", on_behalf_of: str = ""
+) -> str:
     """Send a text message to a chat or user.
 
     The response includes ``message_id`` and ``thread_id``. Keep the returned
     ``message_id`` if you plan to reply-in-thread to it later (it becomes the
     topic root).
 
+    When you are **relaying someone's words to a third party** ("帮我给张三带句话…"),
+    pass that person's open_id as ``on_behalf_of`` — the recipient then sees a
+    "{姓名}给你发了一条消息" attribution prefix instead of a bare bubble that looks like
+    the bot spoke on its own. Use the ``sender_open_id`` from ``<feishu_context>``.
+    Leave it empty for messages the bot itself authors (dashboards, notifications, etc.).
+
     Args:
         receive_id: Target id — a chat_id (oc_...), open_id (ou_...), user_id, union_id, or email.
         text: Message text. May contain ``<at user_id="ou_xxx"></at>`` to @-mention.
         receive_id_type: Type of receive_id — chat_id, open_id, user_id, union_id, or email.
+        on_behalf_of: Open_id of the person whose words you are relaying (optional). When
+            set, the text is wrapped with a "某人给你发了一条消息" attribution prefix.
     """
-    return _f.dumps_result(await _f.send_message_impl(receive_id, text, receive_id_type))
+    return _f.dumps_result(await _f.send_message_impl(receive_id, text, receive_id_type, on_behalf_of))
 
 
 async def feishu_message_reply(message_id: str, text: str, reply_in_thread: bool = True) -> str:
