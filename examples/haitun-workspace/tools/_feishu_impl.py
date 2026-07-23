@@ -1046,7 +1046,14 @@ async def start_topic_impl(
 _UAT_USER_KEY = "default"  # fallback key when a caller does not pass user_key
 _token_store: Any = None
 _uat_client: Any = None
-_DEFAULT_SCOPES = "docs:doc:readonly drive:drive:readonly offline_access"
+_DEFAULT_SCOPES = (
+    "docs:doc:readonly drive:drive:readonly "
+    # write scopes: create/edit docx bodies and create/manage wiki nodes so the
+    # user-token path (create doc, append blocks, create wiki node) is not
+    # limited to read-only. docx:document covers both creating and editing docs.
+    "docx:document wiki:wiki "
+    "offline_access"
+)
 
 
 def _norm_user_key(user_key: str = "") -> str:
