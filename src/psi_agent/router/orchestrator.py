@@ -100,6 +100,13 @@ class Orchestrator:
                 seen_ids.add(call_id)
                 calls.append(deepcopy(call))
         finish = "tool_calls" if calls else "stop"
+        logger.info(
+            "Router aggregate result: finish_reason=%s, content=%r, reasoning_chars=%d, tool_calls=%d",
+            finish,
+            content,
+            len(reasoning),
+            len(calls),
+        )
         return UpstreamResult(content=content, reasoning=reasoning, tool_calls=calls, finish_reason=finish)
 
     def discard(self, session_id: str) -> None:
