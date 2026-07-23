@@ -1,4 +1,4 @@
-"""OpenAI-compatible HTTP/SSE boundary for serial Router orchestration."""
+"""OpenAI-compatible HTTP/SSE boundary for concurrent Router fan-out."""
 
 from __future__ import annotations
 

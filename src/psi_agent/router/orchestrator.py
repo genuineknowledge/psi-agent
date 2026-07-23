@@ -1,4 +1,4 @@
-"""Serial branch orchestration and Session-owned tool round trips."""
+"""Concurrent upstream fan-out and deterministic result aggregation."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class _TaskPlanner(Protocol):
 
 
 class Orchestrator:
-    """Own private runs and advance exactly one branch at a time."""
+    """Fan out one Session round and aggregate upstream responses."""
 
     def __init__(
         self,
