@@ -20,7 +20,7 @@ class ChannelFeishu:
     """Session socket path (Unix/TCP/Named Pipe). 无 gateway_url 时全体共用, 有 gateway_url 时作兜底。"""
 
     gateway_url: str | None = None
-    """Gateway REST 基址 (如 ``http://127.0.0.1:8760``), 面向**动态任意用户**场景。
+    """Gateway REST 基址 (如 ``http://127.0.0.1:8080``), 面向**动态任意用户**场景。
 
     设置后, 任意飞书用户首次发消息时 channel 按其 open_id 经 Gateway ``POST /feishu/route`` 幂等地
     拿到其独立 session 的 ``channel_socket`` 再连——路由/spawn 决策全在 Gateway (``FeishuManager``),
