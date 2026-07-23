@@ -37,10 +37,28 @@ hosts. The map is a JSON object keyed by Feishu `open_id`:
 ```
 
 The starter owns this file and keeps it outside the workspace and source
-control. Map membership enables durable memory for that user. The bearer token
-determines the server-side user identity, so the same user shares memory across
-Sessions while different users remain isolated. Map contents are re-read at
-runtime; changing the configured file path requires an Agent restart.
+control. `token` is required; `workspace_id` is provenance only and may be
+empty or omitted, in which case it defaults to `fusion-memory`. Map membership
+enables durable memory for that user. The bearer token determines the
+server-side user identity, so the same user shares memory across Sessions while
+different users remain isolated. Map contents are re-read at runtime; changing
+the configured file path requires an Agent restart. Assigning one token to
+multiple `open_id` entries rejects the map. Removing an entry stops that
+Session's watcher and closes its cached client. Validated map snapshots are
+cached by file signature and refreshed when the file changes.
+
+The passive writer stores only completed ordinary chat turns. Schedule,
+compaction, heartbeat, tool-only, and incomplete rows are excluded. Unchanged
+history files are not reparsed on each polling interval.
+Each active turn renews the Session watcher lease; an idle watcher and its MCP
+client are reclaimed after five minutes and restart on the next message.
+
+The workspace route assumes a trusted Feishu Channel, Gateway, Session
+runtime and management tools, host shell, and token-map file.
+`feishu-<open_id>` is a routing convention, not a cryptographically
+authenticated principal. Strong isolation from forged Session IDs or
+workspace code that can read the complete map requires runtime authorization
+and a privileged credential broker outside this example workspace.
 
 When `FUSION_MEMORY_TOKEN_MAP_FILE` is absent, the legacy single-user variables
 `FUSION_MEMORY_TOKEN`, `FUSION_MEMORY_WORKSPACE_ID`, and

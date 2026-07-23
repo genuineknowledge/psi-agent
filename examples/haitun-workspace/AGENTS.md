@@ -39,7 +39,7 @@ them. Haitun consumes this MCP service only and must not use legacy REST routes.
 | Variable | Purpose |
 |---|---|
 | `FUSION_MEMORY_MCP_URL` | Remote Fusion Memory MCP Streamable HTTP endpoint; TLS is terminated by its reverse proxy. |
-| `FUSION_MEMORY_TOKEN_MAP_FILE` | Absolute path to the operator-owned JSON map keyed by Feishu `open_id`; each entry contains `token` and `workspace_id`. |
+| `FUSION_MEMORY_TOKEN_MAP_FILE` | Absolute path to the operator-owned JSON map keyed by Feishu `open_id`; each entry requires `token`, while empty or omitted `workspace_id` defaults to `haitun`. |
 | `FUSION_MEMORY_TOKEN` | Legacy single-user bearer token, used only when no token-map path is configured. |
 | `FUSION_MEMORY_WORKSPACE_ID` | Legacy single-user workspace provenance (defaults to `haitun`). |
 | `FUSION_MEMORY_SESSION_ID` | Optional legacy single-user Session provenance. |
@@ -48,7 +48,17 @@ Token-map membership enables automatic durable memory. On each mapped user's fir
 process startup, `system_prompt_builder()` or `system_prompt_rebuild_checker()` idempotently starts
 authenticated MCP health checking and that Session's passive JSONL writer. Unknown users can chat
 but receive no bearer token, connector, writer, checkpoint, or durable memory. Map mode never falls
-back to the legacy shared token. Server provisioning and token creation remain operator actions.
+back to the legacy shared token. Duplicate token assignments reject the map. Removing an entry
+stops that Session's watcher and closes its cached client. Passive persistence accepts only completed
+ordinary chat turns, excludes schedule/heartbeat/compaction rows, and skips unchanged history files.
+Validated maps are cached by file signature. Each active turn renews a five-minute watcher lease;
+idle watcher/client resources are reclaimed and restart on the next message. Server provisioning
+and token creation remain operator actions.
+
+This is a trusted-runtime boundary: the Feishu Channel, Gateway, Session runtime and management
+tools, host shell, and token-map file must be trusted. `feishu-<open_id>` is not a cryptographic
+principal. Strong isolation from forged Session IDs or workspace code that can read the complete
+map requires core authorization and a privileged credential broker outside this workspace.
 
 ## Runtime display and service credentials
 

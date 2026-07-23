@@ -2,27 +2,30 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 from typing import Any
 
+import anyio
 
-def history_paths(workspace_root: Path, session_id: str) -> tuple[Path, Path]:
+from psi_agent.session.history_display import KIND_CHAT, message_kind, wire_role
+
+
+def history_paths(workspace_root: anyio.Path, session_id: str) -> tuple[anyio.Path, anyio.Path]:
     history_path = workspace_root / "histories" / f"{session_id}.jsonl"
     checkpoint_path = workspace_root / ".fusion-memory" / "haitun-history-watcher" / f"{session_id}.json"
     return history_path, checkpoint_path
 
 
-def completed_history_batches(history_path: Path, session_id: str) -> list[dict[str, Any]]:
-    if not history_path.exists():
+async def completed_history_batches(history_path: anyio.Path, session_id: str) -> list[dict[str, Any]]:
+    if not await history_path.exists():
         return []
     try:
-        lines = history_path.read_text(encoding="utf-8").splitlines()
+        lines = (await history_path.read_text(encoding="utf-8")).splitlines()
     except OSError:
         return []
 
     batches: list[dict[str, Any]] = []
     pending_user: dict[str, Any] | None = None
-    source_identity = str(history_path.resolve())
+    source_identity = str(await history_path.absolute())
     for line_number, line in enumerate(lines, start=1):
         raw = line.strip()
         if not raw:
@@ -33,9 +36,15 @@ def completed_history_batches(history_path: Path, session_id: str) -> list[dict[
             continue
         if not isinstance(item, dict):
             continue
-        role = item.get("role")
+        if message_kind(item) != KIND_CHAT:
+            pending_user = None
+            continue
+        role = wire_role(item.get("role"))
         content = _content_text(item.get("content"))
         if role == "user":
+            if content.startswith("# Heartbeat Task"):
+                pending_user = None
+                continue
             pending_user = {"role": "user", "content": content, "line_number": line_number} if content else None
             continue
         if role != "assistant" or pending_user is None or item.get("tool_calls") or not content:
@@ -46,11 +55,11 @@ def completed_history_batches(history_path: Path, session_id: str) -> list[dict[
     return batches
 
 
-def load_checkpoint(path: Path) -> dict[str, Any]:
-    if not path.exists():
+async def load_checkpoint(path: anyio.Path) -> dict[str, Any]:
+    if not await path.exists():
         return {"submitted_batches": []}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(await path.read_text(encoding="utf-8"))
     except OSError, json.JSONDecodeError:
         return {"submitted_batches": []}
     if not isinstance(payload, dict):
@@ -61,14 +70,14 @@ def load_checkpoint(path: Path) -> dict[str, Any]:
     return payload
 
 
-def save_checkpoint(path: Path, checkpoint: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+async def save_checkpoint(path: anyio.Path, checkpoint: dict[str, Any]) -> None:
+    await path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(f"{path.suffix}.tmp")
-    temporary_path.write_text(
+    await temporary_path.write_text(
         json.dumps(checkpoint, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    temporary_path.replace(path)
+    await temporary_path.replace(path)
 
 
 def _content_text(value: Any) -> str:

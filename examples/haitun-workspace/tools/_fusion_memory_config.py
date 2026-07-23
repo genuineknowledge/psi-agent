@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import os
 import re
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
@@ -16,6 +18,8 @@ MAX_TIMEOUT_SECONDS = 120.0
 DEFAULT_MAX_RETRIES = 2
 MIN_MAX_RETRIES = 0
 MAX_MAX_RETRIES = 5
+_TOKEN_MAP_CACHE: dict[str, tuple[tuple[int, int, int], dict[str, object]]] = {}
+_TOKEN_MAP_CACHE_LOCK = threading.RLock()
 
 
 @dataclass(frozen=True)
@@ -148,15 +152,15 @@ async def resolve_memory_config(
         workspace_id = entry.get("workspace_id")
         if not isinstance(token, str) or not token.strip():
             raise MemoryConfigError("configuration_error", "Fusion Memory token-map entry has no valid token")
-        if not isinstance(workspace_id, str) or not workspace_id.strip():
+        if workspace_id is not None and not isinstance(workspace_id, str):
             raise MemoryConfigError(
                 "configuration_error",
-                "Fusion Memory token-map entry has no valid workspace_id",
+                "Fusion Memory token-map entry has an invalid workspace_id",
             )
         return ResolvedMemoryConfig(
             url=effective.url,
             token=token.strip(),
-            workspace_id=workspace_id.strip(),
+            workspace_id=(workspace_id or "").strip() or effective.workspace_id,
             session_id=trusted_session_id,
             timeout_seconds=effective.timeout_seconds,
             max_retries=effective.max_retries,
@@ -185,17 +189,58 @@ def _open_id_from_session(session_id: str) -> str | None:
 
 
 async def _read_token_map(path: str) -> dict[str, object]:
+    token_map_path = anyio.Path(path)
+    for attempt in range(2):
+        before = await _token_map_signature(token_map_path)
+        with _TOKEN_MAP_CACHE_LOCK:
+            cached = _TOKEN_MAP_CACHE.get(path)
+            if cached is not None and cached[0] == before:
+                return cached[1]
+        try:
+            raw = await token_map_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise MemoryConfigError("configuration_error", "Fusion Memory token map is unavailable") from exc
+        after = await _token_map_signature(token_map_path)
+        if before != after:
+            if attempt == 0:
+                continue
+            raise MemoryConfigError("configuration_error", "Fusion Memory token map changed while reading")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise MemoryConfigError("configuration_error", "Fusion Memory token map is invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise MemoryConfigError("configuration_error", "Fusion Memory token map must be a JSON object")
+        _ensure_unique_tokens(payload)
+        with _TOKEN_MAP_CACHE_LOCK:
+            _TOKEN_MAP_CACHE[path] = (after, payload)
+        return payload
+    raise MemoryConfigError("configuration_error", "Fusion Memory token map is unavailable")
+
+
+async def _token_map_signature(path: anyio.Path) -> tuple[int, int, int]:
     try:
-        raw = await anyio.Path(path).read_text(encoding="utf-8")
+        stat = await path.stat()
     except OSError as exc:
         raise MemoryConfigError("configuration_error", "Fusion Memory token map is unavailable") from exc
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise MemoryConfigError("configuration_error", "Fusion Memory token map is invalid JSON") from exc
-    if not isinstance(payload, dict):
-        raise MemoryConfigError("configuration_error", "Fusion Memory token map must be a JSON object")
-    return payload
+    return stat.st_mtime_ns, stat.st_size, stat.st_ino
+
+
+def _ensure_unique_tokens(token_map: dict[str, object]) -> None:
+    digests: set[str] = set()
+    for entry in token_map.values():
+        if not isinstance(entry, dict):
+            continue
+        token = entry.get("token")
+        if not isinstance(token, str) or not token.strip():
+            continue
+        digest = hashlib.sha256(token.strip().encode()).hexdigest()
+        if digest in digests:
+            raise MemoryConfigError(
+                "configuration_error",
+                "Fusion Memory token map assigns one token to multiple users",
+            )
+        digests.add(digest)
 
 
 CONFIG = build_memory_config()

@@ -22,8 +22,9 @@ export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 - `FUSION_MEMORY_MCP_URL` is the remote MCP Streamable HTTP endpoint. TLS is
   terminated by the service's reverse proxy.
 - `FUSION_MEMORY_TOKEN_MAP_FILE` points to an operator-owned JSON object keyed
-  by Feishu `open_id`. Each entry requires `token` and `workspace_id` strings.
-  Keep the file outside the workspace and source control.
+  by Feishu `open_id`. Each entry requires a non-empty `token`; `workspace_id`
+  is optional provenance and defaults to `haitun` when empty or omitted. Keep
+  the file outside the workspace and source control.
 
 Map membership enables durable memory. On a mapped user's first message after
 startup, Haitun initiates authenticated `memory_health` and starts passive
@@ -33,8 +34,17 @@ token shares memory across Sessions; different tokens remain isolated.
 
 Users absent from the map can continue chatting but receive no bearer token,
 connector, passive writer, checkpoint, or durable memory. In map mode there is
-no fallback to `FUSION_MEMORY_TOKEN`. When the map variable is absent, the
-legacy single-user token/workspace/session variables remain compatible.
+no fallback to `FUSION_MEMORY_TOKEN`; duplicate token assignments reject the
+map, and removing an entry stops that Session's watcher and client. When the
+map variable is absent, the legacy single-user token/workspace/session
+variables remain compatible.
+
+Passive persistence accepts only completed ordinary chat turns and skips
+unchanged history files. Schedule, heartbeat, compaction, tool-only, and
+incomplete rows are excluded.
+Validated maps are cached by file signature. Each active turn renews a
+five-minute watcher lease; idle resources are reclaimed and restart on the
+next message.
 
 ## Use
 

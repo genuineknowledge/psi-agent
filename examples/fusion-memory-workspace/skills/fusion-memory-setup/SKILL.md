@@ -20,14 +20,23 @@ export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 
 `FUSION_MEMORY_MCP_URL` must be exactly `/mcp`. HTTPS is required for remote
 hosts; HTTP is accepted only for loopback development. The map is a JSON object
-keyed by Feishu `open_id`; each entry requires a non-empty `token` and
-`workspace_id`. Keep it outside the workspace and source control.
+keyed by Feishu `open_id`; each entry requires a non-empty `token`.
+`workspace_id` is optional provenance and defaults to `fusion-memory` when it
+is empty or omitted. Keep the map outside the workspace and source control.
 
 Map membership enables automatic durable memory. On the mapped user's first
 message, the workspace initiates `memory_health` and starts passive history
 sync. The bearer token determines user identity, so the same user shares memory
 across Sessions while different users remain isolated. Unknown users can chat
-but receive no bearer token or durable memory.
+but receive no bearer token or durable memory. Duplicate token assignments
+reject the map; removing a user stops that Session's watcher and client.
+Validated maps are cached by file signature and refreshed on content changes.
+
+Passive sync stores only completed ordinary chat turns and skips unchanged
+history files. Schedule, heartbeat, compaction, tool-only, and incomplete rows
+are never submitted.
+Each turn renews a five-minute watcher lease. Idle watcher/client resources are
+reclaimed and automatically restart on the next message.
 
 Never commit, print, return, or log a token. Do not derive authentication from
 model-visible `<feishu_context>`. `FUSION_MEMORY_MCP_TIMEOUT_SECONDS`

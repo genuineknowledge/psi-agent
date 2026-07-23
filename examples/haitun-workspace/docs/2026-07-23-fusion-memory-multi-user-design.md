@@ -8,8 +8,8 @@ Session, without changing psi-agent core, Gateway, or Feishu Channel code.
 
 The Feishu multi-user route creates deterministic Session IDs of the form
 `feishu-<open_id>`. The token map is an operator-managed JSON object keyed by
-the same `open_id`. Each value contains a bearer `token` and a provenance-only
-`workspace_id`.
+the same `open_id`. Each value contains a bearer `token`; the provenance-only
+`workspace_id` may be empty or omitted and then uses the workspace default.
 
 ## Scope
 
@@ -51,7 +51,11 @@ The token map schema is:
 
 Additional metadata fields are ignored. Token values must never appear in
 logs, error messages, dataclass representations, documentation examples,
-tool results, or source control.
+tool results, or source control. `token` must be a non-empty string;
+`workspace_id` must be a string when present, but an empty value falls back to
+the current workspace default (`fusion-memory` or `haitun`). The full map is
+rejected if two user entries contain the same token, because token equality
+would merge their server-side identities.
 
 ## Identity Resolution
 
@@ -65,6 +69,36 @@ through `psi_agent.session.runtime_context.get_session_id()`.
 
 The message-level `<feishu_context>` block is not used for authentication. It
 is model-visible input and therefore cannot select a bearer token.
+
+### Trust Boundary
+
+This workspace-level routing assumes that the Feishu Channel, Gateway,
+Session runtime, Session-management tools, host shell, and operator-managed
+token-map file are trusted. `feishu-<open_id>` is a runtime routing convention,
+not a cryptographically authenticated principal. Under this deployment model,
+users interact through the Feishu route and cannot choose another user's
+Session ID or read the token map.
+
+This change does not claim isolation against an untrusted Agent, Gateway
+caller, Session-management tool, shell process, or host user. That stronger
+threat model requires changes outside the two example workspaces: an
+unforgeable principal injected by the Channel/Gateway path, authorization on
+Session creation and handoff, authenticated Gateway control endpoints, and a
+privileged credential broker that does not expose the complete token map to
+workspace code.
+
+An active watcher revalidates its map route before each polling cycle. Removing
+or invalidating an entry revokes the cached client and stops that watcher;
+rotating a token closes the stale client without delaying use of the new route.
+History is reparsed only when file size or modification time changes, and only
+completed `kind=chat` user/assistant turns are eligible. Schedule, heartbeat,
+compaction, tool-only, and incomplete rows are excluded.
+Validated token maps are cached process-wide per workspace implementation by
+inode, modification time, and size, so unchanged polling does not repeatedly
+parse or hash the full map. Each system-prompt check renews a five-minute
+watcher lease. Deleted or idle Session resources are therefore reclaimed even
+though the current runtime has no workspace-tool shutdown hook; the next turn
+starts a fresh watcher idempotently.
 
 ## Token Selection Rules
 

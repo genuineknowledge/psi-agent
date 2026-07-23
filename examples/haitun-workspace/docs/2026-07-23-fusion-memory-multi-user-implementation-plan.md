@@ -56,7 +56,7 @@
 
 - [ ] **Step 3: Implement the minimal resolver in both workspaces**
 
-  Add `token_map_file: str | None` to `MemoryMcpConfig`, a frozen `ResolvedMemoryConfig` whose `token` field uses `repr=False`, and a structured `MemoryConfigError`. Resolve `feishu-<open_id>` only from the passed Session ID. In map mode, read and validate the JSON object on every resolution, require a non-empty string `token` and `workspace_id` for the matching entry, and raise safe errors that never include token values or full entry representations.
+  Add `token_map_file: str | None` to `MemoryMcpConfig`, a frozen `ResolvedMemoryConfig` whose `token` field uses `repr=False`, and a structured `MemoryConfigError`. Resolve `feishu-<open_id>` only from the passed Session ID. In map mode, read and validate the JSON object on every resolution, require a non-empty string `token`, reject duplicate token assignments, accept an empty or omitted `workspace_id` by falling back to the workspace default, and raise safe errors that never include token values or full entry representations.
 
 - [ ] **Step 4: Run the harness to verify GREEN**
 
@@ -145,7 +145,7 @@
 
 - [ ] **Step 3: Implement passive synchronization**
 
-  Add a daemon thread registry keyed by canonical workspace path and trusted Session ID. Its anyio loop must initiate `memory_health`, scan JSONL with synchronous file work isolated in the daemon thread, normalize only completed user/assistant turns, call `memory_add_batch` with deterministic IDs and source metadata, atomically replace checkpoint files after confirmed success, and retry with bounded exponential backoff. Log Session-safe lifecycle and error codes only; never log credentials, headers, map entries, or message contents.
+  Add a daemon thread registry keyed by canonical workspace path and trusted Session ID. Its anyio loop must initiate `memory_health`, use `anyio.Path` for JSONL/checkpoint IO, scan only changed history files, normalize only completed ordinary chat user/assistant turns, call `memory_add_batch` with deterministic IDs and source metadata, atomically replace checkpoint files after confirmed success, revalidate a file-signature-cached map on each cycle, renew a bounded watcher lease from system-prompt checks, and retry recoverable outages with bounded exponential backoff. Log Session-safe lifecycle and error codes only; never log credentials, headers, map entries, or message contents.
 
 - [ ] **Step 4: Wire first-message activation through system callbacks**
 
