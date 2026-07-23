@@ -2733,3 +2733,63 @@ def test_drive_upload_tool_is_async_with_docstring() -> None:
     fn = mod.feishu_drive_upload
     assert inspect.iscoroutinefunction(fn)
     assert (inspect.getdoc(fn) or "").strip()
+
+
+# ── Contact batch user detail impl tests (卡点找人 / 取负责人联系方式) ──────────
+
+
+@pytest.mark.asyncio
+async def test_get_users_batch_builds_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [
+                {
+                    "open_id": "ou_1",
+                    "user_id": "e1",
+                    "name": "张三",
+                    "mobile": "138",
+                    "email": "z@x.com",
+                    "job_title": "SRE",
+                    "department_ids": ["od_1"],
+                    "leader_user_id": "ou_boss",
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_users_batch_impl("ou_1, ou_2", "open_id")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri.endswith("/contact/v3/users/batch")
+    # user_ids is a repeated query param — inspect the raw list, not the collapsed dict.
+    uid_vals = [v for k, v in req.queries if k == "user_ids"]
+    assert uid_vals == ["ou_1", "ou_2"]
+    assert _qdict(req).get("user_id_type") == "open_id"
+    assert result["count"] == 1
+    u = result["users"][0]
+    assert u["mobile"] == "138"
+    assert u["job_title"] == "SRE"
+    assert u["leader_user_id"] == "ou_boss"
+
+
+@pytest.mark.asyncio
+async def test_get_users_batch_requires_ids() -> None:
+    result = await _impl.get_users_batch_impl("  ,  ")
+    assert result["ok"] is False
+    assert "required" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_get_users_batch_rejects_over_50() -> None:
+    ids = ",".join(f"ou_{i}" for i in range(51))
+    result = await _impl.get_users_batch_impl(ids)
+    assert result["ok"] is False
+    assert "50" in result["message"]
+
+
+def test_contact_tools_are_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_contact")
+    for name in ("feishu_department_members", "feishu_user_get"):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"
