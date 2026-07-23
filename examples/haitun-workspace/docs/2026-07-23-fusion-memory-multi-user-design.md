@@ -90,31 +90,45 @@ behavior remains compatible for non-multi-user deployments.
 
 ## Startup And Automatic Activation
 
-"Start each user's long-term memory" means that the launcher supplies one
-operator-managed token map and HaiTun automatically activates the correct
-user's MCP client when that user's isolated Feishu Session first needs memory.
-No user or agent must copy, paste, request, or assign a bearer token during a
-conversation.
+"Start each user's long-term memory" means that the process starter manually
+configures one operator-managed token-map path before launching HaiTun. HaiTun
+then activates the correct user's MCP client and passive history writer on that
+user's first message after the process starts. No user or agent must copy,
+paste, request, discover, or assign a bearer token during a conversation.
 
-The token map is parsed and structurally validated by the memory integration
-when its workspace modules are loaded. Tool loading remains available if the
-file is temporarily invalid; affected calls fail closed with structured errors
+Presence in the operator-managed token map is the enablement decision for
+durable memory. A mapped user's conversation is therefore eligible for passive
+history persistence immediately; the model does not ask for a second consent
+step. An unmapped user can chat normally but receives neither a bearer token nor
+durable memory.
+
+The token-map path is captured when workspace modules are loaded, while the
+small JSON map is parsed and structurally validated when a Session resolves its
+credentials. Tool loading remains available if the file is temporarily
+invalid; affected activation and tool calls fail closed with structured errors
 instead of removing the tools from HaiTun.
 
 MCP network sessions are not opened for every token during Python module
 import. At that point most per-user Feishu Sessions do not exist, and bulk
 network side effects would couple workspace loading to the availability of all
-users and the remote service. Instead:
+users and the remote service. Instead, the workspace uses the system-prompt
+lifecycle as its trusted first-turn hook:
 
-1. A mapped user's first `memory_health`, read, or write call creates that
-   user's client and establishes the MCP connection.
-2. Later calls reuse the same user-specific client and reconnect through the
-   existing supervisor when needed.
-3. HaiTun's Fusion Memory skill and system guidance direct the agent to call
-   `memory_health` when a user asks whether memory is active, and before the
-   first relevant memory operation when a health check is needed.
-4. Unknown users continue chatting; their memory calls stop before any bearer
-   header or network request is created.
+1. `SessionAgent.run()` binds the current Session ID before invoking either
+   `system_prompt_builder()` or `system_prompt_rebuild_checker()`.
+2. Both workspace callbacks call an idempotent Fusion Memory activation entry
+   point. This covers new histories and existing histories restored after a
+   HaiTun restart.
+3. A mapped user's first activation starts a dedicated passive writer and
+   immediately initiates an authenticated `memory_health` call in that
+   background worker. The user response is not blocked when Memory is offline.
+4. The writer watches `histories/<session-id>.jsonl`, submits completed
+   user/assistant turns with `memory_add_batch`, and stores idempotent local
+   checkpoints under `.fusion-memory/haitun-history-watcher/`.
+5. Later turns and explicit memory tools reuse the same effective client and
+   reconnect through the existing supervisor when needed.
+6. Unknown users continue chatting; activation and memory calls stop before any
+   bearer header, MCP connector, watcher, or checkpoint is created.
 
 This preserves automatic per-user availability while keeping startup resilient
 when the Memory service is temporarily unavailable.
@@ -123,18 +137,24 @@ when the Memory service is temporarily unavailable.
 
 Replace the process-wide single-token client facade with a routing facade that
 resolves credentials at call time and maintains independent MCP clients keyed
-by resolved user configuration.
+by resolved user configuration and current Session provenance.
 
 - Different mapped users never share a client or Authorization header.
-- The same mapped user reuses a client across calls.
-- A token or workspace change in the operator map creates/replaces that user's
-  effective client without exposing the old or new token.
+- The same mapped user and Session reuse a client across calls.
+- Different Sessions for the same mapped user may use separate MCP connections
+  so each connection carries the correct `X-Fusion-Memory-Session` header; the
+  shared bearer-token subject still gives those Sessions one user memory scope.
+- A token or workspace change in the operator map creates/replaces the affected
+  Session's effective client without exposing the old or new token.
 - Read retry and reconnect behavior remains unchanged inside each client.
 - `memory_add` remains non-replayed unless an idempotency key is supplied by
   the existing protocol rules.
+- `memory_add_batch` uses its stable `batch_id` as the idempotency key and may be
+  retried after a transport interruption.
 
-The map may be cached by file metadata, but updates must become visible without
-restarting HaiTun. Cache state must not contain printable credential objects.
+The small operator map is re-read when credentials are resolved, so entry
+updates become visible without restarting HaiTun. The configured map path
+itself is process-start configuration and changing it requires a restart.
 
 ## Tools
 
@@ -149,9 +169,27 @@ MCP tool using the same per-user routing rules. It lets HaiTun answer memory
 status questions with an actual connectivity check instead of inspecting or
 editing `.env` files.
 
-The setup skill must describe launcher-time token-map configuration and the
-automatic first-use activation flow. It must not tell HaiTun to edit `.env`,
-mint tokens, or start a local Memory service.
+The setup skill must describe starter-managed token-map-path configuration and
+the automatic first-message activation flow. It must not tell HaiTun to edit
+`.env`, mint tokens, expose credentials, or start a local Memory service.
+
+## Passive History Semantics
+
+The passive writer persists only completed conversational turns. It ignores
+system rows, tool-call rows, tool results, and incomplete trailing user-only
+turns. This prevents a long-running tool round from producing multiple variants
+of the same user message.
+
+Each batch includes a deterministic `batch_id` derived from the workspace
+history path, Session ID, source line range, and normalized user/assistant
+messages. The checkpoint is written atomically only after the MCP server
+confirms success. Service outages, process restarts, and repeated file scans
+therefore retry safely without duplicating confirmed batches.
+
+The writer performs no shell invocation and never places a token in command
+arguments, child-process environments, checkpoint files, or logs. Background
+workers for different users run independently, so one unavailable or slow user
+does not serialize other users' memory operations.
 
 ## Workspace Synchronization
 
@@ -186,7 +224,14 @@ The verification cases are:
 7. Without map mode, the existing single-user environment-token flow works.
 8. `memory_health` routes through the same user-specific client.
 9. Token-map updates are observed without process restart.
-10. Formatting, lint, relevant existing tests, and both workspace smoke checks
+10. A mapped user's first message starts one passive writer, initiates
+    `memory_health`, and submits a completed JSONL turn through
+    `memory_add_batch`.
+11. Repeated turns do not start duplicate writers or resubmit checkpointed
+    batches.
+12. An unmapped user's first message starts no connector or writer and creates
+    no checkpoint.
+13. Formatting, lint, relevant existing tests, and both workspace smoke checks
     pass.
 
 ## Security Properties
