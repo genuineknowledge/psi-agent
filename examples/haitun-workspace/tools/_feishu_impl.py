@@ -2555,3 +2555,322 @@ async def append_doc_content_impl(document_id: str, content: str, user_key: str 
             return res
         added += len(batch)
     return {"ok": True, "document_id": document_id.strip(), "added": added}
+
+
+# ── Drive permissions — make a doc public / give different people different access ──
+# One doc/sheet/bitable/wiki, per-member permission (view/edit/full_access). Add a
+# department (e.g. the whole company) for "全员可查", or add specific users/groups at
+# different perm levels so different people see/do different things on the artifact.
+_PERM_MEMBER_TYPES = {"openid", "openchat", "opendepartmentid", "userid", "unionid", "email", "groupid", "wikispaceid"}
+_PERM_LEVELS = {"view", "edit", "full_access"}
+
+
+def _build_add_permission_member_request(
+    token: str, obj_type: str, member_type: str, member_id: str, member_kind: str, perm: str, need_notification: bool
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/drive/v1/permissions/:token/members"
+    req.paths["token"] = token
+    req.add_query("type", obj_type)
+    req.add_query("need_notification", "true" if need_notification else "false")
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"member_type": member_type, "member_id": member_id, "perm": perm, "type": member_kind}
+    return req
+
+
+async def add_permission_member_impl(
+    token: str,
+    obj_type: str,
+    member_id: str,
+    perm: str = "view",
+    member_type: str = "openid",
+    member_kind: str = "user",
+    need_notification: bool = False,
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Grant a user/chat/department a permission (view/edit/full_access) on a Feishu file."""
+    if not token.strip() or not member_id.strip():
+        return _error("token and member_id are required.")
+    if perm not in _PERM_LEVELS:
+        return _error(f"perm must be one of {sorted(_PERM_LEVELS)}.")
+    if member_type not in _PERM_MEMBER_TYPES:
+        return _error(f"member_type must be one of {sorted(_PERM_MEMBER_TYPES)}.")
+    req = _build_add_permission_member_request(
+        token.strip(), obj_type, member_type, member_id.strip(), member_kind, perm, need_notification
+    )
+    res = await _invoke(req, user_key=user_key)
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {"ok": True, "member": data.get("member", {}), "token": token.strip(), "type": obj_type}
+
+
+def _build_list_permission_members_request(token: str, obj_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/drive/v1/permissions/:token/members"
+    req.paths["token"] = token
+    req.add_query("type", obj_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_permission_members_impl(token: str, obj_type: str, user_key: str = "") -> dict[str, Any]:
+    """List everyone who has an explicit permission on a Feishu file (who can see/edit it)."""
+    if not token.strip():
+        return _error("token is required.")
+    res = await _invoke(_build_list_permission_members_request(token.strip(), obj_type), user_key=user_key)
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    members = [
+        {
+            "member_id": m.get("member_id", ""),
+            "member_type": m.get("member_type", ""),
+            "perm": m.get("perm", ""),
+            "type": m.get("type", ""),
+            "name": m.get("name", ""),
+        }
+        for m in items
+        if isinstance(m, dict)
+    ]
+    return {"ok": True, "members": members, "member_total": len(members)}
+
+
+def _build_delete_permission_member_request(
+    token: str, obj_type: str, member_id: str, member_type: str, member_kind: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.DELETE
+    req.uri = "/open-apis/drive/v1/permissions/:token/members/:member_id"
+    req.paths["token"] = token
+    req.paths["member_id"] = member_id
+    req.add_query("type", obj_type)
+    req.add_query("member_type", member_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"type": member_kind}
+    return req
+
+
+async def delete_permission_member_impl(
+    token: str,
+    obj_type: str,
+    member_id: str,
+    member_type: str = "openid",
+    member_kind: str = "user",
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Revoke a user/chat/department's permission on a Feishu file."""
+    if not token.strip() or not member_id.strip():
+        return _error("token and member_id are required.")
+    req = _build_delete_permission_member_request(token.strip(), obj_type, member_id.strip(), member_type, member_kind)
+    res = await _invoke(req, user_key=user_key)
+    if not res["ok"]:
+        return res
+    return {"ok": True, "token": token.strip(), "member_id": member_id.strip()}
+
+
+# ── Bitable advanced permission — one base, different roles see different rows/fields ──
+# A custom role (自定义角色) controls per-table read/edit, optional per-record visibility
+# rules, and per-field permissions. Assign people to a role so everyone opens the same
+# base but each role sees different rows/fields. Requires advanced permission on the base.
+def _build_create_bitable_role_request(app_token: str, body: dict[str, Any]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/roles"
+    req.paths["app_token"] = app_token
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = body
+    return req
+
+
+async def create_bitable_role_impl(
+    app_token: str, role_name: str, table_roles_json: str, user_key: str = ""
+) -> dict[str, Any]:
+    """Create a custom role on a bitable. table_roles_json is a JSON list of per-table perms."""
+    if not app_token.strip() or not role_name.strip():
+        return _error("app_token and role_name are required.")
+    try:
+        table_roles = json.loads(table_roles_json)
+    except ValueError as exc:
+        return _error(f"table_roles_json is not valid JSON: {exc}")
+    if not isinstance(table_roles, list):
+        return _error("table_roles_json must be a JSON array of per-table permission objects.")
+    body = {"role_name": role_name.strip(), "table_roles": table_roles}
+    res = await _invoke(_build_create_bitable_role_request(app_token.strip(), body), user_key=user_key)
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    role = data.get("role", {}) if isinstance(data.get("role"), dict) else {}
+    return {"ok": True, "role_id": role.get("role_id", ""), "role_name": role.get("role_name", "")}
+
+
+def _build_list_bitable_roles_request(app_token: str, page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/roles"
+    req.paths["app_token"] = app_token
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_bitable_roles_impl(
+    app_token: str, page_size: int = 100, page_token: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """List the custom roles defined on a bitable (each with its role_id and table perms)."""
+    if not app_token.strip():
+        return _error("app_token is required.")
+    res = await _invoke(_build_list_bitable_roles_request(app_token.strip(), page_size, page_token), user_key=user_key)
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    roles = [
+        {"role_id": r.get("role_id", ""), "role_name": r.get("role_name", ""), "table_roles": r.get("table_roles", [])}
+        for r in items
+        if isinstance(r, dict)
+    ]
+    return {
+        "ok": True,
+        "roles": roles,
+        "has_more": data.get("has_more", False),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+def _build_add_bitable_role_member_request(
+    app_token: str, role_id: str, member_id: str, member_id_type: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/roles/:role_id/members"
+    req.paths["app_token"] = app_token
+    req.paths["role_id"] = role_id
+    req.add_query("member_id_type", member_id_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"member_id": member_id}
+    return req
+
+
+async def add_bitable_role_member_impl(
+    app_token: str, role_id: str, member_id: str, member_id_type: str = "open_id", user_key: str = ""
+) -> dict[str, Any]:
+    """Assign a user to a bitable custom role (that person then sees the role's rows/fields)."""
+    if not app_token.strip() or not role_id.strip() or not member_id.strip():
+        return _error("app_token, role_id and member_id are required.")
+    req = _build_add_bitable_role_member_request(app_token.strip(), role_id.strip(), member_id.strip(), member_id_type)
+    res = await _invoke(req, user_key=user_key)
+    if not res["ok"]:
+        return res
+    return {"ok": True, "role_id": role_id.strip(), "member_id": member_id.strip()}
+
+
+# ── eLearning (在线学习) — query each person's course-registration / learning records ──
+# Reads who signed up for a course and their completion status/progress/score. Note:
+# creating/publishing a course and assigning it to 全员 is done in the eLearning admin
+# console — the open platform exposes the *reading* of registration/learning records.
+# The exact path & scope below follow Feishu's naming convention; verify on the live
+# doc during integration (the doc site is a JS SPA and can't be scraped).
+def _build_list_course_registrations_request(
+    user_ids: list[str], user_id_type: str, page_size: int, page_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/elearning/v2/course_registrations"
+    req.add_query("user_id_type", user_id_type)
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    for uid in user_ids:
+        req.add_query("user_ids", uid)
+    req.token_types = {AccessTokenType.TENANT}
+    return req
+
+
+async def list_course_registrations_impl(
+    user_ids: str = "",
+    user_id_type: str = "open_id",
+    page_size: int = 100,
+    page_token: str = "",
+) -> dict[str, Any]:
+    """List eLearning course registrations (learning records) — optionally filtered by user."""
+    ids = [u.strip() for u in user_ids.split(",") if u.strip()]
+    res = await _invoke(_build_list_course_registrations_request(ids, user_id_type, page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    return {
+        "ok": True,
+        "registrations": items,
+        "has_more": data.get("has_more", False),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+# ── Drive media upload — put a learning video / signed proof into Feishu Drive ─────────
+# upload_all handles files up to 20MB in one shot (multipart). Larger files need the
+# chunked upload_prepare/upload_part/upload_finish flow (not implemented here).
+_UPLOAD_ALL_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _build_media_upload_all_request(
+    file_name: str, parent_type: str, parent_node: str, size: int, data: bytes, extra: dict[str, Any] | None
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/drive/v1/medias/upload_all"
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {
+        "file_name": file_name,
+        "parent_type": parent_type,
+        "parent_node": parent_node,
+        "size": str(size),
+    }
+    if extra:
+        body["extra"] = json.dumps(extra, ensure_ascii=False)
+    req.body = body
+    req.files = {"file": (file_name, data)}
+    return req
+
+
+async def upload_media_impl(
+    file_path: str,
+    parent_type: str = "explorer",
+    parent_node: str = "",
+    file_name: str = "",
+    extra_json: str = "",
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Upload a local file (e.g. a learning video) to Feishu Drive; returns its file_token."""
+    p = anyio.Path(file_path)
+    if not await p.is_file():
+        return _error(f"file not found: {file_path}")
+    if not parent_node.strip():
+        return _error("parent_node is required (the target folder token for parent_type=explorer).")
+    extra: dict[str, Any] | None = None
+    if extra_json.strip():
+        try:
+            extra = json.loads(extra_json)
+        except ValueError as exc:
+            return _error(f"extra_json is not valid JSON: {exc}")
+    name = file_name.strip() or p.name
+    data = await p.read_bytes()
+    size = len(data)
+    if size > _UPLOAD_ALL_MAX_BYTES:
+        return _error(
+            f"file is {size} bytes (> 20MB). upload_all supports files up to 20MB; "
+            "use the chunked upload flow for larger files.",
+            size=size,
+        )
+    req = _build_media_upload_all_request(name, parent_type, parent_node.strip(), size, data, extra)
+    res = await _invoke(req, user_key=user_key)
+    if not res["ok"]:
+        return res
+    rdata = res["data"] if isinstance(res["data"], dict) else {}
+    return {"ok": True, "file_token": rdata.get("file_token", ""), "file_name": name, "size": size}

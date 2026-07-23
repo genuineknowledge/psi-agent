@@ -122,3 +122,35 @@ async def feishu_drive_delete_file(file_token: str, file_type: str, user_key: st
             that user (needed for user-owned files/wikis); empty uses the bot's tenant token.
     """
     return _f.dumps_result(await _f.delete_file_impl(file_token, file_type, user_key))
+
+
+async def feishu_drive_upload(
+    file_path: str,
+    parent_node: str,
+    parent_type: str = "explorer",
+    file_name: str = "",
+    extra_json: str = "",
+    user_key: str = "",
+) -> str:
+    """Upload a local file (e.g. a learning video or a signed-proof image) to Feishu Drive.
+
+    Handles files up to 20MB in one request and returns the new ``file_token`` (which you
+    can then share via ``feishu_permission_add_member`` or reference as learning evidence).
+    Larger files need Feishu's chunked upload flow, which this tool does not implement — it
+    returns an error telling you the size.
+
+    Args:
+        file_path: Local path of the file to upload.
+        parent_node: Target container token — for parent_type=explorer, the destination
+            folder token (the segment in a feishu.cn/drive/folder/<token> URL).
+        parent_type: Where it goes — "explorer" (a Drive folder, default) or a doc-attach
+            type like "docx_image" / "docx_file" when attaching into a document.
+        file_name: Name to store it as (defaults to the local file's name).
+        extra_json: Optional JSON string for the endpoint's ``extra`` field (e.g. the target
+            drive_route_token when attaching into a doc). Empty for a plain folder upload.
+        user_key: The sender's open_id; pass it to upload as that user (needed when the
+            target folder is user-owned). Empty uses the bot's tenant token.
+    """
+    return _f.dumps_result(
+        await _f.upload_media_impl(file_path, parent_type, parent_node, file_name, extra_json, user_key)
+    )
