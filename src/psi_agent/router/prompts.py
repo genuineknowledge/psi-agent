@@ -104,7 +104,8 @@ def build_aggregation_messages(
             "role": "user",
             "content": (
                 "Synthesize the following specialist results into one accurate, self-contained final answer. "
-                "Do not mention routing or the specialists.\n\n"
+                "Do not mention routing or the specialists. Do not output JSON, Markdown fences, thoughts, task lists, "
+                "backend sockets, or planning instructions. Return only the answer intended for the end user.\n\n"
                 f"{answer_text}"
             ),
         }

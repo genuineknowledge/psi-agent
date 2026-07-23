@@ -63,6 +63,7 @@ class Orchestrator:
         messages = self._messages(body)
         tools = self._tools(body)
         plan = await self.planner.plan(messages=messages)
+        logger.info(f"Router plan selected {len(plan)} task(s): {[(task.subtask, task.socket) for task in plan]}")
         results: list[UpstreamResult | None] = [None] * len(plan)
         errors: list[Exception] = []
 
