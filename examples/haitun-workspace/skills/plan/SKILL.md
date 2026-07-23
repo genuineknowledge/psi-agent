@@ -56,6 +56,8 @@ docs/superpowers/plans/<YYYY-MM-DD>-<kebab-slug>.md
 
 例：`docs/superpowers/plans/2026-07-13-add-plan-skill.md`。日期用**今天的真实日期**，slug 用简短英文短横线。
 
+该目录是本地工作产物，根 `.gitignore` 已忽略；不要将计划或 spec 暂存、提交。
+
 ### 结构（照抄这个骨架）
 
 ```markdown
@@ -136,4 +138,3 @@ docs/superpowers/plans/<YYYY-MM-DD>-<kebab-slug>.md
 - **执行期进度追踪**：`skills/task-planning/SKILL.md`（`todo` tool）
 - **问用户澄清/选型**：`skills/clarify/SKILL.md`
 - **收尾自检**：`skills/task-self-check/SKILL.md`
-- **历史计划范例**：`docs/superpowers/plans/*.md`
