@@ -6,16 +6,17 @@ Router 位于 Session 与多个 AI 后端之间，负责把一次 Session 请求
 
 ## 目录结构
 
-Router 代码按职责分为五类：
-
-| 文件/职责 | 说明 |
-|---|---|
-| `__init__.py` | 对外暴露 `Router` 和 `serve_router`。不放业务逻辑。 |
-| `server.py` | aiohttp HTTP/SSE 入口、fallback、生命周期和响应编码。 |
-| `entry.py` | CLI/dataclass 启动编排；负责构造配置、客户端、分流器并启动 server。 |
-| `planner.py`、`orchestrator.py`、`protocol.py`、`client.py` | 分流脚本及其内部协议/传输适配：Planner 根据 description 生成 `{subtask, socket}`，Orchestrator 调用选中的 upstream。 |
-| `prompts.py` | 路由、修复、子任务和聚合 prompt 的纯函数构造。 |
-| `aggregation.py`（如拆分时） | 聚合脚本：将子任务结果交给 `router_socket` 聚合，并处理 tool-call ID 去重。 |
+router/
+├── __init__.py       # Router 对外入口
+├── server.py         # HTTP/SSE 服务、fallback、生命周期
+├── routing.py        # 分流 facade：Planner、Orchestrator、RouterClient、协议类型
+├── aggregation.py    # 聚合 facade：聚合入口和聚合 Prompt
+├── prompts.py        # 路由、修复、子任务、聚合 Prompt
+├── entry.py          # CLI 启动入口
+├── client.py         # socket/SSE 传输实现
+├── planner.py        # 路由模型调用和计划校验
+├── orchestrator.py   # 子任务执行和编排
+└── protocol.py       # 类型和配置定义
 
 后续重构应将 `client.py`、`protocol.py` 等纯支撑代码合并到分流脚本或聚合脚本中，保持 Router 顶层只剩 `server.py`、分流脚本、聚合脚本和 `prompts.py`。迁移期间允许保留兼容导入模块，但不得在其中增加新的业务逻辑。
 
