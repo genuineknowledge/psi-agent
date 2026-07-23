@@ -303,6 +303,8 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| POST | `/feishu/route` | 按飞书 open_id 幂等路由到其独立 Session（首次按需 spawn） |
+| GET | `/feishu/routes` | 列出飞书 open_id → Session 路由 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |

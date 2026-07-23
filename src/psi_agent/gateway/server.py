@@ -14,6 +14,7 @@ from loguru import logger
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
+from psi_agent.gateway._feishu_manager import FeishuManager
 from psi_agent.gateway._history_manager import HistoryManager
 from psi_agent.gateway._openapi import render_openapi
 from psi_agent.gateway._session_manager import SessionManager
@@ -135,11 +136,14 @@ async def create_app(
     favicon_path: str | None = None,
     app_name: str = DEFAULT_APP_NAME,
     attention: AttentionHub | None = None,
+    feishu_ai_id: str = "",
+    feishu_workspace_root: str = "",
 ) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
     app["sm"] = sm
     app["tm"] = tm
+    app["fm"] = FeishuManager(_sm=sm, _ai_id=feishu_ai_id, _workspace_root=feishu_workspace_root)
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
     app["hm"] = HistoryManager()
@@ -186,6 +190,8 @@ async def create_app(
     app.router.add_get("/sessions/{session_id}/history", _get_history)
     app.router.add_get("/sessions/{session_id}/todos", _get_todos)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
+    app.router.add_post("/feishu/route", _feishu_route)
+    app.router.add_get("/feishu/routes", _list_feishu_routes)
 
     return app
 
@@ -267,6 +273,37 @@ async def _delete_session(request: web.Request) -> web.Response:
 async def _list_sessions(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
     return _json([asdict(i) for i in await sm.list_all()])
+
+
+async def _feishu_route(request: web.Request) -> web.Response:
+    """按飞书 ``open_id`` 幂等地路由到其独立 Session, 首次见到时按需 spawn。
+
+    body: ``{open_id, ai_id?, workspace?}`` → ``201 {open_id, session_id, channel_socket}``。
+    channel 拿回 ``channel_socket`` 连接即得该用户隔离的会话。
+    """
+    fm: FeishuManager = request.app["fm"]
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return _error("Request body must be a JSON object", status=400)
+        socket, session_id = await fm.route(
+            body["open_id"],
+            ai_id=body.get("ai_id"),
+            workspace=body.get("workspace"),
+        )
+        return _json({"open_id": body["open_id"], "session_id": session_id, "channel_socket": socket}, status=201)
+    except (TypeError, ValueError, KeyError) as e:
+        return _error(str(e), status=400)
+    except LookupError as e:
+        return _error(str(e), status=404)
+    except Exception as e:
+        logger.error(f"Unexpected error routing feishu open_id: {e!r}")
+        return _error(str(e), status=500)
+
+
+async def _list_feishu_routes(request: web.Request) -> web.Response:
+    fm: FeishuManager = request.app["fm"]
+    return _json([asdict(r) for r in fm.list_routes()])
 
 
 async def _list_titles(request: web.Request) -> web.Response:

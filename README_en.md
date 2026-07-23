@@ -303,6 +303,8 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| POST | `/feishu/route` | Idempotently route a Feishu open_id to its dedicated Session (spawn on first use) |
+| GET | `/feishu/routes` | List Feishu open_id → Session routes |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
