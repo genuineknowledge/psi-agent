@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from .client import RouterClient, UpstreamResult
 from .orchestrator import OrchestrationError, Orchestrator
-from .planner import PlanValidationError, Planner, parse_plan
+from .planner import Planner, PlanValidationError, parse_plan
 from .protocol import PlannedTask, RouterConfig
 
 __all__ = [
