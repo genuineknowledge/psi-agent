@@ -10,15 +10,15 @@
 
 | 角色 | 典型路径示例 | 典型分支 | 做什么 |
 |------|--------------|----------|--------|
-| 前端施工 | `…/Haitun develop` 或 `…-spa` | `feat/…`（只动 spa） | 只改 `src/psi_agent/gateway/spa-v2/`（及必要的 Gateway 壳） |
-| 后端 / workspace 施工 | `…-workspace` 或功能向 `…-feat` | 另一条 `feat/…` | 只改 `examples/haitun-workspace/`、Session/Gateway 服务端等 |
-| 参谋 / 结构讨论 | `…-arch` 或干净 `…-main` | `main`（只读为主）或 `chore/…` | 读代码、谈架构、写方案；尽量少改业务代码 |
+| 前端施工 | `…/Haitun-develop-spa-v2` | `feat/…`（只动 spa） | 只改 `src/psi_agent/gateway/spa-v2/`（及必要的 Gateway 壳） |
+| 后端 / workspace 施工 | `…/Haitun-develop-workspace` | 另一条 `feat/…` | 只改 `examples/haitun-workspace/`、Session/Gateway 服务端等 |
+| 干净主线 / 流程文档 | `…/Haitun-develop-main`、`…/Haitun-develop-workflow` | `main`（只读为主）或 `chore/…` | 对照 main、谈架构、写流程约定；尽量少改业务代码 |
 
-本机当前约定示例（路径可按机器调整，角色建议保持）：
+本机当前约定（文件夹名即角色，路径可按机器调整）：
 
-- `D:/Haitun develop` — 功能施工（当前功能分支）
-- `D:/Haitun-develop-main` — 干净 `main`
-- `D:/Haitun-develop-arch` — 结构讨论 / 流程约定
+- `D:/Haitun-develop-spa-v2` — spa-v2 前端施工（`feat/…`）
+- `D:/Haitun-develop-main` — 干净 `main` 对照
+- `D:/Haitun-develop-workflow` — 流程 / worktree 约定（`chore/…`）
 
 ### 必须遵守
 
