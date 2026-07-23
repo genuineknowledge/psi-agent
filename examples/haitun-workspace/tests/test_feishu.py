@@ -1094,6 +1094,149 @@ def test_attendance_tool_async_with_docstring() -> None:
     assert (inspect.getdoc(fn) or "").strip()
 
 
+# ── Attendance admin config — groups (考勤组) & shifts (班次), read-only ────────
+
+
+@pytest.mark.asyncio
+async def test_list_attendance_groups(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "group_list": [
+                {"group_id": "g1", "group_name": "总部考勤"},
+                {"group_id": "g2", "group_name": "研发考勤"},
+            ],
+            "has_more": True,
+            "page_token": "tok2",
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_attendance_groups_impl(50, "")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/attendance/v1/groups"
+    assert _qdict(req).get("page_size") == "50"
+    assert "page_token" not in _qdict(req)  # empty token not sent
+    assert result["count"] == 2
+    assert result["groups"][0] == {"group_id": "g1", "group_name": "总部考勤"}
+    assert result["has_more"] is True
+    assert result["page_token"] == "tok2"
+
+
+@pytest.mark.asyncio
+async def test_list_attendance_groups_clamps_and_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"group_list": []})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.list_attendance_groups_impl(999, "ptok")
+    q = _qdict(cap.request)
+    assert q.get("page_size") == "50"  # clamped to max 50
+    assert q.get("page_token") == "ptok"
+
+
+@pytest.mark.asyncio
+async def test_get_attendance_group_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "group_id": "g1",
+            "group_name": "总部考勤",
+            "group_type": 0,
+            "punch_type": 3,
+            "allow_out_punch": True,
+            "allow_pc_punch": False,
+            "work_day_no_punch_as_lack": True,
+            "punch_day_shift_ids": ["s1", "s2"],
+            "ignored_field": "dropped",
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_attendance_group_impl("g1", "employee_id", "open_id")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/attendance/v1/groups/:group_id"
+    assert req.paths["group_id"] == "g1"
+    assert _qdict(req).get("employee_type") == "employee_id"
+    assert _qdict(req).get("dept_type") == "open_id"
+    grp = result["group"]
+    assert grp["punch_type"] == 3
+    assert grp["punch_day_shift_ids"] == ["s1", "s2"]
+    assert grp["work_day_no_punch_as_lack"] is True
+    assert "ignored_field" not in grp  # only whitelisted config fields kept
+
+
+@pytest.mark.asyncio
+async def test_get_attendance_group_requires_id() -> None:
+    result = await _impl.get_attendance_group_impl("  ")
+    assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_shifts(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "shift_list": [
+                {"shift_id": "s1", "shift_name": "早班", "punch_times": 2, "is_flexible": True},
+            ],
+            "has_more": False,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_shifts_impl(20, "")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/attendance/v1/shifts"
+    assert _qdict(req).get("page_size") == "20"
+    s0 = result["shifts"][0]
+    assert s0["shift_name"] == "早班"
+    assert s0["punch_times"] == 2
+    assert s0["is_flexible"] is True
+    assert result["has_more"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_shift_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "shift_id": "s1",
+            "shift_name": "早班",
+            "punch_times": 2,
+            "is_flexible": True,
+            "flexible_minutes": 30,
+            "flexible_rule": [{"flexible_early_minutes": 30, "flexible_late_minutes": 30}],
+            "punch_time_rule": [{"on_time": "09:00", "off_time": "18:00", "late_minutes_as_late": 10}],
+            "not_a_config_field": "dropped",
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_shift_impl("s1")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/attendance/v1/shifts/:shift_id"
+    assert req.paths["shift_id"] == "s1"
+    shift = result["shift"]
+    assert shift["punch_time_rule"][0]["on_time"] == "09:00"
+    assert shift["flexible_rule"][0]["flexible_late_minutes"] == 30
+    assert shift["flexible_minutes"] == 30
+    assert "not_a_config_field" not in shift  # only whitelisted config fields kept
+
+
+@pytest.mark.asyncio
+async def test_get_shift_requires_id() -> None:
+    result = await _impl.get_shift_impl("")
+    assert result["ok"] is False
+
+
+def test_attendance_config_tools_async_with_docstring() -> None:
+    mod = importlib.import_module("feishu_attendance")
+    for name in (
+        "feishu_attendance_groups",
+        "feishu_attendance_group_config",
+        "feishu_attendance_shifts",
+        "feishu_attendance_shift_config",
+    ):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), name
+
+
 # ── Tasks — create/assign, list, update, complete ─────────────────────────────
 
 
