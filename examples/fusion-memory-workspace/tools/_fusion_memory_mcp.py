@@ -16,6 +16,7 @@ from typing import Any
 import anyio
 import httpx
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from loguru import logger
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -45,6 +46,12 @@ ResolvedMemoryConfig = _config_module["ResolvedMemoryConfig"]
 CONFIG = _config_module["CONFIG"]
 resolve_memory_config = _config_module["resolve_memory_config"]
 validate_mcp_url = _config_module["validate_mcp_url"]
+
+_, _history_module = _load_sibling_module("_fusion_memory_history")
+completed_history_batches = _history_module["completed_history_batches"]
+history_paths = _history_module["history_paths"]
+load_checkpoint = _history_module["load_checkpoint"]
+save_checkpoint = _history_module["save_checkpoint"]
 
 
 @dataclass(eq=False)
@@ -330,6 +337,12 @@ class _ClientKey:
     session_id: str | None
 
 
+@dataclass
+class _HistoryWatcher:
+    stop: threading.Event
+    thread: threading.Thread
+
+
 class MemoryMcpRouter:
     """Resolve trusted Session credentials before selecting an MCP client."""
 
@@ -338,11 +351,14 @@ class MemoryMcpRouter:
         config: Any,
         *,
         connector: Callable[..., Any] | None = None,
+        poll_interval_seconds: float = 1.0,
     ) -> None:
         self._config = config
         self._connector = connector
+        self._poll_interval_seconds = max(0.1, float(poll_interval_seconds))
         self._clients: dict[_ClientKey, MemoryMcpClient] = {}
         self._session_keys: dict[str, _ClientKey] = {}
+        self._watchers: dict[tuple[str, str], _HistoryWatcher] = {}
         self._lock = threading.RLock()
 
     async def call_tool(self, name: str, arguments: dict[str, Any], *, retryable: bool) -> dict[str, Any]:
@@ -366,7 +382,48 @@ class MemoryMcpRouter:
             await stale_client.close()
         return await client.call_tool(name, arguments, retryable=retryable)
 
+    async def activate_current_session(self, workspace_root: Any) -> dict[str, Any]:
+        session_id = get_session_id().strip()
+        try:
+            await resolve_memory_config(session_id, self._config)
+        except MemoryConfigError as exc:
+            return _error(exc.code, str(exc), False)
+
+        workspace_anyio = await anyio.Path(str(workspace_root)).expanduser()
+        workspace_anyio = await workspace_anyio.absolute()
+        workspace = Path(str(workspace_anyio))
+        watcher_key = (str(workspace), session_id)
+        with self._lock:
+            existing = self._watchers.get(watcher_key)
+            if existing is not None and existing.thread.is_alive():
+                return {"ok": True, "running": True, "already_running": True}
+            stop = threading.Event()
+            thread = threading.Thread(
+                target=self._watch_history_thread,
+                args=(workspace, session_id, stop),
+                name=f"fusion-memory-history-{hashlib.sha256(session_id.encode()).hexdigest()[:8]}",
+                daemon=True,
+            )
+            self._watchers[watcher_key] = _HistoryWatcher(stop=stop, thread=thread)
+        try:
+            thread.start()
+        except RuntimeError:
+            with self._lock:
+                self._watchers.pop(watcher_key, None)
+            return _error("watcher_start_failed", "Fusion Memory history watcher failed to start", True)
+        logger.info(f"Fusion Memory history watcher starting for session {session_id!r}")
+        return {"ok": True, "running": True, "already_running": False}
+
     async def close(self) -> None:
+        with self._lock:
+            watchers = list(self._watchers.values())
+            self._watchers.clear()
+            for watcher in watchers:
+                watcher.stop.set()
+        for watcher in watchers:
+            while watcher.thread.is_alive():  # noqa: ASYNC110 - daemon thread checks a thread-safe stop flag
+                await anyio.sleep(0.01)
+
         with self._lock:
             clients = list(self._clients.values())
             self._clients.clear()
@@ -374,6 +431,93 @@ class MemoryMcpRouter:
         async with anyio.create_task_group() as task_group:
             for client in clients:
                 task_group.start_soon(client.close)
+
+    def _watch_history_thread(self, workspace: Path, session_id: str, stop: threading.Event) -> None:
+        try:
+            anyio.run(self._watch_history, workspace, session_id, stop)
+        except Exception as exc:
+            logger.warning(
+                f"Fusion Memory history watcher stopped for session {session_id!r} after {type(exc).__name__}"
+            )
+
+    async def _watch_history(self, workspace: Path, session_id: str, stop: threading.Event) -> None:
+        healthy = False
+        backoff = 0.5
+        last_error_code = ""
+        while not stop.is_set():
+            if not healthy:
+                result = await self.call_tool_for_session(session_id, "memory_health", {}, retryable=True)
+                if result.get("ok") is not True:
+                    last_error_code = self._log_watcher_error(session_id, result, last_error_code)
+                    await self._wait_for_stop(stop, backoff)
+                    backoff = min(backoff * 2.0, 30.0)
+                    continue
+                healthy = True
+                backoff = 0.5
+                if last_error_code:
+                    logger.info(f"Fusion Memory history watcher recovered for session {session_id!r}")
+                    last_error_code = ""
+            if stop.is_set():
+                break
+
+            result = await self._sync_history_once(workspace, session_id)
+            if result.get("ok") is not True:
+                healthy = False
+                last_error_code = self._log_watcher_error(session_id, result, last_error_code)
+                await self._wait_for_stop(stop, backoff)
+                backoff = min(backoff * 2.0, 30.0)
+                continue
+            backoff = 0.5
+            await self._wait_for_stop(stop, self._poll_interval_seconds)
+
+    async def _sync_history_once(self, workspace: Path, session_id: str) -> dict[str, Any]:
+        history_path, checkpoint_path = history_paths(workspace, session_id)
+        batches = completed_history_batches(history_path, session_id)
+        checkpoint = load_checkpoint(checkpoint_path)
+        submitted = set(checkpoint.get("submitted_batches") or [])
+        for batch in batches:
+            batch_id = batch["batch_id"]
+            if batch_id in submitted:
+                continue
+            result = await self.call_tool_for_session(
+                session_id,
+                "memory_add_batch",
+                {
+                    "messages": batch["messages"],
+                    "batch_id": batch_id,
+                    "metadata": batch["metadata"],
+                },
+                retryable=False,
+            )
+            if result.get("ok") is not True:
+                return result
+            submitted.add(batch_id)
+            checkpoint.setdefault("submitted_batches", []).append(batch_id)
+            checkpoint.update(
+                {
+                    "history_path": str(history_path),
+                    "session_id": session_id,
+                    "last_batch_id": batch_id,
+                }
+            )
+            save_checkpoint(checkpoint_path, checkpoint)
+        return {"ok": True, "submitted_count": len(submitted), "batch_count": len(batches)}
+
+    @staticmethod
+    def _log_watcher_error(session_id: str, result: dict[str, Any], previous_code: str) -> str:
+        error = result.get("error")
+        code = str(error.get("code") or "request_failed") if isinstance(error, dict) else "request_failed"
+        if code != previous_code:
+            logger.warning(f"Fusion Memory history watcher deferred for session {session_id!r}: {code}")
+        return code
+
+    @staticmethod
+    async def _wait_for_stop(stop: threading.Event, seconds: float) -> None:
+        remaining = max(0.0, seconds)
+        while remaining > 0 and not stop.is_set():
+            delay = min(0.1, remaining)
+            await anyio.sleep(delay)
+            remaining -= delay
 
     def _client_for(
         self,

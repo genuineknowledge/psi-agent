@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
+import logging
+import sys
+import types
+from pathlib import Path
 
 import anyio
 
 from psi_agent._yaml import parse_yaml_header
+
+logger = logging.getLogger(__name__)
 
 
 async def system_prompt_builder() -> str:
     """Build the system prompt for Fusion Memory tools."""
     current_file = anyio.Path(inspect.getfile(system_prompt_builder))
     workspace_root = current_file.parent.parent
+    await _activate_fusion_memory(workspace_root)
     skills_dir = workspace_root / "skills"
     skills = await _load_workspace_skills(skills_dir)
     skills_text = "\n".join(skills) if skills else "(None)"
@@ -32,6 +40,36 @@ async def system_prompt_builder() -> str:
         "but do not install, start, or replace it with an HTTP memory API.\n\n"
         f"## Workspace Skills\nLocation: {skills_dir}\n\nAvailable:\n{skills_text}"
     )
+
+
+async def system_prompt_rebuild_checker() -> bool:
+    """Activate Memory on the first turn after restoring an existing Session."""
+    current_file = anyio.Path(inspect.getfile(system_prompt_rebuild_checker))
+    await _activate_fusion_memory(current_file.parent.parent)
+    return False
+
+
+async def _activate_fusion_memory(workspace_root: anyio.Path) -> None:
+    mcp_path = Path(str(workspace_root)) / "tools" / "_fusion_memory_mcp.py"
+    module_name = f"fusion_memory_tool__fusion_memory_mcp_{hashlib.sha256(str(mcp_path).encode()).hexdigest()[:12]}"
+    module = sys.modules.get(module_name)
+    created = False
+    try:
+        if module is None:
+            source = await anyio.Path(str(mcp_path)).read_text(encoding="utf-8")
+            module = types.ModuleType(module_name)
+            module.__file__ = str(mcp_path)
+            sys.modules[module_name] = module
+            created = True
+            exec(compile(source, str(mcp_path), "exec"), module.__dict__)
+        client = module.__dict__.get("CLIENT")
+        activate = getattr(client, "activate_current_session", None)
+        if activate is not None:
+            await activate(workspace_root)
+    except Exception as exc:
+        if created:
+            sys.modules.pop(module_name, None)
+        logger.warning("Fusion Memory activation skipped after %s", type(exc).__name__)
 
 
 async def _load_workspace_skills(skills_dir: anyio.Path) -> list[str]:
