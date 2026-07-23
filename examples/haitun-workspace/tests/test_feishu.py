@@ -235,6 +235,43 @@ async def test_send_message_builds_create_and_returns_thread(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
+async def test_send_message_no_on_behalf_keeps_text_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 回归保护: 不传 on_behalf_of 时正文原样发出, 不加任何前缀 (机器人自己发内容的路径)。
+    cap = _CapturedInvoke({"message_id": "om_1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.send_message_impl("oc_1", "看板已更新", "chat_id")
+    assert json.loads(cap.request.body["content"])["text"] == "看板已更新"
+
+
+@pytest.mark.asyncio
+async def test_send_message_on_behalf_wraps_with_resolved_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"message_id": "om_1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+
+    async def _fake_batch(user_ids: str, user_id_type: str = "open_id", **_: Any) -> dict[str, Any]:
+        assert user_ids == "ou_zhangsan"
+        return {"ok": True, "users": [{"open_id": "ou_zhangsan", "name": "张三"}]}
+
+    monkeypatch.setattr(_impl, "get_users_batch_impl", _fake_batch)
+    await _impl.send_message_impl("ou_lisi", "记得交周报", "open_id", on_behalf_of="ou_zhangsan")
+    assert json.loads(cap.request.body["content"])["text"] == "张三给你发了一条消息：「记得交周报」"  # noqa: RUF001
+
+
+@pytest.mark.asyncio
+async def test_send_message_on_behalf_falls_back_to_open_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 查名失败也要把消息发出去, 前缀回退成 open_id 本身 (转达失败比署名不全更糟)。
+    cap = _CapturedInvoke({"message_id": "om_1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+
+    async def _fail_batch(*_: Any, **__: Any) -> dict[str, Any]:
+        return {"ok": False, "code": 99991672, "msg": "permission denied"}
+
+    monkeypatch.setattr(_impl, "get_users_batch_impl", _fail_batch)
+    await _impl.send_message_impl("ou_lisi", "记得交周报", "open_id", on_behalf_of="ou_zhangsan")
+    assert json.loads(cap.request.body["content"])["text"] == "ou_zhangsan给你发了一条消息：「记得交周报」"  # noqa: RUF001
+
+
+@pytest.mark.asyncio
 async def test_reply_message_sets_reply_in_thread(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke({"message_id": "om_2", "thread_id": "omt_1"})
     monkeypatch.setattr(_impl, "_invoke", cap)
