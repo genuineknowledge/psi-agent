@@ -100,9 +100,10 @@ class _CapturedInvoke:
         self.request: Any = None
         self._data = data or {}
 
-    async def __call__(self, request: Any, user_key: str | None = None) -> dict[str, Any]:
+    async def __call__(self, request: Any, user_key: str | None = None, prefer: str = "tenant") -> dict[str, Any]:
         self.request = request
         self.user_key = user_key
+        self.prefer = prefer
         return {"ok": True, "code": 0, "msg": "", "data": self._data}
 
 
@@ -379,7 +380,7 @@ class _PagedInvoke:
         self.requests: list[Any] = []
         self._pages = list(pages)
 
-    async def __call__(self, request: Any, user_key: str | None = None) -> dict[str, Any]:
+    async def __call__(self, request: Any, user_key: str | None = None, prefer: str = "tenant") -> dict[str, Any]:
         self.requests.append(request)
         page = self._pages.pop(0) if self._pages else {}
         return {"ok": True, "code": 0, "msg": "", "data": page}
@@ -674,7 +675,7 @@ async def test_get_wiki_node_builds_request(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.asyncio
 async def test_get_wiki_node_error_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _fake(_req: Any, user_key: str | None = None) -> dict[str, Any]:
+    async def _fake(_req: Any, user_key: str | None = None, prefer: str = "tenant") -> dict[str, Any]:
         return {"ok": False, "code": 131006, "msg": "node not found", "message": "Feishu API error 131006"}
 
     monkeypatch.setattr(_impl, "_invoke", _fake)
@@ -850,6 +851,13 @@ async def test_auth_start_builds_authorize_url(monkeypatch: pytest.MonkeyPatch, 
     assert "drive:drive:drive" not in q["scope"][0]
     # state persisted for CSRF check
     assert json.loads((tmp_path / "pending.json").read_text())["state"] == q["state"][0]
+    # the prompt must be explicit about copying the code from the browser ADDRESS BAR
+    msg = result["message"]
+    assert "地址栏" in msg
+    assert "code=" in msg
+    assert "feishu_auth_complete" in msg
+    # reassure the user they won't be asked again after authorizing once
+    assert "不会再" in msg or "自动续期" in msg
 
 
 @pytest.mark.asyncio
@@ -2031,6 +2039,27 @@ async def test_download_media_user_key_not_authorized(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_download_media_tenant_first_skips_uat(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Even with a user_key, the bot's tenant token is tried first; if it can fetch
+    the file, the UAT is never resolved (no needless authorization)."""
+
+    class _TenantClient:
+        async def arequest(self, req: Any) -> Any:  # tenant path (no option)
+            return _FakeResp(None, "", b"TENANTBYTES")
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
+
+    async def _uat_should_not_run(user_key: str = "") -> Any:
+        raise AssertionError("UAT must not run when tenant can download the file")
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat_should_not_run)
+    dest = tmp_path / "t.pdf"
+    result = await _impl.download_file_impl("media_tok", str(dest), False, "ou_a")
+    assert result["ok"] is True
+    assert dest.read_bytes() == b"TENANTBYTES"
+
+
+@pytest.mark.asyncio
 async def test_download_media_empty_user_key_uses_tenant(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     captured: dict[str, Any] = {}
 
@@ -2106,7 +2135,11 @@ async def test_delete_file_user_key_routes_through_uat(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
-async def test_delete_file_user_key_not_authorized(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_delete_file_no_uat_tenant_denied_needs_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """delete is prefer='user': with no UAT it falls back to tenant; if tenant is also
+    permission-denied, the user is prompted to authorize."""
+    body = json.dumps({"code": 99991672, "msg": "permission denied", "data": {}}).encode()
+    monkeypatch.setattr(_impl, "_get_client", lambda: _FakeClient(_FakeResp(99991672, "permission denied", body)))
     monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
 
     async def _no_uat(user_key: str = "") -> Any:
@@ -2116,6 +2149,27 @@ async def test_delete_file_user_key_not_authorized(monkeypatch: pytest.MonkeyPat
     result = await _impl.delete_file_impl("doccnX", "docx", "ou_a")
     assert result["ok"] is False
     assert result.get("need_auth") is True
+
+
+@pytest.mark.asyncio
+async def test_delete_file_no_uat_tenant_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """delete with no UAT but tenant has permission: the bot deletes it (no auth prompt)."""
+
+    class _TenantClient:
+        async def arequest(self, request: Any, option: Any = None) -> Any:
+            raw = _FakeRaw(json.dumps({"code": 0, "data": {"task_id": "tsk_1"}}).encode())
+            return type("R", (), {"raw": raw, "code": 0, "msg": ""})()
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+
+    async def _no_uat(user_key: str = "") -> Any:
+        return None
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _no_uat)
+    result = await _impl.delete_file_impl("doccnX", "docx", "ou_a")
+    assert result["ok"] is True
+    assert result.get("need_auth") is not True
 
 
 def test_delete_file_tool_async_with_docstring() -> None:
@@ -2343,8 +2397,8 @@ async def test_invoke_empty_user_key_uses_tenant(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
-async def test_invoke_user_key_routes_through_uat(monkeypatch: pytest.MonkeyPatch) -> None:
-    """_invoke with a user_key must attach the user's UAT to the request."""
+async def test_invoke_prefer_user_routes_through_uat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prefer='user' with a cached UAT must act as the user (content owned by them)."""
     client = _CapturingUatClient({"code": 0, "data": {"ok": 1}})
     monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
 
@@ -2352,20 +2406,99 @@ async def test_invoke_user_key_routes_through_uat(monkeypatch: pytest.MonkeyPatc
         return _FakeUAT()
 
     monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
-    res = await _impl._invoke(object(), user_key="ou_a")
+    res = await _impl._invoke(object(), user_key="ou_a", prefer="user")
     assert res["ok"] is True
     assert client.option.user_access_token == "uat_tok"
 
 
 @pytest.mark.asyncio
-async def test_invoke_user_key_not_authorized(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_invoke_prefer_tenant_uses_tenant_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prefer='tenant' (default): tenant is tried first even when a user_key is given;
+    the UAT is not touched when tenant succeeds (so no needless authorization)."""
+    calls: dict[str, Any] = {}
+
+    class _TenantClient:
+        async def arequest(self, request: Any, option: Any = None) -> Any:
+            calls["tenant"] = True
+            raw = _FakeRaw(json.dumps({"code": 0, "data": {"ok": 1}}).encode())
+            return type("R", (), {"raw": raw, "code": 0, "msg": ""})()
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
+
+    async def _uat_should_not_run(user_key: str = "") -> Any:
+        raise AssertionError("UAT must not be resolved when tenant succeeds")
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat_should_not_run)
+    res = await _impl._invoke(object(), user_key="ou_a")  # prefer defaults to tenant
+    assert res["ok"] is True
+    assert calls.get("tenant") is True
+
+
+@pytest.mark.asyncio
+async def test_invoke_tenant_permission_error_falls_back_to_uat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prefer='tenant': on a permission error, transparently retry as the user."""
+    tenant_body = json.dumps({"code": 99991672, "msg": "permission denied", "data": {}}).encode()
+    monkeypatch.setattr(
+        _impl, "_get_client", lambda: _FakeClient(_FakeResp(99991672, "permission denied", tenant_body))
+    )
+    uat_client = _CapturingUatClient({"code": 0, "data": {"ok": 1}})
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: uat_client)
+
+    async def _uat(user_key: str = "") -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    res = await _impl._invoke(object(), user_key="ou_a")
+    assert res["ok"] is True
+    assert uat_client.option.user_access_token == "uat_tok"
+
+
+@pytest.mark.asyncio
+async def test_invoke_tenant_permission_error_no_user_key_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No user_key to fall back to → surface the original tenant permission error, not need_auth."""
+    body = json.dumps({"code": 99991672, "msg": "permission denied", "data": {}}).encode()
+    monkeypatch.setattr(_impl, "_get_client", lambda: _FakeClient(_FakeResp(99991672, "permission denied", body)))
+    res = await _impl._invoke(object())  # no user_key
+    assert res["ok"] is False
+    assert res["code"] == 99991672
+    assert res.get("need_auth") is not True
+
+
+@pytest.mark.asyncio
+async def test_invoke_prefer_user_no_uat_falls_back_to_tenant(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prefer='user' but no cached UAT: the bot's tenant token still does the write."""
+    calls: dict[str, Any] = {}
+
+    class _TenantClient:
+        async def arequest(self, request: Any, option: Any = None) -> Any:
+            calls["tenant"] = True
+            raw = _FakeRaw(json.dumps({"code": 0, "data": {"ok": 1}}).encode())
+            return type("R", (), {"raw": raw, "code": 0, "msg": ""})()
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
     monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
 
     async def _no_uat(user_key: str = "") -> Any:
         return None
 
     monkeypatch.setattr(_impl, "_get_valid_uat", _no_uat)
-    res = await _impl._invoke(object(), user_key="ou_a")
+    res = await _impl._invoke(object(), user_key="ou_a", prefer="user")
+    assert res["ok"] is True
+    assert calls.get("tenant") is True
+
+
+@pytest.mark.asyncio
+async def test_invoke_prefer_user_no_uat_tenant_denied_needs_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prefer='user', no UAT, and tenant is also permission-denied → prompt to authorize."""
+    body = json.dumps({"code": 99991672, "msg": "permission denied", "data": {}}).encode()
+    monkeypatch.setattr(_impl, "_get_client", lambda: _FakeClient(_FakeResp(99991672, "permission denied", body)))
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: object())
+
+    async def _no_uat(user_key: str = "") -> Any:
+        return None
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _no_uat)
+    res = await _impl._invoke(object(), user_key="ou_a", prefer="user")
     assert res["ok"] is False
     assert res.get("need_auth") is True
 
@@ -2375,7 +2508,7 @@ async def test_create_wiki_node_forwards_user_key(monkeypatch: pytest.MonkeyPatc
     """create_wiki_node_impl must pass user_key down to _invoke."""
     seen: dict[str, Any] = {}
 
-    async def _fake_invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
+    async def _fake_invoke(request: Any, user_key: str | None = None, prefer: str = "tenant") -> dict[str, Any]:
         seen["user_key"] = user_key
         return {"ok": True, "code": 0, "msg": "", "data": {"node": {"node_token": "n", "obj_token": "o"}}}
 
@@ -2405,7 +2538,16 @@ async def test_list_wiki_spaces_paginates(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_list_wiki_spaces_user_key_routes_through_uat(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_list_wiki_spaces_empty_tenant_falls_back_to_uat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The bot usually isn't a wiki member → tenant returns an empty list. With a
+    user_key + cached UAT, transparently retry as the user and return their spaces."""
+
+    class _TenantClient:
+        async def arequest(self, request: Any, option: Any = None) -> Any:
+            raw = _FakeRaw(json.dumps({"code": 0, "data": {"items": []}}).encode())
+            return type("R", (), {"raw": raw, "code": 0, "msg": ""})()
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
     client = _CapturingUatClient({"code": 0, "data": {"items": [{"space_id": "sp1", "name": "我的库"}]}})
     monkeypatch.setattr(_impl, "_get_uat_client", lambda: client)
 
@@ -2420,10 +2562,30 @@ async def test_list_wiki_spaces_user_key_routes_through_uat(monkeypatch: pytest.
 
 
 @pytest.mark.asyncio
+async def test_list_wiki_spaces_nonempty_tenant_no_uat_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If the bot's tenant token already sees spaces, don't touch the UAT."""
+
+    class _TenantClient:
+        async def arequest(self, request: Any, option: Any = None) -> Any:
+            raw = _FakeRaw(json.dumps({"code": 0, "data": {"items": [{"space_id": "spT", "name": "bot库"}]}}).encode())
+            return type("R", (), {"raw": raw, "code": 0, "msg": ""})()
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
+
+    async def _uat_should_not_run(user_key: str = "") -> Any:
+        raise AssertionError("UAT must not run when tenant already returns spaces")
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat_should_not_run)
+    result = await _impl.list_wiki_spaces_impl(20, "", "ou_a")
+    assert result["ok"] is True
+    assert result["spaces"][0]["space_id"] == "spT"
+
+
+@pytest.mark.asyncio
 async def test_get_wiki_node_forwards_user_key(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 
-    async def _fake_invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
+    async def _fake_invoke(request: Any, user_key: str | None = None, prefer: str = "tenant") -> dict[str, Any]:
         seen["user_key"] = user_key
         return {"ok": True, "code": 0, "msg": "", "data": {"node": {"obj_token": "o", "obj_type": "docx"}}}
 
@@ -2507,7 +2669,7 @@ async def test_append_doc_content_builds_root_request(monkeypatch: pytest.Monkey
 async def test_append_doc_content_batches_over_50(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
 
-    async def fake_invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
+    async def fake_invoke(request: Any, user_key: str | None = None, prefer: str = "tenant") -> dict[str, Any]:
         calls.append(len(request.body["children"]))
         return {"ok": True, "code": 0, "msg": "", "data": {}}
 

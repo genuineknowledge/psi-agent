@@ -61,14 +61,39 @@ def _get_client() -> Any:
     return _client
 
 
-async def _invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
-    """Send a BaseRequest. If ``user_key`` is provided (non-empty), send it as that
-    user (user_access_token) instead of the bot's tenant token — needed for APIs
-    that act on behalf of a user (e.g. writing into a wiki the user owns).
-    ``user_key=None`` (default) keeps the original tenant-token behavior.
-    """
-    if user_key is not None and user_key.strip():
-        return await _invoke_as_user(request, user_key)
+# Shown to the user whenever a user_access_token is genuinely required (tenant
+# token can't do it and no cached UAT exists). Spelled out step-by-step — the
+# key gotcha is that the code lives in the browser ADDRESS BAR after redirect.
+_AUTH_PROMPT = (
+    "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步). 步骤:\n"
+    "1. 调 feishu_auth_start 拿到 authorize_url, 打开它并点「同意授权」;\n"
+    "2. 浏览器会跳转到一个网址, 从**地址栏**里复制 code= 后面那一串 (或直接整段网址);\n"
+    "3. 把它交给 feishu_auth_complete.\n"
+    "授权一次即缓存并自动续期, 之后同类操作不会再让你授权."
+)
+
+
+# Feishu permission-denied codes: the 999916xx family (drive/docs "no permission"),
+# 1254xxx (bitable), 131006 (wiki node no permission). Combined with a msg-substring
+# check so we still catch permission failures whose exact code we don't enumerate.
+_PERMISSION_CODES = {99991672, 99991663, 99991661, 131006, 1254302, 1254045, 1254043}
+_PERMISSION_MSG_HINTS = ("permission", "forbidden", "无权限", "没有权限", "access denied", "not authorized")
+
+
+def _is_permission_error(res: dict[str, Any]) -> bool:
+    """True if ``res`` is a Feishu permission/authorization failure (so a UAT retry
+    could help). Distinct from transport errors or empty-but-ok responses."""
+    if res.get("ok"):
+        return False
+    code = res.get("code")
+    if isinstance(code, int) and (code in _PERMISSION_CODES or 1254000 <= code <= 1254999):
+        return True
+    msg = f"{res.get('msg', '')} {res.get('message', '')}".lower()
+    return any(h in msg for h in _PERMISSION_MSG_HINTS)
+
+
+async def _send_as_tenant(request: Any) -> dict[str, Any]:
+    """Send a BaseRequest with the bot's tenant token."""
     client = _get_client()
     if client is None:
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
@@ -79,14 +104,16 @@ async def _invoke(request: Any, user_key: str | None = None) -> dict[str, Any]:
     return _resp_to_result(resp)
 
 
-async def _invoke_as_user(request: Any, user_key: str) -> dict[str, Any]:
-    """Send a BaseRequest with the user's UAT (resolved by user_key)."""
+async def _send_as_user(request: Any, user_key: str) -> dict[str, Any] | None:
+    """Send a BaseRequest with the user's UAT. Returns None (no send attempted) when
+    the app isn't configured or the user has no cached/valid UAT — callers decide
+    whether that means need_auth or a tenant fallback."""
     client = _get_uat_client()
     if client is None:
-        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
+        return None
     uat = await _get_valid_uat(user_key)
     if uat is None or not uat.access_token:
-        return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
+        return None
     from lark_channel.core.model import RequestOption  # noqa: PLC0415
 
     option = RequestOption.builder().user_access_token(uat.access_token).build()
@@ -95,6 +122,65 @@ async def _invoke_as_user(request: Any, user_key: str) -> dict[str, Any]:
     except Exception as exc:  # SDK/transport failure
         return _error(f"Feishu request failed: {type(exc).__name__}: {exc}")
     return _resp_to_result(resp)
+
+
+async def _invoke(request: Any, user_key: str | None = None, prefer: str = "tenant") -> dict[str, Any]:
+    """Send a BaseRequest, preferring the bot's tenant token and only using the
+    user's ``user_access_token`` (UAT) when necessary.
+
+    ``prefer`` controls the strategy (``user_key`` is the sender's open_id, used to
+    resolve that user's cached UAT):
+
+    - ``"tenant"`` (default, read-oriented): try tenant first; if it fails with a
+      *permission* error and the user has a cached UAT, transparently retry as the
+      user. The user is only asked to authorize when tenant is denied AND no UAT
+      exists. Passing ``user_key`` here is harmless — it's just a fallback identity.
+    - ``"user"`` (write/create-oriented): if the user has a cached UAT, act as that
+      user so the created content is owned by them; otherwise fall back to the
+      tenant token so the bot can still do it without forcing authorization. Only
+      when BOTH the tenant attempt is permission-denied is ``need_auth`` returned.
+
+    ``user_key`` empty/None means "no user identity available" — tenant only.
+    """
+    key = user_key.strip() if user_key else ""
+
+    if prefer == "user":
+        if key:
+            user_res = await _send_as_user(request, key)
+            if user_res is not None:
+                return user_res
+        # No usable UAT — fall back to tenant so the bot can still act.
+        tenant_res = await _send_as_tenant(request)
+        if key and _is_permission_error(tenant_res):
+            return _error(_AUTH_PROMPT, need_auth=True)
+        return tenant_res
+
+    # prefer == "tenant": tenant first, UAT retry only on permission failure.
+    tenant_res = await _send_as_tenant(request)
+    if not _is_permission_error(tenant_res):
+        return tenant_res
+    if not key:
+        # No user identity to fall back to — surface the original tenant error.
+        return tenant_res
+    user_res = await _send_as_user(request, key)
+    if user_res is not None:
+        return user_res
+    return _error(_AUTH_PROMPT, need_auth=True)
+
+
+async def _invoke_wiki_read(request: Any, user_key: str | None, is_empty: Any) -> dict[str, Any]:
+    """Wiki listing/resolve reads: tenant first, but the bot is usually not a member
+    of any wiki space, so tenant succeeds with an *empty* payload rather than a
+    permission error. Detect that (via ``is_empty(res)``) and transparently retry as
+    the user, so we don't wrongly report "no knowledge bases". No re-auth prompt on
+    the empty case — if the user simply has none, the empty tenant result stands."""
+    res = await _invoke(request, user_key=user_key, prefer="tenant")
+    key = user_key.strip() if user_key else ""
+    if res.get("ok") and key and is_empty(res):
+        user_res = await _send_as_user(request, key)
+        if user_res is not None and user_res.get("ok"):
+            return user_res
+    return res
 
 
 def _resp_to_result(resp: Any) -> dict[str, Any]:
@@ -129,7 +215,7 @@ def _resp_to_result(resp: Any) -> dict[str, Any]:
 
 async def add_comment_impl(file_token: str, file_type: str, content: str, user_key: str = "") -> dict[str, Any]:
     req = _comment.build_comment_create_request(file_token=file_token, file_type=file_type, content=content)
-    return await _invoke(req, user_key=user_key)
+    return await _invoke(req, user_key=user_key, prefer="user")
 
 
 async def list_comments_impl(file_token: str, file_type: str, page_size: int, page_token: str) -> dict[str, Any]:
@@ -184,7 +270,7 @@ async def reply_comment_impl(
         content=content,
         at_user_id=at_user_id,
     )
-    return await _invoke(req, user_key=user_key)
+    return await _invoke(req, user_key=user_key, prefer="user")
 
 
 def _raw_get(uri: str, path_name: str, path_value: str) -> BaseRequest:
@@ -970,7 +1056,11 @@ async def get_wiki_node_impl(token: str, user_key: str = "") -> dict[str, Any]:
     Pass ``user_key`` to resolve as that user (needed when the wiki is user-owned and
     the bot isn't a member); empty uses the bot's tenant token.
     """
-    res = await _invoke(_wiki_node.build_wiki_node_get_request(token=token), user_key=user_key)
+    res = await _invoke_wiki_read(
+        _wiki_node.build_wiki_node_get_request(token=token),
+        user_key,
+        lambda r: not (r.get("data", {}) or {}).get("node"),
+    )
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -1205,9 +1295,15 @@ async def auth_start_impl(scopes: str = "", user_key: str = "") -> dict[str, Any
         "ok": True,
         "authorize_url": f"{_AUTHORIZE_URL}?{query}",
         "message": (
-            "打开 authorize_url 并同意授权. 浏览器会跳转到 redirect_uri, 地址栏里带 ?code=XXX; "
-            "把那个 code (或整段跳转后的网址) 交给 feishu_auth_complete."
+            "请按以下步骤完成一次性授权 (只读文档/云盘):\n"
+            "1. 打开下面的 authorize_url, 在飞书页面点「同意授权」;\n"
+            "2. 同意后浏览器会自动跳转到一个新网址, **看浏览器地址栏** -- 它形如 "
+            "`http://localhost/?code=xxxxxxxx&state=...`, 把 `code=` 后面, `&` 之前的那一串复制下来 "
+            "(复制整段网址也行, 工具会自动提取);\n"
+            "3. 把它作为 code 交给 feishu_auth_complete.\n"
+            "授权一次即缓存并自动续期, 之后同类操作不会再让你授权."
         ),
+        "authorize_url_note": "把 authorize_url 原样发给用户点击; 下一步要的是跳转后地址栏里的 code.",
     }
 
 
@@ -1240,7 +1336,7 @@ async def auth_complete_impl(code: str, user_key: str = "") -> dict[str, Any]:
         "ok": True,
         "open_id": uat.open_id or "",
         "scopes": uat.scopes,
-        "message": "授权成功, 已缓存 user_access_token.",
+        "message": "授权成功, 已缓存 user_access_token 并会自动续期 -- 之后同类操作不会再让你授权.",
     }
 
 
@@ -1288,7 +1384,7 @@ async def search_docs_impl(
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
     uat = await _get_valid_uat(user_key)
     if uat is None or not uat.access_token:
-        return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
+        return _error(_AUTH_PROMPT, need_auth=True)
 
     types_list = [t.strip() for t in docs_types.split(",") if t.strip()]
     req = _build_doc_search_request(search_key, count, offset, types_list)
@@ -1356,7 +1452,7 @@ async def create_wiki_space_impl(
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
     uat = await _get_valid_uat(user_key)
     if uat is None or not uat.access_token:
-        return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
+        return _error(_AUTH_PROMPT, need_auth=True)
 
     sharing = open_sharing.strip()
     if sharing and sharing not in ("open", "closed"):
@@ -1514,7 +1610,7 @@ async def create_bitable_record_impl(
         return _error(f"fields_json is not valid JSON: {exc}")
     if not isinstance(fields, dict):
         return _error("fields_json must be a JSON object mapping column names to values.")
-    res = await _invoke(_build_create_record_request(app_token, table_id, fields), user_key=user_key)
+    res = await _invoke(_build_create_record_request(app_token, table_id, fields), user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -1543,7 +1639,9 @@ async def delete_bitable_records_impl(
     deleted = 0
     for i in range(0, len(ids), 500):
         batch = ids[i : i + 500]
-        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch), user_key=user_key)
+        res = await _invoke(
+            _build_batch_delete_records_request(app_token, table_id, batch), user_key=user_key, prefer="user"
+        )
         if not res["ok"]:
             return {**res, "deleted": deleted}
         deleted += len(batch)
@@ -1573,7 +1671,9 @@ async def clear_bitable_table_impl(app_token: str, table_id: str, user_key: str 
     deleted = 0
     for i in range(0, len(ids), 500):
         batch = ids[i : i + 500]
-        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch), user_key=user_key)
+        res = await _invoke(
+            _build_batch_delete_records_request(app_token, table_id, batch), user_key=user_key, prefer="user"
+        )
         if not res["ok"]:
             return {**res, "deleted": deleted}
         deleted += len(batch)
@@ -1662,7 +1762,7 @@ async def delete_bitable_fields_impl(
         return _error("No field_ids provided (comma-separated field ids from feishu_bitable_list_fields).")
     deleted: list[str] = []
     for fid in ids:
-        res = await _invoke(_build_delete_field_request(app_token, table_id, fid), user_key=user_key)
+        res = await _invoke(_build_delete_field_request(app_token, table_id, fid), user_key=user_key, prefer="user")
         if not res["ok"]:
             return {**res, "deleted": deleted, "failed_field_id": fid}
         deleted.append(fid)
@@ -1984,7 +2084,7 @@ async def create_task_impl(
         body["due"] = {"timestamp": due_ms, "is_all_day": False}
     if members:
         body["members"] = members
-    res = await _invoke(_build_create_task_request(body), user_key=user_key)
+    res = await _invoke(_build_create_task_request(body), user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -2066,7 +2166,9 @@ async def update_task_impl(
         update_fields.append("due")
     if not update_fields:
         return _error("Nothing to update: provide summary, description, or due.")
-    res = await _invoke(_build_patch_task_request(task_guid, task_fields, update_fields), user_key=user_key)
+    res = await _invoke(
+        _build_patch_task_request(task_guid, task_fields, update_fields), user_key=user_key, prefer="user"
+    )
     if not res["ok"]:
         return res
     return {"ok": True, "task_guid": task_guid, "updated": update_fields}
@@ -2077,7 +2179,9 @@ async def complete_task_impl(task_guid: str, completed: bool, user_key: str = ""
     import time  # noqa: PLC0415
 
     ts = str(int(time.time() * 1000)) if completed else "0"
-    res = await _invoke(_build_patch_task_request(task_guid, {"completed_at": ts}, ["completed_at"]), user_key=user_key)
+    res = await _invoke(
+        _build_patch_task_request(task_guid, {"completed_at": ts}, ["completed_at"]), user_key=user_key, prefer="user"
+    )
     if not res["ok"]:
         return res
     return {"ok": True, "task_guid": task_guid, "completed": completed}
@@ -2592,31 +2696,8 @@ async def _download_url_bytes(url: str) -> tuple[bytes | None, str]:
     return resp.content, ""
 
 
-async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
-    # user_key non-empty → download as that user (UAT), so we can fetch files the
-    # user can see but the bot can't (e.g. a PDF in the user's wiki/drive).
-    if user_key.strip():
-        client = _get_uat_client()
-        if client is None:
-            return None, "Feishu app not configured."
-        uat = await _get_valid_uat(user_key)
-        if uat is None or not uat.access_token:
-            return None, "Not authorized. Call feishu_auth_start then feishu_auth_complete first. (need_auth)"
-        from lark_channel.core.model import RequestOption  # noqa: PLC0415
-
-        option = RequestOption.builder().user_access_token(uat.access_token).build()
-        try:
-            resp = await client.arequest(_build_media_download_request(file_token), option)
-        except Exception as exc:  # SDK/transport failure
-            return None, f"{type(exc).__name__}: {exc}"
-    else:
-        client = _get_client()
-        if client is None:
-            return None, "Feishu app not configured."
-        try:
-            resp = await client.arequest(_build_media_download_request(file_token))
-        except Exception as exc:  # SDK/transport failure
-            return None, f"{type(exc).__name__}: {exc}"
+def _media_resp_to_bytes(resp: Any) -> tuple[bytes | None, str]:
+    """Extract file bytes from a media-download response, or an (err) if it failed."""
     raw = getattr(resp, "raw", None)
     content = getattr(raw, "content", None) if raw is not None else None
     if not content:
@@ -2630,6 +2711,51 @@ async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[by
             if isinstance(body, dict) and body.get("code") not in (0, None):
                 return None, f"Feishu API error {body.get('code')}: {body.get('msg', '')}"
     return data, ""
+
+
+async def _download_media_as_tenant(file_token: str) -> tuple[bytes | None, str]:
+    client = _get_client()
+    if client is None:
+        return None, "Feishu app not configured."
+    try:
+        resp = await client.arequest(_build_media_download_request(file_token))
+    except Exception as exc:  # SDK/transport failure
+        return None, f"{type(exc).__name__}: {exc}"
+    return _media_resp_to_bytes(resp)
+
+
+async def _download_media_as_user(file_token: str, user_key: str) -> tuple[bytes | None, str] | None:
+    """Download as the user's UAT. None → no usable UAT (caller decides need_auth)."""
+    client = _get_uat_client()
+    if client is None:
+        return None
+    uat = await _get_valid_uat(user_key)
+    if uat is None or not uat.access_token:
+        return None
+    from lark_channel.core.model import RequestOption  # noqa: PLC0415
+
+    option = RequestOption.builder().user_access_token(uat.access_token).build()
+    try:
+        resp = await client.arequest(_build_media_download_request(file_token), option)
+    except Exception as exc:  # SDK/transport failure
+        return None, f"{type(exc).__name__}: {exc}"
+    return _media_resp_to_bytes(resp)
+
+
+async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
+    # Tenant-first: try the bot's token, and only if it's denied (and the user has a
+    # cached UAT) retry as the user — so we still fetch files the user can see but the
+    # bot can't (e.g. a PDF in the user's wiki/drive) without forcing authorization.
+    data, err = await _download_media_as_tenant(file_token)
+    if data is not None:
+        return data, ""
+    key = user_key.strip()
+    if not key:
+        return None, err
+    user_out = await _download_media_as_user(file_token, key)
+    if user_out is None:
+        return None, f"{err} — 或需用户授权后重试. (need_auth)"
+    return user_out
 
 
 async def download_file_impl(source: str, save_path: str, is_url: bool = False, user_key: str = "") -> dict[str, Any]:
@@ -2685,7 +2811,7 @@ async def delete_file_impl(file_token: str, file_type: str, user_key: str = "") 
     ftype = file_type.strip()
     if ftype not in _DELETABLE_FILE_TYPES:
         return _error(f"file_type must be one of {sorted(_DELETABLE_FILE_TYPES)}, got {ftype!r}.")
-    res = await _invoke(_build_delete_file_request(token, ftype), user_key=user_key)
+    res = await _invoke(_build_delete_file_request(token, ftype), user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -2726,7 +2852,9 @@ async def create_docx_impl(title: str, folder_token: str = "", user_key: str = "
 
     Pass ``user_key`` to create as that user (doc owned by them); empty uses tenant token.
     """
-    res = await _invoke(_build_docx_create_request(title.strip(), folder_token.strip()), user_key=user_key)
+    res = await _invoke(
+        _build_docx_create_request(title.strip(), folder_token.strip()), user_key=user_key, prefer="user"
+    )
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -2781,6 +2909,7 @@ async def create_wiki_node_impl(
             title=title.strip(),
         ),
         user_key=user_key,
+        prefer="user",
     )
     if not res["ok"]:
         return res
@@ -2851,7 +2980,11 @@ async def list_wiki_spaces_impl(page_size: int = 20, page_token: str = "", user_
     only sees spaces the bot was added to — usually none); empty uses the bot token.
     """
     page_size = max(1, min(int(page_size or 20), 50))
-    res = await _invoke(_build_list_spaces_request(page_size, page_token.strip()), user_key=user_key)
+    res = await _invoke_wiki_read(
+        _build_list_spaces_request(page_size, page_token.strip()),
+        user_key,
+        lambda r: not (r.get("data", {}) or {}).get("items"),
+    )
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -2897,9 +3030,10 @@ async def list_wiki_nodes_impl(
     if not space_id.strip():
         return _error("space_id is required. Use feishu_wiki_list_spaces to find it.")
     page_size = max(1, min(int(page_size or 50), 50))
-    res = await _invoke(
+    res = await _invoke_wiki_read(
         _build_list_wiki_nodes_request(space_id.strip(), page_size, page_token.strip(), parent_node_token.strip()),
-        user_key=user_key,
+        user_key,
+        lambda r: not (r.get("data", {}) or {}).get("items"),
     )
     if not res["ok"]:
         return res
@@ -2985,7 +3119,7 @@ async def append_doc_content_impl(document_id: str, content: str, user_key: str 
     added = 0
     for start in range(0, len(blocks), _BLOCKS_BATCH):
         batch = blocks[start : start + _BLOCKS_BATCH]
-        res = await _invoke(_build_blocks_append_request(document_id.strip(), batch), user_key=user_key)
+        res = await _invoke(_build_blocks_append_request(document_id.strip(), batch), user_key=user_key, prefer="user")
         if not res["ok"]:
             res["added"] = added
             return res
@@ -3035,7 +3169,7 @@ async def add_permission_member_impl(
     req = _build_add_permission_member_request(
         token.strip(), obj_type, member_type, member_id.strip(), member_kind, perm, need_notification
     )
-    res = await _invoke(req, user_key=user_key)
+    res = await _invoke(req, user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -3102,7 +3236,7 @@ async def delete_permission_member_impl(
     if not token.strip() or not member_id.strip():
         return _error("token and member_id are required.")
     req = _build_delete_permission_member_request(token.strip(), obj_type, member_id.strip(), member_type, member_kind)
-    res = await _invoke(req, user_key=user_key)
+    res = await _invoke(req, user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     return {"ok": True, "token": token.strip(), "member_id": member_id.strip()}
@@ -3135,7 +3269,7 @@ async def create_bitable_role_impl(
     if not isinstance(table_roles, list):
         return _error("table_roles_json must be a JSON array of per-table permission objects.")
     body = {"role_name": role_name.strip(), "table_roles": table_roles}
-    res = await _invoke(_build_create_bitable_role_request(app_token.strip(), body), user_key=user_key)
+    res = await _invoke(_build_create_bitable_role_request(app_token.strip(), body), user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -3200,7 +3334,7 @@ async def add_bitable_role_member_impl(
     if not app_token.strip() or not role_id.strip() or not member_id.strip():
         return _error("app_token, role_id and member_id are required.")
     req = _build_add_bitable_role_member_request(app_token.strip(), role_id.strip(), member_id.strip(), member_id_type)
-    res = await _invoke(req, user_key=user_key)
+    res = await _invoke(req, user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     return {"ok": True, "role_id": role_id.strip(), "member_id": member_id.strip()}
@@ -3305,7 +3439,7 @@ async def upload_media_impl(
             size=size,
         )
     req = _build_media_upload_all_request(name, parent_type, parent_node.strip(), size, data, extra)
-    res = await _invoke(req, user_key=user_key)
+    res = await _invoke(req, user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     rdata = res["data"] if isinstance(res["data"], dict) else {}
