@@ -1553,6 +1553,177 @@ async def query_attendance_impl(
     }
 
 
+# ── Attendance admin config — groups (考勤组) & shifts (班次), read-only ────────
+#
+# The user_tasks/query API above only tells you *who clocked in/out*. The admin
+# console config — which shift someone is on, the punch time segments, the
+# flexible/late/early rules, the punch method, and the schedule — lives in two
+# separate read-only APIs: attendance groups (考勤组) and shifts (班次). Both work
+# with the bot's tenant token given attendance:task:readonly + a data-permission
+# scope in the attendance admin console. list endpoints return only id+name, so
+# fetch the detail endpoint for the full rule set.
+
+
+def _build_list_attendance_groups_request(page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/attendance/v1/groups"
+    req.add_query("page_size", max(1, min(page_size, 50)))
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_attendance_groups_impl(page_size: int = 50, page_token: str = "") -> dict[str, Any]:
+    """List attendance groups (考勤组) the app can see — id + name only (read-only)."""
+    res = await _invoke(_build_list_attendance_groups_request(page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    groups = [
+        {"group_id": g.get("group_id", ""), "group_name": g.get("group_name", "")}
+        for g in (data.get("group_list") or [])
+        if isinstance(g, dict)
+    ]
+    return {
+        "ok": True,
+        "groups": groups,
+        "count": len(groups),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+_GROUP_CONFIG_FIELDS = (
+    "group_id",
+    "group_name",
+    "group_type",  # 0 fixed shift, 2 scheduled, 3 free/flexible
+    "punch_type",  # bitwise: 1 GPS, 2 Wi-Fi, 4 machine, 8 IP
+    "allow_out_punch",
+    "out_punch_need_approval",
+    "out_punch_need_photo",
+    "allow_pc_punch",
+    "work_day_no_punch_as_lack",
+    "punch_day_shift_ids",  # bound shift ids (fixed-shift groups)
+    "free_punch_cfg",  # free/flexible-mode window
+    "free_clock_setting",
+    "overtime_clock_cfg",
+    "need_punch_special_days",  # extra dates requiring punch + their shift
+    "no_need_punch_special_days",
+    "calendar_id",
+    "new_calendar_id",
+    "bind_default_dept_ids",
+    "bind_default_user_ids",
+)
+
+
+def _build_get_attendance_group_request(group_id: str, employee_type: str, dept_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/attendance/v1/groups/:group_id"
+    req.paths["group_id"] = group_id
+    req.add_query("employee_type", employee_type)
+    req.add_query("dept_type", dept_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_attendance_group_impl(
+    group_id: str, employee_type: str = "employee_id", dept_type: str = "open_id"
+) -> dict[str, Any]:
+    """Get one attendance group's full config (考勤组配置) — punch method, 外勤/PC
+    打卡, 缺卡规则, 绑定班次, 排班特殊日期 (read-only)."""
+    gid = group_id.strip()
+    if not gid:
+        return _error("group_id is required (get it from feishu_attendance_groups).")
+    res = await _invoke(_build_get_attendance_group_request(gid, employee_type, dept_type))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    group = {k: data.get(k) for k in _GROUP_CONFIG_FIELDS if k in data}
+    return {"ok": True, "group": group}
+
+
+def _build_list_shifts_request(page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/attendance/v1/shifts"
+    req.add_query("page_size", max(1, min(page_size, 50)))
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_shifts_impl(page_size: int = 50, page_token: str = "") -> dict[str, Any]:
+    """List attendance shifts (班次) the app can see — id + name + punch count (read-only)."""
+    res = await _invoke(_build_list_shifts_request(page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    shifts = [
+        {
+            "shift_id": s.get("shift_id", ""),
+            "shift_name": s.get("shift_name", ""),
+            "punch_times": s.get("punch_times"),
+            "is_flexible": s.get("is_flexible"),
+        }
+        for s in (data.get("shift_list") or [])
+        if isinstance(s, dict)
+    ]
+    return {
+        "ok": True,
+        "shifts": shifts,
+        "count": len(shifts),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+_SHIFT_CONFIG_FIELDS = (
+    "shift_id",
+    "shift_name",
+    "punch_times",
+    "day_type",  # 1 workday, 2 rest day
+    "is_flexible",
+    "flexible_minutes",
+    "flexible_rule",  # [{flexible_early_minutes, flexible_late_minutes}]
+    "no_need_off",
+    "punch_time_rule",  # 打卡时间段: on_time/off_time + late/early thresholds
+    "late_off_late_on_rule",
+    "rest_time_rule",
+    "overtime_rule",
+    "overtime_rest_time_rule",
+    "shift_middle_time_rule",
+    "late_off_late_on_setting",
+    "late_minutes_as_serious_late",
+)
+
+
+def _build_get_shift_request(shift_id: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/attendance/v1/shifts/:shift_id"
+    req.paths["shift_id"] = shift_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_shift_impl(shift_id: str) -> dict[str, Any]:
+    """Get one shift's full config (班次配置) — 打卡时间段 (punch_time_rule), 弹性规则
+    (flexible_rule/is_flexible), 迟到/早退/缺卡阈值, 休息时段 (read-only)."""
+    sid = shift_id.strip()
+    if not sid:
+        return _error("shift_id is required (get it from feishu_attendance_shifts).")
+    res = await _invoke(_build_get_shift_request(sid))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    shift = {k: data.get(k) for k in _SHIFT_CONFIG_FIELDS if k in data}
+    return {"ok": True, "shift": shift}
+
+
 # ── Tasks (任务 v2) — create/assign, list, update, complete ───────────────────
 #
 # Feishu native tasks: assign work to people with a due date, list, and mark
