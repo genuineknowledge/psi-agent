@@ -62,9 +62,10 @@ def test_router_config_allows_duplicate_upstream_sockets() -> None:
 
 def test_router_config_is_immutable() -> None:
     config = _config()
+    config_any: Any = config
 
     with pytest.raises(FrozenInstanceError):
-        object.__setattr__(config, "default_socket", "other.sock")
+        config_any.default_socket = "other.sock"
 
 
 def test_router_config_rejects_default_socket_matching_session_socket() -> None:

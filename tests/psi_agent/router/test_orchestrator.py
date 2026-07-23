@@ -8,7 +8,7 @@ import pytest
 
 from psi_agent.router.client import UpstreamResult
 from psi_agent.router.orchestrator import OrchestrationError, Orchestrator
-from psi_agent.router.protocol import RouterConfig
+from psi_agent.router.protocol import PlannedTask, RouterConfig
 
 
 @dataclass
@@ -32,6 +32,14 @@ class FakeClient:
         return result
 
 
+@dataclass
+class FakePlanner:
+    tasks: tuple[PlannedTask, ...] = tuple(PlannedTask(socket=socket, subtask=socket) for socket in ("a", "b", "c"))
+
+    async def plan(self, *, messages: list[dict[str, Any]]) -> tuple[PlannedTask, ...]:
+        return self.tasks
+
+
 def config() -> RouterConfig:
     return RouterConfig(
         session_socket="session",
@@ -53,7 +61,8 @@ async def test_fanout_starts_all_upstreams_before_completion() -> None:
         release=release,
         all_started=anyio.Event(),
     )
-    orchestrator = Orchestrator(config=config(), client=client)
+    client.results["router"] = UpstreamResult(content="aggregate", finish_reason="stop")
+    orchestrator = Orchestrator(config=config(), client=client, planner=FakePlanner())
     async with anyio.create_task_group() as tg:
         result_holder: list[UpstreamResult] = []
 
@@ -65,7 +74,7 @@ async def test_fanout_starts_all_upstreams_before_completion() -> None:
             assert client.all_started is not None
             await client.all_started.wait()
         release.set()
-    assert result_holder[0].content == "a\nb\nc"
+    assert result_holder[0].content == "aggregate"
 
 
 @pytest.mark.anyio
@@ -77,8 +86,9 @@ async def test_partial_failure_keeps_configured_order() -> None:
             "c": UpstreamResult(content="C", finish_reason="stop"),
         }
     )
-    result = await Orchestrator(config=config(), client=client).process(body=body())
-    assert result.content == "A\nC"
+    client.results["router"] = UpstreamResult(content="aggregate", finish_reason="stop")
+    result = await Orchestrator(config=config(), client=client, planner=FakePlanner()).process(body=body())
+    assert result.content == "aggregate"
 
 
 @pytest.mark.anyio
@@ -87,12 +97,13 @@ async def test_tool_calls_are_deduplicated_by_id() -> None:
     client = FakeClient(
         {socket: UpstreamResult(tool_calls=[call], finish_reason="tool_calls") for socket in ("a", "b", "c")}
     )
-    result = await Orchestrator(config=config(), client=client).process(body=body())
-    assert len(result.tool_calls) == 1
+    client.results["router"] = UpstreamResult(content="aggregate", finish_reason="stop")
+    result = await Orchestrator(config=config(), client=client, planner=FakePlanner()).process(body=body())
+    assert len(result.tool_calls) == 0
 
 
 @pytest.mark.anyio
 async def test_all_upstreams_failure_raises() -> None:
     client = FakeClient({socket: RuntimeError(socket) for socket in ("a", "b", "c")})
     with pytest.raises(OrchestrationError):
-        await Orchestrator(config=config(), client=client).process(body=body())
+        await Orchestrator(config=config(), client=client, planner=FakePlanner()).process(body=body())

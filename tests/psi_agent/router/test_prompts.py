@@ -28,7 +28,7 @@ def test_planning_prompt_exposes_configured_socket_description_catalog_and_stric
     assert '"tasks"' in messages[-1]["content"]
     assert '"socket"' in messages[-1]["content"]
     assert '"description"' not in messages[-1]["content"]
-    assert "exactly three" in messages[-1]["content"].lower()
+    assert "one or more tasks" in messages[-1]["content"].lower()
 
 
 def test_repair_prompt_includes_invalid_answer_and_configured_socket_schema() -> None:

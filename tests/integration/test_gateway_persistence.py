@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import anyio
 import pytest
@@ -62,5 +63,8 @@ async def test_gateway_state_corrupt_json_falls_back(tmp_path: str) -> None:
 
 def test_aim_get_socket_computes_for_unknown_id() -> None:
     socket = _socket_path("test", "ais", "unknown-id")
-    assert socket.endswith(".sock")
+    if sys.platform == "win32":
+        assert socket.startswith(r"\\.\pipe\")
+    else:
+        assert socket.endswith(".sock")
     assert "unknown-id" in socket
