@@ -71,6 +71,7 @@ class Orchestrator:
 
         async def invoke(index: int, socket: str) -> None:
             try:
+                logger.info(f"Router dispatching round to upstream[{index}] socket={socket!r}")
                 results[index] = await self.client.complete(
                     socket=socket,
                     body=request_bodies[index],
@@ -85,6 +86,7 @@ class Orchestrator:
                 tg.start_soon(invoke, index, socket)
 
         successful = [result for result in results if result is not None]
+        logger.info(f"Router upstream round completed: {len(successful)}/{len(results)} succeeded")
         if not successful:
             raise OrchestrationError("All configured upstreams failed") from (errors[0] if errors else None)
 
@@ -101,11 +103,8 @@ class Orchestrator:
                 calls.append(deepcopy(call))
         finish = "tool_calls" if calls else "stop"
         logger.info(
-            "Router aggregate result: finish_reason=%s, content=%r, reasoning_chars=%d, tool_calls=%d",
-            finish,
-            content,
-            len(reasoning),
-            len(calls),
+            f"Router aggregate result: finish_reason={finish}, content={content!r}, "
+            f"reasoning_chars={len(reasoning)}, tool_calls={len(calls)}"
         )
         return UpstreamResult(content=content, reasoning=reasoning, tool_calls=calls, finish_reason=finish)
 

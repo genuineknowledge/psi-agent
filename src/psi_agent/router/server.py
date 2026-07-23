@@ -75,10 +75,8 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         return await _stream_fallback(request=request, client=client, config=config, body=body)
 
     logger.info(
-        "Router result ready: finish_reason=%s, content=%r, tool_calls=%d",
-        result.finish_reason,
-        result.content,
-        len(result.tool_calls),
+        f"Router result ready: finish_reason={result.finish_reason}, "
+        f"content={result.content!r}, tool_calls={len(result.tool_calls)}"
     )
 
     response = web.StreamResponse(status=200, reason="OK", headers=_SSE_HEADERS)
