@@ -370,6 +370,113 @@ def test_doc_tool_is_async_with_docstring() -> None:
     assert (inspect.getdoc(fn) or "").strip()
 
 
+# ── Sheet writes — put values/formulas, append rows, set cell style ────────────
+
+
+@pytest.mark.asyncio
+async def test_sheet_write_builds_put_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"updatedRange": "S1!A1:B2", "updatedCells": 4, "spreadsheetToken": "sht1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.write_sheet_impl("sht1", "S1!A1:B2", '[["a",1],["=SUM(B1:B1)",2]]', user_key="ou_1")
+    assert result["ok"] is True
+    assert result["updated_range"] == "S1!A1:B2"
+    assert result["updated_cells"] == 4
+    req = cap.request
+    assert req.http_method.name == "PUT"
+    assert req.paths["spreadsheet_token"] == "sht1"
+    assert "sheets/v2/spreadsheets/:spreadsheet_token/values" in req.uri
+    assert req.body["valueRange"]["range"] == "S1!A1:B2"
+    assert req.body["valueRange"]["values"] == [["a", 1], ["=SUM(B1:B1)", 2]]
+    # writes act as the user so the content is owned by them
+    assert cap.prefer == "user"
+    assert cap.user_key == "ou_1"
+
+
+@pytest.mark.asyncio
+async def test_sheet_write_rejects_bad_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.write_sheet_impl("sht1", "S1!A1", "{not json")
+    assert result["ok"] is False
+    assert "JSON" in result["message"]
+    assert cap.request is None  # never hit the API
+
+
+@pytest.mark.asyncio
+async def test_sheet_write_rejects_non_grid(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.write_sheet_impl("sht1", "S1", '["not","a","grid"]')
+    assert result["ok"] is False
+    assert "list of lists" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_sheet_write_requires_token_and_range() -> None:
+    assert (await _impl.write_sheet_impl("", "S1!A1", "[[1]]"))["ok"] is False
+    assert (await _impl.write_sheet_impl("sht1", "", "[[1]]"))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_sheet_write_rejects_too_many_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    big = json.dumps([[1] for _ in range(_impl._SHEET_MAX_ROWS + 1)])
+    result = await _impl.write_sheet_impl("sht1", "S1", big)
+    assert result["ok"] is False
+    assert "too many rows" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_sheet_append_builds_post_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"tableRange": "S1!A1:B3"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.append_sheet_impl("sht1", "S1", '[["x",1]]', insert_data_option="insert_rows")
+    assert result["ok"] is True
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert "values_append" in req.uri
+    assert _qdict(req).get("insertDataOption") == "INSERT_ROWS"
+    assert req.body["valueRange"]["values"] == [["x", 1]]
+
+
+@pytest.mark.asyncio
+async def test_sheet_append_rejects_bad_option() -> None:
+    result = await _impl.append_sheet_impl("sht1", "S1", "[[1]]", insert_data_option="NOPE")
+    assert result["ok"] is False
+    assert "insert_data_option" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_sheet_format_builds_style_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"spreadsheetToken": "sht1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.format_sheet_impl("sht1", "S1!A1:B2", '{"font":{"bold":true},"backColor":"#21d11f"}')
+    assert result["ok"] is True
+    req = cap.request
+    assert req.http_method.name == "PUT"
+    assert req.uri.endswith("/style")
+    assert req.body["appendStyle"]["range"] == "S1!A1:B2"
+    assert req.body["appendStyle"]["style"]["font"]["bold"] is True
+
+
+@pytest.mark.asyncio
+async def test_sheet_format_rejects_non_object(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.format_sheet_impl("sht1", "S1!A1", "[1,2]")
+    assert result["ok"] is False
+    assert cap.request is None
+
+
+def test_sheet_tools_are_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_sheet")
+    for name in ("feishu_sheet_write", "feishu_sheet_append", "feishu_sheet_format"):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn)
+        assert (inspect.getdoc(fn) or "").strip()
+
+
 # ── Contact — find member id by name ──────────────────────────────────────────
 
 

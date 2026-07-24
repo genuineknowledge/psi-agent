@@ -92,6 +92,13 @@ message_id / sender_open_id）。需要群里之前的上下文时：
   一次完成「建节点 + 写正文」，避免分两步（`feishu_wiki_create_doc` 再 `feishu_doc_append_content`）
   时留下**空文档**。若正文写入失败，它会连 `node_token`/`obj_token` 一并回报，可用相同 `user_key`
   调 `feishu_doc_append_content` 补写。
+- **往电子表格写数据/公式/格式**（表格只能读不能写的缺口已补上）：
+  `feishu_sheet_write(token, range, values_json, user_key)` 覆盖写一个区域；
+  `feishu_sheet_append(token, range, values_json, insert_data_option, user_key)` 在数据末尾追加行；
+  `feishu_sheet_format(token, range, style_json, user_key)` 设单元格样式（字体/颜色/边框/对齐/数字格式）。
+  `token` 是表格 URL 里 `/sheets/` 后那串；`range` 用 `"SHEET_ID!A1:C3"`（裸 `"SHEET_ID"` 指整张已用区域）；
+  `values_json` 是「行的数组」如 `'[["姓名","分数"],["张三",95],["合计","=SUM(B2:B2)"]]'`——**单元格值以 `=` 开头即写成公式**。
+  写表格默认带 `user_key=<sender_open_id>` 以用户身份写（表格归用户、机器人非协作者时必需），空则用机器人 tenant。
 - **删除文档/文件**：`feishu_drive_delete_file(file_token, file_type, user_key)`——删除进
   **回收站可恢复**。file_type 是 docx/doc/sheet/bitable/mindnote/slides/file/folder/shortcut。
   删**知识库(wiki)里的文档**：飞书没有独立删 wiki 节点的接口——先 `feishu_wiki_get_node`
