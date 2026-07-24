@@ -105,7 +105,8 @@ message_id / sender_open_id）。需要群里之前的上下文时：
 - **读知识库里的 PDF/附件（下载）**：飞书文档 API 只能直接读 docx/doc/sheet；PDF、图片等要先下载再解析。
   `feishu_file_download(source, save_path, user_key=...)` 已 tenant 优先、机器人下不到时自动回退到用户身份。
   流程：`feishu_wiki_get_node(token, user_key)` 拿 `obj_token` → `feishu_file_download`（带 user_key）
-  存到本地 → 用 `ocr-and-documents` 技能（PyMuPDF）抽文本。**下载失败不要直接让用户手动复制粘贴，
+  存到本地 → 用 `read_pdf(pdf_path)` 抽文本（数字版 PDF 直接读文本层；扫描件/图片型 PDF 自动逐页
+  渲染成图走 MiniMax 视觉 OCR，和 `describe_image` 同一套 `.env.multimodal` 凭据）。**下载失败不要直接让用户手动复制粘贴，
   先确认带了 user_key**；返回 `need_auth=True` 时才按上面分步引导授权。
 11. **代员工提交审批（自助办事）**：员工私聊说要请假/报销等，按 [`feishu-self-service-agent`] 技能代其提交。
     先 `feishu_approval_get_definition(approval_code)` 读表单模板（要填哪些字段/类型/必填），把员工口语
