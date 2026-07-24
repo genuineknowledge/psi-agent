@@ -15,7 +15,7 @@
     "highlight.js": "^11.11.1",
     "katex": "^0.18.1",
     "marked": "^18.0.7",
-    "material-symbols": "^0.45.8",
+    "material-symbols": "^0.45.9",
     "papaparse": "^5.5.4",
     "pdfjs-dist": "^6.1.200",
     "pinia": "^4.0.2",
