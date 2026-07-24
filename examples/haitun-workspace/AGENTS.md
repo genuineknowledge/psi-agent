@@ -36,7 +36,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `HAITUN_MODEL` | Override the model name shown in the runtime line. |
 | `HAITUN_AGENT_ID` | Agent ID shown in the runtime line. |
 | `HAITUN_CHANNEL` | Channel name shown in the runtime line. |
-| `TIMEZONE` | IANA time zone for the date/time section, e.g. `Asia/Shanghai` (falls back to the standard `TZ`; when neither is set, follows the system's local time zone). |
+| `TZ` | Standard IANA time zone for the date/time section, e.g. `Asia/Shanghai` (when unset, follows the system's local time zone). |
 | `XFYUN_STT_APP_ID`, `XFYUN_STT_API_KEY`, `XFYUN_STT_API_SECRET` | iFLYTEK streaming STT credentials. |
 | `XFYUN_TTS_APP_ID`, `XFYUN_TTS_API_KEY`, `XFYUN_TTS_API_SECRET` | iFLYTEK online TTS credentials. |
 | `XFYUN_APP_ID`, `XFYUN_API_KEY`, `XFYUN_API_SECRET` | Optional shared fallback when both services use one app. |

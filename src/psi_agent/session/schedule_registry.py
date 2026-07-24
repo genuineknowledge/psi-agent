@@ -168,19 +168,18 @@ class ScheduleRegistry:
     def _schedule_tz() -> ZoneInfo | None:
         """Resolve the timezone cron schedules are anchored to.
 
-        Reads ``TIMEZONE`` (falling back to the standard ``TZ``), e.g.
-        ``Asia/Shanghai``. Returns ``None`` when unset or invalid; the
-        caller then falls back to the system's local timezone via
-        ``astimezone()``, so no IANA data package (tzdata) is strictly
-        required.
+        Reads the standard ``TZ`` env var, e.g. ``Asia/Shanghai``. Returns
+        ``None`` when unset or invalid; the caller then falls back to the
+        system's local timezone via ``astimezone()``, so no IANA data
+        package (tzdata) is strictly required.
         """
-        name = os.environ.get("TIMEZONE", "").strip() or os.environ.get("TZ", "").strip()
+        name = os.environ.get("TZ", "").strip()
         if not name:
             return None
         try:
             return ZoneInfo(name)
         except (ZoneInfoNotFoundError, ValueError) as e:
-            logger.warning(f"Invalid TIMEZONE/TZ {name!r}, falling back to system local time: {e!r}")
+            logger.warning(f"Invalid TZ {name!r}, falling back to system local time: {e!r}")
             return None
 
     @staticmethod
@@ -188,8 +187,8 @@ class ScheduleRegistry:
         """Perpetual coroutine that fires a schedule on its cron interval."""
         logger.info(f"Schedule runner started: {schedule.name!r} ({schedule.cron!r})")
 
-        # Anchor cron to TIMEZONE/TZ so "0 9 * * *" means 9am *local* time,
-        # not 9am UTC. When unset/invalid, fall back to the system's local
+        # Anchor cron to TZ so "0 9 * * *" means 9am *local* time, not 9am
+        # UTC. When TZ is unset/invalid, fall back to the system's local
         # timezone via astimezone() — still tz-aware, so cron stays local.
         tz = ScheduleRegistry._schedule_tz()
         base = datetime.now(tz) if tz is not None else datetime.now().astimezone()

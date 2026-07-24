@@ -674,7 +674,7 @@ def _build_runtime_info(model: str | None) -> str:
 def _build_datetime_section() -> str:
     """Build the ## Current Date & Time section.
 
-    Reads TIMEZONE (falling back to the standard TZ) for the timezone and
+    Reads the standard TZ env var for the timezone and
     HAITUN_KNOWLEDGE_CUTOFF (optional, e.g. "2026-01") for the knowledge
     cutoff anchor. When the cutoff is unset, emit a neutral line rather
     than fabricating a date.
@@ -682,11 +682,11 @@ def _build_datetime_section() -> str:
     The clock and the label are computed from the same source so they
     always agree — otherwise a UTC container would show UTC wall-clock
     time under an "Asia/Shanghai" label (or vice versa), silently feeding
-    the agent a time that is off by the UTC offset. When TIMEZONE/TZ is
-    unset or invalid, fall back to the system's local timezone via
-    astimezone(), so no tzdata package is strictly required.
+    the agent a time that is off by the UTC offset. When TZ is unset or
+    invalid, fall back to the system's local timezone via astimezone(),
+    so no tzdata package is strictly required.
     """
-    tz_name = os.environ.get("TIMEZONE", "").strip() or os.environ.get("TZ", "").strip()
+    tz_name = os.environ.get("TZ", "").strip()
     try:
         now = datetime.now(ZoneInfo(tz_name)) if tz_name else datetime.now().astimezone()
     except ZoneInfoNotFoundError, ValueError:

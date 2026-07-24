@@ -157,7 +157,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 
 ```
 每个 schedule 一个 run_one_schedule() coroutine：
-  base = 本地时区的 aware datetime  ← _schedule_tz()(TIMEZONE/TZ) 或 astimezone()
+  base = 本地时区的 aware datetime  ← _schedule_tz()(标准 TZ) 或 astimezone()
   cron_iter = croniter(cron, base)   ← 按本地时区解释 cron
   while True:
     cron_iter.get_next(float)         ← 计算下次触发时间(epoch)
@@ -174,7 +174,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 
 关键点：
 - Schedule 是纯配置数据类（`name, cron, task_content`），cron 状态由 `run_one_schedule` 维护
-- **cron 按本地时区排程（刻意设计，勿改回 UTC）**：`croniter` 若以裸 epoch（`time.time()`）为基准会按 **UTC** 解释 cron，导致 `0 9 * * *` 在 UTC+8 实际于当地 17:00 触发。因此 `_run_one` 用 **timezone-aware** 的 `datetime` 作基准：`ScheduleRegistry._schedule_tz()` 读 `TIMEZONE`（兜底标准 `TZ`）解析成 `ZoneInfo`，二者都未设 / 非法时回退 `datetime.now().astimezone()` 跟随系统本地时区（仍是 aware，cron 保持按本地）。`get_next(float)` 取 epoch 再与 `time.time()` 做差得等待秒数。不额外依赖 `tzdata`——`astimezone()` 兜底不需要 IANA 数据包
+- **cron 按本地时区排程（刻意设计，勿改回 UTC）**：`croniter` 若以裸 epoch（`time.time()`）为基准会按 **UTC** 解释 cron，导致 `0 9 * * *` 在 UTC+8 实际于当地 17:00 触发。因此 `_run_one` 用 **timezone-aware** 的 `datetime` 作基准：`ScheduleRegistry._schedule_tz()` 读标准 `TZ` 解析成 `ZoneInfo`，未设 / 非法时回退 `datetime.now().astimezone()` 跟随系统本地时区（仍是 aware，cron 保持按本地）。`get_next(float)` 取 epoch 再与 `time.time()` 做差得等待秒数。不额外依赖 `tzdata`——`astimezone()` 兜底不需要 IANA 数据包
 - Schedule 响应的 content 和 reasoning 各自存在于各自的消息周期，不会交错
 - 多个 schedule 可以并发 sleep，但通过 lock 串行触发
 - 每个 schedule 在加载时独立处理——IO 错误、YAML 解析问题、cron 验证失败都只跳过该 schedule
