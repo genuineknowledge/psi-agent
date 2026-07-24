@@ -249,6 +249,13 @@ async def test_agent_attaches_the_same_routing_session_id_to_every_tool_round_re
 
 @pytest.mark.anyio
 async def test_agent_pending_schedule_response(tmp_path: Path) -> None:
+    """Pending-chunk plumbing still works when something stashes into it.
+
+    NOTE: schedule runners no longer stash (see fix-schedule-bug /
+    ``test_run_one_never_stashes``); this exercises the retained fallback
+    infrastructure directly, not the schedule code path.
+    """
+
     async def handler(request: web.Request) -> web.StreamResponse:
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
         await resp.prepare(request)
