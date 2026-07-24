@@ -143,6 +143,12 @@ service tools:
 
 ## Prerequisites
 
+- **Haibao ChatBI**: Haibao tools are not bundled in this workspace. See
+  [`docs/haibao-integration.md`](docs/haibao-integration.md) for the recommended native Tool
+  path, optional MCP adapter, identity boundary, error contract, and acceptance checklist.
+  Treat that document as a target integration design rather than a statement of current
+  production support.
+
 - **Fusion Memory**: Haitun only consumes an operator-provisioned remote MCP
   Streamable HTTP service. The process starter supplies the token-map path; the
   bearer token defines user identity, while workspace/Session values are only
