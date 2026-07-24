@@ -12,11 +12,22 @@ event loop (Windows only).
 
 from __future__ import annotations
 
+import sys
 import urllib.parse
 
 import aiohttp
 from aiohttp import web
 from loguru import logger
+
+_WIN_UNIX_SOCKET_HINT = (
+    "Unix-socket transport is not supported on Windows: asyncio has no "
+    "create_unix_connection there, so aiohttp raises a bare NotImplementedError "
+    "deep in the connect path. On Windows use a named-pipe address instead "
+    "(e.g. r'\\\\.\\pipe\\psi\\channels\\<id>'). Note that when passing the "
+    "address through a POSIX shell the backslashes must survive quoting — a "
+    "single-backslash '\\.\\pipe\\...' silently falls through to the Unix "
+    "branch. Got addr={addr!r}."
+)
 
 
 def resolve_connector_and_endpoint(
@@ -38,6 +49,8 @@ def resolve_connector_and_endpoint(
         endpoint = f"http://localhost{path_prefix}"
         logger.debug(f"Resolved transport: addr={addr!r} → Named Pipe endpoint={endpoint!r}")
     else:
+        if sys.platform == "win32":
+            raise ValueError(_WIN_UNIX_SOCKET_HINT.format(addr=addr))
         connector = aiohttp.UnixConnector(path=addr)
         endpoint = f"http://localhost{path_prefix}"
         logger.debug(f"Resolved transport: addr={addr!r} → Unix socket endpoint={endpoint!r}")
@@ -62,5 +75,7 @@ def create_site(
     if addr.startswith("\\\\.\\pipe\\"):
         logger.debug(f"Creating Named Pipe site: {addr}")
         return web.NamedPipeSite(runner, addr)
+    if sys.platform == "win32":
+        raise ValueError(_WIN_UNIX_SOCKET_HINT.format(addr=addr))
     logger.debug(f"Creating Unix site: {addr}")
     return web.UnixSite(runner, addr)

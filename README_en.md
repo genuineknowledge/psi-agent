@@ -157,11 +157,13 @@ All components auto-detect transport type via address prefix:
 
 | Address Format | Transport |
 |----------------|-----------|
-| `./ai.sock` (bare filesystem path, relative or absolute) | Unix socket |
+| `./ai.sock` (bare filesystem path, relative or absolute) | Unix socket (POSIX only) |
 | `http://127.0.0.1:8080` | TCP |
 | `\\.\pipe\name` (Windows) | Named Pipe |
 
 AI and Session components are transport-agnostic — handled uniformly by `_sockets.py`.
+
+> **Windows note**: Windows has no Unix sockets (asyncio lacks `create_unix_connection`), so a bare filesystem path is **rejected outright with a clear `ValueError`** rather than falling through to a Unix socket and crashing with a context-free `NotImplementedError` deep inside aiohttp. On Windows use a named-pipe address `\\.\pipe\name`; when passing it through a POSIX shell (e.g. bash single-quotes) the backslashes must survive — a single-backslash `\.\pipe\...` fails the named-pipe prefix check, is treated as a bare path, and triggers the same `ValueError`.
 
 Protocol errors between components take two forms:
 
