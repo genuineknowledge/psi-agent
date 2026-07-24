@@ -58,7 +58,7 @@ import {
   type AiInfo,
 } from "../services/api";
 import { ensureDefaultAi, pickPreferredAi, purgePlaceholderAis, writeStoredAiId } from "../services/bootstrapAi";
-import { filesToChatFiles } from "../services/chatFiles";
+import { chatFileToFile, filesToChatFiles } from "../services/chatFiles";
 import { streamSessionChat } from "../services/chatStream";
 import {
   historyToChat,
@@ -145,6 +145,10 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const activeChatInputRef = useRef<HTMLInputElement | null>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /** Bumped each runChatTurn so a superseded/aborted turn cannot keep appending deltas. */
+  const streamEpochRef = useRef(0);
+  /** After Stop, block submit briefly — Stop↔Send swap under the same click would re-send the restored draft. */
+  const suppressSubmitUntilRef = useRef(0);
   const historyLoadedRef = useRef<Set<string>>(new Set(["overview"]));
   /** Invalidate in-flight todo polls so a late streaming refresh cannot reopen 「产出与确认」. */
   const todoRefreshSeqRef = useRef<Record<string, number>>({});
@@ -436,6 +440,35 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     });
   };
 
+  const isAbortError = (e: unknown) =>
+    typeof e === "object" && e !== null && "name" in e && (e as { name: string }).name === "AbortError";
+
+  /** Cursor-like stop: drop this turn's bubbles and put the draft back in the input. */
+  const restoreStoppedTurn = (
+    cardId: string,
+    text: string,
+    files: Array<File | ChatFile>,
+  ) => {
+    setMessages((current) => {
+      const list = [...(current[cardId] ?? [])];
+      if (list.at(-1)?.role === "agent") list.pop();
+      if (list.at(-1)?.role === "user") list.pop();
+      return { ...current, [cardId]: list };
+    });
+    const fileNames = files.map((f) => f.name).join("、");
+    const uploadOnly =
+      files.length > 0 && (!text.trim() || text === `已上传：${fileNames}`);
+    setChatDrafts((current) => ({
+      ...current,
+      [cardId]: uploadOnly ? "" : text,
+    }));
+    setChatAttachments((current) => ({
+      ...current,
+      [cardId]: files.map((f) => (f instanceof File ? f : chatFileToFile(f))),
+    }));
+    queueMicrotask(() => activeChatInputRef.current?.focus());
+  };
+
   /** Stream one turn; caller must already append user + empty agent (or replace agent stub). */
   const runChatTurn = async (
     cardId: string,
@@ -443,10 +476,13 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     files: Array<File | ChatFile> = [],
     titleSource?: string,
   ) => {
-    setTypingCard(cardId);
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+    const epoch = ++streamEpochRef.current;
+    const live = () => epoch === streamEpochRef.current && !controller.signal.aborted;
+
+    setTypingCard(cardId);
     const userVisible = titleSource ?? (text.trim() || "附件");
     let turnOk = false;
     let replySummary = "";
@@ -466,8 +502,12 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
         files,
         controller.signal,
         {
-          onText: (delta) => appendStreamingAgent(cardId, delta),
+          onText: (delta) => {
+            if (!live()) return;
+            appendStreamingAgent(cardId, delta);
+          },
           onBlob: (name, data) => {
+            if (!live()) return;
             setTasks((current) =>
               current.map((task) =>
                 (task.id === cardId
@@ -489,6 +529,11 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
           },
         },
       );
+      // Some browsers end the body with done instead of throwing AbortError.
+      if (!live()) {
+        if (epoch === streamEpochRef.current) restoreStoppedTurn(cardId, text, files);
+        return;
+      }
       turnOk = true;
       replySummary = full.trim();
       if (!full.trim()) {
@@ -525,27 +570,11 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
         }).catch(() => {});
       }
     } catch (e) {
-      if ((e as Error).name === "AbortError") {
-        setMessages((current) => {
-          const list = [...(current[cardId] ?? [])];
-          for (let i = list.length - 1; i >= 0; i--) {
-            if (list[i]?.role === "user") {
-              list[i] = { ...list[i]!, failed: true, failedReason: "stopped" };
-              break;
-            }
-          }
-          const last = list[list.length - 1];
-          if (last?.role === "agent") {
-            list[list.length - 1] = {
-              ...last,
-              stopped: true,
-              text: last.text.trim() || "（已停止）",
-            };
-          }
-          return { ...current, [cardId]: list };
-        });
+      if (isAbortError(e) || controller.signal.aborted) {
+        if (epoch === streamEpochRef.current) restoreStoppedTurn(cardId, text, files);
         return;
       }
+      if (epoch !== streamEpochRef.current) return;
       const err = e instanceof Error ? e.message : String(e);
       setMessages((current) => {
         const list = [...(current[cardId] ?? [])];
@@ -568,11 +597,13 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       });
       showToast(err);
     } finally {
-      setTypingCard((current) => (current === cardId ? null : current));
-      if (abortRef.current === controller) abortRef.current = null;
+      if (epoch === streamEpochRef.current) {
+        setTypingCard((current) => (current === cardId ? null : current));
+        if (abortRef.current === controller) abortRef.current = null;
+      }
       void (async () => {
         await refreshTodos(cardId, false);
-        if (!turnOk) return;
+        if (!turnOk || epoch !== streamEpochRef.current) return;
         setTasks((current) =>
           current.map((task) =>
             (task.id === cardId
@@ -585,10 +616,14 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   };
 
   const stopChat = useCallback(() => {
+    // Same pointer gesture must not land on the Send button that replaces Stop
+    // after typingCard clears — especially once we restore the draft text.
+    suppressSubmitUntilRef.current = Date.now() + 400;
     abortRef.current?.abort();
   }, []);
 
   const sendMessage = async (text: string, cardId = currentCard.id, files: File[] = []) => {
+    if (Date.now() < suppressSubmitUntilRef.current) return;
     const clean = text.trim();
     const pendingFiles = files.length ? files : (chatAttachments[cardId] ?? []);
     if (!clean && !pendingFiles.length) return;
@@ -677,6 +712,8 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
 
   const handleChatSubmit = (event: FormEvent) => {
     event.preventDefault();
+    if (typingCard) return;
+    if (Date.now() < suppressSubmitUntilRef.current) return;
     const files = chatAttachments[currentCard.id] ?? [];
     if (!currentChatDraft.trim() && !files.length) return;
     if (!chatExpanded) setChatExpanded(true);
@@ -1156,7 +1193,9 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
                 className="send-button stop-button"
                 data-attach-control
                 disabled={!interactive}
-                onClick={(event) => {
+                onPointerDown={(event) => {
+                  // preventDefault: avoid mouseup activating the Send that replaces this button.
+                  event.preventDefault();
                   event.stopPropagation();
                   if (interactive) stopChat();
                 }}
