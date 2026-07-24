@@ -407,6 +407,28 @@ async def find_chat_impl(name: str, exact: bool, page_size: int = 50, page_token
     }
 
 
+def _infer_receive_id_type(receive_id: str, given: str) -> str:
+    """Infer the Feishu ``receive_id_type`` from the id's prefix.
+
+    The API rejects a mismatched type with ``230001 invalid receive_id`` (e.g.
+    sending a DM by passing an ``ou_`` open_id while the type is still the default
+    ``chat_id``). The id prefix is an unambiguous signal, so trust it: ``oc_`` is a
+    chat_id, ``ou_`` an open_id, ``on_`` a union_id, and a value containing ``@`` an
+    email. Only fall back to *given* when the prefix carries no signal (e.g. a bare
+    user_id), so an explicit caller choice for those still wins.
+    """
+    rid = receive_id.strip()
+    if rid.startswith("oc_"):
+        return "chat_id"
+    if rid.startswith("ou_"):
+        return "open_id"
+    if rid.startswith("on_"):
+        return "union_id"
+    if "@" in rid:
+        return "email"
+    return given
+
+
 def _build_send_message_request(receive_id: str, receive_id_type: str, msg_type: str, content: str) -> BaseRequest:
     req = BaseRequest()
     req.http_method = HttpMethod.POST
@@ -444,6 +466,27 @@ async def _resolve_sender_name(open_id: str) -> str:
     return open_id
 
 
+_AT_TAG_RE = re.compile(
+    r"(?:<|&lt;)\s*at\b[^>]*?user_id\s*=\s*[\"']?(?P<uid>[^\"'>&\s]+)[\"']?[^>]*?(?:>|&gt;)"
+    r"(?:\s*(?:<|&lt;)\s*/\s*at\s*(?:>|&gt;))?",
+    re.IGNORECASE,
+)
+
+
+def _extract_and_strip_at_tags(text: str) -> tuple[str, list[str]]:
+    """Pull ``<at user_id=ou_xxx>`` tags (also HTML-escaped ``&lt;at&gt;``) out of *text*.
+
+    Returns the text with those tags removed and the list of mentioned open_ids.
+    A plain-text message's ``<at>`` does NOT render for bots (Feishu shows the raw
+    tag, e.g. ``&lt;at&gt;``), so the caller must resend as a ``post`` message whose
+    ``at`` element renders. Extracting here means the model can write the tag inline
+    (as the tool docs historically told it to) and mentions still work.
+    """
+    open_ids = [m.group("uid") for m in _AT_TAG_RE.finditer(text)]
+    stripped = _AT_TAG_RE.sub("", text).strip()
+    return stripped, open_ids
+
+
 async def send_message_impl(receive_id: str, text: str, receive_id_type: str, on_behalf_of: str = "") -> dict[str, Any]:
     """Send a text message to a chat/user. Returns message_id + thread_id (thread_id is the topic root).
 
@@ -452,13 +495,46 @@ async def send_message_impl(receive_id: str, text: str, receive_id_type: str, on
     prefix — the recipient sees who it is from instead of a bare bubble authored by
     the bot. Name is resolved from the open_id; falls back to the raw open_id if
     unresolvable.
+
+    ``receive_id_type`` is auto-corrected from the id prefix, and any ``<at>`` tags
+    embedded in *text* are turned into a real ``post`` mention (a plain-text ``<at>``
+    would render as a raw tag for bots), so mentions work regardless of id type or
+    how the tag was written.
+
+    Relay guard: relaying someone's words (``on_behalf_of`` set) is a private message
+    to a person, never a group post. If ``receive_id`` is a group chat (``oc_``), the
+    send is redirected to the mentioned person's DM (open_id taken from the ``<at>``
+    tag in *text*). If no recipient open_id can be determined, it returns an error
+    instead of leaking the private message into the group.
     """
+    at_target_ids = [m.group("uid") for m in _AT_TAG_RE.finditer(text)]
+    if on_behalf_of.strip() and receive_id.strip().startswith("oc_"):
+        # A relay must stay private: never post it into the group. Redirect to the
+        # mentioned person's DM; refuse (don't fall back to the group) if unknown.
+        target = next((oid for oid in at_target_ids if oid.startswith("ou_")), "")
+        if not target:
+            return _error(
+                "代人带话必须私发给本人, 但未能从消息里确定收件人 open_id; "
+                "请用 feishu_chat_find_member 查到本人 open_id 后作为 receive_id 私发, 不要发到群里。",
+                code="relay_recipient_unknown",
+            )
+        receive_id, receive_id_type = target, "open_id"
+
     if on_behalf_of.strip():
         sender = await _resolve_sender_name(on_behalf_of)
         if sender:
             text = f"{sender}给你发了一条消息：「{text}」"  # noqa: RUF001
-    content = json.dumps({"text": text}, ensure_ascii=False)
-    res = await _invoke(_build_send_message_request(receive_id, receive_id_type, "text", content))
+    receive_id_type = _infer_receive_id_type(receive_id, receive_id_type)
+    stripped, at_open_ids = _extract_and_strip_at_tags(text)
+    # In a 1:1 DM an @-mention is noise; keep mentions only when sending to a group.
+    if at_open_ids and receive_id_type == "chat_id":
+        # Mentions only render in a post message; a plain-text <at> shows the raw tag.
+        content = _build_post_at_content(stripped, at_open_ids, at_all=False)
+        req = _build_send_message_request(receive_id, receive_id_type, "post", content)
+    else:
+        content = json.dumps({"text": stripped if at_open_ids else text}, ensure_ascii=False)
+        req = _build_send_message_request(receive_id, receive_id_type, "text", content)
+    res = await _invoke(req)
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
