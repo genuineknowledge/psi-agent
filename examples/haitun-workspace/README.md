@@ -10,6 +10,10 @@ A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combin
 
 See `AGENTS.md` for the full layout and conventions.
 
+To integrate Haibao ChatBI through native workspace tools or an MCP adapter, see
+[`docs/haibao-integration.md`](docs/haibao-integration.md). The guide describes a target
+integration and production gates; Haibao tools are not bundled in this workspace yet.
+
 ## Run
 
 Three terminals:
