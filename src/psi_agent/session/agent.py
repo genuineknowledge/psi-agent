@@ -213,6 +213,7 @@ class SessionAgent:
                         extra_params.pop("tools", None)
                         extra_params.pop("stream", None)
                         request_body |= extra_params
+                    request_body["routing"] = {"session_id": self._conversation.session_id}
 
                     logger.info("Sending request to AI via AiClient")
                     logger.debug(f"Request messages count: {len(ai_messages)}, tools: {len(tool_defs)}")
