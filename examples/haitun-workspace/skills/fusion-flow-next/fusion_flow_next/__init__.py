@@ -22,7 +22,7 @@ from .core_ir import (
     Workflow,
     WorkflowFile,
 )
-from .parser import parse_workflow
+from .parser import ParseContext, parse_workflow
 from .planning import (
     PlannedStep,
     PlannedSyntax,
@@ -44,6 +44,7 @@ __all__ = [
     "ListTerm",
     "LogicalConnective",
     "Operator",
+    "ParseContext",
     "ParseResult",
     "PlannedStep",
     "PlannedSyntax",
