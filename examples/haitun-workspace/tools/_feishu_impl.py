@@ -407,6 +407,28 @@ async def find_chat_impl(name: str, exact: bool, page_size: int = 50, page_token
     }
 
 
+def _infer_receive_id_type(receive_id: str, given: str) -> str:
+    """Infer the Feishu ``receive_id_type`` from the id's prefix.
+
+    The API rejects a mismatched type with ``230001 invalid receive_id`` (e.g.
+    sending a DM by passing an ``ou_`` open_id while the type is still the default
+    ``chat_id``). The id prefix is an unambiguous signal, so trust it: ``oc_`` is a
+    chat_id, ``ou_`` an open_id, ``on_`` a union_id, and a value containing ``@`` an
+    email. Only fall back to *given* when the prefix carries no signal (e.g. a bare
+    user_id), so an explicit caller choice for those still wins.
+    """
+    rid = receive_id.strip()
+    if rid.startswith("oc_"):
+        return "chat_id"
+    if rid.startswith("ou_"):
+        return "open_id"
+    if rid.startswith("on_"):
+        return "union_id"
+    if "@" in rid:
+        return "email"
+    return given
+
+
 def _build_send_message_request(receive_id: str, receive_id_type: str, msg_type: str, content: str) -> BaseRequest:
     req = BaseRequest()
     req.http_method = HttpMethod.POST
@@ -457,6 +479,7 @@ async def send_message_impl(receive_id: str, text: str, receive_id_type: str, on
         sender = await _resolve_sender_name(on_behalf_of)
         if sender:
             text = f"{sender}给你发了一条消息：「{text}」"  # noqa: RUF001
+    receive_id_type = _infer_receive_id_type(receive_id, receive_id_type)
     content = json.dumps({"text": text}, ensure_ascii=False)
     res = await _invoke(_build_send_message_request(receive_id, receive_id_type, "text", content))
     if not res["ok"]:

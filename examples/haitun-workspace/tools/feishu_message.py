@@ -61,6 +61,9 @@ async def feishu_message_send(
         receive_id: Target id — a chat_id (oc_...), open_id (ou_...), user_id, union_id, or email.
         text: Message text. May contain ``<at user_id="ou_xxx"></at>`` to @-mention.
         receive_id_type: Type of receive_id — chat_id, open_id, user_id, union_id, or email.
+            Usually leave as-is: the type is auto-detected from the id prefix (``oc_``→chat_id,
+            ``ou_``→open_id, ``on_``→union_id, contains ``@``→email), so DMing by open_id works
+            even with the default. Only set it explicitly for a bare user_id.
         on_behalf_of: Open_id of the person whose words you are relaying (optional). When
             set, the text is wrapped with a "某人给你发了一条消息" attribution prefix.
     """
