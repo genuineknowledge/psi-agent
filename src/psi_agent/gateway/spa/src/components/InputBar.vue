@@ -24,8 +24,9 @@
       ></textarea>
 
       <ModelPanel
-        @select-ai="$emit('select-ai', $event)"
+        @select-backend="$emit('select-backend', $event)"
         @delete-ai="$emit('delete-ai', $event)"
+        @delete-router="$emit('delete-router', $event)"
       />
 
       <button v-if="streaming" class="send stop" @click="stopMessage" title="停止生成">
@@ -48,7 +49,7 @@ import ModelPanel from './ModelPanel.vue'
 const chat = useChatStore()
 const { selectedFiles, inputText, uploadResetToken, streaming } = storeToRefs(chat)
 
-defineEmits(['select-ai', 'delete-ai'])
+defineEmits(['select-backend', 'delete-ai', 'delete-router'])
 
 function onFileSelected(e) {
   const files = Array.from(e.target.files || [])

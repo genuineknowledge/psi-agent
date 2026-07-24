@@ -10,6 +10,7 @@ export const useUiStore = defineStore('ui', () => {
   const isMobileSidebarOpen = ref(false)
   const isDragging = ref(false)
   const dlgAI = ref(false)
+  const dlgRouter = ref(false)
   const dlgSess = ref(false)
   const sessionSearchFocusToken = ref(0)
   const hubMenuOpen = ref(false)
@@ -69,6 +70,7 @@ export const useUiStore = defineStore('ui', () => {
     isMobileSidebarOpen,
     isDragging,
     dlgAI,
+    dlgRouter,
     dlgSess,
     sessionSearchFocusToken,
     hubMenuOpen,
