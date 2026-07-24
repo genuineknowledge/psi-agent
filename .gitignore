@@ -9,3 +9,6 @@ dist/
 *.sock
 .coverage
 /result
+
+# Per-worktree Agent identity card (local paths / branch); never commit
+/AGENT_BOOTSTRAP.md

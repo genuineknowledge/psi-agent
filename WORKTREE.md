@@ -9,8 +9,8 @@
 - **Agent**：可两窗各挂一树各干各的；要对齐契约时再靠 commit / fetch（或人口头转述），不必时刻互通脏改动
 - **命名**：文件夹名应直接体现角色（`spa-v2` / `workspace` / `workflow` / `main`），避免无后缀的模糊目录名
 
-完整约定见根目录 **`AGENTS.md` →「本地并行开发」**（含 **什么该提交 / 什么不该提交**：探讨纪要留本地，跨树共享约定才进 Git）。  
-每棵树有角色专属 **`AGENT_BOOTSTRAP.md`**（新开对应 Agent 先读，并强制再读相关 `AGENTS.md`）。
+完整约定见根目录 **`AGENTS.md` →「本地并行开发」**（含提交范围：共享约定进 Git；**`AGENT_BOOTSTRAP.md` 与探讨纪要留本机**）。  
+每棵树可自备本机 **`AGENT_BOOTSTRAP.md`**（gitignore，不进远程）；新开 Agent 先读它，再读共享 `AGENTS.md`。
 
 ```bash
 git worktree list
