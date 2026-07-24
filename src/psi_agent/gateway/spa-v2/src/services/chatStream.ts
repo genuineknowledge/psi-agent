@@ -27,20 +27,40 @@ export async function streamSessionChat(
   let full = ''
   const blobs: ChatFile[] = []
   const reader = await streamChat(sessionId, fd, signal)
-  for await (const chunk of readSSE(reader)) {
-    if (chunk.type === 'text' && typeof chunk.text === 'string') {
-      full += chunk.text
-      handlers.onText?.(chunk.text)
-    } else if (chunk.type === 'blob' && typeof chunk.name === 'string') {
-      const data = typeof chunk.data === 'string' ? chunk.data : ''
-      blobs.push({ name: chunk.name, data })
-      handlers.onBlob?.(chunk.name, data)
-    } else if (chunk.type === 'reasoning' && typeof chunk.text === 'string') {
-      handlers.onReasoning?.(chunk.text)
-    } else if (chunk.type === 'error' && typeof chunk.error === 'string') {
-      handlers.onError?.(chunk.error)
-      throw new Error(chunk.error)
-    }
+  const cancelReader = () => {
+    void reader.cancel().catch(() => {})
   }
-  return { text: full, blobs }
+  if (signal) {
+    if (signal.aborted) {
+      cancelReader()
+      throw new DOMException('Aborted', 'AbortError')
+    }
+    signal.addEventListener('abort', cancelReader, { once: true })
+  }
+  try {
+    for await (const chunk of readSSE(reader)) {
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      if (chunk.type === 'text' && typeof chunk.text === 'string') {
+        full += chunk.text
+        handlers.onText?.(chunk.text)
+      } else if (chunk.type === 'blob' && typeof chunk.name === 'string') {
+        const data = typeof chunk.data === 'string' ? chunk.data : ''
+        blobs.push({ name: chunk.name, data })
+        handlers.onBlob?.(chunk.name, data)
+      } else if (chunk.type === 'reasoning' && typeof chunk.text === 'string') {
+        handlers.onReasoning?.(chunk.text)
+      } else if (chunk.type === 'error' && typeof chunk.error === 'string') {
+        handlers.onError?.(chunk.error)
+        throw new Error(chunk.error)
+      }
+    }
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError')
+    }
+    return { text: full, blobs }
+  } finally {
+    signal?.removeEventListener('abort', cancelReader)
+  }
 }
