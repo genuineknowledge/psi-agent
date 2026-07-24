@@ -54,9 +54,14 @@ async def feishu_message_send(
     topic root).
 
     When you are **relaying someone's words to a third party** ("帮我给张三带句话…"),
-    pass that person's open_id as ``on_behalf_of`` — the recipient then sees a
-    "{姓名}给你发了一条消息" attribution prefix instead of a bare bubble that looks like
-    the bot spoke on its own. Use the ``sender_open_id`` from ``<feishu_context>``.
+    pass that person's open_id as ``on_behalf_of`` and send it as a **private DM to
+    the recipient** — set ``receive_id`` to the recipient's own open_id (``ou_...``),
+    NOT a group chat_id. You may look the recipient up in a group with
+    ``feishu_chat_find_member`` to get their open_id, but the message itself must go to
+    their DM, never posted into the group. (As a safeguard, a relay addressed to a
+    group is auto-redirected to the mentioned person's DM, or refused if no recipient
+    can be determined.) The recipient sees a "{姓名}给你发了一条消息" attribution prefix.
+    Use the ``sender_open_id`` from ``<feishu_context>`` as ``on_behalf_of``.
     Leave it empty for messages the bot itself authors (dashboards, notifications, etc.).
 
     Args:

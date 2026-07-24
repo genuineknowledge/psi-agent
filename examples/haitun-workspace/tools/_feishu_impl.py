@@ -500,19 +500,39 @@ async def send_message_impl(receive_id: str, text: str, receive_id_type: str, on
     embedded in *text* are turned into a real ``post`` mention (a plain-text ``<at>``
     would render as a raw tag for bots), so mentions work regardless of id type or
     how the tag was written.
+
+    Relay guard: relaying someone's words (``on_behalf_of`` set) is a private message
+    to a person, never a group post. If ``receive_id`` is a group chat (``oc_``), the
+    send is redirected to the mentioned person's DM (open_id taken from the ``<at>``
+    tag in *text*). If no recipient open_id can be determined, it returns an error
+    instead of leaking the private message into the group.
     """
+    at_target_ids = [m.group("uid") for m in _AT_TAG_RE.finditer(text)]
+    if on_behalf_of.strip() and receive_id.strip().startswith("oc_"):
+        # A relay must stay private: never post it into the group. Redirect to the
+        # mentioned person's DM; refuse (don't fall back to the group) if unknown.
+        target = next((oid for oid in at_target_ids if oid.startswith("ou_")), "")
+        if not target:
+            return _error(
+                "代人带话必须私发给本人, 但未能从消息里确定收件人 open_id; "
+                "请用 feishu_chat_find_member 查到本人 open_id 后作为 receive_id 私发, 不要发到群里。",
+                code="relay_recipient_unknown",
+            )
+        receive_id, receive_id_type = target, "open_id"
+
     if on_behalf_of.strip():
         sender = await _resolve_sender_name(on_behalf_of)
         if sender:
             text = f"{sender}给你发了一条消息：「{text}」"  # noqa: RUF001
     receive_id_type = _infer_receive_id_type(receive_id, receive_id_type)
     stripped, at_open_ids = _extract_and_strip_at_tags(text)
-    if at_open_ids:
+    # In a 1:1 DM an @-mention is noise; keep mentions only when sending to a group.
+    if at_open_ids and receive_id_type == "chat_id":
         # Mentions only render in a post message; a plain-text <at> shows the raw tag.
         content = _build_post_at_content(stripped, at_open_ids, at_all=False)
         req = _build_send_message_request(receive_id, receive_id_type, "post", content)
     else:
-        content = json.dumps({"text": text}, ensure_ascii=False)
+        content = json.dumps({"text": stripped if at_open_ids else text}, ensure_ascii=False)
         req = _build_send_message_request(receive_id, receive_id_type, "text", content)
     res = await _invoke(req)
     if not res["ok"]:
