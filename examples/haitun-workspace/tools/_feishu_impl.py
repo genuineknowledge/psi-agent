@@ -436,8 +436,8 @@ async def write_sheet_impl(token: str, range_: str, values_json: str, user_key: 
     if not range_.strip():
         return _error("range is required, e.g. 'SHEET_ID!A1:C3' or just 'SHEET_ID'.")
     values, err = _parse_values_json(values_json)
-    if err:
-        return _error(err)
+    if err or values is None:
+        return _error(err or "values_json produced no rows.")
     res = await _invoke(
         _build_sheet_write_request(token.strip(), range_.strip(), values), user_key=user_key, prefer="user"
     )
@@ -456,8 +456,8 @@ async def append_sheet_impl(
     if option not in ("OVERWRITE", "INSERT_ROWS"):
         return _error("insert_data_option must be 'OVERWRITE' or 'INSERT_ROWS'.")
     values, err = _parse_values_json(values_json)
-    if err:
-        return _error(err)
+    if err or values is None:
+        return _error(err or "values_json produced no rows.")
     res = await _invoke(
         _build_sheet_append_request(token.strip(), range_.strip(), values, option), user_key=user_key, prefer="user"
     )
