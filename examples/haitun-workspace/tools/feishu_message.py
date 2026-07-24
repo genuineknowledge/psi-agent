@@ -5,8 +5,10 @@ These let the bot proactively post to a group/user, form a native Feishu
 thread. For example: post a topic root message, then read the thread's replies
 and post per-reply feedback back into the same thread.
 
-To @-mention someone in the text, embed ``<at user_id="ou_xxx"></at>`` in the
-``text`` / ``content`` string (the value is the person's open_id).
+To @-mention someone, embed ``<at user_id="ou_xxx"></at>`` in the ``text`` (the
+value is the person's open_id). ``feishu_message_send`` auto-detects such tags and
+sends a rich-text ``post`` so the mention renders — a raw ``<at>`` in a plain text
+message would otherwise show up literally.
 """
 
 from __future__ import annotations

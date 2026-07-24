@@ -466,6 +466,27 @@ async def _resolve_sender_name(open_id: str) -> str:
     return open_id
 
 
+_AT_TAG_RE = re.compile(
+    r"(?:<|&lt;)\s*at\b[^>]*?user_id\s*=\s*[\"']?(?P<uid>[^\"'>&\s]+)[\"']?[^>]*?(?:>|&gt;)"
+    r"(?:\s*(?:<|&lt;)\s*/\s*at\s*(?:>|&gt;))?",
+    re.IGNORECASE,
+)
+
+
+def _extract_and_strip_at_tags(text: str) -> tuple[str, list[str]]:
+    """Pull ``<at user_id=ou_xxx>`` tags (also HTML-escaped ``&lt;at&gt;``) out of *text*.
+
+    Returns the text with those tags removed and the list of mentioned open_ids.
+    A plain-text message's ``<at>`` does NOT render for bots (Feishu shows the raw
+    tag, e.g. ``&lt;at&gt;``), so the caller must resend as a ``post`` message whose
+    ``at`` element renders. Extracting here means the model can write the tag inline
+    (as the tool docs historically told it to) and mentions still work.
+    """
+    open_ids = [m.group("uid") for m in _AT_TAG_RE.finditer(text)]
+    stripped = _AT_TAG_RE.sub("", text).strip()
+    return stripped, open_ids
+
+
 async def send_message_impl(receive_id: str, text: str, receive_id_type: str, on_behalf_of: str = "") -> dict[str, Any]:
     """Send a text message to a chat/user. Returns message_id + thread_id (thread_id is the topic root).
 
@@ -474,14 +495,26 @@ async def send_message_impl(receive_id: str, text: str, receive_id_type: str, on
     prefix — the recipient sees who it is from instead of a bare bubble authored by
     the bot. Name is resolved from the open_id; falls back to the raw open_id if
     unresolvable.
+
+    ``receive_id_type`` is auto-corrected from the id prefix, and any ``<at>`` tags
+    embedded in *text* are turned into a real ``post`` mention (a plain-text ``<at>``
+    would render as a raw tag for bots), so mentions work regardless of id type or
+    how the tag was written.
     """
     if on_behalf_of.strip():
         sender = await _resolve_sender_name(on_behalf_of)
         if sender:
             text = f"{sender}给你发了一条消息：「{text}」"  # noqa: RUF001
     receive_id_type = _infer_receive_id_type(receive_id, receive_id_type)
-    content = json.dumps({"text": text}, ensure_ascii=False)
-    res = await _invoke(_build_send_message_request(receive_id, receive_id_type, "text", content))
+    stripped, at_open_ids = _extract_and_strip_at_tags(text)
+    if at_open_ids:
+        # Mentions only render in a post message; a plain-text <at> shows the raw tag.
+        content = _build_post_at_content(stripped, at_open_ids, at_all=False)
+        req = _build_send_message_request(receive_id, receive_id_type, "post", content)
+    else:
+        content = json.dumps({"text": text}, ensure_ascii=False)
+        req = _build_send_message_request(receive_id, receive_id_type, "text", content)
+    res = await _invoke(req)
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
