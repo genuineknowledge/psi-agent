@@ -2,6 +2,60 @@
 
 本文档面向后续开发者（人或 AI Agent），说明 psi-agent 的设计思路、代码结构、开发约定以及我们在开发过程中沉淀的最佳实践。
 
+## 本地并行开发：推荐用 `git worktree`
+
+后续开发者规划工作结构时，**优先用 Git worktree 开多个工作目录**，而不是复制整份仓库。多棵树共用**同一份 Git 历史**；未提交的工作区文件彼此独立、不自动同步。详见同目录 `WORKTREE.md`（本节约入口）。
+
+### 建议的三棵树分工
+
+| 角色 | 典型路径示例 | 典型分支 | 做什么 |
+|------|--------------|----------|--------|
+| 前端施工 | `…/Haitun-develop-spa-v2` | `feat/…`（只动 spa） | 只改 `src/psi_agent/gateway/spa-v2/`（及必要的 Gateway 壳） |
+| 后端 / workspace 施工 | `…/Haitun-develop-workspace` | 另一条 `feat/…` | 只改 `examples/haitun-workspace/`、Session/Gateway 服务端等 |
+| 干净主线 / 流程文档 | `…/Haitun-develop-main`、`…/Haitun-develop-workflow` | `main`（只读为主）或 `chore/…` | 对照 main、谈架构、写流程约定；尽量少改业务代码 |
+
+本机当前约定（文件夹名即角色，路径可按机器调整）：
+
+- `D:/Haitun-develop-spa-v2` — spa-v2 **前端施工**（`feat/…`）
+- `D:/Haitun-develop-workspace` — haitun-workspace **后端/能力施工**（`feat/…`）
+- `D:/Haitun-develop-workflow` — **流程参谋**（`chore/…`；写约定 / AGENTS）
+- `D:/Haitun-develop-main` — 可选：干净 `main` **只读对照**（不是第二参谋施工位）
+
+每棵树根目录可有本机专用的 `AGENT_BOOTSTRAP.md`（角色身份卡：本机路径、当前分支、先读清单）。**该文件只留在本机工作区，不进 Git**（已列入 `.gitignore`）；共享约定写在本文件与 `WORKTREE.md`。
+
+### 必须遵守
+
+1. **一分支同时只挂一棵树**：这里的「分支」是 Git branch（如 `main`、`feat/xxx`），不是 Cursor 窗口名。
+2. **切换树 = 打开另一个文件夹 / 另一个编辑器窗口**，不是在同一目录里靠 `git checkout` 硬切施工现场。
+3. **两个 Agent 默认可各开一窗、各管一棵树**；默认看不见对方未提交改动。对齐接口或合并时，用 **commit / fetch / 分支**（或由人转述契约）交接。
+4. **日常按目录隔离**；**前后端对接**时再通过 Git 用稳定快照联调，不必让两个 Agent 时刻互读脏工作区。
+5. `git worktree list` 查看；`git worktree remove <路径>` 删除（先收拾未提交改动）。
+
+### 什么该提交、什么不该提交（跨树共享）
+
+Git 里只放**全体开发者 / 各 worktree 都需要共享**的信息。判别：
+
+| 该提交（共享） | 不要提交（本机 / 探讨） |
+|----------------|-------------------------|
+| 各层 `AGENTS.md`、`WORKTREE.md` 里的**现行约定** | 每棵树的 **`AGENT_BOOTSTRAP.md`**（含本机绝对路径、当前分支等身份卡；已 gitignore） |
+| 已批准、全员要跟的实现 / 协议变更（代码 + 同步后的 AGENTS） | 与上级微信/当面聊的方案草稿、纪要、长文「拍板前探讨」 |
+| 测试、对外 README、已立项且入库的 `docs/` 规格（明确写「已批准 / 现行」） | 某棵树上单独推敲用的 design/brief、未收束备忘、会议流水 |
+
+**刻意为之**：`AGENT_BOOTSTRAP.md` 与探讨类文件都可以（或应当）留在本机，但 **默认不 `git add`、不进 PR**。结论一旦稳定，把**可执行的约定**写进相关 `AGENTS.md` / `WORKTREE.md`，而不是把身份卡或聊天式长文推进远程。
+
+流程参谋树尤其注意：产出以「改 AGENTS / WORKTREE」为主；`docs/superpowers/specs/` 里若是当面/微信对齐用的重组草案、待改协议备忘等，**未升格为共享原则前一律不提交**。
+
+```bash
+git worktree list
+git fetch origin
+git worktree add -b feat/your-topic ../Haitun-develop-spa origin/main
+git worktree remove ../Haitun-develop-spa
+```
+
+**一句话**：树是目录上的多张办公桌，分支是 Git 账本上的线；历史联动，工作区独立；施工与参谋分开，对接靠 Git。
+
+**本树 Agent 身份卡（仅本机）**：同目录 `AGENT_BOOTSTRAP.md`（每棵 worktree 自备一份，**不提交**）。
+
 ## 设计理念
 
 psi-agent 是一个**微内核**式的 agent 框架。核心理念是：

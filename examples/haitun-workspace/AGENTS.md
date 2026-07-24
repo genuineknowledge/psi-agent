@@ -12,6 +12,8 @@ in the system prompt). It merges the most useful parts of the other example work
 - **Skills + file tools** — the full hermes-skills domain skill set plus selected curated
   skills, on top of clean async file/shell tools.
 
+**并行开发**：改本 workspace 时建议单独一棵 `git worktree` + 独立功能分支；勿与 spa-v2 前端施工共挂同一分支。约定见仓库根 `WORKTREE.md` 与 `AGENTS.md`（「本地并行开发」）。
+
 ## No global config
 
 **Nothing is read from `~/` — there is no global config directory.** The agent's identity,
