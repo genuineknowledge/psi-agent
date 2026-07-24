@@ -10,7 +10,6 @@ import {
   Sparkles,
   SquareStack,
   X,
-  Zap,
 } from "lucide-react";
 import { type FormEvent, useRef, useState } from "react";
 import { NEW_TASK_PRESETS } from "./demo-fixtures";
@@ -33,27 +32,33 @@ export function NewTaskWorkspace({
   setCategory: (value: string) => void;
   onBack: () => void;
   onOpenTemplates: () => void;
-  onCreate: (title: string, category: string) => Task | Promise<Task>;
+  /** Same path as overview chat: text + File[] go into the first Session chat turn. */
+  onCreate: (title: string, category: string, files?: File[]) => Task | Promise<Task>;
   onViewTask: (task: Task) => void;
 }) {
   const [typing, setTyping] = useState(false);
-  const [attachmentName, setAttachmentName] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
   const attachmentRef = useRef<HTMLInputElement | null>(null);
+
+  const canSend = Boolean(draft.trim() || attachments.length);
 
   const submitConversation = async (event: FormEvent) => {
     event.preventDefault();
     const clean = draft.trim();
-    if (!clean || typing) return;
+    if ((!clean && !attachments.length) || typing) return;
 
+    const pendingFiles = attachments;
     setDraft("");
+    setAttachments([]);
     setTyping(true);
 
     try {
       // First message creates the Session and jumps into split focus (left context + right chat).
-      const task = await onCreate(clean, category);
+      const task = await onCreate(clean, category, pendingFiles);
       onViewTask(task);
     } catch {
       setDraft(clean);
+      setAttachments(pendingFiles);
       setTyping(false);
     }
   };
@@ -75,63 +80,91 @@ export function NewTaskWorkspace({
           <p>描述希望得到的结果、截止时间，以及手头已有的材料。发送后会进入任务分屏继续对话。</p>
         </div>
 
-        {typing && (
-          <div className="new-task-conversation" aria-live="polite">
-            <div className="new-task-message agent"><AgentMark /><span className="typing"><i /><i /><i /></span></div>
-          </div>
-        )}
+        <div className="new-task-compose-block">
+          {!typing && (
+            <div className="new-task-presets">
+              {NEW_TASK_PRESETS.map((preset) => {
+                const Icon = preset.icon;
+                return (
+                  <button
+                    type="button"
+                    key={preset.label}
+                    onClick={() => {
+                      setDraft(preset.prompt);
+                      setCategory(preset.category);
+                    }}
+                  >
+                    <Icon size={14} />
+                    <span>{preset.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
-        {!typing && (
-          <div className="new-task-presets">
-            {NEW_TASK_PRESETS.map((preset) => {
-              const Icon = preset.icon;
-              return (
-                <button
-                  type="button"
-                  key={preset.label}
-                  onClick={() => {
-                    setDraft(preset.prompt);
-                    setCategory(preset.category);
-                  }}
-                >
-                  <Icon size={16} />
-                  <span>{preset.label}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
+          {typing && (
+            <div className="new-task-compose-status" aria-live="polite">
+              <AgentMark /><span className="typing"><i /><i /><i /></span>
+            </div>
+          )}
 
-        <form className="new-task-composer" onSubmit={submitConversation}>
-          <textarea
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-            placeholder="描述一个任务，发送后进入分屏与 Agent 对话…"
-            aria-label="描述新任务"
-            autoFocus
-            disabled={typing}
-          />
-          <div className="new-task-composer-actions">
-            <button type="button" className="composer-attachment" onClick={() => attachmentRef.current?.click()} aria-label="添加附件" disabled={typing}><Paperclip size={18} /></button>
+          {attachments.length > 0 && (
+            <div className="chat-pending-files new-task-pending-files" data-attach-control>
+              {attachments.map((file, index) => (
+                <span className="chat-pending-chip" key={`${file.name}-${file.size}-${index}`}>
+                  <Paperclip size={13} />
+                  <em>{file.name}</em>
+                  <button
+                    type="button"
+                    data-attach-control
+                    disabled={typing}
+                    onClick={() => setAttachments((current) => current.filter((_, i) => i !== index))}
+                    aria-label={`移除 ${file.name}`}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          <form className="new-task-composer-strip" onSubmit={submitConversation}>
+            <button
+              type="button"
+              className="chat-attach-button"
+              data-attach-control
+              onClick={() => attachmentRef.current?.click()}
+              aria-label="添加附件"
+              disabled={typing}
+            >
+              <Paperclip size={20} />
+            </button>
             <input
               ref={attachmentRef}
               type="file"
+              multiple
               hidden
+              data-attach-control
               onChange={(event) => {
-                const file = event.target.files?.[0] ?? null;
-                setAttachmentName(file?.name ?? "");
+                const next = event.target.files ? Array.from(event.target.files) : [];
+                if (next.length) setAttachments((current) => [...current, ...next]);
+                event.target.value = "";
               }}
             />
-            <span><Zap size={13} /> {attachmentName ? `已添加：${attachmentName}` : typing ? "正在创建任务…" : "发送后创建 Session 并进入分屏"}</span>
-            <button type="submit" className="composer-send" disabled={!draft.trim() || typing} aria-label="发送任务描述"><Send size={17} /></button>
-          </div>
-        </form>
+            <input
+              type="text"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder={typing ? "正在创建任务…" : "描述一个任务，发送后进入分屏与 Agent 对话…"}
+              aria-label="描述新任务"
+              autoFocus
+              disabled={typing}
+            />
+            <button type="submit" className="send-button" disabled={!canSend || typing} aria-label="发送任务描述">
+              <Send size={16} />
+            </button>
+          </form>
+        </div>
 
         <div className="new-task-secondary-actions">
           <button type="button" onClick={onOpenTemplates} disabled={typing}><SquareStack size={15} /> 从任务模板开始</button>
