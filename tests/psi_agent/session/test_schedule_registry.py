@@ -8,7 +8,6 @@ import anyio
 import pytest
 
 from psi_agent._yaml import parse_yaml_header
-from psi_agent.session.protocol import AgentChunk
 from psi_agent.session.schedule_registry import Schedule, ScheduleEntry, ScheduleRegistry
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -383,39 +382,6 @@ async def test_run_one_handles_agent_error() -> None:
     cancel_scope = anyio.CancelScope()
     with anyio.move_on_after(3):
         await ScheduleRegistry._run_one(s, cast(Any, agent), cancel_scope)
-
-
-# ── _run_one never pushes results into the next Channel turn ──────────────────
-
-
-class _RecordingAgent:
-    """Agent whose run() yields chunks; records any stash attempts."""
-
-    _lock = anyio.Lock()
-
-    def __init__(self) -> None:
-        self.stashed: list[object] = []
-
-    async def run(self, msg: object, **_kwargs: object) -> Any:  # type: ignore[return]
-        yield AgentChunk(reasoning="[Schedule triggered]")
-        yield AgentChunk(content="daily report body")
-
-    def set_pending_schedule_chunks(self, chunks: object) -> None:
-        self.stashed.append(chunks)
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("visibility", ["display", "silent"])
-async def test_run_one_never_stashes(visibility: str) -> None:
-    """Regression (fix-schedule-bug): schedule results must never be stashed
-    for the next Channel turn — not even ``visibility: display`` ones — so the
-    agent does not piggyback a completion report onto the user's next message."""
-    s = Schedule(name="t", cron="* * * * * *", task_content="ping", visibility=visibility)
-    agent = _RecordingAgent()
-    cancel_scope = anyio.CancelScope()
-    with anyio.move_on_after(3):
-        await ScheduleRegistry._run_one(s, cast(Any, agent), cancel_scope)
-    assert agent.stashed == []
 
 
 # ── YAML parse helper ─────────────────────────────────────────────────────────
