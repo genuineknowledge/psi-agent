@@ -1,4 +1,5 @@
 from .checker import check_workflow
+from .compiler import CoreIRCompiler
 from .contracts import (
     CheckResult,
     Diagnostic,
@@ -37,6 +38,7 @@ __all__ = [
     "Concept",
     "ConnectiveFormula",
     "Constant",
+    "CoreIRCompiler",
     "Diagnostic",
     "DiagnosticSeverity",
     "Formula",
