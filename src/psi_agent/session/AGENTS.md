@@ -158,8 +158,10 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 
 ```
 每个 schedule 一个 run_one_schedule() coroutine：
+  base = 本地时区的 aware datetime  ← _schedule_tz()(标准 TZ) 或 astimezone()
+  cron_iter = croniter(cron, base)   ← 按本地时区解释 cron
   while True:
-    croniter.get_next()         ← 计算下次触发时间
+    cron_iter.get_next(float)         ← 计算下次触发时间(epoch)
     await anyio.sleep(触发时间 - now) ← 睡到触发
     async with agent._lock:       ← 等当前请求完成
       user = {role:user, content:TASK.md, kind:schedule.silent}  ← user 始终 silent
@@ -172,6 +174,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 
 关键点：
 - Schedule 配置：`name, cron, task_content, visibility`（`display`/`silent`，缺省 `display`）
+- **cron 按本地时区排程（刻意设计，勿改回 UTC）**：`croniter` 若以裸 epoch（`time.time()`）为基准会按 **UTC** 解释 cron，导致 `0 9 * * *` 在 UTC+8 实际于当地 17:00 触发。因此 `_run_one` 用 **timezone-aware** 的 `datetime` 作基准：`ScheduleRegistry._schedule_tz()` 读标准 `TZ` 解析成 `ZoneInfo`，未设 / 非法时回退 `datetime.now().astimezone()` 跟随系统本地时区（仍是 aware，cron 保持按本地）。`get_next(float)` 取 epoch 再与 `time.time()` 做差得等待秒数。不额外依赖 `tzdata`——`astimezone()` 兜底不需要 IANA 数据包
 - **``kind`` 字段**（敲定协议）：OpenAI ``role`` 不变；用正交字段区分对话来源。Gateway ``/history`` 只返回 ``is_displayable_chat_message``（``kind=chat`` 的 user/assistant，以及 ``kind=schedule.display`` 的 assistant）。AI 请求经 ``messages_for_ai`` 剥掉 ``kind``/遗留 ``chat_type``
 - ``visibility: silent`` 的 schedule（heartbeat）结果永不 pending、永不展示
 - ``visibility: display`` 的 schedule 结果可进 history，并通过 pending 随下次 ``POST /chat`` 带回（``/events/schedule`` 推送通道仍待定）

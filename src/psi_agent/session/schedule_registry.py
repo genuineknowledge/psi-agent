@@ -8,11 +8,14 @@ The public ``schedules`` list remains flat for backward compatibility.
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from contextlib import aclosing
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
 from croniter import croniter
@@ -169,17 +172,40 @@ class ScheduleRegistry:
     # -- runner coroutine (perpetual) -------------------------------------------
 
     @staticmethod
+    def _schedule_tz() -> ZoneInfo | None:
+        """Resolve the timezone cron schedules are anchored to.
+
+        Reads the standard ``TZ`` env var, e.g. ``Asia/Shanghai``. Returns
+        ``None`` when unset or invalid; the caller then falls back to the
+        system's local timezone via ``astimezone()``, so no IANA data
+        package (tzdata) is strictly required.
+        """
+        name = os.environ.get("TZ", "").strip()
+        if not name:
+            return None
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            logger.warning(f"Invalid TZ {name!r}, falling back to system local time: {e!r}")
+            return None
+
+    @staticmethod
     async def _run_one(schedule: Schedule, agent: SessionAgent, cancel_scope: anyio.CancelScope) -> None:
         """Perpetual coroutine that fires a schedule on its cron interval."""
         logger.info(f"Schedule runner started: {schedule.name!r} ({schedule.cron!r})")
 
-        cron_iter = croniter(schedule.cron, time.time())
+        # Anchor cron to TZ so "0 9 * * *" means 9am *local* time, not 9am
+        # UTC. When TZ is unset/invalid, fall back to the system's local
+        # timezone via astimezone() — still tz-aware, so cron stays local.
+        tz = ScheduleRegistry._schedule_tz()
+        base = datetime.now(tz) if tz is not None else datetime.now().astimezone()
+        cron_iter = croniter(schedule.cron, base)
 
         try:
             with cancel_scope:
                 while True:
                     try:
-                        next_run = cron_iter.get_next()
+                        next_run = cron_iter.get_next(float)
                         wait = max(0.0, next_run - time.time())
                         await anyio.sleep(wait)
 

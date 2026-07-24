@@ -41,6 +41,7 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
 from prompt_sections import (
@@ -674,13 +675,28 @@ def _build_runtime_info(model: str | None) -> str:
 def _build_datetime_section() -> str:
     """Build the ## Current Date & Time section.
 
-    Reads HAITUN_TIMEZONE (default UTC) for the timezone label and
+    Reads the standard TZ env var for the timezone and
     HAITUN_KNOWLEDGE_CUTOFF (optional, e.g. "2026-01") for the knowledge
     cutoff anchor. When the cutoff is unset, emit a neutral line rather
     than fabricating a date.
+
+    The clock and the label are computed from the same source so they
+    always agree — otherwise a UTC container would show UTC wall-clock
+    time under an "Asia/Shanghai" label (or vice versa), silently feeding
+    the agent a time that is off by the UTC offset. When TZ is unset or
+    invalid, fall back to the system's local timezone via astimezone(),
+    so no tzdata package is strictly required.
     """
-    tz = os.environ.get("HAITUN_TIMEZONE", "UTC")
-    now = datetime.now()
+    tz_name = os.environ.get("TZ", "").strip()
+    try:
+        now = datetime.now(ZoneInfo(tz_name)) if tz_name else datetime.now().astimezone()
+    except ZoneInfoNotFoundError, ValueError:
+        # Unknown tz name: fall back to system local time and label it
+        # honestly so the agent knows the zone is unverified.
+        now = datetime.now().astimezone()
+        tz_name = f"{tz_name} (unresolved — using system local time)"
+    if not tz_name:
+        tz_name = str(now.tzinfo)
     cutoff = os.environ.get("HAITUN_KNOWLEDGE_CUTOFF", "").strip()
     if cutoff:
         cutoff_line = (
@@ -694,7 +710,7 @@ def _build_datetime_section() -> str:
         )
     return (
         f"## Current Date & Time\nDate: {now.strftime('%Y-%m-%d')}\n"
-        f"Time: {now.strftime('%H:%M:%S')}\nTime zone: {tz}\n{cutoff_line}"
+        f"Time: {now.strftime('%H:%M:%S')}\nTime zone: {tz_name}\n{cutoff_line}"
     )
 
 
