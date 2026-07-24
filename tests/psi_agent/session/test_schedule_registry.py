@@ -10,12 +10,7 @@ import pytest
 from croniter import croniter
 
 from psi_agent._yaml import parse_yaml_header
-from psi_agent.session.schedule_registry import (
-    Schedule,
-    ScheduleEntry,
-    ScheduleRegistry,
-    _schedule_tz,
-)
+from psi_agent.session.schedule_registry import Schedule, ScheduleEntry, ScheduleRegistry
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -374,17 +369,17 @@ async def test_run_one_handles_agent_error() -> None:
 def test_schedule_tz_unset_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TIMEZONE", raising=False)
     monkeypatch.delenv("TZ", raising=False)
-    assert _schedule_tz() is None
+    assert ScheduleRegistry._schedule_tz() is None
 
 
 def test_schedule_tz_invalid_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TIMEZONE", "Not/AZone")
-    assert _schedule_tz() is None
+    assert ScheduleRegistry._schedule_tz() is None
 
 
 def test_schedule_tz_valid(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TIMEZONE", "Asia/Shanghai")
-    tz = _schedule_tz()
+    tz = ScheduleRegistry._schedule_tz()
     assert tz is not None
     assert str(tz) == "Asia/Shanghai"
 
@@ -393,7 +388,7 @@ def test_schedule_tz_falls_back_to_tz_var(monkeypatch: pytest.MonkeyPatch) -> No
     """TIMEZONE takes priority; the standard TZ is the fallback."""
     monkeypatch.delenv("TIMEZONE", raising=False)
     monkeypatch.setenv("TZ", "Asia/Shanghai")
-    tz = _schedule_tz()
+    tz = ScheduleRegistry._schedule_tz()
     assert tz is not None
     assert str(tz) == "Asia/Shanghai"
 
@@ -406,7 +401,7 @@ def test_cron_anchored_to_local_timezone(monkeypatch: pytest.MonkeyPatch) -> Non
     bare-epoch base would land it at 17:00 Shanghai (09:00 UTC).
     """
     monkeypatch.setenv("TIMEZONE", "Asia/Shanghai")
-    tz = _schedule_tz()
+    tz = ScheduleRegistry._schedule_tz()
     assert tz is not None
 
     it = croniter("0 9 * * *", datetime.now(tz))
