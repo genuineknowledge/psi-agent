@@ -60,6 +60,7 @@ import {
 import { ensureDefaultAi, pickPreferredAi, purgePlaceholderAis, writeStoredAiId } from "../services/bootstrapAi";
 import { chatFileToFile, filesToChatFiles } from "../services/chatFiles";
 import { filesFromClipboard } from "../services/clipboardFiles";
+import { onComposerEnterKey } from "../services/composerKeys";
 import { streamSessionChat } from "../services/chatStream";
 import {
   historyToChat,
@@ -143,7 +144,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   const transitionTimer = useRef<number | null>(null);
   const toastTimer = useRef<number | null>(null);
   const globalSearchRef = useRef<HTMLInputElement | null>(null);
-  const activeChatInputRef = useRef<HTMLInputElement | null>(null);
+  const activeChatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const attachInputRef = useRef<HTMLInputElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   /** Bumped each runChatTurn so a superseded/aborted turn cannot keep appending deltas. */
@@ -731,7 +732,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
   };
 
   /** Paste any clipboard file (screenshot, copied file, …) ≡ paperclip attach. */
-  const handleChatPaste = (cardId: string, event: React.ClipboardEvent<HTMLInputElement>) => {
+  const handleChatPaste = (cardId: string, event: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const files = filesFromClipboard(event.clipboardData);
     if (!files.length) return;
     addChatAttachments(cardId, files);
@@ -1189,14 +1190,26 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
                 event.target.value = "";
               }}
             />
-            <input
+            <textarea
               ref={interactive ? activeChatInputRef : undefined}
+              rows={1}
               value={unitDraft}
               onChange={(event) => interactive && setChatDrafts((current) => ({ ...current, [unitCard.id]: event.target.value }))}
               onFocus={() => interactive && setChatExpanded(true)}
               onPaste={(event) => {
                 if (!interactive) return;
                 handleChatPaste(unitCard.id, event);
+              }}
+              onKeyDown={(event) => {
+                if (!interactive) return;
+                onComposerEnterKey(event, unitDraft, (next, cursor) => {
+                  setChatDrafts((current) => ({ ...current, [unitCard.id]: next }));
+                  queueMicrotask(() => {
+                    const el = activeChatInputRef.current;
+                    if (!el) return;
+                    el.selectionStart = el.selectionEnd = cursor;
+                  });
+                });
               }}
               placeholder={`告诉 Agent 如何继续「${unitCard.title}」…`}
               aria-label="对话内容"

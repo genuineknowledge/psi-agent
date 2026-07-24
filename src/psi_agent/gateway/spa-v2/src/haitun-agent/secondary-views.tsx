@@ -16,6 +16,7 @@ import { NEW_TASK_PRESETS } from "./demo-fixtures";
 import { OVERVIEW_LABEL, type Task, type TaskTemplate } from "./model";
 import { AgentMark, BrandLogo } from "./primitives";
 import { filesFromClipboard } from "../services/clipboardFiles";
+import { onComposerEnterKey } from "../services/composerKeys";
 
 export function NewTaskWorkspace({
   draft,
@@ -152,17 +153,27 @@ export function NewTaskWorkspace({
                 event.target.value = "";
               }}
             />
-            <input
-              type="text"
+            <textarea
+              rows={1}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              onPaste={(event: ClipboardEvent<HTMLInputElement>) => {
+              onPaste={(event: ClipboardEvent<HTMLTextAreaElement>) => {
                 if (typing) return;
                 const files = filesFromClipboard(event.clipboardData);
                 if (!files.length) return;
                 setAttachments((current) => [...current, ...files]);
                 const text = event.clipboardData.getData("text/plain");
                 if (!text) event.preventDefault();
+              }}
+              onKeyDown={(event) => {
+                if (typing) return;
+                const el = event.currentTarget;
+                onComposerEnterKey(event, draft, (next, cursor) => {
+                  setDraft(next);
+                  queueMicrotask(() => {
+                    el.selectionStart = el.selectionEnd = cursor;
+                  });
+                });
               }}
               placeholder={typing ? "正在创建任务…" : "描述一个任务，发送后进入分屏与 Agent 对话…"}
               aria-label="描述新任务"

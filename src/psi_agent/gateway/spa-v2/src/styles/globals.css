@@ -1909,12 +1909,13 @@ textarea:focus-visible {
 .typing i:nth-child(3) { animation-delay: 240ms; }
 
 .context-chat form {
-  height: 52px;
+  min-height: 52px;
+  height: auto;
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr) 42px;
-  align-items: center;
+  align-items: start;
   gap: 4px;
-  padding: 0 6px;
+  padding: 6px;
   border: 1px solid #dce3df;
   border-radius: 13px;
   background: #fff;
@@ -1949,19 +1950,33 @@ textarea:focus-visible {
   cursor: default;
 }
 
-.context-chat form input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  color: #223440;
-  background: transparent;
-  font-size: 15px;
+.context-chat form input[type="file"] {
+  display: none;
 }
 
-.context-chat form input::placeholder { color: #9aa4a8; }
+.context-chat form textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 24px;
+  max-height: 8em;
+  margin: 0;
+  padding: 8px 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  overflow-y: auto;
+  color: #223440;
+  background: transparent;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.4;
+  field-sizing: content;
+}
+
+.context-chat form textarea::placeholder { color: #9aa4a8; }
 
 .context-chat form .send-button {
+  align-self: start;
   color: #fff;
   background: var(--brand-500);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
@@ -2667,12 +2682,13 @@ textarea:focus-visible {
 }
 
 .new-task-composer-strip {
-  height: 52px;
+  min-height: 52px;
+  height: auto;
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr) 42px;
-  align-items: center;
+  align-items: start;
   gap: 4px;
-  padding: 0 6px;
+  padding: 6px;
   border: 1px solid #dce3df;
   border-radius: 13px;
   background: #fff;
@@ -2712,19 +2728,32 @@ textarea:focus-visible {
   cursor: default;
 }
 
-.new-task-composer-strip input[type="text"] {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  color: #223440;
-  background: transparent;
-  font-size: 15px;
+.new-task-composer-strip input[type="file"] {
+  display: none;
 }
 
-.new-task-composer-strip input[type="text"]::placeholder { color: #9aa4a8; }
+.new-task-composer-strip textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 24px;
+  max-height: 8em;
+  margin: 0;
+  padding: 8px 0;
+  border: 0;
+  outline: 0;
+  resize: none;
+  overflow-y: auto;
+  color: #223440;
+  background: transparent;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.4;
+  field-sizing: content;
+}
 
-.new-task-composer-strip input[type="text"]:disabled {
+.new-task-composer-strip textarea::placeholder { color: #9aa4a8; }
+
+.new-task-composer-strip textarea:disabled {
   opacity: 0.65;
   cursor: default;
 }
@@ -3425,7 +3454,7 @@ textarea:focus-visible {
 
   .quick-actions { display: none; }
   .latest-message { height: 36px; padding: 3px 4px 3px 30px; white-space: normal; line-height: 1.45; }
-  .context-chat form { height: 39px; }
+  .context-chat form { min-height: 39px; height: auto; }
 
   .artifact-drawer {
     width: 94vw;
@@ -3459,8 +3488,8 @@ textarea:focus-visible {
     padding: 0 10px;
     font-size: 11px;
   }
-  .new-task-composer-strip { height: 48px; }
-  .new-task-composer-strip input[type="text"] { font-size: 15px; }
+  .new-task-composer-strip { min-height: 48px; height: auto; }
+  .new-task-composer-strip textarea { font-size: 15px; }
   .new-task-secondary-actions { width: 100%; justify-content: space-between; margin-top: 12px; }
   .new-task-secondary-actions button { min-height: 40px; font-size: 12px; }
   .new-task-conversation { max-height: 225px; margin-top: 13px; }
@@ -4689,7 +4718,7 @@ textarea:focus-visible {
 .card-chat-unit.chat-expanded .chat-context-row strong {
   font-size: 14px;
 }
-.card-chat-unit.chat-expanded .context-chat form input {
+.card-chat-unit.chat-expanded .context-chat form textarea {
   font-size: 15px;
 }
 
@@ -4813,8 +4842,8 @@ html[data-haptics="off"] .monitoring-pulse > span { animation: none !important; 
 
 @media (max-width: 880px) {
   .app-shell { background: radial-gradient(circle at 88% 4%, rgba(var(--brand-rgb), 0.13), transparent 29%), linear-gradient(150deg, #f5f9ff 0%, #e9f3fe 100%); }
-  .context-chat form input,
-  .new-task-composer-strip input[type="text"],
+  .context-chat form textarea,
+  .new-task-composer-strip textarea,
   .template-toolbar input,
   .template-builder input,
   .template-builder textarea,
