@@ -13,7 +13,13 @@ from loguru import logger
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
+from psi_agent.session.history_display import (
+    message_kind,
+    messages_for_ai,
+    with_kind,
+)
 from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.runtime_context import session_id_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_registry import ToolRegistry
@@ -135,7 +141,11 @@ class SessionAgent:
     # -- agent loop -----------------------------------------------------------
 
     async def run(
-        self, user_message: dict[str, Any], extra_params: dict[str, Any] | None = None
+        self,
+        user_message: dict[str, Any],
+        extra_params: dict[str, Any] | None = None,
+        *,
+        response_kind: str | None = None,
     ) -> AsyncGenerator[AgentChunk]:
         """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``.
 
@@ -143,207 +153,230 @@ class SessionAgent:
         failure the snapshot is restored so that memory and disk
         remain synchronised — the caller can safely retry the same
         user message.
+
+        ``response_kind`` stamps assistant/tool rows for this turn
+        (schedule runners pass ``schedule.display`` / ``schedule.silent``).
+        When omitted, assistant/tool rows inherit the user message's ``kind``
+        (Channel turns default to ``chat``).
         """
-        async with self._conversation:
-            # reload tools and schedules from workspace (incremental hash-based)
-            await self._tool_registry.refresh()
-            await self._schedule_registry.refresh()
+        user_kind = message_kind(user_message)
+        turn_response_kind = response_kind if response_kind is not None else user_kind
+        user_message = with_kind(user_message, user_kind)
 
-            # system prompt (lazy + optional rebuild)
-            await self._system_prompt.ensure(self._conversation)
+        # Gateway embeds many Sessions in one process — bind this turn so
+        # workspace tools (todo, …) do not fall back to session_id "default".
+        with session_id_scope(self._conversation.session_id):
+            async with self._conversation:
+                # reload tools and schedules from workspace (incremental hash-based)
+                await self._tool_registry.refresh()
+                await self._schedule_registry.refresh()
 
-            # peek pending schedule chunks — yield first, clear only after yield
-            pending = self._conversation.peek_pending()
-            if pending:
-                logger.info(f"Yielding {len(pending)} pending schedule chunk(s)")
-                for chunk in pending:
-                    yield chunk
-                self._conversation.clear_pending()
+                # system prompt (lazy + optional rebuild)
+                await self._system_prompt.ensure(self._conversation)
 
-            self._conversation.add(user_message)
-            await self._conversation.commit()
-            logger.debug(f"History now has {len(self._conversation.messages)} messages")
+                # peek pending schedule chunks — yield first, clear only after yield
+                # (only schedule.display results are stashed; silent never enters pending)
+                pending = self._conversation.peek_pending()
+                if pending:
+                    logger.info(f"Yielding {len(pending)} pending schedule chunk(s)")
+                    for chunk in pending:
+                        yield chunk
+                    self._conversation.clear_pending()
 
-            for _round in range(self._max_tool_rounds):
-                logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
+                self._conversation.add(user_message)
+                await self._conversation.commit()
+                logger.debug(f"History now has {len(self._conversation.messages)} messages")
 
-                tool_defs = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.parameters,
-                        },
+                for _round in range(self._max_tool_rounds):
+                    logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
+
+                    tool_defs = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": t.name,
+                                "description": t.description,
+                                "parameters": t.parameters,
+                            },
+                        }
+                        for t in self._tool_registry.tools.values()
+                    ]
+
+                    ai_messages = messages_for_ai(self._conversation.messages)
+                    request_body: dict[str, Any] = {
+                        "messages": ai_messages,
+                        "tools": tool_defs,
+                        "stream": True,
                     }
-                    for t in self._tool_registry.tools.values()
-                ]
+                    if extra_params:
+                        extra_params.pop("messages", None)
+                        extra_params.pop("tools", None)
+                        extra_params.pop("stream", None)
+                        request_body |= extra_params
+                    request_body["routing"] = {"session_id": self._conversation.session_id}
 
-                request_body: dict[str, Any] = {
-                    "messages": self._conversation.messages,
-                    "tools": tool_defs,
-                    "stream": True,
-                }
-                if extra_params:
-                    extra_params.pop("messages", None)
-                    extra_params.pop("tools", None)
-                    extra_params.pop("stream", None)
-                    request_body |= extra_params
+                    logger.info("Sending request to AI via AiClient")
+                    logger.debug(f"Request messages count: {len(ai_messages)}, tools: {len(tool_defs)}")
 
-                logger.info("Sending request to AI via AiClient")
-                logger.debug(f"Request messages count: {len(self._conversation.messages)}, tools: {len(tool_defs)}")
+                    finish_reason: str | None = None
+                    accumulated_tool_calls: dict[int, dict[str, Any]] = {}
+                    accumulated_content: str = ""
+                    accumulated_reasoning: str = ""
 
-                finish_reason: str | None = None
-                accumulated_tool_calls: dict[int, dict[str, Any]] = {}
-                accumulated_content: str = ""
-                accumulated_reasoning: str = ""
-
-                async with aclosing(self._ai_client.stream(request_body)) as stream:
-                    async for delta in stream:
-                        logger.debug(
-                            f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
-                            f"finish_reason={delta.finish_reason!r}, "
-                            f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
-                        )
-                        if delta.content:
-                            yield AgentChunk(content=delta.content)
-                            accumulated_content += delta.content
-                        if delta.reasoning:
-                            yield AgentChunk(reasoning=delta.reasoning)
-                            accumulated_reasoning += delta.reasoning
-
-                        if delta.finish_reason and not finish_reason:
-                            finish_reason = delta.finish_reason
-
-                        if delta.tool_calls:
-                            for tc in delta.tool_calls:
-                                idx = tc.get("index", 0)
-                                if idx not in accumulated_tool_calls:
-                                    accumulated_tool_calls[idx] = {
-                                        "id": tc.get("id", ""),
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                acc = accumulated_tool_calls[idx]
-                                if tc.get("id"):
-                                    acc["id"] = tc["id"]
-                                func = tc.get("function", {})
-                                if func.get("name"):
-                                    acc["function"]["name"] = func["name"]
-                                if func.get("arguments"):
-                                    acc["function"]["arguments"] += func["arguments"]
-
-                        if finish_reason == "error":
-                            logger.warning("AI returned error, stopping without saving to history")
-                            raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
-
-                        if finish_reason == "stop":
-                            logger.debug("AI finished with stop")
+                    async with aclosing(self._ai_client.stream(request_body)) as stream:
+                        async for delta in stream:
                             logger.debug(
-                                f"Stop: content={len(accumulated_content)} chars, "
-                                f"reasoning={len(accumulated_reasoning)} chars"
+                                f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
+                                f"finish_reason={delta.finish_reason!r}, "
+                                f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
                             )
-                            if accumulated_content or accumulated_reasoning:
-                                assistant_msg: dict[str, Any] = {"role": "assistant"}
+                            if delta.content:
+                                yield AgentChunk(content=delta.content)
+                                accumulated_content += delta.content
+                            if delta.reasoning:
+                                yield AgentChunk(reasoning=delta.reasoning)
+                                accumulated_reasoning += delta.reasoning
+
+                            if delta.finish_reason and not finish_reason:
+                                finish_reason = delta.finish_reason
+
+                            if delta.tool_calls:
+                                for tc in delta.tool_calls:
+                                    idx = tc.get("index", 0)
+                                    if idx not in accumulated_tool_calls:
+                                        accumulated_tool_calls[idx] = {
+                                            "id": tc.get("id", ""),
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                    acc = accumulated_tool_calls[idx]
+                                    if tc.get("id"):
+                                        acc["id"] = tc["id"]
+                                    func = tc.get("function", {})
+                                    if func.get("name"):
+                                        acc["function"]["name"] = func["name"]
+                                    if func.get("arguments"):
+                                        acc["function"]["arguments"] += func["arguments"]
+
+                            if finish_reason == "error":
+                                logger.warning("AI returned error, stopping without saving to history")
+                                raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
+
+                            if finish_reason == "stop":
+                                logger.debug("AI finished with stop")
+                                logger.debug(
+                                    f"Stop: content={len(accumulated_content)} chars, "
+                                    f"reasoning={len(accumulated_reasoning)} chars"
+                                )
+                                if accumulated_content or accumulated_reasoning:
+                                    assistant_msg: dict[str, Any] = {"role": "assistant"}
+                                    if accumulated_content:
+                                        assistant_msg["content"] = accumulated_content
+                                    if accumulated_reasoning:
+                                        assistant_msg["reasoning"] = accumulated_reasoning
+                                    self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                                await self._conversation.commit()
+                                await self._schedule_registry.refresh()
+                                return
+
+                            if finish_reason == "tool_calls":
+                                logger.info("AI requested tool calls, processing...")
+                                ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
+
+                                assistant_msg: dict[str, Any] = {"role": "assistant", "tool_calls": ordered_calls}
                                 if accumulated_content:
                                     assistant_msg["content"] = accumulated_content
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
-                                self._conversation.add(assistant_msg)
-                            await self._conversation.commit()
-                            await self._schedule_registry.refresh()
-                            return
+                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
 
-                        if finish_reason == "tool_calls":
-                            logger.info("AI requested tool calls, processing...")
-                            ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
+                                # pre-compute args + yield tool-call intent
+                                tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
+                                for i, tc in enumerate(ordered_calls):
+                                    func_info = tc.get("function", {})
+                                    func_name = func_info.get("name", "")
+                                    func_args_str = func_info.get("arguments", "{}")
 
-                            assistant_msg: dict[str, Any] = {"role": "assistant", "tool_calls": ordered_calls}
+                                    try:
+                                        args = json.loads(func_args_str)
+                                        if not isinstance(args, dict):
+                                            logger.warning(f"Tool arguments is not a dict: {type(args).__name__}")
+                                            args = {}
+                                    except json.JSONDecodeError, TypeError:
+                                        logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
+                                        args = {}
+
+                                    logger.info(f"Executing tool: {func_name!r}({args!r})")
+                                    yield AgentChunk(
+                                        reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
+                                    )
+                                    tool_args.append((i, tc, func_name, args))
+
+                                # execute all tools concurrently
+                                results: list[str] = [""] * len(ordered_calls)
+
+                                async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
+                                    func = self._tool_registry.get(fn)
+                                    if func is None:
+                                        r[idx] = f"Error: Tool '{fn}' not found"
+                                        logger.error(f"Tool not found: {fn!r}")
+                                    else:
+                                        try:
+                                            raw = await func(**a)
+                                            r[idx] = str(raw)
+                                            logger.info(f"Tool result ({fn!r}): {str(raw)[:1000]!r}")
+                                        except Exception as e:
+                                            r[idx] = f"Error executing tool '{fn}': {e}"
+                                            logger.error(f"Tool execution error ({fn!r}): {e!r}")
+
+                                async with anyio.create_task_group() as tg:
+                                    for i, _tc, func_name, args in tool_args:
+                                        if func_name:
+                                            tg.start_soon(_execute_one, i, func_name, args, results)
+                                        else:
+                                            results[i] = "Error: empty tool call name"
+
+                                # yield results in order, save
+                                for i, tc, func_name, _args in tool_args:
+                                    result = results[i]
+                                    yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:1000]}]")
+                                    self._conversation.add(
+                                        with_kind(
+                                            {
+                                                "role": "tool",
+                                                "tool_call_id": tc.get("id", ""),
+                                                "name": func_name,
+                                                "content": str(result),
+                                            },
+                                            turn_response_kind,
+                                        )
+                                    )
+                                await self._conversation.commit()
+
+                                break
+
+                    if finish_reason not in ("error", "stop", "tool_calls"):
+                        logger.warning(
+                            f"Unexpected finish_reason={finish_reason!r}, "
+                            f"saving {len(accumulated_content)} chars of content and stopping"
+                        )
+                        if accumulated_content or accumulated_reasoning:
+                            assistant_msg: dict[str, Any] = {"role": "assistant"}
                             if accumulated_content:
                                 assistant_msg["content"] = accumulated_content
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
-                            self._conversation.add(assistant_msg)
+                            self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                        await self._conversation.commit()
+                        return
 
-                            # pre-compute args + yield tool-call intent
-                            tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
-                            for i, tc in enumerate(ordered_calls):
-                                func_info = tc.get("function", {})
-                                func_name = func_info.get("name", "")
-                                func_args_str = func_info.get("arguments", "{}")
-
-                                try:
-                                    args = json.loads(func_args_str)
-                                    if not isinstance(args, dict):
-                                        logger.warning(f"Tool arguments is not a dict: {type(args).__name__}")
-                                        args = {}
-                                except json.JSONDecodeError, TypeError:
-                                    logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
-                                    args = {}
-
-                                logger.info(f"Executing tool: {func_name!r}({args!r})")
-                                yield AgentChunk(
-                                    reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
-                                )
-                                tool_args.append((i, tc, func_name, args))
-
-                            # execute all tools concurrently
-                            results: list[str] = [""] * len(ordered_calls)
-
-                            async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
-                                func = self._tool_registry.get(fn)
-                                if func is None:
-                                    r[idx] = f"Error: Tool '{fn}' not found"
-                                    logger.error(f"Tool not found: {fn!r}")
-                                else:
-                                    try:
-                                        raw = await func(**a)
-                                        r[idx] = str(raw)
-                                        logger.info(f"Tool result ({fn!r}): {str(raw)[:1000]!r}")
-                                    except Exception as e:
-                                        r[idx] = f"Error executing tool '{fn}': {e}"
-                                        logger.error(f"Tool execution error ({fn!r}): {e!r}")
-
-                            async with anyio.create_task_group() as tg:
-                                for i, _tc, func_name, args in tool_args:
-                                    if func_name:
-                                        tg.start_soon(_execute_one, i, func_name, args, results)
-                                    else:
-                                        results[i] = "Error: empty tool call name"
-
-                            # yield results in order, save
-                            for i, tc, func_name, _args in tool_args:
-                                result = results[i]
-                                yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:1000]}]")
-                                self._conversation.add(
-                                    {
-                                        "role": "tool",
-                                        "tool_call_id": tc.get("id", ""),
-                                        "name": func_name,
-                                        "content": str(result),
-                                    }
-                                )
-                            await self._conversation.commit()
-
-                            break
-
-                if finish_reason not in ("error", "stop", "tool_calls"):
-                    logger.warning(
-                        f"Unexpected finish_reason={finish_reason!r}, "
-                        f"saving {len(accumulated_content)} chars of content and stopping"
+                else:
+                    logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
+                    self._conversation.add(
+                        with_kind(
+                            {"role": "assistant", "content": "[Max tool rounds reached]"},
+                            turn_response_kind,
+                        )
                     )
-                    if accumulated_content or accumulated_reasoning:
-                        assistant_msg: dict[str, Any] = {"role": "assistant"}
-                        if accumulated_content:
-                            assistant_msg["content"] = accumulated_content
-                        if accumulated_reasoning:
-                            assistant_msg["reasoning"] = accumulated_reasoning
-                        self._conversation.add(assistant_msg)
                     await self._conversation.commit()
-                    return
-
-            else:
-                logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
-                self._conversation.add({"role": "assistant", "content": "[Max tool rounds reached]"})
-                await self._conversation.commit()
-                yield AgentChunk(content="[Max tool rounds reached]")
+                    yield AgentChunk(content="[Max tool rounds reached]")

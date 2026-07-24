@@ -47,7 +47,7 @@
           python = pkgs.python314;
 
           # Version for hatch-vcs (git may be unavailable in the build sandbox).
-          version = "0.0.1-alpha20260710";
+          version = "0.0.1-alpha20260719";
 
           runtimeTools = with pkgs; [
             uv
@@ -62,7 +62,10 @@
             pname = "psi-agent-spa";
             inherit version;
             src = ./src/psi_agent/gateway/spa;
-            npmDepsHash = "sha256-OynHupMkgWGLWddgDQd+dG/x1zES4pB7QDiGVrWanms=";
+            npmDeps = pkgs.importNpmLock {
+              npmRoot = ./src/psi_agent/gateway/spa;
+            };
+            npmConfigHook = pkgs.importNpmLock.npmConfigHook;
             # vite build → dist/
             installPhase = ''
               runHook preInstall

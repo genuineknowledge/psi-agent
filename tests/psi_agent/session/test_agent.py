@@ -41,7 +41,6 @@ class MockAIServer:
     """Helper to create and cleanup a mock AI Unix socket server."""
 
     def __init__(self, tmp_path: Path) -> None:
-        self.socket_path = tmp_path / "ai.sock"
         self._runner: web.AppRunner | None = None
         self._app: web.Application | None = None
 
@@ -50,9 +49,11 @@ class MockAIServer:
         self._app.router.add_post("/chat/completions", handler)
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        site = web.UnixSite(self._runner, str(self.socket_path))
+        sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        site = web.SockSite(self._runner, sock)
         await site.start()
-        return str(self.socket_path)
+        return f"http://127.0.0.1:{sock.getsockname()[1]}"
 
     async def cleanup(self) -> None:
         if self._runner:
@@ -174,6 +175,76 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
         assert request_count >= 2
     finally:
         await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_attaches_the_same_routing_session_id_to_every_tool_round_request(tmp_path: Path) -> None:
+    """Router continuations can associate both requests with this Session."""
+
+    requests: list[dict] = []
+    request_count = 0
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        nonlocal request_count
+        requests.append(await request.json())
+        request_count += 1
+        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        if request_count == 1:
+            await response.write(
+                (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "id": "tool-call",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "tool_calls": [
+                                            {
+                                                "index": 0,
+                                                "id": "call-1",
+                                                "type": "function",
+                                                "function": {"name": "echo", "arguments": '{"message":"hello"}'},
+                                            }
+                                        ]
+                                    },
+                                    "finish_reason": "tool_calls",
+                                }
+                            ],
+                        }
+                    )
+                    + "\n\n"
+                ).encode()
+            )
+        else:
+            await response.write(_sse_chunk(content="finished", finish="stop").encode())
+        await response.write(b"data: [DONE]\n\n")
+        return response
+
+    async def echo(message: str) -> str:
+        return message
+
+    tool = ToolFunction.from_callable(echo)
+    history_path = tmp_path / "histories" / "stable-session.jsonl"
+    await anyio.Path(history_path.parent).mkdir()
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            conversation=Conversation(path=history_path),
+            tool_registry=ToolRegistry(files={"test": FileEntry("", {"echo": tool}, {"echo": echo})}),
+        )
+        _ = [chunk async for chunk in agent.run({"role": "user", "content": "run a tool"})]
+    finally:
+        await mock_server.cleanup()
+
+    assert [body["routing"] for body in requests] == [
+        {"session_id": "stable-session"},
+        {"session_id": "stable-session"},
+    ]
 
 
 @pytest.mark.anyio

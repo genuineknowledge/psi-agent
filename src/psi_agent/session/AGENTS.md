@@ -20,6 +20,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - `SessionAgent` 自包含：持有 `_ai_client`、`_channel_adapter`、`_lock`
 - `_session_id` 从 `_history_path.stem` 派生，同时用于 sys.modules 隔离（tools/system 的 module name）
 - `channel_socket` 由 `Session.run()` 直接传给 `serve_session()`，不进入 agent 内部
+- **工具可见的 session id**：`SessionAgent.run` 用 ``runtime_context.session_id_scope`` 绑定 ContextVar（Gateway 同进程多 Session 时 ``sys.argv`` 无法标识当前会话）。workspace ``todo`` 等经 ``current_session_id()`` 读取，勿回落到 ``default``
 - 所有手动模块加载使用 `原名_session_id_文件hash` 作为 module name（tool 和 system prompt 均用 `compile` + `exec` 避免 importlib bytecode 缓存），确保同进程多 session 隔离
 - `SessionAgent.create()` 完成所有初始化——`__init__.py` 只做入口编排
 - Tool 加载：`compile(source)` + `exec(module.__dict__)` 避免 importlib 的 bytecode 缓存导致刷新时读到旧文件内容
@@ -163,21 +164,34 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
     cron_iter.get_next(float)         ← 计算下次触发时间(epoch)
     await anyio.sleep(触发时间 - now) ← 睡到触发
     async with agent._lock:       ← 等当前请求完成
-      调用 agent.run(msg)       ← AI 处理
-      流式结果追加到 pending_chunks (list[AgentChunk])
-      agent.set_pending_schedule_chunks(chunks)
-      ↓
-    下次 channel 请求到达时：
-      SessionAgent.run() 开头先 yield 所有 _pending_schedule_chunks
-      然后正常处理当前 channel 消息
+      user = {role:user, content:TASK.md, kind:schedule.silent}  ← user 始终 silent
+      response_kind = schedule.display | schedule.silent         ← 由 TASK.md visibility 决定
+      agent.run(user, response_kind=...)
+      ← 整轮写入 JSONL（user/assistant/tool 均带 kind）
+      ← 仅 visibility=display 时 stash pending，下次 Channel POST 开头 yield
+      ← visibility=silent（如 heartbeat）不注入下一轮 SSE
 ```
 
 关键点：
-- Schedule 是纯配置数据类（`name, cron, task_content`），cron 状态由 `run_one_schedule` 维护
+- Schedule 配置：`name, cron, task_content, visibility`（`display`/`silent`，缺省 `display`）
 - **cron 按本地时区排程（刻意设计，勿改回 UTC）**：`croniter` 若以裸 epoch（`time.time()`）为基准会按 **UTC** 解释 cron，导致 `0 9 * * *` 在 UTC+8 实际于当地 17:00 触发。因此 `_run_one` 用 **timezone-aware** 的 `datetime` 作基准：`ScheduleRegistry._schedule_tz()` 读标准 `TZ` 解析成 `ZoneInfo`，未设 / 非法时回退 `datetime.now().astimezone()` 跟随系统本地时区（仍是 aware，cron 保持按本地）。`get_next(float)` 取 epoch 再与 `time.time()` 做差得等待秒数。不额外依赖 `tzdata`——`astimezone()` 兜底不需要 IANA 数据包
+- **``kind`` 字段**（敲定协议）：OpenAI ``role`` 不变；用正交字段区分对话来源。Gateway ``/history`` 只返回 ``is_displayable_chat_message``（``kind=chat`` 的 user/assistant，以及 ``kind=schedule.display`` 的 assistant）。AI 请求经 ``messages_for_ai`` 剥掉 ``kind``/遗留 ``chat_type``
+- ``visibility: silent`` 的 schedule（heartbeat）结果永不 pending、永不展示
+- ``visibility: display`` 的 schedule 结果可进 history，并通过 pending 随下次 ``POST /chat`` 带回（``/events/schedule`` 推送通道仍待定）
 - Schedule 响应的 content 和 reasoning 各自存在于各自的消息周期，不会交错
 - 多个 schedule 可以并发 sleep，但通过 lock 串行触发
 - 每个 schedule 在加载时独立处理——IO 错误、YAML 解析问题、cron 验证失败都只跳过该 schedule
+
+### History 展示白名单（``history_display.py``）
+
+| kind | 展示 |
+|------|------|
+| `chat` | user/assistant 非空 content |
+| `schedule.display` | 仅 assistant |
+| `schedule.silent` / `compacted` | 否 |
+| 遗留 `chat_type=schedule` / `*_schedule` role | 视为 silent |
+
+Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记。
 
 ## History 持久化
 

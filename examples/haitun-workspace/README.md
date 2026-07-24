@@ -40,6 +40,61 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 - **Serper search** needs psi-agent installed with the `mcp` extra and `uvx` on PATH.
 - Never put API keys in this workspace or in generated `.flow.ts` / `.env` files.
 
+## Fusion Memory
+
+Haitun consumes an operator-provisioned Fusion Memory MCP service over
+**Streamable HTTP**. Before starting Haitun, the process starter manually
+configures the endpoint and token-map path:
+
+```bash
+export FUSION_MEMORY_MCP_URL="https://memory.example.com/mcp"
+export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
+```
+
+`FUSION_MEMORY_MCP_URL` is the remote endpoint; TLS is terminated by its
+reverse proxy. The map is keyed by Feishu `open_id`; each entry requires the
+operator-issued `token`. `workspace_id` is provenance only and may be empty or
+omitted, in which case it defaults to `haitun`. Keep the map outside this
+workspace and source control, and never log, print, or return token values.
+
+Map membership enables durable memory for that user. On the user's first
+message after Haitun starts, the workspace automatically initiates
+`memory_health` and starts a passive writer for that trusted
+`feishu-<open_id>` Session. Completed user/assistant turns are persisted through
+`memory_add_batch`; the same token shares memory across Sessions, while tokens
+for different users remain isolated. Model-visible `<feishu_context>` never
+selects credentials.
+
+Users absent from the map can chat normally but receive no bearer token,
+connector, passive writer, checkpoint, or durable memory. Duplicate token
+assignments reject the map, and token-map mode never falls back to
+`FUSION_MEMORY_TOKEN`. When no map path is configured, the legacy single-user
+token/workspace/session variables remain compatible.
+
+Passive persistence stores only completed ordinary chat turns. Schedule,
+heartbeat, compaction, tool-only, and incomplete rows are excluded. Unchanged
+history files are not reparsed each polling interval. Removing a map entry
+stops that Session's watcher and closes its cached MCP client.
+Validated map snapshots are cached by file signature and refreshed only when
+the file changes. Each active turn renews a five-minute watcher lease; idle
+watcher/client resources are reclaimed and restart on the next message.
+
+This workspace-level isolation assumes the Feishu Channel, Gateway, Session
+runtime and management tools, host shell, and token-map file are trusted.
+`feishu-<open_id>` is a routing convention rather than a cryptographic
+principal. Protecting against callers that can forge Session IDs, invoke
+cross-Session operations, or read the token map requires runtime authorization
+and a privileged credential broker outside this example workspace.
+
+The service operator owns provisioning, token creation and revocation, reverse
+proxy configuration, and service storage. The operator also supervises the MCP,
+model, and history services with `systemd` so they survive SSH disconnects and
+restart after process failures. Haitun only consumes the remote service; it
+does not create local memory services or fall back to another transport. MCP
+outages do not block chat, and the background writer retries independently.
+Use `memory_health` for explicit status and
+`skills/fusion-memory-setup/SKILL.md` for operator recovery guidance.
+
 ## Smoke test
 
 ```bash

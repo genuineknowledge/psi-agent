@@ -14,6 +14,7 @@ import contextlib
 import json
 import os
 import pathlib
+import re
 from typing import Any
 
 import anyio
@@ -60,7 +61,39 @@ def _get_client() -> Any:
     return _client
 
 
-async def _invoke(request: Any) -> dict[str, Any]:
+# Shown to the user whenever a user_access_token is genuinely required (tenant
+# token can't do it and no cached UAT exists). Spelled out step-by-step — the
+# key gotcha is that the code lives in the browser ADDRESS BAR after redirect.
+_AUTH_PROMPT = (
+    "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步). 步骤:\n"
+    "1. 调 feishu_auth_start 拿到 authorize_url, 打开它并点「同意授权」;\n"
+    "2. 浏览器会跳转到一个网址, 从**地址栏**里复制 code= 后面那一串 (或直接整段网址);\n"
+    "3. 把它交给 feishu_auth_complete.\n"
+    "授权一次即缓存并自动续期, 之后同类操作不会再让你授权."
+)
+
+
+# Feishu permission-denied codes: the 999916xx family (drive/docs "no permission"),
+# 1254xxx (bitable), 131006 (wiki node no permission). Combined with a msg-substring
+# check so we still catch permission failures whose exact code we don't enumerate.
+_PERMISSION_CODES = {99991672, 99991663, 99991661, 131006, 1254302, 1254045, 1254043}
+_PERMISSION_MSG_HINTS = ("permission", "forbidden", "无权限", "没有权限", "access denied", "not authorized")
+
+
+def _is_permission_error(res: dict[str, Any]) -> bool:
+    """True if ``res`` is a Feishu permission/authorization failure (so a UAT retry
+    could help). Distinct from transport errors or empty-but-ok responses."""
+    if res.get("ok"):
+        return False
+    code = res.get("code")
+    if isinstance(code, int) and (code in _PERMISSION_CODES or 1254000 <= code <= 1254999):
+        return True
+    msg = f"{res.get('msg', '')} {res.get('message', '')}".lower()
+    return any(h in msg for h in _PERMISSION_MSG_HINTS)
+
+
+async def _send_as_tenant(request: Any) -> dict[str, Any]:
+    """Send a BaseRequest with the bot's tenant token."""
     client = _get_client()
     if client is None:
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
@@ -68,7 +101,89 @@ async def _invoke(request: Any) -> dict[str, Any]:
         resp = await client.arequest(request)
     except Exception as exc:  # SDK/transport failure
         return _error(f"Feishu request failed: {type(exc).__name__}: {exc}")
+    return _resp_to_result(resp)
 
+
+async def _send_as_user(request: Any, user_key: str) -> dict[str, Any] | None:
+    """Send a BaseRequest with the user's UAT. Returns None (no send attempted) when
+    the app isn't configured or the user has no cached/valid UAT — callers decide
+    whether that means need_auth or a tenant fallback."""
+    client = _get_uat_client()
+    if client is None:
+        return None
+    uat = await _get_valid_uat(user_key)
+    if uat is None or not uat.access_token:
+        return None
+    from lark_channel.core.model import RequestOption  # noqa: PLC0415
+
+    option = RequestOption.builder().user_access_token(uat.access_token).build()
+    try:
+        resp = await client.arequest(request, option)
+    except Exception as exc:  # SDK/transport failure
+        return _error(f"Feishu request failed: {type(exc).__name__}: {exc}")
+    return _resp_to_result(resp)
+
+
+async def _invoke(request: Any, user_key: str | None = None, prefer: str = "tenant") -> dict[str, Any]:
+    """Send a BaseRequest, preferring the bot's tenant token and only using the
+    user's ``user_access_token`` (UAT) when necessary.
+
+    ``prefer`` controls the strategy (``user_key`` is the sender's open_id, used to
+    resolve that user's cached UAT):
+
+    - ``"tenant"`` (default, read-oriented): try tenant first; if it fails with a
+      *permission* error and the user has a cached UAT, transparently retry as the
+      user. The user is only asked to authorize when tenant is denied AND no UAT
+      exists. Passing ``user_key`` here is harmless — it's just a fallback identity.
+    - ``"user"`` (write/create-oriented): if the user has a cached UAT, act as that
+      user so the created content is owned by them; otherwise fall back to the
+      tenant token so the bot can still do it without forcing authorization. Only
+      when BOTH the tenant attempt is permission-denied is ``need_auth`` returned.
+
+    ``user_key`` empty/None means "no user identity available" — tenant only.
+    """
+    key = user_key.strip() if user_key else ""
+
+    if prefer == "user":
+        if key:
+            user_res = await _send_as_user(request, key)
+            if user_res is not None:
+                return user_res
+        # No usable UAT — fall back to tenant so the bot can still act.
+        tenant_res = await _send_as_tenant(request)
+        if key and _is_permission_error(tenant_res):
+            return _error(_AUTH_PROMPT, need_auth=True)
+        return tenant_res
+
+    # prefer == "tenant": tenant first, UAT retry only on permission failure.
+    tenant_res = await _send_as_tenant(request)
+    if not _is_permission_error(tenant_res):
+        return tenant_res
+    if not key:
+        # No user identity to fall back to — surface the original tenant error.
+        return tenant_res
+    user_res = await _send_as_user(request, key)
+    if user_res is not None:
+        return user_res
+    return _error(_AUTH_PROMPT, need_auth=True)
+
+
+async def _invoke_wiki_read(request: Any, user_key: str | None, is_empty: Any) -> dict[str, Any]:
+    """Wiki listing/resolve reads: tenant first, but the bot is usually not a member
+    of any wiki space, so tenant succeeds with an *empty* payload rather than a
+    permission error. Detect that (via ``is_empty(res)``) and transparently retry as
+    the user, so we don't wrongly report "no knowledge bases". No re-auth prompt on
+    the empty case — if the user simply has none, the empty tenant result stands."""
+    res = await _invoke(request, user_key=user_key, prefer="tenant")
+    key = user_key.strip() if user_key else ""
+    if res.get("ok") and key and is_empty(res):
+        user_res = await _send_as_user(request, key)
+        if user_res is not None and user_res.get("ok"):
+            return user_res
+    return res
+
+
+def _resp_to_result(resp: Any) -> dict[str, Any]:
     code = getattr(resp, "code", None)
     msg = getattr(resp, "msg", "") or ""
     data: dict[str, Any] = {}
@@ -98,9 +213,9 @@ async def _invoke(request: Any) -> dict[str, Any]:
     return {"ok": True, "code": 0, "msg": msg, "data": data}
 
 
-async def add_comment_impl(file_token: str, file_type: str, content: str) -> dict[str, Any]:
+async def add_comment_impl(file_token: str, file_type: str, content: str, user_key: str = "") -> dict[str, Any]:
     req = _comment.build_comment_create_request(file_token=file_token, file_type=file_type, content=content)
-    return await _invoke(req)
+    return await _invoke(req, user_key=user_key, prefer="user")
 
 
 async def list_comments_impl(file_token: str, file_type: str, page_size: int, page_token: str) -> dict[str, Any]:
@@ -146,7 +261,7 @@ def _build_reply_create_request(
 
 
 async def reply_comment_impl(
-    file_token: str, file_type: str, comment_id: str, content: str, at_user_id: str
+    file_token: str, file_type: str, comment_id: str, content: str, at_user_id: str, user_key: str = ""
 ) -> dict[str, Any]:
     req = _build_reply_create_request(
         file_token=file_token,
@@ -155,7 +270,7 @@ async def reply_comment_impl(
         content=content,
         at_user_id=at_user_id,
     )
-    return await _invoke(req)
+    return await _invoke(req, user_key=user_key, prefer="user")
 
 
 def _raw_get(uri: str, path_name: str, path_value: str) -> BaseRequest:
@@ -292,6 +407,28 @@ async def find_chat_impl(name: str, exact: bool, page_size: int = 50, page_token
     }
 
 
+def _infer_receive_id_type(receive_id: str, given: str) -> str:
+    """Infer the Feishu ``receive_id_type`` from the id's prefix.
+
+    The API rejects a mismatched type with ``230001 invalid receive_id`` (e.g.
+    sending a DM by passing an ``ou_`` open_id while the type is still the default
+    ``chat_id``). The id prefix is an unambiguous signal, so trust it: ``oc_`` is a
+    chat_id, ``ou_`` an open_id, ``on_`` a union_id, and a value containing ``@`` an
+    email. Only fall back to *given* when the prefix carries no signal (e.g. a bare
+    user_id), so an explicit caller choice for those still wins.
+    """
+    rid = receive_id.strip()
+    if rid.startswith("oc_"):
+        return "chat_id"
+    if rid.startswith("ou_"):
+        return "open_id"
+    if rid.startswith("on_"):
+        return "union_id"
+    if "@" in rid:
+        return "email"
+    return given
+
+
 def _build_send_message_request(receive_id: str, receive_id_type: str, msg_type: str, content: str) -> BaseRequest:
     req = BaseRequest()
     req.http_method = HttpMethod.POST
@@ -306,10 +443,98 @@ def _build_send_message_request(receive_id: str, receive_id_type: str, msg_type:
     return req
 
 
-async def send_message_impl(receive_id: str, text: str, receive_id_type: str) -> dict[str, Any]:
-    """Send a text message to a chat/user. Returns message_id + thread_id (thread_id is the topic root)."""
-    content = json.dumps({"text": text}, ensure_ascii=False)
-    res = await _invoke(_build_send_message_request(receive_id, receive_id_type, "text", content))
+async def _resolve_sender_name(open_id: str) -> str:
+    """把发起人 open_id 解析成真实姓名, 供「代人带话」前缀用。
+
+    复用 ``get_users_batch_impl`` 取 ``name``; 查名失败 / 取空 / 非 open_id 一律
+    回退成传入值本身——绝不因查名失败而让消息发不出去 (转达失败比署名不全更糟)。
+    """
+    open_id = (open_id or "").strip()
+    if not open_id:
+        return ""
+    try:
+        res = await get_users_batch_impl(open_id, user_id_type="open_id")
+    except Exception:
+        return open_id
+    if not res.get("ok"):
+        return open_id
+    users = res.get("users") or []
+    if users and isinstance(users[0], dict):
+        name = (users[0].get("name") or "").strip()
+        if name:
+            return name
+    return open_id
+
+
+_AT_TAG_RE = re.compile(
+    r"(?:<|&lt;)\s*at\b[^>]*?user_id\s*=\s*[\"']?(?P<uid>[^\"'>&\s]+)[\"']?[^>]*?(?:>|&gt;)"
+    r"(?:\s*(?:<|&lt;)\s*/\s*at\s*(?:>|&gt;))?",
+    re.IGNORECASE,
+)
+
+
+def _extract_and_strip_at_tags(text: str) -> tuple[str, list[str]]:
+    """Pull ``<at user_id=ou_xxx>`` tags (also HTML-escaped ``&lt;at&gt;``) out of *text*.
+
+    Returns the text with those tags removed and the list of mentioned open_ids.
+    A plain-text message's ``<at>`` does NOT render for bots (Feishu shows the raw
+    tag, e.g. ``&lt;at&gt;``), so the caller must resend as a ``post`` message whose
+    ``at`` element renders. Extracting here means the model can write the tag inline
+    (as the tool docs historically told it to) and mentions still work.
+    """
+    open_ids = [m.group("uid") for m in _AT_TAG_RE.finditer(text)]
+    stripped = _AT_TAG_RE.sub("", text).strip()
+    return stripped, open_ids
+
+
+async def send_message_impl(receive_id: str, text: str, receive_id_type: str, on_behalf_of: str = "") -> dict[str, Any]:
+    """Send a text message to a chat/user. Returns message_id + thread_id (thread_id is the topic root).
+
+    When ``on_behalf_of`` (发起人的 open_id) is given, the bot is relaying someone
+    else's words, so the text is wrapped with a "{姓名}给你发了一条消息" attribution
+    prefix — the recipient sees who it is from instead of a bare bubble authored by
+    the bot. Name is resolved from the open_id; falls back to the raw open_id if
+    unresolvable.
+
+    ``receive_id_type`` is auto-corrected from the id prefix, and any ``<at>`` tags
+    embedded in *text* are turned into a real ``post`` mention (a plain-text ``<at>``
+    would render as a raw tag for bots), so mentions work regardless of id type or
+    how the tag was written.
+
+    Relay guard: relaying someone's words (``on_behalf_of`` set) is a private message
+    to a person, never a group post. If ``receive_id`` is a group chat (``oc_``), the
+    send is redirected to the mentioned person's DM (open_id taken from the ``<at>``
+    tag in *text*). If no recipient open_id can be determined, it returns an error
+    instead of leaking the private message into the group.
+    """
+    at_target_ids = [m.group("uid") for m in _AT_TAG_RE.finditer(text)]
+    if on_behalf_of.strip() and receive_id.strip().startswith("oc_"):
+        # A relay must stay private: never post it into the group. Redirect to the
+        # mentioned person's DM; refuse (don't fall back to the group) if unknown.
+        target = next((oid for oid in at_target_ids if oid.startswith("ou_")), "")
+        if not target:
+            return _error(
+                "代人带话必须私发给本人, 但未能从消息里确定收件人 open_id; "
+                "请用 feishu_chat_find_member 查到本人 open_id 后作为 receive_id 私发, 不要发到群里。",
+                code="relay_recipient_unknown",
+            )
+        receive_id, receive_id_type = target, "open_id"
+
+    if on_behalf_of.strip():
+        sender = await _resolve_sender_name(on_behalf_of)
+        if sender:
+            text = f"{sender}给你发了一条消息：「{text}」"  # noqa: RUF001
+    receive_id_type = _infer_receive_id_type(receive_id, receive_id_type)
+    stripped, at_open_ids = _extract_and_strip_at_tags(text)
+    # In a 1:1 DM an @-mention is noise; keep mentions only when sending to a group.
+    if at_open_ids and receive_id_type == "chat_id":
+        # Mentions only render in a post message; a plain-text <at> shows the raw tag.
+        content = _build_post_at_content(stripped, at_open_ids, at_all=False)
+        req = _build_send_message_request(receive_id, receive_id_type, "post", content)
+    else:
+        content = json.dumps({"text": stripped if at_open_ids else text}, ensure_ascii=False)
+        req = _build_send_message_request(receive_id, receive_id_type, "text", content)
+    res = await _invoke(req)
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -730,6 +955,170 @@ async def decide_approval_task_impl(
     return {"ok": True, "action": action, "instance_code": instance_code, "task_id": task_id}
 
 
+# ── Approval (审批) —发起端: read a definition's form schema + submit an instance ─
+#
+# The submit side of approvals: read what fields an approval requires (its form
+# template), then create an instance *on behalf of an applicant*. Feishu records
+# the instance under the applicant's open_id/user_id carried in the body — the
+# bot's tenant token creates it, so no per-employee UAT authorization is needed
+# (unlike the audit side's decide, which still needs a real approver's user_id).
+
+
+def _build_approval_definition_request(approval_code: str, user_id_type: str, with_admin_id: bool) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/approval/v4/approvals/:approval_code"
+    req.paths["approval_code"] = approval_code
+    req.add_query("user_id_type", user_id_type)
+    if with_admin_id:
+        req.add_query("with_admin_id", True)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+def _parse_approval_form_schema(form: Any) -> list[dict[str, Any]]:
+    """Parse a definition's stringified ``form`` JSON into a clean widget list.
+
+    The ``form`` field is a JSON string of control (widget) objects. Each widget
+    becomes ``{id, custom_id, name, type, required}`` — the ``id`` (and optional
+    ``custom_id``) is what a create-instance form must reference, ``name`` is the
+    display label, ``type`` is the control type (input/textarea/number/amount/
+    date/radioV2/...), and ``required`` flags mandatory fields. Mirrors the
+    tolerant json.loads + isinstance(list) guard of ``_parse_approval_attachments``.
+    """
+    widgets: Any = form
+    if isinstance(form, str):
+        with contextlib.suppress(ValueError):
+            widgets = json.loads(form)
+    if not isinstance(widgets, list):
+        return []
+    fields: list[dict[str, Any]] = []
+    for w in widgets:
+        if not isinstance(w, dict):
+            continue
+        fields.append(
+            {
+                "id": w.get("id", ""),
+                "custom_id": w.get("custom_id", ""),
+                "name": w.get("name", ""),
+                "type": w.get("type", ""),
+                "required": bool(w.get("required")),
+            }
+        )
+    return fields
+
+
+async def get_approval_definition_impl(
+    approval_code: str, user_id_type: str = "open_id", with_admin_id: bool = False
+) -> dict[str, Any]:
+    """Read an approval definition's form schema + node list so the agent knows which fields to fill.
+
+    Returns the parsed widget list (``form``) and an approval-chain summary
+    (``node_list``). Use this before ``create_approval_instance_impl`` to map an
+    employee's words onto the real field ids/types — never invent field ids.
+    """
+    if not approval_code:
+        return _error("approval_code is required (the approval definition code).")
+    res = await _invoke(_build_approval_definition_request(approval_code, user_id_type, with_admin_id))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    node_list = [
+        {"name": n.get("name", ""), "node_id": n.get("node_id", ""), "node_type": n.get("node_type", "")}
+        for n in (data.get("node_list", []) if isinstance(data.get("node_list"), list) else [])
+        if isinstance(n, dict)
+    ]
+    return {
+        "ok": True,
+        "approval_code": approval_code,
+        "approval_name": data.get("approval_name", ""),
+        "status": data.get("status", ""),
+        "form": _parse_approval_form_schema(data.get("form", "")),
+        "node_list": node_list,
+    }
+
+
+def _build_create_instance_request(
+    approval_code: str,
+    form: str,
+    applicant_open_id: str,
+    applicant_user_id: str,
+    node_approver_open_id_list: list[dict[str, Any]] | None,
+    title: str,
+    user_id_type: str,
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/approval/v4/instances"
+    req.add_query("user_id_type", user_id_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {"approval_code": approval_code, "form": form}
+    if applicant_open_id:
+        body["open_id"] = applicant_open_id
+    if applicant_user_id:
+        body["user_id"] = applicant_user_id
+    if title:
+        body["title"] = title
+    if node_approver_open_id_list:
+        body["node_approver_open_id_list"] = node_approver_open_id_list
+    req.body = body
+    return req
+
+
+async def create_approval_instance_impl(
+    approval_code: str,
+    form_json: str,
+    applicant_open_id: str = "",
+    applicant_user_id: str = "",
+    node_approver_open_id_list_json: str = "",
+    title: str = "",
+    user_id_type: str = "open_id",
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Submit an approval instance on behalf of an applicant. Returns the new instance_code.
+
+    ``form_json`` is a JSON array of ``{id, type, value}`` widgets whose ids come
+    from ``get_approval_definition_impl``. An applicant id (open_id or user_id) is
+    required — the instance is recorded under that person.
+    """
+    if not approval_code:
+        return _error("approval_code is required (the approval definition code).")
+    if not applicant_open_id and not applicant_user_id:
+        return _error(
+            "an applicant id is required — pass applicant_open_id (the sender's open_id) or applicant_user_id."
+        )
+    try:
+        form = json.loads(form_json)
+    except ValueError as exc:
+        return _error(f"form_json is not valid JSON: {exc}")
+    if not isinstance(form, list):
+        return _error("form_json must be a JSON array of {id, type, value} widget objects.")
+    node_approvers: list[dict[str, Any]] | None = None
+    if node_approver_open_id_list_json.strip():
+        try:
+            node_approvers = json.loads(node_approver_open_id_list_json)
+        except ValueError as exc:
+            return _error(f"node_approver_open_id_list_json is not valid JSON: {exc}")
+        if not isinstance(node_approvers, list):
+            return _error("node_approver_open_id_list_json must be a JSON array of {key, value} objects.")
+    res = await _invoke(
+        _build_create_instance_request(
+            approval_code,
+            json.dumps(form, ensure_ascii=False),
+            applicant_open_id,
+            applicant_user_id,
+            node_approvers,
+            title,
+            user_id_type,
+        ),
+        user_key=user_key,
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {"ok": True, "instance_code": data.get("instance_code", "")}
+
+
 # ── Wiki — resolve a wiki node token to its underlying document ───────────────
 #
 # A Feishu wiki URL (.../wiki/<node_token>) is a shell; the real content lives in
@@ -737,9 +1126,17 @@ async def decide_approval_task_impl(
 # + obj_type so the agent can then read it (docx/doc/sheet via read_doc_impl).
 
 
-async def get_wiki_node_impl(token: str) -> dict[str, Any]:
-    """Resolve a wiki node token to its underlying document (obj_token + obj_type)."""
-    res = await _invoke(_wiki_node.build_wiki_node_get_request(token=token))
+async def get_wiki_node_impl(token: str, user_key: str = "") -> dict[str, Any]:
+    """Resolve a wiki node token to its underlying document (obj_token + obj_type).
+
+    Pass ``user_key`` to resolve as that user (needed when the wiki is user-owned and
+    the bot isn't a member); empty uses the bot's tenant token.
+    """
+    res = await _invoke_wiki_read(
+        _wiki_node.build_wiki_node_get_request(token=token),
+        user_key,
+        lambda r: not (r.get("data", {}) or {}).get("node"),
+    )
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -812,10 +1209,27 @@ async def start_topic_impl(
 # a UAT, cache it in <workspace>/.psi/feishu/uat.json (plaintext — dev use), and
 # call the search endpoint with a hand-built BaseRequest carrying the UAT.
 
-_UAT_USER_KEY = "default"  # single local user; not multi-tenant
+_UAT_USER_KEY = "default"  # fallback key when a caller does not pass user_key
 _token_store: Any = None
 _uat_client: Any = None
-_DEFAULT_SCOPES = "docs:doc:readonly drive:drive:readonly offline_access"
+_DEFAULT_SCOPES = (
+    "docs:doc:readonly drive:drive:readonly "
+    # write scopes: create/edit docx bodies and create/manage wiki nodes so the
+    # user-token path (create doc, append blocks, create wiki node) is not
+    # limited to read-only. docx:document covers both creating and editing docs.
+    "docx:document wiki:wiki "
+    "offline_access"
+)
+
+
+def _norm_user_key(user_key: str = "") -> str:
+    """Normalize a per-user UAT key. Empty falls back to the shared 'default'.
+
+    Callers pass the message sender's ``open_id`` (from the injected
+    ``<feishu_context>``) so each user's authorization is isolated in the token
+    store. Single-user / local dev can leave it empty and share ``default``.
+    """
+    return user_key.strip() or _UAT_USER_KEY
 
 
 def _uat_store_path() -> str:
@@ -826,8 +1240,13 @@ def _uat_store_path() -> str:
     return str(d / "uat.json")
 
 
-def _pending_auth_path() -> str:
-    return str(pathlib.Path(_uat_store_path()).parent / "pending_auth.json")
+def _pending_auth_path(user_key: str = "") -> str:
+    """Per-user pending-auth file so concurrent authorizations don't clobber each other."""
+    key = _norm_user_key(user_key)
+    # Keep filenames filesystem-safe: only allow word chars + dash, replace the
+    # rest (incl. path separators and dots, so a crafted open_id can't traverse).
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", key)
+    return str(pathlib.Path(_uat_store_path()).parent / f"pending_auth_{safe}.json")
 
 
 def _get_token_store() -> Any:
@@ -928,7 +1347,7 @@ def _uat_from_token_response(payload: dict[str, Any]) -> Any:
     )
 
 
-async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
+async def auth_start_impl(scopes: str = "", user_key: str = "") -> dict[str, Any]:
     """Build the browser authorize URL for the authorization-code flow."""
     creds = _config()
     if creds is None:
@@ -938,7 +1357,7 @@ async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
     app_id, _ = creds
     scope_str = scopes or _DEFAULT_SCOPES
     state = os.urandom(8).hex()
-    await anyio.Path(_pending_auth_path()).write_text(json.dumps({"state": state}), encoding="utf-8")
+    await anyio.Path(_pending_auth_path(user_key)).write_text(json.dumps({"state": state}), encoding="utf-8")
     query = urlencode(
         {
             "client_id": app_id,
@@ -952,13 +1371,19 @@ async def auth_start_impl(scopes: str = "") -> dict[str, Any]:
         "ok": True,
         "authorize_url": f"{_AUTHORIZE_URL}?{query}",
         "message": (
-            "打开 authorize_url 并同意授权. 浏览器会跳转到 redirect_uri, 地址栏里带 ?code=XXX; "
-            "把那个 code (或整段跳转后的网址) 交给 feishu_auth_complete."
+            "请按以下步骤完成一次性授权 (只读文档/云盘):\n"
+            "1. 打开下面的 authorize_url, 在飞书页面点「同意授权」;\n"
+            "2. 同意后浏览器会自动跳转到一个新网址, **看浏览器地址栏** -- 它形如 "
+            "`http://localhost/?code=xxxxxxxx&state=...`, 把 `code=` 后面, `&` 之前的那一串复制下来 "
+            "(复制整段网址也行, 工具会自动提取);\n"
+            "3. 把它作为 code 交给 feishu_auth_complete.\n"
+            "授权一次即缓存并自动续期, 之后同类操作不会再让你授权."
         ),
+        "authorize_url_note": "把 authorize_url 原样发给用户点击; 下一步要的是跳转后地址栏里的 code.",
     }
 
 
-async def auth_complete_impl(code: str) -> dict[str, Any]:
+async def auth_complete_impl(code: str, user_key: str = "") -> dict[str, Any]:
     """Exchange the authorization code for a user_access_token and cache it."""
     if not code.strip():
         return _error("No code provided.")
@@ -980,23 +1405,24 @@ async def auth_complete_impl(code: str) -> dict[str, Any]:
     uat = _uat_from_token_response(payload)
     if not uat.access_token:
         return _error("Token exchange returned no access_token.")
-    await _get_token_store().set(_UAT_USER_KEY, uat)
+    await _get_token_store().set(_norm_user_key(user_key), uat)
     with contextlib.suppress(OSError):
-        await anyio.Path(_pending_auth_path()).unlink()
+        await anyio.Path(_pending_auth_path(user_key)).unlink()
     return {
         "ok": True,
         "open_id": uat.open_id or "",
         "scopes": uat.scopes,
-        "message": "授权成功, 已缓存 user_access_token.",
+        "message": "授权成功, 已缓存 user_access_token 并会自动续期 -- 之后同类操作不会再让你授权.",
     }
 
 
-async def _get_valid_uat() -> Any:
-    """Return a non-expired UAT (refreshing via refresh_token if needed), or None."""
+async def _get_valid_uat(user_key: str = "") -> Any:
+    """Return a non-expired UAT for ``user_key`` (refreshing if needed), or None."""
     from lark_channel.channel.auth.device_flow import uat_needs_refresh  # noqa: PLC0415
 
+    key = _norm_user_key(user_key)
     store = _get_token_store()
-    uat = await store.get(_UAT_USER_KEY)
+    uat = await store.get(key)
     if uat is None:
         return None
     if uat_needs_refresh(uat) and uat.refresh_token:
@@ -1009,7 +1435,7 @@ async def _get_valid_uat() -> Any:
             )
             if payload.get("code") in (0, None) and (payload.get("data") or payload).get("access_token"):
                 uat = _uat_from_token_response(payload)
-                await store.set(_UAT_USER_KEY, uat)
+                await store.set(key, uat)
     return uat
 
 
@@ -1025,14 +1451,16 @@ def _build_doc_search_request(search_key: str, count: int, offset: int, docs_typ
     return req
 
 
-async def search_docs_impl(search_key: str, count: int, offset: int, docs_types: str) -> dict[str, Any]:
+async def search_docs_impl(
+    search_key: str, count: int, offset: int, docs_types: str, user_key: str = ""
+) -> dict[str, Any]:
     """Search cloud docs by keyword (needs a user_access_token). Returns matched docs."""
     client = _get_uat_client()
     if client is None:
         return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
-    uat = await _get_valid_uat()
+    uat = await _get_valid_uat(user_key)
     if uat is None or not uat.access_token:
-        return _error("Not authorized. Call feishu_auth_start then feishu_auth_complete first.", need_auth=True)
+        return _error(_AUTH_PROMPT, need_auth=True)
 
     types_list = [t.strip() for t in docs_types.split(",") if t.strip()]
     req = _build_doc_search_request(search_key, count, offset, types_list)
@@ -1068,6 +1496,69 @@ async def search_docs_impl(search_key: str, count: int, offset: int, docs_types:
         "count": len(docs),
         "has_more": bool(data.get("has_more")),
         "total": data.get("total", 0),
+    }
+
+
+def _build_wiki_space_create_request(name: str, description: str, open_sharing: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/wiki/v2/spaces"
+    req.token_types = {AccessTokenType.USER}
+    body: dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if description:
+        body["description"] = description
+    if open_sharing:
+        body["open_sharing"] = open_sharing
+    req.body = body
+    return req
+
+
+async def create_wiki_space_impl(
+    name: str, description: str = "", open_sharing: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """Create a new Feishu wiki space (knowledge base). Needs a user_access_token.
+
+    Feishu's create-space API only accepts a UAT (not the bot's tenant token); the
+    new space is owned by the authorizing user. Returns the new space_id + name.
+    """
+    client = _get_uat_client()
+    if client is None:
+        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
+    uat = await _get_valid_uat(user_key)
+    if uat is None or not uat.access_token:
+        return _error(_AUTH_PROMPT, need_auth=True)
+
+    sharing = open_sharing.strip()
+    if sharing and sharing not in ("open", "closed"):
+        return _error("open_sharing must be 'open' or 'closed' (or empty).")
+    req = _build_wiki_space_create_request(name.strip(), description.strip(), sharing)
+    from lark_channel.core.model import RequestOption  # noqa: PLC0415
+
+    option = RequestOption.builder().user_access_token(uat.access_token).build()
+    try:
+        resp = await client.arequest(req, option)
+    except Exception as exc:
+        return _error(f"Feishu create wiki space failed: {type(exc).__name__}: {exc}")
+
+    body = _parse_resp_body(resp)
+    if body.get("code") not in (0, None):
+        return {
+            "ok": False,
+            "code": body.get("code"),
+            "msg": body.get("msg", ""),
+            "message": f"Feishu API error {body.get('code')}: {body.get('msg', '')}",
+        }
+    data = body.get("data", {}) if isinstance(body.get("data"), dict) else {}
+    space = data.get("space", {}) if isinstance(data.get("space"), dict) else {}
+    space_id = space.get("space_id", "")
+    return {
+        "ok": True,
+        "space_id": space_id,
+        "name": space.get("name", name),
+        "description": space.get("description", description),
+        "url": f"{_DOC_BASE_URL}/wiki/settings/{space_id}" if space_id else "",
     }
 
 
@@ -1185,7 +1676,9 @@ def _build_create_record_request(app_token: str, table_id: str, fields: dict[str
     return req
 
 
-async def create_bitable_record_impl(app_token: str, table_id: str, fields_json: str) -> dict[str, Any]:
+async def create_bitable_record_impl(
+    app_token: str, table_id: str, fields_json: str, user_key: str = ""
+) -> dict[str, Any]:
     """Create one record in a bitable table. fields_json is a JSON object of {column: value}."""
     try:
         fields = json.loads(fields_json)
@@ -1193,7 +1686,7 @@ async def create_bitable_record_impl(app_token: str, table_id: str, fields_json:
         return _error(f"fields_json is not valid JSON: {exc}")
     if not isinstance(fields, dict):
         return _error("fields_json must be a JSON object mapping column names to values.")
-    res = await _invoke(_build_create_record_request(app_token, table_id, fields))
+    res = await _invoke(_build_create_record_request(app_token, table_id, fields), user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -1212,7 +1705,9 @@ def _build_batch_delete_records_request(app_token: str, table_id: str, record_id
     return req
 
 
-async def delete_bitable_records_impl(app_token: str, table_id: str, record_ids: str) -> dict[str, Any]:
+async def delete_bitable_records_impl(
+    app_token: str, table_id: str, record_ids: str, user_key: str = ""
+) -> dict[str, Any]:
     """Delete records (rows) by id. record_ids is comma-separated; batches of 500."""
     ids = [r.strip() for r in record_ids.split(",") if r.strip()]
     if not ids:
@@ -1220,19 +1715,23 @@ async def delete_bitable_records_impl(app_token: str, table_id: str, record_ids:
     deleted = 0
     for i in range(0, len(ids), 500):
         batch = ids[i : i + 500]
-        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch))
+        res = await _invoke(
+            _build_batch_delete_records_request(app_token, table_id, batch), user_key=user_key, prefer="user"
+        )
         if not res["ok"]:
             return {**res, "deleted": deleted}
         deleted += len(batch)
     return {"ok": True, "deleted": deleted, "record_ids": ids}
 
 
-async def clear_bitable_table_impl(app_token: str, table_id: str) -> dict[str, Any]:
+async def clear_bitable_table_impl(app_token: str, table_id: str, user_key: str = "") -> dict[str, Any]:
     """Delete ALL records (rows) in a table — pages through every record, then batch-deletes."""
     ids: list[str] = []
     page_token = ""
     while True:
-        res = await _invoke(_build_list_records_request(app_token, table_id, 500, page_token, "", "", ""))
+        res = await _invoke(
+            _build_list_records_request(app_token, table_id, 500, page_token, "", "", ""), user_key=user_key
+        )
         if not res["ok"]:
             return res
         data = res["data"] if isinstance(res["data"], dict) else {}
@@ -1248,7 +1747,9 @@ async def clear_bitable_table_impl(app_token: str, table_id: str) -> dict[str, A
     deleted = 0
     for i in range(0, len(ids), 500):
         batch = ids[i : i + 500]
-        res = await _invoke(_build_batch_delete_records_request(app_token, table_id, batch))
+        res = await _invoke(
+            _build_batch_delete_records_request(app_token, table_id, batch), user_key=user_key, prefer="user"
+        )
         if not res["ok"]:
             return {**res, "deleted": deleted}
         deleted += len(batch)
@@ -1328,14 +1829,16 @@ def _build_delete_field_request(app_token: str, table_id: str, field_id: str) ->
     return req
 
 
-async def delete_bitable_fields_impl(app_token: str, table_id: str, field_ids: str) -> dict[str, Any]:
+async def delete_bitable_fields_impl(
+    app_token: str, table_id: str, field_ids: str, user_key: str = ""
+) -> dict[str, Any]:
     """Delete fields (columns) by id. field_ids is comma-separated. Primary field cannot be deleted."""
     ids = [f.strip() for f in field_ids.split(",") if f.strip()]
     if not ids:
         return _error("No field_ids provided (comma-separated field ids from feishu_bitable_list_fields).")
     deleted: list[str] = []
     for fid in ids:
-        res = await _invoke(_build_delete_field_request(app_token, table_id, fid))
+        res = await _invoke(_build_delete_field_request(app_token, table_id, fid), user_key=user_key, prefer="user")
         if not res["ok"]:
             return {**res, "deleted": deleted, "failed_field_id": fid}
         deleted.append(fid)
@@ -1431,6 +1934,177 @@ async def query_attendance_impl(
     }
 
 
+# ── Attendance admin config — groups (考勤组) & shifts (班次), read-only ────────
+#
+# The user_tasks/query API above only tells you *who clocked in/out*. The admin
+# console config — which shift someone is on, the punch time segments, the
+# flexible/late/early rules, the punch method, and the schedule — lives in two
+# separate read-only APIs: attendance groups (考勤组) and shifts (班次). Both work
+# with the bot's tenant token given attendance:task:readonly + a data-permission
+# scope in the attendance admin console. list endpoints return only id+name, so
+# fetch the detail endpoint for the full rule set.
+
+
+def _build_list_attendance_groups_request(page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/attendance/v1/groups"
+    req.add_query("page_size", max(1, min(page_size, 50)))
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_attendance_groups_impl(page_size: int = 50, page_token: str = "") -> dict[str, Any]:
+    """List attendance groups (考勤组) the app can see — id + name only (read-only)."""
+    res = await _invoke(_build_list_attendance_groups_request(page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    groups = [
+        {"group_id": g.get("group_id", ""), "group_name": g.get("group_name", "")}
+        for g in (data.get("group_list") or [])
+        if isinstance(g, dict)
+    ]
+    return {
+        "ok": True,
+        "groups": groups,
+        "count": len(groups),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+_GROUP_CONFIG_FIELDS = (
+    "group_id",
+    "group_name",
+    "group_type",  # 0 fixed shift, 2 scheduled, 3 free/flexible
+    "punch_type",  # bitwise: 1 GPS, 2 Wi-Fi, 4 machine, 8 IP
+    "allow_out_punch",
+    "out_punch_need_approval",
+    "out_punch_need_photo",
+    "allow_pc_punch",
+    "work_day_no_punch_as_lack",
+    "punch_day_shift_ids",  # bound shift ids (fixed-shift groups)
+    "free_punch_cfg",  # free/flexible-mode window
+    "free_clock_setting",
+    "overtime_clock_cfg",
+    "need_punch_special_days",  # extra dates requiring punch + their shift
+    "no_need_punch_special_days",
+    "calendar_id",
+    "new_calendar_id",
+    "bind_default_dept_ids",
+    "bind_default_user_ids",
+)
+
+
+def _build_get_attendance_group_request(group_id: str, employee_type: str, dept_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/attendance/v1/groups/:group_id"
+    req.paths["group_id"] = group_id
+    req.add_query("employee_type", employee_type)
+    req.add_query("dept_type", dept_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_attendance_group_impl(
+    group_id: str, employee_type: str = "employee_id", dept_type: str = "open_id"
+) -> dict[str, Any]:
+    """Get one attendance group's full config (考勤组配置) — punch method, 外勤/PC
+    打卡, 缺卡规则, 绑定班次, 排班特殊日期 (read-only)."""
+    gid = group_id.strip()
+    if not gid:
+        return _error("group_id is required (get it from feishu_attendance_groups).")
+    res = await _invoke(_build_get_attendance_group_request(gid, employee_type, dept_type))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    group = {k: data.get(k) for k in _GROUP_CONFIG_FIELDS if k in data}
+    return {"ok": True, "group": group}
+
+
+def _build_list_shifts_request(page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/attendance/v1/shifts"
+    req.add_query("page_size", max(1, min(page_size, 50)))
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_shifts_impl(page_size: int = 50, page_token: str = "") -> dict[str, Any]:
+    """List attendance shifts (班次) the app can see — id + name + punch count (read-only)."""
+    res = await _invoke(_build_list_shifts_request(page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    shifts = [
+        {
+            "shift_id": s.get("shift_id", ""),
+            "shift_name": s.get("shift_name", ""),
+            "punch_times": s.get("punch_times"),
+            "is_flexible": s.get("is_flexible"),
+        }
+        for s in (data.get("shift_list") or [])
+        if isinstance(s, dict)
+    ]
+    return {
+        "ok": True,
+        "shifts": shifts,
+        "count": len(shifts),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+_SHIFT_CONFIG_FIELDS = (
+    "shift_id",
+    "shift_name",
+    "punch_times",
+    "day_type",  # 1 workday, 2 rest day
+    "is_flexible",
+    "flexible_minutes",
+    "flexible_rule",  # [{flexible_early_minutes, flexible_late_minutes}]
+    "no_need_off",
+    "punch_time_rule",  # 打卡时间段: on_time/off_time + late/early thresholds
+    "late_off_late_on_rule",
+    "rest_time_rule",
+    "overtime_rule",
+    "overtime_rest_time_rule",
+    "shift_middle_time_rule",
+    "late_off_late_on_setting",
+    "late_minutes_as_serious_late",
+)
+
+
+def _build_get_shift_request(shift_id: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/attendance/v1/shifts/:shift_id"
+    req.paths["shift_id"] = shift_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_shift_impl(shift_id: str) -> dict[str, Any]:
+    """Get one shift's full config (班次配置) — 打卡时间段 (punch_time_rule), 弹性规则
+    (flexible_rule/is_flexible), 迟到/早退/缺卡阈值, 休息时段 (read-only)."""
+    sid = shift_id.strip()
+    if not sid:
+        return _error("shift_id is required (get it from feishu_attendance_shifts).")
+    res = await _invoke(_build_get_shift_request(sid))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    shift = {k: data.get(k) for k in _SHIFT_CONFIG_FIELDS if k in data}
+    return {"ok": True, "shift": shift}
+
+
 # ── Tasks (任务 v2) — create/assign, list, update, complete ───────────────────
 #
 # Feishu native tasks: assign work to people with a due date, list, and mark
@@ -1463,7 +2137,9 @@ def _build_create_task_request(body: dict[str, Any]) -> BaseRequest:
     return req
 
 
-async def create_task_impl(summary: str, description: str, due: str, assignees: str, followers: str) -> dict[str, Any]:
+async def create_task_impl(
+    summary: str, description: str, due: str, assignees: str, followers: str, user_key: str = ""
+) -> dict[str, Any]:
     """Create a task, optionally with a due date and assignee/follower open_ids."""
     if not summary.strip():
         return _error("Task summary is required.")
@@ -1484,7 +2160,7 @@ async def create_task_impl(summary: str, description: str, due: str, assignees: 
         body["due"] = {"timestamp": due_ms, "is_all_day": False}
     if members:
         body["members"] = members
-    res = await _invoke(_build_create_task_request(body))
+    res = await _invoke(_build_create_task_request(body), user_key=user_key, prefer="user")
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -1548,7 +2224,9 @@ def _build_patch_task_request(task_guid: str, task_fields: dict[str, Any], updat
     return req
 
 
-async def update_task_impl(task_guid: str, summary: str, description: str, due: str) -> dict[str, Any]:
+async def update_task_impl(
+    task_guid: str, summary: str, description: str, due: str, user_key: str = ""
+) -> dict[str, Any]:
     """Update only the provided (non-empty) fields of a task."""
     task_fields: dict[str, Any] = {}
     update_fields: list[str] = []
@@ -1564,18 +2242,22 @@ async def update_task_impl(task_guid: str, summary: str, description: str, due: 
         update_fields.append("due")
     if not update_fields:
         return _error("Nothing to update: provide summary, description, or due.")
-    res = await _invoke(_build_patch_task_request(task_guid, task_fields, update_fields))
+    res = await _invoke(
+        _build_patch_task_request(task_guid, task_fields, update_fields), user_key=user_key, prefer="user"
+    )
     if not res["ok"]:
         return res
     return {"ok": True, "task_guid": task_guid, "updated": update_fields}
 
 
-async def complete_task_impl(task_guid: str, completed: bool) -> dict[str, Any]:
+async def complete_task_impl(task_guid: str, completed: bool, user_key: str = "") -> dict[str, Any]:
     """Mark a task complete (completed=True) or reopen it (False)."""
     import time  # noqa: PLC0415
 
     ts = str(int(time.time() * 1000)) if completed else "0"
-    res = await _invoke(_build_patch_task_request(task_guid, {"completed_at": ts}, ["completed_at"]))
+    res = await _invoke(
+        _build_patch_task_request(task_guid, {"completed_at": ts}, ["completed_at"]), user_key=user_key, prefer="user"
+    )
     if not res["ok"]:
         return res
     return {"ok": True, "task_guid": task_guid, "completed": completed}
@@ -1744,6 +2426,131 @@ async def create_event_impl(
     return result
 
 
+# ── Calendar (日历) — list events on a calendar over a time range ─────────────
+#
+# Read the schedule of a calendar (the bot's primary one by default) between two
+# instants. Reading someone else's calendar needs the identity to have reader
+# access to it; scope calendar:calendar or calendar:calendar.event:read.
+
+
+def _ts_of(t: str, timezone: str) -> str | None:
+    """Parse 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD' (00:00 that day) to a Unix-second string."""
+    info = _time_to_info(t, timezone)
+    if info is None:
+        return None
+    if "timestamp" in info:
+        return info["timestamp"]
+    import datetime  # noqa: PLC0415
+
+    with contextlib.suppress(ValueError):
+        dt = datetime.datetime.strptime(info["date"], "%Y-%m-%d")
+        return str(int(dt.timestamp()))
+    return None
+
+
+def _build_list_events_request(
+    calendar_id: str, start_ts: str, end_ts: str, page_size: int, page_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/calendar/v4/calendars/:calendar_id/events"
+    req.paths["calendar_id"] = calendar_id
+    req.add_query("start_time", start_ts)
+    req.add_query("end_time", end_ts)
+    req.add_query("page_size", page_size)
+    req.add_query("user_id_type", "open_id")
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+def _event_time_str(t: Any) -> str:
+    """Normalize a calendar event start/end object to a readable string."""
+    if not isinstance(t, dict):
+        return ""
+    if t.get("timestamp"):
+        return _fmt_ms(str(int(t["timestamp"]) * 1000)) if str(t["timestamp"]).isdigit() else str(t["timestamp"])
+    return str(t.get("date", ""))
+
+
+def _normalize_event(ev: dict[str, Any]) -> dict[str, Any]:
+    organizer = ev.get("organizer_calendar_id", "") or ev.get("event_organizer", {}).get("display_name", "")
+    attendee_ability = ev.get("attendee_ability", "")
+    start = ev.get("start_time", {})
+    return {
+        "event_id": ev.get("event_id", ""),
+        "summary": ev.get("summary", ""),
+        "description": ev.get("description", ""),
+        "start": _event_time_str(ev.get("start_time", {})),
+        "end": _event_time_str(ev.get("end_time", {})),
+        "status": ev.get("status", ""),
+        "is_all_day": isinstance(start, dict) and "date" in start and "timestamp" not in start,
+        "organizer": organizer,
+        "attendee_ability": attendee_ability,
+    }
+
+
+async def list_events_impl(
+    start: str, end: str, calendar_id: str = "", timezone: str = "Asia/Shanghai", max_events: int = 50
+) -> dict[str, Any]:
+    """List events on a calendar between start and end. Blank calendar_id uses the bot's primary calendar."""
+    start_ts = _ts_of(start, timezone)
+    end_ts = _ts_of(end, timezone)
+    if start_ts is None or end_ts is None:
+        return _error("start/end must be 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD'.")
+    cal_id = calendar_id.strip() or await _get_primary_calendar_id()
+    if not cal_id:
+        return _error("Could not resolve a calendar_id. Pass one, or ensure the bot's primary calendar is available.")
+    events: list[dict[str, Any]] = []
+    page_token = ""
+    while len(events) < max_events:
+        page_size = min(1000, max(50, max_events - len(events)))
+        res = await _invoke(_build_list_events_request(cal_id, start_ts, end_ts, page_size, page_token))
+        if not res["ok"]:
+            return res
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        for ev in data.get("items", []) if isinstance(data.get("items"), list) else []:
+            if isinstance(ev, dict):
+                events.append(_normalize_event(ev))
+            if len(events) >= max_events:
+                break
+        page_token = data.get("page_token", "") if data.get("has_more") else ""
+        if not page_token:
+            break
+    return {"ok": True, "calendar_id": cal_id, "count": len(events), "events": events}
+
+
+# ── Calendar (日历) — create a separate event for each person ─────────────────
+#
+# For "give each person their own schedule": create one independent event per
+# attendee on the bot's primary calendar, each inviting only that one person.
+# Partial failures are reported per person rather than crashing the batch.
+
+
+async def create_events_per_person_impl(
+    summary: str,
+    start: str,
+    end: str,
+    attendees: str,
+    description: str = "",
+    timezone: str = "Asia/Shanghai",
+) -> dict[str, Any]:
+    """Create one independent event per open_id, each inviting only that person."""
+    open_ids = [a.strip() for a in attendees.split(",") if a.strip()]
+    if not open_ids:
+        return _error("attendees must contain at least one comma-separated open_id.")
+    created: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+    for oid in open_ids:
+        res = await create_event_impl(summary, start, end, description, oid, timezone)
+        if res.get("ok") and not res.get("attendee_warning"):
+            created.append({"open_id": oid, "event_id": res.get("event_id", "")})
+        else:
+            failed.append({"open_id": oid, "error": res.get("attendee_warning") or res.get("message", "failed")})
+    return {"ok": not failed, "count": len(created), "created": created, "failed": failed}
+
+
 # ── Contact (通讯录) — list department members ────────────────────────────────
 #
 # Get the roster for a department (or the whole org from root id "0"), so the
@@ -1871,6 +2678,66 @@ async def list_department_members_impl(
     }
 
 
+# ── Contact — batch user detail (contact info: mobile / email / job title) ─────
+#
+# find_by_department only gives name + ids. To hand someone a colleague's contact
+# details (so an employee stuck on a blocker can reach the right owner), fetch the
+# full user records via the batch endpoint: mobile, email, job title, department.
+# Tenant token works; the app's 通讯录权限范围 must cover the users, and reading
+# mobile/email needs the corresponding contact scopes (see feishu_contact tool).
+
+
+def _build_batch_users_request(user_ids: list[str], user_id_type: str, department_id_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/contact/v3/users/batch"
+    for uid in user_ids:
+        req.add_query("user_ids", uid)
+    req.add_query("user_id_type", user_id_type)
+    req.add_query("department_id_type", department_id_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_users_batch_impl(
+    user_ids: str,
+    user_id_type: str = "open_id",
+    department_id_type: str = "open_department_id",
+) -> dict[str, Any]:
+    """Fetch full user records (contact details) for up to 50 ids in one call.
+
+    Returns [{open_id, user_id, name, mobile, email, enterprise_email, job_title,
+    department_ids, leader_user_id}] — the info needed to hand someone a colleague's
+    contact details. mobile/email are only populated if the app has the matching
+    contact scopes and 通讯录权限范围 covers the user.
+    """
+    ids = [uid.strip() for uid in user_ids.split(",") if uid.strip()]
+    if not ids:
+        return _error("user_ids is required (comma-separated ids).")
+    if len(ids) > 50:
+        return _error("Feishu allows at most 50 user_ids per batch call.")
+    res = await _invoke(_build_batch_users_request(ids, user_id_type, department_id_type))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    users: list[dict[str, Any]] = []
+    for it in data.get("items", []) if isinstance(data.get("items"), list) else []:
+        users.append(
+            {
+                "open_id": it.get("open_id", ""),
+                "user_id": it.get("user_id", ""),
+                "name": it.get("name", ""),
+                "mobile": it.get("mobile", ""),
+                "email": it.get("email", ""),
+                "enterprise_email": it.get("enterprise_email", ""),
+                "job_title": it.get("job_title", ""),
+                "department_ids": it.get("department_ids", []),
+                "leader_user_id": it.get("leader_user_id", ""),
+            }
+        )
+    return {"ok": True, "user_id_type": user_id_type, "users": users, "count": len(users)}
+
+
 # ── Drive — download a file/attachment to disk ────────────────────────────────
 #
 # Two sources: a drive media file_token (goes through the medias endpoint), or a
@@ -1905,14 +2772,8 @@ async def _download_url_bytes(url: str) -> tuple[bytes | None, str]:
     return resp.content, ""
 
 
-async def _download_media_bytes(file_token: str) -> tuple[bytes | None, str]:
-    client = _get_client()
-    if client is None:
-        return None, "Feishu app not configured."
-    try:
-        resp = await client.arequest(_build_media_download_request(file_token))
-    except Exception as exc:  # SDK/transport failure
-        return None, f"{type(exc).__name__}: {exc}"
+def _media_resp_to_bytes(resp: Any) -> tuple[bytes | None, str]:
+    """Extract file bytes from a media-download response, or an (err) if it failed."""
     raw = getattr(resp, "raw", None)
     content = getattr(raw, "content", None) if raw is not None else None
     if not content:
@@ -1928,13 +2789,63 @@ async def _download_media_bytes(file_token: str) -> tuple[bytes | None, str]:
     return data, ""
 
 
-async def download_file_impl(source: str, save_path: str, is_url: bool = False) -> dict[str, Any]:
-    """Download a Feishu file to disk. is_url=True treats source as a direct URL, else a media file_token."""
+async def _download_media_as_tenant(file_token: str) -> tuple[bytes | None, str]:
+    client = _get_client()
+    if client is None:
+        return None, "Feishu app not configured."
+    try:
+        resp = await client.arequest(_build_media_download_request(file_token))
+    except Exception as exc:  # SDK/transport failure
+        return None, f"{type(exc).__name__}: {exc}"
+    return _media_resp_to_bytes(resp)
+
+
+async def _download_media_as_user(file_token: str, user_key: str) -> tuple[bytes | None, str] | None:
+    """Download as the user's UAT. None → no usable UAT (caller decides need_auth)."""
+    client = _get_uat_client()
+    if client is None:
+        return None
+    uat = await _get_valid_uat(user_key)
+    if uat is None or not uat.access_token:
+        return None
+    from lark_channel.core.model import RequestOption  # noqa: PLC0415
+
+    option = RequestOption.builder().user_access_token(uat.access_token).build()
+    try:
+        resp = await client.arequest(_build_media_download_request(file_token), option)
+    except Exception as exc:  # SDK/transport failure
+        return None, f"{type(exc).__name__}: {exc}"
+    return _media_resp_to_bytes(resp)
+
+
+async def _download_media_bytes(file_token: str, user_key: str = "") -> tuple[bytes | None, str]:
+    # Tenant-first: try the bot's token, and only if it's denied (and the user has a
+    # cached UAT) retry as the user — so we still fetch files the user can see but the
+    # bot can't (e.g. a PDF in the user's wiki/drive) without forcing authorization.
+    data, err = await _download_media_as_tenant(file_token)
+    if data is not None:
+        return data, ""
+    key = user_key.strip()
+    if not key:
+        return None, err
+    user_out = await _download_media_as_user(file_token, key)
+    if user_out is None:
+        return None, f"{err} — 或需用户授权后重试. (need_auth)"
+    return user_out
+
+
+async def download_file_impl(source: str, save_path: str, is_url: bool = False, user_key: str = "") -> dict[str, Any]:
+    """Download a Feishu file to disk. is_url=True treats source as a direct URL, else a media file_token.
+
+    Pass ``user_key`` (only used when is_url=False) to download as that user — needed for
+    files the user can see but the bot can't (e.g. a PDF in the user's wiki/drive).
+    """
     if not source or not save_path:
         return _error("source and save_path are required.")
-    data, err = await (_download_url_bytes(source) if is_url else _download_media_bytes(source))
+    data, err = await (_download_url_bytes(source) if is_url else _download_media_bytes(source, user_key))
     if data is None:
-        return _error(err or "download failed", source=source)
+        extra = {"need_auth": True} if "need_auth" in (err or "") else {}
+        return _error(err or "download failed", source=source, **extra)
     path = pathlib.Path(save_path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1942,3 +2853,670 @@ async def download_file_impl(source: str, save_path: str, is_url: bool = False) 
     except OSError as exc:
         return _error(f"could not write file: {exc}", path=str(path))
     return {"ok": True, "path": str(path), "bytes": len(data)}
+
+
+# ── Delete a cloud file / document (to trash) ─────────────────────────────────
+#
+# DELETE /drive/v1/files/:file_token?type=... moves the file to the recycle bin
+# (recoverable). Works with tenant OR user token; deleting inside a user-owned
+# wiki needs the user's UAT (pass user_key). To delete a *wiki* doc: resolve the
+# node with get_wiki_node_impl → obj_token/obj_type, then delete that.
+
+_DELETABLE_FILE_TYPES = {"file", "docx", "doc", "sheet", "bitable", "mindnote", "slides", "folder", "shortcut"}
+
+
+def _build_delete_file_request(file_token: str, file_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.DELETE
+    req.uri = "/open-apis/drive/v1/files/:file_token"
+    req.paths["file_token"] = file_token
+    req.add_query("type", file_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def delete_file_impl(file_token: str, file_type: str, user_key: str = "") -> dict[str, Any]:
+    """Delete a cloud file/document (moves it to the recycle bin — recoverable).
+
+    Pass ``user_key`` to delete as that user (required when the file/wiki is owned by
+    the user and the bot isn't a collaborator); empty uses the bot's tenant token.
+    """
+    token = file_token.strip()
+    if not token:
+        return _error("file_token is required.")
+    ftype = file_type.strip()
+    if ftype not in _DELETABLE_FILE_TYPES:
+        return _error(f"file_type must be one of {sorted(_DELETABLE_FILE_TYPES)}, got {ftype!r}.")
+    res = await _invoke(_build_delete_file_request(token, ftype), user_key=user_key, prefer="user")
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    out: dict[str, Any] = {"ok": True, "file_token": token, "type": ftype}
+    # Folder deletion is async and returns a task_id — surface it for status polling.
+    if data.get("task_id"):
+        out["task_id"] = data["task_id"]
+    return out
+
+
+# ── Create documents: standalone docx + wiki (knowledge base) nodes ───────────
+#
+# Read tools above only *fetch* content; these create new documents. A wiki doc
+# is a two-layer thing: the wiki *node* (the entry in a knowledge space) wraps an
+# underlying docx whose token is `obj_token` — that token is the docx document_id
+# you pass to `append_doc_content_impl` to fill in the body. So the full flow is
+# list_wiki_spaces → create_wiki_node → append_doc_content.
+
+_DOC_BASE_URL = "https://feishu.cn"
+
+
+def _build_docx_create_request(title: str, folder_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/docx/v1/documents"
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {}
+    if title:
+        body["title"] = title
+    if folder_token:
+        body["folder_token"] = folder_token
+    req.body = body
+    return req
+
+
+async def create_docx_impl(title: str, folder_token: str = "", user_key: str = "") -> dict[str, Any]:
+    """Create a new standalone docx cloud document. Returns its document_id + URL.
+
+    Pass ``user_key`` to create as that user (doc owned by them); empty uses tenant token.
+    """
+    res = await _invoke(
+        _build_docx_create_request(title.strip(), folder_token.strip()), user_key=user_key, prefer="user"
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    doc = data.get("document", {}) if isinstance(data.get("document"), dict) else {}
+    document_id = doc.get("document_id", "")
+    return {
+        "ok": True,
+        "document_id": document_id,
+        "title": doc.get("title", title),
+        "revision_id": doc.get("revision_id"),
+        "url": f"{_DOC_BASE_URL}/docx/{document_id}" if document_id else "",
+    }
+
+
+def _build_wiki_node_create_request(
+    *, space_id: str, obj_type: str, node_type: str, parent_node_token: str, title: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/wiki/v2/spaces/:space_id/nodes"
+    req.paths["space_id"] = space_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {"obj_type": obj_type, "node_type": node_type}
+    if parent_node_token:
+        body["parent_node_token"] = parent_node_token
+    if title:
+        body["title"] = title
+    req.body = body
+    return req
+
+
+async def create_wiki_node_impl(
+    space_id: str, title: str, obj_type: str = "docx", parent_node_token: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """Create a node (default: a docx doc) in a wiki space. Returns node_token + obj_token(=document_id).
+
+    Pass ``user_key`` to act as that user (needed when the wiki space is owned by the
+    user, so the bot isn't a collaborator); empty uses the bot's tenant token.
+    """
+    if not space_id.strip():
+        return _error("space_id is required. Use feishu_wiki_list_spaces to find it.")
+    # Feishu deprecated `doc`; the API rejects it with error 131010.
+    obj_type = (obj_type or "docx").strip()
+    if obj_type == "doc":
+        obj_type = "docx"
+    res = await _invoke(
+        _build_wiki_node_create_request(
+            space_id=space_id.strip(),
+            obj_type=obj_type,
+            node_type="origin",
+            parent_node_token=parent_node_token.strip(),
+            title=title.strip(),
+        ),
+        user_key=user_key,
+        prefer="user",
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    node = data.get("node", {}) if isinstance(data.get("node"), dict) else {}
+    obj_token = node.get("obj_token", "")
+    return {
+        "ok": True,
+        "node_token": node.get("node_token", ""),
+        "obj_token": obj_token,
+        "obj_type": node.get("obj_type", obj_type),
+        "space_id": node.get("space_id", space_id),
+        "title": node.get("title", title),
+        # For a docx node, obj_token is the document_id — write the body with
+        # feishu_doc_append_content(document_id=obj_token, ...).
+        "url": f"{_DOC_BASE_URL}/wiki/{node.get('node_token', '')}",
+    }
+
+
+async def create_wiki_doc_with_content_impl(
+    space_id: str, title: str, content: str, parent_node_token: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """Create a wiki docx node AND write its body in one call (atomic-ish).
+
+    Avoids the "empty node" failure of doing create + append as two separate LLM
+    tool calls: creates the node, then appends the body. If the body write fails,
+    the node_token/obj_token are returned alongside the error (so the half-created
+    node can be found or retried), rather than leaving a silent empty page.
+    """
+    node = await create_wiki_node_impl(space_id, title, "docx", parent_node_token, user_key)
+    if not node["ok"]:
+        return node
+    obj_token = node.get("obj_token", "")
+    # No body requested (or only blank lines): return the node as-is, not an error.
+    if not _content_to_blocks(content or ""):
+        return {**node, "added": 0, "note": "no body content — created an empty doc"}
+    if not obj_token:
+        return {**node, "ok": False, "message": "node created but obj_token missing — cannot write body"}
+    written = await append_doc_content_impl(obj_token, content, user_key)
+    if not written["ok"]:
+        # Surface the node so the caller knows a doc exists and can retry the body.
+        return {
+            **node,
+            "ok": False,
+            "body_written": False,
+            "added": written.get("added", 0),
+            "message": f"Node created but writing body failed: {written.get('message', '')}",
+            **({"need_auth": True} if written.get("need_auth") else {}),
+        }
+    return {**node, "body_written": True, "added": written.get("added", 0)}
+
+
+def _build_list_spaces_request(page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/wiki/v2/spaces"
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    return req
+
+
+async def list_wiki_spaces_impl(page_size: int = 20, page_token: str = "", user_key: str = "") -> dict[str, Any]:
+    """List the wiki (knowledge base) spaces the app/user can access. Returns space_id + name.
+
+    Pass ``user_key`` to list the spaces THAT USER can see (the bot's own tenant token
+    only sees spaces the bot was added to — usually none); empty uses the bot token.
+    """
+    page_size = max(1, min(int(page_size or 20), 50))
+    res = await _invoke_wiki_read(
+        _build_list_spaces_request(page_size, page_token.strip()),
+        user_key,
+        lambda r: not (r.get("data", {}) or {}).get("items"),
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    spaces = [
+        {"space_id": it.get("space_id", ""), "name": it.get("name", ""), "space_type": it.get("space_type", "")}
+        for it in items
+        if isinstance(it, dict)
+    ]
+    return {
+        "ok": True,
+        "spaces": spaces,
+        "page_token": data.get("page_token", ""),
+        "has_more": bool(data.get("has_more")),
+    }
+
+
+def _build_list_wiki_nodes_request(
+    space_id: str, page_size: int, page_token: str, parent_node_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/wiki/v2/spaces/:space_id/nodes"
+    req.paths["space_id"] = space_id
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    if parent_node_token:
+        req.add_query("parent_node_token", parent_node_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_wiki_nodes_impl(
+    space_id: str, page_size: int = 50, page_token: str = "", parent_node_token: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """List the child nodes (documents/pages) of a wiki space (or under a parent node).
+
+    Pass ``user_key`` to browse as that user (the bot's tenant token only sees spaces
+    it was added to); empty uses the bot token. ``parent_node_token`` empty lists the
+    space's top level; set it to drill into a node's children.
+    """
+    if not space_id.strip():
+        return _error("space_id is required. Use feishu_wiki_list_spaces to find it.")
+    page_size = max(1, min(int(page_size or 50), 50))
+    res = await _invoke_wiki_read(
+        _build_list_wiki_nodes_request(space_id.strip(), page_size, page_token.strip(), parent_node_token.strip()),
+        user_key,
+        lambda r: not (r.get("data", {}) or {}).get("items"),
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    nodes = [
+        {
+            "node_token": it.get("node_token", ""),
+            "obj_token": it.get("obj_token", ""),
+            "obj_type": it.get("obj_type", ""),
+            "title": it.get("title", ""),
+            "has_child": bool(it.get("has_child")),
+        }
+        for it in items
+        if isinstance(it, dict)
+    ]
+    return {
+        "ok": True,
+        "nodes": nodes,
+        "page_token": data.get("page_token", ""),
+        "has_more": bool(data.get("has_more")),
+    }
+
+
+# ── Write body content into a docx ────────────────────────────────────────────
+#
+# The docx block API is rich (tables/images/code/…). We map plain text / light
+# Markdown to the two blocks that cover "write a knowledge-base doc": headings
+# (`# ` → h1 … up to `###### ` → h6, block_type 3..8) and paragraphs (block_type
+# 2). Blank lines are skipped. Children are appended to the document root
+# (block_id == document_id) in batches of <=50 (the API cap).
+
+_HEADING_KEYS = {3: "heading1", 4: "heading2", 5: "heading3", 6: "heading4", 7: "heading5", 8: "heading6"}
+_BLOCKS_BATCH = 50
+
+
+def _line_to_block(line: str) -> dict[str, Any] | None:
+    text = line.rstrip()
+    if not text.strip():
+        return None
+    stripped = text.lstrip()
+    level = 0
+    while level < len(stripped) and stripped[level] == "#":
+        level += 1
+    # "# " .. "###### " → heading blocks (block_type 3..8)
+    if 1 <= level <= 6 and level < len(stripped) and stripped[level] == " ":
+        block_type = 2 + level
+        content = stripped[level + 1 :].strip()
+        key = _HEADING_KEYS[block_type]
+        return {"block_type": block_type, key: {"elements": [{"text_run": {"content": content}}]}}
+    # Everything else → a plain text paragraph (block_type 2)
+    return {"block_type": 2, "text": {"elements": [{"text_run": {"content": text.strip()}}]}}
+
+
+def _content_to_blocks(content: str) -> list[dict[str, Any]]:
+    blocks = [b for b in (_line_to_block(ln) for ln in content.splitlines()) if b is not None]
+    return blocks
+
+
+def _build_blocks_append_request(document_id: str, children: list[dict[str, Any]]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    # Root block: the document_id doubles as the root block_id.
+    req.uri = "/open-apis/docx/v1/documents/:document_id/blocks/:block_id/children"
+    req.paths["document_id"] = document_id
+    req.paths["block_id"] = document_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"children": children}
+    return req
+
+
+async def append_doc_content_impl(document_id: str, content: str, user_key: str = "") -> dict[str, Any]:
+    """Append text/heading blocks (from plain text or light Markdown) to a docx body.
+
+    Pass ``user_key`` to write as that user (e.g. into a doc inside a user-owned wiki);
+    empty uses the bot's tenant token.
+    """
+    if not document_id.strip():
+        return _error("document_id is required.")
+    blocks = _content_to_blocks(content or "")
+    if not blocks:
+        return _error("content is empty — nothing to write.")
+    added = 0
+    for start in range(0, len(blocks), _BLOCKS_BATCH):
+        batch = blocks[start : start + _BLOCKS_BATCH]
+        res = await _invoke(_build_blocks_append_request(document_id.strip(), batch), user_key=user_key, prefer="user")
+        if not res["ok"]:
+            res["added"] = added
+            return res
+        added += len(batch)
+    return {"ok": True, "document_id": document_id.strip(), "added": added}
+
+
+# ── Drive permissions — make a doc public / give different people different access ──
+# One doc/sheet/bitable/wiki, per-member permission (view/edit/full_access). Add a
+# department (e.g. the whole company) for "全员可查", or add specific users/groups at
+# different perm levels so different people see/do different things on the artifact.
+_PERM_MEMBER_TYPES = {"openid", "openchat", "opendepartmentid", "userid", "unionid", "email", "groupid", "wikispaceid"}
+_PERM_LEVELS = {"view", "edit", "full_access"}
+
+
+def _build_add_permission_member_request(
+    token: str, obj_type: str, member_type: str, member_id: str, member_kind: str, perm: str, need_notification: bool
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/drive/v1/permissions/:token/members"
+    req.paths["token"] = token
+    req.add_query("type", obj_type)
+    req.add_query("need_notification", "true" if need_notification else "false")
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"member_type": member_type, "member_id": member_id, "perm": perm, "type": member_kind}
+    return req
+
+
+async def add_permission_member_impl(
+    token: str,
+    obj_type: str,
+    member_id: str,
+    perm: str = "view",
+    member_type: str = "openid",
+    member_kind: str = "user",
+    need_notification: bool = False,
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Grant a user/chat/department a permission (view/edit/full_access) on a Feishu file."""
+    if not token.strip() or not member_id.strip():
+        return _error("token and member_id are required.")
+    if perm not in _PERM_LEVELS:
+        return _error(f"perm must be one of {sorted(_PERM_LEVELS)}.")
+    if member_type not in _PERM_MEMBER_TYPES:
+        return _error(f"member_type must be one of {sorted(_PERM_MEMBER_TYPES)}.")
+    req = _build_add_permission_member_request(
+        token.strip(), obj_type, member_type, member_id.strip(), member_kind, perm, need_notification
+    )
+    res = await _invoke(req, user_key=user_key, prefer="user")
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {"ok": True, "member": data.get("member", {}), "token": token.strip(), "type": obj_type}
+
+
+def _build_list_permission_members_request(token: str, obj_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/drive/v1/permissions/:token/members"
+    req.paths["token"] = token
+    req.add_query("type", obj_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_permission_members_impl(token: str, obj_type: str, user_key: str = "") -> dict[str, Any]:
+    """List everyone who has an explicit permission on a Feishu file (who can see/edit it)."""
+    if not token.strip():
+        return _error("token is required.")
+    res = await _invoke(_build_list_permission_members_request(token.strip(), obj_type), user_key=user_key)
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    members = [
+        {
+            "member_id": m.get("member_id", ""),
+            "member_type": m.get("member_type", ""),
+            "perm": m.get("perm", ""),
+            "type": m.get("type", ""),
+            "name": m.get("name", ""),
+        }
+        for m in items
+        if isinstance(m, dict)
+    ]
+    return {"ok": True, "members": members, "member_total": len(members)}
+
+
+def _build_delete_permission_member_request(
+    token: str, obj_type: str, member_id: str, member_type: str, member_kind: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.DELETE
+    req.uri = "/open-apis/drive/v1/permissions/:token/members/:member_id"
+    req.paths["token"] = token
+    req.paths["member_id"] = member_id
+    req.add_query("type", obj_type)
+    req.add_query("member_type", member_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"type": member_kind}
+    return req
+
+
+async def delete_permission_member_impl(
+    token: str,
+    obj_type: str,
+    member_id: str,
+    member_type: str = "openid",
+    member_kind: str = "user",
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Revoke a user/chat/department's permission on a Feishu file."""
+    if not token.strip() or not member_id.strip():
+        return _error("token and member_id are required.")
+    req = _build_delete_permission_member_request(token.strip(), obj_type, member_id.strip(), member_type, member_kind)
+    res = await _invoke(req, user_key=user_key, prefer="user")
+    if not res["ok"]:
+        return res
+    return {"ok": True, "token": token.strip(), "member_id": member_id.strip()}
+
+
+# ── Bitable advanced permission — one base, different roles see different rows/fields ──
+# A custom role (自定义角色) controls per-table read/edit, optional per-record visibility
+# rules, and per-field permissions. Assign people to a role so everyone opens the same
+# base but each role sees different rows/fields. Requires advanced permission on the base.
+def _build_create_bitable_role_request(app_token: str, body: dict[str, Any]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/roles"
+    req.paths["app_token"] = app_token
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = body
+    return req
+
+
+async def create_bitable_role_impl(
+    app_token: str, role_name: str, table_roles_json: str, user_key: str = ""
+) -> dict[str, Any]:
+    """Create a custom role on a bitable. table_roles_json is a JSON list of per-table perms."""
+    if not app_token.strip() or not role_name.strip():
+        return _error("app_token and role_name are required.")
+    try:
+        table_roles = json.loads(table_roles_json)
+    except ValueError as exc:
+        return _error(f"table_roles_json is not valid JSON: {exc}")
+    if not isinstance(table_roles, list):
+        return _error("table_roles_json must be a JSON array of per-table permission objects.")
+    body = {"role_name": role_name.strip(), "table_roles": table_roles}
+    res = await _invoke(_build_create_bitable_role_request(app_token.strip(), body), user_key=user_key, prefer="user")
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    role = data.get("role", {}) if isinstance(data.get("role"), dict) else {}
+    return {"ok": True, "role_id": role.get("role_id", ""), "role_name": role.get("role_name", "")}
+
+
+def _build_list_bitable_roles_request(app_token: str, page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/roles"
+    req.paths["app_token"] = app_token
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def list_bitable_roles_impl(
+    app_token: str, page_size: int = 100, page_token: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """List the custom roles defined on a bitable (each with its role_id and table perms)."""
+    if not app_token.strip():
+        return _error("app_token is required.")
+    res = await _invoke(_build_list_bitable_roles_request(app_token.strip(), page_size, page_token), user_key=user_key)
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    roles = [
+        {"role_id": r.get("role_id", ""), "role_name": r.get("role_name", ""), "table_roles": r.get("table_roles", [])}
+        for r in items
+        if isinstance(r, dict)
+    ]
+    return {
+        "ok": True,
+        "roles": roles,
+        "has_more": data.get("has_more", False),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+def _build_add_bitable_role_member_request(
+    app_token: str, role_id: str, member_id: str, member_id_type: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/roles/:role_id/members"
+    req.paths["app_token"] = app_token
+    req.paths["role_id"] = role_id
+    req.add_query("member_id_type", member_id_type)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"member_id": member_id}
+    return req
+
+
+async def add_bitable_role_member_impl(
+    app_token: str, role_id: str, member_id: str, member_id_type: str = "open_id", user_key: str = ""
+) -> dict[str, Any]:
+    """Assign a user to a bitable custom role (that person then sees the role's rows/fields)."""
+    if not app_token.strip() or not role_id.strip() or not member_id.strip():
+        return _error("app_token, role_id and member_id are required.")
+    req = _build_add_bitable_role_member_request(app_token.strip(), role_id.strip(), member_id.strip(), member_id_type)
+    res = await _invoke(req, user_key=user_key, prefer="user")
+    if not res["ok"]:
+        return res
+    return {"ok": True, "role_id": role_id.strip(), "member_id": member_id.strip()}
+
+
+# ── eLearning (在线学习) — query each person's course-registration / learning records ──
+# Reads who signed up for a course and their completion status/progress/score. Note:
+# creating/publishing a course and assigning it to 全员 is done in the eLearning admin
+# console — the open platform exposes the *reading* of registration/learning records.
+# The exact path & scope below follow Feishu's naming convention; verify on the live
+# doc during integration (the doc site is a JS SPA and can't be scraped).
+def _build_list_course_registrations_request(
+    user_ids: list[str], user_id_type: str, page_size: int, page_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/elearning/v2/course_registrations"
+    req.add_query("user_id_type", user_id_type)
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    for uid in user_ids:
+        req.add_query("user_ids", uid)
+    req.token_types = {AccessTokenType.TENANT}
+    return req
+
+
+async def list_course_registrations_impl(
+    user_ids: str = "",
+    user_id_type: str = "open_id",
+    page_size: int = 100,
+    page_token: str = "",
+) -> dict[str, Any]:
+    """List eLearning course registrations (learning records) — optionally filtered by user."""
+    ids = [u.strip() for u in user_ids.split(",") if u.strip()]
+    res = await _invoke(_build_list_course_registrations_request(ids, user_id_type, page_size, page_token))
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    items = data.get("items", []) if isinstance(data.get("items"), list) else []
+    return {
+        "ok": True,
+        "registrations": items,
+        "has_more": data.get("has_more", False),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+# ── Drive media upload — put a learning video / signed proof into Feishu Drive ─────────
+# upload_all handles files up to 20MB in one shot (multipart). Larger files need the
+# chunked upload_prepare/upload_part/upload_finish flow (not implemented here).
+_UPLOAD_ALL_MAX_BYTES = 20 * 1024 * 1024
+
+
+def _build_media_upload_all_request(
+    file_name: str, parent_type: str, parent_node: str, size: int, data: bytes, extra: dict[str, Any] | None
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/drive/v1/medias/upload_all"
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {
+        "file_name": file_name,
+        "parent_type": parent_type,
+        "parent_node": parent_node,
+        "size": str(size),
+    }
+    if extra:
+        body["extra"] = json.dumps(extra, ensure_ascii=False)
+    req.body = body
+    req.files = {"file": (file_name, data)}
+    return req
+
+
+async def upload_media_impl(
+    file_path: str,
+    parent_type: str = "explorer",
+    parent_node: str = "",
+    file_name: str = "",
+    extra_json: str = "",
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Upload a local file (e.g. a learning video) to Feishu Drive; returns its file_token."""
+    p = anyio.Path(file_path)
+    if not await p.is_file():
+        return _error(f"file not found: {file_path}")
+    if not parent_node.strip():
+        return _error("parent_node is required (the target folder token for parent_type=explorer).")
+    extra: dict[str, Any] | None = None
+    if extra_json.strip():
+        try:
+            extra = json.loads(extra_json)
+        except ValueError as exc:
+            return _error(f"extra_json is not valid JSON: {exc}")
+    name = file_name.strip() or p.name
+    data = await p.read_bytes()
+    size = len(data)
+    if size > _UPLOAD_ALL_MAX_BYTES:
+        return _error(
+            f"file is {size} bytes (> 20MB). upload_all supports files up to 20MB; "
+            "use the chunked upload flow for larger files.",
+            size=size,
+        )
+    req = _build_media_upload_all_request(name, parent_type, parent_node.strip(), size, data, extra)
+    res = await _invoke(req, user_key=user_key, prefer="user")
+    if not res["ok"]:
+        return res
+    rdata = res["data"] if isinstance(res["data"], dict) else {}
+    return {"ok": True, "file_token": rdata.get("file_token", ""), "file_name": name, "size": size}

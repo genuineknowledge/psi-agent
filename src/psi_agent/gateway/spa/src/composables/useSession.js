@@ -112,11 +112,13 @@ export async function promoteDraftToSession() {
   const draft = session.draftSession
   if (!draft) return session.selectedSessionId
 
-  const aiId = draft.aiId || ai.selectedAiId
-  if (!aiId) throw new Error('请先选择一个大模型代理')
+  const backendType = draft.backendType || 'ai'
+  const backendId = draft.backendId || draft.aiId || ai.selectedAiId
+  if (!backendId) throw new Error('请先选择一个大模型或路由服务')
 
   const info = await api('POST', '/sessions', {
-    ai_id: aiId,
+    backend_type: backendType,
+    backend_id: backendId,
     workspace: draft.workspace,
   })
   const sid = info.id
@@ -168,6 +170,10 @@ export async function startDraftChat(workspacePath) {
     return false
   }
   if (!ai.selectedAiId) ai.selectedAiId = ai.ais[0].id
+  if (!session.selectedBackendId) {
+    session.selectedBackendType = 'ai'
+    session.selectedBackendId = ai.selectedAiId
+  }
 
   const path = normalizeWorkspacePath(workspacePath || session.selectedWorkspacePath)
   if (!path) return false
@@ -189,6 +195,8 @@ export async function startDraftChat(workspacePath) {
     draftId,
     workspace: path,
     aiId: ai.selectedAiId,
+    backendType: session.selectedBackendType,
+    backendId: session.selectedBackendId,
   }
   session.sessionMessages[draftId] = []
   session.sessionStreaming[draftId] = false
@@ -330,7 +338,9 @@ export async function selectSession(id) {
 
   const currentSess = session.sessions.find(s => s.id === id)
   if (currentSess) {
-    ai.selectedAiId = currentSess.ai_id
+    session.selectedBackendType = currentSess.backend_type || 'ai'
+    session.selectedBackendId = currentSess.backend_id || currentSess.ai_id
+    if (session.selectedBackendType === 'ai') ai.selectedAiId = session.selectedBackendId
     session.setSelectedWorkspace(resolveSessionWorkspace(currentSess, session.gatewayCwd))
     session.ensureWorkspaceExpanded(session.selectedWorkspacePath)
   }

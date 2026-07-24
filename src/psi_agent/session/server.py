@@ -24,7 +24,11 @@ async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
     """
     logger.info(f"Starting session server on {channel_socket}")
 
-    app = web.Application()
+    # Large conversation contexts (long histories, tool outputs) routinely exceed
+    # aiohttp's 1 MiB default body limit, which would reject the request with
+    # HTTPRequestEntityTooLarge before it reaches the agent. Match the gateway
+    # and AI-forwarder apps' 100 MiB ceiling so the same payloads flow through.
+    app = web.Application(client_max_size=100 * 1024 * 1024)
     app.router.add_post("/chat/completions", agent.handle_request)
 
     runner = web.AppRunner(app)

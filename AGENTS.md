@@ -104,7 +104,8 @@ src/
         ├── _openapi.py             # OpenAPI schema 生成
         ├── _tray.py                # 系统托盘图标 (pystray)
         ├── _webview.py            # 原生 webview 窗口 (pywebview)
-        └── spa/                    # Vue 3 SPA 前端（Vite + SFC）
+        ├── spa/                    # Vue 3 SPA v1（Vite + SFC）
+        └── spa-v2/                 # React SPA v2（任务工作台；默认 GET /）
 ```
 
 项目使用 **src-layout**（`src/psi_agent/`），由 `uv sync` 安装为 editable package。

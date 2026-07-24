@@ -24,7 +24,7 @@ import _feishu_impl as _f
 
 
 async def feishu_task_create(
-    summary: str, description: str = "", due: str = "", assignees: str = "", followers: str = ""
+    summary: str, description: str = "", due: str = "", assignees: str = "", followers: str = "", user_key: str = ""
 ) -> str:
     """Create a Feishu task, optionally assigning people and a due date.
 
@@ -36,8 +36,10 @@ async def feishu_task_create(
         due: Optional due date — 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD'.
         assignees: Comma-separated open_ids of people responsible (assignees).
         followers: Comma-separated open_ids of followers (kept in the loop).
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to create
+            the task as that user (owned by them); empty uses the bot's tenant token.
     """
-    return _f.dumps_result(await _f.create_task_impl(summary, description, due, assignees, followers))
+    return _f.dumps_result(await _f.create_task_impl(summary, description, due, assignees, followers, user_key))
 
 
 async def feishu_task_get(task_guid: str) -> str:
@@ -68,7 +70,9 @@ async def feishu_task_list(completed: str = "", page_size: int = 50, page_token:
     return _f.dumps_result(await _f.list_tasks_impl(completed, page_size, page_token))
 
 
-async def feishu_task_update(task_guid: str, summary: str = "", description: str = "", due: str = "") -> str:
+async def feishu_task_update(
+    task_guid: str, summary: str = "", description: str = "", due: str = "", user_key: str = ""
+) -> str:
     """Update a task's summary, description, and/or due date (only the fields you pass).
 
     Args:
@@ -76,15 +80,17 @@ async def feishu_task_update(task_guid: str, summary: str = "", description: str
         summary: New title (omit to leave unchanged).
         description: New description (omit to leave unchanged).
         due: New due date 'YYYY-MM-DD HH:MM' or 'YYYY-MM-DD' (omit to leave unchanged).
+        user_key: The sender's open_id; pass it to act as that user (see feishu_task_create).
     """
-    return _f.dumps_result(await _f.update_task_impl(task_guid, summary, description, due))
+    return _f.dumps_result(await _f.update_task_impl(task_guid, summary, description, due, user_key))
 
 
-async def feishu_task_complete(task_guid: str, completed: bool = True) -> str:
+async def feishu_task_complete(task_guid: str, completed: bool = True, user_key: str = "") -> str:
     """Mark a task complete, or reopen it.
 
     Args:
         task_guid: The task's guid.
         completed: True to complete (default), False to reopen an already-completed task.
+        user_key: The sender's open_id; pass it to act as that user (see feishu_task_create).
     """
-    return _f.dumps_result(await _f.complete_task_impl(task_guid, completed))
+    return _f.dumps_result(await _f.complete_task_impl(task_guid, completed, user_key))

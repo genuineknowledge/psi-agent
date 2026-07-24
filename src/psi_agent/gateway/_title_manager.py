@@ -22,6 +22,13 @@ class TitleManager:
         self._titles[session_id] = title
         await self._persist()
 
+    async def delete(self, session_id: str) -> None:
+        if session_id not in self._titles:
+            return
+        del self._titles[session_id]
+        await self._persist()
+        logger.debug(f"Title deleted for session {session_id!r}")
+
     async def generate(self, session_id: str, ai_socket: str, user_text: str, assistant_text: str) -> str | None:
         prompt = (
             f"Generate a short title (3-5 words, in the same language as the user) for this conversation:\n\n"

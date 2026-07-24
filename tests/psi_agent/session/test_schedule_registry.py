@@ -18,7 +18,7 @@ from psi_agent.session.schedule_registry import Schedule, ScheduleEntry, Schedul
 class _MockAgent:
     _lock = anyio.Lock()
 
-    async def run(self, msg: object) -> Any:  # type: ignore[return]
+    async def run(self, msg: object, **_kwargs: object) -> Any:  # type: ignore[return]
         if False:
             yield
 
@@ -29,7 +29,7 @@ class _MockAgent:
 class _RaisingAgent:
     _lock = anyio.Lock()
 
-    async def run(self, msg: object) -> Any:  # type: ignore[return]
+    async def run(self, msg: object, **_kwargs: object) -> Any:  # type: ignore[return]
         if False:
             yield
         raise RuntimeError("test error")
@@ -46,6 +46,7 @@ def test_schedule_dataclass_fields() -> None:
     assert s.name == "test"
     assert s.cron == "* * * * *"
     assert s.task_content == "Run"
+    assert s.visibility == "display"
 
 
 # ── ScheduleEntry ─────────────────────────────────────────────────────────────
@@ -89,7 +90,29 @@ async def test_load_schedule_with_yaml_header(tmp_path: Path) -> None:
     assert entry.fresh is True
     assert entry.schedule.name == "daily-report"
     assert entry.schedule.cron == "0 12 * * *"
+    assert entry.schedule.visibility == "display"
     assert "请生成项目进展日报" in entry.schedule.task_content
+
+
+@pytest.mark.anyio
+async def test_load_schedule_visibility_silent(tmp_path: Path) -> None:
+    schedules_dir = tmp_path / "schedules" / "heartbeat"
+    await anyio.Path(schedules_dir).mkdir(parents=True)
+    await anyio.Path(schedules_dir / "TASK.md").write_text(
+        textwrap.dedent("""\
+        ---
+        name: heartbeat
+        cron: "*/30 * * * *"
+        visibility: silent
+        ---
+        Respond with HEARTBEAT_OK
+    """),
+        encoding="utf-8",
+    )
+
+    files = await ScheduleRegistry._load_from_dir(tmp_path / "schedules")
+    entry = next(iter(files.values()))
+    assert entry.schedule.visibility == "silent"
 
 
 @pytest.mark.anyio

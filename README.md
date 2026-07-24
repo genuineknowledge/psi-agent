@@ -303,6 +303,8 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| POST | `/feishu/route` | 按飞书 open_id 幂等路由到其独立 Session（首次按需 spawn） |
+| GET | `/feishu/routes` | 列出飞书 open_id → Session 路由 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
@@ -365,6 +367,8 @@ uv run psi-agent channel feishu \
 - 卡片流式渲染：`stream.append()` 逐段更新飞书卡片
 - 处理状态表情：处理中显示 `Typing`，完成移除，失败显示 `CrossMark`
 - 支持文本、图片、文件、音频
+- 文档评论回复：`--respond-to-comments`（默认开）文档评论区 @机器人 时，用 agent 的回答回复该评论（需后台订阅 `drive.notice.comment_add_v1`）
+- 按用户独立会话：`--gateway-url http://127.0.0.1:8080` 接上 Gateway 后，每个飞书用户首次发消息时由 Gateway 按其 open_id 幂等 spawn 一个独立 Session（独立 workspace 子目录、独立历史），实现同一机器人对不同用户的隔离会话。所挂 AI 与 workspace 父目录由 Gateway 的 `--feishu-ai-id` / `--feishu-workspace-root` 决定。不设 `--gateway-url` 时全体共用 `--session-socket`（行为不变）。Gateway 不可达时自动回退共享 socket
 
 ## 示例 Workspace
 

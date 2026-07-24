@@ -33,7 +33,11 @@ async def serve_ai(
         f"(provider={provider!r}, model={model!r}, base_url={base_url}, api_key={api_key_status})"
     )
 
-    app = web.Application()
+    # Large conversation contexts (long histories, tool outputs) routinely exceed
+    # aiohttp's 1 MiB default body limit, which would reject the request with
+    # HTTPRequestEntityTooLarge before it ever reaches the upstream. Match the
+    # gateway app's 100 MiB ceiling so the forwarder accepts the same payloads.
+    app = web.Application(client_max_size=100 * 1024 * 1024)
     app["provider"] = provider
     app["model"] = model
     app["api_key"] = api_key

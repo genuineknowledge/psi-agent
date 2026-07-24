@@ -14,6 +14,7 @@ from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
+from psi_agent.gateway._router_manager import RouterManager, RouterUpstreamInfo
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway._state import GatewayState
@@ -57,6 +58,15 @@ class Gateway:
     tray: bool = False
     """Show a system tray icon (requires --icon)."""
 
+    feishu_ai_id: str = ""
+    """飞书用户 Session 默认挂载的 AI 实例 id。飞书 channel 经 ``POST /feishu/route`` 按需为
+    每个飞书用户 spawn 独立 Session 时用它作缺省 AI (请求体也可逐次覆盖 ``ai_id``)。空 = 未配,
+    此时若请求也不带 ``ai_id`` 则 ``/feishu/route`` 返回 400。"""
+
+    feishu_workspace_root: str = ""
+    """飞书各用户独立 workspace 的父目录。每个 open_id 得到 ``<root>/<open_id>`` 子目录, 文件/历史
+    互相隔离。空 = 以 Gateway 进程 cwd 为父目录。"""
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -74,7 +84,8 @@ class Gateway:
 
         async with anyio.create_task_group() as tg:
             aim = AIManager(_prefix=self.socket_path, _tg=tg)
-            sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
+            rm = RouterManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
+            sm = SessionManager(_aim=aim, _rm=rm, _prefix=self.socket_path, _tg=tg)
             tm = TitleManager()
 
             for cfg in snapshot.get("ais", []):
@@ -90,10 +101,29 @@ class Gateway:
                 except Exception as e:
                     logger.warning(f"Failed to restore AI {cfg.get('id', '?')!r}: {e!r}")
 
+            for cfg in snapshot.get("routers", []):
+                try:
+                    await rm.create(
+                        name=cfg.get("name", ""),
+                        router_ai_id=cfg.get("router_ai_id", ""),
+                        upstreams=[
+                            RouterUpstreamInfo(item.get("ai_id", ""), item.get("description", ""))
+                            for item in cfg.get("upstreams", [])
+                        ],
+                        default_ai_id=cfg.get("default_ai_id", ""),
+                        router_timeout=cfg.get("router_timeout"),
+                        router_context_chars=cfg.get("router_context_chars", 12_000),
+                        id=cfg.get("id", ""),
+                    )
+                    logger.info(f"Restored Router {cfg.get('id', '?')!r}")
+                except Exception as e:
+                    logger.warning(f"Failed to restore Router {cfg.get('id', '?')!r}: {e!r}")
+
             for cfg in snapshot.get("sessions", []):
                 try:
                     await sm.create(
-                        ai_id=cfg.get("ai_id", ""),
+                        backend_type=cfg.get("backend_type", "ai"),
+                        backend_id=cfg.get("backend_id", cfg.get("ai_id", "")),
                         workspace=cfg.get("workspace", ""),
                         id=cfg.get("id", ""),
                     )
@@ -109,9 +139,12 @@ class Gateway:
                 aim,
                 sm,
                 tm,
+                rm=rm,
                 favicon_path=self.icon,
                 app_name=self.app_name,
                 attention=attention,
+                feishu_ai_id=self.feishu_ai_id,
+                feishu_workspace_root=self.feishu_workspace_root,
             )
 
             async def _do_persist() -> None:
@@ -127,13 +160,33 @@ class Gateway:
                         for info in await aim.list_all()
                     ],
                     sessions=[
-                        {"id": info.id, "ai_id": info.ai_id, "workspace": info.workspace}
+                        {
+                            "id": info.id,
+                            "backend_type": info.backend_type,
+                            "backend_id": info.backend_id,
+                            "workspace": info.workspace,
+                        }
                         for info in await sm.list_all()
                     ],
                     titles=[{"id": sid, "title": title} for sid, title in tm.get_all().items()],
+                    routers=[
+                        {
+                            "id": info.id,
+                            "name": info.name,
+                            "router_ai_id": info.router_ai_id,
+                            "upstreams": [
+                                {"ai_id": item.ai_id, "description": item.description} for item in info.upstreams
+                            ],
+                            "default_ai_id": info.default_ai_id,
+                            "router_timeout": info.router_timeout,
+                            "router_context_chars": info.router_context_chars,
+                        }
+                        for info in await rm.list_all()
+                    ],
                 )
 
             aim._persist = _do_persist
+            rm._persist = _do_persist
             sm._persist = _do_persist
             tm._persist = _do_persist
 

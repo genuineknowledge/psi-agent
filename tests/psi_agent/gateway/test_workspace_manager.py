@@ -35,9 +35,9 @@ async def test_browse_file_kind_includes_files(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_list_roots_includes_cwd() -> None:
+async def test_list_places_includes_cwd() -> None:
     wm = WorkspaceManager()
-    data = await wm.list_roots()
-    assert isinstance(data["roots"], list)
-    assert any(r["id"] == "cwd" for r in data["roots"])
+    data = await wm.list_places()
+    assert isinstance(data["places"], list)
+    assert any(r["id"] == "cwd" for r in data["places"])
     assert isinstance(data["drives"], list)

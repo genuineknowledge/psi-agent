@@ -1,294 +1,80 @@
 ---
 name: fusion-memory-setup
-description: Use before first using Fusion Memory tools, when memory tools return ok:false or service_unavailable, or when checking whether a local Fusion Memory checkout should be installed or updated.
+description: Use when configuring or diagnosing the operator-managed Fusion Memory MCP connection.
 ---
 
-# Fusion Memory Setup
+# Fusion Memory MCP Setup
 
-Use this before the first `memory_add`, `memory_search`, or
-`memory_answer_context` call in a workspace, and whenever a memory tool returns
-`ok: false`.
+This workspace is an MCP client. It does not install, start, or embed a
+Fusion Memory server, database, model, or HTTP memory API.
 
-## Check First
+## Configure
 
-Always check before installing or upgrading. Fusion Memory must be checked out
-under the current agent directory, not the workspace directory. Set `AGENT_DIR`
-to the current agent directory; if it is unknown, ask the user once before
-installing. The default tracks fusion-memory main, so update an existing
-checkout from `origin/main` only when it is missing, behind, or the installed
-package points somewhere else.
+For multi-user Feishu deployments, the process starter must provide a
+Streamable HTTP MCP endpoint and token-map path before starting the Agent:
 
 ```bash
-AGENT_DIR="/path/to/current-agent-directory"
-fusion-memory status --json
-fusion-memory doctor --json
-git -C "$AGENT_DIR/fusion-memory" status --short --branch
-git -C "$AGENT_DIR/fusion-memory" fetch origin main
-git -C "$AGENT_DIR/fusion-memory" rev-list --left-right --count HEAD...origin/main
+export FUSION_MEMORY_MCP_URL="https://memory.example.com/mcp"
+export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 ```
 
-Do not run installation repeatedly while these checks are still in progress.
-Tell the user the estimate first: a warm status check should take under 1
-minute, a normal editable install should take 2-5 minutes, and a cold dependency
-install can take 10-20 minutes depending on Python wheels, model dependencies,
-and network speed.
+`FUSION_MEMORY_MCP_URL` must be exactly `/mcp`. HTTPS is required for remote
+hosts; HTTP is accepted only for loopback development. The map is a JSON object
+keyed by Feishu `open_id`; each entry requires a non-empty `token`.
+`workspace_id` is optional provenance and defaults to `fusion-memory` when it
+is empty or omitted. Keep the map outside the workspace and source control.
 
-## Install Or Update
+Map membership enables automatic durable memory. On the mapped user's first
+message, the workspace initiates `memory_health` and starts passive history
+sync. The bearer token determines user identity, so the same user shares memory
+across Sessions while different users remain isolated. Unknown users can chat
+but receive no bearer token or durable memory. Duplicate token assignments
+reject the map; removing a user stops that Session's watcher and client.
+Validated maps are cached by file signature and refreshed on content changes.
 
-If Fusion Memory is missing:
+Passive sync stores only completed ordinary chat turns and skips unchanged
+history files. Schedule, heartbeat, compaction, tool-only, and incomplete rows
+are never submitted.
+Each turn renews a five-minute watcher lease. Idle watcher/client resources are
+reclaimed and automatically restart on the next message.
+
+Never commit, print, return, or log a token. Do not derive authentication from
+model-visible `<feishu_context>`. `FUSION_MEMORY_MCP_TIMEOUT_SECONDS`
+defaults to 30 seconds and is clamped to `0.1..120`; retryable reads and
+idempotent writes reconnect automatically after transport failures.
+
+When `FUSION_MEMORY_TOKEN_MAP_FILE` is absent, legacy single-user
+`FUSION_MEMORY_TOKEN`, `FUSION_MEMORY_WORKSPACE_ID`, and
+`FUSION_MEMORY_SESSION_ID` configuration remains supported. Map mode never
+falls back to the legacy shared token.
+
+## Verify
+
+Before calling a memory tool, verify the operator-managed service and endpoint:
 
 ```bash
-AGENT_DIR="/path/to/current-agent-directory"
-git clone https://github.com/genuineknowledge/fusion-memory.git "$AGENT_DIR/fusion-memory"
-cd "$AGENT_DIR/fusion-memory"
-sh install.sh
+systemctl --user is-active fusion-memory-mcp.service
+systemctl --user is-active fusion-memory-health.timer
 ```
 
-On Windows PowerShell, use the same target directory rule but run the PowerShell
-installer. It installs Fusion Memory as a `uv tool` with uv-managed Python 3.12
-first, with compatible Windows CPython 3.11/3.12 only as a fallback instead of
-using the agent's MSYS2 Python environment:
+For a remote deployment, ask the operator to check the MCP reverse proxy,
+Postgres, model pool units, and token status. Do not replace MCP with `/add`,
+`/search`, `/answer-context`, or another HTTP API.
 
-```powershell
-$env:AGENT_DIR = "C:\path\to\current-agent-directory"
-git clone https://github.com/genuineknowledge/fusion-memory.git "$env:AGENT_DIR\fusion-memory"
-Set-Location "$env:AGENT_DIR\fusion-memory"
-.\install.ps1
-```
+If the endpoint or token is missing, or a tool returns a structured
+`configuration_error`, `unauthorized`, or `transport_error`, continue the
+conversation without durable memory and report the safe error. Do not mint a
+token, weaken TLS, or start a local fallback service from this workspace.
 
-Do not use MSYS2/Mingw Python for the full local Qwen runtime on Windows;
-PyTorch wheels are not available for that Python ABI. MSYS2 Python may only be
-used to bootstrap the installer. Do not ask the user to manually install Python
-or Git LFS. `install.ps1` resolves or downloads a local `uv.exe`
-non-interactively and first uses uv-managed Python 3.12 for the Fusion Memory
-tool runtime. It probes compatible Windows CPython 3.11/3.12 only if
-uv-managed Python creation fails.
-Do not ask the user to create, activate, or repair `.fusion-memory-venv`
-manually; if that compatibility/runtime directory exists, treat it as
-installer-owned legacy state. Native-risk Qwen dependencies must stay in
-wheel-only/no-build mode. If compatible wheels are unavailable, stop with
-not_ready and report the concise failed step and log path.
+## Runtime Policy
 
-The default local_full configuration is SQLite plus local Qwen vector models
-stored under the Fusion Memory home models directory:
-
-```text
-database: SQLite using Fusion Memory's default local database path
-embedding: FUSION_MEMORY_HOME/models/Qwen3-Embedding-0.6B or the platform default Fusion Memory home
-reranker: FUSION_MEMORY_HOME/models/Qwen3-Reranker-0.6B or the platform default Fusion Memory home
-```
-
-Postgres/pgvector is optional for production deployments that need pgvector
-indexes, larger datasets, or multi-user service storage. It is not required for
-the default local setup.
-
-The installer installs Fusion Memory with `uv tool install`; on Windows it first
-uses uv-managed Python 3.12, and falls back to an already installed compatible
-Windows CPython 3.11/3.12 only if managed Python creation fails. It downloads
-the two Qwen model directories from ModelScope into the Fusion Memory home
-models directory, and installs the Python runtime
-dependencies for Postgres integration, local Qwen models, PyTorch, and
-Transformers. It does not install or start a PostgreSQL/pgvector server.
-
-On Windows, `install.ps1` performs the same full-runtime readiness check through
-the uv-managed tool runtime; native-risk dependency steps are configured to stop
-instead of compiling from source or falling back to `local_test`.
-
-If model files are missing, incomplete, or Git LFS pointers, installation
-downloads the real model weights from ModelScope. If model download or Qwen runtime dependency installation fails, installation is not ready; do not report
-setup as complete and do not fall back to `local_test`. Only when model files
-and dependencies are present but this hardware/runtime cannot load or run both
-local vector models does installation fall back to compromised local mode. In
-compromised mode Fusion Memory still runs with SQLite plus built-in lightweight
-embedding/reranker, but memory quality is compromised.
-CPU-only machines are supported; do not tell the user that CUDA or a GPU is
-required. If Qwen local smoke fails on CPU-only hardware, report it as a local
-Qwen smoke/runtime readiness failure and mention the log path. Do not summarize
-the failure as "because there is no CUDA/GPU"; CUDA availability is diagnostic
-metadata, not the installation rule.
-
-On Windows, Fusion Memory hides the service and history watcher it starts in
-the background. When starting memory service or passive sync, do not use pwsh, powershell.exe, PowerShell jobs, or shell backgrounding to keep the process
-alive. Run the finite Fusion Memory CLI command and let it return: the Fusion Memory CLI creates the hidden/no-window service and watcher internally.
-
-If install-check returns not_ready, make one explicit repair attempt by rerunning
-the installer before stopping:
-
-```bash
-AGENT_DIR="/path/to/current-agent-directory"
-cd "$AGENT_DIR/fusion-memory"
-sh install.sh
-```
-
-On Windows PowerShell:
-
-```powershell
-$env:AGENT_DIR = "C:\path\to\current-agent-directory"
-Set-Location "$env:AGENT_DIR\fusion-memory"
-.\install.ps1
-```
-
-If the repair attempt still reports not_ready, summarize the failed install step
-and the install-check `missing` / `next_step` fields for the user. Do not paste full pip logs into chat. Do not paste full uv, dependency, or model download logs into chat; give the concise failure step and log path. Do not silently fall back to local_test or report setup as complete.
-`local_test` is allowed only when the user explicitly chooses temporary
-evaluation after being told memory quality is downgraded.
-
-Recommended API provider for API-backed models: Aliyun DashScope.
-
-```bash
-export DASHSCOPE_API_KEY=<your-api-key>
-```
-
-If the checkout exists and is behind main:
-
-```bash
-AGENT_DIR="/path/to/current-agent-directory"
-git -C "$AGENT_DIR/fusion-memory" pull --ff-only origin main
-sh "$AGENT_DIR/fusion-memory/install.sh"
-fusion-memory doctor --json
-```
-
-On Windows after pulling, rerun the installer and then use the installed
-`fusion-memory` tool command:
-
-```powershell
-$env:AGENT_DIR = "C:\path\to\current-agent-directory"
-git -C "$env:AGENT_DIR\fusion-memory" pull --ff-only origin main
-Set-Location "$env:AGENT_DIR\fusion-memory"
-.\install.ps1
-fusion-memory doctor --json
-```
-
-Use the wizard only when defaults need to be overridden:
-
-```bash
-FUSION_MEMORY_USE_WIZARD=1 sh install.sh
-```
-
-## Start And Verify
-
-Initialize the default local_full configuration:
-
-```bash
-fusion-memory init --json
-```
-
-Use local test mode only for temporary evaluation when Qwen model dependencies,
-model files, or hardware are not ready: `fusion-memory init --local-test --json`.
-Tell the user this is a quality downgrade and not a completed full-memory
-installation.
-
-Start the local HTTP service and use the returned URL:
-
-```bash
-fusion-memory start --json
-fusion-memory status --json
-fusion-memory doctor --json
-```
-
-On Windows PowerShell, use the installed Fusion Memory tool command:
-
-```powershell
-fusion-memory start --json
-fusion-memory status --json
-fusion-memory doctor --json
-```
-
-The beginner default is `http://127.0.0.1:8700`, but if that port is busy the
-start command may choose another local port. Set `PSI_MEMORY_BASE_URL` to the
-returned URL before starting Haitun or psi-agent.
-
-After verifying, immediately start the passive sync process as a background
-process beside the agent session. Do not run the long-running sync in the
-foreground tool call. Use `sync-haitun-history --once` only for a finite
-backfill check, or use `sync-haitun-history --background` / the watcher start
-command for the long-running watcher.
-
-```bash
-fusion-memory status --json
-fusion-memory doctor --json
-fusion-memory sync-haitun-history \
-  --workspace /path/to/haitun-workspace \
-  --session-id <session-id> \
-  --memory-url <url-from-fusion-memory-start-or-status> \
-  --once --json
-fusion-memory sync-haitun-history \
-  --workspace /path/to/haitun-workspace \
-  --session-id <session-id> \
-  --memory-url <url-from-fusion-memory-start-or-status> \
-  --background --json
-fusion-memory status-haitun-history-watcher \
-  --workspace /path/to/haitun-workspace \
-  --session-id <session-id> \
-  --memory-url <url-from-fusion-memory-start-or-status> \
-  --json
-```
-
-Do not continue as if cross-session persistence is active until this process is
-reported as running with an OS pid, pid_file, and log_file, or the user
-explicitly chooses to continue without passive sync. On Windows, do not use
-pwsh, powershell.exe, PowerShell jobs, or shell backgrounding to manage this
-watcher; the Fusion Memory CLI writes the real OS pid itself. If Windows still
-shows a persistent watcher console after `--background --json` returns, treat it
-as a foreground PowerShell or console wrapper startup bug and report the pid_file
-and log_file instead of switching to PowerShell jobs or a foreground watcher. On
-Linux/macOS, do not hand-write shell backgrounding; use the same CLI background
-command.
-
-## Persistence (Required After Start)
-
-Start or verify the passive sync process after every service start for Haitun
-workspaces. The sync reads saved `histories/<session-id>.jsonl` turns and
-persists conversation evidence through HTTP /add without requiring the agent to
-decide every write. Never run the long-running watcher in the foreground tool
-call:
-
-```bash
-fusion-memory sync-haitun-history \
-  --workspace /path/to/haitun-workspace \
-  --session-id <session-id> \
-  --memory-url <url-from-fusion-memory-start-or-status> \
-  --background --json
-fusion-memory status-haitun-history-watcher \
-  --workspace /path/to/haitun-workspace \
-  --session-id <session-id> \
-  --memory-url <url-from-fusion-memory-start-or-status> \
-  --json
-```
-
-For a one-time backfill:
-
-```bash
-fusion-memory sync-haitun-history \
-  --workspace /path/to/haitun-workspace \
-  --session-id <session-id> \
-  --memory-url <url-from-fusion-memory-start-or-status> \
-  --once --json
-```
-
-automatic turn sync writes conversation evidence. memory_add is for explicit durable facts, preferences, decisions, and corrections that should be stored
-immediately. Prefer passive sync for ordinary conversation history and use
-`memory_add` only when the user asks to remember something or the agent needs to
-persist a high-signal fact now.
-
-## Recovery
-
-If a memory tool returns `service_unavailable`, run:
-
-```bash
-fusion-memory status --json
-fusion-memory doctor --json
-fusion-memory start --json
-```
-
-If status and doctor are healthy but memory tools still report
-`service_unavailable` / `connection_failed` while local Qwen is loading or
-running on CPU, do not repeatedly restart the service. Check
-`PSI_MEMORY_TIMEOUT_SECONDS`; the default is 30 seconds and values up to 120
-seconds are allowed for slow local Qwen calls. After changing workspace tool
-code or timeout environment, start a fresh agent session so cached tool modules
-do not keep the old timeout.
-
-If a tool returns `bad_request`, fix the reported `cause` first, such as
-`missing_scope` or `missing_query`; reinstalling will not fix request-shape
-errors.
+- Use `memory_add` for durable preferences, facts, decisions, and corrections.
+- Use `memory_search` for raw evidence when prior context is relevant.
+- Use `memory_answer_context` for query-grounded context before answering
+  questions about the user's history or preferences.
+- Use `memory_health` to verify the current mapped user's authenticated MCP
+  connectivity.
+- Completed conversation turns are persisted automatically by the workspace's
+  passive writer; do not duplicate transient turns with explicit `memory_add`.
+- Do not edit `.env`, ask a user to provide a token, mint credentials, or start
+  a local Memory service. The process starter owns the token-map path.

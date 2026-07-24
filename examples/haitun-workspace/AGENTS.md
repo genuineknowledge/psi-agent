@@ -27,9 +27,43 @@ user profile, and bootstrap files all live at the workspace root:
 | `HEARTBEAT.md` | Dynamic context, re-read every turn (below the cache boundary). |
 | `AGENTS.md` | This file; also loaded as a bootstrap context file. |
 
-## Environment variables (optional)
+## Remote Fusion Memory configuration
 
-All are optional and only affect the dynamic suffix / runtime line:
+These process-start settings connect Haitun to an operator-provisioned remote Fusion Memory MCP
+Streamable HTTP service. For multi-user Feishu routing, the starter manually configures one token
+map outside the workspace. The bearer token is the only source of server-side user identity: the
+same token shares memory across Sessions, while different tokens are isolated. Workspace and
+Session IDs are provenance only. Keep tokens in deployment-managed secrets; never commit or log
+them. Haitun consumes this MCP service only and must not use legacy REST routes.
+
+| Variable | Purpose |
+|---|---|
+| `FUSION_MEMORY_MCP_URL` | Remote Fusion Memory MCP Streamable HTTP endpoint; TLS is terminated by its reverse proxy. |
+| `FUSION_MEMORY_TOKEN_MAP_FILE` | Absolute path to the operator-owned JSON map keyed by Feishu `open_id`; each entry requires `token`, while empty or omitted `workspace_id` defaults to `haitun`. |
+| `FUSION_MEMORY_TOKEN` | Legacy single-user bearer token, used only when no token-map path is configured. |
+| `FUSION_MEMORY_WORKSPACE_ID` | Legacy single-user workspace provenance (defaults to `haitun`). |
+| `FUSION_MEMORY_SESSION_ID` | Optional legacy single-user Session provenance. |
+
+Token-map membership enables automatic durable memory. On each mapped user's first message after
+process startup, `system_prompt_builder()` or `system_prompt_rebuild_checker()` idempotently starts
+authenticated MCP health checking and that Session's passive JSONL writer. Unknown users can chat
+but receive no bearer token, connector, writer, checkpoint, or durable memory. Map mode never falls
+back to the legacy shared token. Duplicate token assignments reject the map. Removing an entry
+stops that Session's watcher and closes its cached client. Passive persistence accepts only completed
+ordinary chat turns, excludes schedule/heartbeat/compaction rows, and skips unchanged history files.
+Validated maps are cached by file signature. Each active turn renews a five-minute watcher lease;
+idle watcher/client resources are reclaimed and restart on the next message. Server provisioning
+and token creation remain operator actions.
+
+This is a trusted-runtime boundary: the Feishu Channel, Gateway, Session runtime and management
+tools, host shell, and token-map file must be trusted. `feishu-<open_id>` is not a cryptographic
+principal. Strong isolation from forged Session IDs or workspace code that can read the complete
+map requires core authorization and a privileged credential broker outside this workspace.
+
+## Runtime display and service credentials
+
+The following optional variables either change runtime display metadata or enable their named
+service tools:
 
 | Variable | Purpose |
 |---|---|
@@ -54,12 +88,15 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
 | `flow_manage` | CRUD + promote on Fusion Flow assets under `flows/`. |
 | `schedule_manage` | CRUD on `schedules/<name>/TASK.md` (cron + task body); validates the cron expression. |
+| `memory_add` / `memory_search` / `memory_answer_context` / `memory_health` | Per-Session routed Fusion Memory MCP tools. Authentication comes only from the trusted runtime Session and operator token map. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
 | `x_search` (`x_search.py` + `_x_search_impl.py`) | Search recent public posts on X (Twitter) via the X API v2 recent-search endpoint (last ~7 days). `x_search(query, max_results, sort_order)` supports X search operators (`from:`, `#tag`, `"phrase"`, `lang:`, `-is:retweet`). Uses `aiohttp` (already a core dep), no extra packages. Requires `X_BEARER_TOKEN` (X API v2 App-only OAuth 2.0 bearer token). |
 | `browser` (`browser.py` + `_browser_impl.py` + `_mcp.py`) | Browser automation via Playwright MCP driving the system browser (Edge). Tools surface as `browser_*` (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press_key`, `browser_navigate_back`, `browser_console_messages`, `browser_handle_dialog`, `browser_take_screenshot`, …). One long-lived `npx @playwright/mcp` server with `--shared-browser-context` keeps page state across calls. Requires Node.js/`npx`. |
 | `browser_cdp` (`browser_cdp.py` + `_browser_cdp_impl.py`) | Send a **raw Chrome DevTools Protocol** command to a browser — the escape hatch for anything the `browser_*` tools don't wrap (any CDP domain: `Page.*`, `Network.*`, `Emulation.*`, `Runtime.*`, `Browser.*`, `Target.*`, …). `browser_cdp(method, params, target="page"/"browser", timeout_s)` where `params` is a **JSON object string** (e.g. `'{"url": "https://example.com"}'`, empty for no-arg methods); returns the raw CDP result JSON. Launches a **dedicated** debug browser (Edge, then Chrome, with `--remote-debugging-port` + isolated profile — separate from the Playwright MCP browser) on first use and reuses it, or connects to an existing browser when `CDP_ENDPOINT` is set. CDP is JSON-over-WebSocket; uses `aiohttp` (already a core dep), no extra packages. |
-| `feishu_doc` (`feishu_doc.py` + `_feishu_impl.py`) | Read full text of a Feishu/Lark document. Tool `feishu_doc_read(file_type, token, max_chars)` supports docx/doc/sheet. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
+| `feishu_doc` (`feishu_doc.py` + `_feishu_impl.py`) | Read, **create**, and **write** Feishu/Lark documents. `feishu_doc_read(file_type, token, max_chars)` reads docx/doc/sheet. `feishu_doc_create(title, folder_token="")` creates a new standalone docx and returns its `document_id` + URL. `feishu_doc_append_content(document_id, content)` appends headings/paragraphs (plain text or light Markdown: `# `..`###### ` → h1–h6, other lines → paragraphs) to a docx body — also works on the docx behind a wiki node via its `obj_token`. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
+| `feishu_wiki` (`feishu_wiki.py` + `_feishu_impl.py`) | Create docs in and resolve nodes of a Feishu/Lark **wiki (knowledge base)**. `feishu_wiki_list_spaces(page_size, page_token)` lists accessible knowledge bases (to get a `space_id`). `feishu_wiki_create_doc(space_id, title, parent_node_token="")` creates a new docx node in a knowledge base and returns `node_token` + `obj_token` (the docx `document_id`) + URL. `feishu_wiki_get_node(token)` resolves a wiki node token to its `obj_token`/`obj_type` for reading. **Create-a-knowledge-base-doc flow:** `feishu_wiki_list_spaces` → `feishu_wiki_create_doc` → `feishu_doc_append_content(obj_token, content)`. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` + edit permission on the target space/parent node. |
 | `feishu_drive` (`feishu_drive.py` + `_feishu_impl.py`) | Read/post whole-document comments on a Feishu/Lark file. Tools `feishu_drive_add_comment`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment`. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
+| `feishu_calendar` (`feishu_calendar.py` + `_feishu_impl.py`) | Read & set schedules (日程) on the bot's calendar. `feishu_calendar_create_event(summary, start, end, …, attendees)` — one shared meeting inviting several people; `feishu_calendar_list_events(start, end, calendar_id="", …)` — read the schedule (list events in a time range; blank `calendar_id` = bot's primary, reading another calendar needs reader access to it); `feishu_calendar_create_per_person(summary, start, end, attendees, …)` — give each person their **own** schedule (one independent event per open_id, each inviting only that person). Resolve open_ids via `feishu_chat_find_member` / `feishu_department_members`. Needs bot ability enabled + scope `calendar:calendar` (or `calendar:calendar.event:read` for read-only), and `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
 | `speech_to_text` | iFLYTEK streaming STT for WAV/PCM/MP3 files received through `[RECV:]`. |
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
 | `computer_use` | Apple toolset. Drive the macOS desktop in the background (screenshot/click/type/scroll/drag) via the `cua-driver` CLI — no cursor/focus/Space theft. macOS only; needs `cua-driver` installed + Accessibility & Screen Recording permissions. See `skills/macos-computer-use/`. |
@@ -90,15 +127,31 @@ All are optional and only affect the dynamic suffix / runtime line:
 - `simplify-code` — behavior-preserving cleanup of **recent** code changes by fanning out **3 parallel subagents** over the changed files: split the git diff into 3 disjoint buckets, delegate each to a background subagent (via the `subagent-orchestration` recipe), then merge their edits and re-verify against a baseline. `coding` category; composes existing `bash`/`read`/`edit`/`subagent_*` tools — no dedicated tool, no extra deps.
 - `research-paper-writing` — write an ML research paper for NeurIPS / ICML / ICLR end to end (design the contribution → draft sections → revise → official-template LaTeX build → rebuttal / camera-ready); `research` category. Composes the existing `read`/`write`/`edit`/`bash` tools plus `arxiv` (verify related work) and `subagent-orchestration` (parallel section drafting) — no dedicated tool, no extra deps. LaTeX (`texlive`/`tectonic`) is driven through `bash` when producing the PDF; hard rule against fabricating results or citations.
 - `ocr-and-documents` — extract text from PDFs / scans / images. Two tiers: (1) fast, free text-LAYER extraction with **PyMuPDF** (`import fitz`, already a core dep) for born-digital PDFs, and (2) high-accuracy **OCR + layout → Markdown/JSON** via the external **marker-pdf** CLI (`marker_single` / `marker`) for scanned/image-only PDFs. Decision rule: probe the PyMuPDF text layer first (instant, no models); only fall back to marker-pdf OCR when it's empty/garbled or the user needs layout-faithful Markdown/tables. `research` category; `bash`-driven. PyMuPDF needs nothing extra; **marker-pdf is a heavy external tool (PyTorch + Surya OCR model weights, optional GPU) installed on demand via `pip install marker-pdf` — NOT a bundled dependency**, so no pyproject / nuitka / pyinstaller changes. Read-only (extraction), not PDF editing.
+- **行政财务技能组** (drive the existing `feishu_*` tools; no dedicated tool, no extra deps):
+  - `admin-finance-governance` — the tiered-autonomy rulebook (小事不问 / 中事少问 / 大事必问): default 假勤/报销 thresholds, per-tier action boundaries, and the audit-trail rule. `knowledge-base`; the other three reference it. Load first for any admin-finance work.
+  - `feishu-leave-audit-board` — auto-audit 假勤 approvals by tier (小事 auto-approve via `feishu_approval_decide`, 中事 recommend, 大事 ask), log to a bitable, build a 看板 doc, and push it via `feishu_message_send`/`feishu_topic_start`. `productivity`.
+  - `feishu-reimbursement-audit-report` — auto-audit 报销 by tier, download verified attachments per-claim, roll up a bitable, and produce a 财务报告/分析单 doc pushed to finance. Extends `feishu-reimbursement-archive`. `productivity`.
+  - `feishu-admin-finance-assistant` — 真知小助手: answer 行政/财务 policy questions from Feishu docs synced into the local `llm-wiki` (`wiki_*`), always citing sources, routing any implied action through `admin-finance-governance`. `knowledge-base`.
 - `fusion-flow` — the immutable Fusion Flow runtime skill (node-based). **Do not edit it.**
 
 ## Schedules (`schedules/`)
 
 - Use `schedule_manage` to add / list / view / update / delete tasks instead of editing
   `schedules/<name>/TASK.md` by hand.
--（已移除）原 30 分钟 `heartbeat` schedule；勿重新添加除非明确要求定期背景负载。
+- `schedules/heartbeat/` uses `visibility: silent` so HEARTBEAT turns stay out of Web Console
+  history and are not injected into the next chat SSE.
 
 ## Prerequisites
+
+- **Fusion Memory**: Haitun only consumes an operator-provisioned remote MCP
+  Streamable HTTP service. The process starter supplies the token-map path; the
+  bearer token defines user identity, while workspace/Session values are only
+  provenance. The operator creates tokens, terminates TLS at the reverse proxy,
+  and supervises MCP/model services with `systemd` for SSH-disconnect resilience
+  and restart after failure. The workspace itself starts one passive writer per
+  mapped Session and retries outages without blocking chat. Never commit or log
+  a token or token map; do not authenticate from `<feishu_context>`, create a
+  local memory service, or use another public memory transport.
 
 - **Fusion Flow**: Node.js / `npm` / `npx`. First use: `cd skills/fusion-flow && npm install`.
 - **Serper search**: install psi-agent with the `mcp` extra and have `uvx` available.

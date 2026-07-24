@@ -36,6 +36,7 @@ import logging
 import os
 import platform
 import re
+import types
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
@@ -879,7 +880,11 @@ class System:
             return ""
 
         flows_dir = workspace_resolved / "flows"
-        repo_root = Path(str(workspace_resolved)).parents[1]
+        # A workspace placed at a shallow path (e.g. ``/workspace``) may have fewer than
+        # two parents; fall back to the workspace itself instead of raising IndexError,
+        # which would abort the whole system prompt build and drop the agent's persona.
+        _ws_parents = Path(str(workspace_resolved)).parents
+        repo_root = _ws_parents[1] if len(_ws_parents) > 1 else Path(str(workspace_resolved))
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
         flows_index = await _build_flows_index(flows_dir)
         runtime_bundle = fusion_skill_dir / "runtime" / "agent-flow-core.bundle.mjs"
@@ -1232,7 +1237,38 @@ async def system_prompt_builder() -> str:
     this file's location and delegate to the ``System`` class.
     """
     workspace_dir = anyio.Path(__file__).parent.parent
+    await _activate_fusion_memory(workspace_dir)
     return await System(workspace_dir).build_system_prompt()
+
+
+async def system_prompt_rebuild_checker() -> bool:
+    """Activate Memory on the first turn after restoring an existing Session."""
+    workspace_dir = anyio.Path(__file__).parent.parent
+    await _activate_fusion_memory(workspace_dir)
+    return False
+
+
+async def _activate_fusion_memory(workspace_dir: anyio.Path) -> None:
+    mcp_path = Path(str(workspace_dir)) / "tools" / "_fusion_memory_mcp.py"
+    module_name = f"fusion_memory_tool__fusion_memory_mcp_{hashlib.sha256(str(mcp_path).encode()).hexdigest()[:12]}"
+    module = sys.modules.get(module_name)
+    created = False
+    try:
+        if module is None:
+            source = await anyio.Path(str(mcp_path)).read_text(encoding="utf-8")
+            module = types.ModuleType(module_name)
+            module.__file__ = str(mcp_path)
+            sys.modules[module_name] = module
+            created = True
+            exec(compile(source, str(mcp_path), "exec"), module.__dict__)
+        client = module.__dict__.get("CLIENT")
+        activate = getattr(client, "activate_current_session", None)
+        if activate is not None:
+            await activate(workspace_dir)
+    except Exception as exc:
+        if created:
+            sys.modules.pop(module_name, None)
+        logger.warning("Fusion Memory activation skipped after %s", type(exc).__name__)
 
 
 if __name__ == "__main__":

@@ -5,8 +5,10 @@ These let the bot proactively post to a group/user, form a native Feishu
 thread. For example: post a topic root message, then read the thread's replies
 and post per-reply feedback back into the same thread.
 
-To @-mention someone in the text, embed ``<at user_id="ou_xxx"></at>`` in the
-``text`` / ``content`` string (the value is the person's open_id).
+To @-mention someone, embed ``<at user_id="ou_xxx"></at>`` in the ``text`` (the
+value is the person's open_id). ``feishu_message_send`` auto-detects such tags and
+sends a rich-text ``post`` so the mention renders — a raw ``<at>`` in a plain text
+message would otherwise show up literally.
 """
 
 from __future__ import annotations
@@ -42,19 +44,37 @@ async def feishu_topic_start(
     return _f.dumps_result(await _f.start_topic_impl(chat_id, text, at_open_ids, at_all))
 
 
-async def feishu_message_send(receive_id: str, text: str, receive_id_type: str = "chat_id") -> str:
+async def feishu_message_send(
+    receive_id: str, text: str, receive_id_type: str = "chat_id", on_behalf_of: str = ""
+) -> str:
     """Send a text message to a chat or user.
 
     The response includes ``message_id`` and ``thread_id``. Keep the returned
     ``message_id`` if you plan to reply-in-thread to it later (it becomes the
     topic root).
 
+    When you are **relaying someone's words to a third party** ("帮我给张三带句话…"),
+    pass that person's open_id as ``on_behalf_of`` and send it as a **private DM to
+    the recipient** — set ``receive_id`` to the recipient's own open_id (``ou_...``),
+    NOT a group chat_id. You may look the recipient up in a group with
+    ``feishu_chat_find_member`` to get their open_id, but the message itself must go to
+    their DM, never posted into the group. (As a safeguard, a relay addressed to a
+    group is auto-redirected to the mentioned person's DM, or refused if no recipient
+    can be determined.) The recipient sees a "{姓名}给你发了一条消息" attribution prefix.
+    Use the ``sender_open_id`` from ``<feishu_context>`` as ``on_behalf_of``.
+    Leave it empty for messages the bot itself authors (dashboards, notifications, etc.).
+
     Args:
         receive_id: Target id — a chat_id (oc_...), open_id (ou_...), user_id, union_id, or email.
         text: Message text. May contain ``<at user_id="ou_xxx"></at>`` to @-mention.
         receive_id_type: Type of receive_id — chat_id, open_id, user_id, union_id, or email.
+            Usually leave as-is: the type is auto-detected from the id prefix (``oc_``→chat_id,
+            ``ou_``→open_id, ``on_``→union_id, contains ``@``→email), so DMing by open_id works
+            even with the default. Only set it explicitly for a bare user_id.
+        on_behalf_of: Open_id of the person whose words you are relaying (optional). When
+            set, the text is wrapped with a "某人给你发了一条消息" attribution prefix.
     """
-    return _f.dumps_result(await _f.send_message_impl(receive_id, text, receive_id_type))
+    return _f.dumps_result(await _f.send_message_impl(receive_id, text, receive_id_type, on_behalf_of))
 
 
 async def feishu_message_reply(message_id: str, text: str, reply_in_thread: bool = True) -> str:

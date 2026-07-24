@@ -73,14 +73,16 @@
 
 - 关键坑：搜索接口 `POST /suite/docs-api/search/object` **只吃 UAT**；且**国内版飞书无
   设备流**（v2 端点 404），改用**授权码流 + 手动粘贴 code**。
-- `feishu_auth_start(scopes)` — 拼 `accounts.feishu.cn/open-apis/authen/v1/authorize` URL
+- `feishu_auth_start(user_key)` — 拼 `accounts.feishu.cn/open-apis/authen/v1/authorize` URL
   （client_id/redirect_uri/response_type=code/scope/state），state 存 pending。
-- `feishu_auth_complete(code)` — 取 app_access_token（`/auth/v3/app_access_token/internal`）
-  → `POST /authen/v1/access_token` 换 UAT → 存 FileTokenStore；支持粘整段 URL 抠 code；
+  **scope 固定、不作参数暴露给 LLM**（后续增强，见第七节）。
+- `feishu_auth_complete(code, user_key)` — 取 app_access_token（`/auth/v3/app_access_token/internal`）
+  → `POST /authen/v1/access_token` 换 UAT → 按 `user_key` 存 FileTokenStore；支持粘整段 URL 抠 code；
   刷新走 `/authen/v1/refresh_access_token`。
-- `feishu_docs_search(search_key, count, offset, docs_types)` — `token_types={USER}`；
-  搜到的是**授权用户可见范围**的文档，非全局。
-- UAT+refresh_token 明文存 `<workspace>/.psi/feishu/uat.json`（`.psi/` 已 gitignore）。
+- `feishu_docs_search(search_key, count, offset, docs_types, user_key)` — `token_types={USER}`；
+  搜到的是**授权用户可见范围**的文档，非全局。`user_key` 对应搜哪个用户的可见范围。
+- UAT+refresh_token 明文存 `<workspace>/.psi/feishu/uat.json`（`.psi/` 已 gitignore），
+  **按 `user_key`（用户 open_id）分槽**，多人互不覆盖（后续增强，见第七节）。
 - 用户侧：注册 redirect_uri（如 `http://localhost/`）+ scope `docs:doc:readonly`/
   `drive:drive:readonly` + `offline_access`，真机走一次授权。
 
@@ -120,5 +122,122 @@ pyproject / nuitka / pyinstaller。
 ## 六、非目标（YAGNI，跨域汇总）
 
 不做代打卡；不做任务 members/reminders/tasklist 增改；不做评论删除/解决；不做 bitable
-记录删改/字段管理；不做多用户 UAT；不做 session 主动推送 / channel 轮询；不在 API 层改
+记录删改/字段管理；不做 session 主动推送 / channel 轮询；不在 API 层改
 飞书审批流定义（“设条件”靠 agent 作为审批人校验）。
+
+> 注：原“不做多用户 UAT”已在第七节落地（按 `user_key` 隔离）。
+
+## 七、后续增强：多用户 UAT 隔离 + scope 固定 + 建知识库 + 写入类以用户身份调用 + 一步建带内容文档（2026-07-20，已完成）
+
+分支 `feishu-per-user-uat`。设计规格见 spec 第 9 节。场景：公司里每人与 agent 各有对话框，
+用全局搜索查知识库 / 审阅交付物，需每人各自授权、各搜自己可见的文档，互不覆盖。
+
+**根因（多人授权互相覆盖）**：UAT 存储 key 写死常量 `"default"`。底层 `FileTokenStore`
+本就支持一个 JSON 多 user key，只是没用上。
+**根因（授权页报错 20043）**：`feishu_auth_start` 把 `scopes` 暴露给 LLM，模型编造无效
+scope（如 `drive:drive:drive:readonly`），飞书拒绝整个授权页。
+
+**Files:**
+- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
+- Modify: `examples/haitun-workspace/tools/feishu_auth.py`
+- Modify: `examples/haitun-workspace/tools/feishu_docs.py`
+- Modify: `examples/haitun-workspace/tools/feishu_wiki.py`
+- Modify: `examples/haitun-workspace/tools/feishu_doc.py`
+- Modify: `examples/haitun-workspace/tools/feishu_bitable.py`
+- Modify: `examples/haitun-workspace/tools/feishu_task.py`
+- Modify: `examples/haitun-workspace/tools/feishu_drive.py`
+- Modify: `examples/haitun-workspace/tests/test_feishu.py`
+- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 9 节）
+
+- [x] `auth_start_impl` / `auth_complete_impl` / `_get_valid_uat` / `search_docs_impl` 加 `user_key`；
+  三个对外工具暴露 `user_key`（用户 open_id，来自 `<feishu_context>.sender_open_id`，同一用户三处一致）
+- [x] `_norm_user_key`（空 → `default`，向后兼容）；`_pending_auth_path(user_key)` 按用户分文件 +
+  正则清洗非 `[A-Za-z0-9_-]` 防路径穿越
+- [x] `feishu_auth_start` 去掉 `scopes` 参数（LLM 碰不到），wrapper 恒传空 → impl 回落固定
+  `_DEFAULT_SCOPES`（docs:doc:readonly drive:drive:readonly offline_access）
+- [x] `create_wiki_space_impl` + `feishu_wiki_create_space(name, description, open_sharing, user_key)`：
+  `POST /wiki/v2/spaces`（**只吃 UAT**），复用按用户隔离；`open_sharing` 仅 open/closed；未授权 need_auth
+- [x] 写入类以用户身份调用：`_invoke` 加可选 `user_key`（非空→UAT 分支 `_invoke_as_user`，否则 tenant）；
+  抽 `_resp_to_result`；写入类 impl+wrapper 透传 `user_key`（wiki 建文档节点 / docx 建+写正文 /
+  bitable 增删记录字段清表 / task 建改完成 / drive 评论回复）。修"机器人非知识库协作者→建文档权限不足"。
+  刻意不给日历/消息/考勤/只读类加 UAT
+- [x] 一步建带内容文档（修"空节点"）：`create_wiki_doc_with_content_impl` + 工具
+  `feishu_wiki_create_doc_with_content`，一次调用内部建节点 + 写正文；正文写入失败仍回报
+  `node_token`/`obj_token`（`body_written=False`，不静默留空壳），空正文按成功处理。TOOLS.md 引导优先用它
+- [x] 测试：UAT 按 key 隔离不覆盖、pending 分离且防穿越、search+建库+建文档节点 转发 user_key、
+  `_norm_user_key` 回落、authorize_url 的 scope 恰为默认值且不含编造 scope、wrapper 无 scopes 参数、
+  建库(UAT 请求组装 / 未授权 / 非法 open_sharing)、`_invoke` 空 user_key 走 tenant / 非空走 UAT / 未授权 need_auth；
+  fake `_invoke`/`_CapturedInvoke`/`_PagedInvoke` 接受 `user_key`
+- [x] `TOOLS.md`：引导 agent 传 `sender_open_id` 作 `user_key`，先问再授权，建文档链路全程同一 `user_key`
+- [x] 门禁：`ruff check` + `ruff format --check`（用 CI 版 ruff 0.15）+ pytest（feishu 142 passed）
+- [x] Commit `feat(haitun/feishu): 飞书全局搜索 UAT 按用户隔离`（`c1c44e9f`）；scope 修复 `721b9fe0`；
+  建库工具 `0a76240f`；写入类以用户身份调用 `afbc9ea8`；一步建带内容文档（本次）
+
+**仍未做（诚实边界）**：OAuth 回调仍手动回传 code；UAT 仍明文存；`auth_complete` 不校验 CSRF state。
+
+## 八、后续增强：删除云文档/文件（2026-07-21，已完成）
+
+分支 `feishu-delete-file`。设计规格见 spec 第 10 节。给 agent 加删除飞书文档/文件能力，
+与其它写入类一致：先用用户身份(UAT, `user_key`)，未传回退机器人 tenant token。
+
+**Files:**
+- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
+- Modify: `examples/haitun-workspace/tools/feishu_drive.py`
+- Modify: `examples/haitun-workspace/tests/test_feishu.py`
+- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 10 节）
+
+- [x] `_build_delete_file_request` + `delete_file_impl(file_token, file_type, user_key="")`：
+  `DELETE /drive/v1/files/:file_token?type=...`（tenant/user 都支持），走 `_invoke` UAT/tenant；
+  校验 token 非空、type 合法；删除进回收站；文件夹异步返回 task_id 透传
+- [x] 工具 `feishu_drive_delete_file(file_token, file_type, user_key)`
+- [x] 删 wiki 文档：飞书无独立删节点 API，靠 `feishu_wiki_get_node` → `feishu_drive_delete_file`
+  组合（TOOLS.md 第 8 条写清）
+- [x] 测试：DELETE 组装 / 空 token / 非法 type / 文件夹 task_id / user_key 走 UAT / 未授权 need_auth
+- [x] 门禁：`ruff check` + `ruff format --check`（CI 版 ruff 0.15）+ pytest（feishu 145 passed）
+
+## 九、后续增强：wiki 读工具支持 user_key（以用户身份访问知识库，2026-07-21，已完成）
+
+分支 `feishu-wiki-read-userkey`。设计规格见 spec 第 11 节。
+
+**根因**：`feishu_wiki_list_spaces` 只用机器人 tenant token，机器人不是任何知识库成员 → 返回空，
+agent 误判"企业没有知识库"。读类 wiki 工具没接 user_key。
+
+**Files:**
+- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
+- Modify: `examples/haitun-workspace/tools/feishu_wiki.py`
+- Modify: `examples/haitun-workspace/tests/test_feishu.py`
+- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 11 节）
+
+- [x] `list_wiki_spaces_impl` / `get_wiki_node_impl` 加 `user_key`，走 `_invoke(..., user_key=...)`
+- [x] 新增 `list_wiki_nodes_impl` + 工具 `feishu_wiki_list_nodes`（`GET /wiki/v2/spaces/:space_id/nodes`，
+  列知识库内文档/页面、可下钻），补上"浏览知识库内容"的缺口
+- [x] 完整读链路：list_spaces(user_key) → list_nodes(space_id, user_key) → get_node(user_key) → doc_read
+- [x] 测试：list_spaces user_key 走 UAT / get_node 转发 user_key / list_nodes 组装 + 必填校验
+- [x] TOOLS.md 第 9 条：访问/浏览知识库带 user_key，list_spaces 空不代表没库，先带 user_key 重试
+- [x] 门禁：`ruff check` + `ruff format --check`（CI 版 ruff 0.15）+ pytest（feishu 149 passed）
+
+## 十、后续增强：文件下载支持 user_key（读知识库里的 PDF/附件，2026-07-21，已完成）
+
+分支 `feishu-download-userkey`。设计规格见 spec 第 12 节。
+
+**根因**：agent 能在知识库搜到 PDF 但下不下来——`feishu_file_download`(media 下载)写死机器人
+token，用户知识库里的文件机器人无权限。读类工具没接 user_key（与 list_spaces 同病）。
+
+**Files:**
+- Modify: `examples/haitun-workspace/tools/_feishu_impl.py`
+- Modify: `examples/haitun-workspace/tools/feishu_drive.py`
+- Modify: `examples/haitun-workspace/tests/test_feishu.py`
+- Modify: `examples/haitun-workspace/TOOLS.md`
+- Modify: `docs/superpowers/specs/2026-07-17-feishu-tools-extended-design.md`（第 12 节）
+
+- [x] `_download_media_bytes` / `download_file_impl` 加 `user_key`：非空走 UAT
+  (`_get_uat_client` + `_get_valid_uat` + `RequestOption.user_access_token`)，否则 tenant；
+  未授权返回 need_auth；is_url=True 直链不受影响
+- [x] 工具 `feishu_file_download` 暴露 `user_key`
+- [x] 读 PDF 走既有 `ocr-and-documents` 技能(PyMuPDF)，链路 get_node→download(user_key)→ocr
+- [x] 测试：media 下载 user_key 走 UAT / 未授权 need_auth / 空 user_key 走 tenant
+- [x] TOOLS.md 第 10 条：读知识库 PDF/附件的完整流程，下载失败先确认带 user_key
+- [x] 门禁：`ruff check` + `ruff format --check`（CI 版 ruff 0.15）+ pytest（feishu 152 passed）
