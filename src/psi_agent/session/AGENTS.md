@@ -33,7 +33,7 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 2. `SessionAgent.run()` 入口：
    - add() / replace_system() 在首次变更时自动建立快照（implicit snapshot）
    - 惰性构建或重建 system prompt（首次 run 或 rebuild checker 返回 True 时）
-   - 检查暂存的 schedule 响应 → peek + yield → yield 全部成功后 `clear_pending()`
+   - 检查暂存的 schedule 响应 → peek + yield → yield 全部成功后 `clear_pending()`（**当前无生产调用方往 pending 写入**，见下方「Schedule 机制」，此步实际恒为空跑，保留仅为兜底基础设施）
    - User message 追加到 history 后立即 ``commit()`` 落盘
 3. 获取 `anyio.Lock`（忙则 FIFO 排队等待）—— `handle_request()` 在调用 `run()` 前持有
 4. 通过 `AiClient.stream()` 发送 `history + tools + extra_params` 到 AI backend（streaming）
@@ -166,15 +166,21 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
       response_kind = schedule.display | schedule.silent         ← 由 TASK.md visibility 决定
       agent.run(user, response_kind=...)
       ← 整轮写入 JSONL（user/assistant/tool 均带 kind）
-      ← 仅 visibility=display 时 stash pending，下次 Channel POST 开头 yield
-      ← visibility=silent（如 heartbeat）不注入下一轮 SSE
+      ← 结果【永不】stash 进 pending：schedule 是 headless 后台触发，
+        绝不搭便车塞进用户下一次 Channel POST 的回复里
+        （无论 display 还是 silent；display 仅决定是否写进可展示 history）
 ```
 
 关键点：
 - Schedule 配置：`name, cron, task_content, visibility`（`display`/`silent`，缺省 `display`）
 - **``kind`` 字段**（敲定协议）：OpenAI ``role`` 不变；用正交字段区分对话来源。Gateway ``/history`` 只返回 ``is_displayable_chat_message``（``kind=chat`` 的 user/assistant，以及 ``kind=schedule.display`` 的 assistant）。AI 请求经 ``messages_for_ai`` 剥掉 ``kind``/遗留 ``chat_type``
 - ``visibility: silent`` 的 schedule（heartbeat）结果永不 pending、永不展示
-- ``visibility: display`` 的 schedule 结果可进 history，并通过 pending 随下次 ``POST /chat`` 带回（``/events/schedule`` 推送通道仍待定）
+- ``visibility: display`` 的 schedule 结果**会写进可展示 history**（Gateway ``/history`` 可查），但**不会**主动推送给 Channel 用户——``visibility`` 只决定「是否写进可展示 history」，不再决定「是否搭便车带回下一次 Channel 回复」。主动推送通道（``/events/schedule``）仍待定
+
+> [!IMPORTANT]
+> **刻意行为 · 勿当 bug 修掉（fix-schedule-bug）**：schedule runner（``_run_one``）**永不**调用 ``agent.set_pending_schedule_chunks()``——定时任务结果绝不 stash 进 pending、绝不搭便车塞进用户下一条 Channel 消息的回复。
+> 早期实现曾让 ``visibility: display`` 的结果 stash 后随下次 ``POST /chat`` 开头 yield，导致「用户提问 → agent 先汇报定时任务完成 → 再答问题」的糟糕体验，已修正为永不 stash。
+> ``Conversation.stash/peek_pending/clear_pending``、``agent.set_pending_schedule_chunks``、``agent.run`` 入口的 peek+yield 逻辑**均保留**，作为兜底/未来主动推送通道的基础设施，但**当前没有任何生产调用方往 pending 写入**，agent loop 入口的 peek 恒为空跑。回归测试见 ``test_run_one_never_stashes``。
 - Schedule 响应的 content 和 reasoning 各自存在于各自的消息周期，不会交错
 - 多个 schedule 可以并发 sleep，但通过 lock 串行触发
 - 每个 schedule 在加载时独立处理——IO 错误、YAML 解析问题、cron 验证失败都只跳过该 schedule
@@ -209,3 +215,6 @@ Session 支持将对话历史持久化到 `workspace/histories/{session_id}.json
 ### peek_pending / clear_pending 安全机制
 
 `Conversation.peek_pending()` 返回 pending chunks 的副本但**不清空** buffer——调用方在 yield 全部成功后显式调用 `clear_pending()`。这保证 channel 断开时 pending schedule chunks 不会永久丢失，下次请求会重新 push。
+
+> [!NOTE]
+> 该机制目前**无生产写入方**：schedule runner 已改为永不 stash（见上方「Schedule 机制」的刻意行为说明），故 `agent.run` 入口的 peek 恒返回空、`clear_pending()` 不会被触发。`stash / peek_pending / clear_pending` 作为兜底/未来主动推送通道的基础设施保留。

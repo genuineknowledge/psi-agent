@@ -94,6 +94,9 @@ class SessionAgent:
         self._schedule_registry.start_all(task_group, self)
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
+        # Retained as fallback infrastructure: schedule runners no longer call this
+        # (see fix-schedule-bug — results are never pushed into the next Channel turn).
+        # Currently exercised only by tests / a future proactive-push channel.
         self._conversation.stash(chunks)
 
     async def reload_tools(self) -> dict[str, str]:
@@ -174,8 +177,11 @@ class SessionAgent:
                 # system prompt (lazy + optional rebuild)
                 await self._system_prompt.ensure(self._conversation)
 
-                # peek pending schedule chunks — yield first, clear only after yield
-                # (only schedule.display results are stashed; silent never enters pending)
+                # peek pending schedule chunks — yield first, clear only after yield.
+                # NOTE: schedule runners no longer stash results (see fix-schedule-bug
+                # in schedule_registry.py / session/AGENTS.md), so there is currently
+                # no producer writing into pending — this peek is effectively a no-op
+                # kept as fallback infrastructure for a future proactive-push channel.
                 pending = self._conversation.peek_pending()
                 if pending:
                     logger.info(f"Yielding {len(pending)} pending schedule chunk(s)")
