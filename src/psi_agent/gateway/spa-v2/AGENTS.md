@@ -5,6 +5,16 @@
 >
 > **Gateway 默认控制台**：`GET /` → `/spa-v2/index.html`（`--browser` / webview 打开根地址即 v2）。v1 仍在 `/spa/`。
 
+## 开发 session 交接
+
+本文件是 SPA v2 相关开发在多个 session 之间交接的**第一文档**（与根 `AGENTS.md`、`examples/haitun-workspace/AGENTS.md` 一并阅读）。新 session 开工先读本文件；行为 / 协议 / UI 约定变更时先写回本文件再交接。聊天记录不替代文档。
+
+**并行开发**：改本目录时建议单独一棵 `git worktree` + 独立功能分支；勿与 workspace/后端施工共挂同一分支。约定见仓库根 `WORKTREE.md` 与 `AGENTS.md`（「本地并行开发」）。
+
+## 少用全局变量
+
+遵循根 `AGENTS.md` 第 15 条：React/模块代码中避免模块级可变全局（如裸 `let`/`Map` 跨组件共享、挂到 `window` 的状态）。状态放进组件 props、context、或明确归属的模块 API；**仅赶工临时**可破例，并标注「赶工临时」。
+
 ## 与 spa v1
 
 | | spa (v1) | spa-v2 |
@@ -28,13 +38,14 @@
 
 ```text
 任务卡          ↔  Gateway Session（同 workspace）
-新建任务        ↔  POST /sessions + POST /titles + 首条 chat SSE；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
+新建任务        ↔  POST /sessions + POST /titles + 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
 任务历史文案    ↔  GET /sessions/{id}/history
 任务卡中间步 N/M ↔  GET /sessions/{id}/todos（workspace ``todo`` tool → `.psi/todos/{id}.json`）
 打开即用 AI     ↔  空池先开模型面板；「免费」清空配置；对话时惰性 POST `/ais`（远程默认）
 ```
 
+**新建任务输入**：单个大框（对齐总览 `context-chat`）——框内上部是预设快捷按钮（单行），底部是细条真输入（回形针 + 文本框 + 发送）；附件 chip 在细条上方。发送时随首轮 `streamSessionChat` 上传；可纯附件无文案。页内「返回任务总览」始终回总览（`goHome`）；顶栏在从模板进入时可显示「返回模板库」（`newTaskReturnView`）。
 **模型选择（防踩坑）**：启动 / 新建任务不盲选 `ais[0]`。池里若已有真实 key，会清掉残留的 `haitun-default` 占位项，并优先用户选中（localStorage）的 AI；仅空池才走免费远程。Session 创建时固定 `ai_id`——已绑坏 AI 的旧任务需新建。
 
 ### 任务卡三步进度（分层）
@@ -95,6 +106,7 @@ npm run dev
 
 生产/联调：`npm run build` 后 Gateway 自动挂载 `spa-v2/dist` → `http://<gateway>/spa-v2/`。
 
+**改完验收**：用户经 Gateway 看页面时，前端改动后先 `npm run build` 再让对方刷新（硬刷）；不要只改源码不 build。
 安装包：PyInstaller / Nuitka CI 会构建并 `--add-data` / `--include-data-dir` 打入 `spa-v2/dist`；有该目录时安装版默认 `GET /` → v2。
 
 ## 目录

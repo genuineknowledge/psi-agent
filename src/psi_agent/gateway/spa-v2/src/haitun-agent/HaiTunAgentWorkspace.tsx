@@ -729,7 +729,13 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     setIsDragging(false);
   };
 
-  const createTask = async (description: string, category: string) => {
+  const createTask = async (description: string, category: string, files: File[] = []) => {
+    const clean = description.trim();
+    const pendingFiles = files;
+    const userVisible =
+      clean || (pendingFiles.length ? `已上传：${pendingFiles.map((file) => file.name).join("、")}` : "");
+    if (!userVisible) throw new Error("empty task");
+
     // Always re-resolve against the live pool so leftover haitun-default never wins.
     const ais = await purgePlaceholderAis();
     let resolvedAiId = pickPreferredAi(ais, aiId)?.id ?? null;
@@ -745,7 +751,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     }
     setAiId(resolvedAiId);
     writeStoredAiId(resolvedAiId);
-    const title = titleFromPrompt(description);
+    const title = titleFromPrompt(clean || userVisible);
     let session;
     try {
       session = await createSession(resolvedAiId, workspace);
@@ -754,9 +760,10 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
       throw e;
     }
     await setTitle(session.id, title).catch(() => {});
+    const summarySeed = clean || userVisible;
     const newTask = {
       ...sessionToTask(session, title, {
-        summary: `Agent 已收到任务描述：“${description.slice(0, 58)}${description.length > 58 ? "…" : ""}”`,
+        summary: `Agent 已收到任务描述：“${summarySeed.slice(0, 58)}${summarySeed.length > 58 ? "…" : ""}”`,
         status: "working",
         progress: 8,
       }),
@@ -764,17 +771,23 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     };
     historyLoadedRef.current.add(session.id);
     setTasks((current) => [...current, newTask]);
+    const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
     setMessages((current) => ({
       ...current,
       [newTask.id]: [
-        { role: "user", text: description },
+        {
+          role: "user",
+          text: userVisible,
+          files: storedFiles.length ? storedFiles : undefined,
+        },
         { role: "agent", text: "" },
       ],
     }));
     setToast("新任务已创建，正在请求 Agent…");
     window.setTimeout(() => setToast(null), 2600);
 
-    void runChatTurn(newTask.id, description, [], description);
+    // Same multipart path as overview/focus chat composer (text + File attachments).
+    void runChatTurn(newTask.id, clean, pendingFiles, userVisible);
 
     return newTask;
   };
@@ -1391,7 +1404,7 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
             category={newTaskCategory}
             setDraft={setNewTaskDraft}
             setCategory={setNewTaskCategory}
-            onBack={() => setMainView(newTaskReturnView)}
+            onBack={goHome}
             onOpenTemplates={openTemplates}
             onCreate={createTask}
             onViewTask={viewCreatedTask}
