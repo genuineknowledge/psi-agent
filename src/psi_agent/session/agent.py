@@ -19,7 +19,7 @@ from psi_agent.session.history_display import (
     with_kind,
 )
 from psi_agent.session.protocol import AgentChunk, AgentError
-from psi_agent.session.runtime_context import session_id_scope
+from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_registry import ToolRegistry
@@ -35,9 +35,9 @@ class SessionAgent:
     ``ChannelAdapter``, ``Lock``, and ``max_tool_rounds``.
 
     Design principle: ``__init__`` takes already-built components.
-    ``create()`` is the async factory that assembles everything from a
-    workspace directory.  ``handle_request()`` owns the full request
-    lifecycle: parse → lock+prepare → run → write.
+    ``create()`` is the async factory that assembles everything from an
+    agent package + AppData history dir + user workspace.  ``handle_request()``
+    owns the full request lifecycle: parse → lock+prepare → run → write.
     """
 
     def __init__(
@@ -50,6 +50,8 @@ class SessionAgent:
         schedule_registry: ScheduleRegistry | None = None,
         system_prompt: SystemPrompt | None = None,
         max_tool_rounds: int = 128,
+        workspace_path: Path | None = None,
+        agent_path: Path | None = None,
     ) -> None:
         self._ai_client = ai_client
         self._channel_adapter = channel_adapter or ChannelAdapter()
@@ -59,6 +61,8 @@ class SessionAgent:
         self._system_prompt = system_prompt or SystemPrompt()
         self._max_tool_rounds = max_tool_rounds
         self._lock = anyio.Lock()
+        self._workspace_path = workspace_path
+        self._agent_path = agent_path
 
     # -- factory --------------------------------------------------------------
 
@@ -70,13 +74,33 @@ class SessionAgent:
         workspace_path: Path,
         max_tool_rounds: int = 128,
         session_id: str | None = None,
+        agent_path: Path | None = None,
+        history_dir: Path | None = None,
     ) -> SessionAgent:
-        """Production entry point.  Loads everything from *workspace_path*."""
+        """Production entry point.
+
+        *agent_path* loads tools / schedules / system.  When omitted, falls back
+        to *workspace_path* for legacy single-root callers only — prefer an
+        explicit agent package path.  History lives under *history_dir*
+        (AppData ``history/``); *workspace_path* is the user open-folder root.
+        Each turn binds ContextVars via ``runtime_scope`` (tools must not treat
+        the agent package as the file workspace).
+        """
+        from psi_agent._app_paths import history_dir as app_history_dir
+
+        agent_root = agent_path if agent_path is not None else workspace_path
+        if agent_path is None:
+            logger.warning(
+                "SessionAgent.create: agent_path omitted; loading tools/system "
+                f"from workspace_path={workspace_path} (legacy). Prefer a dedicated agent package."
+            )
+        hist_root = history_dir if history_dir is not None else app_history_dir()
+
         ai_client = AiClient(ai_socket)
-        conversation = await Conversation.from_workspace(workspace_path, session_id)
-        tool_registry = await ToolRegistry.load(workspace_path / "tools", conversation.session_id)
-        schedule_registry = await ScheduleRegistry.load(workspace_path / "schedules")
-        system_prompt = await SystemPrompt.from_workspace(workspace_path, conversation.session_id)
+        conversation = await Conversation.from_history_dir(hist_root, session_id)
+        tool_registry = await ToolRegistry.load(agent_root / "tools", conversation.session_id)
+        schedule_registry = await ScheduleRegistry.load(agent_root / "schedules")
+        system_prompt = await SystemPrompt.from_workspace(agent_root, conversation.session_id)
 
         return cls(
             ai_client=ai_client,
@@ -85,6 +109,8 @@ class SessionAgent:
             schedule_registry=schedule_registry,
             system_prompt=system_prompt,
             max_tool_rounds=max_tool_rounds,
+            workspace_path=workspace_path,
+            agent_path=agent_root,
         )
 
     # -- delegation -----------------------------------------------------------
@@ -165,7 +191,11 @@ class SessionAgent:
 
         # Gateway embeds many Sessions in one process — bind this turn so
         # workspace tools (todo, …) do not fall back to session_id "default".
-        with session_id_scope(self._conversation.session_id):
+        with runtime_scope(
+            session_id=self._conversation.session_id,
+            workspace=str(self._workspace_path) if self._workspace_path is not None else "",
+            agent=str(self._agent_path) if self._agent_path is not None else "",
+        ):
             async with self._conversation:
                 # reload tools and schedules from workspace (incremental hash-based)
                 await self._tool_registry.refresh()

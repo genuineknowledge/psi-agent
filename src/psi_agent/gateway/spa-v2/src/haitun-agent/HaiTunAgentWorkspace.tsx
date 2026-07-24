@@ -101,10 +101,12 @@ import { collectDeliverableFiles } from "../utils/filePreviewUtils";
 
 type Props = {
   workspace: string;
+  /** Gateway default agent package; omitted → server fills POST /sessions.agent. */
+  defaultAgent?: string;
   onChangeWorkspace?: () => void;
 };
 
-export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: Props) {
+export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onChangeWorkspace }: Props) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [templates, setTemplates] = useState<TaskTemplate[]>(INITIAL_TEMPLATES);
   const [aiId, setAiId] = useState<string | null>(null);
@@ -748,7 +750,9 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     const title = titleFromPrompt(description);
     let session;
     try {
-      session = await createSession(resolvedAiId, workspace);
+      session = await createSession(resolvedAiId, workspace, {
+        ...(defaultAgent ? { agent: defaultAgent } : {}),
+      });
     } catch (e) {
       showToast(e instanceof Error ? e.message : "创建任务失败");
       throw e;

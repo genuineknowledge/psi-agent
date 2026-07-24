@@ -75,7 +75,7 @@ jobs:
           name: psi-agent-pyinstaller-windows-latest
           path: dist-exe
       - shell: cmd
-        run: copy dist-exe\psi-agent.exe "examples\haitun-workspace\psi-agent.exe"
+        run: copy dist-exe\psi-agent.exe "examples\haitun\psi-agent.exe"
       - uses: msys2/setup-msys2@v2
         id: msys2
         with:
@@ -88,10 +88,10 @@ jobs:
             mingw-w64-ucrt-x86_64-nodejs mingw-w64-ucrt-x86_64-uv
       - shell: pwsh
         run: |
-          robocopy "${{ steps.msys2.outputs.msys2-location }}" "examples\haitun-workspace\msys64" /E /NFL /NDL /NJH /NJS /NP
+          robocopy "${{ steps.msys2.outputs.msys2-location }}" "examples\haitun\msys64" /E /NFL /NDL /NJH /NJS /NP
           if ($LASTEXITCODE -ge 8) { exit 1 } else { exit 0 }
       - shell: pwsh
-        run: Remove-Item -Recurse -Force "examples\haitun-workspace\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
+        run: Remove-Item -Recurse -Force "examples\haitun\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
       - run: choco install innosetup --no-progress
       - shell: pwsh
         run: |

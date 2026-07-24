@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import anyio
 import pytest
@@ -11,8 +12,8 @@ from psi_agent.gateway._state import GatewayState
 
 @pytest.mark.anyio
 async def test_gateway_state_persistence_roundtrip(tmp_path: str) -> None:
-    state_path = anyio.Path(tmp_path) / "state" / "latest.json"
-    state = GatewayState(_path=state_path)
+    state_root = anyio.Path(tmp_path) / "state"
+    state = GatewayState(state_root=state_root)
 
     ais_data = {
         "a1": {
@@ -24,7 +25,7 @@ async def test_gateway_state_persistence_roundtrip(tmp_path: str) -> None:
         },
     }
     sessions_data = {
-        "s1": {"id": "s1", "ai_id": "a1", "workspace": str(tmp_path)},
+        "s1": {"id": "s1", "ai_id": "a1", "workspace": str(tmp_path), "agent": ""},
     }
     titles_data = [{"id": "s1", "title": "Test Chat"}]
 
@@ -34,6 +35,7 @@ async def test_gateway_state_persistence_roundtrip(tmp_path: str) -> None:
         titles=titles_data,
     )
 
+    state_path = state_root / "latest.json"
     raw = await state_path.read_text(encoding="utf-8")
     parsed = json.loads(raw)
     assert isinstance(parsed["ais"], list)
@@ -51,16 +53,20 @@ async def test_gateway_state_persistence_roundtrip(tmp_path: str) -> None:
 
 @pytest.mark.anyio
 async def test_gateway_state_corrupt_json_falls_back(tmp_path: str) -> None:
-    state_path = anyio.Path(tmp_path) / "state" / "latest.json"
-    await state_path.parent.mkdir(parents=True)
+    state_root = anyio.Path(tmp_path) / "state"
+    state_path = state_root / "latest.json"
+    await state_root.mkdir(parents=True)
     await state_path.write_text("{invalid json", encoding="utf-8")
 
-    state = GatewayState(_path=state_path)
+    state = GatewayState(state_root=state_root)
     snapshot = await state.load()
     assert snapshot == {"ais": [], "sessions": [], "titles": []}
 
 
 def test_aim_get_socket_computes_for_unknown_id() -> None:
     socket = _socket_path("test", "ais", "unknown-id")
-    assert socket.endswith(".sock")
     assert "unknown-id" in socket
+    if sys.platform == "win32":
+        assert socket.startswith("\\\\.\\pipe\\")
+    else:
+        assert socket.endswith(".sock")

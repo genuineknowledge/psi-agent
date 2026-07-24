@@ -8,15 +8,15 @@ from psi_agent.gateway._history_manager import HistoryManager
 
 @pytest.mark.anyio
 async def test_history_missing_file_returns_empty(tmp_path: str) -> None:
-    hm = HistoryManager()
+    hm = HistoryManager(history_root=anyio.Path(tmp_path) / "history")
     assert await hm.get(str(tmp_path), "nope") == []
 
 
 @pytest.mark.anyio
 async def test_history_filters_roles_kind_and_markers(tmp_path: str) -> None:
-    hm = HistoryManager()
-    hist_dir = anyio.Path(str(tmp_path)) / "histories"
+    hist_dir = anyio.Path(str(tmp_path)) / "history"
     await hist_dir.mkdir(parents=True)
+    hm = HistoryManager(history_root=hist_dir)
     content = "\n".join(
         [
             '{"role": "system", "content": "sys"}',
@@ -51,9 +51,9 @@ async def test_history_filters_roles_kind_and_markers(tmp_path: str) -> None:
 
 @pytest.mark.anyio
 async def test_history_delete_removes_file(tmp_path: str) -> None:
-    hm = HistoryManager()
-    hist_dir = anyio.Path(str(tmp_path)) / "histories"
+    hist_dir = anyio.Path(str(tmp_path)) / "history"
     await hist_dir.mkdir(parents=True)
+    hm = HistoryManager(history_root=hist_dir)
     path = hist_dir / "s-del.jsonl"
     await path.write_text('{"role": "user", "content": "x", "kind": "chat"}\n', encoding="utf-8")
     assert await path.exists()

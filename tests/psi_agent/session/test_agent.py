@@ -658,18 +658,25 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_histories_dir_and_gitignore_created(tmp_path: Path) -> None:
+async def test_appdata_history_dir_created(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PSI_APP_DATA_ROOT", str(tmp_path / "appdata"))
     workspace = tmp_path / "workspace"
     await anyio.Path(workspace).mkdir()
     await anyio.Path(workspace / "tools").mkdir()
     await anyio.Path(workspace / "schedules").mkdir()
 
-    histories_dir = workspace / "histories"
+    history_dir = tmp_path / "appdata" / "history"
 
-    agent = await SessionAgent.create(ai_socket="http://x", workspace_path=workspace, session_id="test")
-    assert await anyio.Path(histories_dir).is_dir()
-    assert await anyio.Path(histories_dir / ".gitignore").read_text(encoding="utf-8") == "*\n"
+    agent = await SessionAgent.create(
+        ai_socket="http://x",
+        workspace_path=workspace,
+        agent_path=workspace,
+        history_dir=history_dir,
+        session_id="test",
+    )
+    assert await anyio.Path(history_dir).is_dir()
     assert agent._conversation._path is not None
+    assert agent._conversation._path.parent == history_dir
 
 
 # --- Snapshot / rollback tests ---

@@ -1,5 +1,5 @@
 ; Inno Setup script for HaiTun Agent.
-; Packages the entire haitun-workspace (including psi-agent.exe, copied in at build time).
+; Packages the entire haitun (including psi-agent.exe, copied in at build time).
 
 #define MyAppName "HaiTun Agent"
 #define MyAppVersion "1.0.0"
@@ -31,7 +31,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\..\examples\haitun-workspace\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\examples\haitun\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "haitun.ico"; DestDir: "{app}"
 Source: "haitun.exe"; DestDir: "{app}"
 

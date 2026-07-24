@@ -56,21 +56,27 @@ class Conversation:
 
     @classmethod
     async def from_workspace(cls, workspace_path: Path, session_id: str | None = None) -> Conversation:
-        """Create the histories directory, load an existing JSONL (if any),
-        and return a ready-to-use Conversation."""
+        """Legacy alias for single-root workspaces (``{workspace}/histories``).
+
+        Production code should use :meth:`from_history_dir` with AppData
+        ``history/`` (see ``psi_agent._app_paths.history_dir``).
+        """
+        return await cls.from_history_dir(workspace_path / "histories", session_id)
+
+    @classmethod
+    async def from_history_dir(cls, history_dir: Path, session_id: str | None = None) -> Conversation:
+        """Create *history_dir* if needed, load JSONL, return a Conversation."""
         if session_id is not None and not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
             raise ValueError(f"Invalid session_id: {session_id!r} (only alphanumeric, dash, underscore allowed)")
         session_id = session_id or uuid.uuid4().hex
         logger.info(f"Starting session: {session_id}")
 
-        histories_dir = anyio.Path(str(workspace_path / "histories"))
-        if not await histories_dir.is_dir():
-            await histories_dir.mkdir(parents=True)
-            logger.info(f"Created histories directory: {histories_dir}")
-            await (histories_dir / ".gitignore").write_text("*\n", encoding="utf-8")
-            logger.debug(f"Created .gitignore in {histories_dir}")
+        hist = anyio.Path(str(history_dir))
+        if not await hist.is_dir():
+            await hist.mkdir(parents=True)
+            logger.info(f"Created history directory: {hist}")
 
-        path = workspace_path / "histories" / f"{session_id}.jsonl"
+        path = Path(history_dir) / f"{session_id}.jsonl"
         messages = await cls._load(path)
         return cls(messages=messages, path=path)
 

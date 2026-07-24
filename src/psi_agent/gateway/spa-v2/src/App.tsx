@@ -1,56 +1,96 @@
 import { useCallback, useEffect, useState } from 'react'
 import WorkspaceGate from './components/WorkspaceGate'
 import HaiTunAgentWorkspace from './haitun-agent/HaiTunAgentWorkspace'
-import { fetchCwd } from './services/api'
+import { browseWorkspace, fetchDefaults } from './services/api'
 import { BrandLogo } from './haitun-agent/primitives'
 
 const LS_WORKSPACE = 'gw-v2-workspace'
 
-/** Read saved path; treat legacy default ``workspace`` as unset. */
+/** Paths that were agent packages, not user workspaces — treat as unset. */
+function isLegacyWorkspacePath(path: string): boolean {
+  const n = path.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  if (!n || n === 'workspace') return true
+  // Old examples/*-workspace layout (agent pack mistaken for open-folder)
+  if (/\/examples\/[^/]+-workspace$/i.test(n)) return true
+  if (n.endsWith('/haitun-workspace')) return true
+  return false
+}
+
 function readSavedWorkspace(): string {
   try {
     const raw = window.localStorage.getItem(LS_WORKSPACE)?.trim() || ''
-    if (!raw || raw === 'workspace') return ''
+    if (isLegacyWorkspacePath(raw)) return ''
     return raw
   } catch {
     return ''
   }
 }
 
+async function pathExistsAsDir(path: string): Promise<boolean> {
+  try {
+    await browseWorkspace(path, { kind: 'directory' })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
  * spa-v2 根编排：
- * - 无记忆时默认 Gateway cwd（启动目录即 haitun-workspace）
- * - 「切换工作区」打开选择页（含浏览目录，对齐 spa v1 PathPicker）
+ * - 启动时以 ``GET /defaults``.workspace 为准；localStorage 仅在路径仍存在且非遗留 agent 包时沿用
+ * - 「切换工作区」打开选择页；Agent 包路径由 Gateway 默认（``agent`` 字段已留接口）
  */
 export default function App() {
-  const [workspace, setWorkspace] = useState(readSavedWorkspace)
-  const [bootstrapping, setBootstrapping] = useState(() => !readSavedWorkspace())
+  const [workspace, setWorkspace] = useState('')
+  const [defaultAgent, setDefaultAgent] = useState('')
+  const [bootstrapping, setBootstrapping] = useState(true)
   const [picking, setPicking] = useState(false)
 
   useEffect(() => {
-    if (!bootstrapping) return
     let cancelled = false
-    void fetchCwd()
-      .then((info) => {
+    void (async () => {
+      try {
+        const d = await fetchDefaults()
         if (cancelled) return
-        const cwd = (info.cwd || '').trim()
-        if (cwd) {
-          setWorkspace(cwd)
+        if (d.agent) setDefaultAgent(d.agent)
+        const fromDefaults = (d.workspace || '').trim()
+        const saved = readSavedWorkspace()
+        let chosen = ''
+        if (saved && (await pathExistsAsDir(saved))) {
+          chosen = saved
+        } else if (fromDefaults && (await pathExistsAsDir(fromDefaults))) {
+          chosen = fromDefaults
+        } else if (fromDefaults) {
+          chosen = fromDefaults
+        }
+        if (cancelled) return
+        // Drop stale localStorage so next boot does not revive dead paths
+        if (saved && saved !== chosen) {
+          try {
+            if (chosen) window.localStorage.setItem(LS_WORKSPACE, chosen)
+            else window.localStorage.removeItem(LS_WORKSPACE)
+          } catch {
+            /* ignore */
+          }
+        }
+        if (chosen) {
+          setWorkspace(chosen)
           setBootstrapping(false)
+          setPicking(false)
           return
         }
         setBootstrapping(false)
         setPicking(true)
-      })
-      .catch(() => {
+      } catch {
         if (cancelled) return
         setBootstrapping(false)
         setPicking(true)
-      })
+      }
+    })()
     return () => {
       cancelled = true
     }
-  }, [bootstrapping])
+  }, [])
 
   const ready = useCallback((path: string) => {
     const clean = path.trim()
@@ -93,6 +133,7 @@ export default function App() {
     <HaiTunAgentWorkspace
       key={workspace}
       workspace={workspace}
+      defaultAgent={defaultAgent}
       onChangeWorkspace={changeWorkspace}
     />
   )

@@ -66,6 +66,15 @@ class Gateway:
     """飞书各用户独立 workspace 的父目录。每个 open_id 得到 ``<root>/<open_id>`` 子目录, 文件/历史
     互相隔离。空 = 以 Gateway 进程 cwd 为父目录。"""
 
+    app_data_root: str = ""
+    """Override AppData root (platformdirs by default). Env ``PSI_APP_DATA_ROOT`` also works."""
+
+    default_agent: str = ""
+    """Default agent package path. Empty → ``examples/haitun`` (via ``default_agent_path``)."""
+
+    default_workspace: str = ""
+    """Default user workspace. Empty → process cwd. SPA may override per session via POST /sessions."""
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -78,12 +87,36 @@ class Gateway:
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
 
-        state = GatewayState()
+        from psi_agent._app_paths import (
+            app_data_root as resolve_app_data,
+            default_agent_path,
+            default_workspace_path,
+            history_dir,
+            state_dir,
+        )
+
+        app_override = self.app_data_root.strip() or None
+        agent_default = self.default_agent.strip() or str(default_agent_path())
+        workspace_default = self.default_workspace.strip() or str(default_workspace_path())
+        logger.info(f"AppData root: {resolve_app_data(override=app_override)}")
+        logger.info(f"State dir: {state_dir(override=app_override)}")
+        logger.info(f"History dir: {history_dir(override=app_override)}")
+        logger.info(f"Default agent: {agent_default}")
+        logger.info(f"Default workspace: {workspace_default}")
+
+        state = GatewayState(app_data_root=app_override)
         snapshot = await state.load()
 
         async with anyio.create_task_group() as tg:
             aim = AIManager(_prefix=self.socket_path, _tg=tg)
-            sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
+            sm = SessionManager(
+                _aim=aim,
+                _prefix=self.socket_path,
+                _tg=tg,
+                _default_agent=agent_default,
+                _default_workspace=workspace_default,
+                _app_data_root=app_override or "",
+            )
             tm = TitleManager()
 
             for cfg in snapshot.get("ais", []):
@@ -104,6 +137,7 @@ class Gateway:
                     await sm.create(
                         ai_id=cfg.get("ai_id", ""),
                         workspace=cfg.get("workspace", ""),
+                        agent=cfg.get("agent", "") or agent_default,
                         id=cfg.get("id", ""),
                     )
                     logger.info(f"Restored Session {cfg.get('id', '?')!r}")
@@ -123,6 +157,9 @@ class Gateway:
                 attention=attention,
                 feishu_ai_id=self.feishu_ai_id,
                 feishu_workspace_root=self.feishu_workspace_root,
+                app_data_root=app_override or "",
+                default_agent=agent_default,
+                default_workspace=workspace_default,
             )
 
             async def _do_persist() -> None:
@@ -138,7 +175,12 @@ class Gateway:
                         for info in await aim.list_all()
                     ],
                     sessions=[
-                        {"id": info.id, "ai_id": info.ai_id, "workspace": info.workspace}
+                        {
+                            "id": info.id,
+                            "ai_id": info.ai_id,
+                            "workspace": info.workspace,
+                            "agent": info.agent,
+                        }
                         for info in await sm.list_all()
                     ],
                     titles=[{"id": sid, "title": title} for sid, title in tm.get_all().items()],

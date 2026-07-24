@@ -1,7 +1,7 @@
 import { FolderOpen, Loader2 } from 'lucide-react'
 import { FormEvent, useEffect, useState } from 'react'
 import { BrandLogo } from '../haitun-agent/primitives'
-import { fetchCwd } from '../services/api'
+import { fetchCwd, fetchDefaults } from '../services/api'
 import PathPickerDialog from './PathPickerDialog'
 
 type Props = {
@@ -28,6 +28,11 @@ export default function WorkspaceGate({ initialPath = '', onReady, onCancel }: P
     let cancelled = false
     ;(async () => {
       try {
+        const d = await fetchDefaults().catch(() => null)
+        if (!cancelled && d?.workspace) {
+          setPath(d.workspace)
+          return
+        }
         const cwd = await fetchCwd()
         if (!cancelled) setPath(cwd?.cwd || '')
       } catch (e) {
@@ -57,7 +62,10 @@ export default function WorkspaceGate({ initialPath = '', onReady, onCancel }: P
         <BrandLogo size="hero" />
         <span className="eyebrow">HaiTun Agent</span>
         <h1>打开工作区</h1>
-        <p>任务会绑定到 Gateway Session。请选择本机工作区目录，Agent 的 tools 与 history 都落在该目录下。</p>
+        <p>
+          任务绑定到 Gateway Session。请选择本机<strong>用户工作区</strong>（工程目录）；
+          Agent 能力包与对话 history 由 Gateway 默认路径管理，不强制落在此目录。
+        </p>
         {loading ? (
           <div className="workspace-gate-loading"><Loader2 className="spin" size={22} /> 正在连接 Gateway…</div>
         ) : (
@@ -77,7 +85,7 @@ export default function WorkspaceGate({ initialPath = '', onReady, onCancel }: P
                 <input
                   value={path}
                   onChange={(e) => setPath(e.target.value)}
-                  placeholder="例如 D:\Haitun develop\examples\haitun-workspace"
+                  placeholder="例如 D:\Projects\my-folder"
                   autoFocus
                 />
               </div>

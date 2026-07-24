@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -8,6 +7,7 @@ from typing import Any
 import anyio
 from loguru import logger
 
+from psi_agent._app_paths import default_agent_path, default_workspace_path
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._manager import (
     _ensure_socket_dir,
@@ -25,7 +25,11 @@ class SessionInfo:
     id: str
     ai_id: str
     workspace: str
+    """User workspace (open folder)."""
+
     channel_socket: str
+    agent: str = ""
+    """Agent package path. Empty string in old snapshots → filled on restore via default."""
 
 
 @dataclass
@@ -42,6 +46,9 @@ class SessionManager:
     _entries: dict[str, _SessionEntry] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
     _persist: Callable[[], Awaitable[None]] = _noop
+    _default_agent: str = ""
+    _default_workspace: str = ""
+    _app_data_root: str = ""
 
     async def create(
         self,
@@ -49,9 +56,11 @@ class SessionManager:
         *,
         id: str = "",
         workspace: str = "",
+        agent: str = "",
     ) -> SessionInfo:
         session_id = id or _new_uuid()
-        workspace = workspace or os.getcwd()
+        workspace = workspace or self._default_workspace or str(default_workspace_path())
+        agent = agent or self._default_agent or str(default_agent_path())
         async with self._lock:
             logger.debug(f"SessionManager: acquired lock for create {session_id!r}")
             if session_id in self._entries:
@@ -61,9 +70,11 @@ class SessionManager:
             await _ensure_socket_dir(channel_socket)
             sess = Session(
                 workspace=workspace,
+                agent=agent,
                 channel_socket=channel_socket,
                 ai_socket=ai_socket,
                 session_id=session_id,
+                app_data_root=self._app_data_root,
             )
             scope = anyio.CancelScope()
 
@@ -79,7 +90,13 @@ class SessionManager:
 
             logger.debug(f"SessionManager: starting session {session_id!r} task")
             self._tg.start_soon(_run_session)
-            info = SessionInfo(id=session_id, ai_id=ai_id, workspace=workspace, channel_socket=channel_socket)
+            info = SessionInfo(
+                id=session_id,
+                ai_id=ai_id,
+                workspace=workspace,
+                agent=agent,
+                channel_socket=channel_socket,
+            )
             self._entries[session_id] = _SessionEntry(scope=scope, info=info)
         try:
             await _wait_socket(info.channel_socket)
@@ -93,7 +110,10 @@ class SessionManager:
                 await self._persist()
             raise
         await self._persist()
-        logger.info(f"Session {session_id!r} created on {info.channel_socket} -> AI '{ai_id}'")
+        logger.info(
+            f"Session {session_id!r} created on {info.channel_socket} "
+            f"-> AI '{ai_id}' agent={agent!r} workspace={workspace!r}"
+        )
         return info
 
     async def delete(self, session_id: str) -> None:
@@ -122,3 +142,8 @@ class SessionManager:
         if session_id not in self._entries:
             raise LookupError(f"Session {session_id!r} not found")
         return self._entries[session_id].info.workspace
+
+    def get_agent(self, session_id: str) -> str:
+        if session_id not in self._entries:
+            raise LookupError(f"Session {session_id!r} not found")
+        return self._entries[session_id].info.agent

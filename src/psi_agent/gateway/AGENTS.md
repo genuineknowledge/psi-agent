@@ -17,7 +17,7 @@ Gateway 进程
 ├── ChatManager        — SSE 流式对话管理
 ├── HistoryManager     — JSONL 历史读取
 ├── TodoManager        — 会话 todo 列表只读（workspace `.psi/todos/`）
-├── GatewayState       — 状态持久化到 state/latest.json
+├── GatewayState       — 状态持久化到 AppData `state/latest.json`（platformdirs）
 ├── aiohttp REST Server  — OpenAPI CRUD + Web UI chat
 ├── spa/               — Vue 3 SPA 前端项目 (Vite + SFC)
 ├── GatewayWebView     — 原生 webview 窗口 (pywebview)
@@ -35,7 +35,7 @@ Gateway 进程
 | `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo |
 | `_feishu_manager.py` | `FeishuManager` — 飞书 open_id → Session 路由表（复用 SessionManager 按需 spawn）+ FeishuRoute |
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
-| `_state.py` | `GatewayState` dataclass — `state/latest.json` 的 load/save + 历史快照 `state/YYYYMMDD-HHMMSS.json` |
+| `_state.py` | `GatewayState` — AppData `state/latest.json` + 快照 `state/YYYYMMDD-HHMMSS.json`（可用 `PSI_APP_DATA_ROOT` / `--app-data-root`） |
 | `_spa_shell.py` | SPA 外壳注入 — `DEFAULT_APP_NAME`、`inject_app_name()`、`read_spa_index_template()`；`GET /spa/index.html` 替换 `__GATEWAY_APP_NAME__` |
 | `server.py` | aiohttp Application + REST handlers |
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
@@ -173,7 +173,7 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 Session 运行时 crash 时，`_run_session` 的 except 块从 `_entries` 中移除该 entry 并调用 `_persist`。
 
 REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
-- 删除 workspace 下 ``histories/{id}.jsonl``（``HistoryManager.delete``，文件不存在则忽略）
+- 删除 AppData ``history/{id}.jsonl`` + ``meta.jsonl`` 行（``HistoryManager.delete`` / ``remove_history_meta``，文件不存在则忽略）
 - 清除 ``TitleManager`` 中该会话标题
 
 ## TodoManager
@@ -240,6 +240,7 @@ REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
 | POST | `/feishu/route` | 按飞书 `open_id` 幂等路由到其独立 Session（首次按需 spawn）`{open_id, ai_id?, workspace?}` → 201 `{open_id, session_id, channel_socket}`；缺 open_id / 无 ai_id → 400 |
 | GET | `/feishu/routes` | 列出所有飞书 open_id → Session 路由 `[{open_id, session_id}]` |
 | GET | `/workspace/cwd` | Gateway 进程当前工作目录 |
+| GET | `/defaults` | 默认 agent / workspace / AppData `history_dir`+`state_dir`（SPA 与切换工作区接口；agent 切换 UI 未做，先留字段） |
 | GET | `/workspace/places` | PathPicker 快捷位置（cwd / home / desktop / documents / downloads）+ 盘符 |
 | GET | `/workspace/browse` | 浏览目录 `?path=...&kind=directory|file|all&q=...`，默认 `kind=directory` |
 | GET | `/workspace/file` | 读取文件为 base64（`?path=...&root=...`）；``root`` 非空时路径须落在该目录下 |

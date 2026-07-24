@@ -4,27 +4,37 @@
 
 Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、tool 执行、schedule 调度以及面向 Channel 的 HTTP/SSE 服务。
 
+## 三区路径（Agent / 用户工作区 / AppData）
+
+| 概念 | Session 字段 / API | 用途 |
+|------|-------------------|------|
+| **Agent 包** | `Session.agent` / `POST /sessions.agent` | tools、schedules、`systems/system.py`、skills |
+| **用户工作区** | `Session.workspace` | 用户打开的工程目录；工具相对路径 / bash cwd / `generated/` |
+| **AppData 记忆区** | `app_data_root` → `history/`、`todos/`；Gateway `state/` | 会话 JSONL、todo、跨会话状态 |
+
+`SessionAgent.run` 经 ``runtime_scope(session_id, workspace, agent)`` 绑定 ContextVar；haitun 工具用 `resolve_workspace` / `resolve_agent`（**永不**把 agent 包当作用户 cwd）。子进程工具把 `WORKSPACE_DIR`/`PSI_AGENT_DIR` 写入**子进程 env**，不改进程全局（多 Session 并发安全）。
+
 ## Workspace 启动流程
 
-`Session.run()` 的启动顺序（由 `SessionAgent.create()` 完成 workspace 加载）：
+`Session.run()` 的启动顺序（由 `SessionAgent.create()` 完成加载）：
 
 ```
 1. setup_logging(verbose)
-2. 解析 workspace 路径（空字符串时用 Path.cwd()，否则 anyio.Path.resolve()）
-3. SessionAgent.create() → 生成 session_id、创建 AiClient/ChannelAdapter/anyio.Lock、加载 tools/schedules/system 模块
+2. 解析 agent / workspace（空值走 default_agent_path / default_workspace_path）；history → AppData history/
+3. SessionAgent.create(agent_path=…, workspace_path=…, history_dir=…) → session_id、AiClient、tools/schedules/system
 4. 启动 anyio.task_group：
    ├── serve_session(agent=agent)  ← 从 agent 读取 channel_socket + handle_request
    └── 每个 schedule 一个 run_one_schedule(schedule, agent) task
 
 **关键点**：
-- `SessionAgent` 自包含：持有 `_ai_client`、`_channel_adapter`、`_lock`
-- `_session_id` 从 `_history_path.stem` 派生，同时用于 sys.modules 隔离（tools/system 的 module name）
+- `SessionAgent` 自包含：持有 `_ai_client`、`_channel_adapter`、`_lock`、`_workspace_path`、`_agent_path`
+- `_session_id` 从 history JSONL stem 派生，同时用于 sys.modules 隔离（tools/system 的 module name）
 - `channel_socket` 由 `Session.run()` 直接传给 `serve_session()`，不进入 agent 内部
-- **工具可见的 session id**：`SessionAgent.run` 用 ``runtime_context.session_id_scope`` 绑定 ContextVar（Gateway 同进程多 Session 时 ``sys.argv`` 无法标识当前会话）。workspace ``todo`` 等经 ``current_session_id()`` 读取，勿回落到 ``default``
+- **工具可见的 session id / 路径**：`SessionAgent.run` 用 ``runtime_scope`` 绑定 ContextVar（Gateway 同进程多 Session 时 ``sys.argv`` 无法标识当前会话）。``todo`` 等经 ``get_session_id()`` 读取，勿回落到 ``default``
 - 所有手动模块加载使用 `原名_session_id_文件hash` 作为 module name（tool 和 system prompt 均用 `compile` + `exec` 避免 importlib bytecode 缓存），确保同进程多 session 隔离
 - `SessionAgent.create()` 完成所有初始化——`__init__.py` 只做入口编排
-- Tool 加载：`compile(source)` + `exec(module.__dict__)` 避免 importlib 的 bytecode 缓存导致刷新时读到旧文件内容
-- System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）
+- Tool / schedule / system 从 **agent_path** 加载；勿与用户 workspace 混用
+- System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`，应同时注入 user workspace + agent package）
 - 后续请求可调用 `system_prompt_rebuild_checker()`（如果定义），返回 True 则重建 system prompt
 
 ## Agent Loop 逻辑
@@ -192,19 +202,21 @@ Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记。
 
 ## History 持久化
 
-Session 支持将对话历史持久化到 `workspace/histories/{session_id}.jsonl`：
+Session 支持将对话历史持久化到 AppData `history/{session_id}.jsonl`（非用户工作区）：
 
 - `Session.session_id: str | None = None` — None 时自动生成 UUID，给定字符串时可 resume
-- 加载：`SessionAgent.create()` 中从 jsonl 逐行读取，非法行跳过 + warning
+- `Session.agent` / `Session.workspace` — Agent 包路径 vs 用户打开的工程目录；空值走 `default_agent_path()` / `default_workspace_path()`
+- 加载：`SessionAgent.create()` 中从 AppData history 目录逐行读取，非法行跳过 + warning
+- 同目录 `meta.jsonl`：每行 `{id, name, workspace, agent}`，Session 启动时 upsert
 - **Turn 级别原子性**：`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；任何异常（AI error、连接断开、cancellation）都会通过 ``__aexit__`` 自动触发 `Conversation.rollback()` 恢复到快照，保证内存和磁盘始终同步于最近一个成功阶段。
 - 保存时机（一致性检查点）：
-  - `finish_reason="stop"` — assistant 响应追加后立即 `commit()`，随后刷新 schedule registry（完整回合）
-  - `finish_reason="tool_calls"` — 所有 tool 结果追加后立即 `commit()`（子回合）
-  - unexpected `finish_reason` — 累积 content 追加后 `commit()`
-  - 达到 `max_tool_rounds` — 追加 `[Max tool rounds reached]` assistant 消息后 `commit()`
+ - `finish_reason="stop"` — assistant 响应追加后立即 `commit()`，随后刷新 schedule registry（完整回合）
+ - `finish_reason="tool_calls"` — 所有 tool 结果追加后立即 `commit()`（子回合）
+ - unexpected `finish_reason` — 累积 content 追加后 `commit()`
+ - 达到 `max_tool_rounds` — 追加 `[Max tool rounds reached]` assistant 消息后 `commit()`
 - `Conversation.save()` 使用 tempfile + `os.replace()` 实现原子写入；`commit()` 封装 save + 清除快照
 - **部分保存**的场景：`finish_reason="error"`、AI 连接断开、channel 断开、schedule runner 异常——user message 已通过早期 `commit()` 落盘，AI 响应部分通过 `rollback()` 回滚，不写入磁盘
-- 首次使用时自动创建 `histories/` 目录 + `.gitignore`（忽略全部文件）
+- 首次使用时自动创建 AppData `history/` 目录
 
 ### peek_pending / clear_pending 安全机制
 

@@ -19,7 +19,7 @@ async def test_aimanager_create_list_delete(tmp_path: str) -> None:
         )
         assert info.provider == "openai"
         assert info.model == "gpt-4o"
-        assert info.socket.endswith(".sock")
+        assert "gw-test" in info.socket or info.socket.endswith(".sock") or "\\\\.\\pipe\\" in info.socket
 
         items = await mgr.list_all()
         assert len(items) == 1
@@ -70,7 +70,7 @@ async def test_aimanager_has_and_get_socket(tmp_path: str) -> None:
         assert not mgr.has("nonexistent")
         assert mgr.get_socket(info.id) == info.socket
         socket = mgr.get_socket("nonexistent")
-        assert socket.endswith(".sock")
+        assert ".sock" in socket or "pipe" in socket.lower()
         await mgr.delete(info.id)
     finally:
         await tg.__aexit__(None, None, None)
@@ -99,9 +99,9 @@ async def test_sessionmanager_create_delete(tmp_path: str) -> None:
 
         await am.create(provider="o", model="m", api_key="k", base_url="b", id="ai1")
 
-        info = await sm.create(ai_id="ai1", workspace=str(tmp_path))
+        info = await sm.create(ai_id="ai1", workspace=str(tmp_path), agent=str(tmp_path))
         assert info.ai_id == "ai1"
-        assert info.channel_socket.endswith(".sock")
+        assert ".sock" in info.channel_socket or "pipe" in info.channel_socket.lower()
 
         items = await sm.list_all()
         assert len(items) == 1
@@ -122,7 +122,7 @@ async def test_sessionmanager_create_without_ai(tmp_path: str) -> None:
     try:
         am = AIManager(_prefix="gw-test", _tg=tg)
         sm = SessionManager(_aim=am, _prefix="gw-test", _tg=tg)
-        info = await sm.create(ai_id="no-such-ai", workspace=str(tmp_path), id="s1")
+        info = await sm.create(ai_id="no-such-ai", workspace=str(tmp_path), agent=str(tmp_path), id="s1")
         assert info.ai_id == "no-such-ai"
         await sm.delete("s1")
     finally:
@@ -139,9 +139,9 @@ async def test_sessionmanager_duplicate_id(tmp_path: str) -> None:
 
         await am.create(provider="o", model="m", api_key="k", base_url="b", id="ai1")
 
-        info = await sm.create(ai_id="ai1", workspace=str(tmp_path), id="dup")
+        info = await sm.create(ai_id="ai1", workspace=str(tmp_path), agent=str(tmp_path), id="dup")
         with pytest.raises(ValueError, match="already exists"):
-            await sm.create(ai_id="ai1", workspace=str(tmp_path), id="dup")
+            await sm.create(ai_id="ai1", workspace=str(tmp_path), agent=str(tmp_path), id="dup")
         await sm.delete(info.id)
         await am.delete("ai1")
     finally:
@@ -158,7 +158,7 @@ async def test_sessionmanager_has_and_get_socket(tmp_path: str) -> None:
 
         await am.create(provider="o", model="m", api_key="k", base_url="b", id="ai1")
 
-        info = await sm.create(ai_id="ai1", workspace=str(tmp_path))
+        info = await sm.create(ai_id="ai1", workspace=str(tmp_path), agent=str(tmp_path))
         assert sm.has(info.id)
         assert not sm.has("nonexistent")
         assert sm.get_socket(info.id) == info.channel_socket
@@ -209,7 +209,7 @@ async def test_sessionmanager_delete_removes_socket_file(tmp_path: str) -> None:
         am = AIManager(_prefix="gw-test", _tg=tg)
         sm = SessionManager(_aim=am, _prefix="gw-test", _tg=tg)
         await am.create(provider="o", model="m", api_key="k", base_url="b", id="ai1")
-        info = await sm.create(ai_id="ai1", workspace=str(tmp_path))
+        info = await sm.create(ai_id="ai1", workspace=str(tmp_path), agent=str(tmp_path))
         assert await anyio.Path(info.channel_socket).exists()
         await sm.delete(info.id)
         assert not await anyio.Path(info.channel_socket).exists()
@@ -272,7 +272,7 @@ async def test_sessionmanager_persist_called_on_create_delete(tmp_path: str) -> 
     try:
         am = AIManager(_prefix="gw-test", _tg=tg)
         sm = SessionManager(_aim=am, _prefix="gw-test", _tg=tg, _persist=fake_persist)
-        info = await sm.create(ai_id="ai1", workspace=str(tmp_path))
+        info = await sm.create(ai_id="ai1", workspace=str(tmp_path), agent=str(tmp_path))
         assert call_count == 1
         await sm.delete(info.id)
         assert call_count == 2

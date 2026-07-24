@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import anyio
 from loguru import logger
 
+from psi_agent._app_paths import history_dir as app_history_dir
 from psi_agent.session.history_display import (
     extract_send_paths,
     is_displayable_chat_message,
@@ -15,8 +17,20 @@ from psi_agent.session.history_display import (
 
 
 class HistoryManager:
+    def __init__(self, *, history_root: str | Path | None = None) -> None:
+        self._history_root = Path(history_root) if history_root is not None else None
+
+    def _dir(self) -> Path:
+        return self._history_root if self._history_root is not None else app_history_dir()
+
     async def get(self, workspace: str, session_id: str) -> list[dict[str, object]]:
-        path = anyio.Path(workspace) / "histories" / f"{session_id}.jsonl"
+        """Load displayable history for *session_id*.
+
+        *workspace* is ignored (kept for call-site compatibility); files live
+        under AppData ``history/``.
+        """
+        _ = workspace
+        path = anyio.Path(str(self._dir() / f"{session_id}.jsonl"))
         messages: list[dict[str, object]] = []
         try:
             content = await path.read_text(encoding="utf-8")
@@ -68,8 +82,9 @@ class HistoryManager:
         return messages
 
     async def delete(self, workspace: str, session_id: str) -> None:
-        """Remove ``histories/{session_id}.jsonl`` if present (best-effort)."""
-        path = anyio.Path(workspace) / "histories" / f"{session_id}.jsonl"
+        """Remove AppData ``history/{session_id}.jsonl`` if present (best-effort)."""
+        _ = workspace
+        path = anyio.Path(str(self._dir() / f"{session_id}.jsonl"))
         try:
             await path.unlink()
             logger.info(f"Deleted history file for session {session_id!r} at {path!r}")

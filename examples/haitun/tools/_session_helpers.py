@@ -1,0 +1,1582 @@
+"""Session discovery helpers — histories, background registry, optional Gateway."""
+
+from __future__ import annotations
+
+import json
+import re
+import shlex
+import sys
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import _background_process_registry as _bg
+import _subagent_helpers as _sub
+import anyio
+
+try:
+    from psi_agent.session.runtime_context import get_session_id as _runtime_session_id
+except ImportError:
+
+    def _runtime_session_id() -> str:
+        return ""
+
+
+def _argv_flag(argv: list[str], flag: str) -> str:
+    try:
+        index = argv.index(flag)
+    except ValueError:
+        return ""
+    if index + 1 >= len(argv):
+        return ""
+    return argv[index + 1].strip()
+
+
+def current_session_id() -> str:
+    """Session id for the active turn.
+
+    Prefer the ContextVar set by ``SessionAgent`` (Gateway in-process). Fall
+    back to ``psi-agent session --session-id`` argv when running as a
+    standalone Session process.
+    """
+    sid = _runtime_session_id().strip()
+    if sid:
+        return sid
+    if "session" not in sys.argv:
+        return ""
+    return _argv_flag(sys.argv, "--session-id")
+
+
+def _session_id_from_process_id(process_id: str) -> str:
+    process_id = process_id.strip()
+    for suffix in ("-session", "-ai"):
+        if process_id.endswith(suffix):
+            return process_id[: -len(suffix)]
+    return process_id
+
+
+def _session_id_from_command(command: str) -> str:
+    command = command.strip()
+    if not command or "session" not in command:
+        return ""
+    try:
+        tokens = shlex.split(command, posix=(sys.platform != "win32"))
+    except ValueError:
+        return ""
+    sid = _argv_flag(tokens, "--session-id")
+    return sid
+
+
+def _infer_background_session_id(row: dict[str, Any]) -> str:
+    process_id = str(row.get("process_id", "")).strip()
+    sid = _session_id_from_process_id(process_id)
+    if sid and sid != process_id:
+        return sid
+    command = str(row.get("command", ""))
+    sid = _session_id_from_command(command)
+    if sid:
+        return sid
+    return process_id
+
+
+async def _count_jsonl_messages(path: anyio.Path) -> int:
+    count = 0
+    try:
+        async with await path.open(encoding="utf-8") as handle:
+            async for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    msg = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(msg, dict) and msg.get("role"):
+                    count += 1
+    except OSError:
+        return 0
+    return count
+
+
+def resolve_history_dir() -> anyio.Path:
+    """AppData ``history/`` (platformdirs / ``PSI_APP_DATA_ROOT``)."""
+    try:
+        from psi_agent._app_paths import history_dir as app_history_dir
+
+        return anyio.Path(str(app_history_dir()))
+    except ImportError:
+        return anyio.Path("history")
+
+
+def _legacy_history_path(workspace: anyio.Path, session_id: str) -> anyio.Path:
+    return workspace / "histories" / f"{session_id}.jsonl"
+
+
+def _history_path(session_id: str, workspace: anyio.Path | None = None) -> anyio.Path:
+    """Canonical history JSONL under AppData. *workspace* kept for call-site compat."""
+    _ = workspace
+    return resolve_history_dir() / f"{session_id}.jsonl"
+
+
+async def _resolve_existing_history(
+    session_id: str,
+    workspace: anyio.Path | None = None,
+) -> anyio.Path:
+    """Prefer AppData; fall back to legacy ``{workspace}/histories/`` if present."""
+    primary = _history_path(session_id)
+    if await primary.exists():
+        return primary
+    if workspace is not None:
+        legacy = _legacy_history_path(workspace, session_id)
+        if await legacy.exists():
+            return legacy
+    return primary
+
+
+async def _scan_history_dir(histories_dir: anyio.Path, *, source: str = "history") -> dict[str, dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    if not await histories_dir.exists():
+        return rows
+    async for entry in histories_dir.glob("*.jsonl"):
+        if entry.name == "meta.jsonl":
+            continue
+        session_id = entry.name.removesuffix(".jsonl").strip()
+        if not session_id:
+            continue
+        try:
+            stat = await entry.stat()
+            mtime = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+        except OSError:
+            mtime = ""
+        rows[session_id] = {
+            "session_id": session_id,
+            "sources": [source],
+            "running": False,
+            "history_path": str(entry),
+            "history_mtime": mtime,
+            "message_count": await _count_jsonl_messages(entry),
+            "background_processes": [],
+            "gateway": None,
+            "title": "",
+            "is_current": session_id == current_session_id(),
+        }
+    return rows
+
+
+async def _scan_history_sessions(workspace: anyio.Path) -> dict[str, dict[str, Any]]:
+    """Scan AppData history/, then merge legacy ``{workspace}/histories`` (AppData wins)."""
+    rows = await _scan_history_dir(resolve_history_dir(), source="history")
+    legacy_dir = workspace / "histories"
+    if await legacy_dir.exists():
+        for sid, row in (await _scan_history_dir(legacy_dir, source="history.legacy")).items():
+            if sid not in rows:
+                rows[sid] = row
+            else:
+                sources = rows[sid].setdefault("sources", [])
+                if isinstance(sources, list) and "history.legacy" not in sources:
+                    sources.append("history.legacy")
+    return rows
+
+
+def _ensure_session_row(rows: dict[str, dict[str, Any]], session_id: str) -> dict[str, Any]:
+    row = rows.get(session_id)
+    if row is not None:
+        return row
+    row = {
+        "session_id": session_id,
+        "sources": [],
+        "running": False,
+        "history_path": "",
+        "history_mtime": "",
+        "message_count": 0,
+        "background_processes": [],
+        "gateway": None,
+        "title": "",
+        "is_current": session_id == current_session_id(),
+    }
+    rows[session_id] = row
+    return row
+
+
+def _add_source(row: dict[str, Any], source: str) -> None:
+    sources = row.setdefault("sources", [])
+    if not isinstance(sources, list):
+        row["sources"] = [str(sources)]
+        sources = row["sources"]
+    if source not in sources:
+        sources.append(source)
+
+
+async def _merge_background_sessions(
+    rows: dict[str, dict[str, Any]],
+    *,
+    workspace_raw: str,
+) -> None:
+    bg = await _bg.list_processes(workspace_raw=workspace_raw)
+    processes = bg.get("processes")
+    if not isinstance(processes, list):
+        return
+    for proc in processes:
+        if not isinstance(proc, dict):
+            continue
+        session_id = _infer_background_session_id(proc)
+        if not session_id:
+            continue
+        row = _ensure_session_row(rows, session_id)
+        _add_source(row, "background")
+        alive = bool(proc.get("alive"))
+        if alive:
+            row["running"] = True
+        bg_entry = {
+            "process_id": str(proc.get("process_id", "")),
+            "pid": proc.get("pid", 0),
+            "alive": alive,
+            "command": str(proc.get("command", "")),
+        }
+        processes_list = row.setdefault("background_processes", [])
+        if isinstance(processes_list, list):
+            processes_list.append(bg_entry)
+
+
+async def _merge_gateway_sessions(
+    rows: dict[str, dict[str, Any]],
+    *,
+    workspace: Path,
+) -> str:
+    gateway_url = await _sub.resolve_gateway_url(workspace)
+    if not gateway_url:
+        return ""
+
+    titles: dict[str, str] = {}
+    try:
+        raw_titles = await _sub._fetch_gateway_json(f"{gateway_url}/titles")
+        if isinstance(raw_titles, dict):
+            titles = {str(k): str(v) for k, v in raw_titles.items()}
+    except Exception:
+        pass
+
+    try:
+        raw_sessions = await _sub._fetch_gateway_json(f"{gateway_url}/sessions")
+    except Exception:
+        return gateway_url
+
+    if not isinstance(raw_sessions, list):
+        return gateway_url
+
+    for item in raw_sessions:
+        if not isinstance(item, dict):
+            continue
+        session_id = str(item.get("id", "")).strip()
+        if not session_id:
+            continue
+        ws = str(item.get("workspace", "")).strip()
+        if ws and not _sub._workspaces_match(ws, workspace):
+            continue
+        row = _ensure_session_row(rows, session_id)
+        _add_source(row, "gateway")
+        row["running"] = True
+        row["gateway"] = {
+            "ai_id": str(item.get("ai_id", "")),
+            "workspace": ws,
+            "channel_socket": str(item.get("channel_socket", "")),
+        }
+        title = titles.get(session_id, "")
+        if title:
+            row["title"] = title
+
+    return gateway_url
+
+
+async def _collect_session_rows(
+    *,
+    workspace_raw: str = "",
+    include_gateway: bool = True,
+) -> tuple[anyio.Path, str, dict[str, dict[str, Any]]]:
+    workspace = _bg.resolve_workspace(workspace_raw)
+    workspace_path = Path(str(workspace))
+
+    rows = await _scan_history_sessions(workspace)
+    await _merge_background_sessions(rows, workspace_raw=workspace_raw)
+
+    gateway_url = ""
+    if include_gateway:
+        gateway_url = await _merge_gateway_sessions(rows, workspace=workspace_path)
+
+    return workspace, gateway_url, rows
+
+
+def resolve_session_id(session_id: str) -> str:
+    """Use explicit id, else current process session id."""
+    sid = session_id.strip()
+    if sid:
+        return sid
+    return current_session_id()
+
+
+def _normalize_history_message(msg: dict[str, Any], *, include_tool_messages: bool) -> dict[str, Any] | None:
+    role = str(msg.get("role", "")).strip()
+    if role == "tool":
+        if not include_tool_messages:
+            return None
+        content = msg.get("content", "")
+        return {
+            "role": role,
+            "name": str(msg.get("name", "")),
+            "content": content if isinstance(content, str) else str(content),
+        }
+    if role not in ("user", "assistant", "system"):
+        return None
+    content = msg.get("content", "")
+    if content is None:
+        content = ""
+    if not isinstance(content, str):
+        content = str(content)
+    row: dict[str, Any] = {"role": role, "content": content}
+    reasoning = msg.get("reasoning", "")
+    if isinstance(reasoning, str) and reasoning.strip():
+        row["reasoning"] = reasoning
+    tool_calls = msg.get("tool_calls")
+    if include_tool_messages and isinstance(tool_calls, list) and tool_calls:
+        row["tool_calls"] = tool_calls
+    if role in ("user", "assistant") or include_tool_messages:
+        return row
+    return None
+
+
+async def _read_history_messages(
+    path: anyio.Path,
+    *,
+    limit: int,
+    include_tool_messages: bool,
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    try:
+        async with await path.open(encoding="utf-8") as handle:
+            async for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    raw = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                normalized = _normalize_history_message(raw, include_tool_messages=include_tool_messages)
+                if normalized is not None:
+                    messages.append(normalized)
+    except OSError:
+        return []
+    if limit > 0 and len(messages) > limit:
+        return messages[-limit:]
+    return messages
+
+
+async def get_session_status(
+    *,
+    session_id: str = "",
+    workspace_raw: str = "",
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    sid = resolve_session_id(session_id)
+    if not sid:
+        return {
+            "ok": False,
+            "message": "session_id is required when not running inside a session process",
+            "session_id": "",
+        }
+
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+    row = rows.get(sid)
+    if row is None:
+        return {
+            "ok": False,
+            "message": f"session {sid!r} not found in workspace histories, background registry, or Gateway",
+            "session_id": sid,
+            "workspace": str(workspace),
+            "gateway_url": gateway_url,
+        }
+
+    channel_socket = ""
+    gateway_info = row.get("gateway")
+    if isinstance(gateway_info, dict):
+        channel_socket = str(gateway_info.get("channel_socket", "")).strip()
+    if not channel_socket:
+        for proc in row.get("background_processes", []):
+            if not isinstance(proc, dict):
+                continue
+            command = str(proc.get("command", ""))
+            if "--channel-socket" in command:
+                try:
+                    tokens = shlex.split(command, posix=(sys.platform != "win32"))
+                except ValueError:
+                    tokens = []
+                channel_socket = _argv_flag(tokens, "--channel-socket")
+                if channel_socket:
+                    break
+
+    session = dict(row)
+    if channel_socket:
+        session["channel_socket"] = channel_socket
+
+    return {
+        "ok": True,
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "current_session_id": current_session_id(),
+        "session_id": sid,
+        "session": session,
+    }
+
+
+async def get_session_history(
+    *,
+    session_id: str = "",
+    workspace_raw: str = "",
+    limit: int = 50,
+    include_tool_messages: bool = False,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    sid = resolve_session_id(session_id)
+    if not sid:
+        return {
+            "ok": False,
+            "message": "session_id is required when not running inside a session process",
+            "session_id": "",
+            "messages": [],
+        }
+
+    limit = max(1, min(500, int(limit)))
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+    path = await _resolve_existing_history(sid, workspace)
+    messages: list[dict[str, Any]] = []
+    history_source = ""
+
+    if await path.exists():
+        history_source = "history"
+        messages = await _read_history_messages(
+            path,
+            limit=limit,
+            include_tool_messages=include_tool_messages,
+        )
+    elif include_gateway and gateway_url:
+        try:
+            raw = await _sub._fetch_gateway_json(f"{gateway_url.rstrip('/')}/sessions/{sid}/history")
+        except Exception as exc:
+            return {
+                "ok": False,
+                "message": f"failed to read history for session {sid!r}: {exc}",
+                "session_id": sid,
+                "workspace": str(workspace),
+                "gateway_url": gateway_url,
+                "messages": [],
+            }
+        if isinstance(raw, list):
+            history_source = "gateway"
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role", "")).strip()
+                text = item.get("text", item.get("content", ""))
+                if role in ("user", "assistant") and isinstance(text, str) and text:
+                    messages.append({"role": role, "content": text})
+            if limit > 0 and len(messages) > limit:
+                messages = messages[-limit:]
+
+    row = rows.get(sid, {})
+    if not messages and sid not in rows:
+        return {
+            "ok": False,
+            "message": f"no history found for session {sid!r}",
+            "session_id": sid,
+            "workspace": str(workspace),
+            "gateway_url": gateway_url,
+            "history_path": str(path),
+            "messages": [],
+        }
+
+    if not history_source and await path.exists():
+        history_source = "history"
+
+    return {
+        "ok": True,
+        "session_id": sid,
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "history_path": str(path) if history_source == "history" else "",
+        "history_source": history_source,
+        "title": str(row.get("title", "")) if isinstance(row, dict) else "",
+        "running": bool(row.get("running")) if isinstance(row, dict) else False,
+        "count": len(messages),
+        "messages": messages,
+    }
+
+
+TASK_CATEGORIES: tuple[str, ...] = (
+    "subagent",
+    "github",
+    "gateway",
+    "background",
+    "untitled",
+    "recent",
+    "all",
+)
+
+_SNIPPET_MAX_CHARS = 200
+_MAX_SNIPPETS_PER_SESSION = 3
+_RECENT_DAYS = 7
+
+_GITHUB_HINTS = ("github", "gh pr", "pull request", "gh repo")
+
+
+def _truncate(text: str, max_chars: int = _SNIPPET_MAX_CHARS) -> str:
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1] + "…"
+
+
+def _searchable_message_text(msg: dict[str, Any]) -> str:
+    role = str(msg.get("role", "")).strip()
+    if role not in ("user", "assistant"):
+        return ""
+    content = msg.get("content", "")
+    if not isinstance(content, str):
+        content = str(content)
+    return content
+
+
+async def _recent_user_texts(path: anyio.Path, *, limit: int = 5) -> list[str]:
+    texts: list[str] = []
+    try:
+        async with await path.open(encoding="utf-8") as handle:
+            async for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    raw = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(raw, dict) or raw.get("role") != "user":
+                    continue
+                content = raw.get("content", "")
+                if isinstance(content, str) and content.strip():
+                    texts.append(content.strip())
+    except OSError:
+        return texts
+    if len(texts) > limit:
+        return texts[-limit:]
+    return texts
+
+
+def _parse_mtime_iso(value: str) -> datetime | None:
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+
+
+def _infer_task_categories(row: dict[str, Any], *, user_texts: list[str]) -> list[str]:
+    categories: list[str] = []
+    session_id = str(row.get("session_id", "")).strip()
+    title = str(row.get("title", "")).strip()
+    sources = row.get("sources")
+    source_list = sources if isinstance(sources, list) else []
+
+    if session_id.startswith("sub-"):
+        categories.append("subagent")
+
+    processes = row.get("background_processes")
+    alive_background = False
+    if isinstance(processes, list):
+        alive_background = any(isinstance(proc, dict) and proc.get("alive") for proc in processes)
+    if alive_background:
+        categories.append("background")
+
+    if row.get("gateway") is not None or "gateway" in source_list:
+        categories.append("gateway")
+
+    blob = f"{title}\n" + "\n".join(user_texts)
+    blob_lower = blob.lower()
+    if any(hint in blob_lower for hint in _GITHUB_HINTS):
+        categories.append("github")
+
+    if not title and int(row.get("message_count", 0) or 0) > 0:
+        categories.append("untitled")
+
+    mtime = _parse_mtime_iso(str(row.get("history_mtime", "")))
+    if mtime is not None and mtime >= datetime.now(tz=UTC) - timedelta(days=_RECENT_DAYS):
+        categories.append("recent")
+
+    return categories
+
+
+async def _keyword_search_file(
+    path: anyio.Path,
+    *,
+    query: str,
+    session_row: dict[str, Any],
+) -> dict[str, Any] | None:
+    needle = query.casefold()
+    if not needle:
+        return None
+
+    snippets: list[dict[str, Any]] = []
+    message_count = 0
+    hit_count = 0
+
+    try:
+        async with await path.open(encoding="utf-8") as handle:
+            async for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    raw = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(raw, dict):
+                    continue
+                searchable = _searchable_message_text(raw)
+                if not searchable:
+                    continue
+                message_count += 1
+                if needle not in searchable.casefold():
+                    continue
+                hit_count += 1
+                if len(snippets) < _MAX_SNIPPETS_PER_SESSION:
+                    match = re.search(re.escape(query), searchable, flags=re.IGNORECASE)
+                    span = [match.start(), match.end()] if match else []
+                    snippets.append(
+                        {
+                            "role": str(raw.get("role", "")),
+                            "text": _truncate(searchable),
+                            "match_span": span,
+                        }
+                    )
+    except OSError:
+        return None
+
+    if hit_count == 0:
+        return None
+
+    score = hit_count / max(1, message_count)
+    return {
+        "session_id": session_row.get("session_id", path.name.removesuffix(".jsonl")),
+        "title": session_row.get("title", ""),
+        "running": bool(session_row.get("running")),
+        "message_count": message_count or session_row.get("message_count", 0),
+        "history_mtime": session_row.get("history_mtime", ""),
+        "score": round(score, 4),
+        "hit_count": hit_count,
+        "snippets": snippets,
+    }
+
+
+async def keyword_search_sessions(
+    *,
+    query: str,
+    session_id: str = "",
+    workspace_raw: str = "",
+    limit: int = 10,
+) -> dict[str, Any]:
+    query = query.strip()
+    if not query:
+        return {
+            "ok": False,
+            "message": "query must not be empty",
+            "query": "",
+            "hits": [],
+        }
+
+    limit = max(1, min(50, int(limit)))
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=True,
+    )
+
+    scope = session_id.strip()
+    if scope:
+        row = rows.get(scope)
+        path = await _resolve_existing_history(scope, workspace)
+        if row is None and not await path.exists():
+            return {
+                "ok": False,
+                "message": f"session {scope!r} not found",
+                "query": query,
+                "session_id_scope": scope,
+                "hits": [],
+            }
+        session_row = row or _ensure_session_row(rows, scope)
+        hit = await _keyword_search_file(path, query=query, session_row=session_row)
+        hits = [hit] if hit is not None else []
+    else:
+        hits = []
+        for sid, row in rows.items():
+            path = await _resolve_existing_history(sid, workspace)
+            if not await path.exists():
+                continue
+            hit = await _keyword_search_file(path, query=query, session_row=row)
+            if hit is not None:
+                hits.append(hit)
+        hits.sort(key=lambda item: (float(item.get("score", 0)), int(item.get("hit_count", 0))), reverse=True)
+        hits = hits[:limit]
+
+    return {
+        "ok": True,
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "query": query,
+        "session_id_scope": scope,
+        "count": len(hits),
+        "hits": hits,
+    }
+
+
+async def task_search_sessions(
+    *,
+    category: str,
+    workspace_raw: str = "",
+    limit: int = 10,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    category = category.strip().lower()
+    if category not in TASK_CATEGORIES:
+        return {
+            "ok": False,
+            "message": f"category must be one of: {', '.join(TASK_CATEGORIES)}",
+            "category": category,
+            "hits": [],
+        }
+
+    limit = max(1, min(50, int(limit)))
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+
+    hits: list[dict[str, Any]] = []
+    for sid, row in rows.items():
+        path = await _resolve_existing_history(sid, workspace)
+        user_texts: list[str] = []
+        if await path.exists():
+            user_texts = await _recent_user_texts(path)
+        categories = _infer_task_categories(row, user_texts=user_texts)
+        if category != "all" and category not in categories:
+            continue
+        hits.append(
+            {
+                "session_id": sid,
+                "title": row.get("title", ""),
+                "running": bool(row.get("running")),
+                "message_count": row.get("message_count", 0),
+                "history_mtime": row.get("history_mtime", ""),
+                "categories": categories,
+                "sources": row.get("sources", []),
+            }
+        )
+
+    hits.sort(key=lambda item: str(item.get("history_mtime", "")), reverse=True)
+    hits = hits[:limit]
+
+    return {
+        "ok": True,
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "category": category,
+        "count": len(hits),
+        "hits": hits,
+    }
+
+
+async def list_sessions(
+    *,
+    workspace_raw: str = "",
+    running_only: bool = False,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    """List sessions for a workspace (histories + background + optional Gateway)."""
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+
+    sessions = list(rows.values())
+    if running_only:
+        sessions = [row for row in sessions if row.get("running")]
+
+    sessions.sort(
+        key=lambda row: (
+            str(row.get("history_mtime", "")),
+            str(row.get("session_id", "")),
+        ),
+        reverse=True,
+    )
+
+    return {
+        "ok": True,
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "current_session_id": current_session_id(),
+        "count": len(sessions),
+        "sessions": sessions,
+    }
+
+
+EXPORT_FORMATS: tuple[str, ...] = ("markdown", "json", "jsonl", "text")
+
+
+async def _read_all_raw_messages(path: anyio.Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        async with await path.open(encoding="utf-8") as handle:
+            async for line in handle:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    raw = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(raw, dict):
+                    rows.append(raw)
+    except OSError:
+        return []
+    return rows
+
+
+def _resolve_output_path(workspace: anyio.Path, output_path: str) -> anyio.Path:
+    raw = output_path.strip()
+    if not raw:
+        msg = "output_path must not be empty"
+        raise ValueError(msg)
+    path = anyio.Path(raw)
+    if not Path(raw).is_absolute():
+        path = workspace / raw
+    return path
+
+
+def _format_export_markdown(messages: list[dict[str, Any]]) -> str:
+    """Render user/assistant turns only — no metadata, system, tools, or reasoning."""
+    lines: list[str] = []
+    for msg in messages:
+        role = str(msg.get("role", "")).strip()
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        content = content.strip()
+        if not content:
+            continue
+        label = "User" if role == "user" else "Assistant"
+        lines.extend([f"### {label}", "", content, ""])
+    if not lines:
+        return "\n"
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_export_text(
+    messages: list[dict[str, Any]],
+    *,
+    include_tool_messages: bool,
+) -> str:
+    lines: list[str] = []
+    for msg in messages:
+        role = str(msg.get("role", "")).strip()
+        if role == "tool" and not include_tool_messages:
+            continue
+        if role not in ("user", "assistant", "tool", "system"):
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        label = role.upper()
+        if role == "tool":
+            name = str(msg.get("name", "")).strip()
+            label = f"TOOL:{name}" if name else "TOOL"
+        lines.extend([f"{label}:", content.strip(), ""])
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _format_export_jsonl(messages: list[dict[str, Any]]) -> str:
+    return "".join(json.dumps(msg, ensure_ascii=False) + "\n" for msg in messages)
+
+
+async def export_session(
+    *,
+    session_id: str = "",
+    output_path: str,
+    export_format: str = "markdown",
+    workspace_raw: str = "",
+    include_tool_messages: bool = False,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    sid = resolve_session_id(session_id)
+    if not sid:
+        return {
+            "ok": False,
+            "message": "session_id is required when not running inside a session process",
+            "session_id": "",
+        }
+
+    fmt = export_format.strip().lower() or "markdown"
+    if fmt not in EXPORT_FORMATS:
+        return {
+            "ok": False,
+            "message": f"export_format must be one of: {', '.join(EXPORT_FORMATS)}",
+            "session_id": sid,
+            "export_format": fmt,
+        }
+
+    try:
+        out_path = _resolve_output_path(_bg.resolve_workspace(workspace_raw), output_path)
+    except ValueError as exc:
+        return {"ok": False, "message": str(exc), "session_id": sid}
+
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+    row = rows.get(sid, {})
+    title = str(row.get("title", "")) if isinstance(row, dict) else ""
+
+    history_path = await _resolve_existing_history(sid, workspace)
+    raw_messages = await _read_all_raw_messages(history_path)
+
+    if not raw_messages and include_gateway and gateway_url:
+        hist = await get_session_history(
+            session_id=sid,
+            workspace_raw=workspace_raw,
+            limit=500,
+            include_tool_messages=include_tool_messages,
+            include_gateway=True,
+        )
+        if hist.get("ok") and isinstance(hist.get("messages"), list):
+            raw_messages = [
+                {"role": m.get("role", ""), "content": m.get("content", "")}
+                for m in hist["messages"]
+                if isinstance(m, dict)
+            ]
+
+    if not raw_messages:
+        return {
+            "ok": False,
+            "message": f"no history found for session {sid!r}",
+            "session_id": sid,
+            "workspace": str(workspace),
+            "history_path": str(history_path),
+        }
+
+    if fmt == "markdown":
+        dialogue_messages = await _read_history_messages(
+            history_path,
+            limit=0,
+            include_tool_messages=False,
+        )
+        if not dialogue_messages and include_gateway and gateway_url:
+            hist = await get_session_history(
+                session_id=sid,
+                workspace_raw=workspace_raw,
+                limit=0,
+                include_tool_messages=False,
+                include_gateway=True,
+            )
+            if hist.get("ok") and isinstance(hist.get("messages"), list):
+                dialogue_messages = [
+                    m for m in hist["messages"] if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+                ]
+        if not dialogue_messages:
+            return {
+                "ok": False,
+                "message": f"no user/assistant dialogue found for session {sid!r}",
+                "session_id": sid,
+                "workspace": str(workspace),
+                "history_path": str(history_path),
+            }
+        body = _format_export_markdown(dialogue_messages)
+    elif fmt == "json":
+        if include_tool_messages:
+            payload = raw_messages
+        else:
+            payload = [m for m in raw_messages if m.get("role") in ("user", "assistant", "system")]
+        body = (
+            json.dumps(
+                {
+                    "session_id": sid,
+                    "title": title,
+                    "message_count": len(payload),
+                    "messages": payload,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        )
+    elif fmt == "jsonl":
+        body = _format_export_jsonl(raw_messages)
+    else:
+        body = _format_export_text(raw_messages, include_tool_messages=include_tool_messages)
+
+    parent = out_path.parent
+    if not await parent.exists():
+        await parent.mkdir(parents=True, exist_ok=True)
+    await out_path.write_text(body, encoding="utf-8")
+    size = len(body.encode("utf-8"))
+
+    return {
+        "ok": True,
+        "session_id": sid,
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "history_path": str(history_path),
+        "export_format": fmt,
+        "output_path": str(out_path),
+        "title": title,
+        "message_count": len(raw_messages),
+        "bytes_written": size,
+    }
+
+
+_HANDOFF_HISTORY_DEFAULT = 20
+_HANDOFF_CONTEXT_MAX_CHARS = 8000
+
+
+def _default_channel_socket(session_id: str, *, prefix: str = "psi") -> str:
+    if sys.platform == "win32":
+        return rf"\\.\pipe\{prefix}\channels\{session_id}"
+    return f"/tmp/{prefix}/channels/{session_id}.sock"
+
+
+def _channel_socket_from_row(row: dict[str, Any]) -> str:
+    gateway_info = row.get("gateway")
+    if isinstance(gateway_info, dict):
+        channel_socket = str(gateway_info.get("channel_socket", "")).strip()
+        if channel_socket:
+            return channel_socket
+    processes = row.get("background_processes")
+    if isinstance(processes, list):
+        for proc in processes:
+            if not isinstance(proc, dict):
+                continue
+            command = str(proc.get("command", ""))
+            if "--channel-socket" not in command:
+                continue
+            try:
+                tokens = shlex.split(command, posix=(sys.platform != "win32"))
+            except ValueError:
+                tokens = []
+            channel_socket = _argv_flag(tokens, "--channel-socket")
+            if channel_socket:
+                return channel_socket
+    session_id = str(row.get("session_id", "")).strip()
+    if session_id and bool(row.get("running")):
+        return _default_channel_socket(session_id)
+    return ""
+
+
+async def resolve_channel_socket(
+    *,
+    session_id: str,
+    workspace_raw: str = "",
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    sid = session_id.strip()
+    if not sid:
+        return {"ok": False, "message": "session_id is required", "session_id": ""}
+
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+    row = rows.get(sid)
+    if row is None:
+        return {
+            "ok": False,
+            "message": f"session {sid!r} not found",
+            "session_id": sid,
+            "workspace": str(workspace),
+            "gateway_url": gateway_url,
+        }
+
+    channel_socket = _channel_socket_from_row(row)
+    if not channel_socket:
+        return {
+            "ok": False,
+            "message": f"session {sid!r} is not running (no channel socket)",
+            "session_id": sid,
+            "workspace": str(workspace),
+            "gateway_url": gateway_url,
+            "running": bool(row.get("running")),
+        }
+
+    ready = await _sub.wait_socket(channel_socket, timeout_seconds=3.0)
+    if not ready.get("ok"):
+        return {
+            "ok": False,
+            "message": f"channel for session {sid!r} is not reachable",
+            "session_id": sid,
+            "channel_socket": channel_socket,
+            "workspace": str(workspace),
+            "gateway_url": gateway_url,
+        }
+
+    return {
+        "ok": True,
+        "session_id": sid,
+        "channel_socket": channel_socket,
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "title": str(row.get("title", "")),
+        "running": bool(row.get("running")),
+    }
+
+
+def _format_handoff_message(
+    *,
+    source_session_id: str,
+    task: str,
+    context_body: str,
+    query: str = "",
+    source_title: str = "",
+) -> str:
+    title_line = f" ({source_title})" if source_title else ""
+    query_line = f"\n**Matched query:** `{query}`\n" if query.strip() else ""
+    return (
+        "## Session handoff\n\n"
+        f"**From session:** `{source_session_id}`{title_line}\n"
+        f"**Task:** {task.strip()}\n"
+        f"{query_line}\n"
+        "### Context\n\n"
+        f"{context_body.strip()}\n\n"
+        "---\n"
+        "Continue this work in the current session. Do not ask the user to re-paste this handoff."
+    )
+
+
+def _messages_to_context_body(
+    messages: list[dict[str, Any]],
+    *,
+    query: str = "",
+    snippets: list[dict[str, Any]] | None = None,
+) -> str:
+    parts: list[str] = []
+    needle = query.strip().casefold()
+
+    if snippets:
+        parts.append("#### Matching excerpts")
+        for item in snippets:
+            role = str(item.get("role", "")).strip() or "message"
+            text = str(item.get("text", "")).strip()
+            if text:
+                parts.append(f"- **{role}**: {text}")
+        parts.append("")
+
+    dialogue_lines: list[str] = []
+    for msg in messages:
+        role = str(msg.get("role", "")).strip()
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        content = content.strip()
+        if not content:
+            continue
+        if needle and needle not in content.casefold():
+            continue
+        dialogue_lines.append(f"**{role.capitalize()}:** {content}")
+
+    if dialogue_lines:
+        parts.append("#### Recent dialogue")
+        parts.extend(dialogue_lines)
+
+    body = "\n\n".join(parts).strip()
+    if not body:
+        return "(no user/assistant context extracted)"
+    if len(body) > _HANDOFF_CONTEXT_MAX_CHARS:
+        return body[: _HANDOFF_CONTEXT_MAX_CHARS - 1] + "…"
+    return body
+
+
+async def _resolve_handoff_source_session(
+    *,
+    source_session_id: str,
+    query: str,
+    category: str,
+    workspace_raw: str,
+) -> tuple[str, dict[str, Any] | None]:
+    sid = source_session_id.strip()
+    if sid:
+        return sid, None
+
+    q = query.strip()
+    if q:
+        search = await keyword_search_sessions(
+            query=q,
+            workspace_raw=workspace_raw,
+            limit=1,
+        )
+        hits = search.get("hits")
+        if isinstance(hits, list) and hits and isinstance(hits[0], dict):
+            hit_sid = str(hits[0].get("session_id", "")).strip()
+            if hit_sid:
+                return hit_sid, search
+        return "", search
+
+    cat = category.strip().lower()
+    if cat:
+        search = await task_search_sessions(
+            category=cat,
+            workspace_raw=workspace_raw,
+            limit=1,
+        )
+        sessions = search.get("sessions")
+        if isinstance(sessions, list) and sessions and isinstance(sessions[0], dict):
+            hit_sid = str(sessions[0].get("session_id", "")).strip()
+            if hit_sid:
+                return hit_sid, search
+        return "", search
+
+    return resolve_session_id(""), None
+
+
+async def build_handoff_context(
+    *,
+    source_session_id: str,
+    workspace_raw: str = "",
+    query: str = "",
+    context: str = "",
+    history_limit: int = _HANDOFF_HISTORY_DEFAULT,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    sid = source_session_id.strip()
+    if not sid:
+        return {"ok": False, "message": "source_session_id is required", "context_body": ""}
+
+    if context.strip():
+        return {
+            "ok": True,
+            "source_session_id": sid,
+            "context_body": context.strip()[:_HANDOFF_CONTEXT_MAX_CHARS],
+            "source": "manual",
+        }
+
+    workspace, gateway_url, rows = await _collect_session_rows(
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+    row = rows.get(sid, {})
+    title = str(row.get("title", "")) if isinstance(row, dict) else ""
+
+    snippets: list[dict[str, Any]] = []
+    q = query.strip()
+    if q:
+        path = await _resolve_existing_history(sid, workspace)
+        if await path.exists():
+            hit = await _keyword_search_file(path, query=q, session_row=row if row else {"session_id": sid})
+            if hit and isinstance(hit.get("snippets"), list):
+                snippets = [s for s in hit["snippets"] if isinstance(s, dict)]
+
+    hist = await get_session_history(
+        session_id=sid,
+        workspace_raw=workspace_raw,
+        limit=max(1, min(500, int(history_limit))),
+        include_tool_messages=False,
+        include_gateway=include_gateway,
+    )
+    if not hist.get("ok"):
+        return {
+            "ok": False,
+            "message": str(hist.get("message", "failed to read source history")),
+            "source_session_id": sid,
+            "context_body": "",
+        }
+
+    messages = hist.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+
+    context_body = _messages_to_context_body(messages, query=q, snippets=snippets or None)
+    return {
+        "ok": True,
+        "source_session_id": sid,
+        "source_title": title,
+        "context_body": context_body,
+        "message_count": len(messages),
+        "workspace": str(workspace),
+        "gateway_url": gateway_url,
+        "source": "history",
+    }
+
+
+async def send_session_message(
+    *,
+    target_session_id: str,
+    message: str,
+    workspace_raw: str = "",
+    wait: bool = True,
+    timeout_seconds: float = 600.0,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    resolved = await resolve_channel_socket(
+        session_id=target_session_id,
+        workspace_raw=workspace_raw,
+        include_gateway=include_gateway,
+    )
+    if not resolved.get("ok"):
+        return resolved
+
+    channel_socket = str(resolved.get("channel_socket", ""))
+    chat_timeout = timeout_seconds if wait else min(timeout_seconds, 30.0)
+    chat = await _sub.chat_subagent(
+        channel_socket=channel_socket,
+        message=message,
+        timeout_seconds=chat_timeout,
+    )
+
+    if wait:
+        return {
+            **resolved,
+            "ok": bool(chat.get("ok")),
+            "message": str(chat.get("message", "")),
+            "reply_text": str(chat.get("text", "")),
+            "waited": True,
+        }
+
+    delivered = bool(chat.get("text", "").strip()) or str(chat.get("message", "")) == "ok"
+    return {
+        **resolved,
+        "ok": delivered or "timed out" in str(chat.get("message", "")),
+        "message": "handoff delivered (reply not required)"
+        if delivered or "timed out" in str(chat.get("message", ""))
+        else str(chat.get("message", "delivery failed")),
+        "reply_text": str(chat.get("text", "")),
+        "waited": False,
+    }
+
+
+async def handoff_session(
+    *,
+    target_session_id: str,
+    task: str,
+    source_session_id: str = "",
+    query: str = "",
+    category: str = "",
+    context: str = "",
+    workspace_raw: str = "",
+    wait: bool = False,
+    timeout_seconds: float = 600.0,
+    history_limit: int = _HANDOFF_HISTORY_DEFAULT,
+    include_gateway: bool = True,
+) -> dict[str, Any]:
+    target = target_session_id.strip()
+    if not target:
+        return {"ok": False, "message": "target_session_id is required"}
+
+    task_text = task.strip()
+    if not task_text:
+        return {"ok": False, "message": "task is required"}
+
+    source, search_meta = await _resolve_handoff_source_session(
+        source_session_id=source_session_id,
+        query=query,
+        category=category,
+        workspace_raw=workspace_raw,
+    )
+    if not source:
+        msg = "could not resolve source session"
+        if search_meta and not search_meta.get("ok", True):
+            msg = str(search_meta.get("message", msg))
+        elif query:
+            msg = f"no session found matching query {query!r}"
+        elif category:
+            msg = f"no session found for category {category!r}"
+        else:
+            msg = "source_session_id is required when not running inside a session process"
+        return {
+            "ok": False,
+            "message": msg,
+            "target_session_id": target,
+            "search": search_meta,
+        }
+
+    if source == target:
+        return {
+            "ok": False,
+            "message": "source and target session must differ",
+            "source_session_id": source,
+            "target_session_id": target,
+        }
+
+    ctx = await build_handoff_context(
+        source_session_id=source,
+        workspace_raw=workspace_raw,
+        query=query,
+        context=context,
+        history_limit=history_limit,
+        include_gateway=include_gateway,
+    )
+    if not ctx.get("ok"):
+        return {**ctx, "target_session_id": target, "search": search_meta}
+
+    handoff_message = _format_handoff_message(
+        source_session_id=source,
+        task=task_text,
+        context_body=str(ctx.get("context_body", "")),
+        query=query,
+        source_title=str(ctx.get("source_title", "")),
+    )
+
+    send = await send_session_message(
+        target_session_id=target,
+        message=handoff_message,
+        workspace_raw=workspace_raw,
+        wait=wait,
+        timeout_seconds=timeout_seconds,
+        include_gateway=include_gateway,
+    )
+
+    return {
+        "ok": bool(send.get("ok")),
+        "message": str(send.get("message", "")),
+        "source_session_id": source,
+        "target_session_id": target,
+        "task": task_text,
+        "query": query.strip(),
+        "category": category.strip(),
+        "context_body": ctx.get("context_body", ""),
+        "handoff_message_chars": len(handoff_message),
+        "channel_socket": send.get("channel_socket", ""),
+        "reply_text": send.get("reply_text", ""),
+        "waited": send.get("waited", wait),
+        "search": search_meta,
+        "gateway_url": send.get("gateway_url", ctx.get("gateway_url", "")),
+    }
+
+
+async def create_session(
+    *,
+    workspace_raw: str = "",
+    session_id: str = "",
+    ai_id: str = "",
+    include_gateway: bool = True,
+    ready_timeout_seconds: float = 30.0,
+) -> dict[str, Any]:
+    """Create a new Gateway-managed session (in-process runtime)."""
+    if not include_gateway:
+        return {
+            "ok": False,
+            "message": "sessions_create requires Gateway (POST /sessions)",
+        }
+
+    workspace = _bg.resolve_workspace(workspace_raw)
+    workspace_path = Path(str(workspace))
+    workspace_abs = str(workspace_path)
+
+    gateway_url = await _sub.resolve_gateway_url(workspace_path)
+    if not gateway_url:
+        return {
+            "ok": False,
+            "message": "Gateway is not reachable; cannot create session",
+            "workspace": workspace_abs,
+        }
+
+    resolved_ai = ai_id.strip()
+    if not resolved_ai:
+        resolved_ai = await _sub._resolve_ai_id_for_workspace(
+            gateway_url,
+            workspace=workspace_path,
+        )
+    if not resolved_ai:
+        return {
+            "ok": False,
+            "message": "ai_id is required (link an AI in Gateway or pass ai_id)",
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+        }
+
+    body: dict[str, Any] = {
+        "ai_id": resolved_ai,
+        "workspace": workspace_abs,
+    }
+    sid = session_id.strip()
+    if sid:
+        body["id"] = sid
+
+    try:
+        created = await _sub.post_gateway_json(
+            f"{gateway_url.rstrip('/')}/sessions",
+            body,
+            timeout_seconds=ready_timeout_seconds,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "message": f"failed to create session: {exc}",
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+            "ai_id": resolved_ai,
+        }
+
+    if not isinstance(created, dict):
+        return {
+            "ok": False,
+            "message": "Gateway returned unexpected create-session payload",
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+        }
+
+    new_id = str(created.get("id", "")).strip()
+    channel_socket = str(created.get("channel_socket", "")).strip()
+    if not new_id:
+        return {
+            "ok": False,
+            "message": "Gateway did not return a session id",
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+        }
+
+    deadline = anyio.current_time() + ready_timeout_seconds
+    ready: dict[str, Any] = {"ok": False}
+    while anyio.current_time() < deadline:
+        ready = await resolve_channel_socket(
+            session_id=new_id,
+            workspace_raw=workspace_raw,
+            include_gateway=include_gateway,
+        )
+        if ready.get("ok"):
+            channel_socket = str(ready.get("channel_socket", channel_socket))
+            break
+        await anyio.sleep(0.2)
+
+    if not ready.get("ok"):
+        return {
+            "ok": False,
+            "message": f"session {new_id!r} was created but channel is not ready yet",
+            "session_id": new_id,
+            "ai_id": resolved_ai,
+            "workspace": workspace_abs,
+            "gateway_url": gateway_url,
+            "channel_socket": channel_socket,
+        }
+
+    return {
+        "ok": True,
+        "session_id": new_id,
+        "ai_id": str(created.get("ai_id", resolved_ai)),
+        "workspace": str(created.get("workspace", workspace_abs)),
+        "gateway_url": gateway_url,
+        "channel_socket": channel_socket,
+        "running": True,
+    }

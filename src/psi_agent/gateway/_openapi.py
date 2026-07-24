@@ -237,7 +237,7 @@ OPENAPI_SPEC = {
         },
         "/sessions/{session_id}/todos": {
             "get": {
-                "summary": "Get session todo list (workspace .psi/todos)",
+                "summary": "Get session todo list (AppData todos/; legacy workspace .psi/todos fallback)",
                 "operationId": "getTodos",
                 "parameters": [
                     {
@@ -323,6 +323,22 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/defaults": {
+            "get": {
+                "summary": "Default agent package, user workspace, and AppData roots",
+                "operationId": "getDefaults",
+                "responses": {
+                    "200": {
+                        "description": "Path defaults for SPA / tooling",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/GatewayDefaults"},
+                            }
+                        },
+                    },
+                },
+            },
+        },
         "/workspace/places": {
             "get": {
                 "summary": "List quick-access paths and drives for path picker",
@@ -399,7 +415,11 @@ OPENAPI_SPEC = {
                     "ai_id": {"type": "string"},
                     "workspace": {
                         "type": "string",
-                        "description": "Optional, defaults to CWD",
+                        "description": "User workspace (open folder). Empty → Gateway default / cwd",
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": "Agent package path. Empty → Gateway default (examples/haitun). Hook for future agent switch.",
                     },
                 },
             },
@@ -409,7 +429,18 @@ OPENAPI_SPEC = {
                     "id": {"type": "string"},
                     "ai_id": {"type": "string"},
                     "workspace": {"type": "string"},
+                    "agent": {"type": "string"},
                     "channel_socket": {"type": "string"},
+                },
+            },
+            "GatewayDefaults": {
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string", "description": "Default agent package path"},
+                    "workspace": {"type": "string", "description": "Default user workspace"},
+                    "app_data_root": {"type": "string"},
+                    "history_dir": {"type": "string"},
+                    "state_dir": {"type": "string"},
                 },
             },
             "FeishuRouteRequest": {

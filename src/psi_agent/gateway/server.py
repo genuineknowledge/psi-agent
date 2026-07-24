@@ -138,6 +138,9 @@ async def create_app(
     attention: AttentionHub | None = None,
     feishu_ai_id: str = "",
     feishu_workspace_root: str = "",
+    app_data_root: str = "",
+    default_agent: str = "",
+    default_workspace: str = "",
 ) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
@@ -146,11 +149,17 @@ async def create_app(
     app["fm"] = FeishuManager(_sm=sm, _ai_id=feishu_ai_id, _workspace_root=feishu_workspace_root)
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
-    app["hm"] = HistoryManager()
-    app["todom"] = TodoManager()
+    override = app_data_root.strip() or None
+    from psi_agent._app_paths import history_dir as app_history_dir
+
+    app["hm"] = HistoryManager(history_root=app_history_dir(override=override))
+    app["todom"] = TodoManager(app_data_root=override)
     app["favicon_path"] = favicon_path
     app["app_name"] = app_name
     app["attention"] = attention if attention is not None else AttentionHub()
+    app["app_data_root"] = override or ""
+    app["default_agent"] = default_agent
+    app["default_workspace"] = default_workspace
 
     spa_dist = anyio.Path(__file__).parent / "spa" / "dist"
     spa_v2_dist = anyio.Path(__file__).parent / "spa-v2" / "dist"
@@ -184,6 +193,7 @@ async def create_app(
     app.router.add_post("/titles/generate", _generate_title)
     app.router.add_post("/ui/attention", _request_attention)
     app.router.add_get("/workspace/cwd", _get_cwd)
+    app.router.add_get("/defaults", _get_defaults)
     app.router.add_get("/workspace/places", _list_workspace_places)
     app.router.add_get("/workspace/browse", _browse_workspace)
     app.router.add_get("/workspace/file", _read_workspace_file)
@@ -241,6 +251,7 @@ async def _create_session(request: web.Request) -> web.Response:
             ai_id=body["ai_id"],
             id=body.get("id", ""),
             workspace=body.get("workspace", ""),
+            agent=body.get("agent", ""),
         )
         return _json(asdict(info), status=201)
     except (TypeError, ValueError, KeyError) as e:
@@ -261,6 +272,9 @@ async def _delete_session(request: web.Request) -> web.Response:
         workspace = sm.get_workspace(session_id)
         await sm.delete(session_id)
         await hm.delete(workspace, session_id)
+        from psi_agent._history_meta import remove_history_meta
+
+        await remove_history_meta(session_id=session_id, app_data_override=request.app.get("app_data_root") or None)
         await tm.delete(session_id)
         return _json({"id": session_id, "status": "stopped"})
     except LookupError as e:
@@ -358,6 +372,30 @@ async def _get_cwd(request: web.Request) -> web.Response:
     return _json({"cwd": wm.get_cwd()})
 
 
+async def _get_defaults(request: web.Request) -> web.Response:
+    """Default agent / workspace / AppData roots for SPA and tooling."""
+    from psi_agent._app_paths import (
+        app_data_root,
+        default_agent_path,
+        default_workspace_path,
+        history_dir,
+        state_dir,
+    )
+
+    override = request.app.get("app_data_root") or None
+    agent = request.app.get("default_agent") or str(default_agent_path())
+    workspace = request.app.get("default_workspace") or str(default_workspace_path())
+    return _json(
+        {
+            "agent": agent,
+            "workspace": workspace,
+            "app_data_root": str(app_data_root(override=override)),
+            "history_dir": str(history_dir(override=override)),
+            "state_dir": str(state_dir(override=override)),
+        }
+    )
+
+
 async def _list_workspace_places(request: web.Request) -> web.Response:
     wm: WorkspaceManager = request.app["wm"]
     return _json(await wm.list_places())
@@ -403,7 +441,7 @@ async def _get_history(request: web.Request) -> web.Response:
 
 
 async def _get_todos(request: web.Request) -> web.Response:
-    """Read workspace ``.psi/todos/{session_id}.json`` written by the ``todo`` tool."""
+    """Read AppData ``todos/{session_id}.json`` written by the ``todo`` tool (legacy workspace ``.psi/todos`` fallback)."""
     sm: SessionManager = request.app["sm"]
     todom: TodoManager = request.app["todom"]
     session_id = request.match_info["session_id"]

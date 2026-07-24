@@ -17,7 +17,7 @@
 | 对话 | Gateway SSE | 同左（同一套 API） |
 | 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染 MD/HTML/图片/文本（无 blob 时明确空态，非占位纸面） |
 | 账户区 | 头像菜单合一 | 头像菜单仅资料/登录；**模型池**与**设置**为侧栏独立快捷入口 |
-| 默认工作区 | 无 / 必须先选 | 无记忆时用 Gateway **cwd**（从 haitun-workspace 启动即该目录）；遗留字面量 `workspace` 会忽略 |
+| 默认工作区 | 无 / 必须先选 | 无记忆时用 ``GET /defaults``.workspace；遗留字面量 `workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 选择页；**浏览**按钮走 `/workspace/places` + `/browse`（对齐 v1） |
 | 顶栏新建 | — | 右上角「新建任务」+ 侧栏同入口（`⌘/Ctrl N`） |
 
@@ -30,10 +30,11 @@
 
 ```text
 任务卡          ↔  Gateway Session（同 workspace）
-新建任务        ↔  POST /sessions + POST /titles + 首条 chat SSE；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
+新建任务        ↔  POST /sessions（workspace + 可选 agent）+ POST /titles + 首条 chat SSE；首条后进分屏聚焦
+路径默认        ↔  GET /defaults（agent / workspace / AppData）；Agent 切换 UI 未做，先留 agent 字段
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
-任务历史文案    ↔  GET /sessions/{id}/history
-任务卡中间步 N/M ↔  GET /sessions/{id}/todos（workspace ``todo`` tool → `.psi/todos/{id}.json`）
+任务历史文案    ↔  GET /sessions/{id}/history（AppData history/）
+任务卡中间步 N/M ↔  GET /sessions/{id}/todos（AppData todos/；legacy `.psi/todos` 回退）
 打开即用 AI     ↔  空池先开模型面板；「免费」清空配置；对话时惰性 POST `/ais`（远程默认）
 ```
 

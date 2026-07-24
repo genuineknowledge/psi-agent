@@ -1,6 +1,7 @@
-"""Read session todo lists written by the workspace ``todo`` tool.
+"""Read session todo lists written by the agent ``todo`` tool.
 
-Path convention (haitun-workspace): ``{workspace}/.psi/todos/{session_id}.json``.
+Path convention: ``{AppData}/todos/{session_id}.json``.
+Falls back to legacy ``{workspace}/.psi/todos/{session_id}.json`` if missing.
 Gateway only reads; the agent tool owns writes.
 """
 
@@ -12,14 +13,22 @@ from typing import Any
 import anyio
 from loguru import logger
 
+from psi_agent._app_paths import todos_dir
+
 _VALID_STATUSES = frozenset({"pending", "in_progress", "completed", "cancelled"})
 
 
 class TodoManager:
+    def __init__(self, *, app_data_root: str | None = None) -> None:
+        self._app_data_root = app_data_root
+
     async def get(self, workspace: str, session_id: str) -> dict[str, Any]:
         """Return ``{todos, summary}`` for a session; empty list if missing/invalid."""
-        path = anyio.Path(workspace) / ".psi" / "todos" / f"{session_id}.json"
-        items = await self._read_items(path)
+        primary = anyio.Path(str(todos_dir(override=self._app_data_root) / f"{session_id}.json"))
+        items = await self._read_items(primary)
+        if not items and workspace:
+            legacy = anyio.Path(workspace) / ".psi" / "todos" / f"{session_id}.json"
+            items = await self._read_items(legacy)
         summary = self._summary(items)
         logger.debug(
             f"Todos for session {session_id!r}: total={summary['total']} "
