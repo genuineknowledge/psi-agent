@@ -24,6 +24,7 @@ from psi_agent.session.history_display import (
     KIND_SCHEDULE_SILENT,
     with_kind,
 )
+from psi_agent.session.protocol import AgentChunk
 
 if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent
@@ -192,23 +193,26 @@ class ScheduleRegistry:
                         )
 
                         async with agent._lock:
-                            # Schedules run headless: their result is stamped by
-                            # ``response_kind`` and written to history (viewable in the
-                            # web console per ``visibility``), but is NEVER pushed into
-                            # the next Channel turn — we do not want the agent to
-                            # piggyback a "schedule completed" report onto the user's
-                            # next message. See fix-schedule-bug.
-                            chunk_count = 0
+                            pending_chunks: list[AgentChunk] = []
                             async with aclosing(agent.run(user_msg, response_kind=response_kind)) as chunks:
                                 async for chunk in chunks:
-                                    chunk_count += 1
+                                    pending_chunks.append(chunk)
                                     logger.debug(
                                         f"Schedule chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}"
                                     )
-                            logger.info(
-                                f"Schedule {schedule.name!r} completed "
-                                f"(visibility={schedule.visibility!r}, chunks={chunk_count}, not pushed)"
-                            )
+                                # silent → never push into the next Channel turn
+                                if schedule.visibility == "display" and pending_chunks:
+                                    agent.set_pending_schedule_chunks(pending_chunks)
+                                    logger.info(
+                                        f"Schedule {schedule.name!r} response stored "
+                                        f"({len(pending_chunks)} chunks, visibility=display)"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Schedule {schedule.name!r} completed "
+                                        f"(visibility={schedule.visibility!r}, "
+                                        f"chunks={len(pending_chunks)}, not pending)"
+                                    )
                     except Exception as e:
                         logger.error(f"Error processing schedule {schedule.name!r}: {e!r}")
         finally:
