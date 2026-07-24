@@ -16,9 +16,12 @@
 
 本机当前约定（文件夹名即角色，路径可按机器调整）：
 
-- `D:/Haitun-develop-spa-v2` — spa-v2 前端施工（`feat/…`）
-- `D:/Haitun-develop-main` — 干净 `main` 对照
-- `D:/Haitun-develop-workflow` — 流程 / worktree 约定（`chore/…`）
+- `D:/Haitun-develop-spa-v2` — spa-v2 **前端施工**（`feat/…`）
+- `D:/Haitun-develop-workspace` — haitun-workspace **后端/能力施工**（`feat/…`）
+- `D:/Haitun-develop-workflow` — **流程参谋**（`chore/…`；写约定 / AGENTS）
+- `D:/Haitun-develop-main` — 可选：干净 `main` **只读对照**（不是第二参谋施工位）
+
+每棵树根目录有角色专属 `AGENT_BOOTSTRAP.md`；新开 Agent 先读它，并强制再读相关 `AGENTS.md`。
 
 ### 必须遵守
 
@@ -28,6 +31,20 @@
 4. **日常按目录隔离**；**前后端对接**时再通过 Git 用稳定快照联调，不必让两个 Agent 时刻互读脏工作区。
 5. `git worktree list` 查看；`git worktree remove <路径>` 删除（先收拾未提交改动）。
 
+### 什么该提交、什么不该提交（跨树共享）
+
+Git 里只放**全体开发者 / 各 worktree 都需要共享**的信息。判别：
+
+| 该提交（共享） | 不要提交（探讨 / 纪要） |
+|----------------|-------------------------|
+| 各层 `AGENTS.md`、`WORKTREE.md`、角色 `AGENT_BOOTSTRAP.md` 里的**现行约定** | 与上级微信/当面聊的方案草稿、纪要、长文「拍板前探讨」 |
+| 已批准、全员要跟的实现 / 协议变更（代码 + 同步后的 AGENTS） | 某棵树（尤其流程参谋树）上单独推敲用的 design/brief/笔记 |
+| 测试、对外 README、已立项且入库的 `docs/` 规格（明确写「已批准 / 现行」） | 未收束进 `AGENTS.md` 的临时 specs、个人备忘、会议流水 |
+
+**刻意为之**：探讨类文件可以留在本机工作区（甚至帮人起草），但 **默认不 `git add`、不进 PR**。结论一旦稳定，把**可执行的约定**写进相关 `AGENTS.md`（或其它已约定的共享文档），而不是把整份聊天式长文推进远程。
+
+流程参谋树尤其注意：产出以「改 AGENTS / WORKTREE」为主；`docs/superpowers/specs/` 里若是当面/微信对齐用的重组草案、待改协议备忘等，**未升格为共享原则前一律不提交**。
+
 ```bash
 git worktree list
 git fetch origin
@@ -36,6 +53,8 @@ git worktree remove ../Haitun-develop-spa
 ```
 
 **一句话**：树是目录上的多张办公桌，分支是 Git 账本上的线；历史联动，工作区独立；施工与参谋分开，对接靠 Git。
+
+**本树 Agent 身份卡**：见同目录 `AGENT_BOOTSTRAP.md`（每棵 worktree 一份，角色不同；新开 Agent 会话先读它）。
 
 ## 设计理念
 
