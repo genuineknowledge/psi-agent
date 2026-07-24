@@ -11,6 +11,7 @@ Gateway 自身是一个独立的 aiohttp 进程，AI/Session 作为进程内 any
 ```
 Gateway 进程
 ├── AIManager          — AI 实例注册表 + 生命周期管理
+├── RouterManager      — Gateway 内部语义路由服务注册表 + 生命周期管理
 ├── SessionManager     — Session 实例注册表 + 生命周期管理
 ├── TitleManager       — 会话标题 CRUD + AI 自动生成
 ├── WorkspaceManager   — 目录浏览
@@ -32,6 +33,7 @@ Gateway 进程
 | `__init__.py` | `Gateway` dataclass + `run()` 入口 |
 | `_manager.py` | 共享 helpers（_new_uuid/_noop/_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
 | `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + AiInfo |
+| `_router_manager.py` | `RouterManager` — Router 实例注册表、AI ID 到 socket 解析和生命周期管理 |
 | `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo |
 | `_feishu_manager.py` | `FeishuManager` — 飞书 open_id → Session 路由表（复用 SessionManager 按需 spawn）+ FeishuRoute |
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
@@ -144,13 +146,25 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 
 AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 entry 并调用 `_persist`，确保持久化状态与内存一致。
 
+## RouterManager
+
+路由判断模型和所有候选模型都是 `AIManager` 中已经启动的普通 AI。Router 通过
+`POST /routers` 单独启动，前端/REST 配置只保存 `router_ai_id`、候选
+`ai_id + description` 和 `default_ai_id`；`RouterManager` 在运行时将这些 ID
+解析为 socket，并延迟调用合并后由 `psi_agent.router.Router` 提供的路由服务。
+Gateway 不重复实现语义选择或 SSE 代理。状态恢复顺序固定为 AI → Router → Session。
+
 ## SessionManager
 
 内存注册表，维护 `dict[str, _SessionEntry]` + `anyio.Lock`。
 
 每个 `_SessionEntry` 包含：
 - `scope: anyio.CancelScope` — 独立取消
-- `info: SessionInfo` — 包含 `id`、`ai_id`、`workspace`、`channel_socket`
+- `info: SessionInfo` — 包含 `id`、`backend_type`、`backend_id`、`workspace`、`channel_socket`
+
+`backend_type="ai"` 时通过 `AIManager` 解析 socket；`backend_type="router"` 时
+通过 `RouterManager` 解析 socket。旧 REST 请求中的 `ai_id` 仍兼容为直接 AI
+模式，响应也为直接 AI Session 保留 `ai_id` 字段，供 SPA 完成后续迁移。
 
 **`_persist` 回调**：同 AIManager，默认 no-op，Gateway.run() 注入。
 
@@ -229,6 +243,9 @@ REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/ais` | 创建 AI（201） |
+| POST | `/routers` | 创建并启动 Router（201） |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router（200/404） |
+| GET | `/routers` | 列出所有 Router |
 | DELETE | `/ais/{ai_id}` | 删除 AI（200/404） |
 | GET | `/ais` | 列出所有 AI |
 | POST | `/sessions` | 创建 Session（201） |

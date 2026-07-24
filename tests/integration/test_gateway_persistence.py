@@ -39,7 +39,8 @@ async def test_gateway_state_persistence_roundtrip(tmp_path: str) -> None:
     assert isinstance(parsed["ais"], list)
     assert parsed["ais"][0]["provider"] == "openai"
     assert isinstance(parsed["sessions"], list)
-    assert parsed["sessions"][0]["ai_id"] == "a1"
+    assert parsed["sessions"][0]["backend_type"] == "ai"
+    assert parsed["sessions"][0]["backend_id"] == "a1"
     assert isinstance(parsed["titles"], list)
     assert parsed["titles"][0] == {"id": "s1", "title": "Test Chat"}
 
@@ -57,7 +58,7 @@ async def test_gateway_state_corrupt_json_falls_back(tmp_path: str) -> None:
 
     state = GatewayState(_path=state_path)
     snapshot = await state.load()
-    assert snapshot == {"ais": [], "sessions": [], "titles": []}
+    assert snapshot == {"ais": [], "routers": [], "sessions": [], "titles": []}
 
 
 def test_aim_get_socket_computes_for_unknown_id() -> None:

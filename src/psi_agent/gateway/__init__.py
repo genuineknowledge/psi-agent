@@ -14,6 +14,7 @@ from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
+from psi_agent.gateway._router_manager import RouterManager, RouterUpstreamInfo
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway._state import GatewayState
@@ -83,7 +84,8 @@ class Gateway:
 
         async with anyio.create_task_group() as tg:
             aim = AIManager(_prefix=self.socket_path, _tg=tg)
-            sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
+            rm = RouterManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
+            sm = SessionManager(_aim=aim, _rm=rm, _prefix=self.socket_path, _tg=tg)
             tm = TitleManager()
 
             for cfg in snapshot.get("ais", []):
@@ -99,10 +101,29 @@ class Gateway:
                 except Exception as e:
                     logger.warning(f"Failed to restore AI {cfg.get('id', '?')!r}: {e!r}")
 
+            for cfg in snapshot.get("routers", []):
+                try:
+                    await rm.create(
+                        name=cfg.get("name", ""),
+                        router_ai_id=cfg.get("router_ai_id", ""),
+                        upstreams=[
+                            RouterUpstreamInfo(item.get("ai_id", ""), item.get("description", ""))
+                            for item in cfg.get("upstreams", [])
+                        ],
+                        default_ai_id=cfg.get("default_ai_id", ""),
+                        router_timeout=cfg.get("router_timeout"),
+                        router_context_chars=cfg.get("router_context_chars", 12_000),
+                        id=cfg.get("id", ""),
+                    )
+                    logger.info(f"Restored Router {cfg.get('id', '?')!r}")
+                except Exception as e:
+                    logger.warning(f"Failed to restore Router {cfg.get('id', '?')!r}: {e!r}")
+
             for cfg in snapshot.get("sessions", []):
                 try:
                     await sm.create(
-                        ai_id=cfg.get("ai_id", ""),
+                        backend_type=cfg.get("backend_type", "ai"),
+                        backend_id=cfg.get("backend_id", cfg.get("ai_id", "")),
                         workspace=cfg.get("workspace", ""),
                         id=cfg.get("id", ""),
                     )
@@ -118,6 +139,7 @@ class Gateway:
                 aim,
                 sm,
                 tm,
+                rm=rm,
                 favicon_path=self.icon,
                 app_name=self.app_name,
                 attention=attention,
@@ -138,13 +160,33 @@ class Gateway:
                         for info in await aim.list_all()
                     ],
                     sessions=[
-                        {"id": info.id, "ai_id": info.ai_id, "workspace": info.workspace}
+                        {
+                            "id": info.id,
+                            "backend_type": info.backend_type,
+                            "backend_id": info.backend_id,
+                            "workspace": info.workspace,
+                        }
                         for info in await sm.list_all()
                     ],
                     titles=[{"id": sid, "title": title} for sid, title in tm.get_all().items()],
+                    routers=[
+                        {
+                            "id": info.id,
+                            "name": info.name,
+                            "router_ai_id": info.router_ai_id,
+                            "upstreams": [
+                                {"ai_id": item.ai_id, "description": item.description} for item in info.upstreams
+                            ],
+                            "default_ai_id": info.default_ai_id,
+                            "router_timeout": info.router_timeout,
+                            "router_context_chars": info.router_context_chars,
+                        }
+                        for info in await rm.list_all()
+                    ],
                 )
 
             aim._persist = _do_persist
+            rm._persist = _do_persist
             sm._persist = _do_persist
             tm._persist = _do_persist
 

@@ -20,17 +20,18 @@ class GatewayState:
             raw = await self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
             logger.debug(f"State file {self._path} not found, starting fresh")
-            return {"ais": [], "sessions": [], "titles": []}
+            return {"ais": [], "routers": [], "sessions": [], "titles": []}
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
             logger.warning(f"State file {self._path} is corrupt, starting fresh")
-            return {"ais": [], "sessions": [], "titles": []}
+            return {"ais": [], "routers": [], "sessions": [], "titles": []}
         if not isinstance(data, dict):
             logger.warning(f"State file {self._path} is not a dict, starting fresh")
-            return {"ais": [], "sessions": [], "titles": []}
+            return {"ais": [], "routers": [], "sessions": [], "titles": []}
         return {
             "ais": data.get("ais", []),
+            "routers": data.get("routers", []),
             "sessions": data.get("sessions", []),
             "titles": data.get("titles", []),
         }
@@ -40,7 +41,9 @@ class GatewayState:
         ais: list[dict[str, str]],
         sessions: list[dict[str, str]],
         titles: list[dict[str, str]],
+        routers: list[dict[str, Any]] | None = None,
     ) -> None:
+        routers = routers or []
         data = {
             "ais": [
                 {
@@ -52,7 +55,16 @@ class GatewayState:
                 }
                 for a in ais
             ],
-            "sessions": [{"id": s["id"], "ai_id": s["ai_id"], "workspace": s["workspace"]} for s in sessions],
+            "routers": routers,
+            "sessions": [
+                {
+                    "id": s["id"],
+                    "backend_type": s.get("backend_type", "ai"),
+                    "backend_id": s.get("backend_id", s.get("ai_id", "")),
+                    "workspace": s["workspace"],
+                }
+                for s in sessions
+            ],
             "titles": [{"id": t["id"], "title": t["title"]} for t in titles],
         }
         json_str = json.dumps(data, ensure_ascii=False, indent=2)
