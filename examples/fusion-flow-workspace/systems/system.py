@@ -310,7 +310,11 @@ class System:
         fusion_skill_md = fusion_skill_dir / "SKILL.md"
         flows_dir = workspace_resolved / "flows"
 
-        repo_root = Path(str(workspace_resolved)).parents[1]
+        # A workspace placed at a shallow path (e.g. ``/workspace``) may have fewer than
+        # two parents; fall back to the workspace itself instead of raising IndexError,
+        # which would abort the whole system prompt build and drop the agent's persona.
+        _ws_parents = Path(str(workspace_resolved)).parents
+        repo_root = _ws_parents[1] if len(_ws_parents) > 1 else Path(str(workspace_resolved))
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
         # The psi engine MUST route through the session shim: the current CLI's `run`
         # is a YAML batch launcher and rejects the bundle's old-style
