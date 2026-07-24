@@ -223,7 +223,7 @@ async def read_pdf_impl(
     resolved = str(await path.resolve())
 
     try:
-        doc = await anyio.to_thread.run_sync(pymupdf.open, resolved)
+        doc = await anyio.to_thread.run_sync(pymupdf.open, resolved)  # ty: ignore
     except Exception as e:
         logger.error(f"read_pdf: failed to open {resolved}: {e!r}")
         return PdfResult(False, "", 0, 0, "", f"failed to open pdf: {e!r}", resolved, [])
@@ -259,7 +259,7 @@ async def read_pdf_impl(
             if force_ocr:
                 need_ocr.append(idx)
                 continue
-            layer = await anyio.to_thread.run_sync(_extract_text_layer, doc, idx)
+            layer = await anyio.to_thread.run_sync(_extract_text_layer, doc, idx)  # ty: ignore
             if len(layer) >= _TEXT_LAYER_MIN_CHARS:
                 page_texts[idx] = layer
             else:
@@ -291,7 +291,7 @@ async def read_pdf_impl(
                         logger.warning(f"read_pdf OCR page {res.page_number}: {res.message}")
                 page_meta_by_idx = {r.page_number - 1: r for r in results}
     finally:
-        await anyio.to_thread.run_sync(doc.close)
+        await anyio.to_thread.run_sync(doc.close)  # ty: ignore
 
     # Assemble ordered output.
     page_dicts: list[dict[str, Any]] = []
@@ -336,7 +336,7 @@ async def _ocr_pages(
     async def _one(idx: int) -> None:
         async with limiter:
             try:
-                png = await anyio.to_thread.run_sync(_render_page_png, doc, idx)
+                png = await anyio.to_thread.run_sync(_render_page_png, doc, idx)  # ty: ignore
             except Exception as e:
                 logger.error(f"read_pdf: render page {idx + 1} failed: {e!r}")
                 results[idx] = PageResult(idx + 1, "error", "", f"render failed: {e!r}")
