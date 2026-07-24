@@ -11,10 +11,11 @@ import {
   SquareStack,
   X,
 } from "lucide-react";
-import { type FormEvent, useRef, useState } from "react";
+import { type ClipboardEvent, type FormEvent, useRef, useState } from "react";
 import { NEW_TASK_PRESETS } from "./demo-fixtures";
 import { OVERVIEW_LABEL, type Task, type TaskTemplate } from "./model";
 import { AgentMark, BrandLogo } from "./primitives";
+import { filesFromClipboard } from "../services/clipboardFiles";
 
 export function NewTaskWorkspace({
   draft,
@@ -155,6 +156,14 @@ export function NewTaskWorkspace({
               type="text"
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
+              onPaste={(event: ClipboardEvent<HTMLInputElement>) => {
+                if (typing) return;
+                const files = filesFromClipboard(event.clipboardData);
+                if (!files.length) return;
+                setAttachments((current) => [...current, ...files]);
+                const text = event.clipboardData.getData("text/plain");
+                if (!text) event.preventDefault();
+              }}
               placeholder={typing ? "正在创建任务…" : "描述一个任务，发送后进入分屏与 Agent 对话…"}
               aria-label="描述新任务"
               autoFocus

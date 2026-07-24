@@ -59,6 +59,7 @@ import {
 } from "../services/api";
 import { ensureDefaultAi, pickPreferredAi, purgePlaceholderAis, writeStoredAiId } from "../services/bootstrapAi";
 import { chatFileToFile, filesToChatFiles } from "../services/chatFiles";
+import { filesFromClipboard } from "../services/clipboardFiles";
 import { streamSessionChat } from "../services/chatStream";
 import {
   historyToChat,
@@ -720,13 +721,23 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
     void sendMessage(currentChatDraft, currentCard.id, files);
   };
 
-  const addChatAttachments = (cardId: string, fileList: FileList | null) => {
+  const addChatAttachments = (cardId: string, fileList: FileList | File[] | null) => {
     if (!fileList?.length) return;
     const next = Array.from(fileList);
     setChatAttachments((current) => ({
       ...current,
       [cardId]: [...(current[cardId] ?? []), ...next],
     }));
+  };
+
+  /** Paste any clipboard file (screenshot, copied file, …) ≡ paperclip attach. */
+  const handleChatPaste = (cardId: string, event: React.ClipboardEvent<HTMLInputElement>) => {
+    const files = filesFromClipboard(event.clipboardData);
+    if (!files.length) return;
+    addChatAttachments(cardId, files);
+    const text = event.clipboardData.getData("text/plain");
+    // File-only paste (e.g. screenshot): block browser stuffing binary into the input.
+    if (!text) event.preventDefault();
   };
 
   const removeChatAttachment = (cardId: string, index: number) => {
@@ -1183,6 +1194,10 @@ export default function HaiTunAgentWorkspace({ workspace, onChangeWorkspace }: P
               value={unitDraft}
               onChange={(event) => interactive && setChatDrafts((current) => ({ ...current, [unitCard.id]: event.target.value }))}
               onFocus={() => interactive && setChatExpanded(true)}
+              onPaste={(event) => {
+                if (!interactive) return;
+                handleChatPaste(unitCard.id, event);
+              }}
               placeholder={`告诉 Agent 如何继续「${unitCard.title}」…`}
               aria-label="对话内容"
               readOnly={!interactive}
