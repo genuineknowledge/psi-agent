@@ -68,7 +68,37 @@ Gateway 进程
 11. runner.setup() + create_site + site.start() + tray/webview/browser 等待与 finally 清理
 ```
 
-## 默认 agent / workspace（接口层；AppData 另 PR）
+## 默认 agent / workspace（小步第 2 层：接线；AppData / 工具读路径另 PR）
+
+### 本层接口范围（看 PR 先看这段）
+
+三区拆分拆成小 PR 时，**本层只做「路径怎么传进 Session」**，不做「工具怎么按区读盘」。
+
+```text
+调用方（spa / 飞书 / haitun sessions_create / …）
+    │  GET /defaults  → 得知默认 agent、workspace
+    │  POST /sessions { workspace?, agent? }
+    ▼
+Gateway SessionManager（缺省补 --default-agent / --default-workspace）
+    │  Session(workspace=…, agent=…)
+    ▼
+Session（#472 已支持）
+    │  启动时：tools / schedules / system 从 agent_path 加载
+    │         history 仍在 workspace/histories/
+    │  回合内：runtime_scope 写入 get_agent()/get_workspace() ContextVar
+    ▼
+workspace 工具（write/bash/…）按 ContextVar 解析相对路径  ← ❌ 不在本层
+AppData 记忆区（history/state/todos）                   ← ❌ 不在本层
+```
+
+| 已合 / 本 PR / 未做 | 内容 |
+|---------------------|------|
+| ✅ #472 | Session 可选 `agent`；加载能力包；ContextVar **API** |
+| ✅ **本 PR** | Gateway CLI + `GET /defaults` + `POST /sessions.agent`；各**调用方**把路径交给 Gateway；Gateway 再交给 Session |
+| ❌ 后续 | haitun 等工具真正 `get_workspace()`/`get_agent()` 读路径 |
+| ❌ 后续 | AppData（history/state/todos 迁出 workspace） |
+
+**可读验收**：新建 Session 后 `GET /sessions` 里有 `agent` 字段；该 Session 的 tools 来自 agent 目录（若与 workspace 不同）。**不可用本 PR 验收**：相对路径是否写入「用户工作区」而非 agent 包——那是工具读 ContextVar 的下一步。
 
 | CLI | 含义 |
 |-----|------|
@@ -77,7 +107,7 @@ Gateway 进程
 
 `POST /sessions` 可显式带 `agent` / `workspace`；省略时用上述默认。`SessionInfo` 与 `state/latest.json` 持久化含 `agent`。
 
-**谁对接这套接口（不只 spa-v2）**
+**谁对接这套接口（调用方 = 谁 POST /sessions 或等价 spawn）**
 
 | 调用方 | 怎么用 |
 |--------|--------|
@@ -87,8 +117,6 @@ Gateway 进程
 | **haitun** `sessions_create` / session 工具 | `GET /defaults` 后 `POST /sessions` 带 `agent` |
 | **state 恢复** | snapshot 的 `agent`；缺省回落到 Gateway default |
 | **OpenAPI / 其它客户端** | 同一 REST；可显式传或依赖服务端默认 |
-
-**本步不做**：history / state / todos 迁 AppData（后续小 PR）。
 
 ## 系统托盘 (GatewayTray)
 
