@@ -95,6 +95,7 @@ class FeishuManager:
             await anyio.Path(ws).mkdir(parents=True, exist_ok=True)
 
             try:
+                # agent omitted → SessionManager applies Gateway --default-agent
                 info = await self._sm.create(ai_id=resolved_ai, id=sid, workspace=ws)
                 socket = info.channel_socket
             except ValueError as e:

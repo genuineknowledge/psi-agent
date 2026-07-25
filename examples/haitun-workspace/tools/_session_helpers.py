@@ -1467,6 +1467,16 @@ async def create_session(
     if sid:
         body["id"] = sid
 
+    # Prefer Gateway defaults.agent so tool-spawned sessions share the same package as SPA.
+    try:
+        defaults = await _sub._fetch_gateway_json(f"{gateway_url.rstrip('/')}/defaults")
+        if isinstance(defaults, dict):
+            agent = str(defaults.get("agent", "")).strip()
+            if agent:
+                body["agent"] = agent
+    except Exception:
+        pass
+
     try:
         created = await _sub.post_gateway_json(
             f"{gateway_url.rstrip('/')}/sessions",

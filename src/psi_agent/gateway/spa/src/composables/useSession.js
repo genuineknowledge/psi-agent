@@ -3,7 +3,7 @@ import { useSessionStore } from '../stores/session.js'
 import { useChatStore } from '../stores/chat.js'
 import { useAiStore } from '../stores/ai.js'
 import { useUiStore } from '../stores/ui.js'
-import { api } from '../api.js'
+import { api, fetchDefaults } from '../api.js'
 import { loadHistory, htmlEscape, renderMd, saveActiveState } from '../utils.js'
 import { stripTransferMarkers } from '../sendMarkers.js'
 import { normalizeFailedTurns } from '../messageTurn.js'
@@ -11,6 +11,16 @@ import { normalizeWorkspacePath, resolveSessionWorkspace } from '../sessionList.
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
+}
+
+/** Resolve Gateway default agent package (empty if unset / unreachable). */
+async function defaultAgentFromGateway() {
+  try {
+    const d = await fetchDefaults()
+    return (d?.agent || '').trim()
+  } catch {
+    return ''
+  }
 }
 
 function snapshotDraftSession() {
@@ -116,11 +126,14 @@ export async function promoteDraftToSession() {
   const backendId = draft.backendId || draft.aiId || ai.selectedAiId
   if (!backendId) throw new Error('请先选择一个大模型或路由服务')
 
-  const info = await api('POST', '/sessions', {
+  const body = {
     backend_type: backendType,
     backend_id: backendId,
     workspace: draft.workspace,
-  })
+  }
+  const agent = await defaultAgentFromGateway()
+  if (agent) body.agent = agent
+  const info = await api('POST', '/sessions', body)
   const sid = info.id
   const draftId = draft.draftId
 

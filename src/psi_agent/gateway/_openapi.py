@@ -325,7 +325,7 @@ OPENAPI_SPEC = {
         },
         "/defaults": {
             "get": {
-                "summary": "Default agent package and user workspace paths",
+                "summary": "Default agent package and user workspace paths (all session creators)",
                 "operationId": "getDefaults",
                 "responses": {
                     "200": {

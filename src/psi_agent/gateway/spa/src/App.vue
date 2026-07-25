@@ -418,7 +418,14 @@ async function selectBackend({ type, id }) {
   const current = sessions.value.find(s => s.id === selectedSessionId.value)
   if (!current) return
   await api('DELETE', '/sessions/' + selectedSessionId.value).catch(() => {})
-  await api('POST', '/sessions', { id: selectedSessionId.value, backend_type: type, backend_id: id, workspace: current.workspace })
+  const recreate = {
+    id: selectedSessionId.value,
+    backend_type: type,
+    backend_id: id,
+    workspace: current.workspace,
+  }
+  if (current.agent) recreate.agent = current.agent
+  await api('POST', '/sessions', recreate)
   await refreshSessions()
 }
 

@@ -38,3 +38,8 @@ export async function streamChat(sessionId, formData, signal) {
   }
   return r.body.getReader()
 }
+
+/** Gateway path defaults (agent package + user workspace). Shared by all SPA surfaces. */
+export async function fetchDefaults() {
+  return api('GET', '/defaults')
+}

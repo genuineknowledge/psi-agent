@@ -77,6 +77,17 @@ Gateway 进程
 
 `POST /sessions` 可显式带 `agent` / `workspace`；省略时用上述默认。`SessionInfo` 与 `state/latest.json` 持久化含 `agent`。
 
+**谁对接这套接口（不只 spa-v2）**
+
+| 调用方 | 怎么用 |
+|--------|--------|
+| **spa-v2** | `GET /defaults` 启动选工作区；`POST /sessions` 显式带 `agent` |
+| **spa v1** | `POST /sessions` 带 `agent`（从 `/defaults`）；切换 backend 重建时保留 `agent` |
+| **飞书** `POST /feishu/route` → `FeishuManager` → `SessionManager.create` | 不传 `agent` 时自动吃 Gateway `_default_agent` |
+| **haitun** `sessions_create` / session 工具 | `GET /defaults` 后 `POST /sessions` 带 `agent` |
+| **state 恢复** | snapshot 的 `agent`；缺省回落到 Gateway default |
+| **OpenAPI / 其它客户端** | 同一 REST；可显式传或依赖服务端默认 |
+
 **本步不做**：history / state / todos 迁 AppData（后续小 PR）。
 
 ## 系统托盘 (GatewayTray)
@@ -259,7 +270,7 @@ REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
 | GET | `/sessions/{session_id}/todos` | 读取 workspace ``.psi/todos/{session_id}.json``（``todo`` tool 写入）；返回 ``{todos, summary}``，文件缺失则为空列表 |
 | POST | `/feishu/route` | 按飞书 `open_id` 幂等路由到其独立 Session（首次按需 spawn）`{open_id, ai_id?, workspace?}` → 201 `{open_id, session_id, channel_socket}`；缺 open_id / 无 ai_id → 400 |
 | GET | `/feishu/routes` | 列出所有飞书 open_id → Session 路由 `[{open_id, session_id}]` |
-| GET | `/defaults` | 默认 `agent` + `workspace` 路径（供 spa-v2 启动 / 建 Session） |
+| GET | `/defaults` | 默认 `agent` + `workspace`（**所有**建 Session 调用方可读：spa v1/v2、haitun `sessions_create`、外部 OpenAPI 客户端；省略 `agent` 时服务端也会用同一默认） |
 | GET | `/workspace/cwd` | Gateway 进程当前工作目录 |
 | GET | `/workspace/places` | PathPicker 快捷位置（cwd / home / desktop / documents / downloads）+ 盘符 |
 | GET | `/workspace/browse` | 浏览目录 `?path=...&kind=directory|file|all&q=...`，默认 `kind=directory` |
