@@ -89,6 +89,7 @@ service tools:
 | `flow_manage` | CRUD + promote on Fusion Flow assets under `flows/`. |
 | `schedule_manage` | CRUD on `schedules/<name>/TASK.md` (cron + task body); validates the cron expression. |
 | `memory_add` / `memory_search` / `memory_answer_context` / `memory_health` | Per-Session routed Fusion Memory MCP tools. Authentication comes only from the trusted runtime Session and operator token map. |
+| `haibao_list_datasets` / `haibao_ask` | Bundled Haibao MCP Adapter tools for real business-data queries. They require an operator-provisioned private MCP server; no private server or database onboarding is bundled. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
 | `x_search` (`x_search.py` + `_x_search_impl.py`) | Search recent public posts on X (Twitter) via the X API v2 recent-search endpoint (last ~7 days). `x_search(query, max_results, sort_order)` supports X search operators (`from:`, `#tag`, `"phrase"`, `lang:`, `-is:retweet`). Uses `aiohttp` (already a core dep), no extra packages. Requires `X_BEARER_TOKEN` (X API v2 App-only OAuth 2.0 bearer token). |
 | `browser` (`browser.py` + `_browser_impl.py` + `_mcp.py`) | Browser automation via Playwright MCP driving the system browser (Edge). Tools surface as `browser_*` (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press_key`, `browser_navigate_back`, `browser_console_messages`, `browser_handle_dialog`, `browser_take_screenshot`, …). One long-lived `npx @playwright/mcp` server with `--shared-browser-context` keeps page state across calls. Requires Node.js/`npx`. |
@@ -110,6 +111,8 @@ service tools:
 - The hermes domain skill set (cryptanalysis, image-segmentation, ml-inference, …).
 - Selected curated skills (`psi-agent-help`, `code-review-checklist`, `python-async-basics`,
   `python-static-analysis`, `user-preferences-and-language`, `example-skill`).
+- `haibao` — bundled real business-data query workflow for the two Haibao MCP Adapter tools;
+  requires the separately operated private server.
 - `speech-to-text` / `text-to-speech` — iFLYTEK voice input/output recipes.
 - `gif-search` — search & download animated GIFs/stickers from a hosted GIF API (Giphy; `api.giphy.com`) with `curl` + `jq` (via `bash`); `media` category, shell-only, no extra deps. Delivers files via `[SEND:]`; needs `GIPHY_API_KEY`. Note: Google's Tenor API was shut down 2026-06-30, so this uses Giphy, not Tenor.
 - `github-auth` — GitHub authentication setup (HTTPS PAT, SSH keys, `gh` CLI login); shell-only, no extra deps.
@@ -143,11 +146,16 @@ service tools:
 
 ## Prerequisites
 
-- **Haibao ChatBI**: Haibao tools are not bundled in this workspace. See
-  [`docs/haibao-integration.md`](docs/haibao-integration.md) for the recommended native Tool
-  path, optional MCP adapter, identity boundary, error contract, and acceptance checklist.
-  Treat that document as a target integration design rather than a statement of current
-  production support.
+- **Haibao ChatBI**: The Adapter, `haibao_list_datasets` / `haibao_ask` tools, and Haibao Skill
+  are bundled. They require an operator-provisioned private MCP server; that server, its OAuth
+  configuration, credentials, core implementation, and database onboarding are not bundled.
+  See [`docs/haibao-integration.md`](docs/haibao-integration.md). This is not a claim that a
+  production service is deployed, and direct workspace-to-private-API calls remain prohibited.
+  `HAIBAO_MCP_TOKEN` is process-global, so one Haitun process/workspace deployment is one
+  configured Haibao principal and security boundary; it does not provide per-session identity
+  forwarding. Never use one token/process for users who require distinct authorization. Deploy
+  a separate Haitun process, container, or workspace with a distinct token per principal or
+  distinct authorization cohort.
 
 - **Fusion Memory**: Haitun only consumes an operator-provisioned remote MCP
   Streamable HTTP service. The process starter supplies the token-map path; the

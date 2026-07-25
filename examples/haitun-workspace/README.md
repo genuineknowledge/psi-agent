@@ -10,9 +10,16 @@ A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combin
 
 See `AGENTS.md` for the full layout and conventions.
 
-To integrate Haibao ChatBI through native workspace tools or an MCP adapter, see
-[`docs/haibao-integration.md`](docs/haibao-integration.md). The guide describes a target
-integration and production gates; Haibao tools are not bundled in this workspace yet.
+The Haibao ChatBI MCP Adapter, public tools, and Skill are bundled in this workspace. They
+require an operator-provisioned private MCP server, which is not bundled or claimed to be
+deployed in production. See [`docs/haibao-integration.md`](docs/haibao-integration.md) for
+configuration, behavior, and production gates.
+
+`HAIBAO_MCP_TOKEN` is process-global: one Haitun process/workspace deployment is one configured
+Haibao principal and security boundary. It does not forward per-session identity. Never use one
+token/process to serve users who require distinct authorization; deploy a separate Haitun
+process, container, or workspace with a distinct token for each principal or distinct
+authorization cohort.
 
 ## Run
 
@@ -42,6 +49,9 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
   For stateful sub-agent sessions, copy `bin/env.stateful.template` to
   `skills/fusion-flow/.env` and fill in the paths.
 - **Serper search** needs psi-agent installed with the `mcp` extra and `uvx` on PATH.
+- **Haibao ChatBI** needs the required operator-provisioned private MCP server and the three
+  deployment-managed variables documented in `docs/haibao-integration.md`. The bundled Adapter,
+  tools, and Skill do not provide the private service or database onboarding.
 - Never put API keys in this workspace or in generated `.flow.ts` / `.env` files.
 
 ## Fusion Memory
