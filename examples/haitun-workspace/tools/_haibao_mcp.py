@@ -387,7 +387,16 @@ def _validate_datasets(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_ask(payload: dict[str, Any]) -> dict[str, Any]:
     required = {"status", "execution", "request_id"}
-    allowed = {"status", "answer", "sql", "execution", "request_id"}
+    allowed = {
+        "status",
+        "answer",
+        "sql",
+        "execution",
+        "request_id",
+        "confidence_level",
+        "confidence_note",
+        "confidence_breakdown",
+    }
     if not required <= set(payload) <= allowed:
         raise ProtocolError("invalid ask keys")
     status = payload["status"]
@@ -399,6 +408,7 @@ def _validate_ask(payload: dict[str, Any]) -> dict[str, Any]:
         sql is not None and not _bounded_string(sql, 1, 100_000)
     ):
         raise ProtocolError("invalid ask text")
+    _validate_confidence(payload)
     _validate_request_id(payload)
     if status == "sql_only" and payload["execution"] is None:
         payload = dict(payload)
@@ -439,6 +449,29 @@ def _validate_ask(payload: dict[str, Any]) -> dict[str, Any]:
 def _validate_request_id(payload: dict[str, Any]) -> None:
     if "request_id" in payload and not _bounded_string(payload["request_id"], 1, 256):
         raise ProtocolError("invalid request id")
+
+
+def _validate_confidence(payload: dict[str, Any]) -> None:
+    level = payload.get("confidence_level")
+    if level is not None and level not in {"high", "medium", "low"}:
+        raise ProtocolError("invalid confidence level")
+    note = payload.get("confidence_note")
+    if note is not None and not _bounded_string(note, 1, 1000):
+        raise ProtocolError("invalid confidence note")
+    breakdown = payload.get("confidence_breakdown")
+    if breakdown is None:
+        return
+    if not isinstance(breakdown, list) or len(breakdown) > 20:
+        raise ProtocolError("invalid confidence breakdown")
+    for item in breakdown:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"signal", "status", "graded"}
+            or not _bounded_string(item["signal"], 1, 64)
+            or not _bounded_string(item["status"], 1, 64)
+            or type(item["graded"]) is not bool
+        ):
+            raise ProtocolError("invalid confidence signal")
 
 
 def _safe_id(value: Any) -> bool:

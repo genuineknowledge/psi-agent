@@ -626,6 +626,53 @@ async def test_ask_accepts_sql_only_without_sql_key(adapter):
     assert result == payload
 
 
+async def test_ask_accepts_confidence_fields(adapter):
+    """The production server forwards chatbi confidence fields when present."""
+    payload = {
+        "status": "success",
+        "answer": "6",
+        "sql": "SELECT 1",
+        "execution": {"executed": True, "ok": True, "columns": ["n"], "rows": [[6]], "row_count": 1},
+        "request_id": "req-1",
+        "confidence_level": "high",
+        "confidence_note": "结果可信。",
+        "confidence_breakdown": [
+            {"signal": "symbolic", "status": "ke2sql", "graded": False},
+            {"signal": "semantic", "status": "pass", "graded": True},
+        ],
+    }
+    session = FakeSession(_result(payload))
+    connector, _ = _connector(session)
+    result = await adapter.call_tool("haibao_ask", {"text": "q", "db_id": "sales"}, env=ENV, connector=connector)
+    assert result == payload
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"confidence_level": "extreme"},
+        {"confidence_note": "x" * 1001},
+        {"confidence_breakdown": [{"signal": "s", "status": "pass"}]},
+        {"confidence_breakdown": [{"signal": "s", "status": "pass", "graded": "yes"}]},
+        {"confidence_breakdown": [{"signal": "s", "status": "pass", "graded": True, "extra": 1}]},
+        {"confidence_breakdown": "high"},
+    ],
+)
+async def test_ask_rejects_malformed_confidence(adapter, patch):
+    payload = {
+        "status": "success",
+        "answer": "6",
+        "sql": "SELECT 1",
+        "execution": {"executed": True, "ok": True, "columns": ["n"], "rows": [[6]], "row_count": 1},
+        "request_id": "req-1",
+        **patch,
+    }
+    session = FakeSession(_result(payload))
+    connector, _ = _connector(session)
+    result = await adapter.call_tool("haibao_ask", {"text": "q", "db_id": "sales"}, env=ENV, connector=connector)
+    assert result["error"]["code"] == "protocol_error"
+
+
 async def test_is_error_never_exposes_remote_text(adapter):
     remote_secret = "remote stack and secret"
     session = FakeSession(
