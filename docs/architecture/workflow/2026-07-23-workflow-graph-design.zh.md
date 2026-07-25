@@ -476,4 +476,6 @@ failure、结果聚合与提交由未来 runtime 负责。
 - 直接构造和编译构造都能确定性序列化；
 - tests、Ruff、ty 通过；
 - 根 AGENTS 的代码结构和设计说明同步；
-- 不提前实现 planner/executor。
+- 初版 one-shot planner/executor 已独立实现，边界见
+  `2026-07-25-workflow-execution-plan-design.zh.md`；本图模型仍允许保存 planner
+  暂不支持的有环和 Foreach 结构。

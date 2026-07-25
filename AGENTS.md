@@ -103,6 +103,7 @@ src/
     │   ├── model.py                # Agent、规则、trace、binding 等运行模型
     │   ├── runtime.py              # run 生命周期、持久化与恢复
     │   └── flow.py                 # 29 个 flow.* 执行原语
+    ├── workflow_execution.py       # WorkflowGraph → Fiber/Await/Invoke plan + async executor
     ├── workflow_graph/
     │   ├── __init__.py             # 声明式图模型 API
     │   └── model.py                # 允许有环的 Step–Artifact 静态图
@@ -132,6 +133,7 @@ src/
 - **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
 - **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包
 - **Workflow Graph**: `docs/architecture/workflow/2026-07-23-workflow-graph-design.zh.md` — 允许有环的声明式 Step–Artifact 图及待讨论语义；具体 Core IR 后端位于 `examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/graph_compiler.py`
+- **Workflow Execution**: `docs/architecture/workflow/2026-07-25-workflow-execution-plan-design.zh.md` — one-shot 无环子集的 Fiber/Await/Invoke 计划、全量异步启动和 dispatcher 边界
 
 ## 核心通信协议
 
@@ -214,6 +216,8 @@ SSE 流中的特殊字段：
 17. **Windows batch 参数边界**：`fusion_flow.flow.exec()` 仅在目标显式以 `.cmd`/`.bat` 结尾时使用系统 shell，并对命令与参数整体加引号、延迟还原字面量 `%`；含双引号或换行的参数因无法安全无损地穿过 `cmd.exe` 而直接拒绝。Windows 非 batch 与其他平台始终保持 argv/no-shell 路径。
 
 18. **`WorkflowEdge` 是封闭 union**：`WorkflowGraph` 只接受 `ConsumesEdge`、`ProducesEdge`、`ForeachEdge` 的精确类型，不接受子类。子类会破坏 dataclass 基于精确类型的相等性去重，也能覆盖序列化使用的 `kind`。新增边类型时应显式更新 union、校验和序列化。
+
+19. **WorkflowGraph 可保存有环，但初版 plan 不执行环**：`workflow_execution.generate_plan()` 只编译 one-shot producer/consumer 子集。它同时启动所有 Fiber，以显式 `Await` 唤醒消费者；Foreach、resource、retry、input+producer 和 circular await 在计划阶段报错，不能静默忽略或留到运行期死锁。
 
 ## 测试约定
 

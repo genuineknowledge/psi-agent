@@ -1,0 +1,1204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workflow 执行计划：从图到异步调度</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172021;
+      --muted: #667171;
+      --paper: #f7f3ea;
+      --card: #fffdf8;
+      --line: #d9d4c9;
+      --brand: #0f766e;
+      --brand-soft: #d8eee9;
+      --blue: #2563eb;
+      --blue-soft: #dbeafe;
+      --amber: #b45309;
+      --amber-soft: #fef3c7;
+      --red: #b42318;
+      --red-soft: #fee4e2;
+      --shadow: 0 18px 46px rgb(26 35 35 / 9%);
+      --radius: 20px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 8% 2%, rgb(15 118 110 / 10%), transparent 28rem),
+        radial-gradient(circle at 95% 18%, rgb(37 99 235 / 8%), transparent 24rem),
+        var(--paper);
+      color: var(--ink);
+      font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.55;
+    }
+
+    button, code { font: inherit; }
+
+    .page-shell {
+      width: min(1440px, calc(100% - 40px));
+      margin: 0 auto;
+      padding: 52px 0 64px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 28px;
+      align-items: end;
+      margin-bottom: 28px;
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--brand);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      max-width: 850px;
+      margin: 0;
+      font-size: clamp(2.05rem, 4.2vw, 4.25rem);
+      line-height: 1.05;
+      letter-spacing: -.045em;
+    }
+
+    .hero-copy {
+      max-width: 780px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .hero-copy strong { color: var(--ink); }
+
+    .hero-facts {
+      display: grid;
+      grid-template-columns: repeat(2, 112px);
+      gap: 10px;
+    }
+
+    .fact {
+      min-height: 92px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: rgb(255 253 248 / 72%);
+    }
+
+    .fact b {
+      display: block;
+      color: var(--brand);
+      font-size: 1.15rem;
+    }
+
+    .fact span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: .78rem;
+    }
+
+    .pipeline {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 22px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--card);
+      box-shadow: var(--shadow);
+    }
+
+    .pipeline code {
+      padding: 6px 10px;
+      border-radius: 9px;
+      background: #eee9df;
+      font-size: .84rem;
+      font-weight: 700;
+    }
+
+    .pipeline .arrow { color: var(--brand); font-weight: 900; }
+
+    .control-deck {
+      position: sticky;
+      z-index: 20;
+      top: 12px;
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) auto;
+      gap: 18px;
+      align-items: center;
+      margin-bottom: 18px;
+      padding: 14px 16px;
+      border: 1px solid rgb(23 32 33 / 12%);
+      border-radius: 18px;
+      background: rgb(255 253 248 / 91%);
+      box-shadow: 0 12px 30px rgb(23 32 33 / 11%);
+      backdrop-filter: blur(14px);
+    }
+
+    .progress-copy {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 10px 14px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .step-count {
+      color: var(--brand);
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+
+    #frame-title {
+      overflow: hidden;
+      margin: 0;
+      font-size: .98rem;
+      font-weight: 800;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .progress-track {
+      grid-column: 1 / -1;
+      height: 5px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e7e2d8;
+    }
+
+    #progress-bar {
+      width: 12.5%;
+      height: 100%;
+      border-radius: inherit;
+      background: var(--brand);
+      transition: width .28s ease;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .controls button {
+      min-height: 40px;
+      padding: 8px 13px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--card);
+      color: var(--ink);
+      cursor: pointer;
+      font-weight: 750;
+    }
+
+    .controls button:hover:not(:disabled) {
+      border-color: var(--brand);
+      color: var(--brand);
+    }
+
+    .controls button:focus-visible,
+    .graph-scroll:focus-visible {
+      outline: 3px solid rgb(37 99 235 / 38%);
+      outline-offset: 3px;
+    }
+
+    .controls button:disabled {
+      cursor: not-allowed;
+      opacity: .42;
+    }
+
+    #next-step, #auto-play[aria-pressed="true"] {
+      border-color: var(--brand);
+      background: var(--brand);
+      color: white;
+    }
+
+    .dashboard {
+      display: grid;
+      grid-template-columns: minmax(0, 1.12fr) minmax(390px, .88fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .panel {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--card);
+      box-shadow: var(--shadow);
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: start;
+      padding: 20px 22px 14px;
+      border-bottom: 1px solid #ebe6dc;
+    }
+
+    .panel-kicker {
+      margin: 0 0 3px;
+      color: var(--brand);
+      font-size: .7rem;
+      font-weight: 850;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 1.08rem;
+      letter-spacing: -.015em;
+    }
+
+    .panel-note {
+      margin: 2px 0 0;
+      color: var(--muted);
+      font-size: .76rem;
+      text-align: right;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 0;
+      padding: 12px 22px 0;
+      list-style: none;
+      color: var(--muted);
+      font-size: .73rem;
+    }
+
+    .legend li { display: flex; gap: 6px; align-items: center; }
+
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ddd7cb;
+    }
+
+    .swatch.waiting { background: var(--amber); }
+    .swatch.running { background: var(--blue); }
+    .swatch.done { background: var(--brand); }
+
+    .graph-scroll {
+      overflow-x: auto;
+      padding: 8px 12px 18px;
+    }
+
+    #workflow-graph {
+      display: block;
+      width: 100%;
+      min-width: 720px;
+      height: auto;
+    }
+
+    .edge {
+      fill: none;
+      stroke: #c8c2b7;
+      stroke-width: 2.2;
+      marker-end: url(#arrowhead);
+    }
+
+    .graph-node .shape {
+      fill: #f0ece4;
+      stroke: #c9c3b8;
+      stroke-width: 2;
+      transition: fill .25s ease, stroke .25s ease;
+    }
+
+    .graph-node text {
+      fill: var(--ink);
+      font-size: 14px;
+      font-weight: 800;
+      text-anchor: middle;
+    }
+
+    .graph-node .kind {
+      fill: var(--muted);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .09em;
+    }
+
+    .graph-node[data-state="waiting"] .shape {
+      fill: var(--amber-soft);
+      stroke: var(--amber);
+      stroke-dasharray: 5 4;
+    }
+
+    .graph-node[data-state="running"] .shape {
+      fill: var(--blue-soft);
+      stroke: var(--blue);
+      stroke-width: 3;
+    }
+
+    .graph-node[data-state="done"] .shape,
+    .graph-node[data-state="available"] .shape {
+      fill: var(--brand-soft);
+      stroke: var(--brand);
+    }
+
+    .graph-node[data-state="running"] .status-dot {
+      fill: var(--blue);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .graph-node .status-dot { fill: transparent; }
+
+    .graph-caption {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 22px 18px;
+      color: var(--muted);
+      font-size: .76rem;
+    }
+
+    .graph-caption code { color: var(--brand); font-weight: 750; }
+
+    .plan-body { padding: 16px 18px 20px; }
+
+    .plan-summary {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #f1ede5;
+      color: var(--muted);
+      font-size: .78rem;
+    }
+
+    .plan-summary b { color: var(--ink); }
+
+    .fibers { display: grid; gap: 9px; }
+
+    .fiber {
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      padding: 11px 12px;
+      border: 1px solid #dfd9ce;
+      border-left: 4px solid #cfc9bd;
+      border-radius: 12px;
+      background: #fffcf7;
+    }
+
+    .fiber[data-state="waiting"] { border-left-color: var(--amber); }
+    .fiber[data-state="running"] { border-left-color: var(--blue); background: #f7faff; }
+    .fiber[data-state="done"] { border-left-color: var(--brand); background: #f6fcfa; }
+
+    .fiber-name {
+      font-size: .78rem;
+      font-weight: 850;
+    }
+
+    .instructions {
+      display: flex;
+      min-width: 0;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .instruction {
+      padding: 4px 7px;
+      border: 1px solid #ddd6ca;
+      border-radius: 7px;
+      background: white;
+      color: var(--muted);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: .68rem;
+    }
+
+    .instruction.current {
+      border-color: currentColor;
+      background: var(--amber-soft);
+      color: var(--amber);
+      font-weight: 800;
+    }
+
+    .fiber[data-state="running"] .instruction.invoke.current {
+      background: var(--blue-soft);
+      color: var(--blue);
+    }
+
+    .instruction.passed {
+      border-color: var(--brand);
+      background: var(--brand-soft);
+      color: var(--brand);
+    }
+
+    .instruction-arrow { color: #aaa399; font-size: .75rem; }
+
+    .state-label {
+      padding: 4px 7px;
+      border-radius: 999px;
+      background: #ebe6dc;
+      color: var(--muted);
+      font-size: .67rem;
+      font-weight: 850;
+      white-space: nowrap;
+    }
+
+    .fiber[data-state="waiting"] .state-label { background: var(--amber-soft); color: var(--amber); }
+    .fiber[data-state="running"] .state-label { background: var(--blue-soft); color: var(--blue); }
+    .fiber[data-state="done"] .state-label { background: var(--brand-soft); color: var(--brand); }
+
+    .plan-code {
+      margin: 13px 0 0;
+      overflow-x: auto;
+      padding: 12px;
+      border-radius: 12px;
+      background: #172021;
+      color: #dbe7e4;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: .73rem;
+      line-height: 1.55;
+      white-space: pre;
+    }
+
+    .timeline-body { padding: 16px 18px 20px; }
+
+    .timeline-grid {
+      display: grid;
+      grid-template-columns: 86px repeat(8, minmax(34px, 1fr));
+      gap: 5px;
+      min-width: 650px;
+      align-items: center;
+    }
+
+    .timeline-scroll { overflow-x: auto; }
+
+    .tick {
+      color: var(--muted);
+      font-size: .65rem;
+      text-align: center;
+    }
+
+    .row-name {
+      overflow: hidden;
+      font-size: .72rem;
+      font-weight: 850;
+      text-overflow: ellipsis;
+    }
+
+    .timeline-cell {
+      position: relative;
+      height: 28px;
+      border: 1px solid #e3ddd2;
+      border-radius: 7px;
+      background: #f3efe7;
+      color: transparent;
+      font-size: .6rem;
+      font-weight: 850;
+      text-align: center;
+      line-height: 26px;
+    }
+
+    .timeline-cell.reached.idle { color: #9c9589; }
+    .timeline-cell.reached.waiting { border-color: #e5bd72; background: var(--amber-soft); color: var(--amber); }
+    .timeline-cell.reached.running { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); }
+    .timeline-cell.reached.done { border-color: var(--brand); background: var(--brand-soft); color: var(--brand); }
+    .timeline-cell.current { outline: 2px solid var(--ink); outline-offset: 1px; }
+
+    .fiber-start::before {
+      position: absolute;
+      top: -6px;
+      left: 50%;
+      width: 7px;
+      height: 7px;
+      border: 2px solid white;
+      border-radius: 50%;
+      background: var(--ink);
+      box-shadow: 0 0 0 1px var(--ink);
+      content: "";
+      transform: translateX(-50%);
+    }
+
+    .timeline-foot {
+      display: flex;
+      gap: 9px;
+      align-items: start;
+      margin: 14px 0 0;
+      padding: 11px 12px;
+      border-radius: 12px;
+      background: #f1ede5;
+      color: var(--muted);
+      font-size: .76rem;
+    }
+
+    .timeline-foot b { color: var(--ink); }
+
+    .artifact-body {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(210px, .8fr);
+      gap: 16px;
+      padding: 18px;
+    }
+
+    .artifact-list {
+      display: flex;
+      flex-wrap: wrap;
+      align-content: start;
+      gap: 8px;
+    }
+
+    .artifact-chip {
+      padding: 7px 10px;
+      border: 1px dashed #cec7ba;
+      border-radius: 999px;
+      background: #f3efe7;
+      color: #938c81;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: .72rem;
+      font-weight: 800;
+    }
+
+    .artifact-chip.available {
+      border-style: solid;
+      border-color: var(--brand);
+      background: var(--brand-soft);
+      color: var(--brand);
+    }
+
+    .narration {
+      grid-column: 1 / -1;
+      min-height: 104px;
+      padding: 15px;
+      border-left: 4px solid var(--brand);
+      border-radius: 0 13px 13px 0;
+      background: #f4f0e8;
+    }
+
+    .narration h3 {
+      margin: 0 0 5px;
+      font-size: .96rem;
+    }
+
+    .narration p {
+      margin: 0;
+      color: var(--muted);
+      font-size: .84rem;
+    }
+
+    .dispatch-box {
+      padding: 12px;
+      border-radius: 12px;
+      background: #172021;
+      color: #e0ebe8;
+    }
+
+    .dispatch-box small {
+      display: block;
+      margin-bottom: 5px;
+      color: #8dbeb8;
+      font-weight: 800;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+    }
+
+    .dispatch-box code {
+      display: block;
+      overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: .72rem;
+    }
+
+    .dispatch-box .dispatch-status {
+      margin-top: 8px;
+      color: #aab9b6;
+      font-size: .68rem;
+    }
+
+    .cycle-panel {
+      display: grid;
+      grid-column: 1 / -1;
+      grid-template-columns: minmax(260px, .8fr) minmax(0, 1.2fr);
+      gap: 20px;
+      align-items: center;
+      padding: 22px;
+      border-color: #e0b3ae;
+      background: linear-gradient(135deg, #fffaf8, #fffdf8 62%);
+    }
+
+    .cycle-code {
+      margin: 0;
+      padding: 15px;
+      border: 1px solid #e4bbb7;
+      border-radius: 14px;
+      background: var(--red-soft);
+      color: var(--red);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: .77rem;
+      line-height: 1.7;
+      white-space: pre-wrap;
+    }
+
+    .cycle-copy h2 { margin-bottom: 7px; }
+
+    .cycle-copy p {
+      margin: 0;
+      color: var(--muted);
+      font-size: .85rem;
+    }
+
+    .cycle-result {
+      display: inline-block;
+      margin-top: 11px;
+      padding: 6px 9px;
+      border-radius: 8px;
+      background: var(--red-soft);
+      color: var(--red);
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: .7rem;
+      font-weight: 800;
+    }
+
+    .footer-note {
+      margin: 20px 0 0;
+      color: var(--muted);
+      font-size: .76rem;
+      text-align: center;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: .4; r: 4px; }
+      50% { opacity: 1; r: 7px; }
+    }
+
+    @media (max-width: 980px) {
+      .dashboard { grid-template-columns: 1fr; }
+      .cycle-panel { grid-column: auto; }
+      .cycle-panel { grid-template-columns: 1fr; }
+      .hero { grid-template-columns: 1fr; }
+      .hero-facts { grid-template-columns: repeat(2, minmax(100px, 160px)); }
+    }
+
+    @media (max-width: 680px) {
+      .page-shell { width: min(100% - 24px, 1440px); padding-top: 28px; }
+      .control-deck { position: static; grid-template-columns: 1fr; }
+      .controls { justify-content: stretch; }
+      .controls button { flex: 1 1 calc(50% - 8px); }
+      .panel-header { padding: 17px 16px 12px; }
+      .panel-note { display: none; }
+      .legend { padding-left: 16px; }
+      .graph-scroll { padding-inline: 8px; }
+      .graph-caption { padding-inline: 16px; }
+      .artifact-body { grid-template-columns: 1fr; padding: 16px; }
+      .dispatch-box { grid-row: 2; }
+      .fiber { grid-template-columns: minmax(0, 1fr) auto; }
+      .fiber .instructions { grid-column: 1 / -1; }
+      .fiber .state-label { grid-column: 2; grid-row: 1; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: .01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">psi-agent · PR14 × PR15</p>
+        <h1>执行计划不是“排好的一条队”，而是可检查的等待程序</h1>
+        <p class="hero-copy">
+          PR14 给出 Step / Artifact 图；<strong>generate_plan</strong> 把数据依赖降成
+          <strong>Fiber(Await, Invoke)</strong>；<strong>execute_plan</strong> 同时启动所有 fiber，
+          条件满足后通过注入的异步 <strong>dispatch</strong> 调用 PR15。
+        </p>
+      </div>
+      <div class="hero-facts" aria-label="算法摘要">
+        <div class="fact"><b>O(V + E)</b><span>计划生成与环检查</span></div>
+        <div class="fact"><b>1 task group</b><span>所有 fiber 同时启动</span></div>
+      </div>
+    </header>
+
+    <div class="pipeline" aria-label="从图到执行的流程">
+      <code>WorkflowGraph</code><span class="arrow">→</span>
+      <code>generate_plan()</code><span class="arrow">→</span>
+      <code>ExecutionPlan</code><span class="arrow">→</span>
+      <code>execute_plan()</code><span class="arrow">→</span>
+      <code>await dispatch(...)</code>
+    </div>
+
+    <nav class="control-deck" aria-label="执行演示控制">
+      <div class="progress-copy" aria-live="polite">
+        <span class="step-count" id="step-count">步骤 1 / 8</span>
+        <p id="frame-title">读取 PR14 图</p>
+        <div class="progress-track" aria-hidden="true"><div id="progress-bar"></div></div>
+      </div>
+      <div class="controls">
+        <button id="previous-step" type="button">← 上一步</button>
+        <button id="next-step" type="button">下一步 →</button>
+        <button id="auto-play" type="button" aria-pressed="false">▶ 自动播放</button>
+        <button id="reset-demo" type="button">↺ 重置</button>
+      </div>
+    </nav>
+
+    <main class="dashboard">
+      <section class="panel" id="graph-panel" aria-labelledby="graph-title">
+        <header class="panel-header">
+          <div>
+            <p class="panel-kicker">01 · input</p>
+            <h2 id="graph-title">PR14 Step / Artifact 图</h2>
+          </div>
+          <p class="panel-note">窄屏可横向滑动</p>
+        </header>
+        <ul class="legend" aria-label="节点状态图例">
+          <li><span class="swatch"></span>未开始</li>
+          <li><span class="swatch waiting"></span>等待</li>
+          <li><span class="swatch running"></span>执行中</li>
+          <li><span class="swatch done"></span>完成 / 可用</li>
+        </ul>
+        <div class="graph-scroll" tabindex="0" aria-label="工作流图，可横向滚动">
+          <svg id="workflow-graph" viewBox="0 0 940 430" role="img" aria-labelledby="svg-title svg-desc">
+            <title id="svg-title">文章工作流 Step 与 Artifact 图</title>
+            <desc id="svg-desc">topic 经 research 生成 notes，draft 与 review 并行，publish 等待二者后生成 article。</desc>
+            <defs>
+              <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6.5" refY="3.5" orient="auto">
+                <path d="M0,0 L7,3.5 L0,7 Z" fill="#aaa399"></path>
+              </marker>
+            </defs>
+            <path class="edge" d="M91 215 H139"></path>
+            <path class="edge" d="M261 215 H304"></path>
+            <path class="edge" d="M386 215 C414 215 407 107 439 107"></path>
+            <path class="edge" d="M386 215 C414 215 407 323 439 323"></path>
+            <path class="edge" d="M561 107 H594"></path>
+            <path class="edge" d="M561 323 H594"></path>
+            <path class="edge" d="M676 107 C705 107 695 215 726 215"></path>
+            <path class="edge" d="M676 323 C705 323 695 215 726 215"></path>
+            <path class="edge" d="M848 215 H861"></path>
+
+            <g class="graph-node artifact" data-artifact="topic" transform="translate(9 190)">
+              <rect class="shape" width="82" height="50" rx="25"></rect>
+              <text x="41" y="24">topic</text><text class="kind" x="41" y="38">ARTIFACT</text>
+            </g>
+            <g class="graph-node step" data-step="research" transform="translate(139 180)">
+              <rect class="shape" width="122" height="70" rx="14"></rect>
+              <circle class="status-dot" cx="108" cy="14" r="4"></circle>
+              <text x="61" y="31">research</text><text class="kind" x="61" y="49">STEP</text>
+            </g>
+            <g class="graph-node artifact" data-artifact="notes" transform="translate(304 190)">
+              <rect class="shape" width="82" height="50" rx="25"></rect>
+              <text x="41" y="24">notes</text><text class="kind" x="41" y="38">ARTIFACT</text>
+            </g>
+            <g class="graph-node step" data-step="draft" transform="translate(439 72)">
+              <rect class="shape" width="122" height="70" rx="14"></rect>
+              <circle class="status-dot" cx="108" cy="14" r="4"></circle>
+              <text x="61" y="31">draft</text><text class="kind" x="61" y="49">STEP</text>
+            </g>
+            <g class="graph-node artifact" data-artifact="draft_text" transform="translate(594 82)">
+              <rect class="shape" width="82" height="50" rx="25"></rect>
+              <text x="41" y="24">draft_text</text><text class="kind" x="41" y="38">ARTIFACT</text>
+            </g>
+            <g class="graph-node step" data-step="review" transform="translate(439 288)">
+              <rect class="shape" width="122" height="70" rx="14"></rect>
+              <circle class="status-dot" cx="108" cy="14" r="4"></circle>
+              <text x="61" y="31">review</text><text class="kind" x="61" y="49">STEP</text>
+            </g>
+            <g class="graph-node artifact" data-artifact="review_text" transform="translate(594 298)">
+              <rect class="shape" width="82" height="50" rx="25"></rect>
+              <text x="41" y="24">review_text</text><text class="kind" x="41" y="38">ARTIFACT</text>
+            </g>
+            <g class="graph-node step" data-step="publish" transform="translate(726 180)">
+              <rect class="shape" width="122" height="70" rx="14"></rect>
+              <circle class="status-dot" cx="108" cy="14" r="4"></circle>
+              <text x="61" y="31">publish</text><text class="kind" x="61" y="49">STEP</text>
+            </g>
+            <g class="graph-node artifact" data-artifact="article" transform="translate(861 190)">
+              <rect class="shape" width="70" height="50" rx="25"></rect>
+              <text x="35" y="24">article</text><text class="kind" x="35" y="38">OUTPUT</text>
+            </g>
+          </svg>
+        </div>
+        <div class="graph-caption">
+          <span>边的含义是 <code>ProducesEdge / ConsumesEdge</code></span>
+          <span>没有假设“整张图一定是 DAG”</span>
+        </div>
+      </section>
+
+      <section class="panel" id="plan-panel" aria-labelledby="plan-title">
+        <header class="panel-header">
+          <div>
+            <p class="panel-kicker">02 · lower</p>
+            <h2 id="plan-title">可检查的 ExecutionPlan</h2>
+          </div>
+          <p class="panel-note">每个 Step 降成一个 fiber</p>
+        </header>
+        <div class="plan-body">
+          <div class="plan-summary">
+            <span>规则：</span>
+            <b>消费了哪个产物，就 Await 它的生产 Step</b>
+          </div>
+          <div class="fibers" id="fiber-list"></div>
+          <pre class="plan-code" aria-label="计划生成算法">awaited_by_step[consumer].add(producer)
+_reject_cycles(awaited_by_step)  # Kahn, only preflight
+Fiber(step_id, (Await(producers), Invoke(step_id)))</pre>
+        </div>
+      </section>
+
+      <section class="panel" id="timeline-panel" aria-labelledby="timeline-title">
+        <header class="panel-header">
+          <div>
+            <p class="panel-kicker">03 · execute</p>
+            <h2 id="timeline-title">异步时间线</h2>
+          </div>
+          <p class="panel-note">状态字母：等 / 跑 / 完</p>
+        </header>
+        <div class="timeline-body">
+          <div class="timeline-scroll">
+            <div class="timeline-grid" id="timeline-grid" aria-label="各 fiber 的执行时间线"></div>
+          </div>
+          <pre class="plan-code" aria-label="执行器核心循环">async with anyio.create_task_group() as task_group:
+    for fiber in plan.fibers:
+        task_group.start_soon(run_fiber, fiber)</pre>
+          <p class="timeline-foot">
+            <span aria-hidden="true">●</span>
+            <span><b>第 3 帧的黑点表示 fiber 同时进入 anyio task group。</b>它们不是按拓扑序逐个启动；没拿到输入的 fiber 自己 await。</span>
+          </p>
+        </div>
+      </section>
+
+      <section class="panel" id="artifact-panel" aria-labelledby="artifact-title">
+        <header class="panel-header">
+          <div>
+            <p class="panel-kicker">04 · state</p>
+            <h2 id="artifact-title">Artifact Store 与 PR15 调度</h2>
+          </div>
+          <p class="panel-note">只有产物值是共享状态</p>
+        </header>
+        <div class="artifact-body">
+          <div class="artifact-list" id="artifact-list" aria-label="当前可用产物"></div>
+          <div class="dispatch-box">
+            <small>PR15 boundary</small>
+            <code>outputs = await dispatch(step, step_inputs)</code>
+            <div class="dispatch-status" id="dispatch-status">尚未调用 dispatcher</div>
+          </div>
+          <article class="narration" aria-live="polite">
+            <h3 id="narration-title">读取输入图</h3>
+            <p id="narration-copy"></p>
+          </article>
+        </div>
+      </section>
+
+      <aside class="panel cycle-panel" aria-labelledby="cycle-title">
+        <pre class="cycle-code">Fiber("A", (Await(("B",)), Invoke("A")))
+Fiber("B", (Await(("A",)), Invoke("B")))
+
+ready = []   # 没有入度为 0 的节点
+visited = 0  # 小于节点总数 2</pre>
+        <div class="cycle-copy">
+          <p class="panel-kicker">Preflight · cycle</p>
+          <h2 id="cycle-title">环不会被“await 直接全跑”解决</h2>
+          <p>
+            同时启动只能让两个 fiber 同时等待，仍然会永久挂住。因此生成计划时用 Kahn
+            做一次线性检查；当前的一次性语义明确拒绝环。将来如果需要循环，应增加显式 loop
+            语义和退出条件，而不是悄悄把环当并行。
+          </p>
+          <span class="cycle-result">ExecutionPlanError: cycle requires explicit loop semantics</span>
+        </div>
+      </aside>
+    </main>
+
+    <p class="footer-note">
+      这页演示的是当前最小实现：一次性执行、无 foreach、无 retry、无资源调度；这些能力需要时再扩展计划指令。
+    </p>
+  </div>
+
+  <script>
+    const stepOrder = ["research", "draft", "review", "publish"];
+    const artifactOrder = ["topic", "notes", "draft_text", "review_text", "article"];
+    const plan = {
+      research: { await: [], invoke: "research" },
+      draft: { await: ["research"], invoke: "draft" },
+      review: { await: ["research"], invoke: "review" },
+      publish: { await: ["draft", "review"], invoke: "publish" },
+    };
+
+    const frames = [
+      {
+        title: "读取 PR14 图",
+        narrationTitle: "先保留原图语义",
+        narration: "输入不是“待执行列表”，而是 Step、Artifact 与 Produces / Consumes 边。topic 是当前唯一可用的输入产物。",
+        states: { research: "idle", draft: "idle", review: "idle", publish: "idle" },
+        artifacts: ["topic"],
+        dispatch: "尚未调用 dispatcher",
+      },
+      {
+        title: "生成可检查计划",
+        narrationTitle: "把数据依赖降成等待关系",
+        narration: "notes 的生产者是 research，所以 draft 与 review 都 Await(research)；publish 同时 Await(draft, review)。Kahn 只在启动前排除循环等待。",
+        states: { research: "idle", draft: "idle", review: "idle", publish: "idle" },
+        artifacts: ["topic"],
+        dispatch: "计划生成阶段不调用 PR15",
+      },
+      {
+        title: "同时启动全部 Fiber",
+        narrationTitle: "并发来自 task group，不来自一条串行顺序",
+        narration: "四个 fiber 一起 start_soon。research 可以直接 Invoke；另外三个已经启动，但停在自己的 Await 指令上。",
+        states: { research: "running", draft: "waiting", review: "waiting", publish: "waiting" },
+        artifacts: ["topic"],
+        dispatch: "dispatch(research, {topic})",
+      },
+      {
+        title: "research 发布 notes",
+        narrationTitle: "完成事件唤醒两个消费者",
+        narration: "research 返回 notes 并 set 完成事件。draft 与 review 几乎同时越过 Await，分别进入 Invoke；publish 仍等两个分支。",
+        states: { research: "done", draft: "running", review: "running", publish: "waiting" },
+        artifacts: ["topic", "notes"],
+        dispatch: "dispatch(draft, {notes})  ∥  dispatch(review, {notes})",
+      },
+      {
+        title: "draft 与 review 并行",
+        narrationTitle: "自由并行，但仍受 max_concurrency 限制",
+        narration: "两个 Invoke 都通过同一个 CapacityLimiter。并行上限来自 graph.policy.max_concurrency，不需要把分支写成特殊计划指令。",
+        states: { research: "done", draft: "running", review: "running", publish: "waiting" },
+        artifacts: ["topic", "notes"],
+        dispatch: "await dispatch(...) × 2（并发）",
+      },
+      {
+        title: "一个分支先完成，Join 继续等待",
+        narrationTitle: "Await 表达的是完成条件，不是静态排序",
+        narration: "draft_text 已写入 store，但 publish 要等 draft 与 review 两个完成事件。此时它不会因“某个前驱完成”而误启动。",
+        states: { research: "done", draft: "done", review: "running", publish: "waiting" },
+        artifacts: ["topic", "notes", "draft_text"],
+        dispatch: "review 仍在 dispatch；publish 仍在 Await",
+      },
+      {
+        title: "两个分支就绪，调用 publish",
+        narrationTitle: "Join 条件满足",
+        narration: "review_text 到达后，publish 的两个 Await 条件全部满足。执行器从 store 精确组装 step_inputs，再把 StepNode 与输入交给 PR15 dispatcher。",
+        states: { research: "done", draft: "done", review: "done", publish: "running" },
+        artifacts: ["topic", "notes", "draft_text", "review_text"],
+        dispatch: "dispatch(publish, {draft_text, review_text})",
+      },
+      {
+        title: "返回最终 article",
+        narrationTitle: "一次性计划执行完成",
+        narration: "publish 返回 article，执行器校验输出键与图声明完全一致，并只返回标记为 output 的 Artifact。计划本身仍可序列化、检查和替换。",
+        states: { research: "done", draft: "done", review: "done", publish: "done" },
+        artifacts: ["topic", "notes", "draft_text", "review_text", "article"],
+        dispatch: "完成：{article}",
+      },
+    ];
+
+    const statusText = { idle: "未开始", waiting: "等待", running: "执行中", done: "完成" };
+    const timelineText = { idle: "·", waiting: "等", running: "跑", done: "完" };
+    let currentFrame = 0;
+    let timer = null;
+
+    function instructionState(stepId, kind, awaited) {
+      const frame = frames[currentFrame];
+      const state = frame.states[stepId];
+      if (kind === "invoke") {
+        if (state === "done") return "passed";
+        if (state === "running") return "current";
+        return "";
+      }
+      if (awaited.every((producer) => frame.states[producer] === "done")) return "passed";
+      if (state === "waiting") return "current";
+      return "";
+    }
+
+    function renderPlan(frame) {
+      const host = document.getElementById("fiber-list");
+      host.replaceChildren(...stepOrder.map((stepId) => {
+        const fiber = document.createElement("div");
+        fiber.className = "fiber";
+        fiber.dataset.state = frame.states[stepId];
+
+        const name = document.createElement("div");
+        name.className = "fiber-name";
+        name.textContent = `Fiber("${stepId}")`;
+
+        const instructions = document.createElement("div");
+        instructions.className = "instructions";
+        const items = [];
+        if (plan[stepId].await.length) {
+          const awaitItem = document.createElement("span");
+          awaitItem.className = `instruction await ${instructionState(stepId, "await", plan[stepId].await)}`;
+          awaitItem.textContent = `Await(${plan[stepId].await.join(", ")})`;
+          items.push(awaitItem);
+          const arrow = document.createElement("span");
+          arrow.className = "instruction-arrow";
+          arrow.textContent = "→";
+          items.push(arrow);
+        }
+        const invoke = document.createElement("span");
+        invoke.className = `instruction invoke ${instructionState(stepId, "invoke", [])}`;
+        invoke.textContent = `Invoke(${stepId})`;
+        items.push(invoke);
+        instructions.replaceChildren(...items);
+
+        const label = document.createElement("span");
+        label.className = "state-label";
+        label.textContent = statusText[frame.states[stepId]];
+        fiber.append(name, instructions, label);
+        return fiber;
+      }));
+    }
+
+    function renderTimeline() {
+      const host = document.getElementById("timeline-grid");
+      const nodes = [];
+      const corner = document.createElement("span");
+      corner.className = "tick";
+      corner.textContent = "fiber / 帧";
+      nodes.push(corner);
+      frames.forEach((_, index) => {
+        const tick = document.createElement("span");
+        tick.className = "tick";
+        tick.textContent = index + 1;
+        nodes.push(tick);
+      });
+
+      stepOrder.forEach((stepId) => {
+        const name = document.createElement("span");
+        name.className = "row-name";
+        name.textContent = stepId;
+        nodes.push(name);
+        frames.forEach((frame, index) => {
+          const cell = document.createElement("span");
+          const state = frame.states[stepId];
+          cell.className = `timeline-cell ${state}`;
+          if (index <= currentFrame) cell.classList.add("reached");
+          if (index === currentFrame) cell.classList.add("current");
+          if (index === 2) cell.classList.add("fiber-start");
+          cell.textContent = index <= currentFrame ? timelineText[state] : "";
+          cell.title = `${stepId} · 第 ${index + 1} 帧 · ${statusText[state]}`;
+          nodes.push(cell);
+        });
+      });
+      host.replaceChildren(...nodes);
+    }
+
+    function renderGraph(frame) {
+      document.querySelectorAll("[data-step]").forEach((node) => {
+        node.dataset.state = frame.states[node.dataset.step];
+      });
+      document.querySelectorAll("[data-artifact]").forEach((node) => {
+        node.dataset.state = frame.artifacts.includes(node.dataset.artifact) ? "available" : "idle";
+      });
+    }
+
+    function renderArtifacts(frame) {
+      const host = document.getElementById("artifact-list");
+      host.replaceChildren(...artifactOrder.map((artifactId) => {
+        const chip = document.createElement("span");
+        chip.className = "artifact-chip";
+        if (frame.artifacts.includes(artifactId)) chip.classList.add("available");
+        chip.textContent = artifactId;
+        return chip;
+      }));
+      document.getElementById("dispatch-status").textContent = frame.dispatch;
+    }
+
+    function render() {
+      const frame = frames[currentFrame];
+      document.getElementById("step-count").textContent = `步骤 ${currentFrame + 1} / ${frames.length}`;
+      document.getElementById("frame-title").textContent = frame.title;
+      document.getElementById("progress-bar").style.width = `${((currentFrame + 1) / frames.length) * 100}%`;
+      document.getElementById("narration-title").textContent = frame.narrationTitle;
+      document.getElementById("narration-copy").textContent = frame.narration;
+      document.getElementById("previous-step").disabled = currentFrame === 0;
+      document.getElementById("next-step").disabled = currentFrame === frames.length - 1;
+      renderGraph(frame);
+      renderPlan(frame);
+      renderTimeline();
+      renderArtifacts(frame);
+    }
+
+    function stopAutoPlay() {
+      if (timer !== null) window.clearInterval(timer);
+      timer = null;
+      const button = document.getElementById("auto-play");
+      button.setAttribute("aria-pressed", "false");
+      button.textContent = "▶ 自动播放";
+    }
+
+    function move(delta) {
+      currentFrame = Math.max(0, Math.min(frames.length - 1, currentFrame + delta));
+      render();
+      if (currentFrame === frames.length - 1) stopAutoPlay();
+    }
+
+    document.getElementById("previous-step").addEventListener("click", () => {
+      stopAutoPlay();
+      move(-1);
+    });
+    document.getElementById("next-step").addEventListener("click", () => {
+      stopAutoPlay();
+      move(1);
+    });
+    document.getElementById("reset-demo").addEventListener("click", () => {
+      stopAutoPlay();
+      currentFrame = 0;
+      render();
+    });
+    document.getElementById("auto-play").addEventListener("click", () => {
+      if (timer !== null) {
+        stopAutoPlay();
+        return;
+      }
+      if (currentFrame === frames.length - 1) currentFrame = 0;
+      const button = document.getElementById("auto-play");
+      button.setAttribute("aria-pressed", "true");
+      button.textContent = "❚❚ 暂停";
+      render();
+      timer = window.setInterval(() => move(1), 1100);
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.key === "ArrowLeft") {
+        stopAutoPlay();
+        move(-1);
+      } else if (event.key === "ArrowRight") {
+        stopAutoPlay();
+        move(1);
+      }
+    });
+
+    function selfCheck() {
+      const ids = [
+        "graph-panel", "plan-panel", "timeline-panel", "artifact-panel",
+        "previous-step", "next-step", "auto-play", "reset-demo",
+      ];
+      if (!ids.every((id) => document.getElementById(id))) throw new Error("HTML self-check: required element missing");
+      if (frames.length !== 8 || stepOrder.some((stepId) => !plan[stepId])) throw new Error("HTML self-check: demo data invalid");
+      return true;
+    }
+
+    window.selfCheck = selfCheck;
+    selfCheck();
+    render();
+  </script>
+</body>
+</html>
