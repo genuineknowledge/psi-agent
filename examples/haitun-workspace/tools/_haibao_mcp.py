@@ -166,7 +166,7 @@ async def _production_connector(config: Config) -> AsyncIterator[Any]:
             return
         try:
             payload = json.loads(request.content)
-        except (json.JSONDecodeError, TypeError, httpx.RequestNotRead):
+        except json.JSONDecodeError, TypeError, httpx.RequestNotRead:
             return
         if not isinstance(payload, dict) or "id" not in payload:
             return
