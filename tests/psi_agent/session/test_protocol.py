@@ -226,14 +226,14 @@ def test_tool_function_list_unsupported_item_raises() -> None:
 
 
 def test_tool_function_optional_without_default() -> None:
-    """X | None with NO default value should be not-required."""
+    """X | None with no default value remains required."""
 
     async def f(verbose: bool | None) -> str:
         return "ok"
 
     tf = ToolFunction.from_callable(f)
     assert tf.parameters["properties"]["verbose"]["type"] == "boolean"
-    assert "verbose" not in tf.parameters["required"]
+    assert "verbose" in tf.parameters["required"]
 
 
 def test_tool_function_float_parameter() -> None:
