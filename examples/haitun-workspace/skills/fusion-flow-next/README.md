@@ -15,10 +15,15 @@ or workspace tools, so existing `.flow.ts` behavior is unchanged.
 - `fusion_flow_next/parser.py`: parser facade and Workflow Core IR output boundary.
 - `fusion_flow_next/checker.py`: static semantics boundary.
 - `fusion_flow_next/compiler.py`: target-neutral Core IR traversal and backend hook boundary.
+- `fusion_flow_next/graph_compiler.py`: concrete `CoreIRCompiler` backend that builds `psi_agent.workflow_graph` models.
 - `fusion_flow_next/planning.py`: before workflow authoring, checks the syntax mappings declared for each planned step against the syntax names actually available. Each planned step maps to one catalog `Step` identity, which authoring expands into a typed constant and its assertions.
+- `test/test_graph_compiler.py`: real Core IR to WorkflowGraph compiler contract checks.
 
 The obsolete Node/TypeScript compiler prototype has been removed. The Python
 compiler abstraction does not select or implement a concrete output target.
+`graph_compiler.py` is one concrete backend: it imports the generic graph model
+from `psi_agent`, while `psi_agent.workflow_graph` does not import this example
+package.
 
 ## Current scope and known gaps
 
@@ -32,11 +37,33 @@ The Core IR contains catalog-owned `Concept` and `Operator` references, typed co
 
 `CoreIRCompiler` follows the same template-method design as KEDispatcher's shared Core IR compiler: `compile()` owns traversal, concrete backends override protected node hooks, unsupported nodes fail explicitly, and the compiler does not retain the supplied `WorkflowFile`.
 
+`WorkflowGraphCompiler` uses that traversal directly. It reads the real Core IR
+types, including `ListTerm.items` for all four `*_multi` operators, and returns
+one `WorkflowGraphCompilation` per workflow. Recognized dependency assertions
+become graph nodes, edges, or policy; unknown well-formed assertions remain in
+`residual_assertions`; malformed recognized relations and unsupported recursive
+terms fail explicitly. The graph is serializable, but the compilation is not a
+replacement for the original Core IR.
+
+Because `Assertion` is equality, one recognized graph call may appear on either
+side. The backend normalizes that call before lowering and explicitly rejects an
+equality containing recognized graph calls on both sides.
+
+The package exports `WorkflowGraphCompiler`, `WorkflowGraphCompilation`, and
+`WorkflowGraphCompilationError`.
+
+This remains an example-local package rather than a wheel dependency. Run its
+tests from this directory so `fusion_flow_next` is on the runtime import path:
+
+```powershell
+uv run python -m pytest -q
+```
+
 Variables, quantifiers, truth formulas, theories, rules, and query/SAT/optimization requests are intentionally absent because the reviewed workflow surface does not use them. Operator execution, concept registries and matching, validation, parsing, backend compilation, and Haitun activation remain separate workstreams.
 
 | Item | Intended contract | Current gap | Required compiler behavior |
 | --- | --- | --- | --- |
-| `S01` | `input_workflow` and `output_workflow` declare external artifacts. | The current runtime operations require values that are absent from those declarations. | A backend compiler must provide a lossless mapping or reject the workflow with `design_reference="S01"`; the Python path remains inactive until a backend implements that mapping. |
+| `S01` | `input_workflow` and `output_workflow` declare external artifacts. | The current runtime operations require values that are absent from those declarations. | The graph backend preserves the external-artifact relation, while the original Core IR remains authoritative for values; activation still requires a runtime value contract. |
 
 ## Activation boundary
 
@@ -63,8 +90,9 @@ Commit only `FusionFlowLexer.py` and `FusionFlowParser.py`; the generated `.inte
 3. **Parser** owns `fusion_flow_next/generated/` and `fusion_flow_next/parser.py`: report syntax errors and produce lossless Core IR for later stages.
 4. **Static checker** owns the Python checker: validate workflow legality and backend-independent constraints.
 5. **Compiler** owns `fusion_flow_next/compiler.py`: lower checked Workflow Core IR through backend-specific hooks without selecting a target in the shared layer.
-6. **Planning warnings** owns `fusion_flow_next/planning.py`: after Haitun lists planned steps and before it authors the DSL, check their declared syntax mappings and warn about missing or unavailable names. Each item is already at `Step` granularity; this phase does not introduce a higher-level requirement model and cannot detect steps that Haitun failed to list.
-7. **Haitun integration** updates existing prompt and tool entry points only after parsing and checks work: add the syntax-check tool and require planning before workflow generation.
-8. **Compatibility and migration** owns runnable checks and the activation gate: keep the existing `fusion-flow`, runner, and `.flow.ts` path unchanged until final migration.
+6. **Workflow Graph backend** owns `fusion_flow_next/graph_compiler.py`: compile real Core IR through the shared hooks into the generic `psi_agent.workflow_graph` model while retaining residual assertions.
+7. **Planning warnings** owns `fusion_flow_next/planning.py`: after Haitun lists planned steps and before it authors the DSL, check their declared syntax mappings and warn about missing or unavailable names. Each item is already at `Step` granularity; this phase does not introduce a higher-level requirement model and cannot detect steps that Haitun failed to list.
+8. **Haitun integration** updates existing prompt and tool entry points only after parsing and checks work: add the syntax-check tool and require planning before workflow generation.
+9. **Compatibility and migration** owns runnable checks and the activation gate: keep the existing `fusion-flow`, runner, and `.flow.ts` path unchanged until final migration.
 
-Dependency order: 1 + 2 -> 3 -> 4 -> 5; 2 -> 6; 4 + 5 + 6 -> 7. Workstream 8 runs throughout and gates activation.
+Dependency order: 1 + 2 -> 3 -> 4 -> 5 -> 6; 2 -> 7; 4 + 5 + 7 -> 8. Workstream 9 runs throughout and gates activation.

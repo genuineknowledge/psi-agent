@@ -23,6 +23,11 @@ from .core_ir import (
     Workflow,
     WorkflowFile,
 )
+from .graph_compiler import (
+    WorkflowGraphCompilation,
+    WorkflowGraphCompilationError,
+    WorkflowGraphCompiler,
+)
 from .parser import ParseContext, parse_workflow
 from .planning import (
     PlannedStep,
@@ -56,6 +61,9 @@ __all__ = [
     "Term",
     "Workflow",
     "WorkflowFile",
+    "WorkflowGraphCompilation",
+    "WorkflowGraphCompilationError",
+    "WorkflowGraphCompiler",
     "check_planned_steps",
     "check_workflow",
     "parse_workflow",

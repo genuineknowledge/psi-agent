@@ -1,0 +1,663 @@
+"""Lower checked FusionFlow Core IR into the psi-agent workflow graph model.
+
+The shared :class:`CoreIRCompiler` owns traversal.  This module only implements
+the target-specific hooks: it classifies graph assertions, collects their
+facts, and finally builds the immutable Step-Artifact graph.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+
+from psi_agent.workflow_graph.model import (
+    ArtifactNode,
+    ConsumesEdge,
+    ForeachEdge,
+    ProducesEdge,
+    ResourceRequirement,
+    StepNode,
+    WorkflowEdge,
+    WorkflowGraph,
+    WorkflowGraphError,
+    WorkflowPolicy,
+)
+
+from .compiler import CoreIRCompiler, _CompiledDeclarations
+from .core_ir import Assertion, CompoundTerm, Constant, IfTerm, ListTerm, Workflow
+
+
+class WorkflowGraphCompilationError(ValueError):
+    """A checked Core IR workflow cannot be represented by the graph target."""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkflowGraphCompilation:
+    """One graph plus the assertions deliberately left for another backend."""
+
+    graph: WorkflowGraph
+    residual_assertions: tuple[Assertion, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CompiledCall:
+    """Transient result of the ``CompoundTerm`` compiler hook.
+
+    ``_build_workflow`` consumes this operator name and its recursively
+    compiled arguments to dispatch graph lowering.  This is not a public graph
+    node and never appears in ``WorkflowGraph`` or its serialized payload.
+    """
+
+    operator_name: str
+    arguments: tuple[object, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _CompiledList:
+    """Transient result of the ``ListTerm`` compiler hook.
+
+    The wrapper preserves the Core IR list boundary while its items are being
+    compiled; a bare tuple would be indistinguishable from a call's argument
+    tuple.  It is consumed during lowering and is not a graph Artifact or any
+    other public ``WorkflowGraph`` value.
+    """
+
+    items: tuple[object, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _GraphFact:
+    """One graph-vocabulary equality normalized for workflow assembly.
+
+    The Core IR equality may put its graph call on either side.  This private
+    work item records the functional shape ``operator(arguments...) = value``
+    consumed by ``_build_workflow``; it is not part of ``WorkflowGraph``.
+    """
+
+    operator_name: str
+    arguments: tuple[object, ...]
+    value: object
+
+
+@dataclass(slots=True)
+class _StepDraft:
+    """Mutable StepNode payload until required fields are fully known.
+
+    ``WorkflowGraph`` values are frozen and validated eagerly, so step facts
+    accumulate here until every order-independent assertion has been seen.
+    Complete sub-values such as ``ResourceRequirement`` are stored directly.
+    """
+
+    name_id: str | None = None
+    executor_id: str | None = None
+    instruction_id: str | None = None
+    timeout_seconds: int | None = None
+    # None means the assertion was absent; an explicit value of 1 must still
+    # make a second max_attempts assertion a duplicate.
+    max_attempts: int | None = None
+    resources: dict[str, ResourceRequirement] = field(default_factory=dict)
+
+
+class WorkflowGraphCompiler(CoreIRCompiler):
+    """Compile graph operators while preserving unrelated assertions.
+
+    Graph operators fall into four groups:
+
+    * workflow boundaries: ``input_workflow*`` and ``output_workflow*``;
+    * step metadata: ``step_name``, ``step_instruction``, and ``step_executor``;
+    * dataflow: ``consumes*``, ``produces*``, and ``foreach_item``;
+    * policies: timeouts, retries, resources, and concurrency.
+
+    The compiler only overrides protected hooks.  Public traversal and
+    unsupported-node handling remain owned by :class:`CoreIRCompiler`.
+    """
+
+    _GRAPH_OPERATORS = frozenset(
+        {
+            # Workflow boundary operators.
+            "input_workflow",
+            "input_workflow_multi",
+            "output_workflow",
+            "output_workflow_multi",
+            # Required and optional step metadata.
+            "step_name",
+            "step_instruction",
+            "step_executor",
+            # Step-to-artifact dataflow operators.
+            "consumes",
+            "consumes_multi",
+            "produces",
+            "produces_multi",
+            "foreach_item",
+            # Step and workflow policies.
+            "step_timeout",
+            "max_attempts",
+            "resource_requirement",
+            "max_concurrency",
+            "workflow_timeout",
+        }
+    )
+    # Executor concepts are mutually exclusive in the graph target.
+    _EXECUTOR_CONCEPTS = frozenset({"Human", "Agent", "Program"})
+
+    def _compile_constant(self, constant: Constant) -> object:
+        """Preserve both the constant symbol and its executor concept tags."""
+
+        return constant
+
+    def _compile_compound_term(self, term: CompoundTerm) -> object:
+        """Compile an operator application without interpreting the operator yet.
+
+        Interpretation belongs to ``_build_workflow``, where the workflow name
+        and the other assertions are available for cross-assertion validation.
+        """
+
+        return _CompiledCall(
+            operator_name=term.operator.name,
+            arguments=tuple(self._compile_term(argument) for argument in term.arguments),
+        )
+
+    def _compile_list_term(self, term: ListTerm) -> object:
+        """Compile every list item while retaining the Core IR list boundary."""
+
+        return _CompiledList(items=tuple(self._compile_term(item) for item in term.items))
+
+    def _compile_if_term(self, term: IfTerm) -> object:
+        """Reject conditional graph values and expose a graph-specific error.
+
+        The base hook fails closed.  Wrapping its error keeps callers from
+        depending on the generic compiler's exception type.
+        """
+
+        try:
+            return super()._compile_if_term(term)
+        except ValueError as error:
+            raise WorkflowGraphCompilationError(str(error)) from error
+
+    def _compile_assertion(self, assertion: Assertion) -> object:
+        """Compile one equality into a graph fact or untouched residual IR.
+
+        Equality is symmetric, so position does not select the graph call.
+        Zero recognized calls means this backend does not own the assertion;
+        exactly one defines a graph fact; more than one would try to encode
+        multiple graph facts in a single equality and is rejected.
+        """
+
+        # Pair each possible graph call with the value on the other side.
+        # Nested calls inside an unknown outer operator remain residual because
+        # only top-level terms can declare a graph fact.
+        graph_fact_candidates = tuple(
+            (term, value)
+            for term, value in (
+                (assertion.lhs, assertion.rhs),
+                (assertion.rhs, assertion.lhs),
+            )
+            if isinstance(term, CompoundTerm) and term.operator.name in self._GRAPH_OPERATORS
+        )
+
+        # Returning the original object makes residual IR explicit: it was not
+        # compiled into any graph-specific representation.
+        if not graph_fact_candidates:
+            return assertion
+
+        if len(graph_fact_candidates) > 1:
+            raise WorkflowGraphCompilationError("one equality cannot declare multiple graph facts")
+
+        # FIXME(#20): Before built-in operators grow or the workflow scheduler
+        # is added, give each assertion an operator-specific compile attr/handler
+        # and carry its full Assertion/Formula context through graph lowering and
+        # scheduling.  The compiler and scheduler must consume the same operator
+        # metadata instead of maintaining separate dispatch tables.
+        #
+        # HACK: Every graph operator currently forms a declaration-shaped fact:
+        # one recognized call plus one term treated as its value.  That makes
+        # both this positional split and the flat _GraphFact(call, value) record
+        # sufficient, but _GraphFact is not a general model for future graph
+        # facts.  A pre/post-condition operator may instead carry an Assertion
+        # or another expression as an argument; when that vocabulary arrives,
+        # preserve its term structure and give it purpose-specific lowering
+        # rather than forcing it through this call/value shape.
+        call_term, value_term = graph_fact_candidates[0]
+
+        # Recognized operators are compiled recursively and fail closed on an
+        # unsupported child such as IfTerm.
+        call = self._compile_term(call_term)
+        if not isinstance(call, _CompiledCall):
+            raise TypeError("compound term hook returned an invalid graph call")
+        return _GraphFact(
+            operator_name=call.operator_name,
+            arguments=call.arguments,
+            value=self._compile_term(value_term),
+        )
+
+    def _build_workflow(
+        self,
+        workflow: Workflow,
+        *,
+        assertions: tuple[object, ...],
+    ) -> object:
+        """Collect graph facts, validate cross-op invariants, and build one graph.
+
+        Frozen public graph values are created as soon as one fact fully
+        determines them: artifacts, edges, and resource requirements never need
+        tuple/ID shadow state.  Only incomplete step fields stay mutable until
+        the final order-independent validation pass.
+        """
+
+        step_drafts: dict[str, _StepDraft] = {}
+        artifacts: dict[str, ArtifactNode] = {}
+        edges: set[WorkflowEdge] = set()
+
+        # Workflow-wide policies are optional but singular.
+        policy = WorkflowPolicy()
+
+        # Assertions outside the graph vocabulary remain available to callers.
+        residual: list[Assertion] = []
+
+        for compiled in assertions:
+            # Residual assertions are the untouched Core IR objects returned by
+            # _compile_assertion when this backend owns no graph fact.
+            if isinstance(compiled, Assertion):
+                residual.append(compiled)
+                continue
+
+            # Every other value must be one normalized graph fact produced by
+            # _compile_assertion; anything else breaks the compiler hook contract.
+            if not isinstance(compiled, _GraphFact):
+                raise TypeError("workflow graph compiler received an invalid graph fact")
+
+            operator_name = compiled.operator_name
+            arguments = compiled.arguments
+            fact_value = compiled.value
+
+            # Keep every built-in operator explicit: similar names do not imply
+            # a shared IR contract, so lowering must not infer behavior from a
+            # prefix, suffix, or grouped fallback.
+            match operator_name:
+                case "input_workflow":
+                    # input_workflow(workflow, artifact) = True
+                    self._require_arity(arguments, 2, operator_name)
+                    owner_id = self._symbol(arguments[0], "input_workflow owner")
+                    self._require_owner(owner_id, workflow.name, operator_name)
+                    artifact_id = self._symbol(arguments[1], "input_workflow artifact")
+                    self._require_true(fact_value, operator_name)
+                    artifact = artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
+                    if artifact.is_input:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {artifact_id!r}")
+                    artifacts[artifact_id] = replace(artifact, is_input=True)
+
+                case "input_workflow_multi":
+                    # input_workflow_multi(workflow) = [artifact, ...]
+                    self._require_arity(arguments, 1, operator_name)
+                    artifact_ids = self._list_symbols(fact_value, operator_name)
+                    owner_id = self._symbol(arguments[0], "input_workflow_multi owner")
+                    self._require_owner(owner_id, workflow.name, operator_name)
+                    for artifact_id in artifact_ids:
+                        artifact = artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
+                        if artifact.is_input:
+                            raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {artifact_id!r}")
+                        artifacts[artifact_id] = replace(artifact, is_input=True)
+
+                case "output_workflow":
+                    # output_workflow(workflow, artifact) = True
+                    self._require_arity(arguments, 2, operator_name)
+                    owner_id = self._symbol(arguments[0], "output_workflow owner")
+                    self._require_owner(owner_id, workflow.name, operator_name)
+                    artifact_id = self._symbol(arguments[1], "output_workflow artifact")
+                    self._require_true(fact_value, operator_name)
+                    artifact = artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
+                    if artifact.is_output:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {artifact_id!r}")
+                    artifacts[artifact_id] = replace(artifact, is_output=True)
+
+                case "output_workflow_multi":
+                    # output_workflow_multi(workflow) = [artifact, ...]
+                    self._require_arity(arguments, 1, operator_name)
+                    artifact_ids = self._list_symbols(fact_value, operator_name)
+                    owner_id = self._symbol(arguments[0], "output_workflow_multi owner")
+                    self._require_owner(owner_id, workflow.name, operator_name)
+                    for artifact_id in artifact_ids:
+                        artifact = artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
+                        if artifact.is_output:
+                            raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {artifact_id!r}")
+                        artifacts[artifact_id] = replace(artifact, is_output=True)
+
+                case "consumes":
+                    # consumes(step, artifact) = True
+                    self._require_arity(arguments, 2, operator_name)
+                    step_id = self._symbol(arguments[0], "consumes step")
+                    artifact_id = self._symbol(arguments[1], "consumed artifact")
+                    self._require_true(fact_value, operator_name)
+                    step_drafts.setdefault(step_id, _StepDraft())
+                    artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
+                    self._add_unique(
+                        edges,
+                        ConsumesEdge(artifact_id=artifact_id, step_id=step_id),
+                        operator_name,
+                    )
+
+                case "consumes_multi":
+                    # consumes_multi(step) = [artifact, ...]
+                    self._require_arity(arguments, 1, operator_name)
+                    artifact_ids = self._list_symbols(fact_value, operator_name)
+                    step_id = self._symbol(arguments[0], "consumes_multi owner")
+                    step_drafts.setdefault(step_id, _StepDraft())
+                    for artifact_id in artifact_ids:
+                        artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
+                        self._add_unique(
+                            edges,
+                            ConsumesEdge(artifact_id=artifact_id, step_id=step_id),
+                            operator_name,
+                        )
+
+                case "produces":
+                    # produces(step, artifact) = True
+                    self._require_arity(arguments, 2, operator_name)
+                    step_id = self._symbol(arguments[0], "produces step")
+                    artifact_id = self._symbol(arguments[1], "produced artifact")
+                    self._require_true(fact_value, operator_name)
+                    step_drafts.setdefault(step_id, _StepDraft())
+                    artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
+                    self._add_unique(
+                        edges,
+                        ProducesEdge(step_id=step_id, artifact_id=artifact_id),
+                        operator_name,
+                    )
+
+                case "produces_multi":
+                    # produces_multi(step) = [artifact, ...]
+                    self._require_arity(arguments, 1, operator_name)
+                    artifact_ids = self._list_symbols(fact_value, operator_name)
+                    step_id = self._symbol(arguments[0], "produces_multi owner")
+                    step_drafts.setdefault(step_id, _StepDraft())
+                    for artifact_id in artifact_ids:
+                        artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
+                        self._add_unique(
+                            edges,
+                            ProducesEdge(step_id=step_id, artifact_id=artifact_id),
+                            operator_name,
+                        )
+
+                case "max_concurrency":
+                    # max_concurrency(workflow) = count
+                    self._require_arity(arguments, 1, operator_name)
+                    owner_id = self._symbol(arguments[0], "max_concurrency owner")
+                    self._require_owner(owner_id, workflow.name, operator_name)
+                    value = self._positive_integer(fact_value, operator_name)
+                    # None distinguishes "not supplied" from a duplicate value.
+                    if policy.max_concurrency is not None:
+                        raise WorkflowGraphCompilationError("duplicate max_concurrency")
+                    policy = replace(policy, max_concurrency=value)
+
+                case "workflow_timeout":
+                    # workflow_timeout(workflow) = seconds
+                    self._require_arity(arguments, 1, operator_name)
+                    owner_id = self._symbol(arguments[0], "workflow_timeout owner")
+                    self._require_owner(owner_id, workflow.name, operator_name)
+                    value = self._positive_integer(fact_value, operator_name)
+                    if policy.timeout_seconds is not None:
+                        raise WorkflowGraphCompilationError("duplicate workflow_timeout")
+                    policy = replace(policy, timeout_seconds=value)
+
+                case "step_name":
+                    # step_name(step) = display_name
+                    self._require_arity(arguments, 1, operator_name)
+                    step_id = self._symbol(arguments[0], "step_name step")
+                    step_draft = step_drafts.setdefault(step_id, _StepDraft())
+                    name_id = self._symbol(fact_value, "step_name value")
+                    if step_draft.name_id is not None:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {step_id!r}")
+                    step_draft.name_id = name_id
+
+                case "step_instruction":
+                    # step_instruction(step) = instruction_identity
+                    self._require_arity(arguments, 1, operator_name)
+                    step_id = self._symbol(arguments[0], "step_instruction step")
+                    step_draft = step_drafts.setdefault(step_id, _StepDraft())
+                    instruction_id = self._symbol(fact_value, "step_instruction value")
+                    if step_draft.instruction_id is not None:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {step_id!r}")
+                    step_draft.instruction_id = instruction_id
+
+                case "step_executor":
+                    # step_executor(step) = executor_identity
+                    # Concept tags, when present, also select exactly one executor kind.
+                    self._require_arity(arguments, 1, operator_name)
+                    step_id = self._symbol(arguments[0], "step_executor step")
+                    step_draft = step_drafts.setdefault(step_id, _StepDraft())
+                    executor = self._constant(fact_value, "step_executor value")
+                    self._validate_executor_concepts(executor)
+                    if step_draft.executor_id is not None:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {step_id!r}")
+                    step_draft.executor_id = executor.symbol
+
+                case "foreach_item":
+                    # foreach_item(step, collection_artifact) = item_binding
+                    # The binding is a local artifact owned by exactly this step.
+                    self._require_arity(arguments, 2, operator_name)
+                    step_id = self._symbol(arguments[0], "foreach_item step")
+                    step_drafts.setdefault(step_id, _StepDraft())
+                    source_id = self._symbol(arguments[1], "foreach source")
+                    binding_id = self._symbol(fact_value, "foreach item binding")
+                    # ponytail: keep the edge collection as the source of truth;
+                    # add a foreach index only if large workflows make this scan hot.
+                    if any(isinstance(edge, ForeachEdge) and edge.step_id == step_id for edge in edges):
+                        raise WorkflowGraphCompilationError(f"duplicate foreach_item for step {step_id!r}")
+                    binding_artifact = artifacts.setdefault(binding_id, ArtifactNode(artifact_id=binding_id))
+                    if binding_artifact.binding_step_id is not None:
+                        raise WorkflowGraphCompilationError(f"duplicate foreach item binding {binding_id!r}")
+                    artifacts.setdefault(source_id, ArtifactNode(artifact_id=source_id))
+                    artifacts[binding_id] = replace(binding_artifact, binding_step_id=step_id)
+                    edges.add(
+                        ForeachEdge(
+                            artifact_id=source_id,
+                            step_id=step_id,
+                            item_binding_id=binding_id,
+                        )
+                    )
+
+                case "step_timeout":
+                    # step_timeout(step) = seconds
+                    self._require_arity(arguments, 1, operator_name)
+                    step_id = self._symbol(arguments[0], "step_timeout step")
+                    step_draft = step_drafts.setdefault(step_id, _StepDraft())
+                    timeout_seconds = self._positive_integer(fact_value, operator_name)
+                    if step_draft.timeout_seconds is not None:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {step_id!r}")
+                    step_draft.timeout_seconds = timeout_seconds
+
+                case "max_attempts":
+                    # max_attempts(step) = count
+                    self._require_arity(arguments, 1, operator_name)
+                    step_id = self._symbol(arguments[0], "max_attempts step")
+                    step_draft = step_drafts.setdefault(step_id, _StepDraft())
+                    max_attempts = self._positive_integer(fact_value, operator_name)
+                    if step_draft.max_attempts is not None:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {step_id!r}")
+                    step_draft.max_attempts = max_attempts
+
+                case "resource_requirement":
+                    # resource_requirement(step, resource) = positive_amount
+                    self._require_arity(arguments, 2, operator_name)
+                    step_id = self._symbol(arguments[0], "resource_requirement step")
+                    step_draft = step_drafts.setdefault(step_id, _StepDraft())
+                    resource_id = self._symbol(arguments[1], "resource identity")
+                    amount = self._positive_integer(fact_value, operator_name)
+                    if resource_id in step_draft.resources:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {(step_id, resource_id)!r}")
+                    step_draft.resources[resource_id] = ResourceRequirement(
+                        resource_id=resource_id,
+                        amount=amount,
+                    )
+
+                case _:
+                    # _compile_assertion recognizes names through
+                    # _GRAPH_OPERATORS.  Fail closed if that vocabulary grows
+                    # without a matching, operator-specific lowering case.
+                    raise WorkflowGraphCompilationError(f"unsupported graph operator: {operator_name}")
+
+        try:
+            # A StepNode becomes valid only after its required name and executor
+            # facts are known.  Construct it once here instead of maintaining a
+            # second set of completed step IDs.
+            steps: list[StepNode] = []
+            for step_id, step_draft in sorted(step_drafts.items()):
+                if step_draft.name_id is None:
+                    raise WorkflowGraphCompilationError(f"step {step_id!r} has no step_name")
+                if step_draft.executor_id is None:
+                    raise WorkflowGraphCompilationError(f"step {step_id!r} has no step_executor")
+                steps.append(
+                    StepNode(
+                        step_id=step_id,
+                        name_id=step_draft.name_id,
+                        executor_id=step_draft.executor_id,
+                        instruction_id=step_draft.instruction_id,
+                        timeout_seconds=step_draft.timeout_seconds,
+                        # The graph model defaults retries to one when the DSL
+                        # omits max_attempts.
+                        max_attempts=step_draft.max_attempts if step_draft.max_attempts is not None else 1,
+                        resources=tuple(
+                            step_draft.resources[resource_id] for resource_id in sorted(step_draft.resources)
+                        ),
+                    )
+                )
+
+            # All other collections already contain target graph values.  Sort
+            # only to make equality and serialization independent of IR order.
+            graph = WorkflowGraph(
+                workflow_id=workflow.name,
+                steps=tuple(steps),
+                artifacts=tuple(artifacts[artifact_id] for artifact_id in sorted(artifacts)),
+                # Kind order is consumes, foreach, produces.  Within each kind,
+                # preserve the backend's previous deterministic endpoint order.
+                edges=tuple(
+                    sorted(
+                        edges,
+                        key=lambda edge: (
+                            edge.kind,
+                            edge.artifact_id if isinstance(edge, ConsumesEdge) else edge.step_id,
+                            edge.step_id if isinstance(edge, ConsumesEdge) else edge.artifact_id,
+                            edge.item_binding_id if isinstance(edge, ForeachEdge) else "",
+                        ),
+                    )
+                ),
+                policy=policy,
+            )
+        except WorkflowGraphError as error:
+            # Present target-model invariant failures through the compiler's
+            # public error type while preserving the original cause.
+            raise WorkflowGraphCompilationError(str(error)) from error
+
+        return WorkflowGraphCompilation(
+            graph=graph,
+            residual_assertions=tuple(residual),
+        )
+
+    def _build_program(
+        self,
+        declarations: _CompiledDeclarations,
+        *,
+        workflows: tuple[object, ...],
+    ) -> object:
+        """Return one compilation result per workflow in source order.
+
+        Global constants have already served as term values; the graph target
+        has no declaration table of its own.
+        """
+
+        del declarations
+        return workflows
+
+    @staticmethod
+    def _require_arity(arguments: tuple[object, ...], expected: int, operator_name: str) -> None:
+        """Require the exact arity defined by one graph operator."""
+
+        if len(arguments) != expected:
+            raise WorkflowGraphCompilationError(f"{operator_name} expects {expected} arguments, got {len(arguments)}")
+
+    @staticmethod
+    def _constant(value: object, context: str) -> Constant:
+        """Narrow a compiled value to a non-empty Core IR constant."""
+
+        if not isinstance(value, Constant) or not value.symbol:
+            raise WorkflowGraphCompilationError(f"{context} must be a non-empty constant")
+        return value
+
+    @classmethod
+    def _symbol(cls, value: object, context: str) -> str:
+        """Extract the identity/literal text carried by a compiled constant."""
+
+        return cls._constant(value, context).symbol
+
+    @classmethod
+    def _list_symbols(cls, value: object, operator_name: str) -> tuple[str, ...]:
+        """Extract a duplicate-free ordered symbol list from a compiled ListTerm."""
+
+        if not isinstance(value, _CompiledList):
+            raise WorkflowGraphCompilationError(f"{operator_name} RHS must be a List term")
+        symbols: list[str] = []
+        seen: set[str] = set()
+        for item in value.items:
+            symbol = cls._symbol(item, f"{operator_name} list item")
+            # Reject duplicates here because a set conversion would silently
+            # erase an invalid repeated edge/boundary declaration.
+            if symbol in seen:
+                raise WorkflowGraphCompilationError(f"duplicate {operator_name} list item: {symbol!r}")
+            seen.add(symbol)
+            symbols.append(symbol)
+        return tuple(symbols)
+
+    @staticmethod
+    def _require_owner(owner_id: str, workflow_id: str, operator_name: str) -> None:
+        """Ensure a workflow-scoped assertion cannot mutate another workflow."""
+
+        if owner_id != workflow_id:
+            raise WorkflowGraphCompilationError(
+                f"{operator_name} owner {owner_id!r} does not match workflow {workflow_id!r}"
+            )
+
+    @classmethod
+    def _require_true(cls, value: object, operator_name: str) -> None:
+        """Require the canonical ``True`` RHS used by boolean relation ops."""
+
+        if cls._symbol(value, f"{operator_name} RHS") != "True":
+            raise WorkflowGraphCompilationError(f"{operator_name} RHS must be the True constant")
+
+    @classmethod
+    def _positive_integer(cls, value: object, operator_name: str) -> int:
+        """Parse a positive ASCII-decimal policy value without accepting signs."""
+
+        symbol = cls._symbol(value, f"{operator_name} RHS")
+        # ``str.isdecimal`` accepts non-ASCII digits; the DSL contract does not.
+        if not symbol.isascii() or not symbol.isdecimal():
+            raise WorkflowGraphCompilationError(f"{operator_name} RHS must be a positive integer constant")
+        try:
+            # Python may reject extremely long decimal strings under its
+            # integer-conversion safety limit; normalize that to our API error.
+            number = int(symbol)
+        except ValueError as error:
+            raise WorkflowGraphCompilationError(f"{operator_name} RHS must be a positive integer constant") from error
+        if number < 1:
+            raise WorkflowGraphCompilationError(f"{operator_name} RHS must be a positive integer constant")
+        return number
+
+    @classmethod
+    def _validate_executor_concepts(cls, executor: Constant) -> None:
+        """Validate optional executor typing against the graph's three kinds.
+
+        Untyped constants remain valid for compatibility with minimal Core IR.
+        A typed executor must carry exactly one recognized executor concept.
+        """
+
+        if not executor.belong_concepts:
+            return
+        matches = {concept.name for concept in executor.belong_concepts} & cls._EXECUTOR_CONCEPTS
+        if len(matches) != 1:
+            raise WorkflowGraphCompilationError("step_executor must belong to exactly one of Human, Agent, or Program")
+
+    @staticmethod
+    def _add_unique[T](values: set[T], value: T, operator_name: str) -> None:
+        """Insert one set-backed fact while treating repetition as invalid IR."""
+
+        if value in values:
+            raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {value!r}")
+        values.add(value)
