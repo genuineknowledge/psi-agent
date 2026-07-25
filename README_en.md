@@ -25,6 +25,36 @@ AI layer is stateless. Session maintains conversation history. Channel is a pure
 
 For developers: start components independently, mix and match for debugging and customization. For users: `psi-agent run config.yml` launches everything in one command, and `psi-agent gateway` provides a visual web console for managing everything.
 
+## Python FusionFlow
+
+`psi_agent.fusion_flow` exposes workflow execution primitives directly to Python:
+
+```python
+import anyio
+
+from psi_agent.fusion_flow import RunContext, flow, run
+
+
+async def program(_: RunContext) -> None:
+    message = await flow.input("message", "hello")
+    await flow.output("result", message.upper())
+
+
+async def main() -> None:
+    result = await run(program, inputs={"message": "fusion flow"})
+    print(result.run_dir)
+
+
+anyio.run(main)
+```
+
+Inject Agent calls with `run(..., runner=...)`, or call
+`Agent(config, runner=...)` independently outside a run. The `RunContext`
+passed to a program also exposes `ctx.flow`. Execute commands with
+`flow.exec(name, argv, ...)`. See the
+[open questions](docs/architecture/workflow/2026-07-23-fusion-flow-python-runtime-open-questions.zh.md)
+for compatibility differences and remaining discussions.
+
 ## Quick Start
 
 **Requires Python >= 3.14**

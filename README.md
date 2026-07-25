@@ -25,6 +25,34 @@ AI 层无状态、Session 层维护对话历史、Channel 层是纯 UI 客户端
 
 对开发者：三个组件可独立启动、任意组合，适合调试和定制。对使用者：`psi-agent run config.yml` 一键拉起全部，`psi-agent gateway` 在浏览器里可视化管理一切。
 
+## Python FusionFlow
+
+`psi_agent.fusion_flow` 提供可直接从 Python 调用的工作流执行原语：
+
+```python
+import anyio
+
+from psi_agent.fusion_flow import RunContext, flow, run
+
+
+async def program(_: RunContext) -> None:
+    message = await flow.input("message", "hello")
+    await flow.output("result", message.upper())
+
+
+async def main() -> None:
+    result = await run(program, inputs={"message": "fusion flow"})
+    print(result.run_dir)
+
+
+anyio.run(main)
+```
+
+Agent 调用可通过 `run(..., runner=...)` 注入，也可用
+`Agent(config, runner=...)` 在运行外独立调用；传入 program 的 `RunContext`
+也直接提供 `ctx.flow`。命令执行使用 `flow.exec(name, argv, ...)`。兼容差异与待讨论点见
+[待讨论点](docs/architecture/workflow/2026-07-23-fusion-flow-python-runtime-open-questions.zh.md)。
+
 ## 快速开始
 
 **需要 Python >= 3.14**

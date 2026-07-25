@@ -36,6 +36,15 @@ JSONL 格式零依赖，逐行追加读写简单。文件按 `workspace/historie
 **为什么 socket 文件不自动 unlink？**
 支持热换 Server。每个 `session.post()` 新建 TCP/Unix 连接，由 `UnixConnector` 按路径重新 connect。只要新的服务进程绑定到同一 socket 路径，客户端无需重启即可继续通信。auto-unlink 会破坏这个能力——socket 文件需要保留，由新进程手动接管。
 
+**为什么 FusionFlow 的调用序号在命中缓存或成功落盘后才提交？**
+调用序号属于可恢复状态。失败的 `session()` / `call()` 不得消耗序号，否则同一调用重试时可能误读下一条历史 binding。显式 `binding_name` 的旧恢复产物也不算本次运行已写入，因此 resume miss 后允许覆盖一次；本次运行再次写同名 binding 才报错。
+
+**为什么 FusionFlow `parallel()` 不照搬 TypeScript 的 grace-period 脱离任务？**
+Python 版本坚持 AnyIO 结构化并发：`first` / `any` 取消落后任务后仍等待它们完成清理。这样 `run()` 返回时 binding 与 trace 已封口，不会再被后台任务修改。任务若吞掉取消信号而永久运行，整个并行节点也会继续等待；这是资源与状态一致性的有意取舍。
+
+**FusionFlow 的跨语言兼容边界是什么？**
+运行产物与核心语义优先兼容，包括 binding 恢复、配对的 `node_start` / `node_end` progress 事件、分组 token 汇总、程序快照和 `exec()` 截断标记。GC 保留策略同样遵循参考实现：`keep_count` 与 `keep_days` 同时为 `0` 表示禁用清理，而不是删除全部 run。Python API 保持 snake_case，并由显式 `SessionRunner` 承担 provider 调用；不复制 TypeScript 的 camelCase 配置或内嵌 provider 选择。
+
 ## 技术栈
 
 | 领域 | 技术 |
@@ -89,6 +98,11 @@ src/
     │   ├── cli/                    # 单次消息 CLI thin client
     │   ├── telegram/               # Telegram bot channel
     │   ├── feishu/                 # Feishu bot channel
+    ├── fusion_flow/
+    │   ├── __init__.py             # Python FusionFlow 稳定公开 API
+    │   ├── model.py                # Agent、规则、trace、binding 等运行模型
+    │   ├── runtime.py              # run 生命周期、持久化与恢复
+    │   └── flow.py                 # 29 个 flow.* 执行原语
     ├── workflow_graph/
     │   ├── __init__.py             # 声明式图模型 API
     │   └── model.py                # 允许有环的 Step–Artifact 静态图
@@ -197,7 +211,9 @@ SSE 流中的特殊字段：
 
 16. **消费 async generator 必须用 `aclosing()`**：`async for` 在提前退出或被 cancel 时不调用 generator 的 `aclose()`，导致 generator 内 `async with` 持有的资源（aiohttp 连接、文件句柄等）被遗弃给 GC。正确做法：`async with aclosing(gen) as g: async for chunk in g: ...`。对标 `ai/server.py` 的 `finally` + shielded `aclose()` 模式。参见 `agent.py`、`channel_adapter.py`、`schedule_registry.py`。
 
-17. **`WorkflowEdge` 是封闭 union**：`WorkflowGraph` 只接受 `ConsumesEdge`、`ProducesEdge`、`ForeachEdge` 的精确类型，不接受子类。子类会破坏 dataclass 基于精确类型的相等性去重，也能覆盖序列化使用的 `kind`。新增边类型时应显式更新 union、校验和序列化。
+17. **Windows batch 参数边界**：`fusion_flow.flow.exec()` 仅在目标显式以 `.cmd`/`.bat` 结尾时使用系统 shell，并对命令与参数整体加引号、延迟还原字面量 `%`；含双引号或换行的参数因无法安全无损地穿过 `cmd.exe` 而直接拒绝。Windows 非 batch 与其他平台始终保持 argv/no-shell 路径。
+
+18. **`WorkflowEdge` 是封闭 union**：`WorkflowGraph` 只接受 `ConsumesEdge`、`ProducesEdge`、`ForeachEdge` 的精确类型，不接受子类。子类会破坏 dataclass 基于精确类型的相等性去重，也能覆盖序列化使用的 `kind`。新增边类型时应显式更新 union、校验和序列化。
 
 ## 测试约定
 
