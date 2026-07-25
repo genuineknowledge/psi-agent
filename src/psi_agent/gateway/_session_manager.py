@@ -27,7 +27,11 @@ class SessionInfo:
     backend_type: str
     backend_id: str
     workspace: str
+    """User workspace (open folder)."""
+
     channel_socket: str
+    agent: str = ""
+    """Agent package path. Empty → Session uses workspace (single-root compat)."""
 
     @property
     def ai_id(self) -> str:
@@ -50,6 +54,8 @@ class SessionManager:
     _entries: dict[str, _SessionEntry] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
     _persist: Callable[[], Awaitable[None]] = _noop
+    _default_agent: str = ""
+    _default_workspace: str = ""
 
     async def create(
         self,
@@ -59,9 +65,11 @@ class SessionManager:
         ai_id: str = "",
         id: str = "",
         workspace: str = "",
+        agent: str = "",
     ) -> SessionInfo:
         session_id = id or _new_uuid()
-        workspace = workspace or os.getcwd()
+        workspace = workspace.strip() or self._default_workspace or os.getcwd()
+        agent = agent.strip() or self._default_agent
         backend_id = backend_id or ai_id
         upstream_socket = self.resolve_backend_socket(backend_type, backend_id)
         async with self._lock:
@@ -72,6 +80,7 @@ class SessionManager:
             await _ensure_socket_dir(channel_socket)
             sess = Session(
                 workspace=workspace,
+                agent=agent,
                 channel_socket=channel_socket,
                 ai_socket=upstream_socket,
                 session_id=session_id,
@@ -90,7 +99,14 @@ class SessionManager:
 
             logger.debug(f"SessionManager: starting session {session_id!r} task")
             self._tg.start_soon(_run_session)
-            info = SessionInfo(session_id, backend_type, backend_id, workspace, channel_socket)
+            info = SessionInfo(
+                id=session_id,
+                backend_type=backend_type,
+                backend_id=backend_id,
+                workspace=workspace,
+                channel_socket=channel_socket,
+                agent=agent,
+            )
             self._entries[session_id] = _SessionEntry(scope=scope, info=info)
         try:
             await _wait_socket(info.channel_socket)
@@ -104,7 +120,10 @@ class SessionManager:
                 await self._persist()
             raise
         await self._persist()
-        logger.info(f"Session {session_id!r} created on {info.channel_socket} -> {backend_type} {backend_id!r}")
+        logger.info(
+            f"Session {session_id!r} created on {info.channel_socket} "
+            f"-> {backend_type} {backend_id!r} agent={agent!r} workspace={workspace!r}"
+        )
         return info
 
     def resolve_backend_socket(self, backend_type: str, backend_id: str) -> str:
@@ -142,3 +161,8 @@ class SessionManager:
         if session_id not in self._entries:
             raise LookupError(f"Session {session_id!r} not found")
         return self._entries[session_id].info.workspace
+
+    def get_agent(self, session_id: str) -> str:
+        if session_id not in self._entries:
+            raise LookupError(f"Session {session_id!r} not found")
+        return self._entries[session_id].info.agent

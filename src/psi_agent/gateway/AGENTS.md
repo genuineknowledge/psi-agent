@@ -34,7 +34,8 @@ Gateway 进程
 | `_manager.py` | 共享 helpers（_new_uuid/_noop/_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
 | `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + AiInfo |
 | `_router_manager.py` | `RouterManager` — Router 实例注册表、AI ID 到 socket 解析和生命周期管理 |
-| `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo |
+| `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo（含 `agent`） |
+| `_defaults.py` | `resolve_default_agent` / `resolve_default_workspace` — CLI / `GET /defaults` 用 |
 | `_feishu_manager.py` | `FeishuManager` — 飞书 open_id → Session 路由表（复用 SessionManager 按需 spawn）+ FeishuRoute |
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
 | `_state.py` | `GatewayState` dataclass — `state/latest.json` 的 load/save + 历史快照 `state/YYYYMMDD-HHMMSS.json` |
@@ -56,25 +57,27 @@ Gateway 进程
 ```
 1. setup_logging(verbose)                             — 第一行
 2. if self.browser and self.webview: raise ValueError  — 互斥校验
-3. state = GatewayState() + snapshot = await state.load()  — 加载持久化状态
-4. anyio.create_task_group()                          — 手动管理 task group
-5. 创建 AIManager + SessionManager + TitleManager
-6. 恢复 AI（遍历 snapshot.ais → aim.create，失败 skip）
-7. 恢复 Session（遍历 snapshot.sessions → sm.create，失败 skip）
-8. 恢复标题（遍历 snapshot.titles → tm.set）
-9. await create_app(aim, sm, tm, favicon_path=self.icon, app_name=self.app_name)  — 注册 REST 路由
-10. 创建 _do_persist 闭包（快照三个 manager → state.save）
-11. 注入 _persist（aim._persist = sm._persist = tm._persist = _do_persist）
-12. await _do_persist()                                — 初始全量持久化
-13. runner.setup() + create_site(runner, listen) + site.start()
-14. if self.webview and self.icon is None: raise ValueError("--webview requires --icon")
-15. if self.webview: wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon, app_name=self.app_name); wv.start()
-16. if self.browser: webbrowser.open(addr)
-17. if self.tray and self.icon is None: raise ValueError("--tray requires --icon")
-18. if self.tray: GatewayTray(addr, self.icon, app_name=self.app_name, on_open=wv.show).start()
-19. try: 三路等待 — tray.wait_stop() / wv.wait_closed() / sleep_forever()
-20. finally: tray.stop()（如有）+ wv.stop()（如有）+ runner.cleanup() + tg.__aexit__()
+3. resolve default_agent / default_workspace（见 `_defaults.py`）
+4. state = GatewayState() + snapshot = await state.load()  — 加载持久化状态
+5. anyio.create_task_group()                          — 手动管理 task group
+6. 创建 AIManager + RouterManager + SessionManager（注入 `_default_agent` / `_default_workspace`）+ TitleManager
+7. 恢复 AI / Router / Session（Session 恢复时带 `agent`，缺省用 Gateway default）/ titles
+8. await create_app(..., default_agent=..., default_workspace=...)  — 注册 REST（含 `GET /defaults`）
+9. 创建 _do_persist 闭包（快照 managers → state.save，sessions 含 `agent`）
+10. 注入 _persist + 初始全量持久化
+11. runner.setup() + create_site + site.start() + tray/webview/browser 等待与 finally 清理
 ```
+
+## 默认 agent / workspace（接口层；AppData 另 PR）
+
+| CLI | 含义 |
+|-----|------|
+| `--default-agent` | 新建 Session 的 Agent 包目录；空且 cwd 下存在 `examples/haitun-workspace` 时软默认到该路径；仍空则 Session `agent=""`（与 workspace 同根兼容） |
+| `--default-workspace` | 新建 Session / `GET /defaults` 的用户工作区；空 → 进程 cwd |
+
+`POST /sessions` 可显式带 `agent` / `workspace`；省略时用上述默认。`SessionInfo` 与 `state/latest.json` 持久化含 `agent`。
+
+**本步不做**：history / state / todos 迁 AppData（后续小 PR）。
 
 ## 系统托盘 (GatewayTray)
 
@@ -248,14 +251,15 @@ REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
 | GET | `/routers` | 列出所有 Router |
 | DELETE | `/ais/{ai_id}` | 删除 AI（200/404） |
 | GET | `/ais` | 列出所有 AI |
-| POST | `/sessions` | 创建 Session（201） |
+| POST | `/sessions` | 创建 Session（201）；可选 `agent` / `workspace`（缺省用 Gateway defaults） |
 | DELETE | `/sessions/{session_id}` | 删除 Session + history JSONL + 标题（200/404） |
-| GET | `/sessions` | 列出所有 Session |
+| GET | `/sessions` | 列出所有 Session（含 `agent`） |
 | POST | `/sessions/{session_id}/chat` | Web UI chat（SSE） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史（``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`；assistant 行另附 ``sends`` 路径列表供交付物重水合） |
 | GET | `/sessions/{session_id}/todos` | 读取 workspace ``.psi/todos/{session_id}.json``（``todo`` tool 写入）；返回 ``{todos, summary}``，文件缺失则为空列表 |
 | POST | `/feishu/route` | 按飞书 `open_id` 幂等路由到其独立 Session（首次按需 spawn）`{open_id, ai_id?, workspace?}` → 201 `{open_id, session_id, channel_socket}`；缺 open_id / 无 ai_id → 400 |
 | GET | `/feishu/routes` | 列出所有飞书 open_id → Session 路由 `[{open_id, session_id}]` |
+| GET | `/defaults` | 默认 `agent` + `workspace` 路径（供 spa-v2 启动 / 建 Session） |
 | GET | `/workspace/cwd` | Gateway 进程当前工作目录 |
 | GET | `/workspace/places` | PathPicker 快捷位置（cwd / home / desktop / documents / downloads）+ 盘符 |
 | GET | `/workspace/browse` | 浏览目录 `?path=...&kind=directory|file|all&q=...`，默认 `kind=directory` |
@@ -534,7 +538,7 @@ AI 创建对话框支持从 provider 的 `/models` API 实时拉取可用模型�
 ## CLI 集成
 
 ```
-psi-agent gateway [--listen http://127.0.0.1:PORT] [--socket-path psi] [--icon PATH] [--app-name NAME] [--browser/--no-browser] [--webview/--no-webview] [--tray/--no-tray] [--feishu-ai-id ID] [--feishu-workspace-root DIR] [--verbose]
+psi-agent gateway [--listen http://127.0.0.1:PORT] [--socket-path psi] [--icon PATH] [--app-name NAME] [--browser/--no-browser] [--webview/--no-webview] [--tray/--no-tray] [--feishu-ai-id ID] [--feishu-workspace-root DIR] [--default-agent DIR] [--default-workspace DIR] [--verbose]
 ```
 
 默认 listen 为空，会自动绑定 127.0.0.1 随机高端口。`--browser` 开启自动打开浏览器。

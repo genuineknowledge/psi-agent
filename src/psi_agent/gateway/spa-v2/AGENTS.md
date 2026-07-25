@@ -25,9 +25,10 @@
 | 对话 | Gateway SSE | 同左（同一套 API） |
 | 交付物 | 气泡 blob chip | 宝箱 UI；SSE `blob` 写入 `deliverables`；抽屉内按 blob 真实渲染 MD/HTML/图片/文本（无 blob 时明确空态，非占位纸面） |
 | 账户区 | 头像菜单合一 | 头像菜单仅资料/登录；**模型池**与**设置**为侧栏独立快捷入口 |
-| 默认工作区 | 无 / 必须先选 | 无记忆时用 Gateway **cwd**（从 haitun-workspace 启动即该目录）；遗留字面量 `workspace` 会忽略 |
+| 默认工作区 | 无 / 必须先选 | 启动读 ``GET /defaults``.workspace；遗留 `*-workspace` / 字面量 `workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 选择页；**浏览**按钮走 `/workspace/places` + `/browse`（对齐 v1） |
 | 顶栏新建 | — | 右上角「新建任务」+ 侧栏同入口（`⌘/Ctrl N`） |
+| Agent 包 | 与 workspace 合一 | ``GET /defaults``.agent → 新建任务 ``POST /sessions`` 带 `agent`（可与用户工作区不同） |
 
 设置弹窗暂时只保留**切换工作区**（真实功能）；通知/交付位置等占位项已去掉，避免空壳菜单。
 | 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
@@ -37,12 +38,12 @@
 ## 映射
 
 ```text
-任务卡          ↔  Gateway Session（同 workspace）
-新建任务        ↔  POST /sessions + POST /titles + 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
+任务卡          ↔  Gateway Session（同 workspace；可选独立 agent 包）
+新建任务        ↔  POST /sessions（可带 agent）+ POST /titles + 首条 chat SSE（文案与附件同总览对话框：`File[]` multipart）；**首条发送后立刻进入分屏聚焦**（左上下文 / 右对话），不再停在新建页本地气泡
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
 任务历史文案    ↔  GET /sessions/{id}/history
 任务卡中间步 N/M ↔  GET /sessions/{id}/todos（workspace ``todo`` tool → `.psi/todos/{id}.json`）
-打开即用 AI     ↔  空池先开模型面板；「免费」清空配置；对话时惰性 POST `/ais`（远程默认）
+路径默认        ↔  GET /defaults（agent + workspace）；打开即用 AI 仍走空池惰性 POST `/ais`
 ```
 
 **新建任务输入**：单个大框（对齐总览 `context-chat`）——框内上部是预设快捷按钮（单行），底部是细条真输入（回形针 + 文本框 + 发送）；附件 chip 在细条上方。发送时随首轮 `streamSessionChat` 上传；可纯附件无文案。页内「返回任务总览」始终回总览（`goHome`）；顶栏在从模板进入时可显示「返回模板库」（`newTaskReturnView`）。

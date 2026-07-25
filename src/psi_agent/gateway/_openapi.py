@@ -323,6 +323,22 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/defaults": {
+            "get": {
+                "summary": "Default agent package and user workspace paths",
+                "operationId": "getDefaults",
+                "responses": {
+                    "200": {
+                        "description": "Path defaults for SPA / tooling",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/GatewayDefaults"},
+                            }
+                        },
+                    },
+                },
+            },
+        },
         "/workspace/places": {
             "get": {
                 "summary": "List quick-access paths and drives for path picker",
@@ -399,7 +415,14 @@ OPENAPI_SPEC = {
                     "ai_id": {"type": "string"},
                     "workspace": {
                         "type": "string",
-                        "description": "Optional, defaults to CWD",
+                        "description": "User workspace (open folder). Empty → Gateway default / cwd",
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": (
+                            "Agent package path. Empty → Gateway default "
+                            "(examples/haitun-workspace when present), else Session uses workspace"
+                        ),
                     },
                 },
             },
@@ -409,7 +432,15 @@ OPENAPI_SPEC = {
                     "id": {"type": "string"},
                     "ai_id": {"type": "string"},
                     "workspace": {"type": "string"},
+                    "agent": {"type": "string"},
                     "channel_socket": {"type": "string"},
+                },
+            },
+            "GatewayDefaults": {
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string", "description": "Default agent package path"},
+                    "workspace": {"type": "string", "description": "Default user workspace"},
                 },
             },
             "FeishuRouteRequest": {

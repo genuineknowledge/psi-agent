@@ -14,6 +14,7 @@ from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
+from psi_agent.gateway._defaults import resolve_default_agent, resolve_default_workspace
 from psi_agent.gateway._router_manager import RouterManager, RouterUpstreamInfo
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
@@ -67,6 +68,13 @@ class Gateway:
     """飞书各用户独立 workspace 的父目录。每个 open_id 得到 ``<root>/<open_id>`` 子目录, 文件/历史
     互相隔离。空 = 以 Gateway 进程 cwd 为父目录。"""
 
+    default_agent: str = ""
+    """Default agent package directory for new Sessions. Empty → soft-default
+    ``examples/haitun-workspace`` when present under cwd, else Session single-root compat."""
+
+    default_workspace: str = ""
+    """Default user workspace for new Sessions / ``GET /defaults``. Empty → process cwd."""
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -79,13 +87,25 @@ class Gateway:
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
 
+        agent_default = await resolve_default_agent(self.default_agent)
+        workspace_default = await resolve_default_workspace(self.default_workspace)
+        logger.info(f"Default agent: {agent_default or '(same as workspace)'}")
+        logger.info(f"Default workspace: {workspace_default}")
+
         state = GatewayState()
         snapshot = await state.load()
 
         async with anyio.create_task_group() as tg:
             aim = AIManager(_prefix=self.socket_path, _tg=tg)
             rm = RouterManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
-            sm = SessionManager(_aim=aim, _rm=rm, _prefix=self.socket_path, _tg=tg)
+            sm = SessionManager(
+                _aim=aim,
+                _rm=rm,
+                _prefix=self.socket_path,
+                _tg=tg,
+                _default_agent=agent_default,
+                _default_workspace=workspace_default,
+            )
             tm = TitleManager()
 
             for cfg in snapshot.get("ais", []):
@@ -125,6 +145,7 @@ class Gateway:
                         backend_type=cfg.get("backend_type", "ai"),
                         backend_id=cfg.get("backend_id", cfg.get("ai_id", "")),
                         workspace=cfg.get("workspace", ""),
+                        agent=cfg.get("agent", "") or agent_default,
                         id=cfg.get("id", ""),
                     )
                     logger.info(f"Restored Session {cfg.get('id', '?')!r}")
@@ -145,6 +166,8 @@ class Gateway:
                 attention=attention,
                 feishu_ai_id=self.feishu_ai_id,
                 feishu_workspace_root=self.feishu_workspace_root,
+                default_agent=agent_default,
+                default_workspace=workspace_default,
             )
 
             async def _do_persist() -> None:
@@ -165,6 +188,7 @@ class Gateway:
                             "backend_type": info.backend_type,
                             "backend_id": info.backend_id,
                             "workspace": info.workspace,
+                            "agent": info.agent,
                         }
                         for info in await sm.list_all()
                     ],
