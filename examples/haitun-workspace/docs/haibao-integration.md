@@ -152,6 +152,11 @@ server side 配置可信 OAuth issuer metadata 或受控 static verifier map。i
 - `sql_only`：只生成 SQL，未执行；
 - `execution_failed`：尝试执行但失败。
 
+问数结果还可选携带置信度:`confidence_level`(high/medium/low)、`confidence_note`
+与 `confidence_breakdown`(每项 {signal, status, graded})。Server 仅在下游提供时
+透传,缺失时省略;Adapter 在字段存在时校验其形状。Agent 可据其向用户说明 SQL
+可信程度,但不得把它当作执行成功的替代判据(仍以 executed/ok 为准)。
+
 只有 `execution.executed=true` 且 `execution.ok=true` 才能声称执行成功。Adapter 的
 structured response hook captures status only，保留 401、403 或 429；它 captures no
 remote body。错误 retryability 按 operation 和调用阶段判定：initialize 429 为
