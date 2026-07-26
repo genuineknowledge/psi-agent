@@ -326,8 +326,8 @@ const high_effort: ReasoningEffort;
 const read_tool: Tool;
 
 workflow code_review {
-  input_workflow(code_review, source_code) == True;
-  output_workflow(code_review, final_report) == True;
+  input_workflow(code_review, source_code);
+  output_workflow(code_review, final_report);
   max_concurrency(code_review) == 3;
   workflow_timeout(code_review) == 900;
 
@@ -336,40 +336,40 @@ workflow code_review {
   step_executor(security_review) == security_agent;
   step_timeout(security_review) == 300;
   max_attempts(security_review) == 2;
-  consumes(security_review, source_code) == True;
-  produces(security_review, security_findings) == True;
+  consumes(security_review, source_code);
+  produces(security_review, security_findings);
 
   step_name(performance_review) == performance_review_name;
   step_instruction(performance_review) == performance_instruction;
   step_executor(performance_review) == performance_agent;
   step_timeout(performance_review) == 300;
   max_attempts(performance_review) == 2;
-  consumes(performance_review, source_code) == True;
-  produces(performance_review, performance_findings) == True;
+  consumes(performance_review, source_code);
+  produces(performance_review, performance_findings);
 
   step_name(readability_review) == readability_review_name;
   step_instruction(readability_review) == readability_instruction;
   step_executor(readability_review) == readability_agent;
   step_timeout(readability_review) == 300;
   max_attempts(readability_review) == 2;
-  consumes(readability_review, source_code) == True;
-  produces(readability_review, readability_findings) == True;
+  consumes(readability_review, source_code);
+  produces(readability_review, readability_findings);
 
   step_name(synthesize_report) == synthesize_report_name;
   step_instruction(synthesize_report) == synthesis_instruction;
   step_executor(synthesize_report) == editor_agent;
   consumes_multi(synthesize_report) ==
     [security_findings, performance_findings, readability_findings];
-  produces(synthesize_report, final_report) == True;
+  produces(synthesize_report, final_report);
 
-  agent_config(security_agent, review_model, review_engine, review_api) == True;
-  agent_config(performance_agent, review_model, review_engine, review_api) == True;
-  agent_config(readability_agent, review_model, review_engine, review_api) == True;
-  agent_config(editor_agent, review_model, review_engine, review_api) == True;
+  agent_config(security_agent, review_model, review_engine, review_api);
+  agent_config(performance_agent, review_model, review_engine, review_api);
+  agent_config(readability_agent, review_model, review_engine, review_api);
+  agent_config(editor_agent, review_model, review_engine, review_api);
 
-  allowed_tool(security_agent, read_tool) == True;
-  allowed_tool(performance_agent, read_tool) == True;
-  allowed_tool(readability_agent, read_tool) == True;
+  allowed_tool(security_agent, read_tool);
+  allowed_tool(performance_agent, read_tool);
+  allowed_tool(readability_agent, read_tool);
   reasoning_effort(security_agent) == high_effort;
 }
 ```
@@ -380,6 +380,7 @@ Before authoring, read `grammar/FusionFlow.g4` completely. It is the sole author
 
 ### Modeling rules
 
+- Write a Bool-returning operator call as a standalone assertion, such as `consumes(step, artifact);`; it means the same as explicit `== True`. Only use this shorthand when the grammar/catalog signature returns `Bool`.
 - Declare external inputs and outputs with `input_workflow*` and `output_workflow*`. Their Workflow argument is the enclosing workflow name.
 - Model sequencing through artifacts: a step that produces an artifact precedes a step that consumes it.
 - Model fan-out by making several steps consume the same artifact.
@@ -412,7 +413,7 @@ const editor: Agent, Executor;
 
 workflow summarize_items {
   input_workflow_multi(summarize_items) == items;
-  output_workflow(summarize_items, final_summary) == True;
+  output_workflow(summarize_items, final_summary);
 
   step_name(analyze_item) == analyze_name;
   step_instruction(analyze_item) == analyze_instruction;
@@ -424,7 +425,7 @@ workflow summarize_items {
   step_instruction(merge_summary) == merge_instruction;
   step_executor(merge_summary) == editor;
   consumes_multi(merge_summary) == analyzed_items;
-  produces(merge_summary, final_summary) == True;
+  produces(merge_summary, final_summary);
 }
 ```
 
@@ -460,14 +461,14 @@ const work_instruction: Instruction;
 const worker: Agent, Executor;
 
 workflow workflow_name {
-  input_workflow(workflow_name, input_artifact) == True;
-  output_workflow(workflow_name, output_artifact) == True;
+  input_workflow(workflow_name, input_artifact);
+  output_workflow(workflow_name, output_artifact);
 
   step_name(work_step) == work_name;
   step_instruction(work_step) == work_instruction;
   step_executor(work_step) == worker;
-  consumes(work_step, input_artifact) == True;
-  produces(work_step, output_artifact) == True;
+  consumes(work_step, input_artifact);
+  produces(work_step, output_artifact);
 }
 ```
 

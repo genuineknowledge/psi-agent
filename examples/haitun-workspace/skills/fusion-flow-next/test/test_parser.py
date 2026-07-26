@@ -57,7 +57,49 @@ def _context() -> ParseContext:
         name="typed_mixed",
         input_concepts=(concepts["Artifact"], concepts["Agent"]),
     )
+    operators["predicate"] = Operator(
+        name="predicate",
+        input_concepts=(concepts["Artifact"],),
+        output_concept=concepts["Bool"],
+    )
+    operators["value"] = Operator(
+        name="value",
+        input_concepts=(concepts["Artifact"],),
+        output_concept=concepts["Artifact"],
+    )
     return ParseContext(concepts=concepts, operators=operators)
+
+
+def test_bool_call_shorthand_lowers_to_explicit_true_assertion() -> None:
+    result = parse_workflow(
+        """
+        const item: Artifact;
+        workflow shorthand {
+          predicate(item);
+          predicate(item) == True;
+        }
+        """,
+        context=_context(),
+    )
+
+    assert result.diagnostics == ()
+    assert isinstance(result.core_ir, WorkflowFile)
+    shorthand, explicit = result.core_ir.workflows[0].assertions
+    assert shorthand == explicit
+
+
+def test_non_bool_call_cannot_use_predicate_shorthand() -> None:
+    with pytest.raises(
+        ValueError,
+        match=r"Predicate shorthand requires a Bool-returning operator; 'value' returns 'Artifact'",
+    ):
+        parse_workflow(
+            """
+            const item: Artifact;
+            workflow shorthand { value(item); }
+            """,
+            context=_context(),
+        )
 
 
 def test_parse_workflow_lowers_complete_surface_to_core_ir() -> None:

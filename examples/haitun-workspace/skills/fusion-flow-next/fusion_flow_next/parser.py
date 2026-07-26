@@ -121,6 +121,18 @@ class _CoreIRVisitor:
         )
 
     def visit_assertion(self, context: Any) -> Assertion:
+        operator_call = context.operatorCall()
+        if operator_call is not None:
+            lhs = self.visit_operator_call(operator_call)
+            output_concept = lhs.operator.output_concept
+            if output_concept != self._resolve_concept("Bool"):
+                output_name = "unknown" if output_concept is None else output_concept.name
+                raise ValueError(
+                    "Predicate shorthand requires a Bool-returning operator; "
+                    f"{lhs.operator.name!r} returns {output_name!r}."
+                )
+            return Assertion(lhs=lhs, rhs=self._boolean_constant("true"))
+
         terms = context.term()
         return Assertion(lhs=self.visit_term(terms[0]), rhs=self.visit_term(terms[1]))
 
@@ -194,21 +206,9 @@ class _CoreIRVisitor:
         if conditional is not None:
             return self.visit_if_expression(conditional)
 
-        operator_name = context.operatorName()
-        if operator_name is not None:
-            operator = self._resolve_operator(operator_name.getText())
-            term_list = context.termList()
-            terms = () if term_list is None else tuple(term_list.term())
-            return CompoundTerm(
-                operator=operator,
-                arguments=tuple(
-                    self.visit_term(
-                        term,
-                        operator.input_concepts[index] if index < len(operator.input_concepts) else None,
-                    )
-                    for index, term in enumerate(terms)
-                ),
-            )
+        operator_call = context.operatorCall()
+        if operator_call is not None:
+            return self.visit_operator_call(operator_call)
 
         list_literal = context.listLiteral()
         if list_literal is not None:
@@ -219,6 +219,21 @@ class _CoreIRVisitor:
             return self.visit_atomic_term(atomic_term, expected_concept)
 
         return self.visit_term(context.term(0), expected_concept)
+
+    def visit_operator_call(self, context: Any) -> CompoundTerm:
+        operator = self._resolve_operator(context.operatorName().getText())
+        term_list = context.termList()
+        terms = () if term_list is None else tuple(term_list.term())
+        return CompoundTerm(
+            operator=operator,
+            arguments=tuple(
+                self.visit_term(
+                    term,
+                    operator.input_concepts[index] if index < len(operator.input_concepts) else None,
+                )
+                for index, term in enumerate(terms)
+            ),
+        )
 
     def visit_if_expression(self, context: Any) -> IfTerm:
         branches = context.term()
@@ -294,8 +309,9 @@ class _CoreIRVisitor:
 def parse_workflow(source: str, *, context: ParseContext) -> ParseResult:
     """Parse syntax and lower it without performing static workflow checks.
 
-    Syntax failures are returned as parser diagnostics. Formula equality lowers
-    to an assertion, inequality to NOT over an assertion, and ordered
+    Syntax failures are returned as parser diagnostics. A standalone
+    Bool-returning call lowers to an assertion against True. Formula equality
+    lowers to an assertion, inequality to NOT over an assertion, and ordered
     comparisons to KEDispatcher comparison operators asserted true. Compilation
     and workflow execution are outside this boundary.
     """

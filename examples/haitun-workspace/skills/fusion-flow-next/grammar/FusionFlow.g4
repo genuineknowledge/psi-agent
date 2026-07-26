@@ -37,7 +37,11 @@ workflowName
     : identifier
     ;
 
-/* Workflow blocks contain assertions only; each assertion ends with a semicolon. */
+/*
+ * Workflow blocks contain assertions only; each assertion ends with a semicolon.
+ * A standalone Bool-returning operator call is shorthand for `call == True`.
+ * The parser resolves the catalog return type before applying this shorthand.
+ */
 workflowItem
     : assertion SEMICOLON
     ;
@@ -51,9 +55,10 @@ conceptNameList
     : conceptName (COMMA conceptName)*
     ;
 
-/* Assertions use '=='; '=' is reserved for equality comparisons in formulas. */
+/* Explicit assertions use '=='; '=' is reserved for equality comparisons in formulas. */
 assertion
     : term ASSERT_EQ term
+    | operatorCall
     ;
 
 /*
@@ -91,13 +96,17 @@ comparisonOp
 term
     : LPAREN term RPAREN
     | ifExpression
-    | operatorName LPAREN termList? RPAREN
+    | operatorCall
     | listLiteral
     | op=(PLUS | MINUS) term
     | <assoc=right> left=term op=CARET right=term
     | left=term op=(STAR | DIVIDE | MODULO) right=term
     | left=term op=(PLUS | MINUS) right=term
     | atomicTerm
+    ;
+
+operatorCall
+    : operatorName LPAREN termList? RPAREN
     ;
 
 /*
