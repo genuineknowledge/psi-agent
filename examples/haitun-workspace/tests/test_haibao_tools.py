@@ -1689,3 +1689,40 @@ def test_haibao_public_docs_include_current_files_commands_and_no_private_paths(
         "/v1/conversations",
     ):
         assert forbidden not in combined
+
+
+@pytest.mark.parametrize(
+    ("category", "code", "retryable"),
+    [
+        ("not_data_query", "not_data_query", False),
+        ("invalid_request", "invalid_argument", False),
+        ("invalid_response", "protocol_error", False),
+        ("unauthorized", "unauthorized", False),
+        ("rate_limited", "rate_limited", True),
+        ("result_unknown", "result_unknown", False),
+        ("transport_error", "transport_error", True),
+        ("upstream_error", "transport_error", True),
+    ],
+)
+async def test_is_error_text_categories_are_mapped_distinctly(adapter, category, code, retryable):
+    """isError 文本中的稳定类别必须映射为对应错误码,而不是统一的 remote_error。"""
+    session = FakeSession(
+        CallToolResult(
+            content=[TextContent(type="text", text=f"Error executing tool haibao_list_datasets: {category}")],
+            isError=True,
+        )
+    )
+    connector, _ = _connector(session)
+    result = await adapter.call_tool("haibao_list_datasets", {}, env=ENV, connector=connector)
+    assert result["ok"] is False
+    assert result["error"]["code"] == code
+    assert result["error"]["retryable"] is retryable
+
+
+async def test_is_error_with_unknown_text_remains_remote_error(adapter):
+    session = FakeSession(
+        CallToolResult(content=[TextContent(type="text", text="some unstructured failure")], isError=True)
+    )
+    connector, _ = _connector(session)
+    result = await adapter.call_tool("haibao_list_datasets", {}, env=ENV, connector=connector)
+    assert result["error"]["code"] == "remote_error"

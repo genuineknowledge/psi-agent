@@ -345,8 +345,41 @@ def _only_schema_keys(schema: dict[str, Any], expected: set[str]) -> bool:
     return set(schema) <= expected | {"title", "description"}
 
 
+# isError 文本中的稳定类别(FastMCP 固定前缀 "Error executing tool <name>: <category>"),
+# 只提取已知类别词,不回传任何远程正文。
+_TOOL_ERROR_MAP: dict[str, tuple[str, str, bool | None]] = {
+    "not_data_query": ("not_data_query", "Not a data question; answer directly", False),
+    "invalid_request": ("invalid_argument", "Invalid Haibao arguments", False),
+    "invalid_response": ("protocol_error", "Haibao returned an invalid response", False),
+    "unauthorized": ("unauthorized", "Haibao authentication failed", False),
+    "rate_limited": ("rate_limited", "Haibao rate limit exceeded", None),
+    "result_unknown": ("result_unknown", "Haibao result unknown; do not retry automatically", False),
+    "transport_error": ("transport_error", "Haibao transport failed", None),
+    "upstream_error": ("transport_error", "Haibao transport failed", None),
+}
+
+
+def _tool_error_category(result: Any) -> str | None:
+    content = getattr(result, "content", None)
+    if not isinstance(content, list) or not content:
+        return None
+    text = getattr(content[0], "text", None)
+    if not isinstance(text, str):
+        return None
+    for category in _TOOL_ERROR_MAP:
+        if f": {category}" in text:
+            return category
+    return None
+
+
 def _normalize_result(name: str, result: Any) -> dict[str, Any]:
     if bool(getattr(result, "isError", False)):
+        category = _tool_error_category(result)
+        if category is not None:
+            code, message, retryable = _TOOL_ERROR_MAP[category]
+            if retryable is None:
+                retryable = name == "haibao_list_datasets"
+            return _error(code, message, retryable)
         return _error("remote_error", "Haibao request failed", False)
     payload = getattr(result, "structuredContent", None)
     if not isinstance(payload, dict):
