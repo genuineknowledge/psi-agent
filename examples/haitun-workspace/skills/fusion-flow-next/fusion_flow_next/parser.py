@@ -88,11 +88,23 @@ class _CoreIRVisitor:
         self._context = context
         self._constants: dict[str, Constant] = {}
         self._boolean_constants: dict[bool, Constant] = {}
+        self._inferred_concepts: dict[str, Concept] = {}
 
     def visit_workflow_file(self, context: Any) -> WorkflowFile:
         for declaration in context.constDecl():
             self.visit_const_decl(declaration)
-        workflows = tuple(self.visit_workflow_decl(workflow) for workflow in context.workflowDecl())
+        workflow_contexts = tuple(context.workflowDecl())
+        workflows = tuple(self.visit_workflow_decl(workflow) for workflow in workflow_contexts)
+        if self._inferred_concepts:
+            self._constants = {
+                symbol: (
+                    Constant(symbol=symbol, belong_concepts=(self._inferred_concepts[symbol],))
+                    if symbol in self._inferred_concepts
+                    else constant
+                )
+                for symbol, constant in self._constants.items()
+            }
+            workflows = tuple(self.visit_workflow_decl(workflow) for workflow in workflow_contexts)
         return WorkflowFile(constants=tuple(self._constants.values()), workflows=workflows)
 
     def visit_const_decl(self, context: Any) -> Constant:
@@ -134,7 +146,10 @@ class _CoreIRVisitor:
             return Assertion(lhs=lhs, rhs=self._boolean_constant("true"))
 
         terms = context.term()
-        return Assertion(lhs=self.visit_term(terms[0]), rhs=self.visit_term(terms[1]))
+        return Assertion(
+            lhs=self.visit_term(terms[0], self._term_output_concept(terms[1])),
+            rhs=self.visit_term(terms[1], self._term_output_concept(terms[0])),
+        )
 
     def visit_formula(self, context: Any) -> Formula:
         comparison = context.comparison()
@@ -264,18 +279,20 @@ class _CoreIRVisitor:
         symbol = self._strip_quotes(raw_text)
         existing = self._constants.get(symbol)
         if existing is not None:
-            if expected_concept is not None and expected_concept not in existing.belong_concepts:
-                concepts = tuple(concept.name for concept in existing.belong_concepts)
-                raise ValueError(
-                    f"FusionFlow constant {symbol!r} has concepts {concepts!r}; "
-                    f"operator position requires concept {expected_concept.name!r}."
-                )
+            if expected_concept is not None:
+                concepts = existing.belong_concepts
+                if not concepts:
+                    concepts = (self._inferred_concepts.setdefault(symbol, expected_concept),)
+                if expected_concept not in concepts:
+                    concept_names = tuple(concept.name for concept in concepts)
+                    raise ValueError(
+                        f"FusionFlow constant {symbol!r} has concepts {concept_names!r}; "
+                        f"operator position requires concept {expected_concept.name!r}."
+                    )
             return existing
 
-        if expected_concept is None:
-            raise ValueError(f"Cannot infer concept for FusionFlow constant {symbol!r}.")
-        # HACK: GK uses Any for implicit constants; FusionFlow infers direct operator arguments here.
-        constant = Constant(symbol=symbol, belong_concepts=(expected_concept,))
+        concepts = () if expected_concept is None else (expected_concept,)
+        constant = Constant(symbol=symbol, belong_concepts=concepts)
         self._constants[symbol] = constant
         return constant
 
@@ -298,6 +315,16 @@ class _CoreIRVisitor:
             return self._context.operators[name]
         except KeyError:
             raise ValueError(f"Unknown FusionFlow operator {name!r}.") from None
+
+    def _term_output_concept(self, context: Any) -> Concept | None:
+        """Return a direct operator output concept through transparent parentheses."""
+
+        while context.LPAREN() is not None:
+            context = context.term(0)
+        operator_call = context.operatorCall()
+        if operator_call is None:
+            return None
+        return self._resolve_operator(operator_call.operatorName().getText()).output_concept
 
     @staticmethod
     def _strip_quotes(symbol: str) -> str:

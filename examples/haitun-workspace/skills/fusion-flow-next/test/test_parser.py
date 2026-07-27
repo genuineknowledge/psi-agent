@@ -26,6 +26,7 @@ def _context() -> ParseContext:
             "ComplexNumber",
             "Count",
             "First",
+            "Instruction",
             "Name",
             "Second",
             "Step",
@@ -66,6 +67,11 @@ def _context() -> ParseContext:
         name="value",
         input_concepts=(concepts["Artifact"],),
         output_concept=concepts["Artifact"],
+    )
+    operators["step_instruction"] = Operator(
+        name="step_instruction",
+        input_concepts=(concepts["Step"],),
+        output_concept=concepts["Instruction"],
     )
     return ParseContext(concepts=concepts, operators=operators)
 
@@ -436,6 +442,54 @@ def test_undeclared_names_are_inferred_and_listed_in_first_use_order() -> None:
     assert call.arguments == (second, first)
 
 
+def test_relative_instruction_path_infers_operator_output_concept() -> None:
+    context = _context()
+    result = parse_workflow(
+        """
+        const review: Step;
+        workflow instructions {
+          step_instruction(review) == "./instructions/review-file.md";
+        }
+        """,
+        context=context,
+    )
+
+    assert result.diagnostics == ()
+    assert isinstance(result.core_ir, WorkflowFile)
+    instruction = result.core_ir.workflows[0].assertions[0].rhs
+    assert isinstance(instruction, Constant)
+    assert instruction.symbol == "./instructions/review-file.md"
+    assert instruction.belong_concepts == (context.concepts["Instruction"],)
+
+
+@pytest.mark.parametrize(
+    "assertion_source",
+    (
+        '(step_instruction(review)) == "./instructions/review-file.md"',
+        '"./instructions/review-file.md" == (step_instruction(review))',
+    ),
+)
+def test_parenthesized_operator_output_concept_is_inferred(assertion_source: str) -> None:
+    context = _context()
+    result = parse_workflow(
+        f"""
+        const review: Step;
+        workflow instructions {{
+          {assertion_source};
+        }}
+        """,
+        context=context,
+    )
+
+    assert result.diagnostics == ()
+    assert isinstance(result.core_ir, WorkflowFile)
+    parsed_assertion = result.core_ir.workflows[0].assertions[0]
+    instruction = parsed_assertion.lhs if isinstance(parsed_assertion.lhs, Constant) else parsed_assertion.rhs
+    assert isinstance(instruction, Constant)
+    assert instruction.symbol == "./instructions/review-file.md"
+    assert instruction.belong_concepts == (context.concepts["Instruction"],)
+
+
 @pytest.mark.parametrize(
     "source",
     (
@@ -448,10 +502,39 @@ def test_constant_concept_conflicts_are_rejected(source: str) -> None:
         parse_workflow(source, context=_context())
 
 
-def test_undeclared_constant_without_operator_concept_is_rejected() -> None:
-    with pytest.raises(ValueError, match="Cannot infer concept for FusionFlow constant 'unknown'"):
+def test_undeclared_constants_are_allowed_and_later_inferred() -> None:
+    result = parse_workflow(
+        """
+        workflow inferred {
+          custom(unknown) == true;
+          unknown == other;
+          typed("unknown", typed_value) == true;
+        }
+        """,
+        context=_context(),
+    )
+
+    assert result.diagnostics == ()
+    assert isinstance(result.core_ir, WorkflowFile)
+    unknown, other, typed_value = result.core_ir.constants
+    assert [concept.name for concept in unknown.belong_concepts] == ["Artifact"]
+    assert other.belong_concepts == ()
+    assert [concept.name for concept in typed_value.belong_concepts] == ["Artifact"]
+    first_call = result.core_ir.workflows[0].assertions[0].lhs
+    assert isinstance(first_call, CompoundTerm)
+    assert first_call.arguments[0] is unknown
+
+
+def test_untyped_constant_rejects_conflicting_later_inference() -> None:
+    with pytest.raises(ValueError, match=r"constant 'identity'.*requires concept 'Agent'"):
         parse_workflow(
-            "workflow missing { custom(unknown) == true; }",
+            """
+            workflow conflict {
+              custom(identity) == true;
+              typed(identity, artifact) == true;
+              typed_mixed(artifact, identity) == true;
+            }
+            """,
             context=_context(),
         )
 

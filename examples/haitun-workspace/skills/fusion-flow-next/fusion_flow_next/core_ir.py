@@ -15,7 +15,7 @@ class Concept:
 
 @dataclass(frozen=True, slots=True)
 class Constant:
-    """Typed identity or literal declared or used by a workflow."""
+    """Identity or literal with zero or more catalog concepts."""
 
     symbol: str
     belong_concepts: tuple[Concept, ...] = ()

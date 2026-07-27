@@ -232,6 +232,7 @@ agentOwnerOperator
 /* Constants are numbers, restricted quoted IDs, or lowercase identifiers. */
 constantName
     : NUMBER
+    | RELATIVE_PATH_ID
     | QUOTEDCONSTANTID
     | LOWID
     ;
@@ -276,6 +277,7 @@ fragment LOWERID : [a-z][A-Za-z0-9_]*;
 
 UPID : UPPERID;
 LOWID : LOWERID;
+RELATIVE_PATH_ID : '"./' [A-Za-z0-9._/-]+ '"';
 /* Restricted ID, not a general string: no whitespace or escape sequences. */
 QUOTEDCONSTANTID : '"' [A-Za-z0-9.!#$%?@_{|}~`]* '"';
 COLON : ':';
