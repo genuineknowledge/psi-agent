@@ -117,7 +117,72 @@ service tools:
 | `llm_wiki` (`llm_wiki.py` + `_llm_wiki_impl.py`) | Build/query an interlinked Markdown knowledge base (Karpathy's "LLM wiki" pattern): compile knowledge into durable, cross-referenced pages under `<workspace>/wiki/` instead of re-searching from scratch. Tools `wiki_write`, `wiki_read`, `wiki_search`, `wiki_list`, `wiki_links`, `wiki_delete`. Each page has YAML frontmatter (title/tags/timestamps/aliases) + a body linking others with `[[wikilink]]`; `wiki_links` reports back-links & broken links. Async `anyio` file IO + `pyyaml` frontmatter, both already core deps — no extra packages. |
 | `goal` (`goal.py` + `_goal_impl.py`) | Define and track **high-level goals** for the agent — durable intent that outlives one task (e.g. "ship payments v2", "reach 90% coverage"), which neither `todo` (one session's steps) nor the `taskflow` skill (a task/project board) captures. Tools `goal_set`, `goal_progress`, `goal_get`, `goal_list`, `goal_delete`. Each goal is a Markdown file under `<workspace>/goals/` with YAML frontmatter (title/slug/status[active,paused,achieved,abandoned]/priority/progress 0-100/target_date/tags/timestamps) + an append-only progress `log`, and a body that links related/sub-goals with `[[slug]]`. `goal_progress` records a dated log entry and moves %/status (100% ⇒ achieved); `goal_list` rolls up status counts. Async `anyio` file IO + `pyyaml` frontmatter, both already core deps — no extra packages. |
 | `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Two modes: multiple choice (up to 4 `options` + an auto-appended "Other" free-text) or open-ended (omit `options`). Returns a formatted question block to show the user; then **end the turn** and wait — the reply arrives as the next message (the runtime has no blocking-input primitive). Pure-Python, no extra deps. |
-| `c_drive_cleanup` | Windows C-drive safe-space scanner and cleaner. The first scan in each Session asks for confirmation, but same-turn model approval is allowed; later scans in that Session can proceed without another hard confirmation unless the user objects. Confirmation is recorded only after a successful first scan. Cleanup runs after the user affirms the displayed result and deletes only unchanged files in known temp/cache roots. The latest scan replaces the previous pending scan. State is per-Session, excluded from scanning, and has no public ID or expiration. User files are report-only; Recycle Bin emptying is separate and defaults off. See `docs/c-drive-cleanup-spec.md`. |
+| `c_drive_cleanup` | Windows system-drive safe-space scanner and cleaner. The first scan in each Session asks for confirmation, but same-turn model approval is allowed; later scans in that Session can proceed without another hard confirmation unless the user objects. Cleanup runs only after the user affirms the displayed result and deletes only unchanged files in known temp/cache roots. See “Windows system-drive cleanup contract” below. |
+
+### Windows system-drive cleanup contract
+
+This feature is entirely workspace-local: `tools/c_drive_cleanup.py` is the
+public async tool, `tools/_c_drive_cleanup_impl.py` contains its implementation,
+and `skills/windows-c-drive-cleanup/SKILL.md` governs the conversation flow. It
+does not require psi-agent core changes. Test-only root/state overrides are
+private implementation parameters and must not be exposed by the public tool.
+
+#### Confirmation and state
+
+- On the first `action="scan"` in a Session, the tool returns
+  `requires_scan_confirmation=true` before inspecting the drive. Explain that
+  scanning reads paths, sizes, and timestamps, then obtain confirmation and
+  retry with `scan_approved=true`. Same-turn model approval is allowed.
+- Record first-scan confirmation only after the scan and cleanup snapshot are
+  written successfully. Later scans in the same Session need no separate hard
+  confirmation unless the user objects. Confirmation is isolated by
+  `get_session_id()`; there is no process-wide flag.
+- Present the latest scan summary before deletion, explain that selected
+  temporary/cache files are permanently deleted, and wait for an affirmative
+  contextual reply. No fixed phrase is required. Then call `action="clean"`
+  with `cleanup_approved=true`.
+- The latest scan replaces the prior per-Session snapshot; successful cleanup
+  consumes it. There is no public `plan_id` and no expiration.
+- Snapshots and scan-confirmation markers live under
+  `haitun-c-drive-cleanup-plans` in the system temporary directory. Filenames
+  contain a truncated SHA-256 of the Session ID, never the raw ID. State writes
+  use atomic replace, and this directory is excluded from scans.
+
+#### Public actions and deletion boundary
+
+- `scan` scans allowlisted disposable locations and stores the latest snapshot.
+- `status` returns the latest summary without candidate paths.
+- `clean` revalidates and deletes candidates from that snapshot.
+- `categories` selects a safe-category subset; `min_age_days` remains subject
+  to per-category safety floors; `include_large_files` controls report-only
+  discovery; and `include_recycle_bin` / `empty_recycle_bin` must agree.
+  Results are JSON strings, with operational failures represented by
+  `ok=false`.
+- Automatic candidates are limited to user and Windows temporary files, crash
+  dumps, Windows Error Reporting archives/queues, Direct3D shader cache, and
+  Explorer `thumbcache_*` files. Category-specific age floors always apply.
+- Documents, Desktop, Downloads, media, source code, databases, model files,
+  virtual machines, and other ordinary user content are never automatic
+  candidates. Large user files are report-only.
+- Recycle Bin handling defaults off. It is included only when requested at
+  scan time, and `empty_recycle_bin` must match that stored choice at cleanup.
+
+#### Filesystem safety and reporting
+
+- Never follow directory/file symlinks, junctions, or other reparse points.
+  Deduplicate files reached through overlapping roots and exclude the tool's
+  own state directory. Candidate and large-file result counts are capped, and
+  inaccessible paths must not abort the scan.
+- Persist path, category, size, modification time, device, and inode for each
+  candidate. Before deletion, schema-check the snapshot; resolve every path
+  again; verify its allowlisted root, volume, and metadata; reject reparse-point
+  roots; and bind production cleanup to the current `SYSTEMDRIVE`.
+- Skip changed, missing, locked, malformed, inaccessible, or out-of-root
+  entries. Planned bytes are not measured reclaimed space: report disk free
+  space before and after cleanup plus individual failures.
+- Do not clean WinSxS or Windows Update, stop services, edit the registry,
+  uninstall applications, elevate privileges, automatically delete reported
+  large files, or provide arbitrary-path deletion.
 
 ## Skills (`skills/`)
 

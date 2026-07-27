@@ -15,11 +15,7 @@ confirmation unless the user objects. Cleanup runs after the user affirms the
 displayed result. Only unchanged files in known temporary or cache locations are
 deleted. User files are reported but never selected automatically.
 
-Detailed behavior and implementation scope are recorded in
-[`docs/c-drive-cleanup-spec.md`](docs/c-drive-cleanup-spec.md) and
-[`docs/c-drive-cleanup-plan.md`](docs/c-drive-cleanup-plan.md).
-
-See `AGENTS.md` for the full layout and conventions.
+See `AGENTS.md` for the detailed cleanup contract, full layout, and conventions.
 
 ## Run
 
