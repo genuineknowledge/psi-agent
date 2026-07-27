@@ -67,16 +67,15 @@ def _compile(
     return cast(tuple[WorkflowGraphCompilation, ...], compiled)[0]
 
 
-def test_compiles_all_scalar_graph_operators() -> None:
+def test_compiles_all_graph_operators() -> None:
     workflow = Constant("workflow")
     step = Constant("step")
     input_artifact = Constant("input")
     output_artifact = Constant("output")
-    true = Constant("True")
     compilation = _compile(
         (
-            _assertion("input_workflow", (workflow, input_artifact), true),
-            _assertion("output_workflow", (workflow, output_artifact), true),
+            _assertion("input_workflow", (workflow,), ListTerm((input_artifact,))),
+            _assertion("output_workflow", (workflow,), ListTerm((output_artifact,))),
             _assertion("step_name", (step,), Constant("name")),
             _assertion("step_instruction", (step,), Constant("instruction")),
             _assertion(
@@ -84,8 +83,8 @@ def test_compiles_all_scalar_graph_operators() -> None:
                 (step,),
                 Constant("executor", (Concept("Agent"),)),
             ),
-            _assertion("consumes", (step, input_artifact), true),
-            _assertion("produces", (step, output_artifact), true),
+            _assertion("consumes", (step,), ListTerm((input_artifact,))),
+            _assertion("produces", (step,), ListTerm((output_artifact,))),
             _assertion("foreach_item", (step, input_artifact), Constant("item")),
             _assertion("step_timeout", (step,), Constant("30")),
             _assertion("max_attempts", (step,), Constant("2")),
@@ -147,7 +146,7 @@ def test_compiles_all_scalar_graph_operators() -> None:
     }
 
 
-def test_multi_graph_operators_read_list_term_items() -> None:
+def test_graph_dataflow_operators_read_multiple_list_term_items() -> None:
     workflow = Constant("workflow")
     step = Constant("step")
     inputs = (Constant("in-b"), Constant("in-a"))
@@ -155,10 +154,10 @@ def test_multi_graph_operators_read_list_term_items() -> None:
     compilation = _compile(
         (
             *_step_declarations(),
-            _assertion("input_workflow_multi", (workflow,), ListTerm(inputs)),
-            _assertion("output_workflow_multi", (workflow,), ListTerm(outputs)),
-            _assertion("consumes_multi", (step,), ListTerm(inputs)),
-            _assertion("produces_multi", (step,), ListTerm(outputs)),
+            _assertion("input_workflow", (workflow,), ListTerm(inputs)),
+            _assertion("output_workflow", (workflow,), ListTerm(outputs)),
+            _assertion("consumes", (step,), ListTerm(inputs)),
+            _assertion("produces", (step,), ListTerm(outputs)),
         )
     )
 
@@ -228,10 +227,10 @@ def test_unknown_assertions_remain_residual() -> None:
 
 def test_supported_graph_operator_on_rhs_is_lowered_as_equality() -> None:
     reversed_input = Assertion(
-        lhs=Constant("True"),
+        lhs=ListTerm((Constant("artifact2"),)),
         rhs=CompoundTerm(
             operator=Operator("input_workflow"),
-            arguments=(Constant("workflow1"), Constant("artifact2")),
+            arguments=(Constant("workflow1"),),
         ),
     )
 
@@ -247,11 +246,11 @@ def test_one_equality_cannot_declare_multiple_graph_facts() -> None:
     assertion = Assertion(
         lhs=CompoundTerm(
             operator=Operator("input_workflow"),
-            arguments=(Constant("workflow"), Constant("input")),
+            arguments=(Constant("workflow"),),
         ),
         rhs=CompoundTerm(
             operator=Operator("output_workflow"),
-            arguments=(Constant("workflow"), Constant("output")),
+            arguments=(Constant("workflow"),),
         ),
     )
 
@@ -304,29 +303,28 @@ def test_explicit_one_does_not_hide_duplicate_max_attempts() -> None:
 
 
 def test_cycle_compilation_is_order_independent() -> None:
-    true = Constant("True")
     assertions = (
         *_step_declarations("a"),
         *_step_declarations("b"),
         _assertion(
             "consumes",
-            (Constant("a"), Constant("from-b")),
-            true,
+            (Constant("a"),),
+            ListTerm((Constant("from-b"),)),
         ),
         _assertion(
             "produces",
-            (Constant("a"), Constant("from-a")),
-            true,
+            (Constant("a"),),
+            ListTerm((Constant("from-a"),)),
         ),
         _assertion(
             "consumes",
-            (Constant("b"), Constant("from-a")),
-            true,
+            (Constant("b"),),
+            ListTerm((Constant("from-a"),)),
         ),
         _assertion(
             "produces",
-            (Constant("b"), Constant("from-b")),
-            true,
+            (Constant("b"),),
+            ListTerm((Constant("from-b"),)),
         ),
     )
 
@@ -346,8 +344,8 @@ def test_graph_validation_errors_are_public_and_chained() -> None:
             (
                 _assertion(
                     "output_workflow",
-                    (Constant("workflow"), Constant("missing")),
-                    Constant("True"),
+                    (Constant("workflow"),),
+                    ListTerm((Constant("missing"),)),
                 ),
             )
         )

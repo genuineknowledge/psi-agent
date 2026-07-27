@@ -17,13 +17,25 @@ def test_preset_operators_document_signatures() -> None:
         re.MULTILINE,
     )
     signatures = re.findall(
-        r"^\s*\*\s+([a-z][a-z0-9_]*)\(([^)]*)\)\s*->\s*[A-Z][A-Za-z0-9_]*\s+\[arity\s+(\d+)\]\s*$",
+        r"^\s*\*\s+([a-z][a-z0-9_]*)\(([^)]*)\)\s*->\s*([A-Z][A-Za-z0-9_]*)\s+\[arity\s+(\d+)\]\s*$",
         grammar,
         re.MULTILINE,
     )
 
-    assert sorted(name for name, _, _ in signatures) == sorted(set(preset_operators))
-    for operator, parameters, arity in signatures:
+    assert sorted(name for name, _, _, _ in signatures) == sorted(set(preset_operators))
+    canonical_list_operators = {
+        "input_workflow": ("Workflow", "List", "1"),
+        "consumes": ("Step", "List", "1"),
+        "produces": ("Step", "List", "1"),
+        "output_workflow": ("Workflow", "List", "1"),
+    }
+    assert {
+        name: (parameters, return_type, arity)
+        for name, parameters, return_type, arity in signatures
+        if name in canonical_list_operators
+    } == canonical_list_operators
+    assert all("_multi" not in name for name in preset_operators)
+    for operator, parameters, _, arity in signatures:
         parameter_types = [item.strip() for item in parameters.split(",") if item.strip()]
         assert all(re.fullmatch(r"[A-Z][A-Za-z0-9_]*", item) for item in parameter_types), operator
         assert len(parameter_types) == int(arity), operator

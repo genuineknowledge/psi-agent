@@ -256,7 +256,7 @@ fail-closed 路径显式报错。
 
 ### 7.2 已知 operator
 
-初版识别：
+FusionFlow catalog 共 19 个 preset operator；图后端初版识别：
 
 - `input_workflow`
 - `output_workflow`
@@ -271,10 +271,6 @@ fail-closed 路径显式报错。
 - `resource_requirement`
 - `max_concurrency`
 - `workflow_timeout`
-- `input_workflow_multi`
-- `output_workflow_multi`
-- `consumes_multi`
-- `produces_multi`
 
 已知 operator 如果 arity、RHS、owner 或类型形状错误，直接产生
 `WorkflowGraphCompilationError`，不能伪装成 residual。
@@ -291,26 +287,21 @@ operator 默认可能为 0，不能代表应用实参数量。
 
 | Core IR assertion | WorkflowGraph |
 | --- | --- |
-| `input_workflow(w, a) = True` | `ArtifactNode(a, is_input=True)` |
-| `output_workflow(w, a) = True` | `ArtifactNode(a, is_output=True)` |
+| `input_workflow(w) == [a, ...]` | 每项成为 `ArtifactNode(a, is_input=True)` |
+| `output_workflow(w) == [a, ...]` | 每项成为 `ArtifactNode(a, is_output=True)` |
 | `step_name(s) = n` | `StepNode(s).name_id = n` |
 | `step_instruction(s) = i` | `StepNode(s).instruction_id = i` |
 | `step_executor(s) = e` | `StepNode(s).executor_id = e` |
-| `consumes(s, a) = True` | `ConsumesEdge(a, s)` |
-| `produces(s, a) = True` | `ProducesEdge(s, a)` |
+| `consumes(s) == [a, ...]` | 每项成为 `ConsumesEdge(a, s)` |
+| `produces(s) == [a, ...]` | 每项成为 `ProducesEdge(s, a)` |
 | `foreach_item(s, source) = item` | `ForeachEdge(source, s, item)` + local Artifact |
 | `step_timeout(s) = n` | `StepNode(s).timeout_seconds = n` |
 | `max_attempts(s) = n` | `StepNode(s).max_attempts = n` |
 | `resource_requirement(s, resource) = n` | `StepNode(s).resources += (resource, n)` |
 | `max_concurrency(w) = n` | `WorkflowPolicy.max_concurrency = n` |
 | `workflow_timeout(w) = n` | `WorkflowPolicy.timeout_seconds = n` |
-| `input_workflow_multi(w) = [a, ...]` | 每项成为 workflow input |
-| `output_workflow_multi(w) = [a, ...]` | 每项成为 workflow output |
-| `consumes_multi(s) = [a, ...]` | 每项成为 `ConsumesEdge(a, s)` |
-| `produces_multi(s) = [a, ...]` | 每项成为 `ProducesEdge(s, a)` |
 
-其中所有 `n` 都从 `Constant.symbol` 显式解析为正整数；关系型 assertion 的 `True`
-也按明确的布尔常量解析，不能使用 Python truthiness。resource identity 使用
+其中所有 `n` 都从 `Constant.symbol` 显式解析为正整数。resource identity 使用
 `(step_id, resource_id)` 结构化键，不把 resource 或 amount 建成 Artifact。
 
 普通值 assertion，例如 `files = [file_a, file_b]`，不展开进静态图，留在 residual 供
@@ -334,9 +325,10 @@ WorkflowGraphCompilation
 两侧顶层都没有已知图算子的 assertion（包括普通 equality 和未知 compound operator）
 可以进入 residual；已识别但形状错误的关系和共享编译器不支持的递归节点必须显式失败。
 
-## 8. ListTerm multi 的信息边界
+## 8. canonical dataflow ListTerm 的信息边界
 
-四种 `*_multi` 都从真实 `ListTerm.items` 读取。图后端把它们编译为关系：
+`input_workflow`、`output_workflow`、`consumes`、`produces` 都从真实
+`ListTerm.items` 读取。图后端把它们编译为关系：
 
 - List 项展开为普通边或 I/O 标记；
 - 重复项报错，避免静默丢 multiplicity；
@@ -442,7 +434,7 @@ failure、结果聚合与提交由未来 runtime 负责。
 - 每个已知 operator 的成功映射；
 - arity、owner、RHS、类型错误；
 - 未知 assertion 进入 residual；
-- 真实 `ListTerm` multi 显式擦除顺序、拒绝重复；
+- 四个 canonical dataflow operator 的真实 `ListTerm` 显式擦除顺序、拒绝重复；
 - 未支持的 term 经 `CoreIRCompiler` fail closed；
 - cycle 编译后仍保留；
 - resource key 不发生 `"a:b" + "c"` 与 `"a" + "b:c"` 碰撞；

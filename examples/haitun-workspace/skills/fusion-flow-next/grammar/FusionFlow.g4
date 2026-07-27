@@ -9,7 +9,7 @@
  * cannot redefine them. The checker and catalog own identity/operator lookup,
  * concept compatibility, ordinary operator arity and types, value constraints,
  * workflow legality, and exact backend support. Lowering/runtime own execution
- * order, dependencies, multi-operator data relations, branch evaluation, and
+ * order, dependencies, list-valued data relations, branch evaluation, and
  * retries/timeouts.
  *
  * For a compact, readable BNF and consistency with KEDispatcher, preset
@@ -90,8 +90,8 @@ comparisonOp
 /*
  * Value terms include calls, lists, literals, arithmetic, and if expressions.
  * Arithmetic precedence, high to low: unary +/-; right-associative ^; * / %;
- * then +/-. Lists are ordinary terms, including the result side of every
- * *_multi operator. Numeric/operator/List legality remains checker-owned.
+ * then +/-. Lists are ordinary terms, including the result side of the four
+ * canonical list-valued dataflow operators. Legality remains checker-owned.
  */
 term
     : LPAREN term RPAREN
@@ -113,7 +113,7 @@ operatorCall
  * Value-producing if(condition formula, then term, else term), always arity 3.
  * N-way choice uses nested if expressions. Branch types, dependency collection,
  * and eager/lazy evaluation are checker/runtime concerns. if is surface syntax,
- * not one of the 23 preset operators and not a block or Step.
+ * not one of the 19 preset operators and not a block or Step.
  */
 ifExpression
     : IF LPAREN formula COMMA term COMMA term RPAREN
@@ -147,7 +147,7 @@ operatorName
     ;
 
 /*
- * Complete catalog: 6 workflow + 5 step + 6 data/resource + 6 agent = 23.
+ * Complete catalog: 4 workflow + 5 step + 4 data/resource + 6 agent = 19.
  * Owner categories are disjoint;
  * cross-cutting labels such as dataflow, control, and configuration stay in
  * comments rather than duplicating names across parser rules.
@@ -161,18 +161,14 @@ workflowBuiltinOperator
 
 /*
  * Workflow owner (external I/O and workflow-level control/configuration):
- *   input_workflow(Workflow, Artifact) -> Bool       [arity 2]
- *   input_workflow_multi(Workflow) -> List            [arity 1]
- *   output_workflow(Workflow, Artifact) -> Bool      [arity 2]
- *   output_workflow_multi(Workflow) -> List           [arity 1]
+ *   input_workflow(Workflow) -> List                  [arity 1]
+ *   output_workflow(Workflow) -> List                 [arity 1]
  *   max_concurrency(Workflow) -> Integer             [arity 1]
  *   workflow_timeout(Workflow) -> Integer            [arity 1]
  */
 workflowOwnerOperator
     : 'input_workflow'
-    | 'input_workflow_multi'
     | 'output_workflow'
-    | 'output_workflow_multi'
     | 'max_concurrency'
     | 'workflow_timeout'
     ;
@@ -195,18 +191,14 @@ stepOwnerOperator
 
 /*
  * Data, loop, and resource owner:
- *   consumes(Step, Artifact) -> Bool                  [arity 2]
- *   consumes_multi(Step) -> List                      [arity 1]
- *   produces(Step, Artifact) -> Bool                  [arity 2]
- *   produces_multi(Step) -> List                      [arity 1]
+ *   consumes(Step) -> List                            [arity 1]
+ *   produces(Step) -> List                            [arity 1]
  *   foreach_item(Step, List) -> Artifact              [arity 2]
  *   resource_requirement(Step, Resource) -> Integer   [arity 2]
  */
 dataResourceOperator
     : 'consumes'
-    | 'consumes_multi'
     | 'produces'
-    | 'produces_multi'
     | 'foreach_item'
     | 'resource_requirement'
     ;

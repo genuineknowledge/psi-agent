@@ -102,9 +102,9 @@ class WorkflowGraphCompiler(CoreIRCompiler):
 
     Graph operators fall into four groups:
 
-    * workflow boundaries: ``input_workflow*`` and ``output_workflow*``;
+    * workflow boundaries: ``input_workflow`` and ``output_workflow``;
     * step metadata: ``step_name``, ``step_instruction``, and ``step_executor``;
-    * dataflow: ``consumes*``, ``produces*``, and ``foreach_item``;
+    * dataflow: ``consumes``, ``produces``, and ``foreach_item``;
     * policies: timeouts, retries, resources, and concurrency.
 
     The compiler only overrides protected hooks.  Public traversal and
@@ -115,18 +115,14 @@ class WorkflowGraphCompiler(CoreIRCompiler):
         {
             # Workflow boundary operators.
             "input_workflow",
-            "input_workflow_multi",
             "output_workflow",
-            "output_workflow_multi",
             # Required and optional step metadata.
             "step_name",
             "step_instruction",
             "step_executor",
             # Step-to-artifact dataflow operators.
             "consumes",
-            "consumes_multi",
             "produces",
-            "produces_multi",
             "foreach_item",
             # Step and workflow policies.
             "step_timeout",
@@ -274,22 +270,10 @@ class WorkflowGraphCompiler(CoreIRCompiler):
             # prefix, suffix, or grouped fallback.
             match operator_name:
                 case "input_workflow":
-                    # input_workflow(workflow, artifact) = True
-                    self._require_arity(arguments, 2, operator_name)
-                    owner_id = self._symbol(arguments[0], "input_workflow owner")
-                    self._require_owner(owner_id, workflow.name, operator_name)
-                    artifact_id = self._symbol(arguments[1], "input_workflow artifact")
-                    self._require_true(fact_value, operator_name)
-                    artifact = artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
-                    if artifact.is_input:
-                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {artifact_id!r}")
-                    artifacts[artifact_id] = replace(artifact, is_input=True)
-
-                case "input_workflow_multi":
-                    # input_workflow_multi(workflow) = [artifact, ...]
+                    # input_workflow(workflow) == [artifact, ...]
                     self._require_arity(arguments, 1, operator_name)
                     artifact_ids = self._list_symbols(fact_value, operator_name)
-                    owner_id = self._symbol(arguments[0], "input_workflow_multi owner")
+                    owner_id = self._symbol(arguments[0], "input_workflow owner")
                     self._require_owner(owner_id, workflow.name, operator_name)
                     for artifact_id in artifact_ids:
                         artifact = artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
@@ -298,22 +282,10 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                         artifacts[artifact_id] = replace(artifact, is_input=True)
 
                 case "output_workflow":
-                    # output_workflow(workflow, artifact) = True
-                    self._require_arity(arguments, 2, operator_name)
-                    owner_id = self._symbol(arguments[0], "output_workflow owner")
-                    self._require_owner(owner_id, workflow.name, operator_name)
-                    artifact_id = self._symbol(arguments[1], "output_workflow artifact")
-                    self._require_true(fact_value, operator_name)
-                    artifact = artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
-                    if artifact.is_output:
-                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {artifact_id!r}")
-                    artifacts[artifact_id] = replace(artifact, is_output=True)
-
-                case "output_workflow_multi":
-                    # output_workflow_multi(workflow) = [artifact, ...]
+                    # output_workflow(workflow) == [artifact, ...]
                     self._require_arity(arguments, 1, operator_name)
                     artifact_ids = self._list_symbols(fact_value, operator_name)
-                    owner_id = self._symbol(arguments[0], "output_workflow_multi owner")
+                    owner_id = self._symbol(arguments[0], "output_workflow owner")
                     self._require_owner(owner_id, workflow.name, operator_name)
                     for artifact_id in artifact_ids:
                         artifact = artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
@@ -322,24 +294,10 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                         artifacts[artifact_id] = replace(artifact, is_output=True)
 
                 case "consumes":
-                    # consumes(step, artifact) = True
-                    self._require_arity(arguments, 2, operator_name)
-                    step_id = self._symbol(arguments[0], "consumes step")
-                    artifact_id = self._symbol(arguments[1], "consumed artifact")
-                    self._require_true(fact_value, operator_name)
-                    step_drafts.setdefault(step_id, _StepDraft())
-                    artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
-                    self._add_unique(
-                        edges,
-                        ConsumesEdge(artifact_id=artifact_id, step_id=step_id),
-                        operator_name,
-                    )
-
-                case "consumes_multi":
-                    # consumes_multi(step) = [artifact, ...]
+                    # consumes(step) == [artifact, ...]
                     self._require_arity(arguments, 1, operator_name)
                     artifact_ids = self._list_symbols(fact_value, operator_name)
-                    step_id = self._symbol(arguments[0], "consumes_multi owner")
+                    step_id = self._symbol(arguments[0], "consumes step")
                     step_drafts.setdefault(step_id, _StepDraft())
                     for artifact_id in artifact_ids:
                         artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
@@ -350,24 +308,10 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                         )
 
                 case "produces":
-                    # produces(step, artifact) = True
-                    self._require_arity(arguments, 2, operator_name)
-                    step_id = self._symbol(arguments[0], "produces step")
-                    artifact_id = self._symbol(arguments[1], "produced artifact")
-                    self._require_true(fact_value, operator_name)
-                    step_drafts.setdefault(step_id, _StepDraft())
-                    artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
-                    self._add_unique(
-                        edges,
-                        ProducesEdge(step_id=step_id, artifact_id=artifact_id),
-                        operator_name,
-                    )
-
-                case "produces_multi":
-                    # produces_multi(step) = [artifact, ...]
+                    # produces(step) == [artifact, ...]
                     self._require_arity(arguments, 1, operator_name)
                     artifact_ids = self._list_symbols(fact_value, operator_name)
-                    step_id = self._symbol(arguments[0], "produces_multi owner")
+                    step_id = self._symbol(arguments[0], "produces step")
                     step_drafts.setdefault(step_id, _StepDraft())
                     for artifact_id in artifact_ids:
                         artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
@@ -614,13 +558,6 @@ class WorkflowGraphCompiler(CoreIRCompiler):
             raise WorkflowGraphCompilationError(
                 f"{operator_name} owner {owner_id!r} does not match workflow {workflow_id!r}"
             )
-
-    @classmethod
-    def _require_true(cls, value: object, operator_name: str) -> None:
-        """Require the canonical ``True`` RHS used by boolean relation ops."""
-
-        if cls._symbol(value, f"{operator_name} RHS") != "True":
-            raise WorkflowGraphCompilationError(f"{operator_name} RHS must be the True constant")
 
     @classmethod
     def _positive_integer(cls, value: object, operator_name: str) -> int:

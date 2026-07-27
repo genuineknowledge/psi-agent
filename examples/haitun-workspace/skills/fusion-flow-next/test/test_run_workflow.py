@@ -35,13 +35,13 @@ const request: Artifact;
 const result: Artifact;
 
 workflow dispatch {{
-    input_workflow(dispatch, request) == True;
-    output_workflow(dispatch, result) == True;
+    input_workflow(dispatch) == [request];
+    output_workflow(dispatch) == [result];
     step_name(dispatch_step) == dispatch_name;
     step_instruction(dispatch_step) == "{instruction}";
     step_executor(dispatch_step) == worker;
-    consumes(dispatch_step, request) == True;
-    produces(dispatch_step, result) == True;
+    consumes(dispatch_step) == [request];
+    produces(dispatch_step) == [result];
 }}
 """
 
