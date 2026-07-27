@@ -51,9 +51,16 @@ anyio.run(main)
 Inject Agent calls with `run(..., runner=...)`, or call
 `Agent(config, runner=...)` independently outside a run. The `RunContext`
 passed to a program also exposes `ctx.flow`. Execute commands with
-`flow.exec(name, argv, ...)`. See the
+`flow.exec(name, argv, ...)`. Configure automatic cleanup with
+`run(..., keep_count=50, keep_days=7)`; setting both values to `0` disables it.
+`run(..., resume_from_run_id="last")` resumes the lexicographically latest
+directory, so `run_id="last"` is reserved.
+Real TypeScript and Python run directories are not guaranteed to hit each
+other's resume cache. See the
+[TypeScript / Python audit](docs/architecture/workflow/2026-07-26-fusion-flow-ts-parity-audit.zh.md)
+for the current alignment results and the
 [open questions](docs/architecture/workflow/2026-07-23-fusion-flow-python-runtime-open-questions.zh.md)
-for compatibility differences and remaining discussions.
+for the historical design decisions.
 
 ## Quick Start
 

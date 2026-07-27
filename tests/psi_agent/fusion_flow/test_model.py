@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import FrozenInstanceError
+from typing import cast
 
 import pytest
 
@@ -28,7 +29,12 @@ from psi_agent.fusion_flow.model import (
 def test_format_token_count_matches_typescript_thresholds() -> None:
     assert format_token_count(999) == "999"
     assert format_token_count(1_000) == "1.0k"
+    assert format_token_count(1_150) == "1.1k"
+    assert format_token_count(1_250) == "1.3k"
     assert format_token_count(1_000_000) == "1.00M"
+    assert format_token_count(1_005_000) == "1.00M"
+    assert format_token_count(1_125_000) == "1.13M"
+    assert format_token_count(9_007_199_254_744_999) == "9007199254.75M"
 
 
 def test_format_token_count_distinguishes_unknown_from_zero() -> None:
@@ -90,10 +96,56 @@ def test_agent_config_keeps_system_precedence_and_defaults() -> None:
     config = AgentConfig(name="writer", system="Primary", prompt="Alias")
 
     assert config.system == "Primary"
-    assert config.max_tokens == 8192
-    assert config.temperature == 1.0
+    assert config.max_tokens is None
+    assert config.temperature is None
     assert config.tools == ()
     assert config.context_schema is None
+
+
+@pytest.mark.parametrize(
+    ("input_tokens", "output_tokens", "error"),
+    [
+        (True, 1, TypeError),
+        (1.5, 1, TypeError),
+        (-1, 1, ValueError),
+        (1, False, TypeError),
+        (1, -1, ValueError),
+    ],
+)
+def test_session_result_rejects_invalid_token_counts(
+    input_tokens: object,
+    output_tokens: object,
+    error: type[Exception],
+) -> None:
+    with pytest.raises(error):
+        SessionResult(
+            text="done",
+            input_tokens=cast("int", input_tokens),
+            output_tokens=cast("int", output_tokens),
+        )
+
+
+@pytest.mark.parametrize(
+    ("calls", "input_tokens", "output_tokens", "error"),
+    [
+        (True, 1, 1, TypeError),
+        (-1, 1, 1, ValueError),
+        (1, 1.5, 1, TypeError),
+        (1, 1, -1, ValueError),
+    ],
+)
+def test_token_usage_rejects_invalid_counts(
+    calls: object,
+    input_tokens: object,
+    output_tokens: object,
+    error: type[Exception],
+) -> None:
+    with pytest.raises(error):
+        TokenUsage(
+            calls=cast("int", calls),
+            input=cast("int", input_tokens),
+            output=cast("int", output_tokens),
+        )
 
 
 def test_public_value_models_have_stable_frozen_shapes() -> None:
@@ -140,7 +192,7 @@ def test_session_runner_alias_accepts_async_runner() -> None:
     assert session_runner is runner
 
 
-def test_aggregate_tokens_skips_cached_nodes_and_their_subtrees() -> None:
+def test_aggregate_tokens_skips_cached_nodes_but_counts_their_children() -> None:
     cached_child = ExecutionTrace(
         trace_id="cached-child",
         kind="session",
@@ -188,11 +240,11 @@ def test_aggregate_tokens_skips_cached_nodes_and_their_subtrees() -> None:
     )
 
     assert aggregate_tokens(root) == TokenSummary(
-        user=TokenUsage(calls=1, input=20, output=7),
+        user=TokenUsage(calls=2, input=10_020, output=5_007),
         internal=TokenUsage(calls=1, input=5, output=1),
-        calls=2,
-        input=25,
-        output=8,
+        calls=3,
+        input=10_025,
+        output=5_008,
     )
 
 
@@ -222,6 +274,54 @@ def test_aggregate_tokens_preserves_unknown_counts() -> None:
         input=None,
         output=3,
     )
+
+
+def test_aggregate_tokens_does_not_infer_owner_from_label() -> None:
+    root = ExecutionTrace(
+        trace_id="root",
+        kind="run",
+        label="run-1",
+        started_at="2026-07-23T00:00:00Z",
+        children=(
+            ExecutionTrace(
+                trace_id="unknown-owner",
+                kind="session",
+                label="__misleading_label__",
+                started_at="2026-07-23T00:00:00Z",
+                status="ok",
+                tokens=TokenUsage(calls=7, input=2, output=1),
+            ),
+        ),
+    )
+
+    assert aggregate_tokens(root).user == TokenUsage(calls=1, input=2, output=1)
+    assert aggregate_tokens(root).internal == TokenUsage(calls=0, input=0, output=0)
+
+
+def test_aggregate_tokens_uses_agent_when_evaluator_owner_is_none() -> None:
+    root = ExecutionTrace(
+        trace_id="root",
+        kind="run",
+        label="run-1",
+        started_at="2026-07-23T00:00:00Z",
+        children=(
+            ExecutionTrace(
+                trace_id="internal",
+                kind="evaluate",
+                label="judge",
+                started_at="2026-07-23T00:00:00Z",
+                status="ok",
+                tokens=TokenUsage(calls=1, input=3, output=1),
+                metadata={
+                    "evaluator_agent": None,
+                    "agent": "__internal__",
+                },
+            ),
+        ),
+    )
+
+    assert aggregate_tokens(root).user == TokenUsage(calls=0, input=0, output=0)
+    assert aggregate_tokens(root).internal == TokenUsage(calls=1, input=3, output=1)
 
 
 def test_execution_trace_to_dict_is_json_serializable() -> None:

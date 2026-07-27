@@ -8,6 +8,7 @@ import anyio
 import pytest
 
 from psi_agent.fusion_flow import PipelineStep, RunContext, flow, run
+from psi_agent.fusion_flow.flow import logger as flow_logger
 
 
 async def _execute(
@@ -283,12 +284,16 @@ async def test_loops_have_do_until_and_while_semantics_and_record_caps(
 ) -> None:
     until_count = 0
     while_count = 0
+    initial_metadata: list[dict[str, object]] = []
 
-    async def body(_: RunContext) -> None:
+    async def body(context: RunContext) -> None:
         nonlocal until_count, while_count
 
         async def until_step(_: int) -> None:
             nonlocal until_count
+            initial_metadata.append(
+                dict(context.root_trace.children[-1].metadata),
+            )
             until_count += 1
 
         async def while_step(_: int) -> None:
@@ -324,10 +329,25 @@ async def test_loops_have_do_until_and_while_semantics_and_record_caps(
     assert (until_count, while_count) == (3, 2)
     traces = [trace for trace in context.root_trace.children if trace.kind == "loop"]
     assert [trace.metadata["iterations"] for trace in traces[:3]] == [2, 2, 1]
-    assert [trace.metadata["max_iterations_reached"] for trace in traces[:3]] == [
+    assert [trace.metadata["hit_max_iterations"] for trace in traces[:3]] == [
         False,
         False,
         True,
+    ]
+    assert [trace.metadata["max_iterations"] for trace in traces[:3]] == [4, 4, 1]
+    assert initial_metadata[:2] == [
+        {
+            "loop_kind": "until",
+            "iterations": 0,
+            "max_iterations": 4,
+            "hit_max_iterations": False,
+        },
+        {
+            "loop_kind": "until",
+            "iterations": 1,
+            "max_iterations": 4,
+            "hit_max_iterations": False,
+        },
     ]
 
 
@@ -348,6 +368,9 @@ async def test_collection_operations_preserve_contracts_and_order(tmp_path) -> N
             await anyio.sleep((4 - item) * 0.002)
             return item % 2 == 1
 
+        async def not_a_bool(_: int, __: int) -> bool:
+            return cast("bool", 1)
+
         async def add(total: int, item: int, index: int) -> int:
             return total + item + index
 
@@ -356,9 +379,28 @@ async def test_collection_operations_preserve_contracts_and_order(tmp_path) -> N
         assert await flow.pmap(items, delayed_double) == [2, 4, 6]
         assert await flow.filter(items, is_odd) == [1, 3]
         assert await flow.pfilter(items, delayed_is_odd) == [1, 3]
+        with pytest.raises(TypeError, match="predicate must return bool"):
+            await flow.filter(items, not_a_bool)
+        with pytest.raises(TypeError, match="predicate must return bool"):
+            await flow.pfilter(items, not_a_bool)
         assert await flow.reduce(items, add, 0) == 9
 
     await _execute(tmp_path, "collections", body)
+
+
+@pytest.mark.anyio
+async def test_pmap_uses_the_initial_item_count(tmp_path) -> None:
+    items = [1, 2]
+
+    async def body(_: RunContext) -> None:
+        async def mutate(item: int, index: int) -> int:
+            if index == 0:
+                items.append(3)
+            return item * 2
+
+        assert await flow.pmap(items, mutate) == [2, 4]
+
+    await _execute(tmp_path, "pmap-initial-count", body)
 
 
 @pytest.mark.anyio
@@ -375,7 +417,7 @@ async def test_pipeline_threads_values_and_records_step_children(tmp_path) -> No
             await flow.pipeline(
                 1,
                 [
-                    PipelineStep(fn=increment),
+                    PipelineStep(label="", fn=increment),
                     PipelineStep(fn=render),
                 ],
             )
@@ -393,15 +435,20 @@ async def test_pipeline_threads_values_and_records_step_children(tmp_path) -> No
         "pipelineStep",
         "pipelineStep",
     ]
+    assert trace.metadata == {"step_count": 2}
+    assert [child.label for child in trace.children] == ["", "1"]
     assert [child.metadata["index"] for child in trace.children] == [0, 1]
 
 
 @pytest.mark.anyio
 async def test_retry_counts_total_attempts_and_skips_permanent_errors(
     tmp_path,
+    monkeypatch,
 ) -> None:
     attempts = 0
     permanent_attempts = 0
+    warnings: list[str] = []
+    monkeypatch.setattr(flow_logger, "warning", warnings.append)
 
     async def body(_: RunContext) -> None:
         nonlocal attempts, permanent_attempts
@@ -439,6 +486,47 @@ async def test_retry_counts_total_attempts_and_skips_permanent_errors(
     traces = [trace for trace in context.root_trace.children if trace.kind == "retry"]
     assert [trace.metadata["attempts"] for trace in traces] == [3, 1]
     assert [trace.status for trace in traces] == ["ok", "error"]
+    retry_warnings = [warning for warning in warnings if "retry attempt" in warning]
+    assert len(retry_warnings) == 2
+    assert all("temporary" in warning for warning in retry_warnings)
+
+
+@pytest.mark.anyio
+async def test_retry_recomputes_backoff_before_clamping(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(anyio, "sleep", sleep)
+
+    async def body(_: RunContext) -> None:
+        nonlocal attempts
+
+        async def flaky() -> str:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 4:
+                raise RuntimeError("temporary")
+            return "ok"
+
+        assert (
+            await flow.retry(
+                flaky,
+                max_attempts=4,
+                initial_delay=0.01,
+                backoff_factor=0.8,
+                max_delay=0.005,
+            )
+            == "ok"
+        )
+
+    await _execute(tmp_path, "retry-decreasing-backoff", body)
+    assert delays == [0.005, 0.005, 0.005]
 
 
 @pytest.mark.anyio
@@ -505,6 +593,10 @@ async def test_inline_and_named_blocks_execute_and_trace_without_overwriting(
             return "inline"
 
         handle = flow.define_block("add", add, description="sum")
+        with pytest.raises(ValueError, match="unsafe character"):
+            await flow.run_block("missing/block")
+        with pytest.raises(ValueError, match="unsafe character"):
+            await flow.use("missing/service")
         assert (handle.name, handle.description, handle.kind) == ("add", "sum", "block")
         with pytest.raises(ValueError, match="already defined"):
             flow.define_block("add", add)

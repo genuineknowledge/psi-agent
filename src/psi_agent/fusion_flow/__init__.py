@@ -28,6 +28,7 @@ from .model import (
     StaticRule,
     TokenSummary,
     TokenUsage,
+    _with_agent_defaults,
     aggregate_tokens,
     assert_safe_name,
     format_token_count,
@@ -57,7 +58,14 @@ def _legacy_agent(
 
         started_at = _now_iso()
         started = time.perf_counter()
-        raw = await selected_runner(config, invocation)
+        raw = await selected_runner(
+            _with_agent_defaults(
+                config,
+                max_tokens=8192,
+                temperature=1.0,
+            ),
+            invocation,
+        )
         result = raw if isinstance(raw, SessionResult) else SessionResult(text=raw)
         if not isinstance(result.text, str):
             raise TypeError("Agent runner must return SessionResult or str")
@@ -80,7 +88,7 @@ def _legacy_agent(
                 ),
                 metadata={"agent": handle.name},
             )
-            await context._write_legacy_trace_file(handle.name, trace)
+            await context._commit_legacy_agent_call(handle.name, trace)
         return result.text
 
     vars(invoke).update(

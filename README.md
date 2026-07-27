@@ -50,8 +50,13 @@ anyio.run(main)
 
 Agent 调用可通过 `run(..., runner=...)` 注入，也可用
 `Agent(config, runner=...)` 在运行外独立调用；传入 program 的 `RunContext`
-也直接提供 `ctx.flow`。命令执行使用 `flow.exec(name, argv, ...)`。兼容差异与待讨论点见
-[待讨论点](docs/architecture/workflow/2026-07-23-fusion-flow-python-runtime-open-questions.zh.md)。
+也直接提供 `ctx.flow`。命令执行使用 `flow.exec(name, argv, ...)`。自动清理可用
+`run(..., keep_count=50, keep_days=7)` 配置；两者同时为 `0` 时禁用。
+`run(..., resume_from_run_id="last")` 恢复字典序最新的目录，因此 `run_id="last"`
+是保留值。
+真实 TypeScript 与 Python run 目录不保证直接互相命中恢复缓存。对齐结果见
+[TypeScript / Python 审计](docs/architecture/workflow/2026-07-26-fusion-flow-ts-parity-audit.zh.md)，
+历史取舍见[待讨论点](docs/architecture/workflow/2026-07-23-fusion-flow-python-runtime-open-questions.zh.md)。
 
 ## 快速开始
 

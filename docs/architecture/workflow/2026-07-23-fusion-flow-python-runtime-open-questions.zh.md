@@ -203,7 +203,7 @@ Agent runner、subprocess 和兄弟任务完成清理。
 旧实现可能只 warning 然后成功结束。
 
 **首版暂定**：为逐项迁移，保留旧行为——warning 后正常返回；同时在 trace 中记录
-`max_iterations_reached=true`。
+`hit_max_iterations=true`。
 **建议的未来严格模式**：条件未满足即失败。否则下游无法区分“真的完成”和“被
 安全阀截断”。不能在兼容入口中未经确认直接切换默认。
 
@@ -312,8 +312,8 @@ PR 中默认替换。
 ### 8.2 哪一层决定副作用是否重放
 
 旧 TS 不缓存 `evaluate` 与 `exec`。这意味着 resume 时可能重新选择分支，也可能
-重复执行脚本副作用。Python 首版保留这个可观察边界；它只额外避免覆盖旧 binding，
-未命中时写入带序号的新 binding。
+重复执行脚本副作用。Python 保留这个可观察边界：resume 后第一次重跑会替换同名
+历史 binding，本次执行再次写同名才失败；后续调用按共享调用序号生成新 binding。
 
 不建议把所有原语一律改成自动缓存：
 
@@ -379,8 +379,9 @@ Agent provider 可能不给 usage 或给出不同字段。模型应允许未知 
 
 ### 10.3 timeout 与进程树
 
-Windows 和 POSIX 的进程树终止不同。第一版至少保证直接子进程被终止和 wait；是否
-必须终止整个进程组需要单独平台测试，不能仅凭 Node 行为宣称完成。
+Windows 和 POSIX 的进程树终止不同。当前实现始终终止并 wait 直接子进程；Windows
+batch 另使用新进程组，并尝试通过 Job Object、失败时通过 `taskkill /T` 清理进程树。
+Job Object 在进程启动后挂接，仍有很小的启动窗口，因此不能宣称绝对捕获所有后代。
 
 ### 10.4 shell
 

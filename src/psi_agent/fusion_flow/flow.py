@@ -15,7 +15,7 @@ import sys
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from os import PathLike, environ
 from typing import Any, TypeVar, cast
 
@@ -39,9 +39,38 @@ from .model import (
     SessionResult,
     StaticRule,
     TokenUsage,
+    _with_agent_defaults,
     assert_safe_name,
 )
 from .runtime import current_run_context, stable_payload_hash
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    _PROCESS_SET_QUOTA = 0x0100
+    _PROCESS_TERMINATE = 0x0001
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = (
+        wintypes.DWORD,
+        wintypes.BOOL,
+        wintypes.DWORD,
+    )
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.AssignProcessToJobObject.argtypes = (
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+    )
+    _kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    _kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _kernel32.TerminateJobObject.restype = wintypes.BOOL
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _kernel32.CloseHandle.restype = wintypes.BOOL
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -55,15 +84,15 @@ _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 # ponytail: SessionRunner 暂无结构化输出协议; 先用提示词约束, 再按旧 TS 规则解析和归一化。
 _EVALUATOR_SYSTEM_PROMPT = """你是一个严谨的结构化判断器。
 
-你只输出 JSON, 不要任何解释、前后缀或 Markdown 代码块。
+你只输出 JSON\uff0c不要任何解释、前后缀、Markdown 代码块。
 
-根据用户消息“输出格式”中的 kind 要求, 输出对应格式:
+根据用户给的 `kind` 字段\uff0c输出对应格式\uff1a
 
-- kind = "boolean": 输出 {"value": true} 或 {"value": false}
-- kind = "number": 输出 {"value": <number>}, 必须是数字字面量
-- kind = "choice": 输出 {"value": "<候选项原文>"}, value 必须严格等于 options 中的某一项
+- kind = "boolean"\uff1a输出 {"value": true} 或 {"value": false}
+- kind = "number"\uff1a输出 {"value": <number>}\uff0c必须是数字字面量
+- kind = "choice"\uff1a输出 {"value": "<候选项原文>"}\uff0cvalue 必须严格等于 options 中的某一项
 
-如果信息不足以判断, 按你的最佳判断给出 value, 但保持 JSON 格式。
+如果信息不足以判断\uff0c按你的最佳推测给出 value\uff0c但保持 JSON 格式。
 绝对不要输出额外字段。"""
 
 # ============================================================
@@ -128,7 +157,7 @@ def _config_payload(config: AgentConfig) -> dict[str, object]:
         "temperature": config.temperature,
         "thinking_budget_tokens": config.thinking_budget_tokens,
         "engine": config.engine,
-        "tools": list(config.tools),
+        "tools": sorted(config.tools),
         "max_turns": config.max_turns,
         "context_schema": list(config.context_schema or ()),
     }
@@ -153,7 +182,7 @@ def _build_evaluate_prompt(
             lines.extend((f"## context.{key}", value, ""))
     lines.append("# 输出格式")
     if kind == "boolean":
-        lines.append('kind = "boolean", 输出 {"value": true} 或 {"value": false}。')
+        lines.append('kind = "boolean"\uff0c输出 {"value": true} 或 {"value": false}。')
     elif kind == "number":
         constraints: list[str] = []
         if minimum is not None:
@@ -162,10 +191,10 @@ def _build_evaluate_prompt(
             constraints.append(f"max={maximum}")
         if integer:
             constraints.append("必须为整数")
-        suffix = f"({', '.join(constraints)})" if constraints else ""
-        lines.append(f'kind = "number", 输出 {{"value": <number>}}{suffix}。')
+        suffix = "\uff08" + "\uff0c".join(constraints) + "\uff09" if constraints else ""
+        lines.append(f'kind = "number"\uff0c输出 {{"value": <number>}}{suffix}。')
     else:
-        lines.append('kind = "choice", 必须从下列候选项中选一个:')
+        lines.append('kind = "choice"\uff0c必须从下列候选项中选一个\uff1a')
         lines.extend(f"- {choice}" for choice in choices)
         lines.append('输出 {"value": "<候选项原文>"}。')
     return "\n".join(lines)
@@ -182,9 +211,17 @@ def _ensure_bool(value: object, *, label: str) -> bool:
 def _extract_json_payload(text: str) -> object:
     """解析完整 JSON 文本, 或 Markdown JSON fence 中的完整内容。"""
 
-    fenced = _JSON_FENCE.search(text)
-    payload = fenced.group(1) if fenced is not None else text
-    return json.loads(payload)
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError(f"evaluate result is empty; raw={_preview(text)}")
+    fenced = _JSON_FENCE.fullmatch(stripped)
+    payload = fenced.group(1) if fenced is not None else stripped
+    try:
+        return json.loads(payload)
+    except ValueError as error:
+        raise ValueError(
+            f"evaluate result must be valid JSON; raw={_preview(text)}",
+        ) from error
 
 
 def _parse_evaluate_result(
@@ -200,7 +237,9 @@ def _parse_evaluate_result(
 
     payload = _extract_json_payload(text)
     if not isinstance(payload, dict) or "value" not in payload:
-        raise ValueError("evaluate result must be a JSON object with value")
+        raise ValueError(
+            f"evaluate result must be a JSON object with value; raw={_preview(text)}",
+        )
     value = cast("dict[str, object]", payload)["value"]
     if kind == "boolean":
         if isinstance(value, bool):
@@ -236,9 +275,9 @@ def _parse_evaluate_result(
         text = value.strip()
         if text in choices:
             return text
-        lowered = text.casefold()
+        lowered = text.lower()
         # 仅接受唯一的大小写无关候选, 避免模糊匹配改变分支选择。
-        matches = [choice for choice in choices if choice.casefold() == lowered]
+        matches = [choice for choice in choices if choice.lower() == lowered]
         if len(matches) == 1:
             return matches[0]
         raise ValueError(f"choice {text!r} is not one of the allowed values")
@@ -249,7 +288,8 @@ async def _drain_stream(
     stream: Any,
     *,
     limit: int | None,
-    on_limit: Callable[[], None] | None = None,
+    on_limit: Callable[[], Awaitable[None]] | None = None,
+    tail: bytearray | None = None,
 ) -> tuple[bytes, bool]:
     """读取至 EOF, 保留上限内字节并标记是否截断。"""
 
@@ -263,6 +303,10 @@ async def _drain_stream(
             chunk = await stream.receive()
         except anyio.EndOfStream:
             break
+        if tail is not None:
+            tail.extend(chunk)
+            if len(tail) > 300:
+                del tail[:-300]
         if limit is None:
             chunks.append(chunk)
             continue
@@ -273,14 +317,82 @@ async def _drain_stream(
             if len(chunk) > remaining:
                 truncated = True
                 if on_limit is not None:
-                    on_limit()
+                    await on_limit()
                     on_limit = None
         elif chunk:
             truncated = True
             if on_limit is not None:
-                on_limit()
+                await on_limit()
                 on_limit = None
     return b"".join(chunks), truncated
+
+
+async def _terminate_process(process: Any) -> None:
+    """终止进程及其 Windows 子树, 并等待直接子进程回收。"""
+
+    with anyio.CancelScope(shield=True):
+        job = _take_process_job(process)
+        try:
+            job_terminated = bool(job is not None and sys.platform == "win32" and _kernel32.TerminateJobObject(job, 1))
+            if process.returncode is None and sys.platform == "win32" and not job_terminated:
+                with suppress(OSError):
+                    await anyio.run_process(
+                        (
+                            "taskkill",
+                            "/PID",
+                            str(process.pid),
+                            "/T",
+                            "/F",
+                        ),
+                        check=False,
+                    )
+            if process.returncode is None:
+                with suppress(ProcessLookupError):
+                    process.kill()
+            await process.wait()
+        finally:
+            _close_process_job(job)
+
+
+def _take_process_job(process: Any) -> object | None:
+    """取出并清空挂在进程对象上的 Windows Job handle。"""
+
+    job = getattr(process, "_psi_agent_job", None)
+    if job is not None:
+        process._psi_agent_job = None
+    return job
+
+
+def _close_process_job(job: object | None) -> None:
+    """关闭 Windows Job handle。"""
+
+    if job is not None and sys.platform == "win32":
+        _kernel32.CloseHandle(cast("int", job))
+
+
+def _attach_batch_job(process: Any) -> None:
+    """给 Windows batch 进程挂一个 job, 仅供异常/超时路径显式杀树。"""
+
+    if sys.platform != "win32":
+        return
+    job = _kernel32.CreateJobObjectW(None, None)
+    if not job or job == _INVALID_HANDLE_VALUE:
+        return
+    handle = _kernel32.OpenProcess(
+        _PROCESS_SET_QUOTA | _PROCESS_TERMINATE | _PROCESS_QUERY_LIMITED_INFORMATION,
+        False,
+        process.pid,
+    )
+    if not handle or handle == _INVALID_HANDLE_VALUE:
+        _close_process_job(job)
+        return
+    try:
+        if not _kernel32.AssignProcessToJobObject(job, handle):
+            _close_process_job(job)
+            return
+    finally:
+        _kernel32.CloseHandle(handle)
+    process._psi_agent_job = job
 
 
 async def _run_parallel_tasks[T](
@@ -385,8 +497,13 @@ class Flow:
         if run.runner is None:
             raise RuntimeError("flow.session requires an injected runner")
         normalized_context = _normalize_string_mapping(context)
-        schema = agent.config.context_schema
-        if schema is not None:
+        config = _with_agent_defaults(
+            agent.config,
+            max_tokens=8192,
+            temperature=1.0,
+        )
+        schema = config.context_schema
+        if schema:
             expected = set(schema)
             actual = set(normalized_context)
             if actual != expected:
@@ -396,7 +513,7 @@ class Flow:
         cache_key = stable_payload_hash(
             {
                 "operation": "session",
-                "config": _config_payload(agent.config),
+                "config": _config_payload(config),
                 "prompt": prompt,
                 "context": normalized_context,
             }
@@ -410,6 +527,12 @@ class Flow:
             reserved, call_base, call_count = await run._reserve_call_binding(
                 agent.name,
                 binding_name,
+            )
+            trace.metadata.update(
+                {
+                    "binding_name": reserved,
+                    "trace_file": f"trace/{reserved}.json",
+                }
             )
             # 名称和序号是一笔事务: 缓存命中或结果完整落盘才提交;
             # runner 失败则释放预留, 让同一逻辑调用的重试继续使用原序号。
@@ -430,11 +553,12 @@ class Flow:
                         reserved,
                         call_base,
                         call_count,
+                        call_owner=agent.name,
                     )
                     return cached
 
                 raw = await run.runner(
-                    agent.config,
+                    config,
                     AgentInvocation(prompt=prompt, context=normalized_context or None),
                 )
                 result = raw if isinstance(raw, SessionResult) else SessionResult(text=raw)
@@ -464,6 +588,7 @@ class Flow:
                     metadata=metadata,
                     call_base=call_base,
                     call_count=call_count,
+                    call_owner=agent.name,
                 )
             except BaseException:
                 await run._release_binding(
@@ -487,9 +612,13 @@ class Flow:
         """在当前运行中注册一个命名异步服务并返回句柄, 不立即执行服务体。"""
 
         run = current_run_context()
+        declared_params = tuple(params)
+        param_names = [param.name for param in declared_params]
+        if len(set(param_names)) != len(param_names):
+            raise ValueError("duplicate service parameter names are not allowed")
         handle = ServiceHandle(
             name=name,
-            params=tuple(params),
+            params=declared_params,
             description=description,
         )
         registered = _RegisteredService(handle=handle, body=body)
@@ -549,6 +678,13 @@ class Flow:
                 service.name,
                 binding_name,
             )
+            trace.metadata.update(
+                {
+                    "service": service.name,
+                    "args": dict(normalized_args),
+                    "binding_name": reserved,
+                }
+            )
             try:
                 cached = (
                     run._resume_lookup(
@@ -566,6 +702,8 @@ class Flow:
                         reserved,
                         call_base,
                         call_count,
+                        call_owner=service.name,
+                        service_call=True,
                     )
                     return cached
 
@@ -585,6 +723,8 @@ class Flow:
                     ),
                     call_base=call_base,
                     call_count=call_count,
+                    call_owner=service.name,
+                    service_call=True,
                 )
                 return result
             except BaseException:
@@ -791,8 +931,15 @@ class Flow:
                 raise ValueError("choice evaluate requires non-empty choices")
             if any(not isinstance(choice, str) for choice in choices):
                 raise TypeError("choice evaluate choices must be strings")
-            if len(set(choices)) != len(tuple(choices)):
+            if len({choice.lower() for choice in choices}) != len(tuple(choices)):
                 raise ValueError("choice evaluate choices must be unique")
+        for name, bound in (("minimum", minimum), ("maximum", maximum)):
+            if bound is not None and (isinstance(bound, bool) or not isinstance(bound, int | float)):
+                raise TypeError(f"{name} must be a number or None")
+            if bound is not None and not math.isfinite(bound):
+                raise ValueError(f"{name} must be finite")
+        if not isinstance(integer, bool):
+            raise TypeError("integer must be a bool")
         if minimum is not None and maximum is not None and minimum > maximum:
             raise ValueError("minimum must be <= maximum")
 
@@ -808,6 +955,16 @@ class Flow:
                 temperature=0,
             )
         )
+        evaluator_config = replace(
+            _with_agent_defaults(
+                evaluator.config,
+                max_tokens=256,
+                temperature=0,
+            ),
+            thinking_budget_tokens=None,
+            tools=(),
+            max_turns=None,
+        )
         prompt = _build_evaluate_prompt(
             question=question,
             context=normalized_context,
@@ -818,10 +975,10 @@ class Flow:
             integer=integer,
         )
         # 提示, 解析和 binding 提交严格串行, 避免持久化未经约束的模型文本。
-        reserved = (
-            await run._reserve_binding(binding_name)
-            if binding_name is not None
-            else await run._reserve_auto_binding(f"evaluate.{evaluator.name}")
+        reserved, call_base, call_count = await run._reserve_call_binding(
+            f"evaluate.{evaluator.name}",
+            binding_name,
+            ordinal_base=evaluator.name,
         )
         try:
             async with run._trace(
@@ -838,16 +995,23 @@ class Flow:
                     "maximum": maximum,
                     "integer": integer,
                     "binding_name": reserved,
+                    "trace_file": f"trace/{reserved}.json",
                 },
             ) as trace:
                 raw_result = await run.runner(
-                    evaluator.config,
+                    evaluator_config,
                     AgentInvocation(
                         prompt=prompt,
                         context=normalized_context or None,
                     ),
                 )
                 session_result = raw_result if isinstance(raw_result, SessionResult) else SessionResult(text=raw_result)
+                trace.tokens = TokenUsage(
+                    calls=1,
+                    input=session_result.input_tokens,
+                    output=session_result.output_tokens,
+                )
+                trace.metadata["raw_answer"] = session_result.text
                 parsed = _parse_evaluate_result(
                     text=session_result.text,
                     kind=kind,
@@ -856,11 +1020,10 @@ class Flow:
                     maximum=maximum,
                     integer=integer,
                 )
-                payload = json.dumps({"value": parsed}, ensure_ascii=False)
-                trace.tokens = TokenUsage(
-                    calls=1,
-                    input=session_result.input_tokens,
-                    output=session_result.output_tokens,
+                payload = json.dumps(
+                    {"value": parsed},
+                    ensure_ascii=False,
+                    indent=2,
                 )
                 trace.output_summary = payload
                 await run._commit_reserved_binding(
@@ -878,9 +1041,16 @@ class Flow:
                         evaluator=evaluator.name,
                         question=question,
                     ),
+                    call_base=call_base,
+                    call_count=call_count,
+                    call_owner=evaluator.name,
                 )
         except BaseException:
-            await run._release_binding(reserved)
+            await run._release_binding(
+                reserved,
+                call_base=call_base,
+                call_count=call_count,
+            )
             raise
         await run._write_trace_file(reserved, trace)
         return parsed
@@ -900,7 +1070,16 @@ class Flow:
         if isinstance(max_iterations, bool) or not isinstance(max_iterations, int) or max_iterations <= 0:
             raise ValueError("max_iterations must be a positive integer")
         run = current_run_context()
-        async with run._trace("loop", "loopUntil") as trace:
+        async with run._trace(
+            "loop",
+            "loopUntil",
+            metadata={
+                "loop_kind": "until",
+                "iterations": 0,
+                "max_iterations": max_iterations,
+                "hit_max_iterations": False,
+            },
+        ) as trace:
             iterations = 0
             while iterations < max_iterations:
                 async with run._trace(
@@ -910,12 +1089,10 @@ class Flow:
                 ):
                     await fn(iterations)
                 iterations += 1
+                trace.metadata["iterations"] = iterations
                 if _ensure_bool(await _await_maybe(condition()), label="condition"):
-                    trace.metadata["max_iterations_reached"] = False
-                    trace.metadata["iterations"] = iterations
                     return
-            trace.metadata["max_iterations_reached"] = True
-            trace.metadata["iterations"] = iterations
+            trace.metadata["hit_max_iterations"] = True
             logger.warning(
                 f"FusionFlow loop_until reached max_iterations={max_iterations}",
             )
@@ -935,12 +1112,19 @@ class Flow:
         if isinstance(max_iterations, bool) or not isinstance(max_iterations, int) or max_iterations <= 0:
             raise ValueError("max_iterations must be a positive integer")
         run = current_run_context()
-        async with run._trace("loop", "loopWhile") as trace:
+        async with run._trace(
+            "loop",
+            "loopWhile",
+            metadata={
+                "loop_kind": "while",
+                "iterations": 0,
+                "max_iterations": max_iterations,
+                "hit_max_iterations": False,
+            },
+        ) as trace:
             iterations = 0
             while iterations < max_iterations:
                 if not _ensure_bool(await _await_maybe(condition()), label="condition"):
-                    trace.metadata["max_iterations_reached"] = False
-                    trace.metadata["iterations"] = iterations
                     return
                 async with run._trace(
                     "iteration",
@@ -949,8 +1133,8 @@ class Flow:
                 ):
                     await fn(iterations)
                 iterations += 1
-            trace.metadata["max_iterations_reached"] = True
-            trace.metadata["iterations"] = iterations
+                trace.metadata["iterations"] = iterations
+            trace.metadata["hit_max_iterations"] = True
             logger.warning(
                 f"FusionFlow loop_while reached max_iterations={max_iterations}",
             )
@@ -974,7 +1158,7 @@ class Flow:
         labels = [label for label, _ in branches]
         if not labels:
             raise ValueError("choice requires at least one branch")
-        if len(set(labels)) != len(labels):
+        if len({label.lower() for label in labels}) != len(labels):
             raise ValueError("choice labels must be unique")
         if default_label is not None and default_label not in labels:
             raise ValueError("default_label must name an existing branch")
@@ -997,9 +1181,12 @@ class Flow:
                     choices=tuple(labels),
                     binding_name=binding_name,
                 )
-            except Exception:
+            except Exception as error:
                 if default_label is None:
                     raise
+                logger.warning(
+                    f"FusionFlow choice evaluation failed; using default {default_label!r}: {error}",
+                )
                 selected = default_label
 
             for index, (label, fn) in enumerate(branches):
@@ -1042,6 +1229,7 @@ class Flow:
     ) -> list[R]:
         """并发映射元素, 但按原输入顺序重排并返回结果。"""
 
+        item_count = len(items)
         results: dict[int, R] = {}
 
         async def run_one(item: T, index: int) -> None:
@@ -1050,35 +1238,34 @@ class Flow:
             results[index] = await fn(item, index)
 
         await self.parallel_for_each(items, run_one)
-        return [results[index] for index in range(len(items))]
+        return [results[index] for index in range(item_count)]
 
     async def filter(
         self,
         items: Sequence[T],
-        predicate: Callable[[T, int], Awaitable[object]],
+        predicate: Callable[[T, int], Awaitable[bool]],
     ) -> list[T]:
         """串行计算 predicate, 并保持被保留元素的输入顺序。"""
 
-        kept: list[T] = []
+        flags: list[bool] = []
 
         async def decide(item: T, index: int) -> None:
             """判定一个元素是否保留。"""
 
-            if bool(await predicate(item, index)):
-                kept.append(item)
+            flags.append(_ensure_bool(await predicate(item, index), label="predicate"))
 
         await self.for_each(items, decide)
-        return kept
+        return [item for item, keep in zip(items, flags, strict=False) if keep]
 
     async def pfilter(
         self,
         items: Sequence[T],
-        predicate: Callable[[T, int], Awaitable[object]],
+        predicate: Callable[[T, int], Awaitable[bool]],
     ) -> list[T]:
         """并发计算 predicate, 同时保持被保留元素的输入顺序。"""
 
         flags = await self.pmap(items, predicate)
-        return [item for item, keep in zip(items, flags, strict=False) if bool(keep)]
+        return [item for item, keep in zip(items, flags, strict=False) if _ensure_bool(keep, label="predicate")]
 
     async def reduce(
         self,
@@ -1108,11 +1295,15 @@ class Flow:
 
         run = current_run_context()
         current: object = value
-        async with run._trace("pipeline", "pipeline") as trace:
+        async with run._trace(
+            "pipeline",
+            "pipeline",
+            metadata={"step_count": len(steps)},
+        ) as trace:
             for index, step in enumerate(steps):
                 if not isinstance(step, PipelineStep):
                     raise TypeError("pipeline steps must be PipelineStep instances")
-                label = step.label or str(index)
+                label = step.label if step.label is not None else str(index)
                 async with run._trace(
                     "pipelineStep",
                     label,
@@ -1172,7 +1363,6 @@ class Flow:
                 "error_trail": [],
             },
         ) as trace:
-            delay = min(initial_delay, max_delay)
             attempts = 0
             while True:
                 attempts += 1
@@ -1191,8 +1381,14 @@ class Flow:
                         )
                     if attempts >= max_attempts or not retryable:
                         raise
-                    await anyio.sleep(max(delay, 0))
-                    delay = min(max_delay, delay * backoff_factor)
+                    logger.warning(
+                        f"FusionFlow retry attempt {attempts}/{max_attempts} failed: {error}",
+                    )
+                    delay = min(
+                        initial_delay * backoff_factor ** (attempts - 1),
+                        max_delay,
+                    )
+                    await anyio.sleep(delay)
                 else:
                     trace.metadata["succeeded"] = True
                     trace.output_summary = _preview(value)
@@ -1213,10 +1409,10 @@ class Flow:
             RegexRule | ContainsRule | EqualsRule | RangeRule | PredicateRule,
         ):
             raise TypeError("rule must be a StaticRule")
-        reserved = (
-            await run._reserve_binding(binding_name)
-            if binding_name is not None
-            else await run._reserve_auto_binding("evaluate.static")
+        reserved, call_base, call_count = await run._reserve_call_binding(
+            "evaluate.static",
+            binding_name,
+            ordinal_base="__static__",
         )
         try:
             async with run._trace(
@@ -1227,11 +1423,12 @@ class Flow:
                     "kind": "static",
                     "question": question,
                     "static_rule": rule.kind,
+                    "binding_name": reserved,
+                    "evaluator_agent": "__static__",
                 },
             ) as trace:
                 if isinstance(rule, RegexRule):
-                    pattern = re.compile(rule.pattern) if isinstance(rule.pattern, str) else rule.pattern
-                    result = pattern.search(rule.on) is not None
+                    result = re.search(rule.pattern, rule.on) is not None
                 elif isinstance(rule, ContainsRule):
                     result = rule.needle in rule.on
                 elif isinstance(rule, EqualsRule):
@@ -1251,6 +1448,7 @@ class Flow:
                 payload = json.dumps(
                     {"value": result, "rule": rule.kind},
                     ensure_ascii=False,
+                    indent=2,
                 )
                 trace.output_summary = payload
                 await run._commit_reserved_binding(
@@ -1263,10 +1461,17 @@ class Flow:
                         question=question,
                         static_rule=rule.kind,
                     ),
+                    call_base=call_base,
+                    call_count=call_count,
+                    call_owner="__static__",
                 )
                 return result
         except BaseException:
-            await run._release_binding(reserved)
+            await run._release_binding(
+                reserved,
+                call_base=call_base,
+                call_count=call_count,
+            )
             raise
 
     async def use(
@@ -1279,7 +1484,7 @@ class Flow:
         """按名称调用已注册服务, 是构造 ``ServiceHandle`` 再调用 ``call`` 的便捷写法。"""
 
         return await self.call(
-            ServiceHandle(name=service_name),
+            ServiceHandle(name=assert_safe_name(service_name)),
             args,
             binding_name=binding_name,
         )
@@ -1328,7 +1533,7 @@ class Flow:
         """执行已注册 block, 并把全部字符串参数作为一个 dict 传给 body。"""
 
         run = current_run_context()
-        name = block.name if isinstance(block, BlockHandle) else block
+        name = block.name if isinstance(block, BlockHandle) else assert_safe_name(block)
         registered = run.blocks.get(name)
         if not isinstance(registered, _RegisteredBlock):
             raise ValueError(f'block "{name}" is not defined')
@@ -1352,7 +1557,7 @@ class Flow:
 
         if isinstance(times, bool) or not isinstance(times, int) or times < 0:
             raise ValueError("times must be a non-negative integer")
-        await self.for_each(list(range(times)), lambda item, index: fn(item))
+        await self.for_each(range(times), lambda item, index: fn(item))
 
     async def input(self, name: str, default_value: str) -> str:
         """读取运行注入值或默认值, 并把最终输入持久化为 binding。"""
@@ -1385,12 +1590,19 @@ class Flow:
         """
 
         normalized_name = assert_safe_name(name)
+        if isinstance(argv, str | bytes):
+            raise TypeError("argv must be a sequence of strings, not str or bytes")
         if not argv:
             raise ValueError("argv must not be empty")
         if any(not isinstance(item, str) for item in argv):
             raise TypeError("argv items must be strings")
-        if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int | float)
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds must be a finite positive number")
         if output_limit == math.inf:
             stdout_limit = None
         elif isinstance(output_limit, int) and not isinstance(output_limit, bool) and output_limit >= 0:
@@ -1402,11 +1614,15 @@ class Flow:
 
         run = current_run_context()
         command = list(argv)
+        command_preview = " ".join(command)[:200]
         process_command: str | list[str] = command
         internal_env: dict[str, str] = {}
-        if sys.platform == "win32" and command[0].casefold().endswith((".cmd", ".bat")):
-            if any('"' in argument or "\r" in argument or "\n" in argument for argument in command):
-                raise ValueError('Windows batch argv cannot contain double quotes (") or line breaks')
+        windows_batch = sys.platform == "win32" and command[0].casefold().endswith((".cmd", ".bat"))
+        if windows_batch:
+            if any('"' in argument or "!" in argument or "\r" in argument or "\n" in argument for argument in command):
+                raise ValueError(
+                    'Windows batch argv cannot contain double quotes ("), exclamation marks (!), or line breaks',
+                )
             percent_variable = "PSI_AGENT_EXEC_LITERAL_PERCENT"
             internal_env[percent_variable] = "%"
             percent_reference = f"%{percent_variable}%"
@@ -1418,18 +1634,20 @@ class Flow:
                 **_normalize_string_mapping(env),
                 **internal_env,
             }
-        reserved = (
-            await run._reserve_binding(binding_name)
-            if binding_name is not None
-            else await run._reserve_auto_binding(normalized_name)
+        reserved, call_base, call_count = await run._reserve_call_binding(
+            normalized_name,
+            binding_name,
         )
         process: Any = None
         try:
             async with run._trace(
                 "exec",
                 normalized_name,
-                input_summary=_preview(command),
-                metadata={"name": normalized_name, "argv": command},
+                metadata={
+                    "name": normalized_name,
+                    "command": command_preview,
+                    "binding_name": reserved,
+                },
             ) as trace:
                 started = time.perf_counter()
                 process = await anyio.open_process(
@@ -1439,8 +1657,12 @@ class Flow:
                     stderr=subprocess.PIPE,
                     cwd=cwd,
                     env=merged_env,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
                 )
+                if windows_batch:
+                    _attach_batch_job(process)
                 payload = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
+                stderr_tail = bytearray()
                 # 计时和两条输出 pipe 的消费必须先于 stdin 发送, 否则双方同时
                 # 写满 pipe 时会互相等待, 而超时计时器也永远启动不了。
                 with anyio.move_on_after(timeout_seconds) as scope:
@@ -1448,9 +1670,13 @@ class Flow:
                         process,
                         stdin_payload=payload,
                         output_limit=stdout_limit,
+                        stderr_tail=stderr_tail,
                     )
                 if scope.cancel_called:
-                    raise TimeoutError(f"process timed out after {timeout_seconds}s")
+                    detail = stderr_tail.decode("utf-8", errors="replace").strip()
+                    raise TimeoutError(
+                        f"process timed out after {timeout_seconds}s; stderr tail: {detail}",
+                    )
                 raw = stdout_bytes.decode("utf-8", errors="replace")
                 stderr_text = stderr_bytes.decode("utf-8", errors="replace")
                 result = ExecResult(
@@ -1461,11 +1687,14 @@ class Flow:
                     duration_ms=(time.perf_counter() - started) * 1_000,
                     truncated=stdout_truncated,
                 )
+                trace.metadata["exit_code"] = result.exit_code
+                trace.metadata["truncated"] = result.truncated
                 # stdout 越界产生的非零退出码来自本运行时主动 kill, 属于携带
                 # 部分结果的成功; 其他非零退出仍按执行失败处理。
                 if result.exit_code != 0 and not result.truncated:
+                    output_tail = (result.stderr or result.stdout)[-300:]
                     raise RuntimeError(
-                        f"command exited with code {result.exit_code}: {result.stderr or result.stdout}",
+                        f"command exited with code {result.exit_code}: {output_tail}",
                     )
                 truncation_note = (
                     f"\n\n... [truncated at {output_limit} bytes by "
@@ -1474,28 +1703,28 @@ class Flow:
                     if result.truncated
                     else ""
                 )
-                trace.output_summary = result.stdout
                 await run._commit_reserved_binding(
                     reserved,
                     result.stdout + truncation_note,
                     metadata=run._binding_metadata(
                         reserved,
-                        produced_by=normalized_name,
+                        produced_by=f"exec:{normalized_name}",
                         operation="exec",
-                        exec_name=normalized_name,
-                        argv=command,
                     ),
+                    call_base=call_base,
+                    call_count=call_count,
                 )
+                _close_process_job(_take_process_job(process))
                 return result
         except BaseException:
-            await run._release_binding(reserved)
+            await run._release_binding(
+                reserved,
+                call_base=call_base,
+                call_count=call_count,
+            )
             if process is not None:
-                with anyio.CancelScope(shield=True):
-                    # 超时, 异常或取消时终止并等待子进程, 避免遗留进程。
-                    if process.returncode is None:
-                        with suppress(ProcessLookupError):
-                            process.kill()
-                    await process.wait()
+                # 超时, 异常或取消时终止并等待子进程, 避免遗留进程。
+                await _terminate_process(process)
             raise
 
 
@@ -1504,6 +1733,7 @@ async def _read_process_streams(
     *,
     stdin_payload: bytes | None,
     output_limit: int | None,
+    stderr_tail: bytearray,
 ) -> tuple[bytes, bool, bytes, int]:
     """从启动时并发处理三条 pipe, 并等待子进程退出。"""
 
@@ -1516,11 +1746,10 @@ async def _read_process_streams(
 
         nonlocal stdout_bytes, stdout_truncated
 
-        def kill_at_limit() -> None:
+        async def kill_at_limit() -> None:
             """在 stdout 首次越界时立即终止仍在运行的子进程。"""
-            if process.returncode is None:
-                with suppress(ProcessLookupError):
-                    process.kill()
+
+            await _terminate_process(process)
 
         stdout_bytes, stdout_truncated = await _drain_stream(
             process.stdout,
@@ -1535,6 +1764,7 @@ async def _read_process_streams(
         stderr_bytes, _ = await _drain_stream(
             process.stderr,
             limit=None,
+            tail=stderr_tail,
         )
 
     async def write_stdin() -> None:

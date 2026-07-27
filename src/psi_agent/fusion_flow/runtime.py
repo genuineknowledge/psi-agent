@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
@@ -12,10 +13,12 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from importlib import import_module
 from os import PathLike
+from secrets import choice
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import anyio
+from anyio.lowlevel import checkpoint_if_cancelled
 from loguru import logger
 
 from .model import (
@@ -52,7 +55,8 @@ def _now_iso() -> str:
 def _make_run_id() -> str:
     """生成便于排序且带随机后缀的运行标识。"""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return f"{stamp}-{uuid4().hex[:6]}"
+    suffix = "".join(choice("0123456789abcdefghijklmnopqrstuvwxyz") for _ in range(6))
+    return f"{stamp}-{suffix}"
 
 
 def _error_text(error: BaseException) -> str:
@@ -67,24 +71,33 @@ def stable_payload_hash(value: object) -> str:
         value,
         ensure_ascii=False,
         separators=(",", ":"),
-        sort_keys=True,
     )
     return sha256(payload.encode("utf-8")).hexdigest()
 
 
-async def _atomic_write_text(path: anyio.Path, value: str) -> None:
-    """以原子替换方式写入 UTF-8 文本文件。"""
+async def _atomic_write_bytes(path: anyio.Path, value: bytes) -> None:
+    """以原子替换方式写入字节。"""
     # 临时文件与目标文件同目录. 确保替换可保持原子性。
     temporary = anyio.Path(path.parent, f".{path.name}.tmp-{uuid4().hex}")
     try:
-        await temporary.write_text(value, encoding="utf-8")
+        await temporary.write_bytes(value)
         # 完整写入后再原子替换目标文件。
         await temporary.replace(path)
     finally:
         with anyio.CancelScope(shield=True):
             # 清理未被替换的临时文件。
-            if await temporary.exists():
-                await temporary.unlink()
+            try:
+                if await temporary.exists():
+                    await temporary.unlink()
+            except Exception as cleanup_error:
+                logger.warning(
+                    f'Failed to clean temporary FusionFlow file "{temporary}": {cleanup_error}',
+                )
+
+
+async def _atomic_write_text(path: anyio.Path, value: str) -> None:
+    """以原子替换方式写入 UTF-8 文本文件。"""
+    await _atomic_write_bytes(path, value.encode("utf-8"))
 
 
 async def _atomic_write_json(
@@ -110,8 +123,14 @@ async def _remove_tree(path: anyio.Path) -> None:
         await path.rmdir()
         return
     async for child in path.iterdir():
-        if await child.is_symlink() or not await child.is_dir():
+        if await child.is_symlink():
             await child.unlink()
+        elif not await child.is_dir():
+            try:
+                await child.unlink()
+            except PermissionError:
+                await child.chmod(0o700)
+                await child.unlink()
         elif await child.is_junction():
             await child.rmdir()
         else:
@@ -146,6 +165,23 @@ async def _ensure_run_subdirectory(
     else:
         await path.mkdir()
     return await _resolve_direct_child(
+        path,
+        run_dir,
+        label=f'run path "{name}"',
+    )
+
+
+async def _validate_existing_run_subdirectory(
+    run_dir: anyio.Path,
+    name: str,
+) -> None:
+    """只读验证已有运行子目录, 缺失目录留到预检完成后创建。"""
+    path = anyio.Path(run_dir, name)
+    if not await path.exists():
+        return
+    if not await path.is_dir():
+        raise ValueError(f'run path "{name}" must be a directory')
+    await _resolve_direct_child(
         path,
         run_dir,
         label=f'run path "{name}"',
@@ -189,37 +225,35 @@ class RunContext:
         self._binding_reservations: set[str] = set()
         self._call_ordinals: dict[str, set[int]] = {}
         self._call_ordinal_reservations: set[tuple[str, int]] = set()
+        self._session_call_counts: dict[str, int] = {}
+        self._service_call_counts: dict[str, int] = {}
+        self._progress_started: set[str] = set()
+        self._progress_finished: set[str] = set()
         self._lock = anyio.Lock()
         self._sealed = False
 
     async def input(self, name: str, default_value: str) -> str:
         """读取并持久化一个可被运行注入值覆盖的具名输入。"""
         self._ensure_open()
-        async with self._trace("input", name) as trace:
-            value = await self._read_input(name, default_value)
+        normalized = assert_safe_name(name)
+        async with self._trace("input", normalized) as trace:
+            value = await self._read_input(normalized, default_value)
             trace.output_summary = value
             return value
 
     async def save(self, name: str, value: str) -> None:
         """通过单赋值路径持久化一个具名绑定。"""
         self._ensure_open()
-        preview = repr(value)
-        async with self._trace(
-            "output",
-            name,
-            input_summary=preview if len(preview) <= 60 else f"{preview[:57]}...",
-        ) as trace:
-            await self._commit_binding(
-                name,
-                value,
-                metadata=self._binding_metadata(
-                    name,
-                    produced_by="flow.output",
-                    operation="output",
-                    source_node=trace.trace_id,
-                ),
-            )
-            trace.output_summary = value
+        normalized = assert_safe_name(name)
+        await self._commit_binding(
+            normalized,
+            value,
+            metadata=self._binding_metadata(
+                normalized,
+                produced_by="flow.output",
+                operation="output",
+            ),
+        )
 
     @property
     def services(self) -> dict[str, object]:
@@ -344,13 +378,16 @@ class RunContext:
         self,
         base: str,
         binding_name: str | None,
+        *,
+        ordinal_base: str | None = None,
     ) -> tuple[str, str, int]:
         """预留调用 binding, 但把序号推进留到缓存命中或成功落盘时。"""
         normalized = assert_safe_name(base)
+        ordinal = assert_safe_name(ordinal_base or base)
         explicit = assert_safe_name(binding_name) if binding_name is not None else None
         async with self._lock:
             self._ensure_open()
-            ordinals = self._call_ordinals.setdefault(normalized, set())
+            ordinals = self._call_ordinals.setdefault(ordinal, set())
             count = 1
             while True:
                 if count in ordinals:
@@ -365,16 +402,21 @@ class RunContext:
             # 名称先锁定, 但序号仍是临时值; 失败重试会再次取得同一序号。
             self._binding_reservations.add(candidate)
             ordinals.add(count)
-            self._call_ordinal_reservations.add((normalized, count))
-        return candidate, normalized, count
+            self._call_ordinal_reservations.add((ordinal, count))
+        return candidate, ordinal, count
 
     async def _commit_reserved_call(
         self,
         name: str,
         base: str,
         count: int,
+        *,
+        call_owner: str | None = None,
+        service_call: bool = False,
     ) -> None:
         """提交一次缓存命中的调用身份, 不重复写已有 binding 文件。"""
+        if service_call and call_owner is None:
+            raise RuntimeError("service_call requires call_owner")
         with anyio.CancelScope(shield=True):
             async with self._lock:
                 self._ensure_open()
@@ -384,6 +426,21 @@ class RunContext:
                 self._call_ordinal_reservations.remove(reservation)
                 self._binding_reservations.remove(name)
                 self._binding_names.add(name)
+                if call_owner is not None:
+                    self._increment_call_count(
+                        call_owner,
+                        service=service_call,
+                    )
+
+    def _increment_call_count(
+        self,
+        owner: str,
+        *,
+        service: bool,
+    ) -> None:
+        """在持有运行锁时记录一次成功或缓存命中的调用。"""
+        counts = self._service_call_counts if service else self._session_call_counts
+        counts[owner] = counts.get(owner, 0) + 1
 
     async def _commit_reserved_binding(
         self,
@@ -393,11 +450,20 @@ class RunContext:
         metadata: Mapping[str, object] | None = None,
         call_base: str | None = None,
         call_count: int | None = None,
+        call_owner: str | None = None,
+        service_call: bool = False,
     ) -> None:
         """将已预留的绑定和元数据全部落盘后提交。"""
         if (call_base is None) != (call_count is None):
             await self._release_binding(name)
             raise RuntimeError("call_base and call_count must be provided together")
+        if service_call and call_owner is None:
+            await self._release_binding(
+                name,
+                call_base=call_base,
+                call_count=call_count,
+            )
+            raise RuntimeError("service_call requires call_owner")
         if not isinstance(value, str):
             await self._release_binding(
                 name,
@@ -431,11 +497,13 @@ class RunContext:
         previous_metadata = self._resume_metadata.get(name)
         try:
             self._ensure_open()
+            await _atomic_write_text(binding_path, value)
+            # Metadata is the commit marker: it must never describe content
+            # that has not reached its binding file yet.
             await _atomic_write_json(
                 metadata_path,
                 metadata_payload,
             )
-            await _atomic_write_text(binding_path, value)
 
             async with self._lock:
                 self._ensure_open()
@@ -451,25 +519,48 @@ class RunContext:
                 self._binding_names.add(name)
                 self._resume_bindings[name] = value
                 self._resume_metadata[name] = metadata_payload
+                if call_owner is not None:
+                    self._increment_call_count(
+                        call_owner,
+                        service=service_call,
+                    )
         except BaseException:
             with anyio.CancelScope(shield=True):
-                # 覆盖旧恢复结果也是事务: 任一新文件写入失败都恢复旧版本。
-                if previous_value is None:
-                    if await binding_path.exists():
-                        await binding_path.unlink()
-                else:
-                    await _atomic_write_text(binding_path, previous_value)
-                if previous_metadata is None:
-                    if await metadata_path.exists():
-                        await metadata_path.unlink()
-                else:
-                    await _atomic_write_json(metadata_path, previous_metadata)
-                # 失败或取消时释放预留. 允许调用方重试。
-                await self._release_binding(
-                    name,
-                    call_base=call_base,
-                    call_count=call_count,
-                )
+                # Every rollback step is attempted, but none may replace the
+                # original write error or cancellation.
+                binding_restored = False
+                try:
+                    if previous_value is None:
+                        if await binding_path.exists():
+                            await binding_path.unlink()
+                    else:
+                        await _atomic_write_text(binding_path, previous_value)
+                    binding_restored = True
+                except Exception as rollback_error:
+                    logger.error(f'Failed to restore binding "{name}": {rollback_error}')
+                try:
+                    if not binding_restored or previous_metadata is None:
+                        if await metadata_path.exists():
+                            await metadata_path.unlink()
+                    else:
+                        await _atomic_write_json(metadata_path, previous_metadata)
+                except Exception as rollback_error:
+                    logger.error(f'Failed to restore metadata for binding "{name}": {rollback_error}')
+                    try:
+                        if await metadata_path.exists():
+                            await metadata_path.unlink()
+                    except Exception as cleanup_error:
+                        logger.error(
+                            f'Failed to remove metadata for binding "{name}": {cleanup_error}',
+                        )
+                try:
+                    await self._release_binding(
+                        name,
+                        call_base=call_base,
+                        call_count=call_count,
+                    )
+                except Exception as rollback_error:
+                    logger.error(f'Failed to release binding "{name}": {rollback_error}')
             raise
 
     async def _commit_binding(
@@ -572,12 +663,19 @@ class RunContext:
             separators=(",", ":"),
         )
         async with self._lock:
-            stream = await anyio.Path(
-                self._path,
-                "progress.jsonl",
-            ).open("a", encoding="utf-8")
-            async with stream:
-                await stream.write(f"{line}\n")
+            with anyio.CancelScope(shield=True):
+                stream = await anyio.Path(
+                    self._path,
+                    "progress.jsonl",
+                ).open("a", encoding="utf-8")
+                async with stream:
+                    await stream.write(f"{line}\n")
+                if event == "node_start":
+                    self._progress_started.add(trace.trace_id)
+                elif event == "node_end":
+                    self._progress_started.discard(trace.trace_id)
+                    self._progress_finished.add(trace.trace_id)
+        await checkpoint_if_cancelled()
 
     @asynccontextmanager
     async def _trace(
@@ -613,8 +711,28 @@ class RunContext:
             # token 使嵌套 flow 操作自动继承此 trace, 并在退出时恢复父上下文。
             token = _CURRENT_TRACE.set(trace)
             yield trace
+            trace.status = "ok"
+            trace.finished_at = _now_iso()
+            trace.duration_ms = (time.perf_counter() - started) * 1_000
+            if trace.trace_id not in self._progress_started:
+                try:
+                    await self._record_progress(trace, "node_start")
+                except Exception as progress_error:
+                    logger.error(
+                        f"Failed to persist start event for completed trace {trace.trace_id}: {progress_error}",
+                    )
+            try:
+                await self._record_progress(trace, "node_end")
+            except Exception as progress_error:
+                logger.error(
+                    f"Failed to persist completed trace {trace.trace_id}: {progress_error}",
+                )
         except BaseException as error:
             if not any(child is trace for child in parent.children):
+                raise
+            if trace.trace_id in self._progress_finished:
+                # The node_end write completed; a cancellation checkpoint after
+                # it must not rewrite the same terminal event as cancelled.
                 raise
             cancelled = isinstance(error, anyio.get_cancelled_exc_class())
             # 取消也要写下终态; shield 防止取消信号打断这次诊断持久化。
@@ -624,6 +742,15 @@ class RunContext:
                 trace.error = _error_text(error)
                 trace.finished_at = _now_iso()
                 trace.duration_ms = (time.perf_counter() - started) * 1_000
+                if trace.trace_id not in self._progress_started:
+                    try:
+                        await self._record_progress(trace, "node_start")
+                    except Exception as progress_error:
+                        logger.error(
+                            f"Failed to persist start event for trace "
+                            f"{trace.trace_id} while handling "
+                            f"{error.__class__.__name__}: {progress_error}",
+                        )
                 try:
                     await self._record_progress(trace, "node_end")
                 except Exception as progress_error:
@@ -632,16 +759,6 @@ class RunContext:
                         f"{error.__class__.__name__}: {progress_error}",
                     )
             raise
-        else:
-            trace.status = "ok"
-            trace.finished_at = _now_iso()
-            trace.duration_ms = (time.perf_counter() - started) * 1_000
-            try:
-                await self._record_progress(trace, "node_end")
-            except Exception as progress_error:
-                logger.error(
-                    f"Failed to persist completed trace {trace.trace_id}: {progress_error}",
-                )
         finally:
             # 无论成功, 失败还是取消, 都不能把子 trace 泄漏给后续操作。
             if token is not None:
@@ -667,30 +784,54 @@ class RunContext:
         except Exception as error:
             logger.error(f'Failed to persist diagnostic trace "{name}": {error}')
 
-    async def _write_legacy_trace_file(
+    async def _commit_legacy_agent_call(
         self,
         name: str,
         trace: ExecutionTrace,
     ) -> None:
-        """按共享调用序号写入不属于执行图或 binding 的旧版 Agent trace。"""
+        """原子提交旧版 Agent 的共享调用序号、计数和诊断 trace。"""
         normalized = assert_safe_name(name)
-        try:
+        with anyio.CancelScope(shield=True):
             async with self._lock:
                 self._ensure_open()
                 ordinals = self._call_ordinals.setdefault(normalized, set())
                 count = 1
-                while count in ordinals:
-                    count += 1
-                trace_name = normalized if count == 1 else f"{normalized}.{count}"
-                path = anyio.Path(self._path, "trace", f"{trace_name}.json")
-                while await path.exists():
-                    count += 1
-                    trace_name = f"{normalized}.{count}"
+                inspection_error: Exception | None = None
+                while True:
+                    trace_name = normalized if count == 1 else f"{normalized}.{count}"
                     path = anyio.Path(self._path, "trace", f"{trace_name}.json")
-                await _atomic_write_json(path, trace.to_dict())
+                    if count in ordinals:
+                        count += 1
+                        continue
+                    try:
+                        exists = await path.exists()
+                    except Exception as error:
+                        inspection_error = error
+                        break
+                    if not exists:
+                        break
+                    # Resume preserves old diagnostic traces. Mark every skipped
+                    # file ordinal so later session/evaluate calls cannot reuse it.
+                    ordinals.add(count)
+                    count += 1
                 ordinals.add(count)
-        except Exception as error:
-            logger.error(f'Failed to persist legacy Agent trace "{name}": {error}')
+                self._increment_call_count(normalized, service=False)
+                trace.metadata.update(
+                    {
+                        "call_ordinal": count,
+                        "trace_file": f"trace/{trace_name}.json",
+                    }
+                )
+            if inspection_error is not None:
+                logger.error(
+                    f'Failed to persist legacy Agent trace "{name}": {inspection_error}',
+                )
+            else:
+                try:
+                    await _atomic_write_json(path, trace.to_dict())
+                except Exception as error:
+                    logger.error(f'Failed to persist legacy Agent trace "{name}": {error}')
+        await checkpoint_if_cancelled()
 
 
 def current_run_context() -> RunContext:
@@ -701,9 +842,56 @@ def current_run_context() -> RunContext:
     return context
 
 
+async def _validate_resume_inputs(run_dir: anyio.Path) -> None:
+    """验证 resume run 中已有输入产物的名称与位置。"""
+    names: set[str] = set()
+    directory = anyio.Path(run_dir, "input")
+    if not await directory.exists():
+        return
+    if not await directory.is_dir():
+        raise ValueError('resume path "input" must be a directory')
+    directory = await _resolve_direct_child(
+        directory,
+        run_dir,
+        label='resume path "input"',
+    )
+    try:
+        paths = [path async for path in directory.iterdir()]
+    except OSError as error:
+        logger.warning(f'Ignoring unreadable resume input directory "{directory}": {error}')
+        return
+    for path in paths:
+        if not path.name.endswith(".md"):
+            continue
+        if await path.is_symlink():
+            raise ValueError(f'resume input "{path.name}" must not be a symbolic link')
+        if not await path.is_file():
+            continue
+        path = await _resolve_direct_child(
+            path,
+            directory,
+            label=f'resume input "{path.name}"',
+        )
+        name = path.name.removesuffix(".md")
+        try:
+            normalized = assert_safe_name(name)
+        except ValueError:
+            continue
+        if normalized != name:
+            raise ValueError(
+                f'resume input name "{name}" must use NFC normalization',
+            )
+        if normalized in names:
+            raise ValueError(
+                f'duplicate resume input after NFC normalization: "{normalized}"',
+            )
+        names.add(normalized)
+
+
 async def _load_resume_bindings(run_dir: anyio.Path) -> dict[str, str]:
     """加载 resume run 的直接 bindings 子目录中的安全 Markdown 绑定。"""
     bindings: dict[str, str] = {}
+    names: set[str] = set()
     directory = anyio.Path(run_dir, "bindings")
     if not await directory.exists():
         return bindings
@@ -714,7 +902,12 @@ async def _load_resume_bindings(run_dir: anyio.Path) -> dict[str, str]:
         run_dir,
         label='resume path "bindings"',
     )
-    async for path in directory.iterdir():
+    try:
+        paths = [path async for path in directory.iterdir()]
+    except OSError as error:
+        logger.warning(f'Ignoring unreadable resume bindings directory "{directory}": {error}')
+        return bindings
+    for path in paths:
         if not path.name.endswith(".md"):
             continue
         if await path.is_symlink():
@@ -732,17 +925,29 @@ async def _load_resume_bindings(run_dir: anyio.Path) -> dict[str, str]:
             normalized = assert_safe_name(name)
         except ValueError:
             continue
-        if normalized in bindings:
+        if normalized != name:
+            raise ValueError(
+                f'resume binding name "{name}" must use NFC normalization',
+            )
+        if normalized in names:
             raise ValueError(
                 f'duplicate resume binding after NFC normalization: "{normalized}"',
             )
-        bindings[normalized] = await path.read_text(encoding="utf-8")
+        names.add(normalized)
+        try:
+            bindings[normalized] = await path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            logger.warning(f'Ignoring unreadable resume binding "{path.name}": {error}')
     return bindings
 
 
-async def _load_resume_metadata(run_dir: anyio.Path) -> dict[str, dict[str, object]]:
+async def _load_resume_metadata(
+    run_dir: anyio.Path,
+    binding_names: set[str],
+) -> dict[str, dict[str, object]]:
     """加载 resume bindings 对应的直接元数据文件。"""
     payloads: dict[str, dict[str, object]] = {}
+    names: set[str] = set()
     directory = anyio.Path(run_dir, "bindings")
     if not await directory.exists():
         return payloads
@@ -753,7 +958,12 @@ async def _load_resume_metadata(run_dir: anyio.Path) -> dict[str, dict[str, obje
         run_dir,
         label='resume path "bindings"',
     )
-    async for path in directory.iterdir():
+    try:
+        paths = [path async for path in directory.iterdir()]
+    except OSError as error:
+        logger.warning(f'Ignoring unreadable resume metadata directory "{directory}": {error}')
+        return payloads
+    for path in paths:
         if not path.name.endswith(".meta.json"):
             continue
         if await path.is_symlink():
@@ -773,15 +983,27 @@ async def _load_resume_metadata(run_dir: anyio.Path) -> dict[str, dict[str, obje
             normalized = assert_safe_name(name)
         except ValueError:
             continue
-        if normalized in payloads:
+        if normalized != name:
+            raise ValueError(
+                f'resume binding metadata name "{name}" must use NFC normalization',
+            )
+        if normalized in names:
             raise ValueError(
                 f'duplicate resume metadata after NFC normalization: "{normalized}"',
             )
-        raw = json.loads(await path.read_text(encoding="utf-8"))
+        names.add(normalized)
+        if normalized not in binding_names:
+            continue
+        try:
+            raw = json.loads(await path.read_text(encoding="utf-8"))
+        except Exception as error:
+            logger.warning(f'Ignoring corrupt resume metadata "{path.name}": {error}')
+            continue
         if not isinstance(raw, dict):
-            raise ValueError(
-                f'corrupt resume metadata "{path.name}": expected a JSON object',
+            logger.warning(
+                f'Ignoring corrupt resume metadata "{path.name}": expected a JSON object',
             )
+            continue
         payloads[normalized] = dict(raw)
     return payloads
 
@@ -805,6 +1027,8 @@ async def _persist_final_state(
     if error is not None:
         context.root_trace.error = _error_text(error)
     tokens = aggregate_tokens(context.root_trace)
+    session_calls = {name: count for name, count in context._session_call_counts.items() if not name.startswith("__")}
+    evaluator_calls = {name: count for name, count in context._session_call_counts.items() if name.startswith("__")}
 
     # progress.jsonl 只是过程快照; 最终 execution graph 和 meta 才是封存记录。
     await _atomic_write_json(
@@ -826,6 +1050,24 @@ async def _persist_final_state(
             "resumed": resume_from_run_id is not None,
             "resume_from_run_id": resume_from_run_id,
             "program_snapshot": program_snapshot,
+            "session_calls": session_calls,
+            "evaluator_calls": evaluator_calls,
+            "service_calls": dict(context._service_call_counts),
+            "total_tokens": {
+                "input": tokens.input,
+                "output": tokens.output,
+            },
+            "llm_calls": tokens.calls,
+            "user_tokens": {
+                "input": tokens.user.input,
+                "output": tokens.user.output,
+            },
+            "user_llm_calls": tokens.user.calls,
+            "evaluator_tokens": {
+                "input": tokens.internal.input,
+                "output": tokens.internal.output,
+            },
+            "evaluator_llm_calls": tokens.internal.calls,
             "tokens": {
                 "user": {
                     "calls": tokens.user.calls,
@@ -845,6 +1087,25 @@ async def _persist_final_state(
     )
 
 
+def _validate_gc_retention(
+    keep_count: int,
+    keep_days: int | float,
+) -> None:
+    """验证自动清理保留参数。"""
+    if isinstance(keep_count, bool) or not isinstance(keep_count, int):
+        raise TypeError("keep_count must be an integer")
+    if isinstance(keep_days, bool) or not isinstance(keep_days, int | float):
+        raise TypeError("keep_days must be a number")
+    try:
+        finite = math.isfinite(keep_days)
+    except OverflowError as error:
+        raise ValueError("keep_days must be finite") from error
+    if not finite:
+        raise ValueError("keep_days must be finite")
+    if keep_count < 0 or keep_days < 0:
+        raise ValueError("keep_count and keep_days must be non-negative")
+
+
 async def run(
     program: Program,
     *,
@@ -855,15 +1116,40 @@ async def run(
     resume_from_run_id: str | None = None,
     throw_on_error: bool = False,
     program_path: PathValue | None = None,
+    keep_count: int = 50,
+    keep_days: int | float = 7,
 ) -> RunResult:
     """执行一个 FusionFlow program, 并封存其动态 trace。"""
 
+    _validate_gc_retention(keep_count, keep_days)
     if run_id is not None and resume_from_run_id is not None:
         raise ValueError("run_id and resume_from_run_id are mutually exclusive")
-    selected_id = assert_safe_name(
-        resume_from_run_id or run_id or _make_run_id(),
-    )
+    if run_id == "last":
+        raise ValueError('run_id "last" is reserved for resume_from_run_id')
     root = anyio.Path(runs_dir)
+    if resume_from_run_id == "last":
+        latest: str | None = None
+        try:
+            async for child in root.iterdir():
+                try:
+                    is_directory = await child.is_dir()
+                except OSError as error:
+                    logger.warning(
+                        f'Failed to inspect FusionFlow run "{child.name}": {error}',
+                    )
+                    continue
+                if is_directory and (latest is None or child.name > latest):
+                    latest = child.name
+        except OSError as error:
+            raise FileNotFoundError(
+                f'resume run "last" could not read {root}',
+            ) from error
+        if latest is None:
+            raise FileNotFoundError(f'resume run "last" found no runs in {root}')
+        resume_from_run_id = latest
+    selected_id = assert_safe_name(
+        resume_from_run_id if resume_from_run_id is not None else run_id if run_id is not None else _make_run_id(),
+    )
     resumed = resume_from_run_id is not None
 
     normalized_inputs: dict[str, str] = {}
@@ -878,6 +1164,8 @@ async def run(
         normalized_inputs[normalized] = value
 
     created_run = False
+    resume_bindings: dict[str, str] = {}
+    resume_metadata: dict[str, dict[str, object]] = {}
     try:
         # 第一阶段: 验证既有 resume run, 或创建并约束新的直接 run 子目录。
         if resumed:
@@ -898,12 +1186,22 @@ async def run(
                 root_resolved,
                 label=f'resume run "{selected_id}"',
             )
+            for directory in ("input", "bindings", "trace"):
+                await _validate_existing_run_subdirectory(run_path, directory)
+            await _validate_resume_inputs(run_path)
+            resume_bindings = await _load_resume_bindings(run_path)
+            resume_metadata = await _load_resume_metadata(
+                run_path,
+                set(resume_bindings),
+            )
         else:
             await root.mkdir(parents=True, exist_ok=True)
             root_resolved = await root.resolve()
             run_path = anyio.Path(root_resolved, selected_id)
-            await run_path.mkdir()
-            created_run = True
+            with anyio.CancelScope(shield=True):
+                await run_path.mkdir()
+                created_run = True
+            await checkpoint_if_cancelled()
             run_path = await _resolve_direct_child(
                 run_path,
                 root_resolved,
@@ -913,26 +1211,29 @@ async def run(
         for directory in ("input", "bindings", "trace"):
             await _ensure_run_subdirectory(run_path, directory)
 
-        snapshot_status: str | None = None
-        if program_path is not None:
-            source = anyio.Path(program_path)
-            if await source.is_file():
-                await _atomic_write_text(
-                    anyio.Path(run_path, "program.py"),
-                    await source.read_text(encoding="utf-8"),
+        if not resumed:
+            try:
+                await gc_runs(
+                    root_resolved,
+                    keep_count=keep_count,
+                    keep_days=keep_days,
+                    exclude_run_id=selected_id,
                 )
-                snapshot_status = str(source)
-            else:
-                snapshot_status = f"unavailable: {source}"
-        elif sys.argv:
-            # Python 的入口脚本对应 TypeScript 的 process.argv[1]。默认路径
-            # 只做尽力而为快照, 不能让 REPL、pytest 等宿主环境阻断运行。
-            source = anyio.Path(sys.argv[0])
+            except Exception as cleanup_error:
+                logger.warning(
+                    f"Automatic FusionFlow run cleanup failed: {cleanup_error}",
+                )
+
+        snapshot_status: str | None = None
+        source = anyio.Path(program_path) if program_path is not None else anyio.Path(sys.argv[0]) if sys.argv else None
+        if source is not None:
+            # Python 的入口脚本对应 TypeScript 的 process.argv[1]。无论路径
+            # 来自显式参数还是宿主环境, 程序快照都只做尽力而为。
             try:
                 if await source.is_file():
-                    await _atomic_write_text(
+                    await _atomic_write_bytes(
                         anyio.Path(run_path, "program.py"),
-                        await source.read_text(encoding="utf-8"),
+                        await source.read_bytes(),
                     )
                     snapshot_status = str(source)
                 else:
@@ -961,18 +1262,11 @@ async def run(
             runner=runner,
             root_trace=root_trace,
             resumed=resumed,
-            resume_bindings=await _load_resume_bindings(run_path) if resumed else {},
+            resume_bindings=resume_bindings,
         )
-        # 第二阶段: 构造 context, 并仅在 resume 时读取可复用绑定和元数据。
+        # 第二阶段: 构造 context, 并注入预检阶段加载的可复用绑定和元数据。
         if resumed:
-            context._resume_metadata = await _load_resume_metadata(run_path)
-        else:
-            try:
-                await gc_runs(root_resolved, exclude_run_id=selected_id)
-            except Exception as cleanup_error:
-                logger.warning(
-                    f"Automatic FusionFlow run cleanup failed: {cleanup_error}",
-                )
+            context._resume_metadata = resume_metadata
     except BaseException:
         if created_run:
             with anyio.CancelScope(shield=True):
@@ -1017,22 +1311,35 @@ async def run(
         _CURRENT_TRACE.reset(trace_token)
         _CURRENT_RUN.reset(run_token)
 
-    if persistence_error is not None:
-        if caught is not None and isinstance(caught, anyio.get_cancelled_exc_class()):
+    cancelled = caught is not None and isinstance(caught, anyio.get_cancelled_exc_class())
+    if persistence_error is not None and cancelled:
+        logger.error(
+            f"Failed to persist cancelled FusionFlow run {selected_id}: {persistence_error}",
+        )
+
+    # Cancellation may arrive while final persistence is shielded. Propagate it
+    # before this otherwise synchronous tail can return a successful result.
+    try:
+        await checkpoint_if_cancelled()
+    except anyio.get_cancelled_exc_class():
+        if persistence_error is not None and not cancelled:
             logger.error(
                 f"Failed to persist cancelled FusionFlow run {selected_id}: {persistence_error}",
             )
-        else:
-            if caught is not None:
-                logger.error(
-                    f"FusionFlow run {selected_id} also failed before final-state "
-                    f"persistence failed: {_error_text(caught)}",
-                )
-            raise persistence_error
+        raise
 
+    if persistence_error is not None and not cancelled:
+        if caught is not None:
+            logger.error(
+                f"FusionFlow run {selected_id} also failed before final-state "
+                f"persistence failed: {_error_text(caught)}",
+            )
+        raise persistence_error
+
+    duration_ms = context.root_trace.duration_ms
+    assert duration_ms is not None
     logger.info(
-        f"FusionFlow run {selected_id} finished with status={status} "
-        f"in {(time.perf_counter() - started) * 1_000:.1f}ms",
+        f"FusionFlow run {selected_id} finished with status={status} in {duration_ms:.1f}ms",
     )
     if caught is not None and (
         isinstance(caught, anyio.get_cancelled_exc_class()) or not isinstance(caught, Exception) or throw_on_error
@@ -1049,40 +1356,46 @@ async def gc_runs(
     runs_dir: PathValue,
     *,
     keep_count: int = 50,
-    keep_days: int = 7,
+    keep_days: int | float = 7,
     exclude_run_id: str | None = None,
 ) -> tuple[str, ...]:
     """按数量和日期保留规则清理 runs 目录的直接子 run 目录。"""
 
-    if isinstance(keep_count, bool) or not isinstance(keep_count, int):
-        raise TypeError("keep_count must be an integer")
-    if isinstance(keep_days, bool) or not isinstance(keep_days, int):
-        raise TypeError("keep_days must be an integer")
+    _validate_gc_retention(keep_count, keep_days)
     if exclude_run_id is not None:
         exclude_run_id = assert_safe_name(exclude_run_id)
-    if keep_count < 0 or keep_days < 0:
-        raise ValueError("keep_count and keep_days must be non-negative")
     if keep_count == 0 and keep_days == 0:
         return ()
 
     root = anyio.Path(runs_dir)
-    if not await root.exists():
+    try:
+        if not await root.exists():
+            return ()
+        root_resolved = await root.resolve()
+        children = [child async for child in root.iterdir()]
+    except OSError as error:
+        logger.warning(f"Failed to read FusionFlow runs directory {root}: {error}")
         return ()
-    root_resolved = await root.resolve()
     candidates: list[tuple[str, float, anyio.Path]] = []
-    async for child in root.iterdir():
-        if child.name == exclude_run_id:
-            continue
+    for child in children:
         try:
-            assert_safe_name(child.name)
+            normalized_name = assert_safe_name(child.name)
         except ValueError:
             continue
-        if await child.is_symlink() or not await child.is_dir():
+        if normalized_name == exclude_run_id:
             continue
-        resolved = await child.resolve()
-        if resolved.parent != root_resolved:
+        try:
+            if await child.is_symlink() or not await child.is_dir():
+                continue
+            resolved = await child.resolve()
+            if resolved.parent != root_resolved:
+                continue
+            stat = await child.stat(follow_symlinks=False)
+        except Exception as error:
+            logger.warning(
+                f'Failed to inspect FusionFlow run "{child.name}": {error}',
+            )
             continue
-        stat = await child.stat(follow_symlinks=False)
         candidates.append((child.name, stat.st_mtime, child))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
@@ -1098,10 +1411,13 @@ async def gc_runs(
     for name, _, path in candidates:
         if name in keep:
             continue
+        await checkpoint_if_cancelled()
         try:
-            await _remove_tree(path)
+            with anyio.CancelScope(shield=True):
+                await _remove_tree(path)
         except Exception as error:
             logger.warning(f'Failed to remove FusionFlow run "{name}": {error}')
         else:
             deleted.append(name)
+        await checkpoint_if_cancelled()
     return tuple(deleted)

@@ -64,7 +64,7 @@ async def test_binding_metadata_includes_typescript_aliases(tmp_path) -> None:
 
 
 @pytest.mark.anyio
-async def test_resume_accepts_typescript_metadata_only_with_matching_hash(
+async def test_resume_accepts_camel_case_metadata_with_python_cache_key(
     tmp_path,
 ) -> None:
     calls = 0
@@ -87,18 +87,19 @@ async def test_resume_accepts_typescript_metadata_only_with_matching_hash(
         throw_on_error=True,
     )
     metadata = await _binding_metadata(result.run_dir, "worker")
-    ts_metadata = {
+    camel_case_metadata = {
         "name": "worker",
         "producedBy": metadata["produced_by"],
         "producedAt": metadata["produced_at"],
         "sourceNode": metadata["source_node"],
+        # Field spelling is shared; the hash value remains Python-native.
         "inputHash": metadata["cache_key"],
     }
     await anyio.Path(
         result.run_dir,
         "bindings",
         "worker.meta.json",
-    ).write_text(json.dumps(ts_metadata))
+    ).write_text(json.dumps(camel_case_metadata))
     calls = 0
 
     await run(
@@ -111,12 +112,12 @@ async def test_resume_accepts_typescript_metadata_only_with_matching_hash(
 
     assert calls == 0
 
-    ts_metadata["inputHash"] = "mismatched"
+    camel_case_metadata["inputHash"] = "mismatched"
     await anyio.Path(
         result.run_dir,
         "bindings",
         "worker.meta.json",
-    ).write_text(json.dumps(ts_metadata))
+    ).write_text(json.dumps(camel_case_metadata))
     await run(
         program,
         runs_dir=tmp_path,
@@ -127,13 +128,13 @@ async def test_resume_accepts_typescript_metadata_only_with_matching_hash(
 
     assert calls == 1
 
-    ts_metadata["inputHash"] = metadata["cache_key"]
-    ts_metadata["operation"] = "call"
+    camel_case_metadata["inputHash"] = metadata["cache_key"]
+    camel_case_metadata["operation"] = "call"
     await anyio.Path(
         result.run_dir,
         "bindings",
         "worker.meta.json",
-    ).write_text(json.dumps(ts_metadata))
+    ).write_text(json.dumps(camel_case_metadata))
     calls = 0
     await run(
         program,
@@ -615,7 +616,7 @@ async def test_exec_name_is_trace_label_and_default_binding_prefix(tmp_path) -> 
         == "ok"
     )
     metadata = await _binding_metadata(result.run_dir, "named-command")
-    assert metadata["produced_by"] == "named-command"
+    assert metadata["produced_by"] == "exec:named-command"
 
 
 @pytest.mark.anyio

@@ -5,9 +5,21 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from decimal import ROUND_HALF_UP, Decimal
 from types import MappingProxyType
 from typing import Literal
+
+
+def _validate_token_count(value: int | None, name: str) -> None:
+    """Validate an optional non-negative token count."""
+
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer or None")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,8 +30,8 @@ class AgentConfig:
     system: str | None = None
     prompt: str | None = None
     model: str | None = None
-    max_tokens: int = 8192
-    temperature: float = 1.0
+    max_tokens: int | None = None
+    temperature: float | None = None
     thinking_budget_tokens: int | None = None
     engine: str | None = None
     tools: tuple[str, ...] = ()
@@ -36,6 +48,21 @@ class AgentConfig:
         object.__setattr__(self, "tools", tuple(self.tools))
         if self.context_schema is not None:
             object.__setattr__(self, "context_schema", tuple(self.context_schema))
+
+
+def _with_agent_defaults(
+    config: AgentConfig,
+    *,
+    max_tokens: int,
+    temperature: float,
+) -> AgentConfig:
+    """Resolve operation-specific defaults without losing explicit values."""
+
+    return replace(
+        config,
+        max_tokens=max_tokens if config.max_tokens is None else config.max_tokens,
+        temperature=temperature if config.temperature is None else config.temperature,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +89,12 @@ class SessionResult:
     text: str
     input_tokens: int | None = None
     output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        """Reject values that cannot be represented as portable JSON counts."""
+
+        _validate_token_count(self.input_tokens, "input_tokens")
+        _validate_token_count(self.output_tokens, "output_tokens")
 
 
 type SessionRunner = Callable[
@@ -207,6 +240,16 @@ class TokenUsage:
     input: int | None
     output: int | None
 
+    def __post_init__(self) -> None:
+        """Keep persisted token usage within the non-negative integer domain."""
+
+        if isinstance(self.calls, bool) or not isinstance(self.calls, int):
+            raise TypeError("calls must be an integer")
+        if self.calls < 0:
+            raise ValueError("calls must be non-negative")
+        _validate_token_count(self.input, "input")
+        _validate_token_count(self.output, "output")
+
 
 @dataclass(frozen=True, slots=True)
 class TokenSummary:
@@ -239,7 +282,6 @@ type TraceKind = Literal[
     "block",
     "exec",
     "input",
-    "output",
 ]
 
 
@@ -338,19 +380,15 @@ def aggregate_tokens(root: ExecutionTrace) -> TokenSummary:
         """深度优先累加单个节点及其子节点的可计费用量。"""
         nonlocal user_calls, user_input, user_output
         nonlocal internal_calls, internal_input, internal_output
-        if node.cached:
-            return
-        if node.tokens is not None:
-            owner = node.metadata.get(
-                "evaluator_agent",
-                node.metadata.get(
-                    "evaluator",
-                    node.metadata.get("agent", node.label),
-                ),
-            )
+        if node.tokens is not None and not node.cached:
+            owner = node.metadata.get("evaluator_agent")
+            if owner is None:
+                owner = node.metadata.get("evaluator")
+            if owner is None:
+                owner = node.metadata.get("agent", "")
             is_internal = isinstance(owner, str) and owner.startswith("__")
             if is_internal:
-                internal_calls += node.tokens.calls
+                internal_calls += 1
                 internal_input = (
                     None if internal_input is None or node.tokens.input is None else internal_input + node.tokens.input
                 )
@@ -360,7 +398,7 @@ def aggregate_tokens(root: ExecutionTrace) -> TokenSummary:
                     else internal_output + node.tokens.output
                 )
             else:
-                user_calls += node.tokens.calls
+                user_calls += 1
                 user_input = None if user_input is None or node.tokens.input is None else user_input + node.tokens.input
                 user_output = (
                     None if user_output is None or node.tokens.output is None else user_output + node.tokens.output
@@ -392,5 +430,7 @@ def format_token_count(count: int | None) -> str:
     if count < 1_000:
         return str(count)
     if count < 1_000_000:
-        return f"{count / 1_000:.1f}k"
-    return f"{count / 1_000_000:.2f}M"
+        value = Decimal.from_float(float(count) / 1_000).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        return f"{value}k"
+    value = Decimal.from_float(float(count) / 1_000_000).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return f"{value}M"

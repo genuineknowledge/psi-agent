@@ -16,6 +16,7 @@ from psi_agent.fusion_flow import (
     flow,
     run,
 )
+from psi_agent.fusion_flow import runtime as runtime_module
 from psi_agent.fusion_flow.runtime import RunContext
 
 
@@ -100,6 +101,95 @@ async def test_session_requires_exact_context_schema(tmp_path) -> None:
 
 
 @pytest.mark.anyio
+async def test_session_applies_defaults_and_ignores_empty_context_schema(
+    tmp_path,
+) -> None:
+    received: list[tuple[AgentConfig, AgentInvocation]] = []
+
+    async def runner(
+        config: AgentConfig,
+        invocation: AgentInvocation,
+    ) -> str:
+        received.append((config, invocation))
+        return "ok"
+
+    handle = flow.agent(
+        AgentConfig(
+            name="writer",
+            system="Write clearly.",
+            context_schema=(),
+        )
+    )
+
+    async def program(_: RunContext) -> None:
+        assert await flow.session(handle, "hello", {"extra": "allowed"}) == "ok"
+
+    await run(
+        program,
+        runs_dir=tmp_path,
+        run_id="session-defaults",
+        runner=runner,
+        throw_on_error=True,
+    )
+
+    config, invocation = received[0]
+    assert config.max_tokens == 8192
+    assert config.temperature == 1.0
+    assert invocation.context == {"extra": "allowed"}
+
+
+@pytest.mark.anyio
+async def test_session_resume_hash_ignores_tool_order(tmp_path) -> None:
+    calls = 0
+
+    async def runner(_: AgentConfig, __: AgentInvocation) -> str:
+        nonlocal calls
+        calls += 1
+        return "cached"
+
+    async def first(_: RunContext) -> None:
+        handle = flow.agent(
+            AgentConfig(
+                name="writer",
+                system="Write clearly.",
+                tools=("read", "write"),
+            )
+        )
+        assert await flow.session(handle, "hello") == "cached"
+
+    await run(
+        first,
+        runs_dir=tmp_path,
+        run_id="tool-order",
+        runner=runner,
+        throw_on_error=True,
+    )
+
+    async def resumed(_: RunContext) -> None:
+        handle = flow.agent(
+            AgentConfig(
+                name="writer",
+                system="Write clearly.",
+                tools=("write", "read"),
+            )
+        )
+        assert await flow.session(handle, "hello") == "cached"
+
+    await run(
+        resumed,
+        runs_dir=tmp_path,
+        resume_from_run_id="tool-order",
+        runner=runner,
+        throw_on_error=True,
+    )
+
+    assert calls == 1
+    meta = json.loads(await anyio.Path(tmp_path, "tool-order", "meta.json").read_text())
+    assert meta["session_calls"] == {"writer": 1}
+    assert meta["llm_calls"] == 0
+
+
+@pytest.mark.anyio
 async def test_session_failure_does_not_consume_default_binding_number(
     tmp_path,
 ) -> None:
@@ -150,10 +240,14 @@ async def test_session_failure_does_not_consume_default_binding_number(
         "input": 11,
         "output": 7,
     }
+    assert sessions[1]["metadata"]["binding_name"] == "writer"
+    assert sessions[1]["metadata"]["trace_file"] == "trace/writer.json"
     plain_trace = json.loads(await anyio.Path(run_dir, "trace", "writer.json").read_text())
     rich_trace = json.loads(await anyio.Path(run_dir, "trace", "writer.2.json").read_text())
     assert plain_trace["tokens"] == sessions[1]["tokens"]
     assert rich_trace["tokens"] == sessions[2]["tokens"]
+    meta = json.loads(await anyio.Path(run_dir, "meta.json").read_text())
+    assert meta["session_calls"] == {"writer": 2}
 
 
 @pytest.mark.anyio
@@ -258,6 +352,15 @@ async def test_service_validates_registration_and_declared_parameters(
         return f"{args['query']}:{args.get('language', 'default')}"
 
     async def program(_: RunContext) -> None:
+        with pytest.raises(ValueError, match="duplicate service parameter"):
+            flow.service(
+                "duplicate",
+                body,
+                params=(
+                    ServiceParam(name="query", required=True),
+                    ServiceParam(name="query", required=False),
+                ),
+            )
         handle = flow.service(
             "lookup",
             body,
@@ -310,6 +413,55 @@ async def test_service_validates_registration_and_declared_parameters(
         ).read_text()
         == "AnyIO:zh"
     )
+    meta = json.loads(await anyio.Path(result.run_dir, "meta.json").read_text())
+    assert meta["service_calls"] == {"lookup": 2}
+    graph = json.loads(
+        await anyio.Path(result.run_dir, "execution-graph.json").read_text(),
+    )
+    assert graph["root"]["children"][0]["metadata"] == {
+        "service": "lookup",
+        "args": {"query": "Python"},
+        "binding_name": "lookup",
+    }
+    assert graph["root"]["children"][1]["metadata"] == {
+        "service": "lookup",
+        "args": {"query": "AnyIO", "language": "zh"},
+        "binding_name": "lookup.2",
+    }
+
+
+@pytest.mark.anyio
+async def test_service_resume_hash_preserves_argument_order(tmp_path) -> None:
+    calls = 0
+
+    async def body(args: dict[str, str]) -> str:
+        nonlocal calls
+        calls += 1
+        return ",".join(args)
+
+    async def first(_: RunContext) -> None:
+        handle = flow.service("ordered", body)
+        assert await flow.call(handle, {"a": "1", "b": "2"}) == "a,b"
+
+    await run(
+        first,
+        runs_dir=tmp_path,
+        run_id="argument-order",
+        throw_on_error=True,
+    )
+
+    async def resumed(_: RunContext) -> None:
+        handle = flow.service("ordered", body)
+        assert await flow.call(handle, {"b": "2", "a": "1"}) == "b,a"
+
+    await run(
+        resumed,
+        runs_dir=tmp_path,
+        resume_from_run_id="argument-order",
+        throw_on_error=True,
+    )
+
+    assert calls == 2
 
 
 @pytest.mark.anyio
@@ -430,16 +582,23 @@ async def test_legacy_agent_is_an_async_callable_using_the_injected_runner(
     )
 
     assert inspect.iscoroutinefunction(legacy)
+    effective_config = AgentConfig(
+        name="legacy",
+        system="Answer directly.",
+        max_tokens=8192,
+        temperature=1.0,
+        context_schema=("topic",),
+    )
     assert received == [
         (
-            config,
+            effective_config,
             AgentInvocation(
                 prompt="question",
                 context={"topic": "Python"},
             ),
         ),
         (
-            config,
+            effective_config,
             AgentInvocation(
                 prompt="question",
                 context={"topic": "Python"},
@@ -457,6 +616,8 @@ async def test_legacy_agent_is_an_async_callable_using_the_injected_runner(
     graph = json.loads(await anyio.Path(run_dir, "execution-graph.json").read_text())
     assert graph["root"]["children"] == []
     assert not await anyio.Path(run_dir, "progress.jsonl").exists()
+    meta = json.loads(await anyio.Path(run_dir, "meta.json").read_text())
+    assert meta["session_calls"] == {"legacy": 2}
 
 
 @pytest.mark.anyio
@@ -534,6 +695,214 @@ async def test_legacy_agent_shares_successful_ordinals_with_session(tmp_path) ->
 
 
 @pytest.mark.anyio
+async def test_legacy_agent_resume_preserves_traces_and_shared_ordinals(
+    tmp_path,
+) -> None:
+    config = AgentConfig(name="shared", system="Answer directly.")
+    legacy = Agent(config)
+    handle = flow.agent(config)
+
+    async def runner(_: AgentConfig, invocation: AgentInvocation) -> str:
+        return invocation.prompt
+
+    async def seed(_: RunContext) -> None:
+        assert await legacy(AgentInvocation(prompt="seed")) == "seed"
+
+    await run(
+        seed,
+        runs_dir=tmp_path,
+        run_id="legacy-resume-ordinal",
+        runner=runner,
+        throw_on_error=True,
+    )
+
+    async def resumed(_: RunContext) -> None:
+        assert await legacy(AgentInvocation(prompt="legacy-resumed")) == "legacy-resumed"
+        assert await flow.session(handle, "session-resumed") == "session-resumed"
+        assert (
+            await flow.evaluate(
+                question="Is this true?",
+                kind="boolean",
+                agent=handle,
+            )
+            is True
+        )
+
+    answers = iter(("legacy-resumed", "session-resumed", '{"value": true}'))
+
+    async def resumed_runner(
+        _: AgentConfig,
+        __: AgentInvocation,
+    ) -> str:
+        return next(answers)
+
+    result = await run(
+        resumed,
+        runs_dir=tmp_path,
+        resume_from_run_id="legacy-resume-ordinal",
+        runner=resumed_runner,
+        throw_on_error=True,
+    )
+    run_dir = anyio.Path(result.run_dir)
+
+    seed_trace = json.loads(
+        await anyio.Path(run_dir, "trace", "shared.json").read_text(),
+    )
+    resumed_trace = json.loads(
+        await anyio.Path(run_dir, "trace", "shared.2.json").read_text(),
+    )
+    assert seed_trace["output_summary"] == "seed"
+    assert resumed_trace["output_summary"] == "legacy-resumed"
+    assert await anyio.Path(run_dir, "bindings", "shared.3.md").read_text() == "session-resumed"
+    assert await anyio.Path(
+        run_dir,
+        "bindings",
+        "evaluate.shared.4.md",
+    ).exists()
+    meta = json.loads(await anyio.Path(run_dir, "meta.json").read_text())
+    assert meta["session_calls"] == {"shared": 3}
+
+
+@pytest.mark.anyio
+async def test_legacy_agent_cancellation_commits_trace_and_shared_ordinal(
+    tmp_path,
+) -> None:
+    config = AgentConfig(name="shared", system="Answer directly.")
+    legacy = Agent(config)
+    handle = flow.agent(config)
+    cancel_scope: anyio.CancelScope | None = None
+    calls = 0
+
+    async def runner(_: AgentConfig, invocation: AgentInvocation) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert cancel_scope is not None
+            cancel_scope.cancel()
+        return invocation.prompt
+
+    async def program(context: RunContext) -> None:
+        nonlocal cancel_scope
+        lock_held = anyio.Event()
+
+        async def hold_context_lock() -> None:
+            async with context._lock:
+                lock_held.set()
+                await anyio.sleep_forever()
+
+        with anyio.CancelScope() as scope:
+            cancel_scope = scope
+            async with anyio.create_task_group() as task_group:
+                task_group.start_soon(hold_context_lock)
+                await lock_held.wait()
+                await legacy(AgentInvocation(prompt="legacy"))
+
+        assert await flow.session(handle, "session") == "session"
+
+    result = await run(
+        program,
+        runs_dir=tmp_path,
+        run_id="legacy-cancel-ordinal",
+        runner=runner,
+        throw_on_error=True,
+    )
+    run_dir = anyio.Path(result.run_dir)
+
+    legacy_trace = json.loads(
+        await anyio.Path(run_dir, "trace", "shared.json").read_text(),
+    )
+    assert legacy_trace["output_summary"] == "legacy"
+    assert await anyio.Path(run_dir, "bindings", "shared.2.md").read_text() == "session"
+    meta = json.loads(await anyio.Path(run_dir, "meta.json").read_text())
+    assert meta["session_calls"] == {"shared": 2}
+
+
+@pytest.mark.anyio
+async def test_legacy_agent_commits_ordinal_when_trace_write_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = AgentConfig(name="shared", system="Answer directly.")
+    legacy = Agent(config)
+    handle = flow.agent(config)
+    original_atomic_write_json = runtime_module._atomic_write_json
+
+    async def fail_legacy_trace(path: anyio.Path, value: dict[str, object]) -> None:
+        if path.parent.name == "trace" and path.name == "shared.json":
+            raise OSError("trace unavailable")
+        await original_atomic_write_json(path, value)
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_atomic_write_json",
+        fail_legacy_trace,
+    )
+
+    async def runner(_: AgentConfig, invocation: AgentInvocation) -> str:
+        return invocation.prompt
+
+    async def program(_: RunContext) -> None:
+        assert await legacy(AgentInvocation(prompt="legacy")) == "legacy"
+        assert await flow.session(handle, "session") == "session"
+
+    result = await run(
+        program,
+        runs_dir=tmp_path,
+        run_id="legacy-trace-failure",
+        runner=runner,
+        throw_on_error=True,
+    )
+    run_dir = anyio.Path(result.run_dir)
+
+    assert not await anyio.Path(run_dir, "trace", "shared.json").exists()
+    assert await anyio.Path(run_dir, "bindings", "shared.2.md").read_text() == "session"
+    assert not await anyio.Path(run_dir, "bindings", "shared.md").exists()
+
+
+@pytest.mark.anyio
+async def test_legacy_agent_commits_ordinal_when_trace_inspection_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    config = AgentConfig(name="shared", system="Answer directly.")
+    legacy = Agent(config)
+    handle = flow.agent(config)
+    original_exists = anyio.Path.exists
+    inspection_failed = False
+
+    async def fail_legacy_trace_inspection(path: anyio.Path) -> bool:
+        nonlocal inspection_failed
+        if not inspection_failed and path.parent.name == "trace" and path.name == "shared.json":
+            inspection_failed = True
+            raise OSError("trace directory unavailable")
+        return await original_exists(path)
+
+    monkeypatch.setattr(anyio.Path, "exists", fail_legacy_trace_inspection)
+
+    async def runner(_: AgentConfig, invocation: AgentInvocation) -> str:
+        return invocation.prompt
+
+    async def program(_: RunContext) -> None:
+        assert await legacy(AgentInvocation(prompt="legacy")) == "legacy"
+        assert await flow.session(handle, "session") == "session"
+
+    result = await run(
+        program,
+        runs_dir=tmp_path,
+        run_id="legacy-trace-inspection-failure",
+        runner=runner,
+        throw_on_error=True,
+    )
+    run_dir = anyio.Path(result.run_dir)
+
+    assert inspection_failed
+    assert not await anyio.Path(run_dir, "trace", "shared.json").exists()
+    assert await anyio.Path(run_dir, "bindings", "shared.2.md").read_text() == "session"
+    meta = json.loads(await anyio.Path(run_dir, "meta.json").read_text())
+    assert meta["session_calls"] == {"shared": 2}
+
+
+@pytest.mark.anyio
 async def test_standalone_agent_with_explicit_runner_is_callable_outside_run() -> None:
     received: list[tuple[AgentConfig, AgentInvocation]] = []
     config = AgentConfig(name="standalone", system="Answer directly.")
@@ -549,4 +918,14 @@ async def test_standalone_agent_with_explicit_runner_is_callable_outside_run() -
     invocation = AgentInvocation(prompt="question")
 
     assert await agent(invocation) == "standalone answer"
-    assert received == [(config, invocation)]
+    assert received == [
+        (
+            AgentConfig(
+                name="standalone",
+                system="Answer directly.",
+                max_tokens=8192,
+                temperature=1.0,
+            ),
+            invocation,
+        )
+    ]

@@ -43,7 +43,15 @@ JSONL 格式零依赖，逐行追加读写简单。文件按 `workspace/historie
 Python 版本坚持 AnyIO 结构化并发：`first` / `any` 取消落后任务后仍等待它们完成清理。这样 `run()` 返回时 binding 与 trace 已封口，不会再被后台任务修改。任务若吞掉取消信号而永久运行，整个并行节点也会继续等待；这是资源与状态一致性的有意取舍。
 
 **FusionFlow 的跨语言兼容边界是什么？**
-运行产物与核心语义优先兼容，包括 binding 恢复、配对的 `node_start` / `node_end` progress 事件、分组 token 汇总、程序快照和 `exec()` 截断标记。GC 保留策略同样遵循参考实现：`keep_count` 与 `keep_days` 同时为 `0` 表示禁用清理，而不是删除全部 run。Python API 保持 snake_case，并由显式 `SessionRunner` 承担 provider 调用；不复制 TypeScript 的 camelCase 配置或内嵌 provider 选择。
+运行结果与核心行为优先兼容，包括同一运行时内的 binding 恢复、配对的 `node_start` / `node_end` progress 事件、分组 token 汇总、程序快照和 `exec()` 截断标记。真实 TypeScript `inputHash` 与 Python `cache_key` 的输入、provider 身份和长度不同，因此两种运行目录不保证直接互相命中缓存；camelCase metadata 别名只保证字段可读。graph、meta 和 trace 使用各自语言的数据结构：Python 命名 trace 是通用 `ExecutionTrace`，不是 TypeScript 的扁平 provider/model/prompt 对象；只有 `progress.jsonl` 保持共享格式。单节点 trace / progress 写入是 best-effort，最终 graph/meta 才是权威产物，不追随 TypeScript 的诊断写失败即中止。`flow.output()` / `ctx.save()` 写入带 metadata 的单赋值 binding，不额外创建 output graph node。
+
+Python API 保持 snake_case，并由显式 `SessionRunner` 承担 provider 调用；不复制 TypeScript 的 camelCase 配置、环境变量配置、内嵌 provider 选择或 evaluator 的 provider JSON Schema 通道。字符串/编译后的 `RegexRule` 使用原生 Python `re`；需要与 JavaScript `RegExp` 的 ASCII 字符类一致时由调用方显式选择 flags。实际 runner 实现身份不能自动进入 cache key，runner 行为变更时调用方必须同步更新 `AgentConfig.engine`、model 或其他版本字段。自动 GC 通过 `run(keep_count=..., keep_days=...)` 配置，两者同时为 `0` 表示禁用清理。未知 token 保持为 `None`。旧式 `Agent` 的独立诊断 trace 在 resume 时不会覆盖同名旧文件；跳过的文件序号会占入它与 `session()` / `evaluate()` 共享的调用序号，实际序号同时写入 trace metadata，而 `session_calls` 仍只统计本次执行成功或缓存命中的调用。这些都是仓库有意保留的安全适配。
+
+**为什么 `AgentConfig` 的 token / temperature 默认值先保留为 `None`？**
+TypeScript 对同一份省略字段的配置按调用位置解析：普通 `session()` 与旧 `Agent` 使用 `8192 / 1`，自定义 evaluator 使用 `256 / 0`。Python 只有把“未填写”保留到实际调用边界，才能区分省略与用户显式传入 `8192 / 1`；交给 `SessionRunner` 前始终会解析成具体数值。
+
+**为什么不能创建 `run_id="last"`？**
+`resume_from_run_id="last"` 与 TypeScript 的 `--resume=last` 一样是“选择字典序最新目录”的哨兵。为避免一个真实 run 永远无法按同名恢复，Python 明确保留这个名称并在创建目录前拒绝。
 
 ## 技术栈
 
@@ -213,7 +221,7 @@ SSE 流中的特殊字段：
 
 16. **消费 async generator 必须用 `aclosing()`**：`async for` 在提前退出或被 cancel 时不调用 generator 的 `aclose()`，导致 generator 内 `async with` 持有的资源（aiohttp 连接、文件句柄等）被遗弃给 GC。正确做法：`async with aclosing(gen) as g: async for chunk in g: ...`。对标 `ai/server.py` 的 `finally` + shielded `aclose()` 模式。参见 `agent.py`、`channel_adapter.py`、`schedule_registry.py`。
 
-17. **Windows batch 参数边界**：`fusion_flow.flow.exec()` 仅在目标显式以 `.cmd`/`.bat` 结尾时使用系统 shell，并对命令与参数整体加引号、延迟还原字面量 `%`；含双引号或换行的参数因无法安全无损地穿过 `cmd.exe` 而直接拒绝。Windows 非 batch 与其他平台始终保持 argv/no-shell 路径。
+17. **Windows batch 参数边界**：`fusion_flow.flow.exec()` 仅在目标显式以 `.cmd`/`.bat` 结尾时使用系统 shell，并对命令与参数整体加引号、延迟还原字面量 `%`；含双引号、`!` 或换行的参数直接拒绝。`!` 在被调 batch 开启 delayed expansion 后会被静默吃掉，默认拒绝比悄悄改参安全。Windows 非 batch 与其他平台始终保持 argv/no-shell 路径。batch 进程使用独立进程组，并尝试用 Job Object、失败时用 `taskkill /T` 清理进程树；Job Object 在进程启动后挂接，存在很小的启动窗口，不能承诺捕获所有后代。
 
 18. **`WorkflowEdge` 是封闭 union**：`WorkflowGraph` 只接受 `ConsumesEdge`、`ProducesEdge`、`ForeachEdge` 的精确类型，不接受子类。子类会破坏 dataclass 基于精确类型的相等性去重，也能覆盖序列化使用的 `kind`。新增边类型时应显式更新 union、校验和序列化。
 
