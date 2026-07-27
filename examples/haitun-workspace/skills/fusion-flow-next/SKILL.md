@@ -282,9 +282,10 @@ Read `grammar/FusionFlow.g4` completely before using these patterns. The grammar
 | **Fan-out + fan-in** | Several Steps consume the same Artifact; one final Step uses `consumes_multi` to consume their result Artifacts. Set `max_concurrency` on the workflow when needed. | PR review, multi-perspective audit, content moderation. |
 | **Artifact pipeline** | Each Step produces the Artifact consumed by the next Step. Use `max_attempts` only as the attempt limit for a configured Step. | Writing process, ETL, refine-and-check work. |
 | **Per-item work + merge** | Use `foreach_item` for the repeated Step, `produces_multi` for its result List, and `consumes_multi` on the merge Step. | N PRs, issues, docs, or log records into one report. |
-| **Composite workflow** | Combine only the artifact chains, fan-out/fan-in, and per-item relations above. | When one simple pattern does not cover the task. |
+| **Conditional term selection** | Keep every candidate result explicit, then use `if(formula, then_term, else_term)` where one term is expected. Compose formulas with `!`, `AND`, and `OR`; nest `if` for priority selection. | Select one checker-compatible term for a downstream assertion without inventing control-flow syntax. |
+| **Composite workflow** | Combine only the artifact chains, fan-out/fan-in, per-item relations, and conditional term selections above. | When one simple pattern does not cover the task. |
 
-If the task cannot be expressed with syntax and preset operators documented in `grammar/FusionFlow.g4`, report the missing capability. Never invent a keyword or operator to make the source look complete.
+Before reporting a missing capability for a conditional request, first model it as term selection and validate it. Do not infer branch execution or eager/lazy semantics that belong to the checker/runtime. If the task still cannot be expressed with syntax and preset operators documented in `grammar/FusionFlow.g4`, report the missing capability. Never invent a keyword or operator to make the source look complete.
 
 #### Full-featured in-context example
 
@@ -326,42 +327,46 @@ const high_effort: ReasoningEffort;
 const read_tool: Tool;
 
 workflow code_review {
+  -- DATA FLOW
   input_workflow(code_review, source_code);
-  output_workflow(code_review, final_report);
-  max_concurrency(code_review) == 3;
-  workflow_timeout(code_review) == 900;
-
-  step_name(security_review) == security_review_name;
-  step_instruction(security_review) == security_instruction;
-  step_executor(security_review) == security_agent;
-  step_timeout(security_review) == 300;
-  max_attempts(security_review) == 2;
   consumes(security_review, source_code);
   produces(security_review, security_findings);
-
-  step_name(performance_review) == performance_review_name;
-  step_instruction(performance_review) == performance_instruction;
-  step_executor(performance_review) == performance_agent;
-  step_timeout(performance_review) == 300;
-  max_attempts(performance_review) == 2;
   consumes(performance_review, source_code);
   produces(performance_review, performance_findings);
-
-  step_name(readability_review) == readability_review_name;
-  step_instruction(readability_review) == readability_instruction;
-  step_executor(readability_review) == readability_agent;
-  step_timeout(readability_review) == 300;
-  max_attempts(readability_review) == 2;
   consumes(readability_review, source_code);
   produces(readability_review, readability_findings);
-
-  step_name(synthesize_report) == synthesize_report_name;
-  step_instruction(synthesize_report) == synthesis_instruction;
-  step_executor(synthesize_report) == editor_agent;
   consumes_multi(synthesize_report) ==
     [security_findings, performance_findings, readability_findings];
   produces(synthesize_report, final_report);
+  output_workflow(code_review, final_report);
 
+  -- EXECUTOR ASSIGNMENT
+  step_executor(security_review) == security_agent;
+  step_executor(performance_review) == performance_agent;
+  step_executor(readability_review) == readability_agent;
+  step_executor(synthesize_report) == editor_agent;
+
+  -- STEP CONFIGURATION
+  step_name(security_review) == security_review_name;
+  step_instruction(security_review) == security_instruction;
+  step_timeout(security_review) == 300;
+  max_attempts(security_review) == 2;
+  step_name(performance_review) == performance_review_name;
+  step_instruction(performance_review) == performance_instruction;
+  step_timeout(performance_review) == 300;
+  max_attempts(performance_review) == 2;
+  step_name(readability_review) == readability_review_name;
+  step_instruction(readability_review) == readability_instruction;
+  step_timeout(readability_review) == 300;
+  max_attempts(readability_review) == 2;
+  step_name(synthesize_report) == synthesize_report_name;
+  step_instruction(synthesize_report) == synthesis_instruction;
+
+  -- WORKFLOW CONFIGURATION
+  max_concurrency(code_review) == 3;
+  workflow_timeout(code_review) == 900;
+
+  -- AGENT CONFIGURATION
   agent_config(security_agent, review_model, review_engine, review_api);
   agent_config(performance_agent, review_model, review_engine, review_api);
   agent_config(readability_agent, review_model, review_engine, review_api);
@@ -380,17 +385,96 @@ Before authoring, read `grammar/FusionFlow.g4` completely. It is the sole author
 
 ### Modeling rules
 
-- Write a Bool-returning operator call as a standalone assertion, such as `consumes(step, artifact);`; it means the same as explicit `== True`. Only use this shorthand when the grammar/catalog signature returns `Bool`.
+- Group assertions by concern, not by Step: `DATA FLOW`, `EXECUTOR ASSIGNMENT`, `STEP CONFIGURATION`, then workflow and agent configuration when present. Omit empty groups.
+- In `DATA FLOW`, show the complete graph in reading order: workflow inputs, every Step consume/produce relation, then workflow outputs.
+- Prefer a Bool-returning operator call as a standalone assertion, such as `consumes(step, artifact);`; it means explicit `== True`. Use shorthand only for Bool `True`, keep `== False` explicit, and always retain the right-hand value for non-Bool operators.
 - Declare external inputs and outputs with `input_workflow*` and `output_workflow*`. Their Workflow argument is the enclosing workflow name.
+- The payload arguments of `input_workflow`, `output_workflow`, `consumes`, and `produces` are Artifacts. Their Bool return type asserts a relation; it does not make the payload a Boolean signal.
 - Model sequencing through artifacts: a step that produces an artifact precedes a step that consumes it.
 - Model fan-out by making several steps consume the same artifact.
 - Model fan-in with `consumes_multi(step) == [artifact_a, artifact_b];`.
 - Model per-item work with `foreach_item(step, items) == item_result;`.
 - Bind each step to its executor with `step_executor`.
 - Configure concurrency, retries, timeouts, resources, and agent limits with the corresponding preset operators.
-- Use `if` only to select a term. It is not a Step, loop, quality gate, or scoring mechanism.
+- Use `if(formula, then_term, else_term)` wherever one term is expected. It selects a term; it is not a Step, block, loop, quality gate, or scoring mechanism.
 - Variables, quantifiers, rules, implications, biconditionals, query/SAT/optimization requests, local concept declarations, local operator declarations, and imperative blocks are outside this language.
 - Never emit imports, imperative runtime calls, `run(...)`, or invented `parallel`/`pipeline`/`for` blocks.
+
+#### Conditional term selection
+
+Keep every candidate result explicit. Use a nested `if` only to select the compatible Artifact consumed by the downstream Step:
+
+```fusionflow
+const incoming_case: Artifact;
+const primary_criterion: Artifact;
+const block_criterion: Artifact;
+const review_criterion: Artifact;
+const exception_criterion: Artifact;
+const primary_observation: Artifact;
+const block_observation: Artifact;
+const review_observation: Artifact;
+const exception_observation: Artifact;
+const primary_result: Artifact;
+const review_result: Artifact;
+const fallback_result: Artifact;
+const final_result: Artifact;
+
+const triage_step: Step;
+const primary_handler_step: Step;
+const review_handler_step: Step;
+const fallback_handler_step: Step;
+const final_step: Step;
+
+const triage_agent: Agent, Executor;
+const primary_handler: Agent, Executor;
+const review_handler: Agent, Executor;
+const fallback_handler: Agent, Executor;
+const final_consumer: Agent, Executor;
+
+workflow priority_routing {
+  -- DATA FLOW
+  input_workflow_multi(priority_routing) ==
+    [incoming_case, primary_criterion, block_criterion, review_criterion, exception_criterion];
+  consumes(triage_step, incoming_case);
+  produces(triage_step, primary_observation);
+  produces(triage_step, block_observation);
+  produces(triage_step, review_observation);
+  produces(triage_step, exception_observation);
+  consumes(primary_handler_step, incoming_case);
+  produces(primary_handler_step, primary_result);
+  consumes(review_handler_step, incoming_case);
+  produces(review_handler_step, review_result);
+  consumes(fallback_handler_step, incoming_case);
+  produces(fallback_handler_step, fallback_result);
+  consumes(
+    final_step,
+    if(
+      (primary_observation = primary_criterion) AND !(block_observation = block_criterion),
+      primary_result,
+      if(
+        (review_observation = review_criterion) OR (exception_observation = exception_criterion),
+        review_result,
+        fallback_result
+      )
+    )
+  );
+  produces(final_step, final_result);
+  output_workflow(priority_routing, final_result);
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(triage_step) == triage_agent;
+  step_executor(primary_handler_step) == primary_handler;
+  step_executor(review_handler_step) == review_handler;
+  step_executor(fallback_handler_step) == fallback_handler;
+  step_executor(final_step) == final_consumer;
+}
+```
+
+- Build conditions with `=`, `!=`, `<`, `<=`, `>`, or `>=`; reserve `==` for the surrounding assertion.
+- Combine comparisons with `!`, `AND`, and `OR`.
+- For more choices, continue nesting `if` expressions in priority order.
+- Let the checker validate branch concept compatibility. Let lowering/runtime decide dependencies and eager/lazy branch evaluation.
+- Do not replace candidate Artifacts with Boolean Step payloads, refuse valid term selection because `if` is not a Step, or invent `switch`, `choice`, or conditional blocks.
 
 #### Worked example: homogeneous per-item work + one summary
 
@@ -412,20 +496,23 @@ const analyst: Agent, Executor;
 const editor: Agent, Executor;
 
 workflow summarize_items {
+  -- DATA FLOW
   input_workflow_multi(summarize_items) == items;
-  output_workflow(summarize_items, final_summary);
-
-  step_name(analyze_item) == analyze_name;
-  step_instruction(analyze_item) == analyze_instruction;
-  step_executor(analyze_item) == analyst;
   foreach_item(analyze_item, items) == item_result;
   produces_multi(analyze_item) == analyzed_items;
-
-  step_name(merge_summary) == merge_name;
-  step_instruction(merge_summary) == merge_instruction;
-  step_executor(merge_summary) == editor;
   consumes_multi(merge_summary) == analyzed_items;
   produces(merge_summary, final_summary);
+  output_workflow(summarize_items, final_summary);
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(analyze_item) == analyst;
+  step_executor(merge_summary) == editor;
+
+  -- STEP CONFIGURATION
+  step_name(analyze_item) == analyze_name;
+  step_instruction(analyze_item) == analyze_instruction;
+  step_name(merge_summary) == merge_name;
+  step_instruction(merge_summary) == merge_instruction;
 }
 ```
 
@@ -461,14 +548,18 @@ const work_instruction: Instruction;
 const worker: Agent, Executor;
 
 workflow workflow_name {
+  -- DATA FLOW
   input_workflow(workflow_name, input_artifact);
-  output_workflow(workflow_name, output_artifact);
-
-  step_name(work_step) == work_name;
-  step_instruction(work_step) == work_instruction;
-  step_executor(work_step) == worker;
   consumes(work_step, input_artifact);
   produces(work_step, output_artifact);
+  output_workflow(workflow_name, output_artifact);
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(work_step) == worker;
+
+  -- STEP CONFIGURATION
+  step_name(work_step) == work_name;
+  step_instruction(work_step) == work_instruction;
 }
 ```
 
