@@ -1,9 +1,9 @@
 # FusionFlow Next
 
-FusionFlow Next is a temporary name for an inactive compiler-architecture
-package. The existing `SKILL.md` still targets the Node/TypeScript `.flow.ts`
-runtime. The Python compiler modules are not connected to that skill, runtime,
-or workspace tools, so existing `.flow.ts` behavior is unchanged.
+FusionFlow Next is the example-local G4 parser/compiler and authoring Skill.
+The declarative pipeline and the TypeScript-compatible Python execution
+primitives share this package boundary but remain deliberately separate:
+`fusion_flow_next.execution` does not execute G4 Core IR or `WorkflowGraph`.
 
 ## Modules
 
@@ -17,7 +17,9 @@ or workspace tools, so existing `.flow.ts` behavior is unchanged.
 - `fusion_flow_next/compiler.py`: target-neutral Core IR traversal and backend hook boundary.
 - `fusion_flow_next/graph_compiler.py`: concrete `CoreIRCompiler` backend that builds `psi_agent.workflow_graph` models.
 - `fusion_flow_next/planning.py`: before workflow authoring, checks the syntax mappings declared for each planned step against the syntax names actually available. Each planned step maps to one catalog `Step` identity, which authoring expands into a typed constant and its assertions.
+- `fusion_flow_next/execution/`: isolated Python port of the legacy TypeScript `flow.*` runtime, retained for parity and migration work without exposing it as `psi_agent` core API.
 - `test/test_graph_compiler.py`: real Core IR to WorkflowGraph compiler contract checks.
+- `test/execution/`: runtime, persistence, cancellation, subprocess, and pinned TypeScript differential tests for `fusion_flow_next.execution`.
 
 The obsolete Node/TypeScript compiler prototype has been removed. The Python
 compiler abstraction does not select or implement a concrete output target.
@@ -52,7 +54,8 @@ equality containing recognized graph calls on both sides.
 The package exports `WorkflowGraphCompiler`, `WorkflowGraphCompilation`, and
 `WorkflowGraphCompilationError`.
 
-This remains an example-local package rather than a wheel dependency. Run its
+This remains an example-local package rather than a wheel dependency. The
+execution subpackage is a compatibility boundary, not the G4 runtime. Run all
 tests from this directory so `fusion_flow_next` is on the runtime import path:
 
 ```powershell
@@ -67,9 +70,10 @@ Variables, quantifiers, truth formulas, theories, rules, and query/SAT/optimizat
 
 ## Activation boundary
 
-Do not connect the Python modules to the existing `SKILL.md`, workspace tools,
-a prompt switch, or runner changes until the parser, checker, and compiler have
-real implementations and runnable checks.
+Do not connect `fusion_flow_next.execution` to `SKILL.md`, workspace tools, or
+the G4 graph runner merely because it now shares the correct package boundary.
+That integration still requires an explicit Core IR / `WorkflowGraph` runtime
+contract.
 
 Integrate in this order: generated parser -> real functions and checks -> inactive or opt-in Haitun checker tool -> prompt opt-in -> replace legacy only after migration is complete. Existing `fusion-flow` remains the source of truth until the final migration.
 

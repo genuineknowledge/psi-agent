@@ -13,25 +13,27 @@
 
 并且仓库明确记录过“嵌套 Python 包留在示例 skill 内”。本设计则把执行运行时放在：
 
-`src/psi_agent/fusion_flow/`
+`examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/`
 
-支持理由：
+放入核心包的理由：
 
 - 用户希望在普通 Python 中直接使用；
 - 后续声明式图执行器不应依赖某个示例 workspace 的 `sys.path`；
 - 运行原语可以成为多个 workspace 共用的库；
 - 能纳入正常 wheel、全局 lint/type/test 范围。
 
-反对理由：
+留在示例 Skill 的理由：
 
 - psi-agent 的既有定位是微内核，核心包不应吞入 workflow 产品层；
 - FusionFlow 目前仍是一个具体 skill；
 - `src/psi_agent` 会让尚未稳定的 API 看起来像框架承诺；
 - 编译器留在 skill、运行时进核心，会形成割裂布局。
 
-**本 PR 暂定选择**：进入 `src/psi_agent/fusion_flow`，但不从 `psi_agent` 顶层重新
-导出，也不接入 CLI。若评审不接受，应在编码前改为一个独立可安装包，而不是靠
-运行时改 `sys.path`。
+**当前选择**：进入
+`examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution`，
+通过独立子包与 G4 Core IR/compiler 隔离，不从 `psi_agent` 顶层导出，也不接入
+CLI 或 G4 runner。若未来需要跨 workspace 的稳定能力，应先迁成独立可安装包，
+而不是重新塞回微内核或在运行时修改 `sys.path`。
 
 ### 1.2 静态图、执行计划和动态 trace 是否会混为一谈？
 
@@ -70,8 +72,9 @@
 3. 持久化可恢复状态；
 4. 收到人的结果后恢复并产生对应 Artifact。
 
-这也说明 planner/executor adapter 仍是独立新模块；`fusion_flow` 只提供可直接执行的
-Agent、Python callable、subprocess 及运行记录原语。
+这也说明 planner/executor adapter 仍是独立新模块；
+`fusion_flow_next.execution` 只提供可直接执行的 Agent、Python callable、
+subprocess 及运行记录原语。
 
 ## 2. 旧 TS API 的冗余是否保留
 

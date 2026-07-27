@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 
-import psi_agent.fusion_flow as fusion_flow
+import fusion_flow_next.execution as fusion_flow
 
 FLOW_METHODS = {
     "agent",

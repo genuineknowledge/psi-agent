@@ -7,8 +7,7 @@ import shutil
 
 import anyio
 import pytest
-
-from psi_agent.fusion_flow import (
+from fusion_flow_next.execution import (
     ExecutionTrace,
     PipelineStep,
     RegexRule,
@@ -21,16 +20,8 @@ from psi_agent.fusion_flow import (
     run,
 )
 
-_BUNDLE = (
-    anyio.Path(__file__).parent.parent.parent.parent
-    / "examples"
-    / "haitun-workspace"
-    / "skills"
-    / "fusion-flow"
-    / "runtime"
-    / "agent-flow-core.bundle.mjs"
-)
-_BUNDLE_SHA256 = "32fc3dc7edbce5a3016126255ebc31e0dd72f1fae93f2480dffb960173ca900c"
+_BUNDLE = anyio.Path(__file__).parent.parent.parent.parent / "fusion-flow" / "runtime" / "agent-flow-core.bundle.mjs"
+_BUNDLE_SHA256 = "d6998574ad385674a51562413d9761f63ceee447fecbcff1be569795f9cd9da6"
 _NODE_BOOTSTRAP = r"""
 import { readFileSync } from "node:fs";
 
@@ -144,7 +135,8 @@ def _node_or_skip() -> str:
 @pytest.mark.anyio
 async def test_typescript_reference_helpers_match_python_except_windows_names() -> None:
     bundle_bytes = await _BUNDLE.read_bytes()
-    assert hashlib.sha256(bundle_bytes).hexdigest() == _BUNDLE_SHA256
+    normalized_bundle = bundle_bytes.replace(b"\r\n", b"\n")
+    assert hashlib.sha256(normalized_bundle).hexdigest() == _BUNDLE_SHA256
 
     safe_names = (
         "agent",

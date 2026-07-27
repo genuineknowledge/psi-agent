@@ -7,8 +7,7 @@ from functools import partial
 
 import anyio
 import pytest
-
-from psi_agent.fusion_flow import (
+from fusion_flow_next.execution import (
     AgentConfig,
     AgentInvocation,
     ContainsRule,

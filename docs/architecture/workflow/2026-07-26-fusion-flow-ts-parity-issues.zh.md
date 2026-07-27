@@ -9,8 +9,8 @@ Python 侧单方面“修成另一套行为”；Python 为安全性或仓库接
 参考文件：
 
 - `examples/haitun-workspace/skills/fusion-flow/runtime/agent-flow-core.bundle.mjs`
-- SHA-256：
-  `32fc3dc7edbce5a3016126255ebc31e0dd72f1fae93f2480dffb960173ca900c`
+- 换行归一化为 LF 后的 SHA-256：
+  `d6998574ad385674a51562413d9761f63ceee447fecbcff1be569795f9cd9da6`
 
 ## 已有 issue
 

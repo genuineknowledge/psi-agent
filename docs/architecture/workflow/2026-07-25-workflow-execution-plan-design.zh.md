@@ -52,12 +52,15 @@ Fiber(publish):  Await(draft, review) -> Invoke(publish)
 `max_concurrency` 限制同时进入 dispatcher 的数量；workflow 和 step timeout
 分别包住整次运行和单次调用。
 
-## 4. 与 FusionFlow Python runtime 的边界
+## 4. 与 FusionFlow Next Python execution 子包的边界
 
 `StepNode.executor_id` 只是稳定身份，不包含 Agent 配置、ServiceHandle、argv 或
 可调用对象，因此通用执行器不能仅凭图决定调用哪个 `flow.*` 原语。调用方负责提供：
 
 ```python
+from fusion_flow_next.execution import flow
+
+
 async def dispatch(step, inputs):
     if step.executor_id == "writer":
         text = await flow.session(writer, str(inputs["notes"]))
@@ -68,8 +71,10 @@ async def dispatch(step, inputs):
     raise LookupError(step.executor_id)
 ```
 
-dispatcher 可以调用 PR15 的 `flow.session`、`flow.call` 或 `flow.exec`；计划执行器只负责
-并发、等待、输入收集和输出提交。这样不会在 graph package 中复制 executor catalog。
+dispatcher 可以调用 `fusion_flow_next.execution` 中的 `flow.session`、
+`flow.call` 或 `flow.exec`；计划执行器只负责并发、等待、输入收集和输出提交。
+核心执行器仍只接受注入的 dispatcher，不依赖这个示例 Skill 子包，也不会在 graph
+package 中复制 executor catalog。
 
 ## 5. 初版明确拒绝
 

@@ -25,14 +25,16 @@ AI 层无状态、Session 层维护对话历史、Channel 层是纯 UI 客户端
 
 对开发者：三个组件可独立启动、任意组合，适合调试和定制。对使用者：`psi-agent run config.yml` 一键拉起全部，`psi-agent gateway` 在浏览器里可视化管理一切。
 
-## Python FusionFlow
+## FusionFlow Next Python 执行层
 
-`psi_agent.fusion_flow` 提供可直接从 Python 调用的工作流执行原语：
+旧 TypeScript 兼容执行原语属于示例 Skill，而不是 `psi_agent` 核心包。源码位于
+`examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/`，
+在该 Skill 目录内运行 Python 时可通过 `fusion_flow_next.execution` 使用：
 
 ```python
 import anyio
 
-from psi_agent.fusion_flow import RunContext, flow, run
+from fusion_flow_next.execution import RunContext, flow, run
 
 
 async def program(_: RunContext) -> None:
@@ -57,6 +59,8 @@ Agent 调用可通过 `run(..., runner=...)` 注入，也可用
 真实 TypeScript 与 Python run 目录不保证直接互相命中恢复缓存。对齐结果见
 [TypeScript / Python 审计](docs/architecture/workflow/2026-07-26-fusion-flow-ts-parity-audit.zh.md)，
 历史取舍见[待讨论点](docs/architecture/workflow/2026-07-23-fusion-flow-python-runtime-open-questions.zh.md)。
+该兼容层与 G4 parser/compiler 同目录隔离保存，尚未接到 G4
+`WorkflowGraph` 执行入口，也不随 `psi_agent` wheel 导出。
 
 ## 快速开始
 

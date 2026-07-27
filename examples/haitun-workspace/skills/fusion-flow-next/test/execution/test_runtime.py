@@ -9,16 +9,15 @@ import anyio
 import pytest
 from anyio.lowlevel import checkpoint
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
-
-from psi_agent.fusion_flow import runtime as runtime_module
-from psi_agent.fusion_flow.flow import flow
-from psi_agent.fusion_flow.model import (
+from fusion_flow_next.execution import runtime as runtime_module
+from fusion_flow_next.execution.flow import flow
+from fusion_flow_next.execution.model import (
     AgentConfig,
     AgentInvocation,
     ExecutionTrace,
     TraceStatus,
 )
-from psi_agent.fusion_flow.runtime import RunContext, gc_runs, run
+from fusion_flow_next.execution.runtime import RunContext, gc_runs, run
 
 
 def test_generated_run_id_uses_six_base36_characters(monkeypatch) -> None:

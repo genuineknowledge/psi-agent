@@ -1,4 +1,4 @@
-"""公开 FusionFlow 的运行入口、执行原语与稳定数据模型。"""
+"""隔离导出 FusionFlow Next 的旧 ``flow.*`` Python 兼容执行层。"""
 
 from __future__ import annotations
 

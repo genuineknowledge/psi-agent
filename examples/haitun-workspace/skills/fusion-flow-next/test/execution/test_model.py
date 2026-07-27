@@ -5,8 +5,7 @@ from dataclasses import FrozenInstanceError
 from typing import cast
 
 import pytest
-
-from psi_agent.fusion_flow.model import (
+from fusion_flow_next.execution.model import (
     AgentConfig,
     AgentHandle,
     AgentInvocation,

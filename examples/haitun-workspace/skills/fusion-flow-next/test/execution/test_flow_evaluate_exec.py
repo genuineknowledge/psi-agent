@@ -13,10 +13,9 @@ from typing import Any, cast
 
 import anyio
 import pytest
-
-from psi_agent.fusion_flow.flow import flow
-from psi_agent.fusion_flow.flow import logger as flow_logger
-from psi_agent.fusion_flow.model import (
+from fusion_flow_next.execution.flow import flow
+from fusion_flow_next.execution.flow import logger as flow_logger
+from fusion_flow_next.execution.model import (
     AgentConfig,
     AgentInvocation,
     ContainsRule,
@@ -28,9 +27,9 @@ from psi_agent.fusion_flow.model import (
     SessionResult,
     StaticRule,
 )
-from psi_agent.fusion_flow.runtime import RunContext, run
+from fusion_flow_next.execution.runtime import RunContext, run
 
-flow_module = cast("Any", import_module("psi_agent.fusion_flow.flow"))
+flow_module = cast("Any", import_module("fusion_flow_next.execution.flow"))
 
 
 @pytest.mark.anyio

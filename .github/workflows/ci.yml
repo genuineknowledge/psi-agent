@@ -43,8 +43,24 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run ty check .
 
+  fusion-flow-next-test:
+    needs: [generated-sources, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.14"
+      - run: uv sync
+      - name: Test FusionFlow Next
+        working-directory: examples/haitun-workspace/skills/fusion-flow-next
+        run: uv run python -m pytest -q --rootdir=. test
+
   test:
-    if: false # Temporarily paused; keep CI lint-only.
+    if: false # Temporarily pause the repository-wide suite; scoped suites run separately.
     needs: lint
     runs-on: ubuntu-latest
     steps:

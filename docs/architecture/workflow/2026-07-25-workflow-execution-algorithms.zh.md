@@ -343,7 +343,9 @@ PlanAction(
 
 - 根据 Artifact producer 建立 Step 依赖；
 - 使用异步 ready-queue，完成一个节点就立即解锁其 consumers；
-- 调度原子 Step 时复用 PR15 的 `flow.session`、`flow.call` 或 `flow.exec`；
+- 调度原子 Step 时可由注入的 dispatcher 调用
+  `fusion_flow_next.execution` 的 `flow.session`、`flow.call` 或 `flow.exec`；
+  核心 planner/runtime 不直接依赖该示例 Skill 子包；
 - 使用 `WorkflowPolicy.max_concurrency` 限流；
 - 遇到 cycle、尚未闭合的 Foreach 或不明确输入版本时 fail closed；
 - trace 记录实际开始、完成、失败和取消，不把 trace 混进静态 graph。

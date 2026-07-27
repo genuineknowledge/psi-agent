@@ -8,8 +8,8 @@
 参考文件：
 
 - `examples/haitun-workspace/skills/fusion-flow/runtime/agent-flow-core.bundle.mjs`
-- SHA-256：
-  `32fc3dc7edbce5a3016126255ebc31e0dd72f1fae93f2480dffb960173ca900c`
+- 换行归一化为 LF 后的 SHA-256：
+  `d6998574ad385674a51562413d9761f63ceee447fecbcff1be569795f9cd9da6`
 
 证据分三级：
 
@@ -22,8 +22,9 @@
 `SessionRunner` 取代。真实 Node 差分当前覆盖 7 个原语和 4 个 export。
 
 真实差分在
-`tests/psi_agent/fusion_flow/test_ts_reference.py`。测试固定校验 bundle hash；
-Node 不存在时才跳过。本轮 Windows 环境存在 Node，相关探针实际执行。
+`examples/haitun-workspace/skills/fusion-flow-next/test/execution/test_ts_reference.py`。
+测试在换行归一化后固定校验 bundle hash，避免 Git checkout 的 CRLF/LF 策略改变
+参考身份；Node 不存在时才跳过。本轮 Windows 环境存在 Node，相关探针实际执行。
 
 ## 2. 29 个 flow 原语覆盖矩阵
 
@@ -186,7 +187,7 @@ token 已失效。因此没有编造 issue URL；权限恢复后按本地草案�
 
 ## 7. 验证状态
 
-最终验证结果：
+PR26 原始 Windows 验证结果：
 
 - FusionFlow 全量（包含真实 Node 探针）：`230 passed, 2 skipped`；两项 skip
   都是当前 Windows 账户没有创建符号链接的权限。
@@ -204,6 +205,11 @@ token 已失效。因此没有编造 issue URL；权限恢复后按本地草案�
 全仓 pytest 也实际启动过，但会在同一批 Unix socket 用例中失败并在后续
 socket 生命周期测试中挂起，因此没有把不完整计数写成通过结果。上述平台边界
 与 FusionFlow 全量结果分开记录。
+
+迁移到 `fusion_flow_next.execution` 后，Linux 从 FusionFlow Next Skill 目录运行
+完整测试得到 `271 passed, 11 skipped`；11 项均为 Windows 专用 batch、进程树或
+目录 junction 场景，真实 Node 差分探针已执行。换行归一化的 bundle hash 同时在
+LF checkout 上验证通过。
 
 ## 8. 当前结论
 

@@ -106,11 +106,6 @@ src/
     │   ├── cli/                    # 单次消息 CLI thin client
     │   ├── telegram/               # Telegram bot channel
     │   ├── feishu/                 # Feishu bot channel
-    ├── fusion_flow/
-    │   ├── __init__.py             # Python FusionFlow 稳定公开 API
-    │   ├── model.py                # Agent、规则、trace、binding 等运行模型
-    │   ├── runtime.py              # run 生命周期、持久化与恢复
-    │   └── flow.py                 # 29 个 flow.* 执行原语
     ├── workflow_execution.py       # WorkflowGraph → Fiber/Await/Invoke plan + async executor
     ├── workflow_graph/
     │   ├── __init__.py             # 声明式图模型 API
@@ -142,6 +137,7 @@ src/
 - **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包
 - **Workflow Graph**: `docs/architecture/workflow/2026-07-23-workflow-graph-design.zh.md` — 允许有环的声明式 Step–Artifact 图及待讨论语义；具体 Core IR 后端位于 `examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/graph_compiler.py`
 - **Workflow Execution**: `docs/architecture/workflow/2026-07-25-workflow-execution-plan-design.zh.md` — one-shot 无环子集的 Fiber/Await/Invoke 计划、全量异步启动和 dispatcher 边界
+- **FusionFlow Next Execution**: `examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/` — 示例 Skill 内隔离保存的旧 TypeScript `flow.*` Python 兼容层；不属于 `psi_agent` wheel，也不是 G4 Core IR / WorkflowGraph runner
 
 ## 核心通信协议
 
@@ -221,7 +217,7 @@ SSE 流中的特殊字段：
 
 16. **消费 async generator 必须用 `aclosing()`**：`async for` 在提前退出或被 cancel 时不调用 generator 的 `aclose()`，导致 generator 内 `async with` 持有的资源（aiohttp 连接、文件句柄等）被遗弃给 GC。正确做法：`async with aclosing(gen) as g: async for chunk in g: ...`。对标 `ai/server.py` 的 `finally` + shielded `aclose()` 模式。参见 `agent.py`、`channel_adapter.py`、`schedule_registry.py`。
 
-17. **Windows batch 参数边界**：`fusion_flow.flow.exec()` 仅在目标显式以 `.cmd`/`.bat` 结尾时使用系统 shell，并对命令与参数整体加引号、延迟还原字面量 `%`；含双引号、`!` 或换行的参数直接拒绝。`!` 在被调 batch 开启 delayed expansion 后会被静默吃掉，默认拒绝比悄悄改参安全。Windows 非 batch 与其他平台始终保持 argv/no-shell 路径。batch 进程使用独立进程组，并尝试用 Job Object、失败时用 `taskkill /T` 清理进程树；Job Object 在进程启动后挂接，存在很小的启动窗口，不能承诺捕获所有后代。
+17. **Windows batch 参数边界**：`fusion_flow_next.execution.flow.exec()` 仅在目标显式以 `.cmd`/`.bat` 结尾时使用系统 shell，并对命令与参数整体加引号、延迟还原字面量 `%`；含双引号、`!` 或换行的参数直接拒绝。`!` 在被调 batch 开启 delayed expansion 后会被静默吃掉，默认拒绝比悄悄改参安全。Windows 非 batch 与其他平台始终保持 argv/no-shell 路径。batch 进程使用独立进程组，并尝试用 Job Object、失败时用 `taskkill /T` 清理进程树；Job Object 在进程启动后挂接，存在很小的启动窗口，不能承诺捕获所有后代。
 
 18. **`WorkflowEdge` 是封闭 union**：`WorkflowGraph` 只接受 `ConsumesEdge`、`ProducesEdge`、`ForeachEdge` 的精确类型，不接受子类。子类会破坏 dataclass 基于精确类型的相等性去重，也能覆盖序列化使用的 `kind`。新增边类型时应显式更新 union、校验和序列化。
 
