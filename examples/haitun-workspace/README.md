@@ -8,7 +8,16 @@ A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combin
 - clean async file/shell tools, Serper web search, and environment-configured
   iFLYTEK STT/TTS tools.
 
-See `AGENTS.md` for the full layout and conventions.
+On Windows, `c_drive_cleanup` provides a guarded C-drive cleanup workflow:
+the first read-only metadata scan in a Session asks for confirmation (same-turn
+model approval is allowed), while later scans can proceed without another hard
+confirmation unless the user objects. Cleanup runs after the user affirms the
+displayed result. Only unchanged files in known temporary or cache locations are
+deleted. User files are reported but never selected automatically.
+
+The agent-side workflow is defined by
+`skills/windows-c-drive-cleanup/SKILL.md`. See `AGENTS.md` for the general
+workspace layout and conventions.
 
 ## Run
 
