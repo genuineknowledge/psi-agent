@@ -62,7 +62,7 @@ package.
 
 ## Current scope and known gaps
 
-The language contract now covers file-level identity declarations, assertions, `!`/`AND`/`OR` formulas and comparisons, arithmetic, Lists, and value-producing `if(condition, then, else)` expressions. Workflow blocks contain assertions; a standalone Bool-returning operator call is shorthand for that call asserted equal to `True`. Concepts and operator signatures come from an external catalog. The 21 preset operators are split into five disjoint owner groups. The canonical dataflow operators `input_workflow(Workflow)`, `output_workflow(Workflow)`, `consumes(Step)`, and `produces(Step)` return ordinary List terms. Their artifact relation is always explicit on the RHS, including singleton forms such as `consumes(step) == [artifact]`; the removed `*_multi` spellings and former two-argument Bool relations have no compatibility aliases. `program_path` and `agent_system_prompt` declare executor catalog identities without embedding commands or prompt bodies in the grammar. `FusionFlow.g4` fixes `if` at three arguments while ordinary preset and externally registered operators keep flexible call arity for checker-owned validation.
+The language contract now covers file-level identity declarations, assertions, `!`/`AND`/`OR` formulas and comparisons, arithmetic, Lists, JSON-style quoted text, and value-producing `if(condition, then, else)` expressions. Workflow blocks contain assertions; a standalone Bool-returning operator call is shorthand for that call asserted equal to `True`. Concepts and operator signatures come from an external catalog, so quoted text is accepted by the surface grammar while typed catalogs decide where text is valid. The 21 preset operators are split into five disjoint owner groups. The canonical dataflow operators `input_workflow(Workflow)`, `output_workflow(Workflow)`, `consumes(Step)`, and `produces(Step)` return ordinary List terms. Their artifact relation is always explicit on the RHS, including singleton forms such as `consumes(step) == [artifact]`; the removed `*_multi` spellings and former two-argument Bool relations have no compatibility aliases. `program_path` and `agent_system_prompt` remain typed executor configuration; a short `step_instruction` may contain quoted text and a longer one may use an explicit `./...` instruction-file reference. `FusionFlow.g4` fixes `if` at three arguments while ordinary preset and externally registered operators keep flexible call arity for checker-owned validation.
 
 For a compact, readable BNF and consistency with KEDispatcher, preset operators remain syntax sugar over the same flexible call rule instead of receiving separate arity-constrained grammar productions. After syntax parsing, the checker/catalog validates their arity and types. Because that information is intentionally not encoded structurally in the BNF, every preset operator in `FusionFlow.g4` documents its parameter types, return type, and explicit arity for human and agent readers; the grammar contract test enforces this documentation invariant.
 
@@ -109,6 +109,14 @@ capacity is temporarily unavailable, and releases leases on success, failure,
 timeout, or cancellation. Workflow `max_concurrency` and resource capacity both
 apply.
 
+The runner materializes every `./...` Step instruction through one injected
+instruction resolver before dispatching any Step, caches shared references, and
+passes the resulting text consistently to Agent, Human, and Program executors.
+The public workspace adapter accepts UTF-8 Markdown files relative to the
+containing `.workflow` file, rejects bundle escapes and non-files, and includes
+their contents in the durable workflow-definition digest used across Human
+wait/resume turns. Short inline Instruction text bypasses file resolution.
+
 A Program executor must have exactly one `program_path(program) == path`
 declaration. Absolute and explicit `./...` paths pass through; other path
 identities require an injected resolver, and relative resolved paths require an
@@ -148,7 +156,7 @@ host sandbox: only trusted workspace Programs may run, and a POSIX descendant
 that deliberately creates a new session/process group leaves the managed group.
 
 A Human executor keeps instruction preparation and actual user input separate.
-The runner gives a contextual preparer the original instruction/reference,
+The runner gives a contextual preparer the resolved instruction text,
 consumed Artifact values, resource lease, and exact output IDs. The public
 adapter runs that preparer in its own ephemeral Session with a workspace-bound,
 read-only `read` tool, validates its exact
@@ -172,8 +180,10 @@ and explicit plan fibers. Checkpoint values accept only strict, finite JSON
 types and compare recursively without Python coercions such as `True == 1`.
 Resume also validates known and unique operation IDs, dependency closure, and
 the exact materialized-value set. The public workspace resume boundary
-separately hashes the current `.workflow` source and rejects a run when that
-digest differs from its persisted source digest.
+separately hashes the current workflow definition, including resolved Markdown
+instructions for new bundle-aware runs, and rejects a run when that digest
+differs from its persisted definition digest. Legacy source-only state-v2 runs
+resume with their original path-identity instruction semantics.
 
 Checkpoint observers publish state before releasing dependent operations.
 Human waits release resource leases and Session ownership; workflow and Step

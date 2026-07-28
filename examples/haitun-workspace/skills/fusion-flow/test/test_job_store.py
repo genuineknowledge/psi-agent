@@ -82,6 +82,22 @@ async def test_job_store_round_trips_waiting_human_state(tmp_path: Any) -> None:
 
 
 @pytest.mark.anyio
+async def test_job_store_accepts_a_precomputed_workflow_definition_digest(tmp_path: Any) -> None:
+    store = JobStore(tmp_path / "runs")
+    definition_digest = "d" * 64
+
+    run = await store.create(
+        flow_path="flows/review.workflow",
+        flow_source="workflow source",
+        definition_digest=definition_digest,
+        inputs={},
+    )
+
+    assert run.flow_source_digest == definition_digest
+    assert (await store.load(run.run_id)).flow_source_digest == definition_digest
+
+
+@pytest.mark.anyio
 async def test_job_store_persists_response_and_completed_outputs(tmp_path: Any) -> None:
     store = JobStore(tmp_path)
     run = await store.create(

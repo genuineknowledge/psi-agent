@@ -135,19 +135,20 @@ def test_compile_workflow_rejects_duplicate_program_path() -> None:
 @pytest.mark.anyio
 async def test_in_memory_workflow_compiles_and_executes() -> None:
     prompts: list[str] = []
+    instruction = "Explain the request, identify the key trade-offs, and return a concise recommendation."
 
     async def complete(prompt: str) -> str:
         prompts.append(prompt)
         return "completed"
 
     result = await run_workflow.execute_workflow(
-        _dispatch_workflow("Agent", "summarize_request"),
+        _dispatch_workflow("Agent", instruction),
         request="Explain structured concurrency.",
         complete=complete,
     )
 
     assert result == {"result": "completed"}
-    assert prompts[0].splitlines()[0] == "Instruction: summarize_request"
+    assert prompts[0].startswith(f"Instruction:\n{instruction}\n\nInputs: ")
 
 
 def test_runner_compiles_ordered_select_condition() -> None:
@@ -171,14 +172,14 @@ async def test_named_select_executes_both_candidates_and_feeds_final_step() -> N
     prompts: dict[str, str] = {}
 
     async def complete(prompt: str) -> str:
-        instruction = prompt.splitlines()[0].removeprefix("Instruction: ")
+        instruction = prompt.split("\n\n", 1)[0].removeprefix("Instruction:\n")
         prompts[instruction] = prompt
         if instruction == "produce_primary":
             return "PRIMARY"
         if instruction == "produce_fallback":
             return "FALLBACK"
         assert instruction == "consume_selected"
-        assert prompt.splitlines()[1] == 'Inputs: {"selected_result": "PRIMARY"}'
+        assert 'Inputs: {"selected_result": "PRIMARY"}' in prompt
         return "FINAL"
 
     result = await run_workflow.execute_workflow(
@@ -199,23 +200,104 @@ async def test_named_select_executes_both_candidates_and_feeds_final_step() -> N
 
 
 @pytest.mark.anyio
-async def test_agent_executor_receives_instruction_path_unchanged() -> None:
+async def test_instruction_path_requires_a_resolver_before_dispatch() -> None:
+    instruction = "./instructions/missing-agent.md"
+
+    async def complete(prompt: str) -> str:
+        pytest.fail(f"completion called with {prompt!r}")
+
+    with pytest.raises(ValueError, match="instruction path but no instruction resolver"):
+        await run_workflow.execute_workflow(
+            _dispatch_workflow("Agent", instruction),
+            request="Do the work.",
+            complete=complete,
+        )
+
+
+@pytest.mark.anyio
+async def test_agent_executor_receives_resolved_instruction_text() -> None:
     prompts: list[str] = []
-    instruction = "./instructions/missing-agent.txt"
+    references: list[str] = []
+    reference = "./instructions/research.md"
+    instruction = (
+        "Research semantic parsing methods and representative systems.\n"
+        "Cite the supplied evidence, distinguish findings from inference, and summarize limitations."
+    )
+
+    async def resolve_instruction(value: str) -> str:
+        references.append(value)
+        return instruction
 
     async def complete(prompt: str) -> str:
         prompts.append(prompt)
         return "completed"
 
     result = await run_workflow.execute_workflow(
-        _dispatch_workflow("Agent", instruction),
-        request="Do the work.",
+        _dispatch_workflow("Agent", reference),
+        request="Survey semantic parsing.",
         complete=complete,
+        resolve_instruction=resolve_instruction,
     )
 
     assert result == {"result": "completed"}
-    assert prompts[0].splitlines()[0] == f"Instruction: {instruction}"
-    assert f'"{instruction}"' not in prompts[0]
+    assert references == [reference]
+    assert prompts[0].startswith(f"Instruction:\n{instruction}\n\nInputs: ")
+    assert reference not in prompts[0]
+
+
+@pytest.mark.anyio
+async def test_instruction_resolver_must_return_non_empty_text() -> None:
+    async def resolve_instruction(reference: str) -> str:
+        assert reference == "./instructions/empty.md"
+        return " \n"
+
+    async def complete(prompt: str) -> str:
+        pytest.fail(f"completion called with {prompt!r}")
+
+    with pytest.raises(ValueError, match="instruction resolved to no text"):
+        await run_workflow.execute_workflow(
+            _dispatch_workflow("Agent", "./instructions/empty.md"),
+            request="Do the work.",
+            complete=complete,
+            resolve_instruction=resolve_instruction,
+        )
+
+
+@pytest.mark.anyio
+async def test_instruction_files_are_materialized_once_before_dispatch() -> None:
+    source = _select_workflow('request = "primary"')
+    for instruction in ("produce_primary", "produce_fallback", "consume_selected"):
+        source = source.replace(f'"{instruction}"', '"./instructions/shared.md"')
+    resolutions: list[str] = []
+    dispatched: list[str] = []
+
+    async def resolve_instruction(reference: str) -> str:
+        resolutions.append(reference)
+        return "Perform the assigned step using its inputs and return the exact requested output."
+
+    async def complete(prompt: str, context: Any) -> dict[str, object]:
+        del prompt
+        dispatched.append(context.step_id)
+        values: dict[str, dict[str, object]] = {
+            "primary_step": {"primary_result": "PRIMARY"},
+            "fallback_step": {"fallback_result": "FALLBACK"},
+            "final_step": {"final_result": "FINAL"},
+        }
+        return values[context.step_id]
+
+    result = await run_workflow.execute_workflow(
+        source,
+        request="primary",
+        contextual_complete=complete,
+        resolve_instruction=resolve_instruction,
+    )
+
+    assert result == {
+        "final_result": "FINAL",
+        "selected_result": "PRIMARY",
+    }
+    assert resolutions == ["./instructions/shared.md"]
+    assert set(dispatched) == {"primary_step", "fallback_step", "final_step"}
 
 
 @pytest.mark.anyio
@@ -243,7 +325,7 @@ async def test_program_path_is_executed_with_instruction_and_inputs(
 
     source = _dispatch_workflow(
         "Program",
-        "./instructions/missing-program.txt",
+        "Run the configured worker on the supplied request and return its result.",
         executor_configuration="program_path(worker) == worker_path;",
     ).replace(
         "const result: Artifact;",
@@ -268,7 +350,7 @@ async def test_program_path_is_executed_with_instruction_and_inputs(
     assert isinstance(stdin, str)
     assert stdin.endswith("\n")
     assert json.loads(stdin) == {
-        "instruction": "./instructions/missing-program.txt",
+        "instruction": "Run the configured worker on the supplied request and return its result.",
         "inputs": {"request": {"topic": "structured concurrency"}},
     }
 
@@ -410,7 +492,7 @@ async def test_human_instruction_is_prepared_by_agent_before_request() -> None:
         return {"decision": "approve"}
 
     result = await run_workflow.execute_workflow(
-        _dispatch_workflow("Human", "./instructions/../proposal.txt"),
+        _dispatch_workflow("Human", "Ask the reviewer to approve the proposal or request concrete edits."),
         request="proposal-v2",
         complete=complete,
         prepare_human_instruction=prepare_human_instruction,
@@ -420,9 +502,12 @@ async def test_human_instruction_is_prepared_by_agent_before_request() -> None:
     assert result == {"result": {"decision": "approve"}}
     assert len(preparation_prompts) == 1
     assert "Step: dispatch_step" in preparation_prompts[0]
-    assert "Instruction or reference: ./instructions/../proposal.txt" in preparation_prompts[0]
+    assert (
+        "Instruction:\nAsk the reviewer to approve the proposal or request concrete edits.\n\n"
+        in preparation_prompts[0]
+    )
     assert '"request": "proposal-v2"' in preparation_prompts[0]
-    assert "inspect referenced resources" in preparation_prompts[0]
+    assert "inspect supporting resources named by the inputs" in preparation_prompts[0]
     assert "Do not ask the human directly" in preparation_prompts[0]
     assert human_prompts == ["Review the supplied proposal and answer approve or reject."]
 
@@ -432,7 +517,7 @@ async def test_contextual_human_callbacks_receive_step_contract() -> None:
     contexts: list[Any] = []
 
     async def prepare_human_instruction(prompt: str, context: Any) -> str:
-        assert "Instruction or reference: review_reference" in prompt
+        assert "Instruction:\nreview_reference\n\n" in prompt
         contexts.append(context)
         return "Provide approval or detailed edits."
 
@@ -472,7 +557,7 @@ async def test_human_preparation_failure_does_not_request_human() -> None:
 
     with pytest.RaisesGroup(pytest.RaisesExc(PermissionError, match="not approved")):
         await run_workflow.execute_workflow(
-            _dispatch_workflow("Human", "./private/reference.txt"),
+            _dispatch_workflow("Human", "Prepare a review question from the supplied request."),
             request="review",
             complete=complete,
             prepare_human_instruction=prepare_human_instruction,
@@ -552,7 +637,7 @@ async def test_contextual_completion_receives_resource_lease() -> None:
         prompt: str,
         context: Any,
     ) -> dict[str, object]:
-        assert prompt.startswith("Instruction: use_gpu")
+        assert prompt.startswith("Instruction:\nuse_gpu\n\n")
         leases.append(context.dispatch.resource_lease.instances("gpu"))
         return {"result": "completed"}
 
@@ -603,7 +688,7 @@ workflow explicit_order {
 
     async def complete(prompt: str) -> str:
         nonlocal before_finished
-        instruction = prompt.splitlines()[0].removeprefix("Instruction: ")
+        instruction = prompt.split("\n\n", 1)[0].removeprefix("Instruction:\n")
         if instruction == "before":
             before_finished = True
             return "BEFORE"

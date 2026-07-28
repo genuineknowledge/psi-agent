@@ -311,6 +311,7 @@ class JobStore:
         *,
         flow_path: str | PathLike[str],
         flow_source: str,
+        definition_digest: str | None = None,
         inputs: Mapping[str, object],
         resource_capacities: Mapping[str, ResourceCapacity] | None = None,
         checkpoint: ExecutionCheckpoint | None = None,
@@ -319,6 +320,8 @@ class JobStore:
 
         if not isinstance(flow_source, str):
             raise TypeError("flow_source must be a string")
+        if definition_digest is not None and _DIGEST_PATTERN.fullmatch(definition_digest) is None:
+            raise ValueError("definition_digest must be 64 lowercase hexadecimal characters")
         normalized_path = str(flow_path)
         if not normalized_path:
             raise ValueError("flow_path must be non-empty")
@@ -331,7 +334,9 @@ class JobStore:
                 run_id=run_id,
                 status="running",
                 flow_path=normalized_path,
-                flow_source_digest=hashlib.sha256(flow_source.encode()).hexdigest(),
+                flow_source_digest=(
+                    hashlib.sha256(flow_source.encode()).hexdigest() if definition_digest is None else definition_digest
+                ),
                 inputs=dict(inputs),
                 resource_capacities=dict(resource_capacities or {}),
                 checkpoint=checkpoint,

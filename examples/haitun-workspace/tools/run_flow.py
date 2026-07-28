@@ -44,6 +44,7 @@ from fusion_flow.job_store import (  # noqa: E402
     RunLease,
 )
 from fusion_flow.workflow_runner import (  # noqa: E402
+    CompiledWorkflow,
     CompletionContext,
     ProgramInvocation,
     compile_workflow,
@@ -388,6 +389,11 @@ def _job_store() -> JobStore:
 
 
 async def _read_flow_source(flow_path: str) -> str:
+    resolved = await _resolve_flow_path(flow_path)
+    return await resolved.read_text(encoding="utf-8")
+
+
+async def _resolve_flow_path(flow_path: str) -> anyio.Path:
     workspace = await anyio.Path(str(_WORKSPACE_DIR)).resolve()
     candidate = anyio.Path(flow_path)
     if candidate.is_absolute():
@@ -399,7 +405,92 @@ async def _read_flow_source(flow_path: str) -> str:
         raise ValueError("flow_path must stay inside the workspace flows directory")
     if resolved.suffix != ".workflow":
         raise ValueError("flow_path must name a .workflow file")
-    return await resolved.read_text(encoding="utf-8")
+    return resolved
+
+
+def _instruction_resolver(flow_path: str) -> Callable[[str], Awaitable[str]]:
+    """Load ``./`` instruction files relative to their workflow bundle."""
+
+    bundle_dir: anyio.Path | None = None
+
+    async def resolve(reference: str) -> str:
+        nonlocal bundle_dir
+        if not reference.startswith("./"):
+            return reference
+
+        relative = Path(reference.removeprefix("./"))
+        if relative.suffix.lower() != ".md":
+            raise ValueError("instruction path must name a .md file")
+        if ".." in relative.parts:
+            raise ValueError("instruction path must stay inside the workflow directory")
+        if bundle_dir is None:
+            workflow_path = await _resolve_flow_path(flow_path)
+            bundle_dir = await workflow_path.parent.resolve()
+        resolved = await (bundle_dir / str(relative)).resolve()
+        if not Path(str(resolved)).is_relative_to(Path(str(bundle_dir))):
+            raise ValueError("instruction path must stay inside the workflow directory")
+        if not await resolved.is_file():
+            raise ValueError(f"instruction path does not name a file: {reference!r}")
+        return await resolved.read_text(encoding="utf-8")
+
+    return resolve
+
+
+async def _materialize_instruction_files(
+    compiled: CompiledWorkflow,
+    flow_path: str,
+) -> dict[str, str]:
+    """Read every referenced instruction once before workflow execution."""
+
+    references = sorted(
+        {
+            step.instruction_id
+            for step in compiled.graph.steps
+            if step.instruction_id is not None and step.instruction_id.startswith("./")
+        }
+    )
+    resolve = _instruction_resolver(flow_path)
+    return {reference: await resolve(reference) for reference in references}
+
+
+def _legacy_instruction_identities(compiled: CompiledWorkflow) -> dict[str, str]:
+    """Preserve pre-bundle ``./...`` instructions as literal identities."""
+
+    return {
+        step.instruction_id: step.instruction_id
+        for step in compiled.graph.steps
+        if step.instruction_id is not None and step.instruction_id.startswith("./")
+    }
+
+
+def _cached_instruction_resolver(
+    instruction_files: Mapping[str, str],
+) -> Callable[[str], Awaitable[str]]:
+    async def resolve(reference: str) -> str:
+        try:
+            return instruction_files[reference]
+        except KeyError:
+            raise ValueError(f"instruction path was not materialized before execution: {reference!r}") from None
+
+    return resolve
+
+
+def _workflow_definition_digest(
+    source: str,
+    instruction_files: Mapping[str, str],
+) -> str:
+    if not instruction_files:
+        return hashlib.sha256(source.encode()).hexdigest()
+    payload = json.dumps(
+        {
+            "source": source,
+            "instruction_files": dict(instruction_files),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _resource_payload(context: CompletionContext) -> dict[str, list[str]]:
@@ -1144,10 +1235,14 @@ async def _execute_persisted_run(
     lease: RunLease,
     *,
     ai_socket: str,
+    instruction_files: Mapping[str, str] | None = None,
 ) -> str:
     if run.prepared_request is not None:
         raise ValueError("a Human response must be checkpointed before execution resumes")
     run_state = run
+    if instruction_files is None:
+        compiled = compile_workflow(source, strict_executors=True)
+        instruction_files = _legacy_instruction_identities(compiled)
     step_tools: ToolRegistry | None = None
     human_tools: ToolRegistry | None = None
     step_tools_lock = anyio.Lock()
@@ -1238,6 +1333,7 @@ async def _execute_persisted_run(
                 run_program=_run_program,
                 contextual_prepare_human_instruction=prepare_human,
                 contextual_request_human=request_human,
+                resolve_instruction=_cached_instruction_resolver(instruction_files),
                 checkpoint=run.checkpoint,
                 checkpoint_observer=observe_checkpoint,
             )
@@ -1319,12 +1415,14 @@ async def run_flow(
     inputs = _parse_mapping(inputs_json, label="inputs_json")
     resource_capacities = _parse_resource_capacities(resource_capacities_json)
     compiled = compile_workflow(source, strict_executors=True)
+    instruction_files = await _materialize_instruction_files(compiled, flow_path)
     has_human = any(compiled.executor_kinds[step.executor_id] == "Human" for step in compiled.graph.steps)
     if has_human:
         store = _job_store()
         run = await store.create(
             flow_path=flow_path,
             flow_source=source,
+            definition_digest=_workflow_definition_digest(source, instruction_files),
             inputs=inputs,
             resource_capacities=resource_capacities,
             checkpoint=create_execution_checkpoint(
@@ -1339,6 +1437,7 @@ async def run_flow(
                 await lease.load(),
                 lease,
                 ai_socket=ai_socket,
+                instruction_files=instruction_files,
             )
 
     step_tools: ToolRegistry | None = None
@@ -1367,6 +1466,7 @@ async def run_flow(
         resource_capacities=resource_capacities,
         strict_executors=True,
         supported_executor_kinds=("Agent", "Program"),
+        resolve_instruction=_cached_instruction_resolver(instruction_files),
         work_dir=_WORKSPACE_DIR,
         run_program=_run_program,
     )
@@ -1413,17 +1513,28 @@ async def run_flow_resume(
             raise ValueError(f"FusionFlow run {run_id!r} is {run.status}{details}")
 
         source = await _read_flow_source(run.flow_path)
-        digest = hashlib.sha256(source.encode()).hexdigest()
-        if digest != run.flow_source_digest:
+        source_digest = hashlib.sha256(source.encode()).hexdigest()
+        instruction_files: dict[str, str] | None = None
+        definition_changed = False
+        definition_error: Exception | None = None
+        if run.flow_source_digest != source_digest:
+            try:
+                compiled = compile_workflow(source, strict_executors=True)
+                instruction_files = await _materialize_instruction_files(compiled, run.flow_path)
+                definition_changed = _workflow_definition_digest(source, instruction_files) != run.flow_source_digest
+            except Exception as error:
+                definition_changed = True
+                definition_error = error
+        if definition_changed:
             failed = replace(
                 run,
                 status="failed",
                 prepared_request=None,
-                error="workflow source changed after the Human request was prepared",
+                error="workflow definition changed after the Human request was prepared",
             )
             with anyio.CancelScope(shield=True):
                 await lease.save(failed)
-            raise ValueError(f"workflow source changed for FusionFlow run {run_id!r}")
+            raise ValueError(f"workflow definition changed for FusionFlow run {run_id!r}") from definition_error
 
         if run.status == "running":
             if request_id not in run.human_responses:
@@ -1435,6 +1546,7 @@ async def run_flow_resume(
                 run,
                 lease,
                 ai_socket=ai_socket,
+                instruction_files=instruction_files,
             )
 
         if request_id in run.human_responses:
@@ -1472,4 +1584,5 @@ async def run_flow_resume(
             resumed,
             lease,
             ai_socket=ai_socket,
+            instruction_files=instruction_files,
         )

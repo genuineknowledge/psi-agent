@@ -28,6 +28,7 @@ from .parser import ParseContext, parse_workflow
 
 type Completion = Callable[[str], Awaitable[object]]
 type PathResolver = Callable[[str], Awaitable[str]]
+type InstructionResolver = Callable[[str], Awaitable[str]]
 type HumanInstructionPreparer = Callable[[str], Awaitable[str]]
 type HumanRequester = Callable[[str], Awaitable[object]]
 type ExecutorKind = Literal["Agent", "Human", "Program"]
@@ -346,6 +347,32 @@ async def _build_program_paths(
     return paths
 
 
+async def _materialize_instructions(
+    compiled: CompiledWorkflow,
+    resolve_instruction: InstructionResolver | None,
+) -> dict[str, str]:
+    """Resolve every instruction path before the execution plan can dispatch."""
+
+    resolved_references: dict[str, str] = {}
+    instructions: dict[str, str] = {}
+    for step in sorted(compiled.graph.steps, key=lambda item: item.step_id):
+        reference = step.instruction_id
+        if reference is None:
+            raise ValueError(f"step {step.step_id!r} has no step_instruction")
+        if reference.startswith("./"):
+            if resolve_instruction is None:
+                raise ValueError(f"step {step.step_id!r} has an instruction path but no instruction resolver")
+            if reference not in resolved_references:
+                resolved_references[reference] = await resolve_instruction(reference)
+            instruction = resolved_references[reference]
+        else:
+            instruction = reference
+        if not isinstance(instruction, str) or not instruction.strip():
+            raise ValueError(f"step {step.step_id!r} instruction resolved to no text")
+        instructions[step.step_id] = instruction
+    return instructions
+
+
 def _normalize_program_stdout(
     step_id: str,
     output_ids: tuple[str, ...],
@@ -396,6 +423,7 @@ def _normalize_program_stdout(
 def _build_dispatch(
     compiled: CompiledWorkflow,
     *,
+    instructions: Mapping[str, str],
     program_paths: Mapping[str, str],
     work_dir: str | PathLike[str] | None,
     complete: Completion | None,
@@ -417,12 +445,9 @@ def _build_dispatch(
         inputs: Mapping[str, object],
         dispatch_context: DispatchContext,
     ) -> Mapping[str, object]:
-        if step.instruction_id is None:
-            raise ValueError(f"step {step.step_id!r} has no step_instruction")
-
         output_ids = tuple(sorted(outputs_by_step[step.step_id]))
         output_contract = _output_contract(output_ids)
-        instruction = step.instruction_id
+        instruction = instructions[step.step_id]
         executor_kind = compiled.executor_kinds[step.executor_id]
         completion_context = CompletionContext(
             step_id=step.step_id,
@@ -444,12 +469,12 @@ def _build_dispatch(
             preparation_prompt = (
                 "Prepare this workflow step for a human.\n"
                 f"Step: {step.step_id}\n"
-                f"Instruction or reference: {instruction}\n"
+                f"Instruction:\n{instruction}\n\n"
                 f"Inputs: "
                 f"{json.dumps(dict(inputs), ensure_ascii=False, sort_keys=True, default=str)}\n"
                 f"Output contract: {output_contract}\n"
                 "Produce concise, readable guidance. Use available tools only when "
-                "needed to inspect referenced resources. Do not ask the human "
+                "needed to inspect supporting resources named by the inputs. Do not ask the human "
                 "directly, change resources, or invent inaccessible contents."
             )
             if contextual_prepare_human_instruction is not None:
@@ -510,7 +535,7 @@ def _build_dispatch(
             )
 
         prompt = (
-            f"Instruction: {instruction}\n"
+            f"Instruction:\n{instruction}\n\n"
             f"Inputs: "
             f"{json.dumps(dict(inputs), ensure_ascii=False, sort_keys=True, default=str)}\n"
             f"{output_contract}"
@@ -552,6 +577,7 @@ async def execute_workflow(
     strict_executors: bool = False,
     supported_executor_kinds: Collection[ExecutorKind] | None = None,
     resolve_path: PathResolver | None = None,
+    resolve_instruction: InstructionResolver | None = None,
     work_dir: str | PathLike[str] | None = None,
     run_program: ProgramRunner | None = None,
     prepare_human_instruction: HumanInstructionPreparer | None = None,
@@ -608,6 +634,7 @@ async def execute_workflow(
         and contextual_complete is None
     ):
         raise ValueError("provide exactly one of complete or contextual_complete")
+    instructions = await _materialize_instructions(compiled, resolve_instruction)
     program_paths = await _build_program_paths(compiled, resolve_path)
     if work_dir is None and any(not isabs(path) for path in program_paths.values()):
         raise ValueError("relative program_path requires an explicit work_dir")
@@ -616,6 +643,7 @@ async def execute_workflow(
     plan = generate_plan(graph)
     dispatch = _build_dispatch(
         compiled,
+        instructions=instructions,
         program_paths=program_paths,
         work_dir=work_dir,
         complete=complete,

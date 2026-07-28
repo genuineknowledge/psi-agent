@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -190,7 +191,7 @@ workflow review_flow {
     produces(draft_step) == [draft];
 
     step_name(review_step) == review_name;
-    step_instruction(review_step) == "./instructions/review.txt";
+    step_instruction(review_step) == "./instructions/review.md";
     step_executor(review_step) == reviewer;
     consumes(review_step) == [draft];
     produces(review_step) == [decision];
@@ -922,7 +923,18 @@ async def test_run_flow_executes_program_without_creating_agent_session(
 ) -> None:
     flow_path = anyio.Path(tmp_path / "flows" / "program.workflow")
     await flow_path.parent.mkdir()
-    await flow_path.write_text(_PROGRAM_WORKFLOW, encoding="utf-8")
+    instruction = "Run the assigned program step with its consumed request and return the requested result."
+    source = _PROGRAM_WORKFLOW.replace(
+        '"after"',
+        '"./instructions/program.md"',
+    ).replace(
+        '"before"',
+        '"./instructions/program.md"',
+    )
+    await flow_path.write_text(source, encoding="utf-8")
+    instruction_path = flow_path.parent / "instructions" / "program.md"
+    await instruction_path.parent.mkdir()
+    await instruction_path.write_text(instruction, encoding="utf-8")
     created = False
     loaded_tools = False
     calls: list[dict[str, object]] = []
@@ -976,8 +988,7 @@ async def test_run_flow_executes_program_without_creating_agent_session(
     assert all(call["argv"] == ("./bin/worker",) for call in calls)
     assert all(call["cwd"] == tmp_path for call in calls)
     assert {json.loads(cast(str, call["stdin"]))["instruction"] for call in calls} == {
-        "after",
-        "before",
+        instruction,
     }
 
 
@@ -1038,6 +1049,12 @@ async def test_human_step_waits_via_clarify_and_resumes_from_checkpoint(
     flow_path = anyio.Path(tmp_path / "flows" / "review.workflow")
     await flow_path.parent.mkdir(parents=True)
     await flow_path.write_text(_HUMAN_WORKFLOW, encoding="utf-8")
+    instructions_dir = flow_path.parent / "instructions"
+    await instructions_dir.mkdir()
+    await (instructions_dir / "review.md").write_text(
+        "Review the draft proposal. Ask the human to approve it or provide concrete requested changes.",
+        encoding="utf-8",
+    )
     agent_calls: list[str] = []
     agent_inputs: dict[str, dict[str, object]] = {}
     preparation_prompts: list[str] = []
@@ -1112,7 +1129,10 @@ async def test_human_step_waits_via_clarify_and_resumes_from_checkpoint(
     assert control["request"]["output_artifact_ids"] == ["decision"]
     assert agent_calls == ["draft_step"]
     assert len(preparation_prompts) == 1
-    assert "Instruction or reference: ./instructions/review.txt" in preparation_prompts[0]
+    assert (
+        "Instruction:\nReview the draft proposal. Ask the human to approve it "
+        "or provide concrete requested changes.\n\n" in preparation_prompts[0]
+    )
     assert '"draft": "proposal-v2"' in preparation_prompts[0]
 
     formatted = await clarify_tool.clarify(
@@ -1179,6 +1199,141 @@ async def test_human_step_waits_via_clarify_and_resumes_from_checkpoint(
             request_id,
             '"different"',
         )
+
+
+@pytest.mark.anyio
+async def test_human_resume_rejects_changed_instruction_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow_path = anyio.Path(tmp_path / "flows" / "review.workflow")
+    await flow_path.parent.mkdir(parents=True)
+    await flow_path.write_text(_HUMAN_WORKFLOW, encoding="utf-8")
+    instructions = flow_path.parent / "instructions"
+    await instructions.mkdir()
+    instruction_path = instructions / "review.md"
+    await instruction_path.write_text("Review the original draft.", encoding="utf-8")
+
+    async def complete_agent_step(
+        prompt: str,
+        context: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object]:
+        del prompt, ai_socket, tool_registry
+        assert context.step_id == "draft_step"
+        return {"draft": "proposal-v2"}
+
+    async def prepare_human_step(
+        prompt: str,
+        context: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> str:
+        del prompt, context, ai_socket, tool_registry
+        return json.dumps(
+            {
+                "question": "Approve?",
+                "options": ["Approve", "Reject"],
+                "recommended": 1,
+                "default": "",
+            }
+        )
+
+    async def load_step_tools() -> ToolRegistry:
+        return ToolRegistry()
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
+    monkeypatch.setattr(run_flow_tool, "_load_step_tools", load_step_tools)
+    monkeypatch.setattr(run_flow_tool, "_complete_agent_step", complete_agent_step)
+    monkeypatch.setattr(run_flow_tool, "_prepare_human_step", prepare_human_step)
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+
+    waiting = json.loads(
+        await run_flow_tool.run_flow(
+            "flows/review.workflow",
+            '{"request": "write a launch plan"}',
+        )
+    )[run_flow_tool._HUMAN_CONTROL_KEY]
+    await instruction_path.write_text("Review a changed draft.", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="workflow definition changed"):
+        await run_flow_tool.run_flow_resume(
+            waiting["run_id"],
+            waiting["request"]["request_id"],
+            '"Approve"',
+        )
+
+    failed = await run_flow_tool._job_store().load(waiting["run_id"])
+    assert failed.status == "failed"
+    assert failed.error == "workflow definition changed after the Human request was prepared"
+
+
+@pytest.mark.anyio
+async def test_human_resume_preserves_legacy_source_digest_instruction_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_source = _HUMAN_WORKFLOW.replace(
+        "./instructions/review.md",
+        "./instructions/review.txt",
+    )
+    flow_path = anyio.Path(tmp_path / "flows" / "review.workflow")
+    await flow_path.parent.mkdir(parents=True)
+    await flow_path.write_text(legacy_source, encoding="utf-8")
+    compiled = run_flow_tool.compile_workflow(legacy_source, strict_executors=True)
+    checkpoint = run_flow_tool.create_execution_checkpoint(
+        run_flow_tool.generate_plan(compiled.graph),
+        compiled.graph,
+        values={
+            "request": "write a launch plan",
+            "draft": "proposal-v1",
+        },
+        completed_step_ids=("draft_step",),
+    )
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    store = run_flow_tool._job_store()
+    run = await store.create(
+        flow_path="flows/review.workflow",
+        flow_source=legacy_source,
+        inputs={"request": "write a launch plan"},
+        checkpoint=checkpoint,
+    )
+    request = run_flow_tool.HumanRequestSpec.create(
+        step_id="review_step",
+        question="Approve?",
+        output_artifact_ids=("decision",),
+    )
+    waiting = replace(
+        run,
+        status="waiting_for_human",
+        prepared_request=request,
+    )
+    async with store.acquire(run.run_id) as lease:
+        await lease.save(waiting)
+
+    captured: list[str] = []
+
+    async def execute_workflow(source: str, **kwargs: Any) -> dict[str, object]:
+        assert source == legacy_source
+        resolver = kwargs["resolve_instruction"]
+        captured.append(await resolver("./instructions/review.txt"))
+        return {"result": "resumed"}
+
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+    monkeypatch.setattr(run_flow_tool, "_execute_workflow", execute_workflow)
+
+    result = await run_flow_tool.run_flow_resume(
+        run.run_id,
+        request.request_id,
+        '"Approve"',
+    )
+
+    assert json.loads(result) == {"result": "resumed"}
+    assert captured == ["./instructions/review.txt"]
 
 
 def test_human_response_checkpoint_supports_zero_and_multiple_outputs() -> None:
@@ -1251,8 +1406,9 @@ async def test_invalid_multi_output_human_response_remains_correctable(
         lease: Any,
         *,
         ai_socket: str,
+        instruction_files: dict[str, str] | None = None,
     ) -> str:
-        del lease
+        del lease, instruction_files
         assert flow_source == source
         assert ai_socket == "http://ai.example"
         resumed_runs.append(resumed)
@@ -1408,6 +1564,7 @@ async def test_cancelled_resume_keeps_checkpoint_recoverable(
                 await lease.load(),
                 lease,
                 ai_socket="http://ai.example",
+                instruction_files={},
             )
 
         async with anyio.create_task_group() as task_group:
@@ -1454,7 +1611,7 @@ async def test_human_resume_rejects_changed_workflow_source(
         await lease.save(waiting)
     await flow_path.write_text("changed source", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="workflow source changed"):
+    with pytest.raises(ValueError, match="workflow definition changed"):
         await run_flow_tool.run_flow_resume(
             run.run_id,
             request.request_id,
@@ -1463,7 +1620,7 @@ async def test_human_resume_rejects_changed_workflow_source(
 
     failed = await store.load(run.run_id)
     assert failed.status == "failed"
-    assert failed.error == "workflow source changed after the Human request was prepared"
+    assert failed.error == "workflow definition changed after the Human request was prepared"
 
 
 @pytest.mark.anyio
@@ -1778,6 +1935,81 @@ async def test_run_flow_rejects_paths_outside_flows_directory(
         await run_flow_tool._read_flow_source("other/example.workflow")
     with pytest.raises(ValueError, match="relative to the workspace"):
         await run_flow_tool._read_flow_source(str(tmp_path / "flows" / "example.workflow"))
+
+
+@pytest.mark.anyio
+async def test_instruction_resolver_loads_text_relative_to_workflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "flows" / "research"
+    instructions = bundle / "instructions"
+    instructions.mkdir(parents=True)
+    (bundle / "flow.workflow").write_text("workflow source", encoding="utf-8")
+    (instructions / "semantic.md").write_text(
+        "Research semantic parsing and return evidence-backed findings.",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    resolve = run_flow_tool._instruction_resolver("flows/research/flow.workflow")
+
+    assert await resolve("Write a concise synthesis.") == "Write a concise synthesis."
+    assert await resolve("./instructions/semantic.md") == (
+        "Research semantic parsing and return evidence-backed findings."
+    )
+
+
+@pytest.mark.anyio
+async def test_instruction_resolver_rejects_bundle_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "flows" / "research"
+    bundle.mkdir(parents=True)
+    (bundle / "flow.workflow").write_text("workflow source", encoding="utf-8")
+    (bundle.parent / "outside.md").write_text("outside", encoding="utf-8")
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    resolve = run_flow_tool._instruction_resolver("flows/research/flow.workflow")
+
+    with pytest.raises(ValueError, match="inside the workflow directory"):
+        await resolve("./../outside.md")
+
+
+@pytest.mark.anyio
+async def test_instruction_resolver_rejects_non_markdown_and_symlink_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "flows" / "research"
+    instructions = bundle / "instructions"
+    instructions.mkdir(parents=True)
+    (bundle / "flow.workflow").write_text("workflow source", encoding="utf-8")
+    (instructions / "plain.txt").write_text("plain", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    (instructions / "escape.md").symlink_to(outside)
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    resolve = run_flow_tool._instruction_resolver("flows/research/flow.workflow")
+
+    with pytest.raises(ValueError, match=r"must name a \.md file"):
+        await resolve("./instructions/plain.txt")
+    with pytest.raises(ValueError, match="inside the workflow directory"):
+        await resolve("./instructions/escape.md")
+
+
+def test_workflow_definition_digest_covers_instruction_files() -> None:
+    source = "workflow source"
+    original = run_flow_tool._workflow_definition_digest(
+        source,
+        {"./instructions/review.md": "Review version one."},
+    )
+    changed = run_flow_tool._workflow_definition_digest(
+        source,
+        {"./instructions/review.md": "Review version two."},
+    )
+
+    assert original != changed
+    assert run_flow_tool._workflow_definition_digest(source, {}) == hashlib.sha256(source.encode()).hexdigest()
 
 
 @pytest.mark.anyio

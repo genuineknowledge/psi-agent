@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from antlr4 import CommonTokenStream, InputStream
 from fusion_flow.core_ir import (
@@ -485,6 +487,56 @@ def test_relative_instruction_path_infers_operator_output_concept() -> None:
     assert isinstance(instruction, Constant)
     assert instruction.symbol == "./instructions/review-file.md"
     assert instruction.belong_concepts == (context.concepts["Instruction"],)
+
+
+def test_inline_instruction_text_supports_unicode_spaces_and_json_escapes() -> None:
+    context = _context()
+    instruction_text = "调研自然语言处理中的语义解析。\n比较主要方法、代表工作、证据来源与局限, 并输出结构化结论。"
+    result = parse_workflow(
+        f"""
+        const review: Step;
+        workflow instructions {{
+          step_instruction(review) == {json.dumps(instruction_text, ensure_ascii=False)};
+        }}
+        """,
+        context=context,
+    )
+
+    assert result.diagnostics == ()
+    assert isinstance(result.core_ir, WorkflowFile)
+    instruction = result.core_ir.workflows[0].assertions[0].rhs
+    assert isinstance(instruction, Constant)
+    assert instruction.symbol == instruction_text
+    assert instruction.belong_concepts == (context.concepts["Instruction"],)
+
+
+def test_reversed_parenthesized_inline_instruction_infers_instruction_type() -> None:
+    context = _context()
+    instruction_text = "Use the supplied inputs and return a bounded, evidence-backed result."
+    result = parse_workflow(
+        f"""
+        const review: Step;
+        workflow instructions {{
+          {json.dumps(instruction_text)} == (step_instruction(review));
+        }}
+        """,
+        context=context,
+    )
+
+    assert result.diagnostics == ()
+    assert isinstance(result.core_ir, WorkflowFile)
+    instruction = result.core_ir.workflows[0].assertions[0].lhs
+    assert isinstance(instruction, Constant)
+    assert instruction.symbol == instruction_text
+    assert instruction.belong_concepts == (context.concepts["Instruction"],)
+
+
+def test_inline_text_is_rejected_outside_instruction_position() -> None:
+    with pytest.raises(ValueError, match="only valid where Instruction is required"):
+        parse_workflow(
+            'workflow invalid { custom("free form text") == true; }',
+            context=_context(),
+        )
 
 
 @pytest.mark.parametrize(
