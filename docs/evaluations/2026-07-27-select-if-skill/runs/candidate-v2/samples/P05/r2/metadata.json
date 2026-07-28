@@ -1,0 +1,14 @@
+{
+  "case_id": "P05",
+  "duration_seconds": 46.248,
+  "ended_at": "2026-07-27T17:04:51.975696+00:00",
+  "error": null,
+  "http_status": 200,
+  "label": "candidate-v2",
+  "process_returncode": 1,
+  "repetition": 2,
+  "session_id": "candidate-v2-P05-r2-c272f654",
+  "session_port": 54466,
+  "started_at": "2026-07-27T17:04:05.727449+00:00",
+  "stream_error": false
+}

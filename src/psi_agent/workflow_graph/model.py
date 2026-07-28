@@ -9,6 +9,7 @@ downstream serialization and execution planning.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from typing import Literal, TypedDict
 
 
@@ -38,6 +39,54 @@ class ArtifactNodeDict(TypedDict):
     is_input: bool
     is_output: bool
     binding_step_id: str | None
+
+
+class ArtifactOperandDict(TypedDict):
+    """JSON-ready artifact condition operand."""
+
+    kind: Literal["artifact"]
+    artifact_id: str
+
+
+class LiteralOperandDict(TypedDict):
+    """JSON-ready literal condition operand."""
+
+    kind: Literal["literal"]
+    value: str | int | float | bool
+
+
+type ConditionOperandDict = ArtifactOperandDict | LiteralOperandDict
+type ComparisonOperator = Literal["eq", "lt", "lte", "gt", "gte"]
+type LogicalOperator = Literal["not", "and", "or"]
+
+
+class ComparisonConditionDict(TypedDict):
+    """JSON-ready comparison condition."""
+
+    kind: Literal["comparison"]
+    operator: ComparisonOperator
+    left: ConditionOperandDict
+    right: ConditionOperandDict
+
+
+class LogicalConditionDict(TypedDict):
+    """JSON-ready logical condition."""
+
+    kind: Literal["logical"]
+    operator: LogicalOperator
+    conditions: list[SelectConditionDict]
+
+
+type SelectConditionDict = ComparisonConditionDict | LogicalConditionDict
+
+
+class SelectNodeDict(TypedDict):
+    """JSON-ready eager artifact selection payload."""
+
+    output_artifact_id: str
+    when_true_artifact_id: str
+    when_false_artifact_id: str
+    condition: SelectConditionDict
 
 
 class ConsumesEdgeDict(TypedDict):
@@ -83,6 +132,7 @@ class WorkflowGraphDict(TypedDict):
     artifacts: list[ArtifactNodeDict]
     edges: list[WorkflowEdgeDict]
     policy: WorkflowPolicyDict
+    selectors: list[SelectNodeDict]
 
 
 class WorkflowGraphError(ValueError):
@@ -128,6 +178,185 @@ class ArtifactNode:
     is_input: bool = False
     is_output: bool = False
     binding_step_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactOperand:
+    """A condition operand that reads one global artifact."""
+
+    artifact_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class LiteralOperand:
+    """A condition operand containing one JSON scalar literal."""
+
+    value: str | int | float | bool
+
+    def __post_init__(self) -> None:
+        """Reject values outside the condition model's literal boundary."""
+
+        if type(self.value) not in (str, int, float, bool):
+            raise WorkflowGraphError("literal value must be a string, number, or boolean")
+        if type(self.value) is float and not isfinite(self.value):
+            raise WorkflowGraphError("literal float value must be finite")
+
+
+type ConditionOperand = ArtifactOperand | LiteralOperand
+
+
+@dataclass(frozen=True, slots=True)
+class ComparisonCondition:
+    """A comparison between two artifact or literal operands."""
+
+    operator: ComparisonOperator
+    left: ConditionOperand
+    right: ConditionOperand
+
+    def __post_init__(self) -> None:
+        """Keep comparison values inside the closed immutable condition model."""
+
+        if self.operator not in ("eq", "lt", "lte", "gt", "gte"):
+            raise WorkflowGraphError(f"unknown comparison operator: {self.operator}")
+        for operand in (self.left, self.right):
+            if type(operand) not in (ArtifactOperand, LiteralOperand):
+                raise WorkflowGraphError("comparison operands must be condition operands")
+            if type(operand) is LiteralOperand:
+                operand.__post_init__()
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalCondition:
+    """A unary ``not`` or binary ``and``/``or`` condition."""
+
+    operator: LogicalOperator
+    conditions: tuple[SelectCondition, ...]
+
+    def __post_init__(self) -> None:
+        """Require an immutable condition tuple with the operator's exact arity."""
+
+        if self.operator not in ("not", "and", "or"):
+            raise WorkflowGraphError(f"unknown logical operator: {self.operator}")
+        if not isinstance(self.conditions, tuple):
+            raise WorkflowGraphError("conditions must be a tuple")
+        expected = 1 if self.operator == "not" else 2
+        if len(self.conditions) != expected:
+            raise WorkflowGraphError(f"{self.operator} requires {expected} condition(s)")
+        if not all(type(condition) in (ComparisonCondition, LogicalCondition) for condition in self.conditions):
+            raise WorkflowGraphError("conditions must contain only select conditions")
+
+
+type SelectCondition = ComparisonCondition | LogicalCondition
+
+
+@dataclass(frozen=True, slots=True)
+class SelectNode:
+    """Eagerly choose one candidate artifact as a new output artifact."""
+
+    output_artifact_id: str
+    when_true_artifact_id: str
+    when_false_artifact_id: str
+    condition: SelectCondition
+
+    def __post_init__(self) -> None:
+        """Reject condition values outside the closed immutable tree."""
+
+        self._require_artifact_id(
+            self.output_artifact_id,
+            "output_artifact_id",
+        )
+        self.input_artifact_ids()
+
+    def input_artifact_ids(self) -> tuple[str, ...]:
+        """Return sorted, deduplicated condition and candidate dependencies."""
+
+        artifact_ids = {
+            self._require_artifact_id(
+                self.when_true_artifact_id,
+                "when_true_artifact_id",
+            ),
+            self._require_artifact_id(
+                self.when_false_artifact_id,
+                "when_false_artifact_id",
+            ),
+        }
+        artifact_ids.update(self._condition_artifact_ids(self.condition, set()))
+        return tuple(sorted(artifact_ids))
+
+    @staticmethod
+    def _condition_artifact_ids(
+        condition: object,
+        active: set[int],
+    ) -> set[str]:
+        """Validate a condition tree while collecting artifact operands."""
+
+        if type(condition) is ComparisonCondition:
+            condition.__post_init__()
+            artifact_ids: set[str] = set()
+            for operand in (condition.left, condition.right):
+                if type(operand) is ArtifactOperand:
+                    artifact_ids.add(
+                        SelectNode._require_artifact_id(
+                            operand.artifact_id,
+                            "condition artifact_id",
+                        )
+                    )
+            return artifact_ids
+        if type(condition) is not LogicalCondition:
+            raise WorkflowGraphError("condition must be a select condition")
+        condition.__post_init__()
+        condition_id = id(condition)
+        if condition_id in active:
+            raise WorkflowGraphError("condition tree must not contain a cycle")
+        active.add(condition_id)
+        artifact_ids: set[str] = set()
+        for child in condition.conditions:
+            artifact_ids.update(SelectNode._condition_artifact_ids(child, active))
+        active.remove(condition_id)
+        return artifact_ids
+
+    @staticmethod
+    def _require_artifact_id(value: object, field_name: str) -> str:
+        """Require a non-empty artifact identity before set operations."""
+
+        if not isinstance(value, str) or not value:
+            raise WorkflowGraphError(f"{field_name} must be a non-empty string")
+        return value
+
+    @staticmethod
+    def _condition_to_dict(
+        condition: SelectCondition,
+    ) -> SelectConditionDict:
+        """Serialize one already-validated condition tree."""
+
+        if isinstance(condition, ComparisonCondition):
+            operands: list[ConditionOperandDict] = []
+            for operand in (condition.left, condition.right):
+                if isinstance(operand, ArtifactOperand):
+                    operands.append(
+                        ArtifactOperandDict(
+                            kind="artifact",
+                            artifact_id=operand.artifact_id,
+                        )
+                    )
+                else:
+                    operands.append(
+                        LiteralOperandDict(
+                            kind="literal",
+                            value=operand.value,
+                        )
+                    )
+            return ComparisonConditionDict(
+                kind="comparison",
+                operator=condition.operator,
+                left=operands[0],
+                right=operands[1],
+            )
+        return LogicalConditionDict(
+            kind="logical",
+            operator=condition.operator,
+            conditions=[SelectNode._condition_to_dict(child) for child in condition.conditions],
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +415,7 @@ class WorkflowGraph:
     artifacts: tuple[ArtifactNode, ...]
     edges: tuple[WorkflowEdge, ...] = ()
     policy: WorkflowPolicy = WorkflowPolicy()
+    selectors: tuple[SelectNode, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate the graph from container boundaries to cross-edge invariants."""
@@ -202,6 +432,8 @@ class WorkflowGraph:
             raise WorkflowGraphError("edges must be a tuple")
         if not isinstance(self.policy, WorkflowPolicy):
             raise WorkflowGraphError("policy must be a WorkflowPolicy")
+        if not isinstance(self.selectors, tuple):
+            raise WorkflowGraphError("selectors must be a tuple")
         if not all(isinstance(step, StepNode) for step in self.steps):
             raise WorkflowGraphError("steps must contain only StepNode")
         if not all(isinstance(artifact, ArtifactNode) for artifact in self.artifacts):
@@ -210,6 +442,8 @@ class WorkflowGraph:
         # equality-based deduplication and could override the serialized kind.
         if not all(type(edge) in (ConsumesEdge, ProducesEdge, ForeachEdge) for edge in self.edges):
             raise WorkflowGraphError("edges must contain only workflow edges")
+        if not all(type(selector) is SelectNode for selector in self.selectors):
+            raise WorkflowGraphError("selectors must contain only SelectNode")
 
         # Step pass: validate required identities, positive policies, unique
         # step IDs, and resource uniqueness within each owning step.
@@ -364,6 +598,32 @@ class WorkflowGraph:
                     f"local binding must be referenced by exactly one foreach edge: {artifact.artifact_id}"
                 )
 
+        # Selectors eagerly depend on both candidates and every artifact named
+        # by their condition.  Their output is a producer like a Step output.
+        for selector in self.selectors:
+            self._require_identity(
+                selector.output_artifact_id,
+                "select output_artifact_id",
+            )
+            if selector.output_artifact_id not in artifact_ids:
+                raise WorkflowGraphError(f"unknown select output artifact: {selector.output_artifact_id}")
+            output = artifacts_by_id[selector.output_artifact_id]
+            if output.binding_step_id is not None:
+                raise WorkflowGraphError(f"select artifact must be global: {selector.output_artifact_id}")
+            for input_artifact_id in selector.input_artifact_ids():
+                self._require_identity(
+                    input_artifact_id,
+                    "select input artifact_id",
+                )
+                if input_artifact_id not in artifact_ids:
+                    raise WorkflowGraphError(f"unknown select input artifact: {input_artifact_id}")
+                if artifacts_by_id[input_artifact_id].binding_step_id is not None:
+                    raise WorkflowGraphError(f"select artifact must be global: {input_artifact_id}")
+                required_global_artifacts.add(input_artifact_id)
+            if selector.output_artifact_id in producers:
+                raise WorkflowGraphError(f"artifact has multiple producers: {selector.output_artifact_id}")
+            producers[selector.output_artifact_id] = selector.output_artifact_id
+
         # A global value needed by a consumer, foreach, or workflow output must
         # enter through the boundary or have exactly one producer.
         for artifact_id in required_global_artifacts:
@@ -469,6 +729,19 @@ class WorkflowGraph:
                     )
                 )
 
+        selector_payloads = [
+            SelectNodeDict(
+                output_artifact_id=selector.output_artifact_id,
+                when_true_artifact_id=selector.when_true_artifact_id,
+                when_false_artifact_id=selector.when_false_artifact_id,
+                condition=SelectNode._condition_to_dict(selector.condition),
+            )
+            for selector in sorted(
+                self.selectors,
+                key=lambda item: item.output_artifact_id,
+            )
+        ]
+
         return WorkflowGraphDict(
             workflow_id=self.workflow_id,
             steps=step_payloads,
@@ -478,6 +751,7 @@ class WorkflowGraph:
                 max_concurrency=self.policy.max_concurrency,
                 timeout_seconds=self.policy.timeout_seconds,
             ),
+            selectors=selector_payloads,
         )
 
     @staticmethod

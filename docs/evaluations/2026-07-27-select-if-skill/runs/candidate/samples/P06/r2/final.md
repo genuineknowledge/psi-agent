@@ -1,0 +1,79 @@
+```fusionflow
+-- SCENARIO: 接收请求，根据判定标记选择处理路径，两个处理分支都实际运行
+-- AUTHORED: 2025-04-06 from intent: "判定工作流，两个处理分支均实际运行"
+
+const request: Artifact;
+const approval_criterion: Artifact;
+const approved_flag: Artifact;
+const approved_artifact: Artifact;
+const rejected_artifact: Artifact;
+
+const judge_step: Step;
+const approve_handler: Step;
+const reject_handler: Step;
+
+const judge_name: StepName;
+const approve_name: StepName;
+const reject_name: StepName;
+
+const judge_instruction: Instruction;
+const approve_instruction: Instruction;
+const reject_instruction: Instruction;
+
+const judge_agent: Agent, Executor;
+const approve_agent: Agent, Executor;
+const reject_agent: Agent, Executor;
+
+const default_model: Model;
+const default_engine: Engine;
+const default_api: ApiBase;
+const high_effort: ReasoningEffort;
+const read_tool: Tool;
+
+workflow decision_flow {
+  -- DATA FLOW
+  input_workflow(decision_flow) == [request, approval_criterion];
+  consumes(judge_step) == [request];
+  produces(judge_step) == [approved_flag];
+  consumes(approve_handler) == [request];
+  produces(approve_handler) == [approved_artifact];
+  consumes(reject_handler) == [request];
+  produces(reject_handler) == [rejected_artifact];
+  output_workflow(decision_flow) == [if(approved_flag = approval_criterion, approved_artifact, rejected_artifact)];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(judge_step) == judge_agent;
+  step_executor(approve_handler) == approve_agent;
+  step_executor(reject_handler) == reject_agent;
+
+  -- STEP CONFIGURATION
+  step_name(judge_step) == judge_name;
+  step_instruction(judge_step) == judge_instruction;
+  step_timeout(judge_step) == 300;
+  max_attempts(judge_step) == 2;
+
+  step_name(approve_handler) == approve_name;
+  step_instruction(approve_handler) == approve_instruction;
+  step_timeout(approve_handler) == 300;
+  max_attempts(approve_handler) == 2;
+
+  step_name(reject_handler) == reject_name;
+  step_instruction(reject_handler) == reject_instruction;
+  step_timeout(reject_handler) == 300;
+  max_attempts(reject_handler) == 2;
+
+  -- WORKFLOW CONFIGURATION
+  max_concurrency(decision_flow) == 3;
+  workflow_timeout(decision_flow) == 900;
+
+  -- AGENT CONFIGURATION
+  agent_config(judge_agent, default_model, default_engine, default_api);
+  agent_config(approve_agent, default_model, default_engine, default_api);
+  agent_config(reject_agent, default_model, default_engine, default_api);
+
+  allowed_tool(judge_agent, read_tool);
+  allowed_tool(approve_agent, read_tool);
+  allowed_tool(reject_agent, read_tool);
+  reasoning_effort(judge_agent) == high_effort;
+}
+```

@@ -1,0 +1,14 @@
+{
+  "case_id": "N01",
+  "duration_seconds": 32.59,
+  "ended_at": "2026-07-27T16:42:37.426367+00:00",
+  "error": null,
+  "http_status": 200,
+  "label": "baseline",
+  "process_returncode": 1,
+  "repetition": 1,
+  "session_id": "baseline-N01-r1-70f7ab87",
+  "session_port": 49975,
+  "started_at": "2026-07-27T16:42:04.836285+00:00",
+  "stream_error": false
+}

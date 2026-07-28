@@ -1,0 +1,163 @@
+{
+  "case_id": "P01",
+  "diagnostics": {},
+  "graph": {
+    "artifacts": [
+      {
+        "artifact_id": "category",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "fallback_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "final_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": true
+      },
+      {
+        "artifact_id": "primary_category",
+        "binding_step_id": null,
+        "is_input": true,
+        "is_output": false
+      },
+      {
+        "artifact_id": "primary_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "request",
+        "binding_step_id": null,
+        "is_input": true,
+        "is_output": false
+      },
+      {
+        "artifact_id": "selected_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      }
+    ],
+    "edges": [
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "classify_step"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "fallback_processor_step"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "primary_processor_step"
+      },
+      {
+        "artifact_id": "selected_result",
+        "kind": "consumes",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "category",
+        "kind": "produces",
+        "step_id": "classify_step"
+      },
+      {
+        "artifact_id": "fallback_result",
+        "kind": "produces",
+        "step_id": "fallback_processor_step"
+      },
+      {
+        "artifact_id": "final_result",
+        "kind": "produces",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "primary_result",
+        "kind": "produces",
+        "step_id": "primary_processor_step"
+      }
+    ],
+    "policy": {
+      "max_concurrency": null,
+      "timeout_seconds": null
+    },
+    "selectors": [
+      {
+        "condition": {
+          "kind": "comparison",
+          "left": {
+            "artifact_id": "category",
+            "kind": "artifact"
+          },
+          "operator": "eq",
+          "right": {
+            "artifact_id": "primary_category",
+            "kind": "artifact"
+          }
+        },
+        "output_artifact_id": "selected_result",
+        "when_false_artifact_id": "fallback_result",
+        "when_true_artifact_id": "primary_result"
+      }
+    ],
+    "steps": [
+      {
+        "executor_id": "classifier",
+        "instruction_id": "classify_instruction",
+        "max_attempts": 1,
+        "name_id": "classify_name",
+        "resources": [],
+        "step_id": "classify_step",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "fallback_processor",
+        "instruction_id": "fallback_instruction",
+        "max_attempts": 1,
+        "name_id": "fallback_processor_name",
+        "resources": [],
+        "step_id": "fallback_processor_step",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "final_consumer",
+        "instruction_id": "final_instruction",
+        "max_attempts": 1,
+        "name_id": "final_name",
+        "resources": [],
+        "step_id": "final_step",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "primary_processor",
+        "instruction_id": "primary_instruction",
+        "max_attempts": 1,
+        "name_id": "primary_processor_name",
+        "resources": [],
+        "step_id": "primary_processor_step",
+        "timeout_seconds": null
+      }
+    ],
+    "workflow_id": "category_routing"
+  },
+  "passed": true,
+  "predicates": {
+    "compiles": true,
+    "eager_candidate_step_count": true,
+    "final_step_consumes_selector_outputs": true,
+    "named_selector_count": true,
+    "response": true,
+    "selector_chain_depth": true
+  }
+}

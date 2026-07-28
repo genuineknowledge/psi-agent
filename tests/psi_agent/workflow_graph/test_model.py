@@ -6,6 +6,7 @@ from typing import Literal, cast
 
 import pytest
 
+from psi_agent.workflow_graph import model as graph_model
 from psi_agent.workflow_graph.model import (
     ArtifactNode,
     ConsumesEdge,
@@ -689,3 +690,467 @@ def test_workflow_limits_must_be_positive_integers(
 ) -> None:
     with pytest.raises(ValueError, match="positive integer"):
         WorkflowGraph("flow", (), (), policy=policy)
+
+
+def test_select_node_serialization_is_deterministic() -> None:
+    condition = graph_model.LogicalCondition(
+        "and",
+        (
+            graph_model.ComparisonCondition(
+                "eq",
+                graph_model.ArtifactOperand("enabled"),
+                graph_model.LiteralOperand(True),
+            ),
+            graph_model.LogicalCondition(
+                "not",
+                (
+                    graph_model.ComparisonCondition(
+                        "lt",
+                        graph_model.ArtifactOperand("score"),
+                        graph_model.LiteralOperand(10),
+                    ),
+                ),
+            ),
+        ),
+    )
+    selector = graph_model.SelectNode(
+        "selected",
+        "primary",
+        "fallback",
+        condition,
+    )
+    graph = WorkflowGraph(
+        "flow",
+        (),
+        (
+            ArtifactNode("score", is_input=True),
+            ArtifactNode("selected", is_output=True),
+            ArtifactNode("primary", is_input=True),
+            ArtifactNode("fallback", is_input=True),
+            ArtifactNode("enabled", is_input=True),
+            ArtifactNode("z_selected"),
+        ),
+        selectors=(
+            graph_model.SelectNode(
+                "z_selected",
+                "primary",
+                "fallback",
+                condition,
+            ),
+            selector,
+        ),
+    )
+
+    selector_payloads = graph.to_dict()["selectors"]
+    assert [payload["output_artifact_id"] for payload in selector_payloads] == [
+        "selected",
+        "z_selected",
+    ]
+    assert selector_payloads[0] == {
+        "output_artifact_id": "selected",
+        "when_true_artifact_id": "primary",
+        "when_false_artifact_id": "fallback",
+        "condition": {
+            "kind": "logical",
+            "operator": "and",
+            "conditions": [
+                {
+                    "kind": "comparison",
+                    "operator": "eq",
+                    "left": {
+                        "kind": "artifact",
+                        "artifact_id": "enabled",
+                    },
+                    "right": {
+                        "kind": "literal",
+                        "value": True,
+                    },
+                },
+                {
+                    "kind": "logical",
+                    "operator": "not",
+                    "conditions": [
+                        {
+                            "kind": "comparison",
+                            "operator": "lt",
+                            "left": {
+                                "kind": "artifact",
+                                "artifact_id": "score",
+                            },
+                            "right": {
+                                "kind": "literal",
+                                "value": 10,
+                            },
+                        }
+                    ],
+                },
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize("operator", ["eq", "lt", "lte", "gt", "gte"])
+def test_select_comparison_operators_are_serializable(operator: str) -> None:
+    condition = graph_model.ComparisonCondition(
+        cast(graph_model.ComparisonOperator, operator),
+        graph_model.LiteralOperand(1),
+        graph_model.LiteralOperand(2),
+    )
+    selector = graph_model.SelectNode(
+        "selected",
+        "primary",
+        "fallback",
+        condition,
+    )
+    graph = WorkflowGraph(
+        "flow",
+        (),
+        (
+            ArtifactNode("selected", is_output=True),
+            ArtifactNode("primary", is_input=True),
+            ArtifactNode("fallback", is_input=True),
+        ),
+        selectors=(selector,),
+    )
+
+    assert graph.to_dict()["selectors"][0]["condition"]["operator"] == operator
+
+
+def test_select_input_artifact_ids_are_sorted_and_deduplicated() -> None:
+    selector = graph_model.SelectNode(
+        "selected",
+        "candidate",
+        "fallback",
+        graph_model.LogicalCondition(
+            "or",
+            (
+                graph_model.ComparisonCondition(
+                    "eq",
+                    graph_model.ArtifactOperand("candidate"),
+                    graph_model.ArtifactOperand("condition"),
+                ),
+                graph_model.ComparisonCondition(
+                    "gt",
+                    graph_model.ArtifactOperand("condition"),
+                    graph_model.LiteralOperand(0),
+                ),
+            ),
+        ),
+    )
+
+    assert selector.input_artifact_ids() == (
+        "candidate",
+        "condition",
+        "fallback",
+    )
+
+
+def test_select_output_backs_workflow_output_and_consumer() -> None:
+    selector = graph_model.SelectNode(
+        "selected",
+        "primary",
+        "fallback",
+        graph_model.ComparisonCondition(
+            "eq",
+            graph_model.ArtifactOperand("enabled"),
+            graph_model.LiteralOperand(True),
+        ),
+    )
+    graph = WorkflowGraph(
+        "flow",
+        (StepNode("consumer", "consumer-name", "agent"),),
+        (
+            ArtifactNode("enabled", is_input=True),
+            ArtifactNode("primary", is_input=True),
+            ArtifactNode("fallback", is_input=True),
+            ArtifactNode("selected", is_output=True),
+        ),
+        (ConsumesEdge("selected", "consumer"),),
+        selectors=(selector,),
+    )
+
+    assert graph.selectors == (selector,)
+
+
+@pytest.mark.parametrize(
+    ("selector", "message"),
+    [
+        (
+            lambda: graph_model.SelectNode(
+                "missing",
+                "primary",
+                "fallback",
+                graph_model.ComparisonCondition(
+                    "eq",
+                    graph_model.ArtifactOperand("enabled"),
+                    graph_model.LiteralOperand(True),
+                ),
+            ),
+            "unknown select output artifact",
+        ),
+        (
+            lambda: graph_model.SelectNode(
+                "selected",
+                "missing",
+                "fallback",
+                graph_model.ComparisonCondition(
+                    "eq",
+                    graph_model.ArtifactOperand("enabled"),
+                    graph_model.LiteralOperand(True),
+                ),
+            ),
+            "unknown select input artifact",
+        ),
+        (
+            lambda: graph_model.SelectNode(
+                "selected",
+                "primary",
+                "fallback",
+                graph_model.ComparisonCondition(
+                    "eq",
+                    graph_model.ArtifactOperand("missing"),
+                    graph_model.LiteralOperand(True),
+                ),
+            ),
+            "unknown select input artifact",
+        ),
+    ],
+)
+def test_missing_select_artifacts_are_rejected(
+    selector: Callable[[], object],
+    message: str,
+) -> None:
+    with pytest.raises(WorkflowGraphError, match=message):
+        WorkflowGraph(
+            "flow",
+            (),
+            (
+                ArtifactNode("enabled", is_input=True),
+                ArtifactNode("primary", is_input=True),
+                ArtifactNode("fallback", is_input=True),
+                ArtifactNode("selected"),
+            ),
+            selectors=(cast(graph_model.SelectNode, selector()),),
+        )
+
+
+@pytest.mark.parametrize("role", ["output", "candidate", "condition"])
+def test_local_artifacts_cannot_be_referenced_by_select(role: str) -> None:
+    output_id = "item" if role == "output" else "selected"
+    candidate_id = "item" if role == "candidate" else "primary"
+    condition_id = "item" if role == "condition" else "enabled"
+    selector = graph_model.SelectNode(
+        output_id,
+        candidate_id,
+        "fallback",
+        graph_model.ComparisonCondition(
+            "eq",
+            graph_model.ArtifactOperand(condition_id),
+            graph_model.LiteralOperand(True),
+        ),
+    )
+
+    with pytest.raises(WorkflowGraphError, match="select artifact must be global"):
+        WorkflowGraph(
+            "flow",
+            (StepNode("owner", "owner-name", "agent"),),
+            (
+                ArtifactNode("source", is_input=True),
+                ArtifactNode("item", binding_step_id="owner"),
+                ArtifactNode("enabled", is_input=True),
+                ArtifactNode("primary", is_input=True),
+                ArtifactNode("fallback", is_input=True),
+                ArtifactNode("selected"),
+            ),
+            (ForeachEdge("source", "owner", "item"),),
+            selectors=(selector,),
+        )
+
+
+@pytest.mark.parametrize("producer_kind", ["step", "select"])
+def test_select_output_cannot_have_multiple_producers(
+    producer_kind: str,
+) -> None:
+    selector = graph_model.SelectNode(
+        "selected",
+        "primary",
+        "fallback",
+        graph_model.ComparisonCondition(
+            "eq",
+            graph_model.ArtifactOperand("enabled"),
+            graph_model.LiteralOperand(True),
+        ),
+    )
+    steps: tuple[StepNode, ...] = ()
+    edges: tuple[ProducesEdge, ...] = ()
+    selectors = (selector, selector)
+    if producer_kind == "step":
+        steps = (StepNode("producer", "producer-name", "agent"),)
+        edges = (ProducesEdge("producer", "selected"),)
+        selectors = (selector,)
+
+    with pytest.raises(WorkflowGraphError, match="multiple producers"):
+        WorkflowGraph(
+            "flow",
+            steps,
+            (
+                ArtifactNode("enabled", is_input=True),
+                ArtifactNode("primary", is_input=True),
+                ArtifactNode("fallback", is_input=True),
+                ArtifactNode("selected"),
+            ),
+            edges,
+            selectors=selectors,
+        )
+
+
+@pytest.mark.parametrize(
+    ("selectors", "message"),
+    [
+        ([], "selectors must be a tuple"),
+        (("not-select",), "selectors must contain only SelectNode"),
+    ],
+)
+def test_invalid_select_containers_are_rejected(
+    selectors: object,
+    message: str,
+) -> None:
+    with pytest.raises(WorkflowGraphError, match=message):
+        WorkflowGraph(
+            "flow",
+            (),
+            (),
+            selectors=cast(tuple[graph_model.SelectNode, ...], selectors),
+        )
+
+
+def test_graph_rejects_mutated_select_condition_container() -> None:
+    comparison = graph_model.ComparisonCondition(
+        "eq",
+        graph_model.ArtifactOperand("enabled"),
+        graph_model.LiteralOperand(True),
+    )
+    condition = graph_model.LogicalCondition("not", (comparison,))
+    selector = graph_model.SelectNode(
+        "selected",
+        "primary",
+        "fallback",
+        condition,
+    )
+    object.__setattr__(condition, "conditions", [comparison])
+
+    with pytest.raises(WorkflowGraphError, match="conditions must be a tuple"):
+        WorkflowGraph(
+            "flow",
+            (),
+            (
+                ArtifactNode("enabled", is_input=True),
+                ArtifactNode("primary", is_input=True),
+                ArtifactNode("fallback", is_input=True),
+                ArtifactNode("selected"),
+            ),
+            selectors=(selector,),
+        )
+
+
+def test_graph_rejects_mutated_select_literal() -> None:
+    literal = graph_model.LiteralOperand(True)
+    selector = graph_model.SelectNode(
+        "selected",
+        "primary",
+        "fallback",
+        graph_model.ComparisonCondition(
+            "eq",
+            graph_model.ArtifactOperand("enabled"),
+            literal,
+        ),
+    )
+    object.__setattr__(literal, "value", [])
+
+    with pytest.raises(WorkflowGraphError, match="literal value"):
+        WorkflowGraph(
+            "flow",
+            (),
+            (
+                ArtifactNode("enabled", is_input=True),
+                ArtifactNode("primary", is_input=True),
+                ArtifactNode("fallback", is_input=True),
+                ArtifactNode("selected"),
+            ),
+            selectors=(selector,),
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [float("nan"), float("inf"), float("-inf")],
+)
+def test_select_literals_must_be_finite(value: float) -> None:
+    with pytest.raises(WorkflowGraphError, match="finite"):
+        graph_model.LiteralOperand(value)
+
+
+@pytest.mark.parametrize(
+    ("target", "field_name"),
+    [
+        ("operand", "artifact_id"),
+        ("selector", "when_true_artifact_id"),
+        ("selector", "when_false_artifact_id"),
+    ],
+)
+def test_graph_rejects_mutated_select_artifact_ids(
+    target: str,
+    field_name: str,
+) -> None:
+    operand = graph_model.ArtifactOperand("enabled")
+    selector = graph_model.SelectNode(
+        "selected",
+        "primary",
+        "fallback",
+        graph_model.ComparisonCondition(
+            "eq",
+            operand,
+            graph_model.LiteralOperand(True),
+        ),
+    )
+    object.__setattr__(
+        operand if target == "operand" else selector,
+        field_name,
+        [],
+    )
+
+    with pytest.raises(WorkflowGraphError, match="non-empty string"):
+        WorkflowGraph(
+            "flow",
+            (),
+            (
+                ArtifactNode("enabled", is_input=True),
+                ArtifactNode("primary", is_input=True),
+                ArtifactNode("fallback", is_input=True),
+                ArtifactNode("selected"),
+            ),
+            selectors=(selector,),
+        )
+
+
+def test_select_values_are_frozen() -> None:
+    operand = graph_model.ArtifactOperand("enabled")
+    condition = graph_model.ComparisonCondition(
+        "eq",
+        operand,
+        graph_model.LiteralOperand(True),
+    )
+    selector = graph_model.SelectNode(
+        "selected",
+        "primary",
+        "fallback",
+        condition,
+    )
+
+    for value, field_name in (
+        (operand, "artifact_id"),
+        (condition, "operator"),
+        (selector, "output_artifact_id"),
+    ):
+        with pytest.raises(FrozenInstanceError):
+            setattr(value, field_name, "other")

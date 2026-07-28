@@ -1,0 +1,75 @@
+```fusionflow
+-- SCENARIO: Classify input, produce primary and fallback results, select on flag
+-- AUTHORED: 2025-07-17 from intent: workflow with classifier, two parallel handlers, and if-based selection
+
+const request: Artifact;
+const preferred_flag: Artifact;
+const primary_result: Artifact;
+const fallback_result: Artifact;
+const selected_result: Artifact;
+const final_result: Artifact;
+
+const classifier: Step;
+const primary_handler: Step;
+const fallback_handler: Step;
+const final_step: Step;
+
+const classifier_name: StepName;
+const primary_handler_name: StepName;
+const fallback_handler_name: StepName;
+const final_step_name: StepName;
+
+const classifier_instruction: Instruction;
+const primary_instruction: Instruction;
+const fallback_instruction: Instruction;
+const final_instruction: Instruction;
+
+const classifier_agent: Agent, Executor;
+const primary_agent: Agent, Executor;
+const fallback_agent: Agent, Executor;
+const final_agent: Agent, Executor;
+
+const default_model: Model;
+const default_engine: Engine;
+const default_api: ApiBase;
+
+workflow priority_routing {
+  -- DATA FLOW
+  input_workflow(priority_routing) == [request];
+  consumes(classifier) == [request];
+  produces(classifier) == [preferred_flag];
+  consumes(primary_handler) == [request];
+  produces(primary_handler) == [primary_result];
+  consumes(fallback_handler) == [request];
+  produces(fallback_handler) == [fallback_result];
+  selected_result == if(preferred_flag = True, primary_result, fallback_result);
+  consumes(final_step) == [selected_result];
+  produces(final_step) == [final_result];
+  output_workflow(priority_routing) == [final_result];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(classifier) == classifier_agent;
+  step_executor(primary_handler) == primary_agent;
+  step_executor(fallback_handler) == fallback_agent;
+  step_executor(final_step) == final_agent;
+
+  -- STEP CONFIGURATION
+  step_name(classifier) == classifier_name;
+  step_instruction(classifier) == classifier_instruction;
+  step_name(primary_handler) == primary_handler_name;
+  step_instruction(primary_handler) == primary_instruction;
+  step_name(fallback_handler) == fallback_handler_name;
+  step_instruction(fallback_handler) == fallback_instruction;
+  step_name(final_step) == final_step_name;
+  step_instruction(final_step) == final_instruction;
+
+  -- WORKFLOW CONFIGURATION
+  max_concurrency(priority_routing) == 2;
+
+  -- AGENT CONFIGURATION
+  agent_config(classifier_agent, default_model, default_engine, default_api);
+  agent_config(primary_agent, default_model, default_engine, default_api);
+  agent_config(fallback_agent, default_model, default_engine, default_api);
+  agent_config(final_agent, default_model, default_engine, default_api);
+}
+```

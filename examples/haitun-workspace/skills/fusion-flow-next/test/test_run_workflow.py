@@ -9,6 +9,8 @@ import pytest
 
 _SKILL_DIR = os.path.dirname(os.path.dirname(__file__))
 _RUNNER_PATH = os.path.join(_SKILL_DIR, "examples", "run_workflow.py")
+if _SKILL_DIR not in sys.path:
+    sys.path.insert(0, _SKILL_DIR)
 
 
 def _load_module(name: str, path: str) -> Any:
@@ -46,6 +48,49 @@ workflow dispatch {{
 """
 
 
+def _select_workflow(condition: str) -> str:
+    return f"""
+const select_demo: Workflow;
+const primary_step: Step;
+const fallback_step: Step;
+const final_step: Step;
+const primary_name: StepName;
+const fallback_name: StepName;
+const final_name: StepName;
+const worker: Agent;
+const request: Artifact;
+const primary_result: Artifact;
+const fallback_result: Artifact;
+const selected_result: Artifact;
+const final_result: Artifact;
+
+workflow select_demo {{
+    input_workflow(select_demo) == [request];
+    output_workflow(select_demo) == [selected_result, final_result];
+
+    step_name(primary_step) == primary_name;
+    step_instruction(primary_step) == "produce_primary";
+    step_executor(primary_step) == worker;
+    consumes(primary_step) == [request];
+    produces(primary_step) == [primary_result];
+
+    step_name(fallback_step) == fallback_name;
+    step_instruction(fallback_step) == "produce_fallback";
+    step_executor(fallback_step) == worker;
+    consumes(fallback_step) == [request];
+    produces(fallback_step) == [fallback_result];
+
+    selected_result == if({condition}, primary_result, fallback_result);
+
+    step_name(final_step) == final_name;
+    step_instruction(final_step) == "consume_selected";
+    step_executor(final_step) == worker;
+    consumes(final_step) == [selected_result];
+    produces(final_step) == [final_result];
+}}
+"""
+
+
 @pytest.mark.anyio
 async def test_in_memory_workflow_compiles_and_executes() -> None:
     prompts: list[str] = []
@@ -62,6 +107,54 @@ async def test_in_memory_workflow_compiles_and_executes() -> None:
 
     assert result == {"result": "completed"}
     assert prompts[0].splitlines()[0] == "Instruction: summarize_request"
+
+
+def test_runner_compiles_ordered_select_condition() -> None:
+    compiled = run_workflow.compile_workflow(_select_workflow("request >= 10"))
+
+    assert compiled.graph.to_dict()["selectors"][0] == {
+        "output_artifact_id": "selected_result",
+        "when_true_artifact_id": "primary_result",
+        "when_false_artifact_id": "fallback_result",
+        "condition": {
+            "kind": "comparison",
+            "operator": "gte",
+            "left": {"kind": "artifact", "artifact_id": "request"},
+            "right": {"kind": "literal", "value": 10},
+        },
+    }
+
+
+@pytest.mark.anyio
+async def test_named_select_executes_both_candidates_and_feeds_final_step() -> None:
+    prompts: dict[str, str] = {}
+
+    async def complete(prompt: str) -> str:
+        instruction = prompt.splitlines()[0].removeprefix("Instruction: ")
+        prompts[instruction] = prompt
+        if instruction == "produce_primary":
+            return "PRIMARY"
+        if instruction == "produce_fallback":
+            return "FALLBACK"
+        assert instruction == "consume_selected"
+        assert prompt.splitlines()[1] == 'Inputs: {"selected_result": "PRIMARY"}'
+        return "FINAL"
+
+    result = await run_workflow.execute_workflow(
+        _select_workflow('request = "primary"'),
+        request="primary",
+        complete=complete,
+    )
+
+    assert result == {
+        "final_result": "FINAL",
+        "selected_result": "PRIMARY",
+    }
+    assert set(prompts) == {
+        "consume_selected",
+        "produce_fallback",
+        "produce_primary",
+    }
 
 
 @pytest.mark.anyio

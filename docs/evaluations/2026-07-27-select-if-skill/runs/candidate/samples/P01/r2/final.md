@@ -1,0 +1,63 @@
+```fusionflow
+-- SCENARIO: route a request to one of two processors based on a category classification
+-- AUTHORED: 2025-07-15 from intent: "classify request, run both processors, route selected result to final step"
+
+const request: Artifact;
+const primary_category: Artifact;
+const category: Artifact;
+const primary_result: Artifact;
+const fallback_result: Artifact;
+const selected_result: Artifact;
+const final_result: Artifact;
+
+const classify_step: Step;
+const primary_processor_step: Step;
+const fallback_processor_step: Step;
+const final_step: Step;
+
+const classify_name: StepName;
+const primary_processor_name: StepName;
+const fallback_processor_name: StepName;
+const final_name: StepName;
+
+const classify_instruction: Instruction;
+const primary_instruction: Instruction;
+const fallback_instruction: Instruction;
+const final_instruction: Instruction;
+
+const classifier: Agent, Executor;
+const primary_processor: Agent, Executor;
+const fallback_processor: Agent, Executor;
+const final_consumer: Agent, Executor;
+
+workflow category_routing {
+  -- DATA FLOW
+  input_workflow(category_routing) == [request, primary_category];
+  consumes(classify_step) == [request];
+  produces(classify_step) == [category];
+  consumes(primary_processor_step) == [request];
+  produces(primary_processor_step) == [primary_result];
+  consumes(fallback_processor_step) == [request];
+  produces(fallback_processor_step) == [fallback_result];
+  selected_result == if(category = primary_category, primary_result, fallback_result);
+  consumes(final_step) == [selected_result];
+  produces(final_step) == [final_result];
+  output_workflow(category_routing) == [final_result];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(classify_step) == classifier;
+  step_executor(primary_processor_step) == primary_processor;
+  step_executor(fallback_processor_step) == fallback_processor;
+  step_executor(final_step) == final_consumer;
+
+  -- STEP CONFIGURATION
+  step_name(classify_step) == classify_name;
+  step_instruction(classify_step) == classify_instruction;
+  step_name(primary_processor_step) == primary_processor_name;
+  step_instruction(primary_processor_step) == primary_instruction;
+  step_name(fallback_processor_step) == fallback_processor_name;
+  step_instruction(fallback_processor_step) == fallback_instruction;
+  step_name(final_step) == final_name;
+  step_instruction(final_step) == final_instruction;
+}
+```

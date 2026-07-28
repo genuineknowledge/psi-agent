@@ -1,0 +1,12 @@
+{
+  "max_tokens": 32768,
+  "messages": [
+    {
+      "content": "请编写一个完整、可编译并具有真实可执行语义的 FusionFlow G4 工作流。工作流接收一份 request；一个分类 Step 产出 category；两个处理 Step 都消费 request，并分别产出 primary_result 和 fallback_result；最后一个消费 Step 根据 category 是否等于 primary_category，只消费被选择的处理结果并产出 final_result。两个处理 Step 必须在每次执行中都实际运行，选择只决定传给最终 Step 的值。请补全所需的常量声明、数据流、执行器绑定、StepName 和 Instruction 配置。只返回一个标记为 fusionflow 的代码块，不要返回伪代码、解释或运行命令。",
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "stream": true,
+  "temperature": 0
+}

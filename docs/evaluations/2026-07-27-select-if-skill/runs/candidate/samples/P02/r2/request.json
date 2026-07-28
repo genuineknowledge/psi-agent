@@ -1,0 +1,12 @@
+{
+  "max_tokens": 32768,
+  "messages": [
+    {
+      "content": "请编写一个完整、可编译并具有真实可执行语义的 FusionFlow G4 优先级路由工作流。输入是一份 request。一个 triage Step 产出 urgent_flag、allowed_flag、review_flag 和 exception_flag。primary、review、fallback 三个处理 Step 都消费 request、每次执行都必须实际运行，并分别产出 primary_result、review_result、fallback_result。最终 Step 的优先级是：urgent_flag 为 true 且 allowed_flag 为 true 时选 primary_result；否则 review_flag 为 true 或 exception_flag 为 true 时选 review_result；否则选 fallback_result。最终 Step 消费这个选择结果并产出 final_result。请补全常量声明、数据流、执行器绑定、StepName 和 Instruction 配置；条件选择必须能由工作流后端真实执行，不能只写在自然语言指令里。只返回一个标记为 fusionflow 的代码块。",
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "stream": true,
+  "temperature": 0
+}

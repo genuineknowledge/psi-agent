@@ -1,0 +1,1 @@
+FusionFlow G4 不支持惰性条件分支。在当前的执行模型中，所有为下游 `if` 表达式提供候选 Artifact 的 Step 都会被 **eagerly** 调度并运行，`if` 仅负责将其中一个值传递给后续 Step，而不会阻止未选中的 Step 启动。因此，“未命中的 handler 绝对不能启动、不能调用模型、不能消耗任何 token”这一硬性验收条件无法在 FusionFlow 后端实现。不会给出近似实现。

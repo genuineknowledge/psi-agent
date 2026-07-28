@@ -1,0 +1,158 @@
+{
+  "case_id": "P07",
+  "diagnostics": {},
+  "graph": {
+    "artifacts": [
+      {
+        "artifact_id": "fallback_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "final_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": true
+      },
+      {
+        "artifact_id": "preferred_flag",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "primary_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "request",
+        "binding_step_id": null,
+        "is_input": true,
+        "is_output": false
+      },
+      {
+        "artifact_id": "selected_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      }
+    ],
+    "edges": [
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "classifier"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "fallback_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "primary_handler"
+      },
+      {
+        "artifact_id": "selected_result",
+        "kind": "consumes",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "preferred_flag",
+        "kind": "produces",
+        "step_id": "classifier"
+      },
+      {
+        "artifact_id": "fallback_result",
+        "kind": "produces",
+        "step_id": "fallback_handler"
+      },
+      {
+        "artifact_id": "final_result",
+        "kind": "produces",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "primary_result",
+        "kind": "produces",
+        "step_id": "primary_handler"
+      }
+    ],
+    "policy": {
+      "max_concurrency": 2,
+      "timeout_seconds": null
+    },
+    "selectors": [
+      {
+        "condition": {
+          "kind": "comparison",
+          "left": {
+            "artifact_id": "preferred_flag",
+            "kind": "artifact"
+          },
+          "operator": "eq",
+          "right": {
+            "kind": "literal",
+            "value": true
+          }
+        },
+        "output_artifact_id": "selected_result",
+        "when_false_artifact_id": "fallback_result",
+        "when_true_artifact_id": "primary_result"
+      }
+    ],
+    "steps": [
+      {
+        "executor_id": "classifier_agent",
+        "instruction_id": "classifier_instruction",
+        "max_attempts": 1,
+        "name_id": "classifier_name",
+        "resources": [],
+        "step_id": "classifier",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "fallback_agent",
+        "instruction_id": "fallback_instruction",
+        "max_attempts": 1,
+        "name_id": "fallback_handler_name",
+        "resources": [],
+        "step_id": "fallback_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "final_agent",
+        "instruction_id": "final_instruction",
+        "max_attempts": 1,
+        "name_id": "final_step_name",
+        "resources": [],
+        "step_id": "final_step",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "primary_agent",
+        "instruction_id": "primary_instruction",
+        "max_attempts": 1,
+        "name_id": "primary_handler_name",
+        "resources": [],
+        "step_id": "primary_handler",
+        "timeout_seconds": null
+      }
+    ],
+    "workflow_id": "priority_routing"
+  },
+  "passed": true,
+  "predicates": {
+    "compiles": true,
+    "eager_candidate_step_count": true,
+    "final_step_consumes_selector_outputs": true,
+    "inline_if_in_consumes_count": true,
+    "named_selector_count": true,
+    "response": true,
+    "selector_chain_depth": true
+  }
+}

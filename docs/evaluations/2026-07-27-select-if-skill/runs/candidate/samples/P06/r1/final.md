@@ -1,0 +1,73 @@
+```fusionflow
+-- SCENARIO: Judgment-driven selection with eager parallel branches
+-- AUTHORED: 2025-01-01 12:00:00 from intent: "判定 Step 产出 flag，两条分支总是执行，根据 flag 选择最终输出"
+
+const request: Artifact;
+const approved_flag: Artifact;
+const approval_standard: Artifact;
+const approved_artifact: Artifact;
+const rejected_artifact: Artifact;
+const selected_artifact: Artifact;
+
+const judge_step: Step;
+const approve_handler_step: Step;
+const reject_handler_step: Step;
+
+const judge_name: StepName;
+const approve_name: StepName;
+const reject_name: StepName;
+
+const judge_instruction: Instruction;
+const approve_instruction: Instruction;
+const reject_instruction: Instruction;
+
+const agent: Agent, Executor;
+const model: Model;
+const engine: Engine;
+const api_base: ApiBase;
+const tool: Tool;
+
+workflow judge_and_select {
+  -- DATA FLOW
+  input_workflow(judge_and_select) == [request];
+
+  consumes(judge_step) == [request];
+  produces(judge_step) == [approved_flag, approval_standard];
+
+  consumes(approve_handler_step) == [request];
+  produces(approve_handler_step) == [approved_artifact];
+
+  consumes(reject_handler_step) == [request];
+  produces(reject_handler_step) == [rejected_artifact];
+
+  selected_artifact == if(
+    (approved_flag = approval_standard),
+    approved_artifact,
+    rejected_artifact
+  );
+
+  output_workflow(judge_and_select) == [selected_artifact];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(judge_step) == agent;
+  step_executor(approve_handler_step) == agent;
+  step_executor(reject_handler_step) == agent;
+
+  -- STEP CONFIGURATION
+  step_name(judge_step) == judge_name;
+  step_instruction(judge_step) == judge_instruction;
+
+  step_name(approve_handler_step) == approve_name;
+  step_instruction(approve_handler_step) == approve_instruction;
+
+  step_name(reject_handler_step) == reject_name;
+  step_instruction(reject_handler_step) == reject_instruction;
+
+  -- WORKFLOW CONFIGURATION
+  max_concurrency(judge_and_select) == 3;
+
+  -- AGENT CONFIGURATION
+  agent_config(agent, model, engine, api_base);
+  allowed_tool(agent, tool);
+}
+```

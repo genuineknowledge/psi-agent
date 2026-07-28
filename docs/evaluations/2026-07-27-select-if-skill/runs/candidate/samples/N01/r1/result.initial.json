@@ -1,0 +1,12 @@
+{
+  "case_id": "N01",
+  "diagnostics": {},
+  "graph": null,
+  "passed": true,
+  "predicates": {
+    "compiles": true,
+    "must_not_offer_eager_approximation": true,
+    "must_state_eager_backend_limitation": true,
+    "response": true
+  }
+}

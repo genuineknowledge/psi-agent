@@ -1,0 +1,275 @@
+{
+  "case_id": "P04",
+  "diagnostics": {},
+  "graph": {
+    "artifacts": [
+      {
+        "artifact_id": "chosen_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "critical_flag",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "critical_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "fallback_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "final_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": true
+      },
+      {
+        "artifact_id": "legal_flag",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "legal_or_review_default",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "legal_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "request",
+        "binding_step_id": null,
+        "is_input": true,
+        "is_output": false
+      },
+      {
+        "artifact_id": "review_flag",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "review_or_default",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "review_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      }
+    ],
+    "edges": [
+      {
+        "artifact_id": "chosen_result",
+        "kind": "consumes",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "critical_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "fallback_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "legal_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "review_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "triage_step"
+      },
+      {
+        "artifact_id": "critical_result",
+        "kind": "produces",
+        "step_id": "critical_handler"
+      },
+      {
+        "artifact_id": "fallback_result",
+        "kind": "produces",
+        "step_id": "fallback_handler"
+      },
+      {
+        "artifact_id": "final_result",
+        "kind": "produces",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "legal_result",
+        "kind": "produces",
+        "step_id": "legal_handler"
+      },
+      {
+        "artifact_id": "review_result",
+        "kind": "produces",
+        "step_id": "review_handler"
+      },
+      {
+        "artifact_id": "critical_flag",
+        "kind": "produces",
+        "step_id": "triage_step"
+      },
+      {
+        "artifact_id": "legal_flag",
+        "kind": "produces",
+        "step_id": "triage_step"
+      },
+      {
+        "artifact_id": "review_flag",
+        "kind": "produces",
+        "step_id": "triage_step"
+      }
+    ],
+    "policy": {
+      "max_concurrency": 5,
+      "timeout_seconds": 600
+    },
+    "selectors": [
+      {
+        "condition": {
+          "kind": "comparison",
+          "left": {
+            "artifact_id": "critical_flag",
+            "kind": "artifact"
+          },
+          "operator": "eq",
+          "right": {
+            "kind": "literal",
+            "value": true
+          }
+        },
+        "output_artifact_id": "chosen_result",
+        "when_false_artifact_id": "legal_or_review_default",
+        "when_true_artifact_id": "critical_result"
+      },
+      {
+        "condition": {
+          "kind": "comparison",
+          "left": {
+            "artifact_id": "legal_flag",
+            "kind": "artifact"
+          },
+          "operator": "eq",
+          "right": {
+            "kind": "literal",
+            "value": true
+          }
+        },
+        "output_artifact_id": "legal_or_review_default",
+        "when_false_artifact_id": "review_or_default",
+        "when_true_artifact_id": "legal_result"
+      },
+      {
+        "condition": {
+          "kind": "comparison",
+          "left": {
+            "artifact_id": "review_flag",
+            "kind": "artifact"
+          },
+          "operator": "eq",
+          "right": {
+            "kind": "literal",
+            "value": true
+          }
+        },
+        "output_artifact_id": "review_or_default",
+        "when_false_artifact_id": "fallback_result",
+        "when_true_artifact_id": "review_result"
+      }
+    ],
+    "steps": [
+      {
+        "executor_id": "critical_agent",
+        "instruction_id": "critical_instruction",
+        "max_attempts": 1,
+        "name_id": "critical_name",
+        "resources": [],
+        "step_id": "critical_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "fallback_agent",
+        "instruction_id": "fallback_instruction",
+        "max_attempts": 1,
+        "name_id": "fallback_name",
+        "resources": [],
+        "step_id": "fallback_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "final_agent",
+        "instruction_id": "final_instruction",
+        "max_attempts": 1,
+        "name_id": "final_name",
+        "resources": [],
+        "step_id": "final_step",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "legal_agent",
+        "instruction_id": "legal_instruction",
+        "max_attempts": 1,
+        "name_id": "legal_name",
+        "resources": [],
+        "step_id": "legal_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "review_agent",
+        "instruction_id": "review_instruction",
+        "max_attempts": 1,
+        "name_id": "review_name",
+        "resources": [],
+        "step_id": "review_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "triage_agent",
+        "instruction_id": "triage_instruction",
+        "max_attempts": 1,
+        "name_id": "triage_name",
+        "resources": [],
+        "step_id": "triage_step",
+        "timeout_seconds": null
+      }
+    ],
+    "workflow_id": "priority_routing"
+  },
+  "passed": true,
+  "predicates": {
+    "compiles": true,
+    "eager_candidate_step_count": true,
+    "final_step_consumes_selector_outputs": true,
+    "named_selector_count": true,
+    "response": true,
+    "selector_chain_depth": true
+  }
+}

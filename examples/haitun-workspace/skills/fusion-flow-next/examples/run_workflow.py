@@ -42,6 +42,10 @@ _CONCEPT_NAMES = (
     "Workflow",
 )
 _OPERATOR_NAMES = (
+    "comparison_gt_op",
+    "comparison_gte_op",
+    "comparison_lt_op",
+    "comparison_lte_op",
     "consumes",
     "input_workflow",
     "max_concurrency",

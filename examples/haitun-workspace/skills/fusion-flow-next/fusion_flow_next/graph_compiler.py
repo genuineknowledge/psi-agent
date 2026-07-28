@@ -11,10 +11,17 @@ from dataclasses import dataclass, field, replace
 
 from psi_agent.workflow_graph.model import (
     ArtifactNode,
+    ArtifactOperand,
+    ComparisonCondition,
+    ComparisonOperator,
     ConsumesEdge,
     ForeachEdge,
+    LiteralOperand,
+    LogicalCondition,
     ProducesEdge,
     ResourceRequirement,
+    SelectCondition,
+    SelectNode,
     StepNode,
     WorkflowEdge,
     WorkflowGraph,
@@ -23,7 +30,7 @@ from psi_agent.workflow_graph.model import (
 )
 
 from .compiler import CoreIRCompiler, _CompiledDeclarations
-from .core_ir import Assertion, CompoundTerm, Constant, IfTerm, ListTerm, Workflow
+from .core_ir import Assertion, CompoundTerm, ConnectiveFormula, Constant, IfTerm, ListTerm, Workflow
 
 
 class WorkflowGraphCompilationError(ValueError):
@@ -178,6 +185,18 @@ class WorkflowGraphCompiler(CoreIRCompiler):
         multiple graph facts in a single equality and is rejected.
         """
 
+        # A top-level IfTerm has one executable graph representation: it must
+        # select between two Artifact constants into a named Constant. Other
+        # term shapes remain on the existing graph-fact or residual path.
+        for output_term, value_term in (
+            (assertion.lhs, assertion.rhs),
+            (assertion.rhs, assertion.lhs),
+        ):
+            if not isinstance(value_term, IfTerm):
+                continue
+            if isinstance(output_term, Constant):
+                return self._compile_select(output_term, value_term)
+
         # Pair each possible graph call with the value on the other side.
         # Nested calls inside an unknown outer operator remain residual because
         # only top-level terms can declare a graph fact.
@@ -242,6 +261,7 @@ class WorkflowGraphCompiler(CoreIRCompiler):
         step_drafts: dict[str, _StepDraft] = {}
         artifacts: dict[str, ArtifactNode] = {}
         edges: set[WorkflowEdge] = set()
+        selectors: list[SelectNode] = []
 
         # Workflow-wide policies are optional but singular.
         policy = WorkflowPolicy()
@@ -250,6 +270,15 @@ class WorkflowGraphCompiler(CoreIRCompiler):
         residual: list[Assertion] = []
 
         for compiled in assertions:
+            if isinstance(compiled, SelectNode):
+                selectors.append(compiled)
+                for artifact_id in (
+                    compiled.output_artifact_id,
+                    *compiled.input_artifact_ids(),
+                ):
+                    artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
+                continue
+
             # Residual assertions are the untouched Core IR objects returned by
             # _compile_assertion when this backend owns no graph fact.
             if isinstance(compiled, Assertion):
@@ -485,6 +514,12 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                     )
                 ),
                 policy=policy,
+                selectors=tuple(
+                    sorted(
+                        selectors,
+                        key=lambda selector: selector.output_artifact_id,
+                    )
+                ),
             )
         except WorkflowGraphError as error:
             # Present target-model invariant failures through the compiler's
@@ -510,6 +545,154 @@ class WorkflowGraphCompiler(CoreIRCompiler):
 
         del declarations
         return workflows
+
+    @classmethod
+    def _compile_select(cls, output: object, conditional: IfTerm) -> SelectNode:
+        """Lower one named Artifact equality into an eager graph selector."""
+
+        if not isinstance(output, Constant) or not cls._has_concept(output, "Artifact"):
+            raise WorkflowGraphCompilationError("selected if output must be an Artifact constant")
+
+        when_true = conditional.when_true
+        when_false = conditional.when_false
+        if isinstance(when_true, IfTerm) or isinstance(when_false, IfTerm):
+            raise WorkflowGraphCompilationError("nested if branches are unsupported")
+        if not isinstance(when_true, Constant) or not cls._has_concept(when_true, "Artifact"):
+            raise WorkflowGraphCompilationError("if branches must be Artifact constants")
+        if not isinstance(when_false, Constant) or not cls._has_concept(when_false, "Artifact"):
+            raise WorkflowGraphCompilationError("if branches must be Artifact constants")
+
+        try:
+            return SelectNode(
+                output_artifact_id=output.symbol,
+                when_true_artifact_id=when_true.symbol,
+                when_false_artifact_id=when_false.symbol,
+                condition=cls._select_condition(conditional.condition),
+            )
+        except WorkflowGraphError as error:
+            raise WorkflowGraphCompilationError(str(error)) from error
+
+    @classmethod
+    def _select_condition(cls, formula: object) -> SelectCondition:
+        """Lower the closed FusionFlow condition subset into graph-owned values."""
+
+        if isinstance(formula, ConnectiveFormula):
+            left = cls._select_condition(formula.formula_left)
+            match formula.connective:
+                case "NOT":
+                    return LogicalCondition(operator="not", conditions=(left,))
+                case "AND":
+                    if formula.formula_right is None:
+                        raise WorkflowGraphCompilationError("AND condition requires a right formula")
+                    return LogicalCondition(
+                        operator="and",
+                        conditions=(left, cls._select_condition(formula.formula_right)),
+                    )
+                case "OR":
+                    if formula.formula_right is None:
+                        raise WorkflowGraphCompilationError("OR condition requires a right formula")
+                    return LogicalCondition(
+                        operator="or",
+                        conditions=(left, cls._select_condition(formula.formula_right)),
+                    )
+                case _:
+                    raise WorkflowGraphCompilationError(f"unsupported logical connective: {formula.connective}")
+
+        if not isinstance(formula, Assertion):
+            raise WorkflowGraphCompilationError("if condition must be an equality or logical formula")
+
+        ordered = tuple(
+            (term, asserted)
+            for term, asserted in (
+                (formula.lhs, formula.rhs),
+                (formula.rhs, formula.lhs),
+            )
+            if isinstance(term, CompoundTerm)
+            and term.operator.name
+            in {
+                "comparison_lt_op",
+                "comparison_lte_op",
+                "comparison_gt_op",
+                "comparison_gte_op",
+            }
+        )
+        if ordered:
+            if len(ordered) != 1:
+                raise WorkflowGraphCompilationError("one condition cannot contain multiple ordered comparisons")
+            comparison, asserted = ordered[0]
+            if cls._boolean_literal(asserted) is not True:
+                raise WorkflowGraphCompilationError("ordered comparison must be asserted against True")
+            if len(comparison.arguments) != 2:
+                raise WorkflowGraphCompilationError("ordered comparison expects two operands")
+            operator: ComparisonOperator
+            match comparison.operator.name:
+                case "comparison_lt_op":
+                    operator = "lt"
+                case "comparison_lte_op":
+                    operator = "lte"
+                case "comparison_gt_op":
+                    operator = "gt"
+                case "comparison_gte_op":
+                    operator = "gte"
+                case _:
+                    raise AssertionError("ordered comparison was filtered above")
+            return ComparisonCondition(
+                operator=operator,
+                left=cls._select_operand(comparison.arguments[0]),
+                right=cls._select_operand(comparison.arguments[1]),
+            )
+
+        if not isinstance(formula.lhs, Constant) or not isinstance(formula.rhs, Constant):
+            raise WorkflowGraphCompilationError("condition operands must be constants")
+        return ComparisonCondition(
+            operator="eq",
+            left=cls._select_operand(formula.lhs),
+            right=cls._select_operand(formula.rhs),
+        )
+
+    @classmethod
+    def _select_operand(cls, term: object) -> ArtifactOperand | LiteralOperand:
+        """Lower one condition operand without evaluating arbitrary terms."""
+
+        if not isinstance(term, Constant):
+            raise WorkflowGraphCompilationError("condition operands must be constants")
+        if cls._has_concept(term, "Artifact"):
+            return ArtifactOperand(artifact_id=term.symbol)
+        if cls._has_concept(term, "Bool"):
+            boolean = cls._boolean_literal(term)
+            if boolean is None:
+                raise WorkflowGraphCompilationError("Bool condition operand must be True or False")
+            return LiteralOperand(value=boolean)
+        if cls._has_concept(term, "ComplexNumber"):
+            try:
+                value: int | float = int(term.symbol)
+            except ValueError:
+                try:
+                    value = float(term.symbol)
+                except ValueError as error:
+                    raise WorkflowGraphCompilationError("ComplexNumber condition operand must be numeric") from error
+            return LiteralOperand(value=value)
+        return LiteralOperand(value=term.symbol)
+
+    @classmethod
+    def _boolean_literal(cls, term: object) -> bool | None:
+        """Return a typed Bool literal, or None for every other constant."""
+
+        if not isinstance(term, Constant) or not cls._has_concept(term, "Bool"):
+            return None
+        match term.symbol.casefold():
+            case "true":
+                return True
+            case "false":
+                return False
+            case _:
+                return None
+
+    @staticmethod
+    def _has_concept(constant: Constant, concept_name: str) -> bool:
+        """Whether a constant was declared with one named concept."""
+
+        return any(concept.name == concept_name for concept in constant.belong_concepts)
 
     @staticmethod
     def _require_arity(arguments: tuple[object, ...], expected: int, operator_name: str) -> None:

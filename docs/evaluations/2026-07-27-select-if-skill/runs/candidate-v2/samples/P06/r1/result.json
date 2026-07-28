@@ -1,0 +1,132 @@
+{
+  "case_id": "P06",
+  "diagnostics": {},
+  "graph": {
+    "artifacts": [
+      {
+        "artifact_id": "approved_artifact",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "approved_flag",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "rejected_artifact",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "request",
+        "binding_step_id": null,
+        "is_input": true,
+        "is_output": false
+      },
+      {
+        "artifact_id": "selected_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": true
+      }
+    ],
+    "edges": [
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "approve_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "decision_step"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "reject_handler"
+      },
+      {
+        "artifact_id": "approved_artifact",
+        "kind": "produces",
+        "step_id": "approve_handler"
+      },
+      {
+        "artifact_id": "approved_flag",
+        "kind": "produces",
+        "step_id": "decision_step"
+      },
+      {
+        "artifact_id": "rejected_artifact",
+        "kind": "produces",
+        "step_id": "reject_handler"
+      }
+    ],
+    "policy": {
+      "max_concurrency": null,
+      "timeout_seconds": null
+    },
+    "selectors": [
+      {
+        "condition": {
+          "kind": "comparison",
+          "left": {
+            "artifact_id": "approved_flag",
+            "kind": "artifact"
+          },
+          "operator": "eq",
+          "right": {
+            "kind": "literal",
+            "value": "True"
+          }
+        },
+        "output_artifact_id": "selected_result",
+        "when_false_artifact_id": "rejected_artifact",
+        "when_true_artifact_id": "approved_artifact"
+      }
+    ],
+    "steps": [
+      {
+        "executor_id": "approve_agent",
+        "instruction_id": "approve_instruction",
+        "max_attempts": 1,
+        "name_id": "approve_name",
+        "resources": [],
+        "step_id": "approve_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "decision_agent",
+        "instruction_id": "decision_instruction",
+        "max_attempts": 1,
+        "name_id": "decision_name",
+        "resources": [],
+        "step_id": "decision_step",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "reject_agent",
+        "instruction_id": "reject_instruction",
+        "max_attempts": 1,
+        "name_id": "reject_name",
+        "resources": [],
+        "step_id": "reject_handler",
+        "timeout_seconds": null
+      }
+    ],
+    "workflow_id": "approval_workflow"
+  },
+  "passed": true,
+  "predicates": {
+    "compiles": true,
+    "eager_candidate_step_count": true,
+    "named_selector_count": true,
+    "response": true,
+    "selector_chain_depth": true,
+    "selector_output_is_workflow_output": true
+  }
+}

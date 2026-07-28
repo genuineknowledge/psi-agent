@@ -42,6 +42,9 @@ JSONL 格式零依赖，逐行追加读写简单。文件按 `workspace/historie
 **为什么 FusionFlow `parallel()` 不照搬 TypeScript 的 grace-period 脱离任务？**
 Python 版本坚持 AnyIO 结构化并发：`first` / `any` 取消落后任务后仍等待它们完成清理。这样 `run()` 返回时 binding 与 trace 已封口，不会再被后台任务修改。任务若吞掉取消信号而永久运行，整个并行节点也会继续等待；这是资源与状态一致性的有意取舍。
 
+**为什么 WorkflowGraph 的 `SelectNode` 是 eager 值选择？**
+FusionFlow 的命名选择 `selected == if(condition, artifact_a, artifact_b)` 只决定下游读取哪个值。planner 会等待条件和两个候选 Artifact 全部可用，因此两个候选 producer 都会运行。它不是 lazy 分支、Step activation 或控制流 Region；不要据此跳过未选 Step。多级优先级用多个命名 Artifact 串联，禁止把嵌套 `if` 直接塞进 dataflow List。
+
 **FusionFlow 的跨语言兼容边界是什么？**
 运行结果与核心行为优先兼容，包括同一运行时内的 binding 恢复、配对的 `node_start` / `node_end` progress 事件、分组 token 汇总、程序快照和 `exec()` 截断标记。真实 TypeScript `inputHash` 与 Python `cache_key` 的输入、provider 身份和长度不同，因此两种运行目录不保证直接互相命中缓存；camelCase metadata 别名只保证字段可读。graph、meta 和 trace 使用各自语言的数据结构：Python 命名 trace 是通用 `ExecutionTrace`，不是 TypeScript 的扁平 provider/model/prompt 对象；只有 `progress.jsonl` 保持共享格式。单节点 trace / progress 写入是 best-effort，最终 graph/meta 才是权威产物，不追随 TypeScript 的诊断写失败即中止。`flow.output()` / `ctx.save()` 写入带 metadata 的单赋值 binding，不额外创建 output graph node。
 
@@ -106,10 +109,10 @@ src/
     │   ├── cli/                    # 单次消息 CLI thin client
     │   ├── telegram/               # Telegram bot channel
     │   ├── feishu/                 # Feishu bot channel
-    ├── workflow_execution.py       # WorkflowGraph → Fiber/Await/Invoke plan + async executor
+    ├── workflow_execution.py       # WorkflowGraph → Fiber/Await/Select/Invoke plan + async executor
     ├── workflow_graph/
     │   ├── __init__.py             # 声明式图模型 API
-    │   └── model.py                # 允许有环的 Step–Artifact 静态图
+    │   └── model.py                # Step–Artifact 静态图 + eager SelectNode
     └── gateway/
         ├── AGENTS.md                # Gateway 层设计文档
         ├── __init__.py              # Gateway dataclass + run()

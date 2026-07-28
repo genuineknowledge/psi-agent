@@ -1,0 +1,36 @@
+{
+  "created_at": "2026-07-27T16:39:49.503705+00:00",
+  "git_head": "836a88470c5c1a766833525dc29132bb06694256",
+  "python": "3.14.0 (tags/v3.14.0:ebf955d, Oct  7 2025, 10:15:03) [MSC v.1944 64 bit (AMD64)]",
+  "settings": {
+    "base_url": "https://api.deepseek.com/v1",
+    "comparison_policy": {
+      "same_generation_settings": true,
+      "same_oracle": true,
+      "same_prompts": true
+    },
+    "execution_policy": {
+      "repair": false,
+      "retry": false,
+      "selective_rerun": false
+    },
+    "max_tokens": 32768,
+    "model": "deepseek-v4-flash",
+    "provider": "deepseek",
+    "repetitions": 2,
+    "samples_per_variant": 16,
+    "session": {
+      "fresh_process_per_sample": true,
+      "fresh_session_id_per_sample": true,
+      "fresh_session_per_sample": true,
+      "turns": 1
+    },
+    "temperature": 0
+  },
+  "sha256": {
+    "FusionFlow.g4": "c44373b7769f50ae08cb817319c6844ccc84c5c25928299be801a5b6dc1afcca",
+    "SKILL.md": "05dba4a228e16af3c4140aab481898ddba9bbbb7ecd6a579e4c41d60fdc323b4",
+    "cases.json": "43848b0749964926f9db49a49896d65ee3e3547ab185591a9ce921a1c9763ca8",
+    "system_prompt.py": "c78e85c480d8a5ddf403b1eb86544e5d2a669c2887a575c7a421c71ac171ce68"
+  }
+}

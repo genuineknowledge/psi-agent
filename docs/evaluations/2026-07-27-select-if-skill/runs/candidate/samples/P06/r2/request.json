@@ -1,0 +1,12 @@
+{
+  "max_tokens": 32768,
+  "messages": [
+    {
+      "content": "请编写一个完整、可编译并具有真实可执行语义的 FusionFlow G4 工作流。工作流接收 request；一个判定 Step 产出 approved_flag；approve_handler 和 reject_handler 都消费 request、每次执行都实际运行，并分别产出 approved_artifact 与 rejected_artifact。工作流最终输出应当就是根据 approved_flag 选择出的 Artifact 本身，不要再增加只负责转发的最终 Step。请补全所需的常量声明、数据流、执行器绑定、StepName 和 Instruction 配置；选择必须由工作流结构真实执行。只返回一个标记为 fusionflow 的代码块，不要解释。",
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "stream": true,
+  "temperature": 0
+}

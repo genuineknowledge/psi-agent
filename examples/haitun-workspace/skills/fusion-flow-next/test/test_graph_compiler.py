@@ -9,6 +9,7 @@ from fusion_flow_next.core_ir import (
     Assertion,
     CompoundTerm,
     Concept,
+    ConnectiveFormula,
     Constant,
     IfTerm,
     ListTerm,
@@ -23,7 +24,15 @@ from fusion_flow_next.graph_compiler import (
     WorkflowGraphCompiler,
 )
 
-from psi_agent.workflow_graph.model import WorkflowGraphError
+from psi_agent.workflow_graph.model import (
+    ArtifactOperand,
+    ComparisonCondition,
+    ComparisonOperator,
+    LiteralOperand,
+    LogicalCondition,
+    SelectNode,
+    WorkflowGraphError,
+)
 
 
 def _assertion(
@@ -143,6 +152,7 @@ def test_compiles_all_graph_operators() -> None:
             {"kind": "produces", "step_id": "step", "artifact_id": "output"},
         ],
         "policy": {"max_concurrency": 4, "timeout_seconds": 120},
+        "selectors": [],
     }
 
 
@@ -225,6 +235,29 @@ def test_unknown_assertions_remain_residual() -> None:
     )
 
 
+def test_unknown_operator_with_if_value_remains_residual() -> None:
+    artifact = Concept("Artifact")
+    assertion = Assertion(
+        lhs=CompoundTerm(
+            operator=Operator("unknown_operator"),
+            arguments=(Constant("output", (artifact,)),),
+        ),
+        rhs=IfTerm(
+            condition=Assertion(
+                lhs=Constant("condition", (artifact,)),
+                rhs=Constant("True", (Concept("Bool"),)),
+            ),
+            when_true=Constant("primary", (artifact,)),
+            when_false=Constant("fallback", (artifact,)),
+        ),
+    )
+
+    compilation = _compile((assertion,))
+
+    assert compilation.graph.selectors == ()
+    assert compilation.residual_assertions == (assertion,)
+
+
 def test_supported_graph_operator_on_rhs_is_lowered_as_equality() -> None:
     reversed_input = Assertion(
         lhs=ListTerm((Constant("artifact2"),)),
@@ -270,6 +303,372 @@ def test_supported_operator_with_unsupported_term_fails_closed() -> None:
 
     with pytest.raises(ValueError, match="unsupported if term"):
         _compile((_assertion("step_name", (Constant("step"),), conditional),))
+
+
+def test_named_artifact_if_lowers_to_select_without_residual() -> None:
+    artifact = Concept("Artifact")
+    boolean = Concept("Bool")
+    workflow = Constant("workflow")
+    flag = Constant("flag", (artifact,))
+    status = Constant("status", (artifact,))
+    primary = Constant("primary", (artifact,))
+    fallback = Constant("fallback", (artifact,))
+    selected = Constant("selected", (artifact,))
+    condition = ConnectiveFormula(
+        formula_left=Assertion(
+            lhs=flag,
+            rhs=Constant("True", (boolean,)),
+        ),
+        connective="AND",
+        formula_right=ConnectiveFormula(
+            formula_left=Assertion(lhs=status, rhs=Constant("ready")),
+            connective="NOT",
+        ),
+    )
+
+    compilation = _compile(
+        (
+            _assertion(
+                "input_workflow",
+                (workflow,),
+                ListTerm((flag, status, primary, fallback)),
+            ),
+            _assertion("output_workflow", (workflow,), ListTerm((selected,))),
+            Assertion(
+                lhs=selected,
+                rhs=IfTerm(
+                    condition=condition,
+                    when_true=primary,
+                    when_false=fallback,
+                ),
+            ),
+        )
+    )
+
+    assert compilation.residual_assertions == ()
+    assert compilation.graph.selectors == (
+        SelectNode(
+            output_artifact_id="selected",
+            when_true_artifact_id="primary",
+            when_false_artifact_id="fallback",
+            condition=LogicalCondition(
+                operator="and",
+                conditions=(
+                    ComparisonCondition(
+                        operator="eq",
+                        left=ArtifactOperand("flag"),
+                        right=LiteralOperand(True),
+                    ),
+                    LogicalCondition(
+                        operator="not",
+                        conditions=(
+                            ComparisonCondition(
+                                operator="eq",
+                                left=ArtifactOperand("status"),
+                                right=LiteralOperand("ready"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert tuple(artifact.artifact_id for artifact in compilation.graph.artifacts) == (
+        "fallback",
+        "flag",
+        "primary",
+        "selected",
+        "status",
+    )
+
+
+@pytest.mark.parametrize(
+    ("operator_name", "graph_operator"),
+    [
+        ("comparison_lt_op", "lt"),
+        ("comparison_lte_op", "lte"),
+        ("comparison_gt_op", "gt"),
+        ("comparison_gte_op", "gte"),
+    ],
+)
+def test_named_artifact_if_lowers_ordered_comparison(
+    operator_name: str,
+    graph_operator: ComparisonOperator,
+) -> None:
+    artifact = Concept("Artifact")
+    boolean = Concept("Bool")
+    number = Concept("ComplexNumber")
+    workflow = Constant("workflow")
+    score = Constant("score", (artifact,))
+    primary = Constant("primary", (artifact,))
+    fallback = Constant("fallback", (artifact,))
+    selected = Constant("selected", (artifact,))
+
+    compilation = _compile(
+        (
+            _assertion(
+                "input_workflow",
+                (workflow,),
+                ListTerm((score, primary, fallback)),
+            ),
+            _assertion("output_workflow", (workflow,), ListTerm((selected,))),
+            Assertion(
+                lhs=selected,
+                rhs=IfTerm(
+                    condition=Assertion(
+                        lhs=CompoundTerm(
+                            operator=Operator(operator_name),
+                            arguments=(score, Constant("10.5", (number,))),
+                        ),
+                        rhs=Constant("True", (boolean,)),
+                    ),
+                    when_true=primary,
+                    when_false=fallback,
+                ),
+            ),
+        )
+    )
+
+    assert compilation.graph.selectors[0].condition == ComparisonCondition(
+        operator=graph_operator,
+        left=ArtifactOperand("score"),
+        right=LiteralOperand(10.5),
+    )
+
+
+def test_named_select_chains_compile_deterministically() -> None:
+    artifact = Concept("Artifact")
+    boolean = Concept("Bool")
+    workflow = Constant("workflow")
+    condition_one = Constant("condition_one", (artifact,))
+    condition_two = Constant("condition_two", (artifact,))
+    primary = Constant("primary", (artifact,))
+    review = Constant("review", (artifact,))
+    fallback = Constant("fallback", (artifact,))
+    review_or_fallback = Constant("review_or_fallback", (artifact,))
+    selected = Constant("selected", (artifact,))
+    true = Constant("True", (boolean,))
+    assertions = (
+        _assertion(
+            "input_workflow",
+            (workflow,),
+            ListTerm((condition_one, condition_two, primary, review, fallback)),
+        ),
+        _assertion("output_workflow", (workflow,), ListTerm((selected,))),
+        Assertion(
+            lhs=review_or_fallback,
+            rhs=IfTerm(
+                condition=Assertion(condition_two, true),
+                when_true=review,
+                when_false=fallback,
+            ),
+        ),
+        Assertion(
+            lhs=selected,
+            rhs=IfTerm(
+                condition=Assertion(condition_one, true),
+                when_true=primary,
+                when_false=review_or_fallback,
+            ),
+        ),
+    )
+
+    left = _compile(assertions)
+    right = _compile(tuple(reversed(assertions)))
+
+    assert left.graph.to_dict() == right.graph.to_dict()
+    assert tuple(selector.output_artifact_id for selector in left.graph.selectors) == (
+        "review_or_fallback",
+        "selected",
+    )
+    assert left.residual_assertions == ()
+
+
+def test_inline_if_in_consumes_fails_closed() -> None:
+    conditional = IfTerm(
+        condition=Assertion(lhs=Constant("condition"), rhs=Constant("True")),
+        when_true=Constant("yes"),
+        when_false=Constant("no"),
+    )
+
+    with pytest.raises(WorkflowGraphCompilationError, match="unsupported if term"):
+        _compile(
+            (
+                _assertion(
+                    "consumes",
+                    (Constant("step"),),
+                    ListTerm((conditional,)),
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("selected", "when_true", "message"),
+    [
+        (
+            Constant("selected"),
+            Constant("primary", (Concept("Artifact"),)),
+            "selected if output must be an Artifact constant",
+        ),
+        (
+            Constant("selected", (Concept("Artifact"),)),
+            Constant("primary"),
+            "if branches must be Artifact constants",
+        ),
+        (
+            Constant("selected", (Concept("Artifact"),)),
+            ListTerm((Constant("primary", (Concept("Artifact"),)),)),
+            "if branches must be Artifact constants",
+        ),
+        (
+            Constant("selected", (Concept("Artifact"),)),
+            CompoundTerm(Operator("identity"), (Constant("primary"),)),
+            "if branches must be Artifact constants",
+        ),
+        (
+            Constant("selected", (Concept("Artifact"),)),
+            IfTerm(
+                condition=Assertion(Constant("nested"), Constant("True")),
+                when_true=Constant("a"),
+                when_false=Constant("b"),
+            ),
+            "nested if branches are unsupported",
+        ),
+    ],
+)
+def test_named_if_rejects_non_artifact_and_compound_branches(
+    selected: Constant,
+    when_true: Term,
+    message: str,
+) -> None:
+    artifact = Concept("Artifact")
+
+    with pytest.raises(WorkflowGraphCompilationError, match=message):
+        _compile(
+            (
+                Assertion(
+                    lhs=selected,
+                    rhs=IfTerm(
+                        condition=Assertion(
+                            Constant("condition", (artifact,)),
+                            Constant("True", (Concept("Bool"),)),
+                        ),
+                        when_true=when_true,
+                        when_false=Constant("fallback", (artifact,)),
+                    ),
+                ),
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "operand",
+    [
+        ListTerm((Constant("condition"),)),
+        CompoundTerm(Operator("+"), (Constant("condition"), Constant("1"))),
+        IfTerm(
+            condition=Assertion(Constant("inner"), Constant("True")),
+            when_true=Constant("yes"),
+            when_false=Constant("no"),
+        ),
+    ],
+)
+def test_named_if_rejects_unsupported_condition_operands(operand: Term) -> None:
+    artifact = Concept("Artifact")
+
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="condition operands must be constants",
+    ):
+        _compile(
+            (
+                Assertion(
+                    lhs=Constant("selected", (artifact,)),
+                    rhs=IfTerm(
+                        condition=Assertion(
+                            lhs=operand,
+                            rhs=Constant("True", (Concept("Bool"),)),
+                        ),
+                        when_true=Constant("primary", (artifact,)),
+                        when_false=Constant("fallback", (artifact,)),
+                    ),
+                ),
+            )
+        )
+
+
+def test_step_and_select_duplicate_producer_is_public_and_chained() -> None:
+    artifact = Concept("Artifact")
+    workflow = Constant("workflow")
+    condition = Constant("condition", (artifact,))
+    primary = Constant("primary", (artifact,))
+    fallback = Constant("fallback", (artifact,))
+    selected = Constant("selected", (artifact,))
+
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="artifact has multiple producers",
+    ) as caught:
+        _compile(
+            (
+                *_step_declarations(),
+                _assertion(
+                    "input_workflow",
+                    (workflow,),
+                    ListTerm((condition, primary, fallback)),
+                ),
+                _assertion("output_workflow", (workflow,), ListTerm((selected,))),
+                _assertion(
+                    "produces",
+                    (Constant("step"),),
+                    ListTerm((selected,)),
+                ),
+                Assertion(
+                    lhs=selected,
+                    rhs=IfTerm(
+                        condition=Assertion(condition, Constant("True", (Concept("Bool"),))),
+                        when_true=primary,
+                        when_false=fallback,
+                    ),
+                ),
+            )
+        )
+
+    assert isinstance(caught.value.__cause__, WorkflowGraphError)
+
+
+def test_duplicate_select_output_is_public_and_chained() -> None:
+    artifact = Concept("Artifact")
+    workflow = Constant("workflow")
+    condition = Constant("condition", (artifact,))
+    primary = Constant("primary", (artifact,))
+    fallback = Constant("fallback", (artifact,))
+    selected = Constant("selected", (artifact,))
+    select = IfTerm(
+        condition=Assertion(condition, Constant("True", (Concept("Bool"),))),
+        when_true=primary,
+        when_false=fallback,
+    )
+
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="artifact has multiple producers",
+    ) as caught:
+        _compile(
+            (
+                _assertion(
+                    "input_workflow",
+                    (workflow,),
+                    ListTerm((condition, primary, fallback)),
+                ),
+                _assertion("output_workflow", (workflow,), ListTerm((selected,))),
+                Assertion(lhs=selected, rhs=select),
+                Assertion(lhs=selected, rhs=select),
+            )
+        )
+
+    assert isinstance(caught.value.__cause__, WorkflowGraphError)
 
 
 def test_oversized_integer_is_reported_as_a_graph_compilation_error() -> None:

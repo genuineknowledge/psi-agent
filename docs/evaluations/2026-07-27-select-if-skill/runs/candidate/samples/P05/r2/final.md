@@ -1,0 +1,103 @@
+```fusionflow
+-- SCENARIO: independent conditional routing of tone and risk before final synthesis
+-- AUTHORED: from intent: "routing Step produces tone_flag and risk_flag; four eager handlers run;
+--   independently select formal/casual by tone, escalated/safe by risk; final Step consumes both selections."
+
+const request: Artifact;
+const formal_tone: Artifact;
+const high_risk: Artifact;
+const tone_flag: Artifact;
+const risk_flag: Artifact;
+const formal_result: Artifact;
+const casual_result: Artifact;
+const safe_result: Artifact;
+const escalated_result: Artifact;
+const selected_tone: Artifact;
+const selected_risk: Artifact;
+const final_result: Artifact;
+
+const routing_step: Step;
+const formal_handler: Step;
+const casual_handler: Step;
+const safe_handler: Step;
+const escalated_handler: Step;
+const final_step: Step;
+
+const routing_name: StepName;
+const formal_name: StepName;
+const casual_name: StepName;
+const safe_name: StepName;
+const escalated_name: StepName;
+const final_name: StepName;
+
+const routing_instruction: Instruction;
+const formal_instruction: Instruction;
+const casual_instruction: Instruction;
+const safe_instruction: Instruction;
+const escalated_instruction: Instruction;
+const final_instruction: Instruction;
+
+const routing_agent: Agent, Executor;
+const formal_agent: Agent, Executor;
+const casual_agent: Agent, Executor;
+const safe_agent: Agent, Executor;
+const escalated_agent: Agent, Executor;
+const final_agent: Agent, Executor;
+
+const model: Model;
+const engine: Engine;
+const api_base: ApiBase;
+
+workflow conditional_routing {
+  -- DATA FLOW
+  input_workflow(conditional_routing) == [request, formal_tone, high_risk];
+  consumes(routing_step) == [request];
+  produces(routing_step) == [tone_flag, risk_flag];
+  consumes(formal_handler) == [request];
+  produces(formal_handler) == [formal_result];
+  consumes(casual_handler) == [request];
+  produces(casual_handler) == [casual_result];
+  consumes(safe_handler) == [request];
+  produces(safe_handler) == [safe_result];
+  consumes(escalated_handler) == [request];
+  produces(escalated_handler) == [escalated_result];
+  selected_tone == if(tone_flag = formal_tone, formal_result, casual_result);
+  selected_risk == if(risk_flag = high_risk, escalated_result, safe_result);
+  consumes(final_step) == [selected_tone, selected_risk];
+  produces(final_step) == [final_result];
+  output_workflow(conditional_routing) == [final_result];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(routing_step) == routing_agent;
+  step_executor(formal_handler) == formal_agent;
+  step_executor(casual_handler) == casual_agent;
+  step_executor(safe_handler) == safe_agent;
+  step_executor(escalated_handler) == escalated_agent;
+  step_executor(final_step) == final_agent;
+
+  -- STEP CONFIGURATION
+  step_name(routing_step) == routing_name;
+  step_instruction(routing_step) == routing_instruction;
+  step_name(formal_handler) == formal_name;
+  step_instruction(formal_handler) == formal_instruction;
+  step_name(casual_handler) == casual_name;
+  step_instruction(casual_handler) == casual_instruction;
+  step_name(safe_handler) == safe_name;
+  step_instruction(safe_handler) == safe_instruction;
+  step_name(escalated_handler) == escalated_name;
+  step_instruction(escalated_handler) == escalated_instruction;
+  step_name(final_step) == final_name;
+  step_instruction(final_step) == final_instruction;
+
+  -- WORKFLOW CONFIGURATION
+  max_concurrency(conditional_routing) == 4;
+
+  -- AGENT CONFIGURATION
+  agent_config(routing_agent, model, engine, api_base);
+  agent_config(formal_agent, model, engine, api_base);
+  agent_config(casual_agent, model, engine, api_base);
+  agent_config(safe_agent, model, engine, api_base);
+  agent_config(escalated_agent, model, engine, api_base);
+  agent_config(final_agent, model, engine, api_base);
+}
+```

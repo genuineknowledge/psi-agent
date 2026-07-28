@@ -1,0 +1,258 @@
+{
+  "case_id": "P05",
+  "diagnostics": {},
+  "graph": {
+    "artifacts": [
+      {
+        "artifact_id": "casual_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "escalated_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "final_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": true
+      },
+      {
+        "artifact_id": "formal_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "formal_tone",
+        "binding_step_id": null,
+        "is_input": true,
+        "is_output": false
+      },
+      {
+        "artifact_id": "high_risk",
+        "binding_step_id": null,
+        "is_input": true,
+        "is_output": false
+      },
+      {
+        "artifact_id": "request",
+        "binding_step_id": null,
+        "is_input": true,
+        "is_output": false
+      },
+      {
+        "artifact_id": "risk_flag",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "safe_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "selected_risk",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "selected_tone",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "tone_flag",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      }
+    ],
+    "edges": [
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "casual_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "escalated_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "formal_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "routing_step"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "safe_handler"
+      },
+      {
+        "artifact_id": "selected_risk",
+        "kind": "consumes",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "selected_tone",
+        "kind": "consumes",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "casual_result",
+        "kind": "produces",
+        "step_id": "casual_handler"
+      },
+      {
+        "artifact_id": "escalated_result",
+        "kind": "produces",
+        "step_id": "escalated_handler"
+      },
+      {
+        "artifact_id": "final_result",
+        "kind": "produces",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "formal_result",
+        "kind": "produces",
+        "step_id": "formal_handler"
+      },
+      {
+        "artifact_id": "risk_flag",
+        "kind": "produces",
+        "step_id": "routing_step"
+      },
+      {
+        "artifact_id": "tone_flag",
+        "kind": "produces",
+        "step_id": "routing_step"
+      },
+      {
+        "artifact_id": "safe_result",
+        "kind": "produces",
+        "step_id": "safe_handler"
+      }
+    ],
+    "policy": {
+      "max_concurrency": 4,
+      "timeout_seconds": null
+    },
+    "selectors": [
+      {
+        "condition": {
+          "kind": "comparison",
+          "left": {
+            "artifact_id": "risk_flag",
+            "kind": "artifact"
+          },
+          "operator": "eq",
+          "right": {
+            "artifact_id": "high_risk",
+            "kind": "artifact"
+          }
+        },
+        "output_artifact_id": "selected_risk",
+        "when_false_artifact_id": "safe_result",
+        "when_true_artifact_id": "escalated_result"
+      },
+      {
+        "condition": {
+          "kind": "comparison",
+          "left": {
+            "artifact_id": "tone_flag",
+            "kind": "artifact"
+          },
+          "operator": "eq",
+          "right": {
+            "artifact_id": "formal_tone",
+            "kind": "artifact"
+          }
+        },
+        "output_artifact_id": "selected_tone",
+        "when_false_artifact_id": "casual_result",
+        "when_true_artifact_id": "formal_result"
+      }
+    ],
+    "steps": [
+      {
+        "executor_id": "casual_agent",
+        "instruction_id": "casual_instruction",
+        "max_attempts": 1,
+        "name_id": "casual_name",
+        "resources": [],
+        "step_id": "casual_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "escalated_agent",
+        "instruction_id": "escalated_instruction",
+        "max_attempts": 1,
+        "name_id": "escalated_name",
+        "resources": [],
+        "step_id": "escalated_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "final_agent",
+        "instruction_id": "final_instruction",
+        "max_attempts": 1,
+        "name_id": "final_name",
+        "resources": [],
+        "step_id": "final_step",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "formal_agent",
+        "instruction_id": "formal_instruction",
+        "max_attempts": 1,
+        "name_id": "formal_name",
+        "resources": [],
+        "step_id": "formal_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "routing_agent",
+        "instruction_id": "routing_instruction",
+        "max_attempts": 1,
+        "name_id": "routing_name",
+        "resources": [],
+        "step_id": "routing_step",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "safe_agent",
+        "instruction_id": "safe_instruction",
+        "max_attempts": 1,
+        "name_id": "safe_name",
+        "resources": [],
+        "step_id": "safe_handler",
+        "timeout_seconds": null
+      }
+    ],
+    "workflow_id": "conditional_routing"
+  },
+  "passed": true,
+  "predicates": {
+    "compiles": true,
+    "eager_candidate_step_count": true,
+    "named_selector_count": true,
+    "one_final_step_consumes_all_selector_outputs": true,
+    "response": true,
+    "selectors_are_independent": true
+  }
+}

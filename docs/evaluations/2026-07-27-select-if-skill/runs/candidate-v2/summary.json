@@ -1,0 +1,141 @@
+{
+  "ai_returncode": 1,
+  "failed": 3,
+  "label": "candidate-v2",
+  "manifest": {
+    "created_at": "2026-07-27T17:02:33.710273+00:00",
+    "git_head": "1871eba14761ce309ddf9f362e455efc8c4ce4c8",
+    "python": "3.14.0 (tags/v3.14.0:ebf955d, Oct  7 2025, 10:15:03) [MSC v.1944 64 bit (AMD64)]",
+    "settings": {
+      "base_url": "https://api.deepseek.com/v1",
+      "comparison_policy": {
+        "same_generation_settings": true,
+        "same_oracle": true,
+        "same_prompts": true
+      },
+      "execution_policy": {
+        "repair": false,
+        "retry": false,
+        "selective_rerun": false
+      },
+      "max_tokens": 32768,
+      "model": "deepseek-v4-flash",
+      "provider": "deepseek",
+      "repetitions": 2,
+      "samples_per_variant": 16,
+      "session": {
+        "fresh_process_per_sample": true,
+        "fresh_session_id_per_sample": true,
+        "fresh_session_per_sample": true,
+        "turns": 1
+      },
+      "temperature": 0
+    },
+    "sha256": {
+      "FusionFlow.g4": "41c755e13f4ba7b6202a65d0963ea464eb2ac18bc8b86f90acc8fc29a637266f",
+      "SKILL.md": "d770dd8d53d8d87dc22039e4f6f220c5c920e73d1900bebd1ff5c907b5663f36",
+      "cases.json": "43848b0749964926f9db49a49896d65ee3e3547ab185591a9ce921a1c9763ca8",
+      "system_prompt.py": "c78e85c480d8a5ddf403b1eb86544e5d2a669c2887a575c7a421c71ac171ce68"
+    }
+  },
+  "passed": 13,
+  "sample_count": 16,
+  "samples": [
+    {
+      "case_id": "N01",
+      "passed": true,
+      "repetition": 1,
+      "sample": "samples/N01/r1"
+    },
+    {
+      "case_id": "N01",
+      "passed": true,
+      "repetition": 2,
+      "sample": "samples/N01/r2"
+    },
+    {
+      "case_id": "P01",
+      "passed": false,
+      "repetition": 1,
+      "sample": "samples/P01/r1"
+    },
+    {
+      "case_id": "P01",
+      "passed": true,
+      "repetition": 2,
+      "sample": "samples/P01/r2"
+    },
+    {
+      "case_id": "P02",
+      "passed": true,
+      "repetition": 1,
+      "sample": "samples/P02/r1"
+    },
+    {
+      "case_id": "P02",
+      "passed": true,
+      "repetition": 2,
+      "sample": "samples/P02/r2"
+    },
+    {
+      "case_id": "P03",
+      "passed": true,
+      "repetition": 1,
+      "sample": "samples/P03/r1"
+    },
+    {
+      "case_id": "P03",
+      "passed": true,
+      "repetition": 2,
+      "sample": "samples/P03/r2"
+    },
+    {
+      "case_id": "P04",
+      "passed": true,
+      "repetition": 1,
+      "sample": "samples/P04/r1"
+    },
+    {
+      "case_id": "P04",
+      "passed": false,
+      "repetition": 2,
+      "sample": "samples/P04/r2"
+    },
+    {
+      "case_id": "P05",
+      "passed": true,
+      "repetition": 1,
+      "sample": "samples/P05/r1"
+    },
+    {
+      "case_id": "P05",
+      "passed": false,
+      "repetition": 2,
+      "sample": "samples/P05/r2"
+    },
+    {
+      "case_id": "P06",
+      "passed": true,
+      "repetition": 1,
+      "sample": "samples/P06/r1"
+    },
+    {
+      "case_id": "P06",
+      "passed": true,
+      "repetition": 2,
+      "sample": "samples/P06/r2"
+    },
+    {
+      "case_id": "P07",
+      "passed": true,
+      "repetition": 1,
+      "sample": "samples/P07/r1"
+    },
+    {
+      "case_id": "P07",
+      "passed": true,
+      "repetition": 2,
+      "sample": "samples/P07/r2"
+    }
+  ]
+}

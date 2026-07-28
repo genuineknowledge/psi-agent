@@ -1,0 +1,12 @@
+{
+  "max_tokens": 32768,
+  "messages": [
+    {
+      "content": "Write a complete, compilable FusionFlow G4 workflow with real executable semantics and two independent conditional selections. The workflow receives request. A routing Step produces tone_flag and risk_flag. Four eager handler Steps all consume request on every run: formal and casual handlers produce formal_result and casual_result; safe and escalated handlers produce safe_result and escalated_result. Independently choose formal_result when tone_flag is formal_tone, otherwise casual_result; and choose escalated_result when risk_flag is high_risk, otherwise safe_result. One final Step must consume both chosen values together and produce final_result. Include all declarations, data flow, executor bindings, StepName values, and Instruction values. Do not hide either choice in prose. Return exactly one fusionflow code fence and nothing else.",
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "stream": true,
+  "temperature": 0
+}

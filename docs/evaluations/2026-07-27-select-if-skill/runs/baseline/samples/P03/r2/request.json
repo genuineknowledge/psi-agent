@@ -1,0 +1,12 @@
+{
+  "max_tokens": 32768,
+  "messages": [
+    {
+      "content": "Write a complete, compilable FusionFlow G4 workflow with real executable semantics. The workflow receives request. A scoring Step consumes request and produces score. Both an accept handler and a review handler consume request and must execute on every run, producing accept_result and review_result. Select accept_result when score is greater than or equal to the numeric literal 80; otherwise select review_result. A final Step consumes the selected value and produces final_result. Include all required declarations, data-flow assertions, executor bindings, StepName values, and Instruction values. The condition must be executable workflow structure, not prose hidden in an instruction. Return exactly one fusionflow code fence and nothing else.",
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "stream": true,
+  "temperature": 0
+}

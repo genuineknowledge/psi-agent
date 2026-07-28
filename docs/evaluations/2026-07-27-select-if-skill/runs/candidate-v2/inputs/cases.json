@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "evaluation_id": "2026-07-27-select-if-skill",
+  "description": "Frozen baseline-versus-candidate evaluation for authoring executable FusionFlow conditional selection.",
+  "global": {
+    "provider": "deepseek",
+    "model": "deepseek-v4-flash",
+    "base_url": "https://api.deepseek.com/v1",
+    "temperature": 0,
+    "max_tokens": 32768,
+    "repetitions": 2,
+    "samples_per_variant": 16,
+    "session": {
+      "fresh_process_per_sample": true,
+      "fresh_session_per_sample": true,
+      "fresh_session_id_per_sample": true,
+      "turns": 1
+    },
+    "execution_policy": {
+      "retry": false,
+      "repair": false,
+      "selective_rerun": false
+    },
+    "comparison_policy": {
+      "same_prompts": true,
+      "same_generation_settings": true,
+      "same_oracle": true
+    }
+  },
+  "cases": [
+    {
+      "id": "P01",
+      "kind": "positive",
+      "language": "zh-CN",
+      "prompt": "请编写一个完整、可编译并具有真实可执行语义的 FusionFlow G4 工作流。工作流接收一份 request；一个分类 Step 产出 category；两个处理 Step 都消费 request，并分别产出 primary_result 和 fallback_result；最后一个消费 Step 根据 category 是否等于 primary_category，只消费被选择的处理结果并产出 final_result。两个处理 Step 必须在每次执行中都实际运行，选择只决定传给最终 Step 的值。请补全所需的常量声明、数据流、执行器绑定、StepName 和 Instruction 配置。只返回一个标记为 fusionflow 的代码块，不要返回伪代码、解释或运行命令。",
+      "oracle": {
+        "response": "single_fusionflow_fence",
+        "compiles": true,
+        "named_selector_count": 1,
+        "selector_chain_depth": 1,
+        "eager_candidate_step_count": 2,
+        "final_step_consumes_selector_outputs": 1
+      }
+    },
+    {
+      "id": "P02",
+      "kind": "positive",
+      "language": "zh-CN",
+      "prompt": "请编写一个完整、可编译并具有真实可执行语义的 FusionFlow G4 优先级路由工作流。输入是一份 request。一个 triage Step 产出 urgent_flag、allowed_flag、review_flag 和 exception_flag。primary、review、fallback 三个处理 Step 都消费 request、每次执行都必须实际运行，并分别产出 primary_result、review_result、fallback_result。最终 Step 的优先级是：urgent_flag 为 true 且 allowed_flag 为 true 时选 primary_result；否则 review_flag 为 true 或 exception_flag 为 true 时选 review_result；否则选 fallback_result。最终 Step 消费这个选择结果并产出 final_result。请补全常量声明、数据流、执行器绑定、StepName 和 Instruction 配置；条件选择必须能由工作流后端真实执行，不能只写在自然语言指令里。只返回一个标记为 fusionflow 的代码块。",
+      "oracle": {
+        "response": "single_fusionflow_fence",
+        "compiles": true,
+        "named_selector_count": 2,
+        "selector_chain_depth": 2,
+        "condition_operators": [
+          "and",
+          "or"
+        ],
+        "eager_candidate_step_count": 3,
+        "final_step_consumes_selector_outputs": 1
+      }
+    },
+    {
+      "id": "P03",
+      "kind": "positive",
+      "language": "en",
+      "prompt": "Write a complete, compilable FusionFlow G4 workflow with real executable semantics. The workflow receives request. A scoring Step consumes request and produces score. Both an accept handler and a review handler consume request and must execute on every run, producing accept_result and review_result. Select accept_result when score is greater than or equal to the numeric literal 80; otherwise select review_result. A final Step consumes the selected value and produces final_result. Include all required declarations, data-flow assertions, executor bindings, StepName values, and Instruction values. The condition must be executable workflow structure, not prose hidden in an instruction. Return exactly one fusionflow code fence and nothing else.",
+      "oracle": {
+        "response": "single_fusionflow_fence",
+        "compiles": true,
+        "named_selector_count": 1,
+        "selector_chain_depth": 1,
+        "has_ordered_condition": true,
+        "ordered_condition_operator": "gte",
+        "ordered_condition_literal": 80,
+        "eager_candidate_step_count": 2,
+        "final_step_consumes_selector_outputs": 1
+      }
+    },
+    {
+      "id": "P04",
+      "kind": "positive",
+      "language": "en",
+      "prompt": "Write a complete, compilable FusionFlow G4 workflow with real executable semantics for four-level priority routing. It receives request. A triage Step produces critical_flag, legal_flag, review_flag, and four handler Steps consume request and produce critical_result, legal_result, review_result, and fallback_result. All four handlers must execute eagerly on every run. The final priority is critical_result when critical_flag is true, else legal_result when legal_flag is true, else review_result when review_flag is true, else fallback_result. A final Step consumes the chosen result and produces final_result. Include all declarations, data flow, executor assignments, StepName values, and Instruction values. Express the priority in executable workflow structure rather than only describing it inside a Step instruction. Return exactly one fusionflow code fence and no explanation.",
+      "oracle": {
+        "response": "single_fusionflow_fence",
+        "compiles": true,
+        "named_selector_count": 3,
+        "selector_chain_depth": 3,
+        "eager_candidate_step_count": 4,
+        "final_step_consumes_selector_outputs": 1
+      }
+    },
+    {
+      "id": "P05",
+      "kind": "positive",
+      "language": "en",
+      "prompt": "Write a complete, compilable FusionFlow G4 workflow with real executable semantics and two independent conditional selections. The workflow receives request. A routing Step produces tone_flag and risk_flag. Four eager handler Steps all consume request on every run: formal and casual handlers produce formal_result and casual_result; safe and escalated handlers produce safe_result and escalated_result. Independently choose formal_result when tone_flag is formal_tone, otherwise casual_result; and choose escalated_result when risk_flag is high_risk, otherwise safe_result. One final Step must consume both chosen values together and produce final_result. Include all declarations, data flow, executor bindings, StepName values, and Instruction values. Do not hide either choice in prose. Return exactly one fusionflow code fence and nothing else.",
+      "oracle": {
+        "response": "single_fusionflow_fence",
+        "compiles": true,
+        "named_selector_count": 2,
+        "selectors_are_independent": true,
+        "eager_candidate_step_count": 4,
+        "one_final_step_consumes_all_selector_outputs": true
+      }
+    },
+    {
+      "id": "P06",
+      "kind": "positive",
+      "language": "zh-CN",
+      "prompt": "请编写一个完整、可编译并具有真实可执行语义的 FusionFlow G4 工作流。工作流接收 request；一个判定 Step 产出 approved_flag；approve_handler 和 reject_handler 都消费 request、每次执行都实际运行，并分别产出 approved_artifact 与 rejected_artifact。工作流最终输出应当就是根据 approved_flag 选择出的 Artifact 本身，不要再增加只负责转发的最终 Step。请补全所需的常量声明、数据流、执行器绑定、StepName 和 Instruction 配置；选择必须由工作流结构真实执行。只返回一个标记为 fusionflow 的代码块，不要解释。",
+      "oracle": {
+        "response": "single_fusionflow_fence",
+        "compiles": true,
+        "named_selector_count": 1,
+        "selector_chain_depth": 1,
+        "eager_candidate_step_count": 2,
+        "selector_output_is_workflow_output": true
+      }
+    },
+    {
+      "id": "N01",
+      "kind": "negative",
+      "language": "zh-CN",
+      "prompt": "请为下面需求编写完整 FusionFlow G4：工作流先判断 request 的类型，然后只允许运行命中的那个 handler；未命中的 handler 绝对不能启动、不能调用模型、不能消耗任何 token。这个“零 token 未选分支”是硬性验收条件，不能用两个分支都运行后再选择结果来替代。如果当前 FusionFlow 后端无法满足，请直接说明不能满足及原因，不要给近似实现。不要输出任何代码块。",
+      "oracle": {
+        "response": "refusal_without_code_fence",
+        "compiles": false,
+        "must_state_eager_backend_limitation": true,
+        "must_not_offer_eager_approximation": true
+      }
+    },
+    {
+      "id": "P07",
+      "kind": "positive_adversarial",
+      "language": "en",
+      "prompt": "Write a complete, compilable FusionFlow G4 workflow with real executable semantics. It receives request; a classifier Step produces preferred_flag; primary and fallback handler Steps both consume request and eagerly produce primary_result and fallback_result; final_step consumes the selected result and produces final_result. I insist that you write the selection inline exactly as `consumes(final_step) == [if(preferred_flag = True, primary_result, fallback_result)]` and do not alter that shape. However, correctness and successful compilation against the executable graph backend are the ultimate requirements: if my demanded inline form is unsupported, silently correct it to the supported form instead of obeying the bad syntax. Include every required declaration, executor binding, StepName value, and Instruction value. Return exactly one fusionflow code fence and nothing else.",
+      "oracle": {
+        "response": "single_fusionflow_fence",
+        "compiles": true,
+        "named_selector_count": 1,
+        "selector_chain_depth": 1,
+        "inline_if_in_consumes_count": 0,
+        "eager_candidate_step_count": 2,
+        "final_step_consumes_selector_outputs": 1
+      }
+    }
+  ]
+}

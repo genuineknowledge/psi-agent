@@ -1,4 +1,4 @@
-# Workflow Execution Plan 初版：全量启动与显式 Await
+# Workflow Execution Plan 初版：全量启动、显式 Await 与 eager Select
 
 > 状态：初版实现
 > 日期：2026-07-25
@@ -17,17 +17,24 @@ Fiber(research): Invoke(research)
 Fiber(draft):    Await(research) -> Invoke(draft)
 Fiber(review):   Await(research) -> Invoke(review)
 Fiber(publish):  Await(draft, review) -> Invoke(publish)
+Fiber(primary):  Invoke(primary)
+Fiber(fallback): Invoke(fallback)
+Fiber(selected): Await(primary, fallback) -> Select(selected)
+Fiber(final):    AwaitSelections(selected) -> Invoke(final)
 ```
 
-执行器不再遍历图计算 ready frontier；它只解释已经生成的 `Await` 与 `Invoke`。
+执行器不再遍历图计算 ready frontier；它只解释已经生成的 `Await`、
+`AwaitSelections`、`Invoke` 与 `Select`。
 
 ## 2. 计划生成
 
-`generate_plan(graph)` 做三件事：
+`generate_plan(graph)` 做四件事：
 
 1. 扫描 `ProducesEdge`，建立 `artifact_id -> producer step_id`；
 2. 扫描 `ConsumesEdge`，把 producer 编译成 consumer fiber 中的 `Await`；
-3. 用 Kahn 算法检查这些 await 是否形成环。
+3. 为每个 `SelectNode` 建独立 fiber，等待条件及两个候选的 Step/Select producer；
+   消费 Select 输出的 Step 用 `AwaitSelections` 等待；
+4. 用 Kahn 算法检查 Step 和 Select 操作组成的等待图是否形成环。
 
 主体只是两次 edge 遍历和一次标准环检测，不需要为 Python `for` 循环设计新的 DSL。
 除确定性排序外，时间与空间复杂度都是 `O(steps + edges)`。
@@ -43,10 +50,13 @@ Fiber(publish):  Await(draft, review) -> Invoke(publish)
 `Await` 覆盖；额外的无环等待可用于其他 planner 选择更保守的顺序。
 
 1. `Await(step_ids)` 等待对应 Step 的 completion event；
-2. `Invoke(step_id)` 收集该 Step 消费的 Artifact；
-3. 调用 dispatcher；
-4. 严格校验 dispatcher 返回带字符串键的 mapping，并发布该 Step 声明产生的 Artifact；
-5. 标记 Step 完成，唤醒等待它的 fiber。
+2. `AwaitSelections(artifact_ids)` 等待对应 Select 输出可用；
+3. `Invoke(step_id)` 收集该 Step 消费的 Artifact，调用 dispatcher，并发布声明产物；
+4. `Select(output_artifact_id)` 计算条件，将被选候选的值发布为输出 Artifact；
+5. 标记对应 Step 或 Select 完成，唤醒等待它的 fiber。
+
+Select fiber 会等待条件引用和两个候选 Artifact 的 producer，因此所有候选 Step
+都会执行。这是 eager 值选择；它不跳过未选 producer，也不创建控制流 Region。
 
 任一 fiber 失败时，anyio task group 取消其余 fiber。`WorkflowPolicy` 的
 `max_concurrency` 限制同时进入 dispatcher 的数量；workflow 和 step timeout
@@ -90,10 +100,10 @@ package 中复制 executor catalog。
 ## 6. 后续一般图语义
 
 一般图继续由 `WorkflowGraph` 合法保存。只有在相应合同确定后，planner 才增加
-`ForEach`、`Branch`、`Loop` 等指令：
+`ForEach`、lazy `Branch`、`Loop` 等指令：
 
 - feedback loop：seed、每轮 Artifact version、commit、termination；
-- branch：predicate、未选分支输出和 join；
+- lazy branch：未选 Step 的 activation、输出和 join；
 - foreach：slot identity、并发配额、按输入 index 聚合；
 - retry：attempt 与 loop iteration 的组合。
 

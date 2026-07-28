@@ -8,7 +8,7 @@ primitives share this package boundary but remain deliberately separate:
 ## Modules
 
 - `grammar/FusionFlow.g4`: the syntax grammar; ordinary preset/external-operator arity remains checker-owned.
-- `test/test_grammar.py`: generated-parser and preset-signature contract checks.
+- `test/test_grammar.py`: generated-parser, preset-signature, and authoring-Skill example contract checks.
 - `fusion_flow_next/generated/`: committed ANTLR 4.13.2 Python lexer and parser generated from the grammar.
 - `fusion_flow_next/contracts.py`: diagnostics and parse/check phase results.
 - `fusion_flow_next/core_ir.py`: immutable Workflow Core IR shared by compiler phases.
@@ -29,7 +29,7 @@ package.
 
 ## Current scope and known gaps
 
-The language contract now covers file-level identity declarations, assertions, `!`/`AND`/`OR` formulas and comparisons, arithmetic, Lists, and value-producing `if(condition, then, else)` expressions. Workflow blocks contain assertions; a standalone Bool-returning operator call is shorthand for that call asserted equal to `True`. Concepts and operator signatures come from an external catalog. The 19 preset operators are split into four disjoint owner groups. The canonical dataflow operators `input_workflow(Workflow)`, `output_workflow(Workflow)`, `consumes(Step)`, and `produces(Step)` return ordinary List terms. `FusionFlow.g4` fixes `if` at three arguments while ordinary preset and externally registered operators keep flexible call arity for checker-owned validation.
+The language contract now covers file-level identity declarations, assertions, `!`/`AND`/`OR` formulas and comparisons, arithmetic, Lists, and value-producing `if(condition, then, else)` expressions. Workflow blocks contain assertions; a standalone Bool-returning operator call is shorthand for that call asserted equal to `True`. Concepts and operator signatures come from an external catalog. The 19 preset operators are split into four disjoint owner groups. The canonical dataflow operators `input_workflow(Workflow)`, `output_workflow(Workflow)`, `consumes(Step)`, and `produces(Step)` return ordinary List terms. Their artifact relation is always explicit on the RHS, including singleton forms such as `consumes(step) == [artifact]`; the removed `*_multi` spellings and former two-argument Bool relations have no compatibility aliases. `FusionFlow.g4` fixes `if` at three arguments while ordinary preset and externally registered operators keep flexible call arity for checker-owned validation.
 
 For a compact, readable BNF and consistency with KEDispatcher, preset operators remain syntax sugar over the same flexible call rule instead of receiving separate arity-constrained grammar productions. After syntax parsing, the checker/catalog validates their arity and types. Because that information is intentionally not encoded structurally in the BNF, every preset operator in `FusionFlow.g4` documents its parameter types, return type, and explicit arity for human and agent readers; the grammar contract test enforces this documentation invariant.
 
@@ -44,7 +44,11 @@ including `ListTerm.items` returned by the four canonical dataflow operators,
 and returns one `WorkflowGraphCompilation` per workflow. Recognized dependency assertions
 become graph nodes, edges, or policy; unknown well-formed assertions remain in
 `residual_assertions`; malformed recognized relations and unsupported recursive
-terms fail explicitly. The graph is serializable, but the compilation is not a
+terms fail explicitly. A top-level `selected == if(condition, artifact_a,
+artifact_b)` lowers to an eager `SelectNode`; both candidates must be declared
+Artifacts and both producers run. Downstream dataflow consumes `[selected]`.
+Priority selection uses named intermediate Artifacts; inline or nested `if`
+terms fail closed. The graph is serializable, but the compilation is not a
 replacement for the original Core IR.
 
 Because `Assertion` is equality, one recognized graph call may appear on either
@@ -66,7 +70,7 @@ Variables, quantifiers, truth formulas, theories, rules, and query/SAT/optimizat
 
 | Item | Intended contract | Current gap | Required compiler behavior |
 | --- | --- | --- | --- |
-| `S01` | `input_workflow` and `output_workflow` declare external artifacts. | The current runtime operations require values that are absent from those declarations. | The graph backend preserves the external-artifact relation, while the original Core IR remains authoritative for values; activation still requires a runtime value contract. |
+| `S01` | `input_workflow` and `output_workflow` declare external artifacts. | The compatibility-only `fusion_flow_next.execution` operations are not wired to those declarations. | The generic `WorkflowGraph` executor already enforces the exact input boundary; connecting the compatibility execution package still requires a separate runtime value contract. |
 
 ## Activation boundary
 

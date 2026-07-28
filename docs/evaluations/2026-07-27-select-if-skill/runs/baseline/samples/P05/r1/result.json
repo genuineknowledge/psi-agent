@@ -1,0 +1,16 @@
+{
+  "case_id": "P05",
+  "diagnostics": {
+    "compile": "WorkflowGraphCompilationError: WorkflowGraphCompiler cannot compile unsupported if term node of type IfTerm."
+  },
+  "graph": null,
+  "passed": false,
+  "predicates": {
+    "compiles": false,
+    "eager_candidate_step_count": false,
+    "named_selector_count": false,
+    "one_final_step_consumes_all_selector_outputs": false,
+    "response": true,
+    "selectors_are_independent": false
+  }
+}

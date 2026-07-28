@@ -1,0 +1,67 @@
+```fusionflow
+-- SCENARIO: decision workflow with conditional output based on approved_flag
+-- AUTHORED: 2025-03-23 12:00:00 from intent: "workflow that chooses output based on flag"
+
+const request: Artifact;
+const approved_flag: Artifact;
+const approved_artifact: Artifact;
+const rejected_artifact: Artifact;
+
+const judge_step: Step;
+const approve_handler: Step;
+const reject_handler: Step;
+
+const judge_name: StepName;
+const approve_name: StepName;
+const reject_name: StepName;
+
+const judge_instruction: Instruction;
+const approve_instruction: Instruction;
+const reject_instruction: Instruction;
+
+const judge_agent: Agent, Executor;
+const approve_agent: Agent, Executor;
+const reject_agent: Agent, Executor;
+
+const judge_model: Model;
+const judge_engine: Engine;
+const judge_api: ApiBase;
+
+const approve_model: Model;
+const approve_engine: Engine;
+const approve_api: ApiBase;
+
+const reject_model: Model;
+const reject_engine: Engine;
+const reject_api: ApiBase;
+
+workflow decision_workflow {
+  -- DATA FLOW
+  input_workflow(decision_workflow) == [request];
+  consumes(judge_step) == [request];
+  produces(judge_step) == [approved_flag];
+  consumes(approve_handler) == [request];
+  produces(approve_handler) == [approved_artifact];
+  consumes(reject_handler) == [request];
+  produces(reject_handler) == [rejected_artifact];
+  output_workflow(decision_workflow) == [if(approved_flag = true, approved_artifact, rejected_artifact)];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(judge_step) == judge_agent;
+  step_executor(approve_handler) == approve_agent;
+  step_executor(reject_handler) == reject_agent;
+
+  -- STEP CONFIGURATION
+  step_name(judge_step) == judge_name;
+  step_instruction(judge_step) == judge_instruction;
+  step_name(approve_handler) == approve_name;
+  step_instruction(approve_handler) == approve_instruction;
+  step_name(reject_handler) == reject_name;
+  step_instruction(reject_handler) == reject_instruction;
+
+  -- AGENT CONFIGURATION
+  agent_config(judge_agent, judge_model, judge_engine, judge_api);
+  agent_config(approve_agent, approve_model, approve_engine, approve_api);
+  agent_config(reject_agent, reject_model, reject_engine, reject_api);
+}
+```

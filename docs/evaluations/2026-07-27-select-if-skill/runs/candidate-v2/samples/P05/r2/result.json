@@ -1,0 +1,16 @@
+{
+  "case_id": "P05",
+  "diagnostics": {
+    "compile": "ValueError: workflow parse failed: 76:24: token recognition error at: '\"claude-'; 76:42: token recognition error at: '\",'; 76:55: token recognition error at: '\"https:'; 76:67: token recognition error at: '.'; 76:77: token recognition error at: '.'; 76:81: token recognition error at: '\")'; 77:30: token recognition error at: '\"claude-'; 77:48: token recognition error at: '\",'; 77:61: token recognition error at: '\"https:'; 77:73: token recognition error at: '.'; 77:83: token recognition error at: '.'; 77:87: token recognition error at: '\")'; 78:30: token recognition error at: '\"claude-'; 78:48: token recognition error at: '\",'; 78:61: token recognition error at: '\"https:'; 78:73: token recognition error at: '.'; 78:83: token recognition error at: '.'; 78:87: token recognition error at: '\")'; 79:28: token recognition error at: '\"claude-'; 79:46: token recognition error at: '\",'; 79:59: token recognition error at: '\"https:'; 79:71: token recognition error at: '.'; 79:81: token recognition error at: '.'; 79:85: token recognition error at: '\")'; 80:33: token recognition error at: '\"claude-'; 80:51: token recognition error at: '\",'; 80:64: token recognition error at: '\"https:'; 80:76: token recognition error at: '.'; 80:86: token recognition error at: '.'; 80:90: token recognition error at: '\")'; 81:29: token recognition error at: '\"claude-'; 81:47: token recognition error at: '\",'; 81:60: token recognition error at: '\"https:'; 81:72: token recognition error at: '.'; 81:82: token recognition error at: '.'; 81:86: token recognition error at: '\")'; 76:45: no viable alternative at input 'agent_config(router,3-5-sonnet\"claude\"'; 76:22: mismatched input ',' expecting ')'; 76:45: missing ';' at '\"claude\"'; 76:53: mismatched input ',' expecting '=='; 77:51: no viable alternative at input 'agent_config(formal_agent,3-5-sonnet\"claude\"'; 77:28: mismatched input ',' expecting ')'; 77:51: missing ';' at '\"claude\"'; 77:59: mismatched input ',' expecting '=='; 78:51: no viable alternative at input 'agent_config(casual_agent,3-5-sonnet\"claude\"'; 78:28: mismatched input ',' expecting ')'; 78:51: missing ';' at '\"claude\"'; 78:59: mismatched input ',' expecting '=='; 79:49: no viable alternative at input 'agent_config(safe_agent,3-5-sonnet\"claude\"'; 79:26: mismatched input ',' expecting ')'; 79:49: missing ';' at '\"claude\"'; 79:57: mismatched input ',' expecting '=='; 80:54: no viable alternative at input 'agent_config(escalated_agent,3-5-sonnet\"claude\"'; 80:31: mismatched input ',' expecting ')'; 80:54: missing ';' at '\"claude\"'; 80:62: mismatched input ',' expecting '=='; 81:50: no viable alternative at input 'agent_config(final_agent,3-5-sonnet\"claude\"'; 81:27: mismatched input ',' expecting ')'; 81:50: missing ';' at '\"claude\"'; 81:58: mismatched input ',' expecting '=='"
+  },
+  "graph": null,
+  "passed": false,
+  "predicates": {
+    "compiles": false,
+    "eager_candidate_step_count": false,
+    "named_selector_count": false,
+    "one_final_step_consumes_all_selector_outputs": false,
+    "response": true,
+    "selectors_are_independent": false
+  }
+}

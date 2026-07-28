@@ -1,0 +1,12 @@
+{
+  "max_tokens": 32768,
+  "messages": [
+    {
+      "content": "Write a complete, compilable FusionFlow G4 workflow with real executable semantics for four-level priority routing. It receives request. A triage Step produces critical_flag, legal_flag, review_flag, and four handler Steps consume request and produce critical_result, legal_result, review_result, and fallback_result. All four handlers must execute eagerly on every run. The final priority is critical_result when critical_flag is true, else legal_result when legal_flag is true, else review_result when review_flag is true, else fallback_result. A final Step consumes the chosen result and produces final_result. Include all declarations, data flow, executor assignments, StepName values, and Instruction values. Express the priority in executable workflow structure rather than only describing it inside a Step instruction. Return exactly one fusionflow code fence and no explanation.",
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "stream": true,
+  "temperature": 0
+}

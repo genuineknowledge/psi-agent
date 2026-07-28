@@ -1,0 +1,76 @@
+-- SCENARIO: Classification-based routing: categorize a request, then run both handlers eagerly, but only pass the selected result onward.
+-- AUTHORED: from intent: "Classify request, run both handlers every time, select result by category"
+
+const request: Artifact;
+const primary_category: Artifact;
+const category: Artifact;
+const primary_result: Artifact;
+const fallback_result: Artifact;
+const selected_result: Artifact;
+const final_result: Artifact;
+
+const classify_step: Step;
+const primary_handler_step: Step;
+const fallback_handler_step: Step;
+const final_step: Step;
+
+const classify_name: StepName;
+const primary_handler_name: StepName;
+const fallback_handler_name: StepName;
+const final_name: StepName;
+
+const classify_instruction: Instruction;
+const primary_instruction: Instruction;
+const fallback_instruction: Instruction;
+const final_instruction: Instruction;
+
+const agent: Agent, Executor;
+const engine: Engine;
+const model: Model;
+const api: ApiBase;
+
+workflow categorization_router {
+  -- DATA FLOW
+  input_workflow(categorization_router) == [request, primary_category];
+  consumes(classify_step) == [request];
+  produces(classify_step) == [category];
+  consumes(primary_handler_step) == [request];
+  produces(primary_handler_step) == [primary_result];
+  consumes(fallback_handler_step) == [request];
+  produces(fallback_handler_step) == [fallback_result];
+  selected_result == if(
+    category = primary_category,
+    primary_result,
+    fallback_result
+  );
+  consumes(final_step) == [selected_result];
+  produces(final_step) == [final_result];
+  output_workflow(categorization_router) == [final_result];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(classify_step) == agent;
+  step_executor(primary_handler_step) == agent;
+  step_executor(fallback_handler_step) == agent;
+  step_executor(final_step) == agent;
+
+  -- STEP CONFIGURATION
+  step_name(classify_step) == classify_name;
+  step_instruction(classify_step) == classify_instruction;
+  step_timeout(classify_step) == 120;
+  step_name(primary_handler_step) == primary_handler_name;
+  step_instruction(primary_handler_step) == primary_instruction;
+  step_timeout(primary_handler_step) == 300;
+  step_name(fallback_handler_step) == fallback_handler_name;
+  step_instruction(fallback_handler_step) == fallback_instruction;
+  step_timeout(fallback_handler_step) == 300;
+  step_name(final_step) == final_name;
+  step_instruction(final_step) == final_instruction;
+  step_timeout(final_step) == 120;
+
+  -- WORKFLOW CONFIGURATION
+  max_concurrency(categorization_router) == 3;
+  workflow_timeout(categorization_router) == 600;
+
+  -- AGENT CONFIGURATION
+  agent_config(agent, model, engine, api);
+}

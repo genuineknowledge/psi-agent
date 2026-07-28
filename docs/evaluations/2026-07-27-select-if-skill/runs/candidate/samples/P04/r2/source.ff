@@ -1,0 +1,125 @@
+-- SCENARIO: Four-level priority routing with eager parallel handlers
+-- AUTHORED: from intent: "four-level priority routing workflow"
+
+const request: Artifact;
+const critical_flag: Artifact;
+const legal_flag: Artifact;
+const review_flag: Artifact;
+const critical_result: Artifact;
+const legal_result: Artifact;
+const review_result: Artifact;
+const fallback_result: Artifact;
+const legal_or_fallback: Artifact;
+const review_or_fallback: Artifact;
+const selected_result: Artifact;
+const final_result: Artifact;
+
+const triage_step: Step;
+const critical_handler_step: Step;
+const legal_handler_step: Step;
+const review_handler_step: Step;
+const fallback_handler_step: Step;
+const final_step: Step;
+
+const triage_name: StepName;
+const critical_handler_name: StepName;
+const legal_handler_name: StepName;
+const review_handler_name: StepName;
+const fallback_handler_name: StepName;
+const final_name: StepName;
+
+const triage_instruction: Instruction;
+const critical_instruction: Instruction;
+const legal_instruction: Instruction;
+const review_instruction: Instruction;
+const fallback_instruction: Instruction;
+const final_instruction: Instruction;
+
+const triage_agent: Agent, Executor;
+const critical_agent: Agent, Executor;
+const legal_agent: Agent, Executor;
+const review_agent: Agent, Executor;
+const fallback_agent: Agent, Executor;
+const final_agent: Agent, Executor;
+
+const default_model: Model;
+const default_engine: Engine;
+const default_api: ApiBase;
+const read_tool: Tool;
+
+workflow priority_routing {
+  -- DATA FLOW
+  input_workflow(priority_routing) == [request];
+  consumes(triage_step) == [request];
+  produces(triage_step) == [critical_flag, legal_flag, review_flag];
+  consumes(critical_handler_step) == [request];
+  produces(critical_handler_step) == [critical_result];
+  consumes(legal_handler_step) == [request];
+  produces(legal_handler_step) == [legal_result];
+  consumes(review_handler_step) == [request];
+  produces(review_handler_step) == [review_result];
+  consumes(fallback_handler_step) == [request];
+  produces(fallback_handler_step) == [fallback_result];
+  review_or_fallback == if(review_flag = True, review_result, fallback_result);
+  legal_or_fallback == if(legal_flag = True, legal_result, review_or_fallback);
+  selected_result == if(critical_flag = True, critical_result, legal_or_fallback);
+  consumes(final_step) == [selected_result];
+  produces(final_step) == [final_result];
+  output_workflow(priority_routing) == [final_result];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(triage_step) == triage_agent;
+  step_executor(critical_handler_step) == critical_agent;
+  step_executor(legal_handler_step) == legal_agent;
+  step_executor(review_handler_step) == review_agent;
+  step_executor(fallback_handler_step) == fallback_agent;
+  step_executor(final_step) == final_agent;
+
+  -- STEP CONFIGURATION
+  step_name(triage_step) == triage_name;
+  step_name(critical_handler_step) == critical_handler_name;
+  step_name(legal_handler_step) == legal_handler_name;
+  step_name(review_handler_step) == review_handler_name;
+  step_name(fallback_handler_step) == fallback_handler_name;
+  step_name(final_step) == final_name;
+  step_instruction(triage_step) == triage_instruction;
+  step_instruction(critical_handler_step) == critical_instruction;
+  step_instruction(legal_handler_step) == legal_instruction;
+  step_instruction(review_handler_step) == review_instruction;
+  step_instruction(fallback_handler_step) == fallback_instruction;
+  step_instruction(final_step) == final_instruction;
+  step_timeout(triage_step) == 120;
+  step_timeout(critical_handler_step) == 300;
+  step_timeout(legal_handler_step) == 300;
+  step_timeout(review_handler_step) == 300;
+  step_timeout(fallback_handler_step) == 300;
+  step_timeout(final_step) == 120;
+  max_attempts(triage_step) == 2;
+  max_attempts(critical_handler_step) == 2;
+  max_attempts(legal_handler_step) == 2;
+  max_attempts(review_handler_step) == 2;
+  max_attempts(fallback_handler_step) == 2;
+  max_attempts(final_step) == 2;
+
+  -- WORKFLOW CONFIGURATION
+  max_concurrency(priority_routing) == 4;
+  workflow_timeout(priority_routing) == 900;
+
+  -- AGENT CONFIGURATION
+  agent_config(triage_agent, default_model, default_engine, default_api);
+  agent_config(critical_agent, default_model, default_engine, default_api);
+  agent_config(legal_agent, default_model, default_engine, default_api);
+  agent_config(review_agent, default_model, default_engine, default_api);
+  agent_config(fallback_agent, default_model, default_engine, default_api);
+  agent_config(final_agent, default_model, default_engine, default_api);
+  reasoning_effort(triage_agent) == True;
+  reasoning_effort(critical_agent) == True;
+  reasoning_effort(legal_agent) == True;
+  reasoning_effort(review_agent) == True;
+  reasoning_effort(fallback_agent) == True;
+  allowed_tool(triage_agent, read_tool);
+  allowed_tool(critical_agent, read_tool);
+  allowed_tool(legal_agent, read_tool);
+  allowed_tool(review_agent, read_tool);
+  allowed_tool(fallback_agent, read_tool);
+}

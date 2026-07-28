@@ -1,0 +1,66 @@
+-- SCENARIO: request approval with eager handler execution
+-- AUTHORED: 2025-03-23 12:00:00 from intent: "judge request and then select approved or rejected artifact"
+
+const request: Artifact;
+const approved_flag: Artifact;
+const approved_artifact: Artifact;
+const rejected_artifact: Artifact;
+const selected_result: Artifact;
+
+const judge: Step;
+const approve_handler: Step;
+const reject_handler: Step;
+
+const judge_name: StepName;
+const approve_name: StepName;
+const reject_name: StepName;
+
+const judge_instruction: Instruction;
+const approve_instruction: Instruction;
+const reject_instruction: Instruction;
+
+const judge_agent: Agent, Executor;
+const approve_agent: Agent, Executor;
+const reject_agent: Agent, Executor;
+
+const default_model: Model;
+const default_engine: Engine;
+const default_api: ApiBase;
+const default_tool: Tool;
+
+workflow request_workflow {
+  -- DATA FLOW
+  input_workflow(request_workflow) == [request];
+  consumes(judge) == [request];
+  produces(judge) == [approved_flag];
+  consumes(approve_handler) == [request];
+  produces(approve_handler) == [approved_artifact];
+  consumes(reject_handler) == [request];
+  produces(reject_handler) == [rejected_artifact];
+  selected_result == if(approved_flag = "approved", approved_artifact, rejected_artifact);
+  output_workflow(request_workflow) == [selected_result];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(judge) == judge_agent;
+  step_executor(approve_handler) == approve_agent;
+  step_executor(reject_handler) == reject_agent;
+
+  -- STEP CONFIGURATION
+  step_name(judge) == judge_name;
+  step_instruction(judge) == judge_instruction;
+  step_name(approve_handler) == approve_name;
+  step_instruction(approve_handler) == approve_instruction;
+  step_name(reject_handler) == reject_name;
+  step_instruction(reject_handler) == reject_instruction;
+
+  -- WORKFLOW CONFIGURATION
+  max_concurrency(request_workflow) == 3;
+
+  -- AGENT CONFIGURATION
+  agent_config(judge_agent, default_model, default_engine, default_api);
+  agent_config(approve_agent, default_model, default_engine, default_api);
+  agent_config(reject_agent, default_model, default_engine, default_api);
+  allowed_tool(judge_agent, default_tool);
+  allowed_tool(approve_agent, default_tool);
+  allowed_tool(reject_agent, default_tool);
+}

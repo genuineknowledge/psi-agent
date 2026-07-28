@@ -1,0 +1,158 @@
+{
+  "case_id": "P03",
+  "diagnostics": {},
+  "graph": {
+    "artifacts": [
+      {
+        "artifact_id": "accept_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "final_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": true
+      },
+      {
+        "artifact_id": "request",
+        "binding_step_id": null,
+        "is_input": true,
+        "is_output": false
+      },
+      {
+        "artifact_id": "review_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "score",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      },
+      {
+        "artifact_id": "selected_result",
+        "binding_step_id": null,
+        "is_input": false,
+        "is_output": false
+      }
+    ],
+    "edges": [
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "accept_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "review_handler"
+      },
+      {
+        "artifact_id": "request",
+        "kind": "consumes",
+        "step_id": "scoring"
+      },
+      {
+        "artifact_id": "selected_result",
+        "kind": "consumes",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "accept_result",
+        "kind": "produces",
+        "step_id": "accept_handler"
+      },
+      {
+        "artifact_id": "final_result",
+        "kind": "produces",
+        "step_id": "final_step"
+      },
+      {
+        "artifact_id": "review_result",
+        "kind": "produces",
+        "step_id": "review_handler"
+      },
+      {
+        "artifact_id": "score",
+        "kind": "produces",
+        "step_id": "scoring"
+      }
+    ],
+    "policy": {
+      "max_concurrency": null,
+      "timeout_seconds": null
+    },
+    "selectors": [
+      {
+        "condition": {
+          "kind": "comparison",
+          "left": {
+            "artifact_id": "score",
+            "kind": "artifact"
+          },
+          "operator": "gte",
+          "right": {
+            "kind": "literal",
+            "value": 80
+          }
+        },
+        "output_artifact_id": "selected_result",
+        "when_false_artifact_id": "review_result",
+        "when_true_artifact_id": "accept_result"
+      }
+    ],
+    "steps": [
+      {
+        "executor_id": "accept_agent",
+        "instruction_id": "accept_instruction",
+        "max_attempts": 1,
+        "name_id": "accept_name",
+        "resources": [],
+        "step_id": "accept_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "final_agent",
+        "instruction_id": "final_instruction",
+        "max_attempts": 1,
+        "name_id": "final_name",
+        "resources": [],
+        "step_id": "final_step",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "review_agent",
+        "instruction_id": "review_instruction",
+        "max_attempts": 1,
+        "name_id": "review_name",
+        "resources": [],
+        "step_id": "review_handler",
+        "timeout_seconds": null
+      },
+      {
+        "executor_id": "scoring_agent",
+        "instruction_id": "scoring_instruction",
+        "max_attempts": 1,
+        "name_id": "scoring_name",
+        "resources": [],
+        "step_id": "scoring",
+        "timeout_seconds": null
+      }
+    ],
+    "workflow_id": "request_handler"
+  },
+  "passed": true,
+  "predicates": {
+    "compiles": true,
+    "eager_candidate_step_count": true,
+    "final_step_consumes_selector_outputs": true,
+    "has_ordered_condition": true,
+    "named_selector_count": true,
+    "response": true,
+    "selector_chain_depth": true
+  }
+}

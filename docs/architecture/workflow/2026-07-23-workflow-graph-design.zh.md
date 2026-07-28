@@ -179,7 +179,26 @@ ForeachEdge(artifact_id, step_id, item_binding_id)
 - ready 且无依赖关系的 Step 天然可以并发；
 - 多 consumes 已表达 all-ready；
 - 需要独立审计、失败、retry 边界的聚合应是普通 Step；
-- first/any、choice 和条件分支尚未闭合，不能用假节点占位。
+- first/any、lazy branch 和条件控制流尚未闭合，不能用假节点占位。
+
+### 5.4.1 SelectNode
+
+`SelectNode` 是图中唯一的条件选择结构：
+
+```text
+SelectNode
+├── output_artifact_id
+├── when_true_artifact_id
+├── when_false_artifact_id
+└── condition
+    ├── ComparisonCondition(eq | lt | lte | gt | gte)
+    └── LogicalCondition(not | and | or)
+```
+
+条件操作数只能是全局 Artifact 或 JSON scalar literal。Select 会等待条件引用及两个
+候选 Artifact 全部可用，再把被选候选的值发布为 `output_artifact_id`。因此它是
+**eager 值选择**，不是控制流：两个候选 producer 都会运行，不能据此承诺未选分支
+不启动。
 
 ### 5.5 WorkflowPolicy
 
@@ -199,7 +218,8 @@ WorkflowGraph
 ├── steps: tuple[StepNode, ...]
 ├── artifacts: tuple[ArtifactNode, ...]
 ├── edges: tuple[ConsumesEdge | ProducesEdge | ForeachEdge, ...]
-└── policy: WorkflowPolicy
+├── policy: WorkflowPolicy
+└── selectors: tuple[SelectNode, ...]
 ```
 
 模型使用 frozen dataclass 和 tuple，构造后不可变。`to_dict()` 返回仅由 JSON
@@ -245,9 +265,9 @@ Artifact A -> Step S1 -> Artifact B -> Step S2 -> Artifact A
 duck-typed DTO。
 
 `CoreIRCompiler.compile()` 负责遍历文件、声明和 workflow；图后端只实现
-`_compile_*` node hooks 以及 `_build_workflow()`、`_build_program()`。这样未知
-term 不会被近似处理，未实现的 `IfTerm` 或 connective formula 会沿共享编译器的
-fail-closed 路径显式报错。
+`_compile_*` node hooks 以及 `_build_workflow()`、`_build_program()`。未知 term
+不会被近似处理。图后端只认领顶层的命名 Artifact 选择；内联或递归 `IfTerm`
+仍沿共享编译器的 fail-closed 路径显式报错。
 
 `Assertion` 类型本身表示 equality，不再读取源 token 或兼容额外 relation 字段。
 `step_executor` 的类型信息直接来自 `Constant.belong_concepts`；值非空时，图后端
@@ -300,9 +320,15 @@ operator 默认可能为 0，不能代表应用实参数量。
 | `resource_requirement(s, resource) = n` | `StepNode(s).resources += (resource, n)` |
 | `max_concurrency(w) = n` | `WorkflowPolicy.max_concurrency = n` |
 | `workflow_timeout(w) = n` | `WorkflowPolicy.timeout_seconds = n` |
+| `selected == if(condition, a, b)` | `SelectNode(selected, a, b, condition)` |
 
 其中所有 `n` 都从 `Constant.symbol` 显式解析为正整数。resource identity 使用
 `(step_id, resource_id)` 结构化键，不把 resource 或 amount 建成 Artifact。
+
+命名选择要求 `selected`、`a`、`b` 都是已声明的全局 Artifact。比较节点支持
+`=`、`<`、`<=`、`>`、`>=`；表层 `!=` 规范化为 `!(a = b)`，不新增独立比较类型。
+条件还支持 `!`、`AND`、`OR`。多级优先级通过多个命名 Artifact 选择串联；
+`consumes(s) == [if(...)]` 和分支中的嵌套 `IfTerm` 均拒绝。
 
 普通值 assertion，例如 `files = [file_a, file_b]`，不展开进静态图，留在 residual 供
 值求解或 runtime 使用。
@@ -358,7 +384,9 @@ WorkflowGraphCompilation
     foreach；
 11. timeout、concurrency、resource amount 为正整数；
 12. `max_attempts >= 1`；
-13. 不检查 acyclic。
+13. 每个 Select 的输出和输入 Artifact 都存在、均为 global，且输出没有其他 producer；
+14. Select 输出不重复，条件引用的 Artifact 可用；
+15. 不检查 acyclic。
 
 “input Artifact 同时有 producer”初版允许表示，因为它可能是 seed + feedback；
 但它的运行时版本语义尚未定义，所以 planner 不能仅凭结构直接执行。
@@ -371,6 +399,7 @@ WorkflowGraphCompilation
 - 按 identity 排 steps；
 - 按 identity 排 artifacts；
 - 按 `(kind, endpoints...)` 排 edges；
+- 按 output Artifact identity 排 selectors；
 - 按 resource identity 排 resources；
 - 使用固定字段顺序。
 
@@ -415,7 +444,8 @@ failure、结果聚合与提交由未来 runtime 负责。
   `flow.call/exec` 或其他程序适配器；
 - Human handler 必须持久保存未完成任务、释放 worker，并在收到人类结果后提交
   produces Artifact；
-- 图的控制语义未闭合时，不从普通数据边猜测 `if`、first/any 或 while。
+- 图的控制语义未闭合时，不从普通数据边猜测 lazy `if`、first/any 或 while；
+  `SelectNode` 只执行已显式建模的 eager 值选择。
 
 ## 13. 测试策略
 
@@ -451,7 +481,7 @@ failure、结果聚合与提交由未来 runtime 负责。
 - 可执行 feedback loop；
 - Artifact version、commit、termination；
 - SCC analyzer 或 deadlock 判定；
-- `if/else`、choice、while、after、Region；
+- lazy `if/else`、choice、while、after、Region；
 - join-any、fallback、optional input；
 - nested/multi-Step foreach；
 - dynamic graph mutation；

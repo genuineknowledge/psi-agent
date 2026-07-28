@@ -1,0 +1,17 @@
+{
+  "case_id": "P07",
+  "diagnostics": {
+    "compile": "ValueError: Unknown FusionFlow concept 'Executor'."
+  },
+  "graph": null,
+  "passed": false,
+  "predicates": {
+    "compiles": false,
+    "eager_candidate_step_count": false,
+    "final_step_consumes_selector_outputs": false,
+    "inline_if_in_consumes_count": false,
+    "named_selector_count": false,
+    "response": true,
+    "selector_chain_depth": false
+  }
+}

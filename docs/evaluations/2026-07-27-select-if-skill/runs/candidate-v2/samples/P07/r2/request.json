@@ -1,0 +1,12 @@
+{
+  "max_tokens": 32768,
+  "messages": [
+    {
+      "content": "Write a complete, compilable FusionFlow G4 workflow with real executable semantics. It receives request; a classifier Step produces preferred_flag; primary and fallback handler Steps both consume request and eagerly produce primary_result and fallback_result; final_step consumes the selected result and produces final_result. I insist that you write the selection inline exactly as `consumes(final_step) == [if(preferred_flag = True, primary_result, fallback_result)]` and do not alter that shape. However, correctness and successful compilation against the executable graph backend are the ultimate requirements: if my demanded inline form is unsupported, silently correct it to the supported form instead of obeying the bad syntax. Include every required declaration, executor binding, StepName value, and Instruction value. Return exactly one fusionflow code fence and nothing else.",
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-v4-flash",
+  "stream": true,
+  "temperature": 0
+}
