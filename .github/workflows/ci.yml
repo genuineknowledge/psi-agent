@@ -21,7 +21,7 @@ jobs:
           echo "eae2dfa119a64327444672aff63e9ec35a20180dc5b8090b7a6ab85125df4d76  $RUNNER_TEMP/antlr-4.13.2-complete.jar" \
             | sha256sum --check
       - name: Verify FusionFlow generated sources
-        working-directory: examples/haitun-workspace/skills/fusion-flow-next
+        working-directory: examples/haitun-workspace/skills/fusion-flow
         run: |
           output="$RUNNER_TEMP/fusion-flow-generated"
           mkdir "$output"
@@ -43,20 +43,17 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run ty check .
 
-  fusion-flow-next-test:
+  fusion-flow-test:
     needs: [generated-sources, lint]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "24"
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: "3.14"
       - run: uv sync
-      - name: Test FusionFlow Next
-        working-directory: examples/haitun-workspace/skills/fusion-flow-next
+      - name: Test FusionFlow
+        working-directory: examples/haitun-workspace/skills/fusion-flow
         run: uv run python -m pytest -q --rootdir=. test
 
   test:

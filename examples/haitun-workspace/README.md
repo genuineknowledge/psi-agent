@@ -3,7 +3,7 @@
 A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combines:
 
 - a de-branded OpenClaw-style system-prompt engine (all config kept **inside** the workspace),
-- full **Fusion Flow** workflow authoring (node runtime + `flow_manage` + `flows/`),
+- full **Fusion Flow** workflow authoring (Python G4 runtime + `flow_manage` + `flows/`),
 - the hermes domain skill set + curated skills, and
 - clean async file/shell tools, Serper web search, and environment-configured
   iFLYTEK STT/TTS tools.
@@ -33,12 +33,11 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 
 - **First run** triggers a short onboarding (from `BOOTSTRAP.md`). Delete `BOOTSTRAP.md` to
   skip it.
-- **Fusion Flow** needs Node.js. First use: `cd examples/haitun-workspace/skills/fusion-flow && npm install`.
-  Generated flows go under `flows/<task-slug>/`; reusable templates under `flows/curated/`.
-  For stateful sub-agent sessions, copy `bin/env.stateful.template` to
-  `skills/fusion-flow/.env` and fill in the paths.
+- **Fusion Flow** runs through the bundled Python G4 parser/compiler; it needs no separate
+  Node.js install or runtime setup. Generated flows go under `flows/<task-slug>/`; reusable
+  templates go under `flows/curated/`.
 - **Serper search** needs psi-agent installed with the `mcp` extra and `uvx` on PATH.
-- Never put API keys in this workspace or in generated `.flow.ts` / `.env` files.
+- Never put API keys in this workspace or in generated `.workflow` / `.env` files.
 
 ## Smoke test
 
@@ -54,7 +53,7 @@ uv run python examples/haitun-workspace/systems/system.py
 2. `haitun.iss`（Inno Setup 脚本）将整个 workspace 打包为安装程序
 3. 安装后通过 `haitun agent.vbs` 启动 `psi-agent gateway --tray --icon haitun.ico`
 
-产物为 GitHub artifact `haitun-agent-installer`（`Haitun Agent Setup.exe`）。
+产物为 GitHub artifact `haitun-agent-installer-pyinstaller`（`HaiTun Agent Setup.exe`）。
 
 > `haitun agent.vbs` 启动前会读取本目录下的 `.env`（若存在），把其中的 `KEY=VALUE` 注入 `psi-agent.exe` 的运行环境（跳过空行 / `#` 注释，剥离值两端成对引号）。
 

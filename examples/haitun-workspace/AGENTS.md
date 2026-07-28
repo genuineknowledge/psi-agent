@@ -6,9 +6,9 @@ in the system prompt). It merges the most useful parts of the other example work
 - **Prompt engine** — a layered builder (stable prefix + cache boundary + dynamic
   suffix, skills index, bootstrap context files), with **all configuration kept inside this
   workspace** (there is no global config directory).
-- **Fusion Flow** — full workflow-authoring capability (`flow_manage`, the bundled node
-  runtime under `skills/fusion-flow/`, the `bin/` stateful-session shim, the `flows/`
-  layout, and authoring guidance injected into the prompt).
+- **Fusion Flow** — full workflow-authoring capability (`flow_manage`, the bundled Python
+  G4 runtime under `skills/fusion-flow/`, the `run_flow` tool, the `flows/` layout, and
+  authoring guidance injected into the prompt).
 - **Skills + file tools** — the full hermes-skills domain skill set plus selected curated
   skills, on top of clean async file/shell tools.
 
@@ -52,7 +52,8 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `write_excel` | Build a real `.xlsx` from a 2D array (bold header, column-width fitting). |
 | `write_word` | Build a real `.docx` from structured blocks (headings/paragraphs/tables); sets the East-Asian font (`w:eastAsia`) on every style so Chinese text isn't "字体不齐". |
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
-| `flow_manage` | CRUD + promote on Fusion Flow assets under `flows/`. |
+| `flow_manage` | CRUD + promote on Fusion Flow `.workflow` assets under `flows/`. |
+| `run_flow` | Parse, compile, plan, and synchronously execute a Fusion Flow `.workflow` file. |
 | `schedule_manage` | CRUD on `schedules/<name>/TASK.md` (cron + task body); validates the cron expression. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
 | `x_search` (`x_search.py` + `_x_search_impl.py`) | Search recent public posts on X (Twitter) via the X API v2 recent-search endpoint (last ~7 days). `x_search(query, max_results, sort_order)` supports X search operators (`from:`, `#tag`, `"phrase"`, `lang:`, `-is:retweet`). Uses `aiohttp` (already a core dep), no extra packages. Requires `X_BEARER_TOKEN` (X API v2 App-only OAuth 2.0 bearer token). |
@@ -90,7 +91,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 - `simplify-code` — behavior-preserving cleanup of **recent** code changes by fanning out **3 parallel subagents** over the changed files: split the git diff into 3 disjoint buckets, delegate each to a background subagent (via the `subagent-orchestration` recipe), then merge their edits and re-verify against a baseline. `coding` category; composes existing `bash`/`read`/`edit`/`subagent_*` tools — no dedicated tool, no extra deps.
 - `research-paper-writing` — write an ML research paper for NeurIPS / ICML / ICLR end to end (design the contribution → draft sections → revise → official-template LaTeX build → rebuttal / camera-ready); `research` category. Composes the existing `read`/`write`/`edit`/`bash` tools plus `arxiv` (verify related work) and `subagent-orchestration` (parallel section drafting) — no dedicated tool, no extra deps. LaTeX (`texlive`/`tectonic`) is driven through `bash` when producing the PDF; hard rule against fabricating results or citations.
 - `ocr-and-documents` — extract text from PDFs / scans / images. Two tiers: (1) fast, free text-LAYER extraction with **PyMuPDF** (`import fitz`, already a core dep) for born-digital PDFs, and (2) high-accuracy **OCR + layout → Markdown/JSON** via the external **marker-pdf** CLI (`marker_single` / `marker`) for scanned/image-only PDFs. Decision rule: probe the PyMuPDF text layer first (instant, no models); only fall back to marker-pdf OCR when it's empty/garbled or the user needs layout-faithful Markdown/tables. `research` category; `bash`-driven. PyMuPDF needs nothing extra; **marker-pdf is a heavy external tool (PyTorch + Surya OCR model weights, optional GPU) installed on demand via `pip install marker-pdf` — NOT a bundled dependency**, so no pyproject / nuitka / pyinstaller changes. Read-only (extraction), not PDF editing.
-- `fusion-flow` — the immutable Fusion Flow runtime skill (node-based). **Do not edit it.**
+- `fusion-flow` — the immutable Fusion Flow Python G4 runtime skill. **Do not edit it.**
 
 ## Schedules (`schedules/`)
 
@@ -100,7 +101,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 
 ## Prerequisites
 
-- **Fusion Flow**: Node.js / `npm` / `npx`. First use: `cd skills/fusion-flow && npm install`.
+- **Fusion Flow**: bundled Python G4 parser/compiler; no separate runtime setup is required.
 - **Serper search**: install psi-agent with the `mcp` extra and have `uvx` available.
 - **Browser tools**: Node.js / `npx` (first run downloads `@playwright/mcp`) and a system
   browser (Edge by default). Optional env: `BROWSER_CHANNEL` (`msedge`/`chrome`),

@@ -12,7 +12,7 @@ _SKILL_ROOT = os.path.join(
     "examples",
     "haitun-workspace",
     "skills",
-    "fusion-flow-next",
+    "fusion-flow",
 )
 _GRAMMAR = os.path.join(_SKILL_ROOT, "grammar", "FusionFlow.g4")
 for _path in (os.path.join(_ROOT, "src"), _SKILL_ROOT):

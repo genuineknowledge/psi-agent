@@ -18,20 +18,12 @@ skills/.curator_report.md
 __pycache__/
 *.pyc
 
-# Fusion Flow node runtime + generated artifacts
-skills/fusion-flow/node_modules/
-skills/fusion-flow/runs/
-skills/fusion-flow/.env
-
 # multimodal API credentials (local dev only)
 .env.multimodal
 
 # local desktop runtime env (vbs injects into psi-agent.exe; never commit)
 .env
 bin/apply_multimodal_test_api.ps1
-skills/fusion-flow/examples/*.flow.ts
-skills/fusion-flow/examples/*.flow.mts
-!skills/fusion-flow/examples/_placeholder.ts
 flows/*
 !flows/.gitkeep
 !flows/curated/

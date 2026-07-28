@@ -25,42 +25,20 @@ AI 层无状态、Session 层维护对话历史、Channel 层是纯 UI 客户端
 
 对开发者：三个组件可独立启动、任意组合，适合调试和定制。对使用者：`psi-agent run config.yml` 一键拉起全部，`psi-agent gateway` 在浏览器里可视化管理一切。
 
-## FusionFlow Next Python 执行层
+## FusionFlow Python 执行层
 
-旧 TypeScript 兼容执行原语属于示例 Skill，而不是 `psi_agent` 核心包。源码位于
-`examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/`，
-在该 Skill 目录内运行 Python 时可通过 `fusion_flow_next.execution` 使用：
+Haitun workspace 中的 `flow` Skill 使用声明式 `.workflow` 源码。运行路径为
+G4 parser → Core IR → `WorkflowGraph` → execution plan → Session-backed Agent Steps，
+由 workspace 的 `run_flow` 工具同步执行并返回最终 Artifact 映射。
 
-```python
-import anyio
+Skill 和 parser/compiler 位于
+`examples/haitun-workspace/skills/fusion-flow/`；通用图结构与执行器位于
+`src/psi_agent/workflow_graph/` 和 `src/psi_agent/workflow_execution.py`。
+用户仍以自然语言要求创建或运行工作流，不需要了解内部语言或执行器切换。
 
-from fusion_flow_next.execution import RunContext, flow, run
-
-
-async def program(_: RunContext) -> None:
-    message = await flow.input("message", "hello")
-    await flow.output("result", message.upper())
-
-
-async def main() -> None:
-    result = await run(program, inputs={"message": "fusion flow"})
-    print(result.run_dir)
-
-
-anyio.run(main)
-```
-
-Agent 调用可通过 `run(..., runner=...)` 注入，也可用
-`Agent(config, runner=...)` 在运行外独立调用；传入 program 的 `RunContext`
-也直接提供 `ctx.flow`。命令执行使用 `flow.exec(name, argv, ...)`。自动清理可用
-`run(..., keep_count=50, keep_days=7)` 配置；两者同时为 `0` 时禁用。
-`run(..., resume_from_run_id="last")` 恢复字典序最新的目录，因此 `run_id="last"`
-是保留值。
-真实 TypeScript 与 Python run 目录不保证直接互相命中恢复缓存。对齐结果见
-[TypeScript / Python 审计](docs/architecture/workflow/2026-07-26-fusion-flow-ts-parity-audit.zh.md)，
-历史取舍见[待讨论点](docs/architecture/workflow/2026-07-23-fusion-flow-python-runtime-open-questions.zh.md)。
-该兼容层与 G4 parser/compiler 同目录隔离保存，尚未接到 G4
-`WorkflowGraph` 执行入口，也不随 `psi_agent` wheel 导出。
+旧 Node/TypeScript `.flow.ts` runtime 不再随 workspace 启用。已有 `.flow.ts`
+需要显式迁移为 `.workflow`，不会被静默执行或自动翻译。历史兼容审计见
+[TypeScript / Python 审计](docs/architecture/workflow/2026-07-26-fusion-flow-ts-parity-audit.zh.md)。
 
 ## 快速开始
 

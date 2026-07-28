@@ -173,7 +173,8 @@ async def test_run_flow_rejects_program_before_creating_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    flow_path = anyio.Path(tmp_path / "program.workflow")
+    flow_path = anyio.Path(tmp_path / "flows" / "program.workflow")
+    await flow_path.parent.mkdir()
     await flow_path.write_text(_PROGRAM_WORKFLOW, encoding="utf-8")
     created = False
     loaded_tools = False
@@ -196,7 +197,7 @@ async def test_run_flow_rejects_program_before_creating_session(
 
     with pytest.raises(ValueError, match=r"unsupported executors: .*Program"):
         await run_flow_tool.run_flow(
-            "program.workflow",
+            "flows/program.workflow",
             '{"request": "go"}',
         )
 
@@ -286,14 +287,18 @@ async def test_step_tool_snapshot_filters_run_flow(
 
 
 @pytest.mark.anyio
-async def test_run_flow_rejects_paths_outside_workspace(
+async def test_run_flow_rejects_paths_outside_flows_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
 
-    with pytest.raises(ValueError, match="inside the workspace"):
+    with pytest.raises(ValueError, match="workspace flows directory"):
         await run_flow_tool._read_flow_source("../outside.workflow")
+    with pytest.raises(ValueError, match="workspace flows directory"):
+        await run_flow_tool._read_flow_source("other/example.workflow")
+    with pytest.raises(ValueError, match="relative to the workspace"):
+        await run_flow_tool._read_flow_source(str(tmp_path / "flows" / "example.workflow"))
 
 
 @pytest.mark.anyio

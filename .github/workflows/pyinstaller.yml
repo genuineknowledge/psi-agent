@@ -6,12 +6,11 @@ on:
 
 jobs:
   pyinstaller:
-    if: false # Temporarily paused; keep CI lint-only.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest]
     env:
       PYINSTALLER_COMMON_FLAGS: >-
         --onefile
@@ -34,6 +33,9 @@ jobs:
         --collect-submodules git
         --collect-submodules chardet
         --collect-submodules hikari
+        --collect-submodules antlr4
+        --collect-submodules psi_agent.workflow_graph
+        --hidden-import psi_agent.workflow_execution
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -50,6 +52,55 @@ jobs:
         working-directory: src/psi_agent/gateway/spa
       - shell: bash
         run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS src/psi_agent/cli.py
+      - name: Smoke test packaged CLI
+        shell: pwsh
+        run: |
+          pyinstaller-dist/psi-agent.exe --help
+          $stdout = Join-Path $env:RUNNER_TEMP "psi-agent-session.out"
+          $stderr = Join-Path $env:RUNNER_TEMP "psi-agent-session.err"
+          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+          $listener.Start()
+          $port = $listener.LocalEndpoint.Port
+          $listener.Stop()
+          $process = $null
+          try {
+            $process = Start-Process `
+              -FilePath "pyinstaller-dist/psi-agent.exe" `
+              -ArgumentList @(
+                "session",
+                "--workspace", "examples/haitun-workspace",
+                "--ai-socket", "http://127.0.0.1:65534",
+                "--channel-socket", "http://127.0.0.1:$port",
+                "--verbose"
+              ) `
+              -RedirectStandardOutput $stdout `
+              -RedirectStandardError $stderr `
+              -PassThru
+
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 90; $attempt++) {
+              if ($process.HasExited) { break }
+              $logs = Get-Content -Path $stdout, $stderr -ErrorAction SilentlyContinue
+              $runnerLoaded = $logs -match "Loaded tool: 'run_flow'"
+              $serverListening = $logs -match "Session server listening"
+              if ($runnerLoaded -and $serverListening) {
+                $ready = $true
+                break
+              }
+              Start-Sleep -Seconds 1
+            }
+
+            $logs = Get-Content -Path $stdout, $stderr -ErrorAction SilentlyContinue
+            $logs
+            if (-not $ready) {
+              throw "Packaged Session did not register run_flow and start its server"
+            }
+          }
+          finally {
+            if ($null -ne $process -and -not $process.HasExited) {
+              taskkill /PID $process.Id /T /F | Out-Null
+            }
+          }
       - uses: actions/upload-artifact@v7
         with:
           name: psi-agent-pyinstaller-${{ matrix.os }}
@@ -66,6 +117,16 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Verify Fusion Flow installer payload
+        shell: pwsh
+        run: |
+          $skill = "examples/haitun-workspace/skills/fusion-flow"
+          if (-not (Test-Path "$skill/grammar/FusionFlow.g4")) { throw "FusionFlow grammar is missing" }
+          if (-not (Test-Path "$skill/fusion_flow_next/workflow_runner.py")) { throw "FusionFlow runner is missing" }
+          if (-not (Test-Path "examples/haitun-workspace/tools/run_flow.py")) { throw "run_flow tool is missing" }
+          if (Test-Path "examples/haitun-workspace/skills/fusion-flow-next") { throw "duplicate FusionFlow skill remains" }
+          if (Test-Path "examples/haitun-workspace/tools/flow_run.py") { throw "legacy flow_run tool remains" }
+          if (Test-Path "$skill/package.json") { throw "legacy Node runtime remains" }
       - uses: actions/download-artifact@v8
         with:
           name: psi-agent-pyinstaller-windows-latest

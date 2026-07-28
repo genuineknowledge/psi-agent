@@ -25,7 +25,7 @@ _SKILL = os.path.join(
     "examples",
     "haitun-workspace",
     "skills",
-    "fusion-flow-next",
+    "fusion-flow",
     "SKILL.md",
 )
 _GRAMMAR = os.path.join(
@@ -33,7 +33,7 @@ _GRAMMAR = os.path.join(
     "examples",
     "haitun-workspace",
     "skills",
-    "fusion-flow-next",
+    "fusion-flow",
     "grammar",
     "FusionFlow.g4",
 )
