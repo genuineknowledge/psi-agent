@@ -155,6 +155,35 @@ async def test_scan_excludes_its_own_state_directory(tmp_path: Path, monkeypatch
     assert [item["path"] for item in plan["items"]] == [str(cleanup_file)]
 
 
+async def test_large_file_scan_prunes_appdata_before_traversal(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "drive"
+    plans = tmp_path / "plans"
+    _set_test_environment(monkeypatch, root)
+    user = root / "Users" / "tester"
+    appdata = user / "AppData"
+    appdata.mkdir(parents=True)
+    document = user / "Documents" / "large.bin"
+    document.parent.mkdir(parents=True)
+    document.touch()
+    os.truncate(document, 100 * 1024**2)
+    real_scandir = impl.os.scandir
+
+    def guarded_scandir(path):
+        if impl._normalized_scan_path(Path(path)) == impl._normalized_scan_path(appdata):
+            raise AssertionError("large-file reporting must prune AppData")
+        return real_scandir(path)
+
+    monkeypatch.setattr(impl.os, "scandir", guarded_scandir)
+    result = await _confirmed_first_scan(
+        include_large_files=True,
+        large_file_bytes=100 * 1024**2,
+        root_override=str(root),
+        plan_dir_override=str(plans),
+    )
+
+    assert [item["path"] for item in result["large_files_report_only"]] == [str(document)]
+
+
 async def test_overlapping_category_roots_do_not_duplicate_candidates(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "drive"
     plans = tmp_path / "plans"

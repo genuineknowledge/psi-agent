@@ -86,14 +86,26 @@ def _is_reparse_point(stat_result: os.stat_result) -> bool:
     return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
 
 
-def _iter_regular_files(root: Path, *, excluded_roots: tuple[Path, ...] = ()) -> Iterable[Path]:
-    """Walk without following symlinks/reparse points; tolerate access errors."""
+def _normalized_scan_path(path: Path) -> str:
+    """Normalize lexically for scan-time comparisons without filesystem resolution."""
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _is_excluded_scan_path(path: str, excluded_roots: tuple[str, ...]) -> bool:
+    return any(path == root or path.startswith(root + os.sep) for root in excluded_roots)
+
+
+def _iter_regular_files(root: Path, *, excluded_roots: tuple[Path, ...] = ()) -> Iterable[tuple[Path, os.stat_result]]:
+    """Walk once per entry without following reparse points; tolerate access errors."""
     try:
-        if root.is_symlink() or _is_reparse_point(root.stat(follow_symlinks=False)):
+        root_stat = root.stat(follow_symlinks=False)
+        if stat.S_ISLNK(root_stat.st_mode) or _is_reparse_point(root_stat):
             return
     except OSError:
         return
-    excluded = tuple(path.resolve(strict=False) for path in excluded_roots)
+    excluded = tuple(_normalized_scan_path(path) for path in excluded_roots)
+    if _is_excluded_scan_path(_normalized_scan_path(root), excluded):
+        return
     stack = [root]
     while stack:
         current = stack.pop()
@@ -101,20 +113,17 @@ def _iter_regular_files(root: Path, *, excluded_roots: tuple[Path, ...] = ()) ->
             with os.scandir(current) as entries:
                 for entry in entries:
                     try:
-                        if entry.is_symlink():
-                            continue
                         path = Path(entry.path)
-                        resolved = path.resolve(strict=False)
-                        if any(_is_relative_to(resolved, excluded_root) for excluded_root in excluded):
+                        normalized = _normalized_scan_path(path)
+                        if _is_excluded_scan_path(normalized, excluded):
                             continue
-                        if entry.is_dir(follow_symlinks=False):
-                            if _is_reparse_point(entry.stat(follow_symlinks=False)):
-                                continue
+                        entry_stat = entry.stat(follow_symlinks=False)
+                        if stat.S_ISLNK(entry_stat.st_mode) or _is_reparse_point(entry_stat):
+                            continue
+                        if stat.S_ISDIR(entry_stat.st_mode):
                             stack.append(path)
-                        elif entry.is_file(follow_symlinks=False):
-                            if _is_reparse_point(entry.stat(follow_symlinks=False)):
-                                continue
-                            yield path
+                        elif stat.S_ISREG(entry_stat.st_mode):
+                            yield path, entry_stat
                     except OSError:
                         continue
         except OSError:
@@ -145,16 +154,16 @@ def _scan_sync(
         for root in roots:
             if not root.exists() or not root.is_dir():
                 continue
-            for path in _iter_regular_files(root, excluded_roots=excluded_roots):
+            for path, _scan_stat in _iter_regular_files(root, excluded_roots=excluded_roots):
                 if len(items) >= MAX_CANDIDATES:
                     truncated = True
                     break
                 if category == "thumbnail_cache" and not path.name.lower().startswith("thumbcache_"):
                     continue
+                normalized_path = _normalized_scan_path(path)
+                if normalized_path in seen_candidate_paths:
+                    continue
                 try:
-                    normalized_path = os.path.normcase(str(path.resolve(strict=False)))
-                    if normalized_path in seen_candidate_paths:
-                        continue
                     stat_result = path.stat(follow_symlinks=False)
                 except OSError:
                     continue
@@ -185,37 +194,31 @@ def _scan_sync(
 
     large_files: list[dict[str, Any]] = []
     user_profile = Path(os.environ.get("USERPROFILE", ""))
-    if include_large_files and user_profile.is_absolute() and _same_volume(user_profile, drive_root):
-        appdata = os.path.normcase(str(user_profile / "AppData"))
-        if user_profile.exists():
-            for path in _iter_regular_files(user_profile, excluded_roots=excluded_roots):
-                normalized = os.path.normcase(str(path))
-                if normalized == appdata or normalized.startswith(appdata + os.sep):
-                    continue
-                try:
-                    stat_result = path.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                if stat_result.st_size >= large_file_bytes:
-                    large_files.append(
-                        {
-                            "path": str(path),
-                            "bytes": stat_result.st_size,
-                            "mtime_ns": stat_result.st_mtime_ns,
-                        }
-                    )
-            large_files.sort(key=lambda item: item["bytes"], reverse=True)
-            large_files = large_files[:MAX_LARGE_FILES]
+    if (
+        include_large_files
+        and user_profile.is_absolute()
+        and _same_volume(user_profile, drive_root)
+        and user_profile.exists()
+    ):
+        large_file_exclusions = (*excluded_roots, user_profile / "AppData")
+        for path, stat_result in _iter_regular_files(user_profile, excluded_roots=large_file_exclusions):
+            if stat_result.st_size >= large_file_bytes:
+                large_files.append(
+                    {
+                        "path": str(path),
+                        "bytes": stat_result.st_size,
+                        "mtime_ns": stat_result.st_mtime_ns,
+                    }
+                )
+        large_files.sort(key=lambda item: item["bytes"], reverse=True)
+        large_files = large_files[:MAX_LARGE_FILES]
 
     usage = shutil.disk_usage(drive_root)
     recycle_bin = {"included": include_recycle_bin, "files": 0, "bytes": 0}
     if include_recycle_bin:
-        for path in _iter_regular_files(drive_root / "$Recycle.Bin", excluded_roots=excluded_roots):
-            try:
-                recycle_bin["files"] += 1
-                recycle_bin["bytes"] += path.stat(follow_symlinks=False).st_size
-            except OSError:
-                continue
+        for _path, stat_result in _iter_regular_files(drive_root / "$Recycle.Bin", excluded_roots=excluded_roots):
+            recycle_bin["files"] += 1
+            recycle_bin["bytes"] += stat_result.st_size
     return {
         "items": items,
         "categories": summaries,
