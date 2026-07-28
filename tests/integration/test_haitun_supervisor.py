@@ -1136,3 +1136,27 @@ async def test_supervisor_cancellation_cleans_only_owned_processes(
     with pytest.raises(anyio.get_cancelled_exc_class()):
         await manager.ensure_supervisor("a" * 64)
     assert stopped == expected_stops
+
+
+@pytest.mark.anyio
+async def test_supervisor_store_retries_transient_windows_replace_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store_module = _load_store()
+    store = store_module.SupervisorStore(anyio.Path(tmp_path))
+    real_replace = store_module.os.replace
+    calls = 0
+
+    def flaky_replace(source: str, target: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError(5, "transient file lock")
+        real_replace(source, target)
+
+    monkeypatch.setattr(store_module.os, "replace", flaky_replace)
+
+    await store.save_heatmap("a" * 64, "machine-learning", {"question_count": 1})
+
+    assert calls == 2
+    assert await store.heatmap_path("a" * 64, "machine-learning").exists()

@@ -250,7 +250,14 @@ class SupervisorStore:
         temporary = target.with_name(f".tmp-{uuid4().hex[:12]}")
         try:
             await temporary.write_text(content, encoding="utf-8")
-            await to_thread.run_sync(os.replace, str(temporary), str(target))
+            for attempt in range(3):
+                try:
+                    await to_thread.run_sync(os.replace, str(temporary), str(target))
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        raise
+                    await anyio.sleep(0.02 * (attempt + 1))
         finally:
             with anyio.CancelScope(shield=True):
                 with suppress(FileNotFoundError):
