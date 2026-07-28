@@ -20,7 +20,7 @@ from fusion_flow_next.execution.runtime import RunContext
 
 
 def test_agent_returns_a_handle_without_an_active_run() -> None:
-    config = AgentConfig(name="writer", system="Write clearly.")
+    config = AgentConfig(name="writer", system_prompt="Write clearly.")
 
     handle = flow.agent(config)
 
@@ -31,7 +31,7 @@ def test_agent_returns_a_handle_without_an_active_run() -> None:
 
 @pytest.mark.anyio
 async def test_session_requires_runner_only_when_called(tmp_path) -> None:
-    handle = flow.agent(AgentConfig(name="writer", system="Write clearly."))
+    handle = flow.agent(AgentConfig(name="writer", system_prompt="Write clearly."))
 
     async def program(_: RunContext) -> None:
         with pytest.raises(RuntimeError, match="injected runner"):
@@ -56,7 +56,7 @@ async def test_session_requires_exact_context_schema(tmp_path) -> None:
     handle = flow.agent(
         AgentConfig(
             name="writer",
-            system="Write clearly.",
+            system_prompt="Write clearly.",
             context_schema=("topic", "language"),
         )
     )
@@ -115,7 +115,7 @@ async def test_session_applies_defaults_and_ignores_empty_context_schema(
     handle = flow.agent(
         AgentConfig(
             name="writer",
-            system="Write clearly.",
+            system_prompt="Write clearly.",
             context_schema=(),
         )
     )
@@ -150,7 +150,7 @@ async def test_session_resume_hash_ignores_tool_order(tmp_path) -> None:
         handle = flow.agent(
             AgentConfig(
                 name="writer",
-                system="Write clearly.",
+                system_prompt="Write clearly.",
                 tools=("read", "write"),
             )
         )
@@ -168,7 +168,7 @@ async def test_session_resume_hash_ignores_tool_order(tmp_path) -> None:
         handle = flow.agent(
             AgentConfig(
                 name="writer",
-                system="Write clearly.",
+                system_prompt="Write clearly.",
                 tools=("write", "read"),
             )
         )
@@ -206,7 +206,7 @@ async def test_session_failure_does_not_consume_default_binding_number(
             return "plain"
         return SessionResult(text="rich", input_tokens=11, output_tokens=7)
 
-    handle = flow.agent(AgentConfig(name="writer", system="Write clearly."))
+    handle = flow.agent(AgentConfig(name="writer", system_prompt="Write clearly."))
 
     async def program(_: RunContext) -> None:
         with pytest.raises(RuntimeError, match="transient"):
@@ -260,7 +260,7 @@ async def test_session_failure_releases_explicit_binding(tmp_path) -> None:
             raise RuntimeError("transient")
         return "saved"
 
-    handle = flow.agent(AgentConfig(name="writer", system="Write clearly."))
+    handle = flow.agent(AgentConfig(name="writer", system_prompt="Write clearly."))
 
     async def program(_: RunContext) -> None:
         with pytest.raises(RuntimeError, match="transient"):
@@ -313,7 +313,7 @@ async def test_cancelled_session_releases_default_binding(tmp_path) -> None:
             await anyio.sleep_forever()
         return "recovered"
 
-    handle = flow.agent(AgentConfig(name="writer", system="Write clearly."))
+    handle = flow.agent(AgentConfig(name="writer", system_prompt="Write clearly."))
 
     async def program(_: RunContext) -> None:
         with anyio.move_on_after(0.2) as cancel_scope:
@@ -544,7 +544,7 @@ async def test_legacy_agent_is_an_async_callable_using_the_injected_runner(
     received: list[tuple[AgentConfig, AgentInvocation]] = []
     config = AgentConfig(
         name="legacy",
-        system="Answer directly.",
+        system_prompt="Answer directly.",
         context_schema=("topic",),
     )
     legacy = Agent(config)
@@ -583,7 +583,7 @@ async def test_legacy_agent_is_an_async_callable_using_the_injected_runner(
     assert inspect.iscoroutinefunction(legacy)
     effective_config = AgentConfig(
         name="legacy",
-        system="Answer directly.",
+        system_prompt="Answer directly.",
         max_tokens=8192,
         temperature=1.0,
         context_schema=("topic",),
@@ -622,7 +622,7 @@ async def test_legacy_agent_is_an_async_callable_using_the_injected_runner(
 @pytest.mark.anyio
 async def test_legacy_agent_prefers_explicit_runner_inside_run(tmp_path) -> None:
     calls: list[str] = []
-    config = AgentConfig(name="explicit", system="Answer directly.")
+    config = AgentConfig(name="explicit", system_prompt="Answer directly.")
 
     async def explicit_runner(
         _: AgentConfig,
@@ -657,7 +657,7 @@ async def test_legacy_agent_prefers_explicit_runner_inside_run(tmp_path) -> None
 @pytest.mark.anyio
 async def test_legacy_agent_shares_successful_ordinals_with_session(tmp_path) -> None:
     calls = 0
-    config = AgentConfig(name="shared", system="Answer directly.")
+    config = AgentConfig(name="shared", system_prompt="Answer directly.")
     legacy = Agent(config)
     handle = flow.agent(config)
 
@@ -697,7 +697,7 @@ async def test_legacy_agent_shares_successful_ordinals_with_session(tmp_path) ->
 async def test_legacy_agent_resume_preserves_traces_and_shared_ordinals(
     tmp_path,
 ) -> None:
-    config = AgentConfig(name="shared", system="Answer directly.")
+    config = AgentConfig(name="shared", system_prompt="Answer directly.")
     legacy = Agent(config)
     handle = flow.agent(config)
 
@@ -766,7 +766,7 @@ async def test_legacy_agent_resume_preserves_traces_and_shared_ordinals(
 async def test_legacy_agent_cancellation_commits_trace_and_shared_ordinal(
     tmp_path,
 ) -> None:
-    config = AgentConfig(name="shared", system="Answer directly.")
+    config = AgentConfig(name="shared", system_prompt="Answer directly.")
     legacy = Agent(config)
     handle = flow.agent(config)
     cancel_scope: anyio.CancelScope | None = None
@@ -821,7 +821,7 @@ async def test_legacy_agent_commits_ordinal_when_trace_write_fails(
     tmp_path,
     monkeypatch,
 ) -> None:
-    config = AgentConfig(name="shared", system="Answer directly.")
+    config = AgentConfig(name="shared", system_prompt="Answer directly.")
     legacy = Agent(config)
     handle = flow.agent(config)
     original_atomic_write_json = runtime_module._atomic_write_json
@@ -863,7 +863,7 @@ async def test_legacy_agent_commits_ordinal_when_trace_inspection_fails(
     tmp_path,
     monkeypatch,
 ) -> None:
-    config = AgentConfig(name="shared", system="Answer directly.")
+    config = AgentConfig(name="shared", system_prompt="Answer directly.")
     legacy = Agent(config)
     handle = flow.agent(config)
     original_exists = anyio.Path.exists
@@ -904,7 +904,7 @@ async def test_legacy_agent_commits_ordinal_when_trace_inspection_fails(
 @pytest.mark.anyio
 async def test_standalone_agent_with_explicit_runner_is_callable_outside_run() -> None:
     received: list[tuple[AgentConfig, AgentInvocation]] = []
-    config = AgentConfig(name="standalone", system="Answer directly.")
+    config = AgentConfig(name="standalone", system_prompt="Answer directly.")
 
     async def runner(
         runner_config: AgentConfig,
@@ -921,7 +921,7 @@ async def test_standalone_agent_with_explicit_runner_is_callable_outside_run() -
         (
             AgentConfig(
                 name="standalone",
-                system="Answer directly.",
+                system_prompt="Answer directly.",
                 max_tokens=8192,
                 temperature=1.0,
             ),

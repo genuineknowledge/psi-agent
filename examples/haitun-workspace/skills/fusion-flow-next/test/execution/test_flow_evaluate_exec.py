@@ -32,6 +32,16 @@ from fusion_flow_next.execution.runtime import RunContext, run
 flow_module = cast("Any", import_module("fusion_flow_next.execution.flow"))
 
 
+def test_config_payload_uses_only_system_prompt() -> None:
+    payload = flow_module._config_payload(
+        AgentConfig(name="judge", system_prompt="Judge."),
+    )
+
+    assert payload["system_prompt"] == "Judge."
+    assert "system" not in payload
+    assert "prompt" not in payload
+
+
 @pytest.mark.anyio
 async def test_custom_evaluator_uses_evaluate_defaults_but_preserves_explicit_values(
     tmp_path,
@@ -42,11 +52,11 @@ async def test_custom_evaluator_uses_evaluate_defaults_but_preserves_explicit_va
         received.append(config)
         return '{"value": true}'
 
-    implicit = flow.agent(AgentConfig(name="implicit", system="Judge."))
+    implicit = flow.agent(AgentConfig(name="implicit", system_prompt="Judge."))
     explicit = flow.agent(
         AgentConfig(
             name="explicit",
-            system="Judge.",
+            system_prompt="Judge.",
             max_tokens=8192,
             temperature=1.0,
             thinking_budget_tokens=1024,
@@ -90,7 +100,7 @@ async def test_default_evaluator_input_and_bindings_match_ts_text(tmp_path) -> N
     received: list[tuple[str | None, AgentInvocation]] = []
 
     async def runner(config: AgentConfig, invocation: AgentInvocation) -> str:
-        received.append((config.system, invocation))
+        received.append((config.system_prompt, invocation))
         return '{"value": 3}'
 
     async def program(_: RunContext) -> None:
@@ -703,9 +713,9 @@ async def test_explicit_bindings_advance_default_evaluate_and_exec_ordinals(
 
 @pytest.mark.anyio
 async def test_session_and_evaluate_share_agent_call_ordinals(tmp_path) -> None:
-    judge = flow.agent(AgentConfig(name="judge", system="Judge."))
-    reverse = flow.agent(AgentConfig(name="reverse", system="Judge."))
-    static = flow.agent(AgentConfig(name="__static__", system="Answer."))
+    judge = flow.agent(AgentConfig(name="judge", system_prompt="Judge."))
+    reverse = flow.agent(AgentConfig(name="reverse", system_prompt="Judge."))
+    static = flow.agent(AgentConfig(name="__static__", system_prompt="Answer."))
 
     async def runner(config: AgentConfig, invocation: AgentInvocation) -> str:
         if invocation.prompt in {"session", "static session"}:

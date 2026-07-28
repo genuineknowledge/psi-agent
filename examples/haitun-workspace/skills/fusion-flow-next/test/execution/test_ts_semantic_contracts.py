@@ -38,7 +38,7 @@ async def _binding_metadata(run_dir: str, name: str) -> dict[str, object]:
 
 @pytest.mark.anyio
 async def test_binding_metadata_includes_typescript_aliases(tmp_path) -> None:
-    config = AgentConfig(name="writer", system="Write.")
+    config = AgentConfig(name="writer", system_prompt="Write.")
     agent = flow.agent(config)
 
     async def runner(_: AgentConfig, __: AgentInvocation) -> str:
@@ -67,7 +67,7 @@ async def test_resume_accepts_camel_case_metadata_with_python_cache_key(
     tmp_path,
 ) -> None:
     calls = 0
-    config = AgentConfig(name="worker", system="Work.")
+    config = AgentConfig(name="worker", system_prompt="Work.")
     agent = flow.agent(config)
 
     async def runner(_: AgentConfig, __: AgentInvocation) -> str:
@@ -674,7 +674,7 @@ async def test_failed_call_retry_reuses_same_resume_ordinal(tmp_path) -> None:
 
 @pytest.mark.anyio
 async def test_failed_session_retry_reuses_same_resume_ordinal(tmp_path) -> None:
-    config = AgentConfig(name="writer", system="Write.")
+    config = AgentConfig(name="writer", system_prompt="Write.")
     agent = flow.agent(config)
 
     async def seed_runner(_: AgentConfig, invocation: AgentInvocation) -> str:

@@ -24,11 +24,10 @@ def _validate_token_count(value: int | None, name: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class AgentConfig:
-    """定义 Agent 的不可变运行配置; 缺少非空 system 或 prompt 时抛出 ValueError。"""
+    """定义 Agent 的不可变运行配置; 缺少非空 system_prompt 时抛出 ValueError。"""
 
     name: str
-    system: str | None = None
-    prompt: str | None = None
+    system_prompt: str | None = None
     model: str | None = None
     max_tokens: int | None = None
     temperature: float | None = None
@@ -41,10 +40,8 @@ class AgentConfig:
     def __post_init__(self) -> None:
         """校验名称并冻结可迭代配置, 保证运行时配置稳定。"""
         object.__setattr__(self, "name", assert_safe_name(self.name))
-        system = self.system if self.system is not None else self.prompt
-        if not system:
-            raise ValueError("AgentConfig requires a non-empty system / prompt")
-        object.__setattr__(self, "system", system)
+        if not self.system_prompt:
+            raise ValueError("AgentConfig requires a non-empty system_prompt")
         object.__setattr__(self, "tools", tuple(self.tools))
         if self.context_schema is not None:
             object.__setattr__(self, "context_schema", tuple(self.context_schema))

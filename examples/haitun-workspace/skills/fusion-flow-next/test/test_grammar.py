@@ -4,7 +4,7 @@ import importlib
 import re
 from pathlib import Path
 
-from fusion_flow_next.core_ir import CompoundTerm, Concept, ListTerm, Operator
+from fusion_flow_next.core_ir import CompoundTerm, Concept, Constant, ListTerm, Operator
 from fusion_flow_next.parser import ParseContext, parse_workflow
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,12 +20,14 @@ CANONICAL_DATAFLOW_OPERATORS = {
 }
 EXPECTED_PRESET_OPERATORS = CANONICAL_DATAFLOW_OPERATORS | {
     "agent_config",
+    "agent_system_prompt",
     "allowed_tool",
     "foreach_item",
     "max_attempts",
     "max_concurrency",
     "max_output_tokens",
     "max_turns",
+    "program_path",
     "reasoning_effort",
     "resource_requirement",
     "step_executor",
@@ -33,6 +35,7 @@ EXPECTED_PRESET_OPERATORS = CANONICAL_DATAFLOW_OPERATORS | {
     "step_name",
     "step_timeout",
     "temperature",
+    "value_from",
     "workflow_timeout",
 }
 REMOVED_DATAFLOW_OPERATORS = {
@@ -88,8 +91,18 @@ def test_preset_operators_document_signatures() -> None:
     )
     signatures = _documented_signatures()
 
+    assert len(set(preset_operators)) == 22
     assert sorted(name for name, _, _, _ in signatures) == sorted(set(preset_operators))
     assert set(preset_operators) == EXPECTED_PRESET_OPERATORS
+    assert {
+        name: (parameters, return_type, arity)
+        for name, parameters, return_type, arity in signatures
+        if name in {"program_path", "value_from", "agent_system_prompt"}
+    } == {
+        "program_path": ("Program", "Path", "1"),
+        "value_from": ("Constant", "Path", "1"),
+        "agent_system_prompt": ("Agent", "Instruction", "1"),
+    }
     canonical_list_operators = {
         "input_workflow": ("Workflow", "List", "1"),
         "consumes": ("Step", "List", "1"),
@@ -139,8 +152,49 @@ def test_skill_examples_follow_canonical_dataflow_contract() -> None:
                 assert isinstance(assertion.rhs, ListTerm), (
                     f"FusionFlow example {index} must give {operator_name} an explicit List RHS"
                 )
+                assert all(isinstance(item, Constant) for item in assertion.rhs.items), (
+                    f"FusionFlow example {index} must name Artifacts directly in {operator_name}"
+                )
 
     assert seen_operators == CANONICAL_DATAFLOW_OPERATORS
+
+
+def test_preset_operators_have_five_disjoint_owner_groups() -> None:
+    grammar = GRAMMAR.read_text(encoding="utf-8")
+    builtin_rule = re.search(
+        r"^workflowBuiltinOperator\s*\n(?P<body>.*?^\s*;)",
+        grammar,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert builtin_rule is not None
+    assert set(re.findall(r"\b([a-z][A-Za-z]+Operator)\b", builtin_rule.group("body"))) == {
+        "workflowOwnerOperator",
+        "programOwnerOperator",
+        "stepOwnerOperator",
+        "dataResourceOperator",
+        "agentOwnerOperator",
+    }
+
+    program_rule = re.search(
+        r"^programOwnerOperator\s*\n(?P<body>.*?^\s*;)",
+        grammar,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert program_rule is not None
+    assert re.findall(r"'([a-z][a-z0-9_]*)'", program_rule.group("body")) == [
+        "program_path",
+    ]
+
+    data_resource_rule = re.search(
+        r"^dataResourceOperator\s*\n(?P<body>.*?^\s*;)",
+        grammar,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert data_resource_rule is not None
+    assert "value_from" in re.findall(
+        r"'([a-z][a-z0-9_]*)'",
+        data_resource_rule.group("body"),
+    )
 
 
 def test_generated_directory_contains_runtime_sources_only() -> None:

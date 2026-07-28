@@ -150,8 +150,7 @@ def _config_payload(config: AgentConfig) -> dict[str, object]:
 
     return {
         "name": config.name,
-        "system": config.system,
-        "prompt": config.prompt,
+        "system_prompt": config.system_prompt,
         "model": config.model,
         "max_tokens": config.max_tokens,
         "temperature": config.temperature,
@@ -950,7 +949,7 @@ class Flow:
         evaluator = agent or self.agent(
             AgentConfig(
                 name="__evaluator__",
-                system=_EVALUATOR_SYSTEM_PROMPT,
+                system_prompt=_EVALUATOR_SYSTEM_PROMPT,
                 max_tokens=256,
                 temperature=0,
             )

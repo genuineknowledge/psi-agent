@@ -72,29 +72,26 @@ def test_assert_safe_name_does_not_overmatch_windows_device_names(name: str) -> 
     assert assert_safe_name(name) == name
 
 
-def test_agent_config_accepts_prompt_as_system_alias() -> None:
-    config = AgentConfig(name="writer", prompt="Write clearly")
+def test_agent_config_accepts_only_system_prompt() -> None:
+    config = AgentConfig(name="writer", system_prompt="Write clearly")
 
-    assert config.system == "Write clearly"
-    assert config.prompt == "Write clearly"
+    assert config.system_prompt == "Write clearly"
+    assert not hasattr(config, "system")
+    assert not hasattr(config, "prompt")
 
 
-@pytest.mark.parametrize(
-    ("system", "prompt"),
-    [(None, None), ("", None), (None, ""), ("", "fallback")],
-)
+@pytest.mark.parametrize("system_prompt", [None, ""])
 def test_agent_config_requires_a_non_empty_system_prompt(
-    system: str | None,
-    prompt: str | None,
+    system_prompt: str | None,
 ) -> None:
-    with pytest.raises(ValueError, match="system / prompt"):
-        AgentConfig(name="writer", system=system, prompt=prompt)
+    with pytest.raises(ValueError, match="system_prompt"):
+        AgentConfig(name="writer", system_prompt=system_prompt)
 
 
-def test_agent_config_keeps_system_precedence_and_defaults() -> None:
-    config = AgentConfig(name="writer", system="Primary", prompt="Alias")
+def test_agent_config_keeps_defaults() -> None:
+    config = AgentConfig(name="writer", system_prompt="Primary")
 
-    assert config.system == "Primary"
+    assert config.system_prompt == "Primary"
     assert config.max_tokens is None
     assert config.temperature is None
     assert config.tools == ()
@@ -148,7 +145,7 @@ def test_token_usage_rejects_invalid_counts(
 
 
 def test_public_value_models_have_stable_frozen_shapes() -> None:
-    config = AgentConfig(name="writer", system="Write")
+    config = AgentConfig(name="writer", system_prompt="Write")
     invocation_context = {"topic": "python"}
     invocation = AgentInvocation(prompt="Draft", context=invocation_context)
     result = SessionResult(text="done", input_tokens=2, output_tokens=1)

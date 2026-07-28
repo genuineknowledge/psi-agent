@@ -19,10 +19,12 @@ from fusion_flow_next.core_ir import (
     WorkflowFile,
 )
 from fusion_flow_next.graph_compiler import (
+    ValueSource,
     WorkflowGraphCompilation,
     WorkflowGraphCompilationError,
     WorkflowGraphCompiler,
 )
+from fusion_flow_next.parser import ParseContext, parse_workflow
 
 from psi_agent.workflow_graph.model import (
     ArtifactOperand,
@@ -256,6 +258,318 @@ def test_unknown_operator_with_if_value_remains_residual() -> None:
 
     assert compilation.graph.selectors == ()
     assert compilation.residual_assertions == (assertion,)
+
+
+def test_value_from_lowers_to_an_implicit_workflow_input() -> None:
+    value = Constant("request")
+    compilation = _compile(
+        (
+            *_step_declarations(),
+            _assertion("consumes", (Constant("step"),), ListTerm((value,))),
+            _assertion("value_from", (value,), Constant("request-source")),
+        )
+    )
+
+    assert compilation.value_sources == (ValueSource(value_id="request", source_id="request-source"),)
+    assert tuple(
+        (artifact.artifact_id, artifact.is_input, artifact.is_output) for artifact in compilation.graph.artifacts
+    ) == (("request", True, False),)
+    assert tuple(edge.kind for edge in compilation.graph.edges) == ("consumes",)
+    assert compilation.residual_assertions == ()
+
+
+def test_value_from_is_order_independent_and_sorted() -> None:
+    values = (Constant("value-b"), Constant("value-a"))
+    reversed_source = Assertion(
+        lhs=Constant("source-b"),
+        rhs=CompoundTerm(
+            operator=Operator("value_from"),
+            arguments=(values[0],),
+        ),
+    )
+    assertions = (
+        *_step_declarations(),
+        _assertion("consumes", (Constant("step"),), ListTerm(values)),
+        reversed_source,
+        _assertion("value_from", (values[1],), Constant("source-a")),
+    )
+
+    forward = _compile(assertions)
+    backward = _compile(tuple(reversed(assertions)))
+
+    assert (
+        forward.value_sources
+        == backward.value_sources
+        == (
+            ValueSource(value_id="value-a", source_id="source-a"),
+            ValueSource(value_id="value-b", source_id="source-b"),
+        )
+    )
+    assert forward.graph.to_dict() == backward.graph.to_dict()
+
+
+def test_value_from_cannot_repeat_an_explicit_workflow_input() -> None:
+    value = Constant("request")
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="value_from value cannot also be an explicit workflow input: 'request'",
+    ):
+        _compile(
+            (
+                *_step_declarations(),
+                _assertion(
+                    "input_workflow",
+                    (Constant("workflow"),),
+                    ListTerm((value,)),
+                ),
+                _assertion("consumes", (Constant("step"),), ListTerm((value,))),
+                _assertion("value_from", (value,), Constant("request-source")),
+            )
+        )
+
+
+def test_value_from_may_supply_a_named_selector_input() -> None:
+    artifact = Concept("Artifact")
+    boolean = Concept("Bool")
+    workflow = Constant("workflow")
+    condition = Constant("condition", (artifact,))
+    primary = Constant("primary", (artifact,))
+    fallback = Constant("fallback", (artifact,))
+    selected = Constant("selected", (artifact,))
+
+    compilation = _compile(
+        (
+            _assertion(
+                "input_workflow",
+                (workflow,),
+                ListTerm((primary, fallback)),
+            ),
+            _assertion("output_workflow", (workflow,), ListTerm((selected,))),
+            _assertion(
+                "value_from",
+                (condition,),
+                Constant("condition-source"),
+            ),
+            Assertion(
+                lhs=selected,
+                rhs=IfTerm(
+                    condition=Assertion(
+                        lhs=condition,
+                        rhs=Constant("True", (boolean,)),
+                    ),
+                    when_true=primary,
+                    when_false=fallback,
+                ),
+            ),
+        )
+    )
+
+    assert compilation.value_sources == (ValueSource(value_id="condition", source_id="condition-source"),)
+    assert next(
+        artifact_node for artifact_node in compilation.graph.artifacts if artifact_node.artifact_id == "condition"
+    ).is_input
+
+
+def test_source_value_from_may_supply_a_named_selector_input() -> None:
+    concept_names = ("Artifact", "Bool", "Constant", "List", "Path", "Workflow")
+    concepts = {name: Concept(name) for name in concept_names}
+    operators = {
+        "input_workflow": Operator(
+            "input_workflow",
+            (concepts["Workflow"],),
+            concepts["List"],
+        ),
+        "output_workflow": Operator(
+            "output_workflow",
+            (concepts["Workflow"],),
+            concepts["List"],
+        ),
+        "value_from": Operator(
+            "value_from",
+            (concepts["Constant"],),
+            concepts["Path"],
+        ),
+    }
+    parsed = parse_workflow(
+        """
+        const select_flow: Workflow;
+        const condition: Artifact, Constant;
+        const primary: Artifact;
+        const fallback: Artifact;
+        const selected: Artifact;
+
+        workflow select_flow {
+          input_workflow(select_flow) == [primary, fallback];
+          output_workflow(select_flow) == [selected];
+          value_from(condition) == condition_source;
+          selected == if(condition = true, primary, fallback);
+        }
+        """,
+        context=ParseContext(concepts=concepts, operators=operators),
+    )
+
+    assert parsed.diagnostics == ()
+    assert parsed.core_ir is not None
+    compiled = WorkflowGraphCompiler().compile(parsed.core_ir)
+    assert isinstance(compiled, tuple)
+    (compilation,) = cast(tuple[WorkflowGraphCompilation, ...], compiled)
+    assert compilation.value_sources == (ValueSource(value_id="condition", source_id="condition_source"),)
+    assert compilation.graph.selectors == (
+        SelectNode(
+            output_artifact_id="selected",
+            when_true_artifact_id="primary",
+            when_false_artifact_id="fallback",
+            condition=ComparisonCondition(
+                operator="eq",
+                left=ArtifactOperand("condition"),
+                right=LiteralOperand(True),
+            ),
+        ),
+    )
+
+
+def test_value_from_cannot_bind_a_named_selector_output() -> None:
+    artifact = Concept("Artifact")
+    boolean = Concept("Bool")
+    workflow = Constant("workflow")
+    condition = Constant("condition", (artifact,))
+    primary = Constant("primary", (artifact,))
+    fallback = Constant("fallback", (artifact,))
+    selected = Constant("selected", (artifact,))
+
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="value_from value cannot be produced: 'selected'",
+    ):
+        _compile(
+            (
+                _assertion(
+                    "input_workflow",
+                    (workflow,),
+                    ListTerm((condition, primary, fallback)),
+                ),
+                _assertion("output_workflow", (workflow,), ListTerm((selected,))),
+                _assertion(
+                    "value_from",
+                    (selected,),
+                    Constant("selected-source"),
+                ),
+                Assertion(
+                    lhs=selected,
+                    rhs=IfTerm(
+                        condition=Assertion(
+                            lhs=condition,
+                            rhs=Constant("True", (boolean,)),
+                        ),
+                        when_true=primary,
+                        when_false=fallback,
+                    ),
+                ),
+            )
+        )
+
+
+def test_value_from_may_supply_a_workflow_output_without_a_consumer() -> None:
+    value = Constant("result")
+    compilation = _compile(
+        (
+            _assertion(
+                "output_workflow",
+                (Constant("workflow"),),
+                ListTerm((value,)),
+            ),
+            _assertion("value_from", (value,), Constant("result-source")),
+        )
+    )
+
+    assert compilation.graph.artifacts[0].is_input
+    assert compilation.graph.artifacts[0].is_output
+    assert compilation.graph.edges == ()
+
+
+def test_duplicate_value_from_is_rejected() -> None:
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="duplicate value_from: 'request'",
+    ):
+        _compile(
+            (
+                _assertion(
+                    "output_workflow",
+                    (Constant("workflow"),),
+                    ListTerm((Constant("request"),)),
+                ),
+                _assertion(
+                    "value_from",
+                    (Constant("request"),),
+                    Constant("first-source"),
+                ),
+                _assertion(
+                    "value_from",
+                    (Constant("request"),),
+                    Constant("second-source"),
+                ),
+            )
+        )
+
+
+def test_value_from_cannot_bind_a_produced_value() -> None:
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="value_from value cannot be produced: 'result'",
+    ):
+        _compile(
+            (
+                *_step_declarations(),
+                _assertion(
+                    "produces",
+                    (Constant("step"),),
+                    ListTerm((Constant("result"),)),
+                ),
+                _assertion(
+                    "value_from",
+                    (Constant("result"),),
+                    Constant("result-source"),
+                ),
+            )
+        )
+
+
+def test_value_from_value_must_be_consumed_or_a_workflow_output() -> None:
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="value_from value must be consumed or a workflow output: 'unused'",
+    ):
+        _compile(
+            (
+                _assertion(
+                    "value_from",
+                    (Constant("unused"),),
+                    Constant("unused-source"),
+                ),
+            )
+        )
+
+
+def test_executor_configuration_remains_residual() -> None:
+    program_path = _assertion(
+        "program_path",
+        (Constant("program"),),
+        Constant("program-source"),
+    )
+    agent_system_prompt = _assertion(
+        "agent_system_prompt",
+        (Constant("agent"),),
+        Constant("system-prompt"),
+    )
+
+    compilation = _compile((program_path, agent_system_prompt))
+
+    assert compilation.value_sources == ()
+    assert compilation.residual_assertions == (
+        program_path,
+        agent_system_prompt,
+    )
 
 
 def test_supported_graph_operator_on_rhs_is_lowered_as_equality() -> None:
@@ -753,6 +1067,7 @@ def test_graph_validation_errors_are_public_and_chained() -> None:
 
 
 def test_graph_backend_is_exported_from_package() -> None:
+    assert fusion_flow_next.ValueSource is ValueSource
     assert fusion_flow_next.WorkflowGraphCompiler is WorkflowGraphCompiler
     assert fusion_flow_next.WorkflowGraphCompilation is WorkflowGraphCompilation
     assert fusion_flow_next.WorkflowGraphCompilationError is WorkflowGraphCompilationError

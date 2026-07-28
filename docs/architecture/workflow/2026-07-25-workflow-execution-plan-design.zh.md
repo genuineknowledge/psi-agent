@@ -91,6 +91,8 @@ package 中复制 executor catalog。
 - `ForeachEdge`：需要 slot、index 稳定聚合和 partial failure 合同；
 - resource requirement：需要 allocator；
 - `max_attempts != 1`：应复用 PR15 `flow.retry`，但 retry/iteration 组合尚未确定；
+- `value_from` 管理的输入：`WorkflowGraphCompiler` 会把它标记为 input，但当前执行器仍只接受
+  调用方直接提供 input；source resolver、缺值等待和恢复属于后续运行时工作；
 - input Artifact 同时有 producer：可能表示 seed + feedback，需要 Artifact version；
 - producer/consumer 环：直接全量启动会形成 circular await。
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from antlr4 import CommonTokenStream, InputStream
 from fusion_flow_next.core_ir import (
     Assertion,
     CompoundTerm,
@@ -12,6 +13,8 @@ from fusion_flow_next.core_ir import (
     Operator,
     WorkflowFile,
 )
+from fusion_flow_next.generated.FusionFlowLexer import FusionFlowLexer
+from fusion_flow_next.generated.FusionFlowParser import FusionFlowParser
 from fusion_flow_next.parser import ParseContext, parse_workflow
 
 
@@ -74,6 +77,29 @@ def _context() -> ParseContext:
         output_concept=concepts["Instruction"],
     )
     return ParseContext(concepts=concepts, operators=operators)
+
+
+@pytest.mark.parametrize(
+    ("operator_call", "owner_rule"),
+    (
+        ("program_path()", "programOwnerOperator"),
+        ("value_from(value, extra)", "dataResourceOperator"),
+        ("agent_system_prompt(agent, extra)", "agentOwnerOperator"),
+    ),
+)
+def test_new_builtins_use_owner_rules_without_parser_arity_checks(
+    operator_call: str,
+    owner_rule: str,
+) -> None:
+    lexer = FusionFlowLexer(InputStream(f"workflow builtins {{ {operator_call} == true; }}"))
+    parser = FusionFlowParser(CommonTokenStream(lexer))
+    tree = parser.workflowFile()
+
+    assert parser.getNumberOfSyntaxErrors() == 0
+    operator_name = tree.workflowDecl(0).workflowItem(0).assertion().term(0).operatorCall().operatorName()
+    builtin = operator_name.workflowBuiltinOperator()
+    assert builtin is not None
+    assert getattr(builtin, owner_rule)() is not None
 
 
 def test_bool_call_shorthand_lowers_to_explicit_true_assertion() -> None:

@@ -1664,7 +1664,7 @@ async def test_resume_treats_non_object_binding_metadata_as_cache_miss(
     await anyio.Path(bindings_dir, "answer.md").write_text("cached")
     await anyio.Path(bindings_dir, "answer.meta.json").write_text("[]")
     calls = 0
-    agent = flow.agent(AgentConfig(name="answer", system="Write."))
+    agent = flow.agent(AgentConfig(name="answer", system_prompt="Write."))
 
     async def runner(_: AgentConfig, __: AgentInvocation) -> str:
         nonlocal calls
@@ -1750,7 +1750,7 @@ async def test_resume_skips_unreadable_binding(tmp_path) -> None:
     await anyio.Path(bindings_dir, "answer.meta.json").write_text(
         '{"operation": "session"}',
     )
-    agent = flow.agent(AgentConfig(name="answer", system="Write."))
+    agent = flow.agent(AgentConfig(name="answer", system_prompt="Write."))
 
     async def runner(_: AgentConfig, __: AgentInvocation) -> str:
         return "fresh"
@@ -1788,7 +1788,7 @@ async def test_resume_treats_unreadable_bindings_directory_as_empty_cache(
 
     monkeypatch.setattr(anyio.Path, "iterdir", fail_bindings)
     calls = 0
-    agent = flow.agent(AgentConfig(name="answer", system="Write."))
+    agent = flow.agent(AgentConfig(name="answer", system_prompt="Write."))
 
     async def runner(_: AgentConfig, __: AgentInvocation) -> str:
         nonlocal calls
@@ -1829,7 +1829,7 @@ async def test_resume_treats_metadata_recursion_error_as_cache_miss(
 
     monkeypatch.setattr(runtime_module.json, "loads", fail_metadata)
     calls = 0
-    agent = flow.agent(AgentConfig(name="answer", system="Write."))
+    agent = flow.agent(AgentConfig(name="answer", system_prompt="Write."))
 
     async def runner(_: AgentConfig, __: AgentInvocation) -> str:
         nonlocal calls

@@ -133,6 +133,9 @@ StepNode
 `Agent`、`Program`；每个 executor identity 必须且只能属于其中一类。Graph 不增加
 `ExecutorKind` 或 `executor_kind` 字段，避免与 Core IR concept 类型形成第二份真源。
 未来 dispatcher 通过原始 Core IR/catalog 解析 identity 的类型与配置。
+`program_path(program) = path_identity` 与
+`agent_system_prompt(agent) = instruction_identity` 属于 catalog/dispatcher
+配置，保留在 residual 中，不复制进 `StepNode` 或 `WorkflowGraph`。
 
 ### 5.3 ArtifactNode
 
@@ -155,6 +158,9 @@ ArtifactNode
 初版不在 ArtifactNode 中复制 Concept/type、运行值、版本、checksum 或存储位置。
 上游 Core IR/checker 仍负责 Concept compatibility；是否把 type reference 下沉到图，
 留作待讨论项。
+
+`value_from(value) = source_identity` 会把 `value` 标记为 `is_input=True`，同时在
+compilation metadata 中记录来源；ArtifactNode 不保存 source identity。
 
 ### 5.4 三类边
 
@@ -276,7 +282,7 @@ duck-typed DTO。
 
 ### 7.2 已知 operator
 
-FusionFlow catalog 共 19 个 preset operator；图后端初版识别：
+FusionFlow catalog 共 22 个 preset operator；图后端初版识别：
 
 - `input_workflow`
 - `output_workflow`
@@ -291,9 +297,13 @@ FusionFlow catalog 共 19 个 preset operator；图后端初版识别：
 - `resource_requirement`
 - `max_concurrency`
 - `workflow_timeout`
+- `value_from`
 
 已知 operator 如果 arity、RHS、owner 或类型形状错误，直接产生
 `WorkflowGraphCompilationError`，不能伪装成 residual。
+
+其中 `value_from` 是 compiler-lowered metadata operator；`program_path` 与
+`agent_system_prompt` 则有意留给未来 catalog/dispatcher，按源码顺序进入 residual。
 
 arity 以 `CompoundTerm.arguments` 的实际长度为准，不使用 `Operator.arity`。当前
 Core IR 中 `Operator.arity` 来自可选 catalog 签名，手工构造或尚未经过 checker 的
@@ -321,6 +331,7 @@ operator 默认可能为 0，不能代表应用实参数量。
 | `max_concurrency(w) = n` | `WorkflowPolicy.max_concurrency = n` |
 | `workflow_timeout(w) = n` | `WorkflowPolicy.timeout_seconds = n` |
 | `selected == if(condition, a, b)` | `SelectNode(selected, a, b, condition)` |
+| `value_from(value) = source` | `ArtifactNode(value, is_input=True)` + `ValueSource(value, source)` |
 
 其中所有 `n` 都从 `Constant.symbol` 显式解析为正整数。resource identity 使用
 `(step_id, resource_id)` 结构化键，不把 resource 或 amount 建成 Artifact。
@@ -330,26 +341,33 @@ operator 默认可能为 0，不能代表应用实参数量。
 条件还支持 `!`、`AND`、`OR`。多级优先级通过多个命名 Artifact 选择串联；
 `consumes(s) == [if(...)]` 和分支中的嵌套 `IfTerm` 均拒绝。
 
+`ValueSource` 只保存 `value_id` 与 `source_id`。`source_id` 是 catalog identity，
+不是 OS 文件路径、Webhook payload、CloudEvents source 或自由文本；同一 source 可以
+供应多个 value。`value_from` 自身已声明外部输入，不要求重复写 `input_workflow`，
+也不创建 Event 节点或额外图边。
+
 普通值 assertion，例如 `files = [file_a, file_b]`，不展开进静态图，留在 residual 供
 值求解或 runtime 使用。
 
-### 7.4 residual
+### 7.4 compilation metadata 与 residual
 
 未知、图无关且结构合法的 assertions 保留在：
 
 ```text
 WorkflowGraphCompilation
 ├── graph
+├── value_sources[(value_id, source_id)]
 └── residual_assertions
 ```
 
 `WorkflowGraphCompiler.compile(WorkflowFile)` 为每个 workflow 返回一个
-`WorkflowGraphCompilation`。residual 保留真实 `Assertion`，因此 compilation
-本身不是持久化 payload；需要持久化时，调用者分别保存原始 Core IR 和
-`graph.to_dict()`。
+`WorkflowGraphCompilation`。`value_sources` 按 `value_id` 排序；residual 保留真实
+`Assertion`，因此 compilation 本身不是持久化 payload。需要持久化时，调用者分别
+保存原始 Core IR、source metadata 和 `graph.to_dict()`。
 
-两侧顶层都没有已知图算子的 assertion（包括普通 equality 和未知 compound operator）
-可以进入 residual；已识别但形状错误的关系和共享编译器不支持的递归节点必须显式失败。
+普通 equality、未知 compound operator，以及 catalog/dispatcher-owned 的
+`program_path` 与 `agent_system_prompt` 可以进入 residual；已识别的图关系或
+`value_from` 若形状错误，以及共享编译器不支持的递归节点，都必须显式失败。
 
 ## 8. canonical dataflow ListTerm 的信息边界
 
@@ -387,6 +405,11 @@ WorkflowGraphCompilation
 13. 每个 Select 的输出和输入 Artifact 都存在、均为 global，且输出没有其他 producer；
 14. Select 输出不重复，条件引用的 Artifact 可用；
 15. 不检查 acyclic。
+
+编译器另检查每个 source-managed value 最多一个 `value_from`、不能同时由 Step
+或 Select 产生，并且必须被 Step 或 Select 消费，或作为 workflow output。显式
+`input_workflow` 与 `value_from` 不能同时提及同一 Artifact，避免 caller-managed
+与 source-managed 两种输入所有权产生歧义。
 
 “input Artifact 同时有 producer”初版允许表示，因为它可能是 seed + feedback；
 但它的运行时版本语义尚未定义，所以 planner 不能仅凭结构直接执行。
@@ -447,6 +470,10 @@ failure、结果聚合与提交由未来 runtime 负责。
 - 图的控制语义未闭合时，不从普通数据边猜测 lazy `if`、first/any 或 while；
   `SelectNode` 只执行已显式建模的 eager 值选择。
 
+当前仓库没有可直接复用的结构化 Human approval interface；示例中的 injected
+callback 也没有 request ID、持久等待或恢复协议。source listener、durable inbox、
+delivery 和 workflow wake-up 同样属于后续 runtime。
+
 ## 13. 测试策略
 
 ### 13.1 模型测试
@@ -468,6 +495,9 @@ failure、结果聚合与提交由未来 runtime 负责。
 - 未支持的 term 经 `CoreIRCompiler` fail closed；
 - cycle 编译后仍保留；
 - resource key 不发生 `"a:b" + "c"` 与 `"a" + "b:c"` 碰撞；
+- `value_from` 隐含 input、生成确定排序的 `ValueSource`，可供应 Select 输入，并
+  拒绝重复、Step/Select producer 冲突、显式 input 冲突和未使用
+  source-managed value；
 - 结果排序稳定。
 
 ## 14. 非目标
@@ -487,13 +517,15 @@ failure、结果聚合与提交由未来 runtime 负责。
 - dynamic graph mutation；
 - Petri Net/TLA+/MLIR lowering；
 - executor callable registry；
+- source listener/adapter/inbox、durable wait、delivery 或 workflow wake-up；
 - FusionFlow Python 运行时。
 
 ## 15. 验收标准
 
 - 图模型明确允许有环，代码中没有 DAG 校验；
 - 静态定义与运行状态彻底分离；
-- PR12 `CoreIRCompiler` hook 边界、residual 和 List 关系映射的信息损失显式；
+- PR12 `CoreIRCompiler` hook 边界、`value_sources`、residual 和 List
+  关系映射的信息损失显式；
 - 模型结构检查完整；
 - 直接构造和编译构造都能确定性序列化；
 - tests、Ruff、ty 通过；
