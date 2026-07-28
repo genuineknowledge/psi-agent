@@ -15,6 +15,7 @@ from psi_agent.session.conversation import Conversation
 from psi_agent.session.protocol import AgentChunk, AgentError
 from psi_agent.session.runtime_context import get_agent, get_workspace, runtime_scope
 from psi_agent.session.schedule_registry import ACTIVATE_ALL
+from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 
@@ -83,6 +84,35 @@ async def test_agent_simple_response(tmp_path: Path) -> None:
 
         all_content = "".join(c.content or "" for c in chunks)
         assert "Hello world" in all_content
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_runs_after_turn_hook_on_stop(tmp_path: Path) -> None:
+    calls: list[tuple[dict, dict]] = []
+
+    async def after_turn(user_message: dict, assistant_message: dict) -> None:
+        calls.append((user_message, assistant_message))
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content="final reply", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    user = {"role": "user", "content": "question"}
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            system_prompt=SystemPrompt(after_turn=after_turn),
+        )
+        _ = [chunk async for chunk in agent.run(user)]
+
+        assert calls == [(user, {"role": "assistant", "content": "final reply"})]
     finally:
         await mock_server.cleanup()
 

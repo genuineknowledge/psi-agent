@@ -262,7 +262,7 @@ class SessionAgent:
         """
         user_kind = message_kind(user_message)
         turn_response_kind = response_kind if response_kind is not None else user_kind
-        user_message = with_kind(user_message, user_kind)
+        stored_user_message = with_kind(user_message, user_kind)
 
         # Gateway embeds many Sessions in one process — bind this turn so
         # tools can read session id / workspace / agent paths via ContextVars.
@@ -277,7 +277,7 @@ class SessionAgent:
                 await self._schedule_registry.refresh()
 
                 # system prompt (lazy build / optional rebuild)
-                await self._system_prompt.ensure(self._conversation)
+                await self._system_prompt.ensure(self._conversation, user_message)
 
                 # peek pending schedule chunks — yield first, clear only after yield
                 # (only schedule.display results are stashed; silent never enters pending)
@@ -294,9 +294,9 @@ class SessionAgent:
                 # prompt plus every earlier turn — byte-identical.
                 turn_context = await self._system_prompt.turn_context()
                 if turn_context:
-                    user_message = user_message | {TURN_CONTEXT_KEY: turn_context}
+                    stored_user_message = stored_user_message | {TURN_CONTEXT_KEY: turn_context}
 
-                self._conversation.add(user_message)
+                self._conversation.add(stored_user_message)
                 await self._conversation.commit()
                 logger.debug(f"History now has {len(self._conversation.messages)} messages")
 
@@ -472,14 +472,15 @@ class SessionAgent:
                             f"Stop: content={len(accumulated_content)} chars, "
                             f"reasoning={len(accumulated_reasoning)} chars"
                         )
+                        assistant_msg: dict[str, Any] = {"role": "assistant"}
                         if accumulated_content or accumulated_reasoning:
-                            assistant_msg: dict[str, Any] = {"role": "assistant"}
                             if accumulated_content:
                                 assistant_msg["content"] = accumulated_content
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
                             self._conversation.add(with_kind(assistant_msg, turn_response_kind))
                         await self._conversation.commit()
+                        await self._system_prompt.run_after_turn(user_message, assistant_msg)
                         await self._schedule_registry.refresh()
                         if _compaction_needed:
                             await self._maybe_compact(_compaction_prompt_tokens, _compaction_threshold)
