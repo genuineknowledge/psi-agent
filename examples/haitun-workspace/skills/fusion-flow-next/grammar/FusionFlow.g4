@@ -115,7 +115,7 @@ operatorCall
  * only a named Artifact equality and represents N-way priority with several
  * named intermediate Artifacts. Inline and nested if terms remain syntax-only
  * unless another backend implements them. if is surface syntax, not one of the
- * 22 preset operators and not a block or Step.
+ * 21 preset operators and not a block or Step.
  */
 ifExpression
     : IF LPAREN formula COMMA term COMMA term RPAREN
@@ -150,7 +150,7 @@ operatorName
 
 /*
  * Complete catalog:
- * 4 workflow + 5 step + 1 program + 5 data/resource/value-source + 7 agent = 22.
+ * 4 workflow + 5 step + 1 program + 4 data/resource + 7 agent = 21.
  * Owner categories are disjoint;
  * cross-cutting labels such as dataflow, control, and configuration stay in
  * comments rather than duplicating names across parser rules.
@@ -202,19 +202,17 @@ stepOwnerOperator
     ;
 
 /*
- * Data, loop, resource, and value-source owner:
+ * Data, loop, and resource owner:
  *   consumes(Step) -> List                            [arity 1]
  *   produces(Step) -> List                            [arity 1]
  *   foreach_item(Step, List) -> Artifact              [arity 2]
  *   resource_requirement(Step, Resource) -> Integer   [arity 2]
- *   value_from(Constant) -> Path                      [arity 1]
  */
 dataResourceOperator
     : 'consumes'
     | 'produces'
     | 'foreach_item'
     | 'resource_requirement'
-    | 'value_from'
     ;
 
 /*

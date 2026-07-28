@@ -24,7 +24,6 @@ from .core_ir import (
     WorkflowFile,
 )
 from .graph_compiler import (
-    ValueSource,
     WorkflowGraphCompilation,
     WorkflowGraphCompilationError,
     WorkflowGraphCompiler,
@@ -60,7 +59,6 @@ __all__ = [
     "SourcePosition",
     "SourceSpan",
     "Term",
-    "ValueSource",
     "Workflow",
     "WorkflowFile",
     "WorkflowGraphCompilation",

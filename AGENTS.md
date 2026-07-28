@@ -59,12 +59,6 @@ TypeScript 对同一份省略字段的配置按调用位置解析：普通 `sess
 `AgentConfig.prompt` 不保留兼容入口，避免把两层 prompt 再次混淆。配置 payload
 字段随之改名，旧运行缓存可能因 hash 变化而重新执行。
 
-**为什么 `value_from` 会隐含 workflow input？**
-`value_from(value) == source` 已完整表达“这个值由外部来源提供”，再要求作者把同一值写进
-`input_workflow` 容易遗漏且重复。图编译器因此把 value 标成 input Artifact，并在
-compilation 中记录 `ValueSource`；不增加 Event 节点或边。监听、持久 inbox、延迟交付、
-唤醒和恢复仍属于后续 runtime，不能从这份静态 metadata 推断为已经实现。
-
 **为什么不能创建 `run_id="last"`？**
 `resume_from_run_id="last"` 与 TypeScript 的 `--resume=last` 一样是“选择字典序最新目录”的哨兵。为避免一个真实 run 永远无法按同名恢复，Python 明确保留这个名称并在创建目录前拒绝。
 

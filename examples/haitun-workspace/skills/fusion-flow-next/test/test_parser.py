@@ -83,7 +83,6 @@ def _context() -> ParseContext:
     ("operator_call", "owner_rule"),
     (
         ("program_path()", "programOwnerOperator"),
-        ("value_from(value, extra)", "dataResourceOperator"),
         ("agent_system_prompt(agent, extra)", "agentOwnerOperator"),
     ),
 )

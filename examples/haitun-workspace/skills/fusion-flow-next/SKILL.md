@@ -409,7 +409,7 @@ Before authoring, read `grammar/FusionFlow.g4` completely. It is the sole author
 - Variables, quantifiers, rules, implications, biconditionals, query/SAT/optimization requests, local concept declarations, local operator declarations, and imperative blocks are outside this language.
 - Never emit imports, imperative runtime calls, `run(...)`, or invented `parallel`/`pipeline`/`for` blocks.
 
-#### Executor configuration and value sources
+#### Executor configuration
 
 Keep stable Agent configuration separate from one Step's task:
 
@@ -417,28 +417,36 @@ Keep stable Agent configuration separate from one Step's task:
 - `step_instruction(step)` is the current Step task;
 - the Step's consumed Artifacts are the invocation context.
 
-`program_path(program)` and `value_from(value)` point to catalog identities, not
-free-form commands, secrets, filesystem contents, Webhook payloads, or
-provider-specific event syntax. A source-managed value is already a workflow
-input, so do not also add it to `input_workflow`.
+`program_path(program)` and `agent_system_prompt(agent)` point to catalog
+identities, not inline commands, secrets, filesystem contents, or prompt bodies.
 
 ```fusionflow
 const request: Artifact;
-const approval_result: Artifact, Constant;
+const prepared_request: Artifact;
 const report: Artifact;
+const prepare: Step;
 const publish: Step;
+const prepare_name: StepName;
 const publish_name: StepName;
+const prepare_instruction: Instruction;
 const publish_instruction: Instruction;
+const formatter: Program, Executor;
+const formatter_path: Path;
 const publisher: Agent, Executor;
 const publisher_system_prompt: Instruction;
-const approval_source: Path;
 
 workflow publish_report {
   input_workflow(publish_report) == [request];
-  value_from(approval_result) == approval_source;
-  consumes(publish) == [request, approval_result];
+  consumes(prepare) == [request];
+  produces(prepare) == [prepared_request];
+  consumes(publish) == [prepared_request];
   produces(publish) == [report];
   output_workflow(publish_report) == [report];
+
+  step_executor(prepare) == formatter;
+  step_name(prepare) == prepare_name;
+  step_instruction(prepare) == prepare_instruction;
+  program_path(formatter) == formatter_path;
 
   step_executor(publish) == publisher;
   step_name(publish) == publish_name;
@@ -447,10 +455,8 @@ workflow publish_report {
 }
 ```
 
-This declaration does not mean the current runtime can listen, wait, resume, or
-deliver external events. Human Steps likewise use the existing Step declarations;
-a future dispatcher must present a readable request, persist a request ID, release
-the worker while waiting, and resume only the matching response.
+These declarations remain catalog/dispatcher configuration. They do not embed a
+Program command or an Agent prompt body in the workflow graph.
 
 #### Named Artifact selection with `if`
 

@@ -35,7 +35,6 @@ EXPECTED_PRESET_OPERATORS = CANONICAL_DATAFLOW_OPERATORS | {
     "step_name",
     "step_timeout",
     "temperature",
-    "value_from",
     "workflow_timeout",
 }
 REMOVED_DATAFLOW_OPERATORS = {
@@ -91,16 +90,15 @@ def test_preset_operators_document_signatures() -> None:
     )
     signatures = _documented_signatures()
 
-    assert len(set(preset_operators)) == 22
+    assert len(set(preset_operators)) == 21
     assert sorted(name for name, _, _, _ in signatures) == sorted(set(preset_operators))
     assert set(preset_operators) == EXPECTED_PRESET_OPERATORS
     assert {
         name: (parameters, return_type, arity)
         for name, parameters, return_type, arity in signatures
-        if name in {"program_path", "value_from", "agent_system_prompt"}
+        if name in {"program_path", "agent_system_prompt"}
     } == {
         "program_path": ("Program", "Path", "1"),
-        "value_from": ("Constant", "Path", "1"),
         "agent_system_prompt": ("Agent", "Instruction", "1"),
     }
     canonical_list_operators = {
@@ -191,10 +189,12 @@ def test_preset_operators_have_five_disjoint_owner_groups() -> None:
         re.MULTILINE | re.DOTALL,
     )
     assert data_resource_rule is not None
-    assert "value_from" in re.findall(
-        r"'([a-z][a-z0-9_]*)'",
-        data_resource_rule.group("body"),
-    )
+    assert re.findall(r"'([a-z][a-z0-9_]*)'", data_resource_rule.group("body")) == [
+        "consumes",
+        "produces",
+        "foreach_item",
+        "resource_requirement",
+    ]
 
 
 def test_generated_directory_contains_runtime_sources_only() -> None:

@@ -29,7 +29,7 @@ package.
 
 ## Current scope and known gaps
 
-The language contract now covers file-level identity declarations, assertions, `!`/`AND`/`OR` formulas and comparisons, arithmetic, Lists, and value-producing `if(condition, then, else)` expressions. Workflow blocks contain assertions; a standalone Bool-returning operator call is shorthand for that call asserted equal to `True`. Concepts and operator signatures come from an external catalog. The 22 preset operators are split into five disjoint owner groups. The canonical dataflow operators `input_workflow(Workflow)`, `output_workflow(Workflow)`, `consumes(Step)`, and `produces(Step)` return ordinary List terms. Their artifact relation is always explicit on the RHS, including singleton forms such as `consumes(step) == [artifact]`; the removed `*_multi` spellings and former two-argument Bool relations have no compatibility aliases. `program_path`, `agent_system_prompt`, and `value_from` declare executor or external-source identities without embedding commands, prompts, event formats, or secrets in the grammar. `FusionFlow.g4` fixes `if` at three arguments while ordinary preset and externally registered operators keep flexible call arity for checker-owned validation.
+The language contract now covers file-level identity declarations, assertions, `!`/`AND`/`OR` formulas and comparisons, arithmetic, Lists, and value-producing `if(condition, then, else)` expressions. Workflow blocks contain assertions; a standalone Bool-returning operator call is shorthand for that call asserted equal to `True`. Concepts and operator signatures come from an external catalog. The 21 preset operators are split into five disjoint owner groups. The canonical dataflow operators `input_workflow(Workflow)`, `output_workflow(Workflow)`, `consumes(Step)`, and `produces(Step)` return ordinary List terms. Their artifact relation is always explicit on the RHS, including singleton forms such as `consumes(step) == [artifact]`; the removed `*_multi` spellings and former two-argument Bool relations have no compatibility aliases. `program_path` and `agent_system_prompt` declare executor catalog identities without embedding commands or prompt bodies in the grammar. `FusionFlow.g4` fixes `if` at three arguments while ordinary preset and externally registered operators keep flexible call arity for checker-owned validation.
 
 For a compact, readable BNF and consistency with KEDispatcher, preset operators remain syntax sugar over the same flexible call rule instead of receiving separate arity-constrained grammar productions. After syntax parsing, the checker/catalog validates their arity and types. Because that information is intentionally not encoded structurally in the BNF, every preset operator in `FusionFlow.g4` documents its parameter types, return type, and explicit arity for human and agent readers; the grammar contract test enforces this documentation invariant.
 
@@ -48,8 +48,6 @@ remain in `residual_assertions`. A top-level
 `SelectNode`; both candidates must be declared Artifacts and both producers run.
 Downstream dataflow consumes `[selected]`. Priority selection uses named
 intermediate Artifacts; inline or nested `if` terms fail closed.
-`value_from(value) == source` adds deterministic `ValueSource` metadata and
-marks `value` as an input Artifact without creating an Event node or graph edge.
 `program_path` and `agent_system_prompt` remain residual for a future
 catalog/dispatcher. Malformed owned relations and unsupported recursive terms
 fail explicitly. The graph is serializable, but the compilation is not a
@@ -59,8 +57,8 @@ Because `Assertion` is equality, one recognized graph call may appear on either
 side. The backend normalizes that call before lowering and explicitly rejects an
 equality containing recognized graph calls on both sides.
 
-The package exports `ValueSource`, `WorkflowGraphCompiler`,
-`WorkflowGraphCompilation`, and `WorkflowGraphCompilationError`.
+The package exports `WorkflowGraphCompiler`, `WorkflowGraphCompilation`, and
+`WorkflowGraphCompilationError`.
 
 This remains an example-local package rather than a wheel dependency. The
 execution subpackage is a compatibility boundary, not the G4 runtime. Run all
@@ -74,7 +72,7 @@ Variables, quantifiers, truth formulas, theories, rules, and query/SAT/optimizat
 
 | Item | Intended contract | Current gap | Required compiler behavior |
 | --- | --- | --- | --- |
-| `S01` | `input_workflow` declares caller-supplied values, `value_from` declares source-managed inputs that may arrive later, and `output_workflow` declares external results. | Static `ValueSource` metadata exists, but source listeners, delivery, durable waiting, resume, and compatibility-runtime wiring do not. | The graph backend preserves the exact input/output boundary and source identity separately; a later runtime must reject caller overrides of source-managed values and resolve delivery. |
+| `S01` | `input_workflow` and `output_workflow` declare external artifacts. | The compatibility-only `fusion_flow_next.execution` operations are not wired to those declarations. | The generic `WorkflowGraph` executor already enforces the exact input boundary; connecting the compatibility execution package still requires a separate runtime value contract. |
 
 ## Activation boundary
 
@@ -108,7 +106,7 @@ Commit only `FusionFlowLexer.py` and `FusionFlowParser.py`; the generated `.inte
 3. **Parser** owns `fusion_flow_next/generated/` and `fusion_flow_next/parser.py`: report syntax errors and produce lossless Core IR for later stages.
 4. **Static checker** owns the Python checker: validate workflow legality and backend-independent constraints.
 5. **Compiler** owns `fusion_flow_next/compiler.py`: lower checked Workflow Core IR through backend-specific hooks without selecting a target in the shared layer.
-6. **Workflow Graph backend** owns `fusion_flow_next/graph_compiler.py`: compile real Core IR through the shared hooks into the generic `psi_agent.workflow_graph` model, deterministic value-source metadata, and residual assertions.
+6. **Workflow Graph backend** owns `fusion_flow_next/graph_compiler.py`: compile real Core IR through the shared hooks into the generic `psi_agent.workflow_graph` model while retaining residual assertions.
 7. **Planning warnings** owns `fusion_flow_next/planning.py`: after Haitun lists planned steps and before it authors the DSL, check their declared syntax mappings and warn about missing or unavailable names. Each item is already at `Step` granularity; this phase does not introduce a higher-level requirement model and cannot detect steps that Haitun failed to list.
 8. **Haitun integration** updates existing prompt and tool entry points only after parsing and checks work: add the syntax-check tool and require planning before workflow generation.
 9. **Compatibility and migration** owns runnable checks and the activation gate: keep the existing `fusion-flow`, runner, and `.flow.ts` path unchanged until final migration.
