@@ -11,10 +11,10 @@ This merges three ideas into one workspace:
   fully merged from the fusion-flow workspace.
 * A fixed Haitun agent persona, always stated in the system prompt.
 
-Only ``system_prompt_builder()`` (and optionally ``system_prompt_rebuild_checker``
-and ``turn_context_builder``) is invoked by psi-agent's session loader.
-``compact_history`` / ``after_turn`` /
-the self-evolution helpers below are **intentionally kept but currently un-wired**
+``system_prompt_builder()``, ``system_prompt_rebuild_checker()``,
+``turn_context_builder()``, ``compact_history()``, and ``system_after_turn()``
+are invoked by psi-agent's session loader. ``System.after_turn`` and the
+self-evolution helpers below are **intentionally kept but currently un-wired**
 - they are future-extension hooks (see AGENTS.md).  Do not delete them as "dead
 code"; they exist on purpose.
 """
@@ -30,8 +30,13 @@ _THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
+_TOOLS_DIR = _os.path.join(_os.path.dirname(_THIS_DIR), "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
 import contextlib
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -1009,7 +1014,12 @@ hand-copying the key.
 
 Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files."""
 
-    async def build_system_prompt(self, model: str | None = None, tool_names: list[str] | None = None) -> str:
+    async def build_system_prompt(
+        self,
+        model: str | None = None,
+        tool_names: list[str] | None = None,
+        user_text: str = "",
+    ) -> str:
         # Capability root (skills/tools/SOUL) vs user open-folder (file IO guidance).
         ws = self._agent_dir
         user_ws = self._user_workspace
@@ -1123,6 +1133,24 @@ Never write API keys into this workspace, generated `.flow.ts` files, or committ
         dynamic_ctx = await _build_dynamic_context_files(ws)
         if dynamic_ctx:
             stable_parts += ["", dynamic_ctx]
+
+        try:
+            profile_module = importlib.import_module("_user_profile")
+            profile = await profile_module.get_profile(str(user_ws))
+            _topic_key, topic = profile.get_topic(user_text)
+            dimensions = topic["dimensions"]
+            profile_text = (
+                "## 当前知识点学习画像\n"
+                f"- 当前知识点: {topic['label']}\n"
+                f"- 该知识点累计轮次: {topic['turns']}\n"
+                f"- 深度偏好: {dimensions['depth']:.2f} (0=框架概览, 1=系统推导)\n"
+                f"- 目标导向: {dimensions['goal']:.2f} (0=兴趣, 1=决策)\n"
+                f"- 领域熟悉度: {dimensions['familiarity']:.2f} (0=新手, 1=专家)\n"
+                f"- 教学指令: {profile.teaching_hint(topic)}\n"
+            )
+            stable_parts += ["", profile_text]
+        except Exception as exc:
+            logger.warning("Failed to inject learner profile: %r", exc, exc_info=True)
 
         return "\n".join(stable_parts)
 
@@ -1256,7 +1284,7 @@ Never write API keys into this workspace, generated `.flow.ts` files, or committ
         )
 
 
-async def system_prompt_builder() -> str:
+async def system_prompt_builder(user_message: dict[str, Any] | None = None) -> str:
     """Module-level entry point used by the psi-agent session loader.
 
     The loader looks up an async ``system_prompt_builder`` attribute in this
@@ -1273,7 +1301,9 @@ async def system_prompt_builder() -> str:
     if raw:
         user_workspace = anyio.Path(raw)
     await _activate_fusion_memory(agent_dir)
-    return await System(agent_dir, user_workspace=user_workspace).build_system_prompt()
+    content = user_message.get("content") if isinstance(user_message, dict) else ""
+    user_text = content if isinstance(content, str) else ""
+    return await System(agent_dir, user_workspace=user_workspace).build_system_prompt(user_text=user_text)
 
 
 RECENT_TURNS_KEPT_VERBATIM = 20
@@ -1391,22 +1421,6 @@ async def compact_history(history: list[dict[str, Any]], complete_fn) -> str:
     return _cap_summary(summary) + "\n" + recent_text
 
 
-async def system_prompt_rebuild_checker() -> bool:
-    """Activate Memory, and rebuild when a per-turn context file has changed.
-
-    ``USER.md`` and the ``HEARTBEAT.md``-style files are documented as
-    "re-read every turn", and they live in the prompt because they are prose
-    the agent should treat as standing context, not as news about this turn.
-    Rebuilding on every turn would mean a full workspace rescan every turn, and
-    a prompt that never repeats itself; rebuilding only when their bytes actually
-    change costs one read of a few small files and keeps the promise. Content,
-    not mtime: a rewrite with identical bytes should not cost a rebuild.
-    """
-    agent_dir = anyio.Path(__file__).parent.parent
-    await _activate_fusion_memory(agent_dir)
-    return await _context_files_changed(agent_dir)
-
-
 async def _context_files_changed(workspace_dir: anyio.Path) -> bool:
     """Whether ``USER.md`` / dynamic context files differ from the last check.
 
@@ -1453,6 +1467,26 @@ async def turn_context_builder() -> str:
         user_workspace = anyio.Path(raw)
     system = System(agent_dir, user_workspace=user_workspace)
     return await system.build_turn_context()
+
+
+async def system_prompt_rebuild_checker(_user_message: dict[str, Any] | None = None) -> bool:
+    """Activate Memory and rebuild for the current topic-specific profile."""
+    agent_dir = anyio.Path(__file__).parent.parent
+    await _activate_fusion_memory(agent_dir)
+    return True
+
+
+async def system_after_turn(user_message: dict[str, Any], assistant_message: dict[str, Any]) -> None:
+    """Persist aggregate topic-profile signals after a successful response."""
+    profile_module = importlib.import_module("_user_profile")
+    profile = await profile_module.get_profile(_runtime_workspace())
+    user_text = user_message.get("content")
+    assistant_text = assistant_message.get("content")
+    profile.update(
+        user_text if isinstance(user_text, str) else "",
+        assistant_text if isinstance(assistant_text, str) else "",
+    )
+    await profile.save()
 
 
 async def _activate_fusion_memory(workspace_dir: anyio.Path) -> None:
