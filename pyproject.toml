@@ -71,7 +71,7 @@ artifacts = ["src/psi_agent/gateway/spa/dist/**/*"]
 target-version = "py314"
 line-length = 120
 extend-exclude = [
-    "examples/haitun-workspace/skills/fusion-flow/fusion_flow_next/generated",
+    "examples/haitun-workspace/skills/fusion-flow/fusion_flow/generated",
     "**/pytest-of-root/**",
 ]
 
@@ -94,7 +94,7 @@ extra-paths = ["examples/haitun-workspace/skills/fusion-flow"]
 
 [tool.ty.src]
 exclude = [
-    "examples/haitun-workspace/skills/fusion-flow/fusion_flow_next/generated",
+    "examples/haitun-workspace/skills/fusion-flow/fusion_flow/generated",
     "**/pytest-of-root/**",
 ]
 

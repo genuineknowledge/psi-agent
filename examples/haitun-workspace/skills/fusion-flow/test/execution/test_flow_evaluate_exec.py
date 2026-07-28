@@ -13,9 +13,9 @@ from typing import Any, cast
 
 import anyio
 import pytest
-from fusion_flow_next.execution.flow import flow
-from fusion_flow_next.execution.flow import logger as flow_logger
-from fusion_flow_next.execution.model import (
+from fusion_flow.execution.flow import flow
+from fusion_flow.execution.flow import logger as flow_logger
+from fusion_flow.execution.model import (
     AgentConfig,
     AgentInvocation,
     ContainsRule,
@@ -27,9 +27,9 @@ from fusion_flow_next.execution.model import (
     SessionResult,
     StaticRule,
 )
-from fusion_flow_next.execution.runtime import RunContext, run
+from fusion_flow.execution.runtime import RunContext, run
 
-flow_module = cast("Any", import_module("fusion_flow_next.execution.flow"))
+flow_module = cast("Any", import_module("fusion_flow.execution.flow"))
 
 
 def test_config_payload_uses_only_system_prompt() -> None:

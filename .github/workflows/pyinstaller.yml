@@ -122,7 +122,8 @@ jobs:
         run: |
           $skill = "examples/haitun-workspace/skills/fusion-flow"
           if (-not (Test-Path "$skill/grammar/FusionFlow.g4")) { throw "FusionFlow grammar is missing" }
-          if (-not (Test-Path "$skill/fusion_flow_next/workflow_runner.py")) { throw "FusionFlow runner is missing" }
+          if (-not (Test-Path "$skill/fusion_flow/workflow_runner.py")) { throw "FusionFlow runner is missing" }
+          if (Test-Path "$skill/fusion_flow_next") { throw "duplicate FusionFlow package remains" }
           if (-not (Test-Path "examples/haitun-workspace/tools/run_flow.py")) { throw "run_flow tool is missing" }
           if (Test-Path "examples/haitun-workspace/skills/fusion-flow-next") { throw "duplicate FusionFlow skill remains" }
           if (Test-Path "examples/haitun-workspace/tools/flow_run.py") { throw "legacy flow_run tool remains" }

@@ -4,13 +4,13 @@ import importlib
 import re
 from pathlib import Path
 
-from fusion_flow_next.core_ir import CompoundTerm, Concept, Constant, ListTerm, Operator
-from fusion_flow_next.parser import ParseContext, parse_workflow
-from fusion_flow_next.workflow_runner import compile_workflow
+from fusion_flow.core_ir import CompoundTerm, Concept, Constant, ListTerm, Operator
+from fusion_flow.parser import ParseContext, parse_workflow
+from fusion_flow.workflow_runner import compile_workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 GRAMMAR = ROOT / "grammar" / "FusionFlow.g4"
-GENERATED = ROOT / "fusion_flow_next" / "generated"
+GENERATED = ROOT / "fusion_flow" / "generated"
 SKILL = ROOT / "SKILL.md"
 
 CANONICAL_DATAFLOW_OPERATORS = {
@@ -217,5 +217,5 @@ def test_generated_directory_contains_runtime_sources_only() -> None:
 
 
 def test_generated_parser_imports() -> None:
-    importlib.import_module("fusion_flow_next.generated.FusionFlowLexer")
-    importlib.import_module("fusion_flow_next.generated.FusionFlowParser")
+    importlib.import_module("fusion_flow.generated.FusionFlowLexer")
+    importlib.import_module("fusion_flow.generated.FusionFlowParser")

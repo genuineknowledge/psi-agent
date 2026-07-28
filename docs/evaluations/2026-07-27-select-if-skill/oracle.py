@@ -18,7 +18,7 @@ _GRAMMAR = os.path.join(_SKILL_ROOT, "grammar", "FusionFlow.g4")
 for _path in (os.path.join(_ROOT, "src"), _SKILL_ROOT):
     if _path not in sys.path:
         sys.path.insert(0, _path)
-_runtime = importlib.import_module("fusion_flow_next")
+_runtime = importlib.import_module("fusion_flow")
 Concept = _runtime.Concept
 Operator = _runtime.Operator
 ParseContext = _runtime.ParseContext

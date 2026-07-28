@@ -37,6 +37,8 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `HAITUN_AGENT_ID` | Agent ID shown in the runtime line. |
 | `HAITUN_CHANNEL` | Channel name shown in the runtime line. |
 | `HAITUN_TIMEZONE` | Time zone for the date/time section (default `UTC`). |
+| `PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES` | Positive-integer retained stdout byte limit for G4 Program Steps (default 4 MiB). |
+| `PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES` | Positive-integer retained stderr byte limit for G4 Program Steps (default 1 MiB). |
 | `XFYUN_STT_APP_ID`, `XFYUN_STT_API_KEY`, `XFYUN_STT_API_SECRET` | iFLYTEK streaming STT credentials. |
 | `XFYUN_TTS_APP_ID`, `XFYUN_TTS_API_KEY`, `XFYUN_TTS_API_SECRET` | iFLYTEK online TTS credentials. |
 | `XFYUN_APP_ID`, `XFYUN_API_KEY`, `XFYUN_API_SECRET` | Optional shared fallback when both services use one app. |
@@ -53,7 +55,7 @@ All are optional and only affect the dynamic suffix / runtime line:
 | `write_word` | Build a real `.docx` from structured blocks (headings/paragraphs/tables); sets the East-Asian font (`w:eastAsia`) on every style so Chinese text isn't "字体不齐". |
 | `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
 | `flow_manage` | CRUD + promote on Fusion Flow `.workflow` assets under `flows/`. |
-| `run_flow` | Parse, compile, plan, and synchronously execute a Fusion Flow `.workflow` file. |
+| `run_flow` / `run_flow_resume` | Start the bundled Python G4 Fusion Flow runner and resume only its active Human request. Agent and workspace-local Program Steps execute directly. For a `$fusion_flow/control` wait envelope, pass its nested `request.question/options/recommended/default` fields to `clarify`, show the formatted text returned by `clarify` verbatim, and immediately end the turn; JSON-encode the next user reply into `run_flow_resume`. |
 | `schedule_manage` | CRUD on `schedules/<name>/TASK.md` (cron + task body); validates the cron expression. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
 | `x_search` (`x_search.py` + `_x_search_impl.py`) | Search recent public posts on X (Twitter) via the X API v2 recent-search endpoint (last ~7 days). `x_search(query, max_results, sort_order)` supports X search operators (`from:`, `#tag`, `"phrase"`, `lang:`, `-is:retweet`). Uses `aiohttp` (already a core dep), no extra packages. Requires `X_BEARER_TOKEN` (X API v2 App-only OAuth 2.0 bearer token). |
@@ -91,7 +93,11 @@ All are optional and only affect the dynamic suffix / runtime line:
 - `simplify-code` — behavior-preserving cleanup of **recent** code changes by fanning out **3 parallel subagents** over the changed files: split the git diff into 3 disjoint buckets, delegate each to a background subagent (via the `subagent-orchestration` recipe), then merge their edits and re-verify against a baseline. `coding` category; composes existing `bash`/`read`/`edit`/`subagent_*` tools — no dedicated tool, no extra deps.
 - `research-paper-writing` — write an ML research paper for NeurIPS / ICML / ICLR end to end (design the contribution → draft sections → revise → official-template LaTeX build → rebuttal / camera-ready); `research` category. Composes the existing `read`/`write`/`edit`/`bash` tools plus `arxiv` (verify related work) and `subagent-orchestration` (parallel section drafting) — no dedicated tool, no extra deps. LaTeX (`texlive`/`tectonic`) is driven through `bash` when producing the PDF; hard rule against fabricating results or citations.
 - `ocr-and-documents` — extract text from PDFs / scans / images. Two tiers: (1) fast, free text-LAYER extraction with **PyMuPDF** (`import fitz`, already a core dep) for born-digital PDFs, and (2) high-accuracy **OCR + layout → Markdown/JSON** via the external **marker-pdf** CLI (`marker_single` / `marker`) for scanned/image-only PDFs. Decision rule: probe the PyMuPDF text layer first (instant, no models); only fall back to marker-pdf OCR when it's empty/garbled or the user needs layout-faithful Markdown/tables. `research` category; `bash`-driven. PyMuPDF needs nothing extra; **marker-pdf is a heavy external tool (PyTorch + Surya OCR model weights, optional GPU) installed on demand via `pip install marker-pdf` — NOT a bundled dependency**, so no pyproject / nuitka / pyinstaller changes. Read-only (extraction), not PDF editing.
-- `fusion-flow` — the immutable Fusion Flow Python G4 runtime skill. **Do not edit it.**
+- `fusion-flow` — the immutable bundled Python G4 authoring/runtime skill. Agent and
+  workspace-local Program Steps execute in the current phase; Human Steps use a dedicated
+  instruction-preparation Agent, the existing `clarify` interaction, and persisted
+  checkpoints for next-turn resume. **Do not edit it**, create another approval UI, or
+  block a tool call waiting for the next message.
 
 ## Schedules (`schedules/`)
 

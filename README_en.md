@@ -25,18 +25,18 @@ AI layer is stateless. Session maintains conversation history. Channel is a pure
 
 For developers: start components independently, mix and match for debugging and customization. For users: `psi-agent run config.yml` launches everything in one command, and `psi-agent gateway` provides a visual web console for managing everything.
 
-## FusionFlow Next Python execution layer
+## FusionFlow Python execution layer
 
 The legacy TypeScript-compatible execution primitives belong to the example
 Skill, not the `psi_agent` core package. Their source lives under
-`examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/`
-and is available as `fusion_flow_next.execution` when Python is run from that
+`examples/haitun-workspace/skills/fusion-flow/fusion_flow/execution/`
+and is available as `fusion_flow.execution` when Python is run from that
 Skill directory:
 
 ```python
 import anyio
 
-from fusion_flow_next.execution import RunContext, flow, run
+from fusion_flow.execution import RunContext, flow, run
 
 
 async def program(_: RunContext) -> None:

@@ -6,9 +6,9 @@ metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fucla
 
 # FusionFlow G4 Skill
 
-This skill authors and runs declarative FusionFlow G4 workflows in psi-agent. The workspace tool compiles G4 source into Core IR, lowers it to a `WorkflowGraph`, generates an execution plan, and synchronously executes Agent-backed Steps.
+This skill authors and runs declarative FusionFlow G4 workflows in psi-agent. The workspace tool compiles G4 source into Core IR, lowers it to a `WorkflowGraph`, generates an execution plan, synchronously executes Agent- and Program-backed Steps, and pauses Human-backed Steps across conversation turns.
 
-> **Workspace boundary.** Store authored G4 files under the workspace-managed `flows/` directory. The skill ships no runnable example workflows and creates no background run directory.
+> **Workspace boundary.** Store authored G4 files under the workspace-managed `flows/` directory. The skill ships no runnable example workflows. Human Steps persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; other runs remain one-shot.
 
 > **No slash commands.** This skill is triggered by **natural-language intent**, never by a `/flow xxx` command. The user just talks: "帮我写个并行调研的工作流" / "跑一下刚生成的那个" / "刚才那个跑完了吗". Do NOT teach, suggest, or expect any `/flow run` / `/flow show` / `/flow author` syntax — those slash commands do not exist and printing them to the user is a bug (a user in an environment without this skill installed will see "命令没找到"). Map what the user *means* to the actions below.
 
@@ -41,15 +41,18 @@ Do **not** activate this skill for `.prose` files — those belong to OpenProse.
 | Layer | Responsibility |
 | --- | --- |
 | `grammar/FusionFlow.g4` + parser | G4 source to Core IR |
-| `fusion_flow_next.workflow_runner` | Core IR to graph, plan, and checked dispatch |
-| `psi_agent.workflow_execution` | dependencies, concurrency, timeouts, and run-local resources |
-| workspace `run_flow` tool | file/JSON boundary and ephemeral Session-backed Agent Steps |
+| `fusion_flow.workflow_runner` | Core IR to graph, plan, and checked dispatch |
+| `psi_agent.workflow_execution` | dependencies, concurrency, timeouts, resources, and validated checkpoints |
+| `fusion_flow.job_store` | private, versioned Human wait/checkpoint state |
+| workspace `run_flow` / `run_flow_resume` tools | file/JSON boundary and ephemeral Session-backed Agent/Human-preparer Steps |
+| workspace `clarify` tool | existing user-facing choice or free-text question formatter |
 
 The skill's job is to:
 
 1. Turn the user's intent into valid FusionFlow G4 source, or resolve the concrete G4 workflow they pointed to.
-2. Submit it once through the synchronous `run_flow` tool.
-3. Return the workflow's output Artifact mapping.
+2. Start it through `run_flow`.
+3. If it reaches a Human Step, pass the nested `$fusion_flow/control.request` fields to the existing `clarify` tool, end the turn, and resume from the next user message.
+4. Return only the final workflow output Artifact mapping.
 
 ## Intent Routing
 
@@ -58,16 +61,16 @@ The user talks in natural language. Map what they **mean** to one of these actio
 | What the user says (examples) | Action |
 | --- | --- |
 | "我能用这个干嘛 / 你能帮我做什么" | Describe capabilities in plain language (see "Capabilities" at the bottom) + offer to build a flow |
-| "跑一下这个 / 帮我跑 X / 执行这个 workflow" | Run the concrete workspace G4 source once with `run_flow` and return its output Artifact mapping. |
-| "接着上次那个跑 / 只重跑改动的部分" | Explain that resume/cache is not part of this runner; run the workflow again only if the user wants a fresh execution. |
-| "看看结果 / 刚才那个跑完了吗" | A `run_flow` call returns only after completion; use the result already returned by that call. |
-| "环境齐不齐 / 能不能跑 / 帮我检查下" | Confirm that the G4 source parses and that all Steps use supported Agent executors. |
+| "跑一下这个 / 帮我跑 X / 执行这个 workflow" | Start the concrete workspace G4 source with `run_flow`; return outputs, or handle its Human request with `clarify`. |
+| "接着上次那个跑 / 只重跑改动的部分" | Use `run_flow_resume` only for the active Human request already returned in this conversation. Arbitrary cache/resume is unsupported; otherwise offer a fresh run. |
+| "看看结果 / 刚才那个跑完了吗" | Use the result already returned. A Human wait is not completion; wait for the user's answer rather than polling. |
+| "环境齐不齐 / 能不能跑 / 帮我检查下" | Confirm that the G4 source parses and that all Steps use supported Agent, Human, or Program executors. |
 | **"帮我写个工作流做 X / 帮我编排 / 我想让几个 agent ..."** | **Author a new FusionFlow G4 workflow from natural language. See "Authoring Mode" below.** |
 | Anything else workflow-shaped | Interpret intent against this table |
 
 ## Running a Workflow
 
-Use the workspace `run_flow` tool for FusionFlow G4 source. It validates and executes the workflow as one synchronous operation and returns the final output Artifacts as a JSON object.
+Use the workspace `run_flow` tool for FusionFlow G4 source. It validates the workflow and returns either the final output Artifacts or one persisted Human request under the reserved `$fusion_flow/control` key.
 
 ### G4-only boundary
 
@@ -79,17 +82,27 @@ Pass named workflow inputs through `inputs_json`. Do not rewrite the G4 source j
 
 Pass run-local resource pools through `resource_capacities_json` only when the workflow declares `resource_requirement`.
 
-Call `run_flow` once and use its returned JSON object as the result.
+Call `run_flow` once. If it returns output Artifacts, use them as the result. If it returns a `$fusion_flow/control` object with `status == "waiting_for_human"`, follow the Human protocol below. This reserved key cannot be a G4 Artifact ID, so an ordinary output Artifact named `status` is never control state.
 
-### Resume
+### Human wait and resume
 
-This runner has no run token, persisted run state, resume, or cache protocol. A second call is a fresh execution.
+`run_flow_resume` is only for a pending Human request; it is not a general cache or arbitrary-step resume API.
 
-## Agent-backed execution
+When `run_flow` or `run_flow_resume` returns a sole top-level `$fusion_flow/control` object whose `status == "waiting_for_human"`:
 
-Before executing a FusionFlow G4 workflow with Agent-backed Steps:
+1. Call the existing `clarify` tool with `$fusion_flow/control.request.question`, `.options`, `.recommended`, and `.default`.
+2. Show the formatted text verbatim and **END THE TURN**. Do not call another tool and do not treat the question as an output Artifact.
+3. On the next user message, map a numbered choice to its option label. If the user selected the generated `Other` line without supplying text, ask for that text first. For an open-ended request with a non-empty `default`, map an affirmative acceptance such as “可以” or “ok” to that exact default. Preserve other free text or structured content.
+4. JSON-encode that value and call `run_flow_resume` with the exact `$fusion_flow/control.run_id` and `.request.request_id`.
+5. If another Human request is returned, repeat this protocol. Otherwise report the final output Artifact mapping.
 
-1. Ensure every Step executor is declared as `Agent`; this runner rejects Human and Program executors before dispatch.
+Never invent, reuse, or guess a run/request ID. A changed workflow source, stale request, or conflicting duplicate response is a stop-and-report error.
+
+## Agent-, Human-, and Program-backed execution
+
+Before executing a FusionFlow G4 workflow:
+
+1. Ensure every Step executor is declared as exactly one of `Agent`, `Human`, or `Program`. Every Program must declare an explicit workspace-relative `program_path`.
 2. Internally estimate cost and latency from the number of Agent Steps. Fold that into one plain-language heads-up line.
 3. Say the heads-up line, then run without adding another approval gate unless the user explicitly said "只生成别跑".
 
@@ -97,9 +110,15 @@ Before executing a FusionFlow G4 workflow with Agent-backed Steps:
 
 Resolve the workspace-relative G4 path, submit it to `run_flow`, and report the returned output mapping. Do not reproduce parsing, dependency scheduling, resource leasing, or Step execution in the parent Session.
 
-### One synchronous call
+### Staged execution
 
-`run_flow` waits for the graph to finish and returns the final JSON result. Do not call the legacy `.flow.ts` `flow_run(start/status/result)` tool for G4 source, and do not invent polling, PID, token, worker, or background-state handling.
+Agent/Program-only workflows finish in the initial `run_flow` call. A Human workflow executes to the next Human frontier, persists a checkpoint, releases the current Session turn, and continues only through `run_flow_resume`. Do not call the legacy `.flow.ts` `flow_run(start/status/result)` tool for G4 source, and do not invent polling, PIDs, workers, or a separate approval inbox.
+
+### Checkpoint integrity and resume safety
+
+An `ExecutionCheckpoint` is valid only for its exact non-empty `workflow_id` and `plan_digest`. The digest is SHA-256 over a canonical serialization of the current graph semantics and explicit execution-plan fibers; matching Step and Artifact IDs from another workflow or graph version are not enough. Values must be strict, finite JSON values, and resume compares them recursively with type identity, so JSON `true` never matches JSON `1`. The executor also validates unique known operation IDs, dependency closure, and the exact set of materialized values before it skips any work.
+
+The public `run_flow_resume` boundary additionally validates the current `.workflow` source against the source digest recorded when the run was created. Human-run state uses the strict state-v2 schema. Each resume is protected by an OS-released advisory file lock plus an in-process reservation guard; a leftover lock file is not ownership, and an abrupt process exit releases the live advisory lease. Do not copy checkpoints between workflows, edit persisted state, or bypass the matching `run_id` / `request_id` protocol.
 
 ### When a run fails
 
@@ -119,7 +138,7 @@ The tool does not expose intermediate progress. Do not invent node status while 
 
 ## Reading a Run
 
-When the call completes, summarize the returned output Artifact mapping. There is no persisted run to inspect later.
+When a call returns output Artifacts, summarize them. When it returns a Human request, ask it through `clarify`; the request text is control state, not an Artifact or completed result.
 
 ## File Locations
 
@@ -147,16 +166,16 @@ This is the flagship: turn a natural-language intent into a runnable FusionFlow 
 ### The 5-step author loop
 
 1. **Understand intent** — restate the user's goal in 1 sentence. If genuinely ambiguous, ask **one** clarifying question (don't grill them). Note whether the user looks like a *developer* (asked to edit FusionFlow G4 source or mentioned operators) — that's the only case where you show technical detail later. Everyone else gets the minimal plain-language summary.
-2. **Model the workflow** — match the intent to one of the executable reference patterns below. Identify inputs, outputs, Agent-backed Steps, Artifacts, dependencies, concurrency, resources, and timeouts.
+2. **Model the workflow** — match the intent to one of the executable reference patterns below. Identify inputs, outputs, Agent-, Human-, or Program-backed Steps, Artifacts, dependencies, concurrency, resources, and timeouts.
 3. **Author one FusionFlow G4 source** — before writing, read `grammar/FusionFlow.g4` completely and treat it as the sole source of truth for FusionFlow syntax and preset operators. Use only declarations, assertions, terms, and operators documented there. Use the workspace-provided target path; never invent a second copy.
 4. **Static self-check** — compare the source against `grammar/FusionFlow.g4` and the executable guardrails in this Skill. There is no separate validation tool.
-5. **Run it once** — the user asked you to do a task, not to receive an implementation artifact. After the static self-check, say ONE friendly heads-up line ("🚀 方案定了，正在帮你跑，预计几分钟…" — a notice, NOT a question), then call `run_flow` once. **Do NOT ask "要不要跑 / 跑不跑" and do NOT wait for `跑`.** The only exception is when the user explicitly says "只生成别跑 / 先给我看看别执行".
+5. **Start it once** — the user asked you to do a task, not to receive an implementation artifact. After the static self-check, say ONE friendly heads-up line ("🚀 方案定了，正在帮你跑，预计几分钟…" — a notice, NOT a question), then call `run_flow` once. A declared Human Step may later ask its own task-specific question through the Human protocol; that is part of execution, not an extra pre-run gate. **Do NOT ask "要不要跑 / 跑不跑" and do NOT wait for `跑`.** The only exception is when the user explicitly says "只生成别跑 / 先给我看看别执行".
 
 Never mention the source file, its path, G4, operator names, static-check stages, or internal runnable artifacts to a non-technical user. From their side you are just doing the task they asked for. If they ask "你在干嘛 / 怎么做的", answer in plain business language ("我让几个分析分头跑、再汇总").
 
 ### Talking to the user while you work
 
-Before calling `run_flow`, send one short heads-up such as "🚀 方案定了，正在帮你跑，预计几分钟…". The synchronous tool exposes no node-level progress, so do not claim that an individual Step or branch has started or completed. When the call returns, lead with the result. Do not add an approval question between authoring and execution.
+Before calling `run_flow`, send one short heads-up such as "🚀 方案定了，正在帮你跑，预计几分钟…". The tools expose no node-level progress, so do not claim that an individual Step or branch has started or completed. When a call returns final outputs, lead with the result; when it returns a Human request, follow the Human protocol. Do not add an approval question between authoring and execution.
 
 ### Hard stops in Authoring Mode (real TUI failures, do not repeat)
 
@@ -292,7 +311,7 @@ workflow code_review {
 ### G4 source of truth
 
 Before authoring, read `grammar/FusionFlow.g4` completely. It is the sole authority for surface syntax, declarations, assertions, formulas, terms, and preset operator signatures. This skill additionally defines which grammar-valid shapes the executable graph backend accepts.
-Runner-specific typed catalog extensions use the grammar's generic operator-call syntax without changing its preset catalog. In particular, `depends_on(Step, Step) -> Bool` is registered by `fusion_flow_next/workflow_runner.py` and is executable there, but is not one of the grammar's 21 canonical preset operators.
+Runner-specific typed catalog extensions use the grammar's generic operator-call syntax without changing its preset catalog. In particular, `depends_on(Step, Step) -> Bool` is registered by `fusion_flow/workflow_runner.py` and is executable there, but is not one of the grammar's 21 canonical preset operators.
 
 ### Executable graph backend guardrails
 
@@ -318,7 +337,7 @@ Runner-specific typed catalog extensions use the grammar's generic operator-call
 - Configure concurrency, timeouts, and resources with the corresponding supported operators; keep `max_attempts` omitted or set to `1`.
 - Treat `independent(step)` only as a hint. Artifact dependencies and `depends_on` still decide when the Step is ready.
 - Declare resource demand with `resource_requirement(step, resource)`. Resource capacities or concrete IDs come from runner configuration, never from `.workflow` source.
-- The current one-shot runner supports resource scheduling and explicit `depends_on` ordering but still rejects `foreach_item` execution and `max_attempts` values other than `1`.
+- The current graph runner supports resource scheduling and explicit `depends_on` ordering but still rejects `foreach_item` execution and `max_attempts` values other than `1`.
 - Unknown or unsupported assertions remain residual and stop execution. Never delete them, comment them out, or bypass residual validation to make a run start.
 - Lower executable `if` as a named Artifact selection: `selected_artifact == if(formula, artifact_a, artifact_b);`, followed by ordinary list dataflow such as `consumes(final_step) == [selected_artifact];`.
 - Variables, quantifiers, rules, implications, biconditionals, query/SAT/optimization requests, local concept declarations, local operator declarations, and imperative blocks are outside this language.
@@ -326,7 +345,34 @@ Runner-specific typed catalog extensions use the grammar's generic operator-call
 
 #### Executor configuration
 
-Declare every executor as `Agent, Executor`, bind it with `step_executor`, and give each Step a `step_instruction`. The current runner rejects Human and Program executors before dispatch. `allowed_tool`, `program_path`, and `agent_system_prompt` are not part of this runner's supported catalog; do not emit them.
+Declare every executor as exactly one of `Agent, Executor`, `Human, Executor`, or `Program, Executor`, bind it with `step_executor`, and give each Step a `step_instruction`. `allowed_tool` and `agent_system_prompt` are unsupported residual declarations and must not be emitted.
+
+A Human Step may request an approval, choose among up to four options, or accept open-ended/structured input. Its dedicated preparation Agent receives the original instruction/reference, consumed Artifacts, and output contract; it may read a referenced workspace file, then emits the arguments for the existing `clarify` tool. It never asks the user itself, and its question text never becomes a produced Artifact. The next user response becomes the Human Step result after `run_flow_resume`. Multiple output Artifacts require a JSON object keyed exactly by those Artifact IDs; a zero-output Human Step acts as a pure gate.
+
+Every Program must declare one explicit workspace-relative executable path:
+
+```text
+const worker: Program, Executor;
+
+program_path(worker) == "./bin/worker";
+```
+
+The public workspace runner has no catalog path resolver, so do not use a bare Path identity. `program_path` names one executable, not a shell command: do not append arguments, operators, pipes, or environment assignments. The runtime launches without a shell from the workspace directory and sends one newline-terminated JSON object on stdin:
+
+```json
+{
+  "instruction": "<step_instruction identity, unchanged>",
+  "inputs": {
+    "<consumed Artifact ID>": "<runtime value>"
+  }
+}
+```
+
+For one produced Artifact, stdout is that Artifact's string value. For multiple produced Artifacts, stdout must be exactly one strict, finite JSON object keyed by all and only those Artifact IDs; `NaN`, `Infinity`, numeric overflow to infinity, nested non-finite values, and duplicate object keys are rejected. A Program that produces no Artifacts must not write stdout.
+
+The public adapter pins the executable before launch. On POSIX, every executable and working-directory path component must be non-symlink; a trusted isolated bootstrap `fchdir()`s to the opened directory and executes the opened inode. Native binaries work without procfs. Shebang scripts require `/proc/self/fd` or `/dev/fd`, and their `$0` / `__file__` is the descriptor-backed path rather than the authored `program_path`. On Windows, the adapter retains a non-replaceable handle, validates its final path as workspace-contained, and starts that final path; this Windows branch has not been dynamically verified in this change.
+
+Programs run in a separate POSIX process group or Windows Job Object. Shielded cleanup terminates members of that boundary on failure, declared Step/workflow timeout, cancellation, output overflow, and after a direct child exits with managed descendants still present. There is no internal 300-second Program timeout. Stdout and stderr are streamed with retained-output defaults of 4 MiB and 1 MiB respectively; set `PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES` or `PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES` to a positive integer to override them. Exceeding either limit terminates the process boundary. This is lifecycle management for trusted workspace Programs, not a host sandbox; on POSIX, code that deliberately creates a new session/process group leaves the managed group.
 
 #### Named Artifact selection with `if`
 
@@ -477,12 +523,12 @@ Extend this skeleton only with syntax and preset operators documented in `gramma
 
 ### Static self-check
 
-Before the single `run_flow` call, inspect the source in order:
+Before the initial `run_flow` call, inspect the source in order:
 
 - every identity is declared with a supported concept;
 - assertions use `==`, while formulas use comparison operators;
 - each operator uses the documented arity and supported shape;
-- each Step has an Agent executor, name, instruction, and explicit data/control dependencies;
+- each Step has a supported Agent, Human, or Program executor, name, instruction, and explicit data/control dependencies;
 - no residual or unsupported operator is emitted.
 
 This is a source review, not a second tool or CLI invocation. Actual parsing and compilation occur inside `run_flow`.
@@ -490,8 +536,9 @@ This is a source review, not a second tool or CLI invocation. Actual parsing and
 ### Running it (automatic, right after the self-check)
 
 1. Call `run_flow(flow_path=..., inputs_json=..., resource_capacities_json=...)` once. Omit resource capacities when the graph declares no resource requirement.
-2. The call returns only after completion. Summarize the returned output Artifact mapping in plain language.
-3. On error, report the compiler diagnostic or failed Step without creating a second workflow or bypassing the runner.
+2. If it returns a `$fusion_flow/control` Human-wait envelope, follow the Human wait/resume protocol exactly. Do not present that envelope as the workflow result.
+3. When a call returns output Artifacts, summarize them in plain language.
+4. On error, report the compiler diagnostic or failed Step without creating a second workflow or bypassing the runner.
 
 ### What Authoring Mode is NOT
 
@@ -529,12 +576,12 @@ When the user asks what this skill can do ("你能帮我做什么 / 我能用这
 用自然语言驱动多 Agent 工作流。直接跟我说就行，不用记任何命令：
 
   • "帮我写个工作流做 X / 帮我编排 ..."           → 用大白话描述需求，我帮你搭好并运行
-  • "跑一下刚才那个 / 帮我跑这个 workflow"        → 同步执行 G4 workflow 并返回输出
-  • "环境齐不齐 / 能不能跑"                        → 检查 G4、Agent executor 和资源声明
+  • "跑一下刚才那个 / 帮我跑这个 workflow"        → 执行 G4 workflow；需要你审批或输入时直接在对话里问
+  • "环境齐不齐 / 能不能跑"                        → 检查 G4、Agent/Human/Program executor 和资源声明
 
 不附带现成可运行示例；你想要什么工作流，直接描述，我会写入 workspace 的 flows/ 目录。
 ```
 
 ## Security + Approvals
 
-Agent Steps run through ephemeral psi Sessions with the workspace's available tools. Review user-supplied G4 source before execution, but do not add an approval gate to a workflow authored for the user's current request. Refuse remote URLs: `run_flow` accepts workspace-local `.workflow` files only.
+Agent Steps run through ephemeral psi Sessions with a filtered workspace tool snapshot; nested workflow launchers and `clarify` are unavailable to them. Human instruction preparers receive only a workspace-confined, read-only `read` tool, so a referenced file cannot escape the workspace through `..`, an absolute path, or a symbolic link. Review user-supplied G4 source before execution, but do not add an approval gate unless the workflow itself declares a Human Step. Human interaction reuses the parent Session's existing `clarify` flow and never creates a separate approval UI. Refuse remote URLs: `run_flow` accepts workspace-local `.workflow` files only, and Program executables must satisfy the pinned workspace-containment contract above.

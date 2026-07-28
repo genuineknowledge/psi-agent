@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import importlib
+import json
 from typing import Any, cast
 
 import pytest
 
-run_workflow = cast(Any, importlib.import_module("fusion_flow_next.workflow_runner"))
+run_workflow = cast(Any, importlib.import_module("fusion_flow.workflow_runner"))
 
 
 def test_runner_catalog_includes_typed_depends_on() -> None:
@@ -17,9 +18,17 @@ def test_runner_catalog_includes_typed_depends_on() -> None:
         "Step",
     )
     assert depends_on.output_concept == context.concepts["Bool"]
+    program_path = context.operators["program_path"]
+    assert tuple(concept.name for concept in program_path.input_concepts) == ("Program",)
+    assert program_path.output_concept == context.concepts["Path"]
 
 
-def _dispatch_workflow(executor_kind: str | None, instruction: str) -> str:
+def _dispatch_workflow(
+    executor_kind: str | None,
+    instruction: str,
+    *,
+    executor_configuration: str = "",
+) -> str:
     executor_declaration = "" if executor_kind is None else f"const worker: {executor_kind};"
     return f"""
 const dispatch: Workflow;
@@ -32,6 +41,7 @@ const result: Artifact;
 workflow dispatch {{
     input_workflow(dispatch) == [request];
     output_workflow(dispatch) == [result];
+    {executor_configuration}
     step_name(dispatch_step) == dispatch_name;
     step_instruction(dispatch_step) == "{instruction}";
     step_executor(dispatch_step) == worker;
@@ -82,6 +92,44 @@ workflow select_demo {{
     produces(final_step) == [final_result];
 }}
 """
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        'program_path(worker) == "./bin/worker";',
+        '"./bin/worker" == program_path(worker);',
+    ],
+)
+def test_compile_workflow_extracts_program_path(configuration: str) -> None:
+    compiled = run_workflow.compile_workflow(
+        _dispatch_workflow(
+            "Program",
+            "do_work",
+            executor_configuration=configuration,
+        )
+    )
+
+    assert compiled.program_paths == {"worker": "./bin/worker"}
+
+
+def test_compile_workflow_requires_program_path() -> None:
+    with pytest.raises(ValueError, match="has no program_path"):
+        run_workflow.compile_workflow(_dispatch_workflow("Program", "do_work"))
+
+
+def test_compile_workflow_rejects_duplicate_program_path() -> None:
+    with pytest.raises(ValueError, match="duplicate program_path"):
+        run_workflow.compile_workflow(
+            _dispatch_workflow(
+                "Program",
+                "do_work",
+                executor_configuration="""
+                program_path(worker) == "./bin/first";
+                program_path(worker) == "./bin/second";
+                """,
+            )
+        )
 
 
 @pytest.mark.anyio
@@ -151,25 +199,16 @@ async def test_named_select_executes_both_candidates_and_feeds_final_step() -> N
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("executor_kind", "instruction"),
-    [
-        ("Agent", "./instructions/missing-agent.txt"),
-        ("Program", "./instructions/missing-program.txt"),
-    ],
-)
-async def test_non_human_executor_receives_instruction_path_unchanged(
-    executor_kind: str,
-    instruction: str,
-) -> None:
+async def test_agent_executor_receives_instruction_path_unchanged() -> None:
     prompts: list[str] = []
+    instruction = "./instructions/missing-agent.txt"
 
     async def complete(prompt: str) -> str:
         prompts.append(prompt)
         return "completed"
 
     result = await run_workflow.execute_workflow(
-        _dispatch_workflow(executor_kind, instruction),
+        _dispatch_workflow("Agent", instruction),
         request="Do the work.",
         complete=complete,
     )
@@ -177,6 +216,167 @@ async def test_non_human_executor_receives_instruction_path_unchanged(
     assert result == {"result": "completed"}
     assert prompts[0].splitlines()[0] == f"Instruction: {instruction}"
     assert f'"{instruction}"' not in prompts[0]
+
+
+@pytest.mark.anyio
+async def test_program_path_is_executed_with_instruction_and_inputs(
+    tmp_path: Any,
+) -> None:
+    calls: list[dict[str, object]] = []
+    path_references: list[str] = []
+
+    async def resolve_path(reference: str) -> str:
+        path_references.append(reference)
+        return "./bin/worker"
+
+    async def execute_program(invocation: Any) -> str:
+        calls.append(
+            {
+                "name": invocation.name,
+                "argv": invocation.argv,
+                "stdin": invocation.stdin,
+                "cwd": invocation.cwd,
+                "binding_name": invocation.binding_name,
+            }
+        )
+        return "completed"
+
+    source = _dispatch_workflow(
+        "Program",
+        "./instructions/missing-program.txt",
+        executor_configuration="program_path(worker) == worker_path;",
+    ).replace(
+        "const result: Artifact;",
+        "const worker_path: Path;\nconst result: Artifact;",
+    )
+
+    result = await run_workflow.execute_workflow(
+        source,
+        inputs={"request": {"topic": "structured concurrency"}},
+        resolve_path=resolve_path,
+        work_dir=tmp_path,
+        run_program=execute_program,
+    )
+
+    assert result == {"result": "completed"}
+    assert path_references == ["worker_path"]
+    assert calls[0]["name"] == "worker"
+    assert calls[0]["argv"] == ("./bin/worker",)
+    assert calls[0]["cwd"] == tmp_path
+    assert calls[0]["binding_name"] == "dispatch_step"
+    stdin = calls[0]["stdin"]
+    assert isinstance(stdin, str)
+    assert stdin.endswith("\n")
+    assert json.loads(stdin) == {
+        "instruction": "./instructions/missing-program.txt",
+        "inputs": {"request": {"topic": "structured concurrency"}},
+    }
+
+
+@pytest.mark.anyio
+async def test_program_multiple_outputs_are_read_from_json_stdout(
+    tmp_path: Any,
+) -> None:
+    async def execute_program(invocation: Any) -> str:
+        del invocation
+        return '{"result": "first", "extra": {"rank": 2}}'
+
+    source = (
+        _dispatch_workflow(
+            "Program",
+            "produce_two",
+            executor_configuration='program_path(worker) == "./bin/worker";',
+        )
+        .replace(
+            "const result: Artifact;",
+            "const result: Artifact;\nconst extra: Artifact;",
+        )
+        .replace(
+            "output_workflow(dispatch) == [result];",
+            "output_workflow(dispatch) == [result, extra];",
+        )
+        .replace(
+            "produces(dispatch_step) == [result];",
+            "produces(dispatch_step) == [result, extra];",
+        )
+    )
+
+    result = await run_workflow.execute_workflow(
+        source,
+        request="Do the work.",
+        work_dir=tmp_path,
+        run_program=execute_program,
+    )
+
+    assert result == {
+        "extra": {"rank": 2},
+        "result": "first",
+    }
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    (
+        "NaN",
+        "Infinity",
+        "-Infinity",
+        "1e400",
+        '{"nested": NaN}',
+        '{"duplicate": 1, "duplicate": 2}',
+    ),
+)
+@pytest.mark.anyio
+async def test_program_multiple_outputs_reject_non_finite_json(
+    tmp_path: Any,
+    invalid_value: str,
+) -> None:
+    async def execute_program(invocation: Any) -> str:
+        del invocation
+        return f'{{"result": {invalid_value}, "extra": 1}}'
+
+    source = (
+        _dispatch_workflow(
+            "Program",
+            "produce_two",
+            executor_configuration='program_path(worker) == "./bin/worker";',
+        )
+        .replace(
+            "const result: Artifact;",
+            "const result: Artifact;\nconst extra: Artifact;",
+        )
+        .replace(
+            "output_workflow(dispatch) == [result];",
+            "output_workflow(dispatch) == [result, extra];",
+        )
+        .replace(
+            "produces(dispatch_step) == [result];",
+            "produces(dispatch_step) == [result, extra];",
+        )
+    )
+
+    with pytest.RaisesGroup(pytest.RaisesExc(ValueError, match="strict JSON object")):
+        await run_workflow.execute_workflow(
+            source,
+            request="Do the work.",
+            work_dir=tmp_path,
+            run_program=execute_program,
+        )
+
+
+@pytest.mark.anyio
+async def test_relative_program_path_requires_work_dir() -> None:
+    with pytest.raises(
+        ValueError,
+        match="relative program_path requires an explicit work_dir",
+    ):
+        await run_workflow.execute_workflow(
+            _dispatch_workflow(
+                "Program",
+                "do_work",
+                executor_configuration='program_path(worker) == "./bin/worker";',
+            ),
+            request="Do the work.",
+        )
 
 
 def test_untyped_executor_defaults_to_agent_for_compatibility() -> None:
@@ -222,8 +422,40 @@ async def test_human_instruction_is_prepared_by_agent_before_request() -> None:
     assert "Step: dispatch_step" in preparation_prompts[0]
     assert "Instruction or reference: ./instructions/../proposal.txt" in preparation_prompts[0]
     assert '"request": "proposal-v2"' in preparation_prompts[0]
-    assert "available tools and normal approval flow" in preparation_prompts[0]
+    assert "inspect referenced resources" in preparation_prompts[0]
+    assert "Do not ask the human directly" in preparation_prompts[0]
     assert human_prompts == ["Review the supplied proposal and answer approve or reject."]
+
+
+@pytest.mark.anyio
+async def test_contextual_human_callbacks_receive_step_contract() -> None:
+    contexts: list[Any] = []
+
+    async def prepare_human_instruction(prompt: str, context: Any) -> str:
+        assert "Instruction or reference: review_reference" in prompt
+        contexts.append(context)
+        return "Provide approval or detailed edits."
+
+    async def request_human(prompt: str, context: Any) -> object:
+        assert prompt == "Provide approval or detailed edits."
+        contexts.append(context)
+        return "Tighten the conclusion."
+
+    result = await run_workflow.execute_workflow(
+        _dispatch_workflow("Human", "review_reference"),
+        request="proposal-v2",
+        contextual_prepare_human_instruction=prepare_human_instruction,
+        contextual_request_human=request_human,
+    )
+
+    assert result == {"result": "Tighten the conclusion."}
+    assert len(contexts) == 2
+    assert contexts[0] is contexts[1]
+    assert contexts[0].step_id == "dispatch_step"
+    assert contexts[0].executor_id == "worker"
+    assert contexts[0].executor_kind == "Human"
+    assert contexts[0].inputs == {"request": "proposal-v2"}
+    assert contexts[0].output_ids == ("result",)
 
 
 @pytest.mark.anyio

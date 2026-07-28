@@ -22,7 +22,7 @@
 `SessionRunner` 取代。真实 Node 差分当前覆盖 7 个原语和 4 个 export。
 
 真实差分在
-`examples/haitun-workspace/skills/fusion-flow-next/test/execution/test_ts_reference.py`。
+`examples/haitun-workspace/skills/fusion-flow/test/execution/test_ts_reference.py`。
 测试在换行归一化后固定校验 bundle hash，避免 Git checkout 的 CRLF/LF 策略改变
 参考身份；Node 不存在时才跳过。本轮 Windows 环境存在 Node，相关探针实际执行。
 
@@ -206,7 +206,7 @@ PR26 原始 Windows 验证结果：
 socket 生命周期测试中挂起，因此没有把不完整计数写成通过结果。上述平台边界
 与 FusionFlow 全量结果分开记录。
 
-迁移到 `fusion_flow_next.execution` 后，Linux 从 FusionFlow Next Skill 目录运行
+迁移到 `fusion_flow.execution` 后，Linux 从 FusionFlow Skill 目录运行
 完整测试得到 `271 passed, 11 skipped`；11 项均为 Windows 专用 batch、进程树或
 目录 junction 场景，真实 Node 差分探针已执行。换行归一化的 bundle hash 同时在
 LF checkout 上验证通过。

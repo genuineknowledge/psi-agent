@@ -57,4 +57,4 @@ def check_planned_steps(
     """
 
     del steps, available_syntax_names
-    raise NotImplementedError("FusionFlow Next planning check is not implemented.")
+    raise NotImplementedError("FusionFlow planning check is not implemented.")

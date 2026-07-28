@@ -9,11 +9,11 @@
 
 当前 Python 编译器原型位于：
 
-`examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/`
+`examples/haitun-workspace/skills/fusion-flow/fusion_flow/`
 
 并且仓库明确记录过“嵌套 Python 包留在示例 skill 内”。本设计则把执行运行时放在：
 
-`examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/`
+`examples/haitun-workspace/skills/fusion-flow/fusion_flow/execution/`
 
 放入核心包的理由：
 
@@ -30,7 +30,7 @@
 - 编译器留在 skill、运行时进核心，会形成割裂布局。
 
 **当前选择**：进入
-`examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution`，
+`examples/haitun-workspace/skills/fusion-flow/fusion_flow/execution`，
 通过独立子包与 G4 Core IR/compiler 隔离，不从 `psi_agent` 顶层导出，也不接入
 CLI 或 G4 runner。若未来需要跨 workspace 的稳定能力，应先迁成独立可安装包，
 而不是重新塞回微内核或在运行时修改 `sys.path`。
@@ -63,6 +63,12 @@ CLI 或 G4 runner。若未来需要跨 workspace 的稳定能力，应先迁成�
 
 ### 1.4 human executor 由谁执行？
 
+> 2026-07-28 结论：由 G4 workspace adapter 执行两阶段适配，不扩展 legacy
+> `fusion_flow.execution`，也不新增 approval UI。专用 preparation Agent
+> 读取必要引用并生成 `clarify` 参数；adapter 保存 validated checkpoint 与
+> `run_id/request_id`，结束 Session turn；下一条普通用户消息经
+> `run_flow_resume` 成为 Human Artifact。
+
 当 `executor_id` 指向的 Core IR/catalog identity 属于 `Human` concept 时，表示执行
 需要人的参与；静态图不另存 `executor_kind`，它也不应映射成某个自动调用的
 `flow.*` 函数。图读取与计划层需要把它降解为：
@@ -72,8 +78,8 @@ CLI 或 G4 runner。若未来需要跨 workspace 的稳定能力，应先迁成�
 3. 持久化可恢复状态；
 4. 收到人的结果后恢复并产生对应 Artifact。
 
-这也说明 planner/executor adapter 仍是独立新模块；
-`fusion_flow_next.execution` 只提供可直接执行的 Agent、Python callable、
+这也说明 planner/executor adapter 是独立边界；
+`fusion_flow.execution` 只提供可直接执行的 Agent、Python callable、
 subprocess 及运行记录原语。
 
 ## 2. 旧 TS API 的冗余是否保留

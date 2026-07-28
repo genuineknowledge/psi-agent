@@ -6,7 +6,7 @@ from typing import cast
 
 import anyio
 import pytest
-from fusion_flow_next.execution import (
+from fusion_flow.execution import (
     Agent,
     AgentConfig,
     AgentInvocation,
@@ -15,8 +15,8 @@ from fusion_flow_next.execution import (
     flow,
     run,
 )
-from fusion_flow_next.execution import runtime as runtime_module
-from fusion_flow_next.execution.runtime import RunContext
+from fusion_flow.execution import runtime as runtime_module
+from fusion_flow.execution.runtime import RunContext
 
 
 def test_agent_returns_a_handle_without_an_active_run() -> None:

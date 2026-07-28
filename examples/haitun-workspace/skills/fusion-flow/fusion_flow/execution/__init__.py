@@ -1,4 +1,4 @@
-"""隔离导出 FusionFlow Next 的旧 ``flow.*`` Python 兼容执行层。"""
+"""隔离导出 FusionFlow 的旧 ``flow.*`` Python 兼容执行层。"""
 
 from __future__ import annotations
 

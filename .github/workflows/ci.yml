@@ -28,8 +28,8 @@ jobs:
           java -jar "$RUNNER_TEMP/antlr-4.13.2-complete.jar" \
             -Dlanguage=Python3 -no-listener -Xexact-output-dir \
             -o "$output" grammar/FusionFlow.g4
-          diff -u fusion_flow_next/generated/FusionFlowLexer.py "$output/FusionFlowLexer.py"
-          diff -u fusion_flow_next/generated/FusionFlowParser.py "$output/FusionFlowParser.py"
+          diff -u fusion_flow/generated/FusionFlowLexer.py "$output/FusionFlowLexer.py"
+          diff -u fusion_flow/generated/FusionFlowParser.py "$output/FusionFlowParser.py"
 
   lint:
     runs-on: ubuntu-latest

@@ -11,13 +11,16 @@ import psi_agent.workflow_execution as workflow_execution
 from psi_agent.workflow_execution import (
     Await,
     DispatchContext,
+    ExecutionCheckpoint,
     ExecutionPlan,
     ExecutionPlanError,
     Fiber,
     Invoke,
     ResourceAllocator,
     StepDispatcher,
+    create_execution_checkpoint,
     execute_plan,
+    execution_plan_digest,
     generate_plan,
 )
 from psi_agent.workflow_graph import (
@@ -1286,3 +1289,356 @@ async def test_resource_is_released_after_failure_timeout_and_cancel() -> None:
 
     with anyio.fail_after(1):
         await execute_plan(generate_plan(normal), normal, inputs={}, dispatch=succeed, allocator=allocator)
+
+
+@pytest.mark.anyio
+async def test_execute_plan_resumes_from_dependency_closed_checkpoint() -> None:
+    graph = _diamond_graph()
+    plan = generate_plan(graph)
+    invoked: list[str] = []
+
+    async def dispatch(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        invoked.append(step.step_id)
+        if step.step_id == "draft":
+            return {"draft_text": inputs["notes"]}
+        if step.step_id == "review":
+            return {"review_text": inputs["notes"]}
+        if step.step_id == "publish":
+            return {"article": f"{inputs['draft_text']}/{inputs['review_text']}"}
+        raise AssertionError(step.step_id)
+
+    result = await execute_plan(
+        plan,
+        graph,
+        inputs={"topic": "async"},
+        dispatch=dispatch,
+        checkpoint=create_execution_checkpoint(
+            plan,
+            graph,
+            values={"topic": "async", "notes": "resumed"},
+            completed_step_ids=("research",),
+        ),
+    )
+
+    assert set(invoked) == {"draft", "review", "publish"}
+    assert result == {"article": "resumed/resumed"}
+
+
+def _checkpoint_input_graph(
+    *,
+    workflow_id: str = "checkpoint-input",
+    executor_id: str = "processor",
+) -> WorkflowGraph:
+    return WorkflowGraph(
+        workflow_id=workflow_id,
+        steps=(StepNode("process", "process", executor_id),),
+        artifacts=(
+            ArtifactNode("payload", is_input=True),
+            ArtifactNode("result", is_output=True),
+        ),
+        edges=(
+            ConsumesEdge("payload", "process"),
+            ProducesEdge("process", "result"),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("saved_input", "current_input"),
+    [
+        (True, 1),
+        (1, 1.0),
+        ({"items": [True, {"count": 1}]}, {"items": [1, {"count": 1}]}),
+        ([1, 2], [2, 1]),
+    ],
+    ids=("bool-int", "int-float", "nested-bool-int", "list-order"),
+)
+@pytest.mark.anyio
+async def test_checkpoint_input_comparison_is_json_type_strict(
+    saved_input: object,
+    current_input: object,
+) -> None:
+    graph = _checkpoint_input_graph()
+    plan = generate_plan(graph)
+    checkpoint_value = create_execution_checkpoint(
+        plan,
+        graph,
+        values={
+            "payload": saved_input,
+            "result": "stale",
+        },
+        completed_step_ids=("process",),
+    )
+
+    with pytest.raises(ExecutionPlanError, match="checkpoint input does not match"):
+        await execute_plan(
+            plan,
+            graph,
+            inputs={"payload": current_input},
+            dispatch=_unexpected_dispatch,
+            checkpoint=checkpoint_value,
+        )
+
+
+@pytest.mark.anyio
+async def test_checkpoint_input_comparison_ignores_object_key_order() -> None:
+    graph = _checkpoint_input_graph()
+    plan = generate_plan(graph)
+    checkpoint_value = create_execution_checkpoint(
+        plan,
+        graph,
+        values={
+            "payload": {
+                "first": [True, 1, 1.0],
+                "second": {"value": None},
+            },
+            "result": "resumed",
+        },
+        completed_step_ids=("process",),
+    )
+
+    result = await execute_plan(
+        plan,
+        graph,
+        inputs={
+            "payload": {
+                "second": {"value": None},
+                "first": [True, 1, 1.0],
+            }
+        },
+        dispatch=_unexpected_dispatch,
+        checkpoint=checkpoint_value,
+    )
+
+    assert result == {"result": "resumed"}
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_checkpoint_rejects_non_finite_json_values(value: float) -> None:
+    graph = _checkpoint_input_graph()
+    plan = generate_plan(graph)
+
+    with pytest.raises(ExecutionPlanError, match="non-finite"):
+        create_execution_checkpoint(
+            plan,
+            graph,
+            values={"payload": value},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "identifiers"),
+    [
+        ("completed_step_ids", ("",)),
+        ("completed_step_ids", ("process", "process")),
+        ("completed_selection_ids", ("",)),
+        ("completed_selection_ids", ("result", "result")),
+    ],
+)
+def test_checkpoint_rejects_invalid_completed_operation_ids(
+    field_name: str,
+    identifiers: tuple[str, ...],
+) -> None:
+    graph = _checkpoint_input_graph()
+    plan = generate_plan(graph)
+
+    with pytest.raises(ValueError, match=field_name):
+        create_execution_checkpoint(
+            plan,
+            graph,
+            values={"payload": "saved"},
+            completed_step_ids=(identifiers if field_name == "completed_step_ids" else ()),
+            completed_selection_ids=(identifiers if field_name == "completed_selection_ids" else ()),
+        )
+
+
+def test_checkpoint_rejects_non_string_completed_operation_id() -> None:
+    graph = _checkpoint_input_graph()
+    plan = generate_plan(graph)
+
+    with pytest.raises(ValueError, match="completed_step_ids"):
+        create_execution_checkpoint(
+            plan,
+            graph,
+            values={"payload": "saved"},
+            completed_step_ids=cast(tuple[str, ...], (1,)),
+        )
+
+
+def test_checkpoint_rejects_string_as_completed_operation_collection() -> None:
+    graph = _checkpoint_input_graph()
+    plan = generate_plan(graph)
+
+    with pytest.raises(ValueError, match="completed_step_ids"):
+        create_execution_checkpoint(
+            plan,
+            graph,
+            values={"payload": "saved"},
+            completed_step_ids=cast(tuple[str, ...], "process"),
+        )
+
+
+@pytest.mark.anyio
+async def test_execute_plan_rejects_non_finite_current_checkpoint_input() -> None:
+    graph = _checkpoint_input_graph()
+    plan = generate_plan(graph)
+    checkpoint_value = create_execution_checkpoint(
+        plan,
+        graph,
+        values={"payload": 1},
+    )
+
+    with pytest.raises(ExecutionPlanError, match="checkpoint input does not match"):
+        await execute_plan(
+            plan,
+            graph,
+            inputs={"payload": float("inf")},
+            dispatch=_unexpected_dispatch,
+            checkpoint=checkpoint_value,
+        )
+
+
+@pytest.mark.anyio
+async def test_checkpoint_rejects_another_workflow_with_matching_operation_ids() -> None:
+    original_graph = _checkpoint_input_graph(workflow_id="original")
+    original_plan = generate_plan(original_graph)
+    checkpoint_value = create_execution_checkpoint(
+        original_plan,
+        original_graph,
+        values={"payload": "saved", "result": "stale"},
+        completed_step_ids=("process",),
+    )
+    current_graph = _checkpoint_input_graph(workflow_id="current")
+    current_plan = generate_plan(current_graph)
+
+    with pytest.raises(ExecutionPlanError, match=r"checkpoint targets workflow 'original'.*'current'"):
+        await execute_plan(
+            current_plan,
+            current_graph,
+            inputs={"payload": "saved"},
+            dispatch=_unexpected_dispatch,
+            checkpoint=checkpoint_value,
+        )
+
+
+@pytest.mark.anyio
+async def test_checkpoint_rejects_changed_graph_with_same_workflow_and_operation_ids() -> None:
+    original_graph = _checkpoint_input_graph(executor_id="processor-v1")
+    original_plan = generate_plan(original_graph)
+    checkpoint_value = create_execution_checkpoint(
+        original_plan,
+        original_graph,
+        values={"payload": "saved", "result": "stale"},
+        completed_step_ids=("process",),
+    )
+    current_graph = _checkpoint_input_graph(executor_id="processor-v2")
+    current_plan = generate_plan(current_graph)
+
+    with pytest.raises(ExecutionPlanError, match="checkpoint plan digest does not match"):
+        await execute_plan(
+            current_plan,
+            current_graph,
+            inputs={"payload": "saved"},
+            dispatch=_unexpected_dispatch,
+            checkpoint=checkpoint_value,
+        )
+
+
+def test_execution_plan_digest_is_stable_for_concurrent_fiber_order() -> None:
+    graph = _diamond_graph()
+    plan = generate_plan(graph)
+    reordered_plan = ExecutionPlan(
+        workflow_id=plan.workflow_id,
+        fibers=tuple(reversed(plan.fibers)),
+    )
+
+    assert execution_plan_digest(plan, graph) == execution_plan_digest(reordered_plan, graph)
+
+
+def test_execution_plan_digest_covers_explicit_plan_structure() -> None:
+    graph = _steps_graph(
+        (
+            StepNode("first", "first", "executor"),
+            StepNode("second", "second", "executor"),
+        )
+    )
+    concurrent_plan = generate_plan(graph)
+    ordered_plan = ExecutionPlan(
+        workflow_id=graph.workflow_id,
+        fibers=(
+            Fiber("first", (Invoke("first"),)),
+            Fiber("second", (Await(("first",)), Invoke("second"))),
+        ),
+    )
+
+    assert execution_plan_digest(concurrent_plan, graph) != execution_plan_digest(ordered_plan, graph)
+
+
+@pytest.mark.anyio
+async def test_execute_plan_rejects_checkpoint_without_dependency_closure() -> None:
+    graph = _diamond_graph()
+    plan = generate_plan(graph)
+
+    with pytest.raises(ExecutionPlanError, match=r"dependency-closed.*research"):
+        await execute_plan(
+            plan,
+            graph,
+            inputs={"topic": "async"},
+            dispatch=_unexpected_dispatch,
+            checkpoint=create_execution_checkpoint(
+                plan,
+                graph,
+                values={"topic": "async", "draft_text": "draft"},
+                completed_step_ids=("draft",),
+            ),
+        )
+
+
+@pytest.mark.anyio
+async def test_checkpoint_observer_finishes_before_dependent_is_released() -> None:
+    graph = WorkflowGraph(
+        "persist-before-release",
+        (
+            StepNode("prepare", "prepare", "executor"),
+            StepNode("publish", "publish", "executor", depends_on=("prepare",)),
+        ),
+        (),
+    )
+    observer_entered = anyio.Event()
+    release_observer = anyio.Event()
+    publish_entered = anyio.Event()
+    checkpoints: list[ExecutionCheckpoint] = []
+
+    async def dispatch(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        assert inputs == {}
+        if step.step_id == "publish":
+            publish_entered.set()
+        return {}
+
+    async def observe(checkpoint: ExecutionCheckpoint) -> None:
+        checkpoints.append(checkpoint)
+        if checkpoint.completed_step_ids == ("prepare",):
+            observer_entered.set()
+            await release_observer.wait()
+
+    async def run() -> None:
+        await execute_plan(
+            generate_plan(graph),
+            graph,
+            inputs={},
+            dispatch=dispatch,
+            checkpoint_observer=observe,
+        )
+
+    with anyio.fail_after(1):
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(run)
+            await observer_entered.wait()
+            await checkpoint()
+            assert not publish_entered.is_set()
+            release_observer.set()
+
+    assert publish_entered.is_set()
+    assert checkpoints[-1].completed_step_ids == ("prepare", "publish")
+    assert checkpoints[-1].workflow_id == graph.workflow_id
+    assert checkpoints[-1].plan_digest == execution_plan_digest(generate_plan(graph), graph)

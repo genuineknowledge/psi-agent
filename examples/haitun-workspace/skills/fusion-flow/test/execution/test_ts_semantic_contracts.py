@@ -7,7 +7,7 @@ from functools import partial
 
 import anyio
 import pytest
-from fusion_flow_next.execution import (
+from fusion_flow.execution import (
     AgentConfig,
     AgentInvocation,
     ContainsRule,

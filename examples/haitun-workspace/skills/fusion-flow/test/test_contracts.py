@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from fusion_flow_next import PlannedStep, check_planned_steps
-from fusion_flow_next.checker import check_workflow
-from fusion_flow_next.core_ir import Workflow, WorkflowFile
+from fusion_flow import PlannedStep, check_planned_steps
+from fusion_flow.checker import check_workflow
+from fusion_flow.core_ir import Workflow, WorkflowFile
 
 
 def test_unimplemented_phase_boundaries_fail_explicitly() -> None:

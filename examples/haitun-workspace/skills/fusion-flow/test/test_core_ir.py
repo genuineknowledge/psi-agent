@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from fusion_flow_next.core_ir import (
+from fusion_flow.core_ir import (
     Assertion,
     CompoundTerm,
     Concept,

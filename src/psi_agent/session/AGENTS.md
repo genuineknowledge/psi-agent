@@ -52,6 +52,10 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 - `response.prepare()` 在 lock 内执行——客户端在 lock 释放前不会看到 HTTP 200。
 - `SessionAgent.handle_request()` 编排完整请求生命周期：parse → lock+prepare → run → write。
 - `ChannelAdapter` 是纯无状态工具——不持有 agent/lock 引用。
+- Tool 不能在本次调用内等待下一条用户消息：请求的完整 agent/tool loop 都持有同一
+  `_lock`，下一条消息只能在本轮结束后进入。需要 Human 选择或输入的 tool 必须先
+  持久化自己的可恢复状态，返回问题并结束 turn；下一轮用显式 token 恢复。workspace
+  的 `clarify` 只负责格式化问题，不是阻塞输入原语。
 - Channel 请求中除 `messages` 外的不认识参数全部透传到 AI 层（`extra_params`）。
 - AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
 - AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history，且通过 turn 快照回滚机制保证本轮用户消息也不落盘。

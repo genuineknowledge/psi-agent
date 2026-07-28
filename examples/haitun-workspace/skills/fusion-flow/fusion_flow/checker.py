@@ -19,4 +19,4 @@ def check_workflow(core_ir: WorkflowFile) -> CheckResult:
     """
 
     del core_ir
-    raise NotImplementedError("FusionFlow Next checker is not implemented.")
+    raise NotImplementedError("FusionFlow checker is not implemented.")

@@ -9,15 +9,15 @@ import anyio
 import pytest
 from anyio.lowlevel import checkpoint
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
-from fusion_flow_next.execution import runtime as runtime_module
-from fusion_flow_next.execution.flow import flow
-from fusion_flow_next.execution.model import (
+from fusion_flow.execution import runtime as runtime_module
+from fusion_flow.execution.flow import flow
+from fusion_flow.execution.model import (
     AgentConfig,
     AgentInvocation,
     ExecutionTrace,
     TraceStatus,
 )
-from fusion_flow_next.execution.runtime import RunContext, gc_runs, run
+from fusion_flow.execution.runtime import RunContext, gc_runs, run
 
 
 def test_generated_run_id_uses_six_base36_characters(monkeypatch) -> None:

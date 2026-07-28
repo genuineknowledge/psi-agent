@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from antlr4 import CommonTokenStream, InputStream
-from fusion_flow_next.core_ir import (
+from fusion_flow.core_ir import (
     Assertion,
     CompoundTerm,
     Concept,
@@ -13,9 +13,9 @@ from fusion_flow_next.core_ir import (
     Operator,
     WorkflowFile,
 )
-from fusion_flow_next.generated.FusionFlowLexer import FusionFlowLexer
-from fusion_flow_next.generated.FusionFlowParser import FusionFlowParser
-from fusion_flow_next.parser import ParseContext, parse_workflow
+from fusion_flow.generated.FusionFlowLexer import FusionFlowLexer
+from fusion_flow.generated.FusionFlowParser import FusionFlowParser
+from fusion_flow.parser import ParseContext, parse_workflow
 
 
 def _context() -> ParseContext:

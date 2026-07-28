@@ -5,12 +5,16 @@ from __future__ import annotations
 import json
 from collections import Counter
 from collections.abc import Awaitable, Callable, Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from os import PathLike
+from os.path import isabs
 from typing import Literal, cast
 
 from psi_agent.workflow_execution import (
+    CheckpointObserver,
     ContextualStepDispatcher,
     DispatchContext,
+    ExecutionCheckpoint,
     ResourceAllocator,
     ResourceCapacity,
     execute_plan,
@@ -18,11 +22,12 @@ from psi_agent.workflow_execution import (
 )
 from psi_agent.workflow_graph import ProducesEdge, StepNode, WorkflowGraph
 
-from .core_ir import Assertion, CompoundTerm, Concept, Operator
+from .core_ir import Assertion, CompoundTerm, Concept, Constant, Operator
 from .graph_compiler import WorkflowGraphCompilation, WorkflowGraphCompiler
 from .parser import ParseContext, parse_workflow
 
 type Completion = Callable[[str], Awaitable[object]]
+type PathResolver = Callable[[str], Awaitable[str]]
 type HumanInstructionPreparer = Callable[[str], Awaitable[str]]
 type HumanRequester = Callable[[str], Awaitable[object]]
 type ExecutorKind = Literal["Agent", "Human", "Program"]
@@ -34,11 +39,12 @@ class CompiledWorkflow:
 
     graph: WorkflowGraph
     executor_kinds: Mapping[str, ExecutorKind]
+    program_paths: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class CompletionContext:
-    """Structured runtime contract for an Agent or Program completion."""
+    """Structured runtime contract for an Agent or Human callback."""
 
     step_id: str
     executor_id: str
@@ -48,10 +54,31 @@ class CompletionContext:
     dispatch: DispatchContext
 
 
+@dataclass(frozen=True, slots=True)
+class ProgramInvocation:
+    """Exact subprocess contract passed to an injected Program runner."""
+
+    name: str
+    argv: tuple[str, ...]
+    stdin: str
+    cwd: str | PathLike[str] | None
+    binding_name: str
+    dispatch: DispatchContext
+
+
 type ContextualCompletion = Callable[
     [str, CompletionContext],
     Awaitable[object],
 ]
+type ContextualHumanInstructionPreparer = Callable[
+    [str, CompletionContext],
+    Awaitable[str],
+]
+type ContextualHumanRequester = Callable[
+    [str, CompletionContext],
+    Awaitable[object],
+]
+type ProgramRunner = Callable[[ProgramInvocation], Awaitable[str]]
 
 
 _CONCEPT_NAMES = (
@@ -67,6 +94,7 @@ _CONCEPT_NAMES = (
     "Integer",
     "List",
     "Model",
+    "Path",
     "Program",
     "ReasoningEffort",
     "Resource",
@@ -96,6 +124,7 @@ _OPERATOR_SIGNATURES: Mapping[
     "max_output_tokens": (("Agent",), "Integer"),
     "max_turns": (("Agent",), "Integer"),
     "output_workflow": (("Workflow",), "List"),
+    "program_path": (("Program",), "Path"),
     "produces": (("Step",), "List"),
     "reasoning_effort": (("Agent",), "ReasoningEffort"),
     "resource_requirement": (("Step", "Resource"), "Integer"),
@@ -135,6 +164,57 @@ def _residual_operator_counts(
     return counts
 
 
+def _typed_constant(
+    value: object,
+    concept_name: str,
+    context: str,
+) -> Constant:
+    if not isinstance(value, Constant) or not value.symbol:
+        raise ValueError(f"{context} must be a non-empty constant")
+    concepts = {concept.name for concept in value.belong_concepts}
+    if concept_name not in concepts:
+        raise ValueError(f"{context} must belong to {concept_name}")
+    return value
+
+
+def _extract_program_paths(
+    assertions: tuple[Assertion, ...],
+) -> tuple[dict[str, str], tuple[Assertion, ...]]:
+    """Consume catalog-owned Program path declarations from graph residuals."""
+
+    program_paths: dict[str, str] = {}
+    residual: list[Assertion] = []
+    for assertion in assertions:
+        candidates = tuple(
+            (term, value)
+            for term, value in (
+                (assertion.lhs, assertion.rhs),
+                (assertion.rhs, assertion.lhs),
+            )
+            if isinstance(term, CompoundTerm) and term.operator.name == "program_path"
+        )
+        if not candidates:
+            residual.append(assertion)
+            continue
+        if len(candidates) != 1:
+            raise ValueError("one equality cannot configure multiple Program paths")
+
+        call, value = candidates[0]
+        if len(call.arguments) != 1:
+            raise ValueError(f"program_path expects 1 argument, got {len(call.arguments)}")
+        executor = _typed_constant(
+            call.arguments[0],
+            "Program",
+            "program_path argument",
+        )
+        path = _typed_constant(value, "Path", "program_path value")
+        if executor.symbol in program_paths:
+            raise ValueError(f"duplicate program_path for {executor.symbol!r}")
+        program_paths[executor.symbol] = path.symbol
+
+    return program_paths, tuple(residual)
+
+
 def compile_workflow(
     source: str,
     *,
@@ -170,8 +250,9 @@ def compile_workflow(
     if len(compilations) != 1:
         raise ValueError("workflow runner expects exactly one workflow")
     compilation = compilations[0]
-    if compilation.residual_assertions:
-        counts = _residual_operator_counts(compilation.residual_assertions)
+    program_paths, residual_assertions = _extract_program_paths(compilation.residual_assertions)
+    if residual_assertions:
+        counts = _residual_operator_counts(residual_assertions)
         details = ", ".join(f"{operator_name}={count}" for operator_name, count in sorted(counts.items()))
         raise ValueError(f"workflow contains unconsumed assertions: {details}")
 
@@ -193,10 +274,13 @@ def compile_workflow(
                 "must be declared as exactly one of Agent, Human, or Program"
             )
         executor_kinds[step.executor_id] = cast(ExecutorKind, matches.pop())
+        if executor_kinds[step.executor_id] == "Program" and step.executor_id not in program_paths:
+            raise ValueError(f"Program executor {step.executor_id!r} has no program_path")
 
     return CompiledWorkflow(
         graph=compilation.graph,
         executor_kinds=executor_kinds,
+        program_paths=program_paths,
     )
 
 
@@ -238,13 +322,89 @@ def _output_contract(output_ids: tuple[str, ...]) -> str:
     return f"Return a mapping keyed exactly by these output artifact IDs: {json.dumps(output_ids, ensure_ascii=False)}."
 
 
+async def _build_program_paths(
+    compiled: CompiledWorkflow,
+    resolve_path: PathResolver | None,
+) -> dict[str, str]:
+    """Resolve only catalog identities; explicit absolute and ``./`` paths pass through."""
+
+    paths: dict[str, str] = {}
+    program_ids = {
+        step.executor_id for step in compiled.graph.steps if compiled.executor_kinds[step.executor_id] == "Program"
+    }
+    for program_id in sorted(program_ids):
+        path_reference = compiled.program_paths[program_id]
+        if isabs(path_reference) or path_reference.startswith("./"):
+            executable_path = path_reference
+        else:
+            if resolve_path is None:
+                raise ValueError(f"Program executor {program_id!r} has a path identity but no path resolver")
+            executable_path = await resolve_path(path_reference)
+            if not isinstance(executable_path, str) or not executable_path.strip():
+                raise ValueError(f"program_path for {program_id!r} resolved to no path")
+        paths[program_id] = executable_path
+    return paths
+
+
+def _normalize_program_stdout(
+    step_id: str,
+    output_ids: tuple[str, ...],
+    stdout: str,
+) -> dict[str, object]:
+    """Keep legacy scalar stdout while extending Program steps to N outputs."""
+
+    if len(output_ids) <= 1:
+        result: object = stdout if output_ids or stdout else None
+        return _normalize_outputs(
+            step_id,
+            output_ids,
+            result,
+            named_mapping_required=False,
+        )
+
+    def reject_non_finite_constant(value: str) -> object:
+        raise ValueError(f"non-finite JSON constant {value!r}")
+
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON object key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        result = json.loads(
+            stdout,
+            parse_constant=reject_non_finite_constant,
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        # ``json.loads("1e400")`` produces infinity without invoking
+        # ``parse_constant``. Re-encoding with ``allow_nan=False`` validates
+        # every nested number and catches that overflow case as well.
+        json.dumps(result, allow_nan=False)
+    except (json.JSONDecodeError, OverflowError, ValueError) as error:
+        raise ValueError(f"Program step {step_id!r} must write a strict JSON object keyed by artifact ID") from error
+    return _normalize_outputs(
+        step_id,
+        output_ids,
+        result,
+        named_mapping_required=True,
+    )
+
+
 def _build_dispatch(
     compiled: CompiledWorkflow,
     *,
+    program_paths: Mapping[str, str],
+    work_dir: str | PathLike[str] | None,
     complete: Completion | None,
     contextual_complete: ContextualCompletion | None,
+    run_program: ProgramRunner | None,
     prepare_human_instruction: HumanInstructionPreparer | None,
     request_human: HumanRequester | None,
+    contextual_prepare_human_instruction: ContextualHumanInstructionPreparer | None,
+    contextual_request_human: ContextualHumanRequester | None,
 ) -> ContextualStepDispatcher:
     graph = compiled.graph
     outputs_by_step: dict[str, list[str]] = {step.step_id: [] for step in graph.steps}
@@ -264,8 +424,20 @@ def _build_dispatch(
         output_contract = _output_contract(output_ids)
         instruction = step.instruction_id
         executor_kind = compiled.executor_kinds[step.executor_id]
+        completion_context = CompletionContext(
+            step_id=step.step_id,
+            executor_id=step.executor_id,
+            executor_kind=executor_kind,
+            inputs=dict(inputs),
+            output_ids=output_ids,
+            dispatch=dispatch_context,
+        )
         if executor_kind == "Human":
-            if prepare_human_instruction is None or request_human is None:
+            has_legacy_callbacks = prepare_human_instruction is not None and request_human is not None
+            has_contextual_callbacks = (
+                contextual_prepare_human_instruction is not None and contextual_request_human is not None
+            )
+            if not has_legacy_callbacks and not has_contextual_callbacks:
                 raise ValueError(
                     f"step {step.step_id!r} requires prepare_human_instruction and request_human callbacks"
                 )
@@ -276,18 +448,65 @@ def _build_dispatch(
                 f"Inputs: "
                 f"{json.dumps(dict(inputs), ensure_ascii=False, sort_keys=True, default=str)}\n"
                 f"Output contract: {output_contract}\n"
-                "Produce concise, readable guidance. Decide whether referenced "
-                "resources need inspection using your available tools and normal "
-                "approval flow. Do not invent inaccessible contents."
+                "Produce concise, readable guidance. Use available tools only when "
+                "needed to inspect referenced resources. Do not ask the human "
+                "directly, change resources, or invent inaccessible contents."
             )
-            prepared_instruction = await prepare_human_instruction(preparation_prompt)
+            if contextual_prepare_human_instruction is not None:
+                prepared_instruction = await contextual_prepare_human_instruction(
+                    preparation_prompt,
+                    completion_context,
+                )
+            else:
+                if prepare_human_instruction is None:
+                    raise AssertionError("Human callback preflight did not select an instruction preparer")
+                prepared_instruction = await prepare_human_instruction(preparation_prompt)
             if not prepared_instruction.strip():
                 raise ValueError(f"step {step.step_id!r} human instruction preparation returned no text")
+            if contextual_request_human is not None:
+                human_result = await contextual_request_human(
+                    prepared_instruction,
+                    completion_context,
+                )
+            else:
+                if request_human is None:
+                    raise AssertionError("Human callback preflight did not select a requester")
+                human_result = await request_human(prepared_instruction)
             return _normalize_outputs(
                 step.step_id,
                 output_ids,
-                await request_human(prepared_instruction),
+                human_result,
                 named_mapping_required=False,
+            )
+
+        if executor_kind == "Program":
+            payload = json.dumps(
+                {
+                    "instruction": instruction,
+                    "inputs": dict(inputs),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+            if run_program is None:
+                raise AssertionError("Program runner preflight did not select a runner")
+            stdout = await run_program(
+                ProgramInvocation(
+                    name=step.executor_id,
+                    argv=(program_paths[step.executor_id],),
+                    stdin=f"{payload}\n",
+                    cwd=work_dir,
+                    binding_name=step.step_id,
+                    dispatch=dispatch_context,
+                )
+            )
+            if not isinstance(stdout, str):
+                raise TypeError(f"Program runner for step {step.step_id!r} must return stdout as str")
+            return _normalize_program_stdout(
+                step.step_id,
+                output_ids,
+                stdout,
             )
 
         prompt = (
@@ -299,14 +518,7 @@ def _build_dispatch(
         if contextual_complete is not None:
             result = await contextual_complete(
                 prompt,
-                CompletionContext(
-                    step_id=step.step_id,
-                    executor_id=step.executor_id,
-                    executor_kind=executor_kind,
-                    inputs=dict(inputs),
-                    output_ids=output_ids,
-                    dispatch=dispatch_context,
-                ),
+                completion_context,
             )
             return _normalize_outputs(
                 step.step_id,
@@ -339,13 +551,28 @@ async def execute_workflow(
     parse_context: ParseContext | None = None,
     strict_executors: bool = False,
     supported_executor_kinds: Collection[ExecutorKind] | None = None,
+    resolve_path: PathResolver | None = None,
+    work_dir: str | PathLike[str] | None = None,
+    run_program: ProgramRunner | None = None,
     prepare_human_instruction: HumanInstructionPreparer | None = None,
     request_human: HumanRequester | None = None,
+    contextual_prepare_human_instruction: ContextualHumanInstructionPreparer | None = None,
+    contextual_request_human: ContextualHumanRequester | None = None,
+    checkpoint: ExecutionCheckpoint | None = None,
+    checkpoint_observer: CheckpointObserver | None = None,
 ) -> dict[str, object]:
     """Execute one checked workflow with explicit dispatcher/runtime injection."""
 
-    if (complete is None) == (contextual_complete is None):
+    if complete is not None and contextual_complete is not None:
         raise ValueError("provide exactly one of complete or contextual_complete")
+    if prepare_human_instruction is not None and contextual_prepare_human_instruction is not None:
+        raise ValueError("provide exactly one of prepare_human_instruction or contextual_prepare_human_instruction")
+    if request_human is not None and contextual_request_human is not None:
+        raise ValueError("provide exactly one of request_human or contextual_request_human")
+    if (prepare_human_instruction is None) != (request_human is None):
+        raise ValueError("provide prepare_human_instruction and request_human together")
+    if (contextual_prepare_human_instruction is None) != (contextual_request_human is None):
+        raise ValueError("provide contextual_prepare_human_instruction and contextual_request_human together")
     if inputs is None:
         if request is None:
             raise ValueError("either request or inputs must be provided")
@@ -375,18 +602,38 @@ async def execute_workflow(
             raise ValueError(f"workflow contains unsupported executors: {details}")
 
     graph = compiled.graph
+    if (
+        any(compiled.executor_kinds[step.executor_id] == "Agent" for step in graph.steps)
+        and complete is None
+        and contextual_complete is None
+    ):
+        raise ValueError("provide exactly one of complete or contextual_complete")
+    program_paths = await _build_program_paths(compiled, resolve_path)
+    if work_dir is None and any(not isabs(path) for path in program_paths.values()):
+        raise ValueError("relative program_path requires an explicit work_dir")
+    if program_paths and run_program is None:
+        raise ValueError("Program workflow requires an injected run_program callback")
     plan = generate_plan(graph)
+    dispatch = _build_dispatch(
+        compiled,
+        program_paths=program_paths,
+        work_dir=work_dir,
+        complete=complete,
+        contextual_complete=contextual_complete,
+        run_program=run_program,
+        prepare_human_instruction=prepare_human_instruction,
+        request_human=request_human,
+        contextual_prepare_human_instruction=contextual_prepare_human_instruction,
+        contextual_request_human=contextual_request_human,
+    )
+
     return await execute_plan(
         plan,
         graph,
         inputs=workflow_inputs,
-        contextual_dispatch=_build_dispatch(
-            compiled,
-            complete=complete,
-            contextual_complete=contextual_complete,
-            prepare_human_instruction=prepare_human_instruction,
-            request_human=request_human,
-        ),
+        contextual_dispatch=dispatch,
         resource_capacities=resource_capacities,
         allocator=allocator,
+        checkpoint=checkpoint,
+        checkpoint_observer=checkpoint_observer,
     )

@@ -6,8 +6,8 @@ from typing import cast
 
 import anyio
 import pytest
-from fusion_flow_next.execution import PipelineStep, RunContext, flow, run
-from fusion_flow_next.execution.flow import logger as flow_logger
+from fusion_flow.execution import PipelineStep, RunContext, flow, run
+from fusion_flow.execution.flow import logger as flow_logger
 
 
 async def _execute(

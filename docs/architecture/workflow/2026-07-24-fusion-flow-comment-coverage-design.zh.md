@@ -10,10 +10,10 @@ FusionFlow 运行时补齐中文 docstring 和关键步骤注释，使读者能�
 
 覆盖以下生产文件：
 
-- `examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/__init__.py`
-- `examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/model.py`
-- `examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/runtime.py`
-- `examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/execution/flow.py`
+- `examples/haitun-workspace/skills/fusion-flow/fusion_flow/execution/__init__.py`
+- `examples/haitun-workspace/skills/fusion-flow/fusion_flow/execution/model.py`
+- `examples/haitun-workspace/skills/fusion-flow/fusion_flow/execution/runtime.py`
+- `examples/haitun-workspace/skills/fusion-flow/fusion_flow/execution/flow.py`
 
 每个模块、数据类型、公开函数和私有 helper 都应有与复杂度匹配的说明：
 
@@ -60,5 +60,5 @@ resume 元数据加载、trace 持久化、取消安全清理和 run GC。
 2. 运行 `uv run ruff format --check .`。
 3. 运行 `uv run ruff check .`。
 4. 运行 `uv run ty check`。
-5. 进入 `examples/haitun-workspace/skills/fusion-flow-next`，运行
+5. 进入 `examples/haitun-workspace/skills/fusion-flow`，运行
    `uv run python -m pytest -q test/execution`。

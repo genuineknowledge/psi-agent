@@ -1,5 +1,5 @@
 /node_modules/
-fusion_flow_next/generated/__pycache__/
-fusion_flow_next/generated/**/*.pyc
-fusion_flow_next/generated/*.interp
-fusion_flow_next/generated/*.tokens
+fusion_flow/generated/__pycache__/
+fusion_flow/generated/**/*.pyc
+fusion_flow/generated/*.interp
+fusion_flow/generated/*.tokens

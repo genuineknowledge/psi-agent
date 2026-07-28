@@ -36,7 +36,7 @@ def test_workspace_exposes_one_python_fusion_flow_runtime() -> None:
 
     assert (skill_dir / "SKILL.md").is_file()
     assert (skill_dir / "grammar" / "FusionFlow.g4").is_file()
-    assert (skill_dir / "fusion_flow_next" / "workflow_runner.py").is_file()
+    assert (skill_dir / "fusion_flow" / "workflow_runner.py").is_file()
     assert (_WORKSPACE_DIR / "tools" / "run_flow.py").is_file()
     assert not (_WORKSPACE_DIR / "tools" / "flow_run.py").exists()
 

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import cast
 
-import fusion_flow_next
+import fusion_flow
 import pytest
-from fusion_flow_next.compiler import CoreIRCompiler
-from fusion_flow_next.core_ir import (
+from fusion_flow.compiler import CoreIRCompiler
+from fusion_flow.core_ir import (
     Assertion,
     CompoundTerm,
     Concept,
@@ -18,7 +18,7 @@ from fusion_flow_next.core_ir import (
     Workflow,
     WorkflowFile,
 )
-from fusion_flow_next.graph_compiler import (
+from fusion_flow.graph_compiler import (
     WorkflowGraphCompilation,
     WorkflowGraphCompilationError,
     WorkflowGraphCompiler,
@@ -942,6 +942,6 @@ def test_graph_validation_errors_are_public_and_chained() -> None:
 
 
 def test_graph_backend_is_exported_from_package() -> None:
-    assert fusion_flow_next.WorkflowGraphCompiler is WorkflowGraphCompiler
-    assert fusion_flow_next.WorkflowGraphCompilation is WorkflowGraphCompilation
-    assert fusion_flow_next.WorkflowGraphCompilationError is WorkflowGraphCompilationError
+    assert fusion_flow.WorkflowGraphCompiler is WorkflowGraphCompiler
+    assert fusion_flow.WorkflowGraphCompilation is WorkflowGraphCompilation
+    assert fusion_flow.WorkflowGraphCompilationError is WorkflowGraphCompilationError
