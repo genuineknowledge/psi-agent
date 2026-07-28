@@ -5,7 +5,8 @@
 
 ## 1. 目标
 
-`WorkflowGraph` 保存声明式 Step–Artifact 关系，但不保存运行状态。初版
+`WorkflowGraph` 保存声明式 Step–Artifact 关系、无数据传递的显式 Step 顺序约束，
+但不保存运行状态。初版
 `workflow_execution` 把其中能够无歧义执行的 one-shot 子集编译为可检查的
 `ExecutionPlan`，再通过调用方注入的 dispatcher 执行 Step。
 
@@ -21,6 +22,7 @@ Fiber(primary):  Invoke(primary)
 Fiber(fallback): Invoke(fallback)
 Fiber(selected): Await(primary, fallback) -> Select(selected)
 Fiber(final):    AwaitSelections(selected) -> Invoke(final)
+Fiber(cleanup):  Await(final) -> Invoke(cleanup)  # 来自 depends_on，无需 Artifact 边
 ```
 
 执行器不再遍历图计算 ready frontier；它只解释已经生成的 `Await`、
@@ -31,7 +33,8 @@ Fiber(final):    AwaitSelections(selected) -> Invoke(final)
 `generate_plan(graph)` 做四件事：
 
 1. 扫描 `ProducesEdge`，建立 `artifact_id -> producer step_id`；
-2. 扫描 `ConsumesEdge`，把 producer 编译成 consumer fiber 中的 `Await`；
+2. 扫描 `ConsumesEdge`，把 producer 与 `StepNode.depends_on` 中的显式前驱合并，
+   编译成 consumer fiber 中的 `Await`；
 3. 为每个 `SelectNode` 建独立 fiber，等待条件及两个候选的 Step/Select producer；
    消费 Select 输出的 Step 用 `AwaitSelections` 等待；
 4. 用 Kahn 算法检查 Step 和 Select 操作组成的等待图是否形成环。
@@ -46,8 +49,9 @@ Fiber(final):    AwaitSelections(selected) -> Invoke(final)
 
 `execute_plan()` 使用一个 anyio task group 同时启动全部 fiber：
 
-执行前会验证每个 Step 恰好被调用一次，且其 producer 已由前序 `Invoke` 或
-`Await` 覆盖；额外的无环等待可用于其他 planner 选择更保守的顺序。
+执行前会验证每个 Step 恰好被调用一次，且其 Artifact producer 和显式
+`depends_on` 前驱均已由前序 `Invoke` 或 `Await` 覆盖；额外的无环等待可用于
+其他 planner 选择更保守的顺序。
 
 1. `Await(step_ids)` 等待对应 Step 的 completion event；
 2. `AwaitSelections(artifact_ids)` 等待对应 Select 输出可用；
@@ -59,8 +63,15 @@ Select fiber 会等待条件引用和两个候选 Artifact 的 producer，因此
 都会执行。这是 eager 值选择；它不跳过未选 producer，也不创建控制流 Region。
 
 任一 fiber 失败时，anyio task group 取消其余 fiber。`WorkflowPolicy` 的
-`max_concurrency` 限制同时进入 dispatcher 的数量；workflow 和 step timeout
-分别包住整次运行和单次调用。
+`max_concurrency` 与资源 allocator 在同一个 admission 临界区中限制进入
+dispatcher 的调用；workflow 和 step timeout 分别包住整次运行和单次调用。
+
+资源容量由 runner 以正整数或具体实例 ID 列表提供。Step 获取资源时一次性检查并
+保留全部 `resource_requirement`，避免部分持有后再等待另一资源；等待资源的 Step
+也不会提前占用全局并发位。`DispatchContext.resource_lease` 向 contextual
+dispatcher 暴露具体实例。退出 dispatch 的 success、exception、timeout 或
+cancellation 路径都会在 shielded cleanup 中归还资源。当前 allocator 是进程内
+固定资源池，不提供跨进程锁或 shared/exclusive 租约模式。
 
 ## 4. 与 FusionFlow Next Python execution 子包的边界
 
@@ -82,14 +93,14 @@ async def dispatch(step, inputs):
 ```
 
 dispatcher 可以调用 `fusion_flow_next.execution` 中的 `flow.session`、
-`flow.call` 或 `flow.exec`；计划执行器只负责并发、等待、输入收集和输出提交。
-核心执行器仍只接受注入的 dispatcher，不依赖这个示例 Skill 子包，也不会在 graph
-package 中复制 executor catalog。
+`flow.call` 或 `flow.exec`；需要具体资源实例时使用三参数 contextual dispatcher，
+从 `DispatchContext.resource_lease` 读取 grant。计划执行器只负责并发、等待、
+资源 admission、输入收集和输出提交。核心执行器不依赖这个示例 Skill 子包，
+也不会在 graph package 中复制 executor catalog。
 
 ## 5. 初版明确拒绝
 
 - `ForeachEdge`：需要 slot、index 稳定聚合和 partial failure 合同；
-- resource requirement：需要 allocator；
 - `max_attempts != 1`：应复用 PR15 `flow.retry`，但 retry/iteration 组合尚未确定；
 - input Artifact 同时有 producer：可能表示 seed + feedback，需要 Artifact version；
 - producer/consumer 环：直接全量启动会形成 circular await。

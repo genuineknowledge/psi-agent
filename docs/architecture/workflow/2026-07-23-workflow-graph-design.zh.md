@@ -116,7 +116,9 @@ StepNode
 ├── instruction_id?
 ├── timeout_seconds?
 ├── max_attempts
-└── resources[(resource_id, amount)]
+├── resources[(resource_id, amount)]
+├── depends_on[predecessor_step_id]
+└── independent
 ```
 
 合同：
@@ -126,7 +128,12 @@ StepNode
 - `step_instruction` 第一版允许缺省；
 - `max_attempts >= 1`，含第一次执行；
 - timeout 和 resource amount 为正整数；
-- resources 以 `(step_id, resource_id)` 识别，不使用可碰撞的字符串拼接 key。
+- resources 以 `(step_id, resource_id)` 识别，不使用可碰撞的字符串拼接 key；
+- `depends_on` 保存不伴随 Artifact 值传递的显式顺序前驱，引用必须存在且不能重复；
+- `independent` 是非约束 metadata，不能覆盖 Artifact 依赖或 `depends_on`。
+
+Artifact 边回答“这个值从哪里来”，`depends_on` 回答“即使不传值，谁也必须先完成”。
+结构模型允许保存两者共同形成的环；one-shot planner 决定是否能够执行。
 
 `executor_id` 仍是 Core IR 中的具体 constant identity，不把 Python callable、命令或
 人工审批配置塞进静态图。上游已确认 `Executor` 的三个直接子 concept 是 `Human`、
@@ -279,7 +286,8 @@ duck-typed DTO。
 
 ### 7.2 已知 operator
 
-FusionFlow catalog 共 21 个 preset operator；图后端初版识别：
+FusionFlow grammar catalog 仍有 21 个 preset operator；runner 的 typed context
+另外注入 `independent` 和 `depends_on`。图后端当前识别：
 
 - `input_workflow`
 - `output_workflow`
@@ -294,6 +302,8 @@ FusionFlow catalog 共 21 个 preset operator；图后端初版识别：
 - `resource_requirement`
 - `max_concurrency`
 - `workflow_timeout`
+- `independent`
+- `depends_on`
 
 已知 operator 如果 arity、RHS、owner 或类型形状错误，直接产生
 `WorkflowGraphCompilationError`，不能伪装成 residual。
@@ -324,6 +334,8 @@ operator 默认可能为 0，不能代表应用实参数量。
 | `step_timeout(s) = n` | `StepNode(s).timeout_seconds = n` |
 | `max_attempts(s) = n` | `StepNode(s).max_attempts = n` |
 | `resource_requirement(s, resource) = n` | `StepNode(s).resources += (resource, n)` |
+| `independent(s) == True` | `StepNode(s).independent = True`，仅保留 metadata |
+| `depends_on(s, predecessor) == True` | `StepNode(s).depends_on += predecessor` |
 | `max_concurrency(w) = n` | `WorkflowPolicy.max_concurrency = n` |
 | `workflow_timeout(w) = n` | `WorkflowPolicy.timeout_seconds = n` |
 | `selected == if(condition, a, b)` | `SelectNode(selected, a, b, condition)` |
@@ -393,7 +405,8 @@ WorkflowGraphCompilation
 12. `max_attempts >= 1`；
 13. 每个 Select 的输出和输入 Artifact 都存在、均为 global，且输出没有其他 producer；
 14. Select 输出不重复，条件引用的 Artifact 可用；
-15. 不检查 acyclic。
+15. `depends_on` 必须是 Step ID tuple，前驱存在且不重复；
+16. 不检查 acyclic；自依赖与多 Step 环由 planner 拒绝。
 
 “input Artifact 同时有 producer”初版允许表示，因为它可能是 seed + feedback；
 但它的运行时版本语义尚未定义，所以 planner 不能仅凭结构直接执行。
@@ -408,6 +421,7 @@ WorkflowGraphCompilation
 - 按 `(kind, endpoints...)` 排 edges；
 - 按 output Artifact identity 排 selectors；
 - 按 resource identity 排 resources；
+- 按 predecessor Step identity 排 `depends_on`；
 - 使用固定字段顺序。
 
 这保证 hash、diff、snapshot 和缓存稳定。

@@ -280,8 +280,8 @@ Read `grammar/FusionFlow.g4` completely before using these patterns. The grammar
 | Pattern | FusionFlow shape | When to use |
 | --- | --- | --- |
 | **Fan-out + fan-in** | Several Steps each use `consumes(step) == [shared_artifact]`; one final Step uses `consumes(final_step) == [result_a, result_b]`. Set `max_concurrency` on the workflow when needed. | PR review, multi-perspective audit, content moderation. |
-| **Artifact pipeline** | Each Step produces the Artifact consumed by the next Step. Use `max_attempts` only as the attempt limit for a configured Step. | Writing process, ETL, refine-and-check work. |
-| **Per-item work + merge** | Use `foreach_item` for the repeated Step. Declare a List that also participates in graph relations as `Artifact, List`, then connect it with `produces(step) == [result_collection]` and `consumes(merge_step) == [result_collection]`. | N PRs, issues, docs, or log records into one report. |
+| **Artifact pipeline** | Each Step produces the Artifact consumed by the next Step. `max_attempts` is declarative retry metadata; the current one-shot runner accepts only `1`. | Writing process, ETL, refine-and-check work. |
+| **Per-item work + merge** | Use `foreach_item` for the repeated Step. Declare a List that also participates in graph relations as `Artifact, List`, then connect it with `produces(step) == [result_collection]` and `consumes(merge_step) == [result_collection]`. The current one-shot runner still rejects `ForeachEdge`. | Future N-item execution after slot semantics are implemented. |
 | **Named Artifact selection** | Keep every candidate result explicit, then bind `selected_artifact == if(formula, artifact_a, artifact_b)` and use `selected_artifact` in ordinary dataflow. For priority selection, chain named intermediate Artifacts. | Eagerly run all candidate producers, then choose one value for downstream Steps. |
 | **Composite workflow** | Combine only the artifact chains, fan-out/fan-in, per-item relations, and named Artifact selections above. | When one simple pattern does not cover the task. |
 
@@ -320,10 +320,6 @@ const performance_agent: Agent, Executor;
 const readability_agent: Agent, Executor;
 const editor_agent: Agent, Executor;
 
-const review_model: Model;
-const review_engine: Engine;
-const review_api: ApiBase;
-const high_effort: ReasoningEffort;
 const read_tool: Tool;
 
 workflow code_review {
@@ -350,15 +346,12 @@ workflow code_review {
   step_name(security_review) == security_review_name;
   step_instruction(security_review) == security_instruction;
   step_timeout(security_review) == 300;
-  max_attempts(security_review) == 2;
   step_name(performance_review) == performance_review_name;
   step_instruction(performance_review) == performance_instruction;
   step_timeout(performance_review) == 300;
-  max_attempts(performance_review) == 2;
   step_name(readability_review) == readability_review_name;
   step_instruction(readability_review) == readability_instruction;
   step_timeout(readability_review) == 300;
-  max_attempts(readability_review) == 2;
   step_name(synthesize_report) == synthesize_report_name;
   step_instruction(synthesize_report) == synthesis_instruction;
 
@@ -366,22 +359,17 @@ workflow code_review {
   max_concurrency(code_review) == 3;
   workflow_timeout(code_review) == 900;
 
-  -- AGENT CONFIGURATION
-  agent_config(security_agent, review_model, review_engine, review_api);
-  agent_config(performance_agent, review_model, review_engine, review_api);
-  agent_config(readability_agent, review_model, review_engine, review_api);
-  agent_config(editor_agent, review_model, review_engine, review_api);
-
+  -- AGENT TOOL POLICY
   allowed_tool(security_agent, read_tool);
   allowed_tool(performance_agent, read_tool);
   allowed_tool(readability_agent, read_tool);
-  reasoning_effort(security_agent) == high_effort;
 }
 ```
 
 ### G4 source of truth
 
 Before authoring, read `grammar/FusionFlow.g4` completely. It is the sole authority for surface syntax, declarations, assertions, formulas, terms, and preset operator signatures. This skill additionally defines which grammar-valid shapes the executable graph backend accepts.
+Runner-specific typed catalog extensions use the grammar's generic operator-call syntax without changing its preset catalog. In particular, `depends_on(Step, Step) -> Bool` is registered by `examples/run_workflow.py` and is executable there, but is not one of the grammar's 21 canonical preset operators.
 
 ### Executable graph backend guardrails
 
@@ -392,19 +380,23 @@ Before authoring, read `grammar/FusionFlow.g4` completely. It is the sole author
 
 ### Modeling rules
 
-- Group assertions by concern in this exact order: `DATA FLOW`, `EXECUTOR ASSIGNMENT`, `STEP CONFIGURATION`, `WORKFLOW CONFIGURATION`, `AGENT CONFIGURATION`. Omit empty groups.
+- Group assertions by concern in this exact order: `DATA FLOW`, `EXECUTOR ASSIGNMENT`, `STEP CONFIGURATION`, `SCHEDULING CONFIGURATION`, `WORKFLOW CONFIGURATION`, `AGENT CONFIGURATION`. Omit empty groups.
 - In `DATA FLOW`, declare the complete external input List once, then every Step's `consumes`/`produces` edges and named Artifact selections in dependency order, then the complete external output List once.
 - Use exactly one symmetric Artifact dataflow contract: `input_workflow(workflow) == [artifact_a, artifact_b];`, `consumes(step) == [artifact_a, artifact_b];`, `produces(step) == [artifact_a, artifact_b];`, and `output_workflow(workflow) == [artifact_a, artifact_b];`. All four operators return `List`; even one Artifact requires an explicit List literal such as `[artifact]`. Never use these calls as standalone assertions, with `== True`, with an Artifact as a second argument, or through alternate multi variants.
 - Bool shorthand is only for non-dataflow presets that genuinely return Bool, such as `agent_config(...)` and `allowed_tool(...)`. Keep `== False` explicit. Retain the right-hand value for every non-Bool operator.
 - When the user supplies a grammar-valid literal as a typed constant name, including a restricted quoted ID or `"./..."` path, preserve that literal and use it directly as the required preset value; do not hide it behind an alias constant and an extra equality.
-- Model sequencing through Artifact edges: a Step that produces an Artifact precedes a Step that consumes it. Declaration order does not define execution order; Artifact edges define dependencies.
+- Model data sequencing through Artifact edges: a Step that produces an Artifact precedes a Step that consumes it. When ordering is required without passing data, use `depends_on(step, predecessor) == True`; repeat it for multiple predecessors. Declaration order never defines execution order.
 - Preserve the external data boundary from the user's intent. Fan-out Steps that analyze the same subject reuse one shared input Artifact; do not split it into synthetic per-branch workflow inputs.
 - Emit every explicitly requested relation. Every operand must be a declared grammar term: `_` and `...` are not wildcards. Declare typed constants for required operands, or omit an optional configuration instead of inserting placeholders.
 - Model fan-out by making several steps consume the same artifact.
 - Model fan-in with `consumes(step) == [artifact_a, artifact_b];`.
 - Model per-item work with `foreach_item(step, items) == item_result;`. If a List also participates in graph relations, declare it as `Artifact, List` and still place it inside an explicit List RHS.
 - Bind each step to its executor with `step_executor`.
-- Configure concurrency, retries, timeouts, resources, and agent limits with the corresponding preset operators.
+- Configure concurrency, retries, timeouts, resources, and agent limits with the corresponding preset operators; keep `max_attempts` omitted or set to `1` for the current one-shot runner.
+- Treat `independent(step)` only as a hint. Artifact dependencies and `depends_on` still decide when the Step is ready.
+- Declare resource demand with `resource_requirement(step, resource)`. Resource capacities or concrete IDs come from runner configuration, never from `.workflow` source.
+- The current one-shot runner supports resource scheduling and explicit `depends_on` ordering but still rejects `foreach_item` execution and `max_attempts` values other than `1`.
+- Unknown or unsupported assertions remain residual and stop execution. Never delete them, comment them out, or bypass residual validation to make a run start.
 - Lower executable `if` as a named Artifact selection: `selected_artifact == if(formula, artifact_a, artifact_b);`, followed by ordinary list dataflow such as `consumes(final_step) == [selected_artifact];`.
 - Variables, quantifiers, rules, implications, biconditionals, query/SAT/optimization requests, local concept declarations, local operator declarations, and imperative blocks are outside this language.
 - Never emit imports, imperative runtime calls, `run(...)`, or invented `parallel`/`pipeline`/`for` blocks.

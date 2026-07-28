@@ -929,7 +929,7 @@ visited = 0  # 小于节点总数 2</pre>
     </main>
 
     <p class="footer-note">
-      这页演示的是当前最小实现：一次性执行、无 foreach、无 retry、无资源调度；这些能力需要时再扩展计划指令。
+      这页聚焦一次性 Artifact 依赖；当前实现还会把显式 depends_on 降低为 Await，并在 dispatch 前执行资源 admission。foreach 与 retry 仍待后续语义。
     </p>
   </div>
 

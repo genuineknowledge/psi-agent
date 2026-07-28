@@ -101,7 +101,9 @@ class _StepDraft:
     # None means the assertion was absent; an explicit value of 1 must still
     # make a second max_attempts assertion a duplicate.
     max_attempts: int | None = None
-    resources: dict[str, ResourceRequirement] = field(default_factory=dict)
+    independent: bool | None = None
+    resources: dict[str, int] = field(default_factory=dict)
+    depends_on: set[str] = field(default_factory=set)
 
 
 class WorkflowGraphCompiler(CoreIRCompiler):
@@ -137,6 +139,9 @@ class WorkflowGraphCompiler(CoreIRCompiler):
             "resource_requirement",
             "max_concurrency",
             "workflow_timeout",
+            # Catalog-backed scheduling metadata.
+            "independent",
+            "depends_on",
         }
     )
     # Executor concepts are mutually exclusive in the graph target.
@@ -448,19 +453,58 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                         raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {step_id!r}")
                     step_draft.max_attempts = max_attempts
 
+                case "independent":
+                    # independent(step) == True is preserved as a non-binding hint.
+                    self._require_arity(arguments, 1, operator_name)
+                    self._require_true(fact_value, operator_name)
+                    step_id = self._concept_symbol(
+                        arguments[0],
+                        "Step",
+                        "independent step",
+                    )
+                    step_draft = step_drafts.setdefault(step_id, _StepDraft())
+                    if step_draft.independent is not None:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {step_id!r}")
+                    step_draft.independent = True
+
                 case "resource_requirement":
                     # resource_requirement(step, resource) = positive_amount
                     self._require_arity(arguments, 2, operator_name)
-                    step_id = self._symbol(arguments[0], "resource_requirement step")
+                    step_id = self._concept_symbol(
+                        arguments[0],
+                        "Step",
+                        "resource_requirement step",
+                    )
                     step_draft = step_drafts.setdefault(step_id, _StepDraft())
-                    resource_id = self._symbol(arguments[1], "resource identity")
+                    resource_id = self._concept_symbol(
+                        arguments[1],
+                        "Resource",
+                        "resource identity",
+                    )
                     amount = self._positive_integer(fact_value, operator_name)
                     if resource_id in step_draft.resources:
                         raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {(step_id, resource_id)!r}")
-                    step_draft.resources[resource_id] = ResourceRequirement(
-                        resource_id=resource_id,
-                        amount=amount,
+                    step_draft.resources[resource_id] = amount
+
+                case "depends_on":
+                    # depends_on(step, predecessor) == True declares an explicit
+                    # control dependency without inventing an Artifact edge.
+                    self._require_arity(arguments, 2, operator_name)
+                    self._require_true(fact_value, operator_name)
+                    step_id = self._concept_symbol(
+                        arguments[0],
+                        "Step",
+                        "depends_on step",
                     )
+                    predecessor_id = self._concept_symbol(
+                        arguments[1],
+                        "Step",
+                        "depends_on predecessor",
+                    )
+                    step_draft = step_drafts.setdefault(step_id, _StepDraft())
+                    if predecessor_id in step_draft.depends_on:
+                        raise WorkflowGraphCompilationError(f"duplicate {operator_name}: {(step_id, predecessor_id)!r}")
+                    step_draft.depends_on.add(predecessor_id)
 
                 case _:
                     # _compile_assertion recognizes names through
@@ -474,10 +518,25 @@ class WorkflowGraphCompiler(CoreIRCompiler):
             # second set of completed step IDs.
             steps: list[StepNode] = []
             for step_id, step_draft in sorted(step_drafts.items()):
+                if step_draft.depends_on and (step_draft.name_id is None or step_draft.executor_id is None):
+                    raise WorkflowGraphCompilationError(f"depends_on target {step_id!r} is not a fully declared step")
+                for predecessor_id in sorted(step_draft.depends_on):
+                    predecessor = step_drafts.get(predecessor_id)
+                    if predecessor is None or predecessor.name_id is None or predecessor.executor_id is None:
+                        raise WorkflowGraphCompilationError(
+                            f"depends_on predecessor {predecessor_id!r} is not a fully declared step"
+                        )
                 if step_draft.name_id is None:
                     raise WorkflowGraphCompilationError(f"step {step_id!r} has no step_name")
                 if step_draft.executor_id is None:
                     raise WorkflowGraphCompilationError(f"step {step_id!r} has no step_executor")
+                resources = [
+                    ResourceRequirement(
+                        resource_id=resource_id,
+                        amount=amount,
+                    )
+                    for resource_id, amount in sorted(step_draft.resources.items())
+                ]
                 steps.append(
                     StepNode(
                         step_id=step_id,
@@ -488,9 +547,9 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                         # The graph model defaults retries to one when the DSL
                         # omits max_attempts.
                         max_attempts=step_draft.max_attempts if step_draft.max_attempts is not None else 1,
-                        resources=tuple(
-                            step_draft.resources[resource_id] for resource_id in sorted(step_draft.resources)
-                        ),
+                        resources=tuple(resources),
+                        independent=step_draft.independent is True,
+                        depends_on=tuple(sorted(step_draft.depends_on)),
                     )
                 )
 
@@ -714,6 +773,34 @@ class WorkflowGraphCompiler(CoreIRCompiler):
         """Extract the identity/literal text carried by a compiled constant."""
 
         return cls._constant(value, context).symbol
+
+    @classmethod
+    def _concept_symbol(
+        cls,
+        value: object,
+        concept_name: str,
+        context: str,
+    ) -> str:
+        """Extract an identity and reject a conflicting explicit concept tag.
+
+        Untyped constants remain accepted for compatibility with hand-built
+        Core IR. The official parser/catalog path supplies concept tags, which
+        must include the operator position's required concept.
+        """
+
+        constant = cls._constant(value, context)
+        if constant.belong_concepts and concept_name not in {concept.name for concept in constant.belong_concepts}:
+            raise WorkflowGraphCompilationError(f"{context} must belong to {concept_name}")
+        return constant.symbol
+
+    @classmethod
+    def _require_true(cls, value: object, operator_name: str) -> None:
+        """Require the positive form of a catalog Bool relation."""
+
+        constant = cls._constant(value, f"{operator_name} RHS")
+        concept_names = {concept.name for concept in constant.belong_concepts}
+        if constant.symbol != "True" or (concept_names and "Bool" not in concept_names):
+            raise WorkflowGraphCompilationError(f"{operator_name} RHS must be the Boolean constant True")
 
     @classmethod
     def _list_symbols(cls, value: object, operator_name: str) -> tuple[str, ...]:

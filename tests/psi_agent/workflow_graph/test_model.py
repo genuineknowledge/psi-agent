@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, dataclass, field
 from typing import Literal, cast
@@ -42,6 +43,8 @@ def test_cycle_is_valid_and_serialization_is_deterministic() -> None:
             ResourceRequirement("gpu", 1),
             ResourceRequirement("cpu", 2),
         ),
+        independent=True,
+        depends_on=("s2",),
     )
     s2 = StepNode("s2", "review", "reviewer")
     a = ArtifactNode("a", is_input=True)
@@ -53,8 +56,18 @@ def test_cycle_is_valid_and_serialization_is_deterministic() -> None:
         ProducesEdge("s2", "a"),
     )
 
-    left = WorkflowGraph("flow", (s2, s1), (b, a), tuple(reversed(edges)))
-    right = WorkflowGraph("flow", (s1, s2), (a, b), edges)
+    left = WorkflowGraph(
+        "flow",
+        (s2, s1),
+        (b, a),
+        tuple(reversed(edges)),
+    )
+    right = WorkflowGraph(
+        "flow",
+        (s1, s2),
+        (a, b),
+        edges,
+    )
 
     assert left.to_dict() == right.to_dict()
     payload = left.to_dict()
@@ -64,12 +77,86 @@ def test_cycle_is_valid_and_serialization_is_deterministic() -> None:
         {"resource_id": "cpu", "amount": 2},
         {"resource_id": "gpu", "amount": 1},
     ]
+    assert payload["steps"][0]["independent"] is True
+    assert payload["steps"][0]["depends_on"] == ["s2"]
     assert [edge["kind"] for edge in payload["edges"]] == [
         "consumes",
         "consumes",
         "produces",
         "produces",
     ]
+
+
+def test_default_catalog_fields_preserve_the_exact_legacy_payload() -> None:
+    graph = WorkflowGraph(
+        "legacy",
+        (
+            StepNode(
+                "step",
+                "step-name",
+                "agent",
+                instruction_id="instruction",
+                timeout_seconds=30,
+                max_attempts=2,
+                resources=(ResourceRequirement("cpu", 2),),
+            ),
+        ),
+        (
+            ArtifactNode("input", is_input=True),
+            ArtifactNode("output", is_output=True),
+        ),
+        (
+            ConsumesEdge("input", "step"),
+            ProducesEdge("step", "output"),
+        ),
+        policy=WorkflowPolicy(max_concurrency=1, timeout_seconds=60),
+    )
+
+    assert graph.to_dict() == {
+        "workflow_id": "legacy",
+        "steps": [
+            {
+                "step_id": "step",
+                "name_id": "step-name",
+                "executor_id": "agent",
+                "instruction_id": "instruction",
+                "timeout_seconds": 30,
+                "max_attempts": 2,
+                "resources": [{"resource_id": "cpu", "amount": 2}],
+            }
+        ],
+        "artifacts": [
+            {
+                "artifact_id": "input",
+                "is_input": True,
+                "is_output": False,
+                "binding_step_id": None,
+            },
+            {
+                "artifact_id": "output",
+                "is_input": False,
+                "is_output": True,
+                "binding_step_id": None,
+            },
+        ],
+        "edges": [
+            {
+                "kind": "consumes",
+                "artifact_id": "input",
+                "step_id": "step",
+            },
+            {
+                "kind": "produces",
+                "step_id": "step",
+                "artifact_id": "output",
+            },
+        ],
+        "policy": {
+            "max_concurrency": 1,
+            "timeout_seconds": 60,
+        },
+        "selectors": [],
+    }
 
 
 def test_input_artifact_may_also_have_a_producer() -> None:
@@ -155,6 +242,15 @@ def test_graph_components_are_frozen(
                 ),
             ),
             "resources must be a tuple",
+        ),
+        (
+            lambda: StepNode(
+                "step",
+                "name",
+                "agent",
+                depends_on=cast(tuple[str, ...], ["predecessor"]),
+            ),
+            "depends_on must be a tuple",
         ),
     ],
 )
@@ -319,6 +415,15 @@ def test_edge_subclasses_are_rejected(
             ),
             "resource_id",
         ),
+        (
+            lambda: StepNode(
+                "step",
+                "name",
+                "agent",
+                depends_on=("",),
+            ),
+            "depends_on",
+        ),
     ],
 )
 def test_empty_identities_are_rejected(
@@ -376,6 +481,15 @@ def test_empty_identities_are_rejected(
                 (),
             ),
             "duplicate resource",
+        ),
+        (
+            lambda: StepNode(
+                "step",
+                "name",
+                "agent",
+                depends_on=("predecessor", "predecessor"),
+            ),
+            "duplicate depends_on",
         ),
         (
             lambda: WorkflowGraph(
@@ -633,6 +747,70 @@ def test_local_binding_cannot_be_referenced_by_multiple_foreach_edges() -> None:
 )
 def test_step_limits_must_be_positive_integers(step: StepNode) -> None:
     with pytest.raises(ValueError, match="positive integer"):
+        WorkflowGraph("flow", (step,), ())
+
+
+@pytest.mark.parametrize("value", [1, "true", None])
+def test_independent_requires_an_actual_boolean(
+    value: object,
+) -> None:
+    step = StepNode("step", "name", "agent")
+    object.__setattr__(step, "independent", value)
+
+    with pytest.raises(WorkflowGraphError, match="independent must be a boolean"):
+        WorkflowGraph("flow", (step,), ())
+
+
+def test_explicit_step_dependencies_validate_and_round_trip_through_json() -> None:
+    graph = WorkflowGraph(
+        "ordered",
+        (
+            StepNode("third", "third-name", "agent", depends_on=("second", "first")),
+            StepNode("first", "first-name", "agent", depends_on=("third", "first")),
+            StepNode("second", "second-name", "agent"),
+        ),
+        (),
+    )
+
+    payload = json.loads(json.dumps(graph.to_dict()))
+
+    assert payload["steps"] == [
+        {
+            "step_id": "first",
+            "name_id": "first-name",
+            "executor_id": "agent",
+            "instruction_id": None,
+            "timeout_seconds": None,
+            "max_attempts": 1,
+            "resources": [],
+            "depends_on": ["first", "third"],
+        },
+        {
+            "step_id": "second",
+            "name_id": "second-name",
+            "executor_id": "agent",
+            "instruction_id": None,
+            "timeout_seconds": None,
+            "max_attempts": 1,
+            "resources": [],
+        },
+        {
+            "step_id": "third",
+            "name_id": "third-name",
+            "executor_id": "agent",
+            "instruction_id": None,
+            "timeout_seconds": None,
+            "max_attempts": 1,
+            "resources": [],
+            "depends_on": ["first", "second"],
+        },
+    ]
+
+
+def test_explicit_step_dependency_references_must_exist() -> None:
+    step = StepNode("step", "name", "agent", depends_on=("missing",))
+
+    with pytest.raises(WorkflowGraphError, match="unknown depends_on step"):
         WorkflowGraph("flow", (step,), ())
 
 

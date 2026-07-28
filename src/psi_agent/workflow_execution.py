@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import heapq
 import operator
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import cast
 
@@ -18,6 +19,7 @@ from psi_agent.workflow_graph import (
     ForeachEdge,
     LiteralOperand,
     ProducesEdge,
+    ResourceRequirement,
     SelectCondition,
     StepNode,
     WorkflowGraph,
@@ -82,14 +84,230 @@ type StepDispatcher = Callable[
 ]
 
 
+@dataclass(frozen=True, slots=True)
+class ResourceGrant:
+    """Concrete resource instances reserved for one step invocation."""
+
+    resource_id: str
+    instance_ids: tuple[str, ...]
+
+    @property
+    def amount(self) -> int:
+        """Return the number of reserved instances."""
+
+        return len(self.instance_ids)
+
+
+@dataclass(frozen=True, slots=True)
+class ResourceLease:
+    """All resource grants held for one step invocation."""
+
+    grants: tuple[ResourceGrant, ...] = ()
+
+    def instances(self, resource_id: str) -> tuple[str, ...]:
+        """Return the concrete instances granted for one resource."""
+
+        for grant in self.grants:
+            if grant.resource_id == resource_id:
+                return grant.instance_ids
+        return ()
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchContext:
+    """Runtime-only scheduling information supplied to a contextual dispatcher."""
+
+    resource_lease: ResourceLease = ResourceLease()
+
+
+type ContextualStepDispatcher = Callable[
+    [StepNode, Mapping[str, object], DispatchContext],
+    Awaitable[Mapping[str, object]],
+]
+type ResourceCapacity = int | Sequence[str]
+
+
+@dataclass(slots=True)
+class _AdmissionState:
+    """Run-local counters committed under one allocator condition."""
+
+    max_concurrency: int
+    running: int = 0
+
+
+class ResourceAllocator:
+    """Atomically lease named resource instances from fixed local pools."""
+
+    def __init__(self, capacities: Mapping[str, ResourceCapacity]) -> None:
+        """Validate and copy anonymous capacities or explicit instance IDs."""
+
+        if not isinstance(capacities, Mapping):
+            raise ExecutionPlanError("resource_capacities must be a mapping")
+
+        instances_by_resource: dict[str, tuple[str, ...]] = {}
+        for resource_id, capacity in capacities.items():
+            if not isinstance(resource_id, str) or not resource_id:
+                raise ExecutionPlanError("resource capacity IDs must be non-empty strings")
+            if type(capacity) is int:
+                if capacity < 1:
+                    raise ExecutionPlanError(f"resource capacity for {resource_id!r} must be a positive integer")
+                instances = tuple(f"{resource_id}-{index}" for index in range(capacity))
+            else:
+                if isinstance(capacity, (str, bytes)) or not isinstance(capacity, Sequence):
+                    raise ExecutionPlanError(
+                        f"resource capacity for {resource_id!r} must be a positive integer or instance sequence"
+                    )
+                instances = tuple(cast(Sequence[str], capacity))
+                if not instances:
+                    raise ExecutionPlanError(f"resource instances for {resource_id!r} must not be empty")
+                if not all(isinstance(instance_id, str) and instance_id for instance_id in instances):
+                    raise ExecutionPlanError(f"resource instances for {resource_id!r} must be non-empty strings")
+                if len(set(instances)) != len(instances):
+                    raise ExecutionPlanError(f"resource instances for {resource_id!r} must be unique")
+            instances_by_resource[resource_id] = instances
+
+        self._instances_by_resource = instances_by_resource
+        self._available = {resource_id: list(instances) for resource_id, instances in instances_by_resource.items()}
+        self._instance_order = {
+            resource_id: {instance_id: index for index, instance_id in enumerate(instances)}
+            for resource_id, instances in instances_by_resource.items()
+        }
+        self._condition = anyio.Condition()
+
+    async def preflight(
+        self,
+        requirements_by_step: Mapping[str, tuple[ResourceRequirement, ...]],
+    ) -> None:
+        """Reject missing or forever-unsatisfiable requirements before dispatch."""
+
+        for step_id in sorted(requirements_by_step):
+            seen: set[str] = set()
+            for requirement in requirements_by_step[step_id]:
+                resource_id = requirement.resource_id
+                if resource_id in seen:
+                    raise ExecutionPlanError(f"step {step_id!r} has duplicate resource requirement: {resource_id!r}")
+                seen.add(resource_id)
+                if resource_id not in self._instances_by_resource:
+                    raise ExecutionPlanError(f"step {step_id!r} requires missing resource: {resource_id!r}")
+                if type(requirement.amount) is not int or requirement.amount < 1:
+                    raise ExecutionPlanError(
+                        f"step {step_id!r} resource amount for {resource_id!r} must be a positive integer"
+                    )
+                capacity = len(self._instances_by_resource[resource_id])
+                if requirement.amount > capacity:
+                    raise ExecutionPlanError(
+                        f"step {step_id!r} requires {requirement.amount} of {resource_id!r}, "
+                        f"but total capacity is {capacity}"
+                    )
+
+    @asynccontextmanager
+    async def lease(
+        self,
+        requirements: tuple[ResourceRequirement, ...],
+    ) -> AsyncIterator[ResourceLease]:
+        """Wait for and atomically hold every requirement until context exit."""
+
+        lease: ResourceLease | None = None
+        try:
+            lease = await self._acquire(requirements)
+            yield lease
+        finally:
+            if lease is not None and lease.grants:
+                # Workflow cancellation must never interrupt resource return.
+                with anyio.CancelScope(shield=True):
+                    await self._release(lease)
+
+    @asynccontextmanager
+    async def _admit(
+        self,
+        requirements: tuple[ResourceRequirement, ...],
+        *,
+        state: _AdmissionState,
+    ) -> AsyncIterator[ResourceLease]:
+        """Atomically reserve run concurrency and resources."""
+
+        lease: ResourceLease | None = None
+        try:
+            lease = await self._acquire(
+                requirements,
+                state=state,
+            )
+            yield lease
+        finally:
+            if lease is not None:
+                # A no-resource step still owns a run admission counter.
+                with anyio.CancelScope(shield=True):
+                    await self._release(
+                        lease,
+                        state=state,
+                    )
+
+    async def _acquire(
+        self,
+        requirements: tuple[ResourceRequirement, ...],
+        *,
+        state: _AdmissionState | None = None,
+    ) -> ResourceLease:
+        """Atomically commit admission counters and requested instances."""
+
+        ordered = tuple(sorted(requirements, key=lambda requirement: requirement.resource_id))
+        if not ordered and state is None:
+            return ResourceLease()
+
+        async with self._condition:
+            while (state is not None and state.running >= state.max_concurrency) or any(
+                requirement.resource_id not in self._available
+                or len(self._available[requirement.resource_id]) < requirement.amount
+                for requirement in ordered
+            ):
+                await self._condition.wait()
+
+            if state is not None:
+                state.running += 1
+
+            grants: list[ResourceGrant] = []
+            for requirement in ordered:
+                available = self._available[requirement.resource_id]
+                instance_ids = tuple(available[: requirement.amount])
+                del available[: requirement.amount]
+                grants.append(
+                    ResourceGrant(
+                        resource_id=requirement.resource_id,
+                        instance_ids=instance_ids,
+                    )
+                )
+            lease = ResourceLease(tuple(grants))
+            if lease.grants:
+                logger.debug(f"Acquired workflow resources: {lease.grants}")
+            return lease
+
+    async def _release(
+        self,
+        lease: ResourceLease,
+        *,
+        state: _AdmissionState | None = None,
+    ) -> None:
+        """Return admission and resources, then wake every eligible waiter."""
+
+        async with self._condition:
+            if state is not None:
+                state.running -= 1
+            for grant in lease.grants:
+                available = self._available[grant.resource_id]
+                available.extend(grant.instance_ids)
+                rank = self._instance_order[grant.resource_id]
+                available.sort(key=rank.__getitem__)
+            if lease.grants:
+                logger.debug(f"Released workflow resources: {lease.grants}")
+            self._condition.notify_all()
+
+
 def generate_plan(graph: WorkflowGraph) -> ExecutionPlan:
-    """Lower one-shot producer/consumer dependencies into async fibers."""
+    """Lower one-shot data and explicit step dependencies into async fibers."""
 
     if any(isinstance(edge, ForeachEdge) for edge in graph.edges):
         raise ExecutionPlanError("foreach execution is not supported")
     for step in graph.steps:
-        if step.resources:
-            raise ExecutionPlanError("resource scheduling is not supported")
         if step.max_attempts != 1:
             raise ExecutionPlanError("step retries are not supported")
 
@@ -101,7 +319,14 @@ def generate_plan(graph: WorkflowGraph) -> ExecutionPlan:
         ):
             raise ExecutionPlanError(f"input artifact is also produced: {artifact.artifact_id}")
 
-    awaited_steps_by_step: dict[str, set[str]] = {step.step_id: set() for step in graph.steps}
+    step_ids = {step.step_id for step in graph.steps}
+    awaited_steps_by_step: dict[str, set[str]] = {}
+    for step in graph.steps:
+        explicit_dependencies = set(step.depends_on)
+        unknown_dependencies = explicit_dependencies - step_ids
+        if unknown_dependencies:
+            raise ExecutionPlanError(f"step {step.step_id!r} depends on unknown steps: {sorted(unknown_dependencies)}")
+        awaited_steps_by_step[step.step_id] = explicit_dependencies
     awaited_selections_by_step: dict[str, set[str]] = {step.step_id: set() for step in graph.steps}
     for edge in graph.edges:
         if not isinstance(edge, ConsumesEdge):
@@ -181,12 +406,19 @@ async def execute_plan(
     graph: WorkflowGraph,
     *,
     inputs: Mapping[str, object],
-    dispatch: StepDispatcher,
+    dispatch: StepDispatcher | None = None,
+    contextual_dispatch: ContextualStepDispatcher | None = None,
+    resource_capacities: Mapping[str, ResourceCapacity] | None = None,
+    allocator: ResourceAllocator | None = None,
 ) -> dict[str, object]:
     """Start all fibers and interpret their awaits and invocations."""
 
     if plan.workflow_id != graph.workflow_id:
         raise ExecutionPlanError(f"plan targets {plan.workflow_id}, not {graph.workflow_id}")
+    if (dispatch is None) == (contextual_dispatch is None):
+        raise ExecutionPlanError("provide exactly one of dispatch or contextual_dispatch")
+    if resource_capacities is not None and allocator is not None:
+        raise ExecutionPlanError("resource_capacities and allocator are mutually exclusive")
 
     expected_inputs = {artifact.artifact_id for artifact in graph.artifacts if artifact.is_input}
     supplied_inputs = set(inputs)
@@ -257,11 +489,12 @@ async def execute_plan(
             satisfied_steps = awaited_steps | invoked_earlier
             satisfied_selections = awaited_selections | selected_earlier
             if isinstance(instruction, Invoke):
-                required_steps = {
+                required_steps = set(steps[instruction.step_id].depends_on)
+                required_steps.update(
                     step_producer_by_artifact[artifact_id]
                     for artifact_id in consumed[instruction.step_id]
                     if artifact_id in step_producer_by_artifact
-                }
+                )
                 missing_steps = required_steps - satisfied_steps
                 if missing_steps:
                     raise ExecutionPlanError(
@@ -309,11 +542,50 @@ async def execute_plan(
             plan_dependencies[operation_id].update(("select", artifact_id) for artifact_id in satisfied_selections)
     _reject_cycles(plan_dependencies)
 
+    requirements_by_step = {step.step_id: step.resources for step in graph.steps}
+    has_resources = any(requirements_by_step.values())
+    if allocator is None:
+        if resource_capacities is None:
+            if has_resources:
+                raise ExecutionPlanError("resource capacities or an allocator are required")
+            allocator = ResourceAllocator({})
+        else:
+            allocator = ResourceAllocator(resource_capacities)
+    await allocator.preflight(requirements_by_step)
+
     values = dict(inputs)
     completed_steps = {step_id: anyio.Event() for step_id in steps}
     completed_selections = {artifact_id: anyio.Event() for artifact_id in selectors}
     capacity = graph.policy.max_concurrency or max(1, len(steps))
-    limiter = anyio.CapacityLimiter(capacity)
+    admission_state = _AdmissionState(
+        max_concurrency=capacity,
+    )
+
+    async def invoke_step(
+        step: StepNode,
+        step_inputs: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        async with allocator._admit(
+            step.resources,
+            state=admission_state,
+        ) as resource_lease:
+            logger.debug(f"Dispatching workflow step: {step.step_id}")
+            context = DispatchContext(
+                resource_lease=resource_lease,
+            )
+            if step.timeout_seconds is None:
+                if contextual_dispatch is not None:
+                    return await contextual_dispatch(step, step_inputs, context)
+                if dispatch is None:
+                    raise AssertionError("dispatcher preflight did not select a dispatcher")
+                return await dispatch(step, step_inputs)
+
+            with anyio.fail_after(step.timeout_seconds):
+                if contextual_dispatch is not None:
+                    return await contextual_dispatch(step, step_inputs, context)
+                if dispatch is None:
+                    raise AssertionError("dispatcher preflight did not select a dispatcher")
+                return await dispatch(step, step_inputs)
 
     async def run_fiber(fiber: Fiber) -> None:
         for instruction in fiber.instructions:
@@ -338,13 +610,7 @@ async def execute_plan(
                 if step is None:
                     raise ExecutionPlanError(f"plan invokes unknown step: {instruction.step_id}")
                 step_inputs = {artifact_id: values[artifact_id] for artifact_id in consumed[step.step_id]}
-                async with limiter:
-                    logger.debug(f"Dispatching workflow step: {step.step_id}")
-                    if step.timeout_seconds is None:
-                        outputs = await dispatch(step, step_inputs)
-                    else:
-                        with anyio.fail_after(step.timeout_seconds):
-                            outputs = await dispatch(step, step_inputs)
+                outputs = await invoke_step(step, step_inputs)
 
                 if not isinstance(outputs, Mapping) or not all(isinstance(artifact_id, str) for artifact_id in outputs):
                     raise ExecutionPlanError(f"outputs for {step.step_id} must be a mapping with string keys")

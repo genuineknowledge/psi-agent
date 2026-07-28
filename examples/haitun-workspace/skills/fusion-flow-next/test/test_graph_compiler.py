@@ -30,6 +30,7 @@ from psi_agent.workflow_graph.model import (
     ComparisonOperator,
     LiteralOperand,
     LogicalCondition,
+    ResourceRequirement,
     SelectNode,
     WorkflowGraphError,
 )
@@ -76,6 +77,10 @@ def _compile(
     return cast(tuple[WorkflowGraphCompilation, ...], compiled)[0]
 
 
+def test_supported_operators_include_depends_on() -> None:
+    assert "depends_on" in WorkflowGraphCompiler.SUPPORTED_OPERATORS
+
+
 def test_compiles_all_graph_operators() -> None:
     workflow = Constant("workflow")
     step = Constant("step")
@@ -118,7 +123,12 @@ def test_compiles_all_graph_operators() -> None:
                 "instruction_id": "instruction",
                 "timeout_seconds": 30,
                 "max_attempts": 2,
-                "resources": [{"resource_id": "gpu", "amount": 3}],
+                "resources": [
+                    {
+                        "resource_id": "gpu",
+                        "amount": 3,
+                    }
+                ],
             }
         ],
         "artifacts": [
@@ -154,6 +164,165 @@ def test_compiles_all_graph_operators() -> None:
         "policy": {"max_concurrency": 4, "timeout_seconds": 120},
         "selectors": [],
     }
+
+
+def test_compiles_scheduling_policies_order_independently() -> None:
+    step = Constant("step", (Concept("Step"),))
+    predecessor = Constant("predecessor", (Concept("Step"),))
+    gpu = Constant("gpu", (Concept("Resource"),))
+    true = Constant("True", (Concept("Bool"),))
+    assertions = (
+        *_step_declarations("step"),
+        *_step_declarations("predecessor"),
+        _assertion("independent", (step,), true),
+        _assertion("depends_on", (step, predecessor), true),
+        _assertion("resource_requirement", (step, gpu), Constant("1")),
+    )
+
+    left = _compile(assertions)
+    right = _compile(tuple(reversed(assertions)))
+
+    assert left.residual_assertions == right.residual_assertions == ()
+    assert left.graph.to_dict() == right.graph.to_dict()
+    compiled_step = next(item for item in left.graph.steps if item.step_id == "step")
+    assert compiled_step.independent is True
+    assert compiled_step.depends_on == ("predecessor",)
+    assert compiled_step.resources == (ResourceRequirement("gpu", 1),)
+    compiled_payload = next(item for item in left.graph.to_dict()["steps"] if item["step_id"] == "step")
+    assert compiled_payload["depends_on"] == ["predecessor"]
+
+
+@pytest.mark.parametrize(
+    ("operator_name", "arguments"),
+    [
+        ("independent", (Constant("step", (Concept("Step"),)),)),
+        (
+            "depends_on",
+            (
+                Constant("step", (Concept("Step"),)),
+                Constant("predecessor", (Concept("Step"),)),
+            ),
+        ),
+    ],
+)
+def test_catalog_bool_relations_accept_only_true(
+    operator_name: str,
+    arguments: tuple[Term, ...],
+) -> None:
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="RHS must be the Boolean constant True",
+    ):
+        _compile(
+            (
+                *_step_declarations(),
+                *_step_declarations("predecessor"),
+                _assertion(
+                    operator_name,
+                    arguments,
+                    Constant("False", (Concept("Bool"),)),
+                ),
+            )
+        )
+
+
+def test_depends_on_supports_multiple_predecessors() -> None:
+    true = Constant("True", (Concept("Bool"),))
+    step = Constant("step", (Concept("Step"),))
+    first = Constant("first", (Concept("Step"),))
+    second = Constant("second", (Concept("Step"),))
+
+    compilation = _compile(
+        (
+            _assertion("depends_on", (step, second), true),
+            *_step_declarations("first"),
+            *_step_declarations("step"),
+            _assertion("depends_on", (step, first), true),
+            *_step_declarations("second"),
+        )
+    )
+
+    compiled_step = next(item for item in compilation.graph.steps if item.step_id == "step")
+    assert compiled_step.depends_on == ("first", "second")
+
+
+def test_depends_on_rejects_duplicate_pair() -> None:
+    true = Constant("True", (Concept("Bool"),))
+    step = Constant("step", (Concept("Step"),))
+    predecessor = Constant("predecessor", (Concept("Step"),))
+
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match=r"duplicate depends_on: \('step', 'predecessor'\)",
+    ):
+        _compile(
+            (
+                *_step_declarations(),
+                *_step_declarations("predecessor"),
+                _assertion(
+                    "depends_on",
+                    (step, predecessor),
+                    true,
+                ),
+                _assertion("depends_on", (step, predecessor), true),
+            )
+        )
+
+
+def test_depends_on_rejects_unknown_predecessor() -> None:
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="depends_on predecessor 'missing' is not a fully declared step",
+    ):
+        _compile(
+            (
+                *_step_declarations(),
+                _assertion(
+                    "depends_on",
+                    (
+                        Constant("step", (Concept("Step"),)),
+                        Constant("missing", (Concept("Step"),)),
+                    ),
+                    Constant("True", (Concept("Bool"),)),
+                ),
+            )
+        )
+
+
+def test_depends_on_rejects_unknown_target() -> None:
+    with pytest.raises(
+        WorkflowGraphCompilationError,
+        match="depends_on target 'missing' is not a fully declared step",
+    ):
+        _compile(
+            (
+                *_step_declarations("predecessor"),
+                _assertion(
+                    "depends_on",
+                    (
+                        Constant("missing", (Concept("Step"),)),
+                        Constant("predecessor", (Concept("Step"),)),
+                    ),
+                    Constant("True", (Concept("Bool"),)),
+                ),
+            )
+        )
+
+
+def test_depends_on_self_cycle_is_preserved_for_the_planner() -> None:
+    step = Constant("step", (Concept("Step"),))
+    compilation = _compile(
+        (
+            *_step_declarations(),
+            _assertion(
+                "depends_on",
+                (step, step),
+                Constant("True", (Concept("Bool"),)),
+            ),
+        )
+    )
+
+    assert compilation.graph.steps[0].depends_on == ("step",)
 
 
 def test_graph_dataflow_operators_read_multiple_list_term_items() -> None:

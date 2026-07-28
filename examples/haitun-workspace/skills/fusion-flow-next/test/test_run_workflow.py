@@ -26,6 +26,17 @@ def _load_module(name: str, path: str) -> Any:
 run_workflow = _load_module("fusion_flow_next_workflow_runner", _RUNNER_PATH)
 
 
+def test_runner_catalog_includes_typed_depends_on() -> None:
+    context = run_workflow._default_parse_context()
+
+    depends_on = context.operators["depends_on"]
+    assert tuple(concept.name for concept in depends_on.input_concepts) == (
+        "Step",
+        "Step",
+    )
+    assert depends_on.output_concept == context.concepts["Bool"]
+
+
 def _dispatch_workflow(executor_kind: str | None, instruction: str) -> str:
     executor_declaration = "" if executor_kind is None else f"const worker: {executor_kind};"
     return f"""
@@ -186,23 +197,18 @@ async def test_non_human_executor_receives_instruction_path_unchanged(
     assert f'"{instruction}"' not in prompts[0]
 
 
-@pytest.mark.anyio
-async def test_untyped_executor_defaults_to_agent() -> None:
-    prompts: list[str] = []
+def test_untyped_executor_defaults_to_agent_for_compatibility() -> None:
+    compiled = run_workflow.compile_workflow(_dispatch_workflow(None, "./instructions/untyped-agent.txt"))
 
-    async def complete(prompt: str) -> str:
-        prompts.append(prompt)
-        return "completed"
+    assert compiled.executor_kinds == {"worker": "Agent"}
 
-    instruction = "./instructions/untyped-agent.txt"
-    result = await run_workflow.execute_workflow(
-        _dispatch_workflow(None, instruction),
-        request="Do the work.",
-        complete=complete,
-    )
 
-    assert result == {"result": "completed"}
-    assert prompts[0].splitlines()[0] == f"Instruction: {instruction}"
+def test_strict_runner_rejects_untyped_executor() -> None:
+    with pytest.raises(ValueError, match="must be declared as exactly one"):
+        run_workflow.compile_workflow(
+            _dispatch_workflow(None, "./instructions/untyped-agent.txt"),
+            strict_executors=True,
+        )
 
 
 @pytest.mark.anyio
@@ -293,3 +299,157 @@ async def test_human_step_requires_preparer_and_requester() -> None:
             request="review",
             complete=complete,
         )
+
+
+def test_unconsumed_assertions_report_operator_counts() -> None:
+    context = run_workflow._default_parse_context()
+    context.operators["custom_policy"] = run_workflow.Operator(
+        name="custom_policy",
+        output_concept=context.concepts["Bool"],
+    )
+    source = _dispatch_workflow("Agent", "do_work").replace(
+        "\n}",
+        "\n    custom_policy(dispatch_step) == True;\n}",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"unconsumed assertions: custom_policy=1",
+    ):
+        run_workflow.compile_workflow(source, context=context)
+
+
+@pytest.mark.anyio
+async def test_contextual_completion_receives_resource_lease() -> None:
+    source = (
+        _dispatch_workflow("Agent", "use_gpu")
+        .replace(
+            "const result: Artifact;",
+            "const result: Artifact;\nconst gpu: Resource;",
+        )
+        .replace(
+            "\n}",
+            "\n    resource_requirement(dispatch_step, gpu) == 1;\n}",
+        )
+    )
+    leases: list[tuple[str, ...]] = []
+
+    async def contextual_complete(
+        prompt: str,
+        context: Any,
+    ) -> dict[str, object]:
+        assert prompt.startswith("Instruction: use_gpu")
+        leases.append(context.dispatch.resource_lease.instances("gpu"))
+        return {"result": "completed"}
+
+    result = await run_workflow.execute_workflow(
+        source,
+        request="Do the work.",
+        contextual_complete=contextual_complete,
+        resource_capacities={"gpu": ("cuda:0",)},
+    )
+
+    assert result == {"result": "completed"}
+    assert leases == [("cuda:0",)]
+
+
+@pytest.mark.anyio
+async def test_depends_on_orders_steps_without_an_artifact_dependency() -> None:
+    source = """
+const explicit_order: Workflow;
+const after_step: Step;
+const before_step: Step;
+const after_name: StepName;
+const before_name: StepName;
+const worker: Agent;
+const request: Artifact;
+const after_result: Artifact;
+const before_result: Artifact;
+
+workflow explicit_order {
+    input_workflow(explicit_order) == [request];
+    output_workflow(explicit_order) == [after_result, before_result];
+
+    step_name(after_step) == after_name;
+    step_instruction(after_step) == "after";
+    step_executor(after_step) == worker;
+    consumes(after_step) == [request];
+    produces(after_step) == [after_result];
+
+    step_name(before_step) == before_name;
+    step_instruction(before_step) == "before";
+    step_executor(before_step) == worker;
+    consumes(before_step) == [request];
+    produces(before_step) == [before_result];
+
+    depends_on(after_step, before_step) == True;
+}
+"""
+    before_finished = False
+
+    async def complete(prompt: str) -> str:
+        nonlocal before_finished
+        instruction = prompt.splitlines()[0].removeprefix("Instruction: ")
+        if instruction == "before":
+            before_finished = True
+            return "BEFORE"
+        assert instruction == "after"
+        assert before_finished
+        return "AFTER"
+
+    result = await run_workflow.execute_workflow(
+        source,
+        request="run",
+        complete=complete,
+    )
+
+    assert result == {
+        "after_result": "AFTER",
+        "before_result": "BEFORE",
+    }
+
+
+@pytest.mark.anyio
+async def test_legacy_completion_can_return_multiple_named_outputs() -> None:
+    source = (
+        _dispatch_workflow("Agent", "produce_two")
+        .replace(
+            "const result: Artifact;",
+            "const result: Artifact;\nconst extra: Artifact;",
+        )
+        .replace(
+            "output_workflow(dispatch) == [result];",
+            "output_workflow(dispatch) == [result, extra];",
+        )
+        .replace(
+            "produces(dispatch_step) == [result];",
+            "produces(dispatch_step) == [result, extra];",
+        )
+    )
+
+    async def complete(prompt: str) -> dict[str, object]:
+        del prompt
+        return {"result": "first", "extra": "second"}
+
+    result = await run_workflow.execute_workflow(
+        source,
+        request="Do the work.",
+        complete=complete,
+    )
+
+    assert result == {"extra": "second", "result": "first"}
+
+
+@pytest.mark.anyio
+async def test_legacy_single_output_preserves_same_named_mapping_artifact() -> None:
+    async def complete(prompt: str) -> dict[str, object]:
+        del prompt
+        return {"result": "mapping artifact"}
+
+    result = await run_workflow.execute_workflow(
+        _dispatch_workflow("Agent", "return_mapping"),
+        request="Do the work.",
+        complete=complete,
+    )
+
+    assert result == {"result": {"result": "mapping artifact"}}

@@ -45,6 +45,21 @@ Python 版本坚持 AnyIO 结构化并发：`first` / `any` 取消落后任务�
 **为什么 WorkflowGraph 的 `SelectNode` 是 eager 值选择？**
 FusionFlow 的命名选择 `selected == if(condition, artifact_a, artifact_b)` 只决定下游读取哪个值。planner 会等待条件和两个候选 Artifact 全部可用，因此两个候选 producer 都会运行。它不是 lazy 分支、Step activation 或控制流 Region；不要据此跳过未选 Step。多级优先级用多个命名 Artifact 串联，禁止把嵌套 `if` 直接塞进 dataflow List。
 
+**为什么 WorkflowGraph 同时有 Artifact 依赖和 `depends_on`？**
+`ProducesEdge` / `ConsumesEdge` 表示值的来源与可用性；`StepNode.depends_on`
+表示没有值传递时仍必须遵守的显式顺序约束。planner 将两类前驱合并为同一组
+`Await`，执行器也会拒绝绕过任一前驱的手写计划。结构模型仍允许保存有环图，
+包括显式顺序环；one-shot planner 在执行前统一拒绝 circular await。
+`independent` 只是非约束 metadata，不能覆盖数据依赖或显式 `depends_on`。
+
+**WorkflowGraph 的资源调度边界是什么？**
+`.workflow` 只通过 `resource_requirement` 声明 Step 所需的资源种类和数量；容量或
+具体实例 ID 由 runner 外部配置。执行器在同一个 admission 临界区中同时检查
+`max_concurrency` 和全部资源需求，原子取出实例，并在成功、失败、超时或取消后
+shielded release。`DispatchContext.resource_lease` 负责把具体实例传给 dispatcher，
+但执行器不会自行绑定 GPU、设置环境变量或调用工具。allocator 是进程内对象；
+跨进程/跨主机租约和 shared/exclusive 模式不在当前合同内。
+
 **FusionFlow 的跨语言兼容边界是什么？**
 运行结果与核心行为优先兼容，包括同一运行时内的 binding 恢复、配对的 `node_start` / `node_end` progress 事件、分组 token 汇总、程序快照和 `exec()` 截断标记。真实 TypeScript `inputHash` 与 Python `cache_key` 的输入、provider 身份和长度不同，因此两种运行目录不保证直接互相命中缓存；camelCase metadata 别名只保证字段可读。graph、meta 和 trace 使用各自语言的数据结构：Python 命名 trace 是通用 `ExecutionTrace`，不是 TypeScript 的扁平 provider/model/prompt 对象；只有 `progress.jsonl` 保持共享格式。单节点 trace / progress 写入是 best-effort，最终 graph/meta 才是权威产物，不追随 TypeScript 的诊断写失败即中止。`flow.output()` / `ctx.save()` 写入带 metadata 的单赋值 binding，不额外创建 output graph node。
 
@@ -230,7 +245,7 @@ SSE 流中的特殊字段：
 
 18. **`WorkflowEdge` 是封闭 union**：`WorkflowGraph` 只接受 `ConsumesEdge`、`ProducesEdge`、`ForeachEdge` 的精确类型，不接受子类。子类会破坏 dataclass 基于精确类型的相等性去重，也能覆盖序列化使用的 `kind`。新增边类型时应显式更新 union、校验和序列化。
 
-19. **WorkflowGraph 可保存有环，但初版 plan 不执行环**：`workflow_execution.generate_plan()` 只编译 one-shot producer/consumer 子集。它同时启动所有 Fiber，以显式 `Await` 唤醒消费者；Foreach、resource、retry、input+producer 和 circular await 在计划阶段报错，不能静默忽略或留到运行期死锁。
+19. **WorkflowGraph 可保存有环，但 one-shot plan 不执行环**：`workflow_execution.generate_plan()` 把 producer/consumer 数据前驱与 `StepNode.depends_on` 显式顺序前驱合并为 `Await`。它同时启动所有 Fiber；Foreach、retry、input+producer 和 circular await 在计划阶段报错，不能静默忽略或留到运行期死锁。资源需求由执行器的 allocator 在 dispatch 前处理，不再由 planner 拒绝。
 
 ## 测试约定
 

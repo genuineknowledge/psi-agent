@@ -5,14 +5,17 @@ from typing import cast
 
 import anyio
 import pytest
+from anyio.lowlevel import checkpoint
 
 import psi_agent.workflow_execution as workflow_execution
 from psi_agent.workflow_execution import (
     Await,
+    DispatchContext,
     ExecutionPlan,
     ExecutionPlanError,
     Fiber,
     Invoke,
+    ResourceAllocator,
     StepDispatcher,
     execute_plan,
     generate_plan,
@@ -31,6 +34,7 @@ from psi_agent.workflow_graph import (
     SelectNode,
     StepNode,
     WorkflowGraph,
+    WorkflowPolicy,
 )
 
 
@@ -125,6 +129,79 @@ def test_generate_plan_lowers_artifact_dependencies_to_awaits() -> None:
     )
 
 
+def test_generate_plan_lowers_explicit_dependencies_without_data_edges() -> None:
+    graph = WorkflowGraph(
+        workflow_id="ordered",
+        steps=(
+            StepNode("prepare", "prepare", "executor"),
+            StepNode("publish", "publish", "executor", depends_on=("prepare",)),
+        ),
+        artifacts=(),
+    )
+
+    assert generate_plan(graph) == ExecutionPlan(
+        workflow_id="ordered",
+        fibers=(
+            Fiber("prepare", (Invoke("prepare"),)),
+            Fiber("publish", (Await(("prepare",)), Invoke("publish"))),
+        ),
+    )
+
+
+def test_generate_plan_lowers_multiple_explicit_dependencies() -> None:
+    graph = WorkflowGraph(
+        workflow_id="multiple-predecessors",
+        steps=(
+            StepNode("left", "left", "executor"),
+            StepNode("right", "right", "executor"),
+            StepNode(
+                "join",
+                "join",
+                "executor",
+                depends_on=("right", "left"),
+            ),
+        ),
+        artifacts=(),
+    )
+
+    assert generate_plan(graph) == ExecutionPlan(
+        workflow_id="multiple-predecessors",
+        fibers=(
+            Fiber("join", (Await(("left", "right")), Invoke("join"))),
+            Fiber("left", (Invoke("left"),)),
+            Fiber("right", (Invoke("right"),)),
+        ),
+    )
+
+
+def test_generate_plan_merges_and_deduplicates_data_and_explicit_dependencies() -> None:
+    graph = WorkflowGraph(
+        workflow_id="merged-dependencies",
+        steps=(
+            StepNode("producer", "producer", "executor"),
+            StepNode(
+                "consumer",
+                "consumer",
+                "executor",
+                depends_on=("producer",),
+            ),
+        ),
+        artifacts=(ArtifactNode("value"),),
+        edges=(
+            ProducesEdge("producer", "value"),
+            ConsumesEdge("value", "consumer"),
+        ),
+    )
+
+    assert generate_plan(graph) == ExecutionPlan(
+        workflow_id="merged-dependencies",
+        fibers=(
+            Fiber("consumer", (Await(("producer",)), Invoke("consumer"))),
+            Fiber("producer", (Invoke("producer"),)),
+        ),
+    )
+
+
 def test_generate_plan_rejects_cycles() -> None:
     graph = WorkflowGraph(
         workflow_id="cycle",
@@ -139,6 +216,31 @@ def test_generate_plan_rejects_cycles() -> None:
             ConsumesEdge("left_value", "right"),
             ProducesEdge("right", "right_value"),
         ),
+    )
+
+    with pytest.raises(ExecutionPlanError, match="cycle"):
+        generate_plan(graph)
+
+
+def test_generate_plan_rejects_explicit_dependency_cycles() -> None:
+    graph = WorkflowGraph(
+        workflow_id="explicit-cycle",
+        steps=(
+            StepNode("left", "left", "executor", depends_on=("right",)),
+            StepNode("right", "right", "executor", depends_on=("left",)),
+        ),
+        artifacts=(),
+    )
+
+    with pytest.raises(ExecutionPlanError, match="cycle"):
+        generate_plan(graph)
+
+
+def test_generate_plan_rejects_explicit_self_dependency() -> None:
+    graph = WorkflowGraph(
+        workflow_id="self-cycle",
+        steps=(StepNode("step", "step", "executor", depends_on=("step",)),),
+        artifacts=(),
     )
 
     with pytest.raises(ExecutionPlanError, match="cycle"):
@@ -162,21 +264,6 @@ def test_generate_plan_rejects_cycles() -> None:
                 ),
             ),
             "foreach",
-        ),
-        (
-            WorkflowGraph(
-                "resources",
-                (
-                    StepNode(
-                        "step",
-                        "step",
-                        "executor",
-                        resources=(ResourceRequirement("gpu", 1),),
-                    ),
-                ),
-                (),
-            ),
-            "resource",
         ),
         (
             WorkflowGraph(
@@ -209,6 +296,26 @@ def test_generate_plan_rejects_unsupported_one_shot_semantics(
 ) -> None:
     with pytest.raises(ExecutionPlanError, match=message):
         generate_plan(graph)
+
+
+def test_generate_plan_accepts_resource_requirements() -> None:
+    graph = WorkflowGraph(
+        "resources",
+        (
+            StepNode(
+                "step",
+                "step",
+                "executor",
+                resources=(ResourceRequirement("gpu", 1),),
+            ),
+        ),
+        (),
+    )
+
+    assert generate_plan(graph) == ExecutionPlan(
+        workflow_id="resources",
+        fibers=(Fiber("step", (Invoke("step"),)),),
+    )
 
 
 @pytest.mark.anyio
@@ -244,6 +351,76 @@ async def test_execute_plan_starts_ready_steps_in_parallel() -> None:
 
 
 @pytest.mark.anyio
+async def test_execute_plan_enforces_explicit_dependency_without_data_edge() -> None:
+    graph = WorkflowGraph(
+        workflow_id="ordered",
+        steps=(
+            StepNode("prepare", "prepare", "executor"),
+            StepNode("publish", "publish", "executor", depends_on=("prepare",)),
+        ),
+        artifacts=(),
+    )
+    prepare_completed = False
+    invoked: list[str] = []
+
+    async def dispatch(
+        step: StepNode,
+        inputs: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        nonlocal prepare_completed
+        assert inputs == {}
+        if step.step_id == "prepare":
+            await checkpoint()
+            prepare_completed = True
+        else:
+            assert prepare_completed
+        invoked.append(step.step_id)
+        return {}
+
+    await execute_plan(
+        generate_plan(graph),
+        graph,
+        inputs={},
+        dispatch=dispatch,
+    )
+
+    assert invoked == ["prepare", "publish"]
+
+
+@pytest.mark.anyio
+async def test_execute_plan_does_not_invoke_explicit_dependent_after_predecessor_failure() -> None:
+    graph = WorkflowGraph(
+        workflow_id="ordered-failure",
+        steps=(
+            StepNode("prepare", "prepare", "executor"),
+            StepNode("publish", "publish", "executor", depends_on=("prepare",)),
+        ),
+        artifacts=(),
+    )
+    invoked: list[str] = []
+
+    async def dispatch(
+        step: StepNode,
+        inputs: Mapping[str, object],
+    ) -> Mapping[str, object]:
+        assert inputs == {}
+        invoked.append(step.step_id)
+        if step.step_id == "prepare":
+            raise RuntimeError("prepare failed")
+        return {}
+
+    with pytest.RaisesGroup(pytest.RaisesExc(RuntimeError, match="prepare failed")):
+        await execute_plan(
+            generate_plan(graph),
+            graph,
+            inputs={},
+            dispatch=dispatch,
+        )
+
+    assert invoked == ["prepare"]
+
+
+@pytest.mark.anyio
 async def test_execute_plan_rejects_missing_plan_dependency() -> None:
     graph = _diamond_graph()
     valid_plan = generate_plan(graph)
@@ -263,6 +440,28 @@ async def test_execute_plan_rejects_missing_plan_dependency() -> None:
 
     with pytest.raises(ExecutionPlanError, match=r"missing dependencies.*research"):
         await execute_plan(plan, graph, inputs={"topic": "async"}, dispatch=dispatch)
+
+
+@pytest.mark.anyio
+async def test_execute_plan_rejects_missing_explicit_dependency() -> None:
+    graph = WorkflowGraph(
+        workflow_id="ordered",
+        steps=(
+            StepNode("prepare", "prepare", "executor"),
+            StepNode("publish", "publish", "executor", depends_on=("prepare",)),
+        ),
+        artifacts=(),
+    )
+    plan = ExecutionPlan(
+        workflow_id=graph.workflow_id,
+        fibers=(
+            Fiber("prepare", (Invoke("prepare"),)),
+            Fiber("publish", (Invoke("publish"),)),
+        ),
+    )
+
+    with pytest.raises(ExecutionPlanError, match=r"missing dependencies.*prepare"):
+        await execute_plan(plan, graph, inputs={}, dispatch=_unexpected_dispatch)
 
 
 @pytest.mark.anyio
@@ -694,3 +893,396 @@ async def test_execute_plan_rejects_unknown_instruction_targets(
             inputs={"flag": True},
             dispatch=_unexpected_dispatch,
         )
+
+
+def _steps_graph(
+    steps: tuple[StepNode, ...],
+    *,
+    max_concurrency: int | None = None,
+) -> WorkflowGraph:
+    return WorkflowGraph(
+        "scheduled",
+        steps,
+        (),
+        policy=WorkflowPolicy(max_concurrency=max_concurrency),
+    )
+
+
+async def _assert_max_active(
+    graph: WorkflowGraph,
+    expected: int,
+    *,
+    resource_capacities: Mapping[str, int | tuple[str, ...]] | None = None,
+) -> None:
+    active = 0
+    maximum = 0
+    reached = anyio.Event()
+    release = anyio.Event()
+
+    async def dispatch(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        nonlocal active, maximum
+        del step, inputs
+        active += 1
+        maximum = max(maximum, active)
+        if active == expected:
+            reached.set()
+        try:
+            await release.wait()
+            return {}
+        finally:
+            active -= 1
+
+    async def run() -> None:
+        await execute_plan(
+            generate_plan(graph),
+            graph,
+            inputs={},
+            dispatch=dispatch,
+            resource_capacities=resource_capacities,
+        )
+
+    with anyio.fail_after(1):
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(run)
+            await reached.wait()
+            await checkpoint()
+            assert maximum == expected
+            release.set()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("capacity", "expected"), [(1, 1), (2, 2)])
+async def test_resource_capacity_limits_parallel_steps(capacity: int, expected: int) -> None:
+    requirement = (ResourceRequirement("gpu_device", 1),)
+    graph = _steps_graph(
+        (
+            StepNode("left", "left", "agent", resources=requirement),
+            StepNode("right", "right", "agent", resources=requirement),
+        )
+    )
+
+    await _assert_max_active(
+        graph,
+        expected,
+        resource_capacities={"gpu_device": capacity},
+    )
+
+
+@pytest.mark.anyio
+async def test_different_resources_can_run_in_parallel() -> None:
+    graph = _steps_graph(
+        (
+            StepNode("gpu", "gpu", "agent", resources=(ResourceRequirement("gpu_device", 1),)),
+            StepNode("license", "license", "agent", resources=(ResourceRequirement("license", 1),)),
+        )
+    )
+
+    await _assert_max_active(
+        graph,
+        2,
+        resource_capacities={"gpu_device": 1, "license": 1},
+    )
+
+
+@pytest.mark.anyio
+async def test_multiple_resources_are_acquired_without_deadlock() -> None:
+    graph = _steps_graph(
+        (
+            StepNode(
+                "left",
+                "left",
+                "agent",
+                resources=(
+                    ResourceRequirement("gpu_device", 1),
+                    ResourceRequirement("license", 1),
+                ),
+            ),
+            StepNode(
+                "right",
+                "right",
+                "agent",
+                resources=(
+                    ResourceRequirement("license", 1),
+                    ResourceRequirement("gpu_device", 1),
+                ),
+            ),
+        )
+    )
+
+    await _assert_max_active(
+        graph,
+        1,
+        resource_capacities={"gpu_device": 1, "license": 1},
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("capacities", "message"),
+    [
+        (None, "capacities"),
+        ({"cpu": 1}, "missing resource"),
+        ({"gpu_device": 0}, "positive integer"),
+        ({"gpu_device": True}, "positive integer or instance"),
+        ({"gpu_device": ()}, "must not be empty"),
+        ({"gpu_device": ("gpu-0", "gpu-0")}, "unique"),
+    ],
+)
+async def test_resource_preflight_errors_dispatch_nothing(
+    capacities: Mapping[str, object] | None,
+    message: str,
+) -> None:
+    graph = _steps_graph(
+        (
+            StepNode(
+                "step",
+                "step",
+                "agent",
+                resources=(ResourceRequirement("gpu_device", 2),),
+            ),
+        )
+    )
+    dispatch_count = 0
+
+    async def dispatch(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        nonlocal dispatch_count
+        del step, inputs
+        dispatch_count += 1
+        return {}
+
+    with pytest.raises(ExecutionPlanError, match=message):
+        await execute_plan(
+            generate_plan(graph),
+            graph,
+            inputs={},
+            dispatch=dispatch,
+            resource_capacities=cast(Mapping[str, int | tuple[str, ...]] | None, capacities),
+        )
+    assert dispatch_count == 0
+
+
+@pytest.mark.anyio
+async def test_requirement_over_capacity_dispatches_nothing() -> None:
+    graph = _steps_graph(
+        (
+            StepNode(
+                "step",
+                "step",
+                "agent",
+                resources=(ResourceRequirement("gpu_device", 2),),
+            ),
+        )
+    )
+    dispatch_count = 0
+
+    async def dispatch(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        nonlocal dispatch_count
+        del step, inputs
+        dispatch_count += 1
+        return {}
+
+    with pytest.raises(ExecutionPlanError, match="total capacity is 1"):
+        await execute_plan(
+            generate_plan(graph),
+            graph,
+            inputs={},
+            dispatch=dispatch,
+            resource_capacities={"gpu_device": 1},
+        )
+    assert dispatch_count == 0
+
+
+@pytest.mark.anyio
+async def test_context_contains_resource_lease() -> None:
+    graph = _steps_graph(
+        (
+            StepNode(
+                "step",
+                "step",
+                "agent",
+                resources=(ResourceRequirement("gpu_device", 1),),
+            ),
+        ),
+    )
+    contexts: list[DispatchContext] = []
+
+    async def dispatch(
+        step: StepNode,
+        inputs: Mapping[str, object],
+        context: DispatchContext,
+    ) -> Mapping[str, object]:
+        del step, inputs
+        contexts.append(context)
+        return {}
+
+    await execute_plan(
+        generate_plan(graph),
+        graph,
+        inputs={},
+        contextual_dispatch=dispatch,
+        resource_capacities={"gpu_device": 1},
+    )
+
+    assert contexts[0].resource_lease.instances("gpu_device") == ("gpu_device-0",)
+
+
+@pytest.mark.anyio
+async def test_explicit_resource_instance_ids_are_preserved() -> None:
+    graph = _steps_graph(
+        (
+            StepNode(
+                "step",
+                "step",
+                "agent",
+                resources=(ResourceRequirement("gpu_device", 1),),
+            ),
+        )
+    )
+    instance_ids: tuple[str, ...] = ()
+
+    async def dispatch(
+        step: StepNode,
+        inputs: Mapping[str, object],
+        context: DispatchContext,
+    ) -> Mapping[str, object]:
+        nonlocal instance_ids
+        del step, inputs
+        instance_ids = context.resource_lease.instances("gpu_device")
+        return {}
+
+    await execute_plan(
+        generate_plan(graph),
+        graph,
+        inputs={},
+        contextual_dispatch=dispatch,
+        resource_capacities={"gpu_device": ("cuda:3",)},
+    )
+    assert instance_ids == ("cuda:3",)
+
+
+@pytest.mark.anyio
+async def test_global_max_concurrency_is_stricter_than_resource_capacity() -> None:
+    requirement = (ResourceRequirement("gpu_device", 1),)
+    steps = tuple(StepNode(f"step-{index}", f"step-{index}", "agent", resources=requirement) for index in range(3))
+    graph = _steps_graph(steps, max_concurrency=2)
+
+    await _assert_max_active(
+        graph,
+        2,
+        resource_capacities={"gpu_device": 3},
+    )
+
+
+@pytest.mark.anyio
+async def test_resource_waiter_does_not_hold_global_slot() -> None:
+    gpu = (ResourceRequirement("gpu_device", 1),)
+    graph = _steps_graph(
+        (
+            StepNode("a-gpu-holder", "a-gpu-holder", "agent", resources=gpu),
+            StepNode("b-gpu-waiter", "b-gpu-waiter", "agent", resources=gpu),
+            StepNode("c-cpu", "c-cpu", "agent"),
+        ),
+        max_concurrency=2,
+    )
+    started: set[str] = set()
+    holder_started = anyio.Event()
+    cpu_started = anyio.Event()
+    release = anyio.Event()
+
+    async def dispatch(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        del inputs
+        started.add(step.step_id)
+        if step.step_id == "a-gpu-holder":
+            holder_started.set()
+        elif step.step_id == "c-cpu":
+            cpu_started.set()
+        await release.wait()
+        return {}
+
+    async def run() -> None:
+        await execute_plan(
+            generate_plan(graph),
+            graph,
+            inputs={},
+            dispatch=dispatch,
+            resource_capacities={"gpu_device": 1},
+        )
+
+    with anyio.fail_after(1):
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(run)
+            await holder_started.wait()
+            await cpu_started.wait()
+            assert "b-gpu-waiter" not in started
+            release.set()
+
+
+@pytest.mark.anyio
+async def test_resource_is_released_after_failure_timeout_and_cancel() -> None:
+    allocator = ResourceAllocator({"gpu_device": 1})
+    normal = _steps_graph(
+        (
+            StepNode(
+                "step",
+                "step",
+                "agent",
+                resources=(ResourceRequirement("gpu_device", 1),),
+            ),
+        )
+    )
+
+    async def fail(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        del step, inputs
+        raise RuntimeError("failed")
+
+    with pytest.RaisesGroup(pytest.RaisesExc(RuntimeError, match="failed")):
+        await execute_plan(generate_plan(normal), normal, inputs={}, dispatch=fail, allocator=allocator)
+
+    timed = _steps_graph(
+        (
+            StepNode(
+                "step",
+                "step",
+                "agent",
+                timeout_seconds=1,
+                resources=(ResourceRequirement("gpu_device", 1),),
+            ),
+        )
+    )
+
+    async def hang(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        del step, inputs
+        await anyio.sleep_forever()
+        raise AssertionError("unreachable")
+
+    with pytest.RaisesGroup(pytest.RaisesExc(TimeoutError)):
+        await execute_plan(generate_plan(timed), timed, inputs={}, dispatch=hang, allocator=allocator)
+
+    entered = anyio.Event()
+
+    async def cancellable(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        del step, inputs
+        entered.set()
+        await anyio.sleep_forever()
+        raise AssertionError("unreachable")
+
+    async def run_cancellable() -> None:
+        await execute_plan(
+            generate_plan(normal),
+            normal,
+            inputs={},
+            dispatch=cancellable,
+            allocator=allocator,
+        )
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(run_cancellable)
+        await entered.wait()
+        task_group.cancel_scope.cancel()
+
+    async def succeed(step: StepNode, inputs: Mapping[str, object]) -> Mapping[str, object]:
+        del step, inputs
+        return {}
+
+    with anyio.fail_after(1):
+        await execute_plan(generate_plan(normal), normal, inputs={}, dispatch=succeed, allocator=allocator)

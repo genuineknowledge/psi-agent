@@ -308,6 +308,11 @@ PlanAction(
 )
 ```
 
+这里的 `PlanAction` 仍是解释逻辑图的伪代码，不是运行时类型。实际作者入口是
+`StepNode.depends_on`（FusionFlow assertion 为
+`depends_on(step, predecessor) == True`）；`generate_plan()` 会把它与 Artifact
+producer 前驱合并，降低成物理计划里的 `Await`。
+
 如果 executor 还要遍历依赖、计算 ready frontier，它并不是已经排好的物理执行程序。
 
 更操作性的计划会直接包含：
