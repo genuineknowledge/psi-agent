@@ -22,6 +22,9 @@ async def c_drive_cleanup(
     categories: list[str] | None = None,
     min_age_days: int = 7,
     include_large_files: bool = True,
+    include_duplicate_files: bool = True,
+    include_stale_downloads: bool = True,
+    stale_download_days: int = 90,
     include_recycle_bin: bool = False,
     empty_recycle_bin: bool = False,
 ) -> str:
@@ -30,8 +33,8 @@ async def c_drive_cleanup(
     The first scan in a Session requires user confirmation. Once confirmed,
     later scans in that Session may start directly. Cleaning is limited to
     unchanged files in the latest scan and requires affirmative user
-    confirmation. Large files outside known temporary/cache locations are
-    report-only.
+    confirmation. Large files, exact duplicates, and stale Downloads outside
+    known temporary/cache locations are report-only.
 
     Args:
         action: One of "scan", "status", or "clean".
@@ -41,6 +44,11 @@ async def c_drive_cleanup(
             crash_dumps, error_reports, shader_cache, thumbnail_cache.
         min_age_days: Minimum age; category-specific safety floors still apply.
         include_large_files: Report large user files without making them deletable.
+        include_duplicate_files: Report exact duplicate user files without
+            making them deletable.
+        include_stale_downloads: Report old files in Downloads without making
+            them deletable.
+        stale_download_days: Minimum age for the stale Downloads report.
         include_recycle_bin: Include emptying C:\\$Recycle.Bin in the approval plan.
         empty_recycle_bin: Must match the approved plan at clean time.
 
@@ -55,6 +63,9 @@ async def c_drive_cleanup(
             categories=categories,
             min_age_days=min_age_days,
             include_large_files=include_large_files,
+            include_duplicate_files=include_duplicate_files,
+            include_stale_downloads=include_stale_downloads,
+            stale_download_days=stale_download_days,
             include_recycle_bin=include_recycle_bin,
         )
     elif normalized == "status":

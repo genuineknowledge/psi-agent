@@ -13,7 +13,8 @@ the first read-only metadata scan in a Session asks for confirmation (same-turn
 model approval is allowed), while later scans can proceed without another hard
 confirmation unless the user objects. Cleanup runs after the user affirms the
 displayed result. Only unchanged files in known temporary or cache locations are
-deleted. User files are reported but never selected automatically.
+deleted. Large files, exact duplicate groups, and stale Downloads are reported
+but never selected automatically.
 
 The agent-side workflow is defined by
 `skills/windows-c-drive-cleanup/SKILL.md`. See `AGENTS.md` for the general
