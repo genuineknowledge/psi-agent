@@ -303,6 +303,40 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/workspace/workflows": {
+            "get": {
+                "summary": "List reusable workflow declarations in a workspace",
+                "operationId": "listWorkspaceWorkflows",
+                "parameters": [
+                    {
+                        "name": "path",
+                        "in": "query",
+                        "schema": {"type": "string"},
+                        "description": "Workspace directory; defaults to the Gateway CWD",
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Canonical reusable workflow paths",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["workflows"],
+                                    "properties": {
+                                        "workflows": {
+                                            "type": "array",
+                                            "items": {"$ref": "#/components/schemas/WorkflowSummary"},
+                                        }
+                                    },
+                                }
+                            }
+                        },
+                    },
+                    "400": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
         "/workspace/cwd": {
             "get": {
                 "summary": "Get the server's current working directory",
@@ -361,6 +395,22 @@ OPENAPI_SPEC = {
                 "properties": {
                     "id": {"type": "string"},
                     "status": {"type": "string"},
+                },
+            },
+            "WorkflowSummary": {
+                "type": "object",
+                "required": ["name", "path"],
+                "additionalProperties": False,
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                        "description": "Portable registry slug; Windows reserved names are excluded",
+                    },
+                    "path": {
+                        "type": "string",
+                        "pattern": "^flows/workflows/[a-z][a-z0-9-]{0,63}/[a-z][a-z0-9-]{0,63}\\.workflow$",
+                    },
                 },
             },
             "Error": {

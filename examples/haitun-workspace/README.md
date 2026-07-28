@@ -4,7 +4,8 @@ A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combin
 
 - a de-branded OpenClaw-style system-prompt engine (all config kept **inside** the workspace),
 - full **Fusion Flow** workflow authoring (bundled Python G4 runtime +
-  `flow_manage` + `run_flow` / `run_flow_resume` + `flows/`),
+  `flow_manage` + `run_flow` / `run_flow_resume` + `flows/`), fixed-path
+  reusable workflows, and `/workflow:<slug>` frontend routing,
 - the hermes domain skill set + curated skills, and
 - clean async file/shell tools, Serper web search, and environment-configured
   iFLYTEK STT/TTS tools.
@@ -35,8 +36,12 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 - **First run** triggers a short onboarding (from `BOOTSTRAP.md`). Delete `BOOTSTRAP.md` to
   skip it.
 - **Fusion Flow** runs through the bundled Python G4 parser/compiler; it needs no separate
-  Node.js install or runtime setup. Generated flows go under `flows/<task-slug>/`; reusable
-  templates go under `flows/curated/`.
+  Node.js install or runtime setup. One-off declarations go under
+  `flows/<task-slug>/`. Save reusable
+  declarations with the existing file-writing capability at
+  `flows/workflows/<slug>/<slug>.workflow`. Reuse one with the exact command
+  `/workflow:<slug>`; the agent reads the declaration and collects all declared
+  inputs before the initial fresh `run_flow` call.
 - Agent and workspace-local Program Steps execute directly. Human Steps use a dedicated
   instruction-preparation Agent, persist checkpoints under
   `.psi/fusion-flow/runs/`, ask through the existing `clarify` interaction, and

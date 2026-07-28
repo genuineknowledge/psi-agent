@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 import os
+import re
 import string
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import anyio
 from loguru import logger
+
+_WORKFLOW_NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+_WINDOWS_RESERVED_WORKFLOW_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{number}" for number in range(1, 10)),
+    *(f"lpt{number}" for number in range(1, 10)),
+}
+_MAX_WORKFLOW_SOURCE_BYTES = 8 * 1024 * 1024
+
+
+class WorkflowSummary(TypedDict):
+    name: str
+    path: str
 
 
 def _norm_path(path: str | Path) -> str:
@@ -49,6 +66,12 @@ class WorkspaceManager:
     def get_cwd(self) -> str:
         """Return the current working directory."""
         return _norm_path(Path.cwd())
+
+    @staticmethod
+    def _is_valid_workflow_name(name: str) -> bool:
+        """Return whether name is a portable workflow registry segment."""
+
+        return _WORKFLOW_NAME_RE.fullmatch(name) is not None and name not in _WINDOWS_RESERVED_WORKFLOW_NAMES
 
     async def list_roots(self) -> dict[str, Any]:
         roots: list[dict[str, str]] = []
@@ -116,3 +139,77 @@ class WorkspaceManager:
             "segments": _path_segments(resolved),
             "entries": entries,
         }
+
+    async def list_workflows(self, workspace_path: str) -> list[WorkflowSummary]:
+        """List canonical reusable workflow declarations from one workspace."""
+
+        raw_workspace = workspace_path.strip() or os.getcwd()
+        workspace = anyio.Path(raw_workspace)
+        if not await workspace.exists():
+            raise FileNotFoundError(f"Path not found: {raw_workspace!r}")
+        if not await workspace.is_dir():
+            raise NotADirectoryError(f"Not a directory: {raw_workspace!r}")
+
+        workspace = await workspace.resolve()
+        flows_root = workspace / "flows"
+        if not await flows_root.exists():
+            return []
+        if await flows_root.is_symlink() or not await flows_root.is_dir():
+            logger.warning(f"Skipping workflow registry because flows is not a regular directory: {flows_root!r}")
+            return []
+
+        workflow_root = flows_root / "workflows"
+        if not await workflow_root.exists():
+            return []
+        if await workflow_root.is_symlink() or not await workflow_root.is_dir():
+            logger.warning(f"Skipping workflow registry because it is not a regular directory: {workflow_root!r}")
+            return []
+
+        workflow_root = await workflow_root.resolve()
+        workspace_native = Path(str(workspace))
+        workflow_root_native = Path(str(workflow_root))
+        if not workflow_root_native.is_relative_to(workspace_native):
+            logger.warning(f"Skipping workflow registry outside workspace: {workflow_root!r}")
+            return []
+
+        workflows: list[WorkflowSummary] = []
+        async for entry in workflow_root.iterdir():
+            try:
+                if await entry.is_symlink() or not await entry.is_dir():
+                    continue
+
+                name = entry.name
+                if not self._is_valid_workflow_name(name):
+                    logger.warning(f"Skipping workflow directory with invalid name: {name!r}")
+                    continue
+
+                resolved_entry = await entry.resolve()
+                entry_native = Path(str(resolved_entry))
+                if not entry_native.is_relative_to(workflow_root_native):
+                    logger.warning(f"Skipping workflow directory outside registry: {entry!r}")
+                    continue
+
+                source = resolved_entry / f"{name}.workflow"
+                if not await source.exists() or not await source.is_file() or await source.is_symlink():
+                    logger.warning(f"Skipping incomplete workflow entry: {name!r}")
+                    continue
+
+                resolved_source = await source.resolve()
+                if not Path(str(resolved_source)).is_relative_to(entry_native):
+                    logger.warning(f"Skipping workflow entry with escaped files: {name!r}")
+                    continue
+                if (await resolved_source.stat()).st_size > _MAX_WORKFLOW_SOURCE_BYTES:
+                    logger.warning(f"Skipping oversized workflow source: {name!r}")
+                    continue
+
+                workflows.append(
+                    {
+                        "name": name,
+                        "path": f"flows/workflows/{name}/{name}.workflow",
+                    }
+                )
+            except OSError as e:
+                logger.warning(f"Skipping invalid workflow entry {entry!r}: {e}")
+
+        workflows.sort(key=lambda workflow: workflow["name"])
+        return workflows

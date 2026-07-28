@@ -108,6 +108,7 @@ async def create_app(
     app.router.add_get("/workspace/cwd", _get_cwd)
     app.router.add_get("/workspace/roots", _list_workspace_roots)
     app.router.add_get("/workspace/browse", _browse_workspace)
+    app.router.add_get("/workspace/workflows", _list_workspace_workflows)
     app.router.add_get("/sessions/{session_id}/history", _get_history)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
 
@@ -252,6 +253,15 @@ async def _browse_workspace(request: web.Request) -> web.Response:
     q = request.query.get("q") or ""
     try:
         return _json(await wm.browse(path, kind=kind, q=q))
+    except (OSError, PermissionError, FileNotFoundError, NotADirectoryError) as e:
+        return _error(str(e), status=400)
+
+
+async def _list_workspace_workflows(request: web.Request) -> web.Response:
+    wm: WorkspaceManager = request.app["wm"]
+    path = request.query.get("path") or os.getcwd()
+    try:
+        return _json({"workflows": await wm.list_workflows(path)})
     except (OSError, PermissionError, FileNotFoundError, NotADirectoryError) as e:
         return _error(str(e), status=400)
 

@@ -911,6 +911,7 @@ async def test_run_flow_executes_once_with_dependencies_and_resources(
     assert ["Step: before_step\n" in prompt for prompt in prompts] == [True, False]
     assert 'Reserved resources: {"gpu": ["cuda:0"]}' in prompts[0]
     assert "Reserved resources: {}" in prompts[1]
+    assert all(f"Workspace root: {tmp_path}\n" in prompt for prompt in prompts)
     assert len(agents) == 2
 
 
@@ -1560,6 +1561,152 @@ async def test_step_tool_snapshot_filters_run_flow(
     assert set(refreshed_snapshot.tools) == {"echo"}
     assert loads == 1
     assert refreshes == 1
+
+
+@pytest.mark.anyio
+async def test_step_file_tools_bind_relative_paths_to_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    launcher = tmp_path / "launcher"
+    await anyio.Path(workspace).mkdir()
+    await anyio.Path(launcher).mkdir()
+    received: dict[str, str] = {}
+
+    async def read(file_path: str) -> str:
+        received["read"] = file_path
+        return await anyio.Path(file_path).read_text(encoding="utf-8")
+
+    async def write(file_path: str, content: str) -> str:
+        received["write"] = file_path
+        path = anyio.Path(file_path)
+        await path.parent.mkdir(parents=True, exist_ok=True)
+        await path.write_text(content, encoding="utf-8")
+        return file_path
+
+    async def edit(file_path: str, old_string: str, new_string: str) -> str:
+        received["edit"] = file_path
+        path = anyio.Path(file_path)
+        content = await path.read_text(encoding="utf-8")
+        await path.write_text(content.replace(old_string, new_string, 1), encoding="utf-8")
+        return file_path
+
+    source = ToolRegistry(
+        files={
+            "__test__": FileEntry(
+                file_hash="",
+                tools={
+                    "edit": ToolFunction.from_callable(edit),
+                    "read": ToolFunction.from_callable(read),
+                    "write": ToolFunction.from_callable(write),
+                },
+                funcs={"edit": edit, "read": read, "write": write},
+            )
+        }
+    )
+
+    class FakeToolRegistry(ToolRegistry):
+        @classmethod
+        async def load(
+            cls,
+            tools_dir: Path,
+            session_id: str = "",
+        ) -> ToolRegistry:
+            del cls, tools_dir, session_id
+            return source
+
+    sidecar = workspace / "instructions" / "review.md"
+    await anyio.Path(sidecar.parent).mkdir()
+    await anyio.Path(sidecar).write_text("workspace sidecar", encoding="utf-8")
+    monkeypatch.chdir(launcher)
+    monkeypatch.setattr(run_flow_tool, "ToolRegistry", FakeToolRegistry)
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", workspace)
+    monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
+
+    snapshot = await run_flow_tool._load_step_tools()
+    edit_tool = snapshot.get("edit")
+    read_tool = snapshot.get("read")
+    write_tool = snapshot.get("write")
+    assert edit_tool is not None
+    assert read_tool is not None
+    assert write_tool is not None
+
+    assert await read_tool(file_path="instructions/review.md") == "workspace sidecar"
+    await write_tool(
+        file_path="flows/workflows/child/child.workflow",
+        content="workflow child {}\n",
+    )
+    await edit_tool(
+        file_path="flows/workflows/child/child.workflow",
+        old_string="child",
+        new_string="saved_child",
+    )
+
+    child = workspace / "flows" / "workflows" / "child" / "child.workflow"
+    assert await anyio.Path(child).read_text(encoding="utf-8") == "workflow saved_child {}\n"
+    assert received == {
+        "edit": str(child),
+        "read": str(sidecar),
+        "write": str(child),
+    }
+    assert not await anyio.Path(launcher / "flows").exists()
+
+
+@pytest.mark.anyio
+async def test_human_preparer_reads_through_workspace_bound_step_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    instructions = workspace / "instructions"
+    await anyio.Path(instructions).mkdir(parents=True)
+    sidecar = instructions / "review.txt"
+    await anyio.Path(sidecar).write_text("first\nsecond\n", encoding="utf-8")
+    received: dict[str, object] = {}
+
+    async def read(file_path: str, offset: int = 0, limit: int = 0) -> str:
+        received.update(file_path=file_path, offset=offset, limit=limit)
+        content = await anyio.Path(file_path).read_text(encoding="utf-8")
+        lines = content.splitlines(keepends=True)
+        selected = lines[offset:] if limit == 0 else lines[offset : offset + limit]
+        return "".join(selected)
+
+    source = ToolRegistry(
+        files={
+            "__test__": FileEntry(
+                file_hash="",
+                tools={"read": ToolFunction.from_callable(read)},
+                funcs={"read": read},
+            )
+        }
+    )
+
+    class FakeToolRegistry(ToolRegistry):
+        @classmethod
+        async def load(
+            cls,
+            tools_dir: Path,
+            session_id: str = "",
+        ) -> ToolRegistry:
+            del cls, tools_dir, session_id
+            return source
+
+    monkeypatch.setattr(run_flow_tool, "ToolRegistry", FakeToolRegistry)
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", workspace)
+    monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
+
+    step_tools = await run_flow_tool._load_step_tools()
+    human_tools = run_flow_tool._build_human_preparer_tools(step_tools)
+    human_read = human_tools.get("read")
+
+    assert human_read is not None
+    assert await human_read("instructions/review.txt", 1, 1) == "second\n"
+    assert received == {
+        "file_path": str(sidecar),
+        "offset": 1,
+        "limit": 1,
+    }
 
 
 @pytest.mark.anyio

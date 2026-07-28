@@ -26,6 +26,13 @@ __pycache__/
 bin/apply_multimodal_test_api.ps1
 flows/*
 !flows/.gitkeep
+# Reusable G4 registry: commit only canonical source at one slug level.
+!flows/workflows/
+flows/workflows/*
+!flows/workflows/.gitkeep
+!flows/workflows/*/
+flows/workflows/*/*
+!flows/workflows/*/*.workflow
 !flows/curated/
 !flows/curated/**/
 !flows/curated/**/FLOW.md

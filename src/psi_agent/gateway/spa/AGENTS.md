@@ -81,6 +81,8 @@ spa/
 │   │   ├── chat.js                  # useChatStore：messages, inputText, streaming, abortController, selectedFiles, userHasScrolledUp, uploadResetToken
 │   │   └── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken, hubMenuOpen, hubPanel + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch/toggleHubMenu/openHubPanel/…
 │   ├── sendMarkers.js               # stripTransferMarkers（剥掉气泡/历史展示里的 [SEND:]/[RECV:]，防绝对路径泄露）
+│   ├── workflowCommands.js           # `/workflow:<slug>` 纯解析、过滤、格式化与键盘选中计算
+│   ├── workflowCommands.test.js      # workflow command 语法/补全排序/Windows 保留名单测
 │   ├── mdTable.js                   # GFM 表格复制/下载（MessageBubble + FilePreview MD 预览共用）
 │   ├── assistantSegments.js         # 助手分段辅助（一轮 user → 至多一个主 assistant 气泡）
 │   ├── utils.test.js                # renderMd GFM 表格规范化单测（Vitest）
@@ -153,13 +155,14 @@ spa/
 | `src/stores/session.js` | Session 领域 store | `useSessionStore` setup-store，导出 `sessions/selectedSessionId/draftSession/sessionTitles/sessionMessages/…`；`draftSession` 为 client-only 草稿（首条发送前不 POST）；`pinnedSessionIds` 在 setup 内经 `loadPinnedSessionIds(window.localStorage)` 初始化 |
 | `src/stores/chat.js` | Chat 领域 store | `useChatStore` setup-store，导出 `messages/inputText/streaming/abortController/selectedFiles/userHasScrolledUp/uploadResetToken` |
 | `src/stores/ui.js` | UI 领域 store | `useUiStore` setup-store，导出 `loadingEnv/isLightMode/isDragging/dlgAI/dlgSess/snackbar/dlgConfirm/isSidebarCollapsed/isMobileSidebarOpen/sessionSearchFocusToken/hubMenuOpen/hubPanel` + action `showAlert`/`toggleSidebar`/`closeMobileSidebar`/`focusSessionSearch`/`toggleHubMenu`/`openHubPanel`/`closeHubPanel` |
-| `src/api.js` | HTTP 封装 | `api(method,path,body)` — JSON fetch，非 2xx 抛错；`streamChat(sessionId,formData)` — POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
+| `src/api.js` | HTTP 封装 | `api(method,path,body)` — JSON fetch，非 2xx 抛错；`listWorkspaceWorkflows(path)` — 按当前 workspace 查询 `/workspace/workflows`；`streamChat(sessionId,formData)` — POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
 | `src/utils.js` | 纯工具 + 持久化 | `renderMd`（marked+KaTeX，见「Markdown 渲染流程」）；`htmlEscape`（用户输入转义）；`mimeType`（扩展名→MIME）；localStorage 读写：`saveActiveState/loadActiveState`（`gw-active-ids`）、`saveHistory/loadHistory/clearHistory`（`gw-hist-<id>`：role/text/files + stopped/failed/failedReason/feedback） |
 | `src/providers.js` | 预置 provider 表 | 导出 `PROVIDERS` 数组：13 家供应商的 `v`(值)/`l`(标签)/`base`(默认 base_url)/`models`(预置模型名)，供 AiDialog 高级下拉 |
 | `src/modelPresets.js` | Hub 快捷连接预设 | 导出 `MODEL_PRESETS`（id/label/mark/accent + provider/model/base_url）、`getModelPreset`、`presetToAiPayload`；HubModelsPanel 只填 api_key |
 | `src/userProfile.js` | 用户资料持久化 | `LS_USER_NAME`/`LS_USER_AVATAR` + `readAvatarDataUrl(file)`（≤512KB 图片 → data URL） |
 | `src/sessionList.js` | 会话列表纯逻辑 | 无副作用工具（可单测）：`PINNED_SESSIONS_KEY`、`PLACEHOLDER_SESSION_TITLE`（「新对话」）、`isPlaceholderSessionTitle`、`getSessionDisplayName`(标题优先、回退 workspace/占位)、`loadPinnedSessionIds/savePinnedSessionIds/togglePinnedSessionId`(置顶持久化 + 去重规范化)、`buildSessionTitlePayload`、`buildVisibleSessions`(搜索过滤 + 置顶排在前) |
 | `src/shortcuts.js` | 快捷键判定纯逻辑 | `matchSidebarShortcut(event)` → `'new-session'`(Ctrl/Cmd+Shift+O) / `'focus-search'`(Ctrl/Cmd+Shift+K) / `null`；用 `event.code` 而非 `key`（规避 Shift 大小写/输入法差异），`ctrlKey||metaKey` 兼容 Windows/macOS。配套 `shortcuts.test.js` 单测 |
+| `src/workflowCommands.js` | Workflow 指令纯逻辑 | 识别并校验精确的 `/workflow:<slug>`；严格 slug/Windows 保留名边界且拒绝所有后缀；提供候选 query、过滤排序、格式化与循环键盘选中，配套 `workflowCommands.test.js` |
 
 ### 根组件
 
@@ -172,7 +175,7 @@ spa/
 | 文件 | 组件职责 | 关键逻辑 |
 |------|----------|----------|
 | `Sidebar.vue` | 会话列表侧栏 | 工作区树 + draft 虚拟行「新对话」（client-only）+ 真实 session 列表；「+」/底部按钮 emit `new-session` → `startDraftChat` |
-| `InputBar.vue` | 输入区 UI | 仅 chat 态由 App 挂载；Enter 发送（`useChat.sendMessage`，首条发送时 `promoteDraftToSession`） |
+| `InputBar.vue` | 输入区 UI | 仅 chat 态由 App 挂载；输入 `/workflow:` 时按当前 workspace 加载候选并支持 ↑↓/Enter/Esc 与 IME；选择后仍把 literal command 交给既有聊天链路。发送前拦截非法 slug、任何指令后缀及附件混用；普通消息与 Shift+Enter 行为不变 |
 | `ModelPanel.vue` | 会话模型切换 | 由 InputBar 内嵌；chip 显示当前模型；浮层只切换/`delete` 已连接模型（**不**提供链接入口——链接走右上角 User Hub → 大模型） |
 | `BaseDialog.vue` | 弹窗外壳 | 所有弹窗的基类：overlay + dialog + `title`/默认/`actions` 三插槽；`show` prop 控制，overlay 点击 emit `close`；`.ok`/`.cancel` 按钮样式在此 scoped |
 | `UserHub.vue` | 用户菜单入口 | 头像下拉 → 打开 HubProfile/Models/Login/Settings 面板；桌面 `#topbar` + 移动 `#mobile-topbar` 共用 |

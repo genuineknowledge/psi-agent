@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import anyio
 import anyio.lowlevel
@@ -66,6 +66,11 @@ _STEP_TOOL_SESSION_ID = f"{__name__}_step"
 _STEP_TOOLS_LOAD_LOCK = anyio.Lock()
 _STEP_TOOLS_SOURCE: ToolRegistry | None = None
 _WORKFLOW_LAUNCHERS = frozenset({"flow_run", "run_flow", "run_flow_resume"})
+_WORKSPACE_PATH_PARAMETERS = {
+    "edit": "file_path",
+    "read": "file_path",
+    "write": "file_path",
+}
 _NESTED_TURN_TOOLS = frozenset({"clarify"})
 _HUMAN_PREPARER_TOOLS = frozenset({"read"})
 _HUMAN_CONTROL_KEY = "$fusion_flow/control"
@@ -251,6 +256,25 @@ def _parse_resource_capacities(value: str) -> Mapping[str, ResourceCapacity] | N
                 f"resource capacity for {resource_id!r} must be an integer or an array of resource instance IDs"
             )
     return capacities
+
+
+def _bind_step_tool_to_workspace(
+    tool_name: str,
+    func: Callable[..., Any],
+    workspace: Path,
+) -> Callable[..., Any]:
+    path_parameter = _WORKSPACE_PATH_PARAMETERS.get(tool_name)
+    if path_parameter is None:
+        return func
+
+    async def workspace_bound(**kwargs: object) -> object:
+        bound_kwargs = dict(kwargs)
+        raw_path = bound_kwargs.get(path_parameter)
+        if isinstance(raw_path, str) and not Path(raw_path).is_absolute():
+            bound_kwargs[path_parameter] = str(workspace / raw_path)
+        return await func(**bound_kwargs)
+
+    return workspace_bound
 
 
 def _parse_human_response(value: str) -> object:
@@ -917,7 +941,11 @@ async def _load_step_tools() -> ToolRegistry:
 
         excluded_tools = _WORKFLOW_LAUNCHERS | _NESTED_TURN_TOOLS
         tools = {name: tool for name, tool in _STEP_TOOLS_SOURCE.tools.items() if name not in excluded_tools}
-        funcs = {name: func for name in tools if (func := _STEP_TOOLS_SOURCE.get(name)) is not None}
+        funcs = {
+            name: _bind_step_tool_to_workspace(name, func, _WORKSPACE_DIR)
+            for name in tools
+            if (func := _STEP_TOOLS_SOURCE.get(name)) is not None
+        }
         return _StepToolRegistry(
             files={
                 "__fusion_flow_step_tools__": FileEntry(
@@ -955,7 +983,14 @@ def _build_human_preparer_tools(source: ToolRegistry) -> ToolRegistry:
         resolved = await candidate.resolve()
         if not Path(str(resolved)).is_relative_to(Path(str(workspace))):
             raise ValueError("Human preparer may read only files inside the workspace")
-        return cast(str, await source_read(str(resolved), offset, limit))
+        return cast(
+            str,
+            await source_read(
+                file_path=str(resolved),
+                offset=offset,
+                limit=limit,
+            ),
+        )
 
     metadata = ToolFunction.from_callable(read)
     if metadata.name not in _HUMAN_PREPARER_TOOLS:
@@ -1022,6 +1057,8 @@ async def _complete_agent_step(
     agent, conversation = await _create_step_agent(ai_socket, tool_registry)
     message = (
         "Execute exactly one assigned FusionFlow step. Do not start another workflow.\n"
+        f"Workspace root: {_WORKSPACE_DIR}\n"
+        "Resolve every relative file path against that workspace root.\n"
         f"Step: {context.step_id}\n"
         f"Executor: {context.executor_id}\n"
         f"Reserved resources: {json.dumps(_resource_payload(context), ensure_ascii=False, sort_keys=True)}\n"

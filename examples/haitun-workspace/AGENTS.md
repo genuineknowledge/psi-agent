@@ -8,7 +8,8 @@ in the system prompt). It merges the most useful parts of the other example work
   workspace** (there is no global config directory).
 - **Fusion Flow** — full workflow-authoring capability (`flow_manage`, the bundled Python
   G4 runtime under `skills/fusion-flow/`, the `run_flow` tool, the `flows/` layout, and
-  authoring guidance injected into the prompt).
+  authoring guidance injected into the prompt), including the upper-layer
+  `/workflow:<slug>` command and its fixed reusable registry.
 - **Skills + file tools** — the full hermes-skills domain skill set plus selected curated
   skills, on top of clean async file/shell tools.
 
@@ -99,6 +100,33 @@ All are optional and only affect the dynamic suffix / runtime line:
   checkpoints for next-turn resume. **Do not edit it**, create another approval UI, or
   block a tool call waiting for the next message.
 
+## Reusable FusionFlow G4 workflows
+
+- Author one-off G4 files under `flows/<task-slug>/`. A runnable file contains
+  exactly one workflow declaration and uses supported Agent, Human, or Program
+  executors.
+- Save reusable declarations with the existing `write`/`edit` file tools. The
+  fixed layout is `flows/workflows/<slug>/<slug>.workflow`; no management tool
+  or manifest format is introduced.
+- Reuse a saved declaration with the exact command `/workflow:<slug>`. Do not
+  append inline parameters. Before the sole `run_flow` call, read the saved
+  declaration and collect every declared input through normal conversation.
+  Never call once with the default empty input object merely to discover what
+  is missing.
+- Loading or saving never executes a workflow. Each initial `run_flow` call
+  starts a fresh execution with no arbitrary cache/resume protocol. Only a
+  returned active Human request persists a checkpoint and may continue through
+  `run_flow_resume`.
+- Execution is non-recursive: an Agent Step cannot invoke `run_flow` or start
+  another workflow. A Step may write a self-contained child declaration to the
+  fixed folder; the parent Session remains the only launcher.
+- The registry stores only the canonical `.workflow` source. It does not copy or
+  rewrite instruction sidecars; `"./..."` references remain workspace-root-relative
+  and must point to stable files.
+- Agent Step `read`/`write`/`edit` calls bind relative paths to the invoking
+  psi workspace root, not the launcher process CWD. This keeps instruction
+  sidecar reads and child declaration saves inside the selected workspace.
+
 ## Schedules (`schedules/`)
 
 - Use `schedule_manage` to add / list / view / update / delete tasks instead of editing
@@ -107,7 +135,8 @@ All are optional and only affect the dynamic suffix / runtime line:
 
 ## Prerequisites
 
-- **Fusion Flow**: bundled Python G4 parser/compiler; no separate runtime setup is required.
+- **FusionFlow G4**: no Node.js install is required; it runs through the current
+  psi-agent Session. Agent-backed Steps still require a configured AI socket.
 - **Serper search**: install psi-agent with the `mcp` extra and have `uvx` available.
 - **Browser tools**: Node.js / `npx` (first run downloads `@playwright/mcp`) and a system
   browser (Edge by default). Optional env: `BROWSER_CHANNEL` (`msedge`/`chrome`),
