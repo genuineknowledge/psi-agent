@@ -71,8 +71,9 @@ async def test_chinese_titles_do_not_collide_on_disk(tmp_path: Path) -> None:
     await _write(tmp_path, "校规", "学籍规定。")
     await _write(tmp_path, "中国科学技术大学", "USTC。链接 [[校训]] [[校规]]。")
 
-    files = sorted(p.name for p in (tmp_path / "wiki").glob("*.md"))
+    files = sorted(p.name for p in (tmp_path / "wiki").glob("*.md") if p.name != "CHANGELOG.md")
     assert files == ["中国科学技术大学.md", "校规.md", "校训.md"]
+    assert (tmp_path / "wiki" / "CHANGELOG.md").exists()
     assert "untitled.md" not in files
 
     back = await impl.wiki_read_impl("校训", workspace_raw=str(tmp_path))

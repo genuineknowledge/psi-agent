@@ -9,3 +9,19 @@ dist/
 *.sock
 .coverage
 /result
+
+# Local runtime configuration and generated user data
+/config.yml
+/state/
+/wiki/
+/artifacts/
+/.real-runner-test/
+/.baseline-*/
+/.red-*/
+/.green-*/
+/.verify-*/
+/.uv-cache/
+examples/*-workspace/state/
+examples/*-workspace/wiki/
+examples/*-workspace/histories/
+examples/*-workspace/.psi/
