@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fusion_flow_next.core_ir import CompoundTerm, Concept, Constant, ListTerm, Operator
 from fusion_flow_next.parser import ParseContext, parse_workflow
+from fusion_flow_next.workflow_runner import compile_workflow
 
 ROOT = Path(__file__).resolve().parents[1]
 GRAMMAR = ROOT / "grammar" / "FusionFlow.g4"
@@ -155,6 +156,16 @@ def test_skill_examples_follow_canonical_dataflow_contract() -> None:
                 )
 
     assert seen_operators == CANONICAL_DATAFLOW_OPERATORS
+
+
+def test_skill_examples_compile_for_the_one_shot_runner() -> None:
+    skill = SKILL.read_text(encoding="utf-8")
+    examples = re.findall(r"```fusionflow\s*\n(.*?)\n```", skill, re.DOTALL)
+
+    assert examples
+    for index, source in enumerate(examples, start=1):
+        compiled = compile_workflow(source, strict_executors=True)
+        assert set(compiled.executor_kinds.values()) == {"Agent"}, f"FusionFlow example {index}"
 
 
 def test_preset_operators_have_five_disjoint_owner_groups() -> None:

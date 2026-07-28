@@ -9,7 +9,7 @@ import anyio
 import pytest
 from aiohttp import web
 
-from psi_agent.session.agent import SessionAgent
+from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.protocol import AgentChunk, AgentError
@@ -379,6 +379,83 @@ async def test_agent_tool_returns_int(tmp_path: Path) -> None:
         assert "42" in reasoning
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_isolates_ai_socket_context_between_concurrent_tools() -> None:
+    entered = {
+        "left": anyio.Event(),
+        "right": anyio.Event(),
+    }
+    observed: dict[str, list[str | None]] = {}
+    runners: list[web.AppRunner] = []
+
+    async def build_agent(label: str, other: str) -> tuple[SessionAgent, str]:
+        handler = await _make_inline_ai_handler([_tc("socket_tool", "{}"), _stop("done")])
+        app = web.Application()
+        app.router.add_post("/chat/completions", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        site = web.SockSite(runner, sock)
+        await site.start()
+        runners.append(runner)
+        ai_socket = f"http://127.0.0.1:{port}"
+
+        async def socket_tool() -> str:
+            values = [current_tool_ai_socket()]
+            entered[label].set()
+            await entered[other].wait()
+            values.append(current_tool_ai_socket())
+            observed[label] = values
+            return values[-1] or ""
+
+        tf = ToolFunction(
+            name="socket_tool",
+            description="X",
+            parameters={"type": "object", "properties": {}, "required": []},
+        )
+        return (
+            SessionAgent(
+                ai_client=AiClient(ai_socket),
+                tool_registry=ToolRegistry(
+                    files={
+                        "__test__": FileEntry(
+                            file_hash="",
+                            tools={"socket_tool": tf},
+                            funcs={"socket_tool": socket_tool},
+                        )
+                    }
+                ),
+            ),
+            ai_socket,
+        )
+
+    try:
+        left, left_socket = await build_agent("left", "right")
+        right, right_socket = await build_agent("right", "left")
+        reasoning: dict[str, str] = {}
+
+        async def run_agent(label: str, agent: SessionAgent) -> None:
+            chunks = [chunk async for chunk in agent.run({"role": "user", "content": "t"})]
+            reasoning[label] = "".join(chunk.reasoning or "" for chunk in chunks)
+
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(run_agent, "left", left)
+            task_group.start_soon(run_agent, "right", right)
+
+        assert observed == {
+            "left": [left_socket, left_socket],
+            "right": [right_socket, right_socket],
+        }
+        assert left_socket in reasoning["left"]
+        assert right_socket in reasoning["right"]
+        assert current_tool_ai_socket() is None
+    finally:
+        for runner in runners:
+            await runner.cleanup()
 
 
 # --- Additional edge case tests ---

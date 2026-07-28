@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,21 @@ from psi_agent.session.protocol import AgentChunk, AgentError
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_registry import ToolRegistry
+
+# Workspace tools receive only their declared arguments.  Keep the active
+# backend binding task-local so infrastructure data stays out of tool schemas.
+# HACK(#49): Reconsider this socket bridge before treating tool execution
+# context as a stable mainline runtime contract.
+_CURRENT_TOOL_AI_SOCKET: ContextVar[str | None] = ContextVar(
+    "psi_agent_current_tool_ai_socket",
+    default=None,
+)
+
+
+def current_tool_ai_socket() -> str | None:
+    """Return the invoking Session's AI socket while a workspace tool runs."""
+
+    return _CURRENT_TOOL_AI_SOCKET.get()
 
 
 class SessionAgent:
@@ -297,7 +313,11 @@ class SessionAgent:
                                     logger.error(f"Tool not found: {fn!r}")
                                 else:
                                     try:
-                                        raw = await func(**a)
+                                        token = _CURRENT_TOOL_AI_SOCKET.set(self._ai_client.ai_socket)
+                                        try:
+                                            raw = await func(**a)
+                                        finally:
+                                            _CURRENT_TOOL_AI_SOCKET.reset(token)
                                         r[idx] = str(raw)
                                         logger.info(f"Tool result ({fn!r}): {str(raw)[:1000]!r}")
                                     except Exception as e:

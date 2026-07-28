@@ -1,6 +1,6 @@
 # FusionFlow Next
 
-FusionFlow Next is the example-local G4 parser/compiler and authoring Skill.
+FusionFlow Next is the workspace-local G4 parser/compiler and authoring Skill.
 The declarative pipeline and the TypeScript-compatible Python execution
 primitives share this package boundary but remain deliberately separate:
 `fusion_flow_next.execution` does not execute G4 Core IR or `WorkflowGraph`.
@@ -16,8 +16,7 @@ primitives share this package boundary but remain deliberately separate:
 - `fusion_flow_next/checker.py`: static semantics boundary.
 - `fusion_flow_next/compiler.py`: target-neutral Core IR traversal and backend hook boundary.
 - `fusion_flow_next/graph_compiler.py`: concrete `CoreIRCompiler` backend that builds `psi_agent.workflow_graph` models.
-- `examples/run_workflow.py`: fail-closed compile/plan/execute entry point with legacy and contextual dispatcher contracts.
-- `examples/run_deepseek.py`: live completion smoke-test CLI for the bundled tool-free examples.
+- `fusion_flow_next/workflow_runner.py`: fail-closed compile/plan/execute entry point with legacy and contextual dispatcher contracts.
 - `fusion_flow_next/planning.py`: before workflow authoring, checks the syntax mappings declared for each planned step against the syntax names actually available. Each planned step maps to one catalog `Step` identity, which authoring expands into a typed constant and its assertions.
 - `fusion_flow_next/execution/`: isolated Python port of the legacy TypeScript `flow.*` runtime, retained for parity and migration work without exposing it as `psi_agent` core API.
 - `test/test_graph_compiler.py`: real Core IR to WorkflowGraph compiler contract checks.
@@ -26,7 +25,7 @@ primitives share this package boundary but remain deliberately separate:
 The obsolete Node/TypeScript compiler prototype has been removed. The Python
 compiler abstraction does not select or implement a concrete output target.
 `graph_compiler.py` is one concrete backend: it imports the generic graph model
-from `psi_agent`, while `psi_agent.workflow_graph` does not import this example
+from `psi_agent`, while `psi_agent.workflow_graph` does not import this workspace
 package.
 
 ## Current scope and known gaps
@@ -85,7 +84,7 @@ has no scheduling meaning.
 circular Artifact or explicit control awaits remain fail-closed execution-plan
 boundaries.
 
-This remains an example-local package rather than a wheel dependency. The
+This remains a workspace-local package rather than a wheel dependency. The
 execution subpackage is a compatibility boundary, not the G4 runtime. Run all
 tests from this directory so `fusion_flow_next` is on the runtime import path:
 
@@ -93,27 +92,8 @@ tests from this directory so `fusion_flow_next` is on the runtime import path:
 uv run python -m pytest -q
 ```
 
-The bundled `single_step`, `sequential`, and `parallel_join` workflows can be
-run with the DeepSeek smoke-test CLI:
-
-```bash
-export DEEPSEEK_API_KEY=...
-uv run python -m examples.run_deepseek \
-  examples/single_step.workflow \
-  --inputs-file examples/single_step.inputs.json \
-  --strict-executors
-```
-
-Resource pools stay outside `.workflow` source. Supply either counts or
-concrete instance IDs:
-
-```bash
---resource-capacities '{"gpu_device": 2}'
---resource-capacities '{"gpu_device": ["cuda:0", "cuda:1"]}'
-```
-
-The DeepSeek CLI is intentionally a completion-only smoke runner. Resource-aware
-workflows must also supply capacities or a configured `ResourceAllocator`.
+Resource pools stay outside `.workflow` source and are supplied by the
+embedding tool or application as counts or concrete instance IDs.
 
 Variables, quantifiers, truth formulas, theories, rules, and query/SAT/optimization requests are intentionally absent because the reviewed workflow surface does not use them. Operator execution, concept registries and matching, validation, parsing, backend compilation, and Haitun activation remain separate workstreams.
 

@@ -1,29 +1,11 @@
 from __future__ import annotations
 
-import importlib.util
-import os
-import sys
+import importlib
 from typing import Any, cast
 
 import pytest
 
-_SKILL_DIR = os.path.dirname(os.path.dirname(__file__))
-_RUNNER_PATH = os.path.join(_SKILL_DIR, "examples", "run_workflow.py")
-if _SKILL_DIR not in sys.path:
-    sys.path.insert(0, _SKILL_DIR)
-
-
-def _load_module(name: str, path: str) -> Any:
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load {name}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return cast(Any, module)
-
-
-run_workflow = _load_module("fusion_flow_next_workflow_runner", _RUNNER_PATH)
+run_workflow = cast(Any, importlib.import_module("fusion_flow_next.workflow_runner"))
 
 
 def test_runner_catalog_includes_typed_depends_on() -> None:

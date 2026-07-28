@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import os
 import re
-import runpy
 import sys
 from typing import Any
 
@@ -14,17 +14,16 @@ _SKILL_ROOT = os.path.join(
     "skills",
     "fusion-flow-next",
 )
-_RUNNER = os.path.join(_SKILL_ROOT, "examples", "run_workflow.py")
 _GRAMMAR = os.path.join(_SKILL_ROOT, "grammar", "FusionFlow.g4")
 for _path in (os.path.join(_ROOT, "src"), _SKILL_ROOT):
     if _path not in sys.path:
         sys.path.insert(0, _path)
-_runtime = runpy.run_path(_RUNNER)
-Concept = _runtime["Concept"]
-Operator = _runtime["Operator"]
-ParseContext = _runtime["ParseContext"]
-WorkflowGraphCompiler = _runtime["WorkflowGraphCompiler"]
-parse_workflow = _runtime["parse_workflow"]
+_runtime = importlib.import_module("fusion_flow_next")
+Concept = _runtime.Concept
+Operator = _runtime.Operator
+ParseContext = _runtime.ParseContext
+WorkflowGraphCompiler = _runtime.WorkflowGraphCompiler
+parse_workflow = _runtime.parse_workflow
 
 _FENCE = re.compile(r"\A\s*```fusionflow[ \t]*\r?\n(?P<source>.*?)\r?\n```[ \t]*\s*\Z", re.DOTALL)
 _INLINE_IF = re.compile(r"consumes\s*\([^)]*\)\s*==\s*\[[^\]]*\bif\s*\(", re.DOTALL)

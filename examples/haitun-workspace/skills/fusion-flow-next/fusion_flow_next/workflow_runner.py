@@ -1,21 +1,12 @@
+"""Compile and execute checked FusionFlow workflows."""
+
 from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
-
-from fusion_flow_next import (
-    Assertion,
-    CompoundTerm,
-    Concept,
-    Operator,
-    ParseContext,
-    WorkflowGraphCompilation,
-    WorkflowGraphCompiler,
-    parse_workflow,
-)
 
 from psi_agent.workflow_execution import (
     ContextualStepDispatcher,
@@ -26,6 +17,10 @@ from psi_agent.workflow_execution import (
     generate_plan,
 )
 from psi_agent.workflow_graph import ProducesEdge, StepNode, WorkflowGraph
+
+from .core_ir import Assertion, CompoundTerm, Concept, Operator
+from .graph_compiler import WorkflowGraphCompilation, WorkflowGraphCompiler
+from .parser import ParseContext, parse_workflow
 
 type Completion = Callable[[str], Awaitable[object]]
 type HumanInstructionPreparer = Callable[[str], Awaitable[str]]
@@ -343,6 +338,7 @@ async def execute_workflow(
     allocator: ResourceAllocator | None = None,
     parse_context: ParseContext | None = None,
     strict_executors: bool = False,
+    supported_executor_kinds: Collection[ExecutorKind] | None = None,
     prepare_human_instruction: HumanInstructionPreparer | None = None,
     request_human: HumanRequester | None = None,
 ) -> dict[str, object]:
@@ -364,6 +360,20 @@ async def execute_workflow(
         context=parse_context,
         strict_executors=strict_executors,
     )
+    if supported_executor_kinds is not None:
+        supported = frozenset(supported_executor_kinds)
+        unsupported = sorted(
+            (
+                step.step_id,
+                compiled.executor_kinds[step.executor_id],
+            )
+            for step in compiled.graph.steps
+            if compiled.executor_kinds[step.executor_id] not in supported
+        )
+        if unsupported:
+            details = ", ".join(f"{step_id}={kind}" for step_id, kind in unsupported)
+            raise ValueError(f"workflow contains unsupported executors: {details}")
+
     graph = compiled.graph
     plan = generate_plan(graph)
     return await execute_plan(
