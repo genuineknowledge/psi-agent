@@ -118,7 +118,7 @@ class WorkflowGraphCompiler(CoreIRCompiler):
     unsupported-node handling remain owned by :class:`CoreIRCompiler`.
     """
 
-    _LOWERED_OPERATORS = frozenset(
+    SUPPORTED_OPERATORS = frozenset(
         {
             # Workflow boundary operators.
             "input_workflow",
@@ -206,7 +206,7 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                 (assertion.lhs, assertion.rhs),
                 (assertion.rhs, assertion.lhs),
             )
-            if isinstance(term, CompoundTerm) and term.operator.name in self._LOWERED_OPERATORS
+            if isinstance(term, CompoundTerm) and term.operator.name in self.SUPPORTED_OPERATORS
         )
 
         # Returning the original object makes residual IR explicit: it was not
@@ -464,7 +464,7 @@ class WorkflowGraphCompiler(CoreIRCompiler):
 
                 case _:
                     # _compile_assertion recognizes names through
-                    # _LOWERED_OPERATORS.  Fail closed if that vocabulary grows
+                    # SUPPORTED_OPERATORS.  Fail closed if that vocabulary grows
                     # without a matching, operator-specific lowering case.
                     raise WorkflowGraphCompilationError(f"unsupported graph operator: {operator_name}")
 
