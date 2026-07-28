@@ -15,7 +15,9 @@ confirmation unless the user objects. Cleanup runs after the user affirms the
 displayed result. Only unchanged files in known temporary or cache locations are
 deleted. User files are reported but never selected automatically.
 
-See `AGENTS.md` for the detailed cleanup contract, full layout, and conventions.
+The agent-side workflow is defined by
+`skills/windows-c-drive-cleanup/SKILL.md`. See `AGENTS.md` for the general
+workspace layout and conventions.
 
 ## Run
 
