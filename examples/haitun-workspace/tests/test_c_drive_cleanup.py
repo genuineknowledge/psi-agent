@@ -184,6 +184,88 @@ async def test_large_file_scan_prunes_appdata_before_traversal(tmp_path: Path, m
     assert [item["path"] for item in result["large_files_report_only"]] == [str(document)]
 
 
+async def test_scan_reports_exact_duplicates_without_cleanup_candidates(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "drive"
+    plans = tmp_path / "plans"
+    _set_test_environment(monkeypatch, root)
+    user = root / "Users" / "tester"
+    first = user / "Documents" / "first.bin"
+    second = user / "Pictures" / "second.bin"
+    different = user / "Videos" / "different.bin"
+    for path, content in (
+        (first, b"same-content"),
+        (second, b"same-content"),
+        (different, b"other-content"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+    result = await _confirmed_first_scan(
+        include_large_files=False,
+        duplicate_min_bytes=1,
+        root_override=str(root),
+        plan_dir_override=str(plans),
+    )
+
+    report = result["duplicate_files_report_only"]
+    assert report["groups_found"] == 1
+    assert report["groups"][0]["paths"] == [str(first), str(second)]
+    assert report["potential_reclaimable_bytes"] == len(b"same-content")
+    assert result["candidate_files"] == 0
+    plan = json.loads(impl._plan_path(str(plans)).read_text(encoding="utf-8"))
+    assert plan["items"] == []
+
+
+async def test_duplicate_report_ignores_hard_links(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "drive"
+    plans = tmp_path / "plans"
+    _set_test_environment(monkeypatch, root)
+    first = root / "Users" / "tester" / "Documents" / "first.bin"
+    linked = first.with_name("linked.bin")
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"same-content")
+    try:
+        os.link(first, linked)
+    except OSError:
+        return
+
+    result = await _confirmed_first_scan(
+        include_large_files=False,
+        duplicate_min_bytes=1,
+        root_override=str(root),
+        plan_dir_override=str(plans),
+    )
+
+    assert result["duplicate_files_report_only"]["groups_found"] == 0
+
+
+async def test_scan_reports_stale_downloads_by_kind(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "drive"
+    plans = tmp_path / "plans"
+    _set_test_environment(monkeypatch, root)
+    downloads = root / "Users" / "tester" / "Downloads"
+    installer = downloads / "old.msi"
+    recent = downloads / "recent.zip"
+    _old_file(installer, 40)
+    _old_file(recent, 50)
+    os.utime(recent, None)
+
+    result = await _confirmed_first_scan(
+        include_large_files=False,
+        include_duplicate_files=False,
+        stale_download_days=20,
+        root_override=str(root),
+        plan_dir_override=str(plans),
+    )
+
+    report = result["stale_downloads_report_only"]
+    assert report["files_found"] == 1
+    assert report["bytes"] == 40
+    assert report["files"][0]["path"] == str(installer)
+    assert report["files"][0]["kind"] == "installer"
+    assert result["candidate_files"] == 0
+
+
 async def test_overlapping_category_roots_do_not_duplicate_candidates(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "drive"
     plans = tmp_path / "plans"
@@ -358,6 +440,9 @@ def test_public_tool_schema_exposes_only_supported_parameters() -> None:
         "categories",
         "min_age_days",
         "include_large_files",
+        "include_duplicate_files",
+        "include_stale_downloads",
+        "stale_download_days",
         "include_recycle_bin",
         "empty_recycle_bin",
     }

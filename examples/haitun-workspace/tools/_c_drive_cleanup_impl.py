@@ -23,6 +23,12 @@ from psi_agent.session.runtime_context import get_session_id
 MAX_CANDIDATES = 100_000
 DEFAULT_LARGE_FILE_BYTES = 1024**3
 MAX_LARGE_FILES = 20
+DEFAULT_DUPLICATE_MIN_BYTES = 1024**2
+HASH_SAMPLE_BYTES = 64 * 1024
+MAX_DUPLICATE_GROUPS = 20
+MAX_STALE_DOWNLOADS = 20
+INSTALLER_EXTENSIONS = {".appx", ".exe", ".msi", ".msix", ".msixbundle"}
+ARCHIVE_EXTENSIONS = {".7z", ".cab", ".gz", ".iso", ".rar", ".tar", ".tgz", ".zip"}
 
 CATEGORY_MIN_AGE_DAYS: dict[str, int] = {
     "user_temp": 7,
@@ -130,14 +136,142 @@ def _iter_regular_files(root: Path, *, excluded_roots: tuple[Path, ...] = ()) ->
             continue
 
 
+def _file_digest(path: Path, *, sample_only: bool) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            if sample_only:
+                digest.update(stream.read(HASH_SAMPLE_BYTES))
+                size = path.stat(follow_symlinks=False).st_size
+                if size > HASH_SAMPLE_BYTES:
+                    stream.seek(max(0, size - HASH_SAMPLE_BYTES))
+                    digest.update(stream.read(HASH_SAMPLE_BYTES))
+            else:
+                while chunk := stream.read(1024 * 1024):
+                    digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def _duplicate_report(
+    inventory: list[tuple[Path, os.stat_result]],
+    *,
+    minimum_bytes: int,
+) -> dict[str, Any]:
+    by_size: dict[int, list[tuple[Path, os.stat_result]]] = {}
+    for path, stat_result in inventory:
+        if stat_result.st_size >= minimum_bytes:
+            by_size.setdefault(stat_result.st_size, []).append((path, stat_result))
+
+    groups: list[dict[str, Any]] = []
+    for size, same_size in by_size.items():
+        if len(same_size) < 2:
+            continue
+        by_sample: dict[str, list[tuple[Path, os.stat_result]]] = {}
+        for path, stat_result in same_size:
+            sample = _file_digest(path, sample_only=True)
+            if sample is not None:
+                by_sample.setdefault(sample, []).append((path, stat_result))
+        for same_sample in by_sample.values():
+            if len(same_sample) < 2:
+                continue
+            by_digest: dict[str, list[tuple[Path, os.stat_result]]] = {}
+            for path, stat_result in same_sample:
+                digest = _file_digest(path, sample_only=False)
+                if digest is not None:
+                    by_digest.setdefault(digest, []).append((path, stat_result))
+            for digest, matches in by_digest.items():
+                distinct: list[str] = []
+                distinct_paths: list[Path] = []
+                for path, _stat_result in matches:
+                    try:
+                        already_represented = any(os.path.samefile(path, known) for known in distinct_paths)
+                    except OSError:
+                        already_represented = False
+                    if not already_represented:
+                        distinct_paths.append(path)
+                        distinct.append(str(path))
+                if len(distinct) < 2:
+                    continue
+                distinct.sort(key=os.path.normcase)
+                groups.append(
+                    {
+                        "bytes_each": size,
+                        "copies": len(distinct),
+                        "potential_reclaimable_bytes": size * (len(distinct) - 1),
+                        "sha256": digest,
+                        "paths": distinct,
+                    }
+                )
+    groups.sort(key=lambda group: group["potential_reclaimable_bytes"], reverse=True)
+    total_groups = len(groups)
+    shown = groups[:MAX_DUPLICATE_GROUPS]
+    return {
+        "groups": shown,
+        "groups_found": total_groups,
+        "groups_shown": len(shown),
+        "potential_reclaimable_bytes": sum(group["potential_reclaimable_bytes"] for group in groups),
+        "truncated": total_groups > len(shown),
+        "minimum_file_bytes": minimum_bytes,
+    }
+
+
+def _stale_download_report(
+    inventory: list[tuple[Path, os.stat_result]],
+    *,
+    downloads_root: Path,
+    cutoff: float,
+    days: int,
+) -> dict[str, Any]:
+    normalized_downloads = _normalized_scan_path(downloads_root)
+    stale: list[dict[str, Any]] = []
+    for path, stat_result in inventory:
+        normalized = _normalized_scan_path(path)
+        if not normalized.startswith(normalized_downloads + os.sep) or stat_result.st_mtime > cutoff:
+            continue
+        extension = path.suffix.lower()
+        kind = (
+            "installer"
+            if extension in INSTALLER_EXTENSIONS
+            else "archive"
+            if extension in ARCHIVE_EXTENSIONS
+            else "other"
+        )
+        stale.append(
+            {
+                "path": str(path),
+                "bytes": stat_result.st_size,
+                "mtime_ns": stat_result.st_mtime_ns,
+                "kind": kind,
+            }
+        )
+    stale.sort(key=lambda item: item["bytes"], reverse=True)
+    total_files = len(stale)
+    total_bytes = sum(item["bytes"] for item in stale)
+    shown = stale[:MAX_STALE_DOWNLOADS]
+    return {
+        "files": shown,
+        "files_found": total_files,
+        "files_shown": len(shown),
+        "bytes": total_bytes,
+        "minimum_age_days": days,
+        "truncated": total_files > len(shown),
+    }
+
+
 def _scan_sync(
     *,
     drive_root: Path,
     categories: list[str],
     min_age_days: int,
     include_large_files: bool,
+    include_duplicate_files: bool,
+    include_stale_downloads: bool,
+    stale_download_days: int,
     include_recycle_bin: bool,
     large_file_bytes: int,
+    duplicate_min_bytes: int,
     excluded_roots: tuple[Path, ...] = (),
 ) -> dict[str, Any]:
     now = time.time()
@@ -193,16 +327,34 @@ def _scan_sync(
             break
 
     large_files: list[dict[str, Any]] = []
+    duplicate_files: dict[str, Any] = {
+        "groups": [],
+        "groups_found": 0,
+        "groups_shown": 0,
+        "potential_reclaimable_bytes": 0,
+        "truncated": False,
+        "minimum_file_bytes": duplicate_min_bytes,
+    }
+    stale_downloads: dict[str, Any] = {
+        "files": [],
+        "files_found": 0,
+        "files_shown": 0,
+        "bytes": 0,
+        "minimum_age_days": stale_download_days,
+        "truncated": False,
+    }
     user_profile = Path(os.environ.get("USERPROFILE", ""))
     if (
-        include_large_files
+        (include_large_files or include_duplicate_files or include_stale_downloads)
         and user_profile.is_absolute()
         and _same_volume(user_profile, drive_root)
         and user_profile.exists()
     ):
         large_file_exclusions = (*excluded_roots, user_profile / "AppData")
+        inventory: list[tuple[Path, os.stat_result]] = []
         for path, stat_result in _iter_regular_files(user_profile, excluded_roots=large_file_exclusions):
-            if stat_result.st_size >= large_file_bytes:
+            inventory.append((path, stat_result))
+            if include_large_files and stat_result.st_size >= large_file_bytes:
                 large_files.append(
                     {
                         "path": str(path),
@@ -212,6 +364,15 @@ def _scan_sync(
                 )
         large_files.sort(key=lambda item: item["bytes"], reverse=True)
         large_files = large_files[:MAX_LARGE_FILES]
+        if include_duplicate_files:
+            duplicate_files = _duplicate_report(inventory, minimum_bytes=duplicate_min_bytes)
+        if include_stale_downloads:
+            stale_downloads = _stale_download_report(
+                inventory,
+                downloads_root=user_profile / "Downloads",
+                cutoff=now - stale_download_days * 86400,
+                days=stale_download_days,
+            )
 
     usage = shutil.disk_usage(drive_root)
     recycle_bin = {"included": include_recycle_bin, "files": 0, "bytes": 0}
@@ -225,6 +386,8 @@ def _scan_sync(
         "candidate_files": len(items),
         "candidate_bytes": sum(item["size"] for item in items),
         "large_files_report_only": large_files,
+        "duplicate_files_report_only": duplicate_files,
+        "stale_downloads_report_only": stale_downloads,
         "recycle_bin": recycle_bin,
         "truncated": truncated,
         "drive": {
@@ -327,8 +490,12 @@ async def scan_impl(
     categories: list[str] | None = None,
     min_age_days: int = 7,
     include_large_files: bool = True,
+    include_duplicate_files: bool = True,
+    include_stale_downloads: bool = True,
+    stale_download_days: int = 90,
     include_recycle_bin: bool = False,
     large_file_bytes: int = DEFAULT_LARGE_FILE_BYTES,
+    duplicate_min_bytes: int = DEFAULT_DUPLICATE_MIN_BYTES,
     root_override: str = "",
     plan_dir_override: str = "",
 ) -> dict[str, Any]:
@@ -346,6 +513,10 @@ async def scan_impl(
         return _error("min_age_days must be at least 1.")
     if large_file_bytes < 100 * 1024**2:
         return _error("large_file_bytes must be at least 100 MiB.")
+    if duplicate_min_bytes < 1:
+        return _error("duplicate_min_bytes must be at least 1 byte.")
+    if stale_download_days < 1:
+        return _error("stale_download_days must be at least 1.")
     requested = categories or list(CATEGORY_MIN_AGE_DAYS)
     unknown = sorted(set(requested) - set(CATEGORY_MIN_AGE_DAYS))
     if unknown:
@@ -360,8 +531,12 @@ async def scan_impl(
             categories=requested,
             min_age_days=min_age_days,
             include_large_files=include_large_files,
+            include_duplicate_files=include_duplicate_files,
+            include_stale_downloads=include_stale_downloads,
+            stale_download_days=stale_download_days,
             include_recycle_bin=include_recycle_bin,
             large_file_bytes=large_file_bytes,
+            duplicate_min_bytes=duplicate_min_bytes,
             excluded_roots=(_plan_dir(plan_dir_override),),
         )
     )
