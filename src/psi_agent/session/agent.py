@@ -260,6 +260,11 @@ class SessionAgent:
         When omitted, assistant/tool rows inherit the user message's ``kind``
         (Channel turns default to ``chat``).
         """
+        hook_message = dict(user_message)
+        hook_message["session_id"] = self._conversation.session_id
+        request_params = dict(extra_params or {})
+        hook_message |= request_params
+
         user_kind = message_kind(user_message)
         turn_response_kind = response_kind if response_kind is not None else user_kind
         stored_user_message = with_kind(user_message, user_kind)
@@ -276,8 +281,11 @@ class SessionAgent:
                 await self._tool_registry.refresh()
                 await self._schedule_registry.refresh()
 
-                # system prompt (lazy build / optional rebuild)
-                await self._system_prompt.ensure(self._conversation, user_message)
+                if not turn_response_kind.startswith("schedule."):
+                    hook_message |= await self._system_prompt.run_before_turn(hook_message)
+
+                # system prompt (lazy + optional rebuild)
+                await self._system_prompt.ensure(self._conversation, hook_message)
 
                 # peek pending schedule chunks — yield first, clear only after yield
                 # (only schedule.display results are stashed; silent never enters pending)
@@ -321,11 +329,11 @@ class SessionAgent:
                         "tools": tool_defs,
                         "stream": True,
                     }
-                    if extra_params:
-                        extra_params.pop("messages", None)
-                        extra_params.pop("tools", None)
-                        extra_params.pop("stream", None)
-                        request_body |= extra_params
+                    if request_params:
+                        request_params.pop("messages", None)
+                        request_params.pop("tools", None)
+                        request_params.pop("stream", None)
+                        request_body |= request_params
                     request_body["routing"] = {"session_id": self._conversation.session_id}
 
                     logger.info("Sending request to AI via AiClient")
@@ -480,7 +488,7 @@ class SessionAgent:
                                 assistant_msg["reasoning"] = accumulated_reasoning
                             self._conversation.add(with_kind(assistant_msg, turn_response_kind))
                         await self._conversation.commit()
-                        await self._system_prompt.run_after_turn(user_message, assistant_msg)
+                        await self._system_prompt.run_after_turn(hook_message, assistant_msg)
                         await self._schedule_registry.refresh()
                         if _compaction_needed:
                             await self._maybe_compact(_compaction_prompt_tokens, _compaction_threshold)

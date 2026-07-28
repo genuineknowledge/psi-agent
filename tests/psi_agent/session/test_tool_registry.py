@@ -369,6 +369,20 @@ def test_from_callable_list_type() -> None:
     assert prop["items"]["type"] == "string"
 
 
+def test_from_callable_list_of_objects_type() -> None:
+    async def process(items: list[dict[str, str]] | None = None) -> str:
+        return str(items)
+
+    tf = ToolFunction.from_callable(process)
+
+    assert tf.parameters["properties"]["items"] == {
+        "type": "array",
+        "items": {"type": "object", "additionalProperties": {"type": "string"}},
+        "description": "",
+        "default": None,
+    }
+
+
 def test_from_callable_bool_float_types() -> None:
     async def check(flag: bool, score: float) -> str:
         return f"{flag} {score}"

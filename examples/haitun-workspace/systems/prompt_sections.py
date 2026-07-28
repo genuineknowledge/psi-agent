@@ -164,7 +164,7 @@ Mandatory after file-creating tools:
 Other rules:
 - Never put [SEND:] inside file contents, and never append it to a write/edit tool argument. Saying "file sent" without a reply-content marker does not deliver anything.
 - One marker per file. Use an ABSOLUTE path (prefer the absolute path from the tool result when given).
-- If the user asks for a document (Word .docx, Excel .xlsx, PDF, etc.), actually CREATE the file now with your tools (install a library such as openpyxl / python-docx if it is missing), then send it with [SEND:] in the chat reply. Do NOT just print the code or manual steps — produce the real file and send it.
+- If the user asks for a Word document, call `write_word`; for Excel call `write_excel`. These tools and their dependencies are already available. Do not run pip install or package-manager commands during the request. Create the file and send it with [SEND:] in the chat reply.
 - Only send files that exist and that the user asked for or would expect. Do not auto-send internal/config/tool source under `tools/`, `schedules/`, `skills/`, `systems/`, or `histories/`.
 - The marker text itself may stay visible in the chat, so keep the prose above it self-contained; do not rely on the marker reading like part of a sentence.\
 """
@@ -184,7 +184,7 @@ Judge from the request itself — the user does NOT have to name a format. If th
 - Code, scripts, configs, or a runnable project → write source files into the workspace (and run/verify them).
 - Diagrams, charts, plots → generate the actual image/file.
 
-Create the file with your tools now (install a library such as python-docx / openpyxl / python-pptx if it is missing), verify it exists, then in your **chat reply content** (not inside the file) emit [SEND:<absolute-path>] on its own line — **required** whenever you used a file-creating tool this turn. Give a short plain-text summary of what's inside above the marker; do not also paste the whole content. Never append [SEND:] to write/edit tool arguments. Never end with only "saved to workspace" and no [SEND:].
+Create the file with the existing first-class file tool and do not draft the full artifact in chat first. For a long Word document, first write the full content to Markdown, then call `write_word_from_markdown` with the two file paths; use `write_word` only for smaller structured documents. For Excel call `write_excel`. Their dependencies are already installed. Do not run pip install, raw python-docx scripts, or package-manager commands during the request. Verify the output exists, then in your **chat reply content** (not inside the file) emit [SEND:<absolute-path>] on its own line — **required** whenever you used a file-creating tool this turn. Give a short plain-text summary of what's inside above the marker; do not also paste the whole content. Never append [SEND:] to write/edit tool arguments. Never end with only "saved to workspace" and no [SEND:].
 
 Keep it in chat (no file) when the answer is genuinely short: a direct question, a quick status, a few lines, or a snippet the user clearly wants inline. When it's a judgment call and the content is long, lean toward producing a file. If the user explicitly asks for the content inline, honor that.\
 """

@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
@@ -15,7 +16,7 @@ import _todo_store as _store
 
 
 async def todo(
-    todos: str = "",
+    todos: list[dict[str, str]] | None = None,
     merge: bool = False,
     workspace: str = "",
 ) -> str:
@@ -53,24 +54,18 @@ async def todo(
     Returns:
         JSON with ok, session_id, todos[], summary{{total, pending, …}}, …
     """
-    raw = todos.strip()
-    if not raw:
+    if todos is None:
         result = await _store.read_todos(workspace_raw=workspace)
     else:
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            result = {
-                "ok": False,
-                "message": f"todos must be a JSON array: {exc}",
-            }
+        parsed: Any = todos
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed)
+            except json.JSONDecodeError as exc:
+                result = {"ok": False, "message": f"todos must be a JSON array: {exc}"}
+                return json.dumps(result, ensure_ascii=False)
+        if not isinstance(parsed, list):
+            result = {"ok": False, "message": "todos must be a JSON array"}
         else:
-            if not isinstance(parsed, list):
-                result = {"ok": False, "message": "todos must be a JSON array"}
-            else:
-                result = await _store.write_todos(
-                    todos=parsed,
-                    merge=merge,
-                    workspace_raw=workspace,
-                )
+            result = await _store.write_todos(todos=parsed, merge=merge, workspace_raw=workspace)
     return json.dumps(result, ensure_ascii=False)

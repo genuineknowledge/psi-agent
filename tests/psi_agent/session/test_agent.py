@@ -112,7 +112,7 @@ async def test_agent_runs_after_turn_hook_on_stop(tmp_path: Path) -> None:
         )
         _ = [chunk async for chunk in agent.run(user)]
 
-        assert calls == [(user, {"role": "assistant", "content": "final reply"})]
+        assert calls == [({**user, "session_id": ""}, {"role": "assistant", "content": "final reply"})]
     finally:
         await mock_server.cleanup()
 

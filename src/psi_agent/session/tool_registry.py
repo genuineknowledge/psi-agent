@@ -131,9 +131,28 @@ class ToolFunction:
                     else:
                         args = getattr(annotation, "__args__", ())
                         item = args[0] if args else str
-                        if getattr(item, "__origin__", None) is not None or item not in _type_map:
+                        item_origin = getattr(item, "__origin__", None)
+                        if item_origin is dict:
+                            dict_args = getattr(item, "__args__", ())
+                            key_type, value_type = dict_args if len(dict_args) == 2 else (str, str)
+                            if key_type is not str or value_type not in (*_type_map, Any):
+                                raise TypeError(
+                                    f"Unsupported dict item type: {item!r}. "
+                                    "Keys must be str and values must be str, int, float, or bool"
+                                )
+                            resolved = {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": (
+                                        {} if value_type is Any else {"type": _type_map[value_type]}
+                                    ),
+                                },
+                            }
+                        elif item_origin is not None or item not in _type_map:
                             raise TypeError(f"Unsupported list item type: {item!r}. Supported: str, int, float, bool")
-                        resolved = {"type": "array", "items": {"type": _type_map[item]}}
+                        else:
+                            resolved = {"type": "array", "items": {"type": _type_map[item]}}
                 elif annotation not in _type_map:
                     raise TypeError(
                         f"Unsupported parameter type: {annotation!r}. Supported: str, int, float, bool, list[X]"
