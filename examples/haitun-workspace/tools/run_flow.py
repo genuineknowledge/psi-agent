@@ -217,6 +217,15 @@ class _HumanInputRequiredError(Exception):
         self.request = request
 
 
+class _InstructionReadError(ValueError):
+    """A bundle-confined instruction path whose contents could not be read."""
+
+    def __init__(self, reference: str, workspace_path: str, message: str) -> None:
+        super().__init__(message)
+        self.reference = reference
+        self.workspace_path = workspace_path
+
+
 class _StepToolRegistry(ToolRegistry):
     async def refresh(self) -> dict[str, str]:
         return {}
@@ -412,9 +421,10 @@ def _instruction_resolver(flow_path: str) -> Callable[[str], Awaitable[str]]:
     """Load ``./`` instruction files relative to their workflow bundle."""
 
     bundle_dir: anyio.Path | None = None
+    workspace: anyio.Path | None = None
 
     async def resolve(reference: str) -> str:
-        nonlocal bundle_dir
+        nonlocal bundle_dir, workspace
         if not reference.startswith("./"):
             return reference
 
@@ -426,14 +436,44 @@ def _instruction_resolver(flow_path: str) -> Callable[[str], Awaitable[str]]:
         if bundle_dir is None:
             workflow_path = await _resolve_flow_path(flow_path)
             bundle_dir = await workflow_path.parent.resolve()
+            workspace = await anyio.Path(str(_WORKSPACE_DIR)).resolve()
         resolved = await (bundle_dir / str(relative)).resolve()
         if not Path(str(resolved)).is_relative_to(Path(str(bundle_dir))):
             raise ValueError("instruction path must stay inside the workflow directory")
-        if not await resolved.is_file():
-            raise ValueError(f"instruction path does not name a file: {reference!r}")
-        return await resolved.read_text(encoding="utf-8")
+        if workspace is None:
+            raise AssertionError("instruction resolver did not initialize its workspace")
+        workspace_path = Path(str(resolved)).relative_to(Path(str(workspace))).as_posix()
+        try:
+            if not await resolved.is_file():
+                raise _InstructionReadError(
+                    reference,
+                    workspace_path,
+                    f"instruction path does not name a file: {reference!r}",
+                )
+            return await resolved.read_text(encoding="utf-8")
+        except _InstructionReadError:
+            raise
+        except (OSError, UnicodeError) as error:
+            raise _InstructionReadError(
+                reference,
+                workspace_path,
+                f"instruction path could not be read: {reference!r}",
+            ) from error
 
     return resolve
+
+
+def _agent_instruction_file_fallback(workspace_path: str) -> str:
+    """Delegate a validated but unreadable instruction file to its Agent Step."""
+
+    return (
+        "The instruction for this step is the workspace file "
+        f"{json.dumps(workspace_path, ensure_ascii=False)}. "
+        "Read that file with the available workspace tools before executing the step, "
+        "and follow its contents as the step instruction. "
+        "If the file still cannot be read, continue with the file reference as context "
+        "without inventing its contents."
+    )
 
 
 async def _materialize_instruction_files(
@@ -442,15 +482,22 @@ async def _materialize_instruction_files(
 ) -> dict[str, str]:
     """Read every referenced instruction once before workflow execution."""
 
-    references = sorted(
-        {
-            step.instruction_id
-            for step in compiled.graph.steps
-            if step.instruction_id is not None and step.instruction_id.startswith("./")
-        }
-    )
+    reference_kinds: dict[str, set[str]] = {}
+    for step in compiled.graph.steps:
+        reference = step.instruction_id
+        if reference is not None and reference.startswith("./"):
+            reference_kinds.setdefault(reference, set()).add(compiled.executor_kinds[step.executor_id])
+
     resolve = _instruction_resolver(flow_path)
-    return {reference: await resolve(reference) for reference in references}
+    instruction_files: dict[str, str] = {}
+    for reference, executor_kinds in sorted(reference_kinds.items()):
+        try:
+            instruction_files[reference] = await resolve(reference)
+        except _InstructionReadError as error:
+            if executor_kinds != {"Agent"}:
+                raise
+            instruction_files[reference] = _agent_instruction_file_fallback(error.workspace_path)
+    return instruction_files
 
 
 def _legacy_instruction_identities(compiled: CompiledWorkflow) -> dict[str, str]:

@@ -917,6 +917,111 @@ async def test_run_flow_executes_once_with_dependencies_and_resources(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("failure_mode", ["missing", "invalid-utf8"])
+async def test_run_flow_delegates_unreadable_agent_instruction_file(
+    failure_mode: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = anyio.Path(tmp_path / "flows" / "research")
+    await bundle.mkdir(parents=True)
+    reference = "./instructions/missing.md"
+    source = _ORDERED_RESOURCE_WORKFLOW.replace('"after"', f'"{reference}"').replace(
+        '"before"',
+        f'"{reference}"',
+    )
+    await (bundle / "flow.workflow").write_text(source, encoding="utf-8")
+    if failure_mode == "invalid-utf8":
+        instructions = bundle / "instructions"
+        await instructions.mkdir()
+        await (instructions / "missing.md").write_bytes(b"\xff")
+
+    prompts: list[str] = []
+
+    async def load_step_tools() -> ToolRegistry:
+        return ToolRegistry()
+
+    async def complete_agent_step(
+        prompt: str,
+        context: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object]:
+        del tool_registry
+        assert ai_socket == "http://ai.example"
+        prompts.append(prompt)
+        if context.step_id == "before_step":
+            return {"before_result": "BEFORE"}
+        if context.step_id == "after_step":
+            return {"after_result": "AFTER"}
+        raise AssertionError(f"unexpected Agent step: {context.step_id}")
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
+    monkeypatch.setattr(run_flow_tool, "_load_step_tools", load_step_tools)
+    monkeypatch.setattr(run_flow_tool, "_complete_agent_step", complete_agent_step)
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+
+    result = await run_flow_tool.run_flow(
+        "flows/research/flow.workflow",
+        '{"request": "go"}',
+        '{"gpu": 1}',
+    )
+
+    assert json.loads(result) == {
+        "after_result": "AFTER",
+        "before_result": "BEFORE",
+        "selected_result": "BEFORE",
+    }
+    expected = (
+        'Instruction:\nThe instruction for this step is the workspace file "flows/research/instructions/missing.md".'
+    )
+    assert len(prompts) == 2
+    assert all(expected in prompt for prompt in prompts)
+    assert all(reference not in prompt for prompt in prompts)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("source", "flow_name"),
+    [
+        (_PROGRAM_WORKFLOW.replace('"after"', '"./instructions/missing.md"'), "program"),
+        (_HUMAN_WORKFLOW, "human"),
+    ],
+    ids=["program", "human"],
+)
+async def test_run_flow_does_not_delegate_unreadable_non_agent_instruction_file(
+    source: str,
+    flow_name: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow_path = anyio.Path(tmp_path / "flows" / f"{flow_name}.workflow")
+    await flow_path.parent.mkdir()
+    await flow_path.write_text(source, encoding="utf-8")
+    dispatched = False
+
+    async def execute_program(invocation: Any) -> str:
+        nonlocal dispatched
+        del invocation
+        dispatched = True
+        return ""
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+    monkeypatch.setattr(run_flow_tool, "_run_program", execute_program)
+
+    with pytest.raises(ValueError, match="instruction path does not name a file"):
+        await run_flow_tool.run_flow(
+            f"flows/{flow_name}.workflow",
+            '{"request": "go"}',
+        )
+
+    assert not dispatched
+
+
+@pytest.mark.anyio
 async def test_run_flow_executes_program_without_creating_agent_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

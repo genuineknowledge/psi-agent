@@ -113,9 +113,12 @@ The runner materializes every `./...` Step instruction through one injected
 instruction resolver before dispatching any Step, caches shared references, and
 passes the resulting text consistently to Agent, Human, and Program executors.
 The public workspace adapter accepts UTF-8 Markdown files relative to the
-containing `.workflow` file, rejects bundle escapes and non-files, and includes
-their contents in the durable workflow-definition digest used across Human
-wait/resume turns. Short inline Instruction text bypasses file resolution.
+containing `.workflow` file and rejects bundle escapes. If a validated
+Agent-only file cannot be read, the adapter delegates its normalized
+workspace-relative reference through that Agent's Step prompt; unreadable Human
+or Program instructions remain errors. Materialized text is included in the
+durable workflow-definition digest used across Human wait/resume turns. Short
+inline Instruction text bypasses file resolution.
 
 A Program executor must have exactly one `program_path(program) == path`
 declaration. Absolute and explicit `./...` paths pass through; other path
