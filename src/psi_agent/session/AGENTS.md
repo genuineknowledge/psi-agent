@@ -8,32 +8,11 @@ Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、t
 
 | 字段 | CLI | 用途 |
 |------|-----|------|
-| `Session.workspace` | `--workspace` | 用户打开目录（相对文件 IO）**以及定时任务根**（`{workspace}/schedules/`）；空 → `Path.cwd()` |
-| `Session.agent` | `--agent` | Agent 包目录（tools / `systems/`）；**空 → 与 workspace 相同**（兼容旧单根） |
+| `Session.workspace` | `--workspace` | 用户打开目录（相对文件 IO）；空 → `Path.cwd()` |
+| `Session.agent` | `--agent` | Agent 包目录（tools / schedules / `systems/`）；**空 → 与 workspace 相同**（兼容旧单根） |
 | `Session.appdata` | `--appdata` / `PSI_APPDATA` | 记忆区根；history 写 `{appdata}/histories/`（第 4C）；空 → resolve |
 
 `SessionAgent.create(workspace_path=…, agent_path=…)`：省略 `agent_path` 时回落到 `workspace_path`。每回合经 ``runtime_scope`` 绑定 `get_session_id()` / `get_workspace()` / `get_agent()`（见下节适用范围）。
-
-### 调度归属 workspace，触发权归属 (session × schedule)（刻意为之）
-
-`schedules/` 从 **workspace** 加载——每个 Session 都读到全部条目，但**是否触发逐条决定**：`ScheduleRegistry(active_names=…, deactive_names=…)` 判定为激活（白名单命中且不在黑名单里）的条目才起 runner。
-
-| | |
-|--|--|
-| **为什么** | Gateway 一个进程跑多个 Session；飞书 channel 更是**按会话 spawn 独立 Session**（`gateway/_feishu_manager.py`：私聊按 `open_id` 每人一个、群聊按 `chat_id` 每群一个），多 Session 共用同一个 agent 包。旧行为「每个 Session 为自己加载到的每条 schedule 各起一个 runner」会让一条定时任务被在线会话数乘一遍 → 飞书上一条提醒推 N 次 |
-| **为什么按条而非按 Session 一个布尔** | 触发权本质是「**这一条**任务归哪个 Session」。整个 Session 一个开关只能表达「全触发 / 全不触发」，表达不了「A 条归调度 Session、B 条归某个用户会话」。名单模型下的不变式是：一条 schedule 必须**恰好**被一个 Session 激活 |
-| **加载源** | `workspace_path / "schedules"`。单根模式（`agent=""` → agent≡workspace）行为不变 |
-| **激活名单语义** | 白名单 `active_names`：`None` / 空集 → 一条都不激活（用户会话默认）；`{"*"}`（`ACTIVATE_ALL`）→ 全部；具名集合 → 仅这些 `schedule.name`。黑名单 `deactive_names` **优先**做减法 |
-| **为什么还要黑名单** | 白名单是**枚举**，只覆盖启动那一刻已存在的条目——之后 `_watch_dir` / `refresh()` 新发现的 `TASK.md` 不在名单里，永远不会被触发。要「除某几条以外全都归我」（调度 Session 的常态），只能写 `active='*'` + `deactive=让出的几条`：通配符让新条目自动激活，黑名单精确挖掉划给别人的那几条 |
-| **未激活条目** | 照旧加载进 registry：`schedules` 属性与 `refresh()` 的 add/update/remove 统计都**不受激活影响**，只是不起 runner。`active_schedules` 属性给出本 Session 实际触发的那些（schedule 列表目前不经 REST / SPA 暴露） |
-| **谁触发** | `_start_runner` 逐条查 `is_active(name)`，未激活即 no-op。去重发生在**构造期**（谁激活哪条由创建方决定），不是运行时抢锁，所以没有租约、没有选主、没有「持有者退出谁接管」 |
-| **怎么感知新任务** | 调度 Session 没有 channel → 永远没有回合 → 回合内的两个 refresh 时机都不发生。故 `start_all` 在**白名单非空时**额外起 `_watch_dir` 协程每 30s `refresh()`。**这不是可选优化**：少了它，用户新建的定时任务永远不会被加载（见下方「动态重载」第 3 条）。门是「白名单非空」而非「当前有激活条目」——白名单写了个磁盘上还不存在的名字时也要起 watcher，那个 `TASK.md` 之后可能被建出来；白名单空则黑名单只做减法、一条都不可能激活，不起 watcher，不做无用扫盘 |
-| **谁创建** | Gateway `SchedulerManager.ensure(workspace)`（见 `gateway/AGENTS.md`），为每个 workspace 幂等地维护唯一一个**全量激活**（`("*",)`）的调度 Session（key 经 `await anyio.Path(workspace).resolve()` + `os.path.normcase` 归一；不用 `os.path.realpath`，那是同步 IO，违反「一切异步」）；**按需**——workspace 无 `schedules/*/TASK.md` 时不 spawn。用户会话一律传空名单 |
-| **display 结果** | 调度 Session 没有 channel 连着它，`visibility: display` 的结果只写它自己的 JSONL，**不再回流给用户**（刻意接受的降级）。要可靠推送就用 `fire=tool` + `feishu_message_send`，那条路不依赖 pending |
-| **`fire=prompt` 的历史** | 落在 AppData 的 `histories/scheduler-<hash>.jsonl`（第 4C 起 history 归 AppData），与用户对话历史分开 |
-| **workspace 工具侧** | `schedule_manage` 经 `_runtime_paths.resolve_workspace()`（#485 起的统一路径解析）落盘到 `{workspace}/schedules`。否则内核读 workspace、工具写 agent 包，两边对不上 |
-| **迁移注意** | agent 包（如 `examples/haitun-workspace/schedules/heartbeat`）里的 schedules 在**分离根**部署下不再被加载；需要它跑就放进 workspace |
-| **单进程 CLI** | `psi-agent session` 默认不激活任何条目；`--active-schedules '*'` 触发全部（含之后新建的），`--active-schedules daily,weekly` 只触发具名的几条，`--deactive-schedules x` 从中排除。`psi-agent run` 的 session 配置项同名（`active_schedules:` / `deactive_schedules:`）。**没有布尔开关**——一个 `--scheduler` 表达不了「除 x 以外全部」，且会让「全部」与「具名子集」两种意图落在两个参数上 |
 
 ### `runtime_context` 适用范围（刻意限制）
 
@@ -54,10 +33,10 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 ```
 1. setup_logging(verbose)
 2. 解析 workspace（空 → cwd）；解析 agent（空 → 同 workspace）
-3. SessionAgent.create(workspace_path=…, agent_path=…, appdata_root=…) → session_id、AiClient、从 agent 加载 tools/system、**从 workspace 加载 schedules**；history 在 AppData（legacy 双读）
+3. SessionAgent.create(workspace_path=…, agent_path=…, appdata_root=…) → session_id、AiClient、从 agent 加载 tools/schedules/system；history 在 AppData（legacy 双读）
 4. 启动 anyio.task_group：
    ├── serve_session(agent=agent)  ← 从 agent 读取 channel_socket + handle_request
-   └── 每个**激活的** schedule 一个 run_one_schedule(schedule, agent) task（激活名单由 `--active-schedules` / `--deactive-schedules` 决定；用户会话名单为空，无 runner）
+   └── 每个 schedule 一个 run_one_schedule(schedule, agent) task
 
 **关键点**：
 - `SessionAgent` 自包含：持有 `_ai_client`、`_channel_adapter`、`_lock`、`_workspace_path`、`_agent_path`
@@ -66,13 +45,14 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 - **工具可见的 session id / 路径**：见上方「`runtime_context` 适用范围」。``todo`` 等经 ``get_session_id()`` 读取，勿回落到 ``default``
 - 所有手动模块加载使用 `原名_session_id_文件hash` 作为 module name（tool 和 system prompt 均用 `compile` + `exec` 避免 importlib bytecode 缓存），确保同进程多 session 隔离
 - `SessionAgent.create()` 完成所有初始化——`__init__.py` 只做入口编排
-- Tool / system 从 **agent_path** 加载；**schedule 从 workspace_path 加载**（见上方「调度归属 workspace」）；history 写 **AppData** ``histories/``（第 4C；legacy ``{workspace}/histories/`` 双读）
+- Tool / schedule / system 从 **agent_path** 加载；history 写 **AppData** ``histories/``（第 4C；legacy ``{workspace}/histories/`` 双读）
 - AppData 路径助手在 ``psi_agent._appdata``（与 Gateway 共享；**禁止**经 ContextVar 传递 AppData 根）
 - System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）
 - `system_prompt_builder` 和 `system_prompt_rebuild_checker` 兼容旧的零参形式；如定义了位置参数，Session 会传入当前原始 `user_message`。这一显式参数只用于本轮动态 prompt，不会改变写入 history 的 `kind` 标记副本
 - 后续请求可调用 `system_prompt_rebuild_checker()`（如果定义），返回 True 则用同一条当前 `user_message` 重建 system prompt
 - 可选 `system_after_turn(user_message, assistant_message)` 在 `finish_reason="stop"` 的最终 assistant 消息已 commit 后执行。它是可恢复的 workspace hook：普通异常记 WARNING，不回滚已成功交付的回合；取消信号仍向外传播。未定义时使用 no-op 默认值
 - 未整段重建时，提示词一字不改；若 agent 包定义了 `turn_context_builder()`，则每回合把易变块挂到**本回合 user 消息**上（见下方「每回合易变上下文」）
+- 可选生命周期顺序为 `system_before_turn` → `system_prompt_builder` → AI/tool loop → `system_after_turn`。`system_before_turn` 接收当前回合的临时 hook context（含额外请求参数副本）；普通异常、非 dict 返回值和超时降级为 `{}`，但绝不吞掉取消。其结果仅用于本轮 prompt 构建且不写入 history；除 OpenAI 保留字段外，原始请求参数仍透传给 AI。`schedule.*` 回合跳过该 hook。
 
 ## Agent Loop 逻辑
 
@@ -90,7 +70,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
    - tool 执行起止 → 仍写入 **同一** `reasoning` 槽（刻意压缩，便于 Session↔AI OpenAI 形同构），`kind="tool_call"|"tool_result"`；正文可继续带 `[Tool Call:]`/`[Tool Result:]` 过渡标记
    - tool_calls → 累积（按 index 拼接 partial JSON）
     - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 4
-    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 调用可选 `system_after_turn` + 刷新 schedule registry + 若收到 compaction 信号则调用 `_maybe_compact()` → 释放锁
+    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry + 若收到 compaction 信号则调用 `_maybe_compact()` → 释放锁
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
    - 任何未捕获异常 → 回滚到快照 → 向上传播
 6. 最多 `max_tool_rounds` 轮 tool call，达到上限时追加关闭 assistant 消息 + commit
@@ -229,12 +209,9 @@ Session 层使用两个对称的协议适配器，将 `SessionAgent.run()` 包�
   - 文件内 tool 增删 → 分别标记 `added` / `removed`
 - `fresh` 标志保证 skipped 文件不被误删
 - `ScheduleRegistry` 以 per-file `ScheduleEntry` 存储（含 hash），`refresh()` 支持 add/update/remove/skip。每个 schedule 有独立 `CancelScope`，update/remove 时取消旧 runner 并启动新 runner。`refresh()` 内部已 try/except，失败时 log warning 返回 `{}`，不修改内部状态，调用方可直接 await 无需自行容错
-- **激活是 (session × schedule) 的属性**：`ScheduleRegistry(active_names=…, deactive_names=…)` 逐条决定起不起 runner——白名单 `None`/空 → 一条都不起（所有用户会话的默认），`{"*"}` → 全部，具名集合 → 仅这些；黑名单优先做减法。未激活的条目仍加载进 registry（`schedules` 属性与 `refresh()` 统计都不受影响），`_start_runner` 查 `is_active(name)` 后 no-op。「一条定时任务只触发一次」由此在构造期成立（谁激活哪条由创建方决定），无需运行时协调。**黑名单不是冗余**：`refresh()` 之后新出现的 `TASK.md` 只有通配符白名单能覆盖到，「除某几条以外全归我」必须写成 `*` + 黑名单
-- Schedule 刷新的三个时机：
+- Schedule 刷新的两个时机：
   1. 每次 `run()` 入口（turn 开始），与 tool 一并刷新
   2. `finish_reason="stop"` 后（turn 结束），仅刷新 schedule——因本轮 tool 可能修改了 workspace schedules 下的文件，需立即生效，不等下次 turn
-  3. **`_watch_dir` 常驻协程每 30s 刷新**（仅**白名单非空**的 Session 才起）。**必需**：上面两个时机都在 `SessionAgent.run()` 里，而调度 Session 没有 channel 连着它、永远不会有回合；少了这个 watcher，用户经 `schedule_manage` 新建的定时任务永远不会被加载，只有 spawn 那一刻已存在的能跑。用轮询而非 inotify/watchdog——`refresh()` 已是 hash 增量（未变的文件不重新解析），一次目录 stat 成本可忽略，且零新依赖、跨平台一致
-     - **循环体内 `except Exception` 兜底（对标 `_run_one`）**：watcher 经 `start_soon` 挂在 Session 的 task group 上，任何逸出的异常都会**连坐整个调度 Session**（实测过：`refresh()` 之外抛异常会直接杀掉 Session）。单次刷新失败只记 ERROR，下一周期重试。`CancelledError` 是 `BaseException` 不被捕获，取消照常传播
 
 ## Tool 调用细节
 
@@ -259,7 +236,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 ## Schedule 机制完整流程
 
 ```
-每个**激活的** schedule 一个 run_one_schedule() coroutine（+ 白名单非空时一个 _watch_dir()）：
+每个 schedule 一个 run_one_schedule() coroutine：
   while True:
     _seconds_until_next(cron)   ← 本地墙钟下次触发（勿用 time.time() 作 croniter base；TZ 设了则按该时区）
     await anyio.sleep(wait)     ← 睡到触发
@@ -280,45 +257,19 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 - **cron 按本地时间解释（刻意为之，勿改回 UTC）**：`_seconds_until_next` 用 `datetime.now()` + `croniter`，**禁止**把 Unix timestamp 交给 `croniter` 当 base——后者会把 5 段字段当 UTC，导致 `once_at` 写的本地时刻在非 UTC 机器上晚数小时才触发。workspace `schedule_manage` 的 `once_at`/`cron` 语义都是本机墙钟。此外若设了标准 `TZ` 环境变量，`ScheduleRegistry._schedule_tz()` 解析成 `ZoneInfo` 并以 `datetime.now(tz)` 作 base，让 cron 字段按该时区解释（如 UTC 容器设 `TZ=Asia/Shanghai` 则 `0 9 * * *` 按北京 9 点触发）；`TZ` 未设 / 非法时退回 naive `datetime.now()`，行为与默认一致，不额外依赖 `tzdata`
 - **消息 ``kind``（JSONL provenance，敲定协议）**：OpenAI ``role`` 不变；用正交字段区分对话来源（``chat`` / ``schedule.display`` / ``schedule.silent`` / …）。Gateway ``/history`` 只返回 ``is_displayable_chat_message``。AI 请求经 ``messages_for_ai`` 剥掉消息 ``kind``/遗留 ``chat_type``。**≠** SSE / ``AgentChunk.kind``（``thinking`` / ``tool_call`` / ``tool_result``）——后者只标过程流 provenance，不进 history 白名单语义
 - ``visibility: silent`` 的 schedule（heartbeat）结果永不 pending、永不展示
-- ``visibility: display`` 的 schedule 结果进 history 并 stash 到 pending——但**调度 Session 没有 channel 连着它**，所以这份 pending 实际不会回流给任何用户（刻意接受的降级，见上方「调度归属 workspace」的 display 结果一行）。要可靠推送就用 `fire=tool` 直调 `feishu_message_send` 等工具。pending 机制本身保留：单根 CLI（`psi-agent session --active-schedules '*'`）下同一 Session 既跑调度又接 channel 时仍会带回
+- ``visibility: display`` 的 schedule 结果可进 history，并通过 pending 随下次 ``POST /chat`` 带回（``/events/schedule`` 推送通道仍待定）
 - `fire: prompt` 触发只是 Session 内再跑一轮 agent（TASK 正文当 user message）——**不会**自动往飞书推 IM；`fire: tool` 才按 YAML 直调工具（如 `feishu_message_send`）
 - Schedule 响应的 content 和 reasoning 各自存在于各自的消息周期，不会交错
 - 多个 schedule 可以并发 sleep，但通过 lock 串行触发
 - 每个 schedule 在加载时独立处理——IO 错误、YAML 解析问题、cron 验证失败都只跳过该 schedule
-
-## Event / Trigger 协议（定事）
-
-与 schedule 平行：外部推送经 Channel → Session **通用事件管道** → ``TriggerRegistry`` 匹配 agent 包 ``triggers/*/TRIGGER.md`` → ``fire=tool|prompt``。
-
-### 通用转发接口（Session 只需这些）
-
-**业务事件注册不在 Session。** Session 只做统一收件与按 TRIGGER 发放。
-
-| 角色 | 位置 | 说明 |
-|------|------|------|
-| **统一接收** | ``session/server.py`` ``POST /events`` → ``SessionAgent.handle_event`` | 与 ``POST /chat/completions`` 并列；官方映射与合成事件**同一入口** |
-| **薄信封** | ``session/event_protocol.py`` | 校验形状（``source``/``event``/``payload``…），**无**业务事件 catalog 硬门槛 |
-| **发放（挂钩）** | ``session/trigger_registry.py`` | 匹配 TRIGGER → ``fire`` |
-
-事件从哪来、叫什么业务名：见 agent 包 ``channel_events/`` + Channel 加载（``docs/superpowers/specs/2026-07-29-channel-events-in-agent-package.md``）。
-
-| 概念 | 说明 |
-|------|------|
-| **channel_events** | Agent 包内按 Channel 维护的事件定义（≈ 加 tool）；含官方 ``platform_map`` 与预留 ``synthetic`` |
-| **信封** | ``event`` + ``payload``；可选 ``raw_event`` / ``raw_payload`` |
-| **匹配（刻意为之）** | 先 ``event``+``filter``；未命中再 ``raw_event``+``raw_filter`` |
-| **落盘挂钩** | ``{Session.agent}/triggers/``；haitun ``trigger_manage`` |
-| **kind** | ``trigger.silent`` / ``trigger.display`` |
-
-无 TRIGGER 时事件仍可进门，matched/fired 为空（能力开、钩子关）。
 
 ### History 展示白名单（``history_display.py``）
 
 | kind | 展示 |
 |------|------|
 | `chat` | user/assistant 非空 content |
-| `schedule.display` / `trigger.display` | 仅 assistant |
-| `schedule.silent` / `trigger.silent` / `compacted` | 否 |
+| `schedule.display` | 仅 assistant |
+| `schedule.silent` / `compacted` | 否 |
 | 遗留 `chat_type=schedule` / `*_schedule` role | 视为 silent |
 
 Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记。
