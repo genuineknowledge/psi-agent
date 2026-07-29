@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
+from typing import Annotated, Any, Literal
 
 import anyio
 import pytest
@@ -66,12 +67,296 @@ def test_from_callable_optional_param() -> None:
     assert "units" not in tf.parameters["required"]
 
 
+def test_from_callable_optional_param_without_default_remains_required() -> None:
+    async def query(value: str | None) -> str:
+        return str(value)
+
+    tf = ToolFunction.from_callable(query)
+
+    assert tf.parameters["required"] == ["value"]
+
+
 def test_from_callable_default_param() -> None:
     async def greet(name: str = "World") -> str:
         return f"Hello {name}"
 
     tf = ToolFunction.from_callable(greet)
     assert "name" not in tf.parameters["required"]
+
+
+def test_from_callable_exposes_annotated_constraints_literal_default_and_closed_object() -> None:
+    async def query(
+        text: Annotated[str, {"minLength": 1, "maxLength": 8000}],
+        mode: Literal["low", "medium", "high"] = "medium",
+    ) -> str:
+        return text
+
+    tf = ToolFunction.from_callable(query)
+
+    assert tf.parameters == {
+        "type": "object",
+        "properties": {
+            "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000,
+                "description": "",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+                "default": "medium",
+                "description": "",
+            },
+        },
+        "required": ["text"],
+        "additionalProperties": False,
+    }
+
+
+def test_from_callable_exposes_constraints_for_optional_annotated_type() -> None:
+    async def query(value: Annotated[str, {"minLength": 1}] | None = None) -> str:
+        return str(value)
+
+    tf = ToolFunction.from_callable(query)
+
+    assert tf.parameters["properties"]["value"] == {
+        "type": "string",
+        "minLength": 1,
+        "default": None,
+        "description": "",
+    }
+    assert tf.parameters["required"] == []
+
+
+def test_from_callable_exposes_constraints_around_optional_type() -> None:
+    async def query(value: Annotated[str | None, {"maxLength": 3}] = None) -> str:
+        return str(value)
+
+    tf = ToolFunction.from_callable(query)
+
+    assert tf.parameters["properties"]["value"] == {
+        "type": "string",
+        "maxLength": 3,
+        "default": None,
+        "description": "",
+    }
+
+
+@pytest.mark.parametrize(
+    ("annotation", "metadata"),
+    [
+        (int, {"minLength": 1}),
+        (float, {"maxLength": 2}),
+        (bool, {"pattern": "true"}),
+        (str, {"minimum": 0}),
+        (list[str], {"maximum": 1}),
+    ],
+)
+def test_from_callable_rejects_constraints_for_inapplicable_types(annotation: Any, metadata: dict[str, object]) -> None:
+    async def tool(value: str) -> str:
+        return str(value)
+
+    tool.__annotations__["value"] = Annotated[annotation, metadata]
+
+    with pytest.raises(TypeError, match="not supported for schema type"):
+        ToolFunction.from_callable(tool)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "metadata"),
+    [
+        (str, {"minLength": -1}),
+        (str, {"maxLength": 1.5}),
+        (str, {"minLength": True}),
+        (str, {"pattern": 1}),
+        (int, {"minimum": 1.5}),
+        (int, {"maximum": True}),
+        (float, {"minimum": float("nan")}),
+        (float, {"maximum": float("inf")}),
+    ],
+)
+def test_from_callable_rejects_invalid_constraint_values(annotation: Any, metadata: dict[str, object]) -> None:
+    async def tool(value: str) -> str:
+        return str(value)
+
+    tool.__annotations__["value"] = Annotated[annotation, metadata]
+
+    with pytest.raises(TypeError, match="Invalid JSON Schema constraint"):
+        ToolFunction.from_callable(tool)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "metadata"),
+    [
+        (str, {"minLength": 3, "maxLength": 2}),
+        (int, {"minimum": 3, "maximum": 2}),
+        (float, {"minimum": 3.0, "maximum": 2}),
+    ],
+)
+def test_from_callable_rejects_inverted_constraint_ranges(annotation: Any, metadata: dict[str, object]) -> None:
+    async def tool(value: str) -> str:
+        return str(value)
+
+    tool.__annotations__["value"] = Annotated[annotation, metadata]
+
+    with pytest.raises(TypeError, match="must not exceed"):
+        ToolFunction.from_callable(tool)
+
+
+def test_from_callable_accepts_arbitrarily_large_integer_constraints() -> None:
+    lower_bound = 10**1000
+
+    async def tool(value: int) -> str:
+        return str(value)
+
+    tool.__annotations__["value"] = Annotated[int, {"minimum": lower_bound}]
+    tf = ToolFunction.from_callable(tool)
+
+    assert tf.parameters["properties"]["value"]["minimum"] == lower_bound
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"type": "integer"},
+        {"enum": ["x"]},
+        {"default": "x"},
+        {"description": "replacement"},
+        {"minItems": 1},
+    ],
+)
+def test_from_callable_rejects_metadata_outside_constraint_allowlist(metadata: dict[str, object]) -> None:
+    async def tool(value: str) -> str:
+        return value
+
+    tool.__annotations__["value"] = Annotated[str, metadata]
+
+    with pytest.raises(TypeError, match="Unsupported JSON Schema constraints"):
+        ToolFunction.from_callable(tool)
+
+
+@pytest.mark.parametrize("metadata", ["minimum", object(), ["minimum", 1]])
+def test_from_callable_rejects_non_mapping_annotated_metadata(metadata: object) -> None:
+    async def tool(value: str) -> str:
+        return value
+
+    tool.__annotations__["value"] = Annotated[str, metadata]
+
+    with pytest.raises(TypeError, match="Unsupported Annotated metadata"):
+        ToolFunction.from_callable(tool)
+
+
+def test_from_callable_reports_mixed_unsupported_metadata_keys() -> None:
+    async def tool(value: str) -> str:
+        return value
+
+    tool.__annotations__["value"] = Annotated[str, {"type": "integer", 1: "invalid"}]
+
+    with pytest.raises(TypeError, match="Unsupported JSON Schema constraints"):
+        ToolFunction.from_callable(tool)
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        Literal[1, True],
+        Literal["one", 2],
+        eval("Literal[1.0, float('inf')]", {"Literal": Literal}),
+        eval("Literal[()]", {"Literal": Literal}),
+    ],
+)
+def test_from_callable_rejects_non_json_safe_or_heterogeneous_literals(literal: object) -> None:
+    async def tool(value: str) -> str:
+        return str(value)
+
+    tool.__annotations__["value"] = literal
+
+    with pytest.raises(TypeError, match="Unsupported Literal"):
+        ToolFunction.from_callable(tool)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "default"),
+    [
+        (str, object()),
+        (str, float("nan")),
+        (float, float("inf")),
+        (list[float], [1.0, float("-inf")]),
+        (list[str], ["ok", object()]),
+    ],
+)
+def test_from_callable_rejects_defaults_that_are_not_strict_json(annotation: object, default: object) -> None:
+    async def tool(value: str = "placeholder") -> str:
+        return str(value)
+
+    tool.__annotations__["value"] = annotation
+    tool.__defaults__ = (default,)
+
+    with pytest.raises(TypeError, match=r"default.*JSON", check=lambda e: "value" in str(e)):
+        ToolFunction.from_callable(tool)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "default"),
+    [
+        (str, 1),
+        (int, True),
+        (int, 1.0),
+        (float, True),
+        (bool, 1),
+        (list[int], [1, True]),
+        (list[str], {"item": "value"}),
+        (Literal["low", "high"], "medium"),
+        (str | None, 1),
+        (str, None),
+    ],
+)
+def test_from_callable_rejects_defaults_that_do_not_match_schema(annotation: Any, default: object) -> None:
+    async def tool(value: str = "placeholder") -> str:
+        return str(value)
+
+    tool.__annotations__["value"] = annotation
+    tool.__defaults__ = (default,)
+
+    with pytest.raises(TypeError, match=r"default.*does not conform", check=lambda e: "value" in str(e)):
+        ToolFunction.from_callable(tool)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "metadata", "default"),
+    [
+        (str, {"minLength": 2}, "x"),
+        (str, {"maxLength": 2}, "xxx"),
+        (str, {"pattern": "^[a-z]+$"}, "123"),
+        (int, {"minimum": 2}, 1),
+        (int, {"maximum": 2}, 3),
+        (float, {"minimum": 0.5, "maximum": 1}, 0.25),
+    ],
+)
+def test_from_callable_rejects_defaults_that_violate_constraints(
+    annotation: Any, metadata: dict[str, object], default: object
+) -> None:
+    async def tool(value: str = "placeholder") -> str:
+        return str(value)
+
+    tool.__annotations__["value"] = Annotated[annotation, metadata]
+    tool.__defaults__ = (default,)
+
+    with pytest.raises(TypeError, match=r"default.*does not conform", check=lambda e: "value" in str(e)):
+        ToolFunction.from_callable(tool)
+
+
+def test_from_callable_accepts_recursive_json_default_and_nullable_default() -> None:
+    async def tool(values: list[int], label: str | None = None) -> str:
+        return str(values) + str(label)
+
+    tool.__defaults__ = ([1, 2], None)
+    tf = ToolFunction.from_callable(tool)
+
+    assert tf.parameters["properties"]["values"]["default"] == [1, 2]
+    assert tf.parameters["properties"]["label"]["default"] is None
+    assert tf.parameters["required"] == []
 
 
 def test_from_callable_list_type() -> None:

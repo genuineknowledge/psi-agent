@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import anyio
+import _runtime_paths as _paths
 
 
 async def edit(file_path: str, old_string: str, new_string: str) -> str:
@@ -10,6 +10,9 @@ async def edit(file_path: str, old_string: str, new_string: str) -> str:
 
     The old_string must appear exactly once in the file. If it appears
     zero or more than once, the edit is rejected to prevent ambiguous changes.
+
+    Relative paths resolve under the current Session workspace
+    (``get_workspace()``). Absolute paths are used as-is.
 
     Args:
         file_path: Path to the file to edit.
@@ -19,9 +22,9 @@ async def edit(file_path: str, old_string: str, new_string: str) -> str:
     Returns:
         Success message or error message describing what went wrong.
     """
-    path = anyio.Path(file_path)
+    path = _paths.resolve_user_path(file_path)
     if not await path.exists():
-        return f"[Error] File not found: {file_path}"
+        return f"[Error] File not found: {path}"
 
     content = await path.read_text(encoding="utf-8", errors="replace")
     count = content.count(old_string)
@@ -33,4 +36,4 @@ async def edit(file_path: str, old_string: str, new_string: str) -> str:
 
     new_content = content.replace(old_string, new_string, 1)
     await path.write_text(new_content, encoding="utf-8")
-    return f"[OK] Replaced 1 occurrence in {file_path}"
+    return f"[OK] Replaced 1 occurrence in {path}"

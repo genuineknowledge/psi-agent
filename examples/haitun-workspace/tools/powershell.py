@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
 import shutil
 from pathlib import Path
 
+import _runtime_paths as _paths
 import anyio
 from loguru import logger
 
@@ -57,7 +57,7 @@ async def powershell(command: str, *, cwd: str | None = None) -> str:
         cwd: Working directory. Defaults to the workspace root.
     """
     if cwd is None:
-        cwd = str(Path(inspect.getfile(powershell)).parent.parent)
+        cwd = _paths.workspace_dir()
 
     pwsh = _find_powershell()
     # -NoProfile: skip user profile for predictable, fast startup.

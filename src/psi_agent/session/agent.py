@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from contextvars import ContextVar
 from pathlib import Path
@@ -14,10 +14,26 @@ from loguru import logger
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.event_protocol import EventProtocolError, parse_event_envelope
+from psi_agent.session.history_display import (
+    KIND_COMPACTED,
+    message_kind,
+    messages_for_ai,
+    with_kind,
+)
+from psi_agent.session.protocol import (
+    REASONING_KIND_THINKING,
+    REASONING_KIND_TOOL_CALL,
+    REASONING_KIND_TOOL_RESULT,
+    AgentChunk,
+    AgentError,
+    AgentRunOutcome,
+)
+from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_registry import ToolRegistry
+from psi_agent.session.trigger_registry import TriggerRegistry
 
 # Workspace tools receive only their declared arguments.  Keep the active
 # backend binding task-local so infrastructure data stays out of tool schemas.
@@ -46,8 +62,8 @@ class SessionAgent:
 
     Design principle: ``__init__`` takes already-built components.
     ``create()`` is the async factory that assembles everything from a
-    workspace directory.  ``handle_request()`` owns the full request
-    lifecycle: parse → lock+prepare → run → write.
+    workspace directory (and optional agent package).  ``handle_request()``
+    owns the full request lifecycle: parse → lock+prepare → run → write.
     """
 
     def __init__(
@@ -58,17 +74,23 @@ class SessionAgent:
         conversation: Conversation | None = None,
         tool_registry: ToolRegistry | None = None,
         schedule_registry: ScheduleRegistry | None = None,
+        trigger_registry: TriggerRegistry | None = None,
         system_prompt: SystemPrompt | None = None,
         max_tool_rounds: int = 128,
+        workspace_path: Path | None = None,
+        agent_path: Path | None = None,
     ) -> None:
         self._ai_client = ai_client
         self._channel_adapter = channel_adapter or ChannelAdapter()
         self._conversation = conversation or Conversation()
         self._tool_registry = tool_registry or ToolRegistry()
         self._schedule_registry = schedule_registry or ScheduleRegistry()
+        self._trigger_registry = trigger_registry or TriggerRegistry()
         self._system_prompt = system_prompt or SystemPrompt()
         self._max_tool_rounds = max_tool_rounds
         self._lock = anyio.Lock()
+        self._workspace_path = workspace_path
+        self._agent_path = agent_path
 
     # -- factory --------------------------------------------------------------
 
@@ -80,27 +102,73 @@ class SessionAgent:
         workspace_path: Path,
         max_tool_rounds: int = 128,
         session_id: str | None = None,
+        agent_path: Path | None = None,
+        appdata_root: str = "",
+        active_schedules: set[str] | None = None,
+        deactive_schedules: set[str] | None = None,
     ) -> SessionAgent:
-        """Production entry point.  Loads everything from *workspace_path*."""
+        """Production entry point.
+
+        *workspace_path* is the user open-folder (relative file tools) and owns
+        **schedules** (``schedules/``).
+        *agent_path* loads tools / system / **triggers** (``triggers/``); when omitted, falls
+        back to *workspace_path* (single-root compatibility).
+        *appdata_root* holds history JSONL (Step 4C); empty → resolve via
+        ``PSI_APPDATA`` / platformdirs.
+
+        *active_schedules* / *deactive_schedules* decide, per entry, which
+        schedules under ``{workspace}/schedules`` this Session fires: a whitelist
+        of ``None`` / empty fires none (the default for user Sessions),
+        ``{ACTIVATE_ALL}`` fires all, a named set fires only those ``name`` s;
+        the blacklist wins and subtracts the ones assigned elsewhere.
+        **Activation is a property of (session x schedule)** — two Sessions on
+        the same workspace may activate disjoint subsets, and non-activated
+        entries are still loaded into the registry (readable, refreshable), they
+        just get no runner. 刻意为之: Feishu spawns one Session per ``open_id``,
+        so a schedule must be activated by exactly one Session or the reminder
+        gets multiplied by the number of live sessions; the Gateway's
+        ``SchedulerManager`` keeps exactly one fully activated (``ACTIVATE_ALL``)
+        scheduler Session per workspace. Only the wildcard plus a blacklist (not
+        an enumerated whitelist) fires ``TASK.md`` files created later on.
+        """
+        agent_root = agent_path if agent_path is not None else workspace_path
+
         ai_client = AiClient(ai_socket)
-        conversation = await Conversation.from_workspace(workspace_path, session_id)
-        tool_registry = await ToolRegistry.load(workspace_path / "tools", conversation.session_id)
-        schedule_registry = await ScheduleRegistry.load(workspace_path / "schedules")
-        system_prompt = await SystemPrompt.from_workspace(workspace_path, conversation.session_id)
+        conversation = await Conversation.from_workspace(
+            workspace_path,
+            session_id,
+            appdata_root=appdata_root,
+        )
+        tool_registry = await ToolRegistry.load(agent_root / "tools", conversation.session_id)
+        schedule_registry = await ScheduleRegistry.load(
+            workspace_path / "schedules",
+            active_names=active_schedules,
+            deactive_names=deactive_schedules,
+        )
+        trigger_registry = await TriggerRegistry.load(agent_root / "triggers")
+        system_prompt = await SystemPrompt.from_workspace(agent_root, conversation.session_id)
 
         return cls(
             ai_client=ai_client,
             conversation=conversation,
             tool_registry=tool_registry,
             schedule_registry=schedule_registry,
+            trigger_registry=trigger_registry,
             system_prompt=system_prompt,
             max_tool_rounds=max_tool_rounds,
+            workspace_path=workspace_path,
+            agent_path=agent_root,
         )
 
     # -- delegation -----------------------------------------------------------
 
     def start_all(self, task_group: object) -> None:
-        """Start schedule runners — called by ``Session.run()``."""
+        """Start schedule runners — called by ``Session.run()``.
+
+        Starts runners only for schedules **activated in this Session**;
+        non-activated entries stay readable in the registry (see
+        *active_schedules* on ``SessionAgent.create``).
+        """
         self._schedule_registry.start_all(task_group, self)
 
     def set_pending_schedule_chunks(self, chunks: list[AgentChunk]) -> None:
@@ -111,6 +179,17 @@ class SessionAgent:
 
     async def reload_schedules(self) -> dict[str, str]:
         return await self._schedule_registry.refresh()
+
+    async def reload_triggers(self) -> dict[str, str]:
+        return await self._trigger_registry.refresh()
+
+    async def _execute_tool(self, func: Callable[..., Any], args: dict[str, Any]) -> Any:
+        """Invoke one workspace tool with this Session's task-local AI socket."""
+        token = _CURRENT_TOOL_AI_SOCKET.set(self._ai_client.ai_socket)
+        try:
+            return await func(**args)
+        finally:
+            _CURRENT_TOOL_AI_SOCKET.reset(token)
 
     # -- channel request lifecycle --------------------------------------------
 
@@ -148,10 +227,41 @@ class SessionAgent:
         logger.info("Session request completed")
         return response
 
+    async def handle_event(self, request: web.Request) -> web.Response:
+        """aiohttp handler for ``POST /events`` (Channel → Session envelopes)."""
+        try:
+            body = await request.json()
+        except Exception as e:
+            return web.json_response({"error": f"invalid JSON: {e}"}, status=400)
+        try:
+            envelope = parse_event_envelope(body)
+        except EventProtocolError as e:
+            logger.warning(f"POST /events rejected: {e}")
+            return web.json_response({"error": str(e)}, status=400)
+
+        async with self._lock:
+            matched = self._trigger_registry.match(envelope)
+            fired = await self._trigger_registry.dispatch(envelope, self)
+
+        logger.info(f"POST /events ok event={envelope.event!r} matched={len(matched)} fired={fired!r}")
+        return web.json_response(
+            {
+                "ok": True,
+                "event": envelope.event,
+                "matched": len(matched),
+                "fired": fired,
+            }
+        )
+
     # -- agent loop -----------------------------------------------------------
 
     async def run(
-        self, user_message: dict[str, Any], extra_params: dict[str, Any] | None = None
+        self,
+        user_message: dict[str, Any],
+        extra_params: dict[str, Any] | None = None,
+        *,
+        response_kind: str | None = None,
+        outcome: AgentRunOutcome | None = None,
     ) -> AsyncGenerator[AgentChunk]:
         """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``.
 
@@ -159,211 +269,297 @@ class SessionAgent:
         failure the snapshot is restored so that memory and disk
         remain synchronised — the caller can safely retry the same
         user message.
+
+        ``response_kind`` stamps assistant/tool rows for this turn
+        (schedule runners pass ``schedule.display`` / ``schedule.silent``).
+        When omitted, assistant/tool rows inherit the user message's ``kind``
+        (Channel turns default to ``chat``).
         """
-        async with self._conversation:
-            # reload tools and schedules from workspace (incremental hash-based)
-            await self._tool_registry.refresh()
-            await self._schedule_registry.refresh()
+        if outcome is not None:
+            outcome.termination_reason = None
+        user_kind = message_kind(user_message)
+        turn_response_kind = response_kind if response_kind is not None else user_kind
+        user_message = with_kind(user_message, user_kind)
 
-            # system prompt (lazy + optional rebuild)
-            await self._system_prompt.ensure(self._conversation)
+        # Gateway embeds many Sessions in one process — bind this turn so
+        # tools can read session id / workspace / agent paths via ContextVars.
+        with runtime_scope(
+            session_id=self._conversation.session_id,
+            workspace=str(self._workspace_path) if self._workspace_path is not None else "",
+            agent=str(self._agent_path) if self._agent_path is not None else "",
+        ):
+            async with self._conversation:
+                # reload tools and schedules from agent package (incremental hash-based)
+                await self._tool_registry.refresh()
+                await self._schedule_registry.refresh()
 
-            # peek pending schedule chunks — yield first, clear only after yield
-            pending = self._conversation.peek_pending()
-            if pending:
-                logger.info(f"Yielding {len(pending)} pending schedule chunk(s)")
-                for chunk in pending:
-                    yield chunk
-                self._conversation.clear_pending()
+                # system prompt (lazy + optional rebuild)
+                await self._system_prompt.ensure(self._conversation)
 
-            self._conversation.add(user_message)
-            await self._conversation.commit()
-            logger.debug(f"History now has {len(self._conversation.messages)} messages")
+                # peek pending schedule chunks — yield first, clear only after yield
+                # (only schedule.display results are stashed; silent never enters pending)
+                pending = self._conversation.peek_pending()
+                if pending:
+                    logger.info(f"Yielding {len(pending)} pending schedule chunk(s)")
+                    for chunk in pending:
+                        yield chunk
+                    self._conversation.clear_pending()
 
-            for _round in range(self._max_tool_rounds):
-                logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
+                self._conversation.add(user_message)
+                await self._conversation.commit()
+                logger.debug(f"History now has {len(self._conversation.messages)} messages")
 
-                tool_defs = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": t.name,
-                            "description": t.description,
-                            "parameters": t.parameters,
-                        },
+                for _round in range(self._max_tool_rounds):
+                    logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
+
+                    tool_defs = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": t.name,
+                                "description": t.description,
+                                "parameters": t.parameters,
+                            },
+                        }
+                        for t in self._tool_registry.tools.values()
+                    ]
+
+                    ai_messages = messages_for_ai(self._conversation.messages)
+                    request_body: dict[str, Any] = {
+                        "messages": ai_messages,
+                        "tools": tool_defs,
+                        "stream": True,
                     }
-                    for t in self._tool_registry.tools.values()
-                ]
+                    if extra_params:
+                        extra_params.pop("messages", None)
+                        extra_params.pop("tools", None)
+                        extra_params.pop("stream", None)
+                        request_body |= extra_params
+                    request_body["routing"] = {"session_id": self._conversation.session_id}
 
-                request_body: dict[str, Any] = {
-                    "messages": self._conversation.messages,
-                    "tools": tool_defs,
-                    "stream": True,
-                }
-                if extra_params:
-                    extra_params.pop("messages", None)
-                    extra_params.pop("tools", None)
-                    extra_params.pop("stream", None)
-                    request_body |= extra_params
+                    logger.info("Sending request to AI via AiClient")
+                    logger.debug(f"Request messages count: {len(ai_messages)}, tools: {len(tool_defs)}")
 
-                logger.info("Sending request to AI via AiClient")
-                logger.debug(f"Request messages count: {len(self._conversation.messages)}, tools: {len(tool_defs)}")
+                    finish_reason: str | None = None
+                    accumulated_tool_calls: dict[int, dict[str, Any]] = {}
+                    accumulated_content: str = ""
+                    accumulated_reasoning: str = ""
+                    _compaction_needed = False
 
-                finish_reason: str | None = None
-                accumulated_tool_calls: dict[int, dict[str, Any]] = {}
-                accumulated_content: str = ""
-                accumulated_reasoning: str = ""
-
-                async with aclosing(self._ai_client.stream(request_body)) as stream:
-                    async for delta in stream:
-                        logger.debug(
-                            f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
-                            f"finish_reason={delta.finish_reason!r}, "
-                            f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
-                        )
-                        if delta.content:
-                            yield AgentChunk(content=delta.content)
-                            accumulated_content += delta.content
-                        if delta.reasoning:
-                            yield AgentChunk(reasoning=delta.reasoning)
-                            accumulated_reasoning += delta.reasoning
-
-                        if delta.finish_reason and not finish_reason:
-                            finish_reason = delta.finish_reason
-
-                        if delta.tool_calls:
-                            for tc in delta.tool_calls:
-                                idx = tc.get("index", 0)
-                                if idx not in accumulated_tool_calls:
-                                    accumulated_tool_calls[idx] = {
-                                        "id": tc.get("id", ""),
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""},
-                                    }
-                                acc = accumulated_tool_calls[idx]
-                                if tc.get("id"):
-                                    acc["id"] = tc["id"]
-                                func = tc.get("function", {})
-                                if func.get("name"):
-                                    acc["function"]["name"] = func["name"]
-                                if func.get("arguments"):
-                                    acc["function"]["arguments"] += func["arguments"]
-
-                        if finish_reason == "error":
-                            logger.warning("AI returned error, stopping without saving to history")
-                            raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
-
-                        if finish_reason == "stop":
-                            logger.debug("AI finished with stop")
+                    async with aclosing(self._ai_client.stream(request_body)) as stream:
+                        async for delta in stream:
                             logger.debug(
-                                f"Stop: content={len(accumulated_content)} chars, "
-                                f"reasoning={len(accumulated_reasoning)} chars"
+                                f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
+                                f"finish_reason={delta.finish_reason!r}, "
+                                f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
                             )
-                            if accumulated_content or accumulated_reasoning:
-                                assistant_msg: dict[str, Any] = {"role": "assistant"}
+                            if delta.content:
+                                yield AgentChunk(content=delta.content)
+                                accumulated_content += delta.content
+                            if delta.reasoning:
+                                # Compressed process slot: model thinking stays in
+                                # ``reasoning``; tag provenance for Channel/SPA filter.
+                                r_kind = delta.kind or REASONING_KIND_THINKING
+                                yield AgentChunk(reasoning=delta.reasoning, kind=r_kind)
+                                accumulated_reasoning += delta.reasoning
+
+                            if delta.compaction_needed:
+                                _compaction_needed = True
+
+                            if delta.finish_reason and not finish_reason:
+                                finish_reason = delta.finish_reason
+
+                            if delta.tool_calls:
+                                for tc in delta.tool_calls:
+                                    idx = tc.get("index", 0)
+                                    if idx not in accumulated_tool_calls:
+                                        accumulated_tool_calls[idx] = {
+                                            "id": tc.get("id", ""),
+                                            "type": "function",
+                                            "function": {"name": "", "arguments": ""},
+                                        }
+                                    acc = accumulated_tool_calls[idx]
+                                    if tc.get("id"):
+                                        acc["id"] = tc["id"]
+                                    func = tc.get("function", {})
+                                    if func.get("name"):
+                                        acc["function"]["name"] = func["name"]
+                                    if func.get("arguments"):
+                                        acc["function"]["arguments"] += func["arguments"]
+
+                            if finish_reason == "error":
+                                if outcome is not None:
+                                    outcome.termination_reason = finish_reason
+                                logger.warning("AI returned error, stopping without saving to history")
+                                raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
+
+                            if finish_reason == "tool_calls":
+                                logger.info("AI requested tool calls, processing...")
+                                ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
+
+                                assistant_msg: dict[str, Any] = {"role": "assistant", "tool_calls": ordered_calls}
                                 if accumulated_content:
                                     assistant_msg["content"] = accumulated_content
                                 if accumulated_reasoning:
                                     assistant_msg["reasoning"] = accumulated_reasoning
-                                self._conversation.add(assistant_msg)
-                            await self._conversation.commit()
-                            await self._schedule_registry.refresh()
-                            return
+                                self._conversation.add(with_kind(assistant_msg, turn_response_kind))
 
-                        if finish_reason == "tool_calls":
-                            logger.info("AI requested tool calls, processing...")
-                            ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
+                                # pre-compute args + yield tool-call intent
+                                tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any], str | None]] = []
+                                for i, tc in enumerate(ordered_calls):
+                                    func_info = tc.get("function", {})
+                                    func_name = func_info.get("name", "")
+                                    func_args_str = func_info.get("arguments", "{}")
+                                    argument_error: str | None = None
 
-                            assistant_msg: dict[str, Any] = {"role": "assistant", "tool_calls": ordered_calls}
+                                    try:
+                                        args = json.loads(func_args_str)
+                                        if not isinstance(args, dict):
+                                            logger.warning(f"Tool arguments is not a dict: {type(args).__name__}")
+                                            argument_error = (
+                                                f"Error: Tool '{func_name}' arguments must be a JSON object"
+                                            )
+                                            args = {}
+                                    except json.JSONDecodeError, TypeError:
+                                        logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
+                                        argument_error = f"Error: Tool '{func_name}' arguments must be valid JSON"
+                                        args = {}
+
+                                    logger.info(f"Executing tool: {func_name!r}({args!r})")
+                                    yield AgentChunk(
+                                        reasoning=(f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"),
+                                        kind=REASONING_KIND_TOOL_CALL,
+                                    )
+                                    tool_args.append((i, tc, func_name, args, argument_error))
+
+                                # execute all tools concurrently
+                                results: list[str] = [""] * len(ordered_calls)
+
+                                async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
+                                    func = self._tool_registry.get(fn)
+                                    if func is None:
+                                        r[idx] = f"Error: Tool '{fn}' not found"
+                                        logger.error(f"Tool not found: {fn!r}")
+                                    else:
+                                        try:
+                                            raw = await self._execute_tool(func, a)
+                                            r[idx] = str(raw)
+                                            logger.info(f"Tool result ({fn!r}): {str(raw)[:1000]!r}")
+                                        except Exception as e:
+                                            r[idx] = f"Error executing tool '{fn}': {e}"
+                                            logger.error(f"Tool execution error ({fn!r}): {e!r}")
+
+                                async with anyio.create_task_group() as tg:
+                                    for i, _tc, func_name, args, argument_error in tool_args:
+                                        if not func_name:
+                                            results[i] = "Error: empty tool call name"
+                                        elif argument_error is not None:
+                                            results[i] = argument_error
+                                        else:
+                                            tg.start_soon(_execute_one, i, func_name, args, results)
+
+                                # yield results in order, save
+                                for i, tc, func_name, _args, _argument_error in tool_args:
+                                    result = results[i]
+                                    yield AgentChunk(
+                                        reasoning=f"[Tool Result: {str(result)[:1000]}]",
+                                        kind=REASONING_KIND_TOOL_RESULT,
+                                    )
+                                    self._conversation.add(
+                                        with_kind(
+                                            {
+                                                "role": "tool",
+                                                "tool_call_id": tc.get("id", ""),
+                                                "name": func_name,
+                                                "content": str(result),
+                                            },
+                                            turn_response_kind,
+                                        )
+                                    )
+                                await self._conversation.commit()
+
+                                break
+
+                    if finish_reason == "stop":
+                        if outcome is not None:
+                            outcome.termination_reason = finish_reason
+                        logger.debug("AI finished with stop")
+                        logger.debug(
+                            f"Stop: content={len(accumulated_content)} chars, "
+                            f"reasoning={len(accumulated_reasoning)} chars"
+                        )
+                        if accumulated_content or accumulated_reasoning:
+                            assistant_msg: dict[str, Any] = {"role": "assistant"}
                             if accumulated_content:
                                 assistant_msg["content"] = accumulated_content
                             if accumulated_reasoning:
                                 assistant_msg["reasoning"] = accumulated_reasoning
-                            self._conversation.add(assistant_msg)
+                            self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                        await self._conversation.commit()
+                        await self._schedule_registry.refresh()
+                        if _compaction_needed:
+                            await self._maybe_compact()
+                        return
 
-                            # pre-compute args + yield tool-call intent
-                            tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
-                            for i, tc in enumerate(ordered_calls):
-                                func_info = tc.get("function", {})
-                                func_name = func_info.get("name", "")
-                                func_args_str = func_info.get("arguments", "{}")
+                    if finish_reason not in ("error", "stop", "tool_calls", "compaction_needed"):
+                        if outcome is not None:
+                            outcome.termination_reason = finish_reason or "missing_finish_reason"
+                        logger.warning(
+                            f"Unexpected finish_reason={finish_reason!r}, "
+                            f"saving {len(accumulated_content)} chars of content and stopping"
+                        )
+                        if accumulated_content or accumulated_reasoning:
+                            assistant_msg: dict[str, Any] = {"role": "assistant"}
+                            if accumulated_content:
+                                assistant_msg["content"] = accumulated_content
+                            if accumulated_reasoning:
+                                assistant_msg["reasoning"] = accumulated_reasoning
+                            self._conversation.add(with_kind(assistant_msg, turn_response_kind))
+                        await self._conversation.commit()
+                        return
 
-                                try:
-                                    args = json.loads(func_args_str)
-                                    if not isinstance(args, dict):
-                                        logger.warning(f"Tool arguments is not a dict: {type(args).__name__}")
-                                        args = {}
-                                except json.JSONDecodeError, TypeError:
-                                    logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
-                                    args = {}
-
-                                logger.info(f"Executing tool: {func_name!r}({args!r})")
-                                yield AgentChunk(
-                                    reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
-                                )
-                                tool_args.append((i, tc, func_name, args))
-
-                            # execute all tools concurrently
-                            results: list[str] = [""] * len(ordered_calls)
-
-                            async def _execute_one(idx: int, fn: str, a: dict[str, Any], r: list[str]) -> None:
-                                func = self._tool_registry.get(fn)
-                                if func is None:
-                                    r[idx] = f"Error: Tool '{fn}' not found"
-                                    logger.error(f"Tool not found: {fn!r}")
-                                else:
-                                    try:
-                                        token = _CURRENT_TOOL_AI_SOCKET.set(self._ai_client.ai_socket)
-                                        try:
-                                            raw = await func(**a)
-                                        finally:
-                                            _CURRENT_TOOL_AI_SOCKET.reset(token)
-                                        r[idx] = str(raw)
-                                        logger.info(f"Tool result ({fn!r}): {str(raw)[:1000]!r}")
-                                    except Exception as e:
-                                        r[idx] = f"Error executing tool '{fn}': {e}"
-                                        logger.error(f"Tool execution error ({fn!r}): {e!r}")
-
-                            async with anyio.create_task_group() as tg:
-                                for i, _tc, func_name, args in tool_args:
-                                    if func_name:
-                                        tg.start_soon(_execute_one, i, func_name, args, results)
-                                    else:
-                                        results[i] = "Error: empty tool call name"
-
-                            # yield results in order, save
-                            for i, tc, func_name, _args in tool_args:
-                                result = results[i]
-                                yield AgentChunk(reasoning=f"[Tool Result: {str(result)[:1000]}]")
-                                self._conversation.add(
-                                    {
-                                        "role": "tool",
-                                        "tool_call_id": tc.get("id", ""),
-                                        "name": func_name,
-                                        "content": str(result),
-                                    }
-                                )
-                            await self._conversation.commit()
-
-                            break
-
-                if finish_reason not in ("error", "stop", "tool_calls"):
-                    logger.warning(
-                        f"Unexpected finish_reason={finish_reason!r}, "
-                        f"saving {len(accumulated_content)} chars of content and stopping"
+                else:
+                    if outcome is not None:
+                        outcome.termination_reason = "max_tool_rounds"
+                    logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
+                    self._conversation.add(
+                        with_kind(
+                            {"role": "assistant", "content": "[Max tool rounds reached]"},
+                            turn_response_kind,
+                        )
                     )
-                    if accumulated_content or accumulated_reasoning:
-                        assistant_msg: dict[str, Any] = {"role": "assistant"}
-                        if accumulated_content:
-                            assistant_msg["content"] = accumulated_content
-                        if accumulated_reasoning:
-                            assistant_msg["reasoning"] = accumulated_reasoning
-                        self._conversation.add(assistant_msg)
                     await self._conversation.commit()
-                    return
+                    yield AgentChunk(content="[Max tool rounds reached]")
 
-            else:
-                logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
-                self._conversation.add({"role": "assistant", "content": "[Max tool rounds reached]"})
-                await self._conversation.commit()
-                yield AgentChunk(content="[Max tool rounds reached]")
+    async def _maybe_compact(self) -> None:
+        """Invoke compact_history from system.py, insert compaction message
+        into conversation.  system prompt merge + old-message trimming is
+        deferred to ``messages_for_ai()``."""
+        compaction_fn = self._system_prompt.compaction_fn
+        if compaction_fn is None:
+            logger.warning("No compact_history function in system.py, skipping compaction")
+            return
+
+        async def complete_fn(messages: list[dict[str, Any]]) -> str:
+            body: dict[str, Any] = {"messages": messages, "stream": True}
+            parts: list[str] = []
+            async with aclosing(self._ai_client.stream(body)) as stream:
+                async for delta in stream:
+                    if delta.content:
+                        parts.append(delta.content)
+                    if delta.finish_reason == "error":
+                        raise AgentError(delta.content or "Compaction AI call failed")
+            return "".join(parts)
+
+        try:
+            summary = await compaction_fn(self._conversation.messages, complete_fn)
+            if not summary:
+                logger.debug("Compaction returned empty summary, skipping")
+                return
+            logger.info(f"Compaction summary generated ({len(summary)} chars)")
+
+            self._conversation.add({"role": "compacted", "content": summary, "kind": KIND_COMPACTED})
+            await self._conversation.commit()
+            logger.info("Compaction completed")
+        except Exception as e:
+            logger.error(f"Compaction failed: {e!r}")

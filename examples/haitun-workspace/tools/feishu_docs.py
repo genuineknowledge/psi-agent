@@ -21,7 +21,9 @@ if str(TOOLS_DIR) not in sys.path:
 import _feishu_impl as _f
 
 
-async def feishu_docs_search(search_key: str, count: int = 20, offset: int = 0, docs_types: str = "") -> str:
+async def feishu_docs_search(
+    search_key: str, count: int = 20, offset: int = 0, docs_types: str = "", user_key: str = ""
+) -> str:
     """Search Feishu/Lark cloud documents by keyword and return matching docs.
 
     Returns candidates as ``{title, token, obj_type, owner_id}``. Read a result's
@@ -34,5 +36,8 @@ async def feishu_docs_search(search_key: str, count: int = 20, offset: int = 0, 
         offset: Pagination offset (offset + count < 200).
         docs_types: Comma-separated type filter — doc, sheet, slides, bitable,
             mindnote, file. Empty = all types.
+        user_key: The message sender's open_id (from ``<feishu_context>``), so the
+            search runs as that authorized user. Must match the ``user_key`` used
+            when authorizing. Empty uses the shared ``default`` slot.
     """
-    return _f.dumps_result(await _f.search_docs_impl(search_key, count, offset, docs_types))
+    return _f.dumps_result(await _f.search_docs_impl(search_key, count, offset, docs_types, user_key))

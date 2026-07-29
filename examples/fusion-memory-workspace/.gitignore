@@ -1,0 +1,7 @@
+# psi-agent session history and Fusion Memory runtime checkpoints
+histories/
+.fusion-memory/
+
+# python
+__pycache__/
+*.pyc

@@ -17,6 +17,7 @@ jobs:
         --name psi-agent
         --distpath pyinstaller-dist
         --add-data src/psi_agent/gateway/spa/dist:psi_agent/gateway/spa/dist
+        --add-data src/psi_agent/gateway/spa-v2/dist:psi_agent/gateway/spa-v2/dist
         --collect-submodules any_llm
         --collect-submodules mcp
         --collect-submodules serper_mcp_server
@@ -36,6 +37,7 @@ jobs:
         --collect-submodules antlr4
         --collect-submodules psi_agent.workflow_graph
         --hidden-import psi_agent.workflow_execution
+        --collect-submodules matplotlib
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -43,13 +45,17 @@ jobs:
           python-version: "3.14"
       - run: uv sync
       - run: uv pip install pyinstaller "mcp[cli,rich,ws]" "any-llm-sdk[all]"
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "26"
       - run: npm ci
         working-directory: src/psi_agent/gateway/spa
       - run: npm run build
         working-directory: src/psi_agent/gateway/spa
+      - run: npm ci
+        working-directory: src/psi_agent/gateway/spa-v2
+      - run: npm run build
+        working-directory: src/psi_agent/gateway/spa-v2
       - shell: bash
         run: uv run pyinstaller $PYINSTALLER_COMMON_FLAGS src/psi_agent/cli.py
       - name: Smoke test packaged CLI
@@ -157,7 +163,7 @@ jobs:
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=amd64"
           rc /nologo ".github\inno-setup\haitun.rc"
-          cl /nologo /O2 ".github\inno-setup\haitun.c" ".github\inno-setup\haitun.res" /Fe:".github\inno-setup\haitun.exe" /link /SUBSYSTEM:WINDOWS user32.lib
+          cl /nologo /O2 ".github\inno-setup\haitun.c" ".github\inno-setup\haitun.res" /Fe:".github\inno-setup\haitun.exe" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib
       - shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"

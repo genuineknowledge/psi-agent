@@ -69,6 +69,8 @@ async def test_exact_workflow_command_precedes_natural_language_routing():
     assert "`$fusion_flow/control`" in section
     assert "`run_flow_resume` once with the matching `run_id`, `request_id`" in section
     assert "Repeat only when that resume returns another Human" in section
+    assert "`runs/<run-id>/artifacts/` directory" in section
+    assert "user-visible Artifact files are separate" in section
     assert "adds no operator or manifest protocol" in section
     assert "must not route through" in section
     assert "`flow_manage`" in section

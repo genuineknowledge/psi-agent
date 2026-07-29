@@ -6,6 +6,7 @@ import os
 import shutil
 from pathlib import Path
 
+import _runtime_paths as _paths
 import anyio
 
 
@@ -52,10 +53,11 @@ async def bash(command: str, timeout_seconds: int = 30) -> str:
     # non-ASCII stdout comes back as mojibake once we decode it as UTF-8 below. On
     # Linux/macOS the locale is already UTF-8, so this is a harmless no-op.
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    cwd = _paths.workspace_dir()
 
     try:
         with anyio.fail_after(timeout_seconds):
-            result = await anyio.run_process([bash, "-lc", command], check=False, env=env)
+            result = await anyio.run_process([bash, "-lc", command], check=False, env=env, cwd=cwd)
     except TimeoutError:
         return f"[Error] Command timed out after {timeout_seconds}s: {command}"
 

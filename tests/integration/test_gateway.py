@@ -6,6 +6,7 @@ import os
 import socket
 import tempfile
 import textwrap
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import anyio
@@ -14,6 +15,7 @@ from aiohttp import ClientSession, ClientTimeout, FormData, web
 
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
+from psi_agent.gateway._router_manager import RouterManager
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway.server import create_app
@@ -84,13 +86,23 @@ async def _make_workspace(base: str) -> str:
 
 
 @pytest.mark.anyio
-async def test_gateway_rest_crud(tmp_path: str) -> None:
+async def test_gateway_rest_crud(tmp_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def ready(_path: str) -> None:
+        await anyio.sleep(0.001)
+
+    async def serve(**_kwargs: object) -> None:
+        await anyio.sleep_forever()
+
+    monkeypatch.setattr("psi_agent.gateway._router_manager._wait_socket", ready)
+    monkeypatch.setattr("psi_agent.gateway._router_manager._remove_socket", ready)
+    monkeypatch.setattr("psi_agent.gateway._router_manager._run_router_service", serve)
     tg = anyio.create_task_group()
     await tg.__aenter__()
 
     aim = AIManager(_prefix="gw-test", _tg=tg)
-    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager())
+    rm = RouterManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _rm=rm, _prefix="gw-test", _tg=tg)
+    app = await create_app(aim, sm, TitleManager(), rm=rm)
     base_url, runner = await _start_app_on_free_port(app)
 
     try:
@@ -115,17 +127,35 @@ async def test_gateway_rest_crud(tmp_path: str) -> None:
                 items = await resp.json()
                 assert len(items) == 1
 
+            async with session.post(
+                f"{base_url}/routers",
+                json={
+                    "name": "smart",
+                    "router_ai_id": ai_id,
+                    "upstreams": [{"ai_id": ai_id, "description": "general tasks"}],
+                    "default_ai_id": ai_id,
+                },
+            ) as resp:
+                assert resp.status == 201
+                router_id = (await resp.json())["id"]
+
+            async with session.get(f"{base_url}/routers") as resp:
+                assert resp.status == 200
+                assert len(await resp.json()) == 1
+
             workspace = await _make_workspace(str(tmp_path))
             async with session.post(
                 f"{base_url}/sessions",
                 json={
-                    "ai_id": ai_id,
+                    "backend_type": "router",
+                    "backend_id": router_id,
                     "workspace": workspace,
                 },
             ) as resp:
                 assert resp.status == 201
                 data = await resp.json()
-                assert data["ai_id"] == ai_id
+                assert data["backend_type"] == "router"
+                assert data["backend_id"] == router_id
                 session_id = data["id"]
 
             async with session.get(f"{base_url}/sessions") as resp:
@@ -136,11 +166,144 @@ async def test_gateway_rest_crud(tmp_path: str) -> None:
             async with session.delete(f"{base_url}/sessions/{session_id}") as resp:
                 assert resp.status == 200
 
+            async with session.delete(f"{base_url}/routers/{router_id}") as resp:
+                assert resp.status == 200
+
             async with session.delete(f"{base_url}/ais/{ai_id}") as resp:
                 assert resp.status == 200
 
     finally:
         await runner.cleanup()
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_gateway_feishu_route(tmp_path: str) -> None:
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+
+    aim = AIManager(_prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    app = await create_app(aim, sm, TitleManager(), feishu_workspace_root=str(tmp_path))
+    base_url, runner = await _start_app_on_free_port(app)
+
+    try:
+        timeout = ClientTimeout(total=10)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{base_url}/ais",
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-test",
+                    "base_url": "https://api.example.com",
+                    "id": "ai1",
+                },
+            ) as resp:
+                assert resp.status == 201
+
+            # 无 feishu_ai_id 且请求也不带 ai_id → 400。
+            async with session.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice"}) as resp:
+                assert resp.status == 400
+
+            # 带 ai_id → 幂等 spawn, 返回 channel_socket + session_id。
+            async with session.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice", "ai_id": "ai1"}) as resp:
+                assert resp.status == 201
+                data = await resp.json()
+                assert data["open_id"] == "ou_alice"
+                assert data["session_id"] == "feishu-ou_alice"
+                socket1 = data["channel_socket"]
+
+            # 二次幂等: 同 socket。
+            async with session.post(f"{base_url}/feishu/route", json={"open_id": "ou_alice", "ai_id": "ai1"}) as resp:
+                assert resp.status == 201
+                assert (await resp.json())["channel_socket"] == socket1
+
+            async with session.get(f"{base_url}/feishu/routes") as resp:
+                assert resp.status == 200
+                routes = await resp.json()
+                assert routes == [{"open_id": "ou_alice", "chat_id": "", "session_id": "feishu-ou_alice"}]
+
+            # 缺 open_id 且无群信息 → 400。
+            async with session.post(f"{base_url}/feishu/route", json={"ai_id": "ai1"}) as resp:
+                assert resp.status == 400
+
+            # 只建了一个 session。
+            async with session.get(f"{base_url}/sessions") as resp:
+                assert len(await resp.json()) == 1
+
+    finally:
+        await runner.cleanup()
+        # spawn 出来的 per-user session 是常驻任务, 必须删掉再退 task group, 否则 __aexit__ 挂起。
+        await sm.delete("feishu-ou_alice")
+        await aim.delete("ai1")
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_gateway_feishu_route_group_chat(tmp_path: str) -> None:
+    """群聊按 chat_id 路由: 同群不同发送者拿到同一 session, 与私聊 session 分开。"""
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+
+    aim = AIManager(_prefix="gw-test", _tg=tg)
+    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
+    app = await create_app(aim, sm, TitleManager(), feishu_workspace_root=str(tmp_path))
+    base_url, runner = await _start_app_on_free_port(app)
+
+    try:
+        timeout = ClientTimeout(total=10)
+        async with ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{base_url}/ais",
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-test",
+                    "base_url": "https://api.example.com",
+                    "id": "ai1",
+                },
+            ) as resp:
+                assert resp.status == 201
+
+            body = {"open_id": "ou_alice", "chat_id": "oc_team", "chat_type": "group", "ai_id": "ai1"}
+            async with session.post(f"{base_url}/feishu/route", json=body) as resp:
+                assert resp.status == 201
+                data = await resp.json()
+                assert data["session_id"] == "feishu-chat-oc_team"
+                assert data["chat_id"] == "oc_team"
+                group_socket = data["channel_socket"]
+
+            # 同群另一个人 → 同一 session。
+            body_bob = {"open_id": "ou_bob", "chat_id": "oc_team", "chat_type": "group", "ai_id": "ai1"}
+            async with session.post(f"{base_url}/feishu/route", json=body_bob) as resp:
+                assert resp.status == 201
+                data = await resp.json()
+                assert data["channel_socket"] == group_socket
+                assert data["session_id"] == "feishu-chat-oc_team"
+
+            # 同一个人的私聊 → 另一个 session。
+            body_dm = {"open_id": "ou_alice", "chat_id": "oc_dm", "chat_type": "p2p", "ai_id": "ai1"}
+            async with session.post(f"{base_url}/feishu/route", json=body_dm) as resp:
+                assert resp.status == 201
+                assert (await resp.json())["session_id"] == "feishu-ou_alice"
+
+            # 群 + 私聊共两个 session。
+            async with session.get(f"{base_url}/sessions") as resp:
+                assert len(await resp.json()) == 2
+
+            async with session.get(f"{base_url}/feishu/routes") as resp:
+                routes = {(r["open_id"], r["chat_id"], r["session_id"]) for r in await resp.json()}
+                assert routes == {
+                    ("", "oc_team", "feishu-chat-oc_team"),
+                    ("ou_alice", "", "feishu-ou_alice"),
+                }
+
+    finally:
+        await runner.cleanup()
+        await sm.delete("feishu-chat-oc_team")
+        await sm.delete("feishu-ou_alice")
+        await aim.delete("ai1")
         await tg.__aexit__(None, None, None)
 
 
@@ -284,7 +447,10 @@ async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> 
 
 
 @pytest.mark.anyio
-async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer) -> None:
+async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Inbound blobs land in ~/Downloads/.psi/, so redirect Path.home() to keep
+    # the run from littering the developer's real Downloads folder.
+    monkeypatch.setattr(Path, "home", lambda: Path(str(tmp_path)))
     data_dir = tempfile.mkdtemp(dir="/tmp", prefix="gwb")
     test_file = data_dir + "/test-out.txt"
     await anyio.Path(test_file).write_text("blob response content", encoding="utf-8")

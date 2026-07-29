@@ -6,6 +6,7 @@ import anyio
 import pytest
 
 from psi_agent.session import Session
+from psi_agent.session.schedule_registry import ACTIVATE_ALL
 from psi_agent.session.system_prompt import SystemPrompt
 
 
@@ -83,3 +84,24 @@ async def test_rebuild_checker_loads(tmp_path: Path) -> None:
 def test_workspace_empty_string_uses_cwd(tmp_path: Path) -> None:
     session = Session(workspace="", channel_socket=str(tmp_path / "c.sock"), ai_socket=str(tmp_path / "a.sock"))
     assert session.workspace == ""
+
+
+# ── Activation list parsing (--active-schedules / --deactive-schedules) ───────
+
+
+def test_name_set_empty_by_default() -> None:
+    """Nothing is activated by default - a schedule must be fired by exactly one Session."""
+    assert Session._name_set("") == set()
+
+
+def test_name_set_wildcard() -> None:
+    assert Session._name_set(ACTIVATE_ALL) == {ACTIVATE_ALL}
+
+
+def test_name_set_splits_and_trims() -> None:
+    assert Session._name_set(" daily , weekly ,") == {"daily", "weekly"}
+
+
+def test_name_set_wildcard_with_names() -> None:
+    """Wildcard alongside names: is_active already covers all, so the names are redundant but harmless."""
+    assert Session._name_set("*, daily") == {ACTIVATE_ALL, "daily"}

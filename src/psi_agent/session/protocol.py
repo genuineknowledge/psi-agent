@@ -6,6 +6,13 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+# Provenance for ``delta.reasoning`` / ``AgentChunk.reasoning`` (UI whitelist).
+# Thinking + tool progress stay in one ``reasoning`` slot (Session↔AI shape
+# isomorphism); ``kind`` discriminates render / filter without splitting the slot.
+REASONING_KIND_THINKING = "thinking"
+REASONING_KIND_TOOL_CALL = "tool_call"
+REASONING_KIND_TOOL_RESULT = "tool_result"
+
 
 @dataclass
 class DeltaMessage:
@@ -22,6 +29,7 @@ class DeltaMessage:
     content: str | None = None
     role: str | None = None
     reasoning: str | None = None
+    kind: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -32,6 +40,8 @@ class DeltaMessage:
             d["role"] = self.role
         if self.reasoning is not None:
             d["reasoning"] = self.reasoning
+        if self.kind is not None:
+            d["kind"] = self.kind
         if self.tool_calls is not None:
             d["tool_calls"] = self.tool_calls
         return d
@@ -97,6 +107,13 @@ class AgentError(Exception):
         super().__init__(message)
 
 
+@dataclass(slots=True)
+class AgentRunOutcome:
+    """Optional per-invocation terminal state populated by ``SessionAgent.run()``."""
+
+    termination_reason: str | None = None
+
+
 @dataclass
 class AgentChunk:
     """Semantic output of ``SessionAgent.run()`` — content and/or reasoning.
@@ -104,10 +121,16 @@ class AgentChunk:
     The agent loop yields these to ``ChannelAdapter``, which converts them to
     ``ChatCompletionChunk`` for SSE output.  Contains no protocol fields
     (no ``id``, ``choices``, ``finish_reason``, etc.).
+
+    ``kind`` is provenance for ``reasoning`` only (``thinking`` / ``tool_call`` /
+    ``tool_result``). Tool progress remains in the ``reasoning`` slot on purpose
+    (compressed process stream for OpenAI-shaped Session↔AI reuse); UI filters
+    by ``kind`` instead of splitting the wire field.
     """
 
     content: str | None = None
     reasoning: str | None = None
+    kind: str | None = None
 
 
 @dataclass
@@ -116,12 +139,19 @@ class AiDelta:
 
     Consumed by ``SessionAgent.run()`` to drive the agent loop.  Contains
     SSE-level fields (``tool_calls`` as partial dicts, ``finish_reason``)
-    that the agent loop accumulates and acts on.
+    that the agent loop accumulates and acts on.  ``compaction_needed``
+    signals that the AI layer detected a token-threshold exceed.
+
+    Optional ``kind`` is passed through when the upstream delta already tags
+    reasoning provenance; otherwise Session defaults model ``reasoning`` to
+    ``thinking``.
 
     Never exposed to the Channel side.
     """
 
     content: str | None = None
     reasoning: str | None = None
+    kind: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
     finish_reason: str | None = None
+    compaction_needed: bool = False

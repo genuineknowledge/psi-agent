@@ -4,6 +4,7 @@ import json
 import socket as _s
 import textwrap
 from pathlib import Path
+from typing import Any, cast
 
 import anyio
 import pytest
@@ -12,7 +13,9 @@ from aiohttp import web
 from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.protocol import AgentChunk, AgentError, AgentRunOutcome, AiDelta
+from psi_agent.session.runtime_context import get_agent, get_workspace, runtime_scope
+from psi_agent.session.schedule_registry import ACTIVATE_ALL
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 
@@ -41,7 +44,6 @@ class MockAIServer:
     """Helper to create and cleanup a mock AI Unix socket server."""
 
     def __init__(self, tmp_path: Path) -> None:
-        self.socket_path = tmp_path / "ai.sock"
         self._runner: web.AppRunner | None = None
         self._app: web.Application | None = None
 
@@ -50,9 +52,11 @@ class MockAIServer:
         self._app.router.add_post("/chat/completions", handler)
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
-        site = web.UnixSite(self._runner, str(self.socket_path))
+        sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        site = web.SockSite(self._runner, sock)
         await site.start()
-        return str(self.socket_path)
+        return f"http://127.0.0.1:{sock.getsockname()[1]}"
 
     async def cleanup(self) -> None:
         if self._runner:
@@ -82,6 +86,31 @@ async def test_agent_simple_response(tmp_path: Path) -> None:
         assert "Hello world" in all_content
     finally:
         await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+async def test_agent_records_finish_reason(finish_reason: str) -> None:
+    class ScriptedAiClient:
+        ai_socket = "http://ai.example"
+
+        def stream(self, request: dict[str, Any]) -> Any:
+            del request
+
+            async def generate() -> Any:
+                yield AiDelta(content="partial", finish_reason=finish_reason)
+
+            return generate()
+
+    agent = SessionAgent(
+        ai_client=cast(AiClient, ScriptedAiClient()),
+        tool_registry=ToolRegistry(),
+    )
+    outcome = AgentRunOutcome()
+    chunks = [chunk async for chunk in agent.run({"role": "user", "content": "hi"}, outcome=outcome)]
+
+    assert "".join(chunk.content or "" for chunk in chunks) == "partial"
+    assert outcome.termination_reason == finish_reason
 
 
 @pytest.mark.anyio
@@ -174,6 +203,76 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
         assert request_count >= 2
     finally:
         await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_attaches_the_same_routing_session_id_to_every_tool_round_request(tmp_path: Path) -> None:
+    """Router continuations can associate both requests with this Session."""
+
+    requests: list[dict] = []
+    request_count = 0
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        nonlocal request_count
+        requests.append(await request.json())
+        request_count += 1
+        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        if request_count == 1:
+            await response.write(
+                (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "id": "tool-call",
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {
+                                        "tool_calls": [
+                                            {
+                                                "index": 0,
+                                                "id": "call-1",
+                                                "type": "function",
+                                                "function": {"name": "echo", "arguments": '{"message":"hello"}'},
+                                            }
+                                        ]
+                                    },
+                                    "finish_reason": "tool_calls",
+                                }
+                            ],
+                        }
+                    )
+                    + "\n\n"
+                ).encode()
+            )
+        else:
+            await response.write(_sse_chunk(content="finished", finish="stop").encode())
+        await response.write(b"data: [DONE]\n\n")
+        return response
+
+    async def echo(message: str) -> str:
+        return message
+
+    tool = ToolFunction.from_callable(echo)
+    history_path = tmp_path / "histories" / "stable-session.jsonl"
+    await anyio.Path(history_path.parent).mkdir()
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            conversation=Conversation(path=history_path),
+            tool_registry=ToolRegistry(files={"test": FileEntry("", {"echo": tool}, {"echo": echo})}),
+        )
+        _ = [chunk async for chunk in agent.run({"role": "user", "content": "run a tool"})]
+    finally:
+        await mock_server.cleanup()
+
+    assert [body["routing"] for body in requests] == [
+        {"session_id": "stable-session"},
+        {"session_id": "stable-session"},
+    ]
 
 
 @pytest.mark.anyio
@@ -344,6 +443,62 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.reasoning or "" for c in chunks)
         assert "BOOM" in reasoning or "RuntimeError" in reasoning
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("arguments", "error_fragment"),
+    [
+        ("null", "must be a JSON object"),
+        ("[]", "must be a JSON object"),
+        ("{", "must be valid JSON"),
+    ],
+    ids=["null", "array", "malformed-json"],
+)
+async def test_agent_does_not_execute_tool_with_invalid_arguments(
+    arguments: str,
+    error_fragment: str,
+) -> None:
+    handler = await _make_inline_ai_handler([_tc("no_args", arguments), _stop("recovered")])
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    calls = 0
+    try:
+
+        async def no_args() -> str:
+            nonlocal calls
+            calls += 1
+            return "called"
+
+        tf = ToolFunction.from_callable(no_args)
+        agent = SessionAgent(
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(
+                files={
+                    "__test__": FileEntry(
+                        file_hash="",
+                        tools={"no_args": tf},
+                        funcs={"no_args": no_args},
+                    )
+                }
+            ),
+        )
+
+        chunks = [chunk async for chunk in agent.run({"role": "user", "content": "t"})]
+
+        assert calls == 0
+        reasoning = "".join(chunk.reasoning or "" for chunk in chunks)
+        assert error_fragment in reasoning
+        assert "recovered" in "".join(chunk.content or "" for chunk in chunks)
     finally:
         await runner.cleanup()
 
@@ -735,18 +890,189 @@ async def test_history_not_saved_on_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_histories_dir_and_gitignore_created(tmp_path: Path) -> None:
+async def test_histories_dir_and_gitignore_created(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    appdata = tmp_path / "appdata"
+    monkeypatch.setenv("PSI_APPDATA", str(appdata))
     workspace = tmp_path / "workspace"
     await anyio.Path(workspace).mkdir()
     await anyio.Path(workspace / "tools").mkdir()
     await anyio.Path(workspace / "schedules").mkdir()
 
-    histories_dir = workspace / "histories"
+    histories_dir = appdata / "histories"
 
-    agent = await SessionAgent.create(ai_socket="http://x", workspace_path=workspace, session_id="test")
+    agent = await SessionAgent.create(
+        ai_socket="http://x",
+        workspace_path=workspace,
+        session_id="test",
+        appdata_root=str(appdata),
+    )
     assert await anyio.Path(histories_dir).is_dir()
     assert await anyio.Path(histories_dir / ".gitignore").read_text(encoding="utf-8") == "*\n"
-    assert agent._conversation._path is not None
+    assert agent._conversation._path == histories_dir / "test.jsonl"
+    assert agent._workspace_path == workspace
+    assert agent._agent_path == workspace
+    assert not await (anyio.Path(workspace) / "histories").exists()
+
+
+@pytest.mark.anyio
+async def test_create_agent_path_loads_tools_from_agent_keeps_history_on_appdata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """agent_path ≠ workspace_path: tools from agent; history under AppData."""
+    appdata = tmp_path / "appdata"
+    monkeypatch.setenv("PSI_APPDATA", str(appdata))
+    workspace = tmp_path / "user-ws"
+    agent_pkg = tmp_path / "agent-pkg"
+    await anyio.Path(workspace).mkdir()
+    await anyio.Path(agent_pkg).mkdir()
+    await anyio.Path(agent_pkg / "tools").mkdir()
+    await anyio.Path(agent_pkg / "schedules").mkdir()
+    await anyio.Path(agent_pkg / "tools" / "echo_tool.py").write_text(
+        textwrap.dedent(
+            '''\
+            async def echo_tool(text: str) -> str:
+                """Echo.
+
+                Args:
+                    text: Input.
+                """
+                return text
+            '''
+        ),
+        encoding="utf-8",
+    )
+
+    session_agent = await SessionAgent.create(
+        ai_socket="http://x",
+        workspace_path=workspace,
+        agent_path=agent_pkg,
+        session_id="split",
+        appdata_root=str(appdata),
+    )
+    assert session_agent._workspace_path == workspace
+    assert session_agent._agent_path == agent_pkg
+    assert "echo_tool" in session_agent._tool_registry.tools
+    assert session_agent._conversation._path == appdata / "histories" / "split.jsonl"
+    assert not await (anyio.Path(agent_pkg) / "histories").exists()
+    assert not await (anyio.Path(workspace) / "histories").exists()
+
+
+@pytest.mark.anyio
+async def test_conversation_dual_read_legacy_workspace_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Legacy ``{workspace}/histories/`` still loads; writes go to AppData."""
+    appdata = tmp_path / "appdata"
+    monkeypatch.setenv("PSI_APPDATA", str(appdata))
+    workspace = tmp_path / "ws"
+    await anyio.Path(workspace).mkdir()
+    legacy = anyio.Path(workspace) / "histories"
+    await legacy.mkdir()
+    await (legacy / "old.jsonl").write_text(
+        '{"role":"user","content":"legacy-hi","kind":"chat"}\n',
+        encoding="utf-8",
+    )
+
+    conv = await Conversation.from_workspace(workspace, "old", appdata_root=str(appdata))
+    assert conv.messages[0]["content"] == "legacy-hi"
+    assert conv._path == appdata / "histories" / "old.jsonl"
+
+
+@pytest.mark.anyio
+async def test_schedules_load_from_workspace_not_agent_package(tmp_path: Path) -> None:
+    """Schedules belong to the workspace (刻意为之) - Feishu users sharing one agent pack must not share tasks."""
+    workspace = tmp_path / "user-ws"
+    agent_pkg = tmp_path / "agent-pkg"
+    await anyio.Path(workspace / "schedules" / "mine").mkdir(parents=True)
+    await anyio.Path(workspace / "schedules" / "mine" / "TASK.md").write_text(
+        '---\nname: mine\ncron: "0 12 * * *"\n---\nMy task', encoding="utf-8"
+    )
+    await anyio.Path(agent_pkg / "tools").mkdir(parents=True)
+    await anyio.Path(agent_pkg / "schedules" / "shared").mkdir(parents=True)
+    await anyio.Path(agent_pkg / "schedules" / "shared" / "TASK.md").write_text(
+        '---\nname: shared\ncron: "0 12 * * *"\n---\nShared task', encoding="utf-8"
+    )
+
+    session_agent = await SessionAgent.create(
+        ai_socket="http://x",
+        workspace_path=workspace,
+        agent_path=agent_pkg,
+        session_id="sched-src",
+        active_schedules={ACTIVATE_ALL},
+    )
+    names = {s.name for s in session_agent._schedule_registry.schedules}
+    assert names == {"mine"}
+
+
+@pytest.mark.anyio
+async def test_session_without_active_schedules_fires_none(tmp_path: Path) -> None:
+    """A user Session reads the entries but fires none - otherwise one reminder is multiplied by live sessions."""
+    workspace = tmp_path / "user-ws"
+    await anyio.Path(workspace / "schedules" / "mine").mkdir(parents=True)
+    await anyio.Path(workspace / "schedules" / "mine" / "TASK.md").write_text(
+        '---\nname: mine\ncron: "0 12 * * *"\n---\nMy task', encoding="utf-8"
+    )
+
+    session_agent = await SessionAgent.create(
+        ai_socket="http://x",
+        workspace_path=workspace,
+        session_id="plain-user",
+    )
+    registry = session_agent._schedule_registry
+    assert {s.name for s in registry.schedules} == {"mine"}
+    assert registry.active_schedules == []
+
+
+@pytest.mark.anyio
+async def test_session_activates_only_named_schedules(tmp_path: Path) -> None:
+    """Activation is a property of (session x schedule): named per entry, not one switch per Session."""
+    workspace = tmp_path / "user-ws"
+    for name in ("mine", "theirs"):
+        await anyio.Path(workspace / "schedules" / name).mkdir(parents=True)
+        await anyio.Path(workspace / "schedules" / name / "TASK.md").write_text(
+            f'---\nname: {name}\ncron: "0 12 * * *"\n---\nT', encoding="utf-8"
+        )
+
+    session_agent = await SessionAgent.create(
+        ai_socket="http://x",
+        workspace_path=workspace,
+        session_id="subset-user",
+        active_schedules={"mine"},
+    )
+    registry = session_agent._schedule_registry
+    assert {s.name for s in registry.schedules} == {"mine", "theirs"}
+    assert {s.name for s in registry.active_schedules} == {"mine"}
+
+
+@pytest.mark.anyio
+async def test_session_without_active_schedules_start_all_starts_nothing(tmp_path: Path) -> None:
+    workspace = tmp_path / "user-ws"
+    await anyio.Path(workspace / "schedules" / "mine").mkdir(parents=True)
+    await anyio.Path(workspace / "schedules" / "mine" / "TASK.md").write_text(
+        '---\nname: mine\ncron: "* * * * *"\n---\nMy task', encoding="utf-8"
+    )
+    session_agent = await SessionAgent.create(
+        ai_socket="http://x",
+        workspace_path=workspace,
+        session_id="plain-user-2",
+    )
+    async with anyio.create_task_group() as tg:
+        session_agent.start_all(tg)
+        assert session_agent._schedule_registry._runner_scopes == {}
+        tg.cancel_scope.cancel()
+
+
+@pytest.mark.anyio
+async def test_runtime_scope_exposes_workspace_and_agent(tmp_path: Path) -> None:
+    ws = str(tmp_path / "ws")
+    ag = str(tmp_path / "ag")
+    with runtime_scope(session_id="sid", workspace=ws, agent=ag):
+        assert get_workspace() == ws
+        assert get_agent() == ag
+    assert get_workspace() == ""
+    assert get_agent() == ""
 
 
 # --- Snapshot / rollback tests ---
@@ -945,10 +1271,12 @@ async def test_agent_saves_on_max_tool_rounds(tmp_path: Path) -> None:
             conversation=Conversation(path=history_path),
             max_tool_rounds=1,
         )
-        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        outcome = AgentRunOutcome()
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"}, outcome=outcome)]
 
         content = "".join(c.content or "" for c in chunks)
         assert "Max tool rounds reached" in content
+        assert outcome.termination_reason == "max_tool_rounds"
 
         loaded = await Conversation._load(history_path)
         assert any(m.get("content") == "[Max tool rounds reached]" for m in loaded)

@@ -46,7 +46,28 @@ def browser() -> dict[str, object]:
     scrolling to reveal content, reading console/network activity, handling dialogs, or
     seeing the page via a screenshot. Call ``browser_navigate`` first to open a page,
     then ``browser_snapshot`` to get ref IDs for clicking/typing. State persists across
-    calls — the same browser stays open for the whole session."""
+    calls — the same browser window stays open for the whole conversation and is NOT
+    closed between messages.
+
+    When a page looks blank:
+    - Right after ``browser_navigate`` a page may still be rendering (this is common on
+      search-result pages and other SPAs). If ``browser_snapshot`` comes back blank,
+      near-empty, or shows ``about:blank``, do NOT conclude the page is empty or that the
+      load failed. Wait and retry: call ``browser_wait_for`` (for the text you expect, or a
+      short delay) then ``browser_snapshot`` again, or re-run ``browser_navigate`` on the
+      same URL. Only report a blank/broken page after retrying.
+
+    Keeping pages open (important — this is about user experience):
+    - Do NOT call ``browser_close`` on your own initiative. Every page you open stays OPEN.
+      A page is closed only when the user closes it themselves, or when the user has
+      explicitly told you to close it.
+    - When a site needs the user to sign in — log in, scan a QR code, grant authorization,
+      solve a captcha — do NOT close the page and do NOT treat it as a failure. Leave the
+      page open, tell the user exactly what to do (e.g. "scan the login QR code in the
+      open window"), and let the USER decide how to proceed. Pause and wait for the user
+      rather than abandoning or closing the page.
+    - When you finish a task, never silently close the tab. Ask the user whether they want
+      the page closed, and call ``browser_close`` only after they confirm."""
     endpoint = _b.ensure_server()
     # Playwright MCP binds the open browser tab to the HTTP session; don't terminate the
     # session when a per-call connection closes, or the page resets between tool calls.

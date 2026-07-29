@@ -34,6 +34,18 @@ def test_buffer_type_switch_flushes_previous():
     assert b.flush() == [("text", "answer")]
 
 
+def test_buffer_reasoning_kind_switch_does_not_merge():
+    """Same reasoning slot, different provenance keys must not coalesce."""
+    b = StreamBuffer(10.0)
+    assert b.switch("reasoning:thinking") == []
+    assert b.append("plan") == []
+    assert b.switch("reasoning:tool_call") == [("reasoning:thinking", "plan")]
+    assert b.append("call") == []
+    assert b.switch("reasoning:tool_result") == [("reasoning:tool_call", "call")]
+    assert b.append("done") == []
+    assert b.flush() == [("reasoning:tool_result", "done")]
+
+
 def test_buffer_flush_empty_returns_empty():
     b = StreamBuffer(10.0)
     assert b.flush() == []

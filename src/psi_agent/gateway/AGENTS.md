@@ -11,12 +11,16 @@ Gateway 自身是一个独立的 aiohttp 进程，AI/Session 作为进程内 any
 ```
 Gateway 进程
 ├── AIManager          — AI 实例注册表 + 生命周期管理
+├── RouterManager      — Gateway 内部语义路由服务注册表 + 生命周期管理
 ├── SessionManager     — Session 实例注册表 + 生命周期管理
+├── SchedulerManager   — 每 workspace 一个全量激活的调度 Session（触发其 schedules/，对 SPA 隐藏）
 ├── TitleManager       — 会话标题 CRUD + AI 自动生成
 ├── WorkspaceManager   — 目录浏览 + workspace-scoped reusable workflow 摘要
 ├── ChatManager        — SSE 流式对话管理
-├── HistoryManager     — JSONL 历史读取
-├── GatewayState       — 状态持久化到 state/latest.json
+├── HistoryManager     — JSONL 历史读取（AppData `histories/` + legacy 双读）
+├── TodoManager        — 会话 todo 列表只读（AppData `todos/` + legacy workspace 双读）
+├── OAuthRelay         — OAuth 回调中继（state → code 一次性信箱，免用户手工复制授权码）
+├── GatewayState       — 状态持久化到 AppData `state/latest.json`（legacy cwd 双读）
 ├── aiohttp REST Server  — OpenAPI CRUD + Web UI chat
 ├── spa/               — Vue 3 SPA 前端项目 (Vite + SFC)
 ├── GatewayWebView     — 原生 webview 窗口 (pywebview)
@@ -31,15 +35,22 @@ Gateway 进程
 | `__init__.py` | `Gateway` dataclass + `run()` 入口 |
 | `_manager.py` | 共享 helpers（_new_uuid/_noop/_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
 | `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + AiInfo |
-| `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo |
+| `_router_manager.py` | `RouterManager` — Router 实例注册表、AI ID 到 socket 解析和生命周期管理 |
+| `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo（含 `agent`、`active_schedules` / `deactive_schedules`） |
+| `_scheduler_manager.py` | `SchedulerManager` — 每个 workspace 恰好一个**全量激活**（`active_schedules=("*",)`）的调度 Session，按需 spawn，对 SPA / state 隐藏 |
+| `_defaults.py` | `resolve_default_agent` / `resolve_default_workspace`；再导出 ``psi_agent._appdata`` 路径助手 — CLI / `GET /defaults` 用 |
+| `_feishu_manager.py` | `FeishuManager` — 飞书会话 → Session 路由表（私聊按 `open_id`、群聊按 `chat_id`；复用 SessionManager 按需 spawn）+ FeishuRoute |
+| `_oauth_manager.py` | `OAuthRelay` — OAuth 回调中继（`state → code` 一次性信箱，带 TTL；供 `GET /oauth/callback` + `GET /oauth/code`），让授权码免用户手工复制 |
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
-| `_state.py` | `GatewayState` dataclass — `state/latest.json` 的 load/save + 历史快照 `state/YYYYMMDD-HHMMSS.json` |
+| `_state.py` | `GatewayState` — `{appdata}/state/latest.json` + 时间戳快照；缺则双读 cwd `state/latest.json` |
 | `_spa_shell.py` | SPA 外壳注入 — `DEFAULT_APP_NAME`、`inject_app_name()`、`read_spa_index_template()`；`GET /spa/index.html` 替换 `__GATEWAY_APP_NAME__` |
 | `server.py` | aiohttp Application + REST handlers |
 | `_chat_manager.py` | SSE 流式对话管理（复用 ChannelCore） |
-| `_history_manager.py` | JSONL 历史读取 |
-| `_workspace_manager.py` | 目录浏览 + cwd 查询 + 固定 registry 下 reusable workflow 的安全摘要列表 |
-| `spa/` | Vue 3 SPA 前端项目（Vite + SFC + Composition API），构建输出 `spa/dist/` |
+| `_history_manager.py` | JSONL 历史读取（``{appdata}/histories/{session_id}.jsonl``，legacy ``{workspace}/histories/`` 双读；delete 两侧都清） |
+| `_todo_manager.py` | 会话 todo 列表读取（``{appdata}/todos/{session_id}.json``，legacy ``{workspace}/.psi/todos/`` 双读） |
+| `_workspace_manager.py` | 目录浏览 + 快捷路径列表 + cwd 查询 + 固定 registry 下 reusable workflow 的安全摘要列表 |
+| `spa/` | Vue 3 SPA v1（对话气泡），构建输出 `spa/dist/`；路径 `/spa/` |
+| `spa-v2/` | React SPA v2（任务工作台 + 宝箱），构建输出 `spa-v2/dist/`；**默认** `GET /` → `/spa-v2/`（无 dist 时回退 v1） |
 | `_tray.py` | 系统托盘图标（pystray + Pillow），由 `--tray` 参数开启，`--icon` 参数指定图标文件，左键打开浏览器或恢复 webview 窗口，右键菜单控制；`request_attention()` 脉冲高亮图标 |
 | `_webview.py` | 原生 webview 窗口（pywebview），`--webview` 参数开启。窗口关闭信号通过 `threading.Event` 传递给主 loop；`request_attention()` 在 Windows 上 FlashWindowEx |
 | `_attention.py` | `AttentionHub`：SPA `POST /ui/attention` → 绑定的 tray/webview 注意力提示（best-effort）。`schedule_notify()` 用 daemon thread 异步触发，**禁止**在 aiohttp handler 里同步等 tray（pystray 可能卡死事件循环） |
@@ -50,25 +61,101 @@ Gateway 进程
 ```
 1. setup_logging(verbose)                             — 第一行
 2. if self.browser and self.webview: raise ValueError  — 互斥校验
-3. state = GatewayState() + snapshot = await state.load()  — 加载持久化状态
-4. anyio.create_task_group()                          — 手动管理 task group
-5. 创建 AIManager + SessionManager + TitleManager
-6. 恢复 AI（遍历 snapshot.ais → aim.create，失败 skip）
-7. 恢复 Session（遍历 snapshot.sessions → sm.create，失败 skip）
-8. 恢复标题（遍历 snapshot.titles → tm.set）
-9. await create_app(aim, sm, tm, favicon_path=self.icon, app_name=self.app_name)  — 注册 REST 路由
-10. 创建 _do_persist 闭包（快照三个 manager → state.save）
-11. 注入 _persist（aim._persist = sm._persist = tm._persist = _do_persist）
-12. await _do_persist()                                — 初始全量持久化
-13. runner.setup() + create_site(runner, listen) + site.start()
-14. if self.webview and self.icon is None: raise ValueError("--webview requires --icon")
-15. if self.webview: wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon, app_name=self.app_name); wv.start()
-16. if self.browser: webbrowser.open(addr)
-17. if self.tray and self.icon is None: raise ValueError("--tray requires --icon")
-18. if self.tray: GatewayTray(addr, self.icon, app_name=self.app_name, on_open=wv.show).start()
-19. try: 三路等待 — tray.wait_stop() / wv.wait_closed() / sleep_forever()
-20. finally: tray.stop()（如有）+ wv.stop()（如有）+ runner.cleanup() + tg.__aexit__()
+3. resolve default_agent / default_workspace（见 `_defaults.py`）
+4. state = GatewayState.from_appdata(appdata_root) + snapshot = await state.load()  — AppData state（legacy 双读）
+5. anyio.create_task_group()                          — 手动管理 task group
+6. 创建 AIManager + RouterManager + SessionManager（注入 `_default_agent` / `_default_workspace`）+ TitleManager
+7. 恢复 AI / Router / Session（Session 恢复时带 `agent`，缺省用 Gateway default）/ titles
+8. 创建 SchedulerManager（`--scheduler-ai-id`，空则回落 `--feishu-ai-id`）
+9. await create_app(..., default_agent=..., default_workspace=..., appdata=..., schedm=...)  — 注册 REST（含 `GET /defaults`）
+10. 为每个已恢复 Session 的 workspace `schedm.ensure(...)` — 按需拉起调度 Session（无 `schedules/` 则跳过）
+11. 创建 _do_persist 闭包（快照 managers → state.save，sessions 含 `agent`；`list_all()` 默认已排除调度 Session）
+12. 注入 _persist + 初始全量持久化
+13. runner.setup() + create_site + site.start() + tray/webview/browser 等待与 finally 清理
 ```
+
+## 默认 agent / workspace / AppData（三区路径；记忆区搬家已完成）
+
+### 路径分层（看 PR 先看这段）
+
+```text
+调用方（spa / 飞书 / haitun sessions_create / …）
+    │  GET /defaults  → 得知默认 agent、workspace、appdata
+    │  POST /sessions { workspace?, agent? }
+    ▼
+Gateway SessionManager（缺省补 --default-agent / --default-workspace；注入 _appdata）
+    │  Session(workspace=…, agent=…, appdata=…)
+    ▼
+Session（#472 / 第 4C）
+    │  启动时：tools / system 从 agent_path 加载
+    │         schedules 从 workspace_path 加载（每个 Session 都读到，但只触发激活名单里的）
+    │         history 写 `{appdata}/histories/`（legacy 双读）
+    │  回合内：runtime_scope 写入 get_agent()/get_workspace() ContextVar
+    ▼
+workspace 工具（haitun `_runtime_paths`）按 ContextVar 解析相对路径  ← ✅ 第 3 步
+AppData 记忆区根（`--appdata` / `PSI_APPDATA` / platformdirs）     ← ✅ 第 4A
+todos → `{appdata}/todos/`（双读旧 `{workspace}/.psi/todos/`）   ← ✅ 第 4B
+history → `{appdata}/histories/`（双读旧 `{workspace}/histories/`） ← ✅ 第 4C
+Gateway state → `{appdata}/state/`（双读旧 cwd `state/`）          ← ✅ 第 4D
+schedules → `{workspace}/schedules/`（归 workspace，非 agent 包 / 非 AppData）
+```
+
+路径助手：``psi_agent._appdata``（Session / Gateway / haitun 共用；**刻意**放在 gateway 包外以免循环导入）。``gateway._defaults`` 再导出同名助手。Gateway 启动把解析后的根写入 ``PSI_APPDATA``，同进程工具与 ``GET /defaults.appdata`` 一致。**禁止**把 AppData 根塞进 Session ContextVar。
+
+| 已合 | 内容 |
+|------|------|
+| ✅ #472 | Session 可选 `agent`；加载能力包；ContextVar **API** |
+| ✅ #482 | Gateway CLI + `GET /defaults` + `POST /sessions.agent`；调用方接线 |
+| ✅ 第 3 步 | haitun 工具读 `get_workspace()` / `get_agent()`（`_runtime_paths`） |
+| ✅ 第 4A | 解析并暴露 AppData 根：`GET /defaults.appdata`、CLI `--appdata`、env `PSI_APPDATA` |
+| ✅ 第 4B | todos：**写** `{appdata}/todos/{session_id}.json`；**读**优先 AppData，缺则双读 legacy |
+| ✅ 第 4C | history：**写** `{appdata}/histories/{session_id}.jsonl`；**读**优先 AppData，缺则双读 legacy |
+| ✅ 第 4D | Gateway state：**写** `{appdata}/state/latest.json`；**读**优先 AppData，缺则双读 cwd `state/latest.json` |
+
+**可读验收**：新 todos/history/state 落在 AppData；仅有 legacy 文件时仍可读；再次写入落 AppData。三区路径（agent / workspace / AppData）记忆区侧至此完成。
+
+| CLI | 含义 |
+|-----|------|
+| `--default-agent` | 新建 Session 的 Agent 包目录；空则软默认：① `cwd/examples/haitun-workspace`（仓库开发）；② cwd 自身含 `tools/`+`skills/`（Inno 安装布局 `{app}` 即能力包）；仍空则 Session `agent=""`（与 workspace 同根兼容）。Windows 安装包 `haitun.exe` **显式**传 `--default-agent {app}` |
+| `--default-workspace` | 新建 Session / `GET /defaults` 的用户工作区；空 → 软默认 `{Desktop}/haitun交付`（**只宣布路径**；目录在 `SessionManager.create` / 开始对话时才 mkdir。`platformdirs.user_desktop_dir`）。安装包 `haitun.exe` **显式**传该路径（运行时解析桌面，不写死用户名） |
+| `--appdata` | AppData 记忆区根；空 → `PSI_APPDATA` → `platformdirs`（**禁止**手写死 `%AppData%`） |
+| `--scheduler-ai-id` | 调度 Session 挂载的 AI 实例；空 → 回落 `--feishu-ai-id`；两者都空则有 `schedules/` 的 workspace 只记 warning 不启动调度 |
+
+`POST /sessions` 可显式带 `agent` / `workspace`；省略时用上述默认。`SessionInfo` 与 `state/latest.json` 持久化含 `agent`。
+
+**谁对接这套接口（调用方 = 谁 POST /sessions 或等价 spawn）**
+
+| 调用方 | 怎么用 |
+|--------|--------|
+| **spa-v2** | `GET /defaults` 启动选工作区；`POST /sessions` 显式带 `agent` |
+| **spa v1** | `POST /sessions` 带 `agent`（从 `/defaults`）；切换 backend 重建时保留 `agent` |
+| **飞书** `POST /feishu/route` → `FeishuManager` → `SessionManager.create` | 不传 `agent` 时自动吃 Gateway `_default_agent` |
+| **haitun** `sessions_create` / session 工具 | `GET /defaults` 后 `POST /sessions` 带 `agent` |
+| **state 恢复** | snapshot 的 `agent`；缺省回落到 Gateway default |
+| **OpenAPI / 其它客户端** | 同一 REST；可显式传或依赖服务端默认 |
+| **调度 Session** | 不由外部调用方创建——`SchedulerManager.ensure()` 在上述任一调用方建会话后按 workspace 去重地 spawn（见下节）。`POST /sessions` 传 `active_schedules` / `deactive_schedules` / `scheduler` 无效，三者都不在 REST 入参里 |
+
+## SchedulerManager（定时任务归 workspace，触发权归 session × schedule）
+
+定时任务的正确归属是 **workspace**，而**触发权**的粒度是 **(session × schedule)**。Gateway 一个进程跑多个 Session，飞书更是按会话 spawn 独立 Session（私聊按 `open_id` 每人一个、群聊按 `chat_id` 每群一个）；每个 Session 都读得到 `{workspace}/schedules` 的全部条目，但一条 schedule 必须**恰好被一个 Session 激活**，否则一条提醒就会被在线会话数乘一遍。
+
+`SchedulerManager` 负责那个「恰好一个」：`ensure(workspace)` 幂等地为一个 workspace 拿到/创建唯一的**全量激活**（`active_schedules=("*",)`）调度 Session，用户会话则一律传空名单。**「重复触发」在构造期就不存在**——不需要运行时抢锁，也没有「持有者退出后谁接管」的选主问题。
+
+粒度是逐条而非整个 Session 一个布尔：布尔只能表达「全触发 / 全不触发」，表达不了「A 条归调度 Session、B 条归某个用户会话」。Gateway 默认用 `("*",)` 把整个 workspace 交给调度 Session，但 Session 层的名单机制允许更细的划分（见 `session/AGENTS.md`）。
+
+| | |
+|--|--|
+| **去重键** | workspace 路径，经 `await anyio.Path(...).resolve()` + `os.path.normcase` 归一（Windows 大小写 / 斜杠差异不产出两个调度 Session）。不用 `os.path.realpath`——同步 IO，违反「一切异步」 |
+| **session id** | `scheduler-<workspace sha256 前16位>`，确定性派生 → 重启后 `ensure` 重建同名，无需持久化 |
+| **激活名单** | `active_schedules=("*",)`（`ACTIVATE_ALL`）——整个 workspace 的定时任务都归它，**含之后新建的**（枚举白名单覆盖不到 `refresh()` 新发现的条目）；用户会话为 `()`。要把某几条让给用户会话，用 `deactive_schedules=(名字…)` 从通配符里挖掉，别改成枚举 |
+| **按需 spawn** | 仅当 workspace 真有 `schedules/*/TASK.md` 时才建。否则 N 个从不用定时任务的飞书用户 / 群会各挂一个空调度 Session（每个都付 tools 加载成本）。用户建第一个定时任务后，下一次 `ensure` 把它拉起来 |
+| **之后新建的任务** | 由调度 Session 自己的 `_watch_dir` 协程每 30s `refresh()` 感知，**不**依赖再次 `ensure`（`ensure` 幂等命中缓存后直接返回，不会重载磁盘）。详见 `session/AGENTS.md`「动态重载」 |
+| **谁调 `ensure`** | `POST /sessions`（建会话后）、`POST /feishu/route`（路由用户/群后）、`Gateway.run` 启动恢复 state 后 |
+| **AI 实例** | `--scheduler-ai-id`，空则回落 `--feishu-ai-id`；两者都空时不 spawn（记 warning）——`fire=prompt` 需要 AI 后端，spawn 一个连不上上游的 Session 更糟 |
+| **失败不扩散** | `ensure` 捕获全部异常，只记 warning 返回 `""`。调度起不来不该拖垮建会话 / 收消息的主链路 |
+| **对 SPA / state 隐藏** | 见上方 `list_all(include_scheduler=False)` |
+
+Session 侧的对应契约（逐条激活、未激活条目仍加载、display 结果不再回流用户）见 `session/AGENTS.md` 的「调度归属 workspace，触发权归属 (session × schedule)」。
 
 ## 系统托盘 (GatewayTray)
 
@@ -96,7 +183,7 @@ Gateway 启动时可通过 `--tray` 开启系统托盘，图标由 `--icon` 指�
 
 ## Socket 路径约定
 
-AI 和 Session 之间通过 `_sockets.py` 抽象层以 Unix socket / Named Pipe 通信。
+AI 和 Session 之间通过 `_sockets.py` 抽象层以 Unix socket（仅 POSIX）/ Named Pipe（仅 Windows）通信。`_socket_path()` 的平台分支是**必须**的：`_sockets` 对平台与地址不匹配的组合主动抛 `ValueError`（Windows 上的裸路径、非 Windows 上的 `\\.\pipe\...`），详见根 `AGENTS.md`「关键注意事项」第 17 条。
 
 ```python
 def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
@@ -110,6 +197,16 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 | AI socket | `/tmp/{socket_path}/ais/{ai_id}.sock` | `\\.\pipe\{socket_path}\ais\{ai_id}` |
 | Channel socket | `/tmp/{socket_path}/channels/{session_id}.sock` | `\\.\pipe\{socket_path}\channels\{session_id}` |
 
+**测试里断言 socket 路径不能写死 `.sock`**：由上表可见 Windows 上路径没有该后缀。CI 三个 job 全是 `ubuntu-latest`，写死 `.sock` 在 CI 里永远绿、在每台 Windows 开发机上必然失败。测试请用平台判定（见 `tests/psi_agent/gateway/test_manager.py` 的 `_is_socket_path`）。
+
+### `_wait_socket` 超时（120s，刻意为之）
+
+`_wait_socket` 有 `timeout_sec` 上限（默认 `_SOCKET_READY_TIMEOUT_SECONDS = 120.0`），超时抛 `TimeoutError`，由 `create()` 捕获走 rollback。
+
+这里有段反复：#79 最初是 30s → #248 显式移除、改为无限等待（`while True`）→ 现在加回 120s。**加回的理由**：无限等待时，一个永远起不来的服务会把调用方**永久挂住**——而调用方是 `AIManager.create()` / `SessionManager.create()`，它们又跑在 Gateway 的 REST 请求里，于是这条 HTTP 请求永不返回，`create()` 里那套 rollback（pop entry + cancel scope + remove socket + `_persist`）**一行都执行不到**，注册表停在半成品状态。有上限才能把「起不来」变成一个调用方能报告、能回滚的失败。
+
+上限取 120s 而非 30s 是**刻意的**：#248 移除超时想解决的是慢机器上误杀正常启动（冷启动、Windows Defender 扫描、swap），120s 对此足够宽松；只有真正起不来时才触发。所以这不是简单 revert #248，而是**同时**满足两边：慢启动不误杀 + 死服务不挂死。`docs/superpowers/` 下的历史 spec/plan 已同步。
+
 ## AIManager
 
 内存注册表，维护 `dict[str, _AiEntry]` + `anyio.Lock`。
@@ -121,13 +218,14 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 **`_persist` 回调**：构造函数参数，默认 no-op。Gateway.run() 在恢复完成后注入 persist 闭包（快照所有 manager → state.save），每次 create/delete/crash 后调用。
 
 **create(provider, model, api_key, base_url, *, id="") 流程**：
-1. 获取 lock，断言不重复
-2. `_socket_path(prefix, "ais", ai_id)` 生成 socket 路径
-3. `_ensure_socket_dir(socket)` 创建父目录（anyio 异步）
-4. 构造 `Ai(...)`（传入 api_key + base_url），创建 `CancelScope`，`task_group.start_soon`
-5. 存入 `_entries`
-6. `_wait_socket(socket)` 轮询等待 socket 出现
-7. 成功后调用 `_persist`，返回 `AiInfo`
+1. 获取 lock
+2. 若已有 **完全相同** 的配置（`provider`/`model`/`api_key`/`base_url`，base_url 忽略尾部 `/`），先停掉旧实例再创建；无显式 `id` 时复用旧 `ai_id`（避免 session 悬空）。显式 `id` 已存在且配置不同 → `ValueError`
+3. `_socket_path(prefix, "ais", ai_id)` 生成 socket 路径
+4. `_ensure_socket_dir(socket)` 创建父目录（anyio 异步）
+5. 构造 `Ai(...)`（传入 api_key + base_url），创建 `CancelScope`，`task_group.start_soon`
+6. 存入 `_entries`
+7. `_wait_socket(socket)` 轮询等待 socket 出现（默认 120s 上限，超时抛 `TimeoutError` 走 rollback）
+8. 成功后调用 `_persist`，返回 `AiInfo`
    失败则 rollback：pop entry + cancel scope + remove socket + 调用 `_persist`
 
 **delete(ai_id) 流程**：
@@ -139,25 +237,42 @@ def _socket_path(prefix: str, kind: str, entity_id: str) -> str:
 
 AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 entry 并调用 `_persist`，确保持久化状态与内存一致。
 
+## RouterManager
+
+路由判断模型和所有候选模型都是 `AIManager` 中已经启动的普通 AI。Router 通过
+`POST /routers` 单独启动，前端/REST 配置只保存 `router_ai_id`、候选
+`ai_id + description` 和 `default_ai_id`；`RouterManager` 在运行时将这些 ID
+解析为 socket，并延迟调用合并后由 `psi_agent.router.Router` 提供的路由服务。
+Gateway 不重复实现语义选择或 SSE 代理。状态恢复顺序固定为 AI → Router → Session。
+
 ## SessionManager
 
 内存注册表，维护 `dict[str, _SessionEntry]` + `anyio.Lock`。
 
 每个 `_SessionEntry` 包含：
 - `scope: anyio.CancelScope` — 独立取消
-- `info: SessionInfo` — 包含 `id`、`ai_id`、`workspace`、`channel_socket`
+- `info: SessionInfo` — 包含 `id`、`backend_type`、`backend_id`、`workspace`、`channel_socket`、`agent`、`active_schedules`（本会话实际触发的定时任务名，`("*",)` = 全部）、`deactive_schedules`（从中排除的，黑名单优先）
+
+**`SessionInfo.scheduler`** 是由 `active_schedules` 派生的 property（`"*" in active_schedules`），只用于过滤与展示；真实归属信息在 `active_schedules` / `deactive_schedules` 本身。让出几条（非空黑名单）不改变它仍是该 workspace 调度 Session 的事实。
+
+**`list_all(include_scheduler=False)`**：默认**不返回**全量调度 Session。因此 `GET /sessions` 与 `state/latest.json`（快照走 `list_all()`）都自动排除它——刻意为之：调度 Session 不是用户会话，列在 SPA 里只会让人误删。只激活部分条目的会话**仍是用户会话**，照常出现在列表里。内部去重 / 运维需要看到调度 Session 时传 `include_scheduler=True`。
+
+`backend_type="ai"` 时通过 `AIManager` 解析 socket；`backend_type="router"` 时
+通过 `RouterManager` 解析 socket。旧 REST 请求中的 `ai_id` 仍兼容为直接 AI
+模式，响应也为直接 AI Session 保留 `ai_id` 字段，供 SPA 完成后续迁移。
 
 **`_persist` 回调**：同 AIManager，默认 no-op，Gateway.run() 注入。
 
 **create(ai_id, *, id="", workspace="") 流程**：
-1. 获取 lock，断言不重复
-2. `aimanager.get_socket(ai_id)` 查 AI socket（AI 不存在时计算路径返回，不抛异常——支持启动恢复时 AI 尚未就绪）
-3. `_socket_path(prefix, "channels", session_id)` 生成 channel socket
-4. `_ensure_socket_dir(socket)` 创建父目录
-5. 构造 `Session(...)`，创建 `CancelScope`，`task_group.start_soon`
-6. 存入 `_entries`
-7. `_wait_socket()` 轮询等待 channel socket 就绪
-8. 成功后调用 `_persist`，返回 `SessionInfo`
+1. 解析 `workspace`（缺省用 Gateway `_default_workspace`）→ ``ensure_workspace_dir`` mkdir（**刻意为之**：`GET /defaults` 只宣布路径，目录到此才创建）
+2. 获取 lock，断言不重复
+3. `aimanager.get_socket(ai_id)` 查 AI socket（AI 不存在时计算路径返回，不抛异常——支持启动恢复时 AI 尚未就绪）
+4. `_socket_path(prefix, "channels", session_id)` 生成 channel socket
+5. `_ensure_socket_dir(socket)` 创建父目录
+6. 构造 `Session(...)`，创建 `CancelScope`，`task_group.start_soon`
+7. 存入 `_entries`
+8. `_wait_socket()` 轮询等待 channel socket 就绪（默认 120s 上限，超时抛 `TimeoutError` 走 rollback）
+9. 成功后调用 `_persist`，返回 `SessionInfo`
    失败则 rollback：pop entry + cancel scope + remove socket + 调用 `_persist`
 
 **delete(session_id)**：
@@ -167,9 +282,74 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 
 Session 运行时 crash 时，`_run_session` 的 except 块从 `_entries` 中移除该 entry 并调用 `_persist`。
 
-workspace 中的 history JSONL 不受影响。
+REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
+- 删除 AppData 与 legacy workspace 下的 ``histories/{id}.jsonl``（``HistoryManager.delete``，文件不存在则忽略）
+- 清除 ``TitleManager`` 中该会话标题
+
+## TodoManager
+
+只读：从 AppData（优先）或 legacy workspace 读取 Agent ``todo`` tool 写入的清单。
+
+- **新路径**：``{appdata}/todos/{session_id}.json``（``appdata`` 来自 Gateway ``--appdata`` / ``PSI_APPDATA`` / platformdirs）
+- **Legacy 双读**：``{workspace}/.psi/todos/{session_id}.json``（仅当 AppData 文件不存在）
+- ``get(workspace, session_id, *, appdata="")`` → ``{todos: [{id, content, status}], summary: {…}}``
+- 文件缺失 / JSON 损坏 → 空列表（不 404；路由层仅在 session 不存在时 404）
+- spa-v2 任务卡中间步据此显示 ``N/M``（当前步/总数）
 
 **注意（有意为之）**：删除 AI **不会**级联删除依赖它的 Session。被删 AI 的 socket 失效后，挂在其上的 Session 仍存活但不可用——由前端负责不再访问这类失效 Session，后端不做级联清理。
+
+## FeishuManager
+
+「飞书会话 → Session」路由表，让同一飞书机器人对不同飞书**会话**提供**各自独立**的渠道。会话是**动态**的（事先不知道有哪些人、哪些群），故某个键首次路由时按需 spawn 一个 Session。本组件是 gateway 侧「飞书会话 → Session」的**唯一权威**——飞书 channel 只把 `open_id`/`chat_id`/`chat_type` 三个**客观事实**交给 Gateway 换 socket，既不自己挑路由键，也不决定 `ai_id`/`workspace`（对比早期把路由塞进 channel 内部调 `/sessions` 的做法）。
+
+**路由键分两支（这是本组件的核心语义）**：
+
+| 场景 | `chat_type` | 路由键 | session_id | workspace | 效果 |
+|------|-------------|--------|-----------|-----------|------|
+| 私聊 | `p2p` / 缺失 | 发送者 `open_id` | `feishu-<open_id>` | `<root>/<open_id>` | 一人一个，历史/记忆互相隔离 |
+| 群聊 | `group` / `topic` | `chat:<chat_id>` | `feishu-chat-<chat_id>` | `<root>/chat-<chat_id>` | **整群共用一个**，机器人在群里对全体成员有连贯上下文 |
+
+群聊按 `chat_id` 而非按发言者聚合，是因为群里的对话本身就是共享的：A 问完 B 追问「那第二点呢」，机器人必须看得见 A 那轮。要区分是谁在说话，靠 `_context_header` 每条消息注入的 `sender_open_id`（见 `channel/AGENTS.md`），不靠拆 session。群与群、群与私聊之间互不串味。
+
+**字段**：
+- `_sm: SessionManager` — 复用其 spawn/查询能力管理 Session 生命周期
+- `_ai_id: str` — 飞书 Session 默认挂载的 AI 实例 id（`create_app(..., feishu_ai_id=...)` 注入，来自 `Gateway.feishu_ai_id`）
+- `_workspace_root: str` — 各会话独立 workspace 的父目录（来自 `Gateway.feishu_workspace_root`；空则以 cwd 为父）
+- `_routes: dict[str, str]` — 路由键 → session_id 映射（内存态）
+- `_lock: anyio.Lock` — 首次路由才走，频率低，可接受串行
+
+**派生规则**：
+- 加 `feishu-` 前缀与 SPA 手建 session 命名空间隔离；`sanitize` 用正则 `[^A-Za-z0-9._-] → _`（飞书 id 本身即安全字符，此为防御层）
+- 路由键加 `chat:` 前缀隔离两个命名空间（open_id 里不会有冒号）
+- **私聊侧把 `-` 转义成 `_`（刻意为之，勿"简化"掉）**：`sanitize` 的白名单**允许** `-`，若不转义，某人 open_id 恰为 `chat-oc_x` 时派生出的 `feishu-chat-oc_x` 会与群 `oc_x` 的 session id **逐字节相同**——两个陌生人共享同一份上下文与 workspace，是隐私事故而非美观问题。`_session_id` 与 `_workspace_for` 两处必须同步转义，否则 session 分开了 workspace 还是同一个目录。飞书真实 open_id 不含 `-`，这纯属防御层
+- **`chat_id` 为空时不按群路由（刻意为之）**：`_is_group` 要求 `chat_type in {group, topic}` **且** `chat_id` 非空，否则退回按 `open_id`。宁可这条消息不隔离，也不要建出 `feishu-chat-` 这种无主 session
+
+**route(open_id, *, chat_id="", chat_type="", ai_id=None, workspace=None) → (channel_socket, session_id) 流程**（持 lock）：
+1. `_route_key` 定键 → `_session_id` 派生 sid；键为空 → `raise ValueError`（群聊不要求 `open_id`，私聊要求）
+2. 命中 `_routes` 且 `_sm.has(sid)` → 直接返回 `get_socket`
+3. 否则 `_sm.has(sid)`（重启后 Session 被 state 恢复，或 SPA 侧同名建过）→ **adopt** 该 Session，写回 `_routes`
+4. 否则 `mkdir(workspace)` + `_sm.create(ai_id=ai_id or _ai_id, id=sid, workspace=ws)`；捕获 `ValueError("already exists")` 竞态 → 回退 `get_socket`
+5. `ai_id` 最终为空 → `raise ValueError`（handler 转 400）
+
+**内存态自愈（有意为之）**：`_routes` 不持久化。因 session_id 由路由键确定性派生，Gateway 重启后 Session 经 state 恢复，下次 `route()` 走 adopt 分支自愈，无需额外持久化。
+
+**list_routes() → list[FeishuRoute]**：`[{open_id, chat_id, session_id}]`，供观测（`GET /feishu/routes`）。群聊记录填 `chat_id` 而 `open_id` 留空，私聊反之——一条记录只有一个键有值。
+
+**未定义（已知留白）**：群 Session 的 workspace 只有一份，而 `user_access_token`（UAT）按发送者 `open_id` 存。群里多人时「以谁的身份写文档」由 workspace 侧工具按每条消息的 `sender_open_id` 决定（见 `examples/haitun-workspace/TOOLS.md`），Gateway 不做约定。
+
+## OAuthRelay
+
+OAuth 回调中继（`_oauth_manager.py`）：让**授权码自己回到发起方**，免用户从地址栏手工复制 code。
+
+**为什么在 Gateway**：授权码流程里第三方只把 `code` 拼在 `redirect_uri` 上跳一次浏览器；若没人监听那个地址，用户只能自己抄 code。Gateway 本就是 HTTP 服务且用户浏览器可达（配 `PSI_OAUTH_CALLBACK_BASE` 后连手机端也可达），是回调的天然落点——这也是飞书多用户部署唯一可行的一条通道（浏览器与 agent 不同机）。
+
+**刻意不做的事**：Gateway 不碰 token 交换——不知道 app_secret、不知道 PKCE verifier、不知道是哪个飞书用户。那些都留在发起方（workspace 工具），中继只搬运一次性 code，故本模块**零持久化、无跨用户鉴权**（`state` 是发起方生成的高熵随机串，本身即取件码）。
+
+**字段/行为**：
+- `_pending: dict[str, _Pending]` — `state → {code, error, created_at}`，进程内存
+- `deliver(state, *, code="", error="")` — 回调到达即挂到 `state` 名下；`state` 空 → `raise ValueError`
+- `take(state) → _Pending | None` — 发起方取件，命中即返回并**删除**（一次性），未到达返回 `None`
+- TTL 600s（飞书 code 本身 5 分钟有效），每次 `deliver`/`take` 顺带清理过期项；`_MAX_PENDING=256` 满则淘汰最旧一条，防内存无界增长
 
 ## TitleManager
 
@@ -188,20 +368,32 @@ workspace 中的 history JSONL 不受影响。
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/ais` | 创建 AI（201） |
+| POST | `/routers` | 创建并启动 Router（201） |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router（200/404） |
+| GET | `/routers` | 列出所有 Router |
 | DELETE | `/ais/{ai_id}` | 删除 AI（200/404） |
 | GET | `/ais` | 列出所有 AI |
-| POST | `/sessions` | 创建 Session（201） |
-| DELETE | `/sessions/{session_id}` | 删除 Session（200/404） |
-| GET | `/sessions` | 列出所有 Session |
+| POST | `/sessions` | 创建 Session（201）；可选 `agent` / `workspace`（缺省用 Gateway defaults） |
+| DELETE | `/sessions/{session_id}` | 删除 Session + history JSONL + 标题（200/404） |
+| GET | `/sessions` | 列出所有 Session（含 `agent`） |
 | POST | `/sessions/{session_id}/chat` | Web UI chat（SSE） |
-| GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/history` | 获取会话历史（AppData ``histories/`` 优先 + legacy 双读；``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`；assistant 行另附 ``sends``） |
+| GET | `/sessions/{session_id}/todos` | 读取 todos（AppData ``todos/{id}.json`` 优先，否则 legacy workspace ``.psi/todos``）；返回 ``{todos, summary}``，文件缺失则为空列表 |
+| POST | `/feishu/route` | 幂等路由一次飞书会话到其 Session（首次按需 spawn）`{open_id, chat_id?, chat_type?, ai_id?, workspace?}` → 201 `{open_id, chat_id, session_id, channel_socket}`。`chat_type` 为 `group`/`topic` 且 `chat_id` 非空 → 按 `chat_id` 整群共用一个 Session；否则按 `open_id` 一人一个。缺路由键（私聊无 open_id）/ 无 ai_id → 400 |
+| GET | `/feishu/routes` | 列出所有飞书会话 → Session 路由 `[{open_id, chat_id, session_id}]`（群聊记录只有 `chat_id`，私聊只有 `open_id`） |
+| GET | `/oauth/callback` | OAuth 重定向落地点：收下 `?code=&state=` 交给 `OAuthRelay` 暂存，回一张「授权成功」页；缺 state → 400。用户因此**不必**手工复制 code |
+| GET | `/oauth/code` | 发起方（workspace 工具，通常在另一进程）按 `?state=` 取件，命中返回 `{state, code}` 并作废（一次性）；回调带错误则 `{state, error}`；未到达 → 404 |
+| GET | `/defaults` | 默认 `agent` + `workspace` + `appdata`（建 Session 调用方可读；`appdata` 为记忆区根：todos / history / Gateway state） |
+| GET | `/workspace/cwd` | Gateway 进程当前工作目录 |
+| GET | `/workspace/places` | PathPicker 快捷位置（cwd / home / desktop / documents / downloads）+ 盘符 |
+| GET | `/workspace/browse` | 浏览目录 `?path=...&kind=directory|file|all&q=...`，默认 `kind=directory` |
+| GET | `/workspace/workflows` | 列出指定 workspace 的 reusable workflow 摘要 `?path=...` |
+| GET | `/workspace/file` | 读取文件为 base64（`?path=...&root=...`）；``root`` 非空时路径须落在该目录下 |
+| POST | `/workspace/reveal` | 在本机文件管理器中显示路径（Windows `explorer /select`；macOS `open -R`；Linux `xdg-open` 父目录）。body `{path}`；路径须已存在。供 spa-v2 交付物「在文件夹中显示」 |
 | GET | `/titles` | 获取所有 session 标题 |
 | POST | `/titles` | 设置 session 标题 `{id, title}` |
 | POST | `/titles/generate` | AI 自动生成标题 `{id, user_text, assistant_text}` |
 | POST | `/ui/attention` | 会话在后台完成时闪烁托盘/webview（best-effort，需 `--tray` / `--webview`） |
-| GET | `/workspace/browse` | 浏览目录 `?path=...` |
-| GET | `/workspace/workflows` | 列出指定 workspace 的 reusable workflow 摘要 `?path=...` |
-| GET | `/workspace/cwd` | 获取服务端当前工作目录 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--icon` 设置时注册，返回该图标文件） |
 
@@ -209,7 +401,7 @@ AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
 
 错误响应格式：`{"error": "message"}` + HTTP 状态码（404/400/500）。
 
-**注意**：`GET /workspace/browse` 对 `path` 不加限制，可列举本机任意目录——这是 PathPicker 选 workspace 的预期功能。`GET /workspace/roots` 返回快捷位置与盘符。
+**注意**：`GET /workspace/browse` 对 `path` 不加限制，可列举本机任意目录——这是 PathPicker 选 workspace 的预期功能。`GET /workspace/places` 返回快捷位置与盘符。
 
 `GET /workspace/workflows` 只扫描固定的一层目录
 `flows/workflows/<slug>/<slug>.workflow`，不导入 FusionFlow，也不定义额外
@@ -231,22 +423,40 @@ manifest 协议。目录链或资产文件为 symlink、slug 非法/为 Windows 
 
 **Response (SSE)**：
 ```
+data: {"type": "reasoning", "text": "[Tool Call: read({…})]", "kind": "tool_call"}
 data: {"type": "text", "text": "Hello! "}
-data: {"type": "blob", "name": "generated.png", "data": "base64..."}
+data: {"type": "blob", "name": "generated.png", "data": "base64...", "path": "C:/Users/.../Downloads/.psi/.../generated.png"}
 data: [DONE]
 ```
+
+| `type` | 字段 | 说明 |
+|--------|------|------|
+| `text` | `text` | 助手正文（`TextChunk`） |
+| `reasoning` | `text` + 可选 `kind` | 过程流（thinking / tool 进度仍走同一槽）；`kind` 为 `thinking` \| `tool_call` \| `tool_result`（Session yield 打标）。**≠** JSONL 消息 provenance 的 `kind`（`chat` / `schedule.*`） |
+| `blob` | `name` + `data` + 可选 `path` | 交付物 base64（`FileChunk`）；`path` 为磁盘绝对路径，供 spa-v2「在文件夹中显示」 |
 
 **内部实现**：
 - 查 `SessionManager.get_socket(session_id)` 获取 channel socket
 - 复用 `channel._core.ChannelCore` 构造连接
 - 输入：`TextChunk(text)`、blob（base64 解码后由 `_save_upload()` 落至 `~/Downloads/.psi/<date>/`，持久保留，转为 `FileChunk`）；multipart 文件上传通过 blob 通道走相同路径
-- 输出：`TextChunk` → yield `{"type": "text"}`，`FileChunk` → 读取文件内容 base64 编码后 yield `{"type": "blob"}`
+- **落盘到用户真实家目录是刻意的**（交付物要持久保留、用户能在文件管理器里找到），**因此凡碰 `_save_upload` / blob 入站的测试都必须先重定向家目录**，否则会往开发者真实的 `~/Downloads/.psi/` 里堆测试垃圾。`_downloads_path` 走 `Path.home()`，而它在 Windows 上读 `USERPROFILE`、在 POSIX 上才读 `HOME`——`monkeypatch.setenv("HOME", ...)` 在 Windows 上**完全不生效**。正确做法是 patch 函数本身：`monkeypatch.setattr(Path, "home", lambda: tmp_path)`，见 `tests/psi_agent/gateway/test_chat_manager.py` 的 `fake_home` fixture 与 `tests/integration/test_gateway.py::test_gateway_blob_send`
+- 输出：`TextChunk` → `{"type":"text"}`；`ReasoningChunk` → `{"type":"reasoning","text":…}`（有 `chunk.kind` 则附带）；`FileChunk` → 读盘 base64 → `{"type":"blob","name","data","path"}`
 
 ## Web Console (SPA)
 
-Web 控制台是一个 Vue 3 SPA 项目（Vite + SFC + Composition API），构建产物 `spa/dist/` 由 Gateway 以静态文件方式服务。`GET /` 重定向到 `/spa/index.html`。
+Gateway 提供两套 Web 控制台：
 
-### 技术栈
+| | `spa/`（v1） | `spa-v2/`（v2，默认） |
+|--|--|--|
+| 技术 | Vue 3 + Pinia | React 19 + Vite |
+| 路由 | `/spa/` | `/spa-v2/` |
+| 产品 | 会话气泡 | 任务卡 + 交付物宝箱 |
+
+构建产物分别为 `spa/dist/`、`spa-v2/dist/`，由 Gateway 静态服务。**有 `spa-v2/dist` 时** `GET /` 重定向到 `/spa-v2/index.html`；否则回退 `/spa/index.html`。设计细节见各自目录下的 `AGENTS.md`。
+
+CI 打包（PyInstaller / Nuitka）会分别 `npm ci && npm run build` 两个前端，并用 `--add-data` / `--include-data-dir` 同时打进 `spa/dist` 与 `spa-v2/dist`，安装包默认打开即为 v2。
+
+### 技术栈（v1 概要）
 
 | 资源 | 版本锁定 | 用途 |
 |------|----------|------|
@@ -352,10 +562,12 @@ Session 标题由服务端 `/titles` 端点维护，不在浏览器 localStorage
 
 **启动加载流程**：
 ```
-GET /ais + GET /sessions → 恢复上次 AI/Session → 无则弹窗「链接大模型」
-→ 恢复 titles → 恢复 sidebar/theme 状态 → 恢复 active IDs
+GET /ais + GET /sessions → 恢复上次 AI/Session → 无 AI 时由 SPA 自行 POST /ais（打开即用，见 spa/AGENTS.md）
+→ 仍无 AI 则弹窗 Hub「大模型」→ 恢复 titles / sidebar / theme / active IDs
 ```
-服务端通过 `state/latest.json` 自动持久化 AI、Session、Title 状态，重启后自动恢复。对话历史仍通过 JSONL 文件独立持久化。浏览器 localStorage 仅保留 UI 状态（active ids、sidebar 折叠、主题偏好）和对话历史缓存。
+Chat SSE 在长空闲时写 `: keepalive` 注释，**不得**对上游 `agen.__anext__()` 使用 `fail_after`（会拆掉 ChatManager，导致前端「正在同步」挂死）。打开即用默认模型 / 域名由 SPA 维护，Gateway 不内置默认 AI。
+
+服务端通过 AppData `{appdata}/state/latest.json` 自动持久化 AI、Session、Title 状态（legacy cwd `state/` 双读），重启后自动恢复。对话历史经 AppData `histories/` JSONL 独立持久化。浏览器 localStorage 仅保留 UI 状态（active ids、sidebar 折叠、主题偏好）和对话历史缓存。
 
 ### 移动端键盘适配（visualViewport）
 
@@ -460,12 +672,12 @@ AI 创建对话框支持从 provider 的 `/models` API 实时拉取可用模型�
 - `from __future__ import annotations`
 - `X | None` 非 `Optional[X]`
 - 参数透传原则（chat endpoint 额外字段穿透到 ChannelCore→Session）
-- 可取消：`finally` 清理所有 task scope + `tg.__aexit__()`
+- 可取消：`finally` 清理所有 task scope + `tg.__aexit__()`（**先取消或清空常驻任务再退**，否则 `__aexit__(None, None, None)` 会等它们结束而永久阻塞；详见「测试策略 → 测试约定」）
 
 ## CLI 集成
 
 ```
-psi-agent gateway [--listen http://127.0.0.1:PORT] [--socket-path psi] [--icon PATH] [--app-name NAME] [--browser/--no-browser] [--webview/--no-webview] [--tray/--no-tray] [--verbose]
+psi-agent gateway [--listen http://127.0.0.1:PORT] [--socket-path psi] [--icon PATH] [--app-name NAME] [--browser/--no-browser] [--webview/--no-webview] [--tray/--no-tray] [--feishu-ai-id ID] [--feishu-workspace-root DIR] [--default-agent DIR] [--default-workspace DIR] [--appdata DIR] [--verbose]
 ```
 
 默认 listen 为空，会自动绑定 127.0.0.1 随机高端口。`--browser` 开启自动打开浏览器。
@@ -477,6 +689,22 @@ psi-agent gateway [--listen http://127.0.0.1:PORT] [--socket-path psi] [--icon P
 `--tray` 开启系统托盘图标，此时 **必须** 同时指定 `--icon`（否则报错）。托盘左键点击打开 Web Console，右键可退出 Gateway。托盘可用性与桌面环境有关，缺失时不阻塞启动。`--no-tray` 关闭托盘（默认）。仅设置 `--icon` 不开启 `--tray` 时，图标只用作 favicon。两者均不设置时不创建托盘，也不提供 favicon。
 
 `--webview` 使用原生 pywebview 窗口展示 Web Console。与 `--browser` 互斥，两者同时设为 True 时报错。必须同时指定 `--icon`（否则报错）。关闭窗口行为取决于 `--tray`：有托盘时仅隐藏窗口，无托盘时退出 Gateway 进程。
+
+`--feishu-ai-id` / `--feishu-workspace-root` 见上文 `FeishuManager`（私聊按 `open_id`、群聊按 `chat_id` 各建独立会话）。
+
+### Windows 安装包 launcher（`haitun.exe`）
+
+Inno 安装后 `{app}` **就是** haitun-workspace（`tools/` / `skills/` / `systems/` 在根下），不是仓库的 `examples/haitun-workspace` 嵌套布局。`.github/inno-setup/haitun.c` 编译的 `haitun.exe` 必须显式传：
+
+```text
+psi-agent.exe gateway --tray --browser --icon haitun.ico --verbose
+  --default-agent "{app}"
+  --default-workspace "{Desktop}/haitun交付"
+```
+
+`{app}` / 桌面路径在运行时解析（安装目录 + `SHGetFolderPath`），**禁止**写死本机用户路径。`--appdata` 可不传（软默认 `platformdirs`）。另：Gateway 软默认在 cwd 含 `tools/`+`skills/` 时也会把 cwd 当 agent（兜底直接跑 `psi-agent.exe`）。
+
+`--feishu-ai-id ID` 指定飞书 Session（经 `POST /feishu/route` 按需 spawn）默认挂载的 AI 实例 id。未配时若请求也不带 `ai_id`，`/feishu/route` 返回 400。`--feishu-workspace-root DIR` 指定各飞书会话独立 workspace 的父目录（私聊每个 open_id 得 `<root>/<open_id>`，群聊每个 chat_id 得 `<root>/chat-<chat_id>`）；空则以 Gateway 进程 cwd 为父。两者均为飞书多会话独立渠道服务（配合飞书 channel 的 `--gateway-url`，见 `channel/AGENTS.md`）。
 
 Gateway 不在 `_run.py` 的批量启动中。
 
@@ -496,4 +724,7 @@ Gateway 不在 `_run.py` 的批量启动中。
 - `@pytest.mark.anyio` 标记所有异步测试
 - 集成测试使用 free port（预绑定 socket）避免端口冲突
 - `anyio.create_task_group()` + `__aenter__`/`__aexit__` 手动管理 task 生命周期
+- **退任务组前必须先取消或清空常驻任务，否则断言失败会退化成永久挂死**：manager 通过 `start_soon` 起的是常驻 server，永不自己返回。而 `await tg.__aexit__(None, None, None)` 传三个 `None` 即「正常退出」语义，anyio **不取消**子任务而是等它们结束 → 永久阻塞。于是测试体内**任何**异常都从「失败」变成「挂死」，连 traceback 都看不到（曾让 `test_manager.py` 在 Windows 上整个文件跑不完）。两种正确写法：
+  - `tg.cancel_scope.cancel()` 再 `__aexit__`——见 `test_manager.py` 的 `_close()`，用例本身不关心优雅关闭时首选；
+  - 显式 `delete()` 掉每个 spawn 出来的 Session/AI 再 `__aexit__`——见 `test_feishu_manager.py` 的 `_drain()` 与 `tests/integration/test_gateway.py`，用例要断言 delete 路径时用。
 - Mock AI server 通过 fixture 提供

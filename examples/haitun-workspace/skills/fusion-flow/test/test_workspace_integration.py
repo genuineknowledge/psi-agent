@@ -17,7 +17,13 @@ def _load_module(name: str, path: Path) -> Any:
         raise RuntimeError(f"cannot load {name}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
-    spec.loader.exec_module(module)
+    module_dir = str(path.parent)
+    sys.path.insert(0, module_dir)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if sys.path and sys.path[0] == module_dir:
+            sys.path.pop(0)
     return cast(Any, module)
 
 

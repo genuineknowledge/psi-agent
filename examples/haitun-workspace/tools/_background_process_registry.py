@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import _runtime_paths as _paths
 import anyio
 import anyio.to_thread
 from loguru import logger
@@ -41,12 +42,8 @@ def _iso(dt: datetime) -> str:
 
 
 def resolve_workspace(raw: str) -> anyio.Path:
-    if raw.strip():
-        return anyio.Path(raw.strip())
-    env = os.environ.get("WORKSPACE_DIR", "").strip()
-    if env:
-        return anyio.Path(env)
-    return anyio.Path(str(Path(__file__).resolve().parents[1]))
+    """Prefer Session ContextVar / WORKSPACE_DIR (see ``_runtime_paths``)."""
+    return _paths.resolve_workspace(raw)
 
 
 def registry_path(workspace: anyio.Path) -> anyio.Path:

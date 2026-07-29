@@ -147,17 +147,16 @@ Keep skill descriptions specific so the agent can decide when to read them.
 
 ## Adding Scheduled Tasks
 
-Create `schedules/<task-name>/TASK.md` with frontmatter and task instructions:
+**Do not** hand-write `schedules/*/TASK.md`. Use the `schedule_manage` tool
+(create / list / view / patch / delete). Session loads whatever that tool writes.
 
-```markdown
----
-name: daily-summary
-description: Generate a daily summary
-cron: "0 9 * * *"
----
-
-Task instructions here.
-```
+- **Recurring**: `action=create` + `cron` (5-field).
+- **One-shot**: `action=create` + `once_at` (`YYYY-MM-DD HH:MM` local) →
+  Session sets `run_once` and deletes the task after the first successful fire.
+- **Fire modes** (YAML field `fire`, not a tool name):
+  - `fire=prompt` (default): inject TASK body; LLM may call tools (fragile).
+  - `fire=tool`: Session calls `tool(**tool_args)` at fire time with **no LLM**.
+    Required for Feishu IM reminders — see `skills/feishu-schedule-message/SKILL.md`.
 
 ## Configuring The System Prompt
 

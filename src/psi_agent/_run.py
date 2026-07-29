@@ -19,6 +19,16 @@ Config format (``run-config.yml``):
       workspace: ./examples/a-simple-bash-only-workspace  # optional, defaults to .
       channel_socket: ./channel.sock
       ai_socket: ./ai.sock
+      active_schedules: "*"        # optional, default "" (fire nothing). Names of the
+                                   # tasks under {workspace}/schedules this session
+                                   # fires; "*" = all. Activation belongs to
+                                   # (session x schedule) — sessions on one workspace
+                                   # fire different subsets; a task activated by two
+                                   # sessions is delivered twice.
+      deactive_schedules: "daily"  # optional. Names excluded from the above
+                                   # (blacklist, wins). "*" + blacklist = all but
+                                   # these, and TASK.md files created after startup
+                                   # fire too (an enumerated whitelist misses them).
 
     - type: channel
       name: repl                    # "cli", "repl", "telegram", or "feishu"

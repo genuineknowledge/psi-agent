@@ -4,6 +4,9 @@
 JSONL backing file, and schedule-pending chunks.  ``session_id`` is
 derived from the filename stem — also reused for ``sys.modules``
 isolation.
+
+Step 4C: JSONL lives under AppData ``histories/``; legacy
+``{workspace}/histories/`` is dual-read until rewritten.
 """
 
 from __future__ import annotations
@@ -18,6 +21,11 @@ from typing import Any
 import anyio
 from loguru import logger
 
+from psi_agent._appdata import (
+    appdata_history_path,
+    resolve_appdata_root,
+    resolve_history_read_path,
+)
 from psi_agent.session.protocol import AgentChunk
 
 
@@ -55,24 +63,42 @@ class Conversation:
     # -- construction ----------------------------------------------------------
 
     @classmethod
-    async def from_workspace(cls, workspace_path: Path, session_id: str | None = None) -> Conversation:
-        """Create the histories directory, load an existing JSONL (if any),
-        and return a ready-to-use Conversation."""
+    async def from_workspace(
+        cls,
+        workspace_path: Path,
+        session_id: str | None = None,
+        *,
+        appdata_root: str = "",
+    ) -> Conversation:
+        """Load history (AppData preferred, legacy workspace dual-read).
+
+        New writes always go to ``{appdata}/histories/{session_id}.jsonl``.
+        """
         if session_id is not None and not re.fullmatch(r"[a-zA-Z0-9_-]+", session_id):
             raise ValueError(f"Invalid session_id: {session_id!r} (only alphanumeric, dash, underscore allowed)")
         session_id = session_id or uuid.uuid4().hex
         logger.info(f"Starting session: {session_id}")
 
-        histories_dir = anyio.Path(str(workspace_path / "histories"))
+        resolved_appdata = appdata_root.strip() or await resolve_appdata_root()
+        histories_dir = anyio.Path(resolved_appdata) / "histories"
         if not await histories_dir.is_dir():
             await histories_dir.mkdir(parents=True)
-            logger.info(f"Created histories directory: {histories_dir}")
+            logger.info(f"Created AppData histories directory: {histories_dir}")
             await (histories_dir / ".gitignore").write_text("*\n", encoding="utf-8")
             logger.debug(f"Created .gitignore in {histories_dir}")
 
-        path = workspace_path / "histories" / f"{session_id}.jsonl"
-        messages = await cls._load(path)
-        return cls(messages=messages, path=path)
+        write_path = Path(str(appdata_history_path(resolved_appdata, session_id)))
+        read_path = Path(
+            str(
+                await resolve_history_read_path(
+                    appdata_root=resolved_appdata,
+                    workspace=str(workspace_path),
+                    session_id=session_id,
+                )
+            )
+        )
+        messages = await cls._load(read_path)
+        return cls(messages=messages, path=write_path)
 
     # -- mutation --------------------------------------------------------------
 
@@ -81,6 +107,12 @@ class Conversation:
         first mutation after creation / ``commit`` / ``rollback``."""
         self._begin_if_needed()
         self.messages.append(msg)
+
+    def trim_after(self, index: int) -> None:
+        """Delete all messages after the given index (exclusive).
+        Auto-snapshots on first mutation."""
+        self._begin_if_needed()
+        del self.messages[index + 1 :]
 
     def replace_system(self, content: str) -> None:
         """Replace the system message (``messages[0]``) in-place,
@@ -158,6 +190,9 @@ class Conversation:
         if self._path is None:
             return
         try:
+            parent = anyio.Path(str(self._path.parent))
+            if not await parent.is_dir():
+                await parent.mkdir(parents=True)
             content = "\n".join(json.dumps(msg, ensure_ascii=False) for msg in self.messages) + "\n"
             tmp_path = self._path.with_suffix(".jsonl.tmp")
             await anyio.Path(str(tmp_path)).write_text(content, encoding="utf-8")

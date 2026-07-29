@@ -35,7 +35,7 @@ Session ── POST /chat/completions ──► AI
 ```
 1. CLI → Ai.run()
 2. run() → serve_ai(provider, model, api_key, base_url, handler)
-3. serve_ai → aiohttp UnixSite + 注册 handler
+3. serve_ai → `create_site(runner, socket_path)`（按地址前缀选 UnixSite / TCPSite / NamedPipeSite，见 `psi_agent._sockets`）+ 注册 handler
 4. 请求到达 → handle_chat_completions()
 5. 解析 body → await any_llm.acompletion(provider=..., stream=True, ...)
 6. async for chunk → chunk.model_dump_json() → SSE write
@@ -49,12 +49,13 @@ Session ── POST /chat/completions ──► AI
 | `model` | `--model` | `PSI_AI_MODEL` | 模型名 |
 | `api_key` | `--api-key` | `PSI_AI_API_KEY` | 上游 API key |
 | `base_url` | `--base-url` | `PSI_AI_BASE_URL` | 上游 base URL |
+| `max_context_tokens` | `--max-context-tokens` | `PSI_MAX_CONTEXT_TOKENS` | Token 阈值，超过时触发 compaction（默认 100K，0 = 禁用） |
 
 全部参数可选，CLI 优先于环境变量。`model` 在请求处理中被启动配置覆盖（AI 层隐藏上游 model 细节）。
 
 ## 请求透传
 
-Session 发送的 body 中，除 `model` 被启动配置覆盖、`messages` 被显式提取、`stream` 被剥离（AI 层始终强制 `stream=True`）、`provider`/`api_key`/`api_base` 防御性剥离（避免与启动配置冲突）外，其余字段（`tools`, `temperature`, `max_tokens` 等）全部通过 `**body` 透传给 any-llm-sdk。
+Session 发送的 body 中，除 `model` 被启动配置覆盖、`messages` 被显式提取、`stream` 被剥离（AI 层始终强制 `stream=True`）、`provider`/`api_key`/`api_base`/`routing` 防御性剥离（避免与启动配置冲突）外，其余字段（`tools`, `temperature`, `max_tokens` 等）全部通过 `**body` 透传给 any-llm-sdk。
 
 ## Provider 支持
 
@@ -67,6 +68,17 @@ Anthropic→OpenAI 格式转换由 any-llm-sdk 自动完成，包括 `thinking_d
 - **HTTP 层**（`response.prepare()` 之前）：返回 OpenAI 格式 `{"error": {...}}` JSON + HTTP 4xx/5xx
 - **SSE 层**（`response.prepare()` 之后）：ChatCompletionChunk error chunk → `finish_reason="error"`（psi-agent 内部扩展，非 OpenAI 标准）
 - **取消/断开安全**：上游 stream 在 `finally` 中用 `anyio.CancelScope(shield=True)` 调 `stream.aclose()` 关闭（`getattr` 守卫兼容无 `aclose` 的流），确保客户端断开 / 进程关闭被 cancel 时不泄露上游连接
+
+## Context Compaction
+
+AI 层强制 `stream_options={"include_usage": True}` 获取上游 token 用量。当 `chunk.usage.prompt_tokens > max_context_tokens`（0 禁用），在上游 stream 结束后发送 **额外 SSE 事件** 通知 Session 触发 compaction：
+
+```json
+{"choices": [{"delta": {}, "finish_reason": "compaction_needed"}],
+ "psi_compaction": {"needed": true, "prompt_tokens": N, "threshold": M}}
+```
+
+`psi_compaction` 是 psi-agent 内部扩展字段，非 OpenAI 标准。仅 OpenAI / Anthropic / Gemini 及兼容 provider 支持 `usage` 返回；Groq / Mistral / Ollama 等 strip `stream_options`，compaction 不触发。
 
 ## 依赖
 

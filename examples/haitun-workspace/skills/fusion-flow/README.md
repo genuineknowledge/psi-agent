@@ -9,6 +9,12 @@ conversation turns. The `fusion_flow.execution` compatibility package is
 retained for historical parity tests but is not part of the active workspace
 path.
 
+Every active G4 run also writes each materialized Artifact to the workflow
+bundle's `runs/<run-id>/artifacts/` directory. Text values remain Markdown;
+objects, arrays, numbers, booleans, and null are represented by a fenced
+`json` block. This user-visible history is separate from private Human resume
+state under `.psi/fusion-flow/runs/`.
+
 ## Workspace integration
 
 Reusable declarations use the fixed path
@@ -50,6 +56,7 @@ and script assets without resource requirements.
 - `fusion_flow/compiler.py`: target-neutral Core IR traversal and backend hook boundary.
 - `fusion_flow/graph_compiler.py`: concrete `CoreIRCompiler` backend that builds `psi_agent.workflow_graph` models.
 - `fusion_flow/workflow_runner.py`: fail-closed compile/plan/execute entry point with Agent, Human, Program, and checkpoint injection boundaries.
+- `fusion_flow/artifact_store.py`: atomic, workflow-local Markdown persistence for every materialized G4 Artifact.
 - `fusion_flow/job_store.py`: strict v2 JSON state plus non-blocking, OS-released advisory leases and an in-process guard for G4 runs waiting on Human input.
 - `fusion_flow/planning.py`: before workflow authoring, checks the syntax mappings declared for each planned step against the syntax names actually available. Each planned step maps to one catalog `Step` identity, which authoring expands into a typed constant and its assertions.
 - `fusion_flow/execution/`: inactive Python parity port of legacy `flow.*` primitives; `run_flow` does not import or dispatch through it.
@@ -125,6 +132,22 @@ workspace-relative reference through that Agent's Step prompt; unreadable Human
 or Program instructions remain errors. Materialized text is included in the
 durable workflow-definition digest used across Human wait/resume turns. Short
 inline Instruction text bypasses file resolution.
+
+Each Agent Step receives a `submit_step_result` tool whose schema requires its
+exact output Artifact IDs; a valid submission supplies the Step result, and the
+ephemeral agent turn closes after the current tool-call batch. Plain text remains
+a compatibility path only after a normally completed agent turn: the adapter
+accepts one strict JSON object or one standalone, line-delimited `json` fence.
+If parsing still fails and the Step has exactly one output, the original response
+is bound to that Artifact verbatim and a structured warning is emitted without
+logging the response body. Multi-output Steps receive two result-repair turns
+first; if both fail, the first invalid response is broadcast verbatim to every
+declared output and the same warning is emitted. This is deterministic copying,
+not semantic splitting, and is the runtime default rather than an end-user
+option. A zero-output Step may submit an exact empty object, but an invalid
+response still fails after its repair turns because there is nowhere to bind raw
+text. Truncated and tool-round-exhausted turns also fail instead of entering the
+raw-text fallback. No fallback publishes only part of the declared result.
 
 A Program executor must have exactly one `program_path(program) == path`
 declaration. Absolute and explicit `./...` paths pass through; other path

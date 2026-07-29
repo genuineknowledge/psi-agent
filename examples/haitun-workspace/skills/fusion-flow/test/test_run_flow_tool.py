@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import inspect
@@ -14,6 +15,8 @@ from typing import Any, cast
 import anyio
 import pytest
 
+from psi_agent.session.protocol import AiDelta
+from psi_agent.session.runtime_context import path_scope
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 _WORKSPACE_DIR = Path(__file__).resolve().parents[3]
@@ -935,61 +938,6 @@ async def test_windows_job_termination_failure_closes_kill_on_close_job(
 
 
 @pytest.mark.anyio
-async def test_agent_step_retries_once_after_non_json_response(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    agent = object()
-    conversation = object()
-    messages: list[str] = []
-    responses = iter(
-        [
-            'Done:\n```json\n{"result":"READY"}\n```',
-            'Here is the corrected result:\n```json\n{"result":"READY"}\n```',
-        ]
-    )
-
-    async def create_step_agent(
-        ai_socket: str,
-        tool_registry: ToolRegistry,
-    ) -> tuple[object, object]:
-        assert ai_socket == "http://ai.example"
-        assert isinstance(tool_registry, ToolRegistry)
-        return agent, conversation
-
-    async def complete_step_agent(
-        step_agent: object,
-        step_conversation: object,
-        message: str,
-    ) -> str:
-        assert step_agent is agent
-        assert step_conversation is conversation
-        messages.append(message)
-        return next(responses)
-
-    context = SimpleNamespace(
-        step_id="answer_step",
-        executor_id="worker",
-        output_ids=("result",),
-        dispatch=SimpleNamespace(
-            resource_lease=SimpleNamespace(grants=()),
-        ),
-    )
-    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
-    monkeypatch.setattr(run_flow_tool, "_complete_step_agent", complete_step_agent)
-
-    result = await run_flow_tool._complete_agent_step(
-        "Return READY.",
-        context,
-        ai_socket="http://ai.example",
-        tool_registry=ToolRegistry(),
-    )
-
-    assert result == {"result": "READY"}
-    assert len(messages) == 2
-    assert "previous response was not a JSON object" in messages[1]
-
-
-@pytest.mark.anyio
 async def test_run_flow_executes_once_with_dependencies_and_resources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1013,6 +961,8 @@ async def test_run_flow_executes_once_with_dependencies_and_resources(
             self,
             user_message: dict[str, object],
             extra_params: dict[str, object] | None = None,
+            *,
+            outcome: Any | None = None,
         ) -> Any:
             del extra_params
             prompt = cast(str, user_message["content"])
@@ -1029,6 +979,8 @@ async def test_run_flow_executes_once_with_dependencies_and_resources(
                     {"role": "assistant", "content": content},
                 ]
             )
+            if outcome is not None:
+                outcome.termination_reason = "stop"
             if False:
                 yield None
 
@@ -1045,16 +997,16 @@ async def test_run_flow_executes_once_with_dependencies_and_resources(
         agents.append(agent)
         return agent, conversation
 
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
     monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
     monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
     monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
 
-    result = await run_flow_tool.run_flow(
-        "flows/ordered.workflow",
-        '{"request": "go"}',
-        '{"gpu": ["cuda:0"]}',
-    )
+    with path_scope(workspace=str(tmp_path), agent=str(_WORKSPACE_DIR)):
+        result = await run_flow_tool.run_flow(
+            "flows/ordered.workflow",
+            '{"request": "go"}',
+            '{"gpu": ["cuda:0"]}',
+        )
 
     assert json.loads(result) == {
         "after_result": "AFTER",
@@ -1066,6 +1018,64 @@ async def test_run_flow_executes_once_with_dependencies_and_resources(
     assert "Reserved resources: {}" in prompts[1]
     assert all(f"Workspace root: {tmp_path}\n" in prompt for prompt in prompts)
     assert len(agents) == 2
+    run_dirs = [entry async for entry in (flows / "runs").iterdir()]
+    assert len(run_dirs) == 1
+    artifacts = run_dirs[0] / "artifacts"
+    assert await (artifacts / "request.md").read_text(encoding="utf-8") == "go"
+    assert await (artifacts / "before_result.md").read_text(encoding="utf-8") == "BEFORE"
+    assert await (artifacts / "after_result.md").read_text(encoding="utf-8") == "AFTER"
+    assert await (artifacts / "selected_result.md").read_text(encoding="utf-8") == "BEFORE"
+
+
+@pytest.mark.anyio
+async def test_run_flow_keeps_materialized_artifacts_when_a_later_step_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flows = anyio.Path(tmp_path / "flows")
+    await flows.mkdir()
+    await (flows / "ordered.workflow").write_text(_ORDERED_RESOURCE_WORKFLOW, encoding="utf-8")
+
+    async def load_step_tools() -> ToolRegistry:
+        return ToolRegistry()
+
+    async def complete_agent_step(
+        prompt: str,
+        context: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object]:
+        del prompt, tool_registry
+        assert ai_socket == "http://ai.example"
+        if context.step_id == "before_step":
+            return {"before_result": "completed-before-failure"}
+        raise RuntimeError("later Agent step failed")
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
+    monkeypatch.setattr(run_flow_tool, "_load_step_tools", load_step_tools)
+    monkeypatch.setattr(run_flow_tool, "_complete_agent_step", complete_agent_step)
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+
+    with pytest.raises(ExceptionGroup) as error:
+        await run_flow_tool.run_flow(
+            "flows/ordered.workflow",
+            '{"request": "go"}',
+            '{"gpu": 1}',
+        )
+
+    assert len(error.value.exceptions) == 1
+    assert isinstance(error.value.exceptions[0], RuntimeError)
+    assert str(error.value.exceptions[0]) == "later Agent step failed"
+
+    run_dirs = [entry async for entry in (flows / "runs").iterdir()]
+    assert len(run_dirs) == 1
+    artifacts = run_dirs[0] / "artifacts"
+    assert await (artifacts / "request.md").read_text(encoding="utf-8") == "go"
+    assert await (artifacts / "before_result.md").read_text(encoding="utf-8") == "completed-before-failure"
+    assert not await (artifacts / "after_result.md").exists()
+    assert not await (artifacts / "selected_result.md").exists()
 
 
 @pytest.mark.anyio
@@ -1440,6 +1450,19 @@ async def test_human_step_waits_via_clarify_and_resumes_from_checkpoint(
         "draft_step",
         "publish_step",
         "review_step",
+    )
+    artifacts = anyio.Path(
+        tmp_path,
+        "flows",
+        "runs",
+        control["run_id"],
+        "artifacts",
+    )
+    assert await (artifacts / "request.md").read_text(encoding="utf-8") == "write a launch plan"
+    assert await (artifacts / "draft.md").read_text(encoding="utf-8") == "proposal-v2"
+    assert await (artifacts / "decision.md").read_text(encoding="utf-8") == human_response
+    assert await (artifacts / "result.md").read_text(encoding="utf-8") == (
+        f'```json\n{{\n  "human_response": {json.dumps(human_response, ensure_ascii=False)}\n}}\n```\n'
     )
 
     assert (
@@ -1881,18 +1904,787 @@ async def test_human_resume_rejects_changed_workflow_source(
 
 
 @pytest.mark.anyio
-async def test_step_agent_uses_in_memory_history_and_explicit_system_prompt() -> None:
-    agent, conversation = await run_flow_tool._create_step_agent(
-        "http://ai.example",
-        ToolRegistry(),
-    )
+async def test_step_agent_uses_in_memory_history_and_explicit_system_prompt(
+    tmp_path: Path,
+) -> None:
+    with path_scope(workspace=str(tmp_path), agent=str(_WORKSPACE_DIR)):
+        agent, conversation = await run_flow_tool._create_step_agent(
+            "http://ai.example",
+            ToolRegistry(),
+        )
 
     assert agent._conversation is conversation
     assert agent._ai_client.ai_socket == "http://ai.example"
+    assert agent._workspace_path == tmp_path
+    assert agent._agent_path == _WORKSPACE_DIR
     assert conversation.messages == [
         {"role": "system", "content": run_flow_tool._STEP_SYSTEM_PROMPT},
     ]
     assert conversation._path is None
+
+
+def _agent_completion_context(*output_ids: str) -> Any:
+    return SimpleNamespace(
+        step_id="draft",
+        executor_id="writer",
+        output_ids=output_ids,
+        dispatch=SimpleNamespace(
+            resource_lease=SimpleNamespace(grants=()),
+        ),
+    )
+
+
+def _capture_agent_fallback_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[dict[str, object], str]]:
+    warnings: list[tuple[dict[str, object], str]] = []
+    monkeypatch.setattr(
+        run_flow_tool,
+        "logger",
+        SimpleNamespace(
+            bind=lambda **fields: SimpleNamespace(
+                warning=lambda message: warnings.append((fields, message)),
+            ),
+        ),
+    )
+    return warnings
+
+
+def _install_scripted_step_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    response_batches: list[list[AiDelta]],
+    requests: list[dict[str, Any]],
+) -> None:
+    responses = iter(response_batches)
+
+    class ScriptedAiClient:
+        ai_socket = "http://ai.example"
+
+        def stream(self, request: dict[str, Any]) -> Any:
+            requests.append(copy.deepcopy(request))
+
+            async def generate() -> Any:
+                for delta in next(responses):
+                    yield delta
+
+            return generate()
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        assert ai_socket == "http://ai.example"
+        conversation = run_flow_tool.Conversation(
+            messages=[{"role": "system", "content": run_flow_tool._STEP_SYSTEM_PROMPT}],
+        )
+        return (
+            run_flow_tool.SessionAgent(
+                ai_client=ScriptedAiClient(),
+                conversation=conversation,
+                schedule_registry=run_flow_tool._StepScheduleRegistry(),
+                tool_registry=tool_registry,
+            ),
+            conversation,
+        )
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+
+
+def test_parse_agent_step_result_accepts_backticks_inside_fenced_json() -> None:
+    response = 'Result:\n```json\n{"result": "Use ```bash```", "sources": ["source"]}\n```\n'
+
+    assert run_flow_tool._parse_agent_step_result(
+        response,
+        step_id="draft",
+        output_ids=("result", "sources"),
+    ) == {
+        "result": "Use ```bash```",
+        "sources": ["source"],
+    }
+
+
+@pytest.mark.anyio
+async def test_agent_step_stops_on_submitted_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_registry: ToolRegistry | None = None
+    conversation = SimpleNamespace(messages=[])
+
+    class FakeAgent:
+        async def run(
+            self,
+            message: dict[str, Any],
+            *,
+            outcome: Any | None = None,
+        ) -> Any:
+            del outcome
+            del message
+            assert captured_registry is not None
+            submit = captured_registry.get("submit_step_result")
+            assert submit is not None
+            await submit(result={"answer": 42})
+            yield None
+            raise AssertionError("agent continued after submitting its result")
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        nonlocal captured_registry
+        assert ai_socket == "http://ai.example"
+        captured_registry = tool_registry
+        return FakeAgent(), conversation
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+
+    result = await run_flow_tool._complete_agent_step(
+        "Write the answer.",
+        _agent_completion_context("result"),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {"result": {"answer": 42}}
+    assert captured_registry is not None
+    assert captured_registry.tools["submit_step_result"].parameters == {
+        "type": "object",
+        "properties": {"result": {}},
+        "required": ["result"],
+        "additionalProperties": False,
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "first_arguments",
+    ['{"result": "first"}', '{"wrong": "first"}'],
+    ids=["both-valid", "first-invalid"],
+)
+async def test_agent_step_repairs_duplicate_submissions(
+    first_arguments: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, Any]] = []
+    _install_scripted_step_agent(
+        monkeypatch,
+        [
+            [
+                AiDelta(
+                    tool_calls=[
+                        {
+                            "index": 0,
+                            "id": "first",
+                            "function": {
+                                "name": "submit_step_result",
+                                "arguments": first_arguments,
+                            },
+                        },
+                        {
+                            "index": 1,
+                            "id": "second",
+                            "function": {
+                                "name": "submit_step_result",
+                                "arguments": '{"result": "second"}',
+                            },
+                        },
+                    ],
+                    finish_reason="tool_calls",
+                )
+            ],
+            [
+                AiDelta(
+                    tool_calls=[
+                        {
+                            "index": 0,
+                            "id": "fixed",
+                            "function": {
+                                "name": "submit_step_result",
+                                "arguments": '{"result": "fixed"}',
+                            },
+                        }
+                    ],
+                    finish_reason="tool_calls",
+                )
+            ],
+        ],
+        requests,
+    )
+
+    result = await run_flow_tool._complete_agent_step(
+        "Write the answer.",
+        _agent_completion_context("result"),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {"result": "fixed"}
+    assert len(requests) == 2
+    assert requests[1]["messages"][-1]["role"] == "user"
+    assert "more than once" in requests[1]["messages"][-1]["content"]
+
+
+@pytest.mark.anyio
+async def test_agent_step_keeps_invalid_submission_repair_inside_agent_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[dict[str, Any]] = []
+    _install_scripted_step_agent(
+        monkeypatch,
+        [
+            [
+                AiDelta(
+                    tool_calls=[
+                        {
+                            "index": 0,
+                            "id": "invalid",
+                            "function": {
+                                "name": "submit_step_result",
+                                "arguments": '{"wrong": "value"}',
+                            },
+                        }
+                    ],
+                    finish_reason="tool_calls",
+                )
+            ],
+            [
+                AiDelta(
+                    tool_calls=[
+                        {
+                            "index": 0,
+                            "id": "fixed",
+                            "function": {
+                                "name": "submit_step_result",
+                                "arguments": '{"result": "fixed"}',
+                            },
+                        }
+                    ],
+                    finish_reason="tool_calls",
+                )
+            ],
+        ],
+        requests,
+    )
+
+    result = await run_flow_tool._complete_agent_step(
+        "Write the answer.",
+        _agent_completion_context("result"),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {"result": "fixed"}
+    assert len(requests) == 2
+    assert requests[1]["messages"][-1]["role"] == "tool"
+    assert sum(message["role"] == "user" for message in requests[1]["messages"]) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("finish_reason", "response"),
+    [
+        ("length", "partial response"),
+        ("max_tool_rounds", "[Max tool rounds reached]"),
+    ],
+)
+async def test_agent_step_rejects_abnormal_final_response(
+    finish_reason: str,
+    response: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation = SimpleNamespace(messages=[])
+
+    class FakeAgent:
+        async def run(
+            self,
+            message: dict[str, Any],
+            *,
+            outcome: Any | None = None,
+        ) -> Any:
+            del message
+            assert outcome is not None
+            outcome.termination_reason = finish_reason
+            conversation.messages.append(
+                {
+                    "role": "assistant",
+                    "content": response,
+                }
+            )
+            if False:
+                yield None
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        del ai_socket, tool_registry
+        return FakeAgent(), conversation
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+
+    with pytest.raises(RuntimeError, match=finish_reason):
+        await run_flow_tool._complete_agent_step(
+            "Write the answer.",
+            _agent_completion_context("result"),
+            ai_socket="http://ai.example",
+            tool_registry=ToolRegistry(),
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("first_response", "error_fragment"),
+    [
+        (
+            '{"wrong": "first"}',
+            "expected ['result', 'sources'], got ['wrong']",
+        ),
+        (
+            '{"result": 1e400, "sources": []}',
+            "must be a strict JSON object",
+        ),
+        (
+            '{"result": "first", "result": "last", "sources": []}',
+            "must be a strict JSON object",
+        ),
+        (
+            " \n",
+            "must be a strict JSON object",
+        ),
+    ],
+    ids=["wrong-keys", "numeric-overflow", "duplicate-key", "whitespace"],
+)
+async def test_agent_step_repairs_invalid_result(
+    first_response: str,
+    error_fragment: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation = SimpleNamespace(messages=[])
+    prompts: list[str] = []
+    warnings = _capture_agent_fallback_warnings(monkeypatch)
+    responses = iter(
+        [
+            first_response,
+            'Result:\n```json\n{"result": "fixed", "sources": ["source"]}\n```',
+        ]
+    )
+
+    class FakeAgent:
+        async def run(
+            self,
+            message: dict[str, Any],
+            *,
+            outcome: Any | None = None,
+        ) -> Any:
+            prompts.append(message["content"])
+            conversation.messages.append(
+                {
+                    "role": "assistant",
+                    "content": next(responses),
+                }
+            )
+            assert outcome is not None
+            outcome.termination_reason = "stop"
+            if False:
+                yield None
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        del ai_socket, tool_registry
+        return FakeAgent(), conversation
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+
+    result = await run_flow_tool._complete_agent_step(
+        "Write the answer.",
+        _agent_completion_context("result", "sources"),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {"result": "fixed", "sources": ["source"]}
+    assert len(prompts) == 2
+    assert error_fragment in prompts[1]
+    assert warnings == []
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "response",
+    [
+        "# Research report",
+        " \n",
+        '"ok"',
+        "null",
+        "[]",
+        '{"result": NaN}',
+        '{"result": 1e400}',
+        '{"result": "first", "result": "last"}',
+    ],
+    ids=[
+        "markdown",
+        "whitespace",
+        "json-string",
+        "json-null",
+        "json-array",
+        "non-finite-object",
+        "numeric-overflow",
+        "duplicate-key",
+    ],
+)
+async def test_agent_step_preserves_raw_single_output(
+    response: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation = SimpleNamespace(messages=[])
+    calls = 0
+    warnings = _capture_agent_fallback_warnings(monkeypatch)
+
+    class FakeAgent:
+        async def run(
+            self,
+            message: dict[str, Any],
+            *,
+            outcome: Any | None = None,
+        ) -> Any:
+            nonlocal calls
+            del message
+            calls += 1
+            conversation.messages.append(
+                {
+                    "role": "assistant",
+                    "content": response,
+                }
+            )
+            assert outcome is not None
+            outcome.termination_reason = "stop"
+            if False:
+                yield None
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        del ai_socket, tool_registry
+        return FakeAgent(), conversation
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+    result = await run_flow_tool._complete_agent_step(
+        "Write the answer.",
+        _agent_completion_context("result"),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {"result": response}
+    assert calls == 1
+    assert len(warnings) == 1
+    fields, message = warnings[0]
+    assert set(fields) == {
+        "event",
+        "step_id",
+        "executor_id",
+        "output_artifact_ids",
+        "fallback_mode",
+        "validation_failure",
+        "repair_attempts",
+    }
+    assert fields["event"] == "fusion_flow.agent_result_fallback"
+    assert fields["step_id"] == "draft"
+    assert fields["executor_id"] == "writer"
+    assert fields["output_artifact_ids"] == ["result"]
+    assert fields["fallback_mode"] == "single_raw"
+    assert fields["validation_failure"] == "unparseable_result"
+    assert fields["repair_attempts"] == 0
+    assert message == "FusionFlow Agent Step committed a raw-response fallback"
+    assert response not in message
+    assert response not in json.dumps(fields, ensure_ascii=False)
+
+
+@pytest.mark.anyio
+async def test_agent_step_repairs_whitespace_for_zero_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation = SimpleNamespace(messages=[])
+    prompts: list[str] = []
+    responses = iter([" \n", "{}"])
+
+    class FakeAgent:
+        async def run(
+            self,
+            message: dict[str, Any],
+            *,
+            outcome: Any | None = None,
+        ) -> Any:
+            prompts.append(message["content"])
+            conversation.messages.append(
+                {
+                    "role": "assistant",
+                    "content": next(responses),
+                }
+            )
+            assert outcome is not None
+            outcome.termination_reason = "stop"
+            if False:
+                yield None
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        del ai_socket, tool_registry
+        return FakeAgent(), conversation
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+
+    result = await run_flow_tool._complete_agent_step(
+        "Do the side effect.",
+        _agent_completion_context(),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {}
+    assert len(prompts) == 2
+    assert "must be a strict JSON object" in prompts[1]
+
+
+@pytest.mark.anyio
+async def test_agent_step_repairs_wrong_keys_for_single_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation = SimpleNamespace(messages=[])
+    prompts: list[str] = []
+    responses = iter(
+        [
+            '{"wrong": "first"}',
+            '{"result": "fixed"}',
+        ]
+    )
+
+    class FakeAgent:
+        async def run(
+            self,
+            message: dict[str, Any],
+            *,
+            outcome: Any | None = None,
+        ) -> Any:
+            prompts.append(message["content"])
+            conversation.messages.append(
+                {
+                    "role": "assistant",
+                    "content": next(responses),
+                }
+            )
+            assert outcome is not None
+            outcome.termination_reason = "stop"
+            if False:
+                yield None
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        del ai_socket, tool_registry
+        return FakeAgent(), conversation
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+
+    result = await run_flow_tool._complete_agent_step(
+        "Write the answer.",
+        _agent_completion_context("result"),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {"result": "fixed"}
+    assert len(prompts) == 2
+    assert "expected ['result'], got ['wrong']" in prompts[1]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("first_response", "validation_failure"),
+    [
+        (" \n# Original research report\n ", "unparseable_result"),
+        (
+            '{"SECRET_SENTINEL": "original structured result"}',
+            "output_keys_mismatch",
+        ),
+    ],
+    ids=["unparseable", "wrong-keys"],
+)
+async def test_agent_step_broadcasts_first_invalid_result_after_two_repairs(
+    first_response: str,
+    validation_failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation = SimpleNamespace(messages=[])
+    prompts: list[str] = []
+    warnings = _capture_agent_fallback_warnings(monkeypatch)
+    response_values = [first_response, "invalid repair one", "invalid repair two"]
+    responses = iter(response_values)
+
+    class FakeAgent:
+        async def run(
+            self,
+            message: dict[str, Any],
+            *,
+            outcome: Any | None = None,
+        ) -> Any:
+            prompts.append(message["content"])
+            conversation.messages.append(
+                {
+                    "role": "assistant",
+                    "content": next(responses),
+                }
+            )
+            assert outcome is not None
+            outcome.termination_reason = "stop"
+            if False:
+                yield None
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        del ai_socket, tool_registry
+        return FakeAgent(), conversation
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+
+    result = await run_flow_tool._complete_agent_step(
+        "Write the answer.",
+        _agent_completion_context("result", "sources"),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {
+        "result": first_response,
+        "sources": first_response,
+    }
+    assert len(prompts) == 3
+    assert len(warnings) == 1
+    fields, message = warnings[0]
+    assert fields["event"] == "fusion_flow.agent_result_fallback"
+    assert fields["step_id"] == "draft"
+    assert fields["executor_id"] == "writer"
+    assert fields["output_artifact_ids"] == ["result", "sources"]
+    assert fields["fallback_mode"] == "broadcast_raw"
+    assert fields["validation_failure"] == validation_failure
+    assert fields["repair_attempts"] == 2
+    assert message == "FusionFlow Agent Step committed a raw-response fallback"
+    logged_fields = json.dumps(fields, ensure_ascii=False)
+    for raw_response in response_values:
+        assert raw_response not in message
+        assert raw_response not in logged_fields
+
+
+@pytest.mark.anyio
+async def test_agent_step_accepts_final_repair_without_broadcast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation = SimpleNamespace(messages=[])
+    prompts: list[str] = []
+    warnings = _capture_agent_fallback_warnings(monkeypatch)
+    responses = iter(
+        [
+            "invalid initial response",
+            "invalid first repair",
+            '{"result": "fixed", "sources": ["source"]}',
+        ]
+    )
+
+    class FakeAgent:
+        async def run(
+            self,
+            message: dict[str, Any],
+            *,
+            outcome: Any | None = None,
+        ) -> Any:
+            prompts.append(message["content"])
+            conversation.messages.append(
+                {
+                    "role": "assistant",
+                    "content": next(responses),
+                }
+            )
+            assert outcome is not None
+            outcome.termination_reason = "stop"
+            if False:
+                yield None
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        del ai_socket, tool_registry
+        return FakeAgent(), conversation
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+
+    result = await run_flow_tool._complete_agent_step(
+        "Write the answer.",
+        _agent_completion_context("result", "sources"),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {"result": "fixed", "sources": ["source"]}
+    assert len(prompts) == 3
+    assert warnings == []
+
+
+@pytest.mark.anyio
+async def test_agent_step_with_no_outputs_fails_after_two_repairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conversation = SimpleNamespace(messages=[])
+    calls = 0
+    warnings = _capture_agent_fallback_warnings(monkeypatch)
+
+    class FakeAgent:
+        async def run(
+            self,
+            message: dict[str, Any],
+            *,
+            outcome: Any | None = None,
+        ) -> Any:
+            nonlocal calls
+            del message
+            calls += 1
+            conversation.messages.append(
+                {
+                    "role": "assistant",
+                    "content": "not JSON",
+                }
+            )
+            assert outcome is not None
+            outcome.termination_reason = "stop"
+            if False:
+                yield None
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[Any, Any]:
+        del ai_socket, tool_registry
+        return FakeAgent(), conversation
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+
+    with pytest.raises(ValueError, match="remained invalid after 3 attempts"):
+        await run_flow_tool._complete_agent_step(
+            "Write the answer.",
+            _agent_completion_context(),
+            ai_socket="http://ai.example",
+            tool_registry=ToolRegistry(),
+        )
+
+    assert calls == 3
+    assert warnings == []
 
 
 @pytest.mark.anyio
@@ -1987,6 +2779,7 @@ async def test_step_file_tools_bind_relative_paths_to_workspace(
     await anyio.Path(workspace).mkdir()
     await anyio.Path(launcher).mkdir()
     received: dict[str, str] = {}
+    loaded_from: list[Path] = []
 
     async def read(file_path: str) -> str:
         received["read"] = file_path
@@ -2027,7 +2820,8 @@ async def test_step_file_tools_bind_relative_paths_to_workspace(
             tools_dir: Path,
             session_id: str = "",
         ) -> ToolRegistry:
-            del cls, tools_dir, session_id
+            del cls, session_id
+            loaded_from.append(tools_dir)
             return source
 
     sidecar = workspace / "instructions" / "review.md"
@@ -2035,10 +2829,10 @@ async def test_step_file_tools_bind_relative_paths_to_workspace(
     await anyio.Path(sidecar).write_text("workspace sidecar", encoding="utf-8")
     monkeypatch.chdir(launcher)
     monkeypatch.setattr(run_flow_tool, "ToolRegistry", FakeToolRegistry)
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", workspace)
     monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
 
-    snapshot = await run_flow_tool._load_step_tools()
+    with path_scope(workspace=str(workspace), agent=str(_WORKSPACE_DIR)):
+        snapshot = await run_flow_tool._load_step_tools()
     edit_tool = snapshot.get("edit")
     read_tool = snapshot.get("read")
     write_tool = snapshot.get("write")
@@ -2064,6 +2858,7 @@ async def test_step_file_tools_bind_relative_paths_to_workspace(
         "read": str(sidecar),
         "write": str(child),
     }
+    assert loaded_from == [_WORKSPACE_DIR / "tools"]
     assert not await anyio.Path(launcher / "flows").exists()
 
 
@@ -2180,6 +2975,25 @@ async def test_human_preparer_tools_are_read_only_and_workspace_confined(
         await human_read(str(outside))
     with pytest.raises(ValueError, match="only files inside the workspace"):
         await human_read("instructions/escape.txt")
+
+
+@pytest.mark.anyio
+async def test_split_root_reusable_flow_and_run_store_use_runtime_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "user-workspace"
+    workflow = workspace / "flows" / "workflows" / "daily-brief" / "daily-brief.workflow"
+    await anyio.Path(workflow.parent).mkdir(parents=True)
+    await anyio.Path(workflow).write_text("workflow source", encoding="utf-8")
+    monkeypatch.setenv("WORKSPACE_DIR", str(_WORKSPACE_DIR))
+
+    with path_scope(workspace=str(workspace), agent=str(_WORKSPACE_DIR)):
+        source = await run_flow_tool._read_flow_source("flows/workflows/daily-brief/daily-brief.workflow")
+        store = run_flow_tool._job_store()
+
+    assert source == "workflow source"
+    assert Path(str(store.root)) == workspace / ".psi" / "fusion-flow" / "runs"
 
 
 @pytest.mark.anyio

@@ -9,6 +9,13 @@ import aiohttp
 import anyio
 from loguru import logger
 
+# Upper bound on how long a caller waits for a freshly spawned service to accept
+# its first request. Generous on purpose: a slow machine may need seconds, and
+# create() only fails once this elapses. Without a bound, a service that never
+# comes up hangs the caller (and therefore the whole Gateway request) forever
+# rather than surfacing a rollback the caller can report.
+_SOCKET_READY_TIMEOUT_SECONDS = 120.0
+
 
 def _new_uuid() -> str:
     return uuid.uuid4().hex
@@ -41,17 +48,19 @@ async def _remove_socket(path: str) -> None:
         logger.warning(f"Failed to remove socket file {path!r}: {e!r}")
 
 
-async def _wait_socket(path: str) -> None:
+async def _wait_socket(path: str, timeout_sec: float = _SOCKET_READY_TIMEOUT_SECONDS) -> None:
+    """Poll *path* until the service behind it answers, or raise ``TimeoutError``."""
     if sys.platform == "win32":
         connector: aiohttp.BaseConnector = aiohttp.NamedPipeConnector(path=path)
         kind = "Named Pipe"
     else:
         connector = aiohttp.UnixConnector(path=path)
         kind = "Unix socket"
-    logger.debug(f"Waiting for {kind} {path!r} to become ready")
+    logger.debug(f"Waiting for {kind} {path!r} to become ready (timeout={timeout_sec}s)")
+    deadline = anyio.current_time() + timeout_sec
     session = aiohttp.ClientSession(connector=connector)
     try:
-        while True:
+        while anyio.current_time() < deadline:
             try:
                 async with session.get("http://localhost/") as _resp:
                     pass
@@ -59,6 +68,7 @@ async def _wait_socket(path: str) -> None:
                 return
             except Exception:
                 await anyio.sleep(0.1)
+        raise TimeoutError(f"{kind} {path!r} not ready within {timeout_sec}s")
     finally:
         with anyio.CancelScope(shield=True):
             await session.close()

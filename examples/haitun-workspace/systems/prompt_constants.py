@@ -43,12 +43,15 @@ SESSION_SEARCH_GUIDANCE = (
 )
 
 SKILLS_GUIDANCE = (
-    "After completing a complex task (5+ tool calls), fixing a tricky error, "
-    "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
-    "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') - don't wait to be asked. "
-    "Skills that aren't maintained become liabilities."
+    "Only create a skill when the procedure has reuse value (future similar "
+    "requests). One-shot reminders, one-off plans, and single comparisons are "
+    "not skills — use schedule_manage / in-turn delivery instead. "
+    "For Feishu「提醒我/定时发消息」, first read "
+    "skills/feishu-schedule-message/SKILL.md, then ONE schedule_manage create with "
+    "fire='tool' + tool='feishu_message_send' + tool_args JSON "
+    "(once_at rejects fire=prompt — do not create-then-patch). "
+    "When an agent-created skill is outdated or wrong, patch it with "
+    "skill_manage(action='patch')."
 )
 
 KANBAN_GUIDANCE = (

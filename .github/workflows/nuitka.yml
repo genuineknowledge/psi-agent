@@ -27,6 +27,7 @@ jobs:
         --output-filename=psi-agent
         --assume-yes-for-downloads
         --include-data-dir=src/psi_agent/gateway/spa/dist=psi_agent/gateway/spa/dist
+        --include-data-dir=src/psi_agent/gateway/spa-v2/dist=psi_agent/gateway/spa-v2/dist
         --include-package=any_llm
         --include-package=mcp
         --include-package=serper_mcp_server
@@ -42,6 +43,7 @@ jobs:
         --include-package=git
         --include-package=chardet
         --include-package=hikari
+        --include-package=matplotlib
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -49,13 +51,17 @@ jobs:
           python-version: "3.14"
       - run: uv sync
       - run: uv pip install nuitka
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "26"
       - run: npm ci
         working-directory: src/psi_agent/gateway/spa
       - run: npm run build
         working-directory: src/psi_agent/gateway/spa
+      - run: npm ci
+        working-directory: src/psi_agent/gateway/spa-v2
+      - run: npm run build
+        working-directory: src/psi_agent/gateway/spa-v2
       - shell: bash
         run: uv run python -m nuitka $NUITKA_COMMON_FLAGS src/psi_agent/cli.py
         if: matrix.os == 'ubuntu-latest'
@@ -115,7 +121,7 @@ jobs:
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=amd64"
           rc /nologo ".github\inno-setup\haitun.rc"
-          cl /nologo /O2 ".github\inno-setup\haitun.c" ".github\inno-setup\haitun.res" /Fe:".github\inno-setup\haitun.exe" /link /SUBSYSTEM:WINDOWS user32.lib
+          cl /nologo /O2 ".github\inno-setup\haitun.c" ".github\inno-setup\haitun.res" /Fe:".github\inno-setup\haitun.exe" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib
       - shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"

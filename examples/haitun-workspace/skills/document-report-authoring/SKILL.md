@@ -182,19 +182,22 @@ ws["B14"] = "=SUM(B2:B13)"                            # formula
 wb.save("report.xlsx")
 ```
 
-## Charts — use native library APIs, not matplotlib
+## Charts — prefer native library APIs
 
-`matplotlib` is not installed. Prefer charts that live inside the Office file (they stay
-editable and need no image files):
+Prefer charts that live inside the Office file (they stay editable and need no image files):
 
 - **Excel:** `openpyxl.chart` — `BarChart`, `LineChart`, `PieChart` + `Reference` to cell
   ranges, then `ws.add_chart(chart, "E2")`.
 - **PowerPoint:** `slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, x, y, cx, cy, chart_data)`
   with `pptx.chart.data.CategoryChartData`.
-- **Word:** python-docx cannot create native charts. Options, in order: (a) build the chart in
-  an Excel file and reference/attach it, (b) render an image with a lightweight lib (e.g. PIL)
-  and `add_picture`, or (c) tell the user matplotlib would need installing first and ask before
-  adding a dependency. Do not silently `pip install`.
+- **Word:** python-docx cannot create native charts. Best option: render the chart with a
+  `feishu_chart_*` tool **without** a `document_id` — it returns an `image_path` to a
+  house-styled PNG (CJK fonts handled) — then `add_picture` that path. Alternatively build the
+  chart in an Excel file and reference it.
+
+`matplotlib` is installed (it backs the `feishu_chart_*` tools), so a hand-rolled chart is also
+possible; the tools are preferable because they carry the shared palette, CJK font handling, and
+value annotations.
 
 ## Common pitfalls
 

@@ -1,4 +1,8 @@
-"""Session-scoped todo list persistence under ``<workspace>/.psi/todos/``."""
+"""Session-scoped todo list persistence (AppData + legacy dual-read).
+
+**Write** (Step 4B): ``{appdata}/todos/{session_id}.json``
+**Read**: AppData file if present, else legacy ``{workspace}/.psi/todos/{session_id}.json``.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,12 @@ from typing import Any
 import _background_process_registry as _bg
 import anyio
 from _session_helpers import current_session_id
+
+from psi_agent.gateway._defaults import (
+    appdata_todo_path,
+    resolve_appdata_root,
+    resolve_todo_read_path,
+)
 
 VALID_STATUSES = frozenset({"pending", "in_progress", "completed", "cancelled"})
 MAX_TODO_ITEMS = 50
@@ -23,6 +33,7 @@ def resolve_session_id() -> str:
 
 
 def todo_path(workspace: anyio.Path, session_id: str) -> anyio.Path:
+    """Legacy path helper (tests / callers). Prefer ``appdata_todo_path`` for writes."""
     return workspace / ".psi" / "todos" / f"{session_id}.json"
 
 
@@ -140,12 +151,19 @@ def _merge_items(
 async def read_todos(*, workspace_raw: str = "", session_id: str = "") -> dict[str, Any]:
     workspace = _bg.resolve_workspace(workspace_raw)
     sid = session_id.strip() or resolve_session_id()
-    path = todo_path(workspace, sid)
+    appdata_root = await resolve_appdata_root()
+    path = await resolve_todo_read_path(
+        appdata_root=appdata_root,
+        workspace=str(workspace),
+        session_id=sid,
+    )
     items = await _read_file(path)
     return {
         "ok": True,
         "session_id": sid,
         "workspace": str(workspace),
+        "appdata": appdata_root,
+        "path": str(path),
         "todos": items,
         "summary": _summary(items),
     }
@@ -160,18 +178,36 @@ async def write_todos(
 ) -> dict[str, Any]:
     workspace = _bg.resolve_workspace(workspace_raw)
     sid = session_id.strip() or resolve_session_id()
-    path = todo_path(workspace, sid)
+    appdata_root = await resolve_appdata_root()
+    write_path = appdata_todo_path(appdata_root, sid)
+    read_path = await resolve_todo_read_path(
+        appdata_root=appdata_root,
+        workspace=str(workspace),
+        session_id=sid,
+    )
 
     validated, err = _validate_items(todos)
     if validated is None:
-        return {"ok": False, "message": err, "session_id": sid, "workspace": str(workspace)}
+        return {
+            "ok": False,
+            "message": err,
+            "session_id": sid,
+            "workspace": str(workspace),
+            "appdata": appdata_root,
+        }
 
     if merge:
-        existing = await _read_file(path)
+        existing = await _read_file(read_path)
         items = _merge_items(existing, validated)
         validated_merge, err = _validate_items(items)
         if validated_merge is None:
-            return {"ok": False, "message": err, "session_id": sid, "workspace": str(workspace)}
+            return {
+                "ok": False,
+                "message": err,
+                "session_id": sid,
+                "workspace": str(workspace),
+                "appdata": appdata_root,
+            }
         items = validated_merge
     else:
         items = validated
@@ -183,19 +219,22 @@ async def write_todos(
         "todos": items,
     }
     try:
-        await _atomic_write(path, payload)
+        await _atomic_write(write_path, payload)
     except OSError as exc:
         return {
             "ok": False,
             "message": f"failed to write todos: {exc}",
             "session_id": sid,
             "workspace": str(workspace),
+            "appdata": appdata_root,
         }
 
     return {
         "ok": True,
         "session_id": sid,
         "workspace": str(workspace),
+        "appdata": appdata_root,
+        "path": str(write_path),
         "todos": items,
         "summary": _summary(items),
         "merge": merge,

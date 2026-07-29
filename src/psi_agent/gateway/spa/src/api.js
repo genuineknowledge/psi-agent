@@ -13,8 +13,8 @@ export async function api(method, path, body) {
   return await r.json()
 }
 
-export async function fetchWorkspaceRoots() {
-  return api('GET', '/workspace/roots')
+export async function fetchWorkspacePlaces() {
+  return api('GET', '/workspace/places')
 }
 
 export async function browseWorkspace(path, { kind = 'directory', q = '' } = {}) {
@@ -46,4 +46,9 @@ export async function streamChat(sessionId, formData, signal) {
     throw new Error(e.error || 'HTTP ' + r.status)
   }
   return r.body.getReader()
+}
+
+/** Step 2: GET /defaults (agent package + user workspace). Same contract as spa-v2. */
+export async function fetchDefaults() {
+  return api('GET', '/defaults')
 }

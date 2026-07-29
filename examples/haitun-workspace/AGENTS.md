@@ -28,46 +28,114 @@ user profile, and bootstrap files all live at the workspace root:
 | `HEARTBEAT.md` | Dynamic context, re-read every turn (below the cache boundary). |
 | `AGENTS.md` | This file; also loaded as a bootstrap context file. |
 
-## Environment variables (optional)
+## Remote Fusion Memory configuration
 
-All are optional and only affect the dynamic suffix / runtime line:
+These process-start settings connect Haitun to an operator-provisioned remote Fusion Memory MCP
+Streamable HTTP service. For multi-user Feishu routing, the starter manually configures one token
+map outside the workspace. The bearer token is the only source of server-side user identity: the
+same token shares memory across Sessions, while different tokens are isolated. Workspace and
+Session IDs are provenance only. Keep tokens in deployment-managed secrets; never commit or log
+them. Haitun consumes this MCP service only and must not use legacy REST routes.
+
+| Variable | Purpose |
+|---|---|
+| `FUSION_MEMORY_MCP_URL` | Remote Fusion Memory MCP Streamable HTTP endpoint; TLS is terminated by its reverse proxy. |
+| `FUSION_MEMORY_TOKEN_MAP_FILE` | Absolute path to the operator-owned JSON map keyed by Feishu `open_id`; each entry requires `token`, while empty or omitted `workspace_id` defaults to `haitun`. |
+| `FUSION_MEMORY_TOKEN` | Legacy single-user bearer token, used only when no token-map path is configured. |
+| `FUSION_MEMORY_WORKSPACE_ID` | Legacy single-user workspace provenance (defaults to `haitun`). |
+| `FUSION_MEMORY_SESSION_ID` | Optional legacy single-user Session provenance. |
+
+Token-map membership enables automatic durable memory. On each mapped user's first message after
+process startup, `system_prompt_builder()` or `system_prompt_rebuild_checker()` idempotently starts
+authenticated MCP health checking and that Session's passive JSONL writer. Unknown users can chat
+but receive no bearer token, connector, writer, checkpoint, or durable memory. Map mode never falls
+back to the legacy shared token. Duplicate token assignments reject the map. Removing an entry
+stops that Session's watcher and closes its cached client. Passive persistence accepts only completed
+ordinary chat turns, excludes schedule/heartbeat/compaction rows, and skips unchanged history files.
+Validated maps are cached by file signature. Each active turn renews a five-minute watcher lease;
+idle watcher/client resources are reclaimed and restart on the next message. Server provisioning
+and token creation remain operator actions.
+
+This is a trusted-runtime boundary: the Feishu Channel, Gateway, Session runtime and management
+tools, host shell, and token-map file must be trusted. `feishu-<open_id>` is not a cryptographic
+principal. Strong isolation from forged Session IDs or workspace code that can read the complete
+map requires core authorization and a privileged credential broker outside this workspace.
+
+## Runtime display and service credentials
+
+The following optional variables either change runtime display metadata or enable their named
+service tools:
 
 | Variable | Purpose |
 |---|---|
 | `HAITUN_MODEL` | Override the model name shown in the runtime line. |
 | `HAITUN_AGENT_ID` | Agent ID shown in the runtime line. |
 | `HAITUN_CHANNEL` | Channel name shown in the runtime line. |
-| `HAITUN_TIMEZONE` | Time zone for the date/time section (default `UTC`). |
+| `TZ` | Standard IANA time zone for the date/time section, e.g. `Asia/Shanghai` (when unset, follows the system's local time zone). |
 | `PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES` | Positive-integer retained stdout byte limit for G4 Program Steps (default 4 MiB). |
 | `PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES` | Positive-integer retained stderr byte limit for G4 Program Steps (default 1 MiB). |
 | `XFYUN_STT_APP_ID`, `XFYUN_STT_API_KEY`, `XFYUN_STT_API_SECRET` | iFLYTEK streaming STT credentials. |
 | `XFYUN_TTS_APP_ID`, `XFYUN_TTS_API_KEY`, `XFYUN_TTS_API_SECRET` | iFLYTEK online TTS credentials. |
 | `XFYUN_APP_ID`, `XFYUN_API_KEY`, `XFYUN_API_SECRET` | Optional shared fallback when both services use one app. |
+| `PSI_OAUTH_CALLBACK_BASE` | Gateway base URL the user's browser can reach; makes OAuth authorization copy-paste-free via the `/oauth/callback` relay (works for phone approval / multi-user). Register `<base>/oauth/callback` in the Feishu console. |
+| `PSI_OAUTH_LOOPBACK_PORT` | Port for the one-shot `127.0.0.1` OAuth callback listener (default `17860`); same-machine deployments only. |
+
+## Channel events (`channel_events/`)
+
+**定事信号源（交付对接）**：有「每次 xx 就…」类需求且 xx 可观测时，在 **`channel_events/<channel>/`** 按需注册（官方：`map.py`；自定义：`produce.py`），≈ 加 tool；**不要**改 Session catalog，也**不要**为每个事件改 Channel 源码（Feishu 已统一接线）。必读：`channel_events/README.md`。挂钩仍用 `triggers/` + `trigger_manage`。
 
 ## Tools (`tools/`)
 
+### Path roots（workspace / agent ContextVar + AppData）
+
+当 Session `agent ≠ workspace` 时，工具必须分清两根目录。统一入口：
+`tools/_runtime_paths.py`（也经 `_session_helpers.current_workspace` /
+`current_agent` 暴露）。AppData（todos / history / Gateway state）经
+``psi_agent._appdata`` / ``resolve_appdata_root()``，**不**进 ContextVar。
+
+| 解析 API | 优先顺序 | 典型用途 |
+|----------|----------|----------|
+| `workspace_dir()` / `resolve_workspace()` | 显式参数 → `get_workspace()` → `WORKSPACE_DIR` → 本包父目录 | 相对路径读写、`bash`/`powershell` cwd、`schedules/`、`flows/`、feishu UAT |
+| `agent_dir()` / `resolve_agent()` | 显式参数 → `get_agent()` → 回落 `workspace_dir()` | `skills/`（`skill_manage`） |
+| system prompt「Workspace」段 | `system_prompt_builder` 经 `get_workspace()` 注入用户打开目录（**刻意为之**：勿用 `__file__` 当文件 IO 根，否则 agent≠workspace 时模型会把产出写进能力包） | 引导模型相对路径 / `[SEND:]` 落在用户工作区 |
+| `resolve_user_path(path)` | 相对 → 拼到 workspace；绝对路径原样 | `read` / `write` / `edit` / `list_dir` / `find_files` |
+| AppData todos（第 4B） | `resolve_appdata_root()` → `{appdata}/todos/{session_id}.json`；读时双读 legacy `{workspace}/.psi/todos/` | `todo` tool / Gateway `GET …/todos` |
+| AppData history（第 4C） | 同上根 → `{appdata}/histories/{session_id}.jsonl`；读时双读 legacy `{workspace}/histories/` | Session JSONL / `sessions_list` / `GET …/history` |
+| AppData Gateway state（第 4D） | 同上根 → `{appdata}/state/latest.json`；读时双读 cwd `state/latest.json` | Gateway 重启恢复 AI/Session/Title |
+
+**刻意为之**：AppData 路径用 `platformdirs` / `--appdata` / `PSI_APPDATA`，禁止手写死 `%AppData%`；不把 AppData 塞进 Session ContextVar。
+
 | Tool | Notes |
 |---|---|
-| `bash` | Shell commands (anyio, Windows-aware bash detection). On Windows the installer bundles MSYS2 at `{app}\msys64`, added to PATH by the launcher, so bash works out-of-the-box. |
-| `powershell` | Windows-native shell. |
-| `read` / `write` / `edit` | Async file ops. |
-| `list_dir` / `find_files` | List one directory level; recursively find files by glob (`**/*.py`), sorted newest-first. |
+| `bash` | Shell commands (anyio, Windows-aware bash detection). On Windows the installer bundles MSYS2 at `{app}\msys64`, added to PATH by the launcher, so bash works out-of-the-box. **cwd = workspace**. |
+| `powershell` | Windows-native shell. **默认 cwd = workspace**. |
+| `read` / `write` / `edit` | Async file ops；相对路径相对 **workspace**. |
+| `list_dir` / `find_files` | List one directory level; recursively find files by glob (`**/*.py`), sorted newest-first；默认根为 **workspace**. |
 | `write_excel` | Build a real `.xlsx` from a 2D array (bold header, column-width fitting). |
 | `write_word` | Build a real `.docx` from structured blocks (headings/paragraphs/tables); sets the East-Asian font (`w:eastAsia`) on every style so Chinese text isn't "字体不齐". |
-| `skill_manage` | CRUD on `skills/<name>/SKILL.md` (agent-created skills are mutable). |
-| `flow_manage` | CRUD + promote on Fusion Flow `.workflow` assets under `flows/`. |
+| `skill_manage` | CRUD on **agent** `skills/<name>/SKILL.md`（经 `get_agent()`；agent-created skills are mutable）. |
+| `flow_manage` | CRUD + promote on Fusion Flow `.workflow` assets under **workspace** `flows/`. |
 | `run_flow` / `run_flow_resume` | Start the bundled Python G4 Fusion Flow runner and resume only its active Human request. Agent and workspace-local Program Steps execute directly. For a `$fusion_flow/control` wait envelope, pass its nested `request.question/options/recommended/default` fields to `clarify`, show the formatted text returned by `clarify` verbatim, and immediately end the turn; JSON-encode the next user reply into `run_flow_resume`. |
-| `schedule_manage` | CRUD on `schedules/<name>/TASK.md` (cron + task body); validates the cron expression. |
+| `schedule_manage` | CRUD on **workspace** `schedules/<name>/TASK.md`. **Recurring**: `action=create` + `cron`. **One-shot**: `action=create` + `once_at` (`YYYY-MM-DD HH:MM` local) → writes cron + `run_once: true` (Session deletes TASK.md after first successful fire). **`fire=tool`**: Session calls `tool(**tool_args)` at fire time with no LLM (required for Feishu IM reminders via `feishu_message_send`). `fire=prompt` (default) injects TASK body for an agent turn. Also `visibility` (`display`/`silent`), list/view/patch/delete. |
+| `trigger_manage` | CRUD on **agent** `triggers/<name>/TRIGGER.md`。`event` 名应对齐 agent ``channel_events/`` 已接通能力；Session 不再用 catalog 硬拒。`fire=tool` 命中后直调工具。见 `skills/feishu-event-remind`；事件定义见 ``channel_events/README.md``。 |
+| `memory_add` / `memory_search` / `memory_answer_context` / `memory_health` | Per-Session routed Fusion Memory MCP tools. Authentication comes only from the trusted runtime Session and operator token map. |
+| `haibao_list_datasets` / `haibao_ask` | Bundled Haibao MCP Adapter tools for real business-data queries. They require an operator-provisioned private MCP server; no private server or database onboarding is bundled. |
 | `search` (`search.py` + `_mcp.py`) | Serper web search via MCP. Requires the `mcp` extra and `uvx serper-mcp-server`; tools surface as `serper_*`. |
 | `x_search` (`x_search.py` + `_x_search_impl.py`) | Search recent public posts on X (Twitter) via the X API v2 recent-search endpoint (last ~7 days). `x_search(query, max_results, sort_order)` supports X search operators (`from:`, `#tag`, `"phrase"`, `lang:`, `-is:retweet`). Uses `aiohttp` (already a core dep), no extra packages. Requires `X_BEARER_TOKEN` (X API v2 App-only OAuth 2.0 bearer token). |
 | `browser` (`browser.py` + `_browser_impl.py` + `_mcp.py`) | Browser automation via Playwright MCP driving the system browser (Edge). Tools surface as `browser_*` (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_press_key`, `browser_navigate_back`, `browser_console_messages`, `browser_handle_dialog`, `browser_take_screenshot`, …). One long-lived `npx @playwright/mcp` server with `--shared-browser-context` keeps page state across calls. Requires Node.js/`npx`. |
 | `browser_cdp` (`browser_cdp.py` + `_browser_cdp_impl.py`) | Send a **raw Chrome DevTools Protocol** command to a browser — the escape hatch for anything the `browser_*` tools don't wrap (any CDP domain: `Page.*`, `Network.*`, `Emulation.*`, `Runtime.*`, `Browser.*`, `Target.*`, …). `browser_cdp(method, params, target="page"/"browser", timeout_s)` where `params` is a **JSON object string** (e.g. `'{"url": "https://example.com"}'`, empty for no-arg methods); returns the raw CDP result JSON. Launches a **dedicated** debug browser (Edge, then Chrome, with `--remote-debugging-port` + isolated profile — separate from the Playwright MCP browser) on first use and reuses it, or connects to an existing browser when `CDP_ENDPOINT` is set. CDP is JSON-over-WebSocket; uses `aiohttp` (already a core dep), no extra packages. |
-| `feishu_doc` (`feishu_doc.py` + `_feishu_impl.py`) | Read full text of a Feishu/Lark document. Tool `feishu_doc_read(file_type, token, max_chars)` supports docx/doc/sheet. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
+| `feishu_doc` (`feishu_doc.py` + `_feishu_impl.py`) | Read, **create**, and **write** Feishu/Lark documents. `feishu_doc_read(file_type, token, max_chars)` reads docx/doc/sheet. `feishu_doc_create(title, folder_token="")` creates a new standalone docx and returns its `document_id` + URL. `feishu_doc_append_content(document_id, content)` appends headings/paragraphs (plain text or light Markdown: `# `..`###### ` → h1–h6, other lines → paragraphs) to a docx body — also works on the docx behind a wiki node via its `obj_token`. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
+| `feishu_wiki` (`feishu_wiki.py` + `_feishu_impl.py`) | Create docs in and resolve nodes of a Feishu/Lark **wiki (knowledge base)**. `feishu_wiki_list_spaces(page_size, page_token)` lists accessible knowledge bases (to get a `space_id`). `feishu_wiki_create_doc(space_id, title, parent_node_token="")` creates a new docx node in a knowledge base and returns `node_token` + `obj_token` (the docx `document_id`) + URL. `feishu_wiki_get_node(token)` resolves a wiki node token to its `obj_token`/`obj_type` for reading. **Create-a-knowledge-base-doc flow:** `feishu_wiki_list_spaces` → `feishu_wiki_create_doc` → `feishu_doc_append_content(obj_token, content)`. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` + edit permission on the target space/parent node. |
 | `feishu_drive` (`feishu_drive.py` + `_feishu_impl.py`) | Read/post whole-document comments on a Feishu/Lark file. Tools `feishu_drive_add_comment`, `feishu_drive_list_comments`, `feishu_drive_list_comment_replies`, `feishu_drive_reply_comment`. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
+| `feishu_sheet` (`feishu_sheet.py` + `_feishu_impl.py`) | Range-level read/write on a Feishu/Lark **spreadsheet** (`feishu_doc_read(file_type="sheet")` only dumps the whole workbook). `feishu_sheet_tabs(token, user_key)` lists worksheets — a `SHEET_ID` is **not** in the sheet URL but every range is `"SHEET_ID!A1:B2"`, so call this first. `feishu_sheet_read(token, range, max_chars, user_key)` reads one range as plain-text rows, **flattening mention cells (`@somebody`) and styled rich text to visible text** (a name column reads `"@张三"`, not raw JSON — strip the leading `@` when matching); use it to locate a person's row and to check whether a target cell is already filled before overwriting. `feishu_sheet_write` / `feishu_sheet_append` / `feishu_sheet_format` write values/formulas (a cell string starting with `=` becomes a formula) and cell style. Reads are tenant-first with `user_key` as a permission fallback. Writes take an `identity` argument (`"user"` / `"bot"`) deciding who owns the result; omitted, it uses the choice remembered for that `user_key`, and returns `need_identity_choice` if they have never been asked. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
+| `feishu_bitable` (`feishu_bitable.py` + `_feishu_impl.py`) | Build and drive a Feishu/Lark **bitable (多维表格)**. **Create from nothing**: `feishu_bitable_create_app(name, folder_token="", time_zone="", user_key)` makes the base itself (returns `app_token` + `url` + `default_table_id` — every other bitable tool needs an `app_token`, and this is the only thing that produces one); `feishu_bitable_create_table(app_token, table_name, fields_json, default_view_name="")` makes a data table **with its columns** (`fields_json` is a JSON array of `{field_name, type, property?, ui_type?}`; `type` ints 1 文本/2 数字/3 单选/4 多选/5 日期/7 复选框/11 人员/13 电话/15 超链接/17 附件/20 公式/22 地理位置/1001 创建时间/1005 自动编号, 19 查找引用 not creatable — the **first** field is the index column and must be 1/2/5/13/15/20/22, else Feishu answers 1254012; `default_view_name` is only accepted together with `fields_json`); `feishu_bitable_create_field(app_token, table_id, field_name, field_type, property_json="", ui_type="")` adds one column to an existing table. **Read/write**: `feishu_bitable_list_tables` → `table_id`, `feishu_bitable_list_records(app_token, table_id, …, filter, sort, field_names)`, `feishu_bitable_create_record(app_token, table_id, fields_json)`, `feishu_bitable_delete_records` / `feishu_bitable_clear_table` (wipe Feishu's default empty rows), `feishu_bitable_list_fields` / `feishu_bitable_delete_fields` (drop placeholder columns; the primary one can't be deleted — 1254046). **Role-based visibility**: `feishu_bitable_create_role` / `feishu_bitable_list_roles` / `feishu_bitable_add_role_member` (needs 高级权限 on the base). Build-a-tracker flow: `create_app` → `create_table` (real columns) → `create_record` per row. Writes take an `identity` argument (`"user"` / `"bot"`) deciding whether the base is owned by the person who asked or by the bot; omitted, it uses the choice remembered for that `user_key`, and returns `need_identity_choice` if they have never been asked. Requires `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` + scope `bitable:app` (`base:app:create` / `base:table:create` / `base:field:create` also work), and — for a base the bot didn't create — the app added as a collaborator (editor). |
+| `feishu_auth` (`feishu_auth.py` + `_feishu_impl.py` + `_oauth_receiver.py`) | One-off **user** authorization (OAuth authorization-code flow + PKCE S256) for the `user_access_token` that some Feishu APIs require and the bot's own credentials can't provide. The happy path asks the user for **no copy-pasting**: `feishu_auth_start(user_key)` returns an `authorize_url` to send them, and when it reports `auto_receive=True`, `feishu_auth_wait(user_key, timeout_seconds)` receives the code by itself and finishes the exchange. The code returns either through the Gateway's `/oauth/callback` relay (`PSI_OAUTH_CALLBACK_BASE` — works when the user approves **on a phone**, the only viable channel for multi-user deployments) or through a one-shot `127.0.0.1:17860` listener (`PSI_OAUTH_LOOPBACK_PORT`, same machine only). `feishu_auth_complete(code, user_key)` is the fallback for when neither channel exists (`auto_receive=False` / `manual_required=True`) — then, and only then, the user copies `code=` out of the address bar. **The redirect URI must be registered in the Feishu console's redirect-URL list** or Feishu refuses before redirecting (20071). Authorization asks only for the **capabilities** a task needs: `feishu_auth_start(user_key, capabilities)` takes capability keys (`docs_read`/`drive_read`/`drive_write` (incl. spreadsheets)/`docx_write`/`wiki_write`/`bitable_write`/`task_write`/`calendar_write`/`contact_read`/`contact_phone_email_read`), never raw scope strings — an invalid scope makes Feishu reject the whole authorize page (error 20043), so unknown keys are refused locally. Each grant is the **union** of the request and everything already granted (Feishu's token carries only the latest grant's scopes, so asking for just the new one would revoke the rest); what a user has is recorded in `granted_scopes.json`, so a later task needing the same capabilities never re-prompts. Separately, `feishu_identity_set(user_key, identity)` / `feishu_identity_get(user_key)` record and report whether that person's **writes run as themselves** (output owned by them) or **as the bot** (output owned by the bot), kept in `identity.json`; write tools return `need_identity_choice` and send nothing until it is answered. Tokens are cached per `user_key` (sender's open_id) in `<workspace>/.psi/feishu/uat.json` (plaintext, dev-only) and auto-refreshed. |
+| `feishu_calendar` (`feishu_calendar.py` + `_feishu_impl.py`) | Read & set schedules (日程) on the bot's calendar. `feishu_calendar_create_event(summary, start, end, …, attendees)` — one shared meeting inviting several people; `feishu_calendar_list_events(start, end, calendar_id="", …)` — read the schedule (list events in a time range; blank `calendar_id` = bot's primary, reading another calendar needs reader access to it); `feishu_calendar_create_per_person(summary, start, end, attendees, …)` — give each person their **own** schedule (one independent event per open_id, each inviting only that person). Resolve open_ids via `feishu_chat_find_member` / `feishu_department_members`. Needs bot ability enabled + scope `calendar:calendar` (or `calendar:calendar.event:read` for read-only), and `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`. |
 | `speech_to_text` | iFLYTEK streaming STT for WAV/PCM/MP3 files received through `[RECV:]`. |
 | `text_to_speech` | iFLYTEK online TTS; creates MP3 files delivered through `[SEND:]`. |
 | `computer_use` | Apple toolset. Drive the macOS desktop in the background (screenshot/click/type/scroll/drag) via the `cua-driver` CLI — no cursor/focus/Space theft. macOS only; needs `cua-driver` installed + Accessibility & Screen Recording permissions. See `skills/macos-computer-use/`. |
 | `llm_wiki` (`llm_wiki.py` + `_llm_wiki_impl.py`) | Build/query an interlinked Markdown knowledge base (Karpathy's "LLM wiki" pattern): compile knowledge into durable, cross-referenced pages under `<workspace>/wiki/` instead of re-searching from scratch. Tools `wiki_write`, `wiki_read`, `wiki_search`, `wiki_list`, `wiki_links`, `wiki_delete`. Each page has YAML frontmatter (title/tags/timestamps/aliases) + a body linking others with `[[wikilink]]`; `wiki_links` reports back-links & broken links. Async `anyio` file IO + `pyyaml` frontmatter, both already core deps — no extra packages. |
+| `todo` (`todo.py` + `_todo_store.py`) | **本 Session 执行步骤清单**（非跨会话 goal、非飞书个人看板）。权威「何时建表」：`skills/task-planning/SKILL.md` — 有分拆价值才写；禁止为 UI 进度凑装饰清单。`todo()` 读；`todo(todos='[...]')` 写（`content` 必须是字符串）；`merge=true` 按 id 更新。落盘 AppData `todos/{session_id}.json`（legacy `.psi/todos` 双读）。Gateway `GET …/todos` / spa-v2 `N/M` **只消费**已有清单。 |
 | `goal` (`goal.py` + `_goal_impl.py`) | Define and track **high-level goals** for the agent — durable intent that outlives one task (e.g. "ship payments v2", "reach 90% coverage"), which neither `todo` (one session's steps) nor the `taskflow` skill (a task/project board) captures. Tools `goal_set`, `goal_progress`, `goal_get`, `goal_list`, `goal_delete`. Each goal is a Markdown file under `<workspace>/goals/` with YAML frontmatter (title/slug/status[active,paused,achieved,abandoned]/priority/progress 0-100/target_date/tags/timestamps) + an append-only progress `log`, and a body that links related/sub-goals with `[[slug]]`. `goal_progress` records a dated log entry and moves %/status (100% ⇒ achieved); `goal_list` rolls up status counts. Async `anyio` file IO + `pyyaml` frontmatter, both already core deps — no extra packages. |
 | `clarify` | Ask the user a question when you need clarification, feedback, or a decision before proceeding. Two modes: multiple choice (up to 4 `options` + an auto-appended "Other" free-text) or open-ended (omit `options`). Returns a formatted question block to show the user; then **end the turn** and wait — the reply arrives as the next message (the runtime has no blocking-input primitive). Pure-Python, no extra deps. |
 
@@ -77,6 +145,9 @@ All are optional and only affect the dynamic suffix / runtime line:
 - The hermes domain skill set (cryptanalysis, image-segmentation, ml-inference, …).
 - Selected curated skills (`psi-agent-help`, `code-review-checklist`, `python-async-basics`,
   `python-static-analysis`, `user-preferences-and-language`, `example-skill`).
+- `task-planning` — **何时必须 / 禁止**用 `todo` tool 拆步与维护清单（判定门 + 配方）；spa/Gateway 进度 UI 只消费结果，不定义策略。
+- `haibao` — bundled real business-data query workflow for the two Haibao MCP Adapter tools;
+  requires the separately operated private server.
 - `speech-to-text` / `text-to-speech` — iFLYTEK voice input/output recipes.
 - `gif-search` — search & download animated GIFs/stickers from a hosted GIF API (Giphy; `api.giphy.com`) with `curl` + `jq` (via `bash`); `media` category, shell-only, no extra deps. Delivers files via `[SEND:]`; needs `GIPHY_API_KEY`. Note: Google's Tenor API was shut down 2026-06-30, so this uses Giphy, not Tenor.
 - `github-auth` — GitHub authentication setup (HTTPS PAT, SSH keys, `gh` CLI login); shell-only, no extra deps.
@@ -114,29 +185,108 @@ All are optional and only affect the dynamic suffix / runtime line:
   Never call once with the default empty input object merely to discover what
   is missing.
 - Loading or saving never executes a workflow. Each initial `run_flow` call
-  starts a fresh execution with no arbitrary cache/resume protocol. Only a
-  returned active Human request persists a checkpoint and may continue through
+  starts a fresh execution with no arbitrary cache/resume protocol. Every
+  materialized Artifact is atomically persisted as Markdown under the source
+  bundle's `runs/<run-id>/artifacts/` directory, including inputs,
+  intermediates, selections, and final outputs. Only a returned active Human
+  request additionally persists a private checkpoint and may continue through
   `run_flow_resume`.
 - Execution is non-recursive: an Agent Step cannot invoke `run_flow` or start
   another workflow. A Step may write a self-contained child declaration to the
   fixed folder; the parent Session remains the only launcher.
-- The registry stores only the canonical `.workflow` source. It does not copy or
-  rewrite instruction sidecars; `"./..."` references remain workspace-root-relative
-  and must point to stable files.
+- The registry contract reads only the canonical `.workflow` source. Generated
+  `runs/` directories are ignored by the registry and Git. Saving does not copy
+  or rewrite instruction sidecars; `"./..."` references remain
+  workspace-root-relative and must point to stable files.
 - Agent Step `read`/`write`/`edit` calls bind relative paths to the invoking
   psi workspace root, not the launcher process CWD. This keeps instruction
   sidecar reads and child declaration saves inside the selected workspace.
+- **行政财务技能组** (drive the existing `feishu_*` tools; no dedicated tool, no extra deps):
+  - `admin-finance-governance` — the tiered-autonomy rulebook (小事不问 / 中事少问 / 大事必问): default 假勤/报销 thresholds, per-tier action boundaries, and the audit-trail rule. `knowledge-base`; the other three reference it. Load first for any admin-finance work.
+  - `feishu-leave-audit-board` — auto-audit 假勤 approvals by tier (小事 auto-approve via `feishu_approval_decide`, 中事 recommend, 大事 ask), log to a bitable, build a 看板 doc, and push it via `feishu_message_send`/`feishu_topic_start`. `productivity`.
+  - `feishu-reimbursement-audit-report` — auto-audit 报销 by tier, download verified attachments per-claim, roll up a bitable, and produce a 财务报告/分析单 doc pushed to finance. Extends `feishu-reimbursement-archive`. `productivity`.
+  - `feishu-admin-finance-assistant` — 真知小助手: answer 行政/财务 policy questions from Feishu docs synced into the local `llm-wiki` (`wiki_*`), always citing sources, routing any implied action through `admin-finance-governance`. `knowledge-base`.
+- `feishu-todo-board-sync` — 搬运一篇飞书 docx 个人 ToDoList 进团队看板电子表格（列=日期、行=人）: slice the doc's newest date section, split its `ToDo` items **by the `@name` mentioned in each item** (items mentioning nobody go to the doc's owner), assemble each person's cell text, and write it to the **caller-specified** column. Three hard rules: attribution follows `@name`; the target column is always given by the caller (**never** inferred from the source doc's date, whose format differs from the header's); a non-empty target cell is reported for confirmation instead of being silently overwritten. Board structure (header row / name column / `SHEET_ID`) is discovered per run, never hardcoded. Drives the existing `feishu_wiki_get_node` → `feishu_sheet_tabs` → `feishu_doc_read` → `feishu_sheet_read` → `feishu_sheet_write` tools; `productivity`, no dedicated tool, no extra deps. Never adds rows for people absent from the board — it reports them as skipped.
+- `feishu-schedule-message` — Feishu timed reminders via **`schedule_manage` `fire=tool`**: Session **directly** calls `feishu_message_send(**tool_args)` at fire time (no LLM). Pass `tool_args` JSON with real `chat_id`/`open_id` from `<feishu_context>` (**not** Gateway `session_id`). Prefer `visibility=silent`. One-shot (`once_at`) **rejects** `fire=prompt` / content-embedded calls — create must include `fire`+`tool`+`tool_args` in one shot; Session `run_once` deletes TASK after fire.
+- `feishu-event-remind` — Feishu **event** reminders（定事）via **`trigger_manage` `fire=tool`**: map NL → catalog `event`（如 `feishu.chat.member_added`）+ dual-write `raw_event`（如 `im.chat.member.user.added_v1`）；Session 先规范匹配再 raw 回退。禁止手写 `TRIGGER.md`；未接通事件勿 invent catalog 名。
+- **Feishu tool credentials on Gateway（踩坑）**：`feishu_message_send` 等 workspace 工具跑在 **Session / Gateway 进程**里，读的是该进程的 `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET`。只给 Feishu **channel** 进程设环境变量不够——定时触发时会报 `Feishu app not configured`，飞书收不到推送。启动 Gateway 时也要带上同一组凭证。
+- **Feishu interactive-card callback contract**：发送给其他人的卡片必须同时传
+  `business_context_json`（业务类型、稳定业务 ID、发起人、当前状态等收件方 agent 独立处理所需事实）和
+  `action_handlers_json`（按钮 `value.action` 到 handler 标识符的完整映射）。工具会把原卡片、发送来源、
+  业务上下文和映射保存到 v2 snapshot；按钮/表单操作由 Feishu Channel 按操作者 `open_id` 路由回点击者
+  agent，以 `<feishu_card_action>` 包裹的结构化 JSON 作为下一条 user 消息，并在原卡片所在聊天流式回复。
+  信封中的 `source` 是发卡方 Session / open_id 与接收目标，`card` 是原始完整卡片，
+  `business_context` 是发卡时提供的业务事实，`dispatch` 是确定性选择结果，`action` 是飞书原始操作。
+  Channel **只选择 handler，不直接执行 handler，也不绕过 LLM**。映射键和 handler 必须是无首尾空白的
+  canonical 字符串；配置非空映射后，未知 action 必须得到
+  `dispatch.matched=false` 和 `handler=null`；点击者 agent 不得臆造或执行未匹配 handler。只有未配置映射的
+  v1/v2 snapshot 才回退到把 `action.value.action` / `action_id` 本身作为 handler；snapshot 缺失或损坏时
+  必须 fail closed，不能假定它是旧卡片。首个回调留下持久 `.consumed` tombstone，后续进程/重启后的重复点击
+  直接忽略。原卡片的只读“已选择”已经确认点击，回调 agent 不得再生成“你点击了…”或“我来处理/通知…”等过程文本；
+  应先按匹配 handler 完成必要工具调用。成功且无额外必要信息时以零 assistant 文本结束，不得输出 `NO_REPLY`
+  或成功确认；只有警告、部分失败、权限问题、未匹配 handler 或必要后续步骤才回复，且不得把失败说成成功。
+  Feishu Channel 会防御性吞掉卡片回调中整段独立的 `NO_REPLY`，其他文本保持不变。自定义 AppData 时 Channel 和
+  Gateway/workspace tool 必须使用同一根，推荐统一设置 `PSI_APPDATA`。
+  按钮组/表单优先用旧版卡片；
+  Card 2.0 不支持旧版 `action` 标签。按钮 `value` 必须包含明确动作名和稳定业务 ID（如 `request_id`），
+  且不同按钮使用不同值；选择器/日期输入放进 `form` 后提交，让结果进入 `form_value`，不要依赖 SDK 1.2.0
+  无法完整区分选项变化的 `standalone` 回调。每张卡片按 `message_id` 只接受首个有效操作，随后保留原卡片
+  标题和正文，并把交互区替换为“已选择: <选项>”只读提示；再次收集输入必须发新卡片。有后果的操作执行前
+  重新校验权限和当前状态，底层写操作保持 **idempotent**，以覆盖飞书重投、卡片更新失败和多实例并发。
+  工具成功后卡片已经对用户可见：若卡片已承载全部必要信息，本轮以零 assistant 文本结束，不得输出
+  `NO_REPLY`、发送确认或重复卡片内容/按钮；若仍有卡片未承载的必要信息（风险、部分失败、必要后续步骤），
+  则必须只回复这些信息。若卡片已发送但 snapshot 保存失败，工具返回
+  `ok=false, sent=true, callback_context_saved=false`；必须告知这项必要的部分失败，且不要重发卡片造成重复。
 
 ## Schedules (`schedules/`)
 
 - Use `schedule_manage` to add / list / view / update / delete tasks instead of editing
   `schedules/<name>/TASK.md` by hand.
--（已移除）原 30 分钟 `heartbeat` schedule；勿重新添加除非明确要求定期背景负载。
+- The former 30-minute `schedules/heartbeat/TASK.md` remains intentionally removed. Do not
+  recreate it unless the user explicitly requests recurring background load.
+- **Schedules belong to the *workspace*, not to this agent package.** The Session loads
+  `{workspace}/schedules/`, but **activation is per (session × schedule)**: every Session sees
+  all entries, and only the ones its lists select actually fire — `--active-schedules a,b` for a
+  named subset, `--active-schedules '*'` for everything, `--deactive-schedules x` to carve out
+  entries (the blacklist wins). The default is empty, so a user session fires nothing; the
+  per-workspace **scheduler session** spawned by Gateway `SchedulerManager` is activated with
+  `'*'`. Each schedule must be activated by exactly one Session — otherwise one reminder
+  would fire once per online session (Feishu spawns one Session per `open_id`).
+  Use `'*'` plus a blacklist rather than an enumerated whitelist when a session should own
+  "everything except these": a whitelist cannot cover `TASK.md` files created after startup.
+  Consequence: when this package is used as a **separate agent root** (`--agent` ≠
+  `--workspace`), schedules stored under the agent package are **not** loaded. Put any
+  explicitly requested schedules under the workspace. Single-root usage
+  (`agent` ≡ `workspace`) is unaffected.
+- `visibility: display` results are stashed to pending, but the scheduler session has no
+  channel attached, so under Gateway they do not reach any user. Use `fire=tool` (e.g.
+  `feishu_message_send`) for anything that must actually be delivered.
 
 ## Prerequisites
 
 - **FusionFlow G4**: no Node.js install is required; it runs through the current
   psi-agent Session. Agent-backed Steps still require a configured AI socket.
+- **Haibao ChatBI**: The Adapter, `haibao_list_datasets` / `haibao_ask` tools, and Haibao Skill
+  are bundled. They require an operator-provisioned private MCP server; that server, its OAuth
+  configuration, credentials, core implementation, and database onboarding are not bundled.
+  See [`docs/haibao-integration.md`](docs/haibao-integration.md). This is not a claim that a
+  production service is deployed, and direct workspace-to-private-API calls remain prohibited.
+  `HAIBAO_MCP_TOKEN` is process-global, so one Haitun process/workspace deployment is one
+  configured Haibao principal and security boundary; it does not provide per-session identity
+  forwarding. Never use one token/process for users who require distinct authorization. Deploy
+  a separate Haitun process, container, or workspace with a distinct token per principal or
+  distinct authorization cohort.
+
+- **Fusion Memory**: Haitun only consumes an operator-provisioned remote MCP
+  Streamable HTTP service. The process starter supplies the token-map path; the
+  bearer token defines user identity, while workspace/Session values are only
+  provenance. The operator creates tokens, terminates TLS at the reverse proxy,
+  and supervises MCP/model services with `systemd` for SSH-disconnect resilience
+  and restart after failure. The workspace itself starts one passive writer per
+  mapped Session and retries outages without blocking chat. Never commit or log
+  a token or token map; do not authenticate from `<feishu_context>`, create a
+  local memory service, or use another public memory transport.
+
 - **Serper search**: install psi-agent with the `mcp` extra and have `uvx` available.
 - **Browser tools**: Node.js / `npx` (first run downloads `@playwright/mcp`) and a system
   browser (Edge by default). Optional env: `BROWSER_CHANNEL` (`msedge`/`chrome`),
@@ -148,7 +298,16 @@ All are optional and only affect the dynamic suffix / runtime line:
   CDP over a WebSocket with `aiohttp`. Optional env: `CDP_ENDPOINT`, `CDP_BROWSER_CHANNEL`
   (`msedge`/`chrome`), `CDP_HEADLESS` (`1`/`0`, default headed), `CDP_STARTUP_TIMEOUT`,
   `CDP_COMMAND_TIMEOUT`. If no browser is found the tool returns `ok=false` (not fatal).
-- **Feishu tools**: set `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` (same app as the Feishu channel). Reuses the `lark-channel-sdk` dependency; no extra install. If unset, the tools return `ok=false` (not fatal).
+- **Feishu tools**: set `PSI_FEISHU_APP_ID` / `PSI_FEISHU_APP_SECRET` on the **Gateway/Session process** (same app as the Feishu channel). Channel-only env is not enough for scheduled `feishu_message_send`. Reuses the `lark-channel-sdk` dependency; no extra install. If unset, the tools return `ok=false` (not fatal).
+- **Feishu user authorization (`feishu_auth`)**: to make authorization **copy-paste-free**, give the
+  callback somewhere to land — either set `PSI_OAUTH_CALLBACK_BASE` to a Gateway base URL the user's
+  browser can reach (e.g. `https://haitun.example.com`; required for multi-user/phone approval), or
+  leave it unset on a single-machine deployment and let the tool listen on the loopback
+  callback path `/oauth/callback` at port `17860` (`PSI_OAUTH_LOOPBACK_PORT` to change it).
+  **Register the resulting redirect URI in the Feishu console** either way. Setting
+  `PSI_FEISHU_REDIRECT_URI` to a non-loopback address forces the manual copy-paste path.
+  Feishu China has **no device flow** (`authen/v2/oauth/device_authorization` 404s on every
+  Feishu domain), so loopback/relay redirect is the only automatic option.
 
 ## ⚠️ Intentionally-kept un-wired code (future extension)
 

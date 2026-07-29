@@ -1,8 +1,12 @@
 #include <windows.h>
+#include <shlobj.h>
 #include <stdio.h>
 
 #define MAX_ENV 32767
 #define PATH_BUF 32768
+#define CMD_BUF 4096
+/* Same folder name as Gateway DEFAULT_USER_WORKSPACE_NAME (haitun + 交付). */
+#define DEFAULT_WS_NAME L"haitun\u4ea4\u4ed8"
 
 static WCHAR g_dir[MAX_PATH];
 static WCHAR g_env[MAX_ENV * 2];  /* double size: wide-char bytes */
@@ -193,10 +197,19 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
     /* 6. set working directory */
     SetCurrentDirectoryW(g_dir);
 
-    /* 7. launch psi-agent.exe with --verbose and log files */
+    /* 7. launch psi-agent.exe with Gateway path defaults + log files.
+     *
+     * Install layout: {app} IS the haitun-workspace (tools/skills/systems).
+     * Soft-default in Python only finds examples/haitun-workspace under a
+     * repo root — so the launcher must pass --default-agent explicitly.
+     * Workspace soft-default is Desktop/haitun交付; pass it too so install
+     * and CLI stay aligned. Paths are resolved at runtime (g_dir + SHGetFolderPath),
+     * never hardcoded machine paths.
+     */
     {
-        WCHAR cmd[1024];
+        WCHAR cmd[CMD_BUF];
         WCHAR out_path[512], err_path[512];
+        WCHAR desktop[MAX_PATH];
         WCHAR stamp[32];
         SYSTEMTIME st;
         GetLocalTime(&st);
@@ -226,8 +239,22 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
         HANDLE hErr = CreateFileW(err_path, GENERIC_WRITE, FILE_SHARE_READ,
                                   &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
-        lstrcpyW(cmd, g_dir);
-        lstrcatW(cmd, L"\\psi-agent.exe gateway --tray --browser --icon haitun.ico --verbose");
+        /* Quote paths: install dir may contain spaces ("HaiTun Agent"). */
+        lstrcpyW(cmd, L"\"");
+        lstrcatW(cmd, g_dir);
+        lstrcatW(cmd, L"\\psi-agent.exe\" gateway --tray --browser --icon haitun.ico --verbose");
+        lstrcatW(cmd, L" --default-agent \"");
+        lstrcatW(cmd, g_dir);
+        lstrcatW(cmd, L"\"");
+
+        if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_DESKTOPDIRECTORY, NULL,
+                                        SHGFP_TYPE_CURRENT, desktop))) {
+            lstrcatW(cmd, L" --default-workspace \"");
+            lstrcatW(cmd, desktop);
+            lstrcatW(cmd, L"\\");
+            lstrcatW(cmd, DEFAULT_WS_NAME);
+            lstrcatW(cmd, L"\"");
+        }
 
         PROCESS_INFORMATION pi = {0};
         STARTUPINFOW si = {sizeof(si)};

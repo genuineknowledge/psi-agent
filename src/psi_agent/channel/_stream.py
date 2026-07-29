@@ -120,7 +120,13 @@ class StreamBuffer:
 
     def _label(self) -> str:
         """Human-readable chunk type for log messages."""
-        return "ReasoningChunk" if self._kind == "reasoning" else "TextChunk"
+        if self._kind is None:
+            return "TextChunk"
+        if self._kind == "text":
+            return "TextChunk"
+        if self._kind.startswith("reasoning"):
+            return "ReasoningChunk"
+        return "TextChunk"
 
     def switch(self, incoming_kind: str) -> list[tuple[str, str]]:
         """Declare the kind of the next text, flushing the buffer if it changed.

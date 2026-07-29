@@ -1,70 +1,38 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import types
-from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Protocol
-from typing import cast as _cast
 
 TOOLS_DIR = Path(__file__).resolve().parent
+_mcp_path = TOOLS_DIR / "_fusion_memory_mcp.py"
+_mcp_module_name = f"fusion_memory_tool__fusion_memory_mcp_{hashlib.sha256(str(_mcp_path).encode()).hexdigest()[:12]}"
+_mcp_module = sys.modules.get(_mcp_module_name)
+if _mcp_module is None:
+    _mcp_module = types.ModuleType(_mcp_module_name)
+    _mcp_module.__file__ = str(_mcp_path)
+    sys.modules[_mcp_module_name] = _mcp_module
+    exec(compile(_mcp_path.read_text(encoding="utf-8"), str(_mcp_path), "exec"), _mcp_module.__dict__)
+CLIENT = _mcp_module.__dict__["CLIENT"]
 
 
-class MemoryConfig(Protocol):
-    allow_cross_session: bool
-    base_url: str
-    scope: dict[str, Any]
-    timeout_seconds: float
-
-
-class FormatContextPack(Protocol):
-    def __call__(self, pack: dict[str, Any], limit: int = 8) -> str: ...
-
-
-PostJson = Callable[[str, str, dict[str, Any], float], Awaitable[dict[str, Any]]]
-FormatErrorResult = Callable[[Exception], str]
-
-
-def _load_sibling_module(name: str) -> dict[str, Any]:
-    path = TOOLS_DIR / f"{name}.py"
-    module_name = f"fusion_memory_tool_{name}_{hashlib.sha256(str(path).encode()).hexdigest()[:12]}"
-    module = types.ModuleType(module_name)
-    module.__file__ = str(path)
-    source = path.read_text(encoding="utf-8")
-    sys.modules[module_name] = module
-    exec(compile(source, str(path), "exec"), module.__dict__)
-    return module.__dict__
-
-
-_client = _load_sibling_module("_fusion_memory_client")
-_config = _load_sibling_module("_fusion_memory_config")
-_format_context_pack = _cast(FormatContextPack, _client["format_context_pack"])
-_format_error_result = _cast(FormatErrorResult, _client["format_error_result"])
-_post_json = _cast(PostJson, _client["post_json"])
-CONFIG = _cast(MemoryConfig, _config["CONFIG"])
-
-
-async def memory_answer_context(query: str) -> str:
-    """Retrieve a query-grounded context pack from Fusion Memory.
-
-    Args:
-        query: The question or topic to retrieve context for.
-
-    Returns:
-        A formatted context pack string or an unavailable message.
-    """
+async def memory_answer_context(query: str, limit: int = 8) -> str:
+    """Retrieve a query-grounded context pack from Fusion Memory."""
     try:
-        data = await _post_json(
-            CONFIG.base_url,
-            "/answer-context",
+        bounded_limit = max(1, min(32, int(limit)))
+    except TypeError, ValueError:
+        return json.dumps(
             {
-                "query": query,
-                "scope": CONFIG.scope,
-                "budget": {"limit": 8, "allow_cross_session": CONFIG.allow_cross_session},
+                "ok": False,
+                "error": {"code": "invalid_argument", "message": "limit must be an integer", "retryable": False},
             },
-            CONFIG.timeout_seconds,
+            ensure_ascii=False,
         )
-        return _format_context_pack(data)
-    except Exception as exc:
-        return _format_error_result(exc)
+    result = await CLIENT.call_tool(
+        "memory_answer_context",
+        {"query": query, "limit": bounded_limit},
+        retryable=True,
+    )
+    return json.dumps(result, ensure_ascii=False)

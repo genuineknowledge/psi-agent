@@ -1,4 +1,4 @@
-"""AI backend — unified multi-provider LLM client served over a Unix socket."""
+"""AI backend — unified multi-provider LLM client served over a Unix socket, TCP or Named Pipe."""
 
 from __future__ import annotations
 
@@ -23,9 +23,10 @@ async def serve_ai(
     model: str,
     api_key: str,
     base_url: str,
+    max_context_tokens: int = 0,
     handler: Handler,
 ) -> None:
-    """Serve an AI backend on a Unix socket."""
+    """Serve an AI backend on a Unix socket, TCP address or Named Pipe (see ``psi_agent._sockets``)."""
 
     api_key_status = "set" if api_key else "empty"
     logger.info(
@@ -33,11 +34,16 @@ async def serve_ai(
         f"(provider={provider!r}, model={model!r}, base_url={base_url}, api_key={api_key_status})"
     )
 
-    app = web.Application()
+    # Large conversation contexts (long histories, tool outputs) routinely exceed
+    # aiohttp's 1 MiB default body limit, which would reject the request with
+    # HTTPRequestEntityTooLarge before it ever reaches the upstream. Match the
+    # gateway app's 100 MiB ceiling so the forwarder accepts the same payloads.
+    app = web.Application(client_max_size=100 * 1024 * 1024)
     app["provider"] = provider
     app["model"] = model
     app["api_key"] = api_key
     app["base_url"] = base_url
+    app["max_context_tokens"] = max_context_tokens
     app.router.add_post("/chat/completions", handler)
 
     runner = web.AppRunner(app)
@@ -67,7 +73,7 @@ class Ai:
     """Start an AI backend service that forwards to any LLM provider."""
 
     session_socket: str
-    """Path to the Unix domain socket to listen on."""
+    """Address to listen on: Unix socket path (POSIX), ``http(s)://host:port``, or ``\\\\.\\pipe\\name`` (Windows)."""
 
     provider: str = ""
     """Provider key (openai, anthropic, gemini, etc.). Falls back to PSI_AI_PROVIDER env var."""
@@ -84,6 +90,11 @@ class Ai:
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
+    max_context_tokens: int = -1
+    """Prompt token threshold for triggering compaction (default 100K).
+    -1 = use PSI_MAX_CONTEXT_TOKENS env var or 100K. 0 disables compaction.
+    CLI: --max-context-tokens."""
+
     async def run(self) -> None:
         """Start the server and block until cancelled."""
         setup_logging(verbose=self.verbose)
@@ -91,9 +102,20 @@ class Ai:
         model = self.model or os.environ.get("PSI_AI_MODEL", "")
         api_key = self.api_key or os.environ.get("PSI_AI_API_KEY", "")
         base_url = self.base_url or os.environ.get("PSI_AI_BASE_URL", "")
+        if self.max_context_tokens == -1:
+            env_val = os.environ.get("PSI_MAX_CONTEXT_TOKENS", "")
+            if env_val:
+                try:
+                    self.max_context_tokens = int(env_val)
+                except ValueError:
+                    logger.warning(f"Invalid PSI_MAX_CONTEXT_TOKENS={env_val!r}, using default 100K")
+                    self.max_context_tokens = 100000
+            else:
+                self.max_context_tokens = 100000
         logger.debug(
             f"AI resolved params: provider={provider!r}, model={model!r}, "
-            f"base_url={base_url!r}, api_key={'*' * 8 if api_key else '(empty)'}"
+            f"base_url={base_url!r}, api_key={'*' * 8 if api_key else '(empty)'}, "
+            f"max_context_tokens={self.max_context_tokens}"
         )
         await serve_ai(
             socket_path=self.session_socket,
@@ -101,5 +123,6 @@ class Ai:
             model=model,
             api_key=api_key,
             base_url=base_url,
+            max_context_tokens=self.max_context_tokens,
             handler=handle_chat_completions,
         )
