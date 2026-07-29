@@ -115,7 +115,7 @@ service tools:
 | `write_word` | Build a real `.docx` from structured blocks (headings/paragraphs/tables); sets the East-Asian font (`w:eastAsia`) on every style so Chinese text isn't "字体不齐". |
 | `skill_manage` | CRUD on **agent** `skills/<name>/SKILL.md`（经 `get_agent()`；agent-created skills are mutable）. |
 | `flow_manage` | CRUD + promote on Fusion Flow `.workflow` assets under **workspace** `flows/`. |
-| `run_flow` / `run_flow_resume` | Start the bundled Python G4 Fusion Flow runner and resume only its active Human request. Agent and workspace-local Program Steps execute directly. For a `$fusion_flow/control` wait envelope, pass its nested `request.question/options/recommended/default` fields to `clarify`, show the formatted text returned by `clarify` verbatim, and immediately end the turn; JSON-encode the next user reply into `run_flow_resume`. |
+| `run_flow` / `run_flow_resume` | Start the bundled Python G4 Fusion Flow runner and resume only its active Human request. Agent Steps use ephemeral Sessions. Program Steps use a specialized Program Agent that can prepare or install a language runtime/toolchain; the declared workspace script needs no executable bit. In fidelity mode an interpreted launch is host-built exactly as `[interpreter, declared_script, *logical_argv[1:]]`, never an Agent-selected arbitrary argv. Compiled source must pass through structured `compile_program`, which binds the source hash, artifact hashes, and exact launch argv before `execute_program` verifies and starts it. Once the real Program starts, fidelity mode forbids a second attempt and preserves the original result or error. Only the exact standalone instruction line `Program execution policy: successful completion outranks fidelity.` authorizes adaptation. Captured Program execution/format failures become `$fusion_flow/program_error` values on every declared output Artifact; a failing zero-output Program aborts. For a `$fusion_flow/control` wait envelope, pass its nested `request.question/options/recommended/default` fields to `clarify`, show the formatted text returned by `clarify` verbatim, and immediately end the turn; JSON-encode the next user reply into `run_flow_resume`. |
 | `schedule_manage` | CRUD on **workspace** `schedules/<name>/TASK.md`. **Recurring**: `action=create` + `cron`. **One-shot**: `action=create` + `once_at` (`YYYY-MM-DD HH:MM` local) → writes cron + `run_once: true` (Session deletes TASK.md after first successful fire). **`fire=tool`**: Session calls `tool(**tool_args)` at fire time with no LLM (required for Feishu IM reminders via `feishu_message_send`). `fire=prompt` (default) injects TASK body for an agent turn. Also `visibility` (`display`/`silent`), list/view/patch/delete. |
 | `trigger_manage` | CRUD on **agent** `triggers/<name>/TRIGGER.md`。`event` 名应对齐 agent ``channel_events/`` 已接通能力；Session 不再用 catalog 硬拒。`fire=tool` 命中后直调工具。见 `skills/feishu-event-remind`；事件定义见 ``channel_events/README.md``。 |
 | `memory_add` / `memory_search` / `memory_answer_context` / `memory_health` | Per-Session routed Fusion Memory MCP tools. Authentication comes only from the trusted runtime Session and operator token map. |
@@ -165,8 +165,15 @@ service tools:
 - `simplify-code` — behavior-preserving cleanup of **recent** code changes by fanning out **3 parallel subagents** over the changed files: split the git diff into 3 disjoint buckets, delegate each to a background subagent (via the `subagent-orchestration` recipe), then merge their edits and re-verify against a baseline. `coding` category; composes existing `bash`/`read`/`edit`/`subagent_*` tools — no dedicated tool, no extra deps.
 - `research-paper-writing` — write an ML research paper for NeurIPS / ICML / ICLR end to end (design the contribution → draft sections → revise → official-template LaTeX build → rebuttal / camera-ready); `research` category. Composes the existing `read`/`write`/`edit`/`bash` tools plus `arxiv` (verify related work) and `subagent-orchestration` (parallel section drafting) — no dedicated tool, no extra deps. LaTeX (`texlive`/`tectonic`) is driven through `bash` when producing the PDF; hard rule against fabricating results or citations.
 - `ocr-and-documents` — extract text from PDFs / scans / images. Two tiers: (1) fast, free text-LAYER extraction with **PyMuPDF** (`import fitz`, already a core dep) for born-digital PDFs, and (2) high-accuracy **OCR + layout → Markdown/JSON** via the external **marker-pdf** CLI (`marker_single` / `marker`) for scanned/image-only PDFs. Decision rule: probe the PyMuPDF text layer first (instant, no models); only fall back to marker-pdf OCR when it's empty/garbled or the user needs layout-faithful Markdown/tables. `research` category; `bash`-driven. PyMuPDF needs nothing extra; **marker-pdf is a heavy external tool (PyTorch + Surya OCR model weights, optional GPU) installed on demand via `pip install marker-pdf` — NOT a bundled dependency**, so no pyproject / nuitka / pyinstaller changes. Read-only (extraction), not PDF editing.
-- `fusion-flow` — the immutable bundled Python G4 authoring/runtime skill. Agent and
-  workspace-local Program Steps execute in the current phase; Human Steps use a dedicated
+- `fusion-flow` — the immutable bundled Python G4 authoring/runtime skill. Agent Steps use
+  ephemeral Sessions, while each workspace-local Program Step uses a specialized Program
+  Agent plus structured compile/execute capture. In fidelity mode the host appends the exact
+  declared script and logical arguments to the selected interpreter instead of accepting an
+  arbitrary argv; compiled launches must be registered by `compile_program` with source and
+  artifact hashes and exact launch argv. A real Program launch is the only permitted attempt,
+  whose original result or error is preserved. The Program Agent may prepare/install a
+  multi-language runtime or toolchain before that launch; only the exact standalone
+  repair-policy marker authorizes adaptation. Human Steps use a dedicated
   instruction-preparation Agent, the existing `clarify` interaction, and persisted
   checkpoints for next-turn resume. **Do not edit it**, create another approval UI, or
   block a tool call waiting for the next message.
@@ -176,6 +183,19 @@ service tools:
 - Author one-off G4 files under `flows/<task-slug>/`. A runnable file contains
   exactly one workflow declaration and uses supported Agent, Human, or Program
   executors.
+- A Program `program_path` names one workspace-local regular script/source file, not a
+  shell command. It may be interpreted or compiled by the specialized Program Agent and
+  does not need `chmod` or executable permission. Under the default fidelity policy,
+  interpreted execution is the host-fixed
+  `[interpreter, declared_script, *logical_argv[1:]]`; compiled execution must use
+  `compile_program` to bind the declared source hash, artifact hashes, and exact launch
+  argv before `execute_program`. Do not supply an arbitrary argv, and do not retry after
+  the real Program has started: preserve its first result or error. Add the exact standalone line
+  `Program execution policy: successful completion outranks fidelity.` to that Step's
+  instruction only when adaptation is deliberately authorized. Program failures returned
+  under `$fusion_flow/program_error` are ordinary error-valued Artifacts to report, not
+  permission for the parent Session to edit and rerun the workflow; a failing zero-output
+  Program aborts because no Artifact can carry its diagnostic.
 - Save reusable declarations with the existing `write`/`edit` file tools. The
   fixed layout is `flows/workflows/<slug>/<slug>.workflow`; no management tool
   or manifest format is introduced.

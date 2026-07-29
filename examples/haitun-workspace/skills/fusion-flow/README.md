@@ -2,12 +2,14 @@
 
 FusionFlow is the workspace-local G4 parser/compiler, graph compiler, workflow
 runner, and authoring Skill. Program-backed Steps use an injected Program runner
-contract; the workspace entry point implements it with AnyIO subprocess
-execution. Human-backed Steps use a dedicated instruction-preparation Agent,
-the existing Haitun `clarify` flow, and a private checkpoint that crosses
-conversation turns. The `fusion_flow.execution` compatibility package is
-retained for historical parity tests but is not part of the active workspace
-path.
+contract; the workspace entry point implements it with a specialized Program
+Agent and structured AnyIO `compile_program` / `execute_program` tools. The
+Agent can prepare or install runtimes, dependencies, compilers, and other
+toolchain components for multiple languages, while the host fixes or registers
+the authoritative launch and captures its process result. Human-backed Steps use a dedicated instruction-preparation Agent, the
+existing Haitun `clarify` flow, and a private checkpoint that crosses conversation
+turns. The `fusion_flow.execution` compatibility package is retained for
+historical parity tests but is not part of the active workspace path.
 
 Every active G4 run also writes each materialized Artifact to the workflow
 bundle's `runs/<run-id>/artifacts/` directory. Text values remain Markdown;
@@ -152,42 +154,97 @@ raw-text fallback. No fallback publishes only part of the declared result.
 A Program executor must have exactly one `program_path(program) == path`
 declaration. Absolute and explicit `./...` paths pass through; other path
 identities require an injected resolver, and relative resolved paths require an
-explicit working directory. The runner supplies only the resolved executable
-in `argv`, sends `{"instruction": ..., "inputs": ...}` plus a newline on stdin,
-and uses the Step ID as the invocation binding name. The injected Program
-runner returns stdout. One produced Artifact keeps it as a scalar string;
-multiple produced Artifacts require it to be one strict, finite JSON object
-keyed exactly by those Artifact IDs. Non-standard constants such as `NaN` and
-`Infinity`, numeric overflow to infinity, and non-finite values at any nested
-depth are rejected, as are duplicate object keys.
+explicit working directory. The generic runner supplies the declared path as
+logical `argv[0]`, sends `{"instruction": ..., "inputs": ...}` plus a newline on
+stdin, carries the materialized instruction, consumed Artifact mapping, exact
+output IDs, resource lease, and Step ID in `ProgramInvocation`, and accepts an
+injected runner result. The public workspace adapter resolves the working
+directory and declared script to regular files inside the workspace. A script
+does not need a POSIX executable bit, a shebang, or `chmod`: the Program Agent
+may select or install an interpreter, compile source, and execute the resulting
+command.
 
-The generic runner keeps the injected path contract from the original Program
-implementation. The public Haitun workspace adapter applies the tighter
-security boundary without a shell. On POSIX, it rejects every symbolic-link
-component, pins both the working directory and a regular executable inside the
-workspace, and uses a trusted isolated Python bootstrap to `fchdir()` and
-execute those inherited descriptors. Native executables therefore remain
-securely runnable without procfs. A shebang script requires `/proc/self/fd` or
-`/dev/fd`, because the kernel must give its interpreter a descriptor-backed
-script path; inside such a script, `$0` / `__file__` is that descriptor path
-rather than the authored `program_path`. On Windows, the adapter keeps a
-non-replaceable executable handle open through process completion after
-validating the handle's final path. Native executables start directly; a
-workspace `.py` Program starts with the trusted current interpreter in isolated
-mode (`sys.executable -I`). Both paths remain shell-free and are covered by
-Windows tests.
+Each Program Step gets a fresh specialized Session. Its preparation tools are
+limited to workspace inspection plus `bash`/`powershell`; it cannot launch
+another workflow. Fidelity-mode interpreted execution does not accept an
+Agent-authored complete argv. The Agent selects one interpreter executable, and
+the host constructs exactly
+`[interpreter, declared_script, *logical_argv[1:]]`; interpreter flags, inline
+code, another script, reordered or omitted logical arguments, and extra
+arguments are not accepted. For compiled languages the Agent must call
+`compile_program`, which runs the compiler and atomically registers its compiler
+argv, the declared source hash, every declared artifact hash, and one exact
+launch argv. `execute_program` accepts that compiled launch only while the
+source and artifacts still match their registered hashes. These structured
+tools capture stdout bytes, stderr bytes, exit status, and launch errors
+separately. Shell tools are for environment inspection and installation, not
+for authoritative compilation or execution. The Agent ends by calling the
+zero-argument `submit_program_result`, which deterministically normalizes the
+authoritative captured attempt rather than accepting model-authored Artifact
+values.
 
-The adapter creates a separate POSIX process group or Windows Job Object and
-performs shielded cleanup of that lifecycle boundary after normal direct-child
-exit, failure, timeout, cancellation, or an output-limit violation. It streams
-both output pipes with retained-output limits of 4 MiB for stdout and 1 MiB for
-stderr. Set `PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES` or
+Program execution defaults to fidelity mode. Before the real Program starts,
+the Agent may install a missing runtime, dependency, compiler, or toolchain and
+retry an environment or preparation failure. Once the real Program launches,
+it is the sole attempt: the Agent must not call `execute_program` again,
+regardless of nonzero exit, invalid-input/domain error, or invalid output.
+The original captured result or error must remain authoritative. The Agent also
+must not patch or replace the declared script, alter declared inputs/stdin, or
+reinterpret output. Adaptation is enabled only when the resolved Step
+instruction contains this exact standalone line:
+
+```text
+Program execution policy: successful completion outranks fidelity.
+```
+
+No paraphrase or input/tool/output content enables it. An authorized script or
+stdin adaptation must include a concrete `adaptation_reason`, and consumed input
+Artifact values remain immutable.
+
+For a successful attempt, zero-output Programs must write no stdout, one output
+receives valid UTF-8 stdout verbatim, and multiple outputs require one strict,
+finite JSON object keyed by all and only the declared Artifact IDs. Non-standard
+constants such as `NaN` and `Infinity`, numeric overflow to infinity, nested
+non-finite values, and duplicate object keys are rejected. A launch error,
+nonzero exit, invalid UTF-8 stream, or output-contract failure produces the same
+error value for every declared output:
+
+```json
+{
+  "$fusion_flow/program_error": {
+    "phase": "<input_format|agent|execution|output_format>",
+    "kind": "<stable error kind>",
+    "message": "<diagnostic>",
+    "attempts": [
+      {
+        "argv": ["<actual>", "argv"],
+        "exit_code": 1,
+        "stdout": "partial output\n",
+        "stderr": "failure detail\n",
+        "stdout_base64": null,
+        "stderr_base64": null,
+        "error": null
+      }
+    ]
+  }
+}
+```
+
+A failing zero-output Program raises because no Artifact can carry the error.
+Do not treat an error-valued Artifact as a repaired success.
+
+`execute_program` creates a separate POSIX process group or Windows Job Object
+and performs shielded cleanup after normal direct-child exit, failure, timeout,
+cancellation, or an output-limit violation. It streams both output pipes with
+retained-output limits of 4 MiB for stdout and 1 MiB for stderr. Set
+`PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES` or
 `PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES` to a positive integer to override
-those defaults; crossing either limit terminates the process boundary. There
-is no private 300-second Program cap: declared Step and workflow timeouts remain
-the only execution deadlines. This lifecycle handling is not a filesystem or
-host sandbox: only trusted workspace Programs may run, and a POSIX descendant
-that deliberately creates a new session/process group leaves the managed group.
+those defaults; crossing either limit terminates the process boundary. There is
+no private 300-second Program cap: declared Step and workflow timeouts remain
+the only execution deadlines. The Program Agent and its environment-installation
+shell access are a trusted-workspace boundary, not a filesystem or host sandbox;
+a POSIX descendant that deliberately creates a new session/process group can
+leave the managed group.
 
 A Human executor keeps instruction preparation and actual user input separate.
 The runner gives a contextual preparer the resolved instruction text,
@@ -267,18 +324,24 @@ Variables, quantifiers, truth formulas, theories, rules, and query/SAT/optimizat
 
 | Item | Intended contract | Current gap | Required compiler behavior |
 | --- | --- | --- | --- |
-| `S01` | `input_workflow` and `output_workflow` declare external artifacts. | No gap in the official graph runner. | The generic `WorkflowGraph` executor enforces the exact input/output boundary and adapts Program stdout at the injected dispatcher boundary. |
+| `S01` | `input_workflow` and `output_workflow` declare external artifacts. | No gap in the official graph runner. | The generic `WorkflowGraph` executor enforces the exact input/output boundary and normalizes the injected Program result at the dispatcher boundary. |
 
 ## Activation boundary
 
-Keep Program execution behind the injected runner boundary: one resolved
-executable path in `argv`, step instruction and consumed Artifacts as JSON
-stdin, and stdout as the produced value. The workspace implementation uses the
-pinned executable boundary and bounded, whole-process-tree AnyIO subprocess
-lifecycle described above. Agent Steps continue through the injected contextual
-completion boundary. Human Steps continue through contextual
-preparation/request callbacks plus the generic checkpoint API; they do not
-depend on `fusion_flow.execution`.
+Keep Program execution behind the injected runner boundary: one declared
+script path in logical `argv`, the resolved Step instruction and consumed
+Artifacts as JSON stdin, and exact output Artifact IDs in `ProgramInvocation`.
+The workspace implementation runs a specialized Program Agent for environment
+preparation. In fidelity mode the host fixes interpreted argv from the selected
+interpreter, declared script, and logical arguments; compiled launches cross
+`compile_program` to bind source/artifact hashes and exact launch argv before
+crossing the bounded, whole-process-tree `execute_program` boundary. The real
+Program may launch only once, and its original result or error remains
+authoritative. The script is a workspace-contained regular file, not a
+pre-authorized executable, and needs no executable permission. Agent Steps
+continue through the injected contextual completion boundary. Human Steps
+continue through contextual preparation/request callbacks plus the generic
+checkpoint API; they do not depend on `fusion_flow.execution`.
 
 `AgentConfig.system_prompt` is the only Python field for an Agent's stable
 system prompt. `AgentInvocation.prompt` remains the per-call prompt. The removed

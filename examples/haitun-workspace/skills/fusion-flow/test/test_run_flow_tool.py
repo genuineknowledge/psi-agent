@@ -117,6 +117,81 @@ def _test_checkpoint(
     )
 
 
+def _program_invocation(
+    script: Path,
+    *,
+    stdin: str = '{"instruction":"work","inputs":{"request":"go"}}\n',
+    instruction: str = "Run the declared program.",
+    output_ids: tuple[str, ...] = ("result",),
+    logical_args: tuple[str, ...] = (),
+) -> Any:
+    return run_flow_tool.ProgramInvocation(
+        name="worker",
+        argv=(str(script), *logical_args),
+        stdin=stdin,
+        cwd=script.parent,
+        binding_name="work_step",
+        dispatch=SimpleNamespace(
+            resource_lease=SimpleNamespace(grants=()),
+        ),
+        instruction=instruction,
+        inputs={"request": "go"},
+        output_ids=output_ids,
+    )
+
+
+def _tool_registry(*functions: Any) -> ToolRegistry:
+    metadata = {function.__name__: ToolFunction.from_callable(function) for function in functions}
+    return ToolRegistry(
+        files={
+            "__test__": FileEntry(
+                file_hash="",
+                tools=metadata,
+                funcs={function.__name__: function for function in functions},
+            )
+        }
+    )
+
+
+def _install_program_agent_driver(
+    monkeypatch: pytest.MonkeyPatch,
+    drive: Any,
+    captured: dict[str, object] | None = None,
+) -> None:
+    capture = captured if captured is not None else {}
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+        *,
+        system_prompt: str,
+    ) -> tuple[Any, Any]:
+        capture["ai_socket"] = ai_socket
+        capture["system_prompt"] = system_prompt
+        capture["tool_names"] = set(tool_registry.tools)
+        return (
+            SimpleNamespace(tool_registry=tool_registry),
+            SimpleNamespace(messages=[]),
+        )
+
+    async def complete_step_agent(
+        agent: Any,
+        conversation: Any,
+        message: str,
+        *,
+        stop_when: Any = None,
+    ) -> str:
+        del conversation
+        capture["message"] = message
+        await drive(agent.tool_registry)
+        if stop_when is not None:
+            assert stop_when()
+        return ""
+
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+    monkeypatch.setattr(run_flow_tool, "_complete_step_agent", complete_step_agent)
+
+
 _ORDERED_RESOURCE_WORKFLOW = """
 const ordered: Workflow;
 const after_step: Step;
@@ -257,413 +332,573 @@ def test_run_flow_exposes_start_and_human_resume_tools() -> None:
     ]
 
 
-@pytest.mark.skipif(os.name != "posix", reason="requires the POSIX Program runner")
 @pytest.mark.anyio
-async def test_program_runner_executes_exact_argv_and_json_stdin(
+async def test_execute_program_command_runs_non_executable_python_with_exact_io(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "worker.py"
+    script.write_text(
+        "import json\n"
+        "import sys\n"
+        "payload = {\n"
+        '    "argv": sys.argv[1:],\n'
+        '    "stdin": sys.stdin.buffer.read().decode("utf-8"),\n'
+        "}\n"
+        "sys.stdout.buffer.write(\n"
+        '    json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\\r\\n"\n'
+        ")\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o600)
+    stdin = '{"instruction":"work","inputs":{"request":"gø"}}\r\n'
+    invocation = _program_invocation(script, stdin=stdin)
+    argv = (sys.executable, str(script), "--mode", "two words")
+
+    result = await run_flow_tool._execute_program_command(
+        invocation,
+        argv,
+        stdin=stdin,
+    )
+
+    assert script.stat().st_mode & 0o111 == 0
+    assert result.argv == argv
+    assert result.exit_code == 0
+    assert result.stderr == b""
+    assert result.stdout.endswith(b"\r\n")
+    assert json.loads(result.stdout.removesuffix(b"\r\n")) == {
+        "argv": ["--mode", "two words"],
+        "stdin": stdin,
+    }
+
+
+@pytest.mark.anyio
+async def test_complete_program_step_uses_dedicated_prompt_and_tool_allow_list(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    worker = tmp_path / "bin" / "worker"
-    worker.parent.mkdir()
-    worker.write_text("#!/bin/sh\n", encoding="utf-8")
-    worker.chmod(0o700)
-    worker_inode = (await anyio.Path(worker).stat()).st_ino
-    workspace_inode = (await anyio.Path(tmp_path).stat()).st_ino
-    calls: list[dict[str, object]] = []
-    process = _FakeProcess(stdout=b"completed\r\n")
+    script = tmp_path / "worker.py"
+    script.write_text("print('unused')\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+    process_calls: list[tuple[tuple[str, ...], str]] = []
 
-    async def open_process(
-        command: tuple[str, ...],
+    async def bash(command: str) -> str:
+        return command
+
+    async def find_files(pattern: str) -> str:
+        return pattern
+
+    async def list_dir(path: str) -> str:
+        return path
+
+    async def powershell(command: str, cwd: str = "") -> str:
+        return f"{cwd}:{command}"
+
+    async def read(file_path: str) -> str:
+        return file_path
+
+    async def write(file_path: str, content: str) -> str:
+        return f"{file_path}:{content}"
+
+    async def edit(file_path: str, old_string: str, new_string: str) -> str:
+        return f"{file_path}:{old_string}:{new_string}"
+
+    async def run_flow(flow_path: str) -> str:
+        return flow_path
+
+    async def clarify(question: str) -> str:
+        return question
+
+    async def execute_program_command(
+        invocation: Any,
+        argv: tuple[str, ...],
         *,
-        stdin: int,
-        stdout: int,
-        stderr: int,
-        cwd: Path | None,
-        creationflags: int,
-        start_new_session: bool,
-        pass_fds: tuple[int, ...],
-    ) -> _FakeProcess:
-        calls.append(
-            {
-                "command": command,
-                "stdin": stdin,
-                "stdout": stdout,
-                "stderr": stderr,
-                "cwd": cwd,
-                "creationflags": creationflags,
-                "start_new_session": start_new_session,
-                "pass_fds": pass_fds,
-            }
+        stdin: str,
+    ) -> Any:
+        assert invocation.cwd == tmp_path
+        process_calls.append((argv, stdin))
+        return run_flow_tool._ProgramProcessResult(
+            argv=argv,
+            exit_code=0,
+            stdout=b"verbatim\r\n",
+            stderr=b"",
         )
-        assert command[:4] == (sys.executable, "-I", "-c", run_flow_tool._POSIX_EXEC_BOOTSTRAP)
-        assert command[4:7] == (
-            str(pass_fds[0]),
-            str(pass_fds[1]),
-            f"/proc/self/fd/{pass_fds[0]}",
+
+    async def drive(tool_registry: ToolRegistry) -> None:
+        assert set(tool_registry.tools) == {
+            *run_flow_tool._PROGRAM_AGENT_TOOLS,
+            "compile_program",
+            "execute_program",
+            "submit_program_result",
+        }
+        assert tool_registry.get("write") is None
+        assert tool_registry.get("edit") is None
+        assert tool_registry.get("run_flow") is None
+        assert tool_registry.get("clarify") is None
+        execute = tool_registry.get("execute_program")
+        submit = tool_registry.get("submit_program_result")
+        assert execute is not None
+        assert submit is not None
+        attempt = json.loads(
+            await execute(
+                runtime=sys.executable,
+            )
         )
-        assert json.loads(command[7]) == ["./bin/worker", "--mode", "strict"]
-        assert os.fstat(pass_fds[0]).st_ino == worker_inode
-        assert os.fstat(pass_fds[1]).st_ino == workspace_inode
-        return process
+        assert attempt == {
+            "argv": [sys.executable, str(script), "--mode", "two words"],
+            "error": None,
+            "exit_code": 0,
+            "stderr": "",
+            "stderr_base64": None,
+            "stdout": "verbatim\r\n",
+            "stdout_base64": None,
+        }
+        await submit()
 
     monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
-    monkeypatch.setattr(run_flow_tool, "_find_posix_fd_root", lambda: "/proc/self/fd")
-    monkeypatch.setattr(run_flow_tool.anyio, "open_process", open_process)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=("./bin/worker", "--mode", "strict"),
-        stdin='{"instruction":"work","inputs":{"request":"go"}}\n',
-        cwd=tmp_path,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
+    monkeypatch.setattr(run_flow_tool, "_execute_program_command", execute_program_command)
+    _install_program_agent_driver(monkeypatch, drive, captured)
+    invocation = _program_invocation(script, logical_args=("--mode", "two words"))
+
+    outputs = await run_flow_tool._complete_program_step(
+        invocation,
+        ai_socket="http://ai.example",
+        tool_registry=_tool_registry(
+            bash,
+            find_files,
+            list_dir,
+            powershell,
+            read,
+            write,
+            edit,
+            run_flow,
+            clarify,
+        ),
     )
 
-    stdout = await run_flow_tool._run_program(invocation)
-
-    assert stdout == "completed"
-    assert len(calls) == 1
-    assert calls[0]["cwd"] is None
-    assert calls[0]["creationflags"] == 0
-    assert calls[0]["start_new_session"] is True
-    assert bytes(process.stdin.data) == b'{"instruction":"work","inputs":{"request":"go"}}\n'
-    assert process.stdin.closed
-    assert process.closed
-    for descriptor in cast(tuple[int, ...], calls[0]["pass_fds"]):
-        with pytest.raises(OSError):
-            os.fstat(descriptor)
+    assert outputs == {"result": "verbatim\r\n"}
+    assert captured["ai_socket"] == "http://ai.example"
+    assert captured["system_prompt"] == run_flow_tool._PROGRAM_SYSTEM_PROMPT
+    message = cast(str, captured["message"])
+    prefix = "Execute this exact Program contract:\n"
+    assert message.startswith(prefix)
+    contract = json.loads(message.removeprefix(prefix))
+    assert contract == {
+        "contract_version": 1,
+        "cwd": str(tmp_path),
+        "executor_id": "worker",
+        "input_artifacts": {"request": "go"},
+        "logical_argv": [str(script), "--mode", "two words"],
+        "output_artifact_ids": ["result"],
+        "output_mode": "stdout_verbatim",
+        "repair_authorized": False,
+        "reserved_resources": {},
+        "script_path": str(script),
+        "script_sha256": hashlib.sha256(script.read_bytes()).hexdigest(),
+        "stdin_utf8": invocation.stdin,
+        "step_id": "work_step",
+        "step_instruction": "Run the declared program.",
+        "workspace_root": str(tmp_path),
+    }
+    assert process_calls == [
+        (
+            (sys.executable, str(script), "--mode", "two words"),
+            invocation.stdin,
+        )
+    ]
 
 
 @pytest.mark.anyio
-@pytest.mark.skipif(
-    os.name != "posix" or os.execve not in os.supports_fd,
-    reason="requires POSIX file-descriptor execve",
+async def test_complete_program_step_captures_nonzero_exit_as_error_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "worker.py"
+    script.write_text("raise SystemExit(7)\n", encoding="utf-8")
+
+    async def execute_program_command(
+        invocation: Any,
+        argv: tuple[str, ...],
+        *,
+        stdin: str,
+    ) -> Any:
+        del invocation, stdin
+        return run_flow_tool._ProgramProcessResult(
+            argv=argv,
+            exit_code=7,
+            stdout=b"partial\r\n",
+            stderr=b"boom\r\n",
+        )
+
+    async def drive(tool_registry: ToolRegistry) -> None:
+        execute = tool_registry.get("execute_program")
+        submit = tool_registry.get("submit_program_result")
+        assert execute is not None
+        assert submit is not None
+        await execute(runtime=sys.executable)
+        await submit()
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_execute_program_command", execute_program_command)
+    _install_program_agent_driver(monkeypatch, drive)
+
+    outputs = await run_flow_tool._complete_program_step(
+        _program_invocation(script),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    error = cast(dict[str, Any], outputs["result"])[run_flow_tool._PROGRAM_ERROR_KEY]
+    assert error["phase"] == "execution"
+    assert error["kind"] == "nonzero_exit"
+    assert error["message"] == "Program exited with code 7."
+    assert error["attempts"] == [
+        {
+            "argv": [sys.executable, str(script)],
+            "error": None,
+            "exit_code": 7,
+            "stderr": "boom\r\n",
+            "stderr_base64": None,
+            "stdout": "partial\r\n",
+            "stdout_base64": None,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_program_fidelity_host_builds_argv_and_rejects_inline_or_arbitrary_commands(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "worker.py"
+    other_script = tmp_path / "other.py"
+    script.write_text("print('real')\n", encoding="utf-8")
+    other_script.write_text("print('fake')\n", encoding="utf-8")
+    process_called = False
+
+    async def execute_program_command(*args: object, **kwargs: object) -> Any:
+        nonlocal process_called
+        del args, kwargs
+        process_called = True
+        raise AssertionError("unprovenanced command reached the process boundary")
+
+    async def drive(tool_registry: ToolRegistry) -> None:
+        execute_metadata = tool_registry.tools["execute_program"]
+        assert "argv" not in execute_metadata.parameters["properties"]
+        assert "program_args" not in execute_metadata.parameters["properties"]
+        execute = tool_registry.get("execute_program")
+        submit = tool_registry.get("submit_program_result")
+        assert execute is not None
+        assert submit is not None
+        attempt = json.loads(await execute(runtime=f"{sys.executable} -c"))
+        assert "selected runtime" in attempt["error"]
+        attempt = json.loads(await execute(runtime="printf"))
+        assert "general-purpose command" in attempt["error"]
+        await submit()
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_execute_program_command", execute_program_command)
+    _install_program_agent_driver(monkeypatch, drive)
+
+    outputs = await run_flow_tool._complete_program_step(
+        _program_invocation(script),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert not process_called
+    error = cast(dict[str, Any], outputs["result"])[run_flow_tool._PROGRAM_ERROR_KEY]
+    assert error["kind"] == "execution_error"
+    assert len(error["attempts"]) == 2
+    assert str(other_script) not in json.dumps(error)
+
+
+@pytest.mark.anyio
+async def test_program_fidelity_preserves_launched_failure_and_forbids_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "worker.py"
+    script.write_text("raise SystemExit(2)\n", encoding="utf-8")
+    process_calls = 0
+
+    async def execute_program_command(
+        invocation: Any,
+        argv: tuple[str, ...],
+        *,
+        stdin: str,
+    ) -> Any:
+        nonlocal process_calls
+        del invocation, stdin
+        process_calls += 1
+        return run_flow_tool._ProgramProcessResult(
+            argv=argv,
+            exit_code=2,
+            stdout=b"",
+            stderr=b"invalid input\n",
+        )
+
+    async def drive(tool_registry: ToolRegistry) -> None:
+        execute = tool_registry.get("execute_program")
+        submit = tool_registry.get("submit_program_result")
+        assert execute is not None
+        assert submit is not None
+        first = json.loads(await execute(runtime=sys.executable))
+        assert first["exit_code"] == 2
+        second = json.loads(await execute(runtime=sys.executable))
+        assert second["exit_code"] is None
+        assert "only one launched Program attempt" in second["error"]
+        await submit()
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_execute_program_command", execute_program_command)
+    _install_program_agent_driver(monkeypatch, drive)
+
+    outputs = await run_flow_tool._complete_program_step(
+        _program_invocation(script),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert process_calls == 1
+    error = cast(dict[str, Any], outputs["result"])[run_flow_tool._PROGRAM_ERROR_KEY]
+    assert error["kind"] == "execution_error"
+    assert [attempt["exit_code"] for attempt in error["attempts"]] == [2, None]
+    assert error["attempts"][0]["stderr"] == "invalid input\n"
+
+
+@pytest.mark.anyio
+async def test_program_compiled_launch_is_bound_to_source_artifact_and_logical_args(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "worker.c"
+    artifact = tmp_path / "worker-bin"
+    script.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    process_calls: list[tuple[str, ...]] = []
+
+    async def execute_program_command(
+        invocation: Any,
+        argv: tuple[str, ...],
+        *,
+        stdin: str,
+    ) -> Any:
+        del invocation, stdin
+        process_calls.append(argv)
+        if argv[0] == "test-compiler":
+            artifact.write_bytes(b"compiled")
+            return run_flow_tool._ProgramProcessResult(argv=argv, exit_code=0, stdout=b"", stderr=b"")
+        return run_flow_tool._ProgramProcessResult(
+            argv=argv,
+            exit_code=0,
+            stdout=b"compiled result\n",
+            stderr=b"",
+        )
+
+    async def drive(tool_registry: ToolRegistry) -> None:
+        compile_program = tool_registry.get("compile_program")
+        execute = tool_registry.get("execute_program")
+        submit = tool_registry.get("submit_program_result")
+        assert compile_program is not None
+        assert execute is not None
+        assert submit is not None
+        compilation = json.loads(
+            await compile_program(
+                compile_argv=["test-compiler", str(script), "-o", str(artifact)],
+                execute_argv=[str(artifact)],
+                artifact_paths=[str(artifact)],
+            )
+        )
+        assert compilation["registered"] is True
+        await execute(compiled_launch_argv=[str(artifact)])
+        await submit()
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_execute_program_command", execute_program_command)
+    _install_program_agent_driver(monkeypatch, drive)
+
+    outputs = await run_flow_tool._complete_program_step(
+        _program_invocation(script, logical_args=("--mode", "exact")),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert outputs == {"result": "compiled result\n"}
+    assert process_calls == [
+        ("test-compiler", str(script), "-o", str(artifact)),
+        (str(artifact), "--mode", "exact"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_complete_program_step_broadcasts_multi_output_format_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "worker.py"
+    script.write_text("print('not-json')\n", encoding="utf-8")
+
+    async def execute_program_command(
+        invocation: Any,
+        argv: tuple[str, ...],
+        *,
+        stdin: str,
+    ) -> Any:
+        del invocation, stdin
+        return run_flow_tool._ProgramProcessResult(
+            argv=argv,
+            exit_code=0,
+            stdout=b"not-json\r\n",
+            stderr=b"",
+        )
+
+    async def drive(tool_registry: ToolRegistry) -> None:
+        execute = tool_registry.get("execute_program")
+        submit = tool_registry.get("submit_program_result")
+        assert execute is not None
+        assert submit is not None
+        await execute(runtime=sys.executable)
+        await submit()
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_execute_program_command", execute_program_command)
+    _install_program_agent_driver(monkeypatch, drive)
+
+    outputs = await run_flow_tool._complete_program_step(
+        _program_invocation(script, output_ids=("left", "right")),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert set(outputs) == {"left", "right"}
+    assert outputs["left"] == outputs["right"]
+    error = cast(dict[str, Any], outputs["left"])[run_flow_tool._PROGRAM_ERROR_KEY]
+    assert error["phase"] == "output_format"
+    assert error["kind"] == "invalid_output_contract"
+    assert "strict JSON object" in error["message"]
+    assert error["attempts"][0]["stdout"] == "not-json\r\n"
+
+
+@pytest.mark.parametrize(
+    ("instruction", "expected"),
+    [
+        ("Program execution policy: successful completion outranks fidelity.", True),
+        (
+            "Prepare the runtime.\n  Program execution policy: successful completion outranks fidelity.  \nRun it.",
+            True,
+        ),
+        ("program execution policy: successful completion outranks fidelity.", False),
+        ("Program execution policy: successful completion outranks fidelity. Extra", False),
+        ("Prefix Program execution policy: successful completion outranks fidelity.", False),
+    ],
 )
-async def test_program_runner_executes_native_binary_without_procfs(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_program_repair_authorization_requires_exact_standalone_marker(
+    instruction: str,
+    expected: bool,
 ) -> None:
-    native_source = anyio.Path("/bin/cat")
-    if not await native_source.exists():
-        pytest.skip("/bin/cat is unavailable")
-    worker = anyio.Path(tmp_path / "bin" / "worker")
-    await worker.parent.mkdir()
-    await worker.write_bytes(await native_source.read_bytes())
-    await worker.chmod(0o700)
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
-    monkeypatch.setattr(run_flow_tool, "_find_posix_fd_root", lambda: None)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=("./bin/worker",),
-        stdin='{"instruction":"native","inputs":{}}\n',
-        cwd=tmp_path,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
-    )
-
-    assert await run_flow_tool._run_program(invocation) == '{"instruction":"native","inputs":{}}'
+    assert run_flow_tool._program_repair_authorized(instruction) is expected
 
 
-@pytest.mark.skipif(os.name != "posix", reason="requires the POSIX Program runner")
 @pytest.mark.anyio
-async def test_program_runner_rejects_shebang_before_spawn_without_fd_filesystem(
+async def test_program_fidelity_mode_rejects_script_and_stdin_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    worker = tmp_path / "worker"
-    worker.write_text("#!/bin/sh\nprintf escaped\n", encoding="utf-8")
-    worker.chmod(0o700)
-    spawned = False
+    script = tmp_path / "worker.py"
+    script.write_text("print('original')\n", encoding="utf-8")
+    process_called = False
 
-    async def open_process(*args: object, **kwargs: object) -> _FakeProcess:
-        nonlocal spawned
+    async def execute_program_command(*args: object, **kwargs: object) -> Any:
+        nonlocal process_called
         del args, kwargs
-        spawned = True
-        return _FakeProcess()
+        process_called = True
+        raise AssertionError("fidelity violation reached the process boundary")
+
+    async def drive(tool_registry: ToolRegistry) -> None:
+        execute = tool_registry.get("execute_program")
+        submit = tool_registry.get("submit_program_result")
+        assert execute is not None
+        assert submit is not None
+        script.write_text("print('changed')\n", encoding="utf-8")
+        attempt = json.loads(
+            await execute(
+                runtime=sys.executable,
+                stdin_override='{"changed":true}\n',
+            )
+        )
+        assert "fidelity mode" in attempt["error"]
+        await submit()
 
     monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
-    monkeypatch.setattr(run_flow_tool, "_find_posix_fd_root", lambda: None)
-    monkeypatch.setattr(run_flow_tool.anyio, "open_process", open_process)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=("./worker",),
-        stdin="{}\n",
-        cwd=tmp_path,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
+    monkeypatch.setattr(run_flow_tool, "_execute_program_command", execute_program_command)
+    _install_program_agent_driver(monkeypatch, drive)
+
+    outputs = await run_flow_tool._complete_program_step(
+        _program_invocation(script),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
     )
 
-    with pytest.raises(RuntimeError, match="shebang Program execution requires"):
-        await run_flow_tool._run_program(invocation)
+    assert not process_called
+    error = cast(dict[str, Any], outputs["result"])[run_flow_tool._PROGRAM_ERROR_KEY]
+    assert error["kind"] == "execution_error"
+    assert "fidelity mode" in error["message"]
 
-    assert not spawned
 
-
-@pytest.mark.skipif(os.name != "posix", reason="requires the POSIX Program runner")
 @pytest.mark.anyio
-async def test_program_runner_pins_working_directory_before_path_swap(
+async def test_program_exact_repair_marker_allows_reasoned_adaptation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace = tmp_path / "workspace"
-    work = workspace / "work"
-    work.mkdir(parents=True)
-    worker = work / "worker"
-    worker.write_bytes(b"native-placeholder")
-    worker.chmod(0o700)
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    work_inode = work.stat().st_ino
-    process = _FakeProcess(stdout=b"pinned\n")
+    script = tmp_path / "worker.py"
+    script.write_text("print('original')\n", encoding="utf-8")
+    adapted_stdin = '{"adapted":true}\n'
 
-    async def open_process(
-        command: tuple[str, ...],
+    async def execute_program_command(
+        invocation: Any,
+        argv: tuple[str, ...],
         *,
-        stdin: int,
-        stdout: int,
-        stderr: int,
-        cwd: Path | None,
-        creationflags: int,
-        start_new_session: bool,
-        pass_fds: tuple[int, ...],
-    ) -> _FakeProcess:
-        del command, stdin, stdout, stderr, creationflags, start_new_session
-        pinned = workspace / "pinned"
-        work.rename(pinned)
-        work.symlink_to(outside, target_is_directory=True)
-        assert cwd is None
-        assert os.fstat(pass_fds[1]).st_ino == work_inode
-        assert os.fstat(pass_fds[1]).st_ino == pinned.stat().st_ino
-        return process
+        stdin: str,
+    ) -> Any:
+        assert invocation.cwd == tmp_path
+        assert argv == (sys.executable, str(script))
+        assert stdin == adapted_stdin
+        return run_flow_tool._ProgramProcessResult(
+            argv=argv,
+            exit_code=0,
+            stdout=b"adapted result\n",
+            stderr=b"",
+        )
 
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", workspace)
-    monkeypatch.setattr(run_flow_tool.anyio, "open_process", open_process)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=("./worker",),
-        stdin="{}\n",
-        cwd=work,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
-    )
-
-    assert await run_flow_tool._run_program(invocation) == "pinned"
-
-
-@pytest.mark.skipif(os.name != "posix", reason="requires the POSIX Program runner")
-@pytest.mark.anyio
-async def test_program_runner_executes_opened_inode_when_path_is_replaced(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker = tmp_path / "worker"
-    worker.write_text("#!/bin/sh\nprintf safe\n", encoding="utf-8")
-    worker.chmod(0o700)
-    safe_inode = worker.stat().st_ino
-    outside = tmp_path.parent / "outside-worker"
-    outside.write_text("#!/bin/sh\nprintf escaped\n", encoding="utf-8")
-    outside.chmod(0o700)
-    process = _FakeProcess(stdout=b"safe\n")
-
-    async def open_process(
-        command: tuple[str, ...],
-        *,
-        stdin: int,
-        stdout: int,
-        stderr: int,
-        cwd: Path | None,
-        creationflags: int,
-        start_new_session: bool,
-        pass_fds: tuple[int, ...],
-    ) -> _FakeProcess:
-        del stdin, stdout, stderr, cwd, creationflags, start_new_session
-        worker.unlink()
-        worker.symlink_to(outside)
-        assert os.fstat(pass_fds[0]).st_ino == safe_inode
-        assert command[4] == str(pass_fds[0])
-        assert command[6] == f"/proc/self/fd/{pass_fds[0]}"
-        return process
+    async def drive(tool_registry: ToolRegistry) -> None:
+        execute = tool_registry.get("execute_program")
+        submit = tool_registry.get("submit_program_result")
+        assert execute is not None
+        assert submit is not None
+        script.write_text("print('adapted')\n", encoding="utf-8")
+        await execute(
+            runtime=sys.executable,
+            stdin_override=adapted_stdin,
+            adaptation_reason="The instruction explicitly prioritizes completion.",
+        )
+        await submit()
 
     monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
-    monkeypatch.setattr(run_flow_tool, "_find_posix_fd_root", lambda: "/proc/self/fd")
-    monkeypatch.setattr(run_flow_tool.anyio, "open_process", open_process)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=("./worker",),
-        stdin="{}\n",
-        cwd=tmp_path,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
+    monkeypatch.setattr(run_flow_tool, "_execute_program_command", execute_program_command)
+    _install_program_agent_driver(monkeypatch, drive)
+    instruction = f"Run the declared program.\n{run_flow_tool._PROGRAM_REPAIR_MARKER}\n"
+
+    outputs = await run_flow_tool._complete_program_step(
+        _program_invocation(script, instruction=instruction),
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
     )
 
-    assert await run_flow_tool._run_program(invocation) == "safe"
-
-
-@pytest.mark.anyio
-async def test_program_runner_preserves_windows_argv_after_pinning_executable(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker = tmp_path / "worker.exe"
-
-    def open_windows_executable(
-        workspace: Path,
-        candidate: Path,
-    ) -> tuple[Path, int]:
-        assert workspace == tmp_path
-        assert candidate == worker
-        return candidate, 123
-
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
-    monkeypatch.setattr(run_flow_tool, "_PROGRAM_PLATFORM", "win32")
-    monkeypatch.setattr(run_flow_tool, "_open_windows_executable", open_windows_executable)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=("./worker.exe", "--mode", "strict"),
-        stdin="{}\n",
-        cwd=tmp_path,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
-    )
-
-    prepared = await run_flow_tool._prepare_program(invocation)
-
-    assert prepared.command == (str(worker), "--mode", "strict")
-    assert prepared.cwd == tmp_path
-    assert prepared.retained_handle == 123
-
-
-@pytest.mark.anyio
-async def test_program_runner_uses_isolated_python_for_windows_script(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    worker = tmp_path / "worker.py"
-
-    def open_windows_executable(
-        workspace: Path,
-        candidate: Path,
-    ) -> tuple[Path, int]:
-        assert workspace == tmp_path
-        assert candidate == worker
-        return candidate, 123
-
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
-    monkeypatch.setattr(run_flow_tool, "_PROGRAM_PLATFORM", "win32")
-    monkeypatch.setattr(run_flow_tool, "_open_windows_executable", open_windows_executable)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=("./worker.py",),
-        stdin="{}\n",
-        cwd=tmp_path,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
-    )
-
-    prepared = await run_flow_tool._prepare_program(invocation)
-
-    assert prepared.command == (sys.executable, "-I", str(worker))
-    assert prepared.cwd == tmp_path
-    assert prepared.retained_handle == 123
-
-
-@pytest.mark.anyio
-async def test_program_runner_keeps_windows_script_pinned_until_exit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    prepared = run_flow_tool._PreparedProgram(
-        command=(sys.executable, "-I", str(tmp_path / "worker.py")),
-        cwd=tmp_path,
-        retained_handle=123,
-    )
-    process = _FakeProcess()
-    closed_handles: list[int | None] = []
-
-    async def prepare_program(invocation: Any) -> Any:
-        del invocation
-        return prepared
-
-    async def open_process(*args: object, **kwargs: object) -> _FakeProcess:
-        del args, kwargs
-        return process
-
-    async def communicate_program(*args: object, **kwargs: object) -> tuple[int, bytes, bytes]:
-        del args, kwargs
-        assert closed_handles == []
-        return 0, b"completed\n", b""
-
-    def close_prepared_program(value: Any) -> None:
-        closed_handles.append(value.retained_handle)
-
-    monkeypatch.setattr(run_flow_tool, "_prepare_program", prepare_program)
-    monkeypatch.setattr(run_flow_tool.anyio, "open_process", open_process)
-    monkeypatch.setattr(run_flow_tool, "_communicate_program", communicate_program)
-    monkeypatch.setattr(run_flow_tool, "_attach_windows_job", lambda process: None)
-    monkeypatch.setattr(run_flow_tool, "_close_prepared_program", close_prepared_program)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=("./worker.py",),
-        stdin="{}\n",
-        cwd=tmp_path,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
-    )
-
-    assert await run_flow_tool._run_program(invocation) == "completed"
-    assert closed_handles == [123]
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize("program_path", ["../outside", "/tmp/outside"])
-async def test_program_runner_rejects_executables_outside_workspace(
-    program_path: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", workspace)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=(program_path,),
-        stdin="{}\n",
-        cwd=workspace,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
-    )
-
-    with pytest.raises(ValueError, match="inside the workspace"):
-        await run_flow_tool._run_program(invocation)
-
-
-@pytest.mark.skipif(os.name != "posix", reason="requires POSIX symbolic links")
-@pytest.mark.anyio
-async def test_program_runner_rejects_symlink_escape(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "outside"
-    outside.write_text("#!/bin/sh\n", encoding="utf-8")
-    (workspace / "worker").symlink_to(outside)
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", workspace)
-    invocation = run_flow_tool.ProgramInvocation(
-        name="worker",
-        argv=("./worker",),
-        stdin="{}\n",
-        cwd=workspace,
-        binding_name="work_step",
-        dispatch=cast(Any, None),
-    )
-
-    with pytest.raises(ValueError, match="inside the workspace"):
-        await run_flow_tool._run_program(invocation)
+    assert outputs == {"result": "adapted result\n"}
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("configured", ["", "0", "-1", "+1", "1.5", " 1"])
-async def test_program_runner_rejects_invalid_output_limit_environment(
+async def test_execute_program_command_rejects_invalid_output_limit_environment(
     configured: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -689,7 +924,11 @@ async def test_program_runner_rejects_invalid_output_limit_environment(
     )
 
     with pytest.raises(ValueError, match="PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES must be a positive integer"):
-        await run_flow_tool._run_program(invocation)
+        await run_flow_tool._execute_program_command(
+            invocation,
+            (sys.executable, "worker.py"),
+            stdin=invocation.stdin,
+        )
 
     assert not spawned
 
@@ -702,15 +941,12 @@ async def test_program_runner_rejects_invalid_output_limit_environment(
         ("stderr", "PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES"),
     ],
 )
-async def test_program_runner_terminates_tree_when_output_exceeds_limit(
+async def test_execute_program_command_terminates_tree_when_output_exceeds_limit(
     stream_name: str,
     limit_environment_variable: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    worker = tmp_path / "worker"
-    worker.write_bytes(b"native-placeholder")
-    worker.chmod(0o700)
     process = _FakeProcess(
         stdout=b"12345" if stream_name == "stdout" else b"",
         stderr=b"12345" if stream_name == "stderr" else b"",
@@ -746,30 +982,33 @@ async def test_program_runner_terminates_tree_when_output_exceeds_limit(
         dispatch=cast(Any, None),
     )
 
-    with pytest.raises(RuntimeError, match=rf"{stream_name} exceeded the 4-byte limit"):
-        await run_flow_tool._run_program(invocation)
+    result = await run_flow_tool._execute_program_command(
+        invocation,
+        (sys.executable, "worker.py"),
+        stdin=invocation.stdin,
+    )
 
     assert tree_terminations >= 1
     assert process.killed
+    assert result.error == (
+        f"Program 'worker' {stream_name} exceeded the 4-byte limit; the subprocess tree was terminated"
+    )
+    assert result.stdout == (b"1234" if stream_name == "stdout" else b"")
+    assert result.stderr == (b"1234" if stream_name == "stderr" else b"")
 
 
 @pytest.mark.anyio
-async def test_program_runner_obeys_external_cancellation_and_cleans_up(
+async def test_execute_program_command_obeys_external_cancellation_and_cleans_up(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    worker = tmp_path / "worker"
-    worker.write_bytes(b"native-placeholder")
-    worker.chmod(0o700)
     process = _BlockingFakeProcess()
-    executable_fds: tuple[int, ...] = ()
     spawn_returned = False
     spawn_started = anyio.Event()
 
     async def open_process(*args: object, **kwargs: object) -> _BlockingFakeProcess:
-        nonlocal executable_fds, spawn_returned
-        del args
-        executable_fds = cast(tuple[int, ...], kwargs["pass_fds"])
+        nonlocal spawn_returned
+        del args, kwargs
         spawn_started.set()
         await anyio.sleep(0.1)
         spawn_returned = True
@@ -794,33 +1033,28 @@ async def test_program_runner_obeys_external_cancellation_and_cleans_up(
     with anyio.CancelScope() as cancel_scope:
         async with anyio.create_task_group() as task_group:
             task_group.start_soon(cancel_during_spawn, cancel_scope)
-            await run_flow_tool._run_program(invocation)
+            await run_flow_tool._execute_program_command(
+                invocation,
+                (sys.executable, "worker.py"),
+                stdin=invocation.stdin,
+            )
 
     assert cancel_scope.cancel_called
     assert spawn_returned
     assert process.killed
     assert process.closed
-    for descriptor in executable_fds:
-        with pytest.raises(OSError):
-            os.fstat(descriptor)
 
 
 @pytest.mark.anyio
-async def test_program_runner_cleans_up_when_windows_job_attachment_fails(
+async def test_execute_program_command_cleans_up_when_windows_job_attachment_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    worker = tmp_path / "worker"
-    worker.write_bytes(b"native-placeholder")
-    worker.chmod(0o700)
     process = _BlockingFakeProcess()
-    executable_fds: tuple[int, ...] = ()
     tree_terminations = 0
 
     async def open_process(*args: object, **kwargs: object) -> _BlockingFakeProcess:
-        nonlocal executable_fds
-        del args
-        executable_fds = cast(tuple[int, ...], kwargs["pass_fds"])
+        del args, kwargs
         return process
 
     def attach_windows_job(target: _BlockingFakeProcess) -> None:
@@ -852,14 +1086,15 @@ async def test_program_runner_cleans_up_when_windows_job_attachment_fails(
     )
 
     with pytest.raises(RuntimeError, match="job attachment failed"):
-        await run_flow_tool._run_program(invocation)
+        await run_flow_tool._execute_program_command(
+            invocation,
+            (sys.executable, "worker.py"),
+            stdin=invocation.stdin,
+        )
 
     assert tree_terminations == 1
     assert process.killed
     assert process.closed
-    for descriptor in executable_fds:
-        with pytest.raises(OSError):
-            os.fstat(descriptor)
 
 
 @pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
@@ -1164,15 +1399,20 @@ async def test_run_flow_does_not_delegate_unreadable_non_agent_instruction_file(
     await flow_path.write_text(source, encoding="utf-8")
     dispatched = False
 
-    async def execute_program(invocation: Any) -> str:
+    async def complete_program_step(
+        invocation: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object]:
         nonlocal dispatched
-        del invocation
+        del invocation, ai_socket, tool_registry
         dispatched = True
-        return ""
+        return {}
 
     monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
     monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
-    monkeypatch.setattr(run_flow_tool, "_run_program", execute_program)
+    monkeypatch.setattr(run_flow_tool, "_complete_program_step", complete_program_step)
 
     with pytest.raises(ValueError, match="instruction path does not name a file"):
         await run_flow_tool.run_flow(
@@ -1184,7 +1424,7 @@ async def test_run_flow_does_not_delegate_unreadable_non_agent_instruction_file(
 
 
 @pytest.mark.anyio
-async def test_run_flow_executes_program_without_creating_agent_session(
+async def test_run_flow_routes_program_through_specialized_program_step(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1202,21 +1442,22 @@ async def test_run_flow_executes_program_without_creating_agent_session(
     instruction_path = flow_path.parent / "instructions" / "program.md"
     await instruction_path.parent.mkdir()
     await instruction_path.write_text(instruction, encoding="utf-8")
-    created = False
-    loaded_tools = False
+    loaded_tools = 0
     calls: list[dict[str, object]] = []
-
-    async def create_step_agent(ai_socket: str, tool_registry: ToolRegistry) -> None:
-        nonlocal created
-        del ai_socket, tool_registry
-        created = True
 
     async def load_step_tools() -> ToolRegistry:
         nonlocal loaded_tools
-        loaded_tools = True
+        loaded_tools += 1
         return ToolRegistry()
 
-    async def execute_program(invocation: Any) -> str:
+    async def complete_program_step(
+        invocation: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object]:
+        assert ai_socket == "http://ai.example"
+        assert isinstance(tool_registry, ToolRegistry)
         calls.append(
             {
                 "name": invocation.name,
@@ -1224,16 +1465,19 @@ async def test_run_flow_executes_program_without_creating_agent_session(
                 "stdin": invocation.stdin,
                 "cwd": invocation.cwd,
                 "binding_name": invocation.binding_name,
+                "instruction": invocation.instruction,
+                "inputs": invocation.inputs,
+                "output_ids": invocation.output_ids,
             }
         )
-        return "BEFORE" if invocation.binding_name == "before_step" else "AFTER"
+        value = "BEFORE" if invocation.binding_name == "before_step" else "AFTER"
+        return {invocation.output_ids[0]: value}
 
     monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
     monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
-    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
     monkeypatch.setattr(run_flow_tool, "_load_step_tools", load_step_tools)
     monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
-    monkeypatch.setattr(run_flow_tool, "_run_program", execute_program)
+    monkeypatch.setattr(run_flow_tool, "_complete_program_step", complete_program_step)
 
     result = await run_flow_tool.run_flow(
         "flows/program.workflow",
@@ -1245,8 +1489,7 @@ async def test_run_flow_executes_program_without_creating_agent_session(
         "before_result": "BEFORE",
         "selected_result": "BEFORE",
     }
-    assert not created
-    assert not loaded_tools
+    assert loaded_tools == 1
     assert {call["binding_name"] for call in calls} == {
         "after_step",
         "before_step",
@@ -1254,6 +1497,12 @@ async def test_run_flow_executes_program_without_creating_agent_session(
     assert all(call["name"] == "worker" for call in calls)
     assert all(call["argv"] == ("./bin/worker",) for call in calls)
     assert all(call["cwd"] == tmp_path for call in calls)
+    assert all(call["instruction"] == instruction for call in calls)
+    assert all(call["inputs"] == {"request": "go"} for call in calls)
+    assert {call["output_ids"] for call in calls} == {
+        ("after_result",),
+        ("before_result",),
+    }
     assert {json.loads(cast(str, call["stdin"]))["instruction"] for call in calls} == {
         instruction,
     }

@@ -9,6 +9,11 @@ import pytest
 run_workflow = cast(Any, importlib.import_module("fusion_flow.workflow_runner"))
 
 
+class _StringableNonJson:
+    def __str__(self) -> str:
+        return "must-not-be-stringified"
+
+
 def test_runner_catalog_includes_typed_depends_on() -> None:
     context = run_workflow._default_parse_context()
 
@@ -304,28 +309,22 @@ async def test_instruction_files_are_materialized_once_before_dispatch() -> None
 async def test_program_path_is_executed_with_instruction_and_inputs(
     tmp_path: Any,
 ) -> None:
-    calls: list[dict[str, object]] = []
+    calls: list[Any] = []
     path_references: list[str] = []
+    instruction = "Run the configured worker on the supplied request and return its result."
+    inputs = {"request": {"topic": "structured concurrency"}}
 
     async def resolve_path(reference: str) -> str:
         path_references.append(reference)
         return "./bin/worker"
 
     async def execute_program(invocation: Any) -> str:
-        calls.append(
-            {
-                "name": invocation.name,
-                "argv": invocation.argv,
-                "stdin": invocation.stdin,
-                "cwd": invocation.cwd,
-                "binding_name": invocation.binding_name,
-            }
-        )
+        calls.append(invocation)
         return "completed"
 
     source = _dispatch_workflow(
         "Program",
-        "Run the configured worker on the supplied request and return its result.",
+        instruction,
         executor_configuration="program_path(worker) == worker_path;",
     ).replace(
         "const result: Artifact;",
@@ -334,7 +333,7 @@ async def test_program_path_is_executed_with_instruction_and_inputs(
 
     result = await run_workflow.execute_workflow(
         source,
-        inputs={"request": {"topic": "structured concurrency"}},
+        inputs=inputs,
         resolve_path=resolve_path,
         work_dir=tmp_path,
         run_program=execute_program,
@@ -342,28 +341,31 @@ async def test_program_path_is_executed_with_instruction_and_inputs(
 
     assert result == {"result": "completed"}
     assert path_references == ["worker_path"]
-    assert calls[0]["name"] == "worker"
-    assert calls[0]["argv"] == ("./bin/worker",)
-    assert calls[0]["cwd"] == tmp_path
-    assert calls[0]["binding_name"] == "dispatch_step"
-    stdin = calls[0]["stdin"]
-    assert isinstance(stdin, str)
-    assert stdin.endswith("\n")
-    assert json.loads(stdin) == {
-        "instruction": "Run the configured worker on the supplied request and return its result.",
-        "inputs": {"request": {"topic": "structured concurrency"}},
-    }
+    assert len(calls) == 1
+    invocation = calls[0]
+    assert invocation.name == "worker"
+    assert invocation.argv == ("./bin/worker",)
+    assert invocation.cwd == tmp_path
+    assert invocation.binding_name == "dispatch_step"
+    assert invocation.instruction == instruction
+    assert invocation.inputs == inputs
+    assert invocation.output_ids == ("result",)
+    assert invocation.stdin == (
+        json.dumps(
+            {
+                "instruction": instruction,
+                "inputs": inputs,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        + "\n"
+    )
 
 
-@pytest.mark.anyio
-async def test_program_multiple_outputs_are_read_from_json_stdout(
-    tmp_path: Any,
-) -> None:
-    async def execute_program(invocation: Any) -> str:
-        del invocation
-        return '{"result": "first", "extra": {"rank": 2}}'
-
-    source = (
+def _program_workflow_with_two_outputs() -> str:
+    return (
         _dispatch_workflow(
             "Program",
             "produce_two",
@@ -383,8 +385,113 @@ async def test_program_multiple_outputs_are_read_from_json_stdout(
         )
     )
 
+
+@pytest.mark.anyio
+async def test_program_runner_mapping_uses_exact_output_ids(
+    tmp_path: Any,
+) -> None:
+    output_ids: list[tuple[str, ...]] = []
+
+    async def execute_program(invocation: Any) -> dict[str, object]:
+        output_ids.append(invocation.output_ids)
+        return {
+            "result": "first",
+            "extra": {"rank": 2},
+        }
+
     result = await run_workflow.execute_workflow(
-        source,
+        _program_workflow_with_two_outputs(),
+        request="Do the work.",
+        work_dir=tmp_path,
+        run_program=execute_program,
+    )
+
+    assert output_ids == [("extra", "result")]
+    assert result == {
+        "extra": {"rank": 2},
+        "result": "first",
+    }
+
+
+@pytest.mark.parametrize(
+    "program_result",
+    (
+        pytest.param(
+            {"result": "first"},
+            id="missing-key",
+        ),
+        pytest.param(
+            {
+                "extra": {"rank": 2},
+                "result": "first",
+                "surplus": True,
+            },
+            id="extra-key",
+        ),
+    ),
+)
+@pytest.mark.anyio
+async def test_program_runner_mapping_rejects_non_exact_output_ids(
+    tmp_path: Any,
+    program_result: dict[str, object],
+) -> None:
+    async def execute_program(invocation: Any) -> dict[str, object]:
+        assert invocation.output_ids == ("extra", "result")
+        return program_result
+
+    with pytest.RaisesGroup(pytest.RaisesExc(ValueError, match="must match exactly")):
+        await run_workflow.execute_workflow(
+            _program_workflow_with_two_outputs(),
+            request="Do the work.",
+            work_dir=tmp_path,
+            run_program=execute_program,
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_input",
+    (
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="infinity"),
+        pytest.param(_StringableNonJson(), id="stringable-non-json"),
+    ),
+)
+@pytest.mark.anyio
+async def test_program_inputs_must_be_strict_finite_json(
+    tmp_path: Any,
+    invalid_input: object,
+) -> None:
+    async def execute_program(invocation: Any) -> str:
+        pytest.fail(f"program called with {invocation!r}")
+
+    with pytest.RaisesGroup(
+        pytest.RaisesExc(
+            ValueError,
+            match=r"Program step 'dispatch_step' inputs must be finite JSON values",
+        )
+    ):
+        await run_workflow.execute_workflow(
+            _dispatch_workflow(
+                "Program",
+                "do_work",
+                executor_configuration='program_path(worker) == "./bin/worker";',
+            ),
+            inputs={"request": {"value": invalid_input}},
+            work_dir=tmp_path,
+            run_program=execute_program,
+        )
+
+
+@pytest.mark.anyio
+async def test_program_multiple_outputs_are_read_from_json_stdout(
+    tmp_path: Any,
+) -> None:
+    async def execute_program(invocation: Any) -> str:
+        del invocation
+        return '{"result": "first", "extra": {"rank": 2}}'
+
+    result = await run_workflow.execute_workflow(
+        _program_workflow_with_two_outputs(),
         request="Do the work.",
         work_dir=tmp_path,
         run_program=execute_program,
@@ -416,29 +523,9 @@ async def test_program_multiple_outputs_reject_non_finite_json(
         del invocation
         return f'{{"result": {invalid_value}, "extra": 1}}'
 
-    source = (
-        _dispatch_workflow(
-            "Program",
-            "produce_two",
-            executor_configuration='program_path(worker) == "./bin/worker";',
-        )
-        .replace(
-            "const result: Artifact;",
-            "const result: Artifact;\nconst extra: Artifact;",
-        )
-        .replace(
-            "output_workflow(dispatch) == [result];",
-            "output_workflow(dispatch) == [result, extra];",
-        )
-        .replace(
-            "produces(dispatch_step) == [result];",
-            "produces(dispatch_step) == [result, extra];",
-        )
-    )
-
     with pytest.RaisesGroup(pytest.RaisesExc(ValueError, match="strict JSON object")):
         await run_workflow.execute_workflow(
-            source,
+            _program_workflow_with_two_outputs(),
             request="Do the work.",
             work_dir=tmp_path,
             run_program=execute_program,

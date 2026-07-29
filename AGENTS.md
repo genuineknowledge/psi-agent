@@ -111,6 +111,33 @@ TypeScript 对同一份省略字段的配置按调用位置解析：普通 `sess
 原文。截断、达到 tool round 上限等非正常结束也会直接失败，不进入原文 fallback。
 所有路径都不猜字段、不填默认值，也不发布部分结果。
 
+**为什么 G4 Program Step 改由特化 Agent 执行，而不再要求 `program_path` 可执行？**
+`program_path` 现在标识 workspace 内的普通脚本或源码文件，不是 shell command；
+它只需解析为 workspace 内的 regular file，无需 shebang、`chmod` 或 POSIX executable
+bit。每个 Program Step 建立独立的特化 Session，可用受限的 workspace
+inspection 与 `bash` / `powershell` 工具准备或安装多语言 runtime、dependency、
+compiler 和 toolchain。fidelity 模式的解释型执行不接受 Agent 自选的完整 argv：
+Agent 只选择 interpreter executable，host 固定构造
+`[interpreter, declared_script, *logical_argv[1:]]`，不允许插入 flag、别的 script
+或额外参数。编译型执行必须先经过结构化 `compile_program`，把 compiler argv、
+声明 source hash、产物 hash 与精确 launch argv 绑定；`execute_program` 只启动
+该已注册且重新验 hash 的 argv。结构化工具分别捕获 stdout/stderr bytes、exit
+code 和 launch error，并保留既有的 AnyIO 进程树清理及输出上限。环境 shell
+不能冒充编译注册或最终 Program 执行。
+
+Program Agent 默认是 fidelity mode：真实程序启动前可以修复并重试缺失环境或
+toolchain，但不能改脚本、改 consumed input Artifact、改 stdin 或重解释输出。
+一旦真实程序成功启动，就禁止第二次执行；无论它随后非零退出、报告
+invalid-input/domain error，还是产生不合约输出，都必须保留并提交第一次 attempt
+的原始错误。只有解析后的 Step instruction 含精确独立行
+`Program execution policy: successful completion outranks fidelity.` 时，
+`repair_authorized` 才为真；任何改写脚本或 stdin 的授权适配还必须给出具体
+`adaptation_reason`，input Artifact 值始终不可变。`submit_program_result` 不接受
+模型自填 Artifact，而是确定性提交该权威结构化 attempt：非零退出、invalid
+UTF-8、启动/格式失败等会把含 `phase/kind/message/attempts` 的
+`$fusion_flow/program_error` 值复制到每个声明 output；零 output 失败因无 Artifact
+承载诊断而直接抛错。
+
 **为什么不能创建 `run_id="last"`？**
 `resume_from_run_id="last"` 与 TypeScript 的 `--resume=last` 一样是“选择字典序最新目录”的哨兵。为避免一个真实 run 永远无法按同名恢复，Python 明确保留这个名称并在创建目录前拒绝。
 
