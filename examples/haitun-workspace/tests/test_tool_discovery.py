@@ -137,6 +137,17 @@ async def test_work_assignment_skill_documents_recipient_plan_flow():
     assert "不要调用 `closed_without_plan`" in source
 
 
+async def test_work_assignment_skill_documents_scenario_templates():
+    skill_path = WORKSPACE_ROOT / "skills" / "work-assignment-delegation" / "SKILL.md"
+    source = await anyio.Path(str(skill_path)).read_text(encoding="utf-8")
+    assert "场景模板" in source
+    assert "通用工作安排" in source
+    assert "开发任务" in source
+    assert "交接或同步" in source
+    assert "只改变表达和重点" in source
+    assert "不得改变已确认事实" in source
+
+
 async def test_index_does_not_execute_tool_modules(monkeypatch):
     # Indexing must be pure AST parsing: importing a tool module could trigger
     # side effects (e.g. connecting to an MCP server). Guard by making import
