@@ -64,7 +64,8 @@ jobs:
       - name: Build workspace overlay
         run: |
           mkdir -p dist
-          archive="dist/coscientist-ows-${GITHUB_SHA}.tar.gz"
+          archive_name="coscientist-ows-${GITHUB_SHA}.tar.gz"
+          archive="dist/${archive_name}"
           tar -C examples/haitun-workspace -czf "$archive" \
             flows/workflows/coscientist-ows \
             skills/coscientist-ows-entry \
@@ -75,7 +76,10 @@ jobs:
             skills/source-liquid-sop-designer \
             skills/stage08-catalytic-performance-prover \
             skills/stage08-synthesis-safety-feasibility-judge
-          sha256sum "$archive" > "$archive.sha256"
+          (
+            cd dist
+            sha256sum "$archive_name" > "$archive_name.sha256"
+          )
       - uses: actions/upload-artifact@v7
         with:
           name: coscientist-ows-${{ github.sha }}
