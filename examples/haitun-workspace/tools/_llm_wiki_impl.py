@@ -132,7 +132,7 @@ async def _iter_pages(workspace: anyio.Path) -> list[tuple[str, dict[str, Any], 
         return []
     pages: list[tuple[str, dict[str, Any], str]] = []
     async for entry in root.glob("*.md"):
-        # 跳过 CHANGELOG.md (特殊页面, 不作为知识内容)
+        # CHANGELOG.md is operational metadata, not knowledge content.
         if entry.name == "CHANGELOG.md":
             continue
         page = await _read_page(entry)
@@ -172,13 +172,13 @@ async def _append_changelog(workspace: anyio.Path, slug: str, title: str, create
     changelog_path = wiki_dir(workspace) / "CHANGELOG.md"
     timestamp = _iso_now()
     action = "Created" if created else "Updated"
-    # 截断过长的链接列表用于日志
+    # Keep a changelog line readable even when a page has many links.
     links_str = ", ".join(links[:5])
     if len(links) > 5:
         links_str += f" 等{len(links)}个"
     entry = f"- {timestamp} | **{action}** [{title}]({slug}) | 链接: {links_str}\n"
 
-    # 原子写入: 如果已存在则追加, 否则新建
+    # Atomically rewrite the accumulated changelog, creating it on first write.
     if await changelog_path.exists():
         existing = await changelog_path.read_text(encoding="utf-8")
         await _atomic_write(changelog_path, existing + entry)
@@ -238,7 +238,7 @@ async def wiki_write_impl(
     except OSError as exc:
         return _error(f"Failed to write page: {exc}", slug=slug)
 
-    # 变更日志 (新增)
+    # Keep operational history separate from knowledge pages.
     is_created = existing is None
     await _append_changelog(workspace, slug, meta["title"], is_created, links)
 
@@ -287,7 +287,7 @@ async def wiki_list_impl(*, tag: str = "", workspace_raw: str = "") -> dict[str,
     tag_filter = tag.strip().lower()
     pages = await _iter_pages(workspace)
 
-    # 收集所有 slug 用于断链检测
+    # Collect all slugs for broken-link detection.
     all_slugs = {slug for slug, _, _ in pages}
     all_broken: set[str] = set()
     out: list[dict[str, Any]] = []
@@ -303,10 +303,10 @@ async def wiki_list_impl(*, tag: str = "", workspace_raw: str = "") -> dict[str,
         summary["broken_preview"] = broken[:3]
         out.append(summary)
 
-    # 按断链数降序排列, 方便用户优先处理断链多的页面
+    # Put pages with the most unresolved links first.
     out.sort(key=lambda p: (-p["broken_count"], p["slug"]))
 
-    # 生成 wanted 列表 (按被引用次数排序)
+    # Surface missing targets as candidates for the next page.
     wanted_list = sorted(all_broken)
 
     page_titles = [f"「{p['title']}」" for p in out]
@@ -375,7 +375,7 @@ async def wiki_search_impl(
     matches.sort(key=lambda m: (-m["score"], m["slug"]))
     matched = matches[:limit]
 
-    # 无精确匹配 -> 模糊建议
+    # No exact match: offer fuzzy title suggestions.
     if not matched:
         suggestions_raw = difflib.get_close_matches(query, all_titles, n=3, cutoff=0.6)
         suggestions = []
@@ -400,7 +400,7 @@ async def wiki_search_impl(
             "message": msg,
         }
 
-    # 有结果 -> 生成友好摘要
+    # Include a short summary when there are matches.
     top_titles = [m["title"] for m in matched[:3]]
     msg = f"找到 {len(matched)} 个相关页面, 最匹配的是: {', '.join(top_titles)}"
     if len(matched) > 3:
@@ -540,7 +540,7 @@ async def wiki_related_impl(
     if target not in all_slugs:
         return _error(f"No wiki page named {target!r}.", slug=target)
 
-    # 获取目标页面的出链
+    # Find the target page's outgoing links.
     target_links = []
     for slug, _meta, body in pages:
         if slug == target:
@@ -555,7 +555,7 @@ async def wiki_related_impl(
             "message": f"页面「{target}」没有出链, 无法推荐相关页面。",
         }
 
-    # 统计每个页面的共同引用数量
+    # Score pages by the number of shared outgoing links.
     related_scores: list[tuple[str, int, str]] = []  # (slug, score, title)
     for slug, meta, body in pages:
         if slug == target:
