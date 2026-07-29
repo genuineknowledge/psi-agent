@@ -57,7 +57,7 @@ class CompletionContext:
 
 @dataclass(frozen=True, slots=True)
 class ProgramInvocation:
-    """Exact subprocess contract passed to an injected Program runner."""
+    """Exact script and artifact contract passed to an injected Program runner."""
 
     name: str
     argv: tuple[str, ...]
@@ -65,6 +65,9 @@ class ProgramInvocation:
     cwd: str | PathLike[str] | None
     binding_name: str
     dispatch: DispatchContext
+    instruction: str = ""
+    inputs: Mapping[str, object] = field(default_factory=dict)
+    output_ids: tuple[str, ...] = ()
 
 
 type ContextualCompletion = Callable[
@@ -79,7 +82,7 @@ type ContextualHumanRequester = Callable[
     [str, CompletionContext],
     Awaitable[object],
 ]
-type ProgramRunner = Callable[[ProgramInvocation], Awaitable[str]]
+type ProgramRunner = Callable[[ProgramInvocation], Awaitable[object]]
 
 
 _CONCEPT_NAMES = (
@@ -505,18 +508,21 @@ def _build_dispatch(
             )
 
         if executor_kind == "Program":
-            payload = json.dumps(
-                {
-                    "instruction": instruction,
-                    "inputs": dict(inputs),
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                default=str,
-            )
+            try:
+                payload = json.dumps(
+                    {
+                        "instruction": instruction,
+                        "inputs": dict(inputs),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    allow_nan=False,
+                )
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Program step {step.step_id!r} inputs must be finite JSON values") from error
             if run_program is None:
                 raise AssertionError("Program runner preflight did not select a runner")
-            stdout = await run_program(
+            program_result = await run_program(
                 ProgramInvocation(
                     name=step.executor_id,
                     argv=(program_paths[step.executor_id],),
@@ -524,14 +530,22 @@ def _build_dispatch(
                     cwd=work_dir,
                     binding_name=step.step_id,
                     dispatch=dispatch_context,
+                    instruction=instruction,
+                    inputs=dict(inputs),
+                    output_ids=output_ids,
                 )
             )
-            if not isinstance(stdout, str):
-                raise TypeError(f"Program runner for step {step.step_id!r} must return stdout as str")
-            return _normalize_program_stdout(
+            if isinstance(program_result, str):
+                return _normalize_program_stdout(
+                    step.step_id,
+                    output_ids,
+                    program_result,
+                )
+            return _normalize_outputs(
                 step.step_id,
                 output_ids,
-                stdout,
+                program_result,
+                named_mapping_required=True,
             )
 
         prompt = (

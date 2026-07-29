@@ -53,8 +53,23 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
   `flows/workflows/<slug>/<slug>.workflow`. Reuse one with the exact command
   `/workflow:<slug>`; the agent reads the declaration and collects all declared
   inputs before the initial fresh `run_flow` call.
-- Agent and workspace-local Program Steps execute directly. Human Steps use a dedicated
-  instruction-preparation Agent, persist checkpoints under
+- Agent Steps run in ephemeral Sessions. Workspace-local Program Steps run through a
+  specialized Program Agent that may inspect or install the runtime, dependencies, and
+  toolchain needed for the declared language. In fidelity mode an interpreted launch is fixed
+  by the host as `[interpreter, declared_script, *logical_argv[1:]]`; the Agent cannot supply an
+  arbitrary complete argv. Compiled source must go through structured `compile_program`, which
+  binds the declared source hash, artifact hashes, and exact launch argv before
+  `execute_program` verifies and starts it. The declared script is a workspace-local regular
+  file and does not need an executable bit or `chmod`.
+- Program execution is fidelity-first. Adaptation is enabled only by the exact standalone
+  instruction line `Program execution policy: successful completion outranks fidelity.`.
+  Otherwise the Agent may repair environment/toolchain failures only before the real Program
+  starts, must not patch the script, alter inputs, or reinterpret output, and may not launch a
+  second attempt after the first launch. That first result or error is preserved. Captured
+  execution and output-format failures are returned as `$fusion_flow/program_error` values on
+  every declared output Artifact; a failing zero-output Program aborts because it has no
+  Artifact for the diagnostic.
+- Human Steps use a dedicated instruction-preparation Agent, persist checkpoints under
   `.psi/fusion-flow/runs/`, ask through the existing `clarify` interaction, and
   resume from the next conversation turn.
 - Every run persists each materialized input, intermediate, selected, and final

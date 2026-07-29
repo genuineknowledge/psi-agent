@@ -6,7 +6,7 @@ metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fucla
 
 # FusionFlow G4 Skill
 
-This skill authors, saves, reuses, and runs declarative FusionFlow G4 workflows in psi-agent. The workspace tool compiles G4 source into Core IR, lowers it to a `WorkflowGraph`, generates an execution plan, synchronously executes Agent- and Program-backed Steps, and pauses Human-backed Steps across conversation turns.
+This skill authors, saves, reuses, and runs declarative FusionFlow G4 workflows in psi-agent. The workspace tool compiles G4 source into Core IR, lowers it to a `WorkflowGraph`, generates an execution plan, runs Agent-backed Steps in ephemeral Sessions, runs Program-backed Steps through specialized Program Agents with structured process capture, and pauses Human-backed Steps across conversation turns.
 
 > **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical location: `flows/workflows/<slug>/<slug>.workflow`. The skill ships no runnable example workflows. Every run persists all materialized Artifacts as Markdown under its workflow bundle's `runs/<run-id>/artifacts/` directory. Human Steps additionally persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; non-Human runs remain non-resumable.
 
@@ -153,7 +153,7 @@ Never invent, reuse, or guess a run/request ID. A changed workflow source, stale
 Before executing a FusionFlow G4 workflow:
 
 1. Ensure every Step executor is declared as exactly one of `Agent`, `Human`, or `Program`. Every Program must declare an explicit workspace-relative `program_path`.
-2. Internally estimate cost and latency from the number of Agent Steps. Fold that into one plain-language heads-up line.
+2. Internally estimate cost and latency from the number of Agent and Program Steps. Fold that into one plain-language heads-up line.
 3. Say the heads-up line, then run without adding another approval gate unless the user explicitly said "只生成别跑".
 
 ### Running is the runtime's job, not yours
@@ -415,7 +415,7 @@ Declare every executor as exactly one of `Agent, Executor`, `Human, Executor`, o
 
 A Human Step may request an approval, choose among up to four options, or accept open-ended/structured input. Its dedicated preparation Agent receives the resolved instruction text, consumed Artifacts, and output contract, then emits the arguments for the existing `clarify` tool. It never asks the user itself, and its question text never becomes a produced Artifact. The next user response becomes the Human Step result after `run_flow_resume`. Multiple output Artifacts require a JSON object keyed exactly by those Artifact IDs; a zero-output Human Step acts as a pure gate.
 
-Every Program must declare one explicit workspace-relative executable path:
+Every Program must declare one explicit workspace-relative script or source path:
 
 ```text
 const worker: Program, Executor;
@@ -423,7 +423,7 @@ const worker: Program, Executor;
 program_path(worker) == "./bin/worker";
 ```
 
-The public workspace runner has no catalog path resolver, so do not use a bare Path identity. `program_path` names one executable, not a shell command: do not append arguments, operators, pipes, or environment assignments. The runtime launches without a shell from the workspace directory and sends one newline-terminated JSON object on stdin:
+The public workspace runner has no catalog path resolver, so do not use a bare Path identity. `program_path` names one workspace-local regular file, not a shell command: do not append arguments, operators, pipes, or environment assignments. It does not need an executable bit, a shebang, or `chmod`. A specialized Program Agent may inspect the workspace, prepare or install the required language runtime, dependencies, compiler, or toolchain, and interpret or compile the declared file. The runtime supplies one newline-terminated JSON object as the authoritative stdin:
 
 ```json
 {
@@ -434,11 +434,19 @@ The public workspace runner has no catalog path resolver, so do not use a bare P
 }
 ```
 
-For one produced Artifact, stdout is that Artifact's string value. For multiple produced Artifacts, stdout must be exactly one strict, finite JSON object keyed by all and only those Artifact IDs; `NaN`, `Infinity`, numeric overflow to infinity, nested non-finite values, and duplicate object keys are rejected. A Program that produces no Artifacts must not write stdout.
+Fidelity-mode interpreted execution does not accept an arbitrary argv from the Program Agent. The Agent selects one interpreter executable, and the host constructs exactly `[interpreter, declared_script, *logical_argv[1:]]`; do not add interpreter flags, inline code, another script, extra arguments, or reorder/drop the declared logical arguments. Compiled languages must use structured `compile_program`, which binds the compiler argv, declared source hash, artifact hashes, and one exact launch argv. `execute_program` may launch that compiled argv only after the host revalidates the registered source and artifacts. Preparation shells must not substitute for either structured operation.
 
-The public adapter pins the executable before launch. On POSIX, every executable and working-directory path component must be non-symlink; a trusted isolated bootstrap `fchdir()`s to the opened directory and executes the opened inode. Native binaries work without procfs. Shebang scripts require `/proc/self/fd` or `/dev/fd`, and their `$0` / `__file__` is the descriptor-backed path rather than the authored `program_path`. On Windows, the adapter retains a non-replaceable handle, validates its final path as workspace-contained, and starts that final path; this Windows branch has not been dynamically verified in this change.
+The structured tools capture the actual argv, stdout and stderr bytes, exit code, and launch error separately. Once the real Program launches in fidelity mode, it is the sole attempt: never call `execute_program` again, even after a nonzero exit, invalid-input/domain error, or invalid output. Preserve that first result or error and let `submit_program_result` commit it deterministically; the model never authors the Artifact values itself. Before launch, the Program Agent may install missing environment or toolchain components and retry preparation failures, but it must not patch/replace the declared script, alter consumed input Artifact values or stdin, or reinterpret output. Only include the following exact standalone line in the resolved `step_instruction` when the user deliberately authorizes successful completion to outrank fidelity:
 
-Programs run in a separate POSIX process group or Windows Job Object. Shielded cleanup terminates members of that boundary on failure, declared Step/workflow timeout, cancellation, output overflow, and after a direct child exits with managed descendants still present. There is no internal 300-second Program timeout. Stdout and stderr are streamed with retained-output defaults of 4 MiB and 1 MiB respectively; set `PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES` or `PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES` to a positive integer to override them. Exceeding either limit terminates the process boundary. This is lifecycle management for trusted workspace Programs, not a host sandbox; on POSIX, code that deliberately creates a new session/process group leaves the managed group.
+```text
+Program execution policy: successful completion outranks fidelity.
+```
+
+No paraphrase enables adaptation. An authorized script or stdin adaptation must state a concrete `adaptation_reason`, and the consumed input Artifact values remain immutable.
+
+For one produced Artifact, valid UTF-8 stdout is that Artifact's exact string value, including trailing newlines. For multiple produced Artifacts, stdout must be exactly one strict, finite JSON object keyed by all and only those Artifact IDs; `NaN`, `Infinity`, numeric overflow to infinity, nested non-finite values, and duplicate object keys are rejected. A Program that produces no Artifacts must not write stdout. Launch errors, nonzero exits, invalid UTF-8, and output-format errors become the same `{"$fusion_flow/program_error": {...}}` value on every declared output Artifact, preserving captured attempts; a failing zero-output Program raises because it has no Artifact for the diagnostic. Never reinterpret an error-valued Artifact as success.
+
+`execute_program` runs without a shell in a separate POSIX process group or Windows Job Object. Shielded cleanup terminates members of that boundary on failure, declared Step/workflow timeout, cancellation, output overflow, and after a direct child exits with managed descendants still present. There is no internal 300-second Program timeout. Stdout and stderr are streamed with retained-output defaults of 4 MiB and 1 MiB respectively; set `PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES` or `PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES` to a positive integer to override them. Exceeding either limit terminates the process boundary. Environment preparation can use shell tools, so this remains a trusted-workspace lifecycle boundary rather than a host sandbox; on POSIX, code that deliberately creates a new session/process group leaves the managed group.
 
 #### Named Artifact selection with `if`
 
@@ -645,4 +653,4 @@ When the user asks what this skill can do ("你能帮我做什么 / 我能用这
 
 ## Security + Approvals
 
-Agent Steps run through ephemeral psi Sessions with a filtered workspace tool snapshot; nested workflow launchers and `clarify` are unavailable to them. Human instruction preparers receive only a workspace-confined, read-only `read` tool, so a referenced file cannot escape the workspace through `..`, an absolute path, or a symbolic link. Review user-supplied G4 source before execution, but do not add an approval gate unless the workflow itself declares a Human Step. Human interaction reuses the parent Session's existing `clarify` flow and never creates a separate approval UI. Refuse remote URLs: `run_flow` accepts workspace-local `.workflow` files only, and Program executables must satisfy the pinned workspace-containment contract above.
+Agent Steps run through ephemeral psi Sessions with a filtered workspace tool snapshot; nested workflow launchers and `clarify` are unavailable to them. Program Steps run through separate specialized Sessions with workspace-inspection/environment-preparation tools plus structured `compile_program` and `execute_program`; their declared regular script/source file and working directory must resolve inside the workspace, but the script needs no executable permission. Fidelity-mode interpreted argv is host-built, compiled provenance is hash-bound, and a launched Program is never retried. Human instruction preparers receive only a workspace-confined, read-only `read` tool, so a referenced file cannot escape the workspace through `..`, an absolute path, or a symbolic link. Review user-supplied G4 source before execution, but do not add an approval gate unless the workflow itself declares a Human Step. Human interaction reuses the parent Session's existing `clarify` flow and never creates a separate approval UI. Refuse remote URLs: `run_flow` accepts workspace-local `.workflow` files only. Treat the Program Agent's shell-enabled environment preparation as trusted workspace execution, not as a host sandbox.
