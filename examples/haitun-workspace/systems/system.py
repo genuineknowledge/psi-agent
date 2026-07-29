@@ -981,8 +981,11 @@ To activate:
 The runtime owns parsing, planning, dependency scheduling, resource leasing, Agent/Program Step
 execution, and checkpointed Human waits. Agent/Program-only workflows complete in the initial
 `run_flow` call; Human workflows may return a wait envelope and continue only through
-`run_flow_resume`. Do not invent polling tokens, background workers, alternate run directories,
-or manual substitutes; the runtime alone owns its ignored `.psi/fusion-flow/runs/` state.
+`run_flow_resume`. Every run atomically persists each materialized input, intermediate,
+selected, and final Artifact as Markdown below the workflow bundle's
+`runs/<run-id>/artifacts/` directory. These user-visible Artifact files are separate from the
+ignored `.psi/fusion-flow/runs/` Human resume state. Do not invent polling tokens, background
+workers, alternate run directories, or manual substitutes; the runtime owns both locations.
 Legacy `.flow.ts` files are not executable by this runtime; if a user explicitly points to one,
 explain that it needs migration instead of silently running or translating it.
 

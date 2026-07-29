@@ -45,11 +45,13 @@ for _import_dir in (_TOOLS_DIR, _SKILL_DIR):
 
 _paths = __import__("_runtime_paths")
 
+from fusion_flow.artifact_store import ArtifactStore  # noqa: E402
 from fusion_flow.job_store import (  # noqa: E402
     HumanRequestSpec,
     HumanWorkflowRun,
     JobStore,
     RunLease,
+    new_opaque_id,
 )
 from fusion_flow.workflow_runner import (  # noqa: E402
     CompiledWorkflow,
@@ -517,6 +519,33 @@ def _checkpoint_human_response(
 
 def _job_store() -> JobStore:
     return JobStore(_workspace_dir() / _JOB_STORE_RELATIVE_PATH)
+
+
+async def _artifact_store(
+    flow_path: str,
+    run_id: str,
+    *,
+    reuse_existing: bool,
+) -> ArtifactStore:
+    workflow_path = await _resolve_flow_path(flow_path)
+    return await ArtifactStore.open(
+        workflow_path.parent,
+        run_id,
+        reuse_existing=reuse_existing,
+    )
+
+
+async def _new_artifact_store(flow_path: str) -> ArtifactStore:
+    for _attempt in range(10):
+        try:
+            return await _artifact_store(
+                flow_path,
+                new_opaque_id(),
+                reuse_existing=False,
+            )
+        except FileExistsError:
+            continue
+    raise RuntimeError("could not allocate a unique FusionFlow Artifact run directory")
 
 
 async def _read_flow_source(flow_path: str) -> str:
@@ -1531,7 +1560,15 @@ async def _execute_persisted_run(
 ) -> str:
     if run.prepared_request is not None:
         raise ValueError("a Human response must be checkpointed before execution resumes")
+    if run.checkpoint is None:
+        raise ValueError(f"FusionFlow run {run.run_id!r} has no execution checkpoint")
     run_state = run
+    artifact_store = await _artifact_store(
+        run.flow_path,
+        run.run_id,
+        reuse_existing=True,
+    )
+    await artifact_store.persist(run.checkpoint.values)
     if instruction_files is None:
         compiled = compile_workflow(source, strict_executors=True)
         instruction_files = _legacy_instruction_identities(compiled)
@@ -1602,6 +1639,7 @@ async def _execute_persisted_run(
 
     async def observe_checkpoint(checkpoint: ExecutionCheckpoint) -> None:
         nonlocal run_state
+        await artifact_store.persist(checkpoint.values)
         updated = replace(
             run_state,
             checkpoint=checkpoint,
@@ -1708,6 +1746,11 @@ async def run_flow(
     resource_capacities = _parse_resource_capacities(resource_capacities_json)
     compiled = compile_workflow(source, strict_executors=True)
     instruction_files = await _materialize_instruction_files(compiled, flow_path)
+    initial_checkpoint = create_execution_checkpoint(
+        generate_plan(compiled.graph),
+        compiled.graph,
+        values=inputs,
+    )
     has_human = any(compiled.executor_kinds[step.executor_id] == "Human" for step in compiled.graph.steps)
     if has_human:
         store = _job_store()
@@ -1717,11 +1760,7 @@ async def run_flow(
             definition_digest=_workflow_definition_digest(source, instruction_files),
             inputs=inputs,
             resource_capacities=resource_capacities,
-            checkpoint=create_execution_checkpoint(
-                generate_plan(compiled.graph),
-                compiled.graph,
-                values=inputs,
-            ),
+            checkpoint=initial_checkpoint,
         )
         async with store.acquire(run.run_id) as lease:
             return await _execute_persisted_run(
@@ -1751,6 +1790,12 @@ async def run_flow(
             tool_registry=await get_step_tools(),
         )
 
+    artifact_store = await _new_artifact_store(flow_path)
+    await artifact_store.persist(initial_checkpoint.values)
+
+    async def observe_checkpoint(checkpoint: ExecutionCheckpoint) -> None:
+        await artifact_store.persist(checkpoint.values)
+
     outputs = await _execute_workflow(
         source,
         inputs=inputs,
@@ -1761,6 +1806,8 @@ async def run_flow(
         resolve_instruction=_cached_instruction_resolver(instruction_files),
         work_dir=_workspace_dir(),
         run_program=_run_program,
+        checkpoint=initial_checkpoint,
+        checkpoint_observer=observe_checkpoint,
     )
     return json.dumps(outputs, ensure_ascii=False, sort_keys=True)
 
@@ -1868,6 +1915,12 @@ async def run_flow_resume(
             prepared_request=None,
             human_responses=responses,
         )
+        artifact_store = await _artifact_store(
+            run.flow_path,
+            run.run_id,
+            reuse_existing=True,
+        )
+        await artifact_store.persist(checkpoint.values)
         with anyio.CancelScope(shield=True):
             await lease.save(resumed)
 

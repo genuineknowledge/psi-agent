@@ -185,15 +185,19 @@ service tools:
   Never call once with the default empty input object merely to discover what
   is missing.
 - Loading or saving never executes a workflow. Each initial `run_flow` call
-  starts a fresh execution with no arbitrary cache/resume protocol. Only a
-  returned active Human request persists a checkpoint and may continue through
+  starts a fresh execution with no arbitrary cache/resume protocol. Every
+  materialized Artifact is atomically persisted as Markdown under the source
+  bundle's `runs/<run-id>/artifacts/` directory, including inputs,
+  intermediates, selections, and final outputs. Only a returned active Human
+  request additionally persists a private checkpoint and may continue through
   `run_flow_resume`.
 - Execution is non-recursive: an Agent Step cannot invoke `run_flow` or start
   another workflow. A Step may write a self-contained child declaration to the
   fixed folder; the parent Session remains the only launcher.
-- The registry stores only the canonical `.workflow` source. It does not copy or
-  rewrite instruction sidecars; `"./..."` references remain workspace-root-relative
-  and must point to stable files.
+- The registry contract reads only the canonical `.workflow` source. Generated
+  `runs/` directories are ignored by the registry and Git. Saving does not copy
+  or rewrite instruction sidecars; `"./..."` references remain
+  workspace-root-relative and must point to stable files.
 - Agent Step `read`/`write`/`edit` calls bind relative paths to the invoking
   psi workspace root, not the launcher process CWD. This keeps instruction
   sidecar reads and child declaration saves inside the selected workspace.

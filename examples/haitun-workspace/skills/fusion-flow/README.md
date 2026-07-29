@@ -9,6 +9,12 @@ conversation turns. The `fusion_flow.execution` compatibility package is
 retained for historical parity tests but is not part of the active workspace
 path.
 
+Every active G4 run also writes each materialized Artifact to the workflow
+bundle's `runs/<run-id>/artifacts/` directory. Text values remain Markdown;
+objects, arrays, numbers, booleans, and null are represented by a fenced
+`json` block. This user-visible history is separate from private Human resume
+state under `.psi/fusion-flow/runs/`.
+
 ## Workspace integration
 
 Reusable declarations use the fixed path
@@ -44,6 +50,7 @@ launcher process CWD.
 - `fusion_flow/compiler.py`: target-neutral Core IR traversal and backend hook boundary.
 - `fusion_flow/graph_compiler.py`: concrete `CoreIRCompiler` backend that builds `psi_agent.workflow_graph` models.
 - `fusion_flow/workflow_runner.py`: fail-closed compile/plan/execute entry point with Agent, Human, Program, and checkpoint injection boundaries.
+- `fusion_flow/artifact_store.py`: atomic, workflow-local Markdown persistence for every materialized G4 Artifact.
 - `fusion_flow/job_store.py`: strict v2 JSON state plus non-blocking, OS-released advisory leases and an in-process guard for G4 runs waiting on Human input.
 - `fusion_flow/planning.py`: before workflow authoring, checks the syntax mappings declared for each planned step against the syntax names actually available. Each planned step maps to one catalog `Step` identity, which authoring expands into a typed constant and its assertions.
 - `fusion_flow/execution/`: inactive Python parity port of legacy `flow.*` primitives; `run_flow` does not import or dispatch through it.

@@ -79,6 +79,12 @@ Session，通过既有 `clarify` 格式化问题并结束当前 turn；下一轮
 也在每个恢复阶段重新计时。该 adapter 属于 workspace，不把 Human 交互或持久化
 塞进 `psi_agent.workflow_execution` 核心。
 
+G4 workspace adapter 还会把每次运行已经物化的输入、中间、选择及最终 Artifact
+逐个原子写入 workflow bundle 的 `runs/<run-id>/artifacts/*.md`。字符串保持原
+Markdown，其他 finite JSON 值用 fenced `json` 表示。该目录是用户可见的运行历史，
+不参与 checkpoint 恢复，也不跟 `.psi/fusion-flow/runs/` 的 Human 私有状态混用；
+纯 Agent/Program 运行仍不可 resume，但其中间 Artifact 不能因此丢失。
+
 **FusionFlow 的跨语言兼容边界是什么？**
 运行结果与核心行为优先兼容，包括同一运行时内的 binding 恢复、配对的 `node_start` / `node_end` progress 事件、分组 token 汇总、程序快照和 `exec()` 截断标记。真实 TypeScript `inputHash` 与 Python `cache_key` 的输入、provider 身份和长度不同，因此两种运行目录不保证直接互相命中缓存；camelCase metadata 别名只保证字段可读。graph、meta 和 trace 使用各自语言的数据结构：Python 命名 trace 是通用 `ExecutionTrace`，不是 TypeScript 的扁平 provider/model/prompt 对象；只有 `progress.jsonl` 保持共享格式。单节点 trace / progress 写入是 best-effort，最终 graph/meta 才是权威产物，不追随 TypeScript 的诊断写失败即中止。`flow.output()` / `ctx.save()` 写入带 metadata 的单赋值 binding，不额外创建 output graph node。
 

@@ -921,6 +921,64 @@ async def test_run_flow_executes_once_with_dependencies_and_resources(
     assert "Reserved resources: {}" in prompts[1]
     assert all(f"Workspace root: {tmp_path}\n" in prompt for prompt in prompts)
     assert len(agents) == 2
+    run_dirs = [entry async for entry in (flows / "runs").iterdir()]
+    assert len(run_dirs) == 1
+    artifacts = run_dirs[0] / "artifacts"
+    assert await (artifacts / "request.md").read_text(encoding="utf-8") == "go"
+    assert await (artifacts / "before_result.md").read_text(encoding="utf-8") == "BEFORE"
+    assert await (artifacts / "after_result.md").read_text(encoding="utf-8") == "AFTER"
+    assert await (artifacts / "selected_result.md").read_text(encoding="utf-8") == "BEFORE"
+
+
+@pytest.mark.anyio
+async def test_run_flow_keeps_materialized_artifacts_when_a_later_step_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flows = anyio.Path(tmp_path / "flows")
+    await flows.mkdir()
+    await (flows / "ordered.workflow").write_text(_ORDERED_RESOURCE_WORKFLOW, encoding="utf-8")
+
+    async def load_step_tools() -> ToolRegistry:
+        return ToolRegistry()
+
+    async def complete_agent_step(
+        prompt: str,
+        context: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object]:
+        del prompt, tool_registry
+        assert ai_socket == "http://ai.example"
+        if context.step_id == "before_step":
+            return {"before_result": "completed-before-failure"}
+        raise RuntimeError("later Agent step failed")
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
+    monkeypatch.setattr(run_flow_tool, "_load_step_tools", load_step_tools)
+    monkeypatch.setattr(run_flow_tool, "_complete_agent_step", complete_agent_step)
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+
+    with pytest.raises(ExceptionGroup) as error:
+        await run_flow_tool.run_flow(
+            "flows/ordered.workflow",
+            '{"request": "go"}',
+            '{"gpu": 1}',
+        )
+
+    assert len(error.value.exceptions) == 1
+    assert isinstance(error.value.exceptions[0], RuntimeError)
+    assert str(error.value.exceptions[0]) == "later Agent step failed"
+
+    run_dirs = [entry async for entry in (flows / "runs").iterdir()]
+    assert len(run_dirs) == 1
+    artifacts = run_dirs[0] / "artifacts"
+    assert await (artifacts / "request.md").read_text(encoding="utf-8") == "go"
+    assert await (artifacts / "before_result.md").read_text(encoding="utf-8") == "completed-before-failure"
+    assert not await (artifacts / "after_result.md").exists()
+    assert not await (artifacts / "selected_result.md").exists()
 
 
 @pytest.mark.anyio
@@ -1295,6 +1353,19 @@ async def test_human_step_waits_via_clarify_and_resumes_from_checkpoint(
         "draft_step",
         "publish_step",
         "review_step",
+    )
+    artifacts = anyio.Path(
+        tmp_path,
+        "flows",
+        "runs",
+        control["run_id"],
+        "artifacts",
+    )
+    assert await (artifacts / "request.md").read_text(encoding="utf-8") == "write a launch plan"
+    assert await (artifacts / "draft.md").read_text(encoding="utf-8") == "proposal-v2"
+    assert await (artifacts / "decision.md").read_text(encoding="utf-8") == human_response
+    assert await (artifacts / "result.md").read_text(encoding="utf-8") == (
+        f'```json\n{{\n  "human_response": {json.dumps(human_response, ensure_ascii=False)}\n}}\n```\n'
     )
 
     assert (

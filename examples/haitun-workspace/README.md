@@ -57,6 +57,10 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
   instruction-preparation Agent, persist checkpoints under
   `.psi/fusion-flow/runs/`, ask through the existing `clarify` interaction, and
   resume from the next conversation turn.
+- Every run persists each materialized input, intermediate, selected, and final
+  Artifact as Markdown under the workflow bundle's
+  `runs/<run-id>/artifacts/` directory. String values remain Markdown; other
+  JSON values use a fenced `json` block.
 - **Serper search** needs psi-agent installed with the `mcp` extra and `uvx` on PATH.
 - **Haibao ChatBI** needs the required operator-provisioned private MCP server and the three
   deployment-managed variables documented in `docs/haibao-integration.md`. The bundled Adapter,

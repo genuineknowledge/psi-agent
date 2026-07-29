@@ -8,7 +8,7 @@ metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fucla
 
 This skill authors, saves, reuses, and runs declarative FusionFlow G4 workflows in psi-agent. The workspace tool compiles G4 source into Core IR, lowers it to a `WorkflowGraph`, generates an execution plan, synchronously executes Agent- and Program-backed Steps, and pauses Human-backed Steps across conversation turns.
 
-> **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical location: `flows/workflows/<slug>/<slug>.workflow`. The skill ships no runnable example workflows. Human Steps persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; other runs remain one-shot.
+> **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical location: `flows/workflows/<slug>/<slug>.workflow`. The skill ships no runnable example workflows. Every run persists all materialized Artifacts as Markdown under its workflow bundle's `runs/<run-id>/artifacts/` directory. Human Steps additionally persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; non-Human runs remain non-resumable.
 
 > **Explicit reuse command.** `/workflow:<slug>` is the one supported shortcut for running a saved workflow. It accepts no suffix or inline parameters. If inputs are needed, collect them through normal conversation. Do not invent `/flow run`, `/flow show`, or `/flow author` commands.
 
@@ -194,7 +194,14 @@ The tool does not expose intermediate progress. Do not invent node status while 
 
 ## Reading a Run
 
-When a call returns output Artifacts, summarize them. When it returns a Human request, ask it through `clarify`; the request text is control state, not an Artifact or completed result.
+When a call returns output Artifacts, summarize them. The runtime has already
+persisted every materialized input, intermediate, selected, and final Artifact
+as one Markdown file under the workflow bundle's
+`runs/<run-id>/artifacts/` directory. String values are written verbatim;
+non-string strict JSON values use a fenced `json` block. These user-visible
+files are separate from the private Human checkpoint. When a call returns a
+Human request, ask it through `clarify`; the request text is control state, not
+an Artifact or completed result.
 
 ## File Locations
 
@@ -206,6 +213,8 @@ Paths are relative to the workspace:
 | `flows/<task-slug>/instructions/*.md` | optional long-form instructions for that one-off source |
 | `flows/workflows/<slug>/<slug>.workflow` | canonical reusable G4 source |
 | `flows/workflows/<slug>/instructions/*.md` | optional long-form instructions for that reusable source |
+| `<workflow-bundle>/runs/<run-id>/artifacts/*.md` | one Markdown file for every materialized Artifact in one run |
+| `.psi/fusion-flow/runs/<run-id>.json` | private resumable state for workflows containing Human Steps |
 
 ## Authoring Mode
 
