@@ -612,6 +612,52 @@ async def test_program_fidelity_host_builds_argv_and_rejects_inline_or_arbitrary
     assert str(other_script) not in json.dumps(error)
 
 
+@pytest.mark.parametrize(
+    "runtime",
+    (
+        "file",
+        "find",
+        "find.exe",
+        "findstr",
+        "findstr.exe",
+        "head",
+        "/usr/bin/head",
+        "more",
+        "more.com",
+        "mv",
+        "rm",
+        "sort",
+        "sort.exe",
+        "tail",
+        "touch",
+        "unlink",
+        "wc",
+        "where",
+        "where.exe",
+        "xargs",
+        "xcopy",
+        "xcopy.exe",
+    ),
+)
+@pytest.mark.anyio
+async def test_program_fidelity_rejects_common_non_interpreter_commands(
+    runtime: str,
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "worker.py"
+    script.write_text("print('real')\n", encoding="utf-8")
+
+    argv, error = await run_flow_tool._build_interpreted_program_argv(
+        runtime,
+        cwd=tmp_path,
+        script=script,
+        logical_args=(),
+    )
+
+    assert argv == ()
+    assert error == "The selected runtime is a general-purpose command, not a language interpreter."
+
+
 @pytest.mark.anyio
 async def test_program_fidelity_preserves_launched_failure_and_forbids_retry(
     tmp_path: Path,
