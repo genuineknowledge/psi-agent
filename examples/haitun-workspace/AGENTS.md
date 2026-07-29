@@ -108,7 +108,7 @@ service tools:
 
 | Tool | Notes |
 |---|---|
-| `profile_update` | Manually update the topic-aware learner profile; successful turns are aggregated automatically by `system_after_turn`. Only per-topic dimensions and statistics are persisted, not raw transcripts. |
+| `profile_update` | Manually update the workspace-local topic-aware learner profile; successful `finish_reason="stop"` turns are aggregated automatically by `system_after_turn`. Only per-topic dimensions and statistics are persisted, not raw transcripts. This profile is keyed by workspace, not by channel user identity. |
 | `bash` | Shell commands (anyio, Windows-aware bash detection). On Windows the installer bundles MSYS2 at `{app}\msys64`, added to PATH by the launcher, so bash works out-of-the-box. **cwd = workspace**. |
 | `powershell` | Windows-native shell. **默认 cwd = workspace**. |
 | `read` / `write` / `edit` | Async file ops；相对路径相对 **workspace**. |

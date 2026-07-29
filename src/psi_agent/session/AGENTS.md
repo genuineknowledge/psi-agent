@@ -69,7 +69,9 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 - Tool / system 从 **agent_path** 加载；**schedule 从 workspace_path 加载**（见上方「调度归属 workspace」）；history 写 **AppData** ``histories/``（第 4C；legacy ``{workspace}/histories/`` 双读）
 - AppData 路径助手在 ``psi_agent._appdata``（与 Gateway 共享；**禁止**经 ContextVar 传递 AppData 根）
 - System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）
-- 后续请求可调用 `system_prompt_rebuild_checker()`（如果定义），返回 True 则重建 system prompt
+- `system_prompt_builder` 和 `system_prompt_rebuild_checker` 兼容旧的零参形式；如定义了位置参数，Session 会传入当前原始 `user_message`。这一显式参数只用于本轮动态 prompt，不会改变写入 history 的 `kind` 标记副本
+- 后续请求可调用 `system_prompt_rebuild_checker()`（如果定义），返回 True 则用同一条当前 `user_message` 重建 system prompt
+- 可选 `system_after_turn(user_message, assistant_message)` 在 `finish_reason="stop"` 的最终 assistant 消息已 commit 后执行。它是可恢复的 workspace hook：普通异常记 WARNING，不回滚已成功交付的回合；取消信号仍向外传播。未定义时使用 no-op 默认值
 - 未整段重建时，提示词一字不改；若 agent 包定义了 `turn_context_builder()`，则每回合把易变块挂到**本回合 user 消息**上（见下方「每回合易变上下文」）
 
 ## Agent Loop 逻辑
@@ -88,7 +90,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
    - tool 执行起止 → 仍写入 **同一** `reasoning` 槽（刻意压缩，便于 Session↔AI OpenAI 形同构），`kind="tool_call"|"tool_result"`；正文可继续带 `[Tool Call:]`/`[Tool Result:]` 过渡标记
    - tool_calls → 累积（按 index 拼接 partial JSON）
     - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 4
-    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry + 若收到 compaction 信号则调用 `_maybe_compact()` → 释放锁
+    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 调用可选 `system_after_turn` + 刷新 schedule registry + 若收到 compaction 信号则调用 `_maybe_compact()` → 释放锁
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
    - 任何未捕获异常 → 回滚到快照 → 向上传播
 6. 最多 `max_tool_rounds` 轮 tool call，达到上限时追加关闭 assistant 消息 + commit

@@ -16,13 +16,14 @@ from _user_profile import get_profile
 async def profile_update(user_msg: str, agent_msg: str) -> str:
     """Update the learner profile with the latest exchange and save it.
 
-    Call this at the very end of each turn, after you have composed your final
-    reply.  Pass the user's exact message and your exact reply so the profile
-    engine can detect depth, goal, and familiarity signals.
+    Normally ``system_after_turn`` records successful turns automatically; use
+    this tool only for manual repair or diagnostics. The current profile engine
+    derives signals from the user message and does not persist either message.
 
     Args:
         user_msg: The user's last message, verbatim.
-        agent_msg: Your last reply, verbatim.
+        agent_msg: Your last reply. Accepted for lifecycle compatibility; the
+            current aggregate engine does not inspect or persist it.
     Returns a JSON object with ``ok`` and the updated ``dimensions``.
     """
     profile = await get_profile()
