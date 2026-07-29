@@ -226,14 +226,14 @@ def test_tool_function_list_unsupported_item_raises() -> None:
 
 
 def test_tool_function_optional_without_default() -> None:
-    """X | None with NO default value should be not-required."""
+    """X | None with no default value remains required."""
 
     async def f(verbose: bool | None) -> str:
         return "ok"
 
     tf = ToolFunction.from_callable(f)
     assert tf.parameters["properties"]["verbose"]["type"] == "boolean"
-    assert "verbose" not in tf.parameters["required"]
+    assert "verbose" in tf.parameters["required"]
 
 
 def test_tool_function_float_parameter() -> None:
@@ -321,9 +321,21 @@ def test_delta_message_tool_calls_only() -> None:
 
 
 def test_delta_message_all_fields() -> None:
-    dm = DeltaMessage(content="hi", role="assistant", reasoning="think", tool_calls=[{"index": 0}])
+    dm = DeltaMessage(
+        content="hi",
+        role="assistant",
+        reasoning="think",
+        kind="thinking",
+        tool_calls=[{"index": 0}],
+    )
     d = dm.to_dict()
-    assert d == {"content": "hi", "role": "assistant", "reasoning": "think", "tool_calls": [{"index": 0}]}
+    assert d == {
+        "content": "hi",
+        "role": "assistant",
+        "reasoning": "think",
+        "kind": "thinking",
+        "tool_calls": [{"index": 0}],
+    }
 
 
 def test_stream_choice_default() -> None:
@@ -440,6 +452,7 @@ def test_agent_chunk_defaults():
     c = AgentChunk()
     assert c.content is None
     assert c.reasoning is None
+    assert c.kind is None
 
 
 def test_agent_chunk_with_content():
@@ -449,29 +462,33 @@ def test_agent_chunk_with_content():
 
 
 def test_agent_chunk_with_reasoning():
-    c = AgentChunk(reasoning="thinking...")
+    c = AgentChunk(reasoning="thinking...", kind="thinking")
     assert c.content is None
     assert c.reasoning == "thinking..."
+    assert c.kind == "thinking"
 
 
 def test_agent_chunk_with_both():
-    c = AgentChunk(content="world", reasoning="thinking...")
+    c = AgentChunk(content="world", reasoning="thinking...", kind="thinking")
     assert c.content == "world"
     assert c.reasoning == "thinking..."
+    assert c.kind == "thinking"
 
 
 def test_ai_delta_defaults():
     d = AiDelta()
     assert d.content is None
     assert d.reasoning is None
+    assert d.kind is None
     assert d.tool_calls is None
     assert d.finish_reason is None
 
 
 def test_ai_delta_full():
-    d = AiDelta(content="hi", reasoning="r", tool_calls=[{}], finish_reason="stop")
+    d = AiDelta(content="hi", reasoning="r", kind="thinking", tool_calls=[{}], finish_reason="stop")
     assert d.content == "hi"
     assert d.reasoning == "r"
+    assert d.kind == "thinking"
     assert d.tool_calls == [{}]
     assert d.finish_reason == "stop"
 

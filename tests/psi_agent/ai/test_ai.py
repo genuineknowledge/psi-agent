@@ -73,3 +73,34 @@ async def test_serve_ai_cleans_up_runner_on_start_failure(monkeypatch: pytest.Mo
             handler=_handler,
         )
     assert cleanup_calls == [True]
+
+
+@pytest.mark.anyio
+async def test_serve_ai_app_accepts_large_bodies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The forwarder app must lift aiohttp's 1 MiB default so big contexts aren't rejected."""
+    captured: dict[str, web.Application] = {}
+
+    class _Site:
+        async def start(self) -> None:
+            pass
+
+    def _capture_site(runner: web.AppRunner, addr: str) -> _Site:
+        captured["app"] = runner.app
+        raise RuntimeError("stop after capture")  # abort before sleep_forever
+
+    monkeypatch.setattr("psi_agent.ai.create_site", _capture_site)
+
+    async def _handler(request: web.Request) -> web.StreamResponse:
+        return web.StreamResponse()
+
+    with pytest.raises(RuntimeError, match="stop after capture"):
+        await serve_ai(
+            socket_path="/tmp/ignored.sock",
+            provider="openai",
+            model="m",
+            api_key="k",
+            base_url="b",
+            handler=_handler,
+        )
+    # 100 MiB, matching the gateway app — well above aiohttp's 1 MiB default.
+    assert captured["app"]._client_max_size == 100 * 1024 * 1024

@@ -21,26 +21,29 @@ async def todo(
 ) -> str:
     """Manage your task list for the current session.
 
-    Use for complex work with **3+ steps** or **multiple sub-tasks**. The agent
-    decides when to create or update the list — users do not need to say
-    "break this down". Pair with ``skills/task-planning/SKILL.md``.
+    **When to use** (authoritative): ``skills/task-planning/SKILL.md``.
+    Create a list only when multi-step work is worth tracking (≈3+ checkable
+    steps, multi-file/multi-deliverable, or a long tool chain). Skip for
+    one-shot Q&A, pure chat, or when the user wants a direct result. Do **not**
+    invent a decorative list for the UI.
 
-    **Read:** call with empty ``todos`` (default).
+    The agent decides — users need not say "break this down".
 
-    **Write:** pass ``todos`` as a JSON array string, e.g.
+    **Read:** empty ``todos`` (default).
+
+    **Write:** ``todos`` as a JSON array string, e.g.
     ``[{"id":"1","content":"…","status":"in_progress"}]``.
+    Each ``content`` must be a **string** (not a list/object).
 
-    - ``merge=false`` (default): replace the entire list with a fresh plan.
-    - ``merge=true``: update existing items by ``id``, append new ones.
+    - ``merge=false`` (default): replace the entire list.
+    - ``merge=true``: update by ``id``, append new ids.
 
-    Each item: ``{id: string, content: string, status}`` where ``status`` is
-    ``pending`` | ``in_progress`` | ``completed`` | ``cancelled``.
+    Status: ``pending`` | ``in_progress`` | ``completed`` | ``cancelled``.
+    Order is priority. Only **one** ``in_progress`` at a time. Mark
+    ``completed`` as soon as a step finishes; on failure ``cancelled`` + add a
+    revised item with ``merge=true``.
 
-    List order is priority. Only **one** item should be ``in_progress`` at a
-    time. Mark items ``completed`` as soon as they finish. If a step fails,
-    mark it ``cancelled`` and add a revised item via ``merge=true``.
-
-    Always returns the full current list and summary counts.
+    Always returns the full list and summary counts.
 
     Args:
         todos: JSON array of task items, or empty to read the current list.

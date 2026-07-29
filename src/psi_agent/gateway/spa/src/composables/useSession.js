@@ -3,7 +3,7 @@ import { useSessionStore } from '../stores/session.js'
 import { useChatStore } from '../stores/chat.js'
 import { useAiStore } from '../stores/ai.js'
 import { useUiStore } from '../stores/ui.js'
-import { api } from '../api.js'
+import { api, fetchDefaults } from '../api.js'
 import { loadHistory, htmlEscape, renderMd, saveActiveState } from '../utils.js'
 import { stripTransferMarkers } from '../sendMarkers.js'
 import { normalizeFailedTurns } from '../messageTurn.js'
@@ -11,6 +11,16 @@ import { normalizeWorkspacePath, resolveSessionWorkspace } from '../sessionList.
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
+}
+
+/** Step 2: resolve Gateway default agent package (empty if unset / unreachable). */
+async function defaultAgentFromGateway() {
+  try {
+    const d = await fetchDefaults()
+    return (d?.agent || '').trim()
+  } catch {
+    return ''
+  }
 }
 
 function snapshotDraftSession() {
@@ -112,13 +122,18 @@ export async function promoteDraftToSession() {
   const draft = session.draftSession
   if (!draft) return session.selectedSessionId
 
-  const aiId = draft.aiId || ai.selectedAiId
-  if (!aiId) throw new Error('请先选择一个大模型代理')
+  const backendType = draft.backendType || 'ai'
+  const backendId = draft.backendId || draft.aiId || ai.selectedAiId
+  if (!backendId) throw new Error('请先选择一个大模型或路由服务')
 
-  const info = await api('POST', '/sessions', {
-    ai_id: aiId,
+  const body = {
+    backend_type: backendType,
+    backend_id: backendId,
     workspace: draft.workspace,
-  })
+  }
+  const agent = await defaultAgentFromGateway()
+  if (agent) body.agent = agent
+  const info = await api('POST', '/sessions', body)
   const sid = info.id
   const draftId = draft.draftId
 
@@ -168,6 +183,10 @@ export async function startDraftChat(workspacePath) {
     return false
   }
   if (!ai.selectedAiId) ai.selectedAiId = ai.ais[0].id
+  if (!session.selectedBackendId) {
+    session.selectedBackendType = 'ai'
+    session.selectedBackendId = ai.selectedAiId
+  }
 
   const path = normalizeWorkspacePath(workspacePath || session.selectedWorkspacePath)
   if (!path) return false
@@ -189,6 +208,8 @@ export async function startDraftChat(workspacePath) {
     draftId,
     workspace: path,
     aiId: ai.selectedAiId,
+    backendType: session.selectedBackendType,
+    backendId: session.selectedBackendId,
   }
   session.sessionMessages[draftId] = []
   session.sessionStreaming[draftId] = false
@@ -330,7 +351,9 @@ export async function selectSession(id) {
 
   const currentSess = session.sessions.find(s => s.id === id)
   if (currentSess) {
-    ai.selectedAiId = currentSess.ai_id
+    session.selectedBackendType = currentSess.backend_type || 'ai'
+    session.selectedBackendId = currentSess.backend_id || currentSess.ai_id
+    if (session.selectedBackendType === 'ai') ai.selectedAiId = session.selectedBackendId
     session.setSelectedWorkspace(resolveSessionWorkspace(currentSess, session.gatewayCwd))
     session.ensureWorkspaceExpanded(session.selectedWorkspacePath)
   }

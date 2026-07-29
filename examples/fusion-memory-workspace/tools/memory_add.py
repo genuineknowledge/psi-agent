@@ -4,67 +4,28 @@ import hashlib
 import json
 import sys
 import types
-from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Protocol
-from typing import cast as _cast
 
 TOOLS_DIR = Path(__file__).resolve().parent
+_mcp_path = TOOLS_DIR / "_fusion_memory_mcp.py"
+_mcp_module_name = f"fusion_memory_tool__fusion_memory_mcp_{hashlib.sha256(str(_mcp_path).encode()).hexdigest()[:12]}"
+_mcp_module = sys.modules.get(_mcp_module_name)
+if _mcp_module is None:
+    _mcp_module = types.ModuleType(_mcp_module_name)
+    _mcp_module.__file__ = str(_mcp_path)
+    sys.modules[_mcp_module_name] = _mcp_module
+    exec(compile(_mcp_path.read_text(encoding="utf-8"), str(_mcp_path), "exec"), _mcp_module.__dict__)
+CLIENT = _mcp_module.__dict__["CLIENT"]
 
 
-class MemoryConfig(Protocol):
-    base_url: str
-    scope: dict[str, Any]
-    timeout_seconds: float
-
-
-PostJson = Callable[[str, str, dict[str, Any], float], Awaitable[dict[str, Any]]]
-FormatErrorResult = Callable[[Exception], str]
-
-
-def _load_sibling_module(name: str) -> dict[str, Any]:
-    path = TOOLS_DIR / f"{name}.py"
-    module_name = f"fusion_memory_tool_{name}_{hashlib.sha256(str(path).encode()).hexdigest()[:12]}"
-    module = types.ModuleType(module_name)
-    module.__file__ = str(path)
-    source = path.read_text(encoding="utf-8")
-    sys.modules[module_name] = module
-    exec(compile(source, str(path), "exec"), module.__dict__)
-    return module.__dict__
-
-
-_client = _load_sibling_module("_fusion_memory_client")
-_config = _load_sibling_module("_fusion_memory_config")
-_format_error_result = _cast(FormatErrorResult, _client["format_error_result"])
-_post_json = _cast(PostJson, _client["post_json"])
-CONFIG = _cast(MemoryConfig, _config["CONFIG"])
-
-
-async def memory_add(content: str, source: str = "haitun-tool") -> str:
-    """Store durable information in Fusion Memory.
-
-    Args:
-        content: The preference, fact, or decision to store.
-        source: Optional source label for metadata.
-
-    Returns:
-        A JSON string describing the result of the add request.
-    """
-    try:
-        data = await _post_json(
-            CONFIG.base_url,
-            "/add",
-            {
-                "input": {"role": "user", "content": content},
-                "scope": CONFIG.scope,
-                "metadata": {
-                    "source": source or "haitun-tool",
-                    "write_mode": "explicit_tool",
-                    "auto_persisted": False,
-                },
-            },
-            CONFIG.timeout_seconds,
-        )
-        return json.dumps({"ok": True, "saved": True, "result": data}, ensure_ascii=False)
-    except Exception as exc:
-        return _format_error_result(exc)
+async def memory_add(content: str, source: str = "fusion-memory-tool") -> str:
+    """Store durable information in Fusion Memory."""
+    result = await CLIENT.call_tool(
+        "memory_add",
+        {
+            "content": content,
+            "source": source or "fusion-memory-tool",
+        },
+        retryable=False,
+    )
+    return json.dumps(result, ensure_ascii=False)

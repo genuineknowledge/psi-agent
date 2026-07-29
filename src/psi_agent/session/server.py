@@ -15,17 +15,20 @@ if TYPE_CHECKING:
 
 
 async def serve_session(*, channel_socket: str, agent: SessionAgent) -> None:
-    """Create an aiohttp server that routes ``POST /chat/completions`` to
-    ``agent.handle_request``.
+    """Create an aiohttp server that routes channel traffic to the agent.
 
-    Startup failures are caught, the runner is cleaned up under a shielded
-    cancel scope, then the exception is re-raised.  Normal shutdown in
-    the ``finally`` block is likewise shielded.
+    - ``POST /chat/completions`` → ``agent.handle_request`` (chat SSE)
+    - ``POST /events`` → ``agent.handle_event`` (normalized event envelopes)
     """
     logger.info(f"Starting session server on {channel_socket}")
 
-    app = web.Application()
+    # Large conversation contexts (long histories, tool outputs) routinely exceed
+    # aiohttp's 1 MiB default body limit, which would reject the request with
+    # HTTPRequestEntityTooLarge before it reaches the agent. Match the gateway
+    # and AI-forwarder apps' 100 MiB ceiling so the same payloads flow through.
+    app = web.Application(client_max_size=100 * 1024 * 1024)
     app.router.add_post("/chat/completions", agent.handle_request)
+    app.router.add_post("/events", agent.handle_event)
 
     runner = web.AppRunner(app)
     try:

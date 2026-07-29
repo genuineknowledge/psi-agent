@@ -36,7 +36,18 @@ def test_tool_metadata_is_loadable() -> None:
     meta = ToolFunction.from_callable(tool.schedule_manage)
     assert meta.name == "schedule_manage"
     props = meta.parameters["properties"]
-    assert set(props) == {"action", "schedule_name", "cron", "description", "content"}
+    assert set(props) == {
+        "action",
+        "schedule_name",
+        "cron",
+        "description",
+        "content",
+        "once_at",
+        "visibility",
+        "fire",
+        "tool",
+        "tool_args",
+    }
     # All params have defaults, so nothing is required.
     assert meta.parameters.get("required", []) == []
 
@@ -54,11 +65,14 @@ async def test_create_view_and_list(workspace: Path) -> None:
         content="Compile and send the report.",
     )
     assert "created" in msg
+    assert "recurring" in msg
 
     raw = _read(workspace, "daily-report")
     assert 'cron: "0 9 * * *"' in raw
     assert "name: daily-report" in raw
     assert "created_by: agent" in raw
+    assert "run_once: false" in raw
+    assert "visibility: display" in raw
     assert "Compile and send the report." in raw
 
     view = await tool.schedule_manage(action="view", schedule_name="daily-report")
@@ -66,6 +80,93 @@ async def test_create_view_and_list(workspace: Path) -> None:
 
     listing = await tool.schedule_manage(action="list")
     assert "daily-report [0 9 * * *] [agent]: Send the daily report" in listing
+
+
+async def test_create_one_shot_once_at(workspace: Path) -> None:
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="remind-meet",
+        once_at="2099-07-24 15:30",
+        description="Meeting reminder",
+        fire="tool",
+        tool="feishu_message_send",
+        tool_args=('{"receive_id":"oc_testdemo123","text":"Meeting in 5 minutes","receive_id_type":"chat_id"}'),
+        visibility="silent",
+    )
+    assert "one-shot" in msg
+    assert "fire='tool'" in msg
+    raw = _read(workspace, "remind-meet")
+    assert "run_once: true" in raw
+    assert "fire: tool" in raw
+    assert "feishu_message_send" in raw
+    assert "oc_testdemo123" in raw
+
+    listing = await tool.schedule_manage(action="list")
+    assert "once" in listing
+
+
+async def test_create_one_shot_rejects_prose_without_feishu_send(workspace: Path) -> None:
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="bad-prose",
+        once_at="2099-07-24 15:30",
+        content="# after-work reminder\nsend a message reminding the user to clock out",
+        visibility="display",
+    )
+    assert msg.startswith("[Error]")
+    assert "fire='tool'" in msg
+    assert not (workspace / "schedules" / "bad-prose" / "TASK.md").exists()
+
+
+async def test_create_one_shot_rejects_prompt_with_feishu_in_content(workspace: Path) -> None:
+    """Legacy path: content embeds feishu_message_send + default fire=prompt — must fail."""
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="bad-legacy",
+        once_at="2099-07-24 15:30",
+        content=('feishu_message_send(receive_id="oc_testdemo123", text="hi", receive_id_type="chat_id")'),
+        visibility="display",
+    )
+    assert msg.startswith("[Error]")
+    assert "fire='tool'" in msg
+    assert not (workspace / "schedules" / "bad-legacy" / "TASK.md").exists()
+
+
+async def test_create_one_shot_rejects_placeholder_receive_id(workspace: Path) -> None:
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="bad-placeholder",
+        once_at="2099-07-24 15:30",
+        fire="tool",
+        tool="feishu_message_send",
+        tool_args='{"receive_id":"oc_xxx","text":"hi","receive_id_type":"chat_id"}',
+        visibility="silent",
+    )
+    assert msg.startswith("[Error]")
+    assert "placeholder" in msg.casefold()
+
+
+async def test_create_rejects_both_cron_and_once_at(workspace: Path) -> None:
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="x",
+        cron="0 9 * * *",
+        once_at="2026-12-01 10:00",
+        content="c",
+    )
+    assert msg.startswith("[Error]")
+    assert "both" in msg.lower() or "either" in msg.lower()
+
+
+async def test_create_rejects_past_once_at(workspace: Path) -> None:
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="past",
+        once_at="2020-01-01 10:00",
+        content="c",
+    )
+    assert msg.startswith("[Error]")
+    assert "future" in msg.lower()
 
 
 async def test_create_rejects_invalid_cron(workspace: Path) -> None:

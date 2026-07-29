@@ -28,6 +28,9 @@ def test_chunk_union_isinstance():
 def test_reasoning_chunk_construction():
     rc = ReasoningChunk("thinking...")
     assert rc.text == "thinking..."
+    assert rc.kind is None
+    rc2 = ReasoningChunk("x", kind="tool_call")
+    assert rc2.kind == "tool_call"
 
 
 def test_reasoning_chunk_union_isinstance():

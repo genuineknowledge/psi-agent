@@ -310,7 +310,11 @@ class System:
         fusion_skill_md = fusion_skill_dir / "SKILL.md"
         flows_dir = workspace_resolved / "flows"
 
-        repo_root = Path(str(workspace_resolved)).parents[1]
+        # A workspace placed at a shallow path (e.g. ``/workspace``) may have fewer than
+        # two parents; fall back to the workspace itself instead of raising IndexError,
+        # which would abort the whole system prompt build and drop the agent's persona.
+        _ws_parents = Path(str(workspace_resolved)).parents
+        repo_root = _ws_parents[1] if len(_ws_parents) > 1 else Path(str(workspace_resolved))
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
         # The psi engine MUST route through the session shim: the current CLI's `run`
         # is a YAML batch launcher and rejects the bundle's old-style
@@ -544,3 +548,56 @@ async def system_prompt_builder() -> str:
     """
     workspace_dir = (await anyio.Path(__file__).resolve()).parent.parent
     return await System(workspace_dir).build_system_prompt()
+
+
+async def compact_history(history: list[dict[str, Any]], complete_fn) -> str:
+    """Summarize older conversation turns via LLM, keeping recent turns verbatim.
+
+    Returns the summary string with recent turns appended; the framework
+    merges the whole result into the system prompt.
+    """
+    if len(history) <= 6:
+        return ""
+
+    recent_count = 4
+    older = history[:-recent_count]
+    recent = history[-recent_count:]
+
+    parts: list[str] = []
+    for msg in older:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.strip() and role in ("user", "assistant"):
+            parts.append(f"[{role}]: {content}")
+
+    recent_text = ""
+    recent_parts: list[str] = []
+    for msg in recent:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.strip() and role in ("user", "assistant"):
+            recent_parts.append(f"[{role}]: {content}")
+    if recent_parts:
+        recent_text = "\n[Recent turns]\n" + "\n".join(recent_parts)
+
+    if not parts:
+        return recent_text
+
+    summary_prompt = [
+        {
+            "role": "system",
+            "content": (
+                "Summarize the following conversation concisely. "
+                "Preserve all key facts, decisions, task context, file paths, "
+                "and information the user or assistant explicitly mentioned. "
+                "Do not omit anything that could be needed later."
+            ),
+        },
+        {"role": "user", "content": "Summarize:\n\n" + "\n".join(parts)},
+    ]
+
+    try:
+        summary = await complete_fn(summary_prompt)
+        return summary + "\n" + recent_text
+    except Exception:
+        return "\n".join(parts) + "\n" + recent_text

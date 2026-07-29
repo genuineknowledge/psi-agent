@@ -49,7 +49,7 @@ Summarize the important tool groups:
 - Shell tools: `bash`, `powershell`
 - Skill tools: `skill_manage`
 - Flow tools: `flow_manage`
-- Memory tools: `memory_add`, `memory_search`, `memory_answer_context` (durable semantic memory requires Fusion Memory service and passive sync)
+- Memory tools: `memory_add`, `memory_search`, `memory_answer_context` (durable semantic memory requires an operator-provisioned remote Fusion Memory MCP Streamable HTTP service)
 - Spreadsheet tool: `write_excel`
 - Search tools, if configured in this runtime
 
@@ -59,15 +59,20 @@ systems work, data/text processing, Fusion Flow, memory setup, and other domain 
 ### 4. Memory Status
 
 Include a short memory status note. Explain that this workspace exposes memory tools, but durable
-semantic memory works only after Fusion Memory service and passive sync are configured.
+semantic memory works only when the launcher supplies `FUSION_MEMORY_MCP_URL` and an
+operator-issued `FUSION_MEMORY_TOKEN` for the remote Fusion Memory MCP Streamable HTTP service.
+The bearer token determines the user identity; workspace and session IDs are context only. The
+same user shares memory across sessions and workspaces, while different users are isolated.
 
 Clearly state the consequence of not configuring it: you can still use the current conversation and
 workspace files such as `SESSION.md`, `USER.md`, and `HEARTBEAT.md`, but you cannot write to or search
 durable semantic memory or reliably recall user preferences, project facts, and decisions across new
 sessions.
 
-Do not ask the user to configure memory during this first reply. Mention that if they need
-cross-session long-term memory later, they can say `配置长期记忆` or `帮我配置长期记忆`.
+Do not ask the user to configure memory during this first reply. Do not provision a server or
+create tokens: those are operator actions. Before calling any memory tool, obtain the user's
+explicit consent. Mention that if they need cross-session long-term memory later, they can say
+`了解长期记忆设置` or `检查长期记忆状态`.
 
 ### 5. Common Starter Paths
 

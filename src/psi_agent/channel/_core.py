@@ -16,6 +16,9 @@ from psi_agent.channel._markers import SendMarkerScanner, encode_input
 from psi_agent.channel._stream import StreamBuffer, iter_sse_events
 from psi_agent.channel._types import FileChunk, InputChunk, OutputChunk, ReasoningChunk, TextChunk
 
+_CHAT_PATH = "/chat/completions"
+_EVENTS_PATH = "/events"
+
 
 @dataclass
 class ChannelCore:
@@ -24,9 +27,18 @@ class ChannelCore:
 
     @staticmethod
     def _to_chunk(kind: str, text: str) -> OutputChunk:
-        if kind == "reasoning":
-            return ReasoningChunk(text)
-        return TextChunk(text)
+        # Buffer keys: "text" | "reasoning" | "reasoning:<provenance>".
+        if kind == "text" or not kind.startswith("reasoning"):
+            return TextChunk(text)
+        provenance = kind.split(":", 1)[1] if ":" in kind else None
+        return ReasoningChunk(text=text, kind=provenance or None)
+
+    @staticmethod
+    def events_endpoint_from_chat(chat_endpoint: str) -> str:
+        """Derive ``…/events`` from the chat-completions endpoint on the same socket."""
+        if chat_endpoint.endswith(_CHAT_PATH):
+            return chat_endpoint[: -len(_CHAT_PATH)] + _EVENTS_PATH
+        return chat_endpoint.rstrip("/") + _EVENTS_PATH
 
     async def __aenter__(self) -> ChannelCore:
         connector, self._endpoint = resolve_connector_and_endpoint(self.session_socket)
@@ -36,6 +48,31 @@ class ChannelCore:
     async def __aexit__(self, *args: object) -> None:
         with anyio.CancelScope(shield=True):
             await self._session.close()
+
+    async def post_event(self, envelope: dict[str, object]) -> dict[str, object]:
+        """POST a Channel-built envelope to Session ``/events`` (unified forward).
+
+        Returns the JSON body (``ok`` / ``matched`` / ``fired``). Raises
+        ``ChannelError`` on non-2xx or invalid JSON.
+        """
+        url = self.events_endpoint_from_chat(self._endpoint)
+        logger.debug(f"POST {url} event={envelope.get('event')!r}")
+        async with self._session.post(url, json=envelope) as resp:
+            text = await resp.text()
+            if resp.status >= 400:
+                logger.warning(f"POST /events HTTP {resp.status}: {text[:500]!r}")
+                raise ChannelError(f"POST /events HTTP {resp.status}: {text[:500]}")
+            try:
+                data = json.loads(text) if text else {}
+            except json.JSONDecodeError as e:
+                raise ChannelError(f"POST /events invalid JSON: {e}") from e
+            if not isinstance(data, dict):
+                raise ChannelError("POST /events response must be a JSON object")
+            logger.info(
+                f"POST /events ok event={envelope.get('event')!r} "
+                f"matched={data.get('matched')} fired={data.get('fired')!r}"
+            )
+            return data
 
     async def post(self, chunks: list[InputChunk]) -> AsyncGenerator[OutputChunk]:
         logger.debug(
@@ -67,9 +104,16 @@ class ChannelCore:
             async with aclosing(iter_sse_events(resp.content)) as events:
                 logger.debug("Starting to consume SSE stream")
                 async for delta in events:
+                    reasoning_text = delta.get("reasoning") or ""
+                    content_text = delta.get("content") or ""
+                    raw_kind = delta.get("kind")
+                    reasoning_buf_kind = "reasoning"
+                    if reasoning_text and isinstance(raw_kind, str) and raw_kind.strip():
+                        reasoning_buf_kind = f"reasoning:{raw_kind.strip()}"
+
                     for incoming_kind, text in (
-                        ("reasoning", delta.get("reasoning") or ""),
-                        ("text", delta.get("content") or ""),
+                        (reasoning_buf_kind, reasoning_text),
+                        ("text", content_text),
                     ):
                         if not text:
                             continue
@@ -82,7 +126,7 @@ class ChannelCore:
                             for file_chunk in scanner.feed(text):
                                 yield file_chunk
                         else:
-                            logger.debug(f"delta.reasoning ({len(text)} chars): {text[:1000]!r}")
+                            logger.debug(f"delta.reasoning kind={raw_kind!r} ({len(text)} chars): {text[:1000]!r}")
 
                         for k, t in buffer.append(text):
                             yield self._to_chunk(k, t)

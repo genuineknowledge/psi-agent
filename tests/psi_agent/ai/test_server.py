@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 from typing import Any
 
 import anyio
 import pytest
-from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
+from aiohttp import ClientSession, ClientTimeout, web
 
 from psi_agent.ai.server import handle_chat_completions
 
@@ -44,9 +45,14 @@ class _TrackingStream:
 
 
 async def _serve_handler(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stream: _TrackingStream
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stream: _TrackingStream,
+    received_provider_kwargs: dict[str, Any] | None = None,
 ) -> tuple[web.AppRunner, str]:
     async def fake_acompletion(**kwargs: Any) -> _TrackingStream:
+        if received_provider_kwargs is not None:
+            received_provider_kwargs.update(kwargs)
         return stream
 
     monkeypatch.setattr("psi_agent.ai.server.acompletion", fake_acompletion)
@@ -59,20 +65,20 @@ async def _serve_handler(
     app.router.add_post("/chat/completions", handle_chat_completions)
     runner = web.AppRunner(app)
     await runner.setup()
-    socket_path = str(tmp_path / "ai.sock")
-    site = web.UnixSite(runner, socket_path)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    site = web.SockSite(runner, sock)
     await site.start()
     await anyio.sleep(0.1)
-    return runner, socket_path
+    return runner, f"http://127.0.0.1:{sock.getsockname()[1]}"
 
 
 async def _drain(socket_path: str) -> None:
     body = {"model": "test", "messages": [{"role": "user", "content": "hi"}], "stream": True}
-    connector = UnixConnector(path=socket_path)
     timeout = ClientTimeout(total=5)
     async with (
-        ClientSession(connector=connector, timeout=timeout) as s,
-        s.post("http://localhost/chat/completions", json=body) as resp,
+        ClientSession(timeout=timeout) as s,
+        s.post(f"{socket_path}/chat/completions", json=body) as resp,
     ):
         assert resp.status == 200
         async for _ in resp.content:
@@ -103,3 +109,35 @@ async def test_upstream_stream_closed_after_error(tmp_path: Path, monkeypatch: p
         assert stream.closed is True
     finally:
         await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_handler_strips_internal_routing_before_calling_the_external_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provider-facing calls must never receive the Router's Session metadata."""
+
+    received_provider_kwargs: dict[str, Any] = {}
+    stream = _TrackingStream([_FakeChunk()])
+    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream, received_provider_kwargs)
+    try:
+        async with (
+            ClientSession() as session,
+            session.post(
+                f"{socket_path}/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "routing": {"session_id": "private-session"},
+                    "temperature": 0.2,
+                },
+            ) as response,
+        ):
+            assert response.status == 200
+            async for _ in response.content:
+                pass
+    finally:
+        await runner.cleanup()
+
+    assert "routing" not in received_provider_kwargs
+    assert received_provider_kwargs["temperature"] == 0.2

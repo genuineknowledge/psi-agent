@@ -179,6 +179,73 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/feishu/route": {
+            "post": {
+                "summary": "Route a Feishu chat to its Session (per-chat for groups, per-user for DMs)",
+                "operationId": "feishuRoute",
+                "requestBody": {
+                    "required": True,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FeishuRouteRequest"}}},
+                },
+                "responses": {
+                    "201": {
+                        "description": "Routed",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FeishuRoute"}}},
+                    },
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/feishu/routes": {
+            "get": {
+                "summary": "List all Feishu chat -> Session routes",
+                "operationId": "listFeishuRoutes",
+                "responses": {
+                    "200": {
+                        "description": "List of routes",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {"$ref": "#/components/schemas/FeishuRouteEntry"},
+                                }
+                            }
+                        },
+                    },
+                },
+            },
+        },
+        "/oauth/callback": {
+            "get": {
+                "summary": "OAuth redirect landing point (relays the code, no manual copy)",
+                "operationId": "oauthCallback",
+                "parameters": [
+                    {"name": "state", "in": "query", "required": True, "schema": {"type": "string"}},
+                    {"name": "code", "in": "query", "schema": {"type": "string"}},
+                    {"name": "error", "in": "query", "schema": {"type": "string"}},
+                ],
+                "responses": {
+                    "200": {"description": "HTML success page; the code is held for the initiator"},
+                    "400": {"description": "HTML failure page (missing state, or provider error)"},
+                },
+            },
+        },
+        "/oauth/code": {
+            "get": {
+                "summary": "Take the relayed authorization code once, by state",
+                "operationId": "oauthTakeCode",
+                "parameters": [
+                    {"name": "state", "in": "query", "required": True, "schema": {"type": "string"}},
+                ],
+                "responses": {
+                    "200": {"description": "{state, code} — or {state, error}; consumed on read"},
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
         "/sessions/{session_id}/history": {
             "get": {
                 "summary": "Get session conversation history",
@@ -193,6 +260,24 @@ OPENAPI_SPEC = {
                 ],
                 "responses": {
                     "200": {"description": "Array of {role, text} messages"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/sessions/{session_id}/todos": {
+            "get": {
+                "summary": "Get session todo list (AppData todos/ with legacy dual-read)",
+                "operationId": "getTodos",
+                "parameters": [
+                    {
+                        "name": "session_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
+                ],
+                "responses": {
+                    "200": {"description": ("Object with todos[] ({id, content, status}) and summary counts")},
                     "404": {"$ref": "#/components/responses/Error"},
                 },
             },
@@ -267,7 +352,23 @@ OPENAPI_SPEC = {
                 },
             },
         },
-        "/workspace/roots": {
+        "/defaults": {
+            "get": {
+                "summary": "Default agent, workspace, and AppData root paths",
+                "operationId": "getDefaults",
+                "responses": {
+                    "200": {
+                        "description": "Path defaults for SPA / tooling (AppData announce-only until relocate PRs)",
+                        "content": {
+                            "application/json": {
+                                "schema": {"$ref": "#/components/schemas/GatewayDefaults"},
+                            }
+                        },
+                    },
+                },
+            },
+        },
+        "/workspace/places": {
             "get": {
                 "summary": "List quick-access paths and drives for path picker",
                 "operationId": "listWorkspaceRoots",
@@ -289,7 +390,7 @@ OPENAPI_SPEC = {
                     {
                         "name": "kind",
                         "in": "query",
-                        "schema": {"type": "string", "enum": ["directory", "file", "all"]},
+                        "schema": {"type": "string", "enum": ["directory", "file", "all"], "default": "directory"},
                     },
                     {
                         "name": "q",
@@ -346,6 +447,34 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/workspace/reveal": {
+            "post": {
+                "summary": "Reveal a path in the OS file manager",
+                "operationId": "revealWorkspacePath",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["path"],
+                                "properties": {
+                                    "path": {
+                                        "type": "string",
+                                        "description": "Absolute or resolvable filesystem path to select/open",
+                                    },
+                                },
+                            }
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {"description": "File manager launched ({path, ok})"},
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
     },
     "components": {
         "schemas": {
@@ -377,7 +506,16 @@ OPENAPI_SPEC = {
                     "ai_id": {"type": "string"},
                     "workspace": {
                         "type": "string",
-                        "description": "Optional, defaults to CWD",
+                        "description": (
+                            "User workspace. Empty → Gateway default ({Desktop}/haitun交付); mkdir on Session create"
+                        ),
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": (
+                            "Agent package path. Empty → Gateway default "
+                            "(examples/haitun-workspace when present), else Session uses workspace"
+                        ),
                     },
                 },
             },
@@ -387,7 +525,99 @@ OPENAPI_SPEC = {
                     "id": {"type": "string"},
                     "ai_id": {"type": "string"},
                     "workspace": {"type": "string"},
+                    "agent": {"type": "string"},
                     "channel_socket": {"type": "string"},
+                    "active_schedules": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Names of the schedules under {workspace}/schedules this session "
+                            "actually fires; ['*'] means all of them. Activation is a "
+                            "(session x schedule) property, so sessions sharing a workspace can "
+                            "each fire a different subset"
+                        ),
+                    },
+                    "deactive_schedules": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Names excluded from active_schedules (blacklist, wins over the "
+                            "whitelist). A wildcard whitelist plus this blacklist is how a session "
+                            "claims 'everything except these', including TASK.md files created later"
+                        ),
+                    },
+                    "scheduler": {
+                        "type": "boolean",
+                        "description": (
+                            "Derived: true only for the per-workspace scheduler session that fires "
+                            "all of {workspace}/schedules (active_schedules == ['*']). Such sessions "
+                            "are hidden from GET /sessions, so this is always false in list responses"
+                        ),
+                    },
+                },
+            },
+            "GatewayDefaults": {
+                "type": "object",
+                "properties": {
+                    "agent": {"type": "string", "description": "Default agent package path"},
+                    "workspace": {"type": "string", "description": "Default user workspace"},
+                    "appdata": {
+                        "type": "string",
+                        "description": (
+                            "AppData memory root (platformdirs / --appdata / PSI_APPDATA). "
+                            "Todos live under {appdata}/todos/; history under {appdata}/histories/; "
+                            "Gateway state under {appdata}/state/ (legacy paths dual-read)."
+                        ),
+                    },
+                },
+            },
+            "FeishuRouteRequest": {
+                "type": "object",
+                "description": (
+                    "Needs at least one routing key: open_id (DM) or chat_id with a group/topic chat_type."
+                ),
+                "properties": {
+                    "open_id": {
+                        "type": "string",
+                        "description": "Sender's open_id. Required unless routing a group chat by chat_id.",
+                    },
+                    "chat_id": {
+                        "type": "string",
+                        "description": "Feishu chat id. With chat_type group/topic, the whole chat shares one Session.",
+                    },
+                    "chat_type": {
+                        "type": "string",
+                        "description": "p2p | group | topic. group/topic routes by chat_id, anything else by open_id.",
+                    },
+                    "ai_id": {
+                        "type": "string",
+                        "description": "Optional, overrides Gateway --feishu-ai-id",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": (
+                            "Optional, defaults to <feishu_workspace_root>/<open_id> "
+                            "(or /chat-<chat_id> for group chats)"
+                        ),
+                    },
+                },
+            },
+            "FeishuRoute": {
+                "type": "object",
+                "properties": {
+                    "open_id": {"type": "string"},
+                    "chat_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "channel_socket": {"type": "string"},
+                },
+            },
+            "FeishuRouteEntry": {
+                "type": "object",
+                "description": "One route. Group entries carry chat_id with an empty open_id; DMs the reverse.",
+                "properties": {
+                    "open_id": {"type": "string"},
+                    "chat_id": {"type": "string"},
+                    "session_id": {"type": "string"},
                 },
             },
             "DeleteResponse": {

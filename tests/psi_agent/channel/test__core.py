@@ -513,6 +513,44 @@ async def test_post_reasoning_merges_within_interval(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_post_reasoning_kind_switch_emits_separate_chunks(tmp_path):
+    """Different delta.kind must not merge even inside a long interval window."""
+    sock_path = str(tmp_path / "session.sock")
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse()
+        resp.headers["Content-Type"] = "text/event-stream"
+        await resp.prepare(request)
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"reasoning":"think","kind":"thinking"}}]}\n\n')
+        await resp.write(b'data: {"choices":[{"index":0,"delta":{"reasoning":"call","kind":"tool_call"}}]}\n\n')
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    await anyio.sleep(0.1)
+
+    async with ChannelCore(sock_path, interval=10.0) as core:
+        chunks = []
+        async for chunk in core.post([TextChunk("hi")]):
+            chunks.append(chunk)
+
+    assert len(chunks) == 2
+    assert isinstance(chunks[0], ReasoningChunk)
+    assert isinstance(chunks[1], ReasoningChunk)
+    assert chunks[0].text == "think"
+    assert chunks[0].kind == "thinking"
+    assert chunks[1].text == "call"
+    assert chunks[1].kind == "tool_call"
+
+    await runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_post_send_marker_ignored_in_reasoning(tmp_path):
     """[SEND:...] inside reasoning text does NOT yield a FileChunk."""
     sock_path = str(tmp_path / "session.sock")

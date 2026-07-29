@@ -23,3 +23,18 @@ describe('renderMd tables', () => {
     expect(html).not.toContain('<pre><code>| a | b |')
   })
 })
+
+describe('renderMd links', () => {
+  it('opens markdown links in a new tab', () => {
+    const html = renderMd('[docs](https://example.com/path)')
+    expect(html).toContain('href="https://example.com/path"')
+    expect(html).toContain('target="_blank"')
+    expect(html).toContain('rel="noopener noreferrer"')
+  })
+
+  it('opens autolinks in a new tab', () => {
+    const html = renderMd('see https://example.com/auto')
+    expect(html).toContain('href="https://example.com/auto"')
+    expect(html).toContain('target="_blank"')
+  })
+})

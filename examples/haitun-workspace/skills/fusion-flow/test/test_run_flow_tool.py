@@ -14,6 +14,7 @@ from typing import Any, cast
 import anyio
 import pytest
 
+from psi_agent.session.runtime_context import path_scope
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 _WORKSPACE_DIR = Path(__file__).resolve().parents[3]
@@ -893,16 +894,16 @@ async def test_run_flow_executes_once_with_dependencies_and_resources(
         agents.append(agent)
         return agent, conversation
 
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
     monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
     monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
     monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
 
-    result = await run_flow_tool.run_flow(
-        "flows/ordered.workflow",
-        '{"request": "go"}',
-        '{"gpu": ["cuda:0"]}',
-    )
+    with path_scope(workspace=str(tmp_path), agent=str(_WORKSPACE_DIR)):
+        result = await run_flow_tool.run_flow(
+            "flows/ordered.workflow",
+            '{"request": "go"}',
+            '{"gpu": ["cuda:0"]}',
+        )
 
     assert json.loads(result) == {
         "after_result": "AFTER",
@@ -1729,14 +1730,19 @@ async def test_human_resume_rejects_changed_workflow_source(
 
 
 @pytest.mark.anyio
-async def test_step_agent_uses_in_memory_history_and_explicit_system_prompt() -> None:
-    agent, conversation = await run_flow_tool._create_step_agent(
-        "http://ai.example",
-        ToolRegistry(),
-    )
+async def test_step_agent_uses_in_memory_history_and_explicit_system_prompt(
+    tmp_path: Path,
+) -> None:
+    with path_scope(workspace=str(tmp_path), agent=str(_WORKSPACE_DIR)):
+        agent, conversation = await run_flow_tool._create_step_agent(
+            "http://ai.example",
+            ToolRegistry(),
+        )
 
     assert agent._conversation is conversation
     assert agent._ai_client.ai_socket == "http://ai.example"
+    assert agent._workspace_path == tmp_path
+    assert agent._agent_path == _WORKSPACE_DIR
     assert conversation.messages == [
         {"role": "system", "content": run_flow_tool._STEP_SYSTEM_PROMPT},
     ]
@@ -1835,6 +1841,7 @@ async def test_step_file_tools_bind_relative_paths_to_workspace(
     await anyio.Path(workspace).mkdir()
     await anyio.Path(launcher).mkdir()
     received: dict[str, str] = {}
+    loaded_from: list[Path] = []
 
     async def read(file_path: str) -> str:
         received["read"] = file_path
@@ -1875,7 +1882,8 @@ async def test_step_file_tools_bind_relative_paths_to_workspace(
             tools_dir: Path,
             session_id: str = "",
         ) -> ToolRegistry:
-            del cls, tools_dir, session_id
+            del cls, session_id
+            loaded_from.append(tools_dir)
             return source
 
     sidecar = workspace / "instructions" / "review.md"
@@ -1883,10 +1891,10 @@ async def test_step_file_tools_bind_relative_paths_to_workspace(
     await anyio.Path(sidecar).write_text("workspace sidecar", encoding="utf-8")
     monkeypatch.chdir(launcher)
     monkeypatch.setattr(run_flow_tool, "ToolRegistry", FakeToolRegistry)
-    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", workspace)
     monkeypatch.setattr(run_flow_tool, "_STEP_TOOLS_SOURCE", None)
 
-    snapshot = await run_flow_tool._load_step_tools()
+    with path_scope(workspace=str(workspace), agent=str(_WORKSPACE_DIR)):
+        snapshot = await run_flow_tool._load_step_tools()
     edit_tool = snapshot.get("edit")
     read_tool = snapshot.get("read")
     write_tool = snapshot.get("write")
@@ -1912,6 +1920,7 @@ async def test_step_file_tools_bind_relative_paths_to_workspace(
         "read": str(sidecar),
         "write": str(child),
     }
+    assert loaded_from == [_WORKSPACE_DIR / "tools"]
     assert not await anyio.Path(launcher / "flows").exists()
 
 
@@ -2025,6 +2034,25 @@ async def test_human_preparer_tools_are_read_only_and_workspace_confined(
         await human_read(str(outside))
     with pytest.raises(ValueError, match="only files inside the workspace"):
         await human_read("instructions/escape.txt")
+
+
+@pytest.mark.anyio
+async def test_split_root_reusable_flow_and_run_store_use_runtime_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "user-workspace"
+    workflow = workspace / "flows" / "workflows" / "daily-brief" / "daily-brief.workflow"
+    await anyio.Path(workflow.parent).mkdir(parents=True)
+    await anyio.Path(workflow).write_text("workflow source", encoding="utf-8")
+    monkeypatch.setenv("WORKSPACE_DIR", str(_WORKSPACE_DIR))
+
+    with path_scope(workspace=str(workspace), agent=str(_WORKSPACE_DIR)):
+        source = await run_flow_tool._read_flow_source("flows/workflows/daily-brief/daily-brief.workflow")
+        store = run_flow_tool._job_store()
+
+    assert source == "workflow source"
+    assert Path(str(store.root)) == workspace / ".psi" / "fusion-flow" / "runs"
 
 
 @pytest.mark.anyio

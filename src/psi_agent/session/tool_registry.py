@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import math
 import re
 import sys
 import types
@@ -65,7 +66,7 @@ class ToolFunction:
         description = cls._parse_description(doc)
         param_desc = cls._parse_param_descriptions(doc)
 
-        type_hints = typing.get_type_hints(func)
+        type_hints = typing.get_type_hints(func, include_extras=True)
 
         properties: dict[str, Any] = {}
         required: list[str] = []
@@ -79,11 +80,23 @@ class ToolFunction:
                 )
 
             annotation = type_hints.get(param_name)
+            schema_metadata: dict[str, Any] = {}
 
             is_type_optional = False
-            if annotation is not None:
+            while annotation is not None:
                 origin = getattr(annotation, "__origin__", None)
-                if origin is types.UnionType:
+                if typing.get_origin(annotation) is typing.Annotated:
+                    annotation, *metadata = typing.get_args(annotation)
+                    for item in metadata:
+                        if not isinstance(item, dict):
+                            raise TypeError(
+                                f"Unsupported Annotated metadata: {item!r}. Use JSON Schema constraint dicts."
+                            )
+                        unsupported = set(item) - {"minLength", "maxLength", "minimum", "maximum", "pattern"}
+                        if unsupported:
+                            raise TypeError(f"Unsupported JSON Schema constraints: {sorted(map(repr, unsupported))!r}")
+                        schema_metadata.update(item)
+                elif origin is types.UnionType:
                     args = getattr(annotation, "__args__", ())
                     non_none = [a for a in args if a is not type(None)]
                     if len(non_none) == 1:
@@ -93,18 +106,34 @@ class ToolFunction:
                         raise TypeError(
                             f"Unsupported union type: {annotation!r}. Use X | None for a single optional type."
                         )
+                else:
+                    break
 
             if annotation is not None:
                 _type_map = {str: "string", int: "integer", float: "number", bool: "boolean"}
                 origin = getattr(annotation, "__origin__", None)
                 if origin is not None:
-                    if origin is not list:
+                    if origin is typing.Literal:
+                        values = list(typing.get_args(annotation))
+                        value_types = {type(value) for value in values}
+                        if (
+                            len(value_types) != 1
+                            or not values
+                            or value_types.pop() not in _type_map
+                            or not cls._is_strict_json(values)
+                        ):
+                            raise TypeError(
+                                f"Unsupported Literal type: {annotation!r}. Use values of one primitive type."
+                            )
+                        resolved = {"type": _type_map[type(values[0])], "enum": values}
+                    elif origin is not list:
                         raise TypeError(f"Unsupported generic type: {annotation!r}. Only list[X] is supported.")
-                    args = getattr(annotation, "__args__", ())
-                    item = args[0] if args else str
-                    if getattr(item, "__origin__", None) is not None or item not in _type_map:
-                        raise TypeError(f"Unsupported list item type: {item!r}. Supported: str, int, float, bool")
-                    resolved = {"type": "array", "items": {"type": _type_map[item]}}
+                    else:
+                        args = getattr(annotation, "__args__", ())
+                        item = args[0] if args else str
+                        if getattr(item, "__origin__", None) is not None or item not in _type_map:
+                            raise TypeError(f"Unsupported list item type: {item!r}. Supported: str, int, float, bool")
+                        resolved = {"type": "array", "items": {"type": _type_map[item]}}
                 elif annotation not in _type_map:
                     raise TypeError(
                         f"Unsupported parameter type: {annotation!r}. Supported: str, int, float, bool, list[X]"
@@ -114,9 +143,19 @@ class ToolFunction:
             else:
                 resolved = {"type": "string"}
 
+            cls._validate_schema_metadata(schema_metadata, resolved["type"])
+            resolved.update(schema_metadata)
+            if param.default is not inspect.Parameter.empty:
+                if not cls._is_strict_json(param.default):
+                    raise TypeError(f"Parameter '{param_name}' default must be strict JSON: {param.default!r}")
+                if not cls._default_conforms(param.default, resolved, nullable=is_type_optional):
+                    raise TypeError(
+                        f"Parameter '{param_name}' default does not conform to its generated schema: {param.default!r}"
+                    )
+                resolved["default"] = param.default
             properties[param_name] = resolved | {"description": param_desc.get(param_name, "")}
 
-            if param.default is inspect.Parameter.empty and not is_type_optional:
+            if param.default is inspect.Parameter.empty:
                 required.append(param_name)
 
         return cls(
@@ -126,8 +165,79 @@ class ToolFunction:
                 "type": "object",
                 "properties": properties,
                 "required": required,
+                "additionalProperties": False,
             },
         )
+
+    @staticmethod
+    def _is_strict_json(value: Any) -> bool:
+        value_type = type(value)
+        if value is None or value_type in (bool, int, str):
+            return True
+        if value_type is float:
+            return math.isfinite(value)
+        if value_type is list:
+            return all(ToolFunction._is_strict_json(item) for item in value)
+        if value_type is dict:
+            return all(type(key) is str and ToolFunction._is_strict_json(item) for key, item in value.items())
+        return False
+
+    @staticmethod
+    def _validate_schema_metadata(metadata: dict[str, Any], schema_type: str) -> None:
+        string_constraints = {"minLength", "maxLength", "pattern"}
+        numeric_constraints = {"minimum", "maximum"}
+        for key, value in metadata.items():
+            if key in string_constraints and schema_type != "string":
+                raise TypeError(f"JSON Schema constraint '{key}' is not supported for schema type '{schema_type}'")
+            if key in numeric_constraints and schema_type not in ("integer", "number"):
+                raise TypeError(f"JSON Schema constraint '{key}' is not supported for schema type '{schema_type}'")
+            if key in ("minLength", "maxLength") and (type(value) is not int or value < 0):
+                raise TypeError(f"Invalid JSON Schema constraint '{key}': expected a nonnegative integer")
+            if key == "pattern" and type(value) is not str:
+                raise TypeError("Invalid JSON Schema constraint 'pattern': expected a string")
+            if key in numeric_constraints:
+                valid_type = type(value) is int if schema_type == "integer" else type(value) in (int, float)
+                if not valid_type or (type(value) is float and not math.isfinite(value)):
+                    expected = "a finite integer" if schema_type == "integer" else "a finite number"
+                    raise TypeError(f"Invalid JSON Schema constraint '{key}': expected {expected}")
+
+        if metadata.get("minLength", 0) > metadata.get("maxLength", math.inf):
+            raise TypeError("JSON Schema constraint 'minLength' must not exceed 'maxLength'")
+        if metadata.get("minimum", -math.inf) > metadata.get("maximum", math.inf):
+            raise TypeError("JSON Schema constraint 'minimum' must not exceed 'maximum'")
+
+    @staticmethod
+    def _default_conforms(value: Any, schema: dict[str, Any], *, nullable: bool = False) -> bool:
+        if value is None:
+            return nullable
+
+        schema_type = schema["type"]
+        if schema_type == "string":
+            conforms = type(value) is str
+        elif schema_type == "integer":
+            conforms = type(value) is int
+        elif schema_type == "number":
+            conforms = type(value) in (int, float)
+        elif schema_type == "boolean":
+            conforms = type(value) is bool
+        elif schema_type == "array":
+            conforms = type(value) is list and all(
+                ToolFunction._default_conforms(item, schema["items"]) for item in value
+            )
+        else:
+            return False
+
+        if not conforms or ("enum" in schema and value not in schema["enum"]):
+            return False
+        if schema_type == "string":
+            return (
+                len(value) >= schema.get("minLength", 0)
+                and len(value) <= schema.get("maxLength", math.inf)
+                and ("pattern" not in schema or re.search(schema["pattern"], value) is not None)
+            )
+        if schema_type in ("integer", "number"):
+            return value >= schema.get("minimum", -math.inf) and value <= schema.get("maximum", math.inf)
+        return True
 
     @staticmethod
     def _parse_description(doc: str) -> str:

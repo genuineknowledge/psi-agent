@@ -36,11 +36,23 @@ import logging
 import os
 import platform
 import re
+import types
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import anyio
+
+try:
+    from psi_agent.session.runtime_context import get_workspace as _runtime_workspace
+except ImportError:  # pragma: no cover — standalone import without editable install
+
+    def _runtime_workspace() -> str:
+        return ""
+
+
 from prompt_sections import (
     BOOTSTRAP_PENDING_SECTION,
     CONTEXT_FILE_ORDER,
@@ -676,13 +688,28 @@ def _build_runtime_info(model: str | None) -> str:
 def _build_datetime_section() -> str:
     """Build the ## Current Date & Time section.
 
-    Reads HAITUN_TIMEZONE (default UTC) for the timezone label and
+    Reads the standard TZ env var for the timezone and
     HAITUN_KNOWLEDGE_CUTOFF (optional, e.g. "2026-01") for the knowledge
     cutoff anchor. When the cutoff is unset, emit a neutral line rather
     than fabricating a date.
+
+    The clock and the label are computed from the same source so they
+    always agree — otherwise a UTC container would show UTC wall-clock
+    time under an "Asia/Shanghai" label (or vice versa), silently feeding
+    the agent a time that is off by the UTC offset. When TZ is unset or
+    invalid, fall back to the system's local timezone via astimezone(),
+    so no tzdata package is strictly required.
     """
-    tz = os.environ.get("HAITUN_TIMEZONE", "UTC")
-    now = datetime.now()
+    tz_name = os.environ.get("TZ", "").strip()
+    try:
+        now = datetime.now(ZoneInfo(tz_name)) if tz_name else datetime.now().astimezone()
+    except ZoneInfoNotFoundError, ValueError:
+        # Unknown tz name: fall back to system local time and label it
+        # honestly so the agent knows the zone is unverified.
+        now = datetime.now().astimezone()
+        tz_name = f"{tz_name} (unresolved — using system local time)"
+    if not tz_name:
+        tz_name = str(now.tzinfo)
     cutoff = os.environ.get("HAITUN_KNOWLEDGE_CUTOFF", "").strip()
     if cutoff:
         cutoff_line = (
@@ -696,7 +723,7 @@ def _build_datetime_section() -> str:
         )
     return (
         f"## Current Date & Time\nDate: {now.strftime('%Y-%m-%d')}\n"
-        f"Time: {now.strftime('%H:%M:%S')}\nTime zone: {tz}\n{cutoff_line}"
+        f"Time: {now.strftime('%H:%M:%S')}\nTime zone: {tz_name}\n{cutoff_line}"
     )
 
 
@@ -849,21 +876,32 @@ async def _run_self_evolution_review(
 
 
 class System:
-    def __init__(self, workspace_dir: anyio.Path) -> None:
-        self._workspace_dir = workspace_dir
+    def __init__(
+        self,
+        agent_dir: anyio.Path,
+        *,
+        user_workspace: anyio.Path | None = None,
+    ) -> None:
+        # Agent package: skills / tools / SOUL / systems (capability root).
+        self._agent_dir = agent_dir
+        # User open-folder: relative file IO + deliverables (may differ from agent).
+        self._user_workspace = user_workspace if user_workspace is not None else agent_dir
         self._previous_summary: str | None = None
 
     async def _build_fusion_section(self) -> str:
         """Fusion Flow command routing, authoring guidance, and flows index.
 
-        Returns empty string if the Fusion Flow runtime skill is not present.
+        Returns empty string if the fusion-flow runtime skill is not present.
+        Skill/runtime live under the **agent** package; generated ``flows/`` under
+        the **user workspace**.
         """
-        workspace_resolved = await self._workspace_dir.resolve()
-        fusion_skill_md = workspace_resolved / "skills" / "fusion-flow" / "SKILL.md"
+        agent_resolved = await self._agent_dir.resolve()
+        user_resolved = await self._user_workspace.resolve()
+        fusion_skill_md = agent_resolved / "skills" / "fusion-flow" / "SKILL.md"
         if not await fusion_skill_md.exists():
             return ""
 
-        flows_dir = workspace_resolved / "flows"
+        flows_dir = user_resolved / "flows"
         workflow_registry_dir = flows_dir / "workflows"
         flows_index = await _build_flows_index(flows_dir)
 
@@ -972,7 +1010,9 @@ of the Gateway or Session process working directory. The workflow source contain
 graph declarations only; never write API keys into the workspace or generated `.workflow` files."""
 
     async def build_system_prompt(self, model: str | None = None, tool_names: list[str] | None = None) -> str:
-        ws = self._workspace_dir
+        # Capability root (skills/tools/SOUL) vs user open-folder (file IO guidance).
+        ws = self._agent_dir
+        user_ws = self._user_workspace
         tools = tool_names or await _scan_tool_names(ws)
 
         # -- Stable prefix ------------------------------------------------
@@ -1051,7 +1091,7 @@ graph declarations only; never write API keys into the workspace or generated `.
         if fusion_section:
             stable_parts += ["", fusion_section]
 
-        workspace_abs = str(await ws.resolve())
+        workspace_abs = str(await user_ws.resolve())
         stable_parts += ["", build_workspace_section(workspace_abs)]
 
         if global_agents_md:
@@ -1071,10 +1111,10 @@ graph declarations only; never write API keys into the workspace or generated `.
         stable_prefix = "\n".join(stable_parts)
 
         # -- Dynamic suffix ------------------------------------------------
-        # NOTE: the heartbeat instruction is intentionally NOT injected here.
-        # The heartbeat schedule (schedules/heartbeat/TASK.md) already tells the
-        # agent to reply HEARTBEAT_OK on its poll; injecting it into every turn's
-        # system prompt caused HEARTBEAT_OK to leak into normal chat replies.
+        # NOTE: heartbeat instructions are intentionally NOT injected here. The
+        # former bundled 30-minute schedule remains removed; if a workspace owner
+        # explicitly adds one, its TASK.md carries the poll contract. Injecting
+        # that contract into every turn caused HEARTBEAT_OK to leak into normal chat.
         dynamic_parts: list[str] = []
 
         model_identity = build_model_identity_line(model)
@@ -1221,11 +1261,103 @@ async def system_prompt_builder() -> str:
     """Module-level entry point used by the psi-agent session loader.
 
     The loader looks up an async ``system_prompt_builder`` attribute in this
-    module and calls it with no arguments.  We resolve the workspace root from
-    this file's location and delegate to the ``System`` class.
+    module and calls it with no arguments.
+
+    **Agent vs user workspace (三区)**: this file lives in the agent package, so
+    ``__file__`` resolves the capability root. The user open-folder for file IO
+    comes from Session ``get_workspace()`` (bound inside ``runtime_scope`` during
+    the turn). Falling back to the agent root preserves single-root compat.
     """
-    workspace_dir = anyio.Path(__file__).parent.parent
-    return await System(workspace_dir).build_system_prompt()
+    agent_dir = anyio.Path(__file__).parent.parent
+    user_workspace = agent_dir
+    raw = (_runtime_workspace() or "").strip()
+    if raw:
+        user_workspace = anyio.Path(raw)
+    await _activate_fusion_memory(agent_dir)
+    return await System(agent_dir, user_workspace=user_workspace).build_system_prompt()
+
+
+async def compact_history(history: list[dict[str, Any]], complete_fn) -> str:
+    """Summarize older conversation turns via LLM, keeping recent turns verbatim.
+
+    Returns the summary string with recent turns appended; the framework
+    merges the whole result into the system prompt.
+    """
+    if len(history) <= 6:
+        return ""
+
+    recent_count = 4
+    older = history[:-recent_count]
+    recent = history[-recent_count:]
+
+    parts: list[str] = []
+    for msg in older:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.strip() and role in ("user", "assistant"):
+            parts.append(f"[{role}]: {content}")
+
+    recent_text = ""
+    recent_parts: list[str] = []
+    for msg in recent:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if isinstance(content, str) and content.strip() and role in ("user", "assistant"):
+            recent_parts.append(f"[{role}]: {content}")
+    if recent_parts:
+        recent_text = "\n[Recent turns]\n" + "\n".join(recent_parts)
+
+    if not parts:
+        return recent_text
+
+    summary_prompt = [
+        {
+            "role": "system",
+            "content": (
+                "Summarize the following conversation concisely. "
+                "Preserve all key facts, decisions, task context, file paths, "
+                "and information the user or assistant explicitly mentioned. "
+                "Do not omit anything that could be needed later."
+            ),
+        },
+        {"role": "user", "content": "Summarize:\n\n" + "\n".join(parts)},
+    ]
+
+    try:
+        summary = await complete_fn(summary_prompt)
+        return summary + "\n" + recent_text
+    except Exception:
+        return "\n".join(parts) + "\n" + recent_text
+
+
+async def system_prompt_rebuild_checker() -> bool:
+    """Activate Memory on the first turn after restoring an existing Session."""
+    agent_dir = anyio.Path(__file__).parent.parent
+    await _activate_fusion_memory(agent_dir)
+    return False
+
+
+async def _activate_fusion_memory(workspace_dir: anyio.Path) -> None:
+    mcp_path = Path(str(workspace_dir)) / "tools" / "_fusion_memory_mcp.py"
+    module_name = f"fusion_memory_tool__fusion_memory_mcp_{hashlib.sha256(str(mcp_path).encode()).hexdigest()[:12]}"
+    module = sys.modules.get(module_name)
+    created = False
+    try:
+        if module is None:
+            source = await anyio.Path(str(mcp_path)).read_text(encoding="utf-8")
+            module = types.ModuleType(module_name)
+            module.__file__ = str(mcp_path)
+            sys.modules[module_name] = module
+            created = True
+            exec(compile(source, str(mcp_path), "exec"), module.__dict__)
+        client = module.__dict__.get("CLIENT")
+        activate = getattr(client, "activate_current_session", None)
+        if activate is not None:
+            await activate(workspace_dir)
+    except Exception as exc:
+        if created:
+            sys.modules.pop(module_name, None)
+        logger.warning("Fusion Memory activation skipped after %s", type(exc).__name__)
 
 
 if __name__ == "__main__":

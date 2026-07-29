@@ -7,8 +7,8 @@
 psi-agent 是一个**微内核**式的 agent 框架。核心理念是：
 
 1. **最小化核心**: 框架本身只提供通信协议、组件组合和 tool/Schedule 加载机制
-2. **功能由 workspace 定义**: agent 的能力（tools、system prompt、定时任务）完全由 workspace 目录中的文件定义
-3. **组件无状态**: AI 后端不保存任何状态；Session 只维护一个内存中的 history；Channel 不管理历史
+2. **功能由 agent 包定义**: tools、system prompt 从 **agent** 目录加载（``Session.agent``；空则与 workspace 同根兼容）。用户 **workspace** 是打开目录（相对文件 IO），**定时任务 `schedules/` 例外地从 workspace 加载**（见坑 17）；**AppData** 是进程记忆区（todos / history / Gateway state）
+3. **组件无状态**: AI 后端不保存任何状态；Session 只维护一个内存中的 history（落盘在 AppData）；Channel 不管理历史
 4. **组合优于继承**: 三个独立组件通过 socket 任意组合
 5. **一切异步**: 所有 IO 操作使用 `anyio`，永不使用 `asyncio` 原生 API 或 `pathlib`
 6. **零抑制**: 不堆 `noqa`，不设 `per-file-ignores`。代码本身应符合规则
@@ -31,7 +31,10 @@ Socket 文件天然隔离——不同项目用不同文件路径，互不干扰�
 AI 后端无状态，不保存任何信息。多个 Session 可以共享同一个 AI backend。如果反过来（Session 是 Server），每个 Session 都要自行配置上游 API，违反"组合"原则。
 
 **为什么 Session history 持久化为 JSONL？**
-JSONL 格式零依赖，逐行追加读写简单。文件按 `workspace/histories/{session_id}.jsonl` 存储（workspace 默认当前目录），`session_id` 可由 CLI 传入以 resume 之前的会话。`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器——``Conversation`` 的 ``add / commit / rollback`` 实现回合级原子性。仅在回合成功完成（stop / tool_calls 全部执行 / unexpected finish / max rounds）时落盘；异常时 ``__aexit__`` 自动 ``rollback()`` 恢复内存到快照，磁盘不落地任何新消息。
+JSONL 格式零依赖，逐行追加读写简单。现路径为 AppData ``{appdata}/histories/{session_id}.jsonl``（legacy ``{workspace}/histories/`` 双读），`session_id` 可由 CLI 传入以 resume。`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器——``Conversation`` 的 ``add / commit / rollback`` 实现回合级原子性。仅在回合成功完成（stop / tool_calls 全部执行 / unexpected finish / max rounds）时落盘；异常时 ``__aexit__`` 自动 ``rollback()`` 恢复内存到快照，磁盘不落地任何新消息。细节见 `session/AGENTS.md` / `gateway/AGENTS.md`。
+
+**为什么拆 agent / workspace / AppData 三区？**
+能力包（tools / system）与用户打开目录、进程记忆区解耦：同一 agent 可挂多个 workspace；定时任务 `schedules/` 跟着 **workspace** 走（同一 agent 挂不同 workspace 应有各自的提醒，见坑 17）；todos / history / Gateway `state/` 进 AppData（`platformdirs` / `--appdata` / `PSI_APPDATA`），避免写进用户项目树。路径助手在 ``psi_agent._appdata``（跨 Session/Gateway，避免循环导入）；**禁止**把 AppData 根塞进 Session ContextVar。分层细节见各层 `AGENTS.md`。
 
 **为什么 socket 文件不自动 unlink？**
 支持热换 Server。每个 `session.post()` 新建 TCP/Unix 连接，由 `UnixConnector` 按路径重新 connect。只要新的服务进程绑定到同一 socket 路径，客户端无需重启即可继续通信。auto-unlink 会破坏这个能力——socket 文件需要保留，由新进程手动接管。
@@ -116,6 +119,7 @@ src/
     ├── cli.py                  # tyro CLI 入口，定义 top-level Union
     ├── _yaml.py               # 共享 YAML header 解析（scheduler + workspace system.py）
     ├── _sockets.py             # 共享 socket 工具（prefix-based transport 解析）
+    ├── _appdata.py             # AppData 路径助手（todos/history/state；Session↔Gateway 共享）
     ├── _run.py                 # YAML 配置批量启动（psi-agent run config.yml）
     ├── _logging.py              # loguru 配置，verbose→DEBUG
     ├── ai/
@@ -156,6 +160,10 @@ src/
         ├── _manager.py             # 共享类型 + helpers
         ├── _ai_manager.py         # AIManager
         ├── _session_manager.py    # SessionManager
+        ├── _scheduler_manager.py  # SchedulerManager — 每 workspace 一个全量激活的调度 Session（触发其 schedules/）
+        ├── _router_manager.py      # RouterManager — 内部语义路由服务注册表
+        ├── _feishu_manager.py      # FeishuManager — 飞书 open_id → Session 路由
+        ├── _oauth_manager.py       # OAuthRelay — OAuth 回调中继（免手抄授权码）
         ├── _title_manager.py       # 会话标题 CRUD + AI 生成
         ├── _state.py               # GatewayState — 状态持久化 (state/latest.json)
         ├── server.py               # aiohttp REST handlers
@@ -163,16 +171,18 @@ src/
         ├── _history_manager.py     # JSONL 历史读取
         ├── _workspace_manager.py   # 目录浏览
         ├── _openapi.py             # OpenAPI schema 生成
+        ├── _attention.py           # AttentionHub — tray/webview 注意力提示
         ├── _tray.py                # 系统托盘图标 (pystray)
         ├── _webview.py            # 原生 webview 窗口 (pywebview)
-        └── spa/                    # Vue 3 SPA 前端（Vite + SFC）
+        ├── spa/                    # Vue 3 SPA v1（Vite + SFC）
+        └── spa-v2/                 # React SPA v2（任务工作台；默认 GET /）
 ```
 
 项目使用 **src-layout**（`src/psi_agent/`），由 `uv sync` 安装为 editable package。
 
 各层的详细设计文档见：
-- **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理
-- **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化
+- **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理、context compaction 触发
+- **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化、context compaction
 - **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
 - **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包
 - **Workflow Graph**: `docs/architecture/workflow/2026-07-23-workflow-graph-design.zh.md` — 允许有环的声明式 Step–Artifact 图及待讨论语义；具体 Core IR 后端位于 `examples/haitun-workspace/skills/fusion-flow/fusion_flow/graph_compiler.py`
@@ -181,15 +191,16 @@ src/
 
 ## 核心通信协议
 
-所有组件通过 **aiohttp** 以 **OpenAI Chat Completions HTTP/SSE** 格式通信。传输支持 Unix socket、TCP、Windows Named Pipe，由地址前缀自动检测（`psi_agent._sockets`）：
+所有组件通过 **aiohttp** 以 **OpenAI Chat Completions HTTP/SSE** 格式通信。传输支持 Unix socket（仅 POSIX）、TCP、Windows Named Pipe（仅 Windows），由地址前缀自动检测（`psi_agent._sockets`）；平台与地址不匹配时抛 `ValueError` 快速失败，详见「关键注意事项」第 17 条：
 
 - **AI socket**: Session 作为客户端访问，`POST /chat/completions`
 - **Channel socket**: Session 作为服务端，`POST /chat/completions`
 
 SSE 流中的特殊字段：
+- `delta.reasoning` — 过程流（刻意压缩）：AI thinking + tool 进度仍走同一槽，便于 Session 出口与 AI 层 OpenAI 形协议同构复用；用正交字段 ``delta.kind``（`thinking` / `tool_call` / `tool_result`）供 UI 白名单渲染（Cursor 风进程行只订 tool_*，默认不晒 thinking）
 - `delta.content` — AI 最终文本回复
-- `delta.reasoning` — 聚合了 AI thinking + tool_call 意图 + tool_call 结果
-- `delta.tool_calls` — 部分 tool call 定义（流式累积）
+- `delta.tool_calls` — 部分 tool call 定义（流式累积；Agent 侧协议，与 UI 的 tool 进度 `kind` 不同）
+- `delta.kind` — 仅当本帧带 `reasoning` 时有效的 provenance（见上）
 
 错误响应有两种形式：
 
@@ -205,6 +216,13 @@ SSE 流中的特殊字段：
    所有层统一使用 `finish_reason="error"` 标记流式错误，Session 检测到后不写入 conversation history。
 
 > `finish_reason="error"` 是 psi-agent 的扩展，不在 OpenAI 标准枚举内（标准仅 `stop`/`length`/`tool_calls`/`content_filter`/`function_call`）。仅用于内部层间通信，不暴露给外部。
+
+3. **Compaction 信号（SSE 层面）**：Token 用量超过 `max_context_tokens` 阈值时，AI 层在上游 stream 结束后发送额外 SSE 事件，通知 Session 触发 context compaction：
+   ```json
+   {"choices": [{"delta": {}, "finish_reason": "compaction_needed"}],
+    "psi_compaction": {"needed": true, "prompt_tokens": N, "threshold": M}}
+   ```
+   `psi_compaction` 和 `finish_reason="compaction_needed"` 均为 psi-agent 内部扩展。
 
 ## 日志约定
 
@@ -263,8 +281,19 @@ SSE 流中的特殊字段：
 
 19. **WorkflowGraph 可保存有环，但 one-shot plan 不执行环**：`workflow_execution.generate_plan()` 把 producer/consumer 数据前驱与 `StepNode.depends_on` 显式顺序前驱合并为 `Await`。它同时启动所有 Fiber；Foreach、retry、input+producer 和 circular await 在计划阶段报错，不能静默忽略或留到运行期死锁。资源需求由执行器的 allocator 在 dispatch 前处理，不再由 planner 拒绝。
 
-## 测试约定
+20. **Windows 上裸路径地址直接拒绝（刻意为之，勿"修掉"）**：`_sockets.py` 的 `resolve_connector_and_endpoint` / `create_site` 在 `sys.platform == "win32"` 且地址落到 Unix 分支时**主动 `raise ValueError`**。因为 Windows 的 asyncio 没有 `create_unix_connection` / `create_unix_server`，若继续走 `UnixConnector` / `UnixSite`，aiohttp 会在 connect/listen 深处抛一个**不带任何上下文的 `NotImplementedError`**，极难定位（曾导致飞书 channel 每条消息崩、只显示 `generation interrupted`）。真实诱因：`channel feishu --session-socket \\.\pipe\...` 经 POSIX shell 传参时反斜杠被吞成单反斜杠 `\.\pipe\...`，匹配不上命名管道前缀而落到裸路径分支。**这是 fail-fast 前置校验，不是可删的多余检查**——非 Windows（POSIX）行为完全不变，Unix socket 照常工作。Windows/bash 下传管道地址需用四反斜杠 `'\\\\.\\pipe\\...'` 才能让程序收到两根反斜杠开头的 `\\.\pipe\...`。反方向同样门控：非 Windows 上传 `\\.\pipe\name` 也**主动 `raise ValueError`**，因为命名管道要 `ProactorEventLoop`，而 asyncio 在非 win32 平台根本不导出 `ProactorEventLoop`（`asyncio/__init__.py` 只在 `sys.platform == 'win32'` 时 `from .windows_events import *`），aiohttp 那句 `isinstance(loop, asyncio.ProactorEventLoop)` 门控自己会先抛裸 `AttributeError`。两个方向都是 fail-fast 前置校验。
 
+21. **定时任务归 workspace，触发权归 (session × schedule)（刻意为之，勿"修"回每个 Session 都触发、也勿退回单个布尔）**：`schedules/` 从 **workspace** 加载（不是 agent 包）；每个 Session 都读到全部条目，但**是否起 runner 逐条决定**——`ScheduleRegistry(active_names=…, deactive_names=…)`：白名单 `None`/空 → 一条都不触发（所有用户会话的默认），`{"*"}` → 全部，具名集合 → 仅这些；黑名单**优先**做减法。两个名单都要，因为白名单是枚举、覆盖不到启动后新建的 `TASK.md`——「除某几条以外全归我」只能写成 `*` + 黑名单。未激活的条目照旧被加载进 `ScheduleRegistry.schedules` 并计入 `refresh()` 的 added/updated/removed 统计，只是 `_start_runner` no-op（想只看会触发的用 `active_schedules` property）。因为 Gateway 一进程多 Session、飞书按会话各 spawn 一个（私聊按 `open_id` 每人一个、群聊按 `chat_id` 每群一个），若同一条被多个 Session 激活，一条定时提醒会被在线会话数乘一遍；不变式是**一条 schedule 恰好被一个 Session 激活**。粒度是逐条而非整个 Session 一个布尔：布尔只能表达「全触发 / 全不触发」，表达不了「A 条归调度 Session、B 条归某个用户会话」。Gateway 侧 `SchedulerManager.ensure()` 为每个 workspace 维护唯一一个全量激活（`("*",)`）的调度 Session——去重发生在**构造期**，因此没有租约 / 选主 / 接管这类运行时协调。详见 `session/AGENTS.md`「调度归属 workspace，触发权归属 (session × schedule)」与 `gateway/AGENTS.md`「SchedulerManager」。
+
+22. **飞书群聊整群共用一个 Session，且私聊 session_id 里的 `-` 必须转义（两条都刻意为之，勿"修掉"）**：飞书路由键分两支——私聊按发送者 `open_id`（`feishu-<open_id>`，一人一份上下文），**群聊按 `chat_id`**（`feishu-chat-<chat_id>`，**整群共用一份**）。群聊不按发言者拆，因为群里的对话本就是共享的：A 问完 B 追问「那第二点呢」，机器人必须看得见 A 那轮；要区分谁在说话靠 `_context_header` 每条消息注入的 `sender_open_id`（已有机制），不靠拆 session。第二条：`_sanitize_open_id` 的白名单 `[^A-Za-z0-9._-]` **允许** `-` 通过，所以私聊侧派生 session_id / workspace 时必须额外把 `-` 换成 `_`——否则某人 open_id 恰为 `chat-oc_x` 时派生出的 `feishu-chat-oc_x` 与群 `oc_x` 的 session id **逐字节相同**，两个陌生人共享同一份上下文与 workspace，是**隐私事故**而非美观问题。`_session_id` 与 `_workspace_for` 两处必须同步转义，只改一处会「session 分开了、workspace 还是同一个目录」。同理 `chat_id` 为空时**不**按群路由（否则建出 `feishu-chat-` 无主 session），宁可这条消息不隔离。channel 侧 `_GatewayRouteProvider._cache_key` 复制了同款群聊判定（同群不同发言者须命中同一条缓存，否则每人各打一次 Gateway），**两处判定改动时必须同步**。详见 `gateway/AGENTS.md`「FeishuManager」与 `channel/AGENTS.md`「按会话独立渠道」。
+
+23. **`tg.__aexit__(None, None, None)` 不取消子任务——常驻任务会把它挂死**：传三个 `None` 是「正常退出」语义，anyio 于是**等**子任务自己结束。若任务组里有 `start_soon` 起的常驻 server（Gateway 的 AI / Session、channel core），它们永不返回，`__aexit__` 就永久阻塞。在测试里这最阴：`finally: await tg.__aexit__(None, None, None)` 会把测试体内**任何**断言失败从「失败」放大成「挂死」，traceback 都看不到（曾让 `test_manager.py` 在 Windows 上整个文件跑不完，且因 CI 只跑 Linux 而长期隐身）。退组前必须先 `tg.cancel_scope.cancel()`，或显式 `delete()` 掉每个 spawn 出来的实体。参见 `tests/psi_agent/gateway/test_manager.py` 的 `_close()` 与 `test_feishu_manager.py` 的 `_drain()`。
+
+24. **测试断言跨平台路径不能写死后缀**：`_socket_path()` 在 POSIX 上给 `/tmp/.../{id}.sock`、在 Windows 上给 `\\.\pipe\...`（无后缀）。断言 `.endswith(".sock")` 在 `ubuntu-latest` 的 CI 里永远通过，却在每台 Windows 开发机上必然失败——叠加上一条就是挂死。用平台判定函数（`test_manager.py` 的 `_is_socket_path`）。
+
+25. **重定向家目录必须 patch `Path.home()` 本身，不能只 `setenv("HOME")`**：`Path.home()` 在 Windows 上读 `USERPROFILE`、在 POSIX 上才读 `HOME`，所以 `monkeypatch.setenv("HOME", str(tmp_path))` 在 Windows 上**完全不生效**。后果是双重的：断言落点的用例直接失败，而**没有**断言落点的用例会「安静地通过」并往开发者真实目录里写文件（`~/Downloads/.psi/` 曾被测试污染）。CI 三个 job 全是 `ubuntu-latest`，这类差异永远照不出来。正确写法 `monkeypatch.setattr(Path, "home", lambda: tmp_path)`，见 `tests/psi_agent/gateway/test_chat_manager.py` 的 `fake_home` fixture。凡测试碰到会往家目录写盘的代码（目前是 `_chat_manager._downloads_path`），都要先重定向，且**顺手补一条落点断言**——没有断言就等于没有防线。
+
+## 测试约定
 - **框架**: `pytest` + `pytest-asyncio`（`asyncio_mode = "auto"`，anyio backend）
 - **异步测试**: `@pytest.mark.anyio`
 - **测试目录结构**: 镜像 `src/psi_agent/`（如 `ai/server.py` → `tests/psi_agent/ai/test_server.py`）
@@ -320,6 +349,14 @@ async def handler(request):
 - 禁止使用 raw `any`——始终用 `typing.Any`
 - `anyio.abc.ByteStream` → 用 `Any` 代替（ty 不识别的第三方类型）
 
+## 注释约定
+
+- **语种与风格跟随所在文件**，不跟随个人习惯：改一个文件前先看它现有的注释/docstring 是英文还是中文，然后与之保持一致。**单个 `.py` 文件内必须统一**
+- 仓库整体是混合的（`src/` 与 `tests/` 均约 1:6 中英），但这不是「随便写」的许可——它是逐文件收敛的结果。典型：`gateway/_feishu_manager.py`、`gateway/_scheduler_manager.py` 与其对应测试通篇中文；`session/schedule_registry.py`、`session/agent.py`、`gateway/server.py`、`gateway/_session_manager.py` 通篇英文
+- **`刻意为之:` 是例外**，可嵌在英文注释里作反直觉行为的标记词（如 `# prompt = LLM turn on task_content; tool = direct ToolRegistry call (刻意为之).`）。它是全仓统一的检索词，配合「改动后自检清单」第 1 条使用，不算破坏语种一致性
+- 新建文件按**同层同类邻居**定语种（如 `gateway/_scheduler_manager.py` 对标 `gateway/_feishu_manager.py`），别按仓库全局比例猜
+- 中文注释里避免全角 `，`、`（`、`）`、`：` 与 `×`——ruff 的 RUF001/002/003 报 ambiguous unicode，一律改半角 `,` `(` `)` `:` 和 `x`；`。`、`——`、`「」`、`→` 不在规则里，可用（本条以 `ruff check --isolated --select RUF001,RUF002,RUF003` 实测为准）
+
 ## 开发命令
 
 ```bash
@@ -352,4 +389,5 @@ uv build                         # 构建
 - [x] 更多 channel 类型 — Gateway REST API + Web Console SPA
 - [ ] 更多 AI 后端（Gemini、本地模型等）
 - [x] Session history 持久化（已完成）
+- [x] Context compaction — 超 token 阈值时 AI 层发信号，Session 调用 system.py compact_history 压缩
 - [ ] Channel 广播/多客户端队列

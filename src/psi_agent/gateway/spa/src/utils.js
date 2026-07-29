@@ -51,6 +51,13 @@ markedRenderer.table = function (token) {
   const tableHtml = `<table>\n<thead>\n${header}</thead>\n${body}</table>\n`
   return wrapMdTableHtml(tableHtml)
 }
+// Markdown / autolink → new browser tab. File chips / preview drawers are
+// buttons, not <a>, so they stay in-page.
+markedRenderer.link = function (token) {
+  const html = marked.Renderer.prototype.link.call(this, token)
+  if (!html.startsWith('<a ')) return html
+  return html.replace('<a ', '<a target="_blank" rel="noopener noreferrer" ')
+}
 marked.use({ renderer: markedRenderer })
 
 const TABLE_ROW_RE = /^\s*\|.+\|\s*$/

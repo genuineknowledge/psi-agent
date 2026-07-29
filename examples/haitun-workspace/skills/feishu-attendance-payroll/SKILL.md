@@ -16,6 +16,15 @@ Uses existing tools:
 - `feishu_attendance_query(user_ids, date_from, date_to, ...)` — get their clock-in results
 - an output tool of the user's choice (`powerpoint`/excel skill, or `feishu_bitable_create_record`)
 
+To explain *why* a day is Normal/Late/Early/Lack — the punch time segments, the
+flexible window, and the late/early thresholds behind the result — read the
+admin-console config (all read-only):
+- `feishu_attendance_groups()` / `feishu_attendance_group_config(group_id)` — the
+  考勤组: punch method, 外勤/PC 打卡, 缺卡规则, bound shift ids, 排班特殊日期
+- `feishu_attendance_shifts()` / `feishu_attendance_shift_config(shift_id)` — the
+  班次: 打卡时间段 (`punch_time_rule`), 弹性规则 (`flexible_rule`/`is_flexible`),
+  迟到/早退/缺卡 阈值
+
 ## Every run: get the rule from the user first
 
 Before computing, confirm with the user (ask if not given):

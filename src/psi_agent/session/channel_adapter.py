@@ -59,7 +59,9 @@ class ChannelAdapter:
             async with aclosing(chunks):
                 async for chunk in chunks:
                     await response.write(ChannelAdapter._to_sse(chunk))
-                    logger.debug(f"SSE chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}")
+                    logger.debug(
+                        f"SSE chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}, kind={chunk.kind!r}"
+                    )
                 await response.write(b"data: [DONE]\n\n")
         except AgentError as e:
             await ChannelAdapter._write_error(response, e.message)
@@ -74,7 +76,7 @@ class ChannelAdapter:
 
     @staticmethod
     def _to_sse(chunk: AgentChunk) -> bytes:
-        delta = DeltaMessage(content=chunk.content, reasoning=chunk.reasoning)
+        delta = DeltaMessage(content=chunk.content, reasoning=chunk.reasoning, kind=chunk.kind)
         cc = ChatCompletionChunk(choices=[StreamChoice(index=0, delta=delta)])
         return cc.to_sse().encode()
 

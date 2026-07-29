@@ -32,10 +32,15 @@ from psi_agent.workflow_execution import (
     generate_plan,
 )
 
-_WORKSPACE_DIR = Path(__file__).parent.parent
-_SKILL_DIR = _WORKSPACE_DIR / "skills" / "fusion-flow"
-if str(_SKILL_DIR) not in sys.path:
-    sys.path.insert(0, str(_SKILL_DIR))
+_TOOLS_DIR = Path(__file__).parent
+_AGENT_DIR = _TOOLS_DIR.parent
+_WORKSPACE_DIR = _AGENT_DIR
+_SKILL_DIR = _AGENT_DIR / "skills" / "fusion-flow"
+for _import_dir in (_TOOLS_DIR, _SKILL_DIR):
+    if str(_import_dir) not in sys.path:
+        sys.path.insert(0, str(_import_dir))
+
+_paths = __import__("_runtime_paths")
 
 from fusion_flow.job_store import (  # noqa: E402
     HumanRequestSpec,
@@ -94,6 +99,15 @@ os.fchdir(cwd_fd)
 os.execve(exec_path or executable_fd, argv, os.environ)
 """
 _JOB_STORE_RELATIVE_PATH = Path(".psi") / "fusion-flow" / "runs"
+
+
+def _workspace_dir() -> Path:
+    """Return this turn's user workspace, preserving the single-root fallback."""
+
+    if _WORKSPACE_DIR != _AGENT_DIR:
+        return _WORKSPACE_DIR
+    return Path(_paths.workspace_dir())
+
 
 if sys.platform == "win32":
     import ctypes
@@ -394,7 +408,7 @@ def _checkpoint_human_response(
 
 
 def _job_store() -> JobStore:
-    return JobStore(_WORKSPACE_DIR / _JOB_STORE_RELATIVE_PATH)
+    return JobStore(_workspace_dir() / _JOB_STORE_RELATIVE_PATH)
 
 
 async def _read_flow_source(flow_path: str) -> str:
@@ -403,7 +417,7 @@ async def _read_flow_source(flow_path: str) -> str:
 
 
 async def _resolve_flow_path(flow_path: str) -> anyio.Path:
-    workspace = await anyio.Path(str(_WORKSPACE_DIR)).resolve()
+    workspace = await anyio.Path(_workspace_dir()).resolve()
     candidate = anyio.Path(flow_path)
     if candidate.is_absolute():
         raise ValueError("flow_path must be relative to the workspace")
@@ -436,7 +450,7 @@ def _instruction_resolver(flow_path: str) -> Callable[[str], Awaitable[str]]:
         if bundle_dir is None:
             workflow_path = await _resolve_flow_path(flow_path)
             bundle_dir = await workflow_path.parent.resolve()
-            workspace = await anyio.Path(str(_WORKSPACE_DIR)).resolve()
+            workspace = await anyio.Path(_workspace_dir()).resolve()
         resolved = await (bundle_dir / str(relative)).resolve()
         if not Path(str(resolved)).is_relative_to(Path(str(bundle_dir))):
             raise ValueError("instruction path must stay inside the workflow directory")
@@ -711,7 +725,7 @@ def _close_prepared_program(prepared: _PreparedProgram) -> None:
 async def _prepare_program(invocation: ProgramInvocation) -> _PreparedProgram:
     """Pin the executable before validation so path replacement cannot change the target."""
 
-    workspace = await anyio.Path(_WORKSPACE_DIR).resolve()
+    workspace = await anyio.Path(_workspace_dir()).resolve()
     workspace_path = Path(str(workspace))
     if invocation.cwd is None:
         cwd_candidate = workspace
@@ -1071,16 +1085,17 @@ async def _load_step_tools() -> ToolRegistry:
     async with _STEP_TOOLS_LOAD_LOCK:
         if _STEP_TOOLS_SOURCE is None:
             _STEP_TOOLS_SOURCE = await ToolRegistry.load(
-                _WORKSPACE_DIR / "tools",
+                _TOOLS_DIR,
                 session_id=_STEP_TOOL_SESSION_ID,
             )
         else:
             await _STEP_TOOLS_SOURCE.refresh()
 
+        workspace = _workspace_dir()
         excluded_tools = _WORKFLOW_LAUNCHERS | _NESTED_TURN_TOOLS
         tools = {name: tool for name, tool in _STEP_TOOLS_SOURCE.tools.items() if name not in excluded_tools}
         funcs = {
-            name: _bind_step_tool_to_workspace(name, func, _WORKSPACE_DIR)
+            name: _bind_step_tool_to_workspace(name, func, workspace)
             for name in tools
             if (func := _STEP_TOOLS_SOURCE.get(name)) is not None
         }
@@ -1101,6 +1116,7 @@ def _build_human_preparer_tools(source: ToolRegistry) -> ToolRegistry:
     source_read = source.get("read")
     if source_read is None:
         return _StepToolRegistry()
+    workspace_root = _workspace_dir()
 
     async def read(file_path: str, offset: int = 0, limit: int = 0) -> str:
         """Read one text file that resolves inside the Haitun workspace.
@@ -1114,7 +1130,7 @@ def _build_human_preparer_tools(source: ToolRegistry) -> ToolRegistry:
             The requested file content.
         """
 
-        workspace = await anyio.Path(_WORKSPACE_DIR).resolve()
+        workspace = await anyio.Path(workspace_root).resolve()
         candidate = anyio.Path(file_path)
         if not candidate.is_absolute():
             candidate = workspace / candidate
@@ -1158,6 +1174,8 @@ async def _create_step_agent(
         conversation=conversation,
         schedule_registry=_StepScheduleRegistry(),
         tool_registry=tool_registry,
+        workspace_path=_workspace_dir(),
+        agent_path=_AGENT_DIR,
     )
     return agent, conversation
 
@@ -1193,9 +1211,10 @@ async def _complete_agent_step(
     tool_registry: ToolRegistry,
 ) -> dict[str, object]:
     agent, conversation = await _create_step_agent(ai_socket, tool_registry)
+    workspace = _workspace_dir()
     message = (
         "Execute exactly one assigned FusionFlow step. Do not start another workflow.\n"
-        f"Workspace root: {_WORKSPACE_DIR}\n"
+        f"Workspace root: {workspace}\n"
         "Resolve every relative file path against that workspace root.\n"
         f"Step: {context.step_id}\n"
         f"Executor: {context.executor_id}\n"
@@ -1376,7 +1395,7 @@ async def _execute_persisted_run(
                 resource_capacities=run.resource_capacities,
                 strict_executors=True,
                 supported_executor_kinds=("Agent", "Human", "Program"),
-                work_dir=_WORKSPACE_DIR,
+                work_dir=_workspace_dir(),
                 run_program=_run_program,
                 contextual_prepare_human_instruction=prepare_human,
                 contextual_request_human=request_human,
@@ -1514,7 +1533,7 @@ async def run_flow(
         strict_executors=True,
         supported_executor_kinds=("Agent", "Program"),
         resolve_instruction=_cached_instruction_resolver(instruction_files),
-        work_dir=_WORKSPACE_DIR,
+        work_dir=_workspace_dir(),
         run_program=_run_program,
     )
     return json.dumps(outputs, ensure_ascii=False, sort_keys=True)

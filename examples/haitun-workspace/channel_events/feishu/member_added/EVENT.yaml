@@ -1,0 +1,6 @@
+# Agent-package Channel event (acts on Feishu Channel; not Session catalog).
+name: feishu.chat.member_added
+source: feishu
+kind: platform_map
+platform_event: im.chat.member.user.added_v1
+description: "有人进群 — 官方推送映射为统一信封后 POST /events"

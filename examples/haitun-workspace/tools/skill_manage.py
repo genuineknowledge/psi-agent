@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-import os
-import pathlib
 import re
 from datetime import UTC, datetime
 
+import _runtime_paths as _paths
 import anyio
 
 
 def _skills_dir() -> anyio.Path:
-    workspace_dir = os.environ.get("WORKSPACE_DIR", "")
-    if workspace_dir:
-        return anyio.Path(workspace_dir) / "skills"
-    return anyio.Path(str(pathlib.Path(__file__).resolve().parents[1])) / "skills"
+    # Skills live in the agent package (not the user workspace).
+    return _paths.resolve_agent() / "skills"
 
 
 def _validate_skill_name(skill_name: str) -> str | None:

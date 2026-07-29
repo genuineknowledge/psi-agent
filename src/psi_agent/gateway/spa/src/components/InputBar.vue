@@ -64,8 +64,9 @@
       ></textarea>
 
       <ModelPanel
-        @select-ai="$emit('select-ai', $event)"
+        @select-backend="$emit('select-backend', $event)"
         @delete-ai="$emit('delete-ai', $event)"
+        @delete-router="$emit('delete-router', $event)"
       />
 
       <button v-if="streaming" class="send stop" @click="stopMessage" title="停止生成">
@@ -115,7 +116,7 @@ const activeWorkflowIndex = ref(0)
 const dismissedWorkflowText = ref(null)
 let workflowRequestVersion = 0
 
-defineEmits(['select-ai', 'delete-ai'])
+defineEmits(['select-backend', 'delete-ai', 'delete-router'])
 
 const activeWorkspacePath = computed(() => {
   if (draftSession.value?.workspace) return draftSession.value.workspace

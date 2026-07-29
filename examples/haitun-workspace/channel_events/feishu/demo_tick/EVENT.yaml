@@ -1,0 +1,8 @@
+# Agent-package synthetic Channel event (demo / template).
+# Copy this directory when adding a new custom producer — do not edit Channel src.
+name: feishu.synthetic.demo_tick
+source: feishu
+kind: synthetic
+description: >
+  自定义生产者模板：默认空转；设 HAITUN_CHANNEL_EVENTS_DEMO=1 时发出一次信封。
+  正式业务事件请新建目录，不要复用本 demo name。

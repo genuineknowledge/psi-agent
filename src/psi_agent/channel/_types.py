@@ -22,9 +22,15 @@ class TextChunk:
 
 @dataclass
 class ReasoningChunk:
-    """A streamed reasoning/thinking fragment. Output only — never sent as input."""
+    """A streamed reasoning/thinking fragment. Output only — never sent as input.
+
+    ``kind`` is optional provenance inside the compressed ``reasoning`` wire
+    slot (``thinking`` / ``tool_call`` / ``tool_result``). Missing kind keeps
+    legacy behaviour (CLI dim-prints everything).
+    """
 
     text: str
+    kind: str | None = None
 
 
 InputChunk = FileChunk | TextChunk

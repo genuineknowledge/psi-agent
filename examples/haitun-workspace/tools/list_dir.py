@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import _runtime_paths as _paths
 import anyio
 
 
@@ -13,8 +14,11 @@ async def list_dir(dir_path: str = ".", recursive: bool = False, max_entries: in
     files recursively by glob pattern (e.g. ``**/*.py``) rather than browsing a
     tree level by level, use ``find_files`` instead.
 
+    Relative paths (including default ``.``) resolve under the current Session
+    workspace (``get_workspace()``). Absolute paths are used as-is.
+
     Args:
-        dir_path: Path to the directory to list (defaults to the current directory).
+        dir_path: Path to the directory to list (defaults to the workspace root).
         recursive: When True, walk sub-directories and list their contents too.
         max_entries: Maximum number of entries to return (guards against huge trees).
 
@@ -22,11 +26,11 @@ async def list_dir(dir_path: str = ".", recursive: bool = False, max_entries: in
         A newline-separated listing of entries, or an error message if the path
         cannot be listed.
     """
-    path = anyio.Path(dir_path)
+    path = _paths.resolve_user_path(dir_path)
     if not await path.exists():
-        return f"[Error] Path not found: {dir_path}"
+        return f"[Error] Path not found: {path}"
     if not await path.is_dir():
-        return f"[Error] Not a directory: {dir_path}"
+        return f"[Error] Not a directory: {path}"
 
     entries: list[str] = []
     truncated = False
@@ -49,7 +53,7 @@ async def list_dir(dir_path: str = ".", recursive: bool = False, max_entries: in
     await collect(path, "")
 
     if not entries:
-        return f"(empty directory: {dir_path})"
+        return f"(empty directory: {path})"
 
     listing = "\n".join(entries)
     if truncated:

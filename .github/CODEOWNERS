@@ -1,8 +1,14 @@
 *                                       @hzhangxyz
 
-docs/                                   @hzhangxyz @wey-bo @zhangqh0 @idol643 @misakamikoto0721
+docs/                                   @hzhangxyz @wey-bo @zhangqh0 @idol643 @misakamikoto0721 @xzg2003
 
-src/psi_agent/gateway/spa/              @misakamikoto0721 @hzhangxyz
+tests/                                  @hzhangxyz @wey-bo @zhangqh0 @idol643 @misakamikoto0721 @xzg2003
+
+src/psi_agent/router/                   @xzg2003 @hzhangxyz
+
+src/psi_agent/gateway/                  @misakamikoto0721 @hzhangxyz
+
+src/psi_agent/channel/feishu/           @idol643 @hzhangxyz
 
 examples/haitun-workspace/              @idol643 @misakamikoto0721 @hzhangxyz
 
