@@ -120,6 +120,22 @@ or Program instructions remain errors. Materialized text is included in the
 durable workflow-definition digest used across Human wait/resume turns. Short
 inline Instruction text bypasses file resolution.
 
+Each Agent Step receives a `submit_step_result` tool whose schema requires its
+exact output Artifact IDs; a valid submission supplies the Step result, and the
+ephemeral agent turn closes after the current tool-call batch. Plain text remains
+a compatibility path only after a normally completed agent turn: the adapter
+accepts one strict JSON object or one standalone, line-delimited `json` fence.
+If parsing still fails and the Step has exactly one output, the original response
+is bound to that Artifact verbatim and a structured warning is emitted without
+logging the response body. Multi-output Steps receive two result-repair turns
+first; if both fail, the first invalid response is broadcast verbatim to every
+declared output and the same warning is emitted. This is deterministic copying,
+not semantic splitting, and is the runtime default rather than an end-user
+option. A zero-output Step may submit an exact empty object, but an invalid
+response still fails after its repair turns because there is nowhere to bind raw
+text. Truncated and tool-round-exhausted turns also fail instead of entering the
+raw-text fallback. No fallback publishes only part of the declared result.
+
 A Program executor must have exactly one `program_path(program) == path`
 declaration. Absolute and explicit `./...` paths pass through; other path
 identities require an injected resolver, and relative resolved paths require an

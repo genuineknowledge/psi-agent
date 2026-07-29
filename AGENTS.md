@@ -93,6 +93,18 @@ TypeScript 对同一份省略字段的配置按调用位置解析：普通 `sess
 `AgentConfig.prompt` 不保留兼容入口，避免把两层 prompt 再次混淆。配置 payload
 字段随之改名，旧运行缓存可能因 hash 变化而重新执行。
 
+**为什么 Agent Step 的单输出与多输出 fallback 不同？**
+每个 Agent Step 优先通过按 output Artifact ID 生成精确 schema 的
+`submit_step_result` 提交结果，只有正常结束的最终文本才保留为兼容路径，并接受
+一个精确 object 或独立行包围的单个 `json` fence。若 Step 恰好声明一个 output，
+无法解析为精确 object 的原始回复会直接、完整地绑定到唯一 Artifact，并记录不含
+原文正文的结构化 warning。若声明多个 output，则先允许两次结果修复，仍无效时把
+第一次无效回复完整广播到每个 output Artifact，并记录同样的 warning。这是确定性
+的整段复制而非语义拆分；广播是 runtime 默认策略，当前没有终端用户开关。零输出
+仍可提交精确的空 object；无效回复在修复失败后整体报错，因为没有 Artifact 可承载
+原文。截断、达到 tool round 上限等非正常结束也会直接失败，不进入原文 fallback。
+所有路径都不猜字段、不填默认值，也不发布部分结果。
+
 **为什么不能创建 `run_id="last"`？**
 `resume_from_run_id="last"` 与 TypeScript 的 `--resume=last` 一样是“选择字典序最新目录”的哨兵。为避免一个真实 run 永远无法按同名恢复，Python 明确保留这个名称并在创建目录前拒绝。
 

@@ -4,6 +4,7 @@ import json
 import socket as _s
 import textwrap
 from pathlib import Path
+from typing import Any, cast
 
 import anyio
 import pytest
@@ -12,7 +13,7 @@ from aiohttp import web
 from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.protocol import AgentChunk, AgentError, AgentRunOutcome, AiDelta
 from psi_agent.session.runtime_context import get_agent, get_workspace, runtime_scope
 from psi_agent.session.schedule_registry import ACTIVATE_ALL
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
@@ -85,6 +86,31 @@ async def test_agent_simple_response(tmp_path: Path) -> None:
         assert "Hello world" in all_content
     finally:
         await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
+async def test_agent_records_finish_reason(finish_reason: str) -> None:
+    class ScriptedAiClient:
+        ai_socket = "http://ai.example"
+
+        def stream(self, request: dict[str, Any]) -> Any:
+            del request
+
+            async def generate() -> Any:
+                yield AiDelta(content="partial", finish_reason=finish_reason)
+
+            return generate()
+
+    agent = SessionAgent(
+        ai_client=cast(AiClient, ScriptedAiClient()),
+        tool_registry=ToolRegistry(),
+    )
+    outcome = AgentRunOutcome()
+    chunks = [chunk async for chunk in agent.run({"role": "user", "content": "hi"}, outcome=outcome)]
+
+    assert "".join(chunk.content or "" for chunk in chunks) == "partial"
+    assert outcome.termination_reason == finish_reason
 
 
 @pytest.mark.anyio
@@ -417,6 +443,62 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
         chunks = [c async for c in agent.run({"role": "user", "content": "t"})]
         reasoning = "".join(c.reasoning or "" for c in chunks)
         assert "BOOM" in reasoning or "RuntimeError" in reasoning
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("arguments", "error_fragment"),
+    [
+        ("null", "must be a JSON object"),
+        ("[]", "must be a JSON object"),
+        ("{", "must be valid JSON"),
+    ],
+    ids=["null", "array", "malformed-json"],
+)
+async def test_agent_does_not_execute_tool_with_invalid_arguments(
+    arguments: str,
+    error_fragment: str,
+) -> None:
+    handler = await _make_inline_ai_handler([_tc("no_args", arguments), _stop("recovered")])
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    calls = 0
+    try:
+
+        async def no_args() -> str:
+            nonlocal calls
+            calls += 1
+            return "called"
+
+        tf = ToolFunction.from_callable(no_args)
+        agent = SessionAgent(
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(
+                files={
+                    "__test__": FileEntry(
+                        file_hash="",
+                        tools={"no_args": tf},
+                        funcs={"no_args": no_args},
+                    )
+                }
+            ),
+        )
+
+        chunks = [chunk async for chunk in agent.run({"role": "user", "content": "t"})]
+
+        assert calls == 0
+        reasoning = "".join(chunk.reasoning or "" for chunk in chunks)
+        assert error_fragment in reasoning
+        assert "recovered" in "".join(chunk.content or "" for chunk in chunks)
     finally:
         await runner.cleanup()
 
@@ -1189,10 +1271,12 @@ async def test_agent_saves_on_max_tool_rounds(tmp_path: Path) -> None:
             conversation=Conversation(path=history_path),
             max_tool_rounds=1,
         )
-        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        outcome = AgentRunOutcome()
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"}, outcome=outcome)]
 
         content = "".join(c.content or "" for c in chunks)
         assert "Max tool rounds reached" in content
+        assert outcome.termination_reason == "max_tool_rounds"
 
         loaded = await Conversation._load(history_path)
         assert any(m.get("content") == "[Max tool rounds reached]" for m in loaded)

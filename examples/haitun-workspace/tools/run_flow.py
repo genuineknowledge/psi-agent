@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -19,10 +20,12 @@ import anyio
 import anyio.lowlevel
 import anyio.to_thread
 from anyio.abc import ByteReceiveStream, Process
+from loguru import logger
 
 from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
+from psi_agent.session.protocol import AgentRunOutcome
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 from psi_agent.workflow_execution import (
@@ -60,8 +63,11 @@ _STEP_SYSTEM_PROMPT = (
     "You execute exactly one assigned FusionFlow Agent step. "
     "Follow the step instruction and inputs in the user message, using workspace tools when needed. "
     "Do not perform workspace onboarding and do not start another workflow. "
-    "Your final response must follow the requested JSON output contract exactly."
+    "Submit final artifacts with submit_step_result when it is available; "
+    "otherwise follow the requested JSON output contract exactly."
 )
+_JSON_FENCE_OPEN = re.compile(r"[ \t]*(?P<fence>`{3,})json[ \t]*", re.IGNORECASE)
+_JSON_FENCE_CLOSE = re.compile(r"[ \t]*(?P<fence>`{3,})[ \t]*")
 _HUMAN_PREPARER_SYSTEM_PROMPT = (
     "You prepare exactly one assigned FusionFlow Human step for another person. "
     "Use the workspace-confined read tool only when useful to inspect an instruction reference. "
@@ -240,6 +246,10 @@ class _InstructionReadError(ValueError):
         self.workspace_path = workspace_path
 
 
+class _AgentStepResultParseError(ValueError):
+    """An Agent Step final response that contains no parseable output object."""
+
+
 class _StepToolRegistry(ToolRegistry):
     async def refresh(self) -> dict[str, str]:
         return {}
@@ -262,6 +272,104 @@ def _parse_mapping(value: str, *, label: str) -> dict[str, object]:
     if not isinstance(parsed, dict) or not all(isinstance(key, str) for key in parsed):
         raise ValueError(f"{label} must be a JSON object with string keys")
     return cast(dict[str, object], parsed)
+
+
+def _parse_strict_agent_mapping(value: str, *, label: str) -> dict[str, object]:
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON object key {key!r}")
+            result[key] = item
+        return result
+
+    try:
+        parsed = json.loads(
+            value,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        json.dumps(parsed, allow_nan=False)
+    except (json.JSONDecodeError, OverflowError, ValueError) as error:
+        raise ValueError(f"{label} must be a strict JSON object") from error
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{label} must be a strict JSON object")
+    return parsed
+
+
+def _extract_json_fences(value: str) -> list[str]:
+    lines = value.splitlines(keepends=True)
+    fenced: list[str] = []
+    index = 0
+    while index < len(lines):
+        opener = _JSON_FENCE_OPEN.fullmatch(lines[index].rstrip("\r\n"))
+        if opener is None:
+            index += 1
+            continue
+
+        opening_width = len(opener.group("fence"))
+        body_start = index + 1
+        index = body_start
+        while index < len(lines):
+            closer = _JSON_FENCE_CLOSE.fullmatch(lines[index].rstrip("\r\n"))
+            if closer is not None and len(closer.group("fence")) >= opening_width:
+                fenced.append("".join(lines[body_start:index]))
+                index += 1
+                break
+            index += 1
+        else:
+            return []
+    return fenced
+
+
+def _parse_agent_step_result(
+    value: str,
+    *,
+    step_id: str,
+    output_ids: tuple[str, ...],
+) -> dict[str, object]:
+    label = f"response for step {step_id!r}"
+    try:
+        result = _parse_strict_agent_mapping(value, label=label)
+    except ValueError as error:
+        fenced = _extract_json_fences(value)
+        if len(fenced) != 1:
+            raise _AgentStepResultParseError(str(error)) from error
+        try:
+            result = _parse_strict_agent_mapping(fenced[0], label=label)
+        except ValueError as fenced_error:
+            raise _AgentStepResultParseError(str(fenced_error)) from fenced_error
+
+    expected = set(output_ids)
+    actual = set(result)
+    if actual != expected:
+        raise ValueError(
+            f"outputs for {step_id!r} must match exactly: expected {sorted(expected)}, got {sorted(actual)}"
+        )
+    return result
+
+
+def _warn_agent_result_fallback(
+    *,
+    step_id: str,
+    executor_id: str,
+    output_ids: tuple[str, ...],
+    fallback_mode: str,
+    validation_error: ValueError,
+    repair_attempts: int,
+) -> None:
+    validation_failure = (
+        "unparseable_result" if isinstance(validation_error, _AgentStepResultParseError) else "output_keys_mismatch"
+    )
+    logger.bind(
+        event="fusion_flow.agent_result_fallback",
+        step_id=step_id,
+        executor_id=executor_id,
+        output_artifact_ids=list(output_ids),
+        fallback_mode=fallback_mode,
+        validation_failure=validation_failure,
+        repair_attempts=repair_attempts,
+    ).warning("FusionFlow Agent Step committed a raw-response fallback")
 
 
 def _parse_resource_capacities(value: str) -> Mapping[str, ResourceCapacity] | None:
@@ -1184,21 +1292,22 @@ async def _complete_step_agent(
     agent: SessionAgent,
     conversation: Conversation,
     message: str,
+    *,
+    stop_when: Callable[[], bool] | None = None,
 ) -> str:
-    async with aclosing(agent.run({"role": "user", "content": message})) as chunks:
+    outcome = AgentRunOutcome()
+    async with aclosing(agent.run({"role": "user", "content": message}, outcome=outcome)) as chunks:
         async for _ in chunks:
-            pass
+            if stop_when is not None and stop_when():
+                return ""
 
+    if outcome.termination_reason != "stop":
+        raise RuntimeError(f"step agent ended with finish reason {outcome.termination_reason!r}")
     if not conversation.messages:
         raise RuntimeError("step agent produced no final assistant text")
     final = conversation.messages[-1]
     content = final.get("content")
-    if (
-        final.get("role") != "assistant"
-        or final.get("tool_calls")
-        or not isinstance(content, str)
-        or not content.strip()
-    ):
+    if final.get("role") != "assistant" or final.get("tool_calls") or not isinstance(content, str):
         raise RuntimeError("step agent produced no final assistant text")
     return content
 
@@ -1210,8 +1319,51 @@ async def _complete_agent_step(
     ai_socket: str,
     tool_registry: ToolRegistry,
 ) -> dict[str, object]:
-    agent, conversation = await _create_step_agent(ai_socket, tool_registry)
     workspace = _workspace_dir()
+    submitted: dict[str, object] | None = None
+    submission_error: ValueError | None = None
+
+    async def submit_step_result(**outputs: object) -> str:
+        nonlocal submission_error, submitted
+        if submitted is not None:
+            submission_error = ValueError("step result was submitted more than once")
+            raise submission_error
+        try:
+            encoded = json.dumps(outputs, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as error:
+            raise ValueError("step result must contain finite JSON values") from error
+        submitted = _parse_agent_step_result(
+            encoded,
+            step_id=context.step_id,
+            output_ids=context.output_ids,
+        )
+        return "Step result accepted."
+
+    tools = tool_registry.tools
+    funcs = {name: func for name in tools if (func := tool_registry.get(name)) is not None}
+    tools["submit_step_result"] = ToolFunction(
+        name="submit_step_result",
+        description="Submit this step's final artifacts and stop.",
+        parameters={
+            "type": "object",
+            "properties": {artifact_id: {} for artifact_id in context.output_ids},
+            "required": list(context.output_ids),
+            "additionalProperties": False,
+        },
+    )
+    funcs["submit_step_result"] = submit_step_result
+    agent, conversation = await _create_step_agent(
+        ai_socket,
+        _StepToolRegistry(
+            files={
+                "__fusion_flow_step_result__": FileEntry(
+                    file_hash="",
+                    tools=tools,
+                    funcs=funcs,
+                )
+            }
+        ),
+    )
     message = (
         "Execute exactly one assigned FusionFlow step. Do not start another workflow.\n"
         f"Workspace root: {workspace}\n"
@@ -1221,11 +1373,85 @@ async def _complete_agent_step(
         f"Reserved resources: {json.dumps(_resource_payload(context), ensure_ascii=False, sort_keys=True)}\n"
         f"Required output keys: {json.dumps(context.output_ids, ensure_ascii=False)}\n"
         f"{prompt}\n"
-        "Respond with exactly one JSON object keyed by exactly those output keys, "
-        "with no surrounding prose or Markdown."
+        "When the work is complete, call submit_step_result exactly once and by itself. "
+        "If tool calling is unavailable, respond with exactly one JSON object keyed by exactly "
+        "those output keys, with no surrounding prose or Markdown."
     )
-    response = await _complete_step_agent(agent, conversation, message)
-    return _parse_mapping(response, label=f"response for step {context.step_id!r}")
+    first_invalid_response: str | None = None
+    first_validation_error: ValueError | None = None
+
+    def stop_after_submission() -> bool:
+        nonlocal submission_error
+        if submitted is None:
+            return False
+        if conversation.messages:
+            tool_calls = conversation.messages[-1].get("tool_calls")
+            if isinstance(tool_calls, list):
+                submit_count = sum(
+                    call.get("function", {}).get("name") == "submit_step_result"
+                    for call in tool_calls
+                    if isinstance(call, dict)
+                )
+                if submit_count > 1:
+                    submission_error = ValueError("step result was submitted more than once")
+        return True
+
+    for attempt in range(3):
+        submission_error = None
+        response = await _complete_step_agent(
+            agent,
+            conversation,
+            message,
+            stop_when=stop_after_submission,
+        )
+        if submission_error is not None:
+            submitted = None
+            validation_error = submission_error
+        elif submitted is not None:
+            return submitted
+        else:
+            try:
+                return _parse_agent_step_result(
+                    response,
+                    step_id=context.step_id,
+                    output_ids=context.output_ids,
+                )
+            except _AgentStepResultParseError as error:
+                if len(context.output_ids) == 1:
+                    _warn_agent_result_fallback(
+                        step_id=context.step_id,
+                        executor_id=context.executor_id,
+                        output_ids=context.output_ids,
+                        fallback_mode="single_raw",
+                        validation_error=error,
+                        repair_attempts=attempt,
+                    )
+                    return {context.output_ids[0]: response}
+                validation_error = error
+            except ValueError as error:
+                validation_error = error
+            if first_invalid_response is None:
+                first_invalid_response = response
+                first_validation_error = validation_error
+        if attempt == 2:
+            if len(context.output_ids) > 1 and first_invalid_response is not None:
+                assert first_validation_error is not None
+                _warn_agent_result_fallback(
+                    step_id=context.step_id,
+                    executor_id=context.executor_id,
+                    output_ids=context.output_ids,
+                    fallback_mode="broadcast_raw",
+                    validation_error=first_validation_error,
+                    repair_attempts=attempt,
+                )
+                return dict.fromkeys(context.output_ids, first_invalid_response)
+            raise ValueError(f"step {context.step_id!r} result remained invalid after 3 attempts") from validation_error
+        message = (
+            f"Your previous step result was invalid: {validation_error}\n"
+            "Do not redo the step. Call submit_step_result exactly once and by itself "
+            f"with exactly these keys: {json.dumps(context.output_ids, ensure_ascii=False)}."
+        )
+    raise AssertionError("unreachable")
 
 
 async def _prepare_human_step(

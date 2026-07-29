@@ -107,6 +107,13 @@ class AgentError(Exception):
         super().__init__(message)
 
 
+@dataclass(slots=True)
+class AgentRunOutcome:
+    """Optional per-invocation terminal state populated by ``SessionAgent.run()``."""
+
+    termination_reason: str | None = None
+
+
 @dataclass
 class AgentChunk:
     """Semantic output of ``SessionAgent.run()`` — content and/or reasoning.

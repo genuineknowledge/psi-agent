@@ -27,6 +27,7 @@ from psi_agent.session.protocol import (
     REASONING_KIND_TOOL_RESULT,
     AgentChunk,
     AgentError,
+    AgentRunOutcome,
 )
 from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
@@ -260,6 +261,7 @@ class SessionAgent:
         extra_params: dict[str, Any] | None = None,
         *,
         response_kind: str | None = None,
+        outcome: AgentRunOutcome | None = None,
     ) -> AsyncGenerator[AgentChunk]:
         """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``.
 
@@ -273,6 +275,8 @@ class SessionAgent:
         When omitted, assistant/tool rows inherit the user message's ``kind``
         (Channel turns default to ``chat``).
         """
+        if outcome is not None:
+            outcome.termination_reason = None
         user_kind = message_kind(user_message)
         turn_response_kind = response_kind if response_kind is not None else user_kind
         user_message = with_kind(user_message, user_kind)
@@ -384,6 +388,8 @@ class SessionAgent:
                                         acc["function"]["arguments"] += func["arguments"]
 
                             if finish_reason == "error":
+                                if outcome is not None:
+                                    outcome.termination_reason = finish_reason
                                 logger.warning("AI returned error, stopping without saving to history")
                                 raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
 
@@ -399,19 +405,24 @@ class SessionAgent:
                                 self._conversation.add(with_kind(assistant_msg, turn_response_kind))
 
                                 # pre-compute args + yield tool-call intent
-                                tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any]]] = []
+                                tool_args: list[tuple[int, dict[str, Any], str, dict[str, Any], str | None]] = []
                                 for i, tc in enumerate(ordered_calls):
                                     func_info = tc.get("function", {})
                                     func_name = func_info.get("name", "")
                                     func_args_str = func_info.get("arguments", "{}")
+                                    argument_error: str | None = None
 
                                     try:
                                         args = json.loads(func_args_str)
                                         if not isinstance(args, dict):
                                             logger.warning(f"Tool arguments is not a dict: {type(args).__name__}")
+                                            argument_error = (
+                                                f"Error: Tool '{func_name}' arguments must be a JSON object"
+                                            )
                                             args = {}
                                     except json.JSONDecodeError, TypeError:
                                         logger.warning(f"Failed to parse tool call arguments: {func_args_str[:1000]!r}")
+                                        argument_error = f"Error: Tool '{func_name}' arguments must be valid JSON"
                                         args = {}
 
                                     logger.info(f"Executing tool: {func_name!r}({args!r})")
@@ -419,7 +430,7 @@ class SessionAgent:
                                         reasoning=(f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"),
                                         kind=REASONING_KIND_TOOL_CALL,
                                     )
-                                    tool_args.append((i, tc, func_name, args))
+                                    tool_args.append((i, tc, func_name, args, argument_error))
 
                                 # execute all tools concurrently
                                 results: list[str] = [""] * len(ordered_calls)
@@ -439,14 +450,16 @@ class SessionAgent:
                                             logger.error(f"Tool execution error ({fn!r}): {e!r}")
 
                                 async with anyio.create_task_group() as tg:
-                                    for i, _tc, func_name, args in tool_args:
-                                        if func_name:
-                                            tg.start_soon(_execute_one, i, func_name, args, results)
-                                        else:
+                                    for i, _tc, func_name, args, argument_error in tool_args:
+                                        if not func_name:
                                             results[i] = "Error: empty tool call name"
+                                        elif argument_error is not None:
+                                            results[i] = argument_error
+                                        else:
+                                            tg.start_soon(_execute_one, i, func_name, args, results)
 
                                 # yield results in order, save
-                                for i, tc, func_name, _args in tool_args:
+                                for i, tc, func_name, _args, _argument_error in tool_args:
                                     result = results[i]
                                     yield AgentChunk(
                                         reasoning=f"[Tool Result: {str(result)[:1000]}]",
@@ -468,6 +481,8 @@ class SessionAgent:
                                 break
 
                     if finish_reason == "stop":
+                        if outcome is not None:
+                            outcome.termination_reason = finish_reason
                         logger.debug("AI finished with stop")
                         logger.debug(
                             f"Stop: content={len(accumulated_content)} chars, "
@@ -487,6 +502,8 @@ class SessionAgent:
                         return
 
                     if finish_reason not in ("error", "stop", "tool_calls", "compaction_needed"):
+                        if outcome is not None:
+                            outcome.termination_reason = finish_reason or "missing_finish_reason"
                         logger.warning(
                             f"Unexpected finish_reason={finish_reason!r}, "
                             f"saving {len(accumulated_content)} chars of content and stopping"
@@ -502,6 +519,8 @@ class SessionAgent:
                         return
 
                 else:
+                    if outcome is not None:
+                        outcome.termination_reason = "max_tool_rounds"
                     logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
                     self._conversation.add(
                         with_kind(

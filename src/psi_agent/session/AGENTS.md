@@ -87,11 +87,15 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
    - tool 执行起止 → 仍写入 **同一** `reasoning` 槽（刻意压缩，便于 Session↔AI OpenAI 形同构），`kind="tool_call"|"tool_result"`；正文可继续带 `[Tool Call:]`/`[Tool Result:]` 过渡标记
    - tool_calls → 累积（按 index 拼接 partial JSON）
     - `finish_reason="tool_calls"` → 执行 tool → 结果追加到 history → 回到步骤 4
-    - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry + 若收到 compaction 信号则调用 `_maybe_compact()` → 释放锁
+   - finish_reason="stop" → 最终 content 追加到 history + `commit()` + 刷新 schedule registry（本轮 tool 可能修改了 schedule 文件）+ 若收到 compaction 信号则调用 `_maybe_compact()` → 释放锁
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
    - 任何未捕获异常 → 回滚到快照 → 向上传播
 6. 最多 `max_tool_rounds` 轮 tool call，达到上限时追加关闭 assistant 消息 + commit
-7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
+7. 调用方需要区分正常与非正常结束时，为该次 `run()` 传入独立
+   `AgentRunOutcome`；正常回复记录 `stop`，未知/截断原因保留上游值，达到工具
+   轮次上限记录 `max_tool_rounds`。状态不保存在 `SessionAgent` 上，避免并发调用
+   互相覆盖。
+8. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
 
 **注意**：
 - Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
@@ -133,6 +137,7 @@ Session 层使用两个对称的协议适配器，将 `SessionAgent.run()` 包�
 |------|------|------|
 | `AiDelta` | AI→SessionAgent | SSE 解析后的内部流元素 |
 | `AgentChunk` | SessionAgent→Channel | 纯语义输出（`content` / `reasoning` + 可选 `kind` provenance） |
+| `AgentRunOutcome` | SessionAgent→调用方 | 可选的单次调用结束原因，不进入 SSE |
 | `AgentError` | SessionAgent→Channel | 不可恢复错误信号 |
 
 ## SessionAgent 支持多种传输
@@ -207,7 +212,8 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 收到 `finish_reason="tool_calls"` 后，按 index 排序生成完整 tool_calls 列表，逐一执行。
 
 **Tool 执行容错**：
-- `arguments` 可能不是合法 JSON → `json.loads` 包在 try/except 中，失败时 fallback 为 `{}`
+- `arguments` 不是合法 JSON 或解析后不是 object → 不调用 Tool，以错误文本作为
+  tool result 返回，供 Agent 在当前 loop 中修正
 - Tool 函数可能抛异常 → 以错误文本作为 tool result 返回，不中断 agent loop
 - Tool 返回非字符串（int, None） → 通过 `str()` 强转
 
