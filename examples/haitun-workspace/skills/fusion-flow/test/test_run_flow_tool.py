@@ -254,6 +254,7 @@ def test_run_flow_exposes_start_and_human_resume_tools() -> None:
     ]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires the POSIX Program runner")
 @pytest.mark.anyio
 async def test_program_runner_executes_exact_argv_and_json_stdin(
     tmp_path: Path,
@@ -359,6 +360,7 @@ async def test_program_runner_executes_native_binary_without_procfs(
     assert await run_flow_tool._run_program(invocation) == '{"instruction":"native","inputs":{}}'
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires the POSIX Program runner")
 @pytest.mark.anyio
 async def test_program_runner_rejects_shebang_before_spawn_without_fd_filesystem(
     tmp_path: Path,
@@ -393,6 +395,7 @@ async def test_program_runner_rejects_shebang_before_spawn_without_fd_filesystem
     assert not spawned
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires the POSIX Program runner")
 @pytest.mark.anyio
 async def test_program_runner_pins_working_directory_before_path_swap(
     tmp_path: Path,
@@ -443,6 +446,7 @@ async def test_program_runner_pins_working_directory_before_path_swap(
     assert await run_flow_tool._run_program(invocation) == "pinned"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires the POSIX Program runner")
 @pytest.mark.anyio
 async def test_program_runner_executes_opened_inode_when_path_is_replaced(
     tmp_path: Path,
@@ -526,6 +530,87 @@ async def test_program_runner_preserves_windows_argv_after_pinning_executable(
 
 
 @pytest.mark.anyio
+async def test_program_runner_uses_isolated_python_for_windows_script(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = tmp_path / "worker.py"
+
+    def open_windows_executable(
+        workspace: Path,
+        candidate: Path,
+    ) -> tuple[Path, int]:
+        assert workspace == tmp_path
+        assert candidate == worker
+        return candidate, 123
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_PROGRAM_PLATFORM", "win32")
+    monkeypatch.setattr(run_flow_tool, "_open_windows_executable", open_windows_executable)
+    invocation = run_flow_tool.ProgramInvocation(
+        name="worker",
+        argv=("./worker.py",),
+        stdin="{}\n",
+        cwd=tmp_path,
+        binding_name="work_step",
+        dispatch=cast(Any, None),
+    )
+
+    prepared = await run_flow_tool._prepare_program(invocation)
+
+    assert prepared.command == (sys.executable, "-I", str(worker))
+    assert prepared.cwd == tmp_path
+    assert prepared.retained_handle == 123
+
+
+@pytest.mark.anyio
+async def test_program_runner_keeps_windows_script_pinned_until_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = run_flow_tool._PreparedProgram(
+        command=(sys.executable, "-I", str(tmp_path / "worker.py")),
+        cwd=tmp_path,
+        retained_handle=123,
+    )
+    process = _FakeProcess()
+    closed_handles: list[int | None] = []
+
+    async def prepare_program(invocation: Any) -> Any:
+        del invocation
+        return prepared
+
+    async def open_process(*args: object, **kwargs: object) -> _FakeProcess:
+        del args, kwargs
+        return process
+
+    async def communicate_program(*args: object, **kwargs: object) -> tuple[int, bytes, bytes]:
+        del args, kwargs
+        assert closed_handles == []
+        return 0, b"completed\n", b""
+
+    def close_prepared_program(value: Any) -> None:
+        closed_handles.append(value.retained_handle)
+
+    monkeypatch.setattr(run_flow_tool, "_prepare_program", prepare_program)
+    monkeypatch.setattr(run_flow_tool.anyio, "open_process", open_process)
+    monkeypatch.setattr(run_flow_tool, "_communicate_program", communicate_program)
+    monkeypatch.setattr(run_flow_tool, "_attach_windows_job", lambda process: None)
+    monkeypatch.setattr(run_flow_tool, "_close_prepared_program", close_prepared_program)
+    invocation = run_flow_tool.ProgramInvocation(
+        name="worker",
+        argv=("./worker.py",),
+        stdin="{}\n",
+        cwd=tmp_path,
+        binding_name="work_step",
+        dispatch=cast(Any, None),
+    )
+
+    assert await run_flow_tool._run_program(invocation) == "completed"
+    assert closed_handles == [123]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("program_path", ["../outside", "/tmp/outside"])
 async def test_program_runner_rejects_executables_outside_workspace(
     program_path: str,
@@ -548,6 +633,7 @@ async def test_program_runner_rejects_executables_outside_workspace(
         await run_flow_tool._run_program(invocation)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX symbolic links")
 @pytest.mark.anyio
 async def test_program_runner_rejects_symlink_escape(
     tmp_path: Path,
@@ -646,6 +732,7 @@ async def test_program_runner_terminates_tree_when_output_exceeds_limit(
     monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
     monkeypatch.setenv(limit_environment_variable, "4")
     monkeypatch.setattr(run_flow_tool.anyio, "open_process", open_process)
+    monkeypatch.setattr(run_flow_tool, "_attach_windows_job", lambda process: None)
     monkeypatch.setattr(run_flow_tool, "_terminate_process_tree", terminate_process_tree)
     invocation = run_flow_tool.ProgramInvocation(
         name="worker",
@@ -674,17 +761,24 @@ async def test_program_runner_obeys_external_cancellation_and_cleans_up(
     process = _BlockingFakeProcess()
     executable_fds: tuple[int, ...] = ()
     spawn_returned = False
+    spawn_started = anyio.Event()
 
     async def open_process(*args: object, **kwargs: object) -> _BlockingFakeProcess:
         nonlocal executable_fds, spawn_returned
         del args
         executable_fds = cast(tuple[int, ...], kwargs["pass_fds"])
+        spawn_started.set()
         await anyio.sleep(0.1)
         spawn_returned = True
         return process
 
+    async def cancel_during_spawn(cancel_scope: anyio.CancelScope) -> None:
+        await spawn_started.wait()
+        cancel_scope.cancel()
+
     monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
     monkeypatch.setattr(run_flow_tool.anyio, "open_process", open_process)
+    monkeypatch.setattr(run_flow_tool, "_attach_windows_job", lambda process: None)
     invocation = run_flow_tool.ProgramInvocation(
         name="worker",
         argv=("./worker",),
@@ -694,8 +788,10 @@ async def test_program_runner_obeys_external_cancellation_and_cleans_up(
         dispatch=cast(Any, None),
     )
 
-    with anyio.move_on_after(0.05) as cancel_scope:
-        await run_flow_tool._run_program(invocation)
+    with anyio.CancelScope() as cancel_scope:
+        async with anyio.create_task_group() as task_group:
+            task_group.start_soon(cancel_during_spawn, cancel_scope)
+            await run_flow_tool._run_program(invocation)
 
     assert cancel_scope.cancel_called
     assert spawn_returned
@@ -763,6 +859,7 @@ async def test_program_runner_cleans_up_when_windows_job_attachment_fails(
             os.fstat(descriptor)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX process groups")
 @pytest.mark.anyio
 async def test_program_tree_cleanup_kills_descendants_that_inherit_pipes(
     tmp_path: Path,
@@ -835,6 +932,61 @@ async def test_windows_job_termination_failure_closes_kill_on_close_job(
     assert calls == [("terminate", 123), ("close", 123)]
     assert job.handle is None
     assert process.killed
+
+
+@pytest.mark.anyio
+async def test_agent_step_retries_once_after_non_json_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = object()
+    conversation = object()
+    messages: list[str] = []
+    responses = iter(
+        [
+            'Done:\n```json\n{"result":"READY"}\n```',
+            'Here is the corrected result:\n```json\n{"result":"READY"}\n```',
+        ]
+    )
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> tuple[object, object]:
+        assert ai_socket == "http://ai.example"
+        assert isinstance(tool_registry, ToolRegistry)
+        return agent, conversation
+
+    async def complete_step_agent(
+        step_agent: object,
+        step_conversation: object,
+        message: str,
+    ) -> str:
+        assert step_agent is agent
+        assert step_conversation is conversation
+        messages.append(message)
+        return next(responses)
+
+    context = SimpleNamespace(
+        step_id="answer_step",
+        executor_id="worker",
+        output_ids=("result",),
+        dispatch=SimpleNamespace(
+            resource_lease=SimpleNamespace(grants=()),
+        ),
+    )
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+    monkeypatch.setattr(run_flow_tool, "_complete_step_agent", complete_step_agent)
+
+    result = await run_flow_tool._complete_agent_step(
+        "Return READY.",
+        context,
+        ai_socket="http://ai.example",
+        tool_registry=ToolRegistry(),
+    )
+
+    assert result == {"result": "READY"}
+    assert len(messages) == 2
+    assert "previous response was not a JSON object" in messages[1]
 
 
 @pytest.mark.anyio
@@ -1983,7 +2135,10 @@ async def test_human_preparer_tools_are_read_only_and_workspace_confined(
     (instructions / "review.txt").write_text("Check rollback details.", encoding="utf-8")
     outside = tmp_path / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
-    (instructions / "escape.txt").symlink_to(outside)
+    try:
+        (instructions / "escape.txt").symlink_to(outside)
+    except OSError as error:
+        pytest.skip(f"symbolic links are unavailable: {error}")
 
     async def read(file_path: str, offset: int = 0, limit: int = 0) -> str:
         content = await anyio.Path(file_path).read_text(encoding="utf-8")
@@ -2092,7 +2247,10 @@ async def test_instruction_resolver_rejects_non_markdown_and_symlink_escape(
     (instructions / "plain.txt").write_text("plain", encoding="utf-8")
     outside = tmp_path / "outside.md"
     outside.write_text("outside", encoding="utf-8")
-    (instructions / "escape.md").symlink_to(outside)
+    try:
+        (instructions / "escape.md").symlink_to(outside)
+    except OSError as error:
+        pytest.skip(f"symbolic links are unavailable: {error}")
     monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
     resolve = run_flow_tool._instruction_resolver("flows/research/flow.workflow")
 

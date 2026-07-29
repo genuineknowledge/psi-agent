@@ -56,6 +56,34 @@ jobs:
         working-directory: examples/haitun-workspace/skills/fusion-flow
         run: uv run python -m pytest -q --rootdir=. test
 
+  coscientist-ows-bundle:
+    needs: fusion-flow-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build workspace overlay
+        run: |
+          mkdir -p dist
+          archive="dist/coscientist-ows-${GITHUB_SHA}.tar.gz"
+          tar -C examples/haitun-workspace -czf "$archive" \
+            flows/workflows/coscientist-ows \
+            skills/coscientist-ows-entry \
+            skills/mattergen-structure-sampler \
+            skills/mattersim-structure-evaluator \
+            skills/ows-catalyst-recommender \
+            skills/round-parallel-synthesis-advisor \
+            skills/source-liquid-sop-designer \
+            skills/stage08-catalytic-performance-prover \
+            skills/stage08-synthesis-safety-feasibility-judge
+          sha256sum "$archive" > "$archive.sha256"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: coscientist-ows-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
   test:
     if: false # Temporarily pause the repository-wide suite; scoped suites run separately.
     needs: lint

@@ -1,0 +1,3 @@
+display_name: Round Parallel Synthesis Advisor
+short_description: One-plate routes and source liquids
+default_prompt: Create a one-plate round-level Stage08 synthesis route with source-liquid inventory, preparation methods, and cumulative ChemSkills outputs.

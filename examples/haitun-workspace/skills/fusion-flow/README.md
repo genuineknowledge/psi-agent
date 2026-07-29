@@ -32,6 +32,12 @@ declaration but must not launch another workflow. Its relative
 `read`/`write`/`edit` paths resolve against the psi workspace root, not the
 launcher process CWD.
 
+The registry includes three compact executable examples:
+`single-step`, `sequential`, and `parallel-join`. The larger
+`coscientist-ows` bundle demonstrates shared bundle-relative Markdown
+instructions, Agent fan-out, multi-output Program Steps, and workspace Skill
+and script assets without resource requirements.
+
 ## Modules
 
 - `grammar/FusionFlow.g4`: the syntax grammar; ordinary preset/external-operator arity remains checker-owned.
@@ -142,9 +148,11 @@ securely runnable without procfs. A shebang script requires `/proc/self/fd` or
 `/dev/fd`, because the kernel must give its interpreter a descriptor-backed
 script path; inside such a script, `$0` / `__file__` is that descriptor path
 rather than the authored `program_path`. On Windows, the adapter keeps a
-non-replaceable executable handle open while validating the handle's final path
-and starting that path; this Windows branch has not been dynamically verified
-in this change.
+non-replaceable executable handle open through process completion after
+validating the handle's final path. Native executables start directly; a
+workspace `.py` Program starts with the trusted current interpreter in isolated
+mode (`sys.executable -I`). Both paths remain shell-free and are covered by
+Windows tests.
 
 The adapter creates a separate POSIX process group or Windows Job Object and
 performs shielded cleanup of that lifecycle boundary after normal direct-child
