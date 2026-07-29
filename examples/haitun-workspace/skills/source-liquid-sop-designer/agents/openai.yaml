@@ -1,0 +1,7 @@
+interface:
+  display_name: "Source Liquid SOP Designer"
+  short_description: "Deprecated Stage08 redirect"
+  default_prompt: "Use $round-parallel-synthesis-advisor for Stage08 source-liquid inventory, preparation-method registry, and final source-liquid SOP generation."
+
+policy:
+  allow_implicit_invocation: false

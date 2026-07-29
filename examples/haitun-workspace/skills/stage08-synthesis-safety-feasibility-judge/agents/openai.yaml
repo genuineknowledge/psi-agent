@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stage09 Synthesis Safety Feasibility Judge"
+  short_description: "Judge Stage08 synthesis-route safety and feasibility"
+  default_prompt: "Use $stage08-synthesis-safety-feasibility-judge to assess a Stage08 96-well synthesis route for chemical safety and synthesis feasibility."

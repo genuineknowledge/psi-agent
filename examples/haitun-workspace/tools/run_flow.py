@@ -928,8 +928,13 @@ async def _prepare_program(invocation: ProgramInvocation) -> _PreparedProgram:
                 workspace_path,
                 candidate,
             )
+        command = (
+            (sys.executable, "-I", str(final_path), *invocation.argv[1:])
+            if final_path.suffix.casefold() == ".py"
+            else (str(final_path), *invocation.argv[1:])
+        )
         return _PreparedProgram(
-            command=(str(final_path), *invocation.argv[1:]),
+            command=command,
             cwd=cwd_path,
             retained_handle=handle,
         )
@@ -1178,16 +1183,17 @@ async def _run_program(invocation: ProgramInvocation) -> str:
             )
             windows_job = _attach_windows_job(process)
     except BaseException:
-        if process is not None:
-            try:
-                await _terminate_process_tree(process, windows_job)
-            finally:
-                with anyio.CancelScope(shield=True):
-                    await process.aclose()
+        try:
+            if process is not None:
+                try:
+                    await _terminate_process_tree(process, windows_job)
+                finally:
+                    with anyio.CancelScope(shield=True):
+                        await process.aclose()
+        finally:
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(_close_prepared_program, prepared)
         raise
-    finally:
-        with anyio.CancelScope(shield=True):
-            await anyio.to_thread.run_sync(_close_prepared_program, prepared)
 
     try:
         await anyio.lowlevel.checkpoint_if_cancelled()
@@ -1204,9 +1210,12 @@ async def _run_program(invocation: ProgramInvocation) -> str:
     finally:
         with anyio.CancelScope(shield=True):
             try:
-                _close_windows_job(windows_job)
+                try:
+                    _close_windows_job(windows_job)
+                finally:
+                    await process.aclose()
             finally:
-                await process.aclose()
+                await anyio.to_thread.run_sync(_close_prepared_program, prepared)
 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
