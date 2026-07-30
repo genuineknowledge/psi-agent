@@ -50,19 +50,27 @@ class SystemPrompt:
     async def _default_after_turn(_user_message: dict[str, Any], _assistant_message: dict[str, Any]) -> None:
         return None
 
+    @staticmethod
+    async def _default_before_turn(_user_message: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
     def __init__(
         self,
         builder: Callable[..., Any] | None = None,
         checker: Callable[..., Any] | None = None,
         compaction_fn: Callable[..., Any] | None = None,
         turn_context_fn: Callable[..., Any] | None = None,
+        before_turn: Callable[..., Any] | None = None,
         after_turn: Callable[..., Any] | None = None,
+        before_turn_timeout_seconds: float = 30.0,
     ) -> None:
         self._builder: Callable[..., Any] = builder if builder is not None else self._default_builder
         self._checker: Callable[..., Any] = checker if checker is not None else self._default_checker
         self._compaction_fn: Callable[..., Any] | None = compaction_fn
         self._turn_context_fn: Callable[..., Any] | None = turn_context_fn
+        self._before_turn: Callable[..., Any] = before_turn if before_turn is not None else self._default_before_turn
         self._after_turn: Callable[..., Any] = after_turn if after_turn is not None else self._default_after_turn
+        self._before_turn_timeout_seconds = before_turn_timeout_seconds
 
     @property
     def compaction_fn(self) -> Callable[..., Any] | None:
@@ -71,8 +79,8 @@ class SystemPrompt:
     @classmethod
     async def from_workspace(cls, workspace_path: Path, session_id: str) -> SystemPrompt:
         """Load the system module.  Defaults are used when builder, checker,
-        compaction_fn, or turn_context_builder are not found in the workspace."""
-        builder, checker, compaction_fn, turn_context_fn, after_turn = await cls._load_module(
+        compaction_fn, turn_context_builder, or lifecycle hooks are not found."""
+        builder, checker, compaction_fn, turn_context_fn, before_turn, after_turn = await cls._load_module(
             workspace_path, session_id
         )
         return cls(
@@ -80,6 +88,7 @@ class SystemPrompt:
             checker=checker,
             compaction_fn=compaction_fn,
             turn_context_fn=turn_context_fn,
+            before_turn=before_turn,
             after_turn=after_turn,
         )
 
@@ -169,12 +178,30 @@ class SystemPrompt:
         logger.info(f"Turn context built ({len(block)} chars)")
         return block
 
+    async def run_before_turn(self, user_message: dict[str, Any]) -> dict[str, Any]:
+        """Run the optional bounded workspace hook before an agent turn."""
+        try:
+            with anyio.fail_after(self._before_turn_timeout_seconds):
+                result = await self._before_turn(user_message)
+        except TimeoutError:
+            logger.warning(f"System before-turn hook timed out after {self._before_turn_timeout_seconds:.1f}s")
+            return {}
+        except Exception as e:
+            logger.warning(f"System before-turn hook failed: {e!r}")
+            return {}
+        if not isinstance(result, dict):
+            logger.warning(f"System before-turn hook returned {type(result).__name__}, expected dict")
+            return {}
+        logger.debug("System before-turn hook completed")
+        return result
+
     # -- module loading --------------------------------------------------------
 
     @staticmethod
     async def _load_module(
         workspace_path: Path, session_id: str
     ) -> tuple[
+        Callable[..., Any] | None,
         Callable[..., Any] | None,
         Callable[..., Any] | None,
         Callable[..., Any] | None,
@@ -190,7 +217,7 @@ class SystemPrompt:
             file_bytes = await ap.read_bytes()
         except OSError:
             logger.warning(f"No system.py found at {system_py}")
-            return None, None, None, None, None
+            return None, None, None, None, None, None
 
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         module_name = f"psi_system_{session_id}_{file_hash}"
@@ -200,7 +227,7 @@ class SystemPrompt:
             compiled = compile(source, str(system_py), "exec")
         except Exception as e:
             logger.error(f"Failed to read or compile {system_py!r}: {e!r}")
-            return None, None, None, None, None
+            return None, None, None, None, None, None
 
         module = types.ModuleType(module_name)
         module.__file__ = str(system_py)
@@ -210,7 +237,7 @@ class SystemPrompt:
         except Exception as e:
             logger.error(f"Failed to execute system module {system_py!r}: {e!r}")
             sys.modules.pop(module_name, None)
-            return None, None, None, None, None
+            return None, None, None, None, None, None
         except BaseException:
             sys.modules.pop(module_name, None)
             raise
@@ -220,12 +247,13 @@ class SystemPrompt:
             checker = SystemPrompt._extract_async_func(module, "system_prompt_rebuild_checker")
             compaction_fn = SystemPrompt._extract_async_func(module, "compact_history")
             turn_context_fn = SystemPrompt._extract_async_func(module, "turn_context_builder")
+            before_turn = SystemPrompt._extract_async_func(module, "system_before_turn")
             after_turn = SystemPrompt._extract_async_func(module, "system_after_turn")
         except Exception as e:
             logger.error(f"Failed to extract functions from {system_py!r}: {e!r}")
             sys.modules.pop(module_name, None)
-            return None, None, None, None, None
-        return builder, checker, compaction_fn, turn_context_fn, after_turn
+            return None, None, None, None, None, None
+        return builder, checker, compaction_fn, turn_context_fn, before_turn, after_turn
 
     @staticmethod
     def _extract_async_func(module: object, name: str) -> Callable[..., Any] | None:

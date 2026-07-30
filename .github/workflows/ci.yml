@@ -5,8 +5,8 @@ on:
   pull_request:
 
 jobs:
-  # 旧版 Fusion Flow 没有单独接入 CI，FusionFlow Next 也暂不新增普通测试任务。
-  # 这里只校验 ANTLR 生成源码是否与语法文件同步，避免提交过期的生成文件。
+  # 旧版 Fusion Flow 未配置专属测试任务；为保持并行期行为一致，Next 的专属测试也不接入主 CI。
+  # 本任务只重新生成 ANTLR Lexer/Parser 并与仓库文件比对，防止语法文件与生成源码不一致。
   generated-sources:
     runs-on: ubuntu-latest
     steps:

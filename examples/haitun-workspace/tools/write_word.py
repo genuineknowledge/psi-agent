@@ -82,7 +82,7 @@ def _build_document(
 
 async def write_word(
     file_path: str,
-    blocks_json: str,
+    blocks_json: list[dict[str, Any]],
     title: str = "",
     cjk_font: str = "微软雅黑",
     latin_font: str = "Calibri",
@@ -98,7 +98,7 @@ async def write_word(
 
     Args:
         file_path: Output path for the .docx file (e.g. "report.docx").
-        blocks_json: JSON-encoded array of content blocks, in order. Each block
+        blocks_json: Array of content blocks, in order. Each block
             is an object with a ``type``:
               - ``{"type": "heading", "level": 1, "text": "概述"}`` — level 0 is
                 the title style, 1-3 feed the table of contents.
@@ -119,10 +119,12 @@ async def write_word(
     if not file_path.lower().endswith(".docx"):
         file_path = f"{file_path}.docx"
 
-    try:
-        blocks = json.loads(blocks_json)
-    except json.JSONDecodeError as e:
-        return f"[Error] blocks_json is not valid JSON: {e}"
+    blocks: Any = blocks_json
+    if isinstance(blocks, str):
+        try:
+            blocks = json.loads(blocks)
+        except json.JSONDecodeError as e:
+            return f"[Error] blocks_json is not valid JSON: {e}"
 
     if not isinstance(blocks, list) or not all(isinstance(b, dict) for b in blocks):
         return '[Error] blocks_json must be an array of objects, e.g. [{"type":"paragraph","text":"hi"}]'
@@ -142,3 +144,58 @@ async def write_word(
         return f"[Error] Failed to write Word file: {e!r}"
 
     return f"[OK] Wrote {count} block(s) to {file_path}"
+
+
+async def write_word_from_markdown(
+    markdown_path: str,
+    file_path: str,
+    cjk_font: str = "微软雅黑",
+    latin_font: str = "Calibri",
+) -> str:
+    """Convert an existing Markdown artifact into a Word document.
+
+    Prefer this for long contracts, SOPs, and reports: draft the substantial
+    content to Markdown first, then call this tool with two short paths. This
+    avoids oversized structured tool arguments and runtime package installs.
+
+    Args:
+        markdown_path: Existing UTF-8 Markdown source file.
+        file_path: Output .docx path.
+        cjk_font: East-Asian font for Chinese text.
+        latin_font: Latin font for ASCII text.
+
+    Returns:
+        Success message with the block count, or an error message.
+    """
+    source = anyio.Path(markdown_path)
+    if not await source.exists():
+        return f"[Error] Markdown source does not exist: {markdown_path}"
+    try:
+        markdown = await source.read_text(encoding="utf-8")
+    except OSError as e:
+        return f"[Error] Failed to read Markdown source: {e}"
+
+    blocks: list[dict[str, Any]] = []
+    paragraph_lines: list[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph_lines:
+            blocks.append({"type": "paragraph", "text": "\n".join(paragraph_lines)})
+            paragraph_lines.clear()
+
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            marker, separator, heading = stripped.partition(" ")
+            if separator and set(marker) == {"#"}:
+                flush_paragraph()
+                blocks.append({"type": "heading", "level": min(len(marker), 9), "text": heading})
+                continue
+        if not stripped:
+            flush_paragraph()
+        else:
+            paragraph_lines.append(line)
+    flush_paragraph()
+    if not blocks:
+        return "[Error] Markdown source is empty"
+    return await write_word(file_path, blocks, cjk_font=cjk_font, latin_font=latin_font)

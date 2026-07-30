@@ -213,7 +213,7 @@ service tools:
   则必须只回复这些信息。若卡片已发送但 snapshot 保存失败，工具返回
   `ok=false, sent=true, callback_context_saved=false`；必须告知这项必要的部分失败，且不要重发卡片造成重复。
 - `fusion-flow-next` — preferred immutable G4/Agent workflow skill.
-- `fusion-flow-old` — immutable legacy Node/Fuclaw `.flow.ts` fallback.
+- `flow` (`skills/fusion-flow/`) — immutable legacy Node/Fuclaw `.flow.ts` fallback.
 
 ## Schedules (`schedules/`)
 
@@ -288,11 +288,19 @@ service tools:
 
 ## ⚠️ Intentionally-kept un-wired code (future extension)
 
-psi-agent's session loader only ever calls the module-level `system_prompt_builder()`,
-`system_prompt_rebuild_checker()`, `turn_context_builder()` and `compact_history()`
-(all but the first optional), loads `tools/*.py`, and runs `schedules/*/TASK.md`. The
-following are deliberately included as **future-extension hooks** and are **NOT** invoked by
-the current framework — do not "clean them up" as dead code:
+psi-agent's session loader calls `system_before_turn()` (when defined, excluding `schedule.*`
+turns), `system_prompt_builder()`, an optional `system_prompt_rebuild_checker()`, and
+`turn_context_builder()`, `compact_history()`, and `system_after_turn()` after a committed
+visible answer; it also loads `tools/*.py` and runs `schedules/*/TASK.md`. Before-turn advice
+is ephemeral and must never enter history. Haitun's hook calls the isolated supervisor with an allowlisted payload
+only: current question, hashed identities, profile/stage summary, map/heatmap summaries, and
+prior advice. It must never supply main-answer text, reasoning, drafts, tool calls, or tool
+results. The first eligible learning turn is warmed after the answer; subsequent eligible
+turns may use a validated cache or live advice, and ordinary failures degrade to the normal
+answer path. The supervisor workspace has no lifecycle hooks or tools, preventing recursion.
+
+The following remain deliberately included as **future-extension hooks** and are **NOT**
+invoked by the current framework — do not "clean them up" as dead code:
 
 - `systems/system.py`: `System.compact_history()`, `System.after_turn()`, and the
   `_run_self_evolution_review` / self-evolution helpers. (The **module-level**

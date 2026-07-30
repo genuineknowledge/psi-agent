@@ -83,6 +83,16 @@ async def test_renders_blocks_and_table(tmp_path: Path) -> None:
     assert "月份" in doc_xml and "收入" in doc_xml
 
 
+async def test_accepts_structured_blocks_without_json_escaping(tmp_path: Path) -> None:
+    out = tmp_path / "structured.docx"
+    blocks = [{"type": "paragraph", "text": "含有“引号”和换行\n的合同条款"}]
+
+    result = await tool.write_word(str(out), blocks)
+
+    assert result.startswith("[OK]")
+    assert out.exists()
+
+
 async def test_appends_docx_extension(tmp_path: Path) -> None:
     out = tmp_path / "noext"
     result = await tool.write_word(str(out), json.dumps([{"type": "paragraph", "text": "hi"}]))
@@ -110,3 +120,16 @@ async def test_unknown_block_type_is_reported(tmp_path: Path) -> None:
     result = await tool.write_word(str(tmp_path / "x.docx"), json.dumps([{"type": "bogus"}]))
     assert result.startswith("[Error]")
     assert "bogus" in result
+
+
+async def test_write_word_from_markdown_converts_long_file(tmp_path: Path) -> None:
+    source = tmp_path / "contract.md"
+    source.write_text("# 第一章\n\n## 第一条 定义\n\n这是合同正文。", encoding="utf-8")
+    out = tmp_path / "contract.docx"
+
+    result = await tool.write_word_from_markdown(str(source), str(out))
+
+    assert result.startswith("[OK]")
+    assert out.exists()
+    assert "第一章" in _document_xml(out)
+    assert "这是合同正文" in _document_xml(out)

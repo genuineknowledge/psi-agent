@@ -64,7 +64,7 @@ Common useful skills in this workspace include:
 - `python-static-analysis`: Python static analysis.
 - `user-preferences-and-language`: user preference and language handling.
 - `fusion-flow-next`: preferred authoring and execution path for new Fusion Flow workflows.
-- `fusion-flow-old`: legacy Fuclaw/TypeScript fallback for explicit `.flow.ts` work.
+- `flow` (`skills/fusion-flow/`): legacy Fuclaw/TypeScript fallback for explicit `.flow.ts` work.
 - `fusion-memory-setup`: setting up durable Fusion Memory.
 - Domain skills for systems, data/text processing, ML, media, circuits, cryptanalysis, and other specialized work.
 

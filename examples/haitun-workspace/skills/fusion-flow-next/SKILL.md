@@ -1,6 +1,6 @@
 ---
 name: fusion-flow-next
-description: Preferred skill for authoring or running FusionFlow G4 multi-agent workflows, including coordinated agents, parallel sub-tasks, and multi-step pipelines. Use `fusion-flow-old` only for explicit legacy `.flow.ts`/Fuclaw requests.
+description: Preferred skill for authoring or running FusionFlow G4 multi-agent workflows, including coordinated agents, parallel sub-tasks, and multi-step pipelines. Use the legacy `flow` skill under `skills/fusion-flow/` only for explicit `.flow.ts`/Fuclaw requests.
 metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fuclaw" } }
 ---
 

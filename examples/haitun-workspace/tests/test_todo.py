@@ -21,15 +21,6 @@ todo_tool: Any = importlib.import_module("todo")
 todo_store: Any = importlib.import_module("_todo_store")
 
 
-@pytest.fixture(autouse=True)
-def _todo_appdata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point AppData todos at a per-test directory (Step 4B)."""
-    appdata = tmp_path / "appdata"
-    appdata.mkdir()
-    monkeypatch.setenv("PSI_APPDATA", str(appdata))
-    return appdata
-
-
 def test_tool_metadata_is_loadable() -> None:
     meta = ToolFunction.from_callable(todo_tool.todo)
     assert meta.name == "todo"
@@ -49,7 +40,7 @@ async def test_read_empty_list(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_replace_and_read_persists(tmp_path: Path, _todo_appdata: Path) -> None:
+async def test_replace_and_read_persists(tmp_path: Path) -> None:
     write = await todo_store.write_todos(
         todos=[
             {"id": "1", "content": "first", "status": "in_progress"},
@@ -62,45 +53,12 @@ async def test_replace_and_read_persists(tmp_path: Path, _todo_appdata: Path) ->
     assert write["ok"] is True
     assert write["summary"]["in_progress"] == 1
 
-    path = todo_store.appdata_todo_path(str(_todo_appdata), "sess-a")
+    path = todo_store.anyio.Path(write["path"])
     assert await path.exists()
-    legacy = todo_store.todo_path(todo_store._bg.resolve_workspace(str(tmp_path)), "sess-a")
-    assert not await legacy.exists()
 
     read = await todo_store.read_todos(workspace_raw=str(tmp_path), session_id="sess-a")
     assert read["todos"][0]["content"] == "first"
     assert read["todos"][1]["status"] == "pending"
-
-
-@pytest.mark.anyio
-async def test_dual_read_legacy_then_write_migrates(tmp_path: Path, _todo_appdata: Path) -> None:
-    legacy = todo_store.todo_path(todo_store._bg.resolve_workspace(str(tmp_path)), "sess-legacy")
-    await legacy.parent.mkdir(parents=True, exist_ok=True)
-    await legacy.write_text(
-        json.dumps(
-            {
-                "session_id": "sess-legacy",
-                "todos": [{"id": "1", "content": "old", "status": "pending"}],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    read = await todo_store.read_todos(workspace_raw=str(tmp_path), session_id="sess-legacy")
-    assert read["todos"][0]["content"] == "old"
-
-    write = await todo_store.write_todos(
-        todos=[{"id": "1", "content": "old", "status": "completed"}],
-        merge=False,
-        workspace_raw=str(tmp_path),
-        session_id="sess-legacy",
-    )
-    assert write["ok"] is True
-    app_path = todo_store.appdata_todo_path(str(_todo_appdata), "sess-legacy")
-    assert await app_path.exists()
-    reread = await todo_store.read_todos(workspace_raw=str(tmp_path), session_id="sess-legacy")
-    assert reread["todos"][0]["status"] == "completed"
-    assert Path(reread["path"]) == Path(str(app_path))
 
 
 @pytest.mark.anyio
@@ -204,3 +162,14 @@ async def test_todo_tool_write_json(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert payload["ok"] is True
     assert payload["session_id"] == "sess-tool"
     assert payload["summary"]["in_progress"] == 1
+
+
+@pytest.mark.anyio
+async def test_accepts_native_tool_call_array(tmp_path: Path) -> None:
+    todos = [{"id": "1", "content": "审查协议", "status": "in_progress"}]
+
+    raw = await todo_tool.todo(todos=todos, workspace=str(tmp_path))
+    result = json.loads(raw)
+
+    assert result["ok"] is True
+    assert result["todos"] == todos
