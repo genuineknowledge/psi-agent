@@ -22,8 +22,9 @@ category: productivity
 1. 识别安排者、接收者、任务目标、背景、期望结果、截止时间、原始资料链接。
 2. 找出缺口，向用户确认。
 3. 在用户确认后，调用 `assignment_upsert` 记录安排。
-4. 如果接收者确认收到，调用 `assignment_transition`。
-5. 如果接收者需要形成可评审方案，先帮助整理方案，再记录 transition。
+4. 需要通过飞书交给接收者时，优先调用 `assignment_send_card`，不要手写散落的工作安排卡片。
+5. 如果接收者确认收到，调用 `assignment_transition`。
+6. 如果接收者需要形成可评审方案，先帮助整理方案，再记录 transition。
 
 接收者流程：
 
@@ -62,8 +63,9 @@ category: productivity
 - `assignment_get`
 - `assignment_list`
 - `assignment_transition`
+- `assignment_send_card`
 - `feishu_message_send`
-- `feishu_message_send_card` / 现有卡片发送工具（如果当前 workspace 已提供）
+- `feishu_message_send_card` / 现有卡片发送工具（只有 `assignment_send_card` 不满足当前卡片需求时再直接使用）
 
 输出要求：
 

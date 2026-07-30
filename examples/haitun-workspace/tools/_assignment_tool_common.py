@@ -45,5 +45,7 @@ def invalid_argument(message: str) -> str:
 def bounded_limit(value: int) -> int:
     try:
         return max(1, min(50, int(value)))
-    except TypeError, ValueError:
+    except TypeError:
+        return 20
+    except ValueError:
         return 20

@@ -41,7 +41,13 @@ async def test_index_finds_known_tools_and_skips_private_files():
     assert "fetch" in names
     # The three discovery tools index themselves.
     assert {"tool_search", "tool_search_code", "tool_describe"} <= names
-    assert {"assignment_upsert", "assignment_get", "assignment_list", "assignment_transition"} <= names
+    assert {
+        "assignment_upsert",
+        "assignment_get",
+        "assignment_list",
+        "assignment_transition",
+        "assignment_send_card",
+    } <= names
     # Private helper files (``_fetch_impl.py``) never expose a tool.
     assert "fetch_impl" not in names
     assert all(not n.startswith("_") for n in names)
@@ -115,6 +121,47 @@ async def test_assignment_transition_rejects_invalid_json(monkeypatch):
     assert fake_client.calls == []
 
 
+async def test_assignment_send_card_builds_deterministic_actions(monkeypatch):
+    fake_feishu = _FakeFeishuMessage()
+    module = _import_assignment_send_card_with_fake_feishu(fake_feishu, monkeypatch)
+
+    out = await module.assignment_send_card(
+        receive_id="ou_recipient",
+        assignment_id="wa-123",
+        title="同步客户会议后续",
+        assigner_name="张浩",
+        summary="请整理会议结论并给出下一步方案。",
+        receive_id_type="open_id",
+        user_key="ou_assigner",
+    )
+
+    assert json.loads(out)["ok"] is True
+    [call] = fake_feishu.calls
+    assert call["receive_id"] == "ou_recipient"
+    assert call["receive_id_type"] == "open_id"
+    card = json.loads(call["card_json"])
+    assert card["header"]["title"]["content"] == "新的工作安排"
+    assert "同步客户会议后续" in json.dumps(card, ensure_ascii=False)
+    assert {
+        "action": "view_assignment_detail",
+        "assignment_id": "wa-123",
+    } in _button_values(card)
+    assert {
+        "action": "confirm_assignment_receipt",
+        "assignment_id": "wa-123",
+    } in _button_values(card)
+    assert json.loads(call["business_context_json"]) == {
+        "type": "work_assignment",
+        "assignment_id": "wa-123",
+        "title": "同步客户会议后续",
+        "assigner_name": "张浩",
+    }
+    assert json.loads(call["action_handlers_json"]) == {
+        "view_assignment_detail": "assignment_get",
+        "confirm_assignment_receipt": "assignment_transition",
+    }
+
+
 async def test_work_assignment_skill_documents_generic_assignment_flow():
     skill_path = WORKSPACE_ROOT / "skills" / "work-assignment-delegation" / "SKILL.md"
     source = await anyio.Path(str(skill_path)).read_text(encoding="utf-8")
@@ -180,6 +227,43 @@ class _FakeMemoryClient:
         return {"ok": True, "result": {"name": name, "arguments": arguments}}
 
 
+class _FakeFeishuMessage:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, str]] = []
+
+    async def feishu_message_send_card(
+        self,
+        receive_id: str,
+        card_json: str,
+        receive_id_type: str = "chat_id",
+        user_key: str = "",
+        business_context_json: str = "{}",
+        action_handlers_json: str = "{}",
+    ) -> str:
+        self.calls.append(
+            {
+                "receive_id": receive_id,
+                "card_json": card_json,
+                "receive_id_type": receive_id_type,
+                "user_key": user_key,
+                "business_context_json": business_context_json,
+                "action_handlers_json": action_handlers_json,
+            }
+        )
+        return json.dumps({"ok": True, "sent": True}, ensure_ascii=False)
+
+
+def _button_values(card: dict[str, Any]) -> list[dict[str, Any]]:
+    values: list[dict[str, Any]] = []
+    for element in card.get("elements", []):
+        if not isinstance(element, dict):
+            continue
+        for action in element.get("actions", []):
+            if isinstance(action, dict) and isinstance(action.get("value"), dict):
+                values.append(action["value"])
+    return values
+
+
 def _import_assignment_tool_with_fake_client(name: str, fake_client: _FakeMemoryClient, monkeypatch) -> Any:
     mcp_path = TOOLS_DIR / "_fusion_memory_mcp.py"
     mcp_module_name = f"fusion_memory_tool__fusion_memory_mcp_{hashlib.sha256(str(mcp_path).encode()).hexdigest()[:12]}"
@@ -196,6 +280,14 @@ def _import_assignment_tool_with_fake_client(name: str, fake_client: _FakeMemory
     monkeypatch.setitem(sys.modules, common_name, fake_common_module)
     sys.modules.pop("_assignment_tool_common", None)
     return importlib.import_module(name)
+
+
+def _import_assignment_send_card_with_fake_feishu(fake_feishu: _FakeFeishuMessage, monkeypatch) -> Any:
+    fake_module = types.ModuleType("feishu_message")
+    fake_module.__dict__["feishu_message_send_card"] = fake_feishu.feishu_message_send_card
+    monkeypatch.setitem(sys.modules, "feishu_message", fake_module)
+    sys.modules.pop("assignment_send_card", None)
+    return importlib.import_module("assignment_send_card")
 
 
 async def test_extract_signature_and_docstring(tmp_path):

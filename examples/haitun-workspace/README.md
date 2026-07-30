@@ -81,6 +81,8 @@ selects credentials.
 
 Generic work-arrangement records use the assignment tools backed by the same
 remote Fusion Memory connection.
+Feishu delivery for those records should use `assignment_send_card`, which
+wraps the existing interactive-card sender with stable work-assignment actions.
 
 Users absent from the map can chat normally but receive no bearer token,
 connector, passive writer, checkpoint, or durable memory. Duplicate token
