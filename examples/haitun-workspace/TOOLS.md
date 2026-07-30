@@ -99,18 +99,38 @@ message_id / sender_open_id）。需要群里之前的上下文时：
 用户中途说「这一篇用机器人建就行」时，直接给那次调用传 `identity="bot"`，不必改掉记住的默认。
 想查某人当前的选择和已授权权限，用 `feishu_identity_get(user_key)`。
 
-### 引导用户授权（默认免复制，一次授权后不再问）
+### 引导用户授权（首选一键授权卡，默认免复制，一次授权后不再问）
 
-当工具返回 `need_auth=True`，按工具返回的 `message` 引导用户（把 `sender_open_id` 作为
-`user_key` 贯穿全过程，多人场景各自授权、互不覆盖）：
+当工具返回 `need_auth=True`，把 `sender_open_id` 作为 `user_key` 贯穿全过程（多人场景各自
+授权、互不覆盖）。**首选发一张授权卡**，用户点一下就完事：
+
+1. 调 `feishu_auth_card(user_key=<sender_open_id>, capabilities=<工具给的 need_capabilities>,
+   reason=<一句话说明这次授权干什么>)`。它发一张卡，卡上「点此授权」按钮同时做两件事：打开飞书
+   授权页（`open_url`）+ 把这次点击回调给你（`callback`）；
+2. **发完卡这一轮就收尾**——别在同一轮里调 `feishu_auth_wait`，也别把链接再当文本发一遍。
+   同一轮等待会占住 Session 的 turn 锁，用户这期间说什么都得排队几分钟；
+3. 用户点按钮后，你会收到一条 `<feishu_card_action>`，其 `dispatch.handler` 是
+   `feishu_auth_wait`、`action.value.user_key` 是该用户。**那一轮**才调
+   `feishu_auth_wait(user_key=...)` 等授权码自动回流（此时用户正对着授权页，等待是应该的），
+   拿到 token 后接着做原来被卡住的那件事；
+4. **卡片是一次性的**：用户点了按钮但没在授权页点「同意」时，这张卡已作废（原卡被改写成
+   「已选择」），重新调 `feishu_auth_card` 发一张新的，别让用户再点旧卡；
+5. 授权卡只能**私聊**发给本人（`receive_id` 默认就是 `user_key`）。待完成的授权记录存在发卡方
+   workspace，而群里点卡片会落到点击者自己的私聊会话、读不到这条记录，所以工具直接拒绝
+   `oc_` 群 id。群场景先私聊该用户；
+6. 返回 `manual_required=True` 说明这个部署没有自动回调通道，卡片帮不上忙（用户点完还得从地址栏
+   抄 code），这时才退回下面的手工流程。
+
+`capabilities` 只接受能力键（`docs_read` / `drive_read` / `drive_write`（含电子表格）/
+`docx_write` / `wiki_write` / `bitable_write` / `task_write` / `calendar_write` /
+`contact_read` / `contact_phone_email_read`），**不要传飞书原始 scope 串**——无效 scope 会让
+整个授权页失败（20043），所以工具直接拒绝未知键。已授权过的权限会自动并进去，不会因为再授权
+一次而丢掉旧能力。`feishu_auth_card` 与 `feishu_auth_start` 在这两条上行为一致。
+
+没有卡片通道（或你就是要发纯文本链接）时的手工流程：
 
 1. 调 `feishu_auth_start(user_key=<sender_open_id>, capabilities=<工具给的 need_capabilities>)`，
-   把返回的 `authorize_url` **原样发给用户**，让其打开并点「同意授权」。
-   `capabilities` 只接受能力键（`docs_read` / `drive_read` / `drive_write`（含电子表格）/
-   `docx_write` / `wiki_write` / `bitable_write` / `task_write` / `calendar_write` /
-   `contact_read` / `contact_phone_email_read`），**不要传飞书原始 scope 串**——无效 scope 会让
-   整个授权页失败（20043），所以工具直接拒绝未知键。已授权过的权限会自动并进去，不会因为再授权
-   一次而丢掉旧能力；
+   把返回的 `authorize_url` **原样发给用户**，让其打开并点「同意授权」；
 2. 看返回里的 `auto_receive`：
    - **`auto_receive=True`（默认路径）**：**不要向用户索要任何 code**。直接调
      `feishu_auth_wait(user_key=<sender_open_id>)` 等待——用户点完「同意授权」后浏览器会看到

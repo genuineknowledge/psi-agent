@@ -78,11 +78,16 @@ def _get_client() -> Any:
 # token can't do it and no cached UAT exists). Spelled out step-by-step — the
 # key gotcha is that the code lives in the browser ADDRESS BAR after redirect.
 _AUTH_PROMPT = (
-    "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步). 步骤:\n"
-    "1. 调 feishu_auth_start 拿到 authorize_url, 把它发给用户打开并点「同意授权」;\n"
-    "2. 返回里 auto_receive=True 时**不用复制 code**: 直接调 feishu_auth_wait (同一个 user_key), "
-    "授权码会自动回流并完成授权;\n"
-    "3. 只有 auto_receive=False 时才退回手工: 让用户从浏览器**地址栏**复制 code= 后面那一串 "
+    "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步). 首选一键授权卡:\n"
+    "1. 调 feishu_auth_card(user_key=<sender_open_id>, capabilities=<本次 need_capabilities>, "
+    "reason=<一句话说明用途>) 给用户发一张授权卡, **然后这一轮就收尾** —— 别在同一轮里等待, "
+    "也别再把链接当文本发一遍;\n"
+    "2. 用户点卡上的按钮时, 飞书会把这次点击回调给你 (一条 <feishu_card_action>, dispatch.handler "
+    "是 feishu_auth_wait): **那一轮**再调 feishu_auth_wait (用回调 value 里的 user_key) 等授权码"
+    "自动回流, 拿到 token 后继续原来的操作;\n"
+    "3. 卡片是一次性的: 用户点了按钮但没在授权页点「同意」时, 重新调 feishu_auth_card 发一张新的.\n"
+    "环境没有自动回调通道时 (feishu_auth_card 返回 manual_required=True) 才退回手工: 调 "
+    "feishu_auth_start 把 authorize_url 发给用户, 再让他从浏览器**地址栏**复制 code= 后面那一串 "
     "(或整段网址) 交给 feishu_auth_complete.\n"
     "授权一次即缓存并自动续期, 之后同类操作不会再让你授权."
 )
@@ -2492,6 +2497,163 @@ async def auth_start_impl(capabilities: str = "", user_key: str = "") -> dict[st
             "指向本机回环端口并在飞书后台登记.)"
         ),
         "authorize_url_note": "把 authorize_url 原样发给用户点击; 下一步要的是跳转后地址栏里的 code.",
+    }
+
+
+# ── 授权卡 ───────────────────────────────────────────────────────────────────
+#
+# 一张卡把「发链接」和「等回调」缝在一起: 按钮的 behaviors 同时挂 open_url (打开
+# 授权页) 和 callback (回传给 Channel), 于是用户**点一次**就既看到飞书授权页、又
+# 把「我点了」这件事告诉了 agent。agent 收到 <feishu_card_action> 那一轮才去
+# auth_wait 等真回调 —— 阻塞发生在用户正对着浏览器的时候, 而不是发卡那一轮 (发卡
+# 那轮必须立刻收尾, 否则 SessionAgent 的 turn 锁会把用户后续消息全排到 180s 之后)。
+_AUTH_CARD_ACTION = "feishu_auth_confirm"
+_AUTH_CARD_HANDLER = "feishu_auth_wait"
+# 用户点了按钮却没在授权页上点「同意」时的兜底: 卡片是一次性的 (Channel 领取快照即
+# 立墓碑并改写原卡), 所以只能重新发一张, 不能让用户再点那张已消费的卡。
+_AUTH_CARD_RETRY_NOTE = "若用户点了按钮但没在授权页点「同意」, 这张卡已作废: 重新调 feishu_auth_card 发一张新的."
+
+
+def _auth_card_content(
+    authorize_url: str,
+    capabilities: list[str],
+    reason: str,
+    user_key: str,
+) -> dict[str, Any]:
+    """The authorization card: one button that opens the consent page *and* calls back.
+
+    Card 2.0 is used deliberately: only its ``behaviors`` array lets a single click do
+    both (the legacy ``url`` + ``value`` pair needs ``complex_interaction`` and is the
+    older contract). The button carries ``user_key`` in its callback value so the
+    handling turn knows whose pending authorization to wait on — a group card lands in
+    the clicker's own private session, where the sender's context is not available.
+    """
+    why = reason.strip() or "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步)."
+    body = f"**{why}**\n\n本次申请的权限: {', '.join(capabilities) or '(默认)'}"
+    return {
+        "schema": "2.0",
+        "header": {
+            "title": {"tag": "plain_text", "content": "飞书授权"},
+            "template": "blue",
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": body},
+                {
+                    "tag": "button",
+                    "name": _AUTH_CARD_ACTION,
+                    "text": {"tag": "plain_text", "content": "点此授权"},
+                    "type": "primary",
+                    "behaviors": [
+                        {"type": "open_url", "default_url": authorize_url},
+                        {
+                            "type": "callback",
+                            "value": {"action": _AUTH_CARD_ACTION, "user_key": user_key},
+                        },
+                    ],
+                },
+                {
+                    "tag": "note",
+                    "elements": [
+                        {
+                            "tag": "plain_text",
+                            "content": "点按钮会打开飞书授权页, 在页面上点「同意授权」即可, 不用复制任何东西.",
+                        }
+                    ],
+                },
+            ]
+        },
+    }
+
+
+async def auth_card_impl(
+    user_key: str,
+    capabilities: str = "",
+    reason: str = "",
+    receive_id: str = "",
+) -> dict[str, Any]:
+    """Send ``user_key`` an authorization card instead of a bare authorize URL.
+
+    Wraps ``auth_start_impl`` + ``send_card_impl`` so the model never hand-rolls this
+    card: forgetting ``behaviors``/``action_handlers`` yields a button that opens the
+    page but never tells the agent, and the authorization then hangs waiting for a
+    turn that never comes.
+
+    Only meaningful when the code can come back by itself — with a manual-only
+    receiver the click would still leave the user copying ``code=`` out of the address
+    bar, so this refuses rather than shipping a button that promises otherwise.
+
+    ``receive_id`` defaults to ``user_key`` (a DM). Deliberately: the pending
+    ``state``/PKCE verifier is written under the *sending* workspace, while a card
+    clicked in a group is routed to the clicker's own private session — a different
+    workspace, where ``auth_wait`` would find no pending authorization.
+    """
+    key = (user_key or "").strip()
+    if not key:
+        return _error("user_key is required — it is whose authorization this is (the sender's open_id).")
+    target = (receive_id or "").strip() or key
+    if not target.startswith("ou_"):
+        return _error(
+            "授权卡只能私聊发给本人 (receive_id 必须是 ou_ 开头的 open_id): 待完成的授权记录存在"
+            "发卡方 workspace, 而群里点卡片会落到点击者自己的私聊会话, 那边读不到这条记录. "
+            "群场景请先私聊该用户.",
+            receive_id=target,
+        )
+    started = await auth_start_impl(capabilities, key)
+    if not started.get("ok"):
+        return started
+    if not started.get("auto_receive"):
+        return _error(
+            "当前环境没有自动接收授权码的通道, 授权卡帮不上忙 (用户点完还得从地址栏复制 code). "
+            "请按 feishu_auth_start 的 message 走手工流程, 或在部署侧配 PSI_OAUTH_CALLBACK_BASE.",
+            manual_required=True,
+            mode=started.get("mode", ""),
+            authorize_url=started.get("authorize_url", ""),
+        )
+    granted = [c for c in started.get("capabilities", []) if isinstance(c, str)]
+    card = _auth_card_content(str(started.get("authorize_url", "")), granted, reason, key)
+    sent = await send_card_impl(
+        target,
+        json.dumps(card, ensure_ascii=False),
+        "open_id",
+        key,
+        json.dumps(
+            {
+                "purpose": "feishu_user_authorization",
+                "user_key": key,
+                "capabilities": granted,
+                "reason": reason.strip(),
+                "mode": started.get("mode", ""),
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps({_AUTH_CARD_ACTION: _AUTH_CARD_HANDLER}, ensure_ascii=False),
+    )
+    if not sent.get("ok"):
+        # The card is the whole delivery mechanism here; a send failure leaves the
+        # pending authorization unusable, so report it rather than claiming progress.
+        return {
+            **sent,
+            "authorize_url": started.get("authorize_url", ""),
+            "capabilities": granted,
+            "fallback": "卡片没发出去: 可以把 authorize_url 直接发给用户, 再调 feishu_auth_wait 等回调.",
+        }
+    return {
+        "ok": True,
+        "message_id": sent.get("message_id", ""),
+        "receive_id": target,
+        "capabilities": granted,
+        "newly_requested": started.get("newly_requested", []),
+        "already_granted": started.get("already_granted", []),
+        "mode": started.get("mode", ""),
+        "action_handler": _AUTH_CARD_HANDLER,
+        "message": (
+            "授权卡已发给用户. **这一轮到此为止, 不要再等待、也不要另发链接** —— 用户点卡片上的"
+            "「点此授权」时飞书会把点击回调给你, 那一轮再调 "
+            f"feishu_auth_wait(user_key={key!r}) 等授权码自动回流, 拿到 token 后继续原来的操作.\n"
+            f"{_AUTH_CARD_RETRY_NOTE}"
+        ),
+        "next_step": f"等卡片回调, 届时调 {_AUTH_CARD_HANDLER}",
     }
 
 

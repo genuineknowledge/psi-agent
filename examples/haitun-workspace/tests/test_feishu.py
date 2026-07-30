@@ -1488,6 +1488,7 @@ def test_auth_tools_are_async_with_docstrings() -> None:
     mod = importlib.import_module("feishu_auth")
     for name in (
         "feishu_auth_start",
+        "feishu_auth_card",
         "feishu_auth_wait",
         "feishu_auth_complete",
     ):
@@ -1626,6 +1627,182 @@ async def test_auth_wait_surfaces_user_denial(monkeypatch: pytest.MonkeyPatch, t
     result = await _impl.auth_wait_impl("", 10)
     assert result["ok"] is False
     assert "access_denied" in result["message"]
+
+
+def _auth_card_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Any, mode: str = "gateway") -> dict[str, Any]:
+    """Configure an app + a receiver channel, and capture what gets sent."""
+    monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "pending.json"))
+    monkeypatch.setattr(_impl, "_granted_scopes_path", lambda: str(tmp_path / "granted.json"))
+    monkeypatch.setattr(
+        _impl._oauth_rx,
+        "plan_receiver",
+        lambda explicit="": _impl._oauth_rx.ReceiverPlan(
+            mode=mode,
+            redirect_uri="https://gw.example.com/oauth/callback" if mode == "gateway" else "http://localhost/",
+        ),
+    )
+    captured: dict[str, Any] = {}
+
+    async def _fake_send(
+        receive_id: str,
+        card_json: str,
+        receive_id_type: str,
+        user_key: Any = None,
+        business_context_json: str = "{}",
+        action_handlers_json: str = "{}",
+    ) -> dict[str, Any]:
+        captured.update(
+            receive_id=receive_id,
+            card=json.loads(card_json),
+            receive_id_type=receive_id_type,
+            user_key=user_key,
+            business_context=json.loads(business_context_json),
+            action_handlers=json.loads(action_handlers_json),
+        )
+        return {"ok": True, "message_id": "om_auth", "callback_context_saved": True}
+
+    monkeypatch.setattr(_impl, "send_card_impl", _fake_send)
+    return captured
+
+
+def _card_button(card: dict[str, Any]) -> dict[str, Any]:
+    return next(e for e in card["body"]["elements"] if e.get("tag") == "button")
+
+
+@pytest.mark.asyncio
+async def test_auth_card_button_both_opens_url_and_calls_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """One tap must do both: without the callback the agent never learns to start waiting."""
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("ou_a", "bitable_write", "要把台账建在你名下")
+    assert result["ok"] is True
+    behaviors = _card_button(captured["card"])["behaviors"]
+    by_type = {b["type"]: b for b in behaviors}
+    assert set(by_type) == {"open_url", "callback"}
+    # the jump target is the real authorize URL, carrying the requested scope
+    authorize_url = by_type["open_url"]["default_url"]
+    assert parse_qs(urlparse(authorize_url).query)["redirect_uri"] == ["https://gw.example.com/oauth/callback"]
+    assert "bitable:app" in parse_qs(urlparse(authorize_url).query)["scope"][0]
+    # the callback carries the action name the handler map is keyed on, plus whose auth it is
+    assert by_type["callback"]["value"] == {"action": _impl._AUTH_CARD_ACTION, "user_key": "ou_a"}
+    assert captured["action_handlers"] == {_impl._AUTH_CARD_ACTION: "feishu_auth_wait"}
+    assert captured["business_context"]["user_key"] == "ou_a"
+    assert captured["business_context"]["capabilities"] == ["bitable_write"]
+    assert "要把台账建在你名下" in json.dumps(captured["card"], ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_auth_card_defaults_to_a_dm_to_the_user(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    await _impl.auth_card_impl("ou_a")
+    assert captured["receive_id"] == "ou_a"
+    assert captured["receive_id_type"] == "open_id"
+
+
+@pytest.mark.asyncio
+async def test_auth_card_refuses_group_targets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """A card tapped in a group lands in the tapper's own session, which has no pending auth."""
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("ou_a", receive_id="oc_group")
+    assert result["ok"] is False
+    assert "私聊" in result["message"]
+    assert captured == {}  # nothing sent, and no authorization started
+
+
+@pytest.mark.asyncio
+async def test_auth_card_unions_with_already_granted(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Same union rule as auth_start: a second grant must not drop working capabilities."""
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    _impl._record_granted_capabilities("ou_a", ["docx_write"])
+    result = await _impl.auth_card_impl("ou_a", "bitable_write")
+    scope = parse_qs(urlparse(_card_button(captured["card"])["behaviors"][0]["default_url"]).query)["scope"][0]
+    assert "docx:document" in scope
+    assert "bitable:app" in scope
+    assert result["newly_requested"] == ["bitable_write"]
+    assert result["already_granted"] == ["docx_write"]
+
+
+@pytest.mark.asyncio
+async def test_auth_card_tells_the_agent_to_end_its_turn(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Waiting in the sending turn would hold the Session turn lock for minutes."""
+    _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("ou_a")
+    assert result["action_handler"] == "feishu_auth_wait"
+    msg = result["message"]
+    assert "这一轮到此为止" in msg
+    assert "feishu_auth_wait" in msg
+    # single-use cards: the recovery path must be a fresh card, not another tap
+    assert "feishu_auth_card" in msg
+
+
+@pytest.mark.asyncio
+async def test_auth_card_refuses_when_no_automatic_channel(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """A button that still needs the user to copy code= would be a broken promise."""
+    captured = _auth_card_env(monkeypatch, tmp_path, mode="manual")
+    result = await _impl.auth_card_impl("ou_a")
+    assert result["ok"] is False
+    assert result["manual_required"] is True
+    assert result["authorize_url"]  # the manual path is still reachable
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_auth_card_requires_a_user_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("   ")
+    assert result["ok"] is False
+    assert "user_key" in result["message"]
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_auth_card_reports_send_failure_with_a_link_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    _auth_card_env(monkeypatch, tmp_path)
+
+    async def _failing_send(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": False, "message": "card send failed"}
+
+    monkeypatch.setattr(_impl, "send_card_impl", _failing_send)
+    result = await _impl.auth_card_impl("ou_a")
+    assert result["ok"] is False
+    assert result["authorize_url"]
+    assert "authorize_url" in result["fallback"]
+
+
+@pytest.mark.asyncio
+async def test_auth_card_refuses_raw_scope_strings(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("ou_a", "docx:document")
+    assert result["ok"] is False
+    assert "capability_keys" in result
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_auth_card_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    auth_mod = importlib.import_module("feishu_auth")
+    captured: dict[str, Any] = {}
+
+    async def _fake(user_key: str, capabilities: str = "", reason: str = "", receive_id: str = "") -> dict[str, Any]:
+        captured.update(user_key=user_key, capabilities=capabilities, reason=reason, receive_id=receive_id)
+        return {"ok": True, "message_id": "om_auth"}
+
+    monkeypatch.setattr(auth_mod._f, "auth_card_impl", _fake)
+    out = await auth_mod.feishu_auth_card("ou_a", "docx_write", "建周报")
+    assert json.loads(out)["message_id"] == "om_auth"
+    assert captured == {"user_key": "ou_a", "capabilities": "docx_write", "reason": "建周报", "receive_id": ""}
+
+
+def test_auth_prompt_leads_with_the_card_and_keeps_the_manual_fallback() -> None:
+    """need_auth guidance must name the card first — and still describe the manual path."""
+    prompt = _impl._AUTH_PROMPT
+    assert prompt.index("feishu_auth_card") < prompt.index("feishu_auth_start")
+    assert "feishu_auth_wait" in prompt
+    assert "地址栏" in prompt
+    assert "feishu_auth_complete" in prompt
 
 
 def test_norm_user_key_empty_falls_back_to_default() -> None:
