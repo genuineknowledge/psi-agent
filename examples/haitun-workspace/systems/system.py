@@ -589,13 +589,25 @@ async def _build_flows_index(flows_dir: anyio.Path) -> str:
         async for task_dir in flows_dir.iterdir():
             if not await task_dir.is_dir() or task_dir.name.startswith(".") or task_dir.name in {"curated", "adhoc"}:
                 continue
-            preferred = task_dir / f"{task_dir.name}.flow.ts"
-            if await preferred.exists():
-                task_lines.append(f"    - {task_dir.name}: {preferred.name}")
-                continue
-            async for flow_file in task_dir.glob("*.flow.ts"):
-                task_lines.append(f"    - {task_dir.name}: {flow_file.name}")
-                break
+            candidates = (
+                task_dir / f"{task_dir.name}.workflow",
+                task_dir / f"{task_dir.name}.g4",
+                task_dir / f"{task_dir.name}.flow.ts",
+            )
+            selected: anyio.Path | None = None
+            for candidate in candidates:
+                if await candidate.exists():
+                    selected = candidate
+                    break
+            if selected is None:
+                for pattern in ("*.workflow", "*.g4", "*.flow.ts"):
+                    async for flow_file in task_dir.glob(pattern):
+                        selected = flow_file
+                        break
+                    if selected is not None:
+                        break
+            if selected is not None:
+                task_lines.append(f"    - {task_dir.name}: {selected.name}")
 
     if not curated_lines and not task_lines:
         return "No reusable flows configured."
@@ -810,6 +822,7 @@ def _build_self_evolution_tool_schemas() -> list[dict[str, Any]]:
                         "description": {"type": "string"},
                         "category": {"type": "string"},
                         "body": {"type": "string"},
+                        "flow_source": {"type": "string"},
                         "flow_ts": {"type": "string"},
                         "target": {"type": "string", "enum": ["curated", "tasks", "adhoc", "all"]},
                     },
@@ -896,44 +909,44 @@ class System:
         self._previous_summary: str | None = None
 
     async def _build_fusion_section(self) -> str:
-        """Fusion Flow authoring guidance + flows index (merged from fusion-flow).
+        """Fusion Flow authoring guidance with Next preferred over legacy.
 
-        Returns empty string if the fusion-flow runtime skill is not present.
+        Returns empty string if the fusion-flow-next runtime skill is not present.
         Skill/runtime live under the **agent** package; generated ``flows/`` under
         the **user workspace**.
         """
         agent_resolved = await self._agent_dir.resolve()
         user_resolved = await self._user_workspace.resolve()
         skills_dir = agent_resolved / "skills"
-        fusion_skill_dir = skills_dir / "fusion-flow"
-        fusion_skill_md = fusion_skill_dir / "SKILL.md"
-        if not await fusion_skill_md.exists():
+        fusion_next_dir = skills_dir / "fusion-flow-next"
+        fusion_next_md = fusion_next_dir / "SKILL.md"
+        if not await fusion_next_md.exists():
             return ""
 
+        fusion_skill_dir = skills_dir / "fusion-flow"
+        fusion_skill_md = fusion_skill_dir / "SKILL.md"
         flows_dir = user_resolved / "flows"
-        # A workspace placed at a shallow path (e.g. ``/workspace``) may have fewer than
-        # two parents; fall back to the workspace itself instead of raising IndexError,
-        # which would abort the whole system prompt build and drop the agent's persona.
+        # Preserve the existing legacy runtime handoff paths during the parallel
+        # rollout so explicit .flow.ts work keeps its current setup contract.
         _ws_parents = Path(str(agent_resolved)).parents
         repo_root = _ws_parents[1] if len(_ws_parents) > 1 else Path(str(agent_resolved))
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
-        flows_index = await _build_flows_index(flows_dir)
         runtime_bundle = fusion_skill_dir / "runtime" / "agent-flow-core.bundle.mjs"
-        # psi engine MUST route through the session shim (the current CLI's `run` is a
-        # YAML batch launcher and rejects the bundle's old-style flags with exit=2).
         session_shim_posix = (Path(str(agent_resolved)) / "bin" / "session_shim.py").as_posix()
+        flows_index = await _build_flows_index(flows_dir)
 
-        return f"""## Fusion Flow (workflow authoring)
+        return f"""## Fusion Flow (Next preferred; legacy available)
 
-This workspace can author and run Fusion Flow workflows from natural language.
+Use `fusion-flow-next` and `run_flow` by default for multi-agent or multi-step work.
+Keep the existing `fusion-flow` + `flow_run` path available only for an explicit
+legacy Fuclaw/TypeScript request or an existing `.flow.ts` file.
 
 ### Reusable Flows
 {flows_index}
 
 ### When to activate
 When the user describes a workflow-shaped task - multi-agent collaboration, parallel review,
-fan-out/fan-in, pipelines, multi-step research or scoring, or running/inspecting `.flow.ts`
-results - activate the Fusion Flow skill.
+fan-out/fan-in, pipelines, multi-step research or scoring - activate Fusion Flow Next.
 
 **Multi-agent simulation is workflow-shaped - build a flow, do NOT role-play it yourself.**
 Any task that simulates several distinct agents/personas interacting is a Fusion Flow task:
@@ -941,11 +954,51 @@ a debate among N sides (三方辩论), a role-play conversation or roundtable (�
 a negotiation (谈判), red-team vs blue-team (红蓝对抗), a panel of experts / multi-expert
 review (多专家会诊/多角度评审), interviewer-vs-candidate, or any "let a few AIs each play a
 role and interact" request. When you recognize one, your DEFAULT action is to enter the Fusion
-Flow skill's Authoring Mode and build a `.flow.ts` where each role is its own agent (e.g.
-`flow.parallel` for independent stances, a loop/pipeline for turn-taking, plus a synthesizer to
-merge or judge) - the runtime spawns and drives those role agents. Do NOT play the roles
-yourself in a single reply, and do NOT offer "I'll just do it manually this once" as the default.
+Flow Next Authoring Mode and build a `.workflow` where each role is its own Agent Step.
+Use named Artifacts and explicit dependencies for parallel branches and a final synthesizer.
+Do NOT play the roles yourself in a single reply.
 Only skip the flow if the user explicitly says they want a one-off answer and not a tool.
+
+To activate:
+1. Read the full skill instructions at:
+   {fusion_next_md}
+   Relative path: skills/fusion-flow-next/SKILL.md
+2. Keep the skill itself immutable. Author generated task files under:
+   {flows_dir}/<task-slug>/
+   Layout:
+   - {flows_dir}/<task-slug>/<task-slug>.workflow
+3. Before calling `run_flow`, gather any file, web, or workspace context in the parent Session.
+   Inner Agent Steps have no tools and receive only their instruction body plus input Artifacts.
+4. Build `instructions_json` as an exact mapping from every `step_instruction` ID in the G4
+   source to the full instruction text. Never pass paths or unresolved references as bodies.
+5. Call `run_flow` once with `flow_path`, `instructions_json`, `inputs_json`, and declared
+   resource capacities. It parses, plans, and executes synchronously.
+
+Next is intentionally bounded to Agent-only one-shot DAGs: at most 32 Steps, concurrency 8,
+one model round per Step, and 15 minutes total. Program/Human executors, nested workflow calls,
+Step tools, persistence, and resume are not supported.
+
+If the user explicitly supplies `.flow.ts` or asks for Fuclaw/TypeScript compatibility, read
+`skills/fusion-flow/SKILL.md` and use the legacy `flow_run` path instead. Do not translate or
+delete the legacy flow silently.
+
+### Self-evolution tools
+- `skill_manage`: list, view, create, and patch workspace skills.
+- `flow_manage`: list, view, create, patch, and promote both Next and legacy assets; when both
+  exist for one task, it returns the Next `.workflow`/`.g4` asset first.
+
+Use them only when the task produces reusable knowledge or the user asks to maintain the
+workspace. Never silently rewrite user-authored assets.
+
+Rules:
+1. Keep both `skills/fusion-flow-next/` and `skills/fusion-flow/` immutable.
+2. Treat skills without `created_by: agent` as read-only.
+3. New learned procedures -> `skills/<skill-name>/SKILL.md` via `skill_manage(action="create")`.
+4. Reusable workflow templates -> `flows/curated/<flow-name>/FLOW.md` via `flow_manage`.
+5. One-off task executions -> `flows/<task-slug>/`.
+
+The following existing runtime and credential handoff remains available unchanged for the
+explicit legacy `.flow.ts` fallback:
 
 To activate:
 1. Read the full skill instructions at:
@@ -968,20 +1021,6 @@ To activate:
 When generating the run(...) options, always include both:
 - programPath normalized from import.meta.url
 - runsDir set to the generated flow's sibling ./runs directory
-
-### Self-evolution tools
-- `skill_manage`: list, view, create, and patch workspace skills.
-- `flow_manage`: list, view, create, patch, and promote reusable Fusion Flow assets.
-
-Use them only when the task produces reusable knowledge or the user asks to maintain the
-workspace. Never silently rewrite user-authored assets.
-
-Rules:
-1. Keep `skills/fusion-flow/` immutable - it is the runtime bundle, not a generated skill.
-2. Treat skills without `created_by: agent` as read-only.
-3. New learned procedures -> `skills/<skill-name>/SKILL.md` via `skill_manage(action="create")`.
-4. Reusable workflow templates -> `flows/curated/<flow-name>/FLOW.md` via `flow_manage`.
-5. One-off task executions -> `flows/<task-slug>/`.
 
 ### Engine defaults
 Fusion Flow may call external agent CLI engines. Prefer the psi engine; do not call this same
@@ -1012,7 +1051,10 @@ gateway has been used, reuse its saved config with the fusion-flow-workspace hel
 `bin/env_from_gateway.py` (reads state/latest.json, writes the .env) instead of
 hand-copying the key.
 
-Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files."""
+Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files.
+
+Next reuses the invoking psi-agent Session's configured AI socket. Never write API keys into
+this workspace, generated workflows, `instructions_json`, or committed `.env` files."""
 
     async def build_system_prompt(
         self,

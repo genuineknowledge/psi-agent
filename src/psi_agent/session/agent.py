@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +43,17 @@ fraction of the threshold — in that regime the signal re-fires every turn but
 compaction cannot shrink the system prompt, so each pass costs an LLM call and
 erodes older context without lowering ``prompt_tokens``.
 """
+
+_CURRENT_TOOL_AI_SOCKET: ContextVar[str | None] = ContextVar(
+    "psi_agent_current_tool_ai_socket",
+    default=None,
+)
+
+
+def current_tool_ai_socket() -> str | None:
+    """Return the invoking Session's AI socket while a workspace tool runs."""
+
+    return _CURRENT_TOOL_AI_SOCKET.get()
 
 
 class SessionAgent:
@@ -430,7 +442,11 @@ class SessionAgent:
                                         logger.error(f"Tool not found: {fn!r}")
                                     else:
                                         try:
-                                            raw = await func(**a)
+                                            token = _CURRENT_TOOL_AI_SOCKET.set(self._ai_client.ai_socket)
+                                            try:
+                                                raw = await func(**a)
+                                            finally:
+                                                _CURRENT_TOOL_AI_SOCKET.reset(token)
                                             r[idx] = str(raw)
                                             logger.info(f"Tool result ({fn!r}): {str(raw)[:1000]!r}")
                                         except Exception as e:
