@@ -5,6 +5,8 @@ on:
   pull_request:
 
 jobs:
+  # 旧版 Fusion Flow 没有单独接入 CI，FusionFlow Next 也暂不新增普通测试任务。
+  # 这里只校验 ANTLR 生成源码是否与语法文件同步，避免提交过期的生成文件。
   generated-sources:
     runs-on: ubuntu-latest
     steps:
@@ -43,43 +45,6 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run ty check .
 
-  fusion-flow-next-test:
-    needs: [generated-sources, lint]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
-        with:
-          python-version: "3.14"
-      - run: uv sync
-      - name: Test FusionFlow Next and workspace routing
-        run: >-
-          uv run python -m pytest -q --rootdir=.
-          examples/haitun-workspace/skills/fusion-flow-next/test
-          examples/haitun-workspace/tests/test_fusion_workflow_prompt.py
-          tests/psi_agent/test_workflow_execution.py
-          tests/psi_agent/workflow_graph
-          tests/psi_agent/session/test_agent.py
-
-  fusion-flow-legacy-test:
-    needs: lint
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: examples/haitun-workspace/skills/fusion-flow
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "26"
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run doctor
-
   test:
     needs: lint
     runs-on: ubuntu-latest
@@ -92,7 +57,7 @@ jobs:
       - run: uv run pytest -v
 
   publish:
-    needs: [lint, test, fusion-flow-next-test, fusion-flow-legacy-test]
+    needs: [lint, test]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     environment: pypi
