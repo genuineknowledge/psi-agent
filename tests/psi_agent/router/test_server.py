@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -8,14 +9,15 @@ from typing import Any, cast
 import pytest
 from aiohttp import ClientSession, web
 
+from psi_agent.router.aggregation.orchestrator import OrchestrationError
 from psi_agent.router.client import RouterUpstreamError, UpstreamResult
-from psi_agent.router.orchestrator import OrchestrationError
 from psi_agent.router.protocol import RouterConfig
 from psi_agent.router.server import (
     _ROUTER_CLIENT_KEY,
     _ROUTER_CONFIG_KEY,
-    _ROUTER_ORCHESTRATOR_KEY,
+    _ROUTER_STRATEGY_KEY,
     handle_chat_completions,
+    serve_router,
 )
 
 
@@ -33,6 +35,9 @@ class FakeOrchestrator:
 
     def discard(self, session_id: str) -> None:
         self.discarded.append(session_id)
+
+    def clear(self) -> None:
+        return None
 
 
 @dataclass
@@ -54,16 +59,17 @@ class FakeClient:
                 raise self.error
 
 
-async def _serve(*, orchestrator: FakeOrchestrator, client: FakeClient) -> AsyncIterator[str]:
+async def _serve(*, strategy: FakeOrchestrator, client: FakeClient) -> AsyncIterator[str]:
     app = web.Application()
     app[_ROUTER_CONFIG_KEY] = RouterConfig(
         session_socket="router-listener",
         router_socket="router-ai",
         default_socket="default-ai",
+        mode="aggregation",
         upstream=[("branch-ai", "general")],
         router_timeout=12.0,
     )
-    app[_ROUTER_ORCHESTRATOR_KEY] = orchestrator
+    app[_ROUTER_STRATEGY_KEY] = strategy
     app[_ROUTER_CLIENT_KEY] = client
     app.router.add_post("/chat/completions", handle_chat_completions)
     runner = web.AppRunner(app)
@@ -90,6 +96,15 @@ def _body() -> dict[str, Any]:
     }
 
 
+def _unused_tcp_port() -> int:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+    finally:
+        sock.close()
+
+
 async def _post(
     url: str, *, payload: object | None = None, raw: bytes | None = None
 ) -> tuple[int, str, dict[str, str]]:
@@ -105,7 +120,7 @@ async def _post(
 @pytest.mark.parametrize("raw", [b"{", b"[]"])
 async def test_handler_returns_http_400_before_streaming_for_invalid_or_non_object_json(raw: bytes) -> None:
     orchestrator = FakeOrchestrator(UpstreamResult(content="unused", finish_reason="stop"))
-    async for url in _serve(orchestrator=orchestrator, client=FakeClient()):
+    async for url in _serve(strategy=orchestrator, client=FakeClient()):
         status, text, headers = await _post(url, raw=raw)
 
     assert status == 400
@@ -117,7 +132,7 @@ async def test_handler_returns_http_400_before_streaming_for_invalid_or_non_obje
 @pytest.mark.anyio
 async def test_handler_encodes_a_successful_result_as_one_choice_sse_chunk() -> None:
     orchestrator = FakeOrchestrator(UpstreamResult(content="final answer", finish_reason="stop"))
-    async for url in _serve(orchestrator=orchestrator, client=FakeClient()):
+    async for url in _serve(strategy=orchestrator, client=FakeClient()):
         status, text, headers = await _post(url, payload=_body())
 
     assert status == 200
@@ -133,7 +148,7 @@ async def test_handler_encodes_branch_tool_calls_as_one_choice_sse_chunk() -> No
     orchestrator = FakeOrchestrator(
         UpstreamResult(content="Processing subtask 1: search", tool_calls=tool_calls, finish_reason="tool_calls")
     )
-    async for url in _serve(orchestrator=orchestrator, client=FakeClient()):
+    async for url in _serve(strategy=orchestrator, client=FakeClient()):
         status, text, _ = await _post(url, payload=_body())
 
     assert status == 200
@@ -155,7 +170,7 @@ async def test_handler_encodes_branch_tool_calls_as_one_choice_sse_chunk() -> No
 async def test_handler_falls_back_once_and_preserves_only_public_request_fields(error: Exception) -> None:
     orchestrator = FakeOrchestrator(error)
     client = FakeClient(chunks=[b"data: default answer\n\n"])
-    async for url in _serve(orchestrator=orchestrator, client=client):
+    async for url in _serve(strategy=orchestrator, client=client):
         status, text, _ = await _post(url, payload=_body())
 
     assert status == 200
@@ -179,7 +194,7 @@ async def test_handler_falls_back_once_and_preserves_only_public_request_fields(
 async def test_handler_returns_http_502_if_default_fallback_fails_before_response_prepare() -> None:
     orchestrator = FakeOrchestrator(OrchestrationError("planner failure"))
     client = FakeClient(error=RouterUpstreamError("default unavailable"))
-    async for url in _serve(orchestrator=orchestrator, client=client):
+    async for url in _serve(strategy=orchestrator, client=client):
         status, text, headers = await _post(url, payload=_body())
 
     assert status == 502
@@ -196,7 +211,7 @@ async def test_handler_emits_one_choice_sse_error_if_default_stream_fails_after_
         error=RouterUpstreamError("default stream interrupted"),
         fail_after_first_chunk=True,
     )
-    async for url in _serve(orchestrator=orchestrator, client=client):
+    async for url in _serve(strategy=orchestrator, client=client):
         status, text, _ = await _post(url, payload=_body())
 
     assert status == 200
@@ -211,3 +226,23 @@ async def test_handler_emits_one_choice_sse_error_if_default_stream_fails_after_
         }
     ]
     assert len(client.calls) == 1
+
+
+@pytest.mark.anyio
+async def test_serve_router_accepts_strategy_protocol_and_streams_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = FakeOrchestrator(UpstreamResult(content="strategy answer", finish_reason="stop"))
+
+    async def fake_sleep_forever() -> None:
+        return None
+
+    monkeypatch.setattr("psi_agent.router.server.anyio.sleep_forever", fake_sleep_forever)
+    config = RouterConfig(
+        session_socket=f"http://127.0.0.1:{_unused_tcp_port()}",
+        router_socket="router-ai",
+        default_socket="default-ai",
+        mode="aggregation",
+        upstream=[("branch-ai", "general")],
+    )
+    await serve_router(config=config, strategy=strategy, client=FakeClient())
+
+    assert strategy.received == []

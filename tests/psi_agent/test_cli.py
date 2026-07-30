@@ -17,6 +17,8 @@ def test_router_subcommand_parses_native_upstream_tuples() -> None:
             "planner.sock",
             "--default-socket",
             "default.sock",
+            "--mode",
+            "routing",
             "--upstream",
             "research.sock",
             "research",
@@ -26,4 +28,5 @@ def test_router_subcommand_parses_native_upstream_tuples() -> None:
     )
 
     assert isinstance(command, Router)
+    assert command.mode == "routing"
     assert command.upstream == [("research.sock", "research"), ("analysis.sock", "structured analysis")]

@@ -14,14 +14,21 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent._sockets import create_site
+from psi_agent.router.aggregation import OrchestrationError, Orchestrator, PlanValidationError
 from psi_agent.router.client import RouterClient, RouterUpstreamError, UpstreamResult
-from psi_agent.router.orchestrator import OrchestrationError, Orchestrator
-from psi_agent.router.planner import PlanValidationError
 from psi_agent.router.protocol import RouterConfig
 
 
 class _RawStreamingClient(Protocol):
     def stream_raw(self, *, socket: str, body: dict[str, Any], **options: Any) -> AsyncGenerator[bytes]: ...
+
+
+class RouterStrategy(Protocol):
+    async def process(self, *, body: dict[str, Any]) -> UpstreamResult: ...
+
+    def discard(self, session_id: str) -> None: ...
+
+    def clear(self) -> None: ...
 
 
 _SSE_HEADERS = {
@@ -31,7 +38,7 @@ _SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 _ROUTER_CONFIG_KEY: web.AppKey[RouterConfig] = web.AppKey("router_config", RouterConfig)
-_ROUTER_ORCHESTRATOR_KEY: web.AppKey[object] = web.AppKey("router_orchestrator", object)
+_ROUTER_STRATEGY_KEY: web.AppKey[object] = web.AppKey("router_strategy", object)
 _ROUTER_CLIENT_KEY: web.AppKey[object] = web.AppKey("router_client", object)
 _ORCHESTRATION_FAILURES = (
     OrchestrationError,
@@ -58,20 +65,20 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.debug(f"Router request body: {json.dumps(body, ensure_ascii=False)[:1000]}")
 
     config = request.app[_ROUTER_CONFIG_KEY]
-    orchestrator = cast(Orchestrator, request.app[_ROUTER_ORCHESTRATOR_KEY])
+    strategy = cast(RouterStrategy, request.app[_ROUTER_STRATEGY_KEY])
     client = cast(_RawStreamingClient, request.app[_ROUTER_CLIENT_KEY])
     try:
-        result = await orchestrator.process(body=body)
+        result = await strategy.process(body=body)
     except _ORCHESTRATION_FAILURES as error:
         logger.warning(f"Router orchestration failed; using default socket once: {error!r}")
-        _discard_session_run(orchestrator=orchestrator, body=body)
+        _discard_session_run(strategy=strategy, body=body)
         return await _stream_fallback(request=request, client=client, config=config, body=body)
 
     try:
         chunk = _result_chunk(result)
     except OrchestrationError as error:
         logger.warning(f"Router produced an invalid orchestration result; using default socket once: {error!r}")
-        _discard_session_run(orchestrator=orchestrator, body=body)
+        _discard_session_run(strategy=strategy, body=body)
         return await _stream_fallback(request=request, client=client, config=config, body=body)
 
     logger.info(
@@ -94,19 +101,17 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
 async def serve_router(
     *,
     config: RouterConfig,
-    orchestrator: Orchestrator | None = None,
-    client: RouterClient | None = None,
+    strategy: RouterStrategy | None = None,
+    client: Any | None = None,
 ) -> None:
     """Serve Router requests until cancelled, with shielded startup and shutdown cleanup."""
 
     actual_client = client if client is not None else RouterClient()
-    actual_orchestrator = (
-        orchestrator if orchestrator is not None else Orchestrator(config=config, client=actual_client)
-    )
+    actual_strategy = strategy if strategy is not None else Orchestrator(config=config, client=actual_client)
     logger.info(f"Starting Router server on {config.session_socket}")
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app[_ROUTER_CONFIG_KEY] = config
-    app[_ROUTER_ORCHESTRATOR_KEY] = actual_orchestrator
+    app[_ROUTER_STRATEGY_KEY] = actual_strategy
     app[_ROUTER_CLIENT_KEY] = actual_client
     app.router.add_post("/chat/completions", handle_chat_completions)
     runner = web.AppRunner(app)
@@ -116,7 +121,7 @@ async def serve_router(
         await site.start()
     except Exception as error:
         logger.error(f"Failed to start Router server on {config.session_socket}: {error}")
-        actual_orchestrator.clear()
+        actual_strategy.clear()
         with anyio.CancelScope(shield=True):
             await runner.cleanup()
         raise
@@ -126,7 +131,7 @@ async def serve_router(
         await anyio.sleep_forever()
     finally:
         logger.info(f"Shutting down Router server on {config.session_socket}")
-        actual_orchestrator.clear()
+        actual_strategy.clear()
         with anyio.CancelScope(shield=True):
             await runner.cleanup()
         logger.info(f"Router server shutdown complete on {config.session_socket}")
@@ -184,13 +189,13 @@ def _result_chunk(result: UpstreamResult) -> dict[str, Any]:
     return {"id": "router", "choices": [{"index": 0, "delta": delta, "finish_reason": result.finish_reason}]}
 
 
-def _discard_session_run(*, orchestrator: Orchestrator, body: dict[str, Any]) -> None:
+def _discard_session_run(*, strategy: RouterStrategy, body: dict[str, Any]) -> None:
     """Drop a partial run when a routable Session identity is present."""
 
     routing = body.get("routing")
     session_id = routing.get("session_id") if isinstance(routing, dict) else None
     if isinstance(session_id, str) and session_id.strip():
-        orchestrator.discard(session_id.strip())
+        strategy.discard(session_id.strip())
 
 
 async def _write_raw(*, response: web.StreamResponse, chunk: bytes) -> None:
@@ -227,4 +232,4 @@ def _http_error(*, status: int, message: str, error_type: str) -> web.Response:
     )
 
 
-__all__ = ["handle_chat_completions", "serve_router"]
+__all__ = ["RouterStrategy", "handle_chat_completions", "serve_router"]

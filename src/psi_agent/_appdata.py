@@ -43,6 +43,11 @@ def appdata_todo_path(appdata_root: str, session_id: str) -> anyio.Path:
     return anyio.Path(appdata_root) / "todos" / f"{session_id}.json"
 
 
+def appdata_todo_segments_path(appdata_root: str, session_id: str) -> anyio.Path:
+    """AppData path: ``{appdata}/todos/{session_id}.segments.json`` (sub-task history)."""
+    return anyio.Path(appdata_root) / "todos" / f"{session_id}.segments.json"
+
+
 async def resolve_todo_read_path(
     *,
     appdata_root: str,

@@ -8,9 +8,9 @@ from typing import Any, Protocol
 import anyio
 from loguru import logger
 
+from psi_agent.router.aggregation.planner import Planner
+from psi_agent.router.aggregation.prompts import build_aggregation_messages, build_branch_messages
 from psi_agent.router.client import RouterClient, UpstreamResult
-from psi_agent.router.planner import Planner
-from psi_agent.router.prompts import build_aggregation_messages, build_branch_messages
 from psi_agent.router.protocol import (
     BranchState,
     BranchStatus,
@@ -31,10 +31,12 @@ class _CompletionClient(Protocol):
 
 
 class _TaskPlanner(Protocol):
-    async def plan(self, *, messages: list[dict[str, Any]]) -> tuple[PlannedTask, ...]: ...
+    async def plan(
+        self, *, messages: list[dict[str, Any]], max_context_length: int | None = None
+    ) -> tuple[PlannedTask, ...]: ...
 
 
-class Orchestrator:
+class AggregationOrchestrator:
     """Fan out one Session round and aggregate upstream responses."""
 
     def __init__(
@@ -62,7 +64,24 @@ class Orchestrator:
         """Plan a round, execute selected subtasks, then aggregate through router_socket."""
         messages = self._messages(body)
         tools = self._tools(body)
-        plan = await self.planner.plan(messages=messages)
+        tool_execution = self._tool_execution(body)
+        if tool_execution is not None:
+            messages = [*messages, {"role": "user", "content": self._tool_report_prompt(tool_execution)}]
+        routing = body.get("routing")
+        tool_executions = routing.get("tool_executions", []) if isinstance(routing, dict) else []
+        if isinstance(tool_executions, list) and tool_executions:
+            messages = [
+                *messages,
+                {
+                    "role": "user",
+                    "content": (
+                        "Tool execution report from the previous round. Do not repeat failed tool calls with identical "
+                        f"arguments; choose an alternative or finish:\n{tool_executions[-10:]}"
+                    ),
+                },
+            ]
+        max_context_length = self._max_context_length(body) or self.config.max_context_length
+        plan = await self.planner.plan(messages=messages, max_context_length=max_context_length)
         logger.info(f"Router plan selected {len(plan)} task(s): {[(task.subtask, task.socket) for task in plan]}")
         results: list[UpstreamResult | None] = [None] * len(plan)
         errors: list[Exception] = []
@@ -71,7 +90,9 @@ class Orchestrator:
             try:
                 logger.info(f"Router dispatching round to upstream[{index}] socket={socket!r}")
                 branch_messages = build_branch_messages(
-                    original_messages=messages, subtask=plan[index].subtask, prior_answers=[]
+                    original_messages=messages,
+                    subtask=f"[{plan[index].task_type}] {plan[index].subtask}",
+                    prior_answers=[],
                 )
                 request_body = self._completion_body(request_body=body, messages=branch_messages, tools=tools)
                 results[index] = await self.client.complete(
@@ -83,17 +104,32 @@ class Orchestrator:
                 logger.warning(f"Upstream {socket!r} failed: {exc}")
                 errors.append(exc)
 
+        grouped_indices: dict[str, list[int]] = {}
+        for index, task in enumerate(plan):
+            grouped_indices.setdefault(task.socket, []).append(index)
+
+        async def invoke_socket_group(socket: str, indices: list[int]) -> None:
+            for index in indices:
+                await invoke(index, socket)
+
         async with anyio.create_task_group() as tg:
-            for index, task in enumerate(plan):
-                socket = task.socket
-                tg.start_soon(invoke, index, socket)
+            for socket, indices in grouped_indices.items():
+                tg.start_soon(invoke_socket_group, socket, indices)
 
         successful = [result for result in results if result is not None]
         logger.info(f"Router upstream round completed: {len(successful)}/{len(results)} succeeded")
         if not successful:
             raise OrchestrationError("All configured upstreams failed") from (errors[0] if errors else None)
 
-        aggregate_input = [(plan[index].subtask, result.content) for index, result in enumerate(results) if result]
+        aggregate_input = [
+            {
+                "subtask": plan[index].subtask,
+                "content": result.content,
+                "tool_calls": result.tool_calls,
+            }
+            for index, result in enumerate(results)
+            if result
+        ]
         aggregate = await self.client.complete(
             socket=self.config.router_socket,
             body={
@@ -104,6 +140,13 @@ class Orchestrator:
             timeout=self.config.aggregate_timeout,
         )
         content, reasoning, calls = aggregate.content, aggregate.reasoning, aggregate.tool_calls
+        if not calls and content.strip().upper() in {"NO_REPLY", "NO-REPLY", "NO REPLY"} and aggregate_input:
+            fallback_answers: list[str] = []
+            for answer in aggregate_input:
+                answer_content = answer.get("content")
+                if isinstance(answer_content, str) and answer_content.strip():
+                    fallback_answers.append(answer_content)
+            content = "\n\n".join(fallback_answers)
         finish = "tool_calls" if calls else "stop"
         logger.info(
             f"Router aggregate result: finish_reason={finish}, content={content!r}, "
@@ -295,11 +338,41 @@ class Orchestrator:
         return messages
 
     @staticmethod
+    def _max_context_length(body: dict[str, Any]) -> int | None:
+        for key in ("max_context_length",):
+            value = body.get(key)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value
+        routing = body.get("routing")
+        if isinstance(routing, dict):
+            value = routing.get("max_context_length")
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                return value
+        return None
+
+    @staticmethod
     def _tools(body: dict[str, Any]) -> list[dict[str, Any]]:
         tools = body.get("tools", [])
         if not isinstance(tools, list) or any(not isinstance(tool, dict) for tool in tools):
             raise OrchestrationError("Request tools must be a list of objects")
         return tools
 
+    @staticmethod
+    def _tool_execution(body: dict[str, Any]) -> dict[str, Any] | None:
+        routing = body.get("routing")
+        report = routing.get("tool_execution") if isinstance(routing, dict) else None
+        return report if isinstance(report, dict) else None
 
-__all__ = ["OrchestrationError", "Orchestrator"]
+    @staticmethod
+    def _tool_report_prompt(report: dict[str, Any]) -> str:
+        return (
+            "Tool execution report from the previous round:\n"
+            f"{report}\n"
+            "Use this report when routing. Do not blindly repeat a failed tool call; "
+            "change strategy or provide a final answer when the result is sufficient."
+        )
+
+
+Orchestrator = AggregationOrchestrator
+
+__all__ = ["AggregationOrchestrator", "OrchestrationError", "Orchestrator"]

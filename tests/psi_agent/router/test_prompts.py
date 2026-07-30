@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from psi_agent.router.prompts import (
+from psi_agent.router.aggregation.prompts import (
     build_aggregation_messages,
     build_branch_messages,
     build_planning_messages,
     build_repair_messages,
     merge_upstream_descriptions,
 )
+from psi_agent.router.routing.prompts import build_routing_messages
 
 
 def test_merge_upstream_descriptions_combines_duplicate_socket_entries() -> None:
@@ -28,7 +29,7 @@ def test_planning_prompt_exposes_configured_socket_description_catalog_and_stric
     assert '"tasks"' in messages[-1]["content"]
     assert '"socket"' in messages[-1]["content"]
     assert '"description"' not in messages[-1]["content"]
-    assert "one or more tasks" in messages[-1]["content"].lower()
+    assert "configured" in messages[-1]["content"].lower()
 
 
 def test_repair_prompt_includes_invalid_answer_and_configured_socket_schema() -> None:
@@ -75,3 +76,42 @@ def test_aggregation_prompt_receives_answers_but_no_socket_addresses() -> None:
     assert "answer three" in content
     assert "sock-" not in content
     assert "final answer" in content.lower()
+
+
+def test_aggregation_prompt_includes_structured_child_tool_calls() -> None:
+    messages = build_aggregation_messages(
+        original_messages=[{"role": "user", "content": "main"}],
+        answers=[
+            {
+                "subtask": "first",
+                "content": "answer one",
+                "tool_calls": [{"id": "call-1", "type": "function", "function": {"name": "lookup"}}],
+            }
+        ],
+    )
+
+    content = messages[-1]["content"]
+    assert "answer one" in content
+    assert "call-1" in content
+    assert "lookup" in content
+    assert "observations/material" in content
+
+
+def test_routing_prompt_exposes_socket_catalog_and_strict_json_selection_schema() -> None:
+    messages = build_routing_messages(
+        messages=[{"role": "system", "content": "Be useful"}, {"role": "user", "content": "Fix the test"}],
+        upstream=[("sock-code", "coding specialist"), ("sock-chat", "general chat")],
+    )
+
+    assert messages[:-1] == [
+        {"role": "system", "content": "Be useful"},
+        {"role": "user", "content": "Fix the test"},
+    ]
+    content = messages[-1]["content"]
+    assert "sock-code" in content
+    assert "coding specialist" in content
+    assert "sock-chat" in content
+    assert "general chat" in content
+    assert '{"socket": "<configured socket>"}' in content
+    assert "strict JSON" in content
+    assert "configured socket" in content

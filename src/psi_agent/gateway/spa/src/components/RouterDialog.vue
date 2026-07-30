@@ -8,6 +8,13 @@
     </div>
     <div v-else class="router-form">
       <label class="field">路由服务名称<input v-model="routerForm.name" placeholder="智能任务路由"></label>
+      <label class="field">路由模式
+        <select v-model="routerForm.mode">
+          <option value="">请选择</option>
+          <option value="routing">分流模式</option>
+          <option value="aggregation">聚合模式</option>
+        </select>
+      </label>
       <label class="field">负责路由判断的模型
         <select v-model="routerForm.router_ai_id"><option value="">请选择</option><option v-for="a in ais" :key="a.id" :value="a.id">{{ a.model || a.id }}</option></select>
       </label>
@@ -23,7 +30,7 @@
       </label>
       <div class="advanced">
         <label class="field">路由超时（秒）<input v-model="routerForm.router_timeout" type="number" min="0" placeholder="不限制"></label>
-        <label class="field">上下文字符数<input v-model="routerForm.router_context_chars" type="number" min="1"></label>
+        <label class="field">最大上下文长度<input v-model="routerForm.max_context_length" type="number" min="1"></label>
       </div>
     </div>
     <template #actions>

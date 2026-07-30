@@ -30,6 +30,14 @@ Config format (``run-config.yml``):
                                    # these, and TASK.md files created after startup
                                    # fire too (an enumerated whitelist misses them).
 
+    - type: router
+      mode: aggregation
+      session_socket: ./router.sock
+      router_socket: ./router-ai.sock
+      default_socket: ./ai.sock
+      upstream:
+        - [./ai.sock, general-purpose backend]
+
     - type: channel
       name: repl                    # "cli", "repl", "telegram", or "feishu"
       session_socket: ./channel.sock
@@ -56,6 +64,7 @@ from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.feishu import ChannelFeishu
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.telegram import ChannelTelegram
+from psi_agent.router import Router
 from psi_agent.session import Session
 
 
@@ -137,6 +146,17 @@ async def _run_config(config_path: Path) -> None:
                 c = _build(Session, item)
                 logger.info(
                     f"Configured session: workspace={item.get('workspace')!r}, ai_socket={item.get('ai_socket')!r}"
+                )
+            case "router":
+                upstream = item.get("upstream")
+                if isinstance(upstream, list):
+                    item["upstream"] = [
+                        tuple(entry) if isinstance(entry, list) and len(entry) == 2 else entry for entry in upstream
+                    ]
+                c = _build(Router, item)
+                logger.info(
+                    f"Configured router: session_socket={item.get('session_socket')!r}, "
+                    f"router_socket={item.get('router_socket')!r}"
                 )
             case "channel":
                 try:

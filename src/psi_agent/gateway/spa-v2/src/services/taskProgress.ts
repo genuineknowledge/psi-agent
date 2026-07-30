@@ -125,27 +125,26 @@ export function resolveTaskProgress(input: ProgressInput): ProgressProjection {
   let updated: string
 
   if (hasTodoTrack) {
+    // Checklist UI always mirrors AppData todo status — chat turnSettled must
+    // not paint unfinished items green or inflate N/M / % (真实任务进度).
     steps = active.map((t) => ({
       label: t.content,
-      state: phase === 'done' ? 'done' : todoStatusToStepState(t.status),
+      state: todoStatusToStepState(t.status),
     }))
     if (phase === 'deliver') {
-      steps = [
-        ...steps.map((s) => (s.state === 'waiting' ? { ...s, state: 'done' as const } : s)),
-        { label: '产出与确认', state: 'working' },
-      ]
-    } else if (phase === 'done') {
-      steps = steps.map((s) => ({ ...s, state: 'done' as const }))
+      // Only reached when middle.done while streaming — append deliver line.
+      steps = [...steps, { label: '产出与确认', state: 'working' }]
     }
 
     progress = Math.round((middle.completed / Math.max(middle.total, 1)) * 100)
     if (phase === 'deliver') progress = Math.max(progress, 85)
-    if (phase === 'done') progress = 100
     indeterminate = false
     progressLabel = middle.label
     phaseLabel =
       phase === 'done'
-        ? '已完成'
+        ? middle.done
+          ? '已完成'
+          : `本轮已回复 · ${middle.label}`
         : phase === 'deliver'
           ? '产出与确认'
           : middle.detail
@@ -153,7 +152,9 @@ export function resolveTaskProgress(input: ProgressInput): ProgressProjection {
             : middle.label
     updated =
       phase === 'done'
-        ? '本轮回复已完成'
+        ? middle.done
+          ? '本轮回复已完成'
+          : `本轮已回复 · 清单 ${middle.label}`
         : phase === 'deliver'
           ? '正在产出'
           : '已从 todo 同步进度'

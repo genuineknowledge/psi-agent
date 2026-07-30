@@ -19,6 +19,12 @@ only); see ``_oauth_receiver``. Only when neither channel is available does the 
 manual path apply: the user copies ``code=...`` out of the browser address bar and
 hands it to ``feishu_auth_complete``.
 
+**Asking in one tap** — ``feishu_auth_card`` is the preferred way to ask: it sends an
+interactive card whose single button both opens the consent page and calls back, so the
+agent finishes its turn immediately and only waits once the click actually arrives.
+Sending ``authorize_url`` as plain text still works, and stays the fallback for
+deployments with no automatic callback channel.
+
 **Who owns the output** — a created document/table/task belongs to whoever created
 it. ``feishu_identity_set`` records whether this user wants writes done under their
 own Feishu identity (output owned by them, needs authorization) or under the bot's
@@ -80,13 +86,62 @@ async def feishu_auth_start(user_key: str = "", capabilities: str = "") -> str:
     return _f.dumps_result(await _f.auth_start_impl(capabilities, user_key))
 
 
+async def feishu_auth_card(
+    user_key: str,
+    capabilities: str = "",
+    reason: str = "",
+    receive_id: str = "",
+) -> str:
+    """Ask for authorization with a **one-click card** instead of a bare URL.
+
+    Preferred over sending ``feishu_auth_start``'s ``authorize_url`` as text: the card's
+    button opens the Feishu consent page *and* calls back to you in one tap, so you learn
+    the user acted instead of guessing when to start waiting. Use it whenever a tool
+    returns ``need_auth=True`` and you have the user's open_id.
+
+    **Finish your turn right after this returns.** Do not call ``feishu_auth_wait`` in the
+    same turn and do not also send the link as text. When the user taps the button, Feishu
+    delivers the click to you as a ``<feishu_card_action>`` turn whose ``dispatch.handler``
+    is ``feishu_auth_wait``; call it *then*, with the ``user_key`` carried in the callback
+    value. That is when the user is actually looking at the consent page, so waiting costs
+    them nothing — whereas waiting in this turn would block everything else they say.
+
+    The card is single-use. If the user taps it but never presses 「同意授权」 on the page,
+    that card is spent: send a fresh one with this tool rather than asking them to tap again.
+
+    Falls back with ``manual_required=True`` when the deployment has no automatic callback
+    channel (no ``PSI_OAUTH_CALLBACK_BASE`` and no usable loopback) — a button would then
+    still leave the user copying ``code=`` from the address bar, so use the manual
+    ``feishu_auth_start`` / ``feishu_auth_complete`` path instead.
+
+    Args:
+        user_key: The message sender's open_id (from ``<feishu_context>`` ``sender_open_id``).
+            This is whose authorization it is; pass the same value to ``feishu_auth_wait``.
+        capabilities: Comma-separated capability keys the task needs — typically the
+            ``need_capabilities`` a tool just returned. Same keys and same union-with-already-
+            granted behaviour as ``feishu_auth_start``. Empty asks for a general docs/drive set.
+        reason: One line telling the user what this authorization is for, e.g.
+            ``"要把周报建在你名下"``. Shown on the card; keep it concrete.
+        receive_id: Where to send the card. Defaults to ``user_key`` (a DM), which is
+            normally right. Must be an ``ou_`` open_id: a card tapped in a group chat is
+            routed to the tapper's own private session, which cannot see the pending
+            authorization recorded here.
+    """
+    return _f.dumps_result(await _f.auth_card_impl(user_key, capabilities, reason, receive_id))
+
+
 async def feishu_auth_wait(user_key: str = "", timeout_seconds: int = 180) -> str:
     """Wait for the authorization code to arrive by itself, then finish authorizing.
 
-    Call this right after sending the user ``authorize_url`` from
-    ``feishu_auth_start`` (when it reported ``auto_receive=True``). It blocks until
-    the user approves in the browser, receives the code through the callback
-    channel, exchanges it for a token, and caches it — the user copies nothing.
+    Two ways to get here. After ``feishu_auth_card``, call this **in the turn the card
+    click arrives** (the ``<feishu_card_action>`` whose ``dispatch.handler`` is
+    ``feishu_auth_wait``), using the ``user_key`` from the callback value — not in the
+    turn that sent the card. After a plain ``feishu_auth_start`` that reported
+    ``auto_receive=True``, call it right after sending the user ``authorize_url``.
+
+    Either way it blocks until the user approves in the browser, receives the code
+    through the callback channel, exchanges it for a token, and caches it — the user
+    copies nothing.
 
     On ``timed_out=True`` you may simply call this again to keep waiting. On
     ``manual_required=True`` the environment has no automatic channel: fall back to

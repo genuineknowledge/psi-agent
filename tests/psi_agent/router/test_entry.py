@@ -6,6 +6,8 @@ from typing import Any, cast
 import pytest
 
 from psi_agent.router import Router, serve_router
+from psi_agent.router.aggregation import Orchestrator as AggregationOrchestrator
+from psi_agent.router.routing import Orchestrator as RoutingOrchestrator
 
 
 def _router_kwargs(**overrides: Any) -> dict[str, Any]:
@@ -13,6 +15,7 @@ def _router_kwargs(**overrides: Any) -> dict[str, Any]:
         "session_socket": "router.sock",
         "router_socket": "planner.sock",
         "default_socket": "default.sock",
+        "mode": "routing",
         "upstream": [("research.sock", "research")],
     }
     values.update(overrides)
@@ -67,8 +70,9 @@ async def test_router_run_builds_config_and_orchestrator_then_serves(monkeypatch
 
     monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: configured.append(verbose))
 
-    async def fake_serve_router(*, config: object, orchestrator: object) -> None:
-        served.append((config, orchestrator))
+    async def fake_serve_router(*, config: object, strategy: object, client: object) -> None:
+        del client
+        served.append((config, strategy))
 
     monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve_router)
     router = Router(
@@ -101,13 +105,41 @@ async def test_router_run_builds_config_and_orchestrator_then_serves(monkeypatch
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("mode", "expected_type"),
+    [
+        ("routing", RoutingOrchestrator),
+        ("aggregation", AggregationOrchestrator),
+    ],
+)
+async def test_router_run_wires_strategy_from_mode(
+    monkeypatch: pytest.MonkeyPatch, mode: str, expected_type: type[object]
+) -> None:
+    served: list[object] = []
+
+    monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: None)
+
+    async def fake_serve_router(*, config: object, strategy: object, client: object) -> None:
+        del client
+        served.append((config, strategy))
+
+    monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve_router)
+
+    await Router(**_router_kwargs(mode=mode)).run()
+
+    assert len(served) == 1
+    _, strategy = cast(tuple[Any, Any], served[0])
+    assert isinstance(strategy, expected_type)
+
+
+@pytest.mark.anyio
 async def test_router_run_accepts_supported_transport_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
     served: list[object] = []
 
     monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: None)
 
-    async def fake_serve_router(*, config: object, orchestrator: object) -> None:
-        del orchestrator
+    async def fake_serve_router(*, config: object, strategy: object, client: object) -> None:
+        del strategy, client
         served.append(config)
 
     monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve_router)
@@ -126,6 +158,16 @@ async def test_router_run_accepts_supported_transport_addresses(monkeypatch: pyt
     assert config.router_socket == r"\\.\pipe\planner"
     assert config.default_socket == "https://default.example"
     assert config.upstream == (("http://127.0.0.1:8100", "research"),)
+
+
+def test_router_dataclass_requires_mode() -> None:
+    with pytest.raises(TypeError):
+        Router(  # ty: ignore[missing-argument]
+            session_socket="router.sock",
+            router_socket="planner.sock",
+            default_socket="default.sock",
+            upstream=[("research.sock", "research")],
+        )
 
 
 def test_router_is_exported_with_its_server_function() -> None:

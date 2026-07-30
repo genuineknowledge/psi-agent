@@ -27,6 +27,13 @@ class RoutingStatus(StrEnum):
     FAILED = "failed"
 
 
+class RouterMode(StrEnum):
+    """Supported router upstream orchestration modes."""
+
+    ROUTING = "routing"
+    AGGREGATION = "aggregation"
+
+
 @dataclass(frozen=True)
 class RouterConfig:
     """Validated, immutable socket-only configuration for one Router service."""
@@ -34,14 +41,22 @@ class RouterConfig:
     session_socket: str
     router_socket: str
     default_socket: str
+    mode: RouterMode | str
     upstream: tuple[tuple[str, str], ...] | list[tuple[str, str]]
     max_tool_rounds: int = 10
     router_timeout: float | None = 60.0
     branch_timeout: float | None = None
     aggregate_timeout: float | None = None
     run_ttl: float = 1_800.0
+    max_context_length: int = 12_000
 
     def __post_init__(self) -> None:
+        try:
+            mode = RouterMode(self.mode)
+        except ValueError as exc:
+            raise ValueError("mode must be 'routing' or 'aggregation'") from exc
+        object.__setattr__(self, "mode", mode)
+
         for name in ("session_socket", "router_socket", "default_socket"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
@@ -77,6 +92,12 @@ class RouterConfig:
                 raise ValueError(f"{name} must be a positive number or None")
         if not isinstance(self.run_ttl, (int, float)) or isinstance(self.run_ttl, bool) or self.run_ttl <= 0:
             raise ValueError("run_ttl must be a positive number")
+        if (
+            not isinstance(self.max_context_length, int)
+            or isinstance(self.max_context_length, bool)
+            or self.max_context_length <= 0
+        ):
+            raise ValueError("max_context_length must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -85,6 +106,7 @@ class PlannedTask:
 
     subtask: str
     socket: str
+    task_type: str = "general"
 
 
 @dataclass

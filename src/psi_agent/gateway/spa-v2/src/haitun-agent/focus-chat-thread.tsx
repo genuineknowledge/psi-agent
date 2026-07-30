@@ -13,6 +13,9 @@ import { ensureChatFileData, revealDeliverableInFolder } from "../utils/filePrev
 import { isBlobPreviewable } from "../utils/renderBlobPreview";
 import FilePreview from "../components/FilePreview";
 
+/** Distance from bottom (px) — beyond this, streaming must not yank the viewport down. */
+const STICK_BOTTOM_PX = 60;
+
 function ChatAvatar({ role }: { role: "agent" | "user" }) {
   const [userAvatar, setUserAvatar] = useState(readStoredAvatar);
   const [userName, setUserName] = useState(readStoredName);
@@ -139,6 +142,7 @@ export function FocusChatThread({
   title,
   progressLog,
   workspaceRoot = "",
+  loadingHistory = false,
   onFeedback,
   onRegenerate,
   onRetry,
@@ -150,19 +154,46 @@ export function FocusChatThread({
   progressLog?: ProgressLog | null;
   /** Session workspace — used to resolve relative SEND paths after refresh. */
   workspaceRoot?: string;
+  /** Sidebar jump before GET /history resolves — avoid empty-prompt flash. */
+  loadingHistory?: boolean;
   onFeedback?: (index: number, kind: Exclude<MessageFeedback, "">) => void;
   onRegenerate?: (index: number) => void;
   onRetry?: (index: number) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  /** Align with spa v1 / Cursor: only pin to bottom while the user is near the end. */
+  const stickToBottomRef = useRef(true);
+  const prevMessageCountRef = useRef(0);
   const [preview, setPreview] = useState<ChatFile | null>(null);
   const [previewBusy, setPreviewBusy] = useState<string | null>(null);
   const [revealBusy, setRevealBusy] = useState<string | null>(null);
 
+  const onThreadScroll = () => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const fromBottom = el.scrollHeight - el.clientHeight - el.scrollTop;
+    stickToBottomRef.current = fromBottom <= STICK_BOTTOM_PX;
+  };
+
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+
+    // New user turn → re-stick so the send is visible (same as spa v1 clearing userHasScrolledUp).
+    const count = messages.length;
+    if (count > prevMessageCountRef.current) {
+      const last = messages[count - 1];
+      if (last?.role === "user") stickToBottomRef.current = true;
+    }
+    prevMessageCountRef.current = count;
+
+    if (!stickToBottomRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const node = scrollerRef.current;
+      if (!node || !stickToBottomRef.current) return;
+      node.scrollTop = node.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, [messages, typing, progressLog]);
 
   const openPreview = async (file: ChatFile) => {
@@ -230,9 +261,21 @@ export function FocusChatThread({
       className="focus-chat-thread"
       ref={scrollerRef}
       aria-label={`${title} 的对话`}
+      onScroll={onThreadScroll}
       onClick={(e) => void handleTableAction(e)}
     >
-      {!hasContent && (
+      {!hasContent && loadingHistory && (
+        <div className="focus-chat-empty" aria-busy="true">
+          <div className="focus-chat-avatar agent" aria-hidden="true">
+            <BrandLogo size="mini" />
+          </div>
+          <p>
+            正在同步对话…
+            <span className="typing" aria-label="加载中"><i /><i /><i /></span>
+          </p>
+        </div>
+      )}
+      {!hasContent && !loadingHistory && (
         <div className="focus-chat-empty">
           <div className="focus-chat-avatar agent" aria-hidden="true">
             <BrandLogo size="mini" />

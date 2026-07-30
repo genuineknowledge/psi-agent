@@ -11,13 +11,13 @@ import anyio
 import pytest
 from aiohttp import web
 
+from psi_agent.router.aggregation.orchestrator import Orchestrator
 from psi_agent.router.client import RouterClient
-from psi_agent.router.orchestrator import Orchestrator
 from psi_agent.router.protocol import RouterConfig
 from psi_agent.router.server import (
     _ROUTER_CLIENT_KEY,
     _ROUTER_CONFIG_KEY,
-    _ROUTER_ORCHESTRATOR_KEY,
+    _ROUTER_STRATEGY_KEY,
     handle_chat_completions,
 )
 from psi_agent.session.agent import SessionAgent
@@ -134,13 +134,14 @@ async def test_session_router_executes_three_planned_subtasks_serially_with_exac
         session_socket="router-listener",
         router_socket=router_ai_url,
         default_socket=router_ai_url,
+        mode="aggregation",
         upstream=[(branch_one_url, "first"), (branch_two_url, "second"), (branch_three_url, "third")],
     )
     client = RouterClient()
     router_app = web.Application()
     router_app[_ROUTER_CONFIG_KEY] = router_config
     router_app[_ROUTER_CLIENT_KEY] = client
-    router_app[_ROUTER_ORCHESTRATOR_KEY] = Orchestrator(config=router_config, client=client)
+    router_app[_ROUTER_STRATEGY_KEY] = Orchestrator(config=router_config, client=client)
     router_app.router.add_post("/chat/completions", handle_chat_completions)
     router_runner = web.AppRunner(router_app)
     await router_runner.setup()

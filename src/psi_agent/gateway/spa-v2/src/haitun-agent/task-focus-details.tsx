@@ -6,15 +6,18 @@ import {
   FileArchive,
   FileText,
   History,
+  ListTodo,
   MessageCircle,
   Sparkles,
   Zap,
 } from "lucide-react";
 import { plainTextFromMarkdown } from "../services/assistantDisplay";
+import type { TodoSegmentSummary } from "../services/api";
 import type { FocusHistoryItem, Task } from "./model";
 import { ProgressRing, TreasureVisual } from "./primitives";
 
 function FocusHistoryIcon({ item, task }: { item: FocusHistoryItem; task: Task | null }) {
+  if (item.kind === "segment") return <ListTodo size={15} />;
   if (item.kind === "attention") return <AlertCircle size={15} />;
   if (item.kind === "delivery") return <TreasureVisual state="ready" size="mini" />;
   if (item.kind === "conversation") return <MessageCircle size={15} />;
@@ -30,6 +33,24 @@ function deliveryFileDescription(fileName: string) {
   return "任务生成的可复用文件，已关联到本次执行记录";
 }
 
+function formatSegmentTime(iso: string): string {
+  const raw = iso.trim();
+  if (!raw) return "";
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  return d.toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function segmentProgressLabel(summary: TodoSegmentSummary["summary"] | undefined): string {
+  if (!summary || summary.total <= 0) return "";
+  return `${summary.completed}/${summary.total}`;
+}
+
 /**
  * Split-mode left pane: task context / history / deliverables.
  * Chat transcript lives on the right (FocusChatThread) — not duplicated here.
@@ -37,15 +58,35 @@ function deliveryFileDescription(fileName: string) {
 export function TaskFocusDetails({
   task,
   tasks,
+  todoSegments = [],
+  selectedSegmentId = "live",
+  onSelectTodoSegment,
   onOpenArtifact,
 }: {
   task: Task | null;
   tasks: Task[];
+  /** Session todo segments (newest first); drives「任务历史」clicks. */
+  todoSegments?: TodoSegmentSummary[];
+  /** ``live`` = current AppData todos; else a segment id. */
+  selectedSegmentId?: string;
+  onSelectTodoSegment?: (segmentId: string) => void;
   onOpenArtifact: (task: Task, fileName?: string) => void;
 }) {
+  const viewingHistory = !!task && selectedSegmentId !== "live";
   const workingStep = task?.steps.find((step) => step.state === "working");
-  const activeStep = task?.phase === "done"
-    ? (task.hasTodoTrack ? "全部执行步骤已完成" : "本轮已完成")
+  const checklistDone = !!task?.hasTodoTrack
+    && !!task.steps.length
+    && task.steps.every((step) => step.state === "done");
+  const activeStep = viewingHistory
+    ? (task?.hasTodoTrack
+      ? (checklistDone
+        ? `历史子任务 · ${task.progressLabel || "已完成"}`
+        : `历史子任务 · ${task.progressLabel || workingStep?.label || "步骤"}`)
+      : "历史子任务")
+    : task?.phase === "done"
+    ? (task.hasTodoTrack
+      ? (checklistDone ? "全部执行步骤已完成" : (workingStep?.label || `清单 ${task.progressLabel || "未完成"}`))
+      : "本轮已完成")
     : task?.phase === "deliver"
       ? "正在整理交付"
       : task?.phase === "advance"
@@ -57,25 +98,44 @@ export function TaskFocusDetails({
         : workingStep
           ? workingStep.label
           : (task?.status === "completed" ? "全部执行步骤已完成" : "等待下一步");
-  const historyItems: FocusHistoryItem[] = [
-    ...(task ? [{
-      id: `status-${task.id}`,
-      kind: "status" as const,
-      title: task.hasTodoTrack
-        ? `${task.statusLabel} · ${task.progressLabel || `${task.progress}%`}`
-        : (task.progressIndeterminate
-          ? `${task.statusLabel} · 处理中`
-          : `${task.statusLabel}${task.phase === "done" ? " · 已完成" : ""}`),
-      detail: plainTextFromMarkdown(task.summary),
-      time: task.updated,
-    }] : tasks.slice(0, 3).map((item) => ({
+  const historyItems: FocusHistoryItem[] = task
+    ? (todoSegments.length
+      ? todoSegments.map((seg) => {
+          const isOpen = !seg.closed_at;
+          const nm = segmentProgressLabel(seg.summary);
+          return {
+            id: `seg-${seg.id}`,
+            kind: "segment" as const,
+            segmentId: isOpen ? "live" : seg.id,
+            title: seg.label || "子任务",
+            detail: [isOpen ? "当前" : "已归档", nm ? `清单 ${nm}` : ""].filter(Boolean).join(" · "),
+            time: formatSegmentTime(seg.updated_at || seg.created_at),
+          };
+        })
+      : [{
+          id: `status-${task.id}`,
+          kind: "status" as const,
+          title: task.hasTodoTrack
+            ? (task.phase === "done"
+              ? (checklistDone
+                ? `本轮已完成 · ${task.progressLabel || `${task.progress}%`}`
+                : `本轮已回复 · ${task.progressLabel || `${task.progress}%`}`)
+              : `${task.statusLabel} · ${task.progressLabel || `${task.progress}%`}`)
+            : (task.progressIndeterminate
+              ? `${task.statusLabel} · 处理中`
+              : task.phase === "done"
+                ? (task.status === "completed" ? task.statusLabel : "本轮已完成")
+                : task.statusLabel),
+          detail: "",
+          time: task.updated,
+        }])
+    : tasks.slice(0, 3).map((item) => ({
       id: `status-${item.id}`,
       kind: "status" as const,
       title: `${item.shortTitle} · ${item.statusLabel}`,
-      detail: plainTextFromMarkdown(item.summary),
+      detail: "",
       time: item.updated,
-    }))),
-  ].slice(0, 8);
+    }));
 
   const finiteTasks = tasks.filter((item) => item.status !== "continuous");
   const tracked = finiteTasks.filter((item) => item.hasTodoTrack);
@@ -102,9 +162,17 @@ export function TaskFocusDetails({
     <div className="focus-detail-panel">
       <section className="focus-state-banner">
         <div>
-          <span><Sparkles size={13} /> 当前任务上下文</span>
+          <span><Sparkles size={13} /> 任务摘要</span>
           <strong>{task ? task.title : "今天全部任务的执行上下文"}</strong>
           <p>{task ? plainTextFromMarkdown(task.summary) : `共 ${tasks.length} 个任务，综合进度 ${overall}%。您可以基于任一历史动作继续补充要求。`}</p>
+          {viewingHistory && onSelectTodoSegment ? (
+            <p className="focus-history-viewing-hint">
+              正在查看历史子任务步骤（只读）。
+              <button type="button" className="focus-history-back-live" onClick={() => onSelectTodoSegment("live")}>
+                返回当前清单
+              </button>
+            </p>
+          ) : null}
         </div>
         <div className="focus-state-grid">
           <span><em>状态</em><strong>{task?.statusLabel ?? `${tasks.length} 个任务`}</strong></span>
@@ -133,7 +201,13 @@ export function TaskFocusDetails({
             <Zap size={13} />
             {task ? (task.hasTodoTrack ? "执行步骤" : "活动状态") : "任务运行状态"}
           </span>
-          <em>{task?.hasTodoTrack ? "来自 Session todo" : "无清单时只显示忙闲，不伪造步骤"}</em>
+          <em>
+            {viewingHistory
+              ? "历史快照 · 只读"
+              : task?.hasTodoTrack
+                ? "来自 Session todo"
+                : "无清单时只显示忙闲，不伪造步骤"}
+          </em>
         </header>
         <div>
           {(task ? task.steps : tasks.slice(0, 4).map((item) => ({ label: item.shortTitle, state: item.status === "completed" ? "done" as const : item.status === "attention" ? "waiting" as const : "working" as const, detail: undefined as string | undefined }))).map((step, index) => (
@@ -156,14 +230,45 @@ export function TaskFocusDetails({
         <section className="focus-task-history">
           <header><div><History size={14} /><strong>{task ? "任务历史" : "今天的任务记录"}</strong></div><span>{historyItems.length} 条记录</span></header>
           <div className="focus-history-list">
-            {historyItems.map((item) => (
-              <div className={`focus-history-item ${item.kind}`} key={item.id}>
-                <span className="focus-history-icon"><FocusHistoryIcon item={item} task={task} /></span>
-                <div><strong>{item.title}</strong><p>{item.detail}</p><em>{item.time}</em></div>
-              </div>
-            ))}
+            {historyItems.map((item) => {
+              const segKey = item.segmentId ?? item.id;
+              const active = item.kind === "segment"
+                && (
+                  ((selectedSegmentId === "live") && segKey === "live")
+                  || (selectedSegmentId !== "live" && segKey === selectedSegmentId)
+                );
+              const clickable = item.kind === "segment" && !!onSelectTodoSegment && !!item.segmentId;
+              const inner = (
+                <>
+                  <span className="focus-history-icon"><FocusHistoryIcon item={item} task={task} /></span>
+                  <div>
+                    <strong>{item.title}</strong>
+                    {item.detail.trim() ? <p>{item.detail}</p> : null}
+                    {item.time.trim() ? <em>{item.time}</em> : null}
+                  </div>
+                </>
+              );
+              return clickable ? (
+                <button
+                  type="button"
+                  className={`focus-history-item segment ${active ? "active" : ""}`}
+                  key={item.id}
+                  onClick={() => onSelectTodoSegment?.(item.segmentId!)}
+                  aria-pressed={active}
+                  aria-label={`查看子任务：${item.title}`}
+                >
+                  {inner}
+                </button>
+              ) : (
+                <div className={`focus-history-item ${item.kind}`} key={item.id}>
+                  {inner}
+                </div>
+              );
+            })}
             {historyItems.length === 0 && (
-              <div className="focus-history-empty">暂无额外记录</div>
+              <div className="focus-history-empty">
+                {task ? "尚无子任务分段；Agent 调用 todo（整表重开）后会出现在这里。" : "暂无额外记录"}
+              </div>
             )}
           </div>
         </section>

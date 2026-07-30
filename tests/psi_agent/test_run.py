@@ -88,6 +88,7 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
     monkeypatch.setattr(_run, "Ai", _FakeComponent)
     monkeypatch.setattr(_run, "Session", _FakeComponent)
     monkeypatch.setattr(_run, "ChannelRepl", _FakeComponent)
+    monkeypatch.setattr(_run, "Router", _FakeComponent)
 
     cfg = tmp_path / "c.yml"
     await anyio.Path(cfg).write_text(
@@ -95,11 +96,20 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
         "  session_socket: ./ai.sock\n"
         "- type: session\n"
         "  ai_socket: ./ai.sock\n"
+        "- type: router\n"
+        "  mode: aggregation\n"
+        "  session_socket: ./router.sock\n"
+        "  router_socket: ./ai.sock\n"
+        "  default_socket: ./ai.sock\n"
+        "  upstream:\n"
+        "    - [./ai.sock, general]\n"
         "- type: channel\n"
         "  name: repl\n"
         "  session_socket: ./ch.sock\n",
         encoding="utf-8",
     )
     await _run_config(cfg)
-    assert len(instances) == 3
+    assert len(instances) == 4
     assert all(c.ran for c in instances)
+    assert instances[2].kwargs["mode"] == "aggregation"
+    assert instances[2].kwargs["upstream"] == [("./ai.sock", "general")]

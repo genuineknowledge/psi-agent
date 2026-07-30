@@ -80,7 +80,7 @@ export type ChatMessage = {
   stopped?: boolean;
 };
 
-export type SidebarPanel = "pending" | "deliveries" | "history" | null;
+export type SidebarPanel = "working" | "pending" | "deliveries" | "history" | null;
 export type MainView = "workspace" | "new-task" | "templates";
 
 export type TaskTemplate = {
@@ -103,10 +103,12 @@ export type CardTransition = {
 
 export type FocusHistoryItem = {
   id: string;
-  kind: "status" | "attention" | "delivery" | "update" | "conversation";
+  kind: "status" | "attention" | "delivery" | "update" | "conversation" | "segment";
   title: string;
   detail: string;
   time: string;
+  /** When kind=segment: todo segment id, or ``live`` for current checklist. */
+  segmentId?: string;
 };
 
 export const OVERVIEW_LABEL = "任务总览";

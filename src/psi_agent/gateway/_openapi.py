@@ -282,6 +282,85 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/sessions/{session_id}/todo-segments": {
+            "get": {
+                "summary": "List todo sub-task segments (AppData *.segments.json, newest first)",
+                "operationId": "listTodoSegments",
+                "parameters": [
+                    {
+                        "name": "session_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": ("Array of {id, label, created_at, updated_at, closed_at, source, summary}")
+                    },
+                    "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/sessions/{session_id}/todo-segments/{segment_id}": {
+            "get": {
+                "summary": "Get one todo segment including todos[]",
+                "operationId": "getTodoSegment",
+                "parameters": [
+                    {
+                        "name": "session_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    },
+                    {
+                        "name": "segment_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    },
+                ],
+                "responses": {
+                    "200": {"description": ("Object with id, label, todos[], summary, closed_at, …")},
+                    "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+            "post": {
+                "summary": "Set todo segment label (P1 summary override)",
+                "operationId": "setTodoSegmentLabel",
+                "parameters": [
+                    {
+                        "name": "session_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    },
+                    {
+                        "name": "segment_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["label"],
+                                "properties": {"label": {"type": "string"}},
+                            }
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {"description": "Updated segment including todos[]"},
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
         "/titles": {
             "get": {
                 "summary": "List all session titles",
@@ -337,6 +416,67 @@ OPENAPI_SPEC = {
                 },
                 "responses": {
                     "200": {"description": "Generated title"},
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/summaries": {
+            "get": {
+                "summary": "List all session task summaries",
+                "operationId": "listSummaries",
+                "responses": {
+                    "200": {"description": "Map of session IDs to task summaries"},
+                },
+            },
+            "post": {
+                "summary": "Set a session task summary",
+                "operationId": "setSummary",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["id", "summary"],
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "summary": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+                "responses": {
+                    "200": {"description": "Summary set"},
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/summaries/generate": {
+            "post": {
+                "summary": "AI-generated task summary (1-2 sentences, not a title)",
+                "operationId": "generateSummary",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "required": ["id", "user_text", "assistant_text"],
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "user_text": {"type": "string"},
+                                    "assistant_text": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+                "responses": {
+                    "200": {"description": "Generated summary"},
                     "400": {"$ref": "#/components/responses/Error"},
                     "404": {"$ref": "#/components/responses/Error"},
                     "500": {"$ref": "#/components/responses/Error"},

@@ -96,7 +96,7 @@ async def test_state_load_missing_file_returns_empty(tmp_path: Path) -> None:
         _legacy_path=anyio.Path(tmp_path) / "also-missing" / "latest.json",
     )
     snapshot = await state.load()
-    assert snapshot == {"ais": [], "routers": [], "sessions": [], "titles": []}
+    assert snapshot == {"ais": [], "routers": [], "sessions": [], "titles": [], "summaries": []}
 
 
 @pytest.mark.anyio

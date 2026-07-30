@@ -78,11 +78,16 @@ def _get_client() -> Any:
 # token can't do it and no cached UAT exists). Spelled out step-by-step — the
 # key gotcha is that the code lives in the browser ADDRESS BAR after redirect.
 _AUTH_PROMPT = (
-    "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步). 步骤:\n"
-    "1. 调 feishu_auth_start 拿到 authorize_url, 把它发给用户打开并点「同意授权」;\n"
-    "2. 返回里 auto_receive=True 时**不用复制 code**: 直接调 feishu_auth_wait (同一个 user_key), "
-    "授权码会自动回流并完成授权;\n"
-    "3. 只有 auto_receive=False 时才退回手工: 让用户从浏览器**地址栏**复制 code= 后面那一串 "
+    "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步). 首选一键授权卡:\n"
+    "1. 调 feishu_auth_card(user_key=<sender_open_id>, capabilities=<本次 need_capabilities>, "
+    "reason=<一句话说明用途>) 给用户发一张授权卡, **然后这一轮就收尾** —— 别在同一轮里等待, "
+    "也别再把链接当文本发一遍;\n"
+    "2. 用户点卡上的按钮时, 飞书会把这次点击回调给你 (一条 <feishu_card_action>, dispatch.handler "
+    "是 feishu_auth_wait): **那一轮**再调 feishu_auth_wait (用回调 value 里的 user_key) 等授权码"
+    "自动回流, 拿到 token 后继续原来的操作;\n"
+    "3. 卡片是一次性的: 用户点了按钮但没在授权页点「同意」时, 重新调 feishu_auth_card 发一张新的.\n"
+    "环境没有自动回调通道时 (feishu_auth_card 返回 manual_required=True) 才退回手工: 调 "
+    "feishu_auth_start 把 authorize_url 发给用户, 再让他从浏览器**地址栏**复制 code= 后面那一串 "
     "(或整段网址) 交给 feishu_auth_complete.\n"
     "授权一次即缓存并自动续期, 之后同类操作不会再让你授权."
 )
@@ -2495,6 +2500,163 @@ async def auth_start_impl(capabilities: str = "", user_key: str = "") -> dict[st
     }
 
 
+# ── 授权卡 ───────────────────────────────────────────────────────────────────
+#
+# 一张卡把「发链接」和「等回调」缝在一起: 按钮的 behaviors 同时挂 open_url (打开
+# 授权页) 和 callback (回传给 Channel), 于是用户**点一次**就既看到飞书授权页、又
+# 把「我点了」这件事告诉了 agent。agent 收到 <feishu_card_action> 那一轮才去
+# auth_wait 等真回调 —— 阻塞发生在用户正对着浏览器的时候, 而不是发卡那一轮 (发卡
+# 那轮必须立刻收尾, 否则 SessionAgent 的 turn 锁会把用户后续消息全排到 180s 之后)。
+_AUTH_CARD_ACTION = "feishu_auth_confirm"
+_AUTH_CARD_HANDLER = "feishu_auth_wait"
+# 用户点了按钮却没在授权页上点「同意」时的兜底: 卡片是一次性的 (Channel 领取快照即
+# 立墓碑并改写原卡), 所以只能重新发一张, 不能让用户再点那张已消费的卡。
+_AUTH_CARD_RETRY_NOTE = "若用户点了按钮但没在授权页点「同意」, 这张卡已作废: 重新调 feishu_auth_card 发一张新的."
+
+
+def _auth_card_content(
+    authorize_url: str,
+    capabilities: list[str],
+    reason: str,
+    user_key: str,
+) -> dict[str, Any]:
+    """The authorization card: one button that opens the consent page *and* calls back.
+
+    Card 2.0 is used deliberately: only its ``behaviors`` array lets a single click do
+    both (the legacy ``url`` + ``value`` pair needs ``complex_interaction`` and is the
+    older contract). The button carries ``user_key`` in its callback value so the
+    handling turn knows whose pending authorization to wait on — a group card lands in
+    the clicker's own private session, where the sender's context is not available.
+    """
+    why = reason.strip() or "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步)."
+    body = f"**{why}**\n\n本次申请的权限: {', '.join(capabilities) or '(默认)'}"
+    return {
+        "schema": "2.0",
+        "header": {
+            "title": {"tag": "plain_text", "content": "飞书授权"},
+            "template": "blue",
+        },
+        "body": {
+            "elements": [
+                {"tag": "markdown", "content": body},
+                {
+                    "tag": "button",
+                    "name": _AUTH_CARD_ACTION,
+                    "text": {"tag": "plain_text", "content": "点此授权"},
+                    "type": "primary",
+                    "behaviors": [
+                        {"type": "open_url", "default_url": authorize_url},
+                        {
+                            "type": "callback",
+                            "value": {"action": _AUTH_CARD_ACTION, "user_key": user_key},
+                        },
+                    ],
+                },
+                {
+                    "tag": "note",
+                    "elements": [
+                        {
+                            "tag": "plain_text",
+                            "content": "点按钮会打开飞书授权页, 在页面上点「同意授权」即可, 不用复制任何东西.",
+                        }
+                    ],
+                },
+            ]
+        },
+    }
+
+
+async def auth_card_impl(
+    user_key: str,
+    capabilities: str = "",
+    reason: str = "",
+    receive_id: str = "",
+) -> dict[str, Any]:
+    """Send ``user_key`` an authorization card instead of a bare authorize URL.
+
+    Wraps ``auth_start_impl`` + ``send_card_impl`` so the model never hand-rolls this
+    card: forgetting ``behaviors``/``action_handlers`` yields a button that opens the
+    page but never tells the agent, and the authorization then hangs waiting for a
+    turn that never comes.
+
+    Only meaningful when the code can come back by itself — with a manual-only
+    receiver the click would still leave the user copying ``code=`` out of the address
+    bar, so this refuses rather than shipping a button that promises otherwise.
+
+    ``receive_id`` defaults to ``user_key`` (a DM). Deliberately: the pending
+    ``state``/PKCE verifier is written under the *sending* workspace, while a card
+    clicked in a group is routed to the clicker's own private session — a different
+    workspace, where ``auth_wait`` would find no pending authorization.
+    """
+    key = (user_key or "").strip()
+    if not key:
+        return _error("user_key is required — it is whose authorization this is (the sender's open_id).")
+    target = (receive_id or "").strip() or key
+    if not target.startswith("ou_"):
+        return _error(
+            "授权卡只能私聊发给本人 (receive_id 必须是 ou_ 开头的 open_id): 待完成的授权记录存在"
+            "发卡方 workspace, 而群里点卡片会落到点击者自己的私聊会话, 那边读不到这条记录. "
+            "群场景请先私聊该用户.",
+            receive_id=target,
+        )
+    started = await auth_start_impl(capabilities, key)
+    if not started.get("ok"):
+        return started
+    if not started.get("auto_receive"):
+        return _error(
+            "当前环境没有自动接收授权码的通道, 授权卡帮不上忙 (用户点完还得从地址栏复制 code). "
+            "请按 feishu_auth_start 的 message 走手工流程, 或在部署侧配 PSI_OAUTH_CALLBACK_BASE.",
+            manual_required=True,
+            mode=started.get("mode", ""),
+            authorize_url=started.get("authorize_url", ""),
+        )
+    granted = [c for c in started.get("capabilities", []) if isinstance(c, str)]
+    card = _auth_card_content(str(started.get("authorize_url", "")), granted, reason, key)
+    sent = await send_card_impl(
+        target,
+        json.dumps(card, ensure_ascii=False),
+        "open_id",
+        key,
+        json.dumps(
+            {
+                "purpose": "feishu_user_authorization",
+                "user_key": key,
+                "capabilities": granted,
+                "reason": reason.strip(),
+                "mode": started.get("mode", ""),
+            },
+            ensure_ascii=False,
+        ),
+        json.dumps({_AUTH_CARD_ACTION: _AUTH_CARD_HANDLER}, ensure_ascii=False),
+    )
+    if not sent.get("ok"):
+        # The card is the whole delivery mechanism here; a send failure leaves the
+        # pending authorization unusable, so report it rather than claiming progress.
+        return {
+            **sent,
+            "authorize_url": started.get("authorize_url", ""),
+            "capabilities": granted,
+            "fallback": "卡片没发出去: 可以把 authorize_url 直接发给用户, 再调 feishu_auth_wait 等回调.",
+        }
+    return {
+        "ok": True,
+        "message_id": sent.get("message_id", ""),
+        "receive_id": target,
+        "capabilities": granted,
+        "newly_requested": started.get("newly_requested", []),
+        "already_granted": started.get("already_granted", []),
+        "mode": started.get("mode", ""),
+        "action_handler": _AUTH_CARD_HANDLER,
+        "message": (
+            "授权卡已发给用户. **这一轮到此为止, 不要再等待、也不要另发链接** —— 用户点卡片上的"
+            "「点此授权」时飞书会把点击回调给你, 那一轮再调 "
+            f"feishu_auth_wait(user_key={key!r}) 等授权码自动回流, 拿到 token 后继续原来的操作.\n"
+            f"{_AUTH_CARD_RETRY_NOTE}"
+        ),
+        "next_step": f"等卡片回调, 届时调 {_AUTH_CARD_HANDLER}",
+    }
+
+
 async def _read_pending(user_key: str) -> dict[str, Any]:
     """读回 ``auth_start`` 写下的 pending 记录; 缺失/损坏返回空 dict。"""
     with contextlib.suppress(OSError, ValueError):
@@ -2891,6 +3053,206 @@ async def list_bitable_records_impl(
     }
 
 
+# ── Bitable reads — conditional search and single-record fetch ────────────────
+#
+# list_bitable_records above is the plain GET: it pages the whole table (or a
+# view) and its query-string `filter` only covers simple cases. The search
+# endpoint is a POST whose body carries structured conditions, and Feishu's own
+# docs point at it as the way to obtain a record_id — which is exactly what the
+# update/delete tools need. Note the endpoint ignores `view_id` as soon as filter
+# or sort is given: the request then applies to the whole table.
+
+_SEARCH_OPERATORS = (
+    "is",
+    "isNot",
+    "contains",
+    "doesNotContain",
+    "isEmpty",
+    "isNotEmpty",
+    "isGreater",
+    "isGreaterEqual",
+    "isLess",
+    "isLessEqual",
+)
+
+
+def _build_search_records_request(
+    app_token: str, table_id: str, body: dict[str, Any], page_size: int, page_token: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/search"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = body
+    return req
+
+
+def _parse_search_filter(filter_json: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Parse and check a search filter object; return (filter, error message)."""
+    try:
+        parsed = json.loads(filter_json)
+    except ValueError as exc:
+        return None, f"filter_json is not valid JSON: {exc}"
+    if not isinstance(parsed, dict):
+        return None, (
+            'filter_json must be a JSON object, e.g. \'{"conjunction":"and","conditions":'
+            '[{"field_name":"状态","operator":"is","value":["进行中"]}]}\'.'
+        )
+    conjunction = str(parsed.get("conjunction", "")).strip().lower()
+    if conjunction not in {"and", "or"}:
+        return None, 'filter_json needs "conjunction": "and" or "or" (Feishu requires it).'
+    parsed["conjunction"] = conjunction
+    conditions = parsed.get("conditions")
+    if not isinstance(conditions, list) or not conditions:
+        return None, 'filter_json needs a non-empty "conditions" array.'
+    if len(conditions) > 50:
+        return None, f"filter_json has {len(conditions)} conditions; Feishu allows at most 50."
+    for i, cond in enumerate(conditions):
+        if not isinstance(cond, dict):
+            return None, f"filter_json.conditions[{i}] must be an object with field_name and operator."
+        if not str(cond.get("field_name", "")).strip():
+            return None, f"filter_json.conditions[{i}] is missing a non-empty field_name."
+        operator = str(cond.get("operator", "")).strip()
+        if operator not in _SEARCH_OPERATORS:
+            return None, (
+                f"filter_json.conditions[{i}].operator {operator!r} is not supported; "
+                f"use one of {', '.join(_SEARCH_OPERATORS)}."
+            )
+        value = cond.get("value")
+        if value is not None and not isinstance(value, list):
+            return None, (
+                f'filter_json.conditions[{i}].value must be an array of strings, e.g. ["进行中"] '
+                "(omit it for isEmpty / isNotEmpty)."
+            )
+    return parsed, None
+
+
+async def search_bitable_records_impl(
+    app_token: str,
+    table_id: str,
+    filter_json: str = "",
+    sort_json: str = "",
+    field_names: str = "",
+    view_id: str = "",
+    page_size: int = 100,
+    page_token: str = "",
+    automatic_fields: bool = False,
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Search records with structured conditions. Returns [{record_id, fields}] + pagination."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    if not table_id.strip():
+        return _error("No table_id provided (get it from feishu_bitable_list_tables).")
+    if page_size < 1 or page_size > 500:
+        return _error(f"page_size must be between 1 and 500 (got {page_size}).")
+    body: dict[str, Any] = {}
+    if filter_json.strip():
+        parsed_filter, problem = _parse_search_filter(filter_json)
+        if problem:
+            return _error(problem)
+        body["filter"] = parsed_filter
+    if sort_json.strip():
+        try:
+            sort = json.loads(sort_json)
+        except ValueError as exc:
+            return _error(f"sort_json is not valid JSON: {exc}")
+        if not isinstance(sort, list):
+            return _error('sort_json must be a JSON array, e.g. \'[{"field_name":"日期","desc":true}]\'.')
+        body["sort"] = sort
+    if field_names.strip():
+        try:
+            names = json.loads(field_names)
+        except ValueError as exc:
+            return _error(f"field_names is not valid JSON: {exc}")
+        if not isinstance(names, list):
+            return _error('field_names must be a JSON array of column names, e.g. \'["状态","负责人"]\'.')
+        body["field_names"] = names
+    if view_id.strip():
+        if "filter" in body or "sort" in body:
+            # Feishu silently ignores view_id here; say so rather than let the caller
+            # believe the search was scoped to their view.
+            return _error(
+                "view_id cannot be combined with filter_json / sort_json — Feishu then searches the "
+                "whole table and ignores the view. Drop one of them."
+            )
+        body["view_id"] = view_id.strip()
+    if automatic_fields:
+        body["automatic_fields"] = True
+    res = await _invoke(
+        _build_search_records_request(app_token.strip(), table_id.strip(), body, page_size, page_token),
+        user_key=user_key,
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    records = [
+        {"record_id": r.get("record_id", ""), "fields": r.get("fields", {})}
+        for r in (data.get("items", []) if isinstance(data.get("items"), list) else [])
+    ]
+    return {
+        "ok": True,
+        "records": records,
+        "count": len(records),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+        "total": data.get("total", 0),
+    }
+
+
+def _build_get_record_request(app_token: str, table_id: str, record_id: str, automatic_fields: bool) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.paths["record_id"] = record_id
+    req.add_query("with_shared_url", "true")
+    if automatic_fields:
+        req.add_query("automatic_fields", "true")
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_bitable_record_impl(
+    app_token: str,
+    table_id: str,
+    record_id: str,
+    automatic_fields: bool = False,
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Read one record by id. Returns its fields, url and (optionally) who created/changed it."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    if not table_id.strip():
+        return _error("No table_id provided (get it from feishu_bitable_list_tables).")
+    if not record_id.strip():
+        return _error("No record_id provided (get it from feishu_bitable_search_records).")
+    res = await _invoke(
+        _build_get_record_request(app_token.strip(), table_id.strip(), record_id.strip(), automatic_fields),
+        user_key=user_key,
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    record = data.get("record", {}) if isinstance(data.get("record"), dict) else {}
+    result: dict[str, Any] = {
+        "ok": True,
+        "record_id": record.get("record_id", "") or record_id.strip(),
+        "fields": record.get("fields", {}),
+        "url": record.get("record_url", ""),
+    }
+    for key in ("created_by", "created_time", "last_modified_by", "last_modified_time"):
+        if record.get(key):
+            result[key] = record[key]
+    return result
+
+
 def _build_create_record_request(app_token: str, table_id: str, fields: dict[str, Any]) -> BaseRequest:
     req = BaseRequest()
     req.http_method = HttpMethod.POST
@@ -2920,6 +3282,286 @@ async def create_bitable_record_impl(
     data = res["data"] if isinstance(res["data"], dict) else {}
     record = data.get("record", {}) if isinstance(data.get("record"), dict) else {}
     return {"ok": True, "record_id": record.get("record_id", ""), "fields": record.get("fields", {})}
+
+
+def _build_batch_create_records_request(app_token: str, table_id: str, records: list[dict[str, Any]]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/batch_create"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"records": records}
+    return req
+
+
+async def create_bitable_records_impl(
+    app_token: str,
+    table_id: str,
+    records_json: str,
+    user_key: str = "",
+    identity: str = "",
+    validate_fields: bool = True,
+) -> dict[str, Any]:
+    """Create many records in one call. records_json is a JSON array of row objects; batches of 500."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    if not table_id.strip():
+        return _error("No table_id provided (get it from feishu_bitable_list_tables).")
+    try:
+        rows = json.loads(records_json)
+    except ValueError as exc:
+        return _error(f"records_json is not valid JSON: {exc}")
+    if not isinstance(rows, list) or not rows:
+        return _error(
+            "records_json must be a non-empty JSON array of row objects, e.g. "
+            '\'[{"姓名":"张三","状态":"在读"},{"姓名":"李四"}]\'.'
+        )
+    # Accept both the bare {column: value} shape and Feishu's {"fields": {...}} wrapper,
+    # since a caller who just used update_records will reach for the latter.
+    records: list[dict[str, Any]] = []
+    names: list[str] = []
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            return _error(f"records_json[{i}] must be a JSON object of column → value.")
+        wrapped = row.get("fields")
+        fields = _as_field_map(wrapped) if isinstance(wrapped, dict) else _as_field_map(row)
+        if not fields:
+            return _error(f"records_json[{i}] has no column values.")
+        records.append({"fields": fields})
+        names.extend(k for k in fields if k not in names)
+    if validate_fields:
+        problem = await _check_bitable_columns(app_token.strip(), table_id.strip(), names)
+        if problem:
+            return problem
+    created: list[str] = []
+    dropped: list[str] = []
+    for i in range(0, len(records), 500):
+        batch = records[i : i + 500]
+        res = await _invoke(
+            _build_batch_create_records_request(app_token.strip(), table_id.strip(), batch),
+            user_key=user_key,
+            prefer="user",
+            identity=identity,
+        )
+        if not res["ok"]:
+            return {**res, "created": created, "count": len(created)}
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        echoed = data.get("records", []) if isinstance(data.get("records"), list) else []
+        for offset, rec in enumerate(echoed):
+            if not isinstance(rec, dict):
+                continue
+            created.append(rec.get("record_id", ""))
+            if offset < len(batch):
+                dropped.extend(_dropped_fields(batch[offset]["fields"], rec.get("fields", {})))
+    result: dict[str, Any] = {"ok": True, "created": created, "count": len(created)}
+    if dropped:
+        result["dropped_fields"] = sorted(set(dropped))
+        result["warning"] = (
+            f"Feishu accepted the call but did not write {', '.join(sorted(set(dropped)))} — "
+            "check the column names and value types."
+        )
+    return result
+
+
+# ── Bitable record updates — change cell values in existing rows ──────────────
+#
+# The update APIs are *incremental*: only the field names present in `fields` are
+# written, everything else on the row keeps its value, and an explicit null blanks
+# a cell. That is what makes "改一个单元格" possible without re-sending the row.
+#
+# The hazard these two impls guard against: Feishu **silently drops** field names
+# the table doesn't have and still answers code:0. A caller who writes "Mentor"
+# into a table whose column is "导师" gets a cheerful success and an unchanged
+# cell. So the column names are checked against the table's real fields before the
+# write, and the response is compared with what was asked for afterwards.
+
+
+def _build_update_record_request(app_token: str, table_id: str, record_id: str, fields: dict[str, Any]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.PUT
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.paths["record_id"] = record_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"fields": fields}
+    return req
+
+
+def _build_batch_update_records_request(app_token: str, table_id: str, records: list[dict[str, Any]]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/batch_update"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"records": records}
+    return req
+
+
+def _as_field_map(value: Any) -> dict[str, Any]:
+    """Read a parsed-JSON object as a {column: value} map.
+
+    ``json.loads`` is typed as ``Any``, so an ``isinstance(x, dict)`` check leaves the
+    key type unknown and every column name downstream types as ``object``. JSON object
+    keys are always strings, so restating that here keeps the callers plainly typed
+    instead of casting at each use.
+    """
+    return {str(k): v for k, v in value.items()} if isinstance(value, dict) else {}
+
+
+async def _check_bitable_columns(app_token: str, table_id: str, names: list[str]) -> dict[str, Any] | None:
+    """Reject column names the table doesn't have; return an error dict, or None if fine.
+
+    Returns None as well when the field list can't be read (e.g. the bot may write but
+    not list fields) — a failed *check* must not block a write the user asked for.
+    """
+    listed = await list_bitable_fields_impl(app_token, table_id)
+    if not listed.get("ok"):
+        return None
+    valid = [f.get("name", "") for f in listed.get("fields", [])]
+    unknown = [n for n in names if n not in valid]
+    if not unknown:
+        return None
+    return _error(
+        f"These column names are not in the table and would be silently ignored by Feishu: "
+        f"{', '.join(unknown)}. Existing columns: {', '.join(valid)}.",
+        unknown_fields=unknown,
+        valid_fields=valid,
+    )
+
+
+def _dropped_fields(requested: dict[str, Any], written: Any) -> list[str]:
+    """Field names asked for but missing from Feishu's echo of the updated record."""
+    if not isinstance(written, dict):
+        return []
+    return [k for k, v in requested.items() if v is not None and k not in written]
+
+
+async def update_bitable_record_impl(
+    app_token: str,
+    table_id: str,
+    record_id: str,
+    fields_json: str,
+    user_key: str = "",
+    identity: str = "",
+    validate_fields: bool = True,
+) -> dict[str, Any]:
+    """Update cells in one existing record. Only the given columns change; null clears one."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    if not table_id.strip():
+        return _error("No table_id provided (get it from feishu_bitable_list_tables).")
+    if not record_id.strip():
+        return _error("No record_id provided (get it from feishu_bitable_list_records).")
+    try:
+        parsed = json.loads(fields_json)
+    except ValueError as exc:
+        return _error(f"fields_json is not valid JSON: {exc}")
+    if not isinstance(parsed, dict) or not parsed:
+        return _error(
+            "fields_json must be a non-empty JSON object mapping column names to new values, "
+            'e.g. \'{"状态":"已完成"}\'.'
+        )
+    fields = _as_field_map(parsed)
+    if validate_fields:
+        problem = await _check_bitable_columns(app_token.strip(), table_id.strip(), list(fields))
+        if problem:
+            return problem
+    res = await _invoke(
+        _build_update_record_request(app_token.strip(), table_id.strip(), record_id.strip(), fields),
+        user_key=user_key,
+        prefer="user",
+        identity=identity,
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    record = data.get("record", {}) if isinstance(data.get("record"), dict) else {}
+    written = record.get("fields", {})
+    result = {
+        "ok": True,
+        "record_id": record.get("record_id", "") or record_id.strip(),
+        "updated_fields": list(fields),
+        "fields": written,
+    }
+    dropped = _dropped_fields(fields, written)
+    if dropped:
+        result["dropped_fields"] = dropped
+        result["warning"] = (
+            f"Feishu accepted the call but did not write {', '.join(dropped)} — check the column names and value types."
+        )
+    return result
+
+
+async def update_bitable_records_impl(
+    app_token: str,
+    table_id: str,
+    records_json: str,
+    user_key: str = "",
+    identity: str = "",
+    validate_fields: bool = True,
+) -> dict[str, Any]:
+    """Update many records in one go. records_json is [{record_id, fields}]; batches of 1000."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    if not table_id.strip():
+        return _error("No table_id provided (get it from feishu_bitable_list_tables).")
+    try:
+        parsed = json.loads(records_json)
+    except ValueError as exc:
+        return _error(f"records_json is not valid JSON: {exc}")
+    if not isinstance(parsed, list) or not parsed:
+        return _error(
+            'records_json must be a non-empty JSON array, e.g. \'[{"record_id":"recA","fields":{"状态":"已完成"}}]\'.'
+        )
+    records: list[dict[str, Any]] = []
+    names: list[str] = []
+    for i, rec in enumerate(parsed):
+        if not isinstance(rec, dict):
+            return _error(f"records_json[{i}] must be a JSON object with record_id and fields.")
+        record_id = str(rec.get("record_id", "")).strip()
+        if not record_id:
+            return _error(f"records_json[{i}] is missing a non-empty record_id.")
+        raw_fields = rec.get("fields")
+        if not isinstance(raw_fields, dict) or not raw_fields:
+            return _error(f"records_json[{i}].fields must be a non-empty object of column → new value.")
+        fields = _as_field_map(raw_fields)
+        records.append({"record_id": record_id, "fields": fields})
+        names.extend(k for k in fields if k not in names)
+    if validate_fields:
+        problem = await _check_bitable_columns(app_token.strip(), table_id.strip(), names)
+        if problem:
+            return problem
+    updated: list[str] = []
+    dropped: list[str] = []
+    for i in range(0, len(records), 1000):
+        batch = records[i : i + 1000]
+        res = await _invoke(
+            _build_batch_update_records_request(app_token.strip(), table_id.strip(), batch),
+            user_key=user_key,
+            prefer="user",
+            identity=identity,
+        )
+        if not res["ok"]:
+            return {**res, "updated": updated, "count": len(updated)}
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        echoed = data.get("records", []) if isinstance(data.get("records"), list) else []
+        by_id = {r.get("record_id", ""): r.get("fields", {}) for r in echoed if isinstance(r, dict)}
+        for rec in batch:
+            rid = str(rec["record_id"])
+            updated.append(rid)
+            if rid in by_id:
+                dropped.extend(f"{rid}.{n}" for n in _dropped_fields(_as_field_map(rec["fields"]), by_id[rid]))
+    result: dict[str, Any] = {"ok": True, "updated": updated, "count": len(updated)}
+    if dropped:
+        result["dropped_fields"] = dropped
+        result["warning"] = (
+            f"Feishu accepted the call but did not write {len(dropped)} value(s) — "
+            "check the column names and value types."
+        )
+    return result
 
 
 def _build_batch_delete_records_request(app_token: str, table_id: str, record_ids: list[str]) -> BaseRequest:
@@ -3224,6 +3866,244 @@ async def create_bitable_table_impl(
     }
 
 
+def _build_batch_create_tables_request(app_token: str, names: list[str]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/batch_create"
+    req.paths["app_token"] = app_token
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"tables": [{"name": n} for n in names]}
+    return req
+
+
+async def create_bitable_tables_impl(
+    app_token: str, table_names: str, user_key: str = "", identity: str = ""
+) -> dict[str, Any]:
+    """Create several empty data tables at once (names only — no columns). Max 50 per call."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    names = [n.strip() for n in table_names.split(",") if n.strip()]
+    if not names:
+        return _error("No table_names provided (comma-separated table names).")
+    if len(names) > 50:
+        return _error(f"{len(names)} table names given; Feishu creates at most 50 per call.")
+    bad = [n for n in names if any(c in n for c in "/\\?*:[]")]
+    if bad:
+        return _error(f"These table names contain characters Feishu rejects (/ \\ ? * : [ ]): {', '.join(bad)}.")
+    res = await _invoke(
+        _build_batch_create_tables_request(app_token.strip(), names),
+        user_key=user_key,
+        prefer="user",
+        identity=identity,
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    ids = data.get("table_ids", [])
+    ids = ids if isinstance(ids, list) else []
+    return {
+        "ok": True,
+        "tables": [{"table_id": tid, "name": name} for tid, name in zip(ids, names, strict=False)],
+        "count": len(ids),
+        "note": "these tables have only a placeholder column — add columns with feishu_bitable_create_field",
+    }
+
+
+def _build_batch_delete_tables_request(app_token: str, table_ids: list[str]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/batch_delete"
+    req.paths["app_token"] = app_token
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"table_ids": table_ids}
+    return req
+
+
+async def delete_bitable_tables_impl(
+    app_token: str, table_ids: str, user_key: str = "", identity: str = ""
+) -> dict[str, Any]:
+    """Delete whole data tables (with all their data) by id. Max 50 per call; last table can't go."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    ids = [t.strip() for t in table_ids.split(",") if t.strip()]
+    if not ids:
+        return _error("No table_ids provided (comma-separated table ids from feishu_bitable_list_tables).")
+    if len(ids) > 50:
+        return _error(f"{len(ids)} table ids given; Feishu deletes at most 50 per call.")
+    res = await _invoke(
+        _build_batch_delete_tables_request(app_token.strip(), ids),
+        user_key=user_key,
+        prefer="user",
+        identity=identity,
+    )
+    if not res["ok"]:
+        if str(res.get("code")) == "1254034":
+            return {
+                **res,
+                "hint": "a bitable must keep at least one data table — Feishu refuses to delete the last one.",
+            }
+        return res
+    return {"ok": True, "deleted": ids, "count": len(ids)}
+
+
+# ── Bitable base metadata — read, rename / toggle advanced perms, copy ─────────
+#
+# App-level rather than table-level: the metadata call is also how you check
+# `is_advanced` before trying to create a role (advanced permission must be on),
+# and `copy` turns an existing base into a template — a standard ledger built once
+# and duplicated per project instead of rebuilt column by column.
+
+
+def _build_get_bitable_app_request(app_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/bitable/v1/apps/:app_token"
+    req.paths["app_token"] = app_token
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+async def get_bitable_app_impl(app_token: str, user_key: str = "") -> dict[str, Any]:
+    """Read a base's metadata: name, whether advanced permission is on, time zone, revision."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    res = await _invoke(_build_get_bitable_app_request(app_token.strip()), user_key=user_key)
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    app = data.get("app", {}) if isinstance(data.get("app"), dict) else {}
+    token = app.get("app_token", "") or app_token.strip()
+    return {
+        "ok": True,
+        "app_token": token,
+        "name": app.get("name", ""),
+        "is_advanced": bool(app.get("is_advanced")),
+        "time_zone": app.get("time_zone", ""),
+        "revision": app.get("revision", 0),
+        "url": f"{_DOC_BASE_URL}/base/{token}",
+    }
+
+
+def _build_update_bitable_app_request(app_token: str, body: dict[str, Any]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.PUT
+    req.uri = "/open-apis/bitable/v1/apps/:app_token"
+    req.paths["app_token"] = app_token
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = body
+    return req
+
+
+async def update_bitable_app_impl(
+    app_token: str,
+    name: str = "",
+    is_advanced: str = "",
+    user_key: str = "",
+    identity: str = "",
+) -> dict[str, Any]:
+    """Rename a base and/or switch advanced permission on or off. Omitted settings stay put."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    body: dict[str, Any] = {}
+    if name.strip():
+        if len(name.strip()) > 100:
+            return _error(f"name is {len(name.strip())} chars; Feishu allows at most 100.")
+        if any(c in name for c in "?/\\*:[]"):
+            return _error("name cannot contain ? / \\ * : [ ] (Feishu answers 1254031).")
+        body["name"] = name.strip()
+    advanced = is_advanced.strip().lower()
+    if advanced:
+        if advanced not in {"true", "false"}:
+            return _error('is_advanced must be "true" or "false" (leave it empty to keep the current setting).')
+        body["is_advanced"] = advanced == "true"
+    if not body:
+        return _error("Nothing to change — pass name and/or is_advanced.")
+    res = await _invoke(
+        _build_update_bitable_app_request(app_token.strip(), body),
+        user_key=user_key,
+        prefer="user",
+        identity=identity,
+    )
+    if not res["ok"]:
+        if str(res.get("code")) == "1254301":
+            return {
+                **res,
+                "hint": "advanced permission cannot be enabled on a base that lives in a wiki or is "
+                "embedded in a doc/sheet.",
+            }
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    app = data.get("app", {}) if isinstance(data.get("app"), dict) else {}
+    result: dict[str, Any] = {
+        "ok": True,
+        "app_token": app.get("app_token", "") or app_token.strip(),
+        "name": app.get("name", body.get("name", "")),
+        "changed": sorted(body),
+    }
+    if "is_advanced" in app or "is_advanced" in body:
+        result["is_advanced"] = bool(app.get("is_advanced", body.get("is_advanced")))
+    return result
+
+
+def _build_copy_bitable_app_request(
+    app_token: str, name: str, folder_token: str, without_content: bool, time_zone: str
+) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/copy"
+    req.paths["app_token"] = app_token
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {}
+    if name:
+        body["name"] = name
+    if folder_token:
+        body["folder_token"] = folder_token
+    if without_content:
+        body["without_content"] = True
+    if time_zone:
+        body["time_zone"] = time_zone
+    req.body = body
+    return req
+
+
+async def copy_bitable_app_impl(
+    app_token: str,
+    name: str = "",
+    folder_token: str = "",
+    without_content: bool = False,
+    time_zone: str = "",
+    user_key: str = "",
+    identity: str = "",
+) -> dict[str, Any]:
+    """Duplicate a whole base — the template move. without_content copies structure only."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    res = await _invoke(
+        _build_copy_bitable_app_request(
+            app_token.strip(), name.strip(), folder_token.strip(), without_content, time_zone.strip()
+        ),
+        user_key=user_key,
+        prefer="user",
+        identity=identity,
+    )
+    if not res["ok"]:
+        if str(res.get("code")) == "1254036":
+            return {**res, "hint": "this base is already being copied — wait a moment and retry."}
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    app = data.get("app", {}) if isinstance(data.get("app"), dict) else {}
+    new_token = app.get("app_token", "")
+    return {
+        "ok": True,
+        "app_token": new_token,
+        "name": app.get("name", name.strip()),
+        "folder_token": app.get("folder_token", ""),
+        "time_zone": app.get("time_zone", ""),
+        "url": app.get("url") or (f"{_DOC_BASE_URL}/base/{new_token}" if new_token else ""),
+        "without_content": without_content,
+    }
+
+
 def _build_create_field_request(app_token: str, table_id: str, field: dict[str, Any]) -> BaseRequest:
     req = BaseRequest()
     req.http_method = HttpMethod.POST
@@ -3281,6 +4161,107 @@ async def create_bitable_field_impl(
         "name": created.get("field_name", field["field_name"]),
         "type": _BITABLE_FIELD_TYPES.get(ftype, ftype),
         "is_primary": bool(created.get("is_primary")),
+    }
+
+
+def _build_update_field_request(app_token: str, table_id: str, field_id: str, field: dict[str, Any]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.PUT
+    req.uri = "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields/:field_id"
+    req.paths["app_token"] = app_token
+    req.paths["table_id"] = table_id
+    req.paths["field_id"] = field_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = field
+    return req
+
+
+async def update_bitable_field_impl(
+    app_token: str,
+    table_id: str,
+    field_id: str,
+    field_name: str = "",
+    field_type: int = 0,
+    property_json: str = "",
+    ui_type: str = "",
+    user_key: str = "",
+    identity: str = "",
+) -> dict[str, Any]:
+    """Change a column's definition (rename, retype, edit its options). Keeps the column's data."""
+    if not app_token.strip():
+        return _error("No app_token provided (the segment in a feishu.cn/base/<app_token> URL).")
+    if not table_id.strip():
+        return _error("No table_id provided (get it from feishu_bitable_list_tables).")
+    if not field_id.strip():
+        return _error("No field_id provided (get it from feishu_bitable_list_fields).")
+    # Feishu's update is a FULL replace of the field definition and demands both
+    # field_name and type, so anything the caller left out is read back from the
+    # table rather than silently reset to a default.
+    current: dict[str, Any] = {}
+    if not field_name.strip() or not field_type:
+        listed = await _invoke(
+            _build_list_fields_request(app_token.strip(), table_id.strip(), 100, ""), user_key=user_key
+        )
+        if not listed["ok"]:
+            return _error(
+                "field_name and field_type are both required (Feishu replaces the whole field "
+                f"definition), and reading the current one failed: {listed.get('message', '')}"
+            )
+        data = listed["data"] if isinstance(listed["data"], dict) else {}
+        for f in data.get("items", []) if isinstance(data.get("items"), list) else []:
+            if f.get("field_id") == field_id.strip():
+                current = f
+                break
+        if not current:
+            return _error(f"field_id {field_id.strip()!r} is not in this table — check feishu_bitable_list_fields.")
+    name = field_name.strip() or str(current.get("field_name", ""))
+    ftype = field_type or current.get("type", 0)
+    if not name:
+        return _error("No field_name available for this field; pass field_name explicitly.")
+    if not isinstance(ftype, int) or not ftype:
+        return _error("No field_type available for this field; pass field_type explicitly.")
+    field: dict[str, Any] = {"field_name": name, "type": ftype}
+    problem = _validate_bitable_fields([field], as_table_fields=False)
+    if problem:
+        return _error(
+            problem.replace("fields_json[0].", "").replace("fields_json[0]", "field").replace("created", "updated")
+        )
+    if current.get("is_primary") and ftype not in _INDEX_FIELD_TYPES:
+        return _error(
+            f"this is the index (primary) column, so type {ftype} is not allowed; "
+            f"it must be one of {sorted(_INDEX_FIELD_TYPES)} (Feishu answers 1254012)."
+        )
+    if property_json.strip():
+        try:
+            prop = json.loads(property_json)
+        except ValueError as exc:
+            return _error(f"property_json is not valid JSON: {exc}")
+        if not isinstance(prop, dict):
+            return _error('property_json must be a JSON object, e.g. \'{"options":[{"name":"高","color":0}]}\'.')
+        field["property"] = prop
+    elif current.get("property") and (field_type in (0, current.get("type"))):
+        # Same type and no new property: carry the existing settings over, otherwise
+        # this full-replace update would wipe the select options / number format.
+        field["property"] = current["property"]
+    if ui_type.strip():
+        field["ui_type"] = ui_type.strip()
+    res = await _invoke(
+        _build_update_field_request(app_token.strip(), table_id.strip(), field_id.strip(), field),
+        user_key=user_key,
+        prefer="user",
+        identity=identity,
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    updated = data.get("field", {}) if isinstance(data.get("field"), dict) else {}
+    new_type = updated.get("type", ftype)
+    return {
+        "ok": True,
+        "field_id": updated.get("field_id", "") or field_id.strip(),
+        "name": updated.get("field_name", name),
+        "type": _BITABLE_FIELD_TYPES.get(new_type, new_type),
+        "is_primary": bool(updated.get("is_primary") or current.get("is_primary")),
     }
 
 
@@ -4936,24 +5917,67 @@ async def _append_table_descendants(
     column_width: list[int] | None,
     user_key: str,
     identity: str = "",
+    caption: str = "",
+    auto_number: bool = True,
 ) -> dict[str, Any]:
     """Send one table (built from ``rows``) to the /descendant endpoint. Shared by
-    the table / flowchart / swimlane tools."""
+    the table / flowchart / swimlane tools.
+
+    A caption is written *before* the table, not after: the academic convention places a
+    table's title above it and a figure's below, and these three tools produce tables.
+    Its "表 N" is numbered off the document's existing captions, so tables and figures
+    keep independent, gap-free sequences.
+    """
     if not document_id.strip():
         return _error("document_id is required.")
     if not rows:
         return _error("no rows to write — the table would be empty.")
+    doc = document_id.strip()
+    result_extra: dict[str, Any] = {}
+    if caption.strip():
+        # Before the table, and before the table's own request, so a caption that fails
+        # doesn't leave a numbered heading pointing at nothing.
+        text, fields = await _resolve_table_caption(doc, caption, auto_number, user_key, identity)
+        result_extra.update(fields)
+        note = await append_doc_content_impl(doc, text, user_key, identity)
+        result_extra["caption_written"] = bool(note.get("ok"))
+        if not note.get("ok"):
+            result_extra["caption_error"] = note.get("message", "")
     table_id, descendants = _table_descendants(rows, header_row=header_row, column_width=column_width)
-    req = _build_descendant_request(document_id.strip(), [table_id], descendants, index=-1)
+    req = _build_descendant_request(doc, [table_id], descendants, index=-1)
     res = await _invoke(req, user_key=user_key, prefer="user", identity=identity)
     if not res["ok"]:
         return res
     return {
         "ok": True,
-        "document_id": document_id.strip(),
+        "document_id": doc,
         "rows": len(rows),
         "columns": max((len(r) for r in rows), default=0),
+        **result_extra,
     }
+
+
+async def _resolve_table_caption(
+    document_id: str, caption: str, auto_number: bool, user_key: str, identity: str
+) -> tuple[str, dict[str, Any]]:
+    """A caption body becomes a numbered 表 caption, counted off the document's existing ones.
+
+    Imported lazily because ``_chart_caption`` imports this module: at module scope the
+    two would form an import cycle.
+    """
+    import _chart_caption as _cap  # noqa: PLC0415
+
+    body = _cap.strip_own_number(caption, _cap.TABLE)
+    if not auto_number:
+        return _cap.format_caption(_cap.TABLE, 0, body), {}
+    numbered = await _cap.next_number(document_id, _cap.TABLE, user_key, identity)
+    if not numbered.get("ok"):
+        return (
+            _cap.format_caption(_cap.TABLE, 0, body),
+            {"caption_number_skipped": numbered.get("reason", "could not read the document")},
+        )
+    number = int(numbered["number"])
+    return _cap.format_caption(_cap.TABLE, number, body), {"caption_number": number}
 
 
 async def append_doc_table_impl(
@@ -4963,12 +5987,14 @@ async def append_doc_table_impl(
     column_width_json: str = "",
     user_key: str = "",
     identity: str = "",
+    caption: str = "",
+    auto_number: bool = True,
 ) -> dict[str, Any]:
     """Append a native Feishu table (block_type 31) to a docx body.
 
     ``rows_json`` is a JSON 2-D array; the first row is styled as a header when
     ``header_row`` is true. ``column_width_json`` optionally sets per-column pixel
-    widths (JSON array of ints).
+    widths (JSON array of ints). ``caption`` writes a numbered 表 caption line above it.
     """
     rows = _parse_rows(rows_json)
     if isinstance(rows, dict):  # parse error
@@ -4982,12 +6008,25 @@ async def append_doc_table_impl(
         except json.JSONDecodeError, TypeError:
             column_width = None
     return await _append_table_descendants(
-        document_id, rows, header_row=header_row, column_width=column_width, user_key=user_key, identity=identity
+        document_id,
+        rows,
+        header_row=header_row,
+        column_width=column_width,
+        user_key=user_key,
+        identity=identity,
+        caption=caption,
+        auto_number=auto_number,
     )
 
 
 async def append_doc_flowchart_impl(
-    document_id: str, steps_json: str, title: str = "", user_key: str = "", identity: str = ""
+    document_id: str,
+    steps_json: str,
+    title: str = "",
+    user_key: str = "",
+    identity: str = "",
+    caption: str = "",
+    auto_number: bool = True,
 ) -> dict[str, Any]:
     """Append a flowchart rendered as a single-column Feishu table (each step a row,
     joined by ↓ arrows). Feishu's API can't draw a real diagram, so this is the
@@ -5006,12 +6045,25 @@ async def append_doc_flowchart_impl(
         if i < len(labels) - 1:
             rows.append(["↓"])
     return await _append_table_descendants(
-        document_id, rows, header_row=bool(title) or True, column_width=None, user_key=user_key, identity=identity
+        document_id,
+        rows,
+        header_row=bool(title) or True,
+        column_width=None,
+        user_key=user_key,
+        identity=identity,
+        caption=caption,
+        auto_number=auto_number,
     )
 
 
 async def append_doc_swimlane_impl(
-    document_id: str, lanes_json: str, stages_json: str = "", user_key: str = "", identity: str = ""
+    document_id: str,
+    lanes_json: str,
+    stages_json: str = "",
+    user_key: str = "",
+    identity: str = "",
+    caption: str = "",
+    auto_number: bool = True,
 ) -> dict[str, Any]:
     """Append a swimlane diagram rendered as a Feishu table: columns = lanes
     (角色/部门), rows = stages. Feishu's API can't draw a real swimlane diagram, so
@@ -5047,7 +6099,14 @@ async def append_doc_swimlane_impl(
     else:
         return _error("lanes must be a non-empty JSON array of lane names or an object {lane:[activities]}.")
     return await _append_table_descendants(
-        document_id, rows, header_row=True, column_width=None, user_key=user_key, identity=identity
+        document_id,
+        rows,
+        header_row=True,
+        column_width=None,
+        user_key=user_key,
+        identity=identity,
+        caption=caption,
+        auto_number=auto_number,
     )
 
 
@@ -5517,6 +6576,30 @@ async def _upload_into_image_block(image_path: str, block_id: str, user_key: str
     return {"ok": True, "file_token": token, "size": size}
 
 
+async def read_doc_for_captions(document_id: str, user_key: str = "", identity: str = "") -> dict[str, Any]:
+    """A docx's plain text, for counting the 图/表 captions already in it.
+
+    Separate from ``read_doc_impl`` because that one is a user-facing reader with no
+    identity plumbing (tenant token only): a chart being written into someone's own doc
+    has to be counted with the same credentials that will do the writing, or the read
+    fails on exactly the user-owned docs where captions matter most. ``prefer="tenant"``
+    since this is a read — a doc the bot can see needs no user authorization.
+    """
+    doc = document_id.strip()
+    if not doc:
+        return _error("document_id is required.")
+    res = await _invoke(
+        lambda: _build_docx_raw_request(doc),
+        user_key=user_key,
+        prefer="tenant",
+        identity=identity,
+    )
+    if not res["ok"]:
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {"ok": True, "content": data.get("content", "")}
+
+
 async def append_doc_image_impl(
     document_id: str, image_path: str, caption: str = "", user_key: str = "", identity: str = ""
 ) -> dict[str, Any]:
@@ -5622,3 +6705,307 @@ async def _locate_child_index(document_id: str, block_id: str, user_key: str, id
                 if isinstance(item, dict) and item.get("block_id") == block_id:
                     return position
     return -1
+
+
+# ── Block-level editing — revise a doc in place instead of only appending ────────
+# Everything above only ever *adds* to a document, so fixing one wrong sentence meant
+# rewriting the whole doc. These three close that loop: list the blocks to learn their
+# block_ids and current text, rewrite one block's text, or delete blocks outright.
+#
+# The block_id is the unit of address, never a line number: Feishu's delete endpoint
+# takes a *child index range* under a parent, and indexes shift as soon as anything is
+# added or removed. So delete resolves block_id → current index right before deleting,
+# and refuses rather than guessing when the block can't be found — a wrong index here
+# deletes someone else's paragraph, which no retry can undo.
+_BLOCK_TYPE_NAMES = {
+    1: "page",
+    2: "text",
+    3: "heading1",
+    4: "heading2",
+    5: "heading3",
+    6: "heading4",
+    7: "heading5",
+    8: "heading6",
+    9: "heading7",
+    10: "heading8",
+    11: "heading9",
+    12: "bullet",
+    13: "ordered",
+    14: "code",
+    15: "quote",
+    17: "todo",
+    19: "callout",
+    22: "divider",
+    23: "file",
+    24: "grid",
+    25: "grid_column",
+    27: "image",
+    28: "iframe",
+    30: "sheet",
+    31: "table",
+    32: "table_cell",
+    34: "quote_container",
+    999: "unsupported",
+}
+
+# The typed payload key holding a block's text elements, per block_type. Text lives
+# under the block's own kind name (a heading2's runs are in "heading2"), which is why
+# reading a block's text needs the type→key mapping rather than one fixed field.
+_TEXTUAL_BLOCK_KEYS = {
+    2: "text",
+    3: "heading1",
+    4: "heading2",
+    5: "heading3",
+    6: "heading4",
+    7: "heading5",
+    8: "heading6",
+    9: "heading7",
+    10: "heading8",
+    11: "heading9",
+    12: "bullet",
+    13: "ordered",
+    14: "code",
+    15: "quote",
+    17: "todo",
+}
+
+
+def _build_document_blocks_list_request(document_id: str, page_size: int, page_token: str) -> BaseRequest:
+    """GET every block of a document (flat, with parent_id/children), not just one level."""
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/docx/v1/documents/:document_id/blocks"
+    req.paths["document_id"] = document_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.add_query("page_size", page_size)
+    if page_token:
+        req.add_query("page_token", page_token)
+    return req
+
+
+def _build_block_text_patch_request(document_id: str, block_id: str, elements: list[dict[str, Any]]) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.PATCH
+    req.uri = "/open-apis/docx/v1/documents/:document_id/blocks/:block_id"
+    req.paths["document_id"] = document_id
+    req.paths["block_id"] = block_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"update_text_elements": {"elements": elements}}
+    return req
+
+
+def _build_blocks_batch_delete_request(document_id: str, block_id: str, start: int, end: int) -> BaseRequest:
+    """Delete children [start, end) of ``block_id`` — the range is half-open."""
+    req = BaseRequest()
+    req.http_method = HttpMethod.DELETE
+    req.uri = "/open-apis/docx/v1/documents/:document_id/blocks/:block_id/children/batch_delete"
+    req.paths["document_id"] = document_id
+    req.paths["block_id"] = block_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"start_index": start, "end_index": end}
+    return req
+
+
+def _block_plain_text(block: dict[str, Any]) -> str:
+    """The block's visible text, joined from its text_run/equation/mention elements."""
+    key = _TEXTUAL_BLOCK_KEYS.get(block.get("block_type") or 0, "")
+    payload = block.get(key) if key else None
+    if not isinstance(payload, dict):
+        return ""
+    parts: list[str] = []
+    for element in payload.get("elements") or []:
+        if not isinstance(element, dict):
+            continue
+        run = element.get("text_run")
+        if isinstance(run, dict):
+            parts.append(str(run.get("content", "")))
+            continue
+        equation = element.get("equation")
+        if isinstance(equation, dict):
+            parts.append(str(equation.get("content", "")))
+            continue
+        mention = element.get("mention_doc")
+        if isinstance(mention, dict):
+            parts.append(str(mention.get("title", "")))
+            continue
+        mention_user = element.get("mention_user")
+        if isinstance(mention_user, dict):
+            parts.append("@" + str(mention_user.get("user_id", "")))
+    return "".join(parts)
+
+
+_BLOCKS_LIST_PAGE_MAX = 500
+
+
+async def list_doc_blocks_impl(
+    document_id: str,
+    max_blocks: int = 200,
+    user_key: str = "",
+    identity: str = "",
+) -> dict[str, Any]:
+    """List a docx's blocks as ``{block_id, block_type, type_name, text, parent_id}``.
+
+    The prerequisite for editing anything: ``update_doc_block`` / ``delete_doc_blocks``
+    address content by ``block_id``, and this is the only way to learn those ids. Text
+    is trimmed to a preview so listing a long document doesn't flood the context; read
+    the full body with ``read_doc_impl`` when that's what's wanted.
+
+    ``prefer="tenant"`` because this is a read — a doc the bot can already see needs no
+    user authorization — with the user's identity used when one is available.
+    """
+    doc = document_id.strip()
+    if not doc:
+        return _error("document_id is required.")
+    limit = max(1, min(int(max_blocks or 200), 2000))
+    items: list[dict[str, Any]] = []
+    page_token = ""
+    truncated = False
+    while True:
+        remaining = limit - len(items)
+        page_size = min(_BLOCKS_LIST_PAGE_MAX, max(remaining, 1))
+        res = await _invoke(
+            _build_document_blocks_list_request(doc, page_size, page_token),
+            user_key=user_key,
+            prefer="tenant",
+            identity=identity,
+        )
+        if not res["ok"]:
+            return res
+        data = res["data"] if isinstance(res["data"], dict) else {}
+        for raw in data.get("items") or []:
+            if not isinstance(raw, dict):
+                continue
+            if len(items) >= limit:
+                truncated = True
+                break
+            block_type = raw.get("block_type") or 0
+            text = _block_plain_text(raw)
+            items.append(
+                {
+                    "block_id": raw.get("block_id", ""),
+                    "block_type": block_type,
+                    "type_name": _BLOCK_TYPE_NAMES.get(block_type, str(block_type)),
+                    "parent_id": raw.get("parent_id", ""),
+                    "text": text if len(text) <= 200 else text[:200] + "…",
+                    "editable_text": block_type in _TEXTUAL_BLOCK_KEYS,
+                }
+            )
+        page_token = str(data.get("page_token") or "")
+        if truncated or not page_token or len(items) >= limit:
+            truncated = truncated or bool(page_token)
+            break
+    return {"ok": True, "document_id": doc, "count": len(items), "truncated": truncated, "blocks": items}
+
+
+async def update_doc_block_impl(
+    document_id: str,
+    block_id: str,
+    text: str,
+    user_key: str = "",
+    identity: str = "",
+) -> dict[str, Any]:
+    """Replace the text of one docx block, keeping the block itself (and its type).
+
+    Rewriting a heading leaves it a heading, a bullet stays a bullet: only the text runs
+    are replaced. Structural blocks (image/table/divider/page) carry no text runs to
+    replace and are rejected up front with the reason, rather than sent off to fail as
+    an opaque Feishu error.
+    """
+    doc = document_id.strip()
+    block = block_id.strip()
+    if not doc:
+        return _error("document_id is required.")
+    if not block:
+        return _error("block_id is required — get it from feishu_doc_list_blocks.")
+    if block == doc:
+        return _error(
+            "block_id is the document's root block, which holds no text. "
+            "Pass the block_id of a paragraph/heading from feishu_doc_list_blocks."
+        )
+    if text == "":
+        return _error("text is required — to remove a block entirely use feishu_doc_delete_blocks.")
+    res = await _invoke(
+        _build_block_text_patch_request(doc, block, [{"text_run": {"content": text}}]),
+        user_key=user_key,
+        prefer="user",
+        identity=identity,
+    )
+    if not res["ok"]:
+        return res
+    return {"ok": True, "document_id": doc, "block_id": block, "text": text}
+
+
+async def delete_doc_blocks_impl(
+    document_id: str,
+    block_ids_json: str,
+    parent_block_id: str = "",
+    user_key: str = "",
+    identity: str = "",
+) -> dict[str, Any]:
+    """Delete one or more blocks, addressed by block_id, from a docx.
+
+    Feishu deletes by child-index range under a parent, so each id is resolved to its
+    current index first. Deletions run highest-index-first: removing a block shifts
+    every later sibling down, so deleting low-to-high would make each subsequent index
+    point one block too far. Ids that can't be located are reported as ``not_found``
+    instead of being guessed at.
+    """
+    doc = document_id.strip()
+    if not doc:
+        return _error("document_id is required.")
+    try:
+        raw_ids = json.loads(block_ids_json or "[]")
+    except json.JSONDecodeError as exc:
+        return _error(f"block_ids_json is not valid JSON: {exc}")
+    if isinstance(raw_ids, str):
+        raw_ids = [raw_ids]
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return _error("block_ids_json must be a non-empty JSON array of block_ids, e.g. '[\"abc123\"]'.")
+    wanted = [str(item).strip() for item in raw_ids if str(item).strip()]
+    if not wanted:
+        return _error("block_ids_json contained no usable block_id.")
+    parent = parent_block_id.strip() or doc
+    if doc in wanted:
+        return _error("refusing to delete the document's root block — delete the file with feishu_drive_delete_file.")
+    listed = await _invoke(
+        _build_block_children_list_request(doc, parent),
+        user_key=user_key,
+        prefer="user",
+        identity=identity,
+    )
+    if not listed["ok"]:
+        return listed
+    ldata = listed["data"] if isinstance(listed["data"], dict) else {}
+    positions: dict[str, int] = {}
+    for position, item in enumerate(ldata.get("items") or []):
+        if isinstance(item, dict) and item.get("block_id"):
+            positions[str(item["block_id"])] = position
+    targets = sorted(((positions[bid], bid) for bid in wanted if bid in positions), reverse=True)
+    not_found = [bid for bid in wanted if bid not in positions]
+    deleted: list[str] = []
+    for index, bid in targets:
+        res = await _invoke(
+            _build_blocks_batch_delete_request(doc, parent, index, index + 1),
+            user_key=user_key,
+            prefer="user",
+            identity=identity,
+        )
+        if not res["ok"]:
+            res["deleted"] = deleted
+            res["not_found"] = not_found
+            return res
+        deleted.append(bid)
+    if not deleted:
+        return _error(
+            f"none of those block_ids are children of {parent} — "
+            "re-check them with feishu_doc_list_blocks (nested blocks need their own parent_block_id).",
+            not_found=not_found,
+        )
+    return {
+        "ok": True,
+        "document_id": doc,
+        "parent_block_id": parent,
+        "deleted": deleted,
+        "deleted_count": len(deleted),
+        "not_found": not_found,
+    }

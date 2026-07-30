@@ -11,10 +11,10 @@ This merges three ideas into one workspace:
   fully merged from the fusion-flow workspace.
 * A fixed Haitun agent persona, always stated in the system prompt.
 
-Only ``system_prompt_builder()`` (and optionally ``system_prompt_rebuild_checker``
-and ``turn_context_builder``) is invoked by psi-agent's session loader.
-``compact_history`` / ``after_turn`` /
-the self-evolution helpers below are **intentionally kept but currently un-wired**
+``system_prompt_builder()``, ``system_prompt_rebuild_checker()``,
+``turn_context_builder()``, ``compact_history()``, and ``system_after_turn()``
+are invoked by psi-agent's session loader. ``System.after_turn`` and the
+self-evolution helpers below are **intentionally kept but currently un-wired**
 - they are future-extension hooks (see AGENTS.md).  Do not delete them as "dead
 code"; they exist on purpose.
 """
@@ -30,8 +30,13 @@ _THIS_DIR = _os.path.dirname(_os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
+_TOOLS_DIR = _os.path.join(_os.path.dirname(_THIS_DIR), "tools")
+if _TOOLS_DIR not in sys.path:
+    sys.path.insert(0, _TOOLS_DIR)
+
 import contextlib
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -107,6 +112,8 @@ _USER_MD_MAX_CHARS = 10_000
 _CONTEXT_FILE_MAX_CHARS = 40_000
 
 _SKILLS_SNAPSHOT_FILE = ".skills_prompt_snapshot.json"
+
+_SUPERVISOR_MANAGERS: dict[str, Any] = {}
 
 # Global skills directory, shared across workspaces (AGENTS.md ecosystem
 # convention). Each skill lives at ~/.agent/skills/<name>/SKILL.md, mirroring
@@ -1009,7 +1016,12 @@ hand-copying the key.
 
 Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files."""
 
-    async def build_system_prompt(self, model: str | None = None, tool_names: list[str] | None = None) -> str:
+    async def build_system_prompt(
+        self,
+        model: str | None = None,
+        tool_names: list[str] | None = None,
+        user_text: str = "",
+    ) -> str:
         # Capability root (skills/tools/SOUL) vs user open-folder (file IO guidance).
         ws = self._agent_dir
         user_ws = self._user_workspace
@@ -1256,7 +1268,67 @@ Never write API keys into this workspace, generated `.flow.ts` files, or committ
         )
 
 
-async def system_prompt_builder() -> str:
+def _resolve_workspace(workspace_raw: str = "") -> anyio.Path:
+    raw = workspace_raw or _runtime_workspace() or str(anyio.Path(__file__).parent.parent)
+    return anyio.Path(os.path.realpath(os.path.abspath(raw)))
+
+
+def _get_supervisor_manager(workspace: anyio.Path) -> Any:
+    key = os.path.realpath(os.path.abspath(str(workspace)))
+    manager = _SUPERVISOR_MANAGERS.get(key)
+    if manager is None:
+        supervisor_module = importlib.import_module("supervisor")
+        manager = supervisor_module.SupervisorManager(anyio.Path(key))
+        _SUPERVISOR_MANAGERS[key] = manager
+    return manager
+
+
+def _build_profile_policy(topic_profile: dict[str, Any]) -> str:
+    current_turn = int(topic_profile.get("turns", 0)) + 1
+    socratic = "3. **苏格拉底提问**: 本轮必须提问!" if current_turn % 3 == 0 else "3. 本轮不强制提问。"
+    return (
+        "## 强制监督规则\n\n"
+        "1. **确定性标记**: 事实性陈述使用 `[已确认]`、`[推断]` 或 `[需验证]`。\n"
+        "2. **反例注入**: 每个核心概念给出一个反例或边界场景。\n"
+        f"{socratic}\n4. **破圈引导**: 是否破圈由旁路监督按当前问题决定, 不绑定固定轮次。\n"
+        "5. **画像匹配**: 按教学指令控制深度、术语和决策信息。\n"
+    )
+
+
+async def system_before_turn(
+    user_message: dict[str, Any] | None,
+    *,
+    workspace_raw: str = "",
+) -> dict[str, Any]:
+    """Return validated background advice for an eligible learning turn."""
+    if not isinstance(user_message, dict):
+        return {}
+    content = user_message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return {}
+    if not any(
+        isinstance(user_message.get(name), str) and bool(user_message[name].strip())
+        for name in ("user_id", "profile_id", "session_id")
+    ):
+        return {}
+    supervisor_module = importlib.import_module("supervisor")
+    if not supervisor_module.is_learning_question(content):
+        return {}
+    try:
+        manager = _get_supervisor_manager(_resolve_workspace(workspace_raw))
+        before_turn = getattr(manager, "before_turn", None)
+        advice = await before_turn(user_message) if callable(before_turn) else await manager.supervise(user_message)
+    except Exception as exc:
+        logger.warning("Background supervisor unavailable: %r", exc, exc_info=True)
+        return {}
+    return advice if isinstance(advice, dict) else {}
+
+
+async def system_prompt_builder(
+    user_message: dict[str, Any] | None = None,
+    *,
+    workspace_raw: str = "",
+) -> str:
     """Module-level entry point used by the psi-agent session loader.
 
     The loader looks up an async ``system_prompt_builder`` attribute in this
@@ -1269,11 +1341,55 @@ async def system_prompt_builder() -> str:
     """
     agent_dir = anyio.Path(__file__).parent.parent
     user_workspace = agent_dir
-    raw = (_runtime_workspace() or "").strip()
+    raw = (workspace_raw or _runtime_workspace() or "").strip()
     if raw:
         user_workspace = anyio.Path(raw)
     await _activate_fusion_memory(agent_dir)
-    return await System(agent_dir, user_workspace=user_workspace).build_system_prompt()
+    content = user_message.get("content") if isinstance(user_message, dict) else ""
+    user_text = content if isinstance(content, str) else ""
+    profile_module = importlib.import_module("_user_profile")
+    identity = {
+        name: value
+        for name in ("profile_id", "user_id", "session_id")
+        if isinstance(user_message, dict) and isinstance((value := user_message.get(name)), str) and value
+    }
+    profile = await profile_module.get_profile(str(user_workspace), **identity)
+    topic_profile = None
+    if user_text.strip():
+        _topic_key, topic_profile = profile.get_topic(user_text)
+
+    profile_text = ""
+    policy_text = ""
+    if topic_profile:
+        dimensions = profile.effective_dimensions(topic_profile)
+        profile_text = (
+            "## 当前知识点学习画像 (每轮从持久化画像重新读取)\n"
+            f"- 当前知识点: {topic_profile['label']}\n"
+            f"- 累计轮次: {topic_profile['turns']}\n"
+            f"- 深度: {dimensions['depth']:.2f} (0=框架概览, 1=系统推导)\n"
+            f"- 目标: {dimensions['goal']:.2f} (0=兴趣, 1=决策)\n"
+            f"- 熟悉度: {dimensions['familiarity']:.2f} (0=新手, 1=专家)\n"
+            f"- 教学指令: {profile.teaching_hint(topic_profile)}\n"
+        )
+        policy_text = _build_profile_policy(topic_profile)
+
+    prompt = await System(agent_dir, user_workspace=user_workspace).build_system_prompt()
+    raw_advice = user_message.get("supervisor_advice") if isinstance(user_message, dict) else None
+    if isinstance(raw_advice, dict):
+        protocol = importlib.import_module("supervisor_protocol")
+        advice_text = protocol.render_advice_prompt(protocol.validate_advice(raw_advice))
+        if advice_text:
+            advice_text += "\n- 用户当前消息中的直接范围和深度要求优先; 若用户要求不展开, 则抑制破圈, 不得强制扩展。"
+    else:
+        advice_text = ""
+    injected = "\n".join(part for part in (profile_text, advice_text, policy_text) if part)
+    if not injected:
+        return prompt
+    boundary = "<!-- HAITUN_CACHE_BOUNDARY -->"
+    if boundary in prompt:
+        index = prompt.find(boundary) + len(boundary)
+        return prompt[:index] + "\n" + injected + "\n" + prompt[index:]
+    return prompt + "\n" + injected
 
 
 RECENT_TURNS_KEPT_VERBATIM = 20
@@ -1391,22 +1507,6 @@ async def compact_history(history: list[dict[str, Any]], complete_fn) -> str:
     return _cap_summary(summary) + "\n" + recent_text
 
 
-async def system_prompt_rebuild_checker() -> bool:
-    """Activate Memory, and rebuild when a per-turn context file has changed.
-
-    ``USER.md`` and the ``HEARTBEAT.md``-style files are documented as
-    "re-read every turn", and they live in the prompt because they are prose
-    the agent should treat as standing context, not as news about this turn.
-    Rebuilding on every turn would mean a full workspace rescan every turn, and
-    a prompt that never repeats itself; rebuilding only when their bytes actually
-    change costs one read of a few small files and keeps the promise. Content,
-    not mtime: a rewrite with identical bytes should not cost a rebuild.
-    """
-    agent_dir = anyio.Path(__file__).parent.parent
-    await _activate_fusion_memory(agent_dir)
-    return await _context_files_changed(agent_dir)
-
-
 async def _context_files_changed(workspace_dir: anyio.Path) -> bool:
     """Whether ``USER.md`` / dynamic context files differ from the last check.
 
@@ -1453,6 +1553,42 @@ async def turn_context_builder() -> str:
         user_workspace = anyio.Path(raw)
     system = System(agent_dir, user_workspace=user_workspace)
     return await system.build_turn_context()
+
+
+async def system_prompt_rebuild_checker(_user_message: dict[str, Any] | None = None) -> bool:
+    """Activate Memory and rebuild for the current topic-specific profile."""
+    agent_dir = anyio.Path(__file__).parent.parent
+    await _activate_fusion_memory(agent_dir)
+    return True
+
+
+async def system_after_turn(
+    user_message: dict[str, Any],
+    assistant_message: dict[str, Any],
+    *,
+    workspace_raw: str = "",
+) -> None:
+    """Persist profile signals and warm the background supervisor."""
+    profile_module = importlib.import_module("_user_profile")
+    workspace = _resolve_workspace(workspace_raw)
+    identity = {
+        name: value
+        for name in ("profile_id", "user_id", "session_id")
+        if isinstance((value := user_message.get(name)), str) and value
+    }
+    profile = await profile_module.get_profile(str(workspace), **identity)
+    user_text = user_message.get("content")
+    assistant_text = assistant_message.get("content")
+    user_text = user_text if isinstance(user_text, str) else ""
+    assistant_text = assistant_text if isinstance(assistant_text, str) else ""
+    await profile.record_turn(user_text, assistant_text)
+
+    supervisor_module = importlib.import_module("supervisor")
+    if supervisor_module.is_learning_question(user_text):
+        try:
+            await _get_supervisor_manager(workspace).prime(user_message)
+        except Exception as exc:
+            logger.warning("Background supervisor warmup failed: %r", exc, exc_info=True)
 
 
 async def _activate_fusion_memory(workspace_dir: anyio.Path) -> None:

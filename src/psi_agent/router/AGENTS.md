@@ -6,19 +6,25 @@ Router 位于 Session 与多个 AI 后端之间，负责把一次 Session 请求
 
 ## 目录结构
 
+```text
 router/
-├── __init__.py       # Router 对外入口
-├── server.py         # HTTP/SSE 服务、fallback、生命周期
-├── routing.py        # 分流 facade：Planner、Orchestrator、RouterClient、协议类型
-├── aggregation.py    # 聚合 facade：聚合入口和聚合 Prompt
-├── prompts.py        # 路由、修复、子任务、聚合 Prompt
-├── entry.py          # CLI 启动入口
-├── client.py         # socket/SSE 传输实现
-├── planner.py        # 路由模型调用和计划校验
-├── orchestrator.py   # 子任务执行和编排
-└── protocol.py       # 类型和配置定义
+├── __init__.py              # Router 对外统一导出
+├── entry.py                 # CLI/dataclass 启动入口，按 mode 选择策略
+├── server.py                # HTTP/SSE 服务、fallback、生命周期
+├── client.py                # socket/SSE 传输实现
+├── protocol.py              # 类型和配置定义
+├── routing/
+│   ├── __init__.py          # 分流模式对外导出
+│   ├── orchestrator.py      # 分流策略：选择一个 upstream 并转发完整上下文
+│   └── prompts.py           # 分流模式提示词
+└── aggregation/
+    ├── __init__.py          # 聚合模式对外导出
+    ├── orchestrator.py      # 聚合策略：规划、分发子任务、汇总结果
+    ├── planner.py           # 聚合模式的任务规划和计划校验
+    └── prompts.py           # 聚合模式提示词
+```
 
-后续重构应将 `client.py`、`protocol.py` 等纯支撑代码合并到分流脚本或聚合脚本中，保持 Router 顶层只剩 `server.py`、分流脚本、聚合脚本和 `prompts.py`。迁移期间允许保留兼容导入模块，但不得在其中增加新的业务逻辑。
+业务逻辑必须放在 `routing/` 或 `aggregation/` 内部；根目录只保留传输、协议和启动入口，不得新增模式相关业务逻辑。
 
 ## 数据流
 
@@ -49,3 +55,11 @@ INFO 级别必须记录实际 Planner 计划、选中的 socket、成功 upstrea
 ## 测试
 
 测试目录镜像 `tests/psi_agent/router/`。必须覆盖：动态任务数量、socket 白名单、并发子任务、聚合顺序、tool-call ID 去重、Session 多轮工具调用、部分失败和 default fallback。
+
+## 模式切换契约
+
+Router 启动时必须显式指定模式，不存在隐式默认模式。
+
+- `routing` 表示分流模式：路由模型从已配置的 upstream socket 中选择一个，并把完整请求转发给该 socket。
+- `aggregation` 表示聚合模式：先把任务分发给已配置的 upstream，再由聚合模型综合子结果生成最终回复。
+- CLI、YAML、Gateway 和 SPA 的 Router 创建路径都必须要求传入 `mode`，并且原样透传，不得丢失或自行补默认值。

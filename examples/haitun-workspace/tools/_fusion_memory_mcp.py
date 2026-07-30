@@ -27,7 +27,7 @@ from mcp.client.streamable_http import streamable_http_client
 from psi_agent.session.runtime_context import get_session_id
 
 TOOLS_DIR = Path(__file__).resolve().parent
-READ_TOOLS = frozenset({"memory_search", "memory_answer_context", "memory_health"})
+READ_TOOLS = frozenset({"assignment_get", "assignment_list", "memory_search", "memory_answer_context", "memory_health"})
 
 
 def _load_sibling_module(name: str) -> tuple[str, dict[str, Any]]:

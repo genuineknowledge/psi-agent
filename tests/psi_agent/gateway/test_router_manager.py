@@ -52,15 +52,18 @@ async def test_run_router_service_builds_merged_router(monkeypatch: pytest.Monke
     monkeypatch.setattr("builtins.__import__", fake_import)
     await _run_router_service(
         session_socket="router.sock",
+        mode="aggregation",
         router_socket="route-ai.sock",
         upstreams=(("simple.sock", "simple tasks"),),
         default_socket="simple.sock",
         router_timeout=None,
-        router_context_chars=12_000,
+        max_context_length=12_000,
     )
     assert captured[0]["session_socket"] == "router.sock"
+    assert captured[0]["mode"] == "aggregation"
     assert captured[0]["router_socket"] == "route-ai.sock"
-    assert captured[0]["upstream"] == ['{"socket": "simple.sock", "description": "simple tasks"}']
+    assert captured[0]["upstream"] == [("simple.sock", "simple tasks")]
+    assert captured[0]["max_context_length"] == 12_000
 
 
 @pytest.mark.anyio
@@ -78,6 +81,7 @@ async def test_create_and_delete_router(monkeypatch: pytest.MonkeyPatch) -> None
         manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", tg)
         info = await manager.create(
             "smart",
+            "routing",
             "route",
             [RouterUpstreamInfo("simple", "simple tasks"), RouterUpstreamInfo("complex", "complex tasks")],
             "simple",
@@ -97,6 +101,7 @@ async def test_rejects_invalid_router_configuration() -> None:
         with pytest.raises(ValueError, match="duplicate"):
             await manager.create(
                 "smart",
+                "routing",
                 "route",
                 [RouterUpstreamInfo("simple", "one"), RouterUpstreamInfo("simple", "two")],
                 "simple",
@@ -104,6 +109,7 @@ async def test_rejects_invalid_router_configuration() -> None:
         with pytest.raises(LookupError, match="missing"):
             await manager.create(
                 "smart",
+                "routing",
                 "missing",
                 [RouterUpstreamInfo("simple", "one")],
                 "simple",

@@ -7,8 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from psi_agent.router.aggregation.prompts import build_planning_messages
 from psi_agent.router.client import UpstreamResult
-from psi_agent.router.prompts import build_planning_messages, build_repair_messages
 from psi_agent.router.protocol import PlannedTask
 
 
@@ -43,22 +43,31 @@ def parse_plan(content: str, *, allowed_sockets: set[str]) -> tuple[PlannedTask,
         raise PlanValidationError("Planner output must contain at least one task")
 
     tasks: list[PlannedTask] = []
+    selected_sockets: set[str] = set()
     for index, raw_task in enumerate(raw_tasks, start=1):
         if not isinstance(raw_task, dict):
             raise PlanValidationError(f"Planner task {index} must be an object")
-        if set(raw_task) != {"subtask", "socket"}:
-            raise PlanValidationError(f"Planner task {index} must contain only subtask and socket keys")
+        if set(raw_task) - {"task_type", "subtask", "socket"} or not {"subtask", "socket"} <= set(raw_task):
+            raise PlanValidationError(f"Planner task {index} must contain subtask and socket keys")
         subtask = raw_task.get("subtask")
         socket = raw_task.get("socket")
+        task_type = raw_task.get("task_type", "general")
         if not isinstance(subtask, str) or not subtask.strip():
             raise PlanValidationError(f"Planner task {index} subtask must be a non-empty string")
         if not isinstance(socket, str):
             raise PlanValidationError(f"Planner task {index} socket must be a string")
+        if not isinstance(task_type, str) or not task_type.strip():
+            raise PlanValidationError(f"Planner task {index} task_type must be a non-empty string")
         subtask = subtask.strip()
         socket = socket.strip()
         if socket not in allowed_sockets:
             raise PlanValidationError(f"Planner task {index} selected an unconfigured socket")
-        tasks.append(PlannedTask(subtask=subtask, socket=socket))
+        if socket in selected_sockets:
+            raise PlanValidationError(
+                f"Planner selected socket {socket!r} more than once; each socket may handle only one subtask"
+            )
+        selected_sockets.add(socket)
+        tasks.append(PlannedTask(subtask=subtask, socket=socket, task_type=task_type.strip()))
     return tuple(tasks)
 
 
@@ -71,29 +80,26 @@ class Planner:
     upstream: tuple[tuple[str, str], ...] | list[tuple[str, str]]
     timeout: float | None
 
-    async def plan(self, *, messages: list[dict[str, Any]]) -> tuple[PlannedTask, ...]:
+    async def plan(
+        self, *, messages: list[dict[str, Any]], max_context_length: int | None = None
+    ) -> tuple[PlannedTask, ...]:
         """Return a valid plan, allowing one request solely to repair its structure."""
 
         result = await self.client.complete(
             socket=self.router_socket,
-            body={"messages": build_planning_messages(messages=messages, upstream=self.upstream), "stream": True},
+            body={
+                "messages": build_planning_messages(
+                    messages=messages, upstream=self.upstream, max_context_length=max_context_length
+                ),
+                "stream": True,
+            },
             timeout=self.timeout,
         )
         allowed_sockets = {socket for socket, _ in self.upstream}
-        try:
-            return parse_plan(result.content, allowed_sockets=allowed_sockets)
-        except PlanValidationError:
-            repaired = await self.client.complete(
-                socket=self.router_socket,
-                body={
-                    "messages": build_repair_messages(
-                        original_messages=messages, invalid_plan=result.content[:2_000], upstream=self.upstream
-                    ),
-                    "stream": True,
-                },
-                timeout=self.timeout,
-            )
-            return parse_plan(repaired.content, allowed_sockets=allowed_sockets)
+        # A malformed plan is handled by the HTTP boundary, which immediately
+        # falls back to default_socket.  Do not spend another upstream round
+        # attempting to repair a response that may be empty or truncated.
+        return parse_plan(result.content, allowed_sockets=allowed_sockets)
 
 
 __all__ = ["PlanValidationError", "Planner", "parse_plan"]

@@ -39,6 +39,11 @@ import {
   type Task,
   type TaskTemplate,
 } from "./model";
+import {
+  filterTasksBySignal,
+  signalLabel,
+  type TaskSignalKind,
+} from "./taskSignals";
 
 import {
   INITIAL_TEMPLATES,
@@ -51,11 +56,18 @@ import {
   deleteSession,
   fetchHistory,
   fetchSessionTodos,
+  fetchTodoSegment,
+  generateSummary,
   generateTitle,
   listSessions,
+  listSummaries,
   listTitles,
+  listTodoSegments,
   setTitle,
+  setTodoSegmentLabel,
   type AiInfo,
+  type TodoSegmentDetail,
+  type TodoSegmentSummary,
 } from "../services/api";
 import {
   ensureDefaultAi,
@@ -155,12 +167,17 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
   const [dragX, setDragX] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [cardTransition, setCardTransition] = useState<CardTransition | null>(null);
+  /** Soft fade when switching tasks while already in focus (not the heavy swipe theater). */
+  const [focusSoftEnter, setFocusSoftEnter] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [globalSearch, setGlobalSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [templateSearchSeed, setTemplateSearchSeed] = useState("");
   const dragOrigin = useRef<number | null>(null);
   const transitionTimer = useRef<number | null>(null);
+  const softEnterTimer = useRef<number | null>(null);
+  /** Bumped to cancel a pending double-rAF expand after sidebar select. */
+  const expandFocusGenRef = useRef(0);
   const toastTimer = useRef<number | null>(null);
   const globalSearchRef = useRef<HTMLInputElement | null>(null);
   const activeChatInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -171,16 +188,24 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
   /** After Stop, block submit briefly — Stop↔Send swap under the same click would re-send the restored draft. */
   const suppressSubmitUntilRef = useRef(0);
   const historyLoadedRef = useRef<Set<string>>(new Set(["overview"]));
+  /** Task ids with an in-flight GET /history (sidebar → focus empty-state spinner). */
+  const [historyLoadingIds, setHistoryLoadingIds] = useState(() => new Set<string>());
   /** Invalidate in-flight todo polls so a late streaming refresh cannot reopen 「产出与确认」. */
   const todoRefreshSeqRef = useRef<Record<string, number>>({});
+  /** Todo sub-task segments per session (newest first). */
+  const [todoSegmentsByTask, setTodoSegmentsByTask] = useState<Record<string, TodoSegmentSummary[]>>({});
+  /** ``live`` or a closed segment id — controls left-pane checklist projection. */
+  const [todoSegmentSelection, setTodoSegmentSelection] = useState<Record<string, string>>({});
+  const segmentDetailCacheRef = useRef<Record<string, TodoSegmentDetail>>({});
   const workspaceNorm = normalizeWorkspacePath(workspace);
 
   const cards = useMemo(() => [{ id: "overview", title: OVERVIEW_LABEL }, ...tasks.map((task) => ({ id: task.id, title: task.shortTitle }))], [tasks]);
   const currentTask = currentIndex === 0 ? null : tasks[currentIndex - 1];
   const currentCard = cards[currentIndex] ?? cards[0];
   const currentChatDraft = chatDrafts[currentCard.id] ?? "";
-  const pendingTasks = tasks.filter((task) => task.status === "attention");
-  const deliveryTasks = tasks.filter((task) => task.newDeliverables.length > 0);
+  const pendingTasks = filterTasksBySignal(tasks, "pending");
+  const deliveryTasks = filterTasksBySignal(tasks, "deliveries");
+  const workingTasks = filterTasksBySignal(tasks, "working");
   const normalizedSearch = globalSearch.trim().toLocaleLowerCase("zh-CN");
   const taskSearchResults = normalizedSearch
     ? tasks.filter((task) => `${task.title}${task.shortTitle}${task.category}${task.summary}${task.statusLabel}${task.deliverables.join(" ")}`.toLocaleLowerCase("zh-CN").includes(normalizedSearch)).slice(0, 4)
@@ -189,19 +214,19 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
     ? templates.filter((template) => `${template.title}${template.category}${template.description}${template.starterPrompt}${template.deliverables.join(" ")}`.toLocaleLowerCase("zh-CN").includes(normalizedSearch)).slice(0, 4)
     : [];
 
-  const showToast = useCallback((message: string) => {
+  const showToast = useCallback((message: string, ms = 2600) => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     setToast(message);
-    toastTimer.current = window.setTimeout(() => setToast(null), 2600);
+    toastTimer.current = window.setTimeout(() => setToast(null), ms);
   }, []);
 
   const refreshTodos = useCallback(async (taskId: string, streaming = false) => {
-    if (taskId === "overview") return;
+    if (taskId === "overview") return null;
     const seq = (todoRefreshSeqRef.current[taskId] ?? 0) + 1;
     todoRefreshSeqRef.current[taskId] = seq;
     try {
       const data = await fetchSessionTodos(taskId);
-      if (todoRefreshSeqRef.current[taskId] !== seq) return;
+      if (todoRefreshSeqRef.current[taskId] !== seq) return null;
       const todos = Array.isArray(data.todos) ? data.todos : [];
       setTasks((current) =>
         current.map((task) => {
@@ -213,14 +238,95 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
           });
         }),
       );
+      return todos;
     } catch {
       // Missing file / transient — keep previous steps.
+      return null;
     }
+  }, []);
+
+  const clearSegmentDetailCache = useCallback((taskId: string) => {
+    const prefix = `${taskId}:`;
+    for (const key of Object.keys(segmentDetailCacheRef.current)) {
+      if (key.startsWith(prefix)) delete segmentDetailCacheRef.current[key];
+    }
+  }, []);
+
+  const refreshTodoSegments = useCallback(async (taskId: string) => {
+    if (taskId === "overview") return;
+    try {
+      const segs = await listTodoSegments(taskId);
+      clearSegmentDetailCache(taskId);
+      setTodoSegmentsByTask((current) => ({ ...current, [taskId]: segs }));
+    } catch {
+      // Segments optional for older sessions.
+    }
+  }, [clearSegmentDetailCache]);
+
+  const selectTodoSegment = useCallback(async (taskId: string, segmentId: string) => {
+    if (segmentId === "live") {
+      setTodoSegmentSelection((current) => ({ ...current, [taskId]: "live" }));
+      return;
+    }
+    const cacheKey = `${taskId}:${segmentId}`;
+    try {
+      let detail = segmentDetailCacheRef.current[cacheKey];
+      if (!detail) {
+        detail = await fetchTodoSegment(taskId, segmentId);
+        segmentDetailCacheRef.current[cacheKey] = detail;
+      }
+      setTodoSegmentSelection((current) => ({ ...current, [taskId]: segmentId }));
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "加载子任务步骤失败");
+    }
+  }, [showToast]);
+
+  const focusChecklistTask = useCallback((task: Task | null): Task | null => {
+    if (!task) return null;
+    const sel = todoSegmentSelection[task.id] ?? "live";
+    if (sel === "live") return task;
+    const cached = segmentDetailCacheRef.current[`${task.id}:${sel}`];
+    if (!cached) return task;
+    return withTodoProgress(task, cached.todos, { streaming: false, turnSettled: true });
+  }, [todoSegmentSelection]);
+
+  const refreshTaskSummary = useCallback((cardId: string, userText: string, assistantText: string) => {
+    const user = userText.trim();
+    const asst = assistantText.trim();
+    if (!user && !asst) return;
+    void generateSummary(cardId, user.slice(0, 800), asst.slice(0, 2000))
+      .then(async (res) => {
+        if (!res?.summary?.trim()) return;
+        const summary = res.summary.trim();
+        setTasks((current) =>
+          current.map((task) => (task.id === cardId ? { ...task, summary } : task)),
+        );
+        // P1: reuse turn summary as the open segment label when present.
+        try {
+          const segs = await listTodoSegments(cardId);
+          setTodoSegmentsByTask((current) => ({ ...current, [cardId]: segs }));
+          const open = segs.find((s) => !s.closed_at);
+          if (!open) return;
+          const firstLine = summary.split(/[。！？\n]/u)[0]?.trim() || summary;
+          await setTodoSegmentLabel(cardId, open.id, firstLine);
+          const refreshed = await listTodoSegments(cardId);
+          setTodoSegmentsByTask((current) => ({ ...current, [cardId]: refreshed }));
+        } catch {
+          // Label patch is best-effort.
+        }
+      })
+      .catch(() => {});
   }, []);
 
   const ensureHistory = useCallback(async (taskId: string) => {
     if (taskId === "overview" || historyLoadedRef.current.has(taskId)) return;
     historyLoadedRef.current.add(taskId);
+    setHistoryLoadingIds((prev) => {
+      if (prev.has(taskId)) return prev;
+      const next = new Set(prev);
+      next.add(taskId);
+      return next;
+    });
     try {
       const hist = await fetchHistory(taskId);
       const chat = normalizeFailedTurns(historyToChat(hist));
@@ -229,42 +335,66 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
         ...current,
         [taskId]: chat.length ? chat : (current[taskId] ?? []),
       }));
+      let lastUserText = "";
+      let lastAgentText = "";
       setTasks((current) =>
         current.map((task) => {
           if (task.id !== taskId) return task;
           let next = names.length ? withHistoricalDeliverables(task, names, paths) : task;
           if (chat.length) {
             const lastAgent = [...chat].reverse().find((m) => m.role === "agent" && !m.failed);
+            const lastUser = [...chat].reverse().find((m) => m.role === "user" && !m.failed);
             if (lastAgent) {
-              next = withCompletedTurn(
-                {
-                  ...next,
-                  updated: names.length ? "已从历史同步交付物" : "已从历史同步",
-                },
-                { summary: lastAgent.text },
-              );
+              lastAgentText = lastAgent.text;
+              lastUserText = lastUser?.text ?? "";
+              next = withCompletedTurn({
+                ...next,
+                updated: names.length ? "已从历史同步交付物" : "已从历史同步",
+              });
             }
           }
           return next;
         }),
       );
       await refreshTodos(taskId);
+      await refreshTodoSegments(taskId);
+      // Missing / placeholder summary → one LLM pass (not a raw reply slice).
+      setTasks((current) => {
+        const task = current.find((t) => t.id === taskId);
+        const placeholder =
+          !task?.summary?.trim()
+          || task.summary.includes("任务已接入 Gateway Session")
+          || task.summary.startsWith("Agent 已收到任务描述");
+        if (placeholder && (lastUserText || lastAgentText)) {
+          refreshTaskSummary(taskId, lastUserText, lastAgentText);
+        }
+        return current;
+      });
     } catch (e) {
       historyLoadedRef.current.delete(taskId);
       showToast(e instanceof Error ? e.message : "加载历史失败");
+    } finally {
+      setHistoryLoadingIds((prev) => {
+        if (!prev.has(taskId)) return prev;
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
     }
-  }, [refreshTodos, showToast]);
+  }, [refreshTodos, refreshTodoSegments, refreshTaskSummary, showToast]);
 
   // While Agent runs, poll todos so middle step updates mid-turn (tool writes file).
   // Pass streaming=true so 「产出与确认」 stays working until the turn ends.
   useEffect(() => {
     if (!typingCard || typingCard === "overview") return;
     void refreshTodos(typingCard, true);
+    void refreshTodoSegments(typingCard);
     const id = window.setInterval(() => {
       void refreshTodos(typingCard, true);
+      void refreshTodoSegments(typingCard);
     }, 2500);
     return () => window.clearInterval(id);
-  }, [typingCard, refreshTodos]);
+  }, [typingCard, refreshTodos, refreshTodoSegments]);
 
   const openArtifact = useCallback((task: Task, fileName?: string, listMode?: "new" | "history") => {
     const mode = listMode
@@ -285,9 +415,13 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
       setBootReady(false);
       setOpenModelsOnce(false);
       try {
-        // One hydrate pipeline: sessions → revive dangling AI → titles → tasks.
+        // One hydrate pipeline: sessions → revive dangling AI → titles/summaries → tasks.
         // Empty AI must not skip sessions; missing Session backends must not survive refresh.
-        const [sessions, titles] = await Promise.all([listSessions(), listTitles()]);
+        const [sessions, titles, summaries] = await Promise.all([
+          listSessions(),
+          listTitles(),
+          listSummaries().catch(() => ({}) as Record<string, string>),
+        ]);
         if (cancelled) return;
         const inWs = sessions.filter((s) =>
           sessionMatchesWorkspace(s.workspace, workspaceNorm),
@@ -299,7 +433,11 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
         if (cancelled) return;
         setAiId(preferred?.id ?? null);
         setOpenModelsOnce(openModels);
-        const mapped = inWs.map((s) => sessionToTask(s, titles[s.id] || "新任务"));
+        const mapped = inWs.map((s) =>
+          sessionToTask(s, titles[s.id] || "新任务", {
+            ...(summaries[s.id] ? { summary: summaries[s.id] } : {}),
+          }),
+        );
         setTasks(mapped);
         historyLoadedRef.current = new Set(["overview"]);
         setMessages({ overview: [OVERVIEW_WELCOME] });
@@ -318,6 +456,20 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
       abortRef.current?.abort();
     };
   }, [workspaceNorm, showToast]);
+
+  // Warm a few recent histories so sidebar → focus matches dialogue-bar snappiness.
+  const historyWarmBootRef = useRef(false);
+  useEffect(() => {
+    if (!bootReady) {
+      historyWarmBootRef.current = false;
+      return;
+    }
+    if (historyWarmBootRef.current) return;
+    historyWarmBootRef.current = true;
+    for (const task of tasks.slice(0, 8)) {
+      void ensureHistory(task.id);
+    }
+  }, [bootReady, ensureHistory, tasks]);
 
   const collapseChat = useCallback(() => {
     setChatExpanded(false);
@@ -351,19 +503,66 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
     if (card && card.id !== "overview") void ensureHistory(card.id);
   }, [cards, chatExpanded, collapseChat, currentIndex, ensureHistory]);
 
+  /** Sidebar / search: jump into split focus with the same expand morph as the dialogue strip. */
   const selectTask = (task: Task) => {
     const index = tasks.findIndex((item) => item.id === task.id);
-    if (index >= 0) goTo(index + 1);
+    if (index < 0) return;
+    const next = index + 1;
     setMainView("workspace");
     setSidebarOpen(false);
     setSearchOpen(false);
     setGlobalSearch("");
+    // Never use card swipe exit/enter here — that dual-layer ~470ms path felt laggy.
+    if (transitionTimer.current) window.clearTimeout(transitionTimer.current);
+    setCardTransition(null);
+    expandFocusGenRef.current += 1;
+
+    const needsSwitch = next !== currentIndex;
+    if (needsSwitch) {
+      setCurrentIndex(next);
+      setDragX(0);
+    }
+    void ensureHistory(task.id);
+    setContextPanelCollapsed(false);
+
+    if (chatExpanded) {
+      // Already in focus: light content fade instead of swipe theater.
+      if (needsSwitch && !prefersReducedMotion()) {
+        setFocusSoftEnter(true);
+        if (softEnterTimer.current) window.clearTimeout(softEnterTimer.current);
+        softEnterTimer.current = window.setTimeout(() => setFocusSoftEnter(false), 320);
+      }
+      return;
+    }
+
+    if (!needsSwitch || prefersReducedMotion()) {
+      setChatExpanded(true);
+      return;
+    }
+
+    // Mount the target card collapsed first, then expand — same CSS morph as clicking the dialogue strip.
+    const gen = expandFocusGenRef.current;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (gen !== expandFocusGenRef.current) return;
+        setChatExpanded(true);
+      });
+    });
   };
 
-  const togglePanel = (panel: SidebarPanel) => {
-    setSidebarPanel((current) => (current === panel ? null : panel));
+  /**
+   * Shared inbox entry for overview metrics + sidebar topline.
+   * pending 目前几乎恒空（attention 未接线）；filter 已集中在 taskSignals，后续填协议即可。
+   */
+  const openSignal = useCallback((kind: TaskSignalKind, opts?: { toggle?: boolean }) => {
+    setMainView("workspace");
     setSidebarOpen(true);
-  };
+    setSidebarCollapsed(false);
+    setSidebarPanel((current) => {
+      if (opts?.toggle && current === kind) return null;
+      return kind;
+    });
+  }, []);
 
   const goHome = useCallback(() => {
     setMainView("workspace");
@@ -550,9 +749,10 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
 
     setTypingCard(cardId);
     setTurnProgressLog(progressLogStart());
+    setTodoSegmentSelection((current) => ({ ...current, [cardId]: "live" }));
     const userVisible = titleSource ?? (text.trim() || "附件");
     let turnOk = false;
-    let replySummary = "";
+    let assistantFull = "";
     // Enter advance phase for this turn (layer-1); todos refine the middle label.
     setTasks((current) =>
       current.map((task) =>
@@ -614,7 +814,7 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
         return;
       }
       turnOk = true;
-      replySummary = full.trim();
+      assistantFull = full.trim();
       const hasBlob = blobs.length > 0;
       if (!full.trim() && !hasBlob) {
         // No displayable reply — mark orphan user failed (same as history normalize).
@@ -697,15 +897,21 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
         if (abortRef.current === controller) abortRef.current = null;
       }
       void (async () => {
-        await refreshTodos(cardId, false);
+        const todosAfter = await refreshTodos(cardId, false);
+        await refreshTodoSegments(cardId);
         if (!turnOk || epoch !== streamEpochRef.current) return;
         setTasks((current) =>
-          current.map((task) =>
-            (task.id === cardId
-              ? withCompletedTurn(task, { summary: replySummary || undefined })
-              : task),
-          ),
+          current.map((task) => (task.id === cardId ? withCompletedTurn(task) : task)),
         );
+        refreshTaskSummary(cardId, userVisible, assistantFull);
+        // Soft A: do not rewrite disk; hint if Agent left in_progress after reply.
+        const stuck = (todosAfter ?? []).filter((t) => t.status === "in_progress");
+        if (stuck.length > 0) {
+          showToast(
+            `清单仍有 ${stuck.length} 项进行中。若本轮工作已结束，可再发一句让 Agent 勾选完成。`,
+            4200,
+          );
+        }
       })();
     }
   };
@@ -861,30 +1067,58 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
     if (!chatExpanded) setChatExpanded(true);
   };
 
+  const suppressCardOpenRef = useRef(false);
+  const dragXRef = useRef(0);
+
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "mouse" && event.button !== 0) return;
-    if ((event.target as HTMLElement).closest("button, input, textarea, a")) return;
+    if ((event.target as HTMLElement).closest("button, input, textarea, a, [data-card-interactive]")) return;
     dragOrigin.current = event.clientX;
+    dragXRef.current = 0;
+    suppressCardOpenRef.current = false;
     setIsDragging(true);
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (dragOrigin.current === null) return;
-    setDragX(Math.max(-120, Math.min(120, event.clientX - dragOrigin.current)));
+    const dx = Math.max(-120, Math.min(120, event.clientX - dragOrigin.current));
+    if (Math.abs(dx) > 12) suppressCardOpenRef.current = true;
+    dragXRef.current = dx;
+    setDragX(dx);
   };
 
   const handlePointerUp = () => {
-    if (dragX < -58) {
+    // setPointerCapture on the swipe surface often suppresses child `click`,
+    // so open focus on tap-up here (not only via TaskCard onClick).
+    const dx = dragXRef.current;
+    const wasTracking = dragOrigin.current !== null;
+    const suppressOpen = suppressCardOpenRef.current;
+    if (dx < -58) {
       mobileHaptic(8);
       goTo(currentIndex + 1);
-    } else if (dragX > 58) {
+    } else if (dx > 58) {
       mobileHaptic(8);
       goTo(currentIndex - 1);
+    } else {
+      setDragX(0);
+      dragXRef.current = 0;
+      if (wasTracking && !suppressOpen && !chatExpanded) {
+        setChatExpanded(true);
+      }
     }
-    else setDragX(0);
     dragOrigin.current = null;
+    suppressCardOpenRef.current = false;
     setIsDragging(false);
+  };
+
+  const openChatFromCard = () => {
+    // Keyboard / leftover click path (pointer tap already handled in handlePointerUp).
+    if (suppressCardOpenRef.current) {
+      suppressCardOpenRef.current = false;
+      return;
+    }
+    if (!chatExpanded) setChatExpanded(true);
   };
 
   const createTask = async (description: string, category: string, files: File[] = []) => {
@@ -1095,18 +1329,27 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
 
   useEffect(() => () => {
     if (transitionTimer.current) window.clearTimeout(transitionTimer.current);
+    if (softEnterTimer.current) window.clearTimeout(softEnterTimer.current);
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    expandFocusGenRef.current += 1;
   }, []);
 
-  const visibleSidebarTasks = sidebarPanel === "pending" ? pendingTasks : sidebarPanel === "deliveries" ? deliveryTasks : tasks;
-  const renderCardAt = (index: number) => {
+  const visibleSidebarTasks =
+    sidebarPanel === "pending" ? pendingTasks
+    : sidebarPanel === "deliveries" ? deliveryTasks
+    : sidebarPanel === "working" ? workingTasks
+    : tasks;
+  const renderCardAt = (index: number, openChat?: () => void) => {
     const task = index === 0 ? null : tasks[index - 1];
-    return task ? <TaskCard task={task} onOpenArtifact={openArtifact} onDelete={deleteTask} /> : <OverviewCard tasks={tasks} />;
+    return task
+      ? <TaskCard task={task} onOpenArtifact={openArtifact} onDelete={deleteTask} onOpenChat={openChat} />
+      : <OverviewCard tasks={tasks} onOpenChat={openChat} onOpenSignal={(kind) => openSignal(kind, { toggle: true })} />;
   };
 
   const renderTaskUnit = (index: number, interactive: boolean, visualExpanded = false) => {
     const unitCard = cards[index] ?? cards[0];
     const unitTask = index === 0 ? null : tasks[index - 1];
+    const focusTask = focusChecklistTask(unitTask);
     const unitMessages = messages[unitCard.id] ?? [];
     const unitDraft = chatDrafts[unitCard.id] ?? "";
     const expanded = interactive ? chatExpanded : visualExpanded;
@@ -1122,12 +1365,12 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
                 type="button"
                 className="context-panel-toggle"
                 onClick={() => setContextPanelCollapsed(true)}
-                aria-label="收起任务卡片栏"
+                aria-label="收起任务上下文栏"
                 aria-expanded={!contextPanelCollapsed}
               >
                 <PanelLeftClose size={15} />
               </button>
-              <span className="context-panel-toolbar-label">任务卡片</span>
+              <span className="context-panel-toolbar-label">任务上下文</span>
             </div>
           )}
           <div className="card-transition-frame">
@@ -1140,14 +1383,17 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
               aria-hidden={expanded || undefined}
               inert={expanded ? true : undefined}
             >
-              {renderCardAt(index)}
+              {renderCardAt(index, interactive ? openChatFromCard : undefined)}
             </div>
             <div className="compact-card-layer" aria-hidden={!expanded} inert={!expanded ? true : undefined}>
               {expanded ? (
                 <div className="compact-card-shell focus-info-shell">
                   <TaskFocusDetails
-                    task={unitTask}
+                    task={focusTask}
                     tasks={tasks}
+                    todoSegments={unitTask ? (todoSegmentsByTask[unitTask.id] ?? []) : []}
+                    selectedSegmentId={unitTask ? (todoSegmentSelection[unitTask.id] ?? "live") : "live"}
+                    onSelectTodoSegment={unitTask ? ((segId) => { void selectTodoSegment(unitTask.id, segId); }) : undefined}
                     onOpenArtifact={openArtifact}
                   />
                 </div>
@@ -1156,6 +1402,7 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
               ) : (
                 <CompactOverviewContext
                   tasks={tasks}
+                  onOpenSignal={(kind) => openSignal(kind, { toggle: true })}
                 />
               )}
             </div>
@@ -1193,23 +1440,39 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
           <div className="chat-context-row">
             <div>
               {expanded && interactive && contextPanelCollapsed && (
-                <button
-                  type="button"
-                  className="context-panel-toggle context-panel-toggle-in-chat"
-                  onClick={() => setContextPanelCollapsed(false)}
-                  aria-label="展开任务卡片栏"
-                  aria-expanded={false}
-                >
-                  <PanelLeftOpen size={15} />
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="context-panel-toggle context-panel-toggle-in-chat"
+                    onClick={() => setContextPanelCollapsed(false)}
+                    aria-label="展开任务上下文栏"
+                    aria-expanded={false}
+                  >
+                    <PanelLeftOpen size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    className="context-panel-new-task context-panel-new-task-in-chat"
+                    onClick={() => openNewTask()}
+                    aria-label="新建任务"
+                  >
+                    <Plus size={15} />
+                    <span>新建任务</span>
+                  </button>
+                </>
               )}
               <AgentMark /><span>{expanded ? "任务工作区" : "关于"} <strong>{unitCard.title}</strong>{!expanded && " 的对话"}</span>
             </div>
             <div className="quick-actions">
               {expanded && (
-                <button type="button" className="chat-collapse" onClick={collapseChat}>
-                  <ChevronDown size={13} /> 收起
-                </button>
+                <>
+                  <button type="button" className="chat-new-task" onClick={() => openNewTask()}>
+                    <Plus size={13} /> 新建任务
+                  </button>
+                  <button type="button" className="chat-collapse" onClick={collapseChat}>
+                    <ChevronDown size={13} /> 收起
+                  </button>
+                </>
               )}
               {!expanded && QUICK_ACTIONS.map((action) => (
                 <button
@@ -1235,6 +1498,7 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
               title={unitCard.title}
               progressLog={typingCard === unitCard.id ? turnProgressLog : null}
               workspaceRoot={workspace}
+              loadingHistory={historyLoadingIds.has(unitCard.id)}
               onFeedback={(index, kind) => setMessageFeedback(unitCard.id, index, kind)}
               onRegenerate={(index) => void regenerateAgentMessage(unitCard.id, index)}
               onRetry={(index) => void retryFailedMessage(unitCard.id, index)}
@@ -1388,11 +1652,11 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
       <aside id="main-sidebar" className={`sidebar ${sidebarOpen ? "open" : ""}`}>
         <div className="sidebar-topline">
           <div className="signal-controls" aria-label="任务提醒">
-            <button type="button" className={sidebarPanel === "pending" ? "active" : ""} onClick={() => togglePanel("pending")}>
+            <button type="button" className={sidebarPanel === "pending" ? "active" : ""} onClick={() => openSignal("pending", { toggle: true })}>
               <span className="signal-orb red"><span>{pendingTasks.length}</span></span>
               <span>{PENDING_LABEL}</span>
             </button>
-            <button type="button" className={sidebarPanel === "deliveries" ? "active" : ""} onClick={() => togglePanel("deliveries")}>
+            <button type="button" className={sidebarPanel === "deliveries" ? "active" : ""} onClick={() => openSignal("deliveries", { toggle: true })}>
               <span className="signal-treasure"><TreasureVisual state="ready" size="mini" /><span>{deliveryTasks.length}</span></span>
               <span>{DELIVERY_LABEL}</span>
             </button>
@@ -1437,7 +1701,12 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
             <div className="global-search-results">
               {taskSearchResults.length > 0 && <span className="search-group-title">历史任务</span>}
               {taskSearchResults.map((task) => (
-                <button type="button" key={task.id} onClick={() => selectTask(task)}>
+                <button
+                  type="button"
+                  key={task.id}
+                  onPointerEnter={() => void ensureHistory(task.id)}
+                  onClick={() => selectTask(task)}
+                >
                   <History size={14} /><span><strong>{task.shortTitle}</strong><em>{task.category} · {task.statusLabel}</em></span><ChevronRight size={13} />
                 </button>
               ))}
@@ -1462,24 +1731,38 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
           <button type="button" className={mainView === "workspace" && currentIndex === 0 && !sidebarPanel ? "active" : ""} onClick={goHome}>
             <Grid2X2 size={18} /> {OVERVIEW_LABEL} <ChevronRight size={15} />
           </button>
-          <button type="button" className={mainView === "workspace" && (sidebarPanel === "history" || sidebarPanel === "pending" || sidebarPanel === "deliveries") ? "active" : ""} onClick={() => { setMainView("workspace"); setSidebarPanel((current) => current === "history" ? null : "history"); }}>
-            <History size={18} /> 历史任务 {(sidebarPanel === "history" || sidebarPanel === "pending" || sidebarPanel === "deliveries") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+          <button type="button" className={mainView === "workspace" && (sidebarPanel === "history" || sidebarPanel === "pending" || sidebarPanel === "deliveries" || sidebarPanel === "working") ? "active" : ""} onClick={() => { setMainView("workspace"); setSidebarPanel((current) => current === "history" ? null : "history"); }}>
+            <History size={18} /> 历史任务 {(sidebarPanel === "history" || sidebarPanel === "pending" || sidebarPanel === "deliveries" || sidebarPanel === "working") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           </button>
 
           <div className={`sidebar-task-panel ${sidebarPanel ? "visible" : ""}`}>
             <div className="panel-heading">
               <span>
-                {sidebarPanel === "pending" ? PENDING_LABEL : sidebarPanel === "deliveries" ? DELIVERY_LABEL : "最近任务"}
+                {sidebarPanel === "working" || sidebarPanel === "pending" || sidebarPanel === "deliveries"
+                  ? signalLabel(sidebarPanel)
+                  : "最近任务"}
               </span>
               <em>{visibleSidebarTasks.length}</em>
             </div>
             <div className="task-list">
+              {visibleSidebarTasks.length === 0 && (
+                <div className="task-list-empty">
+                  {sidebarPanel === "pending"
+                    ? "暂无待处理事项（Agent 澄清 / 权限申请接入后会出现在这里）"
+                    : sidebarPanel === "deliveries"
+                      ? "暂无未确认的新交付物"
+                      : sidebarPanel === "working"
+                        ? "暂无运行中的任务"
+                        : "暂无任务"}
+                </div>
+              )}
               {visibleSidebarTasks.map((task) => (
                 <TaskRow
                   key={task.id}
                   task={task}
                   active={currentTask?.id === task.id}
                   onSelect={() => selectTask(task)}
+                  onPrefetch={() => void ensureHistory(task.id)}
                   onOpenArtifact={openArtifact}
                   onDelete={deleteTask}
                 />
@@ -1565,7 +1848,7 @@ export default function HaiTunAgentWorkspace({ workspace, defaultAgent = "", onC
               )}
               <div
                 key={`current-${currentCard.id}`}
-                className={`card-chat-unit-layer ${isDragging ? "dragging" : ""} ${cardTransition ? `card-motion-enter ${cardTransition.direction}` : ""}`}
+                className={`card-chat-unit-layer ${isDragging ? "dragging" : ""} ${cardTransition ? `card-motion-enter ${cardTransition.direction}` : ""} ${focusSoftEnter ? "focus-soft-enter" : ""}`}
                 style={{ transform: `translateX(${dragX}px) rotate(${dragX * 0.012}deg)` }}
               >
                 {renderTaskUnit(currentIndex, true)}

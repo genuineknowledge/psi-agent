@@ -27,7 +27,7 @@
 | 账户区 | 头像菜单合一 | 头像菜单仅资料/登录；**模型池**与**设置**为侧栏独立快捷入口 |
 | 默认工作区 | 无 / 必须先选 | 启动读 ``GET /defaults``.workspace（Gateway 软默认 `{Desktop}/haitun交付`，**只宣布不建目录**；首个 Session/对话时服务端再 mkdir）；遗留 `*-workspace` / 字面量 `workspace` / `haitun-workspace` 会忽略 |
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 选择页；**浏览**按钮走 `/workspace/places` + `/browse`（对齐 v1） |
-| 顶栏新建 | — | 右上角「新建任务」+ 侧栏同入口（`⌘/Ctrl N`） |
+| 顶栏新建 | — | 右上角「新建任务」+ 侧栏同入口（`⌘/Ctrl N`）；**分屏聚焦**时对话栏「收起」旁也有同款入口（左栏收起后展开钮旁再补一枚） |
 | Agent 包 | 与 workspace 合一 | ``GET /defaults``.agent → 新建任务 ``POST /sessions`` 带 `agent`（可与用户工作区不同） |
 
 设置弹窗暂时只保留**切换工作区**（真实功能）；通知/交付位置等占位项已去掉，避免空壳菜单。
@@ -43,6 +43,7 @@
 卡片内对话      ↔  POST /sessions/{id}/chat（multipart chunks）
 任务历史文案    ↔  GET /sessions/{id}/history（AppData `histories/` 优先 + legacy 双读）
 任务卡中间步 N/M ↔  GET /sessions/{id}/todos（``todo`` tool → AppData `todos/{id}.json`，legacy `.psi/todos` 双读）
+分屏「任务历史」 ↔  GET /sessions/{id}/todo-segments（`todos/{id}.segments.json`；点选回放该段步骤）
 路径默认        ↔  GET /defaults（agent + workspace + appdata）；workspace 软默认 `{Desktop}/haitun交付`（宣布路径；目录随首个 Session 创建）；UI 主要用 agent/workspace；appdata 为记忆区根（todos/history/Gateway state 已迁 AppData，前端仍走 REST，不直读盘）；打开即用 AI 仍走空池惰性 POST `/ais`
 ```
 
@@ -52,7 +53,7 @@
 ```text
 GET /spa-v2/     → 302 → index.html（redirect 须先于 add_static，否则 403）
 App              → GET /defaults → 选定 workspace（localStorage / defaults）
-Workbench boot   → GET /sessions + /titles
+Workbench boot   → GET /sessions + /titles + /summaries
                  → hydrateAiForSessions(session.ai_id…)
                       purgePlaceholderAis
                       reviveMissingSessionAis（同 id 复活免费后端）
@@ -62,7 +63,7 @@ Hub「使用免费模型」→ clearAiPool → hydrateAiForSessions(全部 sessi
 发消息           → ensureSessionAi（同 id 复活，腰带）
 ```
 
-不盲选 `ais[0]`。池里若已有真实 key，清掉残留 `haitun-default`；优先 localStorage 选中 AI。Gateway **不**级联删 Session——AI 被清后 Session 仍挂旧 `ai_id`；boot / 免费切换必须 **同 id 复活**，刷新后任务卡与可聊性不变。workspace 过滤用 `sessionMatchesWorkspace`（空 workspace 视为本工作区）。Session 创建时固定 `ai_id`。
+不盲选 `ais[0]`。池里若已有真实 key，清掉残留 `haitun-default`；优先 localStorage 选中 AI。Gateway **不**级联删 Session——AI 被清后 Session 仍挂旧 `ai_id`；boot / 免费切换必须 **同 id 复活**，刷新后任务卡与可聊性不变。workspace 过滤用 `sessionMatchesWorkspace`（空 workspace 视为本工作区）。
 
 ### 任务卡三步进度（分层）
 
@@ -78,10 +79,17 @@ Hub「使用免费模型」→ clearAiPool → hydrateAiForSessions(全部 sessi
 
 **任务卡布局（首页 / 左栏）**：角标圆环已去掉；右上角放**宝箱**；底部为**直线进度条**（有 todo → `N/M` 填充；无 todo 忙时 indeterminate 扫条）。中间步骤区固定 **3×2** 视口高度，超出用小翻页（每页 6 项），视口内仍可纵向滚动；不挤占下方进度条。
 
+**导航（刻意）**：
+- **侧栏 / 搜索选任务** → 直接进入分屏聚焦（`chatExpanded`），不再停在中间卡片面。**刻意为之（手感）**：不做卡片左右滑动进出场（双层 ~470ms 卡顿）；若当前在卡片面，先切到目标卡再跑**与点对话栏相同的展开 CSS**；若已在分屏内换任务，仅轻量淡入。启动后预取最近若干条 `/history`，悬停侧栏行再预取。
+- **任务总览左右划** → 仍是卡片面；点/轻触卡片主体（除宝箱 / 删除 / 步骤翻页 / **底部三格信号钮**）= 与点对话栏相同，进入分屏。**刻意为之**：滑动层 `setPointerCapture` 会吞掉子元素 `click`，因此在 `pointerup` 且未越过滑动阈值时打开分屏（不单靠 `onClick`）。
+- **总览三格信号（运行中 / 待您处理 / 新交付物）** → 可点，走 `openSignal(kind)`（`taskSignals.ts`）展开侧栏对应筛选列表。侧栏顶栏仍只有「待您处理 / 新交付物」两钮（与原先一致）；「运行中」仅卡片入口。**待您处理** 目前只认 `status===attention`（联调几乎恒空，接口预留）。
+- **分屏「收起」旁** + **左栏收起后展开钮旁** → 「新建任务」（顶栏新建在聚焦态仍隐藏，由这两处补入口；样式与顶栏/侧栏蓝色主按钮一致）。
+
 - 流式中：无 todo → `正在处理` + indeterminate；有交付物生成中可进 `deliver`（「正在整理交付」）。
 - 有 todo 且全部 completed 仍在流式 → `deliver`（追加「产出与确认」）。
-- 回合成功结束：`turnSettled=true` → `done`；有 todo 则步骤全勾，无 todo 则单行「本轮已完成」。
+- 回合成功结束：`turnSettled=true` → `phase=done`（本轮**对话**已结算）。**有 todo 时步骤勾选 / `progressLabel` / 进度条 % 一律跟 AppData 清单**，不因结算而强行画满 `N/N` 或绿勾（Agent 未维护则如实 `1/N`）；清单已全部 completed 时才显示「本轮已完成 · N/N」。无 todo → 单行「本轮已完成」。任务历史标题：清单未完成用「本轮已回复 · N/M」。**软提示（A）**：回合成功后若仍有 `in_progress`，toast 提醒用户可让 Agent 勾选——**不改磁盘**（与 haitun `todo` 的自指 `warnings[]`（C）配套；不做自动 completed）。
 - 空 todo 轮询**不会**把已 `done` 的卡打回推进中（保留 `turnSettled`）。
+- **进度条 CSS**：`.task-linear-progress.done` 会强制 `width:100%`，仅在清单真完成（或无 todo 且 phase=done）时加该类。
 
 ### 对话气泡操作（对齐 spa v1）
 
@@ -90,14 +98,26 @@ Hub「使用免费模型」→ clearAiPool → hydrateAiForSessions(全部 sessi
 - **停止生成**：流式进行中输入栏右侧为红色停止键（替换发送）。中止后撤回本轮乐观 user+agent，把原文案与附件还原到输入框（对齐 Cursor）。**刻意为之**：停止键用 `pointerdown` + 短时 `suppressSubmit`，避免 Stop 变回 Send 后同一次点击误触重发（旧逻辑清空输入框，误触 submit 是空操作所以「一点就停」；回填草稿后误触会立刻再跑一轮，看起来像打断后又在气泡里重出）。另用 `streamEpoch` / `signal.aborted` 丢掉中止后的迟到 SSE。网络等非 Abort 失败仍标记 `failed` / 可重试。
 - **粘贴附件**：对话栏 / 新建任务输入 `Ctrl/Cmd+V` 时，剪贴板中的**任意文件**（含截图）等价于回形针选文件，进入同一附件 chip 再走 multipart；纯文字粘贴不拦截。识图等由 workspace tool 处理。
 - **换行**：输入为 `textarea`；`Enter` 发送，`Ctrl/Cmd+Enter` 换行（`Shift+Enter` 亦换行）。
+- **流式吸底（对齐 spa v1 / Cursor）**：`FocusChatThread` 距底 ≤60px 才跟随新内容滚底；手动上拉后不打断阅读；滚回底部恢复跟随。新发用户消息会重新吸底。
 - SSE `reasoning`：**刻意压缩**仍走同一字段；用 `kind`（`thinking` / `tool_call` / `tool_result`）区分——**≠** `/history` 消息 provenance `kind`。过程轴见 `services/turnProgress.ts`（对标 Cursor）：
   - **封存行**：仅 `tool_call` 短句（如 `读取 \`a.py\``）；thinking / `tool_result` **不**封存（`tool_result` 尾行回「规划下一步…」，刻意不要「整理结果…」行）。
   - **尾行**：只活「规划下一步…」/「撰写回复…」；**刻意**永不把「规划下一步」推进 `lines`。
   - **`hideAgentProse`（刻意为之，对标 Cursor）**：仅在过程轴仍为「规划下一步…」（工具 / thinking）时藏正文，避免半截计划与过程轴抢戏；一旦 SSE `content` 到达、尾行切到「撰写回复…」，**正文必须边到边显示**（过程轴仍可挂在上方）。回合结束再收起过程轴。
   - **`preferResultBelowRule`（刻意为之）**：仅展示层——短计划在 `---` 之上时偏好渲染下半段结果；**不改** JSONL / 复制源可选策略以实现为准。
-  - **任务上下文 / 历史 / 卡片 `summary`**：写入经 `plainTextPreview`（`assistantDisplay`）剥掉 `##` / `**` / `` ` `` 等 MD 分隔符；展示侧再 `plainTextFromMarkdown` 兜底。对话气泡仍走完整 Markdown。
+  - **任务摘要 `summary`（刻意为之）**：不再截取助手末条回复。回合成功后（及历史缺摘要时）`POST /summaries/generate` 另开一轮模型写 1～2 句；Gateway `SummaryManager` 持久化到 AppData state（与 titles 同级）。左栏标题为「任务摘要」；任务卡正文同字段。展示侧仍 `plainTextFromMarkdown` 兜底。对话气泡仍走完整 Markdown。段标题（P1）可复用该 summary 写入 open todo-segment。
 
 - 流式进行中不显示助手操作栏。
+
+### 左栏：摘要 vs 历史
+
+| UI | 数据 |
+|----|------|
+| 「任务摘要」 | `task.summary` ← LLM `/summaries/generate`（持久化） |
+| 任务卡正文 | 同上 |
+| 「执行步骤」 | live：`GET …/todos`；点历史段：该段快照（只读） |
+| 「任务历史」 | `GET …/todo-segments`（``merge=false`` 开新子任务段；``merge=true`` 只更新当前段）。可点击切上方 checklist；当前 open 段点选等价 ``live``。P1：回合 summary 可 `POST …/todo-segments/{id}` 覆盖段标题。**不是**聊天 `/history` 时间线 |
+
+**刻意为之**：无 Agent 写 `todo` 则历史为空；不以每条 user 消息切段。新一轮 SSE 自动回到 live 清单。
 
 ### 历史展示隔离（对齐敲定协议 / spa v1）
 

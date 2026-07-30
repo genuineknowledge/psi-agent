@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -16,11 +15,12 @@ from psi_agent.gateway._manager import _ensure_socket_dir, _new_uuid, _noop, _re
 async def _run_router_service(
     *,
     session_socket: str,
+    mode: str,
     router_socket: str,
     upstreams: tuple[tuple[str, str], ...],
     default_socket: str,
     router_timeout: float | None,
-    router_context_chars: int,
+    max_context_length: int,
 ) -> None:
     """Start the Router implementation supplied by the router feature branch.
 
@@ -31,14 +31,12 @@ async def _run_router_service(
     router_class = module.Router
     router = router_class(
         session_socket=session_socket,
+        mode=mode,
         router_socket=router_socket,
-        upstream=[
-            json.dumps({"socket": socket, "description": description}, ensure_ascii=False)
-            for socket, description in upstreams
-        ],
+        upstream=list(upstreams),
         default_socket=default_socket,
         router_timeout=router_timeout,
-        router_context_chars=router_context_chars,
+        max_context_length=max_context_length,
     )
     await router.run()
 
@@ -54,11 +52,12 @@ class RouterInfo:
     id: str
     name: str
     socket: str
+    mode: str
     router_ai_id: str
     upstreams: tuple[RouterUpstreamInfo, ...]
     default_ai_id: str
     router_timeout: float | None
-    router_context_chars: int
+    max_context_length: int
 
 
 @dataclass
@@ -79,17 +78,21 @@ class RouterManager:
     async def create(
         self,
         name: str,
+        mode: str,
         router_ai_id: str,
         upstreams: Sequence[RouterUpstreamInfo],
         default_ai_id: str,
         *,
         router_timeout: float | None = None,
-        router_context_chars: int = 12_000,
+        max_context_length: int = 12_000,
         id: str = "",
     ) -> RouterInfo:
         router_id = id or _new_uuid()
         targets = tuple(RouterUpstreamInfo(x.ai_id.strip(), x.description.strip()) for x in upstreams)
         candidate_ids = [x.ai_id for x in targets]
+        normalized_mode = mode.strip()
+        if normalized_mode not in {"routing", "aggregation"}:
+            raise ValueError("mode must be 'routing' or 'aggregation'")
         if not name.strip() or not router_ai_id.strip():
             raise ValueError("name and router_ai_id must be non-empty")
         if not targets or any(not x.ai_id or not x.description for x in targets):
@@ -98,8 +101,8 @@ class RouterManager:
             raise ValueError("upstreams contain duplicate ai_id values")
         if default_ai_id not in candidate_ids:
             raise ValueError("default_ai_id must identify one of the upstreams")
-        if router_context_chars <= 0:
-            raise ValueError("router_context_chars must be positive")
+        if max_context_length <= 0:
+            raise ValueError("max_context_length must be positive")
         if router_timeout is not None and (not math.isfinite(router_timeout) or router_timeout <= 0):
             raise ValueError("router_timeout must be a finite positive number")
         for ai_id in (router_ai_id, *candidate_ids):
@@ -117,11 +120,12 @@ class RouterManager:
                     with scope:
                         await _run_router_service(
                             session_socket=socket,
+                            mode=normalized_mode,
                             router_socket=self._aim.get_socket(router_ai_id),
                             upstreams=tuple((self._aim.get_socket(item.ai_id), item.description) for item in targets),
                             default_socket=self._aim.get_socket(default_ai_id),
                             router_timeout=router_timeout,
-                            router_context_chars=router_context_chars,
+                            max_context_length=max_context_length,
                         )
                 except Exception as exc:
                     logger.error(f"Router {router_id!r} crashed: {exc!r}")
@@ -134,11 +138,12 @@ class RouterManager:
                 router_id,
                 name.strip(),
                 socket,
+                normalized_mode,
                 router_ai_id,
                 targets,
                 default_ai_id,
                 router_timeout,
-                router_context_chars,
+                max_context_length,
             )
             self._entries[router_id] = _RouterEntry(scope, info)
         try:

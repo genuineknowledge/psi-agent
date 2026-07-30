@@ -84,4 +84,45 @@ describe('resolveTaskProgress (layered)', () => {
     expect(p.progress).toBe(100)
     expect(p.steps).toEqual([{ label: '本轮已完成', state: 'done' }])
   })
+
+  it('turn settled with stale todos → honest N/M + step states (not forced full)', () => {
+    const p = resolveTaskProgress({
+      streaming: false,
+      turnSettled: true,
+      todos: todos([
+        { id: '1', content: '分析', status: 'in_progress' },
+        { id: '2', content: '实现', status: 'pending' },
+        { id: '3', content: '验收', status: 'pending' },
+      ]),
+      hasDeliverables: false,
+    })
+    expect(p.phase).toBe('done')
+    expect(p.progress).toBe(0)
+    expect(p.progressLabel).toBe('1/3')
+    expect(p.steps).toEqual([
+      { label: '分析', state: 'working' },
+      { label: '实现', state: 'waiting' },
+      { label: '验收', state: 'waiting' },
+    ])
+    expect(p.phaseLabel).toBe('本轮已回复 · 1/3')
+    expect(p.updated).toBe('本轮已回复 · 清单 1/3')
+  })
+
+  it('turn settled with all todos completed → N/N and green steps', () => {
+    const p = resolveTaskProgress({
+      streaming: false,
+      turnSettled: true,
+      todos: todos([
+        { id: '1', content: 'a', status: 'completed' },
+        { id: '2', content: 'b', status: 'completed' },
+      ]),
+      hasDeliverables: false,
+    })
+    expect(p.phase).toBe('done')
+    expect(p.progress).toBe(100)
+    expect(p.progressLabel).toBe('2/2')
+    expect(p.steps.every((s) => s.state === 'done')).toBe(true)
+    expect(p.phaseLabel).toBe('已完成')
+    expect(p.updated).toBe('本轮回复已完成')
+  })
 })

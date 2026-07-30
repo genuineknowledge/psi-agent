@@ -1488,6 +1488,7 @@ def test_auth_tools_are_async_with_docstrings() -> None:
     mod = importlib.import_module("feishu_auth")
     for name in (
         "feishu_auth_start",
+        "feishu_auth_card",
         "feishu_auth_wait",
         "feishu_auth_complete",
     ):
@@ -1628,6 +1629,182 @@ async def test_auth_wait_surfaces_user_denial(monkeypatch: pytest.MonkeyPatch, t
     assert "access_denied" in result["message"]
 
 
+def _auth_card_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Any, mode: str = "gateway") -> dict[str, Any]:
+    """Configure an app + a receiver channel, and capture what gets sent."""
+    monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "pending.json"))
+    monkeypatch.setattr(_impl, "_granted_scopes_path", lambda: str(tmp_path / "granted.json"))
+    monkeypatch.setattr(
+        _impl._oauth_rx,
+        "plan_receiver",
+        lambda explicit="": _impl._oauth_rx.ReceiverPlan(
+            mode=mode,
+            redirect_uri="https://gw.example.com/oauth/callback" if mode == "gateway" else "http://localhost/",
+        ),
+    )
+    captured: dict[str, Any] = {}
+
+    async def _fake_send(
+        receive_id: str,
+        card_json: str,
+        receive_id_type: str,
+        user_key: Any = None,
+        business_context_json: str = "{}",
+        action_handlers_json: str = "{}",
+    ) -> dict[str, Any]:
+        captured.update(
+            receive_id=receive_id,
+            card=json.loads(card_json),
+            receive_id_type=receive_id_type,
+            user_key=user_key,
+            business_context=json.loads(business_context_json),
+            action_handlers=json.loads(action_handlers_json),
+        )
+        return {"ok": True, "message_id": "om_auth", "callback_context_saved": True}
+
+    monkeypatch.setattr(_impl, "send_card_impl", _fake_send)
+    return captured
+
+
+def _card_button(card: dict[str, Any]) -> dict[str, Any]:
+    return next(e for e in card["body"]["elements"] if e.get("tag") == "button")
+
+
+@pytest.mark.asyncio
+async def test_auth_card_button_both_opens_url_and_calls_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """One tap must do both: without the callback the agent never learns to start waiting."""
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("ou_a", "bitable_write", "要把台账建在你名下")
+    assert result["ok"] is True
+    behaviors = _card_button(captured["card"])["behaviors"]
+    by_type = {b["type"]: b for b in behaviors}
+    assert set(by_type) == {"open_url", "callback"}
+    # the jump target is the real authorize URL, carrying the requested scope
+    authorize_url = by_type["open_url"]["default_url"]
+    assert parse_qs(urlparse(authorize_url).query)["redirect_uri"] == ["https://gw.example.com/oauth/callback"]
+    assert "bitable:app" in parse_qs(urlparse(authorize_url).query)["scope"][0]
+    # the callback carries the action name the handler map is keyed on, plus whose auth it is
+    assert by_type["callback"]["value"] == {"action": _impl._AUTH_CARD_ACTION, "user_key": "ou_a"}
+    assert captured["action_handlers"] == {_impl._AUTH_CARD_ACTION: "feishu_auth_wait"}
+    assert captured["business_context"]["user_key"] == "ou_a"
+    assert captured["business_context"]["capabilities"] == ["bitable_write"]
+    assert "要把台账建在你名下" in json.dumps(captured["card"], ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_auth_card_defaults_to_a_dm_to_the_user(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    await _impl.auth_card_impl("ou_a")
+    assert captured["receive_id"] == "ou_a"
+    assert captured["receive_id_type"] == "open_id"
+
+
+@pytest.mark.asyncio
+async def test_auth_card_refuses_group_targets(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """A card tapped in a group lands in the tapper's own session, which has no pending auth."""
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("ou_a", receive_id="oc_group")
+    assert result["ok"] is False
+    assert "私聊" in result["message"]
+    assert captured == {}  # nothing sent, and no authorization started
+
+
+@pytest.mark.asyncio
+async def test_auth_card_unions_with_already_granted(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Same union rule as auth_start: a second grant must not drop working capabilities."""
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    _impl._record_granted_capabilities("ou_a", ["docx_write"])
+    result = await _impl.auth_card_impl("ou_a", "bitable_write")
+    scope = parse_qs(urlparse(_card_button(captured["card"])["behaviors"][0]["default_url"]).query)["scope"][0]
+    assert "docx:document" in scope
+    assert "bitable:app" in scope
+    assert result["newly_requested"] == ["bitable_write"]
+    assert result["already_granted"] == ["docx_write"]
+
+
+@pytest.mark.asyncio
+async def test_auth_card_tells_the_agent_to_end_its_turn(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Waiting in the sending turn would hold the Session turn lock for minutes."""
+    _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("ou_a")
+    assert result["action_handler"] == "feishu_auth_wait"
+    msg = result["message"]
+    assert "这一轮到此为止" in msg
+    assert "feishu_auth_wait" in msg
+    # single-use cards: the recovery path must be a fresh card, not another tap
+    assert "feishu_auth_card" in msg
+
+
+@pytest.mark.asyncio
+async def test_auth_card_refuses_when_no_automatic_channel(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """A button that still needs the user to copy code= would be a broken promise."""
+    captured = _auth_card_env(monkeypatch, tmp_path, mode="manual")
+    result = await _impl.auth_card_impl("ou_a")
+    assert result["ok"] is False
+    assert result["manual_required"] is True
+    assert result["authorize_url"]  # the manual path is still reachable
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_auth_card_requires_a_user_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("   ")
+    assert result["ok"] is False
+    assert "user_key" in result["message"]
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_auth_card_reports_send_failure_with_a_link_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    _auth_card_env(monkeypatch, tmp_path)
+
+    async def _failing_send(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": False, "message": "card send failed"}
+
+    monkeypatch.setattr(_impl, "send_card_impl", _failing_send)
+    result = await _impl.auth_card_impl("ou_a")
+    assert result["ok"] is False
+    assert result["authorize_url"]
+    assert "authorize_url" in result["fallback"]
+
+
+@pytest.mark.asyncio
+async def test_auth_card_refuses_raw_scope_strings(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("ou_a", "docx:document")
+    assert result["ok"] is False
+    assert "capability_keys" in result
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_auth_card_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    auth_mod = importlib.import_module("feishu_auth")
+    captured: dict[str, Any] = {}
+
+    async def _fake(user_key: str, capabilities: str = "", reason: str = "", receive_id: str = "") -> dict[str, Any]:
+        captured.update(user_key=user_key, capabilities=capabilities, reason=reason, receive_id=receive_id)
+        return {"ok": True, "message_id": "om_auth"}
+
+    monkeypatch.setattr(auth_mod._f, "auth_card_impl", _fake)
+    out = await auth_mod.feishu_auth_card("ou_a", "docx_write", "建周报")
+    assert json.loads(out)["message_id"] == "om_auth"
+    assert captured == {"user_key": "ou_a", "capabilities": "docx_write", "reason": "建周报", "receive_id": ""}
+
+
+def test_auth_prompt_leads_with_the_card_and_keeps_the_manual_fallback() -> None:
+    """need_auth guidance must name the card first — and still describe the manual path."""
+    prompt = _impl._AUTH_PROMPT
+    assert prompt.index("feishu_auth_card") < prompt.index("feishu_auth_start")
+    assert "feishu_auth_wait" in prompt
+    assert "地址栏" in prompt
+    assert "feishu_auth_complete" in prompt
+
+
 def test_norm_user_key_empty_falls_back_to_default() -> None:
     assert _impl._norm_user_key("") == "default"
     assert _impl._norm_user_key("   ") == "default"
@@ -1736,6 +1913,168 @@ async def test_list_bitable_records(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_bitable_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"items": [{"record_id": "rec1", "fields": {"状态": "进行中"}}], "has_more": False, "total": 1}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.search_bitable_records_impl(
+        "appX",
+        "tbl1",
+        '{"conjunction":"and","conditions":[{"field_name":"状态","operator":"is","value":["进行中"]}]}',
+        '[{"field_name":"日期","desc":true}]',
+        '["状态"]',
+    )
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/search"
+    assert req.body["filter"]["conjunction"] == "and"
+    assert req.body["filter"]["conditions"][0]["field_name"] == "状态"
+    assert req.body["sort"] == [{"field_name": "日期", "desc": True}]
+    assert req.body["field_names"] == ["状态"]
+    assert result["records"][0]["record_id"] == "rec1"
+    assert result["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_search_bitable_records_view_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.search_bitable_records_impl("appX", "tbl1", view_id="vewA", automatic_fields=True)
+    assert cap.request.body == {"view_id": "vewA", "automatic_fields": True}
+    assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_search_bitable_records_rejects_view_with_filter() -> None:
+    result = await _impl.search_bitable_records_impl(
+        "appX",
+        "tbl1",
+        '{"conjunction":"and","conditions":[{"field_name":"a","operator":"is","value":["b"]}]}',
+        view_id="vewA",
+    )
+    assert result["ok"] is False
+    assert "view_id" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_search_bitable_records_bad_filter() -> None:
+    # not JSON / missing conjunction / no conditions / unsupported operator / non-array value
+    bad = [
+        "not json",
+        '{"conditions":[{"field_name":"a","operator":"is"}]}',
+        '{"conjunction":"and","conditions":[]}',
+        '{"conjunction":"and","conditions":[{"field_name":"a","operator":"like","value":["b"]}]}',
+        '{"conjunction":"and","conditions":[{"field_name":"a","operator":"is","value":"b"}]}',
+        '{"conjunction":"and","conditions":[{"operator":"is","value":["b"]}]}',
+    ]
+    for f in bad:
+        result = await _impl.search_bitable_records_impl("appX", "tbl1", f)
+        assert result["ok"] is False, f
+
+
+@pytest.mark.asyncio
+async def test_search_bitable_records_page_size_bounds() -> None:
+    assert (await _impl.search_bitable_records_impl("appX", "tbl1", page_size=501))["ok"] is False
+    assert (await _impl.search_bitable_records_impl("appX", "tbl1", page_size=0))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_bitable_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "record": {
+                "record_id": "rec1",
+                "fields": {"状态": "进行中"},
+                "record_url": "https://x.feishu.cn/base/appX?table=tbl1&record=rec1",
+                "created_time": 1691049973000,
+            }
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_bitable_record_impl("appX", "tbl1", "rec1", automatic_fields=True)
+    req = cap.request
+    q = _qdict(req)
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"
+    assert req.paths["record_id"] == "rec1"
+    assert q.get("automatic_fields") == "true"
+    assert result["fields"] == {"状态": "进行中"}
+    assert result["url"].endswith("record=rec1")
+    assert result["created_time"] == 1691049973000
+
+
+@pytest.mark.asyncio
+async def test_get_bitable_record_requires_ids() -> None:
+    assert (await _impl.get_bitable_record_impl("", "tbl1", "rec1"))["ok"] is False
+    assert (await _impl.get_bitable_record_impl("appX", "", "rec1"))["ok"] is False
+    assert (await _impl.get_bitable_record_impl("appX", "tbl1", ""))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_records_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke(
+        [
+            {"items": [{"field_id": "f1", "field_name": "姓名", "type": 1}], "has_more": False},
+            {
+                "records": [
+                    {"record_id": "recA", "fields": {"姓名": "张三"}},
+                    {"record_id": "recB", "fields": {"姓名": "李四"}},
+                ]
+            },
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.create_bitable_records_impl("appX", "tbl1", '[{"姓名":"张三"},{"姓名":"李四"}]')
+    req = paged.requests[-1]
+    assert req.http_method.name == "POST"
+    assert req.uri.endswith("/records/batch_create")
+    assert req.body["records"] == [{"fields": {"姓名": "张三"}}, {"fields": {"姓名": "李四"}}]
+    assert result["created"] == ["recA", "recB"]
+    assert result["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_records_accepts_fields_wrapper(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"records": [{"record_id": "recA", "fields": {"姓名": "张三"}}]})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_bitable_records_impl(
+        "appX", "tbl1", '[{"fields":{"姓名":"张三"}}]', validate_fields=False
+    )
+    assert cap.request.body["records"] == [{"fields": {"姓名": "张三"}}]
+    assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_records_warns_on_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"records": [{"record_id": "recA", "fields": {"姓名": "张三"}}]})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_bitable_records_impl(
+        "appX", "tbl1", '[{"姓名":"张三","Mentor":"李四"}]', validate_fields=False
+    )
+    assert result["dropped_fields"] == ["Mentor"]
+    assert "Mentor" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_records_rejects_unknown_column(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"field_id": "f1", "field_name": "姓名", "type": 1}], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_bitable_records_impl("appX", "tbl1", '[{"Name":"张三"}]')
+    assert result["ok"] is False
+    assert result["unknown_fields"] == ["Name"]
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_records_bad_input() -> None:
+    assert (await _impl.create_bitable_records_impl("appX", "tbl1", "not json"))["ok"] is False
+    assert (await _impl.create_bitable_records_impl("appX", "tbl1", "[]"))["ok"] is False
+    assert (await _impl.create_bitable_records_impl("appX", "tbl1", '["a"]'))["ok"] is False
+    assert (await _impl.create_bitable_records_impl("appX", "tbl1", "[{}]"))["ok"] is False
+    assert (await _impl.create_bitable_records_impl("", "tbl1", '[{"a":1}]'))["ok"] is False
+
+
+@pytest.mark.asyncio
 async def test_create_bitable_record(monkeypatch: pytest.MonkeyPatch) -> None:
     cap = _CapturedInvoke({"record": {"record_id": "recNew", "fields": {"新人": "张三"}}})
     monkeypatch.setattr(_impl, "_invoke", cap)
@@ -1758,6 +2097,153 @@ async def test_create_bitable_record_bad_json() -> None:
 async def test_create_bitable_record_non_object() -> None:
     result = await _impl.create_bitable_record_impl("appX", "tbl1", '["a","b"]')
     assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke(
+        [
+            {"items": [{"field_id": "f1", "field_name": "状态", "type": 3}], "has_more": False},
+            {"record": {"record_id": "rec1", "fields": {"状态": "已完成"}}},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.update_bitable_record_impl("appX", "tbl1", "rec1", '{"状态":"已完成"}')
+    req = paged.requests[-1]
+    assert req.http_method.name == "PUT"
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"
+    assert req.paths["record_id"] == "rec1"
+    assert req.body["fields"] == {"状态": "已完成"}
+    assert result["ok"] is True
+    assert result["updated_fields"] == ["状态"]
+    assert "dropped_fields" not in result
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_record_skips_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"record": {"record_id": "rec1", "fields": {"任意列": 1}}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.update_bitable_record_impl("appX", "tbl1", "rec1", '{"任意列":1}', validate_fields=False)
+    # Only one call — no field listing when validation is off.
+    assert cap.request.http_method.name == "PUT"
+    assert result["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_record_rejects_unknown_column(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"field_id": "f1", "field_name": "状态", "type": 3}], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.update_bitable_record_impl("appX", "tbl1", "rec1", '{"Status":"done"}')
+    assert result["ok"] is False
+    assert result["unknown_fields"] == ["Status"]
+    assert result["valid_fields"] == ["状态"]
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_record_warns_on_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke(
+        [
+            {
+                "items": [
+                    {"field_id": "f1", "field_name": "状态", "type": 3},
+                    {"field_id": "f2", "field_name": "评分", "type": 2},
+                ],
+                "has_more": False,
+            },
+            {"record": {"record_id": "rec1", "fields": {"状态": "已完成"}}},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.update_bitable_record_impl("appX", "tbl1", "rec1", '{"状态":"已完成","评分":5}')
+    assert result["ok"] is True
+    assert result["dropped_fields"] == ["评分"]
+    assert "评分" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_record_allows_null_clear(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke(
+        [
+            {"items": [{"field_id": "f1", "field_name": "备注", "type": 1}], "has_more": False},
+            {"record": {"record_id": "rec1", "fields": {}}},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.update_bitable_record_impl("appX", "tbl1", "rec1", '{"备注":null}')
+    assert paged.requests[-1].body["fields"] == {"备注": None}
+    # A cleared cell is absent from the echo by design — not a dropped write.
+    assert result["ok"] is True
+    assert "dropped_fields" not in result
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_record_bad_input() -> None:
+    assert (await _impl.update_bitable_record_impl("appX", "tbl1", "rec1", "not json"))["ok"] is False
+    assert (await _impl.update_bitable_record_impl("appX", "tbl1", "rec1", "{}"))["ok"] is False
+    assert (await _impl.update_bitable_record_impl("appX", "tbl1", "", '{"a":1}'))["ok"] is False
+    assert (await _impl.update_bitable_record_impl("", "tbl1", "rec1", '{"a":1}'))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_records_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    paged = _PagedInvoke(
+        [
+            {"items": [{"field_id": "f1", "field_name": "状态", "type": 3}], "has_more": False},
+            {"records": [{"record_id": "recA", "fields": {"状态": "已完成"}}, {"record_id": "recB", "fields": {}}]},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.update_bitable_records_impl(
+        "appX",
+        "tbl1",
+        '[{"record_id":"recA","fields":{"状态":"已完成"}},{"record_id":"recB","fields":{"状态":"进行中"}}]',
+    )
+    req = paged.requests[-1]
+    assert req.http_method.name == "POST"
+    assert req.uri.endswith("/records/batch_update")
+    assert req.body["records"][1]["record_id"] == "recB"
+    assert result["updated"] == ["recA", "recB"]
+    assert result["count"] == 2
+    # recB came back with no fields written at all.
+    assert result["dropped_fields"] == ["recB.状态"]
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_records_bad_input() -> None:
+    assert (await _impl.update_bitable_records_impl("appX", "tbl1", "not json"))["ok"] is False
+    assert (await _impl.update_bitable_records_impl("appX", "tbl1", "[]"))["ok"] is False
+    assert (await _impl.update_bitable_records_impl("appX", "tbl1", '[{"fields":{"a":1}}]'))["ok"] is False
+    assert (await _impl.update_bitable_records_impl("appX", "tbl1", '[{"record_id":"recA"}]'))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_records_survives_unreadable_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed field-list check must not block the write itself."""
+
+    class _Invoke:
+        def __init__(self) -> None:
+            self.requests: list[Any] = []
+
+        async def __call__(
+            self,
+            request: Any,
+            user_key: str | None = None,
+            prefer: str = "tenant",
+            identity: str = "",
+            capabilities: list[str] | None = None,
+        ) -> dict[str, Any]:
+            req = request() if callable(request) else request
+            self.requests.append(req)
+            if req.http_method.name == "GET":
+                return {"ok": False, "message": "no permission to list fields"}
+            echo = {"records": [{"record_id": "recA", "fields": {"状态": "x"}}]}
+            return {"ok": True, "code": 0, "msg": "", "data": echo}
+
+    inv = _Invoke()
+    monkeypatch.setattr(_impl, "_invoke", inv)
+    result = await _impl.update_bitable_records_impl("appX", "tbl1", '[{"record_id":"recA","fields":{"状态":"x"}}]')
+    assert result["ok"] is True
+    assert result["updated"] == ["recA"]
 
 
 @pytest.mark.asyncio
@@ -2000,18 +2486,254 @@ async def test_create_bitable_field_allows_person_type(monkeypatch: pytest.Monke
     assert result["type"] == "人员"
 
 
+@pytest.mark.asyncio
+async def test_update_bitable_field_renames_and_keeps_property(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Omitting type/property must carry the current definition, not reset it."""
+    paged = _PagedInvoke(
+        [
+            {
+                "items": [
+                    {
+                        "field_id": "fldA",
+                        "field_name": "备注",
+                        "type": 3,
+                        "property": {"options": [{"name": "高", "color": 0}]},
+                    }
+                ],
+                "has_more": False,
+            },
+            {"field": {"field_id": "fldA", "field_name": "审批意见", "type": 3}},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", paged)
+    result = await _impl.update_bitable_field_impl("appX", "tbl1", "fldA", "审批意见")
+    req = paged.requests[-1]
+    assert req.http_method.name == "PUT"
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields/:field_id"
+    assert req.paths["field_id"] == "fldA"
+    assert req.body["field_name"] == "审批意见"
+    assert req.body["type"] == 3
+    assert req.body["property"] == {"options": [{"name": "高", "color": 0}]}
+    assert result["name"] == "审批意见"
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_field_explicit_args_skip_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"field": {"field_id": "fldA", "field_name": "金额", "type": 2}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.update_bitable_field_impl("appX", "tbl1", "fldA", "金额", 2, '{"formatter":"0.00"}')
+    assert cap.request.http_method.name == "PUT"  # no GET for the field list
+    assert cap.request.body["property"] == {"formatter": "0.00"}
+    assert result["type"] == "数字"
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_field_rejects_unknown_field_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [{"field_id": "fldA", "field_name": "备注", "type": 1}], "has_more": False})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.update_bitable_field_impl("appX", "tbl1", "fldZZZ", "新名")
+    assert result["ok"] is False
+    assert "fldZZZ" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_field_guards_primary_column_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"items": [{"field_id": "fldA", "field_name": "编号", "type": 1, "is_primary": True}], "has_more": False}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.update_bitable_field_impl("appX", "tbl1", "fldA", field_type=11)
+    assert result["ok"] is False
+    assert "1254012" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_field_rejects_lookup_type() -> None:
+    result = await _impl.update_bitable_field_impl("appX", "tbl1", "fldA", "引用", 19)
+    assert result["ok"] is False
+    assert "19" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_field_requires_ids() -> None:
+    assert (await _impl.update_bitable_field_impl("", "tbl1", "fldA", "x", 1))["ok"] is False
+    assert (await _impl.update_bitable_field_impl("appX", "", "fldA", "x", 1))["ok"] is False
+    assert (await _impl.update_bitable_field_impl("appX", "tbl1", "", "x", 1))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"table_ids": ["tblA", "tblB"]})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.create_bitable_tables_impl("appX", "合同, 付款")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri.endswith("/tables/batch_create")
+    assert req.body["tables"] == [{"name": "合同"}, {"name": "付款"}]
+    assert result["tables"] == [{"table_id": "tblA", "name": "合同"}, {"table_id": "tblB", "name": "付款"}]
+    assert result["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_create_bitable_tables_validates_names() -> None:
+    assert (await _impl.create_bitable_tables_impl("appX", " , "))["ok"] is False
+    assert (await _impl.create_bitable_tables_impl("appX", "合同/付款"))["ok"] is False
+    assert (await _impl.create_bitable_tables_impl("appX", ",".join(f"t{i}" for i in range(51))))["ok"] is False
+    assert (await _impl.create_bitable_tables_impl("", "合同"))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_delete_bitable_tables(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.delete_bitable_tables_impl("appX", "tblA, tblB")
+    req = cap.request
+    assert req.uri.endswith("/tables/batch_delete")
+    assert req.body["table_ids"] == ["tblA", "tblB"]
+    assert result["deleted"] == ["tblA", "tblB"]
+
+
+@pytest.mark.asyncio
+async def test_delete_bitable_tables_last_table_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _refuse(request: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": False, "code": "1254034", "message": "The last table cannot be deleted"}
+
+    monkeypatch.setattr(_impl, "_invoke", _refuse)
+    result = await _impl.delete_bitable_tables_impl("appX", "tblA")
+    assert result["ok"] is False
+    assert "last one" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_delete_bitable_tables_validates() -> None:
+    assert (await _impl.delete_bitable_tables_impl("appX", " , "))["ok"] is False
+    assert (await _impl.delete_bitable_tables_impl("appX", ",".join(f"tbl{i}" for i in range(51))))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_bitable_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "app": {
+                "app_token": "appX",
+                "name": "合同台账",
+                "is_advanced": True,
+                "time_zone": "Asia/Shanghai",
+                "revision": 7,
+            }
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_bitable_app_impl("appX")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token"
+    assert result["name"] == "合同台账"
+    assert result["is_advanced"] is True
+    assert result["revision"] == 7
+    assert result["url"].endswith("/base/appX")
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"app": {"app_token": "appX", "name": "新名字", "is_advanced": True}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.update_bitable_app_impl("appX", "新名字", "true")
+    req = cap.request
+    assert req.http_method.name == "PUT"
+    assert req.body == {"name": "新名字", "is_advanced": True}
+    assert result["changed"] == ["is_advanced", "name"]
+    assert result["is_advanced"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_app_validates() -> None:
+    assert (await _impl.update_bitable_app_impl("appX"))["ok"] is False  # nothing to change
+    assert (await _impl.update_bitable_app_impl("appX", "a/b"))["ok"] is False  # illegal char
+    assert (await _impl.update_bitable_app_impl("appX", "x" * 101))["ok"] is False  # too long
+    assert (await _impl.update_bitable_app_impl("appX", is_advanced="yes"))["ok"] is False
+    assert (await _impl.update_bitable_app_impl("", "新名字"))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_bitable_app_advanced_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _refuse(request: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": False, "code": "1254301", "message": "advanced permission unsupported"}
+
+    monkeypatch.setattr(_impl, "_invoke", _refuse)
+    result = await _impl.update_bitable_app_impl("appX", is_advanced="true")
+    assert result["ok"] is False
+    assert "wiki" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_copy_bitable_app(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"app": {"app_token": "appNew", "name": "台账副本", "folder_token": "fldA", "url": "https://x/base/appNew"}}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.copy_bitable_app_impl("appX", "台账副本", "fldA", True, "Asia/Shanghai")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/bitable/v1/apps/:app_token/copy"
+    assert req.body == {
+        "name": "台账副本",
+        "folder_token": "fldA",
+        "without_content": True,
+        "time_zone": "Asia/Shanghai",
+    }
+    assert result["app_token"] == "appNew"
+    assert result["without_content"] is True
+
+
+@pytest.mark.asyncio
+async def test_copy_bitable_app_omits_blanks(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"app": {"app_token": "appNew"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.copy_bitable_app_impl("appX")
+    assert cap.request.body == {}
+    assert result["url"].endswith("/base/appNew")
+
+
+@pytest.mark.asyncio
+async def test_copy_bitable_app_in_progress_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _refuse(request: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"ok": False, "code": "1254036", "message": "copying"}
+
+    monkeypatch.setattr(_impl, "_invoke", _refuse)
+    result = await _impl.copy_bitable_app_impl("appX")
+    assert result["ok"] is False
+    assert "retry" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_copy_bitable_app_requires_token() -> None:
+    assert (await _impl.copy_bitable_app_impl(""))["ok"] is False
+
+
 def test_bitable_tools_async_with_docstrings() -> None:
     mod = importlib.import_module("feishu_bitable")
     for name in (
         "feishu_bitable_list_tables",
         "feishu_bitable_list_records",
+        "feishu_bitable_search_records",
+        "feishu_bitable_get_record",
         "feishu_bitable_create_record",
+        "feishu_bitable_create_records",
+        "feishu_bitable_update_record",
+        "feishu_bitable_update_records",
         "feishu_bitable_delete_records",
         "feishu_bitable_clear_table",
         "feishu_bitable_list_fields",
         "feishu_bitable_delete_fields",
+        "feishu_bitable_update_field",
         "feishu_bitable_create_app",
+        "feishu_bitable_get_app",
+        "feishu_bitable_update_app",
+        "feishu_bitable_copy_app",
         "feishu_bitable_create_table",
+        "feishu_bitable_create_tables",
+        "feishu_bitable_delete_tables",
         "feishu_bitable_create_field",
     ):
         fn = getattr(mod, name)
@@ -4794,3 +5516,268 @@ def test_read_tools_do_not_take_identity() -> None:
     ]:
         mod = importlib.import_module(mod_name)
         assert "identity" not in inspect.signature(getattr(mod, tool)).parameters, tool
+
+
+# ── Block-level editing: list / update / delete ──────────────────────────────────
+
+
+class _ScriptedInvoke:
+    """An ``_invoke`` stand-in that records every call and replays queued responses.
+
+    ``_CapturedInvoke`` keeps only the last request, which is no use for the delete
+    flow (list children, then one delete per block) where the *order* of the calls is
+    the behaviour under test.
+    """
+
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self._responses = list(responses)
+        self.requests: list[Any] = []
+        self.prefers: list[str] = []
+
+    async def __call__(
+        self,
+        request: Any,
+        user_key: str | None = None,
+        prefer: str = "tenant",
+        identity: str = "",
+        capabilities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.requests.append(request() if callable(request) else request)
+        self.prefers.append(prefer)
+        if self._responses:
+            return self._responses.pop(0)
+        return {"ok": True, "code": 0, "msg": "", "data": {}}
+
+
+def _block(block_id: str, block_type: int, text: str = "", parent_id: str = "doc1") -> dict[str, Any]:
+    raw: dict[str, Any] = {"block_id": block_id, "block_type": block_type, "parent_id": parent_id}
+    key = _impl._TEXTUAL_BLOCK_KEYS.get(block_type)
+    if key:
+        raw[key] = {"elements": [{"text_run": {"content": text}}]}
+    return raw
+
+
+@pytest.mark.asyncio
+async def test_list_doc_blocks_builds_document_blocks_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [_block("b1", 4, "标题"), _block("b2", 2, "正文")], "page_token": ""})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_doc_blocks_impl("doc1")
+    assert result["ok"] is True
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/docx/v1/documents/:document_id/blocks"
+    assert req.paths["document_id"] == "doc1"
+    # page_size asks for no more than the caller's remaining budget (default 200)
+    assert _qdict(req).get("page_size") == "200"
+    # a read authorizes as the bot first, so a doc it can see needs no user grant
+    assert cap.prefer == "tenant"
+
+
+@pytest.mark.asyncio
+async def test_list_doc_blocks_reports_type_and_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [_block("b1", 4, "标题"), _block("b9", 27)], "page_token": ""})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_doc_blocks_impl("doc1")
+    heading, image = result["blocks"]
+    assert (heading["block_id"], heading["type_name"], heading["text"]) == ("b1", "heading2", "标题")
+    assert heading["editable_text"] is True
+    # an image block has no text runs, so update_block can't rewrite it
+    assert (image["type_name"], image["text"], image["editable_text"]) == ("image", "", False)
+
+
+@pytest.mark.asyncio
+async def test_list_doc_blocks_trims_long_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [_block("b1", 2, "x" * 500)], "page_token": ""})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_doc_blocks_impl("doc1")
+    assert result["blocks"][0]["text"] == "x" * 200 + "…"
+
+
+@pytest.mark.asyncio
+async def test_list_doc_blocks_follows_pagination(monkeypatch: pytest.MonkeyPatch) -> None:
+    scripted = _ScriptedInvoke(
+        [
+            {"ok": True, "data": {"items": [_block("b1", 2, "one")], "page_token": "pt2"}},
+            {"ok": True, "data": {"items": [_block("b2", 2, "two")], "page_token": ""}},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", scripted)
+    result = await _impl.list_doc_blocks_impl("doc1")
+    assert [b["block_id"] for b in result["blocks"]] == ["b1", "b2"]
+    assert result["truncated"] is False
+    assert _qdict(scripted.requests[1]).get("page_token") == "pt2"
+
+
+@pytest.mark.asyncio
+async def test_list_doc_blocks_marks_truncation(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": [_block("b1", 2, "a"), _block("b2", 2, "b")], "page_token": ""})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_doc_blocks_impl("doc1", max_blocks=1)
+    assert result["count"] == 1
+    assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_doc_blocks_requires_document_id() -> None:
+    assert (await _impl.list_doc_blocks_impl("  "))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_doc_block_patches_text_elements(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.update_doc_block_impl("doc1", "b2", "改好的正文")
+    assert result["ok"] is True
+    req = cap.request
+    assert req.http_method.name == "PATCH"
+    assert req.uri == "/open-apis/docx/v1/documents/:document_id/blocks/:block_id"
+    assert req.paths["block_id"] == "b2"
+    els = req.body["update_text_elements"]["elements"]
+    assert els == [{"text_run": {"content": "改好的正文"}}]
+    # a write goes as the user when there is one, so the edit is attributable
+    assert cap.prefer == "user"
+
+
+@pytest.mark.asyncio
+async def test_update_doc_block_rejects_root_block() -> None:
+    """The document_id doubles as the root block_id, and the root holds no text."""
+    result = await _impl.update_doc_block_impl("doc1", "doc1", "text")
+    assert result["ok"] is False
+    assert "root" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_update_doc_block_requires_block_and_text() -> None:
+    assert (await _impl.update_doc_block_impl("doc1", "", "t"))["ok"] is False
+    assert (await _impl.update_doc_block_impl("", "b1", "t"))["ok"] is False
+    empty = await _impl.update_doc_block_impl("doc1", "b1", "")
+    assert empty["ok"] is False
+    # an empty rewrite is a delete in disguise; point at the tool that really does it
+    assert "delete_blocks" in empty["message"]
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_blocks_resolves_id_to_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    children = {"items": [_block("b1", 2, "a"), _block("b2", 2, "b"), _block("b3", 2, "c")]}
+    scripted = _ScriptedInvoke([{"ok": True, "data": children}, {"ok": True, "data": {}}])
+    monkeypatch.setattr(_impl, "_invoke", scripted)
+    result = await _impl.delete_doc_blocks_impl("doc1", '["b2"]')
+    assert result["ok"] is True
+    assert result["deleted"] == ["b2"]
+    delete_req = scripted.requests[1]
+    assert delete_req.http_method.name == "DELETE"
+    assert delete_req.uri.endswith("/children/batch_delete")
+    # b2 sits at index 1, and the range is half-open
+    assert delete_req.body == {"start_index": 1, "end_index": 2}
+    assert delete_req.paths["block_id"] == "doc1"
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_blocks_deletes_highest_index_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deleting low-to-high would shift later siblings down and hit the wrong blocks."""
+    children = {"items": [_block("b1", 2, "a"), _block("b2", 2, "b"), _block("b3", 2, "c")]}
+    scripted = _ScriptedInvoke([{"ok": True, "data": children}, {"ok": True, "data": {}}, {"ok": True, "data": {}}])
+    monkeypatch.setattr(_impl, "_invoke", scripted)
+    result = await _impl.delete_doc_blocks_impl("doc1", '["b1","b3"]')
+    assert result["deleted"] == ["b3", "b1"]
+    assert [r.body["start_index"] for r in scripted.requests[1:]] == [2, 0]
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_blocks_reports_unknown_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    children = {"items": [_block("b1", 2, "a")]}
+    scripted = _ScriptedInvoke([{"ok": True, "data": children}, {"ok": True, "data": {}}])
+    monkeypatch.setattr(_impl, "_invoke", scripted)
+    result = await _impl.delete_doc_blocks_impl("doc1", '["b1","nope"]')
+    assert result["ok"] is True
+    assert result["deleted"] == ["b1"]
+    assert result["not_found"] == ["nope"]
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_blocks_errors_when_nothing_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No index is ever guessed: an unlocatable id is refused, not deleted blind."""
+    scripted = _ScriptedInvoke([{"ok": True, "data": {"items": [_block("b1", 2, "a")]}}])
+    monkeypatch.setattr(_impl, "_invoke", scripted)
+    result = await _impl.delete_doc_blocks_impl("doc1", '["ghost"]')
+    assert result["ok"] is False
+    assert result["not_found"] == ["ghost"]
+    # nothing was sent beyond the lookup
+    assert len(scripted.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_blocks_uses_parent_for_nested(monkeypatch: pytest.MonkeyPatch) -> None:
+    children = {"items": [_block("c1", 2, "cell text", parent_id="cell1")]}
+    scripted = _ScriptedInvoke([{"ok": True, "data": children}, {"ok": True, "data": {}}])
+    monkeypatch.setattr(_impl, "_invoke", scripted)
+    result = await _impl.delete_doc_blocks_impl("doc1", '["c1"]', parent_block_id="cell1")
+    assert result["ok"] is True
+    assert result["parent_block_id"] == "cell1"
+    assert all(r.paths["block_id"] == "cell1" for r in scripted.requests)
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_blocks_refuses_root_block() -> None:
+    result = await _impl.delete_doc_blocks_impl("doc1", '["doc1"]')
+    assert result["ok"] is False
+    assert "root" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_blocks_validates_input() -> None:
+    assert (await _impl.delete_doc_blocks_impl("", '["b1"]'))["ok"] is False
+    assert (await _impl.delete_doc_blocks_impl("doc1", "not json"))["ok"] is False
+    assert (await _impl.delete_doc_blocks_impl("doc1", "[]"))["ok"] is False
+    assert (await _impl.delete_doc_blocks_impl("doc1", '["  "]'))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_blocks_accepts_bare_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single id is a common agent slip; accept it rather than erroring on a typo."""
+    scripted = _ScriptedInvoke([{"ok": True, "data": {"items": [_block("b1", 2, "a")]}}, {"ok": True, "data": {}}])
+    monkeypatch.setattr(_impl, "_invoke", scripted)
+    result = await _impl.delete_doc_blocks_impl("doc1", '"b1"')
+    assert result["deleted"] == ["b1"]
+
+
+@pytest.mark.asyncio
+async def test_delete_doc_blocks_stops_and_reports_partial_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    children = {"items": [_block("b1", 2, "a"), _block("b2", 2, "b")]}
+    scripted = _ScriptedInvoke(
+        [
+            {"ok": True, "data": children},
+            {"ok": True, "data": {}},
+            {"ok": False, "message": "permission denied", "code": 99991672},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", scripted)
+    result = await _impl.delete_doc_blocks_impl("doc1", '["b1","b2"]')
+    assert result["ok"] is False
+    # b2 (the higher index) went first, so the caller learns exactly what survived
+    assert result["deleted"] == ["b2"]
+
+
+def test_block_editing_tools_are_async_with_docstrings() -> None:
+    doc_mod = importlib.import_module("feishu_doc")
+    for fn in (doc_mod.feishu_doc_list_blocks, doc_mod.feishu_doc_update_block, doc_mod.feishu_doc_delete_blocks):
+        assert inspect.iscoroutinefunction(fn)
+        assert (inspect.getdoc(fn) or "").strip()
+
+
+def test_block_write_tools_expose_identity_and_list_does_not() -> None:
+    doc_mod = importlib.import_module("feishu_doc")
+    for tool in ("feishu_doc_update_block", "feishu_doc_delete_blocks"):
+        params = inspect.signature(getattr(doc_mod, tool)).parameters
+        assert params["identity"].default == ""
+    # listing blocks owns nothing, so it takes no ownership knob
+    assert "identity" not in inspect.signature(doc_mod.feishu_doc_list_blocks).parameters
+
+
+@pytest.mark.asyncio
+async def test_block_editing_tools_return_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    doc_mod = importlib.import_module("feishu_doc")
+    monkeypatch.setattr(_impl, "_invoke", _CapturedInvoke({"items": [_block("b1", 2, "hi")], "page_token": ""}))
+    assert json.loads(await doc_mod.feishu_doc_list_blocks("doc1"))["ok"] is True
+    monkeypatch.setattr(_impl, "_invoke", _CapturedInvoke({}))
+    assert json.loads(await doc_mod.feishu_doc_update_block("doc1", "b1", "new"))["ok"] is True

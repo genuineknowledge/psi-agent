@@ -36,8 +36,6 @@ def test_tool_metadata_is_loadable() -> None:
         (wiki.wiki_list, {"tag"}),
         (wiki.wiki_links, {"title_or_slug"}),
         (wiki.wiki_delete, {"title_or_slug"}),
-        (wiki.wiki_stats, set()),
-        (wiki.wiki_related, {"title_or_slug", "limit"}),
     ):
         meta = ToolFunction.from_callable(fn)
         assert meta.name == fn.__name__
@@ -73,9 +71,8 @@ async def test_chinese_titles_do_not_collide_on_disk(tmp_path: Path) -> None:
     await _write(tmp_path, "校规", "学籍规定。")
     await _write(tmp_path, "中国科学技术大学", "USTC。链接 [[校训]] [[校规]]。")
 
-    files = sorted(p.name for p in (tmp_path / "wiki").glob("*.md") if p.name != "CHANGELOG.md")
+    files = sorted(p.name for p in (tmp_path / "wiki").glob("*.md"))
     assert files == ["中国科学技术大学.md", "校规.md", "校训.md"]
-    assert (tmp_path / "wiki" / "CHANGELOG.md").exists()
     assert "untitled.md" not in files
 
     back = await impl.wiki_read_impl("校训", workspace_raw=str(tmp_path))
@@ -168,14 +165,6 @@ async def test_search_matches_aliases(tmp_path: Path) -> None:
     assert result["results"][0]["slug"] == "rotary-positional-embeddings"
 
 
-async def test_search_returns_fuzzy_title_suggestions(tmp_path: Path) -> None:
-    await _write(tmp_path, "Rotary Positional Embeddings", "positional info")
-    result = await impl.wiki_search_impl("Rotry Positional Embeddings", workspace_raw=str(tmp_path))
-    assert result["ok"] is True
-    assert result["count"] == 0
-    assert result["suggestions"] == [{"title": "Rotary Positional Embeddings", "slug": "rotary-positional-embeddings"}]
-
-
 async def test_search_requires_query(tmp_path: Path) -> None:
     result = await impl.wiki_search_impl("  ", workspace_raw=str(tmp_path))
     assert result["ok"] is False
@@ -191,27 +180,6 @@ async def test_links_graph_backlinks_and_broken(tmp_path: Path) -> None:
 
     back = await impl.wiki_links_impl("Attention", workspace_raw=str(tmp_path))
     assert back["backlinks"] == ["transformer"]
-
-
-async def test_list_excludes_changelog_and_reports_missing_targets(tmp_path: Path) -> None:
-    await _write(tmp_path, "Transformer", "uses [[Attention]] and [[Missing Page]].")
-    result = await impl.wiki_list_impl(workspace_raw=str(tmp_path))
-    assert result["count"] == 1
-    assert result["pages"][0]["slug"] == "transformer"
-    assert result["pages"][0]["broken_preview"] == ["attention", "missing-page"]
-    assert result["wanted_pages"] == ["attention", "missing-page"]
-    assert result["total_broken"] == 2
-
-
-async def test_stats_and_related_pages(tmp_path: Path) -> None:
-    await _write(tmp_path, "Transformer", "uses [[Attention]] and [[Tokenizer]].", tags="architecture")
-    await _write(tmp_path, "Vision Transformer", "uses [[Attention]] and [[Tokenizer]].", tags="vision")
-    await _write(tmp_path, "Attention", "core mechanism", tags="architecture")
-    stats = await impl.wiki_stats_impl(workspace_raw=str(tmp_path))
-    assert stats["total_pages"] == 3
-    assert stats["unique_tags"] == 2
-    related = await impl.wiki_related_impl("Transformer", workspace_raw=str(tmp_path))
-    assert related["related"] == [{"slug": "vision-transformer", "title": "Vision Transformer", "shared_links": 2}]
 
 
 async def test_delete_reports_orphaned_backlinks(tmp_path: Path) -> None:

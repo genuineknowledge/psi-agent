@@ -34,6 +34,7 @@ If the check finds a fixable problem, **fix it first** (another tool round if ne
 - Claims backed by tool output or explicit reasoning — not invented file contents or API results?
 - Apply **structured-output-tables** (C1) when 3+ parallel items share the same shape?
 - Tone and length appropriate; no half-finished plan when work could continue?
+- If this Session has a `todo` list and you are claiming the work is done: are all related items `completed` / `cancelled` on disk (no leftover `in_progress`)? If not, `merge=true` first — see `task-planning`.
 
 ## When to skip
 

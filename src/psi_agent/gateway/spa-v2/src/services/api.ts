@@ -107,6 +107,18 @@ export async function generateTitle(sessionId: string, userText: string, assista
   })
 }
 
+export async function listSummaries() {
+  return api<Record<string, string>>('GET', '/summaries')
+}
+
+export async function generateSummary(sessionId: string, userText: string, assistantText: string) {
+  return api<{ id: string; summary: string | null }>('POST', '/summaries/generate', {
+    id: sessionId,
+    user_text: userText,
+    assistant_text: assistantText,
+  })
+}
+
 export type HistoryMessage = {
   role: 'user' | 'assistant'
   text: string
@@ -140,6 +152,34 @@ export type SessionTodosResponse = {
 /** Workspace ``.psi/todos/{sessionId}.json`` via the ``todo`` tool. */
 export async function fetchSessionTodos(sessionId: string) {
   return api<SessionTodosResponse>('GET', `/sessions/${sessionId}/todos`)
+}
+
+export type TodoSegmentSummary = {
+  id: string
+  label: string
+  created_at: string
+  updated_at: string
+  closed_at: string | null
+  source: string
+  summary: SessionTodosResponse['summary']
+}
+
+export type TodoSegmentDetail = TodoSegmentSummary & {
+  todos: SessionTodo[]
+}
+
+/** Sub-task segments from ``todo`` merge=false boundaries. */
+export async function listTodoSegments(sessionId: string) {
+  return api<TodoSegmentSummary[]>('GET', `/sessions/${sessionId}/todo-segments`)
+}
+
+export async function fetchTodoSegment(sessionId: string, segmentId: string) {
+  return api<TodoSegmentDetail>('GET', `/sessions/${sessionId}/todo-segments/${segmentId}`)
+}
+
+/** P1: override segment label (e.g. turn summary). */
+export async function setTodoSegmentLabel(sessionId: string, segmentId: string, label: string) {
+  return api<TodoSegmentDetail>('POST', `/sessions/${sessionId}/todo-segments/${segmentId}`, { label })
 }
 
 export async function readWorkspaceFile(path: string, root = '') {

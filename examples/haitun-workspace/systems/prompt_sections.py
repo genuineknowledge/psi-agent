@@ -164,7 +164,7 @@ Mandatory after file-creating tools:
 Other rules:
 - Never put [SEND:] inside file contents, and never append it to a write/edit tool argument. Saying "file sent" without a reply-content marker does not deliver anything.
 - One marker per file. Use an ABSOLUTE path (prefer the absolute path from the tool result when given).
-- If the user asks for a document (Word .docx, Excel .xlsx, PDF, etc.), actually CREATE the file now with your tools (install a library such as openpyxl / python-docx if it is missing), then send it with [SEND:] in the chat reply. Do NOT just print the code or manual steps — produce the real file and send it.
+- If the user asks for a Word document, call `write_word`; for Excel call `write_excel`. These tools and their dependencies are already available. Do not run pip install or package-manager commands during the request. Create the file and send it with [SEND:] in the chat reply.
 - Only send files that exist and that the user asked for or would expect. Do not auto-send internal/config/tool source under `tools/`, `schedules/`, `skills/`, `systems/`, or `histories/`.
 - The marker text itself may stay visible in the chat, so keep the prose above it self-contained; do not rely on the marker reading like part of a sentence.\
 """
@@ -184,7 +184,7 @@ Judge from the request itself — the user does NOT have to name a format. If th
 - Code, scripts, configs, or a runnable project → write source files into the workspace (and run/verify them).
 - Diagrams, charts, plots → generate the actual image/file.
 
-Create the file with your tools now (install a library such as python-docx / openpyxl / python-pptx if it is missing), verify it exists, then in your **chat reply content** (not inside the file) emit [SEND:<absolute-path>] on its own line — **required** whenever you used a file-creating tool this turn. Give a short plain-text summary of what's inside above the marker; do not also paste the whole content. Never append [SEND:] to write/edit tool arguments. Never end with only "saved to workspace" and no [SEND:].
+Create the file with the existing first-class file tool and do not draft the full artifact in chat first. For a long Word document, first write the full content to Markdown, then call `write_word_from_markdown` with the two file paths; use `write_word` only for smaller structured documents. For Excel call `write_excel`. Their dependencies are already installed. Do not run pip install, raw python-docx scripts, or package-manager commands during the request. Verify the output exists, then in your **chat reply content** (not inside the file) emit [SEND:<absolute-path>] on its own line — **required** whenever you used a file-creating tool this turn. Give a short plain-text summary of what's inside above the marker; do not also paste the whole content. Never append [SEND:] to write/edit tool arguments. Never end with only "saved to workspace" and no [SEND:].
 
 Keep it in chat (no file) when the answer is genuinely short: a direct question, a quick status, a few lines, or a snippet the user clearly wants inline. When it's a judgment call and the content is long, lean toward producing a file. If the user explicitly asks for the content inline, honor that.\
 """
@@ -213,9 +213,11 @@ PLANNING_PROGRESS_SECTION = """\
 Execution Bias says act, not drift — on multi-step work, a short plan is how you stay on track.
 - **Gate first:** only when work has clear multi-step value (≥3 checkable steps, multi-file/multi-deliverable, or a long tool chain) — follow `skills/task-planning/SKILL.md` and put the plan in the `todo` tool. Skip the list for one-shot / pure chat / 「直接给结果」.
 - **Never fake a list** just to look organized or to feed the UI progress strip.
+- **Writing `todo` commits you to maintain it with the work** — do not create a list, reprint a table, and end the turn while items stay unfinished (unless the user asked for plan-only; then say so and leave statuses honest).
+- **No self-referential steps** — do not put 「更新清单 / 回复用户 / 同步进度」in `content`; only real deliverables. Mark `completed` with `merge=true` *before* the final user-facing summary.
 - **Advance one item at a time and keep the list current.** Mark `completed` as you finish; `merge=true` when adding steps. One `in_progress` only.
 - **Long tasks: brief progress between major steps**, then keep going — does not replace Execution Bias.
-- **On completion, summarize the outcome**, not every todo tick.\
+- **On completion, summarize the outcome**, not every todo tick. Disk must match: no leftover `in_progress` if you claim the work is done.\
 """
 
 # ---------------------------------------------------------------------------
@@ -419,9 +421,10 @@ export / create → handoff). After a successful handoff, stop executing the tra
 
 TASK_PLANNING_SECTION = """\
 ## Task planning (todo)
-**Authoritative rules:** `skills/task-planning/SKILL.md` (when MUST / MUST NOT create a list).
+**Authoritative rules:** `skills/task-planning/SKILL.md` (when MUST / MUST NOT create a list; **write commits you to maintain**).
 Use the `todo` tool only when the gate says multi-step work is worth tracking — you decide; the user need not ask for a list.
 `todo()` reads; `todo(todos='[...]')` writes a JSON array (`content` must be a string); `merge=true` updates by id.
+After any write: keep statuses current as you work, or explicitly pause as plan-only — never treat an unmaintained list as a finished turn.
 Keep list maintenance silent; summarize outcomes when done. Do not create decorative one-item lists for the UI.\
 """
 

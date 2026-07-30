@@ -1,5 +1,6 @@
 export function validateRouterForm(form, ais) {
   const ids = new Set(ais.map(item => item.id))
+  if (!form.mode) return '请选择路由模式'
   if (!form.name.trim()) return '请输入路由服务名称'
   if (!ids.has(form.router_ai_id)) return '请选择已连接的路由判断模型'
   if (!form.upstreams.length) return '请至少添加一个候选模型'
@@ -12,8 +13,8 @@ export function validateRouterForm(form, ais) {
   if (timeout !== '' && timeout != null && (!(Number(timeout) > 0) || !Number.isFinite(Number(timeout)))) {
     return '路由超时必须是正数'
   }
-  if (!Number.isInteger(Number(form.router_context_chars)) || Number(form.router_context_chars) <= 0) {
-    return '上下文字符数必须是正整数'
+  if (!Number.isInteger(Number(form.max_context_length)) || Number(form.max_context_length) <= 0) {
+    return '最大上下文长度必须是正整数'
   }
   return null
 }
@@ -21,6 +22,7 @@ export function validateRouterForm(form, ais) {
 export function buildRouterPayload(form) {
   return {
     name: form.name.trim(),
+    mode: form.mode,
     router_ai_id: form.router_ai_id,
     upstreams: form.upstreams.map(item => ({
       ai_id: item.ai_id,
@@ -28,6 +30,6 @@ export function buildRouterPayload(form) {
     })),
     default_ai_id: form.default_ai_id,
     router_timeout: form.router_timeout === '' || form.router_timeout == null ? null : Number(form.router_timeout),
-    router_context_chars: Number(form.router_context_chars),
+    max_context_length: Number(form.max_context_length),
   }
 }

@@ -15,7 +15,7 @@ from psi_agent._appdata import (
     resolve_appdata_root,
 )
 
-_EMPTY_KEYS = ("ais", "routers", "sessions", "titles")
+_EMPTY_KEYS = ("ais", "routers", "sessions", "titles", "summaries")
 
 
 def _empty_snapshot() -> dict[str, list[dict[str, Any]]]:
@@ -78,6 +78,7 @@ class GatewayState:
             "routers": data.get("routers", []),
             "sessions": data.get("sessions", []),
             "titles": data.get("titles", []),
+            "summaries": data.get("summaries", []),
         }
 
     async def save(
@@ -86,8 +87,10 @@ class GatewayState:
         sessions: list[dict[str, str]],
         titles: list[dict[str, str]],
         routers: list[dict[str, Any]] | None = None,
+        summaries: list[dict[str, str]] | None = None,
     ) -> None:
         routers = routers or []
+        summaries = summaries or []
         data = {
             "ais": [
                 {
@@ -114,6 +117,7 @@ class GatewayState:
                 for s in sessions
             ],
             "titles": [{"id": t["id"], "title": t["title"]} for t in titles],
+            "summaries": [{"id": s["id"], "summary": s["summary"]} for s in summaries],
         }
         json_str = json.dumps(data, ensure_ascii=False, indent=2)
         try:

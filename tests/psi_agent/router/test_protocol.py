@@ -10,6 +10,7 @@ from psi_agent.router.protocol import (
     BranchStatus,
     PlannedTask,
     RouterConfig,
+    RouterMode,
     RoutingRun,
     RoutingStatus,
 )
@@ -20,16 +21,38 @@ def _config(*, upstream: object = [("socket-a", "research")], **overrides: Any) 
         "session_socket": "router.sock",
         "router_socket": "planner.sock",
         "default_socket": "fallback.sock",
+        "mode": RouterMode.ROUTING,
         "upstream": upstream,
     }
     values.update(overrides)
     return RouterConfig(**values)
 
 
-def test_router_config_accepts_list_of_socket_description_tuples() -> None:
-    config = _config(upstream=[("socket-a", "research"), ("socket-b", "writing")])
+def test_router_config_requires_mode() -> None:
+    with pytest.raises(TypeError):
+        RouterConfig(  # ty: ignore[missing-argument]
+            session_socket="router.sock",
+            router_socket="planner.sock",
+            default_socket="fallback.sock",
+            upstream=[("socket-a", "research")],
+        )
 
+
+def test_router_config_accepts_routing_mode_and_normalizes_upstream() -> None:
+    config = _config(mode="routing", upstream=[("socket-a", "research"), ("socket-b", "writing")])
+
+    assert config.mode is RouterMode.ROUTING
     assert config.upstream == (("socket-a", "research"), ("socket-b", "writing"))
+
+
+def test_router_config_rejects_invalid_mode() -> None:
+    with pytest.raises(ValueError, match="mode must be 'routing' or 'aggregation'"):
+        _config(mode="route")
+
+
+def test_router_config_rejects_non_tuple_upstream_entries() -> None:
+    with pytest.raises(ValueError, match="upstream entries must be \\(socket, description\\) tuples"):
+        _config(upstream=[["socket-a", "research"]])
 
 
 def test_router_config_accepts_tuple_of_socket_description_tuples() -> None:

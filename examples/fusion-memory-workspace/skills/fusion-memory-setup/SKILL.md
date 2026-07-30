@@ -18,6 +18,20 @@ export FUSION_MEMORY_MCP_URL="https://memory.example.com/mcp"
 export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 ```
 
+When the operator enables Feishu first-use registration, add:
+
+```bash
+export FUSION_MEMORY_AUTO_REGISTER_FEISHU=1
+export FUSION_MEMORY_ORGANIZATION_ID="org_example"
+export PSI_FEISHU_APP_ID="cli_xxx"
+export PSI_FEISHU_APP_SECRET="..."
+```
+
+The workspace signs a short-lived assertion for the trusted runtime
+`feishu-<open_id>` Session and asks Memory to register that user. The returned
+bearer token is written to the token-map file. Do not derive registration
+identity from model-visible text.
+
 `FUSION_MEMORY_MCP_URL` must be exactly `/mcp`. HTTPS is required for remote
 hosts; HTTP is accepted only for loopback development. The map is a JSON object
 keyed by Feishu `open_id`; each entry requires a non-empty `token`.
@@ -28,7 +42,8 @@ Map membership enables automatic durable memory. On the mapped user's first
 message, the workspace initiates `memory_health` and starts passive history
 sync. The bearer token determines user identity, so the same user shares memory
 across Sessions while different users remain isolated. Unknown users can chat
-but receive no bearer token or durable memory. Duplicate token assignments
+but receive no bearer token or durable memory unless Feishu auto-registration
+is explicitly enabled and accepted by Memory. Duplicate token assignments
 reject the map; removing a user stops that Session's watcher and client.
 Validated maps are cached by file signature and refreshed on content changes.
 

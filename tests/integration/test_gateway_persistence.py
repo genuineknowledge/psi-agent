@@ -59,7 +59,13 @@ async def test_gateway_state_corrupt_json_falls_back(tmp_path: str) -> None:
 
     state = GatewayState(_path=state_path)
     snapshot = await state.load()
-    assert snapshot == {"ais": [], "routers": [], "sessions": [], "titles": []}
+    assert snapshot == {
+        "ais": [],
+        "routers": [],
+        "sessions": [],
+        "titles": [],
+        "summaries": [],
+    }
 
 
 def test_aim_get_socket_computes_for_unknown_id() -> None:

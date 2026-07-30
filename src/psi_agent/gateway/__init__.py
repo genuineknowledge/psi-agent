@@ -21,6 +21,7 @@ from psi_agent.gateway._scheduler_manager import SchedulerManager
 from psi_agent.gateway._session_manager import SessionManager
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
 from psi_agent.gateway._state import GatewayState
+from psi_agent.gateway._summary_manager import SummaryManager
 from psi_agent.gateway._title_manager import TitleManager
 from psi_agent.gateway._tray import GatewayTray
 from psi_agent.gateway._webview import GatewayWebView
@@ -143,6 +144,7 @@ class Gateway:
                 _appdata=appdata_root,
             )
             tm = TitleManager()
+            sum_m = SummaryManager()
 
             for cfg in snapshot.get("ais", []):
                 try:
@@ -162,6 +164,7 @@ class Gateway:
                 try:
                     await rm.create(
                         name=cfg.get("name", ""),
+                        mode=cfg.get("mode", ""),
                         router_ai_id=cfg.get("router_ai_id", ""),
                         upstreams=[
                             RouterUpstreamInfo(item.get("ai_id", ""), item.get("description", ""))
@@ -169,7 +172,7 @@ class Gateway:
                         ],
                         default_ai_id=cfg.get("default_ai_id", ""),
                         router_timeout=cfg.get("router_timeout"),
-                        router_context_chars=cfg.get("router_context_chars", 12_000),
+                        max_context_length=cfg.get("max_context_length", 12_000),
                         id=cfg.get("id", ""),
                     )
                     logger.info(f"Restored Router {cfg.get('id', '?')!r}")
@@ -192,6 +195,9 @@ class Gateway:
             for t in snapshot.get("titles", []):
                 await tm.set(t["id"], t["title"])
 
+            for row in snapshot.get("summaries", []):
+                await sum_m.set(row["id"], row["summary"])
+
             attention = AttentionHub()
             schedm = SchedulerManager(_sm=sm, _ai_id=self.scheduler_ai_id or self.feishu_ai_id)
             app = await create_app(
@@ -209,6 +215,7 @@ class Gateway:
                 appdata=appdata_root,
                 scheduler_ai_id=self.scheduler_ai_id,
                 schedm=schedm,
+                sum_m=sum_m,
             )
 
             # Restored sessions need a scheduler Session for their workspace too
@@ -240,17 +247,19 @@ class Gateway:
                         for info in await sm.list_all()
                     ],
                     titles=[{"id": sid, "title": title} for sid, title in tm.get_all().items()],
+                    summaries=[{"id": sid, "summary": text} for sid, text in sum_m.get_all().items()],
                     routers=[
                         {
                             "id": info.id,
                             "name": info.name,
+                            "mode": info.mode,
                             "router_ai_id": info.router_ai_id,
                             "upstreams": [
                                 {"ai_id": item.ai_id, "description": item.description} for item in info.upstreams
                             ],
                             "default_ai_id": info.default_ai_id,
                             "router_timeout": info.router_timeout,
-                            "router_context_chars": info.router_context_chars,
+                            "max_context_length": info.max_context_length,
                         }
                         for info in await rm.list_all()
                     ],
@@ -260,6 +269,7 @@ class Gateway:
             rm._persist = _do_persist
             sm._persist = _do_persist
             tm._persist = _do_persist
+            sum_m._persist = _do_persist
 
             await _do_persist()
 

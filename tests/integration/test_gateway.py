@@ -131,6 +131,7 @@ async def test_gateway_rest_crud(tmp_path: str, monkeypatch: pytest.MonkeyPatch)
                 f"{base_url}/routers",
                 json={
                     "name": "smart",
+                    "mode": "aggregation",
                     "router_ai_id": ai_id,
                     "upstreams": [{"ai_id": ai_id, "description": "general tasks"}],
                     "default_ai_id": ai_id,

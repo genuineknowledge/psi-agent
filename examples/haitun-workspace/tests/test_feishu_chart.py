@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import itertools
 import json
 import sys
 from pathlib import Path
@@ -37,6 +38,8 @@ _cr: Any = importlib.import_module("_chart_render")
 _place: Any = importlib.import_module("_chart_place")
 _impl: Any = importlib.import_module("_feishu_impl")
 _chart: Any = importlib.import_module("feishu_chart")
+_doc: Any = importlib.import_module("feishu_doc")
+_cap: Any = importlib.import_module("_chart_caption")
 
 
 @pytest.fixture(autouse=True)
@@ -907,3 +910,516 @@ async def test_failed_upload_deletes_the_placeholder_without_an_index(
     result = await _impl.append_doc_image_impl("doc1", str(png))
     assert result["ok"] is False
     assert deleted == [{"start_index": 1, "end_index": 2}]
+
+
+# ── Combined figures: several panels in one image ──────────────────────────────
+
+# One panel spec per chart kind, in the shape `panels_json` accepts. Kept exhaustive on
+# purpose: a panel builder that forgets a chart kind, or drifts from that chart's tool
+# arguments, only shows up when every kind is actually built.
+#
+# The data is deliberately realistic rather than minimal — units on the values, CJK labels
+# of the length a real report uses, and two or more series where the chart supports them.
+# A two-point single-series panel draws a one-item legend and short labels, which is
+# exactly the case that has room to spare and hides every crowding defect.
+_PANEL_SPECS: dict[str, dict[str, Any]] = {
+    "pie": {"labels": ["研发", "市场", "销售"], "values": [42, 28, 19]},
+    "donut": {"labels": ["华东", "华北", "华南"], "values": [520, 310, 180]},
+    "funnel": {"stages": ["访问", "注册", "下单", "复购"], "values": [1000, 420, 180, 60]},
+    "line": {
+        "labels": ["1月", "2月", "3月", "4月"],
+        "series": {"营收": [120, 145, 138, 170], "成本": [80, 90, 88, 95]},
+    },
+    "area": {"labels": ["1月", "2月", "3月"], "series": {"累计营收": [120, 265, 403]}},
+    "stacked_area": {"labels": ["1月", "2月", "3月"], "series": {"直销": [60, 70, 66], "线上": [60, 75, 72]}},
+    "column": {"labels": ["华东", "华北", "华南", "西南"], "values": [118, 92, 76, 54], "unit": "万元"},
+    "bar": {"labels": ["华东区域", "华北区域", "华南区域"], "values": [118, 92, 76], "unit": "万元"},
+    "grouped_column": {"labels": ["Q1", "Q2", "Q3"], "series": {"2025": [10, 20, 15], "2026": [14, 25, 19]}},
+    "stacked_column": {"labels": ["Q1", "Q2", "Q3"], "series": {"直销": [10, 20, 15], "线上": [14, 25, 19]}},
+    "waterfall": {"labels": ["期初", "新增", "流失", "期末"], "deltas": [100, 40, -25, 0]},
+    "histogram": {"values": [1, 2, 2, 3, 3, 3, 4, 4, 5, 6, 3, 3, 2, 4, 5]},
+    "box": {"groups": {"A组": [1, 2, 3, 4], "B组": [2, 3, 4, 5], "C组": [3, 4, 5, 6]}},
+    "scatter": {"points": [[1, 2], [3, 4], [5, 3], [2, 5]], "x_label": "投入（万元）", "y_label": "产出（万元）"},  # noqa: RUF001
+    "bubble": {"points": [[1, 2, 30], [3, 4, 50], [5, 3, 80]]},
+    "heatmap": {
+        "row_labels": ["线上", "线下"],
+        "col_labels": ["华东", "华北", "华南"],
+        "values": [[12, 5, 3], [4, 9, 6]],
+    },
+    "radar": {"axes": ["质量", "速度", "成本", "服务"], "series": {"A组": [4, 3, 5, 4], "B组": [3, 5, 3, 5]}},
+    "pareto": {"labels": ["登录失败", "支付超时", "页面卡顿"], "values": [120, 85, 42]},
+    "combo": {
+        "labels": ["1月", "2月", "3月"],
+        "bar_series": {"营收": [120, 145, 138]},
+        "line_series": {"毛利率": [32, 35, 33]},
+        "line_percent": True,
+    },
+    "gantt": {
+        "tasks": [
+            {"name": "设计", "start": "2026-08-01", "days": 5},
+            {"name": "开发", "start": "2026-08-04", "days": 8},
+        ]
+    },
+    "progress": {"items": {"华东": 118, "华北": 92, "华南": 76}, "target": 100},
+}
+
+
+def _panels_json(*kinds: str) -> str:
+    return json.dumps(
+        [{"chart": kind, "title": f"面板{kind}", **_PANEL_SPECS[kind]} for kind in kinds], ensure_ascii=False
+    )
+
+
+def test_every_chart_kind_has_a_panel_spec_in_this_test() -> None:
+    """The matrix below is only meaningful if it covers every kind the tool advertises."""
+    assert set(_PANEL_SPECS) == set(_cr.PANEL_CHARTS)
+
+
+@pytest.mark.parametrize("kind", sorted(_PANEL_SPECS))
+def test_build_panel_draw_handles_every_chart_kind(kind: str) -> None:
+    draw, title = _cr.build_panel_draw({"chart": kind, "title": "标题", **_PANEL_SPECS[kind]}, 0)
+    assert callable(draw)
+    assert title == "标题"
+
+
+def test_build_panel_draw_rejects_an_unknown_chart() -> None:
+    with pytest.raises(_cr.ChartDataError, match="unknown chart"):
+        _cr.build_panel_draw({"chart": "sunburst", "labels": ["a"], "values": [1]}, 0)
+
+
+def test_build_panel_draw_names_the_panel_and_its_missing_field() -> None:
+    with pytest.raises(_cr.ChartDataError, match=r"panel 3 .*line.*missing: series"):
+        _cr.build_panel_draw({"chart": "line", "labels": ["1月"]}, 2)
+
+
+@pytest.mark.parametrize(
+    ("layout", "count", "expected"),
+    [
+        ("horizontal", 2, (1, 2)),
+        ("vertical", 3, (3, 1)),
+        ("grid", 4, (2, 2)),
+        ("grid", 3, (2, 2)),  # a 3-panel grid keeps a 2x2 shape and hides the empty cell
+        ("grid", 6, (2, 3)),
+    ],
+)
+def test_panel_grid_shapes(layout: str, count: int, expected: tuple[int, int]) -> None:
+    assert _cr.panel_grid(count, layout) == expected
+
+
+def test_panel_grid_rejects_an_unknown_layout() -> None:
+    with pytest.raises(_cr.ChartDataError, match="unknown layout"):
+        _cr.panel_grid(2, "diagonal")
+
+
+def test_figure_size_refuses_a_canvas_a_doc_cannot_show() -> None:
+    """Six panels in one row would be 48in wide, which Feishu scales down to a thumbnail."""
+    with pytest.raises(_cr.ChartDataError, match=r"over the .*limit"):
+        _cr.figure_size(1, 6)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("layout", "kinds", "size"),
+    [
+        # Each panel keeps the full 1600x900 single-chart footprint.
+        ("horizontal", ("line", "pie"), (3200, 900)),
+        ("vertical", ("line", "pie"), (1600, 1800)),
+        ("grid", ("line", "pie", "bar"), (3200, 1800)),
+    ],
+)
+async def test_render_panels_writes_one_png_sized_by_the_grid(
+    tmp_path: Path, layout: str, kinds: tuple[str, ...], size: tuple[int, int]
+) -> None:
+    draws, titles = _cr.parse_panels(_panels_json(*kinds))
+    out = await _cr.render_panels_to_png(draws, str(tmp_path / "fig.png"), layout=layout, figure_title="总览")
+    assert titles == [f"面板{k}" for k in kinds]
+    with Image.open(out) as img:
+        assert img.size == size
+
+
+@pytest.mark.asyncio
+async def test_render_panels_rejects_a_single_panel(tmp_path: Path) -> None:
+    draws, _titles = _cr.parse_panels(_panels_json("line"))
+    with pytest.raises(_cr.ChartDataError, match="at least 2 panels"):
+        await _cr.render_panels_to_png(draws, str(tmp_path / "fig.png"))
+
+
+@pytest.mark.asyncio
+async def test_render_panels_rejects_too_many_panels(tmp_path: Path) -> None:
+    draws, _titles = _cr.parse_panels(_panels_json(*(("line",) * 7)))
+    with pytest.raises(_cr.ChartDataError, match="more than 6"):
+        await _cr.render_panels_to_png(draws, str(tmp_path / "fig.png"), layout="grid")
+
+
+def test_panel_titles_and_sources_stay_on_their_own_panel() -> None:
+    """Regression: both used to be written at *figure* level, so panel 2 erased panel 1.
+
+    ``_set_title`` promoted a title to ``fig.suptitle`` whenever a legend was present and
+    ``_source_note`` used ``fig.supxlabel`` — a figure has one of each, so in a two-panel
+    figure only the last panel's title and source survived.
+    """
+    token = _cr._panel_mode.set(True)
+    try:
+        fig, axes = plt.subplots(1, 2, figsize=(16, 4.5), layout="constrained", squeeze=False)
+        flat = [ax for row in axes for ax in row]
+        for ax, name in zip(flat, ("左", "右"), strict=True):
+            draw = _cr.draw_line(
+                ["1月", "2月"], [(name, [1, 2]), ("对比", [2, 1])], title=f"标题{name}", source=f"来源{name}"
+            )
+            draw(fig, ax)
+    finally:
+        _cr._panel_mode.reset(token)
+    assert fig.get_suptitle() == ""  # nothing was promoted to the shared figure slot
+    assert [ax.get_title(loc="left") for ax in flat] == ["标题左", "标题右"]
+    labelled = [ax.get_xlabel().endswith(f"来源{side}") for ax, side in zip(flat, ("左", "右"), strict=True)]
+    assert labelled == [True, True]
+    plt.close(fig)
+
+
+def _build_figure(kinds: tuple[str, ...], layout: str) -> Any:
+    """A combined figure built exactly the way ``_render_panels_sync`` builds one.
+
+    Mirrors the real path step for step — panel mode, tags, figure title/source, then both
+    closing passes — because the layout defects this guards against only appear in the
+    finished figure, after those passes have moved things.
+    """
+    # Before any figure exists: the house style installs the CJK font stack, and glyph
+    # widths are what decide whether two labels collide. Measuring with matplotlib's
+    # default font would size every Chinese label as a tofu box and test a layout no user
+    # ever sees.
+    _cr._apply_style()
+    rows, cols = _cr.panel_grid(len(kinds), layout)
+    size = _cr.figure_size(rows, cols)
+    token = _cr._panel_mode.set(True)
+    try:
+        fig = plt.figure(figsize=size, layout="constrained")
+        cells = fig.subfigures(rows, cols, squeeze=False)
+        flat_cells = [cell for row in cells for cell in row]
+        draws, _titles = _cr.parse_panels(_panels_json(*kinds))
+        for index, (draw, cell) in enumerate(zip(draws, flat_cells, strict=False)):
+            ax = cell.subplots()
+            before = set(cell.get_axes())
+            draw(cell, ax)
+            live = ax if ax in cell.get_axes() else next(iter(set(cell.get_axes()) - before), ax)
+            _cr._tag_panel(live, index)
+        fig.suptitle("整图标题", x=0.01, ha="left", fontsize=18, fontweight="bold")
+        fig.supxlabel("数据来源：台账", fontsize=10, ha="left", x=0.01)  # noqa: RUF001
+        _cr._promote_panel_titles(fig)
+        _cr._settle_panel_annotations(fig)
+        _cr._align_panel_plot_boxes(fig)
+    finally:
+        _cr._panel_mode.reset(token)
+    return fig
+
+
+def test_panels_are_tagged_a_b_c_below_the_axes_and_do_not_collide() -> None:
+    """Every panel carries its (a)/(b)/(c) key, centred under the panel, ink-free.
+
+    The tag is its panel's subfigure supxlabel: a real layout band below the axes, which
+    is where a paper puts a sub-figure key and what makes the tags line up with each other
+    across a row. Prefixing it into the title (an earlier version) left them ragged, each
+    starting wherever its title did.
+    """
+    fig = _build_figure(("line", "pie", "bar"), "grid")
+    cells = [ax.get_figure() for ax in fig.get_axes() if ax.get_subplotspec() is not None]
+    tags = [cell._supxlabel for cell in cells]
+    assert [tag.get_text() for tag in tags] == ["(a)", "(b)", "(c)"]
+    assert {tag.get_ha() for tag in tags} == {"center"}
+    # Below its own plot box, not above it.
+    for cell, tag in zip(cells, tags, strict=True):
+        axes_box = next(ax for ax in cell.get_axes() if ax.get_subplotspec() is not None).get_window_extent()
+        assert tag.get_window_extent(fig.canvas.get_renderer()).y1 <= axes_box.y0
+    assert _collisions(fig) == []
+    plt.close(fig)
+
+
+def test_panel_titles_leave_the_plot_box_its_full_height() -> None:
+    """A panel's title must not be bought with plot height.
+
+    The first fix for "title struck through by the legend" padded the title. Constrained
+    layout answers a pad by shrinking the axes, so the loop chased its own tail and left a
+    207px-tall plot box where 589px was available — the panels came out flattened. The
+    title now goes in the subfigure's own title band, which costs the plot box nothing.
+    """
+    fig = _build_figure(("line", "column"), "horizontal")
+    for ax in fig.get_axes():
+        cell = ax.get_figure()
+        box, cell_box = ax.get_window_extent(), cell.bbox
+        assert box.height > cell_box.height * 0.45, f"plot box squeezed to {box.height:.0f}px"
+        # The promoted title sits above the legend band, and only one copy of it exists.
+        assert ax.get_title(loc="left") == ""
+        assert cell._suptitle.get_window_extent(fig.canvas.get_renderer()).y0 >= box.y1
+    plt.close(fig)
+
+
+@pytest.mark.parametrize(
+    "kinds",
+    [("line", "column"), ("donut", "line"), ("radar", "heatmap"), ("funnel", "progress", "gantt", "bubble")],
+)
+def test_every_panel_gets_the_same_plot_box_size(kinds: tuple[str, ...]) -> None:
+    """Panels of different chart kinds must still look the same size.
+
+    Constrained layout sizes each panel around its own decorations, so a chart with a
+    two-line legend got a 1409x588 box beside its neighbour's 1468x515 — side by side the
+    charts read as different sizes, which is what a reader notices before any detail. A
+    square chart (pie, heatmap) keeps its aspect *inside* an equal allocation.
+    """
+    layout = "grid" if len(kinds) > 2 else "horizontal"
+    fig = _build_figure(kinds, layout)
+    boxes = {
+        (round(ax.get_window_extent().width, 1), round(ax.get_window_extent().height, 1))
+        for ax in fig.get_axes()
+        if ax.get_subplotspec() is not None
+    }
+    plt.close(fig)
+    assert len(boxes) == 1, f"panels differ in size: {boxes}"
+
+
+# Every ordered pair of chart kinds, in both a row and a column. One combination is not
+# enough coverage: the first version of the panel code was checked against line+pie+bar
+# only, and 245 of these 420 pairs had text over text — a panel title struck through by
+# its legend, a box plot's glyph key sitting on its tick labels, a column's top value
+# label pushed into the title band. Each is invisible in the one combination that happened
+# to be tested, and obvious in the matrix.
+_PANEL_PAIRS = [(a, b) for a, b in itertools.combinations(sorted(_PANEL_SPECS), 2)]
+
+
+@pytest.mark.parametrize("layout", ["horizontal", "vertical"])
+@pytest.mark.parametrize(("first", "second"), _PANEL_PAIRS)
+def test_no_two_labels_overlap_in_any_two_panel_figure(first: str, second: str, layout: str) -> None:
+    fig = _build_figure((first, second), layout)
+    overlaps = _collisions(fig)
+    plt.close(fig)
+    assert overlaps == []
+
+
+@pytest.mark.parametrize("start", range(len(_PANEL_SPECS)))
+def test_no_two_labels_overlap_in_a_four_panel_grid(start: int) -> None:
+    """Grids add their own failure mode: a panel is half-height, so labels sit closer.
+
+    The window slides one kind at a time and wraps, rather than stepping in blocks of
+    four: block-stepping only ever built 5 of the 21 possible groupings, and the donut's
+    centre total striking through its 合计 lived in a grouping no block reached.
+    """
+    ordered = sorted(_PANEL_SPECS)
+    kinds = tuple(ordered[(start + offset) % len(ordered)] for offset in range(4))
+    fig = _build_figure(kinds, "grid")
+    overlaps = _collisions(fig)
+    plt.close(fig)
+    assert overlaps == []
+
+
+def test_a_panel_without_a_title_still_gets_its_tag() -> None:
+    """The caption refers to panels by tag, so an untitled panel can't go unlabelled."""
+    token = _cr._panel_mode.set(True)
+    try:
+        fig = plt.figure(figsize=(8, 4.5), layout="constrained")
+        cell = fig.subfigures(1, 1, squeeze=False)[0][0]
+        ax = cell.subplots()
+        _cr.draw_line(["1月", "2月"], [("营收", [1, 2])])(cell, ax)
+        _cr._tag_panel(ax, 1)
+    finally:
+        _cr._panel_mode.reset(token)
+    assert cell.get_supxlabel() == "(b)"
+    plt.close(fig)
+
+
+@pytest.mark.asyncio
+async def test_radar_panel_takes_only_its_own_cell(tmp_path: Path) -> None:
+    """A radar swaps in polar axes; built from `111` it would cover the whole figure."""
+    draws, _titles = _cr.parse_panels(_panels_json("radar", "line"))
+    out = await _cr.render_panels_to_png(draws, str(tmp_path / "fig.png"), layout="horizontal")
+    with Image.open(out) as img:
+        assert img.size == (3200, 900)
+        # The right half must still carry the line panel's ink, not blank canvas.
+        right = np.asarray(img.convert("RGB"))[:, 1600:, :]
+    assert (right != 255).any()
+
+
+# ── Caption numbering ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("content", "kind", "expected"),
+    [
+        ("", "图", 0),
+        ("图1：人力分布", "图", 1),  # noqa: RUF001
+        ("图 1：a\n\n图 2：b", "图", 2),  # noqa: RUF001
+        ("图一：手写的中文数字", "图", 1),  # noqa: RUF001
+        ("图十二：两位中文数字", "图", 12),  # noqa: RUF001
+        # Figures and tables are independent sequences.
+        ("表 3：台账\n图 1：图表", "图", 1),  # noqa: RUF001
+        ("表 3：台账\n图 1：图表", "表", 3),  # noqa: RUF001
+        # Ordinary words starting with 图/表 are not captions.
+        ("图书馆的表现很好", "图", 0),
+        ("图书馆的表现很好", "表", 0),
+        # In-prose references count too: the number is already spoken for.
+        ("如图 4 所示，营收上行", "图", 4),  # noqa: RUF001
+        ("(图 5) 见上", "图", 5),
+        ("详见表2、表3", "表", 3),
+    ],
+)
+def test_highest_number_reads_the_captions_already_in_a_doc(content: str, kind: str, expected: int) -> None:
+    assert _cap.highest_number(content, kind) == expected
+
+
+def test_format_caption_names_the_panels() -> None:
+    assert _cap.format_caption("图", 3, "各区域经营概况") == "图 3：各区域经营概况"  # noqa: RUF001
+    assert _cap.format_caption("图", 3, "经营概况", ["营收趋势", "渠道占比"]) == (
+        "图 3：经营概况\n(a) 营收趋势；(b) 渠道占比"  # noqa: RUF001
+    )
+    # A single panel needs no key — "(a) x" alone tells the reader nothing.
+    assert "\n" not in _cap.format_caption("图", 1, "概况", ["只有一个"])
+
+
+def test_strip_own_number_removes_a_hand_written_prefix() -> None:
+    """Agents were told for months to write the number themselves; that habit outlives this change."""
+    assert _cap.strip_own_number("图2：缺陷分析", "图") == "缺陷分析"  # noqa: RUF001
+    assert _cap.strip_own_number("图 12. 缺陷分析", "图") == "缺陷分析"
+    assert _cap.strip_own_number("缺陷分析", "图") == "缺陷分析"
+    # Not a caption prefix, just a word that happens to start with 图.
+    assert _cap.strip_own_number("图书馆调研", "图") == "图书馆调研"
+
+
+class _FakeDoc:
+    """A fake docx whose raw_content grows as captions are written into it.
+
+    Numbering is derived from the document, so a fake that *accumulates* is the only
+    kind that can show a sequence continuing across separate calls.
+    """
+
+    def __init__(self, content: str = "") -> None:
+        self.content = content
+        self.written: list[str] = []
+
+    async def __call__(
+        self, request: Any, user_key: str | None = None, prefer: str = "tenant", **_kw: Any
+    ) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        uri, body = getattr(req, "uri", ""), getattr(req, "body", None) or {}
+        if "raw_content" in uri:
+            return {"ok": True, "data": {"content": self.content}}
+        if "medias/upload_all" in uri:
+            return {"ok": True, "data": {"file_token": "tok_img"}}
+        if "descendant" in uri:
+            return {"ok": True, "data": {}}
+        if uri.endswith("/blocks/:block_id/children") and body.get("children"):
+            children = body["children"]
+            if children[0].get("block_type") == 27:  # the image placeholder
+                return {"ok": True, "data": {"children": [{"block_id": "blk1"}], "index": 1}}
+            for block in children:
+                text = "".join(e["text_run"]["content"] for e in block.get("text", {}).get("elements", []))
+                self.written.append(text)
+                self.content += text + "\n"
+            return {"ok": True, "data": {}}
+        return {"ok": True, "data": {}}
+
+
+@pytest.mark.asyncio
+async def test_caption_numbers_continue_the_document(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeDoc("图 1：已有的图\n")  # noqa: RUF001
+    monkeypatch.setattr(_impl, "_invoke", fake)
+    first = json.loads(
+        await _chart.feishu_chart_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="人力分布")
+    )
+    second = json.loads(
+        await _chart.feishu_chart_bar('["华东","华北"]', "[3,1]", document_id="doc1", caption="区域排名")
+    )
+    assert (first["caption_number"], second["caption_number"]) == (2, 3)
+    assert fake.written == ["图 2：人力分布", "图 3：区域排名"]  # noqa: RUF001
+
+
+@pytest.mark.asyncio
+async def test_a_hand_written_number_is_not_doubled(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeDoc()
+    monkeypatch.setattr(_impl, "_invoke", fake)
+    await _chart.feishu_chart_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="图9：人力分布")  # noqa: RUF001
+    assert fake.written == ["图 1：人力分布"]  # noqa: RUF001
+
+
+@pytest.mark.asyncio
+async def test_auto_number_off_writes_the_caption_as_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeDoc("图 7：已有的图\n")  # noqa: RUF001
+    monkeypatch.setattr(_impl, "_invoke", fake)
+    result = json.loads(
+        await _chart.feishu_chart_pie(
+            '["研发","市场"]', "[3,1]", document_id="doc1", caption="人力分布", auto_number=False
+        )
+    )
+    assert "caption_number" not in result
+    assert fake.written == ["图：人力分布"]  # noqa: RUF001
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_document_still_gets_its_caption(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A chart is worth having without its number; the reason is reported, not raised."""
+
+    async def fake(request: Any, user_key: str | None = None, prefer: str = "tenant", **_kw: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        uri = getattr(req, "uri", "")
+        if "raw_content" in uri:
+            return {"ok": False, "message": "no permission to read the doc"}
+        if "medias/upload_all" in uri:
+            return {"ok": True, "data": {"file_token": "tok_img"}}
+        if "children" in uri:
+            return {"ok": True, "data": {"children": [{"block_id": "blk1"}], "index": 1}}
+        return {"ok": True, "data": {}}
+
+    monkeypatch.setattr(_impl, "_invoke", fake)
+    result = json.loads(
+        await _chart.feishu_chart_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="人力分布")
+    )
+    assert result["ok"] is True
+    assert "no permission" in result["caption_number_skipped"]
+    assert result["caption_written"] is True
+
+
+@pytest.mark.asyncio
+async def test_figure_tool_places_one_image_with_a_panel_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeDoc("图 1：已有的图\n")  # noqa: RUF001
+    monkeypatch.setattr(_impl, "_invoke", fake)
+    result = json.loads(
+        await _chart.feishu_chart_figure(
+            _panels_json("line", "pie"), document_id="doc1", caption="经营概览", figure_title="上半年"
+        )
+    )
+    assert result["ok"] is True
+    assert (result["panels"], result["caption_number"]) == (2, 2)
+    # One image block for the whole figure, and a caption naming both panels.
+    assert sum(1 for c in fake.written if c.startswith("图")) == 1
+    assert fake.written[0] == "图 2：经营概览"  # noqa: RUF001
+    assert fake.written[1] == "(a) 面板line；(b) 面板pie"  # noqa: RUF001
+
+
+@pytest.mark.asyncio
+async def test_figure_without_a_document_leaves_the_png_on_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = json.loads(await _chart.feishu_chart_figure(_panels_json("line", "pie")))
+    assert result["ok"] is True
+    assert await anyio.Path(result["image_path"]).is_file()
+    assert "no document_id" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_table_caption_goes_above_the_table_with_its_own_sequence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Table titles sit above the table (figures caption below), numbered 表 N separately."""
+    fake = _FakeDoc("表 1：已有台账\n图 5：已有的图\n")  # noqa: RUF001
+    monkeypatch.setattr(_impl, "_invoke", fake)
+    order: list[str] = []
+    original = fake.__call__
+
+    async def tracking(request: Any, **kw: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        if "descendant" in getattr(req, "uri", ""):
+            order.append("table")
+        elif getattr(req, "body", None) and (req.body.get("children") or [{}])[0].get("block_type") == 2:
+            order.append("caption")
+        return await original(req, **kw)
+
+    monkeypatch.setattr(_impl, "_invoke", tracking)
+    result = json.loads(
+        await _doc.feishu_doc_append_table("doc1", '[["姓名","部门"],["张三","研发"]]', caption="客户明细")
+    )
+    assert result["caption_number"] == 2  # continues 表, not the doc's 图 5
+    assert result["caption_written"] is True
+    assert order == ["caption", "table"]
+    assert fake.written == ["表 2：客户明细"]  # noqa: RUF001

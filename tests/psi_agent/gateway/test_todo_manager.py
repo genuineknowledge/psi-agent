@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import anyio
@@ -98,3 +99,51 @@ async def test_todos_malformed_json_returns_empty(tmp_path: Path, monkeypatch: p
     await (todo_dir / "bad.json").write_text("{not json", encoding="utf-8")
     result = await todom.get(str(tmp_path / "ws"), "bad", appdata=str(appdata))
     assert result["todos"] == []
+
+
+@pytest.mark.anyio
+async def test_todo_segments_list_and_get(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    appdata = tmp_path / "appdata"
+    monkeypatch.setenv("PSI_APPDATA", str(appdata))
+    todo_dir = anyio.Path(str(appdata)) / "todos"
+    await todo_dir.mkdir(parents=True)
+    payload = {
+        "session_id": "s1",
+        "segments": [
+            {
+                "id": "seg-old",
+                "created_at": "2026-07-30T01:00:00+00:00",
+                "updated_at": "2026-07-30T01:10:00+00:00",
+                "closed_at": "2026-07-30T01:10:00+00:00",
+                "label": "旧子任务",
+                "source": "todo.replace",
+                "todos": [
+                    {"id": "1", "content": "a", "status": "completed"},
+                    {"id": "2", "content": "b", "status": "completed"},
+                ],
+            },
+            {
+                "id": "seg-new",
+                "created_at": "2026-07-30T02:00:00+00:00",
+                "updated_at": "2026-07-30T02:05:00+00:00",
+                "closed_at": None,
+                "label": "新子任务",
+                "source": "todo.replace",
+                "todos": [{"id": "1", "content": "x", "status": "in_progress"}],
+            },
+        ],
+    }
+    await (todo_dir / "s1.segments.json").write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    todom = TodoManager()
+    listed = await todom.list_segments("s1", appdata=str(appdata))
+    assert [s["id"] for s in listed] == ["seg-new", "seg-old"]
+    assert listed[0]["summary"]["in_progress"] == 1
+    got = await todom.get_segment("s1", "seg-old", appdata=str(appdata))
+    assert got is not None
+    assert got["todos"][0]["content"] == "a"
+    patched = await todom.set_segment_label("s1", "seg-new", "  侧栏进度改造  ", appdata=str(appdata))
+    assert patched is not None
+    assert patched["label"] == "侧栏进度改造"
