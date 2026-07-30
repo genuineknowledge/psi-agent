@@ -8,17 +8,7 @@ A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combin
 - clean async file/shell tools, Serper web search, and environment-configured
   iFLYTEK STT/TTS tools.
 
-On Windows, `c_drive_cleanup` provides a guarded C-drive cleanup workflow:
-the first read-only metadata scan in a Session asks for confirmation (same-turn
-model approval is allowed), while later scans can proceed without another hard
-confirmation unless the user objects. Cleanup runs after the user affirms the
-displayed result. Only unchanged files in known temporary or cache locations are
-deleted. Large files, exact duplicate groups, and stale Downloads are reported
-but never selected automatically.
-
-The agent-side workflow is defined by
-`skills/windows-c-drive-cleanup/SKILL.md`. See `AGENTS.md` for the general
-workspace layout and conventions.
+See `AGENTS.md` for the full layout and conventions.
 
 The Haibao ChatBI MCP Adapter, public tools, and Skill are bundled in this workspace. They
 require an operator-provisioned private MCP server, which is not bundled or claimed to be
