@@ -2505,7 +2505,7 @@ async def _read_pending(user_key: str) -> dict[str, Any]:
     return {}
 
 
-async def auth_wait_impl(user_key: str = "", timeout_seconds: int = 180) -> dict[str, Any]:
+async def auth_wait_impl(user_key: str = "", timeout_seconds: int = 480) -> dict[str, Any]:
     """等浏览器把授权码送回来, 然后直接完成授权 -- 用户无需复制任何东西。
 
     按 ``auth_start`` 选定的通道等待: ``gateway`` 轮询 Gateway 的 ``/oauth/code``,
@@ -2518,8 +2518,10 @@ async def auth_wait_impl(user_key: str = "", timeout_seconds: int = 180) -> dict
         return _error("没有待完成的授权, 请先调 feishu_auth_start.")
     if mode == "manual":
         return _error(
-            "当前环境无法自动接收授权码, 请让用户从浏览器地址栏复制 code 后交给 feishu_auth_complete.",
+            "当前环境无法自动接收授权码, 请让用户从浏览器地址栏复制 code 后交给 feishu_auth_complete. "
+            "(想免掉复制: 调 feishu_auth_env_check 看确切缺哪一项配置, 它会给出修法.)",
             manual_required=True,
+            next_step="feishu_auth_env_check",
         )
     timeout = float(max(10, min(timeout_seconds, 600)))
     if mode == "gateway":
@@ -2532,10 +2534,15 @@ async def auth_wait_impl(user_key: str = "", timeout_seconds: int = 180) -> dict
             port = urlsplit(str(pending.get("redirect_uri") or "")).port or port
         got = await _oauth_rx.wait_loopback(port, state, timeout)
     if not got:
+        # 别把超时当失败报给用户: 取件箱 TTL 600 秒, 用户晚点几十秒点完, code 仍在里面等着取。
+        # (实测过一次真实场景: 等待窗口比用户点击早关了 12 秒, 而回调随后就到了。)
         return _error(
-            f"等了 {int(timeout)} 秒还没收到授权回调. 确认用户点了「同意授权」; "
-            "也可以再调一次 feishu_auth_wait 继续等.",
+            f"等了 {int(timeout)} 秒还没收到授权回调 -- 这不代表失败: 用户可能还没点完. "
+            "授权码在 Gateway 取件箱里可留存约 10 分钟, 所以**先再调一次 feishu_auth_wait 继续等**, "
+            "拿到就照样能完成授权; 别急着让用户手抄 code, 也别告诉他失败了. "
+            "只有再等一轮仍然没有, 才去确认用户是否真的点了「同意授权」.",
             timed_out=True,
+            retry_hint="再调一次 feishu_auth_wait (同一个 user_key) 即可继续等待",
         )
     if got.get("error"):
         return _error(f"用户侧授权失败: {got['error']}")
@@ -2594,6 +2601,30 @@ async def _pending_capabilities(user_key: str = "") -> list[str]:
     return [c for c in caps if c in _SCOPE_CATALOG]
 
 
+def _auth_error_hint(code: Any, redirect_uri: str) -> str:
+    """把飞书授权类错误码翻成可操作的话。
+
+    裸 ``msg`` (如 "redirect_uri mismatch") 对 agent 没用: 它给不出「去后台加这条
+    URL」这种下一步。配置类错误里 20071/20043 占绝大多数, 单独翻译这几个就够。
+    """
+    hints = {
+        20071: (
+            f"redirect_uri 没登记或与授权时不一致. 去飞书开放平台「安全设置 -> 重定向 URL」"
+            f"确认有这一条且完全一致 (含端口和末尾斜杠): {redirect_uri or '(本次未记录)'}. "
+            "调 feishu_auth_redirect_url 可以拿到该填的地址."
+        ),
+        20043: (
+            "申请的 scope 里有应用没开通或不存在的项. 去开放平台「权限管理」开通对应权限, "
+            "或改用 capabilities 参数里的合法键 (别直接传飞书原始 scope 字符串)."
+        ),
+        20029: "授权码已过期或被用过. 授权码是一次性且短效的, 让用户重新点一次授权链接.",
+    }
+    try:
+        return hints.get(int(code), "")
+    except TypeError, ValueError:
+        return ""
+
+
 async def auth_complete_impl(code: str, user_key: str = "") -> dict[str, Any]:
     """Exchange the authorization code for a user_access_token and cache it."""
     if not code.strip():
@@ -2614,11 +2645,13 @@ async def auth_complete_impl(code: str, user_key: str = "") -> dict[str, Any]:
         headers={"Authorization": f"Bearer {app_token}"},
     )
     if payload.get("code") not in (0, None):
+        hint = _auth_error_hint(payload.get("code"), str(pending.get("redirect_uri") or ""))
         return {
             "ok": False,
             "code": payload.get("code"),
             "msg": payload.get("msg", ""),
-            "message": f"Token exchange failed: {payload.get('msg', '')}",
+            "message": f"Token exchange failed: {payload.get('msg', '')}" + (f"\n{hint}" if hint else ""),
+            **({"config_hint": hint, "next_step": "feishu_auth_env_check"} if hint else {}),
         }
     uat = _uat_from_token_response(payload)
     if not uat.access_token:

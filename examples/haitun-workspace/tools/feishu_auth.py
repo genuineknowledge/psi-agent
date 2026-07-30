@@ -80,7 +80,7 @@ async def feishu_auth_start(user_key: str = "", capabilities: str = "") -> str:
     return _f.dumps_result(await _f.auth_start_impl(capabilities, user_key))
 
 
-async def feishu_auth_wait(user_key: str = "", timeout_seconds: int = 180) -> str:
+async def feishu_auth_wait(user_key: str = "", timeout_seconds: int = 480) -> str:
     """Wait for the authorization code to arrive by itself, then finish authorizing.
 
     Call this right after sending the user ``authorize_url`` from
@@ -88,13 +88,19 @@ async def feishu_auth_wait(user_key: str = "", timeout_seconds: int = 180) -> st
     the user approves in the browser, receives the code through the callback
     channel, exchanges it for a token, and caches it — the user copies nothing.
 
-    On ``timed_out=True`` you may simply call this again to keep waiting. On
-    ``manual_required=True`` the environment has no automatic channel: fall back to
-    ``feishu_auth_complete`` with a code the user copies from the address bar.
+    ``timed_out=True`` is NOT a failure and must not be reported to the user as one:
+    the code stays retrievable in the Gateway relay for about 10 minutes, so a user
+    who approves later than the wait window still completes normally. Just call this
+    again with the same ``user_key``. On ``manual_required=True`` the environment has
+    no automatic channel — run ``feishu_auth_env_check`` to see what configuration is
+    missing, or fall back to ``feishu_auth_complete`` with a code the user copies from
+    the address bar.
 
     Args:
         user_key: The same open_id passed to ``feishu_auth_start``.
-        timeout_seconds: How long to wait for the user to approve (10-600, default 180).
+        timeout_seconds: How long to wait for the user to approve (10-600, default
+            480). The default is generous on purpose: users read the message, may
+            need to log into Feishu first, and only then approve.
     """
     return _f.dumps_result(await _f.auth_wait_impl(user_key, timeout_seconds))
 
