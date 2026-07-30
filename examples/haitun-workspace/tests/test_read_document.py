@@ -4,6 +4,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import anyio
 import pytest
 from docx import Document
 
@@ -33,10 +34,10 @@ async def test_read_document_extracts_paragraphs_tables_and_source_path(tmp_path
     table.cell(0, 1).text = "要求"
     table.cell(1, 0).text = "source_role"
     table.cell(1, 1).text = "按契约定义"
-    document.save(source)
+    document.save(str(source))
 
     tool = _load_tool()
-    monkeypatch.setattr(tool._paths, "resolve_user_path", lambda value: tool.anyio.Path(value))
+    monkeypatch.setattr(tool._paths, "resolve_user_path", lambda value: anyio.Path(value))
     result = await tool.read_document(str(source))
 
     assert f"[Source: {source}]" in result
@@ -53,7 +54,7 @@ async def test_read_document_rejects_generic_text_files(tmp_path: Path, monkeypa
     source = tmp_path / "notes.txt"
     source.write_text("plain", encoding="utf-8")
     tool = _load_tool()
-    monkeypatch.setattr(tool._paths, "resolve_user_path", lambda value: tool.anyio.Path(value))
+    monkeypatch.setattr(tool._paths, "resolve_user_path", lambda value: anyio.Path(value))
 
     result = await tool.read_document(str(source))
 

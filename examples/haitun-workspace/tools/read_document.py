@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import _runtime_paths as _paths
-import anyio
+from anyio import to_thread
 from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph
@@ -30,7 +30,7 @@ def _table_text(table: Table) -> str:
 
 
 def _read_docx(path: Path) -> str:
-    document = Document(path)
+    document = Document(str(path))
     blocks: list[str] = []
     for item in document.iter_inner_content():
         if isinstance(item, Paragraph):
@@ -70,7 +70,7 @@ async def read_document(file_path: str, max_chars: int = 50000) -> str:
 
     limit = max(1000, min(int(max_chars), 200000))
     try:
-        text = await anyio.to_thread.run_sync(_read_docx, Path(str(path)))
+        text = await to_thread.run_sync(_read_docx, Path(str(path)))
     except Exception as exc:
         return f"[Error] Could not parse DOCX {path}: {type(exc).__name__}: {exc}"
 

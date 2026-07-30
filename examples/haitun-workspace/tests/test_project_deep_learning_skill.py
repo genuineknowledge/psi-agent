@@ -141,7 +141,7 @@ async def test_system_skill_index_discovers_the_skill(tmp_path: Path) -> None:
         isolated_skill_dir = isolated_workspace / "skills" / SKILL_NAME
         isolated_skill_dir.mkdir(parents=True)
         (isolated_skill_dir / "SKILL.md").write_text(_skill_text(), encoding="utf-8")
-        module._GLOBAL_AGENT_SKILLS_DIR = anyio.Path(str(tmp_path / "no-global-skills"))
+        module.__dict__["_GLOBAL_AGENT_SKILLS_DIR"] = anyio.Path(str(tmp_path / "no-global-skills"))
         skills_xml = await module._build_skills_index(anyio.Path(str(isolated_workspace)))
     finally:
         if sys.path and sys.path[0] == str(systems_dir):
