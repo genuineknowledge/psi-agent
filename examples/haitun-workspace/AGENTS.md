@@ -146,6 +146,8 @@ service tools:
 - Selected curated skills (`psi-agent-help`, `code-review-checklist`, `python-async-basics`,
   `python-static-analysis`, `user-preferences-and-language`, `example-skill`).
 - `task-planning` — **何时必须 / 禁止**用 `todo` tool 拆步与维护清单（判定门 + 配方）；spa/Gateway 进度 UI 只消费结果，不定义策略。
+- `project-deep-learning` — 基于真实项目证据诊断掌握度、编织业务与人员关系、安排练习并逐步
+  撤除脚手架，直到员工能独立交付；本地 DOCX 使用 `read_document`，其余能力组合现有工具与 Skill。
 - `haibao` — bundled real business-data query workflow for the two Haibao MCP Adapter tools;
   requires the separately operated private server.
 - `speech-to-text` / `text-to-speech` — iFLYTEK voice input/output recipes.
