@@ -41,8 +41,9 @@ Do **not** activate this skill for `.prose` files — those belong to OpenProse.
 | Layer | Responsibility |
 | --- | --- |
 | `grammar/FusionFlow.g4` + parser | G4 source to Core IR |
-| `fusion_flow_next.workflow_runner` | Core IR to graph, plan, and checked dispatch |
-| `psi_agent.workflow_execution` | dependencies, concurrency, timeouts, and run-local resources |
+| `fusion_flow_next.workflow_graph` | immutable Step–Artifact graph model |
+| `fusion_flow_next.workflow_execution` | plan generation, dependencies, concurrency, timeouts, and run-local resources |
+| `fusion_flow_next.workflow_runner` | Core IR compilation and checked dispatch |
 | workspace `run_flow` tool | file/JSON boundary and ephemeral Session-backed Agent Steps |
 
 The skill's job is to:

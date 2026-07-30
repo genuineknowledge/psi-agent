@@ -6,9 +6,8 @@ from dataclasses import FrozenInstanceError, dataclass, field
 from typing import Literal, cast
 
 import pytest
-
-from psi_agent.workflow_graph import model as graph_model
-from psi_agent.workflow_graph.model import (
+from fusion_flow_next.workflow_graph import model as graph_model
+from fusion_flow_next.workflow_graph.model import (
     ArtifactNode,
     ConsumesEdge,
     ForeachEdge,

@@ -17,7 +17,6 @@ from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.tool_registry import ToolRegistry
-from psi_agent.workflow_execution import ResourceCapacity
 
 _TOOLS_DIR = Path(__file__).resolve().parent
 _AGENT_DIR = _TOOLS_DIR.parent
@@ -28,6 +27,7 @@ if str(_SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(_SKILL_DIR))
 
 import _runtime_paths as _paths  # noqa: E402
+from fusion_flow_next.workflow_execution import ResourceCapacity  # noqa: E402
 from fusion_flow_next.workflow_runner import (  # noqa: E402
     CompletionContext,
     compile_workflow,

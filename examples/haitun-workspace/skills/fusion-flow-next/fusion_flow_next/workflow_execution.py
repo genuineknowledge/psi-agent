@@ -12,7 +12,7 @@ from typing import cast
 import anyio
 from loguru import logger
 
-from psi_agent.workflow_graph import (
+from .workflow_graph import (
     ArtifactOperand,
     ComparisonCondition,
     ConsumesEdge,

@@ -36,8 +36,6 @@ jobs:
         --collect-submodules hikari
         --collect-submodules matplotlib
         --collect-submodules antlr4
-        --collect-submodules psi_agent.workflow_graph
-        --hidden-import psi_agent.workflow_execution
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7

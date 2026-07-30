@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from psi_agent.workflow_graph.model import (
+from .model import (
     ArtifactNode,
     ArtifactNodeDict,
     ArtifactOperand,

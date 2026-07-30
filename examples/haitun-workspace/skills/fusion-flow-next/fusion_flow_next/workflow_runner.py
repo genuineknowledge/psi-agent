@@ -8,7 +8,10 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Literal, cast
 
-from psi_agent.workflow_execution import (
+from .core_ir import Assertion, CompoundTerm, Concept, Operator
+from .graph_compiler import WorkflowGraphCompilation, WorkflowGraphCompiler
+from .parser import ParseContext, parse_workflow
+from .workflow_execution import (
     ContextualStepDispatcher,
     DispatchContext,
     ResourceAllocator,
@@ -16,11 +19,7 @@ from psi_agent.workflow_execution import (
     execute_plan,
     generate_plan,
 )
-from psi_agent.workflow_graph import ProducesEdge, StepNode, WorkflowGraph, WorkflowPolicy
-
-from .core_ir import Assertion, CompoundTerm, Concept, Operator
-from .graph_compiler import WorkflowGraphCompilation, WorkflowGraphCompiler
-from .parser import ParseContext, parse_workflow
+from .workflow_graph import ProducesEdge, StepNode, WorkflowGraph, WorkflowPolicy
 
 type Completion = Callable[[str], Awaitable[object]]
 type ExecutorKind = Literal["Agent", "Human", "Program"]

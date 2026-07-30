@@ -1,4 +1,4 @@
-"""Lower checked FusionFlow Core IR into the psi-agent workflow graph model.
+"""Lower checked FusionFlow Core IR into the FusionFlow Next graph model.
 
 The shared :class:`CoreIRCompiler` owns traversal.  This module only implements
 the target-specific hooks: it classifies graph assertions, collects their
@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from psi_agent.workflow_graph.model import (
+from .compiler import CoreIRCompiler, _CompiledDeclarations
+from .core_ir import Assertion, CompoundTerm, ConnectiveFormula, Constant, IfTerm, ListTerm, Workflow
+from .workflow_graph.model import (
     ArtifactNode,
     ArtifactOperand,
     ComparisonCondition,
@@ -28,9 +30,6 @@ from psi_agent.workflow_graph.model import (
     WorkflowGraphError,
     WorkflowPolicy,
 )
-
-from .compiler import CoreIRCompiler, _CompiledDeclarations
-from .core_ir import Assertion, CompoundTerm, ConnectiveFormula, Constant, IfTerm, ListTerm, Workflow
 
 
 class WorkflowGraphCompilationError(ValueError):

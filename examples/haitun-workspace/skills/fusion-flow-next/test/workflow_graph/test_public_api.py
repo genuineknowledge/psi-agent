@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import psi_agent.workflow_graph as workflow_graph
+import fusion_flow_next.workflow_graph as workflow_graph
 
 
 def test_workflow_graph_public_api_contains_only_the_graph_model() -> None:
