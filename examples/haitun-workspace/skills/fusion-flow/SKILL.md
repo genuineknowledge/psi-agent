@@ -44,7 +44,7 @@ Do **not** activate this skill for `.prose` files — those belong to OpenProse.
 | --- | --- |
 | `grammar/FusionFlow.g4` + parser | G4 source to Core IR |
 | `fusion_flow.workflow_runner` | Core IR to graph, plan, and checked dispatch |
-| `psi_agent.workflow_execution` | dependencies, concurrency, timeouts, resources, and validated checkpoints |
+| `fusion_flow.workflow_execution` | dependencies, concurrency, timeouts, resources, and validated checkpoints |
 | `fusion_flow.job_store` | private, versioned Human wait/checkpoint state |
 | workspace `run_flow` / `run_flow_resume` tools | file/JSON boundary and ephemeral Session-backed Agent/Human-preparer Steps |
 | workspace `clarify` tool | existing user-facing choice or free-text question formatter |

@@ -26,7 +26,7 @@ import anyio
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
 from loguru import logger
 
-from psi_agent.workflow_execution import ExecutionCheckpoint, ResourceCapacity
+from .workflow_execution import ExecutionCheckpoint, ResourceCapacity
 
 STATE_VERSION = 2
 type RunStatus = Literal[

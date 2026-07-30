@@ -56,7 +56,9 @@ and script assets without resource requirements.
 - `fusion_flow/parser.py`: parser facade and Workflow Core IR output boundary.
 - `fusion_flow/checker.py`: static semantics boundary.
 - `fusion_flow/compiler.py`: target-neutral Core IR traversal and backend hook boundary.
-- `fusion_flow/graph_compiler.py`: concrete `CoreIRCompiler` backend that builds `psi_agent.workflow_graph` models.
+- `fusion_flow/workflow_graph/`: immutable Step-Artifact graph model, validation, and deterministic serialization.
+- `fusion_flow/workflow_execution.py`: graph planning, dependency waits, concurrency, resources, timeouts, and checkpoints.
+- `fusion_flow/graph_compiler.py`: concrete `CoreIRCompiler` backend that builds `fusion_flow.workflow_graph` models.
 - `fusion_flow/workflow_runner.py`: fail-closed compile/plan/execute entry point with Agent, Human, Program, and checkpoint injection boundaries.
 - `fusion_flow/artifact_store.py`: atomic, workflow-local Markdown persistence for every materialized G4 Artifact.
 - `fusion_flow/job_store.py`: strict v2 JSON state plus non-blocking, OS-released advisory leases and an in-process guard for G4 runs waiting on Human input.
@@ -71,9 +73,9 @@ compiler abstraction does not select or implement a concrete output target.
 Runtime dependencies, including `antlr4-python3-runtime`, are declared in the
 repository root `pyproject.toml` and locked by the root `uv.lock`; this Skill
 has no independent npm install or per-Skill package lock.
-`graph_compiler.py` is one concrete backend: it imports the generic graph model
-from `psi_agent`, while `psi_agent.workflow_graph` does not import this workspace
-package.
+`graph_compiler.py` is one concrete backend. The graph model and plan executor
+remain internally decoupled from the parser/compiler/runner even though the
+FusionFlow Skill owns all of them.
 
 ## Current scope and known gaps
 
@@ -374,7 +376,7 @@ Commit only `FusionFlowLexer.py` and `FusionFlowParser.py`; the generated `.inte
 3. **Parser** owns `fusion_flow/generated/` and `fusion_flow/parser.py`: report syntax errors and produce lossless Core IR for later stages.
 4. **Static checker** owns the Python checker: validate workflow legality and backend-independent constraints.
 5. **Compiler** owns `fusion_flow/compiler.py`: lower checked Workflow Core IR through backend-specific hooks without selecting a target in the shared layer.
-6. **Workflow Graph backend** owns `fusion_flow/graph_compiler.py`: compile real Core IR through the shared hooks into the generic `psi_agent.workflow_graph` model while retaining residual assertions.
+6. **Workflow Graph backend** owns `fusion_flow/graph_compiler.py`: compile real Core IR through the shared hooks into the `fusion_flow.workflow_graph` model while retaining residual assertions.
 7. **Planning warnings** owns `fusion_flow/planning.py`: after Haitun lists planned steps and before it authors the DSL, check their declared syntax mappings and warn about missing or unavailable names. Each item is already at `Step` granularity; this phase does not introduce a higher-level requirement model and cannot detect steps that Haitun failed to list.
 8. **Haitun integration** keeps the prompt, `run_flow`, and `flow_manage` entry points aligned with the G4 runtime.
 9. **Compatibility** preserves the external `flow` Skill identity and natural-language UX while failing closed on legacy `.flow.ts` input.

@@ -7,7 +7,7 @@
 
 `WorkflowGraph` 保存声明式 Step–Artifact 关系、无数据传递的显式 Step 顺序约束，
 但不保存运行状态。初版
-`workflow_execution` 把其中能够无歧义执行的 one-shot 子集编译为可检查的
+`fusion_flow.workflow_execution` 把其中能够无歧义执行的 one-shot 子集编译为可检查的
 `ExecutionPlan`，再通过调用方注入的 dispatcher 执行 Step。
 
 计划不是原图的另一份依赖表。每个 Step 被编译成一个同时启动的 `Fiber`，其中包含
@@ -117,9 +117,9 @@ async def dispatch(step, inputs, context):
 
 需要具体资源实例时，contextual dispatcher 从
 `DispatchContext.resource_lease` 读取 grant。计划执行器只负责并发、等待、资源
-admission、输入收集、输出提交与 checkpoint；核心执行器不依赖示例 Skill，也不会
-在 graph package 中复制 executor catalog。官方 G4 runner 的 Agent/Program/Human
-adapter 与隔离保留的 `fusion_flow.execution` 兼容层没有运行时耦合。
+admission、输入收集、输出提交与 checkpoint；它不依赖 parser、compiler、runner，
+也不会在 graph package 中复制 executor catalog。官方 G4 runner 的
+Agent/Program/Human adapter 与隔离保留的 `fusion_flow.execution` 兼容层没有运行时耦合。
 
 ## 5. 初版明确拒绝
 

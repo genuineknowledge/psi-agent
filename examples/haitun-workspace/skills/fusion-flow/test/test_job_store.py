@@ -19,8 +19,7 @@ from fusion_flow.job_store import (
     JobStoreError,
     RunAlreadyActiveError,
 )
-
-from psi_agent.workflow_execution import ExecutionCheckpoint
+from fusion_flow.workflow_execution import ExecutionCheckpoint
 
 _WORKFLOW_ID = "review_workflow"
 _PLAN_DIGEST = "c" * 64

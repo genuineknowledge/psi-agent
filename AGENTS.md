@@ -77,7 +77,7 @@ Session。G4 workspace adapter 必须先保存 checkpoint 和 Human request，�
 Session，通过既有 `clarify` 格式化问题并结束当前 turn；下一轮再用匹配的
 `run_id` / `request_id` 恢复。人工等待期间不保留资源 lease，workflow/Step timeout
 也在每个恢复阶段重新计时。该 adapter 属于 workspace，不把 Human 交互或持久化
-塞进 `psi_agent.workflow_execution` 核心。
+塞进 `fusion_flow.workflow_execution` 计划执行器。
 
 G4 workspace adapter 还会把每次运行已经物化的输入、中间、选择及最终 Artifact
 逐个原子写入 workflow bundle 的 `runs/<run-id>/artifacts/*.md`。字符串保持原
@@ -195,10 +195,6 @@ src/
     │   ├── cli/                    # 单次消息 CLI thin client
     │   ├── telegram/               # Telegram bot channel
     │   ├── feishu/                 # Feishu bot channel
-    ├── workflow_execution.py       # WorkflowGraph → plan + async executor + validated checkpoints
-    ├── workflow_graph/
-    │   ├── __init__.py             # 声明式图模型 API
-    │   └── model.py                # Step–Artifact 静态图 + eager SelectNode
     └── gateway/
         ├── AGENTS.md                # Gateway 层设计文档
         ├── __init__.py              # Gateway dataclass + run()

@@ -23,8 +23,7 @@ from fusion_flow.graph_compiler import (
     WorkflowGraphCompilationError,
     WorkflowGraphCompiler,
 )
-
-from psi_agent.workflow_graph.model import (
+from fusion_flow.workflow_graph.model import (
     ArtifactOperand,
     ComparisonCondition,
     ComparisonOperator,

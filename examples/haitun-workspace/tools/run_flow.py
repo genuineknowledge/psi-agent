@@ -28,12 +28,6 @@ from psi_agent.session.conversation import Conversation
 from psi_agent.session.protocol import AgentRunOutcome
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
-from psi_agent.workflow_execution import (
-    ExecutionCheckpoint,
-    ResourceCapacity,
-    create_execution_checkpoint,
-    generate_plan,
-)
 
 _TOOLS_DIR = Path(__file__).parent
 _AGENT_DIR = _TOOLS_DIR.parent
@@ -52,6 +46,12 @@ from fusion_flow.job_store import (  # noqa: E402
     JobStore,
     RunLease,
     new_opaque_id,
+)
+from fusion_flow.workflow_execution import (  # noqa: E402
+    ExecutionCheckpoint,
+    ResourceCapacity,
+    create_execution_checkpoint,
+    generate_plan,
 )
 from fusion_flow.workflow_runner import (  # noqa: E402
     CompiledWorkflow,

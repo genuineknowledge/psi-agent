@@ -35,8 +35,6 @@ jobs:
         --collect-submodules chardet
         --collect-submodules hikari
         --collect-submodules antlr4
-        --collect-submodules psi_agent.workflow_graph
-        --hidden-import psi_agent.workflow_execution
         --collect-submodules matplotlib
     steps:
       - uses: actions/checkout@v7

@@ -31,9 +31,9 @@ Haitun workspace 中的 `flow` Skill 使用声明式 `.workflow` 源码。运行
 G4 parser → Core IR → `WorkflowGraph` → execution plan → Session-backed Agent Steps，
 由 workspace 的 `run_flow` 工具同步执行并返回最终 Artifact 映射。
 
-Skill 和 parser/compiler 位于
-`examples/haitun-workspace/skills/fusion-flow/`；通用图结构与执行器位于
-`src/psi_agent/workflow_graph/` 和 `src/psi_agent/workflow_execution.py`。
+Skill、parser/compiler、图结构与执行器均位于
+`examples/haitun-workspace/skills/fusion-flow/`，由 `fusion_flow.workflow_graph`
+和 `fusion_flow.workflow_execution` 提供内部模型与计划执行能力。
 用户仍以自然语言要求创建或运行工作流，不需要了解内部语言或执行器切换。
 
 旧 Node/TypeScript `.flow.ts` runtime 不再随 workspace 启用。已有 `.flow.ts`

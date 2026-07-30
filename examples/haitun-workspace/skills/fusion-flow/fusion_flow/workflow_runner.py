@@ -10,7 +10,10 @@ from os import PathLike
 from os.path import isabs
 from typing import Literal, cast
 
-from psi_agent.workflow_execution import (
+from .core_ir import Assertion, CompoundTerm, Concept, Constant, Operator
+from .graph_compiler import WorkflowGraphCompilation, WorkflowGraphCompiler
+from .parser import ParseContext, parse_workflow
+from .workflow_execution import (
     CheckpointObserver,
     ContextualStepDispatcher,
     DispatchContext,
@@ -20,11 +23,7 @@ from psi_agent.workflow_execution import (
     execute_plan,
     generate_plan,
 )
-from psi_agent.workflow_graph import ProducesEdge, StepNode, WorkflowGraph
-
-from .core_ir import Assertion, CompoundTerm, Concept, Constant, Operator
-from .graph_compiler import WorkflowGraphCompilation, WorkflowGraphCompiler
-from .parser import ParseContext, parse_workflow
+from .workflow_graph import ProducesEdge, StepNode, WorkflowGraph
 
 type Completion = Callable[[str], Awaitable[object]]
 type PathResolver = Callable[[str], Awaitable[str]]

@@ -3,7 +3,7 @@
 > 状态：已评审；2026-07-23 补充确认 Executor 包含 Human、Agent、Program
 > 日期：2026-07-23
 > 目标 PR：独立于 FusionFlow Python 运行时 PR
-> 图模型：`src/psi_agent/workflow_graph/`
+> 图模型：`examples/haitun-workspace/skills/fusion-flow/fusion_flow/workflow_graph/`
 > Core IR 后端：`examples/haitun-workspace/skills/fusion-flow/fusion_flow/graph_compiler.py`
 
 ## 1. 结论
@@ -50,9 +50,9 @@ ExecutionTrace
 
 分层约束：
 
-- `psi_agent.workflow_graph` 只定义通用图模型，不导入 example skill；
+- `fusion_flow.workflow_graph` 只定义图模型，不导入 parser、compiler 或 runner；
 - `fusion_flow.graph_compiler` 继承 PR12 的 `CoreIRCompiler`，并单向导入图模型；
-- 未来 `workflow_runtime` 可以同时依赖二者；
+- `fusion_flow.workflow_execution` 只依赖图模型，runner 再同时依赖编译与执行两层；
 - Core IR 是语义事实的上游，Graph 是执行依赖的派生视图；
 - 未编译进图的 Core IR 不能被假装已经进入 Graph。
 
@@ -72,18 +72,21 @@ Petri Net、SCC 分析或 Region CDFG 可以成为以后独立的分析/lowering
 ## 4. 包结构
 
 ```text
-src/psi_agent/workflow_graph/
-├── __init__.py
-└── model.py       # 不可变模型、结构校验、确定性序列化
-
-tests/psi_agent/workflow_graph/
-├── __init__.py
-├── test_model.py
-└── test_public_api.py
-
 examples/haitun-workspace/skills/fusion-flow/
-├── fusion_flow/graph_compiler.py  # CoreIRCompiler 的 WorkflowGraph 后端
-└── test/test_graph_compiler.py
+├── fusion_flow/
+│   ├── workflow_graph/
+│   │   ├── __init__.py
+│   │   └── model.py               # 不可变模型、结构校验、确定性序列化
+│   ├── workflow_execution.py      # WorkflowGraph → ExecutionPlan
+│   ├── graph_compiler.py          # CoreIRCompiler 的 WorkflowGraph 后端
+│   └── workflow_runner.py         # compile / plan / dispatch 组合边界
+└── test/
+    ├── workflow_graph/
+    │   ├── __init__.py
+    │   ├── test_model.py
+    │   └── test_public_api.py
+    ├── test_workflow_execution.py
+    └── test_graph_compiler.py
 ```
 
 不创建 scheduler、store、analyzer、region 或 registry。编译遍历复用 PR12
