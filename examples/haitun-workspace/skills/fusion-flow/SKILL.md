@@ -321,11 +321,6 @@ const performance_review: Step;
 const readability_review: Step;
 const synthesize_report: Step;
 
-const security_review_name: StepName;
-const performance_review_name: StepName;
-const readability_review_name: StepName;
-const synthesize_report_name: StepName;
-
 const security_agent: Agent, Executor;
 const performance_agent: Agent, Executor;
 const readability_agent: Agent, Executor;
@@ -353,16 +348,16 @@ workflow code_review {
   step_executor(synthesize_report) == editor_agent;
 
   -- STEP CONFIGURATION
-  step_name(security_review) == security_review_name;
+  step_name(security_review) == "Security Review";
   step_instruction(security_review) == "Inspect the source for exploitable behavior and unsafe trust boundaries. Return prioritized findings with concrete evidence and remediation.";
   step_timeout(security_review) == 300;
-  step_name(performance_review) == performance_review_name;
+  step_name(performance_review) == "Performance Review";
   step_instruction(performance_review) == "Identify material performance risks in the source. Explain the triggering workload, likely impact, evidence, and practical fixes.";
   step_timeout(performance_review) == 300;
-  step_name(readability_review) == readability_review_name;
+  step_name(readability_review) == "Readability Review";
   step_instruction(readability_review) == "Review maintainability and clarity. Return specific high-impact issues, why they matter, and focused improvements.";
   step_timeout(readability_review) == 300;
-  step_name(synthesize_report) == synthesize_report_name;
+  step_name(synthesize_report) == "Synthesize Report";
   step_instruction(synthesize_report) == "Combine the three reviews into one deduplicated report. Preserve evidence, resolve conflicts explicitly, prioritize actions, and separate findings from inference.";
 
   -- WORKFLOW CONFIGURATION
@@ -390,6 +385,7 @@ Runner-specific typed catalog extensions use the grammar's generic operator-call
 - In `DATA FLOW`, declare the complete external input List once, then every Step's `consumes`/`produces` edges and named Artifact selections in dependency order, then the complete external output List once.
 - Use exactly one symmetric Artifact dataflow contract: `input_workflow(workflow) == [artifact_a, artifact_b];`, `consumes(step) == [artifact_a, artifact_b];`, `produces(step) == [artifact_a, artifact_b];`, and `output_workflow(workflow) == [artifact_a, artifact_b];`. All four operators return `List`; even one Artifact requires an explicit List literal such as `[artifact]`. Never use these calls as standalone assertions, with `== True`, with an Artifact as a second argument, or through alternate multi variants.
 - Bool shorthand is only for supported non-dataflow Bool operators such as `independent(step)` and `depends_on(step, predecessor)`. Keep `== False` explicit. Retain the right-hand value for every non-Bool operator.
+- Write each Step display name directly as a JSON string, for example `step_name(security_review) == "Security Review";`. Do not declare an intermediate `StepName` constant or emit a symbolic display name ending in `_name`; symbolic StepName values are rejected before compilation.
 - When the user supplies a grammar-valid literal as a typed constant name, including a restricted quoted ID or `"./..."` path, preserve that literal and use it directly as the required preset value; do not hide it behind an alias constant and an extra equality.
 - Write every `step_instruction` as an executable task specification, not a label. State the objective, how to interpret consumed Artifacts, important constraints or evidence requirements, and the expected result. A name such as `"task_name"` is not an instruction.
 - Keep each Step independently understandable and bounded. Let information dependencies determine the hierarchy: synthesize a distinct group of upstream Artifacts before combining it with other groups only when that intermediate result is genuinely consumed downstream. Do not add layers merely because a request is large, and do not collapse separable work into coarse Steps merely to minimize node count.
@@ -475,11 +471,6 @@ const review_handler_step: Step;
 const fallback_handler_step: Step;
 const final_step: Step;
 
-const triage_name: StepName;
-const primary_handler_name: StepName;
-const review_handler_name: StepName;
-const fallback_handler_name: StepName;
-const final_name: StepName;
 const triage_agent: Agent, Executor;
 const primary_handler: Agent, Executor;
 const review_handler: Agent, Executor;
@@ -521,15 +512,15 @@ workflow priority_routing {
   step_executor(final_step) == final_consumer;
 
   -- STEP CONFIGURATION
-  step_name(triage_step) == triage_name;
+  step_name(triage_step) == "Triage";
   step_instruction(triage_step) == "Evaluate incoming_case against each supplied criterion. Produce one observation Artifact per criterion, citing the relevant evidence and marking uncertainty.";
-  step_name(primary_handler_step) == primary_handler_name;
+  step_name(primary_handler_step) == "Primary Handler";
   step_instruction(primary_handler_step) == "Produce the primary handling result for incoming_case. Explain the decision, preserve material constraints, and return a result suitable for downstream selection.";
-  step_name(review_handler_step) == review_handler_name;
+  step_name(review_handler_step) == "Review Handler";
   step_instruction(review_handler_step) == "Produce a reviewed handling result for incoming_case. Identify risks or ambiguities, resolve what the available evidence supports, and state any remaining uncertainty.";
-  step_name(fallback_handler_step) == fallback_handler_name;
+  step_name(fallback_handler_step) == "Fallback Handler";
   step_instruction(fallback_handler_step) == "Produce a safe fallback result for incoming_case when stronger handling criteria are not met. Explain limitations and preserve enough context for finalization.";
-  step_name(final_step) == final_name;
+  step_name(final_step) == "Finalize Result";
   step_instruction(final_step) == "Turn the selected_result into the final response. Preserve its supported conclusions, remove routing metadata, and make unresolved uncertainty explicit.";
 }
 ```
@@ -542,7 +533,7 @@ workflow priority_routing {
 - Never place `if(...)` inline inside `input_workflow`, `consumes`, `produces`, or `output_workflow`; those operators still take explicit Artifact Lists.
 - Do not replace candidate Artifacts with Boolean Step payloads or invent `switch`, `choice`, or conditional blocks.
 
-Use free-form quoted text only where the typed catalog expects an `Instruction`. Do not encode shell commands, code, large source documents, or secrets as instruction text. Put a long instruction in a companion Markdown file; pass source material through input Artifacts.
+Use free-form quoted text only where the typed catalog expects an `Instruction` or `StepName`. Do not encode shell commands, code, large source documents, or secrets as instruction text. Put a long instruction in a companion Markdown file; pass source material through input Artifacts.
 
 ### Anti-patterns to refuse
 
@@ -567,7 +558,6 @@ Every authored workflow follows this shape:
 const input_artifact: Artifact;
 const output_artifact: Artifact;
 const work_step: Step;
-const work_name: StepName;
 const worker: Agent, Executor;
 
 workflow workflow_name {
@@ -581,7 +571,7 @@ workflow workflow_name {
   step_executor(work_step) == worker;
 
   -- STEP CONFIGURATION
-  step_name(work_step) == work_name;
+  step_name(work_step) == "Work";
   step_instruction(work_step) == "Complete the requested transformation using input_artifact, follow the user's stated constraints, and return the concrete result as output_artifact.";
 }
 ```

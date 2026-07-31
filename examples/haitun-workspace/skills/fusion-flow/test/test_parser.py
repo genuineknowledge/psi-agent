@@ -81,6 +81,17 @@ def _context() -> ParseContext:
     return ParseContext(concepts=concepts, operators=operators)
 
 
+def _step_name_context() -> ParseContext:
+    context = _context()
+    context.concepts["StepName"] = Concept(name="StepName")
+    context.operators["step_name"] = Operator(
+        name="step_name",
+        input_concepts=(context.concepts["Step"],),
+        output_concept=context.concepts["StepName"],
+    )
+    return context
+
+
 @pytest.mark.parametrize(
     ("operator_call", "owner_rule"),
     (
@@ -119,6 +130,94 @@ def test_bool_call_shorthand_lowers_to_explicit_true_assertion() -> None:
     assert isinstance(result.core_ir, WorkflowFile)
     shorthand, explicit = result.core_ir.workflows[0].assertions
     assert shorthand == explicit
+
+
+def test_free_form_string_is_valid_for_step_name() -> None:
+    context = _step_name_context()
+    result = parse_workflow(
+        """
+        const work: Step;
+        workflow names { step_name(work) == "Security Review"; }
+        """,
+        context=context,
+    )
+
+    assert result.diagnostics == ()
+    assert result.core_ir is not None
+    assertion = result.core_ir.workflows[0].assertions[0]
+    assert isinstance(assertion.rhs, Constant)
+    assert assertion.rhs.symbol == "Security Review"
+    assert [concept.name for concept in assertion.rhs.belong_concepts] == ["StepName"]
+
+
+@pytest.mark.parametrize(
+    ("raw_name", "expected_name"),
+    (
+        (r'"Review \"A\""', 'Review "A"'),
+        (r'"Phase\u00201"', "Phase 1"),
+        ('"./Review"', "./Review"),
+    ),
+)
+def test_step_name_decodes_every_json_string_token(raw_name: str, expected_name: str) -> None:
+    context = _step_name_context()
+    result = parse_workflow(
+        f"""
+        const work: Step;
+        workflow names {{ step_name(work) == {raw_name}; }}
+        """,
+        context=context,
+    )
+
+    assert result.diagnostics == ()
+    assert result.core_ir is not None
+    assertion = result.core_ir.workflows[0].assertions[0]
+    assert isinstance(assertion.rhs, Constant)
+    assert assertion.rhs.symbol == expected_name
+
+
+def test_symbolic_step_name_is_rejected() -> None:
+    context = _step_name_context()
+
+    with pytest.raises(ValueError, match="step_name values must be JSON strings"):
+        parse_workflow(
+            """
+            const work: Step;
+            const work_name: StepName;
+            workflow names { step_name(work) == work_name; }
+            """,
+            context=context,
+        )
+
+
+def test_step_name_text_does_not_alias_declared_step_or_instruction() -> None:
+    context = _step_name_context()
+    context.operators["step_instruction"] = Operator(
+        name="step_instruction",
+        input_concepts=(context.concepts["Step"],),
+        output_concept=context.concepts["Instruction"],
+    )
+    result = parse_workflow(
+        """
+        const review: Step;
+        workflow names {
+          step_name(review) == "review";
+          step_instruction(review) == "review";
+        }
+        """,
+        context=context,
+    )
+
+    assert result.diagnostics == ()
+    assert result.core_ir is not None
+    (declared_review,) = result.core_ir.constants
+    name_assertion, instruction_assertion = result.core_ir.workflows[0].assertions
+    assert isinstance(name_assertion.rhs, Constant)
+    assert isinstance(instruction_assertion.rhs, Constant)
+    assert name_assertion.rhs.symbol == instruction_assertion.rhs.symbol == "review"
+    assert name_assertion.rhs is not instruction_assertion.rhs
+    assert name_assertion.rhs is not declared_review
+    assert [concept.name for concept in name_assertion.rhs.belong_concepts] == ["StepName"]
+    assert [concept.name for concept in instruction_assertion.rhs.belong_concepts] == ["Instruction"]
 
 
 def test_non_bool_call_cannot_use_predicate_shorthand() -> None:
@@ -532,7 +631,7 @@ def test_reversed_parenthesized_inline_instruction_infers_instruction_type() -> 
 
 
 def test_inline_text_is_rejected_outside_instruction_position() -> None:
-    with pytest.raises(ValueError, match="only valid where Instruction is required"):
+    with pytest.raises(ValueError, match="only valid where Instruction or StepName is required"):
         parse_workflow(
             'workflow invalid { custom("free form text") == true; }',
             context=_context(),

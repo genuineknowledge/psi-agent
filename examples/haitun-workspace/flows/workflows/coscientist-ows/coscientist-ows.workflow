@@ -17,19 +17,6 @@ const synthesis_route_design_step:Step;
 const synthesis_route_feasibility_analysis_step:Step;
 const shutdown_step:Step;
 
-const prepare_workflow:StepName;
-const recommend_1:StepName;
-const recommend_2:StepName;
-const recommend_3:StepName;
-const recommend_4:StepName;
-const merge_recommendation_outputs:StepName;
-const performance_proof:StepName;
-const mattergen:StepName;
-const mattersim:StepName;
-const synthesis_route_design:StepName;
-const synthesis_route_feasibility_analysis:StepName;
-const shutdown:StepName;
-
 const overall_water_splitting_knowledge_base:Artifact;
 const laboratory_rule_base:Artifact;
 const robot_chemist_skill_library:Artifact;
@@ -380,56 +367,56 @@ workflow coscientist_ows {
     ) == "./skills/coscientist-ows-entry/scripts/program.py";
 
     -- STEP CONFIGURATION
-    step_name(prepare_workflow_step) == prepare_workflow;
+    step_name(prepare_workflow_step) == "Prepare Workflow";
     step_instruction(
         prepare_workflow_step
     ) == "./instructions/prepare-workflow.md";
 
-    step_name(recommend_1_step) == recommend_1;
+    step_name(recommend_1_step) == "Recommend Candidate 1";
     step_instruction(
         recommend_1_step
     ) == "./instructions/recommend-candidate.md";
-    step_name(recommend_2_step) == recommend_2;
+    step_name(recommend_2_step) == "Recommend Candidate 2";
     step_instruction(
         recommend_2_step
     ) == "./instructions/recommend-candidate.md";
-    step_name(recommend_3_step) == recommend_3;
+    step_name(recommend_3_step) == "Recommend Candidate 3";
     step_instruction(
         recommend_3_step
     ) == "./instructions/recommend-candidate.md";
-    step_name(recommend_4_step) == recommend_4;
+    step_name(recommend_4_step) == "Recommend Candidate 4";
     step_instruction(
         recommend_4_step
     ) == "./instructions/recommend-candidate.md";
 
-    step_name(merge_recommendation_outputs_step) == merge_recommendation_outputs;
+    step_name(merge_recommendation_outputs_step) == "Merge Recommendation Outputs";
     step_instruction(
         merge_recommendation_outputs_step
     ) == "./instructions/merge-recommendation-outputs.md";
 
-    step_name(performance_proof_step) == performance_proof;
+    step_name(performance_proof_step) == "Performance Proof";
     step_instruction(
         performance_proof_step
     ) == "./instructions/prove-performance.md";
-    step_name(mattergen_step) == mattergen;
+    step_name(mattergen_step) == "MatterGen";
     step_instruction(
         mattergen_step
     ) == "./instructions/sample-structure.md";
-    step_name(mattersim_step) == mattersim;
+    step_name(mattersim_step) == "MatterSim";
     step_instruction(
         mattersim_step
     ) == "./instructions/evaluate-structures.md";
-    step_name(synthesis_route_design_step) == synthesis_route_design;
+    step_name(synthesis_route_design_step) == "Synthesis Route Design";
     step_instruction(
         synthesis_route_design_step
     ) == "./instructions/design-synthesis-route.md";
     step_name(
         synthesis_route_feasibility_analysis_step
-    ) == synthesis_route_feasibility_analysis;
+    ) == "Synthesis Route Feasibility Analysis";
     step_instruction(
         synthesis_route_feasibility_analysis_step
     ) == "./instructions/analyze-route-feasibility.md";
-    step_name(shutdown_step) == shutdown;
+    step_name(shutdown_step) == "Shutdown";
     step_instruction(
         shutdown_step
     ) == "./instructions/shutdown-workflow.md";

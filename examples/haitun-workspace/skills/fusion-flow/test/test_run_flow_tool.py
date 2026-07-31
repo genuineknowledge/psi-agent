@@ -196,8 +196,6 @@ _ORDERED_RESOURCE_WORKFLOW = """
 const ordered: Workflow;
 const after_step: Step;
 const before_step: Step;
-const after_name: StepName;
-const before_name: StepName;
 const worker: Agent;
 const gpu: Resource;
 const request: Artifact;
@@ -210,13 +208,13 @@ workflow ordered {
     output_workflow(ordered) == [after_result, before_result, selected_result];
     max_concurrency(ordered) == 2;
 
-    step_name(after_step) == after_name;
+    step_name(after_step) == "After";
     step_instruction(after_step) == "after";
     step_executor(after_step) == worker;
     consumes(after_step) == [request];
     produces(after_step) == [after_result];
 
-    step_name(before_step) == before_name;
+    step_name(before_step) == "Before";
     step_instruction(before_step) == "before";
     step_executor(before_step) == worker;
     consumes(before_step) == [request];
@@ -248,9 +246,6 @@ const review_flow: Workflow;
 const draft_step: Step;
 const review_step: Step;
 const publish_step: Step;
-const draft_name: StepName;
-const review_name: StepName;
-const publish_name: StepName;
 const writer: Agent;
 const reviewer: Human;
 const request: Artifact;
@@ -262,19 +257,19 @@ workflow review_flow {
     input_workflow(review_flow) == [request];
     output_workflow(review_flow) == [result];
 
-    step_name(draft_step) == draft_name;
+    step_name(draft_step) == "Draft";
     step_instruction(draft_step) == "draft_proposal";
     step_executor(draft_step) == writer;
     consumes(draft_step) == [request];
     produces(draft_step) == [draft];
 
-    step_name(review_step) == review_name;
+    step_name(review_step) == "Review";
     step_instruction(review_step) == "./instructions/review.md";
     step_executor(review_step) == reviewer;
     consumes(review_step) == [draft];
     produces(review_step) == [decision];
 
-    step_name(publish_step) == publish_name;
+    step_name(publish_step) == "Publish";
     step_instruction(publish_step) == "publish_reviewed_proposal";
     step_executor(publish_step) == writer;
     consumes(publish_step) == [decision];
@@ -285,7 +280,6 @@ workflow review_flow {
 _STATUS_ARTIFACT_WORKFLOW = """
 const status_flow: Workflow;
 const status_step: Step;
-const status_name: StepName;
 const worker: Agent;
 const request: Artifact;
 const status: Artifact;
@@ -294,7 +288,7 @@ workflow status_flow {
     input_workflow(status_flow) == [request];
     output_workflow(status_flow) == [status];
 
-    step_name(status_step) == status_name;
+    step_name(status_step) == "Status";
     step_instruction(status_step) == "report_status";
     step_executor(status_step) == worker;
     consumes(status_step) == [request];

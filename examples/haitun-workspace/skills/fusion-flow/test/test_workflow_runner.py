@@ -38,7 +38,6 @@ def _dispatch_workflow(
     return f"""
 const dispatch: Workflow;
 const dispatch_step: Step;
-const dispatch_name: StepName;
 {executor_declaration}
 const request: Artifact;
 const result: Artifact;
@@ -47,7 +46,7 @@ workflow dispatch {{
     input_workflow(dispatch) == [request];
     output_workflow(dispatch) == [result];
     {executor_configuration}
-    step_name(dispatch_step) == dispatch_name;
+    step_name(dispatch_step) == "Dispatch";
     step_instruction(dispatch_step) == "{instruction}";
     step_executor(dispatch_step) == worker;
     consumes(dispatch_step) == [request];
@@ -62,9 +61,6 @@ const select_demo: Workflow;
 const primary_step: Step;
 const fallback_step: Step;
 const final_step: Step;
-const primary_name: StepName;
-const fallback_name: StepName;
-const final_name: StepName;
 const worker: Agent;
 const request: Artifact;
 const primary_result: Artifact;
@@ -76,13 +72,13 @@ workflow select_demo {{
     input_workflow(select_demo) == [request];
     output_workflow(select_demo) == [selected_result, final_result];
 
-    step_name(primary_step) == primary_name;
+    step_name(primary_step) == "Primary";
     step_instruction(primary_step) == "produce_primary";
     step_executor(primary_step) == worker;
     consumes(primary_step) == [request];
     produces(primary_step) == [primary_result];
 
-    step_name(fallback_step) == fallback_name;
+    step_name(fallback_step) == "Fallback";
     step_instruction(fallback_step) == "produce_fallback";
     step_executor(fallback_step) == worker;
     consumes(fallback_step) == [request];
@@ -90,13 +86,20 @@ workflow select_demo {{
 
     selected_result == if({condition}, primary_result, fallback_result);
 
-    step_name(final_step) == final_name;
+    step_name(final_step) == "Final";
     step_instruction(final_step) == "consume_selected";
     step_executor(final_step) == worker;
     consumes(final_step) == [selected_result];
     produces(final_step) == [final_result];
 }}
 """
+
+
+def test_compile_workflow_uses_string_step_name_without_suffix() -> None:
+    compiled = run_workflow.compile_workflow(_dispatch_workflow("Agent", "do_work"))
+
+    assert compiled.graph.steps[0].name_id == "Dispatch"
+    assert isinstance(compiled.graph.steps[0].name_id, str)
 
 
 @pytest.mark.parametrize(
@@ -745,8 +748,6 @@ async def test_depends_on_orders_steps_without_an_artifact_dependency() -> None:
 const explicit_order: Workflow;
 const after_step: Step;
 const before_step: Step;
-const after_name: StepName;
-const before_name: StepName;
 const worker: Agent;
 const request: Artifact;
 const after_result: Artifact;
@@ -756,13 +757,13 @@ workflow explicit_order {
     input_workflow(explicit_order) == [request];
     output_workflow(explicit_order) == [after_result, before_result];
 
-    step_name(after_step) == after_name;
+    step_name(after_step) == "After";
     step_instruction(after_step) == "after";
     step_executor(after_step) == worker;
     consumes(after_step) == [request];
     produces(after_step) == [after_result];
 
-    step_name(before_step) == before_name;
+    step_name(before_step) == "Before";
     step_instruction(before_step) == "before";
     step_executor(before_step) == worker;
     consumes(before_step) == [request];

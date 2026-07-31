@@ -90,6 +90,9 @@ class _CoreIRVisitor:
         self._constants: dict[str, Constant] = {}
         self._boolean_constants: dict[bool, Constant] = {}
         self._inferred_concepts: dict[str, Concept] = {}
+        self._text_literals: dict[tuple[Concept, str], Constant] = {}
+        self._instruction_concept = context.concepts.get("Instruction")
+        self._step_name_concept = context.concepts.get("StepName")
 
     def visit_workflow_file(self, context: Any) -> WorkflowFile:
         for declaration in context.constDecl():
@@ -264,16 +267,78 @@ class _CoreIRVisitor:
         items = () if term_list is None else tuple(self.visit_term(term) for term in term_list.term())
         return ListTerm(items=items)
 
-    def visit_atomic_term(self, context: Any, expected_concept: Concept | None = None) -> Constant:
+    def visit_atomic_term(
+        self,
+        context: Any,
+        expected_concept: Concept | None = None,
+    ) -> Constant:
         boolean_literal = context.booleanLiteral()
         if boolean_literal is not None:
             return self._boolean_constant(boolean_literal.getText())
+
+        # ANTLR chooses the first matching lexer rule, so JSON strings reach
+        # this visitor as three token kinds:
+        #   "Review" -> QUOTEDCONSTANTID
+        #   "./Review" -> RELATIVE_PATH_ID
+        #   "Security Review" or escaped text -> STRING_LITERAL
         string_literal = context.STRING_LITERAL()
         if string_literal is not None:
-            if expected_concept is None or expected_concept.name != "Instruction":
-                raise ValueError("FusionFlow free-form quoted text is only valid where Instruction is required.")
-            return self._resolve_constant(string_literal.getText(), expected_concept)
-        return self._resolve_constant(context.constantName().getText(), expected_concept)
+            if expected_concept is None or expected_concept not in {
+                self._instruction_concept,
+                self._step_name_concept,
+            }:
+                raise ValueError(
+                    "FusionFlow free-form quoted text is only valid where Instruction or StepName is required."
+                )
+            return self._intern_text_literal(
+                string_literal.getText(),
+                expected_concept,
+            )
+
+        constant_name = context.constantName()
+        raw_constant = constant_name.getText()
+        is_quoted_id = constant_name.QUOTEDCONSTANTID() is not None
+        is_relative_path = constant_name.RELATIVE_PATH_ID() is not None
+
+        if expected_concept is not None and expected_concept == self._step_name_concept:
+            if not (is_quoted_id or is_relative_path):
+                raise ValueError("FusionFlow step_name values must be JSON strings.")
+            return self._intern_text_literal(
+                raw_constant,
+                expected_concept,
+            )
+
+        # Preserve relative-path Instruction constants, but treat short quoted
+        # Instruction values as typed text, matching STRING_LITERAL behavior.
+        if is_quoted_id and expected_concept is not None and expected_concept == self._instruction_concept:
+            return self._intern_text_literal(
+                raw_constant,
+                expected_concept,
+            )
+
+        return self._resolve_constant(
+            raw_constant,
+            expected_concept,
+        )
+
+    def _intern_text_literal(
+        self,
+        raw_text: str,
+        concept: Concept,
+    ) -> Constant:
+        """Decode and cache typed text outside the symbolic namespace."""
+
+        symbol = self._decode_json_string(raw_text)
+        key = (concept, symbol)
+        constant = self._text_literals.get(key)
+        if constant is None:
+            constant = Constant(
+                symbol=symbol,
+                belong_concepts=(concept,),
+            )
+            self._text_literals[key] = constant
+
+        return constant
 
     def _resolve_constant(self, raw_text: str, expected_concept: Concept | None = None) -> Constant:
         is_numeric = raw_text.replace(".", "", 1).isdigit()
@@ -335,11 +400,18 @@ class _CoreIRVisitor:
     @staticmethod
     def _strip_quotes(symbol: str) -> str:
         if symbol.startswith('"') and symbol.endswith('"'):
-            value = json.loads(symbol)
-            if not isinstance(value, str):
-                raise ValueError(f"FusionFlow quoted constant must decode to text: {symbol!r}")
-            return value
+            return _CoreIRVisitor._decode_json_string(symbol)
         return symbol
+
+    @staticmethod
+    def _decode_json_string(raw_text: str) -> str:
+        try:
+            value = json.loads(raw_text)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"Invalid FusionFlow JSON string literal: {raw_text!r}.") from error
+        if not isinstance(value, str):
+            raise ValueError(f"FusionFlow JSON string literal must decode to text: {raw_text!r}.")
+        return value
 
 
 def parse_workflow(source: str, *, context: ParseContext) -> ParseResult:
