@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -267,6 +268,11 @@ class _CoreIRVisitor:
         boolean_literal = context.booleanLiteral()
         if boolean_literal is not None:
             return self._boolean_constant(boolean_literal.getText())
+        string_literal = context.STRING_LITERAL()
+        if string_literal is not None:
+            if expected_concept is None or expected_concept.name != "Instruction":
+                raise ValueError("FusionFlow free-form quoted text is only valid where Instruction is required.")
+            return self._resolve_constant(string_literal.getText(), expected_concept)
         return self._resolve_constant(context.constantName().getText(), expected_concept)
 
     def _resolve_constant(self, raw_text: str, expected_concept: Concept | None = None) -> Constant:
@@ -329,7 +335,10 @@ class _CoreIRVisitor:
     @staticmethod
     def _strip_quotes(symbol: str) -> str:
         if symbol.startswith('"') and symbol.endswith('"'):
-            return symbol[1:-1]
+            value = json.loads(symbol)
+            if not isinstance(value, str):
+                raise ValueError(f"FusionFlow quoted constant must decode to text: {symbol!r}")
+            return value
         return symbol
 
 

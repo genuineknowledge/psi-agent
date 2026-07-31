@@ -28,6 +28,7 @@ from psi_agent.session.protocol import (
     REASONING_KIND_TOOL_RESULT,
     AgentChunk,
     AgentError,
+    AgentRunOutcome,
 )
 from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
@@ -259,6 +260,7 @@ class SessionAgent:
         extra_params: dict[str, Any] | None = None,
         *,
         response_kind: str | None = None,
+        outcome: AgentRunOutcome | None = None,
     ) -> AsyncGenerator[AgentChunk]:
         """Run one turn of the ReAct agent loop.  Yields ``AgentChunk``.
 
@@ -272,6 +274,8 @@ class SessionAgent:
         When omitted, assistant/tool rows inherit the user message's ``kind``
         (Channel turns default to ``chat``).
         """
+        if outcome is not None:
+            outcome.termination_reason = None
         request_params = dict(extra_params or {})
         hook_message = dict(user_message)
         hook_message |= request_params
@@ -405,6 +409,8 @@ class SessionAgent:
                                         acc["function"]["arguments"] += func["arguments"]
 
                             if finish_reason == "error":
+                                if outcome is not None:
+                                    outcome.termination_reason = finish_reason
                                 logger.warning("AI returned error, stopping without saving to history")
                                 raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
 
@@ -493,6 +499,8 @@ class SessionAgent:
                                 break
 
                     if finish_reason == "stop":
+                        if outcome is not None:
+                            outcome.termination_reason = finish_reason
                         logger.debug("AI finished with stop")
                         logger.debug(
                             f"Stop: content={len(accumulated_content)} chars, "
@@ -513,6 +521,8 @@ class SessionAgent:
                         return
 
                     if finish_reason not in ("error", "stop", "tool_calls", "compaction_needed"):
+                        if outcome is not None:
+                            outcome.termination_reason = finish_reason or "missing_finish_reason"
                         logger.warning(
                             f"Unexpected finish_reason={finish_reason!r}, "
                             f"saving {len(accumulated_content)} chars of content and stopping"
@@ -528,6 +538,8 @@ class SessionAgent:
                         return
 
                 else:
+                    if outcome is not None:
+                        outcome.termination_reason = "max_tool_rounds"
                     logger.warning(f"Reached max tool rounds ({self._max_tool_rounds}), stopping")
                     self._conversation.add(
                         with_kind(

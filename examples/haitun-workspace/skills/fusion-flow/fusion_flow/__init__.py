@@ -1,3 +1,4 @@
+from .checker import check_workflow
 from .compiler import CoreIRCompiler
 from .contracts import (
     CheckResult,
@@ -28,6 +29,12 @@ from .graph_compiler import (
     WorkflowGraphCompiler,
 )
 from .parser import ParseContext, parse_workflow
+from .planning import (
+    PlannedStep,
+    PlannedSyntax,
+    PlanningCheckResult,
+    check_planned_steps,
+)
 
 __all__ = [
     "Assertion",
@@ -46,6 +53,9 @@ __all__ = [
     "Operator",
     "ParseContext",
     "ParseResult",
+    "PlannedStep",
+    "PlannedSyntax",
+    "PlanningCheckResult",
     "SourcePosition",
     "SourceSpan",
     "Term",
@@ -54,5 +64,7 @@ __all__ = [
     "WorkflowGraphCompilation",
     "WorkflowGraphCompilationError",
     "WorkflowGraphCompiler",
+    "check_planned_steps",
+    "check_workflow",
     "parse_workflow",
 ]

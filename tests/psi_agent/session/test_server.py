@@ -12,7 +12,7 @@ from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
-from psi_agent.session.protocol import AgentChunk
+from psi_agent.session.protocol import AgentChunk, AgentRunOutcome
 from psi_agent.session.server import serve_session
 from psi_agent.session.tool_registry import ToolRegistry
 
@@ -26,6 +26,7 @@ class _FailingSessionAgent(SessionAgent):
         extra_params: dict[str, Any] | None = None,
         *,
         response_kind: str | None = None,
+        outcome: AgentRunOutcome | None = None,
     ) -> AsyncGenerator[AgentChunk]:
         yield AgentChunk(content="partial")
         raise RuntimeError("boom")

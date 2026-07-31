@@ -934,15 +934,37 @@ class System:
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
         runtime_bundle = legacy_dir / "runtime" / "agent-flow-core.bundle.mjs"
         session_shim_posix = (Path(str(agent_resolved)) / "bin" / "session_shim.py").as_posix()
+        workflow_registry_dir = flows_dir / "workflows"
         flows_index = await _build_flows_index(flows_dir)
 
-        return f"""## Fusion Flow Next (G4 formal-language workflow; legacy .flow.ts fallback)
+        return f"""## Fusion Flow Next (formal-language workflow; explicit legacy fallback)
 
-Use `fusion-flow` and `run_flow` by default for multi-agent or multi-step work.
-Keep `fusion-flow-legacy` + `flow_run` available only for an explicit
-legacy Fuclaw/TypeScript request or an existing `.flow.ts` file.
+Fusion Flow Next is defined by `FusionFlow.g4`. Use `fusion-flow` and
+`run_flow` by default for multi-agent or multi-step work.
 
-### Reusable Flows
+### `/workflow:<slug>` — saved workflow command
+
+Any trimmed user message matching exactly `/workflow:<slug>` invokes one saved
+Fusion Flow Next declaration. Accept no suffix, inline parameters, or trailing
+argument syntax.
+
+For this command:
+1. Read the full skill instructions at:
+   {fusion_md}
+   Relative path: skills/fusion-flow/SKILL.md
+2. Map the slug to `flows/workflows/<slug>/<slug>.workflow`.
+3. Read the declaration and inspect `input_workflow(...)` before execution.
+4. Resolve every required input from the conversation. If a value is missing,
+   ask for it and end the turn without probing `run_flow`.
+5. Call `run_flow` exactly once with `flow_path`, complete `inputs_json`, and
+   declared `resource_capacities_json`.
+6. If the result contains `$fusion_flow/control`, pass its request fields to
+   `clarify`; on the next reply continue only through `run_flow_resume` with the
+   matching `run_id` and `request_id`.
+
+The reusable registry root is fixed at {workflow_registry_dir}.
+
+### Other reusable flows
 {flows_index}
 
 ### When to activate
@@ -968,17 +990,19 @@ To activate:
    {flows_dir}/<task-slug>/
    Layout:
    - {flows_dir}/<task-slug>/<task-slug>.workflow
-3. Before calling `run_flow`, gather any file, web, or workspace context in the parent Session.
-   Inner Agent Steps have no tools and receive only their instruction body plus input Artifacts.
-4. Build `instructions_json` as an exact mapping from every `step_instruction` ID in the G4
-   source to the full instruction text. Never pass paths or unresolved references as bodies.
-5. Call `run_flow` once with `flow_path`, `instructions_json`, `inputs_json`, and declared
-   resource capacities. It parses, plans, and executes synchronously.
+3. Review the source against `skills/fusion-flow/grammar/FusionFlow.g4`.
+4. Call `run_flow` once with all declared inputs and resource pools.
+5. Report the output Artifact mapping. For `$fusion_flow/control`, use
+   `clarify` and next-turn `run_flow_resume` as described above.
 
-Fusion Flow Next's current executor is intentionally bounded to Agent-only one-shot DAGs:
-at most 32 Steps, concurrency 8,
-one model round per Step, and 15 minutes total. Program/Human executors, nested workflow calls,
-Step tools, persistence, and resume are not supported.
+The runtime owns parsing, graph validation, plan generation, dependency
+scheduling, resource leasing, Agent/Program Step dispatch, and checkpointed
+Human waits. Workflows without Human Steps finish in the initial `run_flow`
+call; Human workflows continue only through `run_flow_resume`. Instructions may
+be inline text or bundle-relative Markdown references resolved by the runner.
+Each Step receives only its executor-specific, workspace-confined capability
+set. Every materialized Artifact is persisted under the workflow bundle's
+`runs/<run-id>/artifacts/` directory.
 
 If the user explicitly supplies `.flow.ts` or asks for Fuclaw/TypeScript compatibility, read
 `skills/fusion-flow-legacy/SKILL.md` and use the legacy `flow_run` path instead. Do not translate or
@@ -996,7 +1020,9 @@ Rules:
 1. Keep both `skills/fusion-flow/` and `skills/fusion-flow-legacy/` immutable.
 2. Treat skills without `created_by: agent` as read-only.
 3. New learned procedures -> `skills/<skill-name>/SKILL.md` via `skill_manage(action="create")`.
-4. Reusable workflow templates -> `flows/curated/<flow-name>/FLOW.md` via `flow_manage`.
+4. Reusable Fusion Flow Next declarations ->
+   `flows/workflows/<slug>/<slug>.workflow` via workspace file tools.
+   `flows/curated/<flow-name>/FLOW.md` via `flow_manage` remains a compatibility catalog.
 5. One-off task executions -> `flows/<task-slug>/`.
 
 The following existing runtime and credential handoff remains available unchanged for the
@@ -1056,7 +1082,7 @@ hand-copying the key.
 Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files.
 
 Fusion Flow Next's executor reuses the invoking psi-agent Session's configured AI socket. Never write API keys into
-this workspace, generated workflows, `instructions_json`, or committed `.env` files."""
+this workspace, generated workflows, instruction files, or committed `.env` files."""
 
     async def build_system_prompt(
         self,

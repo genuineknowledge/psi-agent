@@ -43,10 +43,11 @@ JSONL 格式零依赖，逐行追加读写简单。现路径为 AppData ``{appda
 Fusion Flow Next 是由 `FusionFlow.g4` 定义的形式语言工作流系统。Haitun workspace
 的 `fusion-flow` Skill 负责其声明式源码；parser/compiler 将源码编译为
 `fusion_flow.workflow_graph` 的 Step–Artifact 图，`fusion_flow.workflow_execution`
-生成并执行可检查的计划。bounded、Agent-only、one-shot 是当前执行器的能力边界，
-不是这门 Flow 语言的定义。内层 Step 没有工具，外层 Session 必须先收集输入并提供
-完整 instruction body。旧 Node/Fuclaw runtime 位于 `fusion-flow-legacy`，只处理
-显式 `.flow.ts` 兼容请求。
+生成并执行可检查的计划。workspace runner 在计划之上分派 Agent 和 Program，并用
+checkpoint + `run_flow_resume` 处理 Human 的跨回合等待。不含 Human Step 的工作流在
+首次 `run_flow` 调用内完成；Human 工作流只通过保存的请求继续。各类 Step 只能使用
+runner 注入的受限能力，外层 Session 仍须先收集完整的输入 Artifact。旧 Node/Fuclaw
+runtime 位于 `fusion-flow-legacy`，只处理显式 `.flow.ts` 兼容请求。
 
 ## 技术栈
 

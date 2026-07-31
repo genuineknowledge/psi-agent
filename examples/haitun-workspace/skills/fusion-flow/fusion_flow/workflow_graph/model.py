@@ -1,4 +1,4 @@
-"""Immutable Step-Artifact graph values with eager structural validation.
+"""FusionFlow Step-Artifact graph values with eager structural validation.
 
 The model is intentionally declarative: it describes workflow topology and
 policy, but it does not schedule steps or assign runtime state.  Validation is

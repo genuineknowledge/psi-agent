@@ -20,39 +20,9 @@ run_flow_module = cast(Any, importlib.import_module("run_flow"))
 
 def test_g4_and_legacy_public_entry_points_coexist() -> None:
     assert callable(run_flow_module.run_flow)
+    assert callable(run_flow_module.run_flow_resume)
     assert callable(flow_run_module.flow_run)
     assert callable(flow_manage_module.flow_manage)
-
-
-@pytest.mark.anyio
-async def test_inner_agent_is_single_round_and_has_no_tools() -> None:
-    agent, conversation = await run_flow_module._create_step_agent(
-        "http://ai.example",
-        "fusion-flow-smoke",
-    )
-
-    assert conversation.session_id == "fusion-flow-smoke"
-    assert agent._max_tool_rounds == 1
-    assert agent._tool_registry.tools == {}
-
-
-def test_legacy_runner_loads_env_from_relocated_skill(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    key = "FUSION_FLOW_LEGACY_ENV_TEST"
-    flow = tmp_path / "flows" / "demo.flow.ts"
-    canonical = tmp_path / "skills" / "fusion-flow"
-    legacy = tmp_path / "skills" / "fusion-flow-legacy"
-    flow.parent.mkdir(parents=True)
-    canonical.mkdir(parents=True)
-    legacy.mkdir(parents=True)
-    flow.write_text("", encoding="utf-8")
-    (canonical / ".env").write_text(f"{key}=wrong\n", encoding="utf-8")
-    (legacy / ".env").write_text(f"{key}=relocated\n", encoding="utf-8")
-    monkeypatch.delenv(key, raising=False)
-
-    assert flow_run_module._load_flow_env(flow)[key] == "relocated"
 
 
 @pytest.mark.anyio

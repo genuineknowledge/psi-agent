@@ -1,4 +1,4 @@
-"""Lower checked FusionFlow Core IR into the FusionFlow graph model.
+"""Lower checked FusionFlow Core IR into the psi-agent workflow graph model.
 
 The shared :class:`CoreIRCompiler` owns traversal.  This module only implements
 the target-specific hooks: it classifies graph assertions, collects their

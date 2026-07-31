@@ -11,8 +11,9 @@ in the system prompt). It merges the most useful parts of the other example work
   message, so staying current leaves the prompt and every earlier turn untouched. `USER.md` and the dynamic
   context files stay in the prompt and trigger a rebuild only when their **content** changes.
 - **Fusion Flow Next** — `fusion-flow` hosts the formal-language workflow system
-  defined by `FusionFlow.g4`; its current `run_flow` executor produces checked
-  Step–Artifact plans and is bounded, Agent-only, and one-shot.
+  defined by `FusionFlow.g4`; `workflow_graph` stores checked Step–Artifact
+  structure, `workflow_execution` executes inspectable plans, and the workspace
+  runner dispatches Agent and Program Steps plus resumable Human waits.
   Node/Fuclaw `fusion-flow-legacy` + `flow_run` remains an explicit `.flow.ts` fallback.
   `flow_manage` supports both and prefers G4 assets.
 - **Skills + file tools** — the full hermes-skills domain skill set plus selected curated
@@ -124,7 +125,7 @@ service tools:
 | `write_word` | Build a real `.docx` from structured blocks (headings/paragraphs/tables); sets the East-Asian font (`w:eastAsia`) on every style so Chinese text isn't "字体不齐". |
 | `skill_manage` | CRUD on **agent** `skills/<name>/SKILL.md`（经 `get_agent()`；agent-created skills are mutable）. |
 | `flow_manage` | CRUD + promote on Fusion Flow assets under **workspace** `flows/`; prefers `.workflow` / `.g4` over `.flow.ts`. |
-| `run_flow` | Execute Fusion Flow Next programs as checked one-shot plans; requires exact instruction bodies and gives inner Steps no tools. |
+| `run_flow` / `run_flow_resume` | Execute Fusion Flow Next plans. Runs without Human Steps finish in the initial call; Human Steps return a checkpointed request that resumes only through `run_flow_resume`. |
 | `flow_run` | Legacy Node/Fuclaw `.flow.ts` runner retained for explicit fallback use. |
 | `schedule_manage` | CRUD on **workspace** `schedules/<name>/TASK.md`. **Recurring**: `action=create` + `cron`. **One-shot**: `action=create` + `once_at` (`YYYY-MM-DD HH:MM` local) → writes cron + `run_once: true` (Session deletes TASK.md after first successful fire). **`fire=tool`**: Session calls `tool(**tool_args)` at fire time with no LLM (required for Feishu IM reminders via `feishu_message_send`). `fire=prompt` (default) injects TASK body for an agent turn. Also `visibility` (`display`/`silent`), list/view/patch/delete. |
 | `trigger_manage` | CRUD on **agent** `triggers/<name>/TRIGGER.md`。`event` 名应对齐 agent ``channel_events/`` 已接通能力；Session 不再用 catalog 硬拒。`fire=tool` 命中后直调工具。见 `skills/feishu-event-remind`；事件定义见 ``channel_events/README.md``。 |

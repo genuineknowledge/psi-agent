@@ -47,10 +47,13 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 - **First run** triggers a short onboarding (from `BOOTSTRAP.md`). Delete `BOOTSTRAP.md` to
   skip it.
 - **Fusion Flow Next** is the default for new workflows. Its formal G4 language uses the
-  bundled Python parser/compiler and checked `run_flow` executor; no separate setup is required. The existing
+  bundled Python parser/compiler and checked `run_flow` executor for Agent and Program Steps;
+  Human waits continue through `run_flow_resume`. No separate setup is required. The existing
   `fusion-flow-legacy` Node/Fuclaw runtime remains available for explicit `.flow.ts` work:
   first use `cd examples/haitun-workspace/skills/fusion-flow-legacy && npm install`.
-  Generated flows go under `flows/<task-slug>/`; reusable templates under `flows/curated/`.
+  One-off flows go under `flows/<task-slug>/`; saved `/workflow:<slug>` declarations go under
+  `flows/workflows/<slug>/`. `flows/curated/` remains only as a compatibility catalog for
+  `flow_manage` and legacy assets.
   For stateful sub-agent sessions, copy `bin/env.stateful.template` to
   `skills/fusion-flow-legacy/.env` and fill in the paths.
 - **Serper search** needs psi-agent installed with the `mcp` extra and `uvx` on PATH.

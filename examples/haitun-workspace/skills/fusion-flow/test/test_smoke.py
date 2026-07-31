@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
+from pathlib import Path
 
 import anyio
 import pytest
@@ -8,7 +10,6 @@ from fusion_flow.workflow_execution import (
     Await,
     ExecutionPlanError,
     ResourceAllocator,
-    StepExecutionError,
     execute_plan,
     generate_plan,
 )
@@ -23,7 +24,7 @@ from fusion_flow.workflow_graph import (
     WorkflowGraphError,
     WorkflowPolicy,
 )
-from fusion_flow.workflow_runner import execute_workflow
+from fusion_flow.workflow_runner import ProgramInvocation, execute_workflow
 
 
 def test_graph_contract_serializes_and_validates() -> None:
@@ -157,7 +158,7 @@ async def test_timeout_releases_resource_for_the_next_run() -> None:
         await anyio.sleep_forever()
         raise AssertionError("unreachable")
 
-    with pytest.RaisesGroup(pytest.RaisesExc(StepExecutionError, match="workflow step 'step' failed")):
+    with pytest.RaisesGroup(pytest.RaisesExc(TimeoutError)):
         await execute_plan(
             generate_plan(graph),
             graph,
@@ -187,38 +188,65 @@ async def test_timeout_releases_resource_for_the_next_run() -> None:
 
 
 @pytest.mark.anyio
-async def test_g4_program_compiles_and_executes_end_to_end() -> None:
+async def test_agent_and_program_execute_as_one_checked_dag(tmp_path: Path) -> None:
     source = """
 const dispatch: Workflow;
-const dispatch_step: Step;
-const dispatch_name: StepName;
-const worker: Agent;
+const analyze_step: Step;
+const program_step: Step;
+const analyze_name: StepName;
+const program_name: StepName;
+const analyst: Agent, Executor;
+const worker: Program, Executor;
 const request: Artifact;
+const analysis: Artifact;
 const result: Artifact;
 
 workflow dispatch {
     input_workflow(dispatch) == [request];
     output_workflow(dispatch) == [result];
-    step_name(dispatch_step) == dispatch_name;
-    step_instruction(dispatch_step) == "summarize_request";
-    step_executor(dispatch_step) == worker;
-    consumes(dispatch_step) == [request];
-    produces(dispatch_step) == [result];
+    step_name(analyze_step) == analyze_name;
+    step_instruction(analyze_step) == "Analyze the request.";
+    step_executor(analyze_step) == analyst;
+    consumes(analyze_step) == [request];
+    produces(analyze_step) == [analysis];
+    step_name(program_step) == program_name;
+    step_instruction(program_step) == "Transform the analysis.";
+    step_executor(program_step) == worker;
+    program_path(worker) == "./bin/worker";
+    consumes(program_step) == [analysis];
+    produces(program_step) == [result];
 }
 """
     prompts: list[str] = []
+    invocations: list[ProgramInvocation] = []
 
     async def complete(prompt: str) -> str:
         prompts.append(prompt)
-        return "completed"
+        return "agent output"
+
+    async def run_program(invocation: ProgramInvocation) -> Mapping[str, object]:
+        invocations.append(invocation)
+        return {"result": "program output"}
 
     result = await execute_workflow(
         source,
-        instruction_bodies={"summarize_request": "Summarize the request."},
         request="Explain structured concurrency.",
         complete=complete,
+        strict_executors=True,
+        supported_executor_kinds=("Agent", "Program"),
+        work_dir=tmp_path,
+        run_program=run_program,
     )
 
-    assert result == {"result": "completed"}
-    assert "Instruction body:\nSummarize the request." in prompts[0]
+    assert result == {"result": "program output"}
+    assert "Instruction:\nAnalyze the request." in prompts[0]
     assert 'Inputs: {"request": "Explain structured concurrency."}' in prompts[0]
+    assert len(invocations) == 1
+    invocation = invocations[0]
+    assert invocation.argv == ("./bin/worker",)
+    assert invocation.cwd == tmp_path
+    assert invocation.output_ids == ("result",)
+    assert json.loads(invocation.stdin) == {
+        "instruction": "Transform the analysis.",
+        "inputs": {"analysis": "agent output"},
+    }

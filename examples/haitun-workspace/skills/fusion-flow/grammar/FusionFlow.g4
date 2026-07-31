@@ -131,6 +131,7 @@ listLiteral
 
 atomicTerm
     : constantName
+    | STRING_LITERAL
     | booleanLiteral
     ;
 
@@ -235,7 +236,11 @@ agentOwnerOperator
     | 'agent_system_prompt'
     ;
 
-/* Constants are numbers, restricted quoted IDs, or lowercase identifiers. */
+/*
+ * Constants are numbers, relative paths, restricted quoted IDs, or lowercase
+ * identifiers. JSON-style quoted text is a separate atomic term and the Core
+ * IR parser accepts it only where the catalog requires Instruction.
+ */
 constantName
     : NUMBER
     | RELATIVE_PATH_ID
@@ -284,8 +289,12 @@ fragment LOWERID : [a-z][A-Za-z0-9_]*;
 UPID : UPPERID;
 LOWID : LOWERID;
 RELATIVE_PATH_ID : '"./' [A-Za-z0-9._/-]+ '"';
-/* Restricted ID, not a general string: no whitespace or escape sequences. */
+/* Restricted ID: no whitespace or escape sequences. */
 QUOTEDCONSTANTID : '"' [A-Za-z0-9.!#$%?@_{|}~`]* '"';
+/* JSON-style text supports spaces, Unicode, and standard escape sequences. */
+STRING_LITERAL : '"' (ESCAPE_SEQUENCE | ~["\\\r\n])* '"';
+fragment ESCAPE_SEQUENCE : '\\' (["\\/bfnrt] | 'u' HEX_DIGIT HEX_DIGIT HEX_DIGIT HEX_DIGIT);
+fragment HEX_DIGIT : [0-9a-fA-F];
 COLON : ':';
 COMMA : ',';
 SEMICOLON : ';';
