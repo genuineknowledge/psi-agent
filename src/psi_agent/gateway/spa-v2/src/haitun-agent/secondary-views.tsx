@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { type ClipboardEvent, type FormEvent, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { NEW_TASK_PRESETS } from "./demo-fixtures";
 import { OVERVIEW_LABEL, type Task, type TaskTemplate } from "./model";
 import { AgentMark, BrandLogo } from "./primitives";
@@ -256,10 +257,10 @@ export function TemplateLibrary({
 
       <button type="button" className="template-back-link" onClick={onBack}><ArrowLeft size={15} /> 返回{OVERVIEW_LABEL}</button>
 
-      {builderOpen && (
-        <div className="template-builder-layer">
+      {builderOpen && createPortal(
+        <div className="template-builder-layer" role="presentation">
           <button type="button" className="template-builder-scrim" onClick={() => setBuilderOpen(false)} aria-label="关闭模板编辑器" />
-          <aside className="template-builder" aria-label="新建任务模板">
+          <aside className="template-builder" role="dialog" aria-modal="true" aria-label="新建任务模板">
             <header><div><span className="eyebrow">模板库</span><h2>新建模板</h2></div><button type="button" className="icon-button" onClick={() => setBuilderOpen(false)} aria-label="关闭"><X size={19} /></button></header>
             <form onSubmit={saveTemplate}>
               <label><span>模板名称</span><input value={templateTitle} onChange={(event) => setTemplateTitle(event.target.value)} placeholder="例如：新品发布复盘" autoFocus /></label>
@@ -269,7 +270,8 @@ export function TemplateLibrary({
               <button type="submit" className="primary-button" disabled={!templateTitle.trim() || !templatePrompt.trim()}><Check size={16} /> 保存模板</button>
             </form>
           </aside>
-        </div>
+        </div>,
+        document.body,
       )}
     </section>
   );

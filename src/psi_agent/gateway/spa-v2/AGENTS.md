@@ -29,6 +29,7 @@
 | 工作区切换 | 侧栏打开 PathPicker | 设置「切换工作区」→ 全屏选择页；**浏览**走 `/workspace/places` + `/browse`（对齐 v1）；偏好 `gw-v2-workspace` |
 | 顶栏新建 | — | 右上角「新建任务」+ 侧栏同入口（`⌘/Ctrl N`）；**分屏聚焦**时对话栏「收起」旁也有同款入口（左栏收起后展开钮旁再补一枚） |
 | Agent 包 | 与 workspace 合一 | ``GET /defaults``.agent → 新建任务 ``POST /sessions`` 带 `agent`（可与用户工作区不同）。设置「切换 Agent 包」与工作区同区；全屏 `WorkspaceGate kind=agent`；偏好 `gw-v2-agent`（覆盖 defaults）。**刻意为之**：只影响**新建** Session；已有任务仍用创建时绑定的 `agent` |
+| 任务模板库 | — | 卡片正文/分类/交付物/页脚等字号 ≥12–14px（勿回退 8–10px 设计稿字号）。「新建模板」抽屉经 `createPortal` 挂 `document.body`：全屏遮罩 + 右侧贴边抽屉（勿嵌在 `.main-stage` 内导致四边露白） |
 
 设置弹窗保留**切换工作区**与**切换 Agent 包**（真实功能）；通知/交付位置等占位项已去掉，避免空壳菜单。
 | 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
