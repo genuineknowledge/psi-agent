@@ -236,7 +236,7 @@ This is the flagship: turn a natural-language intent into a runnable FusionFlow 
 1. **Understand intent** — restate the user's goal in 1 sentence. If genuinely ambiguous, ask **one** clarifying question (don't grill them). Note whether the user looks like a *developer* (asked to edit FusionFlow G4 source or mentioned operators) — that's the only case where you show technical detail later. Everyone else gets the minimal plain-language summary.
 2. **Model the workflow** — match the intent to one of the executable reference patterns below. Identify inputs, outputs, Agent-, Human-, or Program-backed Steps, Artifacts, dependencies, concurrency, resources, and timeouts. Let information dependencies determine graph depth: add an intermediate aggregation layer only when downstream work needs a coherent result from a distinct group of upstream Artifacts.
 3. **Author one FusionFlow G4 source** — before writing, read `grammar/FusionFlow.g4` completely and treat it as the sole source of truth for FusionFlow syntax and preset operators. Use only declarations, assertions, terms, and operators documented there. Use the workspace-provided target path; never invent a second copy.
-4. **Static self-check** — compare the source against `grammar/FusionFlow.g4` and the executable guardrails in this Skill. There is no separate validation tool.
+4. **Static self-check** — compare the source against `grammar/FusionFlow.g4` and the executable guardrails in this Skill. `run_flow` repeats this with its built-in `check_workflow` pass before dispatch; there is no separate validation tool or CLI.
 5. **Start it once** — the user asked you to do a task, not to receive an implementation artifact. After the static self-check, say ONE friendly heads-up line ("🚀 方案定了，正在帮你跑，预计几分钟…" — a notice, NOT a question), then call `run_flow` once. A declared Human Step may later ask its own task-specific question through the Human protocol; that is part of execution, not an extra pre-run gate. **Do NOT ask "要不要跑 / 跑不跑" and do NOT wait for `跑`.** The only exception is when the user explicitly says "只生成别跑 / 先给我看看别执行".
 
 Never mention the source file, its path, G4, operator names, static-check stages, or internal runnable artifacts to a non-technical user. From their side you are just doing the task they asked for. If they ask "你在干嘛 / 怎么做的", answer in plain business language ("我让几个分析分头跑、再汇总").
@@ -582,13 +582,14 @@ Extend this skeleton only with syntax and preset operators documented in `gramma
 
 Before the initial `run_flow` call, inspect the source in order:
 
-- every identity is declared with a supported concept;
+- graph values may be untyped; when explicitly typed, their concepts include `Artifact`;
+- every other identity is declared with a supported concept;
 - assertions use `==`, while formulas use comparison operators;
 - each operator uses the documented arity and supported shape;
 - each Step has a supported Agent, Human, or Program executor, name, instruction, and explicit data/control dependencies;
 - no residual or unsupported operator is emitted.
 
-This is a source review, not a second tool or CLI invocation. Actual parsing and compilation occur inside `run_flow`.
+This manual source review is not a second tool or CLI invocation. Inside `run_flow`, `check_workflow` requires exactly one workflow, delegates graph semantics to `WorkflowGraphCompiler`, rejects unsupported residual assertions and graph values with explicit concepts that omit `Artifact`, requires every Step instruction and Program path, rejects ambiguous executor typing, and emits preflight warning logs for legacy untyped executors. Parsing, checking, and compilation all occur before dispatch.
 
 ### Running it (automatic, right after the self-check)
 
@@ -608,7 +609,7 @@ This is a source review, not a second tool or CLI invocation. Actual parsing and
 When the user asks whether a workflow can run:
 
 1. Confirm the source is a readable workspace-relative `.workflow` file.
-2. Perform the static self-check above without invoking a separate validator.
+2. Perform the static self-check above. The same checks run inside `run_flow`; there is no separate validator tool or CLI.
 3. Confirm that required resource capacities can be supplied.
 
 If the static check finds an issue, report:

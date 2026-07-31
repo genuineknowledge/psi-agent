@@ -40,6 +40,7 @@ for _import_dir in (_TOOLS_DIR, _SKILL_DIR):
 _paths = __import__("_runtime_paths")
 
 from fusion_flow.artifact_store import ArtifactStore  # noqa: E402
+from fusion_flow.contracts import Diagnostic  # noqa: E402
 from fusion_flow.job_store import (  # noqa: E402
     HumanRequestSpec,
     HumanWorkflowRun,
@@ -694,6 +695,27 @@ def _legacy_instruction_identities(compiled: CompiledWorkflow) -> dict[str, str]
         for step in compiled.graph.steps
         if step.instruction_id is not None and step.instruction_id.startswith("./")
     }
+
+
+def _compile_workflow_for_run(source: str, *, flow_path: str) -> CompiledWorkflow:
+    """Compile one workflow and surface every non-fatal preflight diagnostic."""
+
+    def log_diagnostic(diagnostic: Diagnostic) -> None:
+        logger.bind(
+            event="fusion_flow.preflight_warning",
+            flow_path=flow_path,
+            diagnostic_severity=diagnostic.severity,
+            design_reference=diagnostic.design_reference,
+        ).warning(f"FusionFlow preflight warning: {diagnostic.message}")
+
+    # Use the callback instead of reading CompiledWorkflow.diagnostics after
+    # return: strict executor validation can raise after warnings are known,
+    # leaving no result object for this tool entry point to inspect.
+    return compile_workflow(
+        source,
+        strict_executors=True,
+        diagnostic_callback=log_diagnostic,
+    )
 
 
 def _cached_instruction_resolver(
@@ -1959,7 +1981,7 @@ async def _execute_persisted_run(
     )
     await artifact_store.persist(run.checkpoint.values)
     if instruction_files is None:
-        compiled = compile_workflow(source, strict_executors=True)
+        compiled = _compile_workflow_for_run(source, flow_path=run.flow_path)
         instruction_files = _legacy_instruction_identities(compiled)
     step_tools: ToolRegistry | None = None
     human_tools: ToolRegistry | None = None
@@ -2140,7 +2162,7 @@ async def run_flow(
     source = await _read_flow_source(flow_path)
     inputs = _parse_mapping(inputs_json, label="inputs_json")
     resource_capacities = _parse_resource_capacities(resource_capacities_json)
-    compiled = compile_workflow(source, strict_executors=True)
+    compiled = _compile_workflow_for_run(source, flow_path=flow_path)
     instruction_files = await _materialize_instruction_files(compiled, flow_path)
     initial_checkpoint = create_execution_checkpoint(
         generate_plan(compiled.graph),
@@ -2261,7 +2283,7 @@ async def run_flow_resume(
         definition_error: Exception | None = None
         if run.flow_source_digest != source_digest:
             try:
-                compiled = compile_workflow(source, strict_executors=True)
+                compiled = _compile_workflow_for_run(source, flow_path=run.flow_path)
                 instruction_files = await _materialize_instruction_files(compiled, run.flow_path)
                 definition_changed = _workflow_definition_digest(source, instruction_files) != run.flow_source_digest
             except Exception as error:

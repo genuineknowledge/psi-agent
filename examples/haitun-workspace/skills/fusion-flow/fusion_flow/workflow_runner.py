@@ -10,6 +10,8 @@ from os import PathLike
 from os.path import isabs
 from typing import Literal, cast
 
+from .checker import check_workflow, collect_core_ir_diagnostics
+from .contracts import Diagnostic
 from .core_ir import Assertion, CompoundTerm, Concept, Constant, Operator
 from .graph_compiler import WorkflowGraphCompilation, WorkflowGraphCompiler
 from .parser import ParseContext, parse_workflow
@@ -35,11 +37,12 @@ type ExecutorKind = Literal["Agent", "Human", "Program"]
 
 @dataclass(frozen=True, slots=True)
 class CompiledWorkflow:
-    """One executable graph plus catalog-derived executor classifications."""
+    """One executable graph plus classifications and non-fatal diagnostics."""
 
     graph: WorkflowGraph
     executor_kinds: Mapping[str, ExecutorKind]
     program_paths: Mapping[str, str] = field(default_factory=dict)
+    diagnostics: tuple[Diagnostic, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,12 +226,16 @@ def compile_workflow(
     *,
     context: ParseContext | None = None,
     strict_executors: bool = False,
+    diagnostic_callback: Callable[[Diagnostic], None] | None = None,
 ) -> CompiledWorkflow:
     """Parse and compile one workflow through a closed catalog by default.
 
     Existing workflows that predate typed executor declarations keep their
     historical Agent default.  New entry points can opt into strict executor
-    typing so catalog mistakes fail before dispatch.
+    typing so catalog mistakes fail before dispatch. ``diagnostic_callback``
+    receives only non-fatal warning diagnostics before this function returns
+    or raises; fatal diagnostics are reported through ``ValueError`` instead.
+    Successful results also retain their warnings in ``diagnostics``.
     """
 
     parsed = parse_workflow(
@@ -246,10 +253,33 @@ def compile_workflow(
         )
         raise ValueError(f"workflow parse failed: {details}")
 
-    compiled = WorkflowGraphCompiler().compile(parsed.core_ir)
+    try:
+        compiled = WorkflowGraphCompiler().compile(parsed.core_ir)
+    except (TypeError, ValueError) as error:
+        core_ir_diagnostics = collect_core_ir_diagnostics(parsed.core_ir)
+        if diagnostic_callback is not None:
+            for diagnostic in core_ir_diagnostics:
+                if diagnostic.severity == "warning":
+                    diagnostic_callback(diagnostic)
+        error_messages = [diagnostic.message for diagnostic in core_ir_diagnostics if diagnostic.severity == "error"]
+        error_messages.append(str(error))
+        unique_error_messages = tuple(dict.fromkeys(error_messages))
+        raise ValueError(f"workflow check failed: {'; '.join(unique_error_messages)}") from error
     if not isinstance(compiled, tuple):
         raise TypeError("workflow graph compiler returned an unexpected result")
     compilations = cast(tuple[WorkflowGraphCompilation, ...], compiled)
+
+    checked = check_workflow(parsed.core_ir, graph_compilations=compilations)
+    check_errors = [diagnostic.message for diagnostic in checked.diagnostics if diagnostic.severity == "error"]
+    check_warnings = tuple(diagnostic for diagnostic in checked.diagnostics if diagnostic.severity == "warning")
+    # Warnings must escape before any fatal checker or strict-runner error:
+    # a failed compilation has no CompiledWorkflow result to carry them.
+    if diagnostic_callback is not None:
+        for diagnostic in check_warnings:
+            diagnostic_callback(diagnostic)
+    if check_errors:
+        raise ValueError(f"workflow check failed: {'; '.join(check_errors)}")
+
     if len(compilations) != 1:
         raise ValueError("workflow runner expects exactly one workflow")
     compilation = compilations[0]
@@ -284,6 +314,7 @@ def compile_workflow(
         graph=compilation.graph,
         executor_kinds=executor_kinds,
         program_paths=program_paths,
+        diagnostics=check_warnings,
     )
 
 

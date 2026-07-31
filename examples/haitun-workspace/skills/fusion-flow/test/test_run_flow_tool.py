@@ -38,6 +38,73 @@ run_flow_tool = _load_module("fusion_flow_run_flow_tool", _RUNNER_PATH)
 clarify_tool = _load_module("fusion_flow_clarify_tool", _CLARIFY_PATH)
 
 
+@pytest.mark.anyio
+async def test_run_flow_logs_untyped_warning_before_strict_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _STATUS_ARTIFACT_WORKFLOW.replace("const worker: Agent;\n", "")
+    flow_path = anyio.Path(tmp_path / "flows" / "untyped.workflow")
+    await flow_path.parent.mkdir(parents=True)
+    await flow_path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+
+    records: list[Any] = []
+    handler_id = run_flow_tool.logger.add(
+        lambda message: records.append(message.record),
+        filter=lambda record: record["extra"].get("event") == "fusion_flow.preflight_warning",
+    )
+    try:
+        with pytest.raises(ValueError, match="must be declared as exactly one"):
+            await run_flow_tool.run_flow(
+                "flows/untyped.workflow",
+                '{"request": "report"}',
+            )
+    finally:
+        run_flow_tool.logger.remove(handler_id)
+
+    assert [record["message"] for record in records] == [
+        "FusionFlow preflight warning: executor 'worker' for step 'status_step' has no explicit "
+        "Agent, Human, or Program type; legacy execution defaults it to Agent"
+    ]
+
+
+@pytest.mark.anyio
+async def test_run_flow_logs_untyped_warning_before_graph_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _STATUS_ARTIFACT_WORKFLOW.replace("const worker: Agent;\n", "").replace(
+        '    step_name(status_step) == "Status";\n',
+        "",
+    )
+    flow_path = anyio.Path(tmp_path / "flows" / "untyped-invalid.workflow")
+    await flow_path.parent.mkdir(parents=True)
+    await flow_path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+
+    records: list[Any] = []
+    handler_id = run_flow_tool.logger.add(
+        lambda message: records.append(message.record),
+        filter=lambda record: record["extra"].get("event") == "fusion_flow.preflight_warning",
+    )
+    try:
+        with pytest.raises(ValueError, match="step 'status_step' has no step_name"):
+            await run_flow_tool.run_flow(
+                "flows/untyped-invalid.workflow",
+                '{"request": "report"}',
+            )
+    finally:
+        run_flow_tool.logger.remove(handler_id)
+
+    assert [record["message"] for record in records] == [
+        "FusionFlow preflight warning: executor 'worker' for step 'status_step' has no explicit "
+        "Agent, Human, or Program type; legacy execution defaults it to Agent"
+    ]
+
+
 class _FakeSendStream:
     def __init__(self) -> None:
         self.data = bytearray()
