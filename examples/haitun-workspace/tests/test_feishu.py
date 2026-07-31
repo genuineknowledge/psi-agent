@@ -1488,6 +1488,7 @@ def test_auth_tools_are_async_with_docstrings() -> None:
     mod = importlib.import_module("feishu_auth")
     for name in (
         "feishu_auth_start",
+        "feishu_auth_request",
         "feishu_auth_card",
         "feishu_auth_wait",
         "feishu_auth_complete",
@@ -1782,6 +1783,100 @@ async def test_auth_card_refuses_raw_scope_strings(monkeypatch: pytest.MonkeyPat
 
 
 @pytest.mark.asyncio
+async def test_auth_request_prefers_the_card(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Tier 1 wins whenever it can: one tap is the least the user can be asked to do."""
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_request_impl("ou_a", "bitable_write", "要把台账建在你名下")
+    assert result["ok"] is True
+    assert result["tier"] == _impl.TIER_CARD
+    assert result["message_id"] == "om_auth"  # a card really went out
+    assert captured["receive_id"] == "ou_a"
+    assert "downgraded_from" not in result  # nothing was given up
+
+
+@pytest.mark.asyncio
+async def test_auth_request_falls_back_to_link_without_copy(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """No private chat to send a card to → tier 2: still no code to copy."""
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_request_impl("ou_a", receive_id="oc_group")
+    assert result["ok"] is True
+    assert result["tier"] == _impl.TIER_LINK
+    assert result["auto_receive"] is True
+    assert result["authorize_url"]
+    assert result["downgraded_from"] == _impl.TIER_CARD
+    assert "ou_" in result["downgrade_reason"]  # says why, so the agent can be honest
+    assert "feishu_auth_wait" in result["next_step"]
+    assert captured == {}  # no card was sent
+
+
+@pytest.mark.asyncio
+async def test_auth_request_falls_back_to_link_with_copy(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """No automatic channel at all → tier 3, the only tier that can keep its promise."""
+    captured = _auth_card_env(monkeypatch, tmp_path, mode="manual")
+    result = await _impl.auth_request_impl("ou_a")
+    assert result["ok"] is True
+    assert result["tier"] == _impl.TIER_MANUAL
+    assert result["auto_receive"] is False
+    assert result["authorize_url"]
+    assert result["downgraded_from"] == _impl.TIER_CARD
+    assert "feishu_auth_complete" in result["next_step"]
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_auth_request_downgrades_to_link_when_the_card_send_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """A card that cannot be delivered must not sink the whole request — the link still works."""
+    _auth_card_env(monkeypatch, tmp_path)
+
+    async def _failing_send(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": False, "message": "card send failed"}
+
+    monkeypatch.setattr(_impl, "send_card_impl", _failing_send)
+    result = await _impl.auth_request_impl("ou_a")
+    assert result["ok"] is True
+    assert result["tier"] == _impl.TIER_LINK
+    assert result["downgraded_from"] == _impl.TIER_CARD
+    assert "card send failed" in result["downgrade_reason"]
+
+
+@pytest.mark.asyncio
+async def test_auth_request_requires_a_user_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_request_impl("   ")
+    assert result["ok"] is False
+    assert "user_key" in result["message"]
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_auth_request_propagates_bad_capabilities(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """A raw scope string is refused at every tier, not quietly downgraded into one."""
+    captured = _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_request_impl("ou_a", "docx:document")
+    assert result["ok"] is False
+    assert "capability_keys" in result
+    assert "tier" not in result
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_auth_request_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    auth_mod = importlib.import_module("feishu_auth")
+    captured: dict[str, Any] = {}
+
+    async def _fake(user_key: str, capabilities: str = "", reason: str = "", receive_id: str = "") -> dict[str, Any]:
+        captured.update(user_key=user_key, capabilities=capabilities, reason=reason, receive_id=receive_id)
+        return {"ok": True, "tier": "card"}
+
+    monkeypatch.setattr(auth_mod._f, "auth_request_impl", _fake)
+    out = await auth_mod.feishu_auth_request("ou_a", "docx_write", "建周报")
+    assert json.loads(out)["tier"] == "card"
+    assert captured == {"user_key": "ou_a", "capabilities": "docx_write", "reason": "建周报", "receive_id": ""}
+
+
+@pytest.mark.asyncio
 async def test_auth_card_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> None:
     auth_mod = importlib.import_module("feishu_auth")
     captured: dict[str, Any] = {}
@@ -1796,10 +1891,13 @@ async def test_auth_card_tool_returns_json(monkeypatch: pytest.MonkeyPatch) -> N
     assert captured == {"user_key": "ou_a", "capabilities": "docx_write", "reason": "建周报", "receive_id": ""}
 
 
-def test_auth_prompt_leads_with_the_card_and_keeps_the_manual_fallback() -> None:
-    """need_auth guidance must name the card first — and still describe the manual path."""
+def test_auth_prompt_states_the_tier_order_and_keeps_the_manual_fallback() -> None:
+    """need_auth guidance must point at the one entry point and spell the ladder out in
+    order — and still describe the manual path, since some deployments only have that."""
     prompt = _impl._AUTH_PROMPT
-    assert prompt.index("feishu_auth_card") < prompt.index("feishu_auth_start")
+    assert "feishu_auth_request" in prompt
+    # the three tiers, named and in descending order of how little the user must do
+    assert prompt.index(_impl.TIER_CARD) < prompt.index(_impl.TIER_LINK) < prompt.index(_impl.TIER_MANUAL)
     assert "feishu_auth_wait" in prompt
     assert "地址栏" in prompt
     assert "feishu_auth_complete" in prompt

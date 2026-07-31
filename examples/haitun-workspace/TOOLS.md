@@ -99,45 +99,63 @@ message_id / sender_open_id）。需要群里之前的上下文时：
 用户中途说「这一篇用机器人建就行」时，直接给那次调用传 `identity="bot"`，不必改掉记住的默认。
 想查某人当前的选择和已授权权限，用 `feishu_identity_get(user_key)`。
 
-### 引导用户授权（首选一键授权卡，默认免复制，一次授权后不再问）
+### 引导用户授权（三级优先级，默认免复制，一次授权后不再问）
 
 当工具返回 `need_auth=True`，把 `sender_open_id` 作为 `user_key` 贯穿全过程（多人场景各自
-授权、互不覆盖）。**首选发一张授权卡**，用户点一下就完事：
+授权、互不覆盖）。**只调一个工具**：
 
-1. 调 `feishu_auth_card(user_key=<sender_open_id>, capabilities=<工具给的 need_capabilities>,
-   reason=<一句话说明这次授权干什么>)`。它发一张卡，卡上「点此授权」按钮同时做两件事：打开飞书
-   授权页（`open_url`）+ 把这次点击回调给你（`callback`）；
-2. **发完卡这一轮就收尾**——别在同一轮里调 `feishu_auth_wait`，也别把链接再当文本发一遍。
-   同一轮等待会占住 Session 的 turn 锁，用户这期间说什么都得排队几分钟；
-3. 用户点按钮后，你会收到一条 `<feishu_card_action>`，其 `dispatch.handler` 是
-   `feishu_auth_wait`、`action.value.user_key` 是该用户。**那一轮**才调
-   `feishu_auth_wait(user_key=...)` 等授权码自动回流（此时用户正对着授权页，等待是应该的），
-   拿到 token 后接着做原来被卡住的那件事；
-4. **卡片是一次性的**：用户点了按钮但没在授权页点「同意」时，这张卡已作废（原卡被改写成
-   「已选择」），重新调 `feishu_auth_card` 发一张新的，别让用户再点旧卡；
-5. 授权卡只能**私聊**发给本人（`receive_id` 默认就是 `user_key`）。待完成的授权记录存在发卡方
-   workspace，而群里点卡片会落到点击者自己的私聊会话、读不到这条记录，所以工具直接拒绝
-   `oc_` 群 id。群场景先私聊该用户；
-6. 返回 `manual_required=True` 说明这个部署没有自动回调通道，卡片帮不上忙（用户点完还得从地址栏
-   抄 code），这时才退回下面的手工流程。
+```
+feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_capabilities>,
+                    reason=<一句话说明这次授权干什么>)
+```
+
+它按下面的优先级自动挑当前环境能用的最省事那种，你不用自己判断，看返回的 `tier` 决定下一步：
+
+| 优先级 | `tier` | 用户要做什么 | 你接下来做什么 |
+| --- | --- | --- | --- |
+| 1 | `card` | 点一下卡片按钮 | **这一轮立刻收尾**，等回调那轮再 `feishu_auth_wait` |
+| 2 | `link_auto` | 打开链接点「同意」，**不用复制 code** | 发 `authorize_url`，紧接着 `feishu_auth_wait` |
+| 3 | `link_manual` | 打开链接点「同意」，**还要复制 code** | 发 `authorize_url`，再拿 code 调 `feishu_auth_complete` |
+
+降级原因写在返回的 `downgraded_from` / `downgrade_reason` 里：**如实告诉用户**为什么用了更麻烦的
+方式，别假装走的是更顺的那条。两种降级触发条件：
+
+- 1→2：没有可私聊的 `open_id`（群场景），或卡片没发出去（缺 im 权限、用户没和机器人建过会话、
+  飞书限流……）。卡片发不出去时链接仍然能发，所以整件事不会因此失败；
+- 2→3：这个部署没有自动接收授权码的通道（既没配 `PSI_OAUTH_CALLBACK_BASE`，回环端口也不可用）。
+  此时第 1 级也一并跳过——没有自动回流的卡片，点了还是要手抄，那按钮是个谎。
+
+**第 1 级 `tier=card` 的细节**：卡上「点此授权」按钮同时做两件事——打开飞书授权页（`open_url`）
++ 把这次点击回调给你（`callback`）。
+
+- **发完卡这一轮就收尾**：别在同一轮里调 `feishu_auth_wait`，也别把链接再当文本发一遍。
+  同一轮等待会占住 Session 的 turn 锁，用户这期间说什么都得排队几分钟；
+- 用户点按钮后，你会收到一条 `<feishu_card_action>`，其 `dispatch.handler` 是
+  `feishu_auth_wait`、`action.value.user_key` 是该用户。**那一轮**才调
+  `feishu_auth_wait(user_key=...)` 等授权码自动回流（此时用户正对着授权页，等待是应该的），
+  拿到 token 后接着做原来被卡住的那件事；
+- **卡片是一次性的**：用户点了按钮但没在授权页点「同意」时，这张卡已作废（原卡被改写成
+  「已选择」），重新调 `feishu_auth_request` 发一张新的，别让用户再点旧卡；
+- 授权卡只能**私聊**发给本人（`receive_id` 默认就是 `user_key`）。待完成的授权记录存在发卡方
+  workspace，而群里点卡片会落到点击者自己的私聊会话、读不到这条记录，所以群 id 会跳过这一级。
+
+**第 2、3 级的细节**：把返回的 `authorize_url` **原样发给用户**，让其打开并点「同意授权」，然后
+
+- `tier=link_auto`：**不要向用户索要任何 code**。直接调 `feishu_auth_wait(user_key=...)`
+  等待——用户点完「同意授权」后浏览器会看到「授权成功」页，授权码自动回流并完成授权。
+  返回 `timed_out=True` 时可以再调一次继续等；
+- `tier=link_manual`：才需要**明确告诉用户**看浏览器地址栏，地址形如
+  `http://localhost/?code=xxxxxxxx&state=...`，把 `code=` 后面、`&` 之前那一串复制回来
+  （整段网址也行），然后调 `feishu_auth_complete(code, user_key=...)`。
 
 `capabilities` 只接受能力键（`docs_read` / `drive_read` / `drive_write`（含电子表格）/
 `docx_write` / `wiki_write` / `bitable_write` / `task_write` / `calendar_write` /
 `contact_read` / `contact_phone_email_read`），**不要传飞书原始 scope 串**——无效 scope 会让
 整个授权页失败（20043），所以工具直接拒绝未知键。已授权过的权限会自动并进去，不会因为再授权
-一次而丢掉旧能力。`feishu_auth_card` 与 `feishu_auth_start` 在这两条上行为一致。
+一次而丢掉旧能力。三级在这两条上行为一致。
 
-没有卡片通道（或你就是要发纯文本链接）时的手工流程：
-
-1. 调 `feishu_auth_start(user_key=<sender_open_id>, capabilities=<工具给的 need_capabilities>)`，
-   把返回的 `authorize_url` **原样发给用户**，让其打开并点「同意授权」；
-2. 看返回里的 `auto_receive`：
-   - **`auto_receive=True`（默认路径）**：**不要向用户索要任何 code**。直接调
-     `feishu_auth_wait(user_key=<sender_open_id>)` 等待——用户点完「同意授权」后浏览器会看到
-     「授权成功」页，授权码自动回流并完成授权。返回 `timed_out=True` 时可以再调一次继续等；
-   - **`auto_receive=False`（无自动通道时的兜底）**：才需要**明确告诉用户**看浏览器地址栏，
-     地址形如 `http://localhost/?code=xxxxxxxx&state=...`，把 `code=` 后面、`&` 之前那一串
-     复制回来（整段网址也行），然后调 `feishu_auth_complete(code, user_key=<sender_open_id>)`。
+想只用某一级、不要自动降级时才直接调底层工具：`feishu_auth_card`（只发卡）或
+`feishu_auth_start`（只出链接，看它的 `auto_receive` 区分第 2、3 级）。
 
 成功后凭证缓存并自动续期，之后同类操作不会再让用户授权。
 

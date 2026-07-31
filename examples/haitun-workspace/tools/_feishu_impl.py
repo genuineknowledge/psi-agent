@@ -78,18 +78,22 @@ def _get_client() -> Any:
 # token can't do it and no cached UAT exists). Spelled out step-by-step — the
 # key gotcha is that the code lives in the browser ADDRESS BAR after redirect.
 _AUTH_PROMPT = (
-    "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步). 首选一键授权卡:\n"
-    "1. 调 feishu_auth_card(user_key=<sender_open_id>, capabilities=<本次 need_capabilities>, "
-    "reason=<一句话说明用途>) 给用户发一张授权卡, **然后这一轮就收尾** —— 别在同一轮里等待, "
-    "也别再把链接当文本发一遍;\n"
-    "2. 用户点卡上的按钮时, 飞书会把这次点击回调给你 (一条 <feishu_card_action>, dispatch.handler "
-    "是 feishu_auth_wait): **那一轮**再调 feishu_auth_wait (用回调 value 里的 user_key) 等授权码"
-    "自动回流, 拿到 token 后继续原来的操作;\n"
-    "3. 卡片是一次性的: 用户点了按钮但没在授权页点「同意」时, 重新调 feishu_auth_card 发一张新的.\n"
-    "环境没有自动回调通道时 (feishu_auth_card 返回 manual_required=True) 才退回手工: 调 "
-    "feishu_auth_start 把 authorize_url 发给用户, 再让他从浏览器**地址栏**复制 code= 后面那一串 "
-    "(或整段网址) 交给 feishu_auth_complete. 这种情况下想帮用户彻底免掉复制, 调 "
-    "feishu_auth_env_check 查出确切缺哪一项配置并按它给的修法告诉用户.\n"
+    "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步).\n"
+    "**只调一个工具**: feishu_auth_request(user_key=<sender_open_id>, "
+    "capabilities=<本次 need_capabilities>, reason=<一句话说明用途>). 它按下面的优先级"
+    "自动挑当前环境能用的最省事那种, 你不用自己判断:\n"
+    "1. tier=card —— 卡片授权, 用户点一下就好. **这一轮立刻收尾**, 别等待、也别再把链接"
+    "当文本发一遍; 等飞书把点击回调给你 (一条 <feishu_card_action>, dispatch.handler 是 "
+    "feishu_auth_wait), **那一轮**才调 feishu_auth_wait (用回调 value 里的 user_key).\n"
+    "2. tier=link_auto —— 网站授权但不用复制 code. 把 authorize_url 发给用户, 紧接着调 "
+    "feishu_auth_wait 等授权码自动回流.\n"
+    "3. tier=link_manual —— 网站授权且需要复制 code (兜底). 把 authorize_url 发给用户, "
+    "再让他从浏览器**地址栏**复制 code= 后面那一串 (或整段网址) 交给 feishu_auth_complete. "
+    "想帮用户彻底免掉复制 (把这个部署升到前两级), 调 feishu_auth_env_check 查出确切缺哪一项"
+    "配置并按它给的修法告诉用户.\n"
+    "返回里有 downgraded_from/downgrade_reason 时, 如实告诉用户为什么用了更麻烦的方式, "
+    "别假装走的是更顺的那条. 卡片是一次性的: 用户点了按钮但没在授权页点「同意」, 就重新调 "
+    "feishu_auth_request 发一张新的.\n"
     "授权一次即缓存并自动续期, 之后同类操作不会再让你授权."
 )
 
@@ -2658,6 +2662,106 @@ async def auth_card_impl(
             f"{_AUTH_CARD_RETRY_NOTE}"
         ),
         "next_step": f"等卡片回调, 届时调 {_AUTH_CARD_HANDLER}",
+    }
+
+
+# ── 授权方式的降级顺序 ────────────────────────────────────────────────────────
+#
+# 授权有三种成色, 优先级从高到低写在这里, 而不是散在提示词里靠模型自觉:
+#
+#   1. TIER_CARD    卡片授权 —— 点一下即授权, 且 agent 知道用户点了 (最省事)
+#   2. TIER_LINK    网站授权, 免复制 code —— 有自动回调通道, 但要用户自己去点链接
+#   3. TIER_MANUAL  网站授权, 要复制 code —— 兜底, 用户得从地址栏抄一串给回来
+#
+# 每一级都可能因为**环境**而不可用, 于是往下退一级:
+#   1→2: 没有可私聊的 open_id (群场景/没拿到 sender), 或卡片没发出去 (缺 im 权限、
+#        用户没和机器人建过会话、飞书限流…)。卡片发不出去时链接仍然能发。
+#   2→3: 没有自动接收通道 (既没配 PSI_OAUTH_CALLBACK_BASE, 回环端口也不可用),
+#        此时 code 只能由用户手抄 —— 前两级都在承诺「不用复制」, 做不到就必须说实话。
+#
+# 注意 2→3 的判定发生在**更早**: auto_receive 由 auth_start_impl 决定, 它同时决定了
+# 卡片是否有意义 (没有自动回流的卡片点了也还要手抄, 那按钮是个谎), 所以 manual 环境
+# 下第 1 级直接跳过, 不是"发卡失败"。
+TIER_CARD = "card"
+TIER_LINK = "link_auto"
+TIER_MANUAL = "link_manual"
+
+_TIER_LABEL = {
+    TIER_CARD: "卡片授权(点一下即可)",
+    TIER_LINK: "网站授权(不用复制 code)",
+    TIER_MANUAL: "网站授权(需要复制 code)",
+}
+
+
+async def auth_request_impl(
+    user_key: str,
+    capabilities: str = "",
+    reason: str = "",
+    receive_id: str = "",
+) -> dict[str, Any]:
+    """Ask this user to authorize, using the best method the environment allows.
+
+    Single entry point for "I need authorization": it walks the three tiers in order
+    (card → link-without-copy → link-with-copy) and returns the first that actually
+    works, so the caller never has to know which mechanisms this deployment supports.
+    Each fallback records *why* it happened in ``downgraded_from`` / ``downgrade_reason``
+    rather than silently presenting a worse experience as if it were the intended one.
+
+    The tier also decides what the caller must do next, which is why it is reported
+    explicitly as ``tier``/``next_step``:
+
+    - ``card`` — finish the turn now; wait only when the click callback arrives.
+    - ``link_auto`` — send ``authorize_url`` to the user, then ``feishu_auth_wait``.
+    - ``link_manual`` — send ``authorize_url``, then ask for the code and pass it to
+      ``feishu_auth_complete``.
+    """
+    key = (user_key or "").strip()
+    if not key:
+        return _error("user_key is required — it is whose authorization this is (the sender's open_id).")
+
+    # Tier 1: the card. Only attempted when there is a private chat to send it to —
+    # a card tapped in a group is routed to the tapper's own session, which cannot
+    # see the pending authorization written here.
+    target = (receive_id or "").strip() or key
+    card_skip = (
+        "" if target.startswith("ou_") else f"没有可私聊的 open_id (receive_id={target!r} 不是 ou_ 开头), 卡片无处可发"
+    )
+    if not card_skip:
+        card = await auth_card_impl(key, capabilities, reason, target)
+        if card.get("ok"):
+            return {**card, "tier": TIER_CARD, "tier_label": _TIER_LABEL[TIER_CARD]}
+        # manual_required means there is no automatic callback channel at all, so
+        # tier 2 cannot work either — go straight to tier 3 and say so.
+        card_skip = str(card.get("message") or "卡片发送失败")
+        if card.get("manual_required"):
+            started = await auth_start_impl(capabilities, key)
+            if not started.get("ok"):
+                return started
+            return {
+                **started,
+                "tier": TIER_MANUAL,
+                "tier_label": _TIER_LABEL[TIER_MANUAL],
+                "downgraded_from": TIER_CARD,
+                "downgrade_reason": "本部署没有自动接收授权码的通道, 卡片和免复制链接都做不到",
+                "next_step": "把 authorize_url 发给用户, 再让他把地址栏里的 code 交给 feishu_auth_complete",
+            }
+
+    # Tier 2/3: the plain link. auto_receive decides which of the two we actually got.
+    started = await auth_start_impl(capabilities, key)
+    if not started.get("ok"):
+        return started
+    tier = TIER_LINK if started.get("auto_receive") else TIER_MANUAL
+    return {
+        **started,
+        "tier": tier,
+        "tier_label": _TIER_LABEL[tier],
+        "downgraded_from": TIER_CARD,
+        "downgrade_reason": card_skip,
+        "next_step": (
+            "把 authorize_url 发给用户, 然后调 feishu_auth_wait 等授权码自动回流"
+            if tier == TIER_LINK
+            else "把 authorize_url 发给用户, 再让他把地址栏里的 code 交给 feishu_auth_complete"
+        ),
     }
 
 

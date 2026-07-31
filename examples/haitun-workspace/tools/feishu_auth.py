@@ -19,11 +19,21 @@ only); see ``_oauth_receiver``. Only when neither channel is available does the 
 manual path apply: the user copies ``code=...`` out of the browser address bar and
 hands it to ``feishu_auth_complete``.
 
-**Asking in one tap** — ``feishu_auth_card`` is the preferred way to ask: it sends an
-interactive card whose single button both opens the consent page and calls back, so the
-agent finishes its turn immediately and only waits once the click actually arrives.
-Sending ``authorize_url`` as plain text still works, and stays the fallback for
-deployments with no automatic callback channel.
+**How to ask** — call ``feishu_auth_request`` and let it choose. There are three ways to
+ask, in descending order of how little the user has to do, and it returns the first one
+this deployment can actually deliver (reporting the chosen ``tier``):
+
+1. ``card`` — an interactive card whose single button both opens the consent page and
+   calls back, so the agent finishes its turn at once and waits only when the click
+   arrives. Sent by ``feishu_auth_card``.
+2. ``link_auto`` — the plain ``authorize_url``, with the code still returning by itself
+   through the callback channel. No copying, but the user has to open the link.
+3. ``link_manual`` — the same URL with **no** automatic channel behind it, so the user
+   copies ``code=...`` out of the address bar into ``feishu_auth_complete``.
+
+Tier 1 needs a private chat to send the card to; tiers 1 and 2 both need an automatic
+callback channel. Falling back is reported, never silent — the first two promise "no
+copying", so a deployment that cannot keep that promise must say so.
 
 **Who owns the output** — a created document/table/task belongs to whoever created
 it. ``feishu_identity_set`` records whether this user wants writes done under their
@@ -86,13 +96,59 @@ async def feishu_auth_start(user_key: str = "", capabilities: str = "") -> str:
     return _f.dumps_result(await _f.auth_start_impl(capabilities, user_key))
 
 
+async def feishu_auth_request(
+    user_key: str,
+    capabilities: str = "",
+    reason: str = "",
+    receive_id: str = "",
+) -> str:
+    """Ask a user to authorize — **start here**; it picks the best available method.
+
+    One call handles the whole "I need this user's authorization" case. It tries the three
+    ways in a fixed order and returns the first that works, so you don't have to know what
+    this deployment supports:
+
+    1. ``tier="card"`` — a card whose single tap both opens the consent page and calls
+       back. **Finish your turn now.** Wait only in the later ``<feishu_card_action>`` turn
+       whose ``dispatch.handler`` is ``feishu_auth_wait``, using the ``user_key`` from the
+       callback value. Do not also send the link as text.
+    2. ``tier="link_auto"`` — website authorization with **no code to copy**. Send the user
+       ``authorize_url``, then call ``feishu_auth_wait`` — the code returns by itself.
+    3. ``tier="link_manual"`` — website authorization that **does** need a copy. Send
+       ``authorize_url``, then ask the user for the ``code=`` in their address bar (the full
+       URL is fine too) and pass it to ``feishu_auth_complete``.
+
+    When it falls back, ``downgraded_from`` and ``downgrade_reason`` say why — tell the user
+    plainly rather than implying the smoother path was used. Always read ``tier`` to decide
+    your next move; ``next_step`` spells it out.
+
+    Args:
+        user_key: The message sender's open_id (from ``<feishu_context>`` ``sender_open_id``).
+            This is whose authorization it is; pass the same value to ``feishu_auth_wait``.
+        capabilities: Comma-separated capability keys the task needs — typically the
+            ``need_capabilities`` a tool just returned with ``need_auth``. The request is
+            automatically widened to what this user already granted, so re-authorizing never
+            costs an existing ability. Empty asks for a general docs/drive set.
+        reason: One line telling the user what the authorization is for, e.g.
+            ``"要把周报建在你名下"``. Shown on the card; keep it concrete.
+        receive_id: Where to send the card. Defaults to ``user_key`` (a DM), normally right.
+            A non-``ou_`` value (e.g. a group chat) skips tier 1, because a card tapped in a
+            group is routed to the tapper's own session, which cannot see the pending
+            authorization recorded here.
+    """
+    return _f.dumps_result(await _f.auth_request_impl(user_key, capabilities, reason, receive_id))
+
+
 async def feishu_auth_card(
     user_key: str,
     capabilities: str = "",
     reason: str = "",
     receive_id: str = "",
 ) -> str:
-    """Ask for authorization with a **one-click card** instead of a bare URL.
+    """Send the one-click authorization card specifically (tier 1 only).
+
+    Prefer ``feishu_auth_request``, which tries this first and falls back on its own. Use
+    this directly only when you want the card and nothing else — it does not downgrade.
 
     Preferred over sending ``feishu_auth_start``'s ``authorize_url`` as text: the card's
     button opens the Feishu consent page *and* calls back to you in one tap, so you learn
