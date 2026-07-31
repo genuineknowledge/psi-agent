@@ -214,7 +214,7 @@ async def flow_manage(
         if target == "adhoc":
             filename = "flow.workflow" if flow_source.strip() else "flow.ts"
             flow_path = flows_dir / "adhoc" / flow_name / filename
-            if await flow_path.exists():
+            if await _find_adhoc_flow(flows_dir, flow_name) is not None:
                 return f"[Error] Adhoc flow already exists: {flow_name!r}"
             await _atomic_write(flow_path, (flow_source or flow_ts).strip() + "\n")
             return f"Adhoc flow created: {flow_name!r}"

@@ -1,8 +1,8 @@
 """FusionFlow 的动态执行原语。
 
-本文件保留旧 TypeScript ``flow.ts`` 的六批 API 分组。这里记录的是一次运行如何
-执行与生成 trace; 声明式 WorkflowGraph、计划生成和 human/agent/program
-executor 分派属于独立模块。
+本文件实现共享的 Python ``flow.*`` API。这里记录的是一次运行如何执行与生成
+trace; 声明式 WorkflowGraph、计划生成和 human/agent/program executor 分派属于
+独立模块。
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ R = TypeVar("R")
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 # 默认 evaluator 只供 flow.evaluate/choice 内部使用, 不注册成用户 agent。
-# ponytail: SessionRunner 暂无结构化输出协议; 先用提示词约束, 再按旧 TS 规则解析和归一化。
+# ponytail: SessionRunner 暂无结构化输出协议; 先用提示词约束, 再按 TypeScript 参考语义解析和归一化。
 _EVALUATOR_SYSTEM_PROMPT = """你是一个严谨的结构化判断器。
 
 你只输出 JSON\uff0c不要任何解释、前后缀、Markdown 代码块。
@@ -332,7 +332,7 @@ def _parse_evaluate_result(
         if not math.isfinite(number):
             raise ValueError("number evaluate must resolve to a finite number")
         if integer:
-            # 先整数化, 再应用上下界, 保持旧版 evaluator 的处理顺序。
+            # 先整数化, 再应用上下界, 与 TypeScript 参考实现保持相同顺序。
             number = math.floor(number + 0.5)
         if minimum is not None:
             number = max(number, minimum)
@@ -642,7 +642,7 @@ class Flow:
         """通过注入的 runner 执行一次 agent session, 并持久化成功结果。
 
         ``context_schema`` 存在时, context 的 key 必须精确匹配。恢复运行只会复用
-        agent 完整配置、prompt 与 context 哈希均一致的旧 binding。
+        agent 完整配置、prompt 与 context 哈希均一致的已有 binding。
         """
 
         run = current_run_context()
@@ -730,9 +730,6 @@ class Flow:
                     operation="session",
                     agent=agent.name,
                     cache_key=cache_key,
-                    input_hash=stable_payload_hash(
-                        {"prompt": prompt, "context": normalized_context},
-                    ),
                 )
                 await run._commit_reserved_binding(
                     reserved,
@@ -796,7 +793,7 @@ class Flow:
         """校验参数并调用已注册服务, 然后持久化字符串结果。
 
         恢复身份只包含 service 名称和参数, 不包含服务体代码; 同名服务实现发生变化
-        时, 旧结果仍可能被复用, 这是从 TS 版本保留下来的兼容语义。
+        时, 已有结果仍可能被复用; 这是 flow.call 的既定缓存身份语义。
         """
 
         run = current_run_context()
@@ -1072,7 +1069,7 @@ class Flow:
         """让默认或指定 evaluator 判断 boolean、number 或 choice。
 
         默认 evaluator 通过系统提示词要求 ``{"value": ...}``; 当前 runner 协议没有
-        provider 级 JSON Schema 通道, 因此仍由本地解析器按旧 TS 兼容规则校验、
+        provider 级 JSON Schema 通道, 因此仍由本地解析器按 TypeScript 参考语义校验、
         取整和范围截断。结果会写入 binding, 但不会作为 resume 缓存直接复用。
         """
 
@@ -1303,7 +1300,7 @@ class Flow:
     ) -> T:
         """先用 evaluator 选择标签, 再只执行对应分支。
 
-        为兼容旧 TS, ``default_label`` 会兜底 evaluate 阶段的任意普通异常 (包括
+        与 TypeScript 参考语义一致, ``default_label`` 会兜底 evaluate 阶段的任意普通异常 (包括
         runner 或解析失败), 但不会兜底被选中分支自身的异常, 也不会吞掉取消。
         """
 
@@ -1521,7 +1518,7 @@ class Flow:
                     raise
 
             def warn_retry(error: Exception, attempt: int) -> None:
-                """Keep the public compatibility warning at each actual retry."""
+                """Log each failed attempt before the next retry."""
 
                 logger.warning(
                     f"FusionFlow retry attempt {attempt}/{max_attempts} failed: {error}",

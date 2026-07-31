@@ -9,8 +9,10 @@ Agent can prepare or install runtimes, dependencies, compilers, and other
 toolchain components for multiple languages, while the host fixes or registers
 the authoritative launch and captures its process result. Human-backed Steps use a dedicated instruction-preparation Agent, the
 existing Haitun `clarify` flow, and a private checkpoint that crosses conversation
-turns. The `fusion_flow.execution` package owns the shared `flow.agent`,
-`flow.session`, retry, and bounded-parallel primitives that the G4 runtime reuses.
+turns. Agent-backed Steps reuse `fusion_flow.execution.run()`, `flow.agent()`,
+and `flow.session()` through the workspace `SessionRunner`. The
+`fusion_flow.execution` package also owns the shared retry and bounded-parallel
+primitives that the G4 graph interpreter reuses.
 
 Every active G4 run also writes each materialized Artifact to the workflow
 bundle's `runs/<run-id>/artifacts/` directory. Text values remain Markdown;
@@ -56,13 +58,13 @@ canonical reusable declarations under `flows/workflows/<slug>/`.
 - `fusion_flow/checker.py`: static semantics boundary.
 - `fusion_flow/compiler.py`: target-neutral Core IR traversal and backend hook boundary.
 - `fusion_flow/workflow_graph/`: immutable Step-Artifact graph model, validation, and deterministic serialization.
-- `fusion_flow/workflow_execution.py`: graph planning, dependency waits, concurrency, resources, timeouts, and checkpoints.
+- `fusion_flow/workflow_execution.py`: graph planning and interpretation, dependency waits, concurrency, resources, timeouts, and checkpoints; retry and parallel scheduling reuse the shared Flow helpers.
 - `fusion_flow/graph_compiler.py`: concrete `CoreIRCompiler` backend that builds `fusion_flow.workflow_graph` models.
 - `fusion_flow/workflow_runner.py`: fail-closed compile/plan/execute entry point with Agent, Human, Program, and checkpoint injection boundaries.
 - `fusion_flow/artifact_store.py`: atomic, workflow-local Markdown persistence for every materialized G4 Artifact.
-- `fusion_flow/job_store.py`: strict v2 JSON state plus non-blocking, OS-released advisory leases and an in-process guard for G4 runs waiting on Human input.
+- `fusion_flow/job_store.py`: strict v3 JSON state plus non-blocking, OS-released advisory leases and an in-process guard for G4 runs waiting on Human input.
 - `fusion_flow/planning.py`: before workflow authoring, checks the syntax mappings declared for each planned step against the syntax names actually available. Each planned step maps to one catalog `Step` identity, which authoring expands into a typed constant and its assertions.
-- `fusion_flow/execution/`: shared Python `flow.*` primitives; `run_flow` uses its Agent/session, retry, and bounded-parallel behavior.
+- `fusion_flow/execution/`: shared Python `flow.*` runtime; the G4 adapter reuses `run`/`agent`/`session`, and the graph interpreter reuses its private retry and bounded-parallel helpers.
 - `test/test_workspace_integration.py`: canonical and legacy entry-point routing checks.
 
 The obsolete Node/TypeScript compiler prototype has been removed. The Python
@@ -118,6 +120,15 @@ equality containing recognized graph calls on both sides.
 The package exports `WorkflowGraphCompiler`, `WorkflowGraphCompilation`, and
 `WorkflowGraphCompilationError`.
 
+The Python embedding API has one first-release contract rather than parallel
+compatibility spellings. `execute_workflow` requires `inputs=`. Agent and Human
+callbacks receive exactly `(prompt, CompletionContext)`. `execute_plan`
+requires `dispatch=`, whose `StepDispatcher` receives exactly
+`(StepNode, inputs, DispatchContext)`. Agent completion results must be mappings
+keyed by the exact declared output Artifact IDs. Untyped executor declarations
+fail closed; graph values may remain untyped, but an explicitly typed graph
+value must include `Artifact`.
+
 The graph executor supports fixed resource pools supplied as positive
 capacities or concrete instance IDs. It validates every requirement before
 dispatch, atomically leases all resources needed by one Step, waits when
@@ -140,7 +151,7 @@ inline Instruction text bypasses file resolution.
 Each Agent Step receives a `submit_step_result` tool whose schema requires its
 exact output Artifact IDs; a valid submission supplies the Step result, and the
 ephemeral agent turn closes after the current tool-call batch. Plain text remains
-a compatibility path only after a normally completed agent turn: the adapter
+a fallback path only after a normally completed agent turn: the adapter
 accepts one strict JSON object or one standalone, line-delimited `json` fence.
 If parsing still fails and the Step has exactly one output, the original response
 is bound to that Artifact verbatim and a structured warning is emitted without
@@ -276,10 +287,9 @@ and explicit plan fibers. Checkpoint values accept only strict, finite JSON
 types and compare recursively without Python coercions such as `True == 1`.
 Resume also validates known and unique operation IDs, dependency closure, and
 the exact materialized-value set. The public workspace resume boundary
-separately hashes the current workflow definition, including resolved Markdown
-instructions for new bundle-aware runs, and rejects a run when that digest
-differs from its persisted definition digest. Legacy source-only state-v2 runs
-resume with their original path-identity instruction semantics.
+separately hashes the current workflow definition, including the `.workflow` or
+`.g4` source and every referenced Markdown instruction, and rejects a run when
+that digest differs from its persisted `definition_digest`.
 
 Checkpoint observers publish state before releasing dependent operations.
 Human waits release resource leases and Session ownership; workflow and Step
@@ -289,9 +299,9 @@ uncheckpointed side-effecting Step can run again after resume; workflows should
 not place such a Step concurrently with a Human frontier when exactly-once
 effects matter.
 
-Persisted Human-run documents use the strict state-v2 schema, including the
-workflow/plan-bound checkpoint fields; incompatible versions and unknown or
-missing fields fail closed.
+Persisted Human-run documents use the strict state-v3 schema, including the
+workflow/plan-bound checkpoint and per-iteration fields. State-v2 documents,
+other versions, and unknown or missing fields fail closed.
 
 Each run resume keeps an advisory lock file handle open for its lease. Lock-file
 existence is not ownership: the kernel releases the lock when the holder closes
@@ -348,15 +358,17 @@ crossing the bounded, whole-process-tree `execute_program` boundary. The real
 Program may launch only once, and its original result or error remains
 authoritative. The script is a workspace-contained regular file, not a
 pre-authorized executable, and needs no executable permission. Agent Steps
-continue through the injected contextual completion boundary. Human Steps
-continue through contextual preparation/request callbacks plus the generic
-checkpoint API; they do not depend on `fusion_flow.execution`.
+cross the injected completion boundary through `flow.agent()` and
+`flow.session()` inside one `fusion_flow.execution.run()` per durable G4 run.
+Human Steps continue through the two-argument preparation/request callbacks
+plus the generic checkpoint API; their suspend/resume protocol remains
+graph-owned.
 
 `AgentConfig.system_prompt` is the only Python field for an Agent's stable
 system prompt. `AgentInvocation.prompt` remains the per-call prompt. The removed
 `AgentConfig.system` / `AgentConfig.prompt` constructor spellings are not
-compatibility aliases. Because the serialized config key changes to
-`system_prompt`, an old cached Agent call may execute again after this migration.
+compatibility aliases. Serialized Agent configurations and cache identities
+use `system_prompt` directly.
 
 The workspace activation path points at this directory for G4 source.
 `skills/fusion-flow-legacy/` separately preserves the Node/TypeScript

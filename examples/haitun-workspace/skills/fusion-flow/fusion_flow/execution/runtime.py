@@ -293,17 +293,10 @@ class RunContext:
             "produced_by": produced_by,
             "produced_at": produced_at,
             "source_node": trace.trace_id,
-            "producedBy": produced_by,
-            "producedAt": produced_at,
-            "sourceNode": trace.trace_id,
         }
         if tokens is not None:
             metadata["tokens"] = dict(tokens)
         metadata.update(details)
-        if "cache_key" in metadata:
-            metadata["inputHash"] = metadata["cache_key"]
-        elif "input_hash" in metadata:
-            metadata["inputHash"] = metadata["input_hash"]
         return metadata
 
     async def _read_input(self, name: str, default_value: str) -> str:
@@ -609,8 +602,6 @@ class RunContext:
             return None
         if cache_key is not None:
             stored_cache_key = metadata.get("cache_key")
-            if stored_cache_key is None:
-                stored_cache_key = metadata.get("inputHash")
             if stored_cache_key != cache_key:
                 return None
         return cached
@@ -783,55 +774,6 @@ class RunContext:
             )
         except Exception as error:
             logger.error(f'Failed to persist diagnostic trace "{name}": {error}')
-
-    async def _commit_legacy_agent_call(
-        self,
-        name: str,
-        trace: ExecutionTrace,
-    ) -> None:
-        """原子提交旧版 Agent 的共享调用序号、计数和诊断 trace。"""
-        normalized = assert_safe_name(name)
-        with anyio.CancelScope(shield=True):
-            async with self._lock:
-                self._ensure_open()
-                ordinals = self._call_ordinals.setdefault(normalized, set())
-                count = 1
-                inspection_error: Exception | None = None
-                while True:
-                    trace_name = normalized if count == 1 else f"{normalized}.{count}"
-                    path = anyio.Path(self._path, "trace", f"{trace_name}.json")
-                    if count in ordinals:
-                        count += 1
-                        continue
-                    try:
-                        exists = await path.exists()
-                    except Exception as error:
-                        inspection_error = error
-                        break
-                    if not exists:
-                        break
-                    # Resume preserves old diagnostic traces. Mark every skipped
-                    # file ordinal so later session/evaluate calls cannot reuse it.
-                    ordinals.add(count)
-                    count += 1
-                ordinals.add(count)
-                self._increment_call_count(normalized, service=False)
-                trace.metadata.update(
-                    {
-                        "call_ordinal": count,
-                        "trace_file": f"trace/{trace_name}.json",
-                    }
-                )
-            if inspection_error is not None:
-                logger.error(
-                    f'Failed to persist legacy Agent trace "{name}": {inspection_error}',
-                )
-            else:
-                try:
-                    await _atomic_write_json(path, trace.to_dict())
-                except Exception as error:
-                    logger.error(f'Failed to persist legacy Agent trace "{name}": {error}')
-        await checkpoint_if_cancelled()
 
 
 def current_run_context() -> RunContext:

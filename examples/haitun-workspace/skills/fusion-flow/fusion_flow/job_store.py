@@ -9,7 +9,6 @@ UI or an input channel.
 from __future__ import annotations
 
 import errno
-import hashlib
 import json
 import math
 import os
@@ -32,7 +31,7 @@ from .workflow_execution import (
     ResourceCapacity,
 )
 
-STATE_VERSION = 2
+STATE_VERSION = 3
 type RunStatus = Literal[
     "running",
     "waiting_for_human",
@@ -49,7 +48,7 @@ _RUN_KEYS = frozenset(
         "run_id",
         "status",
         "flow_path",
-        "flow_source_digest",
+        "definition_digest",
         "inputs",
         "resource_capacities",
         "checkpoint",
@@ -69,7 +68,6 @@ _CHECKPOINT_KEYS = frozenset(
         "foreach_iterations",
     }
 )
-_LEGACY_CHECKPOINT_KEYS = _CHECKPOINT_KEYS - {"foreach_iterations"}
 _REQUEST_KEYS = frozenset(
     {
         "request_id",
@@ -167,7 +165,7 @@ class HumanWorkflowRun:
     run_id: str
     status: RunStatus
     flow_path: str
-    flow_source_digest: str
+    definition_digest: str
     inputs: dict[str, object]
     resource_capacities: dict[str, ResourceCapacity]
     checkpoint: ExecutionCheckpoint | None = None
@@ -316,17 +314,14 @@ class JobStore:
         self,
         *,
         flow_path: str | PathLike[str],
-        flow_source: str,
-        definition_digest: str | None = None,
+        definition_digest: str,
         inputs: Mapping[str, object],
         resource_capacities: Mapping[str, ResourceCapacity] | None = None,
         checkpoint: ExecutionCheckpoint | None = None,
     ) -> HumanWorkflowRun:
         """Create and persist a new running job with an opaque run ID."""
 
-        if not isinstance(flow_source, str):
-            raise TypeError("flow_source must be a string")
-        if definition_digest is not None and _DIGEST_PATTERN.fullmatch(definition_digest) is None:
+        if _DIGEST_PATTERN.fullmatch(definition_digest) is None:
             raise ValueError("definition_digest must be 64 lowercase hexadecimal characters")
         normalized_path = str(flow_path)
         if not normalized_path:
@@ -340,9 +335,7 @@ class JobStore:
                 run_id=run_id,
                 status="running",
                 flow_path=normalized_path,
-                flow_source_digest=(
-                    hashlib.sha256(flow_source.encode()).hexdigest() if definition_digest is None else definition_digest
-                ),
+                definition_digest=definition_digest,
                 inputs=dict(inputs),
                 resource_capacities=dict(resource_capacities or {}),
                 checkpoint=checkpoint,
@@ -571,7 +564,7 @@ def _run_to_json(run: HumanWorkflowRun) -> dict[str, object]:
         "run_id": run.run_id,
         "status": run.status,
         "flow_path": run.flow_path,
-        "flow_source_digest": run.flow_source_digest,
+        "definition_digest": run.definition_digest,
         "inputs": run.inputs,
         "resource_capacities": capacities,
         "checkpoint": checkpoint,
@@ -598,14 +591,9 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
         if not isinstance(checkpoint_payload, dict):
             raise InvalidRunStateError("checkpoint must be an object or null")
         checkpoint_payload = cast(dict[str, object], checkpoint_payload)
-        checkpoint_keys = frozenset(checkpoint_payload)
-        if checkpoint_keys not in {
-            _CHECKPOINT_KEYS,
-            _LEGACY_CHECKPOINT_KEYS,
-        }:
-            _require_exact_keys(checkpoint_payload, _CHECKPOINT_KEYS, "checkpoint")
+        _require_exact_keys(checkpoint_payload, _CHECKPOINT_KEYS, "checkpoint")
         try:
-            iteration_payloads = checkpoint_payload.get("foreach_iterations", [])
+            iteration_payloads = checkpoint_payload["foreach_iterations"]
             if not isinstance(iteration_payloads, list):
                 raise InvalidRunStateError("checkpoint.foreach_iterations must be a list")
             foreach_iterations: list[ForeachIterationCheckpoint] = []
@@ -739,9 +727,9 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
                 _require_string(payload["status"], context="status"),
             ),
             flow_path=_require_string(payload["flow_path"], context="flow_path"),
-            flow_source_digest=_require_string(
-                payload["flow_source_digest"],
-                context="flow_source_digest",
+            definition_digest=_require_string(
+                payload["definition_digest"],
+                context="definition_digest",
             ),
             inputs=_require_json_mapping(payload["inputs"], context="inputs"),
             resource_capacities=_decode_resource_capacities(payload["resource_capacities"]),
@@ -802,8 +790,8 @@ def _validate_run(
         raise error_type(f"unsupported run status: {run.status!r}")
     if not isinstance(run.flow_path, str) or not run.flow_path:
         raise error_type("flow_path must be a non-empty string")
-    if not isinstance(run.flow_source_digest, str) or _DIGEST_PATTERN.fullmatch(run.flow_source_digest) is None:
-        raise error_type("flow_source_digest must be 64 lowercase hexadecimal characters")
+    if not isinstance(run.definition_digest, str) or _DIGEST_PATTERN.fullmatch(run.definition_digest) is None:
+        raise error_type("definition_digest must be 64 lowercase hexadecimal characters")
     _copy_json_mapping(run.inputs, context="inputs", error_type=error_type)
     _normalize_resource_capacities(
         run.resource_capacities,

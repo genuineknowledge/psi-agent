@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import isfinite
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, TypedDict
 
 
 class ResourceRequirementDict(TypedDict):
@@ -30,8 +30,8 @@ class StepNodeDict(TypedDict):
     timeout_seconds: int | None
     max_attempts: int
     resources: list[ResourceRequirementDict]
-    independent: NotRequired[bool]
-    depends_on: NotRequired[list[str]]
+    independent: bool
+    depends_on: list[str]
 
 
 class ArtifactNodeDict(TypedDict):
@@ -698,11 +698,9 @@ class WorkflowGraph:
                 timeout_seconds=step.timeout_seconds,
                 max_attempts=step.max_attempts,
                 resources=resources,
+                independent=step.independent,
+                depends_on=sorted(step.depends_on),
             )
-            if step.independent:
-                step_payload["independent"] = True
-            if step.depends_on:
-                step_payload["depends_on"] = sorted(step.depends_on)
             step_payloads.append(step_payload)
 
         # Artifacts have one stable identity key.

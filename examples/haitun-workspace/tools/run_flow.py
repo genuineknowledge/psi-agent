@@ -983,16 +983,6 @@ async def _materialize_instruction_files(
     return instruction_files
 
 
-def _legacy_instruction_identities(compiled: CompiledWorkflow) -> dict[str, str]:
-    """Preserve pre-bundle ``./...`` instructions as literal identities."""
-
-    return {
-        step.instruction_id: step.instruction_id
-        for step in compiled.graph.steps
-        if step.instruction_id is not None and step.instruction_id.startswith("./")
-    }
-
-
 def _compile_workflow_for_run(source: str, *, flow_path: str) -> CompiledWorkflow:
     """Compile one workflow and surface every non-fatal preflight diagnostic."""
 
@@ -1005,11 +995,10 @@ def _compile_workflow_for_run(source: str, *, flow_path: str) -> CompiledWorkflo
         ).warning(f"FusionFlow preflight warning: {diagnostic.message}")
 
     # Use the callback instead of reading CompiledWorkflow.diagnostics after
-    # return: strict executor validation can raise after warnings are known,
-    # leaving no result object for this tool entry point to inspect.
+    # return: later validation can raise after warnings are known, leaving no
+    # result object for this tool entry point to inspect.
     return compile_workflow(
         source,
-        strict_executors=True,
         diagnostic_callback=log_diagnostic,
     )
 
@@ -2305,7 +2294,7 @@ async def _execute_persisted_run(
     lease: RunLease,
     *,
     ai_socket: str,
-    instruction_files: Mapping[str, str] | None = None,
+    instruction_files: Mapping[str, str],
 ) -> str:
     if run.prepared_request is not None:
         raise ValueError("a Human response must be checkpointed before execution resumes")
@@ -2318,9 +2307,6 @@ async def _execute_persisted_run(
         reuse_existing=True,
     )
     await artifact_store.persist(run.checkpoint.values)
-    if instruction_files is None:
-        compiled = _compile_workflow_for_run(source, flow_path=run.flow_path)
-        instruction_files = _legacy_instruction_identities(compiled)
     step_tools: ToolRegistry | None = None
     human_tools: ToolRegistry | None = None
     step_tools_lock = anyio.Lock()
@@ -2409,14 +2395,13 @@ async def _execute_persisted_run(
                 lambda: _execute_workflow(
                     source,
                     inputs=run.inputs,
-                    contextual_complete=agent_sessions.complete,
+                    complete=agent_sessions.complete,
                     resource_capacities=run.resource_capacities,
-                    strict_executors=True,
                     supported_executor_kinds=("Agent", "Human", "Program"),
                     work_dir=_workspace_dir(),
                     run_program=complete_program,
-                    contextual_prepare_human_instruction=prepare_human,
-                    contextual_request_human=request_human,
+                    prepare_human_instruction=prepare_human,
+                    request_human=request_human,
                     resolve_instruction=_cached_instruction_resolver(instruction_files),
                     checkpoint=run.checkpoint,
                     checkpoint_observer=observe_checkpoint,
@@ -2513,7 +2498,6 @@ async def run_flow(
         store = _job_store()
         run = await store.create(
             flow_path=flow_path,
-            flow_source=source,
             definition_digest=_workflow_definition_digest(source, instruction_files),
             inputs=inputs,
             resource_capacities=resource_capacities,
@@ -2560,9 +2544,8 @@ async def run_flow(
         lambda: _execute_workflow(
             source,
             inputs=inputs,
-            contextual_complete=agent_sessions.complete,
+            complete=agent_sessions.complete,
             resource_capacities=resource_capacities,
-            strict_executors=True,
             supported_executor_kinds=("Agent", "Program"),
             resolve_instruction=_cached_instruction_resolver(instruction_files),
             work_dir=_workspace_dir(),
@@ -2616,18 +2599,15 @@ async def run_flow_resume(
             raise ValueError(f"FusionFlow run {run_id!r} is {run.status}{details}")
 
         source = await _read_flow_source(run.flow_path)
-        source_digest = hashlib.sha256(source.encode()).hexdigest()
-        instruction_files: dict[str, str] | None = None
-        definition_changed = False
         definition_error: Exception | None = None
-        if run.flow_source_digest != source_digest:
-            try:
-                compiled = _compile_workflow_for_run(source, flow_path=run.flow_path)
-                instruction_files = await _materialize_instruction_files(compiled, run.flow_path)
-                definition_changed = _workflow_definition_digest(source, instruction_files) != run.flow_source_digest
-            except Exception as error:
-                definition_changed = True
-                definition_error = error
+        try:
+            compiled = _compile_workflow_for_run(source, flow_path=run.flow_path)
+            instruction_files = await _materialize_instruction_files(compiled, run.flow_path)
+            definition_changed = _workflow_definition_digest(source, instruction_files) != run.definition_digest
+        except Exception as error:
+            instruction_files = {}
+            definition_changed = True
+            definition_error = error
         if definition_changed:
             failed = replace(
                 run,

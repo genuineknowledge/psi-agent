@@ -29,11 +29,9 @@ def _functional_call(assertion: Assertion) -> tuple[CompoundTerm, Constant] | No
     return None
 
 
-def _untyped_executor_warning(*, executor_id: str, step_id: str) -> Diagnostic:
+def _untyped_executor_error(*, executor_id: str, step_id: str) -> Diagnostic:
     return _diagnostic(
-        f"executor {executor_id!r} for step {step_id!r} has no explicit "
-        "Agent, Human, or Program type; legacy execution defaults it to Agent",
-        warning=True,
+        f"executor {executor_id!r} for step {step_id!r} has no explicit Agent, Human, or Program type",
     )
 
 
@@ -48,30 +46,6 @@ def collect_core_ir_diagnostics(core_ir: WorkflowFile) -> tuple[Diagnostic, ...]
     if duplicates:
         diagnostics.append(_diagnostic(f"duplicate workflow names: {duplicates}"))
 
-    constants = {constant.symbol: constant for constant in core_ir.constants}
-    warned: set[tuple[str, str]] = set()
-    for workflow in core_ir.workflows:
-        for assertion in workflow.assertions:
-            pair = _functional_call(assertion)
-            if pair is None or pair[0].operator.name != "step_executor":
-                continue
-            call, executor_value = pair
-            if len(call.arguments) != 1 or not isinstance(call.arguments[0], Constant):
-                continue
-            step = call.arguments[0]
-            executor = constants.get(executor_value.symbol, executor_value)
-            if not step.symbol or not executor.symbol or executor.belong_concepts:
-                continue
-            warning_key = (step.symbol, executor.symbol)
-            if warning_key in warned:
-                continue
-            warned.add(warning_key)
-            diagnostics.append(
-                _untyped_executor_warning(
-                    executor_id=executor.symbol,
-                    step_id=step.symbol,
-                )
-            )
     return tuple(diagnostics)
 
 
@@ -128,7 +102,6 @@ def check_workflow(
     """
 
     diagnostics = list(collect_core_ir_diagnostics(core_ir))
-
     compiled: object = graph_compilations
     if compiled is None:
         # Graph semantics stay centralized in WorkflowGraphCompiler; the
@@ -174,8 +147,6 @@ def check_workflow(
         for artifact in compilation.graph.artifacts:
             declaration = constants.get(artifact.artifact_id)
             concepts = set() if declaration is None else {concept.name for concept in declaration.belong_concepts}
-            # Graph relations establish the Artifact role. Untyped constants
-            # remain valid; reject only an explicit, incompatible declaration.
             if concepts and "Artifact" not in concepts:
                 diagnostics.append(
                     _diagnostic(
@@ -195,12 +166,12 @@ def check_workflow(
                 else {concept.name for concept in executor.belong_concepts if concept.name in _EXECUTOR_KINDS}
             )
             if executor is None or not executor.belong_concepts:
-                warning = _untyped_executor_warning(
+                error = _untyped_executor_error(
                     executor_id=step.executor_id,
                     step_id=step.step_id,
                 )
-                if warning not in diagnostics:
-                    diagnostics.append(warning)
+                if error not in diagnostics:
+                    diagnostics.append(error)
             elif len(kinds) != 1:
                 diagnostics.append(
                     _diagnostic(

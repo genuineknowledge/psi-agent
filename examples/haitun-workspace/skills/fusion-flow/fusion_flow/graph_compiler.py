@@ -794,9 +794,9 @@ class WorkflowGraphCompiler(CoreIRCompiler):
     ) -> str:
         """Extract an identity and reject a conflicting explicit concept tag.
 
-        Untyped constants remain accepted for compatibility with hand-built
-        Core IR. The official parser/catalog path supplies concept tags, which
-        must include the operator position's required concept.
+        Untyped constants remain accepted for hand-built Core IR. The official
+        parser/catalog path supplies concept tags, which must include the
+        operator position's required concept.
         """
 
         constant = cls._constant(value, context)
@@ -860,14 +860,8 @@ class WorkflowGraphCompiler(CoreIRCompiler):
 
     @classmethod
     def _validate_executor_concepts(cls, executor: Constant) -> None:
-        """Validate optional executor typing against the graph's three kinds.
+        """Require exactly one of the graph's three executor kinds."""
 
-        Untyped constants remain valid for compatibility with minimal Core IR.
-        A typed executor must carry exactly one recognized executor concept.
-        """
-
-        if not executor.belong_concepts:
-            return
         matches = {concept.name for concept in executor.belong_concepts} & cls._EXECUTOR_CONCEPTS
         if len(matches) != 1:
             raise WorkflowGraphCompilationError("step_executor must belong to exactly one of Human, Agent, or Program")

@@ -50,6 +50,29 @@ async def test_flow_manage_prefers_g4_but_keeps_legacy_fallback(
 
 
 @pytest.mark.anyio
+async def test_flow_manage_rejects_create_over_existing_adhoc_g4(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = anyio.Path(tmp_path)
+    adhoc = workspace / "flows" / "adhoc" / "existing"
+    await adhoc.mkdir(parents=True)
+    await (adhoc / "flow.g4").write_text("workflow existing {}", encoding="utf-8")
+    monkeypatch.setattr(flow_manage_module._paths, "resolve_workspace", lambda: workspace)
+
+    result = await flow_manage_module.flow_manage(
+        "create",
+        "existing",
+        target="adhoc",
+        flow_source="workflow replacement {}",
+    )
+
+    assert result == "[Error] Adhoc flow already exists: 'existing'"
+    assert not await (adhoc / "flow.workflow").exists()
+    assert await (adhoc / "flow.g4").read_text(encoding="utf-8") == "workflow existing {}"
+
+
+@pytest.mark.anyio
 async def test_run_flow_accepts_workflow_and_g4_sources(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

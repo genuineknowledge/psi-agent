@@ -34,7 +34,7 @@ class ExecutionPlanError(ValueError):
     """A workflow graph cannot be lowered to the supported execution plan."""
 
 
-class WorkflowControlError(Exception):
+class _WorkflowControlSignalError(Exception):
     """A dispatcher signal that suspends or redirects workflow execution.
 
     Unlike an ordinary step failure, a control signal must escape foreach
@@ -43,9 +43,9 @@ class WorkflowControlError(Exception):
     """
 
 
-# Public compatibility spelling emphasizes that this exception carries
-# interpreter control flow rather than an ordinary execution failure.
-WorkflowControlSignal = WorkflowControlError
+WorkflowControlSignal = _WorkflowControlSignalError
+WorkflowControlSignal.__name__ = "WorkflowControlSignal"
+WorkflowControlSignal.__qualname__ = "WorkflowControlSignal"
 
 
 class StepOutputError(ExecutionPlanError):
@@ -100,12 +100,6 @@ class ExecutionPlan:
     fibers: tuple[Fiber, ...]
 
 
-type StepDispatcher = Callable[
-    [StepNode, Mapping[str, object]],
-    Awaitable[Mapping[str, object]],
-]
-
-
 @dataclass(frozen=True, slots=True)
 class ResourceGrant:
     """Concrete resource instances reserved for one step invocation."""
@@ -137,7 +131,7 @@ class ResourceLease:
 
 @dataclass(frozen=True, slots=True)
 class DispatchContext:
-    """Runtime-only scheduling information supplied to a contextual dispatcher."""
+    """Runtime scheduling information supplied to one step invocation."""
 
     resource_lease: ResourceLease = ResourceLease()
     invocation_id: str = ""
@@ -145,7 +139,7 @@ class DispatchContext:
     attempt: int = 1
 
 
-type ContextualStepDispatcher = Callable[
+type StepDispatcher = Callable[
     [StepNode, Mapping[str, object], DispatchContext],
     Awaitable[Mapping[str, object]],
 ]
@@ -648,8 +642,7 @@ async def execute_plan(
     graph: WorkflowGraph,
     *,
     inputs: Mapping[str, object],
-    dispatch: StepDispatcher | None = None,
-    contextual_dispatch: ContextualStepDispatcher | None = None,
+    dispatch: StepDispatcher,
     resource_capacities: Mapping[str, ResourceCapacity] | None = None,
     allocator: ResourceAllocator | None = None,
     checkpoint: ExecutionCheckpoint | None = None,
@@ -659,8 +652,6 @@ async def execute_plan(
 
     if plan.workflow_id != graph.workflow_id:
         raise ExecutionPlanError(f"plan targets {plan.workflow_id}, not {graph.workflow_id}")
-    if (dispatch is None) == (contextual_dispatch is None):
-        raise ExecutionPlanError("provide exactly one of dispatch or contextual_dispatch")
     if resource_capacities is not None and allocator is not None:
         raise ExecutionPlanError("resource_capacities and allocator are mutually exclusive")
 
@@ -989,15 +980,7 @@ async def execute_plan(
             context: DispatchContext,
             invocation_inputs: Mapping[str, object],
         ) -> Mapping[str, object]:
-            if contextual_dispatch is not None:
-                return await contextual_dispatch(
-                    step,
-                    invocation_inputs,
-                    context,
-                )
-            if dispatch is None:
-                raise ExecutionPlanError("dispatcher preflight did not select a dispatcher")
-            return await dispatch(step, invocation_inputs)
+            return await dispatch(step, invocation_inputs, context)
 
         async def run_attempt(attempt: int) -> dict[str, object]:
             """Adapt one graph Step attempt to the shared Flow retry kernel."""

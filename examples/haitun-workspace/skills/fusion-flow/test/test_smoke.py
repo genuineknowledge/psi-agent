@@ -8,6 +8,7 @@ import anyio
 import pytest
 from fusion_flow.workflow_execution import (
     Await,
+    DispatchContext,
     ExecutionPlanError,
     ResourceAllocator,
     execute_plan,
@@ -24,7 +25,7 @@ from fusion_flow.workflow_graph import (
     WorkflowGraphError,
     WorkflowPolicy,
 )
-from fusion_flow.workflow_runner import ProgramInvocation, execute_workflow
+from fusion_flow.workflow_runner import CompletionContext, ProgramInvocation, execute_workflow
 
 
 def test_graph_contract_serializes_and_validates() -> None:
@@ -109,9 +110,11 @@ async def test_execution_respects_resource_capacity() -> None:
     async def dispatch(
         step: StepNode,
         inputs: Mapping[str, object],
+        context: DispatchContext,
     ) -> Mapping[str, object]:
         nonlocal active, maximum
         assert inputs == {}
+        assert context.invocation_id == step.step_id
         invoked.add(step.step_id)
         active += 1
         maximum = max(maximum, active)
@@ -153,8 +156,9 @@ async def test_timeout_releases_resource_for_the_next_run() -> None:
     async def hang(
         step: StepNode,
         inputs: Mapping[str, object],
+        context: DispatchContext,
     ) -> Mapping[str, object]:
-        del step, inputs
+        del step, inputs, context
         await anyio.sleep_forever()
         raise AssertionError("unreachable")
 
@@ -170,8 +174,9 @@ async def test_timeout_releases_resource_for_the_next_run() -> None:
     async def succeed(
         step: StepNode,
         inputs: Mapping[str, object],
+        context: DispatchContext,
     ) -> Mapping[str, object]:
-        del step, inputs
+        del step, inputs, context
         return {}
 
     with anyio.fail_after(1):
@@ -218,9 +223,14 @@ workflow dispatch {
     prompts: list[str] = []
     invocations: list[ProgramInvocation] = []
 
-    async def complete(prompt: str) -> str:
+    async def complete(
+        prompt: str,
+        context: CompletionContext,
+    ) -> Mapping[str, object]:
         prompts.append(prompt)
-        return "agent output"
+        assert context.step_id == "analyze_step"
+        assert context.output_ids == ("analysis",)
+        return {"analysis": "agent output"}
 
     async def run_program(invocation: ProgramInvocation) -> Mapping[str, object]:
         invocations.append(invocation)
@@ -228,9 +238,8 @@ workflow dispatch {
 
     result = await execute_workflow(
         source,
-        request="Explain structured concurrency.",
+        inputs={"request": "Explain structured concurrency."},
         complete=complete,
-        strict_executors=True,
         supported_executor_kinds=("Agent", "Program"),
         work_dir=tmp_path,
         run_program=run_program,

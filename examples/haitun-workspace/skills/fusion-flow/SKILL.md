@@ -54,10 +54,17 @@ Do **not** activate this skill for `.prose` files — those belong to OpenProse.
 | `grammar/FusionFlow.g4` + parser | G4 source to Core IR |
 | `fusion_flow.workflow_graph` | immutable Step–Artifact structure and validation |
 | `fusion_flow.workflow_runner` | Core IR to graph, plan, and checked dispatch |
-| `fusion_flow.workflow_execution` | dependencies, concurrency, timeouts, resources, and validated checkpoints |
-| `fusion_flow.job_store` | private, versioned Human wait/checkpoint state |
+| `fusion_flow.workflow_execution` | graph interpretation, dependencies, concurrency, timeouts, resources, and validated checkpoints |
+| `fusion_flow.execution` | shared `flow.*` runtime; G4 Agent leaves reuse `run`/`agent`/`session` |
+| `fusion_flow.job_store` | private, strict state-v3 Human wait/checkpoint state |
 | workspace `run_flow` / `run_flow_resume` tools | file/JSON boundary, ephemeral Session-backed Agent/Program dispatch, and Human preparation/resume |
 | workspace `clarify` tool | existing user-facing choice or free-text question formatter |
+
+The Python runtime has one contract: `execute_workflow` requires `inputs=`;
+Agent and Human callbacks receive `(prompt, CompletionContext)`;
+`execute_plan` requires a `dispatch=` callback with the exact
+`(StepNode, inputs, DispatchContext)` signature. These are the supported forms,
+not compatibility alternatives.
 
 The skill's job is to:
 
@@ -186,7 +193,7 @@ Workflows without Human Steps finish in the initial `run_flow` call. A Human wor
 
 An `ExecutionCheckpoint` is valid only for its exact non-empty `workflow_id` and `plan_digest`. The digest is SHA-256 over a canonical serialization of the current graph semantics and explicit execution-plan fibers; matching Step and Artifact IDs from another workflow or graph version are not enough. Values must be strict, finite JSON values, and resume compares them recursively with type identity, so JSON `true` never matches JSON `1`. The executor also validates unique known operation IDs, dependency closure, and the exact set of materialized values before it skips any work.
 
-The public `run_flow_resume` boundary additionally validates the current workflow definition against the digest recorded when the run was created; for a new instruction bundle, that definition includes the `.workflow` or `.g4` source and every referenced Markdown instruction. Legacy source-only state-v2 runs retain their original path-identity semantics when resumed. Each resume is protected by an OS-released advisory file lock plus an in-process reservation guard; a leftover lock file is not ownership, and an abrupt process exit releases the live advisory lease. Do not copy checkpoints between workflows, edit persisted state, or bypass the matching `run_id` / `request_id` protocol.
+The public `run_flow_resume` boundary additionally validates the current workflow definition against the `definition_digest` recorded when the run was created; that definition includes the `.workflow` or `.g4` source and every referenced Markdown instruction. Persisted Human runs use the strict state-v3 schema; state-v2 and all other older versions are rejected rather than resumed through a compatibility path. Each resume is protected by an OS-released advisory file lock plus an in-process reservation guard; a leftover lock file is not ownership, and an abrupt process exit releases the live advisory lease. Do not copy checkpoints between workflows, edit persisted state, or bypass the matching `run_id` / `request_id` protocol.
 
 ### When a run fails
 
@@ -470,6 +477,13 @@ registry and cannot re-enable a denied workflow launcher. The current workspace
 AI socket fixes provider routing, so a non-default `model`, `engine`, or
 `api_base` is rejected explicitly instead of being ignored.
 
+Agent-backed Steps execute through the shared `flow.agent()` and
+`flow.session()` primitives inside `fusion_flow.execution.run()`. Their
+completion callback must return a mapping keyed exactly by the declared output
+Artifact IDs. The adapter's deterministic plain-text handling after a normally
+completed Agent turn is an output fallback, not an older API compatibility
+route.
+
 A Human Step may request an approval, choose among up to four options, or accept open-ended/structured input. Its dedicated preparation Agent receives the resolved instruction text, consumed Artifacts, and output contract, then emits the arguments for the existing `clarify` tool. It never asks the user itself, and its question text never becomes a produced Artifact. The next user response becomes the Human Step result after `run_flow_resume`. Multiple output Artifacts require a JSON object keyed exactly by those Artifact IDs; a zero-output Human Step acts as a pure gate.
 
 Every Program must declare one explicit workspace-relative script or source path:
@@ -650,7 +664,7 @@ Before the initial `run_flow` call, inspect the source in order:
 - each Step has a supported Agent, Human, or Program executor, name, instruction, and explicit data/control dependencies;
 - no residual or unsupported operator is emitted.
 
-This manual source review is not a second tool or CLI invocation. Inside `run_flow`, `check_workflow` requires exactly one workflow, delegates graph semantics to `WorkflowGraphCompiler`, rejects unsupported residual assertions and graph values with explicit concepts that omit `Artifact`, requires every Step instruction and Program path, rejects ambiguous executor typing, and emits preflight warning logs for legacy untyped executors. Parsing, checking, and compilation all occur before dispatch.
+This manual source review is not a second tool or CLI invocation. Inside `run_flow`, `check_workflow` requires exactly one workflow, delegates graph semantics to `WorkflowGraphCompiler`, rejects unsupported residual assertions and graph values with explicit concepts that omit `Artifact`, requires every Step instruction and Program path, and rejects untyped or ambiguous executor declarations. Parsing, checking, and compilation all occur before dispatch.
 
 ### Running it (automatic, right after the self-check)
 

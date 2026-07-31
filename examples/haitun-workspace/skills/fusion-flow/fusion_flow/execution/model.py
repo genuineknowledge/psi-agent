@@ -36,9 +36,6 @@ class AgentConfig:
     tools: tuple[str, ...] = ()
     max_turns: int | None = None
     context_schema: tuple[str, ...] | None = None
-    # Appended fields preserve the positional shape of the original public
-    # constructor while allowing declarative G4 Agents to carry the remaining
-    # routing and reasoning settings through the shared SessionRunner contract.
     api_base: str | None = None
     reasoning_effort: str | None = None
 

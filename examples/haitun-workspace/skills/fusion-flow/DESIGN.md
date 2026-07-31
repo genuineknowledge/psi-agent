@@ -81,8 +81,8 @@ Unknown, duplicate, type-invalid, or unsupported routing declarations fail
 closed. A declaration must never parse successfully and then be silently
 ignored.
 
-The workspace adapter wraps one complete G4 workflow execution in one legacy
-`execution.run()` and injects a production `SessionRunner`. Each Agent executor
+The workspace adapter wraps one complete G4 workflow execution in one shared
+Python `execution.run()` runtime and injects a production `SessionRunner`. Each Agent executor
 has one immutable `AgentHandle`; every logical Step instance calls:
 
 ```python
@@ -205,7 +205,7 @@ failures still abort or suspend immediately:
 - allocator invariant failure.
 
 Outside foreach, a workspace Program keeps the existing
-`$fusion_flow/program_error` error-valued Artifact compatibility behavior.
+`$fusion_flow/program_error` error-valued Artifact contract.
 Inside foreach, that same reserved Program result is an iteration failure: it
 participates in the Step's `max_attempts`, then joins the aggregate exception.
 
