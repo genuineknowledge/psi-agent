@@ -36,6 +36,14 @@ def _load_module(name: str, path: Path) -> Any:
 
 run_flow_tool = _load_module("fusion_flow_run_flow_tool", _RUNNER_PATH)
 clarify_tool = _load_module("fusion_flow_clarify_tool", _CLARIFY_PATH)
+CompiledAgentConfig = __import__(
+    "fusion_flow.workflow_runner",
+    fromlist=["CompiledAgentConfig"],
+).CompiledAgentConfig
+ForeachIterationCheckpoint = __import__(
+    "fusion_flow.workflow_execution",
+    fromlist=["ForeachIterationCheckpoint"],
+).ForeachIterationCheckpoint
 
 
 @pytest.mark.anyio
@@ -290,6 +298,52 @@ workflow ordered {
 
     depends_on(after_step, before_step) == True;
     selected_result == if(request = "go", before_result, after_result);
+}
+"""
+
+_AGENT_FOREACH_WORKFLOW = """
+const agent_foreach: Workflow;
+const process_step: Step;
+const worker: Agent;
+const items: Artifact;
+const item: Artifact;
+const results: Artifact;
+
+workflow agent_foreach {
+    input_workflow(agent_foreach) == [items];
+    output_workflow(agent_foreach) == [results];
+    max_concurrency(agent_foreach) == 2;
+
+    step_name(process_step) == "Process";
+    step_instruction(process_step) == "Process this item.";
+    step_executor(process_step) == worker;
+    foreach_item(process_step, items) == item;
+    consumes(process_step) == [item];
+    produces(process_step) == [results];
+}
+"""
+
+_PROGRAM_FOREACH_WORKFLOW = """
+const program_foreach: Workflow;
+const process_step: Step;
+const worker: Program;
+const items: Artifact;
+const item: Artifact;
+const results: Artifact;
+
+workflow program_foreach {
+    input_workflow(program_foreach) == [items];
+    output_workflow(program_foreach) == [results];
+    max_concurrency(program_foreach) == 2;
+
+    program_path(worker) == "./worker.py";
+    step_name(process_step) == "Process";
+    step_instruction(process_step) == "Process this item.";
+    step_executor(process_step) == worker;
+    foreach_item(process_step, items) == item;
+    max_attempts(process_step) == 2;
+    consumes(process_step) == [item];
+    produces(process_step) == [results];
 }
 """
 
@@ -1370,6 +1424,148 @@ async def test_run_flow_executes_once_with_dependencies_and_resources(
 
 
 @pytest.mark.anyio
+async def test_run_flow_agent_foreach_collects_failures_after_all_items(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow_path = anyio.Path(tmp_path / "flows" / "foreach.workflow")
+    await flow_path.parent.mkdir()
+    await flow_path.write_text(_AGENT_FOREACH_WORKFLOW, encoding="utf-8")
+    invocations: list[tuple[str, int | None, object]] = []
+
+    async def load_step_tools() -> ToolRegistry:
+        return ToolRegistry()
+
+    async def complete_agent_step(
+        prompt: str,
+        context: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object]:
+        del prompt, tool_registry
+        assert ai_socket == "http://ai.example"
+        item = context.inputs["item"]
+        invocations.append(
+            (
+                context.dispatch.invocation_id,
+                context.dispatch.iteration_index,
+                item,
+            )
+        )
+        if item == "bad":
+            raise RuntimeError("item failed")
+        return {"results": cast(str, item).upper()}
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_load_step_tools", load_step_tools)
+    monkeypatch.setattr(run_flow_tool, "_complete_agent_step", complete_agent_step)
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+
+    with pytest.RaisesGroup(
+        pytest.RaisesGroup(
+            pytest.RaisesExc(RuntimeError, match="item failed"),
+        )
+    ):
+        await run_flow_tool.run_flow(
+            "flows/foreach.workflow",
+            '{"items": ["a", "bad", "c"]}',
+        )
+    assert sorted(invocations) == [
+        ("process_step[0]", 0, "a"),
+        ("process_step[1]", 1, "bad"),
+        ("process_step[2]", 2, "c"),
+    ]
+    session_runs = anyio.Path(tmp_path) / run_flow_tool._SESSION_RUNS_RELATIVE_PATH
+    run_dirs = [path async for path in session_runs.iterdir()]
+    assert len(run_dirs) == 1
+    bindings = run_dirs[0] / "bindings"
+    assert await (bindings / "g4.process_step[0].md").exists()
+    assert not await (bindings / "g4.process_step[1].md").exists()
+    assert await (bindings / "g4.process_step[2].md").exists()
+
+
+@pytest.mark.anyio
+async def test_run_flow_program_foreach_retries_and_collects_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow_path = anyio.Path(tmp_path / "flows" / "program-foreach.workflow")
+    await flow_path.parent.mkdir()
+    await flow_path.write_text(_PROGRAM_FOREACH_WORKFLOW, encoding="utf-8")
+    await anyio.Path(tmp_path / "worker.py").write_text(
+        "raise AssertionError('the process boundary is stubbed')\n",
+        encoding="utf-8",
+    )
+    calls: list[tuple[int, int, object]] = []
+
+    async def load_step_tools() -> ToolRegistry:
+        return ToolRegistry()
+
+    async def execute_program_command(
+        invocation: Any,
+        argv: tuple[str, ...],
+        *,
+        stdin: str,
+    ) -> Any:
+        del stdin
+        item = invocation.inputs["item"]
+        calls.append(
+            (
+                invocation.dispatch.iteration_index,
+                invocation.dispatch.attempt,
+                item,
+            )
+        )
+        if item == "bad":
+            return run_flow_tool._ProgramProcessResult(
+                argv=argv,
+                exit_code=7,
+                stdout=b"x" * 20_000,
+                stderr=b"y" * 20_000,
+            )
+        return run_flow_tool._ProgramProcessResult(
+            argv=argv,
+            exit_code=0,
+            stdout=cast(str, item).upper().encode(),
+            stderr=b"",
+        )
+
+    async def drive(tool_registry: ToolRegistry) -> None:
+        execute = tool_registry.get("execute_program")
+        submit = tool_registry.get("submit_program_result")
+        assert execute is not None
+        assert submit is not None
+        await execute(runtime=sys.executable)
+        await submit()
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_load_step_tools", load_step_tools)
+    monkeypatch.setattr(run_flow_tool, "_execute_program_command", execute_program_command)
+    monkeypatch.setattr(run_flow_tool, "current_tool_ai_socket", lambda: "http://ai.example")
+    _install_program_agent_driver(monkeypatch, drive)
+
+    expected_message = "Program step 'process_step[1]' failed (execution/nonzero_exit): Program exited with code 7."
+    with pytest.RaisesGroup(
+        pytest.RaisesGroup(
+            pytest.RaisesExc(RuntimeError, match=r"process_step\[1\].*Program exited with code 7"),
+        )
+    ):
+        await run_flow_tool.run_flow(
+            "flows/program-foreach.workflow",
+            '{"items": ["ok", "bad"]}',
+        )
+    assert sorted(calls) == [
+        (0, 1, "ok"),
+        (1, 1, "bad"),
+        (1, 2, "bad"),
+    ]
+    assert len(expected_message) < 200
+    assert "x" * 100 not in expected_message
+    assert "y" * 100 not in expected_message
+
+
+@pytest.mark.anyio
 async def test_run_flow_keeps_materialized_artifacts_when_a_later_step_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1973,7 +2169,16 @@ async def test_human_resume_preserves_legacy_source_digest_instruction_identity(
 
 
 def test_human_response_checkpoint_supports_zero_and_multiple_outputs() -> None:
-    checkpoint = _test_checkpoint({"request": "review"})
+    iteration = ForeachIterationCheckpoint(
+        step_id="prior_map",
+        iteration_index=0,
+        attempts=1,
+        outputs={"mapped": "done"},
+    )
+    checkpoint = replace(
+        _test_checkpoint({"request": "review"}),
+        foreach_iterations=(iteration,),
+    )
     gate = run_flow_tool.HumanRequestSpec.create(
         step_id="gate_step",
         question="Continue?",
@@ -1983,6 +2188,7 @@ def test_human_response_checkpoint_supports_zero_and_multiple_outputs() -> None:
 
     assert gated.values == {"request": "review"}
     assert gated.completed_step_ids == ("gate_step",)
+    assert gated.foreach_iterations == (iteration,)
 
     review = run_flow_tool.HumanRequestSpec.create(
         step_id="review_step",
@@ -2001,6 +2207,7 @@ def test_human_response_checkpoint_supports_zero_and_multiple_outputs() -> None:
         "comment": "Ship it.",
     }
     assert reviewed.completed_step_ids == ("review_step",)
+    assert reviewed.foreach_iterations == (iteration,)
 
 
 @pytest.mark.anyio
@@ -2215,6 +2422,87 @@ async def test_cancelled_resume_keeps_checkpoint_recoverable(
 
 
 @pytest.mark.anyio
+async def test_checkpoint_observer_commits_foreach_iteration_when_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "concurrent Program foreach and Human suspension"
+    flow_path = anyio.Path(tmp_path / "flows" / "parallel.workflow")
+    await flow_path.parent.mkdir()
+    await flow_path.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    store = run_flow_tool._job_store()
+    run = await store.create(
+        flow_path="flows/parallel.workflow",
+        flow_source=source,
+        inputs={"items": ["a", "b"]},
+        checkpoint=_test_checkpoint({"items": ["a", "b"]}),
+    )
+    assert run.checkpoint is not None
+    iteration = ForeachIterationCheckpoint(
+        step_id="program_step",
+        iteration_index=0,
+        attempts=1,
+        outputs={"result": "A"},
+    )
+    committed_checkpoint = replace(
+        run.checkpoint,
+        foreach_iterations=(iteration,),
+    )
+    persisted_artifacts: list[dict[str, object]] = []
+    persist_calls = 0
+    cancel_scope: anyio.CancelScope | None = None
+
+    async def persist_artifacts(values: dict[str, object]) -> None:
+        nonlocal persist_calls
+        persist_calls += 1
+        if persist_calls == 2:
+            assert cancel_scope is not None
+            cancel_scope.cancel()
+            await anyio.sleep(0.001)
+        persisted_artifacts.append(copy.deepcopy(values))
+
+    async def artifact_store(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        return SimpleNamespace(persist=persist_artifacts)
+
+    async def execute_workflow(flow_source: str, **kwargs: Any) -> dict[str, object]:
+        assert flow_source == source
+        observer = kwargs["checkpoint_observer"]
+        assert callable(observer)
+        await observer(committed_checkpoint)
+        await anyio.sleep_forever()
+        raise AssertionError("sleep_forever returned unexpectedly")
+
+    monkeypatch.setattr(run_flow_tool, "_artifact_store", artifact_store)
+    monkeypatch.setattr(run_flow_tool, "_execute_workflow", execute_workflow)
+
+    async with store.acquire(run.run_id) as lease:
+
+        async def execute_persisted() -> None:
+            await run_flow_tool._execute_persisted_run(
+                source,
+                await lease.load(),
+                lease,
+                ai_socket="http://ai.example",
+                instruction_files={},
+            )
+
+        async with anyio.create_task_group() as task_group:
+            cancel_scope = task_group.cancel_scope
+            task_group.start_soon(execute_persisted)
+            await anyio.sleep_forever()
+
+    persisted = await store.load(run.run_id)
+    assert persisted.status == "running"
+    assert persisted.checkpoint == committed_checkpoint
+    assert persisted_artifacts == [
+        {"items": ["a", "b"]},
+        {"items": ["a", "b"]},
+    ]
+
+
+@pytest.mark.anyio
 async def test_human_resume_rejects_changed_workflow_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2288,6 +2576,230 @@ def _agent_completion_context(*output_ids: str) -> Any:
             resource_lease=SimpleNamespace(grants=()),
         ),
     )
+
+
+def _configured_agent_completion_context(
+    *,
+    config: Any | None = None,
+    invocation_id: str = "draft[0]",
+) -> Any:
+    return run_flow_tool.CompletionContext(
+        step_id="draft",
+        executor_id="writer",
+        executor_kind="Agent",
+        inputs={"request": "write"},
+        output_ids=("result",),
+        dispatch=SimpleNamespace(
+            resource_lease=SimpleNamespace(grants=()),
+            invocation_id=invocation_id,
+            iteration_index=0,
+            attempt=1,
+        ),
+        agent_config=(CompiledAgentConfig(name="writer") if config is None else config),
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_session_adapter_uses_stable_binding_across_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def get_tools() -> ToolRegistry:
+        return ToolRegistry()
+
+    async def complete_agent_step(
+        prompt: str,
+        context: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object]:
+        nonlocal calls
+        del prompt, tool_registry
+        calls += 1
+        assert ai_socket == "http://ai.example"
+        assert context.dispatch.invocation_id == "draft[7]"
+        return {"result": "cached"}
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_complete_agent_step", complete_agent_step)
+    context = _configured_agent_completion_context(invocation_id="draft[7]")
+
+    first_adapter = run_flow_tool._AgentSessionAdapter(
+        ai_socket="http://ai.example",
+        get_tool_registry=get_tools,
+    )
+    first = await run_flow_tool._run_with_agent_sessions(
+        lambda: first_adapter.complete("Write.", context),
+        adapter=first_adapter,
+        run_id="adapter-resume",
+    )
+    second_adapter = run_flow_tool._AgentSessionAdapter(
+        ai_socket="http://ai.example",
+        get_tool_registry=get_tools,
+    )
+    second = await run_flow_tool._run_with_agent_sessions(
+        lambda: second_adapter.complete("Write.", context),
+        adapter=second_adapter,
+        run_id="adapter-resume",
+    )
+
+    assert first == second == {"result": "cached"}
+    assert calls == 1
+    binding = (
+        anyio.Path(tmp_path)
+        / run_flow_tool._SESSION_RUNS_RELATIVE_PATH
+        / "adapter-resume"
+        / "bindings"
+        / "g4.draft[7].md"
+    )
+    assert json.loads(await binding.read_text(encoding="utf-8")) == {
+        "result": "cached",
+    }
+
+
+@pytest.mark.anyio
+async def test_agent_session_adapter_never_commits_invalid_outputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def get_tools() -> ToolRegistry:
+        return ToolRegistry()
+
+    async def complete_agent_step(
+        prompt: str,
+        context: Any,
+        *,
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+    ) -> dict[str, object]:
+        del prompt, context, ai_socket, tool_registry
+        return {"wrong": "not cacheable"}
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_complete_agent_step", complete_agent_step)
+    adapter = run_flow_tool._AgentSessionAdapter(
+        ai_socket="http://ai.example",
+        get_tool_registry=get_tools,
+    )
+
+    with pytest.raises(ValueError, match=r"outputs for .* must match exactly"):
+        await run_flow_tool._run_with_agent_sessions(
+            lambda: adapter.complete(
+                "Write.",
+                _configured_agent_completion_context(),
+            ),
+            adapter=adapter,
+            run_id="adapter-invalid",
+        )
+
+    bindings = anyio.Path(tmp_path) / run_flow_tool._SESSION_RUNS_RELATIVE_PATH / "adapter-invalid" / "bindings"
+    assert [path async for path in bindings.iterdir()] == []
+
+
+@pytest.mark.anyio
+async def test_agent_session_adapter_applies_prompt_tools_and_request_limits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def allowed_tool(message: str) -> str:
+        return message
+
+    async def denied_tool(message: str) -> str:
+        return message
+
+    async def get_tools() -> ToolRegistry:
+        return _tool_registry(allowed_tool, denied_tool)
+
+    async def create_step_agent(
+        ai_socket: str,
+        tool_registry: ToolRegistry,
+        *,
+        system_prompt: str,
+        max_turns: int | None,
+    ) -> tuple[Any, Any]:
+        captured["ai_socket"] = ai_socket
+        captured["system_prompt"] = system_prompt
+        captured["max_turns"] = max_turns
+        captured["tools"] = set(tool_registry.tools)
+        return SimpleNamespace(tool_registry=tool_registry), SimpleNamespace(messages=[])
+
+    async def complete_step_agent(
+        agent: Any,
+        conversation: Any,
+        message: str,
+        *,
+        stop_when: Any,
+        extra_params: Any,
+    ) -> str:
+        del conversation, message
+        captured["extra_params"] = extra_params
+        submit = agent.tool_registry.get("submit_step_result")
+        assert submit is not None
+        await submit(result="done")
+        assert stop_when()
+        return ""
+
+    monkeypatch.setattr(run_flow_tool, "_WORKSPACE_DIR", tmp_path)
+    monkeypatch.setattr(run_flow_tool, "_create_step_agent", create_step_agent)
+    monkeypatch.setattr(run_flow_tool, "_complete_step_agent", complete_step_agent)
+    config = CompiledAgentConfig(
+        name="writer",
+        system_prompt="Cite sources.",
+        max_tokens=321,
+        temperature=0.25,
+        reasoning_effort="high",
+        tools=("allowed_tool",),
+        max_turns=4,
+    )
+    context = _configured_agent_completion_context(config=config)
+    adapter = run_flow_tool._AgentSessionAdapter(
+        ai_socket="http://ai.example",
+        get_tool_registry=get_tools,
+    )
+
+    result = await run_flow_tool._run_with_agent_sessions(
+        lambda: adapter.complete("Write.", context),
+        adapter=adapter,
+        run_id="adapter-config",
+    )
+
+    assert result == {"result": "done"}
+    assert captured["ai_socket"] == "http://ai.example"
+    assert captured["max_turns"] == 4
+    assert captured["tools"] == {"allowed_tool", "submit_step_result"}
+    assert captured["extra_params"] == {
+        "max_tokens": 321,
+        "temperature": 0.25,
+        "reasoning_effort": "high",
+    }
+    system_prompt = cast(str, captured["system_prompt"])
+    assert system_prompt.startswith(run_flow_tool._STEP_SYSTEM_PROMPT)
+    assert system_prompt.endswith("Cite sources.")
+
+
+@pytest.mark.anyio
+async def test_agent_session_adapter_rejects_unroutable_agent_config() -> None:
+    async def get_tools() -> ToolRegistry:
+        raise AssertionError("routing must fail before tools are loaded")
+
+    adapter = run_flow_tool._AgentSessionAdapter(
+        ai_socket="http://ai.example",
+        get_tool_registry=get_tools,
+    )
+    context = _configured_agent_completion_context(
+        config=CompiledAgentConfig(
+            name="writer",
+            model="other-model",
+        )
+    )
+
+    with pytest.raises(ValueError, match="current Session AI socket"):
+        await adapter.complete("Write.", context)
 
 
 def _capture_agent_fallback_warnings(

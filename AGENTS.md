@@ -45,14 +45,32 @@ JSONL 格式零依赖，逐行追加读写简单。现路径为 AppData ``{appda
 **为什么 FusionFlow `parallel()` 不照搬 TypeScript 的 grace-period 脱离任务？**
 Python 版本坚持 AnyIO 结构化并发：`first` / `any` 取消落后任务后仍等待它们完成清理。这样 `run()` 返回时 binding 与 trace 已封口，不会再被后台任务修改。任务若吞掉取消信号而永久运行，整个并行节点也会继续等待；这是资源与状态一致性的有意取舍。
 
+**为什么 `flow.py` 与 G4 interpreter 共用无 `RunContext` 执行内核？**
+retry 次数推进和并行任务调度不应在公开 Flow API 与 G4 runner 中各写一份。
+G4 因此复用 `fusion_flow.execution.flow` 现有的 `_retry_operation` 与
+`_run_parallel_tasks`；这些私有 helper 必须可脱离活动 `execution.run()` 调用，
+且不得读取 `current_run_context()`、写 binding/trace，或依赖 WorkflowGraph、
+Artifact、checkpoint、resource allocator 和具体 executor。公开 Flow API 在 helper
+外叠加活动 run、trace、backoff 和既有 fail-fast/join 语义；`workflow_execution`
+负责 Fiber/Await/Invoke/Select、Artifact/checkpoint/resume、global admission、资源、
+timeout、严格输出校验与逐 iteration checkpoint。
+
+共用 kernel 不等于把 G4 指令机械翻译成公开 `flow.*` 调用，也不允许把两边策略
+抹平。G4 foreach 默认并行，普通 iteration 失败不取消同组其他 iteration；全部结束
+后统一抛出聚合异常，且错误不写成 G4 Artifact。Human suspension、取消和执行
+不变量仍立即逃逸；公开 Flow collection 保留自己的 fail-fast/join 合同。
+Agent leaf 直接走 `flow.agent()` + `flow.session()`；Program 的特化 Agent、
+编译/修复/provenance/进程合同不等价于 `flow.exec()`，Human 的暂停、checkpoint
+和跨 turn resume 也不等价于 `flow.call()`，两者继续保留 workspace adapter。
+
 **为什么 WorkflowGraph 的 `SelectNode` 是 eager 值选择？**
-FusionFlow 的命名选择 `selected == if(condition, artifact_a, artifact_b)` 只决定下游读取哪个值。planner 会等待条件和两个候选 Artifact 全部可用，因此两个候选 producer 都会运行。它不是 lazy 分支、Step activation 或控制流 Region；不要据此跳过未选 Step。多级优先级用多个命名 Artifact 串联，禁止把嵌套 `if` 直接塞进 dataflow List。
+FusionFlow 的命名选择 `selected == if(condition, artifact_a, artifact_b)` 只决定下游读取哪个值。planner 会等待条件和两个候选 Artifact 全部可用，因此两个候选 producer 都会运行。它不是 lazy 分支、Step activation 或控制流 Region；不要据此跳过未选 Step。多级优先级用多个命名 Artifact 串联，禁止把嵌套 `if` 直接塞进 dataflow List。lazy conditional subgraph 暂不改变，由 `msg-bq/psi-agent#80` 跟踪。
 
 **为什么 WorkflowGraph 同时有 Artifact 依赖和 `depends_on`？**
 `ProducesEdge` / `ConsumesEdge` 表示值的来源与可用性；`StepNode.depends_on`
 表示没有值传递时仍必须遵守的显式顺序约束。planner 将两类前驱合并为同一组
 `Await`，执行器也会拒绝绕过任一前驱的手写计划。结构模型仍允许保存有环图，
-包括显式顺序环；one-shot planner 在执行前统一拒绝 circular await。
+包括显式顺序环；acyclic planner 在执行前统一拒绝 circular await。
 `independent` 只是非约束 metadata，不能覆盖数据依赖或显式 `depends_on`。
 
 **WorkflowGraph 的资源调度边界是什么？**
@@ -64,12 +82,14 @@ shielded release。`DispatchContext.resource_lease` 负责把具体实例传给 
 跨进程/跨主机租约和 shared/exclusive 模式不在当前合同内。
 
 **WorkflowGraph checkpoint 与 Human 跨回合等待的边界是什么？**
-`ExecutionCheckpoint` 只保存已经物化的 Artifact 值，以及依赖闭包完整的已完成
-Step / Select ID，并绑定非空 `workflow_id` 与 graph/plan 结构摘要。checkpoint 值只
-接受 finite JSON；恢复时按 JSON 类型和值递归比较，因此 `true` 不等于 `1`。执行器
-还会严格校验已完成 ID、输入和值集合，预先发布已完成事件并跳过这些操作；
-`checkpoint_observer` 必须成功持久化后才允许依赖者继续。它不是任意缓存命中或
-legacy `flow.*` run-directory resume。
+`ExecutionCheckpoint` 保存已经物化的 Artifact 值、依赖闭包完整的已完成
+Step / Select ID，以及 foreach 各 iteration 的终态，并绑定非空 `workflow_id` 与
+graph/plan 结构摘要。checkpoint 值只接受 finite JSON；恢复时按 JSON 类型和值递归
+比较，因此 `true` 不等于 `1`。执行器还会严格校验已完成 ID、输入和值集合，预先
+发布已完成事件并跳过这些操作；`checkpoint_observer` 必须成功持久化后才允许依赖者
+继续。G4 checkpoint 仍是工作流状态真源；workspace 的 Agent leaf 另用同一 durable
+run 内的 `flow.session()` binding 作为“已经校验的调用结果日志”，Human 跨回合恢复
+时可重用它，但 binding 不能代替 Artifact/checkpoint commit。
 
 Session 在一个请求的完整 agent/tool loop 期间持有 `_lock`，因此 workspace tool
 不能在 Human Step 内阻塞等待“下一条用户消息”，否则下一条消息无法进入同一
@@ -82,8 +102,10 @@ Session，通过既有 `clarify` 格式化问题并结束当前 turn；下一轮
 G4 workspace adapter 还会把每次运行已经物化的输入、中间、选择及最终 Artifact
 逐个原子写入 workflow bundle 的 `runs/<run-id>/artifacts/*.md`。字符串保持原
 Markdown，其他 finite JSON 值用 fenced `json` 表示。该目录是用户可见的运行历史，
-不参与 checkpoint 恢复，也不跟 `.psi/fusion-flow/runs/` 的 Human 私有状态混用；
-纯 Agent/Program 运行仍不可 resume，但其中间 Artifact 不能因此丢失。
+不参与 checkpoint 恢复，也不跟 `.psi/fusion-flow/runs/` 的 Human 私有状态混用。
+纯 Agent/Program 运行仍没有公开的 `run_flow_resume` 入口，但 Agent leaf 会在
+`.psi/fusion-flow/session-runs/` 保存内部 binding journal；其中间 Artifact 仍必须
+落到用户可见历史，不能只存在于该 journal。
 
 **FusionFlow 的跨语言兼容边界是什么？**
 运行结果与核心行为优先兼容，包括同一运行时内的 binding 恢复、配对的 `node_start` / `node_end` progress 事件、分组 token 汇总、程序快照和 `exec()` 截断标记。真实 TypeScript `inputHash` 与 Python `cache_key` 的输入、provider 身份和长度不同，因此两种运行目录不保证直接互相命中缓存；camelCase metadata 别名只保证字段可读。graph、meta 和 trace 使用各自语言的数据结构：Python 命名 trace 是通用 `ExecutionTrace`，不是 TypeScript 的扁平 provider/model/prompt 对象；只有 `progress.jsonl` 保持共享格式。单节点 trace / progress 写入是 best-effort，最终 graph/meta 才是权威产物，不追随 TypeScript 的诊断写失败即中止。`flow.output()` / `ctx.save()` 写入带 metadata 的单赋值 binding，不额外创建 output graph node。
@@ -227,8 +249,9 @@ src/
 - **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
 - **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包
 - **Workflow Graph**: `docs/architecture/workflow/2026-07-23-workflow-graph-design.zh.md` — 允许有环的声明式 Step–Artifact 图及待讨论语义；具体 Core IR 后端位于 `examples/haitun-workspace/skills/fusion-flow/fusion_flow/graph_compiler.py`
-- **Workflow Execution**: `docs/architecture/workflow/2026-07-25-workflow-execution-plan-design.zh.md` — one-shot 无环子集的 Fiber/Await/Invoke 计划、全量异步启动、dispatcher 与 validated checkpoint 边界
-- **FusionFlow Compatibility Execution**: `examples/haitun-workspace/skills/fusion-flow/fusion_flow/execution/` — 示例 Skill 内隔离保存的旧 TypeScript `flow.*` Python 兼容层；不属于 `psi_agent` wheel，也不是 G4 Core IR / WorkflowGraph runner
+- **Workflow Execution**: `docs/architecture/workflow/2026-07-25-workflow-execution-plan-design.zh.md` — 无环 Fiber/Await/Invoke 基础计划、全量异步启动、dispatcher 与 validated checkpoint 边界
+- **FusionFlow durable Agent / foreach**: `examples/haitun-workspace/skills/fusion-flow/DESIGN.md` — `flow.agent` / `flow.session` leaf 复用、共享无上下文 retry/parallel helper、动态 foreach StepInstance、逐项 resource/checkpoint 与 eager Select 边界
+- **FusionFlow Python execution**: `examples/haitun-workspace/skills/fusion-flow/fusion_flow/execution/` — 示例 Skill 内的 Python `flow.*` API、旧 TypeScript 行为兼容面及无 `RunContext` 共享执行 kernel；不属于 `psi_agent` wheel，G4 不把公开 combinator 当图 bytecode，但 Agent leaf 与通用 retry/foreach 机制会复用这里
 
 ## 核心通信协议
 
@@ -320,7 +343,7 @@ SSE 流中的特殊字段：
 
 18. **`WorkflowEdge` 是封闭 union**：`WorkflowGraph` 只接受 `ConsumesEdge`、`ProducesEdge`、`ForeachEdge` 的精确类型，不接受子类。子类会破坏 dataclass 基于精确类型的相等性去重，也能覆盖序列化使用的 `kind`。新增边类型时应显式更新 union、校验和序列化。
 
-19. **WorkflowGraph 可保存有环，但 one-shot plan 不执行环**：`workflow_execution.generate_plan()` 把 producer/consumer 数据前驱与 `StepNode.depends_on` 显式顺序前驱合并为 `Await`。它同时启动所有 Fiber；Foreach、retry、input+producer 和 circular await 在计划阶段报错，不能静默忽略或留到运行期死锁。资源需求由执行器的 allocator 在 dispatch 前处理，不再由 planner 拒绝。
+19. **WorkflowGraph 可保存有环，但 durable plan 不执行环**：`workflow_execution.generate_plan()` 把 producer/consumer 数据前驱与 `StepNode.depends_on` 显式顺序前驱合并为 `Await`，并同时启动所有静态 Fiber。`ForeachEdge` 在 Invoke 时动态展开为稳定的 `step[index]` 实例；G4 复用 `fusion_flow.execution.flow` 的 `_retry_operation` 与 `_run_parallel_tasks`，解释器仍负责 Artifact/checkpoint/resume、global admission、资源与 timeout。foreach 默认并行，只受 workflow `max_concurrency` 与资源容量限制；资源、timeout、`max_attempts` 和成功 checkpoint 均按实例处理。普通 iteration 失败不会取消同组任务，全部结束后作为聚合异常抛出而不是写入 Artifact；成功 iteration 可在恢复时跳过。非 foreach Program 仍保留 `$fusion_flow/program_error` 错误值兼容，Program foreach 的失败则进入同一聚合异常。Human-backed foreach 在 runner 预检阶段拒绝，不能让多个 suspension 竞态。input+producer 和 circular await 仍在计划阶段报错，不能静默忽略或留到运行期死锁。资源需求由执行器的 allocator 在 dispatch 前处理，不再由 planner 拒绝。
 
 20. **Windows 上裸路径地址直接拒绝（刻意为之，勿"修掉"）**：`_sockets.py` 的 `resolve_connector_and_endpoint` / `create_site` 在 `sys.platform == "win32"` 且地址落到 Unix 分支时**主动 `raise ValueError`**。因为 Windows 的 asyncio 没有 `create_unix_connection` / `create_unix_server`，若继续走 `UnixConnector` / `UnixSite`，aiohttp 会在 connect/listen 深处抛一个**不带任何上下文的 `NotImplementedError`**，极难定位（曾导致飞书 channel 每条消息崩、只显示 `generation interrupted`）。真实诱因：`channel feishu --session-socket \\.\pipe\...` 经 POSIX shell 传参时反斜杠被吞成单反斜杠 `\.\pipe\...`，匹配不上命名管道前缀而落到裸路径分支。**这是 fail-fast 前置校验，不是可删的多余检查**——非 Windows（POSIX）行为完全不变，Unix socket 照常工作。Windows/bash 下传管道地址需用四反斜杠 `'\\\\.\\pipe\\...'` 才能让程序收到两根反斜杠开头的 `\\.\pipe\...`。反方向同样门控：非 Windows 上传 `\\.\pipe\name` 也**主动 `raise ValueError`**，因为命名管道要 `ProactorEventLoop`，而 asyncio 在非 win32 平台根本不导出 `ProactorEventLoop`（`asyncio/__init__.py` 只在 `sys.platform == 'win32'` 时 `from .windows_events import *`），aiohttp 那句 `isinstance(loop, asyncio.ProactorEventLoop)` 门控自己会先抛裸 `AttributeError`。两个方向都是 fail-fast 前置校验。
 

@@ -19,7 +19,10 @@ from fusion_flow.job_store import (
     JobStoreError,
     RunAlreadyActiveError,
 )
-from fusion_flow.workflow_execution import ExecutionCheckpoint
+from fusion_flow.workflow_execution import (
+    ExecutionCheckpoint,
+    ForeachIterationCheckpoint,
+)
 
 _WORKFLOW_ID = "review_workflow"
 _PLAN_DIGEST = "c" * 64
@@ -77,6 +80,46 @@ async def test_job_store_round_trips_waiting_human_state(tmp_path: Any) -> None:
         "values": {"draft": "ready", "proposal": {"version": 2}},
         "completed_step_ids": ["draft_step"],
         "completed_selection_ids": [],
+        "foreach_iterations": [],
+    }
+
+
+@pytest.mark.anyio
+async def test_job_store_round_trips_partial_foreach_iterations(tmp_path: Any) -> None:
+    store = JobStore(tmp_path / "runs")
+    checkpoint = ExecutionCheckpoint(
+        workflow_id=_WORKFLOW_ID,
+        plan_digest=_PLAN_DIGEST,
+        values={"items": [1, 2, 3]},
+        foreach_iterations=(
+            ForeachIterationCheckpoint(
+                step_id="process",
+                iteration_index=0,
+                attempts=1,
+                outputs={"result": 10},
+            ),
+            ForeachIterationCheckpoint(
+                step_id="process",
+                iteration_index=1,
+                attempts=2,
+                error={"kind": "RuntimeError", "message": "failed"},
+            ),
+        ),
+    )
+    run = await store.create(
+        flow_path="foreach.workflow",
+        flow_source="workflow",
+        inputs={"items": [1, 2, 3]},
+        checkpoint=checkpoint,
+    )
+
+    loaded = await store.load(run.run_id)
+
+    assert loaded.checkpoint == checkpoint
+    assert loaded.checkpoint is not None
+    assert loaded.checkpoint.foreach_iterations[1].error == {
+        "kind": "RuntimeError",
+        "message": "failed",
     }
 
 

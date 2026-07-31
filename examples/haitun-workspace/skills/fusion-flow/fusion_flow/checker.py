@@ -8,6 +8,7 @@ that otherwise fail only after execution has started.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Collection
 
 from .contracts import CheckResult, Diagnostic
 from .core_ir import Assertion, CompoundTerm, Constant, WorkflowFile
@@ -109,6 +110,7 @@ def check_workflow(
     core_ir: WorkflowFile,
     *,
     graph_compilations: tuple[WorkflowGraphCompilation, ...] | None = None,
+    consumed_residual_operators: Collection[str] = (),
 ) -> CheckResult:
     """Validate one parsed workflow file without executing or rewriting it.
 
@@ -118,6 +120,11 @@ def check_workflow(
     ``graph_compilations`` lets the runner reuse its authoritative compilation
     instead of traversing the same Core IR twice. Standalone checker callers
     omit it and receive the same validation through an internal compilation.
+
+    ``consumed_residual_operators`` declares the closed set of residual
+    operators that the calling backend will validate and consume after this
+    generic check. Assertions containing any other residual operator remain
+    errors; passing a name here never makes an unknown assertion executable.
     """
 
     diagnostics = list(collect_core_ir_diagnostics(core_ir))
@@ -146,6 +153,16 @@ def check_workflow(
         # unsupported workflow contract.
         program_paths, unsupported, path_diagnostics = _program_paths(compilation.residual_assertions)
         diagnostics.extend(path_diagnostics)
+        backend_operators = frozenset(consumed_residual_operators)
+        unconsumed: list[Assertion] = []
+        for assertion in unsupported:
+            operator_names = {
+                term.operator.name for term in (assertion.lhs, assertion.rhs) if isinstance(term, CompoundTerm)
+            }
+            if operator_names and operator_names <= backend_operators:
+                continue
+            unconsumed.append(assertion)
+        unsupported = tuple(unconsumed)
         if unsupported:
             counts: Counter[str] = Counter()
             for assertion in unsupported:

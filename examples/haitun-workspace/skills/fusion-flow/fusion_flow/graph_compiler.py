@@ -411,10 +411,22 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                     # foreach_item(step, collection_artifact) = item_binding
                     # The binding is a local artifact owned by exactly this step.
                     self._require_arity(arguments, 2, operator_name)
-                    step_id = self._symbol(arguments[0], "foreach_item step")
+                    step_id = self._concept_symbol(
+                        arguments[0],
+                        "Step",
+                        "foreach_item step",
+                    )
                     step_drafts.setdefault(step_id, _StepDraft())
-                    source_id = self._symbol(arguments[1], "foreach source")
-                    binding_id = self._symbol(fact_value, "foreach item binding")
+                    source_id = self._concept_symbol(
+                        arguments[1],
+                        "Artifact",
+                        "foreach source",
+                    )
+                    binding_id = self._concept_symbol(
+                        fact_value,
+                        "Artifact",
+                        "foreach item binding",
+                    )
                     # ponytail: keep the edge collection as the source of truth;
                     # add a foreach index only if large workflows make this scan hot.
                     if any(isinstance(edge, ForeachEdge) and edge.step_id == step_id for edge in edges):

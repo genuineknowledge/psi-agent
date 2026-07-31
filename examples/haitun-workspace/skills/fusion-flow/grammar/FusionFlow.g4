@@ -206,7 +206,7 @@ stepOwnerOperator
  * Data, loop, and resource owner:
  *   consumes(Step) -> List                            [arity 1]
  *   produces(Step) -> List                            [arity 1]
- *   foreach_item(Step, List) -> Artifact              [arity 2]
+ *   foreach_item(Step, Artifact) -> Artifact          [arity 2]
  *   resource_requirement(Step, Resource) -> Integer   [arity 2]
  */
 dataResourceOperator

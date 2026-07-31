@@ -102,6 +102,13 @@ def test_preset_operators_document_signatures() -> None:
         "program_path": ("Program", "Path", "1"),
         "agent_system_prompt": ("Agent", "Instruction", "1"),
     }
+    assert {
+        name: (parameters, return_type, arity)
+        for name, parameters, return_type, arity in signatures
+        if name == "foreach_item"
+    } == {
+        "foreach_item": ("Step, Artifact", "Artifact", "2"),
+    }
     canonical_list_operators = {
         "input_workflow": ("Workflow", "List", "1"),
         "consumes": ("Step", "List", "1"),

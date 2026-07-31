@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import Counter
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from typing import Literal, cast
 from .checker import check_workflow, collect_core_ir_diagnostics
 from .contracts import Diagnostic
 from .core_ir import Assertion, CompoundTerm, Concept, Constant, Operator
+from .execution.model import AgentConfig
 from .graph_compiler import WorkflowGraphCompilation, WorkflowGraphCompiler
 from .parser import ParseContext, parse_workflow
 from .workflow_execution import (
@@ -25,7 +27,7 @@ from .workflow_execution import (
     execute_plan,
     generate_plan,
 )
-from .workflow_graph import ProducesEdge, StepNode, WorkflowGraph
+from .workflow_graph import ForeachEdge, ProducesEdge, StepNode, WorkflowGraph
 
 type Completion = Callable[[str], Awaitable[object]]
 type PathResolver = Callable[[str], Awaitable[str]]
@@ -36,12 +38,58 @@ type ExecutorKind = Literal["Agent", "Human", "Program"]
 
 
 @dataclass(frozen=True, slots=True)
+class CompiledAgentConfig:
+    """G4 Agent settings before the workspace adds its fixed safety prompt.
+
+    ``system_prompt`` is an optional specialization overlay, never the complete
+    system prompt.  This keeps workspace policy out of the language compiler
+    while still making every declarative setting available to the runtime.
+    """
+
+    name: str
+    system_prompt: str | None = None
+    model: str | None = None
+    engine: str | None = None
+    api_base: str | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+    reasoning_effort: str | None = None
+    tools: tuple[str, ...] = ()
+    max_turns: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tools", tuple(self.tools))
+
+    def to_agent_config(self, base_system_prompt: str) -> AgentConfig:
+        """Finalize this overlay against a caller-owned fixed system prompt."""
+
+        if not isinstance(base_system_prompt, str) or not base_system_prompt.strip():
+            raise ValueError("base_system_prompt must be a non-empty string")
+        system_prompt = base_system_prompt.rstrip()
+        if self.system_prompt is not None:
+            system_prompt = f"{system_prompt}\n\n# Workflow agent specialization\n{self.system_prompt.strip()}"
+        return AgentConfig(
+            name=self.name,
+            system_prompt=system_prompt,
+            model=self.model,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            engine=self.engine,
+            tools=self.tools,
+            max_turns=self.max_turns,
+            api_base=self.api_base,
+            reasoning_effort=self.reasoning_effort,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class CompiledWorkflow:
     """One executable graph plus classifications and non-fatal diagnostics."""
 
     graph: WorkflowGraph
     executor_kinds: Mapping[str, ExecutorKind]
     program_paths: Mapping[str, str] = field(default_factory=dict)
+    agent_configs: Mapping[str, CompiledAgentConfig] = field(default_factory=dict)
     diagnostics: tuple[Diagnostic, ...] = ()
 
 
@@ -55,6 +103,7 @@ class CompletionContext:
     inputs: Mapping[str, object]
     output_ids: tuple[str, ...]
     dispatch: DispatchContext
+    agent_config: CompiledAgentConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +155,7 @@ _CONCEPT_NAMES = (
     "Resource",
     "Step",
     "StepName",
+    "Tool",
     "Workflow",
 )
 # This is an explicit catalog, not a source-code name discovery mechanism.
@@ -116,13 +166,15 @@ _OPERATOR_SIGNATURES: Mapping[
     tuple[tuple[str, ...], str | None],
 ] = {
     "agent_config": (("Agent", "Model", "Engine", "ApiBase"), "Bool"),
+    "agent_system_prompt": (("Agent",), "Instruction"),
+    "allowed_tool": (("Agent", "Tool"), "Bool"),
     "comparison_gt_op": ((), None),
     "comparison_gte_op": ((), None),
     "comparison_lt_op": ((), None),
     "comparison_lte_op": ((), None),
     "consumes": (("Step",), "List"),
     "depends_on": (("Step", "Step"), "Bool"),
-    "foreach_item": (("Step", "List"), "Artifact"),
+    "foreach_item": (("Step", "Artifact"), "Artifact"),
     "independent": (("Step",), "Bool"),
     "input_workflow": (("Workflow",), "List"),
     "max_attempts": (("Step",), "Integer"),
@@ -141,6 +193,18 @@ _OPERATOR_SIGNATURES: Mapping[
     "temperature": (("Agent",), "ComplexNumber"),
     "workflow_timeout": (("Workflow",), "Integer"),
 }
+
+_AGENT_OPERATOR_NAMES = frozenset(
+    {
+        "agent_config",
+        "agent_system_prompt",
+        "allowed_tool",
+        "max_output_tokens",
+        "max_turns",
+        "reasoning_effort",
+        "temperature",
+    }
+)
 
 
 def _default_parse_context() -> ParseContext:
@@ -221,6 +285,175 @@ def _extract_program_paths(
     return program_paths, tuple(residual)
 
 
+@dataclass(slots=True)
+class _AgentConfigDraft:
+    """Mutable accumulator used while consuming order-independent assertions."""
+
+    system_prompt: str | None = None
+    model: str | None = None
+    engine: str | None = None
+    api_base: str | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+    reasoning_effort: str | None = None
+    tools: list[str] = field(default_factory=list)
+    max_turns: int | None = None
+    declarations: set[str] = field(default_factory=set)
+
+
+def _agent_owner(call: CompoundTerm, *, arity: int) -> Constant:
+    operator_name = call.operator.name
+    if len(call.arguments) != arity:
+        raise ValueError(f"{operator_name} expects {arity} arguments, got {len(call.arguments)}")
+    agent = _typed_constant(
+        call.arguments[0],
+        "Agent",
+        f"{operator_name} owner",
+    )
+    executor_concepts = {
+        concept.name for concept in agent.belong_concepts if concept.name in {"Agent", "Human", "Program"}
+    }
+    if executor_concepts != {"Agent"}:
+        raise ValueError(f"{operator_name} owner must belong to Agent only")
+    return agent
+
+
+def _assert_true(value: object, operator_name: str) -> None:
+    predicate = _typed_constant(value, "Bool", f"{operator_name} value")
+    if predicate.symbol != "True":
+        raise ValueError(f"{operator_name} must be asserted true")
+
+
+def _positive_integer(value: object, operator_name: str) -> int:
+    constant = value if isinstance(value, Constant) else None
+    symbol = None if constant is None else constant.symbol
+    if symbol is None or not symbol.isascii() or not symbol.isdecimal():
+        raise ValueError(f"{operator_name} value must be a positive integer constant")
+    try:
+        parsed = int(symbol)
+    except ValueError as error:
+        raise ValueError(f"{operator_name} value must be a positive integer constant") from error
+    if parsed < 1:
+        raise ValueError(f"{operator_name} value must be a positive integer constant")
+    return parsed
+
+
+def _finite_temperature(value: object) -> float:
+    constant = value if isinstance(value, Constant) else None
+    if constant is None or "ComplexNumber" not in {concept.name for concept in constant.belong_concepts}:
+        raise ValueError("temperature value must be a finite numeric constant")
+    try:
+        parsed = float(constant.symbol)
+    except ValueError as error:
+        raise ValueError("temperature value must be a finite numeric constant") from error
+    if not math.isfinite(parsed) or parsed < 0:
+        raise ValueError("temperature value must be a finite non-negative numeric constant")
+    return parsed
+
+
+def _extract_agent_configs(
+    assertions: tuple[Assertion, ...],
+) -> tuple[dict[str, CompiledAgentConfig], tuple[Assertion, ...]]:
+    """Consume every operator in the closed G4 Agent configuration vocabulary."""
+
+    drafts: dict[str, _AgentConfigDraft] = {}
+    residual: list[Assertion] = []
+    for assertion in assertions:
+        candidates = tuple(
+            (term, value)
+            for term, value in (
+                (assertion.lhs, assertion.rhs),
+                (assertion.rhs, assertion.lhs),
+            )
+            if isinstance(term, CompoundTerm) and term.operator.name in _AGENT_OPERATOR_NAMES
+        )
+        if not candidates:
+            residual.append(assertion)
+            continue
+        if len(candidates) != 1:
+            raise ValueError("one equality cannot configure multiple Agent settings")
+
+        call, value = candidates[0]
+        operator_name = call.operator.name
+        expected_arity = 4 if operator_name == "agent_config" else 2 if operator_name == "allowed_tool" else 1
+        agent = _agent_owner(call, arity=expected_arity)
+        draft = drafts.setdefault(agent.symbol, _AgentConfigDraft())
+
+        if operator_name == "allowed_tool":
+            _assert_true(value, operator_name)
+            tool = _typed_constant(
+                call.arguments[1],
+                "Tool",
+                "allowed_tool tool",
+            )
+            if tool.symbol in draft.tools:
+                raise ValueError(f"duplicate allowed_tool {tool.symbol!r} for {agent.symbol!r}")
+            draft.tools.append(tool.symbol)
+            continue
+
+        if operator_name in draft.declarations:
+            raise ValueError(f"duplicate {operator_name} for {agent.symbol!r}")
+        draft.declarations.add(operator_name)
+
+        if operator_name == "agent_config":
+            _assert_true(value, operator_name)
+            draft.model = _typed_constant(
+                call.arguments[1],
+                "Model",
+                "agent_config model",
+            ).symbol
+            draft.engine = _typed_constant(
+                call.arguments[2],
+                "Engine",
+                "agent_config engine",
+            ).symbol
+            draft.api_base = _typed_constant(
+                call.arguments[3],
+                "ApiBase",
+                "agent_config API base",
+            ).symbol
+        elif operator_name == "agent_system_prompt":
+            prompt = _typed_constant(
+                value,
+                "Instruction",
+                "agent_system_prompt value",
+            ).symbol
+            if not prompt.strip():
+                raise ValueError("agent_system_prompt value must not be blank")
+            draft.system_prompt = prompt
+        elif operator_name == "max_output_tokens":
+            draft.max_tokens = _positive_integer(value, operator_name)
+        elif operator_name == "temperature":
+            draft.temperature = _finite_temperature(value)
+        elif operator_name == "reasoning_effort":
+            draft.reasoning_effort = _typed_constant(
+                value,
+                "ReasoningEffort",
+                "reasoning_effort value",
+            ).symbol
+        elif operator_name == "max_turns":
+            draft.max_turns = _positive_integer(value, operator_name)
+        else:
+            raise AssertionError(f"unhandled Agent operator {operator_name!r}")
+
+    configs = {
+        name: CompiledAgentConfig(
+            name=name,
+            system_prompt=draft.system_prompt,
+            model=draft.model,
+            engine=draft.engine,
+            api_base=draft.api_base,
+            max_tokens=draft.max_tokens,
+            temperature=draft.temperature,
+            reasoning_effort=draft.reasoning_effort,
+            tools=tuple(draft.tools),
+            max_turns=draft.max_turns,
+        )
+        for name, draft in drafts.items()
+    }
+    return configs, tuple(residual)
+
+
 def compile_workflow(
     source: str,
     *,
@@ -269,7 +502,11 @@ def compile_workflow(
         raise TypeError("workflow graph compiler returned an unexpected result")
     compilations = cast(tuple[WorkflowGraphCompilation, ...], compiled)
 
-    checked = check_workflow(parsed.core_ir, graph_compilations=compilations)
+    checked = check_workflow(
+        parsed.core_ir,
+        graph_compilations=compilations,
+        consumed_residual_operators=_AGENT_OPERATOR_NAMES,
+    )
     check_errors = [diagnostic.message for diagnostic in checked.diagnostics if diagnostic.severity == "error"]
     check_warnings = tuple(diagnostic for diagnostic in checked.diagnostics if diagnostic.severity == "warning")
     # Warnings must escape before any fatal checker or strict-runner error:
@@ -284,6 +521,7 @@ def compile_workflow(
         raise ValueError("workflow runner expects exactly one workflow")
     compilation = compilations[0]
     program_paths, residual_assertions = _extract_program_paths(compilation.residual_assertions)
+    configured_agents, residual_assertions = _extract_agent_configs(residual_assertions)
     if residual_assertions:
         counts = _residual_operator_counts(residual_assertions)
         details = ", ".join(f"{operator_name}={count}" for operator_name, count in sorted(counts.items()))
@@ -310,10 +548,29 @@ def compile_workflow(
         if executor_kinds[step.executor_id] == "Program" and step.executor_id not in program_paths:
             raise ValueError(f"Program executor {step.executor_id!r} has no program_path")
 
+    used_agent_executors = {
+        executor_id for executor_id, executor_kind in executor_kinds.items() if executor_kind == "Agent"
+    }
+    unused_configured_agents = sorted(configured_agents.keys() - used_agent_executors)
+    if unused_configured_agents:
+        raise ValueError(
+            "every configured Agent must execute at least one Step; "
+            f"unused configured Agents: {unused_configured_agents}"
+        )
+
+    agent_configs = dict(configured_agents)
+    for executor_id, executor_kind in executor_kinds.items():
+        if executor_kind == "Agent":
+            agent_configs.setdefault(
+                executor_id,
+                CompiledAgentConfig(name=executor_id),
+            )
+
     return CompiledWorkflow(
         graph=compilation.graph,
         executor_kinds=executor_kinds,
         program_paths=program_paths,
+        agent_configs=agent_configs,
         diagnostics=check_warnings,
     )
 
@@ -489,6 +746,7 @@ def _build_dispatch(
             inputs=dict(inputs),
             output_ids=output_ids,
             dispatch=dispatch_context,
+            agent_config=(compiled.agent_configs[step.executor_id] if executor_kind == "Agent" else None),
         )
         if executor_kind == "Human":
             has_legacy_callbacks = prepare_human_instruction is not None and request_human is not None
@@ -672,6 +930,18 @@ async def execute_workflow(
             raise ValueError(f"workflow contains unsupported executors: {details}")
 
     graph = compiled.graph
+    foreach_step_ids = {edge.step_id for edge in graph.edges if isinstance(edge, ForeachEdge)}
+    human_foreach_steps = sorted(
+        step.step_id
+        for step in graph.steps
+        if (step.step_id in foreach_step_ids and compiled.executor_kinds[step.executor_id] == "Human")
+    )
+    if human_foreach_steps:
+        raise ValueError(
+            "Human executors are not supported for foreach steps because "
+            "resumable requests have no iteration identity: "
+            f"{human_foreach_steps}"
+        )
     if (
         any(compiled.executor_kinds[step.executor_id] == "Agent" for step in graph.steps)
         and complete is None

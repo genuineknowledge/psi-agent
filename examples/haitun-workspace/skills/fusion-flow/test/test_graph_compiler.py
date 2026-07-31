@@ -165,6 +165,19 @@ def test_compiles_all_graph_operators() -> None:
     }
 
 
+def test_foreach_source_must_be_an_artifact() -> None:
+    step = Constant("step", (Concept("Step"),))
+    source = Constant("not-an-artifact", (Concept("List"),))
+    item = Constant("item", (Concept("Artifact"),))
+    with pytest.raises(WorkflowGraphCompilationError, match="foreach source must belong to Artifact"):
+        _compile(
+            (
+                *_step_declarations(),
+                _assertion("foreach_item", (step, source), item),
+            )
+        )
+
+
 def test_compiles_scheduling_policies_order_independently() -> None:
     step = Constant("step", (Concept("Step"),))
     predecessor = Constant("predecessor", (Concept("Step"),))

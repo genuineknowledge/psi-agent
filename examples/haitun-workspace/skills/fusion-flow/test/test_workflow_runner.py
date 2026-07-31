@@ -26,6 +26,17 @@ def test_runner_catalog_includes_typed_depends_on() -> None:
     program_path = context.operators["program_path"]
     assert tuple(concept.name for concept in program_path.input_concepts) == ("Program",)
     assert program_path.output_concept == context.concepts["Path"]
+    assert tuple(concept.name for concept in context.operators["allowed_tool"].input_concepts) == ("Agent", "Tool")
+    assert context.operators["agent_system_prompt"].output_concept == context.concepts["Instruction"]
+    assert tuple(concept.name for concept in context.operators["foreach_item"].input_concepts) == ("Step", "Artifact")
+
+
+def test_agent_operator_consumers_cover_the_closed_catalog() -> None:
+    agent_owned_operators = {
+        name for name, (inputs, _) in run_workflow._OPERATOR_SIGNATURES.items() if inputs and inputs[0] == "Agent"
+    }
+
+    assert agent_owned_operators == run_workflow._AGENT_OPERATOR_NAMES
 
 
 def _dispatch_workflow(
@@ -138,6 +149,189 @@ def test_compile_workflow_rejects_duplicate_program_path() -> None:
                 """,
             )
         )
+
+
+def _configured_agent_workflow(configuration: str) -> str:
+    return _dispatch_workflow(
+        "Agent",
+        "do_work",
+        executor_configuration=configuration,
+    ).replace(
+        "const request: Artifact;",
+        """const model: Model;
+const engine: Engine;
+const api: ApiBase;
+const read_tool: Tool;
+const write_tool: Tool;
+const high_effort: ReasoningEffort;
+const invalid_number: ComplexNumber;
+const request: Artifact;""",
+    )
+
+
+def test_compile_workflow_consumes_every_agent_setting() -> None:
+    compiled = run_workflow.compile_workflow(
+        _configured_agent_workflow(
+            """
+            agent_config(worker, model, engine, api);
+            allowed_tool(worker, read_tool);
+            allowed_tool(worker, write_tool) == True;
+            max_output_tokens(worker) == 4096;
+            temperature(worker) == 0.25;
+            reasoning_effort(worker) == high_effort;
+            max_turns(worker) == 7;
+            agent_system_prompt(worker) == "Prefer concise, sourced answers.";
+            """
+        )
+    )
+
+    assert compiled.agent_configs == {
+        "worker": run_workflow.CompiledAgentConfig(
+            name="worker",
+            system_prompt="Prefer concise, sourced answers.",
+            model="model",
+            engine="engine",
+            api_base="api",
+            max_tokens=4096,
+            temperature=0.25,
+            reasoning_effort="high_effort",
+            tools=("read_tool", "write_tool"),
+            max_turns=7,
+        )
+    }
+
+
+def test_compile_workflow_supplies_empty_overlay_for_legacy_agent() -> None:
+    compiled = run_workflow.compile_workflow(_dispatch_workflow("Agent", "do_work"))
+
+    assert compiled.agent_configs == {"worker": run_workflow.CompiledAgentConfig(name="worker")}
+
+
+def test_compile_workflow_rejects_configuration_for_unused_agent() -> None:
+    source = _configured_agent_workflow("allowed_tool(typo_agent, read_tool);").replace(
+        "const worker: Agent;",
+        "const worker: Agent;\nconst typo_agent: Agent;",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"every configured Agent must execute at least one Step.*typo_agent",
+    ):
+        run_workflow.compile_workflow(source)
+
+
+@pytest.mark.parametrize(
+    "configuration, duplicate_name",
+    (
+        (
+            """
+            agent_config(worker, model, engine, api);
+            agent_config(worker, model, engine, api);
+            """,
+            "agent_config",
+        ),
+        (
+            """
+            max_output_tokens(worker) == 10;
+            max_output_tokens(worker) == 20;
+            """,
+            "max_output_tokens",
+        ),
+        (
+            """
+            temperature(worker) == 0.1;
+            temperature(worker) == 0.2;
+            """,
+            "temperature",
+        ),
+        (
+            """
+            reasoning_effort(worker) == high_effort;
+            reasoning_effort(worker) == high_effort;
+            """,
+            "reasoning_effort",
+        ),
+        (
+            """
+            max_turns(worker) == 2;
+            max_turns(worker) == 3;
+            """,
+            "max_turns",
+        ),
+        (
+            """
+            agent_system_prompt(worker) == "First.";
+            agent_system_prompt(worker) == "Second.";
+            """,
+            "agent_system_prompt",
+        ),
+    ),
+)
+def test_compile_workflow_rejects_duplicate_singleton_agent_setting(
+    configuration: str,
+    duplicate_name: str,
+) -> None:
+    with pytest.raises(ValueError, match=rf"duplicate {duplicate_name}"):
+        run_workflow.compile_workflow(_configured_agent_workflow(configuration))
+
+
+def test_compile_workflow_rejects_duplicate_allowed_tool() -> None:
+    with pytest.raises(ValueError, match="duplicate allowed_tool"):
+        run_workflow.compile_workflow(
+            _configured_agent_workflow(
+                """
+                allowed_tool(worker, read_tool);
+                allowed_tool(worker, read_tool);
+                """
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "configuration, message",
+    (
+        ("max_output_tokens(worker) == 0;", "positive integer"),
+        ("max_turns(worker) == 1.5;", "positive integer"),
+        ("temperature(worker) == invalid_number;", "finite numeric constant"),
+        ("agent_config(worker, model, engine, api) == False;", "asserted true"),
+        ("allowed_tool(worker, read_tool) == False;", "asserted true"),
+    ),
+)
+def test_compile_workflow_rejects_invalid_agent_setting(
+    configuration: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        run_workflow.compile_workflow(_configured_agent_workflow(configuration))
+
+
+def test_compiled_agent_config_layers_specialization_over_fixed_prompt() -> None:
+    overlay = run_workflow.CompiledAgentConfig(
+        name="worker",
+        system_prompt="Only use supplied evidence.",
+        model="model",
+        engine="engine",
+        api_base="api",
+        max_tokens=512,
+        temperature=0.3,
+        reasoning_effort="high_effort",
+        tools=("read_tool",),
+        max_turns=4,
+    )
+
+    config = overlay.to_agent_config("Fixed workspace safety policy.")
+
+    assert config.system_prompt == (
+        "Fixed workspace safety policy.\n\n# Workflow agent specialization\nOnly use supplied evidence."
+    )
+    assert config.model == "model"
+    assert config.engine == "engine"
+    assert config.api_base == "api"
+    assert config.max_tokens == 512
+    assert config.temperature == 0.3
+    assert config.reasoning_effort == "high_effort"
+    assert config.tools == ("read_tool",)
+    assert config.max_turns == 4
 
 
 @pytest.mark.anyio
@@ -765,13 +959,67 @@ async def test_human_step_requires_preparer_and_requester() -> None:
         )
 
 
+@pytest.mark.anyio
+async def test_human_foreach_fails_before_any_human_dispatch() -> None:
+    source = """
+const human_foreach: Workflow;
+const review_step: Step;
+const reviewer: Human;
+const items: Artifact;
+const item: Artifact;
+const results: Artifact;
+
+workflow human_foreach {
+    input_workflow(human_foreach) == [items];
+    output_workflow(human_foreach) == [results];
+
+    step_name(review_step) == "Review";
+    step_instruction(review_step) == "Review this item.";
+    step_executor(review_step) == reviewer;
+    foreach_item(review_step, items) == item;
+    consumes(review_step) == [item];
+    produces(review_step) == [results];
+}
+"""
+    calls: list[str] = []
+
+    async def prepare_human(
+        prompt: str,
+        context: Any,
+    ) -> str:
+        del prompt, context
+        calls.append("prepare")
+        return "Review this item."
+
+    async def request_human(
+        prompt: str,
+        context: Any,
+    ) -> str:
+        del prompt, context
+        calls.append("request")
+        return "approved"
+
+    with pytest.raises(
+        ValueError,
+        match=r"Human executors are not supported for foreach steps.*review_step",
+    ):
+        await run_workflow.execute_workflow(
+            source,
+            inputs={"items": ["a", "b"]},
+            contextual_prepare_human_instruction=prepare_human,
+            contextual_request_human=request_human,
+        )
+
+    assert calls == []
+
+
 def test_unconsumed_assertions_report_operator_counts() -> None:
     context = run_workflow._default_parse_context()
     context.operators["custom_policy"] = run_workflow.Operator(
         name="custom_policy",
         output_concept=context.concepts["Bool"],
     )
-    source = _dispatch_workflow("Agent", "do_work").replace(
+    source = _configured_agent_workflow("agent_config(worker, model, engine, api);").replace(
         "\n}",
         "\n    custom_policy(dispatch_step) == True;\n}",
     )
@@ -779,6 +1027,21 @@ def test_unconsumed_assertions_report_operator_counts() -> None:
     with pytest.raises(
         ValueError,
         match=r"workflow check failed: workflow contains unsupported assertions: custom_policy=1",
+    ):
+        run_workflow.compile_workflow(source, context=context)
+
+
+def test_agent_setting_allowlist_does_not_hide_mixed_unknown_equality() -> None:
+    context = run_workflow._default_parse_context()
+    context.operators["custom_policy"] = run_workflow.Operator(
+        name="custom_policy",
+        output_concept=context.concepts["Bool"],
+    )
+    source = _configured_agent_workflow("agent_config(worker, model, engine, api) == custom_policy(dispatch_step);")
+
+    with pytest.raises(
+        ValueError,
+        match=r"workflow check failed: workflow contains unsupported assertions: <equality>=1",
     ):
         run_workflow.compile_workflow(source, context=context)
 
@@ -815,6 +1078,39 @@ async def test_contextual_completion_receives_resource_lease() -> None:
 
     assert result == {"result": "completed"}
     assert leases == [("cuda:0",)]
+
+
+@pytest.mark.anyio
+async def test_contextual_completion_receives_resolved_agent_config() -> None:
+    received: list[Any] = []
+
+    async def contextual_complete(
+        prompt: str,
+        context: Any,
+    ) -> dict[str, object]:
+        del prompt
+        received.append(context.agent_config)
+        return {"result": "completed"}
+
+    result = await run_workflow.execute_workflow(
+        _configured_agent_workflow(
+            """
+            max_turns(worker) == 5;
+            allowed_tool(worker, read_tool);
+            """
+        ),
+        request="Do the work.",
+        contextual_complete=contextual_complete,
+    )
+
+    assert result == {"result": "completed"}
+    assert received == [
+        run_workflow.CompiledAgentConfig(
+            name="worker",
+            tools=("read_tool",),
+            max_turns=5,
+        )
+    ]
 
 
 @pytest.mark.anyio

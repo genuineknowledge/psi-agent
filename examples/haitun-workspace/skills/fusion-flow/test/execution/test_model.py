@@ -96,6 +96,20 @@ def test_agent_config_keeps_defaults() -> None:
     assert config.temperature is None
     assert config.tools == ()
     assert config.context_schema is None
+    assert config.api_base is None
+    assert config.reasoning_effort is None
+
+
+def test_agent_config_carries_optional_routing_and_reasoning_settings() -> None:
+    config = AgentConfig(
+        name="writer",
+        system_prompt="Primary",
+        api_base="provider_endpoint",
+        reasoning_effort="high_effort",
+    )
+
+    assert config.api_base == "provider_endpoint"
+    assert config.reasoning_effort == "high_effort"
 
 
 @pytest.mark.parametrize(
