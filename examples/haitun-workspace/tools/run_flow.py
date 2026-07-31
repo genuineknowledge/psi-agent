@@ -598,8 +598,8 @@ async def _resolve_flow_path(flow_path: str) -> anyio.Path:
     flows_dir = await (workspace / "flows").resolve()
     if not Path(str(resolved)).is_relative_to(Path(str(flows_dir))):
         raise ValueError("flow_path must stay inside the workspace flows directory")
-    if resolved.suffix != ".workflow":
-        raise ValueError("flow_path must name a .workflow file")
+    if resolved.suffix.lower() not in {".workflow", ".g4"}:
+        raise ValueError("flow_path must name a .workflow or .g4 file")
     return resolved
 
 
@@ -2122,7 +2122,7 @@ async def run_flow(
     """Start one G4 workflow and return outputs or a persisted Human request.
 
     Args:
-        flow_path: Workspace-relative path to a UTF-8 ``.workflow`` file.
+        flow_path: Workspace-relative path to a UTF-8 ``.workflow`` or ``.g4`` file.
         inputs_json: JSON object keyed by the workflow's input artifact IDs.
         resource_capacities_json: Optional JSON object mapping resource IDs to
             positive counts or concrete instance-ID arrays.

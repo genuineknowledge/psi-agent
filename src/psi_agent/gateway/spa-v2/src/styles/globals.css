@@ -2072,6 +2072,7 @@ button.metric-cell:disabled {
 .typing i:nth-child(3) { animation-delay: 240ms; }
 
 .context-chat form {
+  position: relative;
   min-height: 52px;
   height: auto;
   display: grid;
@@ -2161,6 +2162,68 @@ button.metric-cell:disabled {
 .context-chat form .send-button.stop-button:hover:not(:disabled) {
   filter: brightness(1.06);
   transform: scale(1.05);
+}
+
+.workflow-command-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 40;
+  max-height: min(320px, 48vh);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid #d8e1dd;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 14px 34px rgba(19, 40, 48, 0.14);
+  backdrop-filter: blur(14px);
+}
+
+.workflow-command-option,
+.context-chat form .workflow-command-option,
+.new-task-composer-strip .workflow-command-option {
+  width: 100%;
+  height: auto;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 9px 11px;
+  border: 0;
+  border-radius: 9px;
+  color: #167f76;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 650;
+  text-align: left;
+  cursor: pointer;
+}
+
+.workflow-command-option:hover,
+.workflow-command-option.active,
+.context-chat form .workflow-command-option:hover,
+.context-chat form .workflow-command-option.active {
+  color: #0d665f;
+  background: #edf7f3;
+  filter: none;
+  transform: none;
+}
+
+.workflow-command-menu-state {
+  padding: 12px 11px;
+  color: #718087;
+  font-size: 13px;
+}
+
+.workflow-command-menu-state.error {
+  color: #b33d3d;
 }
 
 .chat-pending-files {
@@ -3115,6 +3178,7 @@ button.metric-cell:disabled {
 }
 
 .new-task-composer-strip {
+  position: relative;
   min-height: 52px;
   height: auto;
   display: grid;

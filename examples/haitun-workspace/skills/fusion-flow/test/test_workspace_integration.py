@@ -47,3 +47,24 @@ async def test_flow_manage_prefers_g4_but_keeps_legacy_fallback(
     listing = await flow_manage_module.flow_manage("list", target="tasks")
     assert "dual: dual.workflow" in listing
     assert "legacy: legacy.flow.ts" in listing
+
+
+@pytest.mark.anyio
+async def test_run_flow_accepts_workflow_and_g4_sources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flows = anyio.Path(tmp_path) / "flows"
+    await flows.mkdir()
+    await (flows / "first.workflow").write_text("workflow first {}", encoding="utf-8")
+    await (flows / "second.g4").write_text("workflow second {}", encoding="utf-8")
+    await (flows / "unsupported.txt").write_text("workflow third {}", encoding="utf-8")
+    monkeypatch.setattr(run_flow_module, "_WORKSPACE_DIR", tmp_path)
+
+    workflow_path = await run_flow_module._resolve_flow_path("flows/first.workflow")
+    g4_path = await run_flow_module._resolve_flow_path("flows/second.g4")
+
+    assert workflow_path.name == "first.workflow"
+    assert g4_path.name == "second.g4"
+    with pytest.raises(ValueError, match=r"\.workflow or \.g4"):
+        await run_flow_module._resolve_flow_path("flows/unsupported.txt")

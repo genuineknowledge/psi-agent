@@ -231,7 +231,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 收到 `finish_reason="tool_calls"` 后，按 index 排序生成完整 tool_calls 列表，逐一执行。
 
 **Tool 执行容错**：
-- `arguments` 可能不是合法 JSON → `json.loads` 包在 try/except 中，失败时 fallback 为 `{}`
+- `arguments` 不是合法 JSON，或解析结果不是 JSON object → 返回明确的错误 tool result，且不调用 Tool；合法的 `{}` 仍可用于零参数 Tool
 - Tool 函数可能抛异常 → 以错误文本作为 tool result 返回，不中断 agent loop
 - Tool 返回非字符串（int, None） → 通过 `str()` 强转
 

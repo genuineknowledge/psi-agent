@@ -504,6 +504,62 @@ async def test_agent_tool_throws_exception_unit(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("arguments", "error_fragment"),
+    [
+        ("null", "must be a JSON object"),
+        ("[]", "must be a JSON object"),
+        ("{", "must be valid JSON"),
+    ],
+    ids=["null", "array", "malformed-json"],
+)
+async def test_agent_does_not_execute_tool_with_invalid_arguments(
+    arguments: str,
+    error_fragment: str,
+) -> None:
+    handler = await _make_inline_ai_handler([_tc("no_args", arguments), _stop("recovered")])
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    site = web.SockSite(runner, sock)
+    await site.start()
+    calls = 0
+    try:
+
+        async def no_args() -> str:
+            nonlocal calls
+            calls += 1
+            return "called"
+
+        tf = ToolFunction.from_callable(no_args)
+        agent = SessionAgent(
+            ai_client=AiClient(f"http://127.0.0.1:{port}"),
+            tool_registry=ToolRegistry(
+                files={
+                    "__test__": FileEntry(
+                        file_hash="",
+                        tools={"no_args": tf},
+                        funcs={"no_args": no_args},
+                    )
+                }
+            ),
+        )
+
+        chunks = [chunk async for chunk in agent.run({"role": "user", "content": "t"})]
+
+        assert calls == 0
+        reasoning = "".join(chunk.reasoning or "" for chunk in chunks)
+        assert error_fragment in reasoning
+        assert "recovered" in "".join(chunk.content or "" for chunk in chunks)
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_agent_tool_returns_int(tmp_path: Path) -> None:
     handler = await _make_inline_ai_handler([_tc("int_tool", "{}"), _stop("done")])
     app = web.Application()

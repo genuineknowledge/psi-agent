@@ -18,19 +18,27 @@ import { OVERVIEW_LABEL, type Task, type TaskTemplate } from "./model";
 import { AgentMark, BrandLogo } from "./primitives";
 import { filesFromClipboard } from "../services/clipboardFiles";
 import { onComposerEnterKey } from "../services/composerKeys";
+import {
+  useWorkflowCommandMenu,
+  WorkflowCommandMenu,
+} from "../components/WorkflowCommandMenu";
+import { validateWorkflowSubmission } from "../services/workflowCommands";
 
 export function NewTaskWorkspace({
   draft,
   category,
+  workspace,
   setDraft,
   setCategory,
   onBack,
   onOpenTemplates,
   onCreate,
   onViewTask,
+  onValidationError,
 }: {
   draft: string;
   category: string;
+  workspace: string;
   setDraft: (value: string) => void;
   setCategory: (value: string) => void;
   onBack: () => void;
@@ -38,10 +46,16 @@ export function NewTaskWorkspace({
   /** Same path as overview chat: text + File[] go into the first Session chat turn. */
   onCreate: (title: string, category: string, files?: File[]) => Task | Promise<Task>;
   onViewTask: (task: Task) => void;
+  onValidationError: (message: string) => void;
 }) {
   const [typing, setTyping] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
   const attachmentRef = useRef<HTMLInputElement | null>(null);
+  const workflowMenu = useWorkflowCommandMenu({
+    value: draft,
+    workspace,
+    onChange: setDraft,
+  });
 
   const canSend = Boolean(draft.trim() || attachments.length);
 
@@ -49,6 +63,16 @@ export function NewTaskWorkspace({
     event.preventDefault();
     const clean = draft.trim();
     if ((!clean && !attachments.length) || typing) return;
+    const validationError = validateWorkflowSubmission(
+      clean,
+      attachments.length,
+      workflowMenu.workflows,
+      workflowMenu.status,
+    );
+    if (validationError) {
+      onValidationError(validationError);
+      return;
+    }
 
     const pendingFiles = attachments;
     setDraft("");
@@ -132,6 +156,7 @@ export function NewTaskWorkspace({
           )}
 
           <form className="new-task-composer-strip" onSubmit={submitConversation}>
+            <WorkflowCommandMenu controller={workflowMenu} />
             <button
               type="button"
               className="chat-attach-button"
@@ -158,6 +183,8 @@ export function NewTaskWorkspace({
               rows={1}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
+              onFocus={workflowMenu.reopen}
+              onBlur={workflowMenu.dismiss}
               onPaste={(event: ClipboardEvent<HTMLTextAreaElement>) => {
                 if (typing) return;
                 const files = filesFromClipboard(event.clipboardData);
@@ -168,6 +195,7 @@ export function NewTaskWorkspace({
               }}
               onKeyDown={(event) => {
                 if (typing) return;
+                if (workflowMenu.handleKeyDown(event)) return;
                 const el = event.currentTarget;
                 onComposerEnterKey(event, draft, (next, cursor) => {
                   setDraft(next);
@@ -178,6 +206,10 @@ export function NewTaskWorkspace({
               }}
               placeholder={typing ? "正在创建任务…" : "描述一个任务，发送后进入分屏与 Agent 对话…"}
               aria-label="描述新任务"
+              aria-autocomplete="list"
+              aria-expanded={workflowMenu.menuOpen}
+              aria-controls={workflowMenu.menuOpen ? workflowMenu.menuId : undefined}
+              aria-activedescendant={workflowMenu.activeDescendant}
               autoFocus
               disabled={typing}
             />

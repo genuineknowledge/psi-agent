@@ -13,7 +13,7 @@ psi-agent. The workspace tool compiles source into Core IR, lowers it to a
 Sessions, runs Program-backed Steps through specialized Program Agents with
 structured process capture, and checkpoints Human-backed Steps across turns.
 
-> **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical location: `flows/workflows/<slug>/<slug>.workflow`. The skill ships no runnable example workflows. Every run persists all materialized Artifacts as Markdown under its workflow bundle's `runs/<run-id>/artifacts/` directory. Human Steps additionally persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; non-Human runs remain non-resumable.
+> **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical bundle: `flows/workflows/<slug>/`, containing `<slug>.workflow` or `<slug>.g4` (`.workflow` takes precedence if both exist). The skill ships no runnable example workflows. Every run persists all materialized Artifacts as Markdown under its workflow bundle's `runs/<run-id>/artifacts/` directory. Human Steps additionally persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; non-Human runs remain non-resumable.
 
 > **Explicit reuse command.** `/workflow:<slug>` is the one supported shortcut for running a saved workflow. It accepts no suffix or inline parameters. If inputs are needed, collect them through normal conversation. Do not invent `/flow run`, `/flow show`, or `/flow author` commands.
 
@@ -74,10 +74,10 @@ Natural-language requests and the explicit `/workflow:` reuse command both map t
 | What the user says (examples) | Action |
 | --- | --- |
 | "我能用这个干嘛 / 你能帮我做什么" | Describe capabilities in plain language (see "Capabilities" at the bottom) + offer to build a flow |
-| `/workflow:<slug>` | Map the slug to `flows/workflows/<slug>/<slug>.workflow`, collect its declared inputs, and start one fresh run with `run_flow(flow_path=...)`. |
+| `/workflow:<slug>` | Resolve `flows/workflows/<slug>/<slug>.workflow`, falling back to `<slug>.g4`, collect its declared inputs, and start one fresh run with `run_flow(flow_path=...)`. |
 | "有哪些保存的工作流 / list workflows" | List the fixed `flows/workflows/` directory with existing file tools. |
-| "加载 X / 看看保存的 X" | Read the canonical `.workflow` file with existing file tools. |
-| "把刚生成的这个保存为 X" | After self-check, save the self-contained bundle at `flows/workflows/<slug>/`: the canonical `.workflow` file plus every referenced instruction Markdown file, preserving relative paths. |
+| "加载 X / 看看保存的 X" | Read the saved `.workflow` or `.g4` file with existing file tools, preferring `.workflow` if both exist. |
+| "把刚生成的这个保存为 X" | After self-check, save the self-contained bundle at `flows/workflows/<slug>/`: one `.workflow` or `.g4` source file plus every referenced instruction Markdown file, preserving relative paths. |
 | "跑一下这个 / 帮我跑 X / 执行这个 workflow" | Start the concrete workspace G4 source with `run_flow`; return outputs, or handle its Human request with `clarify`. |
 | "接着上次那个跑 / 只重跑改动的部分" | Use `run_flow_resume` only for the active Human request already returned in this conversation. Arbitrary cache/resume is unsupported; otherwise offer a fresh run. |
 | "看看结果 / 刚才那个跑完了吗" | Use the result already returned. A Human wait is not completion; wait for the user's answer rather than polling. |
@@ -110,16 +110,18 @@ value is missing, ask for it in normal conversation and end the turn without
 calling `run_flow`. Do not invent command arguments, guess values, or call once
 with the default empty input object merely to discover missing inputs.
 
-Map the slug to `flows/workflows/<slug>/<slug>.workflow`. Once all inputs are
-available, invoke `run_flow` exactly once with that `flow_path` and the complete
-`inputs_json`. Use an empty input object only when the declaration has no inputs.
-Every initial invocation is a fresh run; only a returned active Human request
-may continue through `run_flow_resume`.
+Under `flows/workflows/<slug>/`, resolve `<slug>.workflow` first and fall back
+to `<slug>.g4`. If neither exists, report that the saved workflow is missing.
+Once all inputs are available, invoke `run_flow` exactly once with that
+`flow_path` and the complete `inputs_json`. Use an empty input object only when
+the declaration has no inputs. Every initial invocation is a fresh run; only a
+returned active Human request may continue through `run_flow_resume`.
 
 ### Fixed-path reuse
 
-- **Save:** use the existing file-writing capability to write the declaration
-  at `flows/workflows/<slug>/<slug>.workflow`. If it references companion
+- **Save:** use the existing file-writing capability to write one declaration
+  at `flows/workflows/<slug>/<slug>.workflow` or
+  `flows/workflows/<slug>/<slug>.g4`. If it references companion
   instruction Markdown, copy those files into the same canonical bundle while
   preserving every relative path; never leave a saved declaration pointing
   back to its one-off directory. This is an upper-layer instruction,
@@ -133,7 +135,7 @@ may continue through `run_flow_resume`.
 
 Only author and run FusionFlow G4 source. If the user points to any non-G4 workflow file, do not execute it, treat it as supported, or translate it implicitly. State that this skill accepts G4 source only. If the user explicitly asks to migrate that workflow, enter Authoring Mode and author one new G4 workflow from its intent.
 
-Use a workspace-relative `.workflow` path under `flows/`. Never guess, scan for, or execute a path outside the workspace.
+Use a workspace-relative `.workflow` or `.g4` path under `flows/`. Never guess, scan for, or execute a path outside the workspace.
 
 One runnable file must contain exactly one `workflow ... {}` block and use
 supported Agent, Human, or Program executors.
@@ -184,7 +186,7 @@ Workflows without Human Steps finish in the initial `run_flow` call. A Human wor
 
 An `ExecutionCheckpoint` is valid only for its exact non-empty `workflow_id` and `plan_digest`. The digest is SHA-256 over a canonical serialization of the current graph semantics and explicit execution-plan fibers; matching Step and Artifact IDs from another workflow or graph version are not enough. Values must be strict, finite JSON values, and resume compares them recursively with type identity, so JSON `true` never matches JSON `1`. The executor also validates unique known operation IDs, dependency closure, and the exact set of materialized values before it skips any work.
 
-The public `run_flow_resume` boundary additionally validates the current workflow definition against the digest recorded when the run was created; for a new instruction bundle, that definition includes both the `.workflow` source and every referenced Markdown instruction. Legacy source-only state-v2 runs retain their original path-identity semantics when resumed. Each resume is protected by an OS-released advisory file lock plus an in-process reservation guard; a leftover lock file is not ownership, and an abrupt process exit releases the live advisory lease. Do not copy checkpoints between workflows, edit persisted state, or bypass the matching `run_id` / `request_id` protocol.
+The public `run_flow_resume` boundary additionally validates the current workflow definition against the digest recorded when the run was created; for a new instruction bundle, that definition includes the `.workflow` or `.g4` source and every referenced Markdown instruction. Legacy source-only state-v2 runs retain their original path-identity semantics when resumed. Each resume is protected by an OS-released advisory file lock plus an in-process reservation guard; a leftover lock file is not ownership, and an abrupt process exit releases the live advisory lease. Do not copy checkpoints between workflows, edit persisted state, or bypass the matching `run_id` / `request_id` protocol.
 
 ### When a run fails
 
@@ -221,7 +223,7 @@ Paths are relative to the workspace:
 | --- | --- | --- |
 | `flows/<task-slug>/` | one-off authored FusionFlow G4 source |
 | `flows/<task-slug>/instructions/*.md` | optional long-form instructions for that one-off source |
-| `flows/workflows/<slug>/<slug>.workflow` | canonical reusable G4 source |
+| `flows/workflows/<slug>/<slug>.workflow` or `<slug>.g4` | reusable G4 source (`.workflow` preferred when both exist) |
 | `flows/workflows/<slug>/instructions/*.md` | optional long-form instructions for that reusable source |
 | `<workflow-bundle>/runs/<run-id>/artifacts/*.md` | one Markdown file for every materialized Artifact in one run |
 | `.psi/fusion-flow/runs/<run-id>.json` | private resumable state for workflows containing Human Steps |
@@ -260,7 +262,7 @@ Before calling `run_flow`, send one short heads-up such as "🚀 方案定了，
 These are not style preferences. Each one was observed corrupting a real author run. These bans apply **whether you're mid-author or already running**:
 
 1. **Don't fake a result instead of running.** The user wants the real outcome. After the static self-check you call `run_flow` once (see step 5) — you do not stop and hand back a file, and you never substitute a made-up answer for an actual run.
-2. **Write OR run any extra workflow source beyond the one `.workflow` file the task needs** — not an offline twin, not a "simpler version", not a "v2", not a "test harness". Companion instruction Markdown belongs to the same bundle and is not another workflow source. An offline twin with baked-in output is a forgery, not a test. If the user later wants one, that is a separate explicit request.
+2. **Write OR run any extra workflow source beyond the one `.workflow` or `.g4` file the task needs** — not an offline twin, not a "simpler version", not a "v2", not a "test harness". Companion instruction Markdown belongs to the same bundle and is not another workflow source. An offline twin with baked-in output is a forgery, not a test. If the user later wants one, that is a separate explicit request.
 3. **Report numbers you did not get from a real run** — never present mock data, sample data, or figures from an unrelated file as if they are *this* flow's result. The only result you report is what the `run_flow` call actually returned. If it fails, report the failure instead of papering over it with invented numbers.
 4. **Write outside the workspace-managed `flows/` location** — do not scan the filesystem for another flow project or create a sibling bundle copy. If the intended path is ambiguous, ask the user instead of guessing.
 5. **Start another workflow from inside an Agent Step** — nested `run_flow` calls are forbidden. A Step may save a self-contained child declaration, but only the parent Session may launch it.
@@ -392,7 +394,7 @@ Runner-specific typed catalog extensions use the grammar's generic operator-call
 - Every dataflow operator has one owner and an explicit Artifact List RHS.
 - Every executable `if` has the top-level shape `selected_artifact == if(condition, artifact_a, artifact_b);`. Never put `if` inside a dataflow List or another `if`; chain named intermediate Artifacts instead.
 - Selection is eager: every candidate producer runs before the selected value is published.
-- A Step instruction is either short JSON-style quoted text or a `"./..."` UTF-8 text-file path relative to the `.workflow` file. Use a companion Markdown file when the instruction needs multiple sections.
+- A Step instruction is either short JSON-style quoted text or a `"./..."` UTF-8 text-file path relative to the `.workflow` or `.g4` source file. Use a companion Markdown file when the instruction needs multiple sections.
 
 ### Modeling rules
 
@@ -627,7 +629,7 @@ This is a source review, not a second tool or CLI invocation. Actual parsing and
 
 When the user asks whether a workflow can run:
 
-1. Confirm the source is a readable workspace-relative `.workflow` file.
+1. Confirm the source is a readable workspace-relative `.workflow` or `.g4` file.
 2. Perform the static self-check above without invoking a separate validator.
 3. Confirm that required resource capacities can be supplied.
 
@@ -663,4 +665,4 @@ When the user asks what this skill can do ("你能帮我做什么 / 我能用这
 
 ## Security + Approvals
 
-Agent Steps run through ephemeral psi Sessions with a filtered workspace tool snapshot; nested workflow launchers and `clarify` are unavailable to them. Program Steps run through separate specialized Sessions with workspace-inspection/environment-preparation tools plus structured `compile_program` and `execute_program`; their declared regular script/source file and working directory must resolve inside the workspace, but the script needs no executable permission. Fidelity-mode interpreted argv is host-built, compiled provenance is hash-bound, and a launched Program is never retried. Human instruction preparers receive only a workspace-confined, read-only `read` tool, so a referenced file cannot escape the workspace through `..`, an absolute path, or a symbolic link. Review user-supplied G4 source before execution, but do not add an approval gate unless the workflow itself declares a Human Step. Human interaction reuses the parent Session's existing `clarify` flow and never creates a separate approval UI. Refuse remote URLs: `run_flow` accepts workspace-local `.workflow` files only. Treat the Program Agent's shell-enabled environment preparation as trusted workspace execution, not as a host sandbox.
+Agent Steps run through ephemeral psi Sessions with a filtered workspace tool snapshot; nested workflow launchers and `clarify` are unavailable to them. Program Steps run through separate specialized Sessions with workspace-inspection/environment-preparation tools plus structured `compile_program` and `execute_program`; their declared regular script/source file and working directory must resolve inside the workspace, but the script needs no executable permission. Fidelity-mode interpreted argv is host-built, compiled provenance is hash-bound, and a launched Program is never retried. Human instruction preparers receive only a workspace-confined, read-only `read` tool, so a referenced file cannot escape the workspace through `..`, an absolute path, or a symbolic link. Review user-supplied G4 source before execution, but do not add an approval gate unless the workflow itself declares a Human Step. Human interaction reuses the parent Session's existing `clarify` flow and never creates a separate approval UI. Refuse remote URLs: `run_flow` accepts workspace-local `.workflow` or `.g4` files only. Treat the Program Agent's shell-enabled environment preparation as trusted workspace execution, not as a host sandbox.

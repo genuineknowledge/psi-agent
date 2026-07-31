@@ -46,6 +46,9 @@ async def test_fusion_prompt_prefers_g4_with_runtime_boundaries(tmp_path: Path) 
     assert "Use `fusion-flow`" in section
     assert "`run_flow` by default" in section
     assert "### `/workflow:<slug>` — saved workflow command" in section
+    assert "prefer\n   `<slug>.workflow`, otherwise use `<slug>.g4`" in section
+    assert "running a `.workflow`\nor `.g4` file" in section
+    assert "`.workflow` takes precedence when both exist" in section
     assert "Agent/Program Step dispatch" in section
     assert "`run_flow_resume`" in section
     assert "executor-specific, workspace-confined capability" in section

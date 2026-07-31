@@ -2,9 +2,25 @@
 
 from __future__ import annotations
 
+import anyio
 import pytest
 
 from psi_agent.gateway._workspace_manager import WorkspaceManager
+
+
+async def _write_workflow(
+    workspace: anyio.Path,
+    name: str,
+    *,
+    suffix: str = ".workflow",
+) -> anyio.Path:
+    workflow_dir = workspace / "flows" / "workflows" / name
+    await workflow_dir.mkdir(parents=True, exist_ok=True)
+    await (workflow_dir / f"{name}{suffix}").write_text(
+        f"workflow {name.replace('-', '_')} {{}}",
+        encoding="utf-8",
+    )
+    return workflow_dir
 
 
 @pytest.mark.anyio
@@ -41,6 +57,73 @@ async def test_list_places_includes_cwd() -> None:
     assert isinstance(data["places"], list)
     assert any(r["id"] == "cwd" for r in data["places"])
     assert isinstance(data["drives"], list)
+
+
+@pytest.mark.anyio
+async def test_list_workflows_supports_both_suffixes_and_prefers_workflow(tmp_path) -> None:
+    workspace = anyio.Path(str(tmp_path))
+    await _write_workflow(workspace, "zeta-flow", suffix=".g4")
+    alpha_dir = await _write_workflow(workspace, "alpha-flow", suffix=".g4")
+    await (alpha_dir / "alpha-flow.workflow").write_text(
+        "workflow alpha_flow {}",
+        encoding="utf-8",
+    )
+
+    result = await WorkspaceManager().list_workflows(str(workspace))
+
+    assert result == [
+        {
+            "name": "alpha-flow",
+            "path": "flows/workflows/alpha-flow/alpha-flow.workflow",
+        },
+        {
+            "name": "zeta-flow",
+            "path": "flows/workflows/zeta-flow/zeta-flow.g4",
+        },
+    ]
+
+
+@pytest.mark.anyio
+async def test_list_workflows_skips_corrupt_and_incomplete_entries(tmp_path) -> None:
+    workspace = anyio.Path(str(tmp_path))
+    await _write_workflow(workspace, "valid-flow")
+
+    missing_source = workspace / "flows" / "workflows" / "missing-source"
+    await missing_source.mkdir(parents=True)
+    await (missing_source / "other.workflow").write_text(
+        "workflow other {}",
+        encoding="utf-8",
+    )
+
+    invalid_name = await _write_workflow(workspace, "Invalid_Name")
+    assert await invalid_name.exists()
+
+    result = await WorkspaceManager().list_workflows(str(workspace))
+
+    assert [workflow["name"] for workflow in result] == ["valid-flow"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        "com1",
+        "com9",
+        "lpt1",
+        "lpt9",
+    ],
+)
+def test_workflow_name_rejects_windows_reserved_names(name: str) -> None:
+    assert not WorkspaceManager._is_valid_workflow_name(name)
+
+
+@pytest.mark.anyio
+async def test_list_workflows_missing_registry_is_empty(tmp_path) -> None:
+    result = await WorkspaceManager().list_workflows(str(tmp_path))
+    assert result == []
 
 
 @pytest.mark.anyio

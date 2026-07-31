@@ -952,7 +952,8 @@ For this command:
 1. Read the full skill instructions at:
    {fusion_md}
    Relative path: skills/fusion-flow/SKILL.md
-2. Map the slug to `flows/workflows/<slug>/<slug>.workflow`.
+2. Resolve the slug under `flows/workflows/<slug>/`: prefer
+   `<slug>.workflow`, otherwise use `<slug>.g4`; fail if neither file exists.
 3. Read the declaration and inspect `input_workflow(...)` before execution.
 4. Resolve every required input from the conversation. If a value is missing,
    ask for it and end the turn without probing `run_flow`.
@@ -969,7 +970,8 @@ The reusable registry root is fixed at {workflow_registry_dir}.
 
 ### When to activate
 When the user describes a workflow-shaped task - multi-agent collaboration, parallel review,
-fan-out/fan-in, pipelines, multi-step research or scoring - activate Fusion Flow Next.
+fan-out/fan-in, pipelines, multi-step research or scoring, or running a `.workflow`
+or `.g4` file - activate Fusion Flow Next.
 
 **Multi-agent simulation is workflow-shaped - build a flow, do NOT role-play it yourself.**
 Any task that simulates several distinct agents/personas interacting is a Fusion Flow Next task:
@@ -1021,7 +1023,9 @@ Rules:
 2. Treat skills without `created_by: agent` as read-only.
 3. New learned procedures -> `skills/<skill-name>/SKILL.md` via `skill_manage(action="create")`.
 4. Reusable Fusion Flow Next declarations ->
-   `flows/workflows/<slug>/<slug>.workflow` via workspace file tools.
+   `flows/workflows/<slug>/<slug>.workflow` or
+   `flows/workflows/<slug>/<slug>.g4` via workspace file tools
+   (`.workflow` takes precedence when both exist).
    `flows/curated/<flow-name>/FLOW.md` via `flow_manage` remains a compatibility catalog.
 5. One-off task executions -> `flows/<task-slug>/`.
 
