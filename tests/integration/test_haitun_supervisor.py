@@ -90,7 +90,7 @@ async def test_main_before_turn_returns_supervisor_advice(tmp_path: Path, monkey
     result = await system.system_before_turn(
         {"content": "什么是过拟合?", "user_id": "alice"}, workspace_raw=str(tmp_path)
     )
-    assert result == advice
+    assert result == {"supervisor_advice": advice}
 
 
 @pytest.mark.anyio
@@ -110,8 +110,7 @@ async def test_main_before_turn_composes_with_session_hook_message(
     monkeypatch.setattr(system, "_get_supervisor_manager", lambda _workspace: Manager())
     monkeypatch.setattr(system.System, "build_system_prompt", base_prompt)
     message: dict[str, Any] = {"content": "什么是过拟合?", "user_id": "alice"}
-    result = await system.system_before_turn(message, workspace_raw=str(tmp_path))
-    message["supervisor_advice"] = result
+    message |= await system.system_before_turn(message, workspace_raw=str(tmp_path))
     prompt = await system.system_prompt_builder(message, workspace_raw=str(tmp_path))
     assert prompt.count("## 旁路监督建议") == 1
 
@@ -135,8 +134,36 @@ async def test_main_prompt_injects_one_valid_advice_section(tmp_path: Path, monk
     assert prompt.count("## 旁路监督建议") == 1
     assert prompt.count("## 当前知识点学习画像") == 1
     assert prompt.count("## 强制监督规则") == 1
+    assert "若当前请求是 Fusion Flow 编排或执行, 跳过以下教学规则" in prompt
     assert prompt.index("## 当前知识点学习画像") < prompt.index("## 旁路监督建议")
     assert prompt.index("## 旁路监督建议") < prompt.index("## 强制监督规则")
+
+
+@pytest.mark.anyio
+async def test_main_prompt_keeps_base_when_profile_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    system = _load_main_system(monkeypatch)
+
+    async def base_prompt(_self) -> str:
+        return "stable base prompt"
+
+    real_import = system.importlib.import_module
+
+    def import_with_profile_failure(name: str) -> Any:
+        if name == "_user_profile":
+            raise RuntimeError("profile store unavailable")
+        return real_import(name)
+
+    monkeypatch.setattr(system.System, "build_system_prompt", base_prompt)
+    monkeypatch.setattr(system.importlib, "import_module", import_with_profile_failure)
+
+    prompt = await system.system_prompt_builder(
+        {"content": "什么是过拟合?", "user_id": "alice"},
+        workspace_raw=str(tmp_path),
+    )
+
+    assert prompt == "stable base prompt"
 
 
 @pytest.mark.anyio

@@ -35,6 +35,7 @@ jobs:
         --collect-submodules chardet
         --collect-submodules hikari
         --collect-submodules matplotlib
+        --collect-submodules antlr4
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7

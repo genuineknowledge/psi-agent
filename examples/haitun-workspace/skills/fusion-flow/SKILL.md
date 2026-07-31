@@ -1,12 +1,14 @@
 ---
 name: flow
-description: For authoring and running `@agent-flow/core` (Fuclaw) TypeScript multi-agent workflows. Use when the task involves `.flow.ts` files, an explicit mention of "agent-flow"/"Fuclaw"/"@agent-flow/core", or a request to coordinate multiple agents, run sub-tasks in parallel, build a multi-step pipeline, or inspect a prior workflow run. Not for `.prose` files. Activated by task intent, not by slash commands.
+description: Legacy fallback for authoring or running existing `@agent-flow/core` (Fuclaw) TypeScript `.flow.ts` workflows. Activate only for an explicit `.flow.ts`, Fuclaw, or `@agent-flow/core` request; use `fusion-flow-next` for new multi-agent workflows.
 metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fuclaw" } }
 ---
 
-# OpenFlow Skill (Fuclaw)
+# OpenFlow Skill (Fuclaw, legacy fallback)
 
 This skill is the author + run protocol for **`@agent-flow/core`** (alias: Fuclaw) — a TypeScript runtime that executes multi-agent workflows and emits a full **execution graph** for replay. Unlike OpenProse, where the LLM *is* the VM, here the VM is a Node.js process; the LLM only orchestrates running it and reading its artifacts.
+
+> **Parallel rollout.** Keep this runtime available for explicit legacy `.flow.ts` work, but do not activate it for a new generic multi-agent request. New workflows use `fusion-flow-next` and the G4 `run_flow` path.
 
 > **What you're working in.** The normal delivery is a **self-contained bundle**: the user copied the `fusion-flow/` folder somewhere, ran `npm install` once, and works inside it. Call that directory `<workDir>`. Everything below — generated `.flow.ts`, the `.env`, the `runs/` artifacts — lives **relative to `<workDir>`** (the directory you `cd` into and run `npx tsx` from), NOT inside any `core/` subfolder. The only time `<workDir>` is a `core/` is when the user happens to be inside a cloned Fuclaw source repo (see "Runtime mode detection"). This skill runs in any long-context LLM client (Claude Code / Cursor / Cherry Studio / Claude.ai); it does not depend on OpenClaw or any plugin install.
 
@@ -19,9 +21,9 @@ Activate this skill when the user:
 - Asks to run a `.flow.ts` file they already have — e.g. one you just generated in Authoring Mode, or a file they point you at ("跑一下这个 / 帮我跑 / 执行"). (This skill does **not** ship runnable demo examples; "run" always means a concrete `.flow.ts` the user has.)
 - Asks to see the result of a previous run ("跑完了吗 / 看看结果 / 上次那个怎么样了")
 - Mentions "agent-flow", "Fuclaw", or "@agent-flow/core"
-- **Describes any task that needs a multi-agent workflow or agent collaboration**, even without saying "flow" — e.g. "让几个 agent 分别审一遍再汇总", "并行跑 N 个子任务再合并", "一步接一步处理(先 A 再 B 再 C)", "多角度评审 / 打分选边", "把这件事拆成多个 agent 协作". If the task clearly benefits from orchestrating more than one agent / parallel branches / a multi-step pipeline, enter **Authoring Mode** (below) and offer to build a flow.
+- Explicitly asks to keep or migrate behavior tied to the legacy TypeScript runtime.
 
-When in doubt about whether a task is "workflow-shaped": if it would take **two or more coordinated LLM steps** (fan-out, pipeline, loop, or judge-then-branch), it qualifies — activate and propose a flow. A single one-shot question does not.
+For generic multi-agent, parallel, or multi-step intent without a legacy marker, activate `fusion-flow-next` instead.
 
 ### HARD RULE: when you recognize a multi-agent task, your job is to BUILD A FLOW — not to do it yourself
 

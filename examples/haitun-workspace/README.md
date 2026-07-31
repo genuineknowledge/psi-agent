@@ -3,7 +3,8 @@
 A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combines:
 
 - a de-branded OpenClaw-style system-prompt engine (all config kept **inside** the workspace),
-- full **Fusion Flow** workflow authoring (node runtime + `flow_manage` + `flows/`),
+- full **Fusion Flow** workflow authoring (`fusion-flow-next` preferred, legacy
+  TypeScript fallback retained, plus `flow_manage` + `flows/`),
 - the hermes domain skill set + curated skills, and
 - clean async file/shell tools, Serper web search, and environment-configured
   iFLYTEK STT/TTS tools.
@@ -44,7 +45,10 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 
 - **First run** triggers a short onboarding (from `BOOTSTRAP.md`). Delete `BOOTSTRAP.md` to
   skip it.
-- **Fusion Flow** needs Node.js. First use: `cd examples/haitun-workspace/skills/fusion-flow && npm install`.
+- **Fusion Flow Next** is the default for new workflows and uses the bundled Python G4
+  parser/compiler plus `run_flow`; no separate runtime setup is required. The existing
+  `fusion-flow` Node/Fuclaw runtime remains available for explicit `.flow.ts` work:
+  first use `cd examples/haitun-workspace/skills/fusion-flow && npm install`.
   Generated flows go under `flows/<task-slug>/`; reusable templates under `flows/curated/`.
   For stateful sub-agent sessions, copy `bin/env.stateful.template` to
   `skills/fusion-flow/.env` and fill in the paths.
@@ -53,6 +57,7 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
   deployment-managed variables documented in `docs/haibao-integration.md`. The bundled Adapter,
   tools, and Skill do not provide the private service or database onboarding.
 - Never put API keys in this workspace or in generated `.flow.ts` / `.env` files.
+  The same rule applies to instruction payloads and generated `.workflow` / `.g4` files.
 
 ## Fusion Memory
 

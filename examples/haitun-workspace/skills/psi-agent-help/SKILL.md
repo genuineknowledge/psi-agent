@@ -42,7 +42,7 @@ Explain tools by capability, because exact runtime availability may vary by sess
 - File operations: `read`, `write`, `edit`
 - Shell execution: `bash`, `powershell`
 - Skill management: `skill_manage`
-- Fusion Flow management: `flow_manage`
+- Fusion Flow execution and management: `run_flow` (Next), `flow_run` (legacy), `flow_manage`
 - Durable memory, if enabled: `memory_add`, `memory_search`, `memory_answer_context`
 - Spreadsheet creation: `write_excel`
 - Web/search tools, if configured in the current runtime
@@ -63,7 +63,8 @@ Common useful skills in this workspace include:
 - `python-async-basics`: Python async guidance.
 - `python-static-analysis`: Python static analysis.
 - `user-preferences-and-language`: user preference and language handling.
-- `fusion-flow`: authoring and managing Fusion Flow workflows.
+- `fusion-flow-next`: preferred authoring and execution path for new Fusion Flow workflows.
+- `flow` (`skills/fusion-flow/`): legacy Fuclaw/TypeScript fallback for explicit `.flow.ts` work.
 - `fusion-memory-setup`: setting up durable Fusion Memory.
 - Domain skills for systems, data/text processing, ML, media, circuits, cryptanalysis, and other specialized work.
 
@@ -78,7 +79,7 @@ Offer these examples when the user asks how to begin:
 - `帮我读这个文件并总结`: use file tools to inspect a file and produce a summary.
 - `帮我检查这段代码`: use code-review guidance and relevant language skills.
 - `帮我创建一个新技能`: use `skill_manage` and the local skill format.
-- `帮我写一个 Fusion Flow`: use the `fusion-flow` skill and `flow_manage`.
+- `帮我写一个 Fusion Flow`: use `fusion-flow-next`, `flow_manage`, and `run_flow`.
 - `帮我配置长期记忆`: read `fusion-memory-setup` and walk through setup.
 - `帮我把表格生成 Excel`: use `write_excel`, not a markdown table.
 - `新手指导`: provide this onboarding flow again.

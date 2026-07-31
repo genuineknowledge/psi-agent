@@ -37,6 +37,7 @@ dependencies = [
     "pygount>=3.2.0",
     "hikari>=2.5.0",
     "matplotlib>=3.11.0",
+    "antlr4-python3-runtime>=4.13.2,<4.14",
 ]
 
 [dependency-groups]
@@ -80,6 +81,7 @@ artifacts = [
 [tool.ruff]
 target-version = "py314"
 line-length = 120
+extend-exclude = ["examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/generated"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]
@@ -95,6 +97,11 @@ testpaths = ["tests"]
 addopts = ["--strict-markers", "-ra", "--cov"]
 markers = ["schedule: schedule-based tests (> 30s)"]
 
+[tool.ty.environment]
+extra-paths = ["examples/haitun-workspace/skills/fusion-flow-next"]
+
+[tool.ty.src]
+exclude = ["examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/generated"]
+
 [tool.coverage.run]
 source = ["src/psi_agent"]
-

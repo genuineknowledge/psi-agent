@@ -48,18 +48,29 @@ async def _atomic_write(path: anyio.Path, content: str) -> None:
     await path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f"{path.name}.tmp"
     await tmp.write_text(content, encoding="utf-8")
-    await tmp.rename(path)
+    await tmp.replace(path)
 
 
 async def _find_task_flow(flows_dir: anyio.Path, flow_name: str) -> anyio.Path | None:
     task_dir = flows_dir / flow_name
-    preferred = task_dir / f"{flow_name}.flow.ts"
-    if await preferred.exists():
-        return preferred
     if not await task_dir.is_dir():
         return None
-    async for candidate in task_dir.glob("*.flow.ts"):
-        return candidate
+    for filename in (f"{flow_name}.workflow", f"{flow_name}.g4", f"{flow_name}.flow.ts"):
+        preferred = task_dir / filename
+        if await preferred.exists():
+            return preferred
+    for pattern in ("*.workflow", "*.g4", "*.flow.ts"):
+        async for candidate in task_dir.glob(pattern):
+            return candidate
+    return None
+
+
+async def _find_adhoc_flow(flows_dir: anyio.Path, flow_name: str) -> anyio.Path | None:
+    adhoc_dir = flows_dir / "adhoc" / flow_name
+    for filename in ("flow.workflow", "flow.g4", "flow.ts"):
+        candidate = adhoc_dir / filename
+        if await candidate.exists():
+            return candidate
     return None
 
 
@@ -70,6 +81,7 @@ def _format_flow_document(
     category: str,
     body: str,
     flow_ts: str,
+    flow_source: str,
     source: str = "",
 ) -> str:
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -86,7 +98,9 @@ def _format_flow_document(
     lines.append("---")
 
     sections = ["\n".join(lines), body.strip()]
-    if flow_ts.strip():
+    if flow_source.strip():
+        sections.append("```fusionflow\n" + flow_source.strip() + "\n```")
+    elif flow_ts.strip():
         sections.append("```typescript\n" + flow_ts.strip() + "\n```")
     return "\n\n".join(section for section in sections if section).rstrip() + "\n"
 
@@ -99,6 +113,7 @@ async def flow_manage(
     body: str = "",
     flow_ts: str = "",
     target: str = "curated",
+    flow_source: str = "",
 ) -> str:
     """Create, patch, view, list, or promote reusable Fusion Flow assets.
 
@@ -107,9 +122,10 @@ async def flow_manage(
         flow_name: Flow name for view/create/patch/promote.
         description: One-line description for created or promoted flows.
         category: Category tag for created or promoted flows.
-        body: FLOW.md body text, excluding frontmatter and TypeScript block.
-        flow_ts: TypeScript flow content to store in FLOW.md.
+        body: FLOW.md body text, excluding frontmatter and source block.
+        flow_ts: Legacy TypeScript flow content to store in FLOW.md.
         target: For list/view/create. Use "curated", "tasks", "adhoc", or "all".
+        flow_source: Preferred FusionFlow Next G4 source to store in FLOW.md.
 
     Returns:
         A result message, list output, or flow content.
@@ -117,6 +133,8 @@ async def flow_manage(
     flows_dir = _flows_dir()
     action = action.strip().lower()
     target = target.strip().lower() or "curated"
+    if flow_source.strip() and flow_ts.strip():
+        return "[Error] Provide only one of flow_source (Next) or flow_ts (legacy)."
 
     if action == "list":
         lines: list[str] = []
@@ -155,9 +173,11 @@ async def flow_manage(
             adhoc_entries: list[str] = []
             if await adhoc_dir.exists():
                 async for entry in adhoc_dir.iterdir():
-                    flow_file = entry / "flow.ts"
-                    if await entry.is_dir() and not entry.name.startswith(".") and await flow_file.exists():
-                        adhoc_entries.append(f"  - {entry.name}: flow.ts")
+                    if not await entry.is_dir() or entry.name.startswith("."):
+                        continue
+                    flow_file = await _find_adhoc_flow(flows_dir, entry.name)
+                    if flow_file is not None:
+                        adhoc_entries.append(f"  - {entry.name}: {flow_file.name}")
             if adhoc_entries:
                 lines.append("adhoc/")
                 lines.extend(sorted(adhoc_entries))
@@ -179,8 +199,8 @@ async def flow_manage(
                 return await task_flow.read_text(encoding="utf-8", errors="replace")
 
         if target in {"adhoc", "all"}:
-            adhoc_flow = flows_dir / "adhoc" / flow_name / "flow.ts"
-            if await adhoc_flow.exists():
+            adhoc_flow = await _find_adhoc_flow(flows_dir, flow_name)
+            if adhoc_flow is not None:
                 return await adhoc_flow.read_text(encoding="utf-8", errors="replace")
 
         return f"[Error] Flow not found: {flow_name!r}"
@@ -192,10 +212,11 @@ async def flow_manage(
             return "[Error] Create target must be 'curated' or 'adhoc'."
 
         if target == "adhoc":
-            flow_path = flows_dir / "adhoc" / flow_name / "flow.ts"
+            filename = "flow.workflow" if flow_source.strip() else "flow.ts"
+            flow_path = flows_dir / "adhoc" / flow_name / filename
             if await flow_path.exists():
                 return f"[Error] Adhoc flow already exists: {flow_name!r}"
-            await _atomic_write(flow_path, flow_ts.strip() + "\n")
+            await _atomic_write(flow_path, (flow_source or flow_ts).strip() + "\n")
             return f"Adhoc flow created: {flow_name!r}"
 
         flow_md = flows_dir / "curated" / flow_name / "FLOW.md"
@@ -209,6 +230,7 @@ async def flow_manage(
                 category=category,
                 body=body,
                 flow_ts=flow_ts,
+                flow_source=flow_source,
             ),
         )
         return f"Curated flow created: {flow_name!r}"
@@ -229,7 +251,16 @@ async def flow_manage(
         frontmatter["updated_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         lines = ["---", *(f"{key}: {value}" for key, value in frontmatter.items()), "---"]
         next_body = body.strip() or existing_body.strip()
-        if flow_ts.strip():
+        if flow_source.strip():
+            next_body = re.sub(
+                r"```(?:fusionflow|g4)\s*\n.*?```",
+                "```fusionflow\n" + flow_source.strip() + "\n```",
+                next_body,
+                flags=re.DOTALL,
+            )
+            if "```fusionflow" not in next_body and "```g4" not in next_body:
+                next_body += "\n\n```fusionflow\n" + flow_source.strip() + "\n```"
+        elif flow_ts.strip():
             next_body = re.sub(
                 r"```(?:typescript|ts)\s*\n.*?```",
                 "```typescript\n" + flow_ts.strip() + "\n```",
@@ -249,10 +280,10 @@ async def flow_manage(
         source_path = await _find_task_flow(flows_dir, flow_name)
         source_label = f"flows/{flow_name}"
         if source_path is None:
-            adhoc_path = flows_dir / "adhoc" / flow_name / "flow.ts"
-            if await adhoc_path.exists():
+            adhoc_path = await _find_adhoc_flow(flows_dir, flow_name)
+            if adhoc_path is not None:
                 source_path = adhoc_path
-                source_label = f"flows/adhoc/{flow_name}/flow.ts"
+                source_label = f"flows/adhoc/{flow_name}/{adhoc_path.name}"
 
         if source_path is None:
             return f"[Error] No task or adhoc flow found for: {flow_name!r}"
@@ -261,7 +292,8 @@ async def flow_manage(
         if await flow_md.exists():
             return f"[Error] Curated flow already exists: {flow_name!r}"
 
-        source_ts = await source_path.read_text(encoding="utf-8", errors="replace")
+        source_text = await source_path.read_text(encoding="utf-8", errors="replace")
+        is_legacy = source_path.name.endswith(".flow.ts") or source_path.name == "flow.ts"
         await _atomic_write(
             flow_md,
             _format_flow_document(
@@ -269,7 +301,8 @@ async def flow_manage(
                 description=description,
                 category=category,
                 body=body,
-                flow_ts=source_ts,
+                flow_ts=source_text if is_legacy else "",
+                flow_source="" if is_legacy else source_text,
                 source=source_label,
             ),
         )
