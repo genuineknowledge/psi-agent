@@ -1,0 +1,8 @@
+# Agent-package: new contact user created → HR onboarding signal.
+name: feishu.hr.user_created
+source: feishu
+kind: platform_map
+platform_event: contact.user.created_v3
+description: >
+  通讯录新建员工（入职侧信号）。可触发手册确认、三阶段建档等 TRIGGER。
+  需订阅 contact.user.created_v3。SOP-3 / SOP-10 入口。

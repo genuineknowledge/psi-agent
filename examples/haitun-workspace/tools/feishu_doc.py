@@ -5,6 +5,9 @@
 - ``feishu_doc_append_content`` — append headings/paragraphs to a docx body
   (also works on the docx behind a wiki node via its ``obj_token``).
 - ``feishu_doc_append_table`` — append a native Feishu table (rows/columns).
+- ``feishu_doc_append_sheet`` — embed a live, editable *spreadsheet* (formulas,
+  filters, its own URL) — for data, where a table block only holds text.
+- ``feishu_doc_append_bitable`` — embed a 多维表格 for record-shaped content.
 - ``feishu_doc_append_flowchart`` — append a flowchart (rendered as a table,
   since Feishu's API can't draw real diagrams).
 - ``feishu_doc_append_swimlane`` — append a swimlane/cross-functional diagram
@@ -144,6 +147,100 @@ async def feishu_doc_append_table(
             identity,
             caption=caption,
             auto_number=auto_number,
+        )
+    )
+
+
+async def feishu_doc_append_sheet(
+    document_id: str,
+    rows: int = 10,
+    columns: int = 5,
+    values_json: str = "",
+    header_row: bool = True,
+    user_key: str = "",
+    identity: str = "",
+    caption: str = "",
+    auto_number: bool = True,
+) -> str:
+    """Embed a real, editable Feishu **spreadsheet** inside a docx document.
+
+    This is the one to use when the user wants "一个可编辑的飞书表格" in a doc/wiki page:
+    it inserts a live spreadsheet (block_type 30) that people can edit in place — with
+    formulas, cell formats, filters and its own URL — not just a static grid of text.
+
+    Choosing between this and ``feishu_doc_append_table``:
+
+    - **this tool** — the content is *data*: it needs formulas (``=SUM(...)``), will be
+      updated repeatedly, wants filters/sorting, or should double as a standalone sheet.
+    - ``feishu_doc_append_table`` — the content is *prose laid out in a grid*: a small
+      comparison table that reads as part of the document's text.
+
+    Returns ``spreadsheet_token`` + ``sheet_id`` + ``range``, which are exactly what
+    ``feishu_sheet_write`` / ``feishu_sheet_append`` / ``feishu_sheet_format`` take — so
+    the embedded sheet can keep being filled and restyled after this call.
+
+    Args:
+        document_id: The docx document_id (or a wiki node's ``obj_token``).
+        rows: Rows the embedded grid should end up with (default 10), raised to fit
+            ``values_json``. Feishu caps *block creation* at 9x9, so a larger size is
+            reached by the write that follows — asking for 30 rows does give 30.
+        columns: Columns the grid should end up with (default 5); same rules as ``rows``.
+        values_json: Optional JSON array of rows to fill it with immediately, e.g.
+            '[["姓名","评分"],["张三",95],["合计","=SUM(B2:B2)"]]'. A cell string starting
+            with ``=`` becomes a live formula. Omit to embed an empty sheet.
+        header_row: Bold the first row when ``values_json`` is given (default true).
+        user_key: The sender's open_id (from ``<feishu_context>``). A user-owned doc or
+            wiki generally needs their identity, since the bot isn't a collaborator.
+        identity: Who owns the result: ``"user"`` (this person — needs their
+            authorization) or ``"bot"``. Omit to use the choice remembered for this
+            ``user_key``; if they have never been asked, the tool does nothing and
+            returns ``need_identity_choice`` so you can ask them.
+        caption: Optional table title, written as a numbered "表 N：…" line **above** the
+            sheet. Write the text only — "客户明细", not "表2：客户明细".
+        auto_number: Number the caption from the document's existing 表 captions (default true).
+    """
+    return _f.dumps_result(
+        await _f.append_doc_sheet_impl(
+            document_id,
+            rows,
+            columns,
+            values_json,
+            header_row,
+            user_key,
+            identity,
+            caption=caption,
+            auto_number=auto_number,
+        )
+    )
+
+
+async def feishu_doc_append_bitable(
+    document_id: str,
+    view_type: int = 1,
+    user_key: str = "",
+    identity: str = "",
+    caption: str = "",
+    auto_number: bool = True,
+) -> str:
+    """Embed a new 多维表格 (bitable) inside a docx document.
+
+    Pick this over ``feishu_doc_append_sheet`` when the content is *records* rather than
+    a grid of cells — typed fields, multiple views, per-row collaboration (a 台账, an
+    issue list, a signup form). Feishu creates the bitable with default fields; extend it
+    with ``feishu_bitable_create_field`` and fill it with ``feishu_bitable_create_record``,
+    using the ``app_token`` and ``table_id`` this returns.
+
+    Args:
+        document_id: The docx document_id (or a wiki node's ``obj_token``).
+        view_type: The initial view — ``1`` grid/表格 (default), ``2`` kanban/看板.
+        user_key: The sender's open_id (from ``<feishu_context>``).
+        identity: ``"user"`` / ``"bot"`` — who owns the result (see append_content).
+        caption: Optional numbered "表 N：…" line above it — text only, no "表N：" prefix.
+        auto_number: Number the caption from the document's existing 表 captions (default true).
+    """
+    return _f.dumps_result(
+        await _f.append_doc_bitable_impl(
+            document_id, view_type, user_key, identity, caption=caption, auto_number=auto_number
         )
     )
 

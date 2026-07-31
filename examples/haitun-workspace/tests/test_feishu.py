@@ -438,6 +438,322 @@ async def test_recall_tool_returns_json_and_passes_user_key(monkeypatch: pytest.
     assert captured == {"message_id": "om_9", "user_key": "ou_a"}
 
 
+# ── Editing an already-sent message (改内容而不撤回重发) ────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_edit_message_builds_put_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.edit_message_impl("om_abc", "改好的内容", user_key="ou_sender")
+    req = cap.request
+    assert req.http_method.name == "PUT"
+    assert req.uri == "/open-apis/im/v1/messages/:message_id"
+    assert req.paths["message_id"] == "om_abc"
+    assert req.body["msg_type"] == "text"
+    assert json.loads(req.body["content"]) == {"text": "改好的内容"}
+    # tenant first: the bot edits its own messages, the UAT is only the fallback
+    assert cap.prefer == "tenant"
+    assert cap.user_key == "ou_sender"
+    assert result == {"ok": True, "message_id": "om_abc", "edited": True, "msg_type": "text"}
+
+
+@pytest.mark.asyncio
+async def test_edit_message_with_mention_becomes_post(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.edit_message_impl("om_abc", '<at user_id="ou_z"></at> 看一下')
+    # A plain-text <at> renders as a raw tag, so an edit that mentions must switch to post
+    assert cap.request.body["msg_type"] == "post"
+    line = json.loads(cap.request.body["content"])["zh_cn"]["content"][0]
+    assert line[0] == {"tag": "at", "user_id": "ou_z"}
+    assert result["msg_type"] == "post"
+
+
+@pytest.mark.asyncio
+async def test_edit_message_rejects_non_message_id_and_empty_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    for bad in ("", "   "):
+        assert "message_id is required" in (await _impl.edit_message_impl(bad, "x"))["message"]
+    for bad in ("oc_group", "ou_person"):
+        assert "must be a message id" in (await _impl.edit_message_impl(bad, "x"))["message"]
+    # Editing replaces the whole content; empty text is a recall, not an edit
+    empty = await _impl.edit_message_impl("om_abc", "  ")
+    assert empty["ok"] is False
+    assert "feishu_message_recall" in empty["message"]
+    assert cap.request is None  # all rejected before spending a request
+
+
+@pytest.mark.asyncio
+async def test_edit_message_hints_sender_only_and_edit_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    for code, needle in ((230071, "发送者"), (230072, "20 次"), (230075, "时限"), (230054, "撤回重发")):
+
+        async def _fake(*a: Any, _code: int = code, **k: Any) -> dict[str, Any]:
+            return {"ok": False, "code": _code, "msg": "nope", "message": "err"}
+
+        monkeypatch.setattr(_impl, "_invoke", _fake)
+        result = await _impl.edit_message_impl("om_abc", "new")
+        assert needle in result["hint"], code
+
+
+@pytest.mark.asyncio
+async def test_edit_message_keeps_unknown_error_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": False, "code": 99999, "msg": "boom", "message": "err"}
+
+    monkeypatch.setattr(_impl, "_invoke", _fake)
+    assert "hint" not in await _impl.edit_message_impl("om_abc", "new")
+
+
+@pytest.mark.asyncio
+async def test_edit_card_patches_and_forces_update_multi(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    card = {"config": {"wide_screen_mode": True}, "elements": [{"tag": "markdown", "content": "已通过"}]}
+    result = await _impl.edit_card_impl("om_card", json.dumps(card))
+    req = cap.request
+    # A card is updated with PATCH (not the text/post PUT) and takes only content
+    assert req.http_method.name == "PATCH"
+    assert req.uri == "/open-apis/im/v1/messages/:message_id"
+    assert set(req.body) == {"content"}
+    sent = json.loads(req.body["content"])
+    # Without update_multi Feishu updates the card for a single viewer only
+    assert sent["config"] == {"wide_screen_mode": True, "update_multi": True}
+    assert sent["elements"] == card["elements"]
+    assert result == {"ok": True, "message_id": "om_card", "edited": True, "msg_type": "interactive"}
+
+
+@pytest.mark.asyncio
+async def test_edit_card_leaves_card_2_schema_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    card = {"schema": "2.0", "body": {"elements": []}}
+    await _impl.edit_card_impl("om_card", json.dumps(card))
+    # Card 2.0 has no update_multi flag; adding one would be inventing a field
+    assert json.loads(cap.request.body["content"]) == card
+
+
+@pytest.mark.asyncio
+async def test_edit_card_rejects_bad_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    assert "not valid JSON" in (await _impl.edit_card_impl("om_c", "{oops"))["message"]
+    assert "must be a JSON object" in (await _impl.edit_card_impl("om_c", "[1,2]"))["message"]
+    assert cap.request is None
+
+
+@pytest.mark.asyncio
+async def test_edit_tools_return_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = importlib.import_module("feishu_message")
+    captured: dict[str, Any] = {}
+
+    async def _fake_edit(message_id: str, text: str, user_key: str = "") -> dict[str, Any]:
+        captured.update(message_id=message_id, text=text, user_key=user_key)
+        return {"ok": True, "message_id": message_id, "edited": True, "msg_type": "text"}
+
+    monkeypatch.setattr(_impl, "edit_message_impl", _fake_edit)
+    out = await mod.feishu_message_edit(message_id="om_1", text="fixed", user_key="ou_a")
+    assert json.loads(out)["edited"] is True
+    assert captured == {"message_id": "om_1", "text": "fixed", "user_key": "ou_a"}
+
+    monkeypatch.setattr(_impl, "_invoke", _CapturedInvoke({}))
+    card_out = await mod.feishu_message_edit_card(message_id="om_2", card_json='{"schema":"2.0","body":{}}')
+    assert json.loads(card_out)["msg_type"] == "interactive"
+
+
+# ── Emoji reactions (表情回应) ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_add_reaction_builds_post_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"reaction_id": "re1", "reaction_type": {"emoji_type": "THUMBSUP"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.add_reaction_impl("om_abc", "THUMBSUP", user_key="ou_me")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/im/v1/messages/:message_id/reactions"
+    assert req.paths["message_id"] == "om_abc"
+    assert req.body == {"reaction_type": {"emoji_type": "THUMBSUP"}}
+    assert cap.user_key == "ou_me"
+    assert result["reaction_id"] == "re1"
+    assert result["emoji_type"] == "THUMBSUP"
+
+
+@pytest.mark.asyncio
+async def test_add_reaction_normalizes_chinese_emoji_and_casing(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Feishu's enum is case-sensitive and inconsistently cased (THUMBSUP but Fire/OnIt),
+    # so a literal Chinese word / emoji / mis-cased key must land on the real key.
+    for given, expected in (("赞", "THUMBSUP"), ("👍", "THUMBSUP"), ("收到", "OnIt"), ("fire", "Fire"), ("ok", "OK")):
+        cap = _CapturedInvoke({"reaction_id": "re1"})
+        monkeypatch.setattr(_impl, "_invoke", cap)
+        result = await _impl.add_reaction_impl("om_abc", given)
+        assert cap.request.body["reaction_type"]["emoji_type"] == expected, given
+        assert result["emoji_type"] == expected
+
+
+@pytest.mark.asyncio
+async def test_add_reaction_passes_unknown_emoji_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Feishu's table has ~130 entries and grows; an unknown value goes out as given and
+    # is answered with 231001, rather than being refused by a list that would go stale.
+    cap = _CapturedInvoke({"reaction_id": "re1"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.add_reaction_impl("om_abc", "SomeNewEmoji2027")
+    assert cap.request.body["reaction_type"]["emoji_type"] == "SomeNewEmoji2027"
+
+
+@pytest.mark.asyncio
+async def test_add_reaction_requires_message_id_and_emoji(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    assert "must be a message id" in (await _impl.add_reaction_impl("oc_group", "OK"))["message"]
+    assert "emoji_type is required" in (await _impl.add_reaction_impl("om_a", "  "))["message"]
+    assert cap.request is None
+
+
+@pytest.mark.asyncio
+async def test_add_reaction_hints_invalid_emoji_and_not_in_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    for code, needle in ((231001, "大小写敏感"), (231002, "不在该消息所在会话")):
+
+        async def _fake(*a: Any, _code: int = code, **k: Any) -> dict[str, Any]:
+            return {"ok": False, "code": _code, "msg": "nope", "message": "err"}
+
+        monkeypatch.setattr(_impl, "_invoke", _fake)
+        assert needle in (await _impl.add_reaction_impl("om_a", "OK"))["hint"], code
+
+
+@pytest.mark.asyncio
+async def test_list_reactions_pages_and_flattens(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [
+                {
+                    "reaction_id": "re1",
+                    "reaction_type": {"emoji_type": "THUMBSUP"},
+                    "operator": {"operator_id": "ou_a", "operator_type": "user"},
+                    "action_time": "1700000000000",
+                },
+                "not-a-dict",
+            ],
+            "has_more": True,
+            "page_token": "pt2",
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_reactions_impl("om_abc", "赞", page_size=99, page_token="pt1")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/im/v1/messages/:message_id/reactions"
+    q = _qdict(req)
+    assert q["reaction_type"] == "THUMBSUP"  # the alias is normalized for filtering too
+    assert q["page_size"] == "50"  # clamped to Feishu's max
+    assert q["page_token"] == "pt1"
+    assert result["count"] == 1
+    assert result["reactions"][0] == {
+        "reaction_id": "re1",
+        "emoji_type": "THUMBSUP",
+        "operator_id": "ou_a",
+        "operator_type": "user",
+        "action_time": "1700000000000",
+    }
+    assert result["has_more"] is True
+    assert result["page_token"] == "pt2"
+
+
+@pytest.mark.asyncio
+async def test_list_reactions_omits_filter_when_no_emoji(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": []})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.list_reactions_impl("om_abc")
+    assert "reaction_type" not in _qdict(cap.request)
+
+
+@pytest.mark.asyncio
+async def test_remove_reaction_by_reaction_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.remove_reaction_impl("om_abc", reaction_id="re1", user_key="ou_me")
+    req = cap.request
+    assert req.http_method.name == "DELETE"
+    assert req.uri == "/open-apis/im/v1/messages/:message_id/reactions/:reaction_id"
+    assert req.paths == {"message_id": "om_abc", "reaction_id": "re1"}
+    # Feishu's delete response can echo nothing; the ids we know must survive that
+    assert result["removed"] is True
+    assert result["reaction_id"] == "re1"
+    assert result["message_id"] == "om_abc"
+
+
+@pytest.mark.asyncio
+async def test_remove_reaction_resolves_reaction_id_from_emoji(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[Any] = []
+
+    async def _fake_invoke(request: Any, **k: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        calls.append(req)
+        if req.http_method.name == "GET":
+            return {
+                "ok": True,
+                "code": 0,
+                "msg": "",
+                "data": {"items": [{"reaction_id": "re7", "reaction_type": {"emoji_type": "THUMBSUP"}}]},
+            }
+        return {"ok": True, "code": 0, "msg": "", "data": {}}
+
+    monkeypatch.setattr(_impl, "_invoke", _fake_invoke)
+    # The same argument that added a reaction removes it — no id to carry around
+    result = await _impl.remove_reaction_impl("om_abc", emoji_type="赞")
+    assert [c.http_method.name for c in calls] == ["GET", "DELETE"]
+    assert calls[1].paths["reaction_id"] == "re7"
+    assert result["removed"] is True
+
+
+@pytest.mark.asyncio
+async def test_remove_reaction_refuses_when_ambiguous_or_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    two = [
+        {"reaction_id": "re1", "reaction_type": {"emoji_type": "THUMBSUP"}, "operator": {"operator_id": "ou_a"}},
+        {"reaction_id": "re2", "reaction_type": {"emoji_type": "THUMBSUP"}, "operator": {"operator_id": "ou_b"}},
+    ]
+
+    async def _listing(items: list[Any]) -> Any:
+        async def _fake(request: Any, **k: Any) -> dict[str, Any]:
+            req = request() if callable(request) else request
+            assert req.http_method.name == "GET", "must not delete when resolution is unclear"
+            return {"ok": True, "code": 0, "msg": "", "data": {"items": items}}
+
+        return _fake
+
+    monkeypatch.setattr(_impl, "_invoke", await _listing(two))
+    ambiguous = await _impl.remove_reaction_impl("om_abc", emoji_type="THUMBSUP")
+    assert ambiguous["ok"] is False
+    assert ambiguous["code"] == "reaction_ambiguous"
+    assert [c["reaction_id"] for c in ambiguous["candidates"]] == ["re1", "re2"]
+
+    monkeypatch.setattr(_impl, "_invoke", await _listing([]))
+    missing = await _impl.remove_reaction_impl("om_abc", emoji_type="THUMBSUP")
+    assert missing["code"] == "reaction_not_found"
+
+
+@pytest.mark.asyncio
+async def test_remove_reaction_needs_emoji_or_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.remove_reaction_impl("om_abc")
+    assert result["ok"] is False
+    assert "either reaction_id, or emoji_type" in result["message"]
+    assert cap.request is None
+
+
+@pytest.mark.asyncio
+async def test_reaction_tools_return_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = importlib.import_module("feishu_message")
+    monkeypatch.setattr(_impl, "_invoke", _CapturedInvoke({"reaction_id": "re1"}))
+    assert json.loads(await mod.feishu_message_react("om_1", "赞"))["reaction_id"] == "re1"
+    monkeypatch.setattr(_impl, "_invoke", _CapturedInvoke({"items": []}))
+    assert json.loads(await mod.feishu_message_reactions("om_1"))["count"] == 0
+    monkeypatch.setattr(_impl, "_invoke", _CapturedInvoke({}))
+    assert json.loads(await mod.feishu_message_unreact("om_1", reaction_id="re1"))["removed"] is True
+
+
 def test_im_tools_are_async_with_docstrings() -> None:
     chat_mod = importlib.import_module("feishu_chat")
     msg_mod = importlib.import_module("feishu_message")
@@ -449,6 +765,16 @@ def test_im_tools_are_async_with_docstrings() -> None:
         msg_mod.feishu_message_reply,
         msg_mod.feishu_message_recall,
         msg_mod.feishu_message_list,
+        msg_mod.feishu_message_edit,
+        msg_mod.feishu_message_edit_card,
+        msg_mod.feishu_message_react,
+        msg_mod.feishu_message_unreact,
+        msg_mod.feishu_message_reactions,
+        msg_mod.feishu_message_send_image,
+        msg_mod.feishu_message_send_file,
+        msg_mod.feishu_message_send_audio,
+        msg_mod.feishu_message_send_video,
+        msg_mod.feishu_message_send_post,
     ]
     for fn in fns:
         assert inspect.iscoroutinefunction(fn), fn.__name__
@@ -1406,7 +1732,10 @@ async def test_auth_start_prefers_automatic_receive(monkeypatch: pytest.MonkeyPa
     result = await _impl.auth_start_impl("")
     assert result["auto_receive"] is True
     assert result["mode"] == "gateway"
-    assert result["next_step"] == "feishu_auth_wait"
+    # 自动通道下要把 agent 引到非阻塞的 check, 且明说本轮收尾 —— 发链接那轮阻塞等待会
+    # 占住 Session 的 turn 锁, 用户这期间说什么都排队。
+    assert "feishu_auth_check" in result["next_step"]
+    assert "feishu_auth_wait" not in result["next_step"]
     q = parse_qs(urlparse(result["authorize_url"]).query)
     assert q["redirect_uri"] == ["https://gw.example.com/oauth/callback"]
     # 自动路径的提示里不能再出现「从地址栏复制」的指令
@@ -1612,7 +1941,10 @@ async def test_auth_wait_timeout_is_retryable(monkeypatch: pytest.MonkeyPatch, t
     result = await _impl.auth_wait_impl("", 10)
     assert result["ok"] is False
     assert result["timed_out"] is True
-    assert "feishu_auth_wait" in result["message"]
+    # 超时必须把 agent 引到非阻塞的 check 上, 而不是「再等一轮」—— 后者会一直占着
+    # Session 的 turn 锁, 用户看到的就是机器人卡死不回话。
+    assert "feishu_auth_check" in result["message"]
+    assert "feishu_auth_check" in result["retry_hint"]
 
 
 @pytest.mark.asyncio
@@ -1630,8 +1962,107 @@ async def test_auth_wait_surfaces_user_denial(monkeypatch: pytest.MonkeyPatch, t
     assert "access_denied" in result["message"]
 
 
-def _auth_card_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Any, mode: str = "gateway") -> dict[str, Any]:
-    """Configure an app + a receiver channel, and capture what gets sent."""
+@pytest.mark.asyncio
+async def test_auth_check_completes_when_code_already_arrived(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """取件箱里已经有码时, check 直接完成授权 —— 与 wait 走同一条通道。"""
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps({"state": "st", "mode": "gateway"}), encoding="utf-8")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
+
+    async def _has_code(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
+        return {"code": "ARRIVED"}
+
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _has_code)
+    completed: dict[str, Any] = {}
+
+    async def _fake_complete(code: str, user_key: str = "") -> dict[str, Any]:
+        completed["code"] = code
+        return {"ok": True}
+
+    monkeypatch.setattr(_impl, "auth_complete_impl", _fake_complete)
+    result = await _impl.auth_check_impl("")
+    assert result["ok"] is True
+    assert completed["code"] == "ARRIVED"
+
+
+@pytest.mark.asyncio
+async def test_auth_check_does_not_block_when_code_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """码还没到时 check 立刻返回 pending, 且只用极短窗口取件 —— 它不占 turn 锁的根据。"""
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps({"state": "st", "mode": "gateway"}), encoding="utf-8")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
+    seen: dict[str, float] = {}
+
+    async def _no_code(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
+        seen["timeout"] = timeout_seconds
+        return {}
+
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _no_code)
+    result = await _impl.auth_check_impl("")
+    assert result["ok"] is False
+    assert result["pending"] is True
+    # 不是失败, 也不能把用户往「手抄 code」上引。
+    assert "feishu_auth_check" in result["retry_hint"]
+    assert seen["timeout"] <= _impl._CHECK_TIMEOUT_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_auth_check_without_pending_asks_for_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "missing.json"))
+    result = await _impl.auth_check_impl("")
+    assert result["ok"] is False
+    assert "feishu_auth_request" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_auth_check_manual_mode_says_so(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """manual 环境没有自动通道, check 也得如实说, 别让 agent 以为再查一次就有。"""
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps({"state": "st", "mode": "manual"}), encoding="utf-8")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
+    result = await _impl.auth_check_impl("")
+    assert result["ok"] is False
+    assert result["manual_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_auth_check_surfaces_user_denial(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps({"state": "st", "mode": "gateway"}), encoding="utf-8")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
+
+    async def _denied(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
+        return {"error": "access_denied"}
+
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _denied)
+    result = await _impl.auth_check_impl("")
+    assert result["ok"] is False
+    assert "access_denied" in result["message"]
+
+
+@pytest.mark.parametrize(
+    ("uri", "private"),
+    [
+        ("http://192.168.60.214:8090/oauth/callback", True),
+        ("http://10.0.0.5:8090/oauth/callback", True),
+        ("http://172.16.3.9/oauth/callback", True),
+        ("http://127.0.0.1:17860/oauth/callback", True),
+        ("http://localhost:17860/oauth/callback", True),
+        ("https://haitun.example.com/oauth/callback", False),
+        # 注意别拿 203.0.113.x (TEST-NET-3) 当公网样本: 文档保留段在 ipaddress 里
+        # 也算 is_private, 会把这个用例变成假失败。
+        ("https://8.8.8.8/oauth/callback", False),
+        ("", False),
+    ],
+)
+def test_is_private_callback_classifies_reachability(uri: str, private: bool) -> None:
+    """内网回调地址必须被认出来 —— 外网用户的浏览器跳不到那里, 自动回流不成立。"""
+    assert _impl._oauth_rx.is_private_callback(uri) is private
+
+
+@pytest.mark.asyncio
+async def test_auth_start_flags_private_callback(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """回调地址是内网 IP 时, 仍走自动通道, 但要交出「贴整条网址」这条后路。"""
     monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
     monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "pending.json"))
@@ -1640,8 +2071,92 @@ def _auth_card_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Any, mode: str = "
         _impl._oauth_rx,
         "plan_receiver",
         lambda explicit="": _impl._oauth_rx.ReceiverPlan(
+            mode="gateway", redirect_uri="http://192.168.60.214:8090/oauth/callback"
+        ),
+    )
+    result = await _impl.auth_start_impl("", "ou_a")
+    assert result["ok"] is True
+    # 自动通道不能因为地址是内网就被取消: 内网用户照样免复制。
+    assert result["auto_receive"] is True
+    assert result["callback_is_private"] is True
+    assert "feishu_auth_complete" in result["fallback_hint"]
+
+
+@pytest.mark.asyncio
+async def test_auth_start_public_callback_has_no_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """公网回调地址不该挂那段手工提示 —— 那是内网专属的补丁。"""
+    monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "pending.json"))
+    monkeypatch.setattr(_impl, "_granted_scopes_path", lambda: str(tmp_path / "granted.json"))
+    monkeypatch.setattr(
+        _impl._oauth_rx,
+        "plan_receiver",
+        lambda explicit="": _impl._oauth_rx.ReceiverPlan(
+            mode="gateway", redirect_uri="https://haitun.example.com/oauth/callback"
+        ),
+    )
+    result = await _impl.auth_start_impl("", "ou_a")
+    assert result["ok"] is True
+    assert "callback_is_private" not in result
+    assert "fallback_hint" not in result
+
+
+@pytest.mark.asyncio
+async def test_auth_wait_timeout_offers_url_paste_when_private(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """内网回调超时不能只叫「再等一轮」: 外网用户再等也不会有回调, 得给另一条出路。"""
+    pending = tmp_path / "pending.json"
+    pending.write_text(
+        json.dumps(
+            {
+                "state": "st",
+                "mode": "gateway",
+                "redirect_uri": "http://192.168.60.214:8090/oauth/callback",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
+
+    async def _no_code(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _no_code)
+    result = await _impl.auth_wait_impl("", 10)
+    assert result["ok"] is False
+    assert result["timed_out"] is True
+    assert result["callback_is_private"] is True
+    # 先再等一轮的建议要保留 (取件箱还有 TTL), 同时给出贴网址的出路。
+    assert "feishu_auth_wait" in result["message"]
+    assert "整条网址" in result["message"]
+    assert "feishu_auth_complete" in result["retry_hint"]
+
+
+@pytest.mark.asyncio
+async def test_auth_complete_accepts_full_callback_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """用户贴回来的是整条网址而不是 code —— 必须能直接用。"""
+    assert _impl._extract_code("http://192.168.60.214:8090/oauth/callback?code=abc123&state=st") == "abc123"
+    assert _impl._extract_code("  abc123  ") == "abc123"
+
+
+def _auth_card_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    mode: str = "gateway",
+    redirect_uri: str = "",
+) -> dict[str, Any]:
+    """Configure an app + a receiver channel, and capture what gets sent."""
+    monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "pending.json"))
+    monkeypatch.setattr(_impl, "_granted_scopes_path", lambda: str(tmp_path / "granted.json"))
+    default_redirect = "https://gw.example.com/oauth/callback" if mode == "gateway" else "http://localhost/"
+    monkeypatch.setattr(
+        _impl._oauth_rx,
+        "plan_receiver",
+        lambda explicit="": _impl._oauth_rx.ReceiverPlan(
             mode=mode,
-            redirect_uri="https://gw.example.com/oauth/callback" if mode == "gateway" else "http://localhost/",
+            redirect_uri=redirect_uri or default_redirect,
         ),
     )
     captured: dict[str, Any] = {}
@@ -1670,6 +2185,36 @@ def _auth_card_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Any, mode: str = "
 
 def _card_button(card: dict[str, Any]) -> dict[str, Any]:
     return next(e for e in card["body"]["elements"] if e.get("tag") == "button")
+
+
+@pytest.mark.asyncio
+async def test_auth_card_carries_private_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """卡片按钮 open_url 打开的是同一个内网 redirect, 所以第 1 级也得带后路。"""
+    _auth_card_env(monkeypatch, tmp_path, redirect_uri="http://192.168.60.214:8090/oauth/callback")
+    result = await _impl.auth_card_impl("ou_a", "docx_write", "写文档", "ou_a")
+    assert result["ok"] is True
+    assert result["callback_is_private"] is True
+    assert "feishu_auth_complete" in result["fallback_hint"]
+
+
+@pytest.mark.asyncio
+async def test_auth_card_public_callback_has_no_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """公网回调时卡片不该多挂那段内网提示。"""
+    _auth_card_env(monkeypatch, tmp_path)
+    result = await _impl.auth_card_impl("ou_a", "docx_write", "写文档", "ou_a")
+    assert result["ok"] is True
+    assert "callback_is_private" not in result
+    assert "fallback_hint" not in result
+
+
+@pytest.mark.asyncio
+async def test_auth_request_tier_card_mentions_private_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """走到第 1 级时, next_step 也要写明外网用户该怎么办。"""
+    _auth_card_env(monkeypatch, tmp_path, redirect_uri="http://192.168.60.214:8090/oauth/callback")
+    result = await _impl.auth_request_impl("ou_a", "docx_write", "写文档", "ou_a")
+    assert result["tier"] == _impl.TIER_CARD
+    assert result["callback_is_private"] is True
+    assert "feishu_auth_complete" in result["next_step"]
 
 
 @pytest.mark.asyncio
@@ -1805,7 +2350,9 @@ async def test_auth_request_falls_back_to_link_without_copy(monkeypatch: pytest.
     assert result["authorize_url"]
     assert result["downgraded_from"] == _impl.TIER_CARD
     assert "ou_" in result["downgrade_reason"]  # says why, so the agent can be honest
-    assert "feishu_auth_wait" in result["next_step"]
+    # 第 2 级同样不许在发链接那轮阻塞: 收尾 + 下一轮 check。
+    assert "feishu_auth_check" in result["next_step"]
+    assert "feishu_auth_wait" not in result["next_step"]
     assert captured == {}  # no card was sent
 
 
@@ -4683,6 +5230,309 @@ async def test_append_doc_swimlane_rejects_bad_json() -> None:
     assert result["ok"] is False
 
 
+# ── Embedded spreadsheets / bitables inside a doc (block_type 30 / 18) ─────────
+
+
+def test_split_embedded_sheet_token_takes_first_underscore() -> None:
+    assert _impl.split_embedded_sheet_token("LGCes_pY34sT") == ("LGCes", "pY34sT")
+    # Splitting from the right would mangle a container token containing an underscore.
+    assert _impl.split_embedded_sheet_token("has_under_child") == ("has", "under_child")
+
+
+def test_split_embedded_sheet_token_rejects_halfless_input() -> None:
+    for bad in ("", "  ", "nounderscore", "_tail", "head_"):
+        assert _impl.split_embedded_sheet_token(bad) == ("", ""), bad
+
+
+def test_column_letter_wraps_past_z() -> None:
+    assert (_impl._column_letter(1), _impl._column_letter(26)) == ("A", "Z")
+    assert (_impl._column_letter(27), _impl._column_letter(52)) == ("AA", "AZ")
+    assert _impl._column_letter(0) == "A"  # never emits an empty range
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_creates_block_and_returns_write_coordinates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _CapturedInvoke(
+        {"children": [{"block_id": "doxcnSheet", "block_type": 30, "sheet": {"token": "shtTok_pY34sT"}}]}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.append_doc_sheet_impl("doc1", rows=4, columns=3)
+    assert result["ok"] is True
+    req = cap.request
+    assert req.uri == "/open-apis/docx/v1/documents/:document_id/blocks/:block_id/children"
+    assert req.body["children"][0] == {"block_type": 30, "sheet": {"row_size": 4, "column_size": 3}}
+    # The split token is the whole point: these are what feishu_sheet_write takes.
+    assert result["spreadsheet_token"] == "shtTok"
+    assert result["sheet_id"] == "pY34sT"
+    assert result["range"] == "pY34sT!A1"
+    assert result["block_id"] == "doxcnSheet"
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_clamps_creation_and_grows_by_writing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Creation is capped at 9x9 by Feishu; the write is what delivers the asked-for size.
+
+    Sending row_size 12 would fail the whole call with 99992402, so the block is created
+    clamped and the ranged write (which does grow the worksheet) covers the real grid.
+    """
+    calls: list[Any] = []
+
+    async def fake_invoke(request: Any, **kwargs: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        calls.append(req)
+        return {
+            "ok": True,
+            "data": {"children": [{"block_id": "b1", "block_type": 30, "sheet": {"token": "shtTok_s1"}}]},
+        }
+
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    rows = json.dumps([[f"r{i}", i, "x"] for i in range(12)])
+    result = await _impl.append_doc_sheet_impl("doc1", values_json=rows, header_row=False)
+    assert result["ok"] is True
+    assert result["values_written"] is True
+    created = calls[0].body["children"][0]["sheet"]
+    assert created == {"row_size": 9, "column_size": 3}
+    # The result reports the size the reader ends up seeing, not the clamped block.
+    assert (result["rows"], result["columns"]) == (12, 3)
+    # Second call is the values write, aimed at the embedded worksheet.
+    assert calls[1].uri == "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values"
+    assert calls[1].paths["spreadsheet_token"] == "shtTok"
+    # A bare "s1!A1" is accepted by Feishu but writes nothing, so the range spans the grid.
+    assert calls[1].body["valueRange"]["range"] == "s1!A1:C12"
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_never_creates_a_block_over_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Any requested size, data or not, must leave creation within 9x9."""
+    seen: list[dict[str, Any]] = []
+
+    async def fake_invoke(request: Any, **kwargs: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        if "docx" in req.uri:
+            seen.append(req.body["children"][0]["sheet"])
+        return {
+            "ok": True,
+            "data": {"children": [{"block_id": "b1", "block_type": 30, "sheet": {"token": "tok_s1"}}]},
+        }
+
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    await _impl.append_doc_sheet_impl("doc1", rows=200, columns=40)
+    await _impl.append_doc_sheet_impl("doc1", rows=10, columns=5)
+    await _impl.append_doc_sheet_impl("doc1", values_json=json.dumps([[1] * 30] * 60))
+    assert seen == [
+        {"row_size": 9, "column_size": 9},
+        {"row_size": 9, "column_size": 5},
+        {"row_size": 9, "column_size": 9},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_lets_the_data_decide_the_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A 4-column table must not be padded out to the default 5 with a stray empty column."""
+    calls: list[Any] = []
+
+    async def fake_invoke(request: Any, **kwargs: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        calls.append(req)
+        return {
+            "ok": True,
+            "data": {"children": [{"block_id": "b1", "block_type": 30, "sheet": {"token": "tok_s1"}}]},
+        }
+
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    grid = json.dumps([["a", "b", "c", "d"], [1, 2, 3, 4]])
+    result = await _impl.append_doc_sheet_impl("doc1", values_json=grid, header_row=False)
+    assert (result["rows"], result["columns"]) == (2, 4)
+    assert calls[1].body["valueRange"]["range"] == "s1!A1:D2"
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_grows_an_empty_sheet_with_blanks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Asking for 20 empty rows to type into must not silently yield 9."""
+    calls: list[Any] = []
+
+    async def fake_invoke(request: Any, **kwargs: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        calls.append(req)
+        return {
+            "ok": True,
+            "data": {"children": [{"block_id": "b1", "block_type": 30, "sheet": {"token": "tok_s1"}}]},
+        }
+
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    result = await _impl.append_doc_sheet_impl("doc1", rows=20, columns=6)
+    assert result["ok"] is True
+    assert (result["rows"], result["columns"]) == (20, 6)
+    assert "values_written" not in result  # nothing was written *as data*
+    grow = calls[1]
+    assert grow.body["valueRange"]["range"] == "s1!A1:F20"
+    values = grow.body["valueRange"]["values"]
+    assert len(values) == 20
+    assert values[0] == [None] * 6  # blank cells, not placeholder text
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_within_the_cap_makes_one_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A small empty sheet needs no growing write — don't spend a request on it."""
+    calls: list[Any] = []
+
+    async def fake_invoke(request: Any, **kwargs: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        calls.append(req)
+        return {
+            "ok": True,
+            "data": {"children": [{"block_id": "b1", "block_type": 30, "sheet": {"token": "tok_s1"}}]},
+        }
+
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    result = await _impl.append_doc_sheet_impl("doc1", rows=5, columns=4)
+    assert result["ok"] is True
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_bolds_header_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[Any] = []
+
+    async def fake_invoke(request: Any, **kwargs: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        seen.append(req)
+        return {
+            "ok": True,
+            "data": {"children": [{"block_id": "b1", "block_type": 30, "sheet": {"token": "tok_s1"}}]},
+        }
+
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    result = await _impl.append_doc_sheet_impl("doc1", values_json='[["姓名","评分"],["张三",95]]', header_row=True)
+    assert result["ok"] is True
+    assert result["header_styled"] is True
+    style_req = seen[-1]
+    assert style_req.uri == "/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/style"
+    assert style_req.body["appendStyle"]["range"] == "s1!A1:B1"
+    assert style_req.body["appendStyle"]["style"]["font"]["bold"] is True
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_keeps_coordinates_when_the_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The embed exists once created — dropping its token would orphan an empty sheet."""
+
+    async def fake_invoke(request: Any, **kwargs: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        if "docx" in req.uri:
+            return {
+                "ok": True,
+                "data": {"children": [{"block_id": "b1", "block_type": 30, "sheet": {"token": "tok_s1"}}]},
+            }
+        return {"ok": False, "message": "no permission", "need_auth": True}
+
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    result = await _impl.append_doc_sheet_impl("doc1", values_json='[["a"]]')
+    assert result["ok"] is False
+    assert result["values_written"] is False
+    assert result["need_auth"] is True
+    assert (result["spreadsheet_token"], result["sheet_id"]) == ("tok", "s1")
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_validates_input() -> None:
+    assert (await _impl.append_doc_sheet_impl(""))["ok"] is False
+    assert (await _impl.append_doc_sheet_impl("doc1", rows=0))["ok"] is False
+    assert (await _impl.append_doc_sheet_impl("doc1", rows=99999))["ok"] is False
+    bad_values = await _impl.append_doc_sheet_impl("doc1", values_json="not json")
+    assert bad_values["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_reports_unsplittable_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"children": [{"block_id": "b1", "block_type": 30, "sheet": {"token": "nounderscore"}}]})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.append_doc_sheet_impl("doc1", values_json='[["a"]]')
+    assert result["ok"] is False
+    assert "could not be split" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_append_doc_bitable_returns_app_and_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"children": [{"block_id": "doxcnBt", "block_type": 18, "bitable": {"token": "appTok_tblXYZ"}}]}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.append_doc_bitable_impl("doc1")
+    assert result["ok"] is True
+    # An empty bitable object is rejected by Feishu (1770001), so view_type is explicit.
+    assert cap.request.body["children"][0] == {"block_type": 18, "bitable": {"view_type": 1}}
+    assert result["app_token"] == "appTok"
+    assert result["table_id"] == "tblXYZ"
+
+
+@pytest.mark.asyncio
+async def test_append_doc_sheet_writes_caption_above(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_caption(
+        document_id: str, caption: str, auto_number: bool, user_key: str, identity: str
+    ) -> tuple[str, dict[str, Any]]:
+        return f"表 3：{caption}", {"caption_number": 3}  # noqa: RUF001
+
+    order: list[str] = []
+
+    async def fake_append_content(document_id: str, content: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        order.append(content)
+        return {"ok": True, "added": 1}
+
+    async def fake_invoke(request: Any, **kwargs: Any) -> dict[str, Any]:
+        order.append("sheet-block")
+        return {
+            "ok": True,
+            "data": {"children": [{"block_id": "b1", "block_type": 30, "sheet": {"token": "tok_s1"}}]},
+        }
+
+    monkeypatch.setattr(_impl, "_resolve_table_caption", fake_caption)
+    monkeypatch.setattr(_impl, "append_doc_content_impl", fake_append_content)
+    monkeypatch.setattr(_impl, "_invoke", fake_invoke)
+    # Within the 9x9 creation cap, so the only calls are the caption and the block itself.
+    result = await _impl.append_doc_sheet_impl("doc1", rows=5, columns=3, caption="客户明细")
+    assert result["ok"] is True
+    assert result["caption_number"] == 3
+    assert order == ["表 3：客户明细", "sheet-block"]  # noqa: RUF001 — caption first, above the sheet
+
+
+@pytest.mark.asyncio
+async def test_list_doc_blocks_surfaces_embedded_coordinates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Editing an *existing* embed is only possible if listing gives back its token."""
+    cap = _CapturedInvoke(
+        {
+            "items": [
+                {"block_id": "p1", "block_type": 2, "text": {"elements": [{"text_run": {"content": "hi"}}]}},
+                {"block_id": "s1", "block_type": 30, "sheet": {"token": "shtTok_wsA"}},
+                {"block_id": "b1", "block_type": 18, "bitable": {"token": "appTok_tbl1"}},
+            ],
+            "page_token": "",
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_doc_blocks_impl("doc1", 50)
+    assert result["ok"] is True
+    by_id = {b["block_id"]: b for b in result["blocks"]}
+    assert by_id["s1"]["type_name"] == "sheet"
+    assert by_id["s1"]["spreadsheet_token"] == "shtTok"
+    assert by_id["s1"]["range"] == "wsA!A1"
+    assert by_id["b1"]["type_name"] == "bitable"
+    assert (by_id["b1"]["app_token"], by_id["b1"]["table_id"]) == ("appTok", "tbl1")
+    # A plain paragraph gains no embed keys.
+    assert "spreadsheet_token" not in by_id["p1"]
+
+
+def test_embedded_sheet_tools_are_async_with_docstrings() -> None:
+    mod = importlib.import_module("feishu_doc")
+    for name in ("feishu_doc_append_sheet", "feishu_doc_append_bitable"):
+        fn = getattr(mod, name)
+        assert inspect.iscoroutinefunction(fn), name
+        assert (inspect.getdoc(fn) or "").strip(), f"{name} needs a docstring"
+
+
 def test_create_tools_are_async_with_docstrings() -> None:
     doc_mod = importlib.import_module("feishu_doc")
     wiki_mod = importlib.import_module("feishu_wiki")
@@ -5879,3 +6729,294 @@ async def test_block_editing_tools_return_json(monkeypatch: pytest.MonkeyPatch) 
     assert json.loads(await doc_mod.feishu_doc_list_blocks("doc1"))["ok"] is True
     monkeypatch.setattr(_impl, "_invoke", _CapturedInvoke({}))
     assert json.loads(await doc_mod.feishu_doc_update_block("doc1", "b1", "new"))["ok"] is True
+
+
+# ── Rich media messages — image / file / audio / video / post ───────────────────
+
+
+class _MediaInvoke:
+    """Replace _invoke for a two-call media send: record every request, answer per path."""
+
+    def __init__(self, image_key: str = "img_v3_1", file_key: str = "file_v3_1") -> None:
+        self.requests: list[Any] = []
+        self._image_key = image_key
+        self._file_key = file_key
+
+    async def __call__(self, request: Any, **kwargs: Any) -> dict[str, Any]:
+        req = request() if callable(request) else request
+        self.requests.append(req)
+        uri = req.uri
+        if uri.endswith("/im/v1/images"):
+            data: dict[str, Any] = {"image_key": self._image_key}
+        elif uri.endswith("/im/v1/files"):
+            data = {"file_key": self._file_key}
+        else:
+            data = {"message_id": "om_new", "thread_id": "omt_new", "chat_id": "oc_1"}
+        return {"ok": True, "code": 0, "msg": "", "data": data}
+
+
+@pytest.mark.asyncio
+async def test_upload_image_puts_binary_in_body(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    f = tmp_path / "chart.png"
+    f.write_bytes(b"png-bytes")
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.upload_image_impl(str(f))
+    req = cap.requests[0]
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/im/v1/images"
+    assert req.body["image_type"] == "message"
+    # Same trap as drive uploads: the SDK overwrites req.files from the body right
+    # before sending, so the binary must be an io.IOBase *in the body* with a .name —
+    # otherwise the request goes out as JSON and Feishu says "boundary not found".
+    sent = req.body["image"]
+    assert isinstance(sent, io.IOBase)
+    assert sent.name == "chart.png"
+    assert sent.read() == b"png-bytes"
+    assert result == {"ok": True, "image_key": "img_v3_1", "file_name": "chart.png", "size": 9}
+
+
+@pytest.mark.asyncio
+async def test_upload_image_rejects_non_image_and_empty_and_oversize(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    doc = tmp_path / "notes.txt"
+    doc.write_bytes(b"hi")
+    assert "not an image" in (await _impl.upload_image_impl(str(doc)))["message"]
+    empty = tmp_path / "empty.png"
+    empty.write_bytes(b"")
+    assert "empty" in (await _impl.upload_image_impl(str(empty)))["message"]
+    assert "file not found" in (await _impl.upload_image_impl(str(tmp_path / "nope.png")))["message"]
+    big = tmp_path / "big.png"
+    big.write_bytes(b"x")
+    monkeypatch.setattr(_impl, "_IMAGE_UPLOAD_MAX_BYTES", 0)
+    assert "over the 0MB limit" in (await _impl.upload_image_impl(str(big)))["message"]
+
+
+@pytest.mark.asyncio
+async def test_upload_file_derives_file_type_from_suffix(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # file_type is Feishu's enum, not the extension: mapped where a mapping exists,
+    # "stream" for everything else (which is how a .zip/.csv attachment is sent).
+    for name, expected in (
+        ("a.mp4", "mp4"),
+        ("b.pdf", "pdf"),
+        ("c.docx", "doc"),
+        ("d.xlsx", "xls"),
+        ("e.zip", "stream"),
+    ):
+        f = tmp_path / name
+        f.write_bytes(b"bytes")
+        cap = _MediaInvoke()
+        monkeypatch.setattr(_impl, "_invoke", cap)
+        result = await _impl.upload_file_impl(str(f))
+        req = cap.requests[0]
+        assert req.uri == "/open-apis/im/v1/files"
+        assert req.body["file_type"] == expected, name
+        assert req.body["file_name"] == name
+        assert isinstance(req.body["file"], io.IOBase)
+        assert "duration" not in req.body  # only sent when a real length is given
+        assert result["file_key"] == "file_v3_1"
+        assert result["file_type"] == expected
+
+
+@pytest.mark.asyncio
+async def test_upload_file_passes_duration_and_rejects_bad_type(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    f = tmp_path / "voice.opus"
+    f.write_bytes(b"opus")
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.upload_file_impl(str(f), duration_ms=3200)
+    assert cap.requests[0].body["duration"] == 3200
+    bad = await _impl.upload_file_impl(str(f), file_type="mp3")
+    assert bad["ok"] is False
+    assert "file_type must be one of" in bad["message"]
+
+
+@pytest.mark.asyncio
+async def test_send_image_message_uploads_then_sends(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    f = tmp_path / "shot.png"
+    f.write_bytes(b"png")
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.send_media_message_impl("oc_1", str(f), "image")
+    assert [r.uri for r in cap.requests] == ["/open-apis/im/v1/images", "/open-apis/im/v1/messages"]
+    send = cap.requests[1]
+    assert send.body["msg_type"] == "image"
+    # A picture message carries image_key; using file_key here is Feishu error 230001
+    assert json.loads(send.body["content"]) == {"image_key": "img_v3_1"}
+    assert result["message_id"] == "om_new"
+    assert result["image_key"] == "img_v3_1"
+
+
+@pytest.mark.asyncio
+async def test_send_file_audio_video_use_file_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    for kind, name, forced in (
+        ("file", "report.pdf", "pdf"),
+        ("audio", "v.opus", "opus"),
+        ("media", "clip.mp4", "mp4"),
+    ):
+        f = tmp_path / name
+        f.write_bytes(b"bytes")
+        cap = _MediaInvoke()
+        monkeypatch.setattr(_impl, "_invoke", cap)
+        result = await _impl.send_media_message_impl("oc_1", str(f), kind)
+        assert [r.uri for r in cap.requests] == ["/open-apis/im/v1/files", "/open-apis/im/v1/messages"]
+        # audio/video force the enum Feishu requires rather than trusting the extension
+        assert cap.requests[0].body["file_type"] == forced, kind
+        send = cap.requests[1]
+        assert send.body["msg_type"] == kind
+        assert json.loads(send.body["content"]) == {"file_key": "file_v3_1"}
+        assert result["msg_type"] == kind
+
+
+@pytest.mark.asyncio
+async def test_send_video_uploads_cover_as_image(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"mp4")
+    cover = tmp_path / "cover.png"
+    cover.write_bytes(b"png")
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.send_media_message_impl("oc_1", str(video), "media", cover_image_path=str(cover))
+    assert [r.uri for r in cap.requests] == [
+        "/open-apis/im/v1/files",
+        "/open-apis/im/v1/images",
+        "/open-apis/im/v1/messages",
+    ]
+    assert json.loads(cap.requests[2].body["content"]) == {"file_key": "file_v3_1", "image_key": "img_v3_1"}
+    assert result["cover_image_key"] == "img_v3_1"
+
+
+@pytest.mark.asyncio
+async def test_send_video_survives_failed_cover(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"mp4")
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    # The video is uploaded and sendable; a cover that can't be read must not lose it
+    result = await _impl.send_media_message_impl("oc_1", str(video), "media", cover_image_path=str(tmp_path / "no.png"))
+    assert result["ok"] is True
+    assert json.loads(cap.requests[-1].body["content"]) == {"file_key": "file_v3_1"}
+    assert "cover_image_key" not in result
+
+
+@pytest.mark.asyncio
+async def test_send_media_infers_receive_id_type_and_rejects_bad_msg_type(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    f = tmp_path / "a.png"
+    f.write_bytes(b"png")
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.send_media_message_impl("ou_person", str(f), "image")
+    assert _qdict(cap.requests[1])["receive_id_type"] == "open_id"
+    bad = await _impl.send_media_message_impl("oc_1", str(f), "sticker")
+    assert bad["ok"] is False
+    assert "msg_type must be one of" in bad["message"]
+
+
+@pytest.mark.asyncio
+async def test_send_media_returns_upload_failure_without_sending(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.send_media_message_impl("oc_1", str(tmp_path / "gone.png"), "image")
+    assert result["ok"] is False
+    assert cap.requests == []  # nothing sent when there is nothing uploaded
+
+
+@pytest.mark.asyncio
+async def test_send_post_builds_paragraphs_and_uploads_images(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    img = tmp_path / "chart.png"
+    img.write_bytes(b"png")
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    blocks = [
+        {"tag": "text", "text": "本周进展", "style": ["bold"]},
+        {"tag": "at", "user_id": "ou_z"},
+        {"tag": "a", "text": "看板", "href": "https://example.com"},
+        {"tag": "img", "image_path": str(img)},
+        {"tag": "md", "text": "1. 一\n2. 二"},
+        {"tag": "hr"},
+    ]
+    result = await _impl.send_post_message_impl("oc_1", json.dumps(blocks), title="周报")
+    assert [r.uri for r in cap.requests] == ["/open-apis/im/v1/images", "/open-apis/im/v1/messages"]
+    send = cap.requests[1]
+    assert send.body["msg_type"] == "post"
+    post = json.loads(send.body["content"])["zh_cn"]
+    assert post["title"] == "周报"
+    # Feishu requires img/hr/md to occupy their own paragraph; adjacent text/link/mention
+    # nodes share one. Getting this wrong renders as a broken layout, so it is asserted.
+    assert post["content"] == [
+        [
+            {"tag": "text", "text": "本周进展", "style": ["bold"]},
+            {"tag": "at", "user_id": "ou_z"},
+            {"tag": "a", "text": "看板", "href": "https://example.com"},
+        ],
+        [{"tag": "img", "image_key": "img_v3_1"}],
+        [{"tag": "md", "text": "1. 一\n2. 二"}],
+        [{"tag": "hr"}],
+    ]
+    assert result["uploaded_image_keys"] == ["img_v3_1"]
+    assert result["blocks"] == 6
+
+
+@pytest.mark.asyncio
+async def test_send_post_accepts_existing_image_key_without_uploading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    blocks = [{"tag": "img", "image_key": "img_already"}]
+    result = await _impl.send_post_message_impl("oc_1", json.dumps(blocks))
+    assert [r.uri for r in cap.requests] == ["/open-apis/im/v1/messages"]
+    assert json.loads(cap.requests[0].body["content"])["zh_cn"]["content"] == [
+        [{"tag": "img", "image_key": "img_already"}]
+    ]
+    assert result["uploaded_image_keys"] == []
+
+
+@pytest.mark.asyncio
+async def test_send_post_reports_the_offending_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    cases = [
+        ("{oops", "not valid JSON"),
+        ("[]", "non-empty JSON array"),
+        ('[{"tag":"nope","text":"x"}]', "unsupported tag"),
+        ('[{"tag":"a","text":"x"}]', "needs href"),
+        ('[{"tag":"at"}]', "needs user_id"),
+        ('[{"tag":"img"}]', "needs image_path or image_key"),
+        ('[{"tag":"text"}]', "needs non-empty text"),
+        ("[1]", "not a JSON object"),
+    ]
+    for payload, needle in cases:
+        result = await _impl.send_post_message_impl("oc_1", payload)
+        assert result["ok"] is False, payload
+        assert needle in result["message"], payload
+    assert cap.requests == []  # a malformed block never becomes a half-sent message
+
+
+@pytest.mark.asyncio
+async def test_media_tools_return_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    mod = importlib.import_module("feishu_message")
+    png = tmp_path / "a.png"
+    png.write_bytes(b"png")
+    mp4 = tmp_path / "a.mp4"
+    mp4.write_bytes(b"mp4")
+    opus = tmp_path / "a.opus"
+    opus.write_bytes(b"opus")
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"pdf")
+    for call in (
+        mod.feishu_message_send_image("oc_1", str(png)),
+        mod.feishu_message_send_file("oc_1", str(pdf)),
+        mod.feishu_message_send_audio("oc_1", str(opus), duration_ms=1000),
+        mod.feishu_message_send_video("oc_1", str(mp4)),
+        mod.feishu_message_send_post("oc_1", '[{"tag":"text","text":"hi"}]'),
+    ):
+        monkeypatch.setattr(_impl, "_invoke", _MediaInvoke())
+        assert json.loads(await call)["message_id"] == "om_new"

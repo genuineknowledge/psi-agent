@@ -1,0 +1,5 @@
+name: haitun.hr.stage_changed
+source: haitun
+kind: synthetic
+description: >
+  人事三阶段切换：offer前/试用/转正。payload: open_id, from_stage, to_stage (external|probation|regular), optional tables_to_sync[], resume_ref. SOP-10。

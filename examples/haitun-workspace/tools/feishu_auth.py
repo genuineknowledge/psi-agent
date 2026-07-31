@@ -11,13 +11,23 @@ re-prompts.
 
 **Getting the code back** — the happy path asks the user for **no copy-pasting**:
 ``feishu_auth_start`` returns a browser URL to approve, and — when an automatic
-callback channel is available (``auto_receive=True``) — ``feishu_auth_wait``
-receives the authorization code by itself and finishes the exchange. The code comes
-back either through the Gateway's ``/oauth/callback`` relay (works when the user
-approves on a phone) or through a one-shot ``127.0.0.1`` listener (same machine
-only); see ``_oauth_receiver``. Only when neither channel is available does the old
-manual path apply: the user copies ``code=...`` out of the browser address bar and
-hands it to ``feishu_auth_complete``.
+callback channel is available (``auto_receive=True``) — the code arrives by itself and
+the exchange finishes without the user copying anything. The code comes back either
+through the Gateway's ``/oauth/callback`` relay (works when the user approves on a
+phone) or through a one-shot ``127.0.0.1`` listener (same machine only); see
+``_oauth_receiver``. Only when neither channel is available does the old manual path
+apply: the user copies ``code=...`` out of the browser address bar and hands it to
+``feishu_auth_complete``.
+
+**Collecting it without freezing the conversation** — two tools read that same relay,
+and picking the wrong one is what makes the bot look dead. ``feishu_auth_check`` looks
+once and returns; ``feishu_auth_wait`` blocks for minutes while holding the Session's
+turn lock, so everything the user says meanwhile just queues. Blocking is only right
+when the user is *at that moment* on the consent page — i.e. the
+``<feishu_card_action>`` turn immediately after a card tap. Everywhere else (after
+sending a ``link_auto`` link, or when the user reports back that they approved) finish
+the turn and use ``feishu_auth_check``. The relay holds the code for ~10 minutes, so
+collecting it a turn later loses nothing.
 
 **How to ask** — call ``feishu_auth_request`` and let it choose. There are three ways to
 ask, in descending order of how little the user has to do, and it returns the first one
@@ -68,8 +78,9 @@ async def feishu_auth_start(user_key: str = "", capabilities: str = "") -> str:
     """Begin Feishu user authorization for ONLY the permissions the task needs.
 
     Send ``authorize_url`` to the user and have them approve. If the result says
-    ``auto_receive=True``, do NOT ask them for any code — call ``feishu_auth_wait``
-    with the same ``user_key`` and the authorization completes on its own. Only if
+    ``auto_receive=True``, do NOT ask them for any code — finish your turn, ask them to
+    say a word once approved, and call ``feishu_auth_check`` with the same ``user_key``
+    in that later turn. Do not block the sending turn on ``feishu_auth_wait``. Only if
     ``auto_receive=False`` fall back to the manual path (user copies ``code=...``
     from the browser address bar into ``feishu_auth_complete``).
 
@@ -113,7 +124,10 @@ async def feishu_auth_request(
        whose ``dispatch.handler`` is ``feishu_auth_wait``, using the ``user_key`` from the
        callback value. Do not also send the link as text.
     2. ``tier="link_auto"`` — website authorization with **no code to copy**. Send the user
-       ``authorize_url``, then call ``feishu_auth_wait`` — the code returns by itself.
+       ``authorize_url`` and **finish your turn**, asking them to say a word once they have
+       approved. Check with ``feishu_auth_check`` in that later turn. Do not block in this
+       turn: the code keeps for ~10 minutes, so waiting buys nothing and costs the user
+       everything they try to say meanwhile.
     3. ``tier="link_manual"`` — website authorization that **does** need a copy. Send
        ``authorize_url``, then ask the user for the ``code=`` in their address bar (the full
        URL is fine too) and pass it to ``feishu_auth_complete``.
@@ -201,11 +215,12 @@ async def feishu_auth_wait(user_key: str = "", timeout_seconds: int = 480) -> st
 
     ``timed_out=True`` is NOT a failure and must not be reported to the user as one:
     the code stays retrievable in the Gateway relay for about 10 minutes, so a user
-    who approves later than the wait window still completes normally. Just call this
-    again with the same ``user_key``. On ``manual_required=True`` the environment has
-    no automatic channel — run ``feishu_auth_env_check`` to see what configuration is
-    missing, or fall back to ``feishu_auth_complete`` with a code the user copies from
-    the address bar.
+    who approves later than the wait window still completes normally. **Finish your turn
+    and use ``feishu_auth_check`` next turn** — do not call this again to keep waiting,
+    which holds the Session turn lock and queues everything the user says. On
+    ``manual_required=True`` the environment has no automatic channel — run
+    ``feishu_auth_env_check`` to see what configuration is missing, or fall back to
+    ``feishu_auth_complete`` with a code the user copies from the address bar.
 
     Args:
         user_key: The same open_id passed to ``feishu_auth_start``.
@@ -214,6 +229,27 @@ async def feishu_auth_wait(user_key: str = "", timeout_seconds: int = 480) -> st
             need to log into Feishu first, and only then approve.
     """
     return _f.dumps_result(await _f.auth_wait_impl(user_key, timeout_seconds))
+
+
+async def feishu_auth_check(user_key: str = "") -> str:
+    """Check whether the authorization code has arrived — returns at once, never blocks.
+
+    Use this instead of ``feishu_auth_wait`` whenever the user is not, at this very
+    moment, looking at the consent page: after sending a ``link_auto`` ``authorize_url``,
+    and in any turn where the user says they have approved. Same retrieval channel as
+    ``feishu_auth_wait``, but it looks once and returns, so it never holds the Session
+    turn lock. The code keeps in the Gateway relay for about 10 minutes, which is what
+    makes checking later safe — nobody has to sit and wait for it.
+
+    ``pending=True`` means the code is not there yet and is **not** a failure: finish your
+    turn, ask the user to say a word once they have approved, and check again then. Only
+    ``feishu_auth_wait`` should still be used in the ``<feishu_card_action>`` turn right
+    after a card tap, where the user genuinely is on the consent page.
+
+    Args:
+        user_key: The same open_id passed to ``feishu_auth_request`` / ``feishu_auth_start``.
+    """
+    return _f.dumps_result(await _f.auth_check_impl(user_key))
 
 
 async def feishu_auth_complete(code: str, user_key: str = "") -> str:

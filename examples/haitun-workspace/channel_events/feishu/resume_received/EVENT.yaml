@@ -1,0 +1,5 @@
+name: haitun.hr.resume_received
+source: haitun
+kind: synthetic
+description: >
+  收到新简历待审阅填表。payload: resume_id, source (docx|file|local), optional candidate_name, bitable_ref, file_ref. SOP-9。

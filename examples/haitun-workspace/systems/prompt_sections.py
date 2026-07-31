@@ -436,9 +436,21 @@ SKILLS_HEADER_TEMPLATE = """\
 ## Skills
 Scan <available_skills>. If one clearly applies, read its SKILL.md with `{read_tool}`, then follow it.
 **Before recommending 3+ products, brands, or parallel options, read `skills/structured-output-tables/SKILL.md`.**
+**Before `skill_manage(create)`:** read `skills/skill-authoring-when/SKILL.md` — always `list` first; if a similar skill exists, `patch` it (do not create a parallel skill). How to write: `skills/skill-authoring-how/SKILL.md`. This gate applies before self-evolution too.
 If several apply, choose the most specific. If none clearly apply, read none.
 One skill up front max. Never guess/fabricate skill paths.
 External API writes: batch when safe, avoid tight loops, respect 429/Retry-After.\
+"""
+
+SKILL_AUTHORING_SECTION = """\
+## Skill authoring (prefer update)
+When the user supplies reusable rules (scoring, SOP, interview prefs, domain procedure) or you would save a new skill:
+1. Read `skills/skill-authoring-when/SKILL.md` (and `skill-authoring-how` when writing).
+2. `skill_manage(action="list")` — mandatory before create.
+3. Same domain already covered → `view` + `patch` that skill (e.g. resume rules → `feishu-resume-review`).
+4. Create only when nothing similar exists and reuse value is clear.
+5. Never raw-write under `skills/`; never stack parallel skills for one domain.
+Self-evolution / background review must follow the same order: list → patch preferred → create last.\
 """
 
 # ---------------------------------------------------------------------------

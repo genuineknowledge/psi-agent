@@ -48,6 +48,9 @@ async def _atomic_write(path: anyio.Path, content: str) -> None:
     await path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / f"{path.name}.tmp"
     await tmp.write_text(content, encoding="utf-8")
+    # Windows: Path.rename fails when the destination already exists.
+    if await path.exists():
+        await path.unlink()
     await tmp.rename(path)
 
 
@@ -58,7 +61,12 @@ async def skill_manage(
     category: str = "general",
     description: str = "",
 ) -> str:
-    """Create, patch, view, or list workspace skills.
+    """Create, patch, view, or list agent-package skills.
+
+    Before ``create``, always ``list`` (and ``view`` candidates): if a similar
+    skill exists, ``patch`` it instead. See skills ``skill-authoring-when`` /
+    ``skill-authoring-how``. ``patch`` is allowed when ``created_by: agent`` or
+    ``agent_editable: true``.
 
     Args:
         action: One of "list", "view", "create", or "patch".
@@ -134,8 +142,18 @@ async def skill_manage(
 
         raw = await skill_md.read_text(encoding="utf-8", errors="replace")
         frontmatter, _body = _parse_frontmatter(raw)
-        if frontmatter.get("created_by") != "agent":
-            return f"[Error] Skill {skill_name!r} is user-authored or unmanaged; patch is read-only."
+        # Bundled base skills may set agent_editable: true so user rules merge via patch
+        # instead of spawning parallel skills (see skill-authoring-when).
+        editable = frontmatter.get("created_by") == "agent" or frontmatter.get("agent_editable", "").lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        if not editable:
+            return (
+                f"[Error] Skill {skill_name!r} is not agent-editable; "
+                "patch requires created_by=agent or agent_editable=true."
+            )
 
         frontmatter["updated_at"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         lines = ["---", *(f"{key}: {value}" for key, value in frontmatter.items()), "---"]

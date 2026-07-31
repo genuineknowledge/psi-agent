@@ -1,0 +1,5 @@
+name: haitun.task.overdue
+source: haitun
+kind: synthetic
+description: >
+  To-do 逾期或定期巡检发现未达标。payload: task_id, owner_open_id, title, optional due_at, severity. SOP-2。

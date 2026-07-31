@@ -125,6 +125,75 @@ async def _await_maybe(value: object) -> object:
     return value
 
 
+def _validate_retry_parameters(
+    *,
+    max_attempts: int,
+    initial_delay: float,
+    backoff_factor: float,
+    max_delay: float,
+) -> None:
+    """Validate the policy shared by traced and graph-owned retry callers."""
+
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
+        raise ValueError("max_attempts must be a positive integer")
+    for name, value in (
+        ("initial_delay", initial_delay),
+        ("backoff_factor", backoff_factor),
+        ("max_delay", max_delay),
+    ):
+        if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+            raise ValueError(f"{name} must be a finite number")
+    if initial_delay < 0 or max_delay < 0:
+        raise ValueError("retry delays must be non-negative")
+    if backoff_factor <= 0:
+        raise ValueError("backoff_factor must be positive")
+
+
+async def _retry_operation[T](
+    operation: Callable[[int], Awaitable[T]],
+    *,
+    max_attempts: int = 3,
+    initial_delay: float = 0.2,
+    backoff_factor: float = 2.0,
+    max_delay: float = 8.0,
+    should_retry: Callable[[Exception, int], Awaitable[bool] | bool] | None = None,
+    on_retry: Callable[[Exception, int], Awaitable[object] | object] | None = None,
+) -> tuple[T, int]:
+    """Run one retryable operation without requiring a ``RunContext``.
+
+    The attempt number is passed to ``operation`` so callers can build a fresh
+    lease, timeout scope, or dispatch context for every try.  Cancellation is a
+    ``BaseException`` in AnyIO and therefore escapes without being retried.
+    """
+
+    _validate_retry_parameters(
+        max_attempts=max_attempts,
+        initial_delay=initial_delay,
+        backoff_factor=backoff_factor,
+        max_delay=max_delay,
+    )
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await operation(attempt), attempt
+        except Exception as error:
+            retryable = True
+            if should_retry is not None:
+                retryable = _ensure_bool(
+                    await _await_maybe(should_retry(error, attempt)),
+                    label="should_retry",
+                )
+            if attempt >= max_attempts or not retryable:
+                raise
+            if on_retry is not None:
+                await _await_maybe(on_retry(error, attempt))
+            delay = min(
+                initial_delay * backoff_factor ** (attempt - 1),
+                max_delay,
+            )
+            await anyio.sleep(delay)
+    raise AssertionError("retry operation completed without a result")
+
+
 def _preview(value: object) -> str:
     """生成长度受限的 trace 摘要。"""
 
@@ -159,6 +228,8 @@ def _config_payload(config: AgentConfig) -> dict[str, object]:
         "tools": sorted(config.tools),
         "max_turns": config.max_turns,
         "context_schema": list(config.context_schema or ()),
+        "api_base": config.api_base,
+        "reasoning_effort": config.reasoning_effort,
     }
 
 
@@ -399,61 +470,143 @@ async def _run_parallel_tasks[T](
     *,
     join: str,
     required: int,
+    max_concurrency: int | None = None,
 ) -> tuple[list[T], tuple[int, ...]]:
-    """并发运行任务, 按 join 策略聚合结果与选中输入索引。"""
+    """并发运行任务, 可限制启动窗口, 并按 join 策略聚合结果。"""
 
-    # 事件依次为输入索引、成功标志和结果或异常。
-    send_stream, receive_stream = anyio.create_memory_object_stream[tuple[int, bool, object]](
-        len(tasks),
-    )
+    if max_concurrency is not None and (
+        isinstance(max_concurrency, bool) or not isinstance(max_concurrency, int) or max_concurrency < 1
+    ):
+        raise ValueError("max_concurrency must be a positive integer or None")
+    task_count = len(tasks)
+    concurrency = task_count if max_concurrency is None else min(max_concurrency, task_count)
+
+    # 事件依次为输入索引、状态和结果或异常。None 表示由本 helper 主动取消。
+    send_stream, receive_stream = anyio.create_memory_object_stream[tuple[int, bool | None, object]](concurrency)
 
     async def worker(
         index: int,
         task: Callable[[], Awaitable[T]],
         sender: Any,
+        cancel_scope: anyio.CancelScope,
     ) -> None:
         """执行一个任务, 并将其成功值或异常发送给汇聚端。"""
 
         async with sender:
-            try:
-                value = await task()
-            except Exception as error:
-                await sender.send((index, False, error))
-            else:
-                await sender.send((index, True, value))
+            with cancel_scope:
+                try:
+                    payload: object = await task()
+                except BaseException as error:
+                    status = (
+                        None
+                        if cancel_scope.cancel_called and isinstance(error, anyio.get_cancelled_exc_class())
+                        else False
+                    )
+                    payload = error
+                else:
+                    status = True
+            # A cancelled task must still report settlement. The channel is
+            # sized to the active window, so cleanup cannot block indefinitely
+            # even when the parent itself is being cancelled.
+            with anyio.CancelScope(shield=True):
+                await sender.send((index, status, payload))
 
     results: dict[int, T] = {}
     completed: list[T] = []
     selected_indexes: list[int] = []
-    failure: Exception | None = None
-    async with receive_stream, anyio.create_task_group() as task_group:
-        for index, task in enumerate(tasks):
-            task_group.start_soon(worker, index, task, send_stream.clone())
-        await send_stream.aclose()
+    failures: list[BaseException] = []
+    async with send_stream, receive_stream, anyio.create_task_group() as task_group:
+        next_index = 0
+        running = 0
+        worker_scopes: dict[int, anyio.CancelScope] = {}
 
-        expected = len(tasks) if join == "all" else required
-        while len(completed) < expected:
-            index, ok, payload = await receive_stream.receive()
-            if not ok:
-                failure = cast("Exception", payload)
-                task_group.cancel_scope.cancel()
-                break
-            value = cast("T", payload)
-            if join == "all":
-                results[index] = value
-                completed.append(value)
-            else:
-                # first/any 的结果按完成顺序保留, 而不是按输入索引重排。
-                selected_indexes.append(index)
-                completed.append(value)
-        if join != "all" or failure is not None:
-            # 已满足 first/any, 或观察到失败后不再等待同组任务。
-            task_group.cancel_scope.cancel()
+        def start_available() -> None:
+            """Fill the configured task window without expanding the whole source."""
 
-    if failure is not None:
-        raise failure
+            nonlocal next_index, running
+            while next_index < task_count and running < concurrency:
+                cancel_scope = anyio.CancelScope()
+                worker_scopes[next_index] = cancel_scope
+                task_group.start_soon(
+                    worker,
+                    next_index,
+                    tasks[next_index],
+                    send_stream.clone(),
+                    cancel_scope,
+                )
+                next_index += 1
+                running += 1
+
+        def cancel_running() -> None:
+            """Cancel only tasks in the active bounded window."""
+
+            for cancel_scope in worker_scopes.values():
+                cancel_scope.cancel()
+
+        start_available()
+
+        expected = task_count if join == "all" else required
+        stopping = False
+        try:
+            while True:
+                if stopping:
+                    if running == 0:
+                        break
+                elif len(completed) >= expected:
+                    if join == "all":
+                        break
+                    stopping = True
+                    cancel_running()
+                    continue
+
+                index, status, payload = await receive_stream.receive()
+                running -= 1
+                worker_scopes.pop(index, None)
+                if status is False:
+                    failures.append(cast("BaseException", payload))
+                    if not stopping:
+                        stopping = True
+                        cancel_running()
+                    continue
+                if status is None or stopping:
+                    continue
+
+                value = cast("T", payload)
+                if join == "all":
+                    results[index] = value
+                    completed.append(value)
+                    start_available()
+                else:
+                    # first/any 的结果按完成顺序保留, 而不是按输入索引重排。
+                    selected_indexes.append(index)
+                    completed.append(value)
+                    if len(completed) < expected:
+                        start_available()
+        except BaseException as parent_error:
+            # External timeout/cancellation also has to settle the active
+            # window. Otherwise a sibling's finally/lease-release exception
+            # would be hidden behind the parent's cancellation exception.
+            cancel_running()
+            with anyio.CancelScope(shield=True):
+                while running:
+                    index, status, payload = await receive_stream.receive()
+                    running -= 1
+                    worker_scopes.pop(index, None)
+                    if status is False:
+                        failures.append(cast("BaseException", payload))
+            if failures:
+                raise BaseExceptionGroup(
+                    "parallel task cancellation failures",
+                    [parent_error, *failures],
+                ) from None
+            raise
+
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("parallel task failures", failures)
     if join == "all":
-        return [results[index] for index in range(len(tasks))], ()
+        return [results[index] for index in range(task_count)], ()
     return completed, tuple(selected_indexes)
 
 
@@ -1338,19 +1491,12 @@ class Flow:
         ``flow.session(...)`` 已创建出的单次 coroutine, 因为重试时无法再次调用它。
         """
 
-        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts < 1:
-            raise ValueError("max_attempts must be a positive integer")
-        for name, value in (
-            ("initial_delay", initial_delay),
-            ("backoff_factor", backoff_factor),
-            ("max_delay", max_delay),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-                raise ValueError(f"{name} must be a finite number")
-        if initial_delay < 0 or max_delay < 0:
-            raise ValueError("retry delays must be non-negative")
-        if backoff_factor <= 0:
-            raise ValueError("backoff_factor must be positive")
+        _validate_retry_parameters(
+            max_attempts=max_attempts,
+            initial_delay=initial_delay,
+            backoff_factor=backoff_factor,
+            max_delay=max_delay,
+        )
         run = current_run_context()
         async with run._trace(
             "retry",
@@ -1362,36 +1508,37 @@ class Flow:
                 "error_trail": [],
             },
         ) as trace:
-            attempts = 0
-            while True:
-                attempts += 1
-                trace.metadata["attempts"] = attempts
+
+            async def traced_operation(attempt: int) -> T:
+                """Record one public Flow attempt before delegating its body."""
+
+                trace.metadata["attempts"] = attempt
                 try:
-                    value = await operation()
-                # AnyIO 取消异常继承 BaseException; 不能把取消误当成可重试失败。
+                    return await operation()
                 except Exception as error:
                     error_trail = cast("list[str]", trace.metadata["error_trail"])
-                    error_trail.append(f"attempt {attempts}: {error}")
-                    retryable = True
-                    if should_retry is not None:
-                        retryable = _ensure_bool(
-                            await _await_maybe(should_retry(error, attempts)),
-                            label="should_retry",
-                        )
-                    if attempts >= max_attempts or not retryable:
-                        raise
-                    logger.warning(
-                        f"FusionFlow retry attempt {attempts}/{max_attempts} failed: {error}",
-                    )
-                    delay = min(
-                        initial_delay * backoff_factor ** (attempts - 1),
-                        max_delay,
-                    )
-                    await anyio.sleep(delay)
-                else:
-                    trace.metadata["succeeded"] = True
-                    trace.output_summary = _preview(value)
-                    return value
+                    error_trail.append(f"attempt {attempt}: {error}")
+                    raise
+
+            def warn_retry(error: Exception, attempt: int) -> None:
+                """Keep the public compatibility warning at each actual retry."""
+
+                logger.warning(
+                    f"FusionFlow retry attempt {attempt}/{max_attempts} failed: {error}",
+                )
+
+            value, _ = await _retry_operation(
+                traced_operation,
+                max_attempts=max_attempts,
+                initial_delay=initial_delay,
+                backoff_factor=backoff_factor,
+                max_delay=max_delay,
+                should_retry=should_retry,
+                on_retry=warn_retry,
+            )
+            trace.metadata["succeeded"] = True
+            trace.output_summary = _preview(value)
+            return value
 
     async def evaluate_static(
         self,

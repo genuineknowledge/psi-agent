@@ -1,0 +1,5 @@
+name: haitun.hr.handbook_ack_required
+source: haitun
+kind: synthetic
+description: >
+  员工手册待学习/待确认（入职或周期复核）。payload: open_id, optional name, due_at, evidence_kind (sign|video|ack), handbook_ref. SOP-3。

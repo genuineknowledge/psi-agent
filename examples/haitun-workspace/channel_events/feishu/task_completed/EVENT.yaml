@@ -1,0 +1,8 @@
+# Generic custom (synthetic) event — not a Feishu platform push.
+name: haitun.task.completed
+source: haitun
+kind: synthetic
+description: >
+  任务/待办完成。payload: task_id (str), title (str), optional session_id,
+  actor_open_id, status (completed|cancelled). 由 workspace todo/goal 工具或
+  produce 轮询状态后 emit；默认 produce 空转，接口先占位。

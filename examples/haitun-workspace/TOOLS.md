@@ -114,7 +114,7 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
 | 优先级 | `tier` | 用户要做什么 | 你接下来做什么 |
 | --- | --- | --- | --- |
 | 1 | `card` | 点一下卡片按钮 | **这一轮立刻收尾**，等回调那轮再 `feishu_auth_wait` |
-| 2 | `link_auto` | 打开链接点「同意」，**不用复制 code** | 发 `authorize_url`，紧接着 `feishu_auth_wait` |
+| 2 | `link_auto` | 打开链接点「同意」，**不用复制 code** | 发 `authorize_url`，**这一轮收尾**，用户回话那轮再 `feishu_auth_check` |
 | 3 | `link_manual` | 打开链接点「同意」，**还要复制 code** | 发 `authorize_url`，再拿 code 调 `feishu_auth_complete` |
 
 降级原因写在返回的 `downgraded_from` / `downgrade_reason` 里：**如实告诉用户**为什么用了更麻烦的
@@ -141,9 +141,10 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
 
 **第 2、3 级的细节**：把返回的 `authorize_url` **原样发给用户**，让其打开并点「同意授权」，然后
 
-- `tier=link_auto`：**不要向用户索要任何 code**。直接调 `feishu_auth_wait(user_key=...)`
-  等待——用户点完「同意授权」后浏览器会看到「授权成功」页，授权码自动回流并完成授权。
-  返回 `timed_out=True` 时可以再调一次继续等；
+- `tier=link_auto`：**不要向用户索要任何 code**，也**别在发链接这一轮调 `feishu_auth_wait` 干等**。
+  发完链接就收尾，顺带请用户点完「同意授权」后回你一句（他会看到「授权成功」页）；用户回话那一轮调
+  `feishu_auth_check(user_key=...)` 查一眼即可完成授权。返回 `pending=True` 只是还没点完，不是失败，
+  再收尾一轮等他回话即可——授权码在取件箱里留存约 10 分钟，晚一轮取毫无损失；
 - `tier=link_manual`：才需要**明确告诉用户**看浏览器地址栏，地址形如
   `http://localhost/?code=xxxxxxxx&state=...`，把 `code=` 后面、`&` 之前那一串复制回来
   （整段网址也行），然后调 `feishu_auth_complete(code, user_key=...)`。
@@ -185,6 +186,19 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
   `document_id`，也就是 `feishu_doc_create` 返回的 id，或 wiki 节点的 `obj_token`；带 `user_key`）：
   - 表格：`feishu_doc_append_table(document_id, rows_json, header_row, column_width_json, user_key, caption)`——
     `rows_json` 是二维 JSON 数组，如 `[["姓名","部门"],["张三","研发"]]`，会生成飞书原生表格块。
+  - **可编辑的内嵌电子表格**：`feishu_doc_append_sheet(document_id, rows, columns, values_json, header_row, user_key, caption)`——
+    在文档里嵌一张**真正的飞书电子表格**（block_type 30，飞书自动新建后端表格），带公式栏、
+    单元格格式、筛选，能在文档里直接编辑，也能单独打开。返回 `spreadsheet_token` / `sheet_id` /
+    `range`，正是 `feishu_sheet_write` / `_append` / `_format` 要的参数，之后可反复写。
+    `values_json` 给了就一次建好并填数（`=` 开头的格子是活公式），尺寸按数据自己定；
+    不给就是一张空表，`rows`/`columns` 要多大就多大（飞书**建块**时限死 9x9，工具会自动
+    先建小再靠写入撑到你要的尺寸，所以要 30 行就真给 30 行）。
+    **和上面 `append_table` 怎么选**：内容是「数据」（要公式、会反复更新、要筛选排序、想当独立
+    表格用）→ 用 `append_sheet`；内容是「排成格子的文字」（一小段对照说明，读起来是正文的一部分）
+    → 用 `append_table`。`append_table` 的表格块只装文字，**没有公式也不能筛选**。
+  - **内嵌多维表格**：`feishu_doc_append_bitable(document_id, view_type, user_key, caption)`——
+    内容是「一条条记录」（台账、问题列表、报名表：要字段类型、多视图、逐行协作）时用它，
+    返回 `app_token` / `table_id`，接着用 `feishu_bitable_create_field` / `_create_record` 建字段填数据。
   - 流程图：`feishu_doc_append_flowchart(document_id, steps_json, title, user_key, caption)`——
     `steps_json` 是步骤数组 `["提交","审批","归档"]`。**飞书开放接口画不了真正的流程图块**
     （block_type 21 是空画布，API 填不进节点），所以用「单列表格 + ↓ 箭头」如实呈现，可编辑。
@@ -200,6 +214,10 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     `{block_id, block_type, type_name, parent_id, text, editable_text}`。**这是拿到 `block_id`
     的唯一途径**，另两个工具都按 `block_id` 定位。`text` 是 200 字预览（要读全文仍用
     `feishu_doc_read`）；`editable_text=false` 表示该块（图片/表格/分割线）没有文字可改。
+    碰到**内嵌的电子表格块**（`type_name="sheet"`）还会多返回 `spreadsheet_token`/`sheet_id`/
+    `range`，内嵌多维表格块（`type_name="bitable"`）多返回 `app_token`/`table_id`——
+    **要改文档里已有的内嵌表格就靠这个**：先列块拿到这些坐标，再用 `feishu_sheet_write` 等写。
+    （这类块本身没有文字，`update_block` 改不了它，内容都在它背后那张表里。）
   - 改一段：`feishu_doc_update_block(document_id, block_id, text)`——只换文字，块的 id 和类型
     都保留（标题还是标题、项目符号还是项目符号）。注意 `text` 是**整段替换而非追加**，要传该块
     完整的新内容。文档根块（其 id 就等于 `document_id`）没有文字，工具会直接拒绝。
@@ -380,7 +398,7 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     机器人**自己发的消息随时能撤**；撤**别人**的消息要求操作身份是该群群主/管理员，否则飞书报 230026，
     此时传群主的 `user_key` 并让其授权才行。撤回还有**时限**（企业管理员配置），超时报 230009。
     这两类失败工具都会在结果里带一句 `hint` 说明卡在哪，**如实转告用户**，别反复重试或谎称已撤回。
-    撤回不是编辑：内容写错就"撤回旧的 + 重发一条新的"。
+    撤回是"让这条消息不该存在"；只是**内容写错**就别撤回重发，用下面第 20 条的编辑。
 19. **改多维表格里已有的格子（改状态/改错的值/补空格，不是新增一行）**：用户说"把张三那行状态改成
     已完成""金额写错了改成 12000""把这几行都标记成已归档"时，**别用 `feishu_bitable_create_record`**
     （那会多出一行重复数据），按三步改：
@@ -404,3 +422,46 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     公式/查找引用/创建时间/自动编号是**计算列，写不进去**，用户要改这些得改它依赖的列。
     两个工具默认 `validate_fields=True` 会先核列名、写完再比对飞书回显，发现没落值就在结果里给
     `dropped_fields` + `warning`——**看到这个别报"已改好"**，如实说哪几个值没写进去。
+20. **改已经发出去的消息（不撤回、不重发）**：用户说"把刚才那条改成…""数字写错了改一下"
+    "补一句"时，用 `feishu_message_edit(message_id=<om_...>, text=<改好的完整内容>, user_key=<sender_open_id>)`。
+    消息**保留原 message_id**、保留在会话/话题里的位置，飞书只标一个"已编辑"——比"撤回+重发"好：
+    重发会丢 message_id（引用它的回复和话题会断），还会给所有人推一条"撤回了一条消息"。
+    编辑是**整条替换**，所以要传改好的**全文**，不是差量；`<at user_id="ou_xxx"></at>` 照样能用
+    （会自动改用富文本发，@才渲染得出来）。
+    卡片消息用 `feishu_message_edit_card(message_id, card_json)`（不同接口）——审批卡片改成"已通过"、
+    按钮置灰、看板刷新都用它，别再发一张新卡片把旧的留在那儿还能点。注意卡片的**按钮回调不会重新注册**
+    （回调在发送时就快照好、首次点击即消耗），所以它改的是卡片**显示什么**，不是按钮**触发什么**；
+    可选动作本身要变就得用 `feishu_message_send_card` 发新卡片。
+    三条硬限制，答复用户前先知道：**只有发送者能编辑**（机器人只能改自己发的；要改某人自己发的消息，
+    传该用户的 `user_key` 并让其授权）、一条消息最多编辑 **20 次**、超过企业管理员配置的**可编辑时限**就只能撤回重发。
+    图片/文件/音频/视频消息**不能编辑**，只能撤回重发。失败时结果里带 `hint` 指明卡在哪，如实转告。
+21. **给消息加表情回应（收到/已处理，不占一条消息）**：用户说"收到就行""给这条点个赞"
+    "标记一下已处理"时，用 `feishu_message_react(message_id=<om_...>, emoji_type=<表情>)`——回应落在原气泡上，
+    **不往会话里加消息**，而回一句"好的"会。取消用
+    `feishu_message_unreact(message_id, emoji_type=<同一个表情>)`（也可传 `reaction_id`）；
+    看谁回应了什么用 `feishu_message_reactions(message_id)`（也是拿 `reaction_id` 的地方，可当轻量点名/投票读）。
+    `emoji_type` 传飞书键（`THUMBSUP`/`OK`/`DONE`/`OnIt`/`THANKS`/`Fire`/`PARTY`）、中文（`赞`/`收到`/`完成`/`感谢`）
+    或表情本身（`👍`/`✅`/`🎉`）都行，工具会归一化——**飞书这套枚举大小写不统一**（`THUMBSUP` 全大写但
+    `Fire`/`OnIt` 首字母大写），照字面猜十次错九次，报 231001。
+    只有**加回应的那个身份**能取消它，所以取消时传当初加回应用的同一个 `user_key`；
+    同一个表情被多人加过时工具**不猜**，返回 candidates 让你挑 `reaction_id`。
+22. **发图片/文件/语音/视频/富文本消息（不只是纯文本和卡片）**：
+    - `feishu_message_send_image(receive_id, image_path)`——把**本机图片**发成图片消息（图表、截图、照片）。
+      纯文本里放个 URL 只是个链接，云盘文件也不是聊天附件，只有这个能在会话里真的显示一张图。≤10MB。
+    - `feishu_message_send_file(receive_id, file_path, file_name="")`——发成可下载附件（PDF/Word/Excel/PPT/zip/任意）。
+      ≤30MB；要的是"放云盘、发链接、可协作编辑"就用 `feishu_drive_upload` 而不是这个。
+    - `feishu_message_send_audio(receive_id, audio_path, duration_ms=0)`——发成可播放语音。飞书只认
+      **OPUS**，.mp3 当语音发直接报 230055，先转（`ffmpeg -i in.mp3 -acodec libopus -ac 1 -ar 16000 out.opus`）
+      或者干脆用 `send_file` 当附件发。`text_to_speech` 产出的是 MP3，要发语音得先转。
+    - `feishu_message_send_video(receive_id, video_path, cover_image_path="")`——发成可播放视频，只支持 **mp4**、≤30MB；
+      不传封面就没有预览帧（封面上传失败不会连视频一起丢，会照发无封面版）。
+    - `feishu_message_send_post(receive_id, blocks_json, title="")`——**富文本**：加粗文字、链接、@、图片
+      装在**同一个气泡**里（带标题的周报、图表配解说、带链接和@的清单）。比卡片省事（不用拼卡片 JSON、
+      不用接回调），比发好几条消息干净。`blocks_json` 是块数组，`tag` 可为
+      `text`（可带 `style`: bold/italic/underline/lineThrough）/`a`(`href`)/`at`(`user_id`，`"all"` 是全员)/
+      `img`（本机图给 `image_path` 自动上传，或直接给已有 `image_key`）/`code_block`(可带 `language`)/`md`/`hr`，
+      分段规则（图片、分割线、markdown 各自独占一行，相邻文字/链接/@合并成一行）工具已经替你处理好。
+    这几个工具都是**上传 + 发送两步一起做**的，所以不会把 `image_key` 和 `file_key` 搞混
+    （图片走 `im/v1/images` 得 `image_key`，音视频文件走 `im/v1/files` 得 `file_key`，用反了报 230001）。
+    要给用户**发一个你刚生成的本地文件**、又不关心细节，最省事的仍是在回复里输出 `[SEND:<绝对路径>]`（第 14 条）；
+    这几个工具用在**指定发给谁、指定发成哪种消息类型**（比如把图表发到某个群、把视频带封面发给某人）的时候。

@@ -1,0 +1,7 @@
+name: haitun.blocker.raised
+source: haitun
+kind: synthetic
+description: >
+  阻塞项出现、需要找人。payload: blocker_id (str), summary (str), optional
+  owner_open_id, reporter_open_id, severity (low|med|high), context_ref.
+  对接 blocker 路由 / 自助场景；默认 produce 空转。

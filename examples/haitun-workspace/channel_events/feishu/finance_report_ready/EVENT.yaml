@@ -1,0 +1,5 @@
+name: haitun.finance.report_ready
+source: haitun
+kind: synthetic
+description: >
+  财务报告/分析单/看板已生成待推送。payload: report_id, kind (expense|attendance|board), path_or_ref, optional audience_open_ids[]. SOP-4。

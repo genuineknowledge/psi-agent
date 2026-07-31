@@ -46,12 +46,16 @@ SKILLS_GUIDANCE = (
     "Only create a skill when the procedure has reuse value (future similar "
     "requests). One-shot reminders, one-off plans, and single comparisons are "
     "not skills — use schedule_manage / in-turn delivery instead. "
+    "Before any skill_manage(create): read skills/skill-authoring-when/SKILL.md, "
+    "skill_manage(list) first; if a similar skill exists (same domain), "
+    "skill_manage(patch) that skill — never spawn a parallel skill. "
+    "Bundled bases with agent_editable=true (e.g. feishu-resume-review) take "
+    "user scoring/interview rules via patch. Writing details: "
+    "skills/skill-authoring-how/SKILL.md. "
     "For Feishu「提醒我/定时发消息」, first read "
     "skills/feishu-schedule-message/SKILL.md, then ONE schedule_manage create with "
     "fire='tool' + tool='feishu_message_send' + tool_args JSON "
-    "(once_at rejects fire=prompt — do not create-then-patch). "
-    "When an agent-created skill is outdated or wrong, patch it with "
-    "skill_manage(action='patch')."
+    "(once_at rejects fire=prompt — do not create-then-patch)."
 )
 
 KANBAN_GUIDANCE = (

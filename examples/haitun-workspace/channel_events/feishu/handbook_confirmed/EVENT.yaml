@@ -1,0 +1,5 @@
+name: haitun.hr.handbook_confirmed
+source: haitun
+kind: synthetic
+description: >
+  员工手册已确认（签字/视频/ack 已落证）。payload: open_id, confirmed_at, evidence_ref, optional name. SOP-3。

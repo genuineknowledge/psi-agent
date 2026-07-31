@@ -1,0 +1,5 @@
+name: haitun.finance.attendance_review_needed
+source: haitun
+kind: synthetic
+description: >
+  假勤需自动审核或汇总推送。payload: period (YYYY-MM), optional department_id, anomaly_count, board_ref. SOP-4。

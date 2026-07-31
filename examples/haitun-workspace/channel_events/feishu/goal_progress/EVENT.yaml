@@ -1,0 +1,7 @@
+name: haitun.goal.progress
+source: haitun
+kind: synthetic
+description: >
+  高阶目标进度变化。payload: goal_slug (str), progress (0-100 int), optional
+  status (active|paused|achieved|abandoned), note (str), actor_open_id.
+  对接 goals/ + goal_progress 工具；默认 produce 空转。

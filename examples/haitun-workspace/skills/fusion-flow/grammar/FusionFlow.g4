@@ -206,7 +206,7 @@ stepOwnerOperator
  * Data, loop, and resource owner:
  *   consumes(Step) -> List                            [arity 1]
  *   produces(Step) -> List                            [arity 1]
- *   foreach_item(Step, List) -> Artifact              [arity 2]
+ *   foreach_item(Step, Artifact) -> Artifact          [arity 2]
  *   resource_requirement(Step, Resource) -> Integer   [arity 2]
  */
 dataResourceOperator
@@ -239,7 +239,9 @@ agentOwnerOperator
 /*
  * Constants are numbers, relative paths, restricted quoted IDs, or lowercase
  * identifiers. JSON-style quoted text is a separate atomic term and the Core
- * IR parser accepts it only where the catalog requires Instruction.
+ * IR parser accepts it only where the catalog requires Instruction or
+ * StepName. step_name(step) requires a readable JSON string directly; symbolic
+ * StepName constants are rejected by the Core IR parser.
  */
 constantName
     : NUMBER

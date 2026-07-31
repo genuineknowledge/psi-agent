@@ -22,6 +22,10 @@ _KNOWN_EVENTS = frozenset(
         "feishu.chat.member_added",
         "feishu.chat.member_removed",
         "feishu.im.message_received",
+        "feishu.hr.user_created",
+        "feishu.hr.identity_changed",
+        "haitun.hr.handbook_ack_required",
+        "haitun.hr.handbook_confirmed",
         "telegram.chat.member_joined",
     }
 )
@@ -31,6 +35,8 @@ _EVENT_TO_RAW: dict[str, str] = {
     "feishu.chat.member_added": "im.chat.member.user.added_v1",
     "feishu.chat.member_removed": "im.chat.member.user.deleted_v1",
     "feishu.im.message_received": "im.message.receive_v1",
+    "feishu.hr.user_created": "contact.user.created_v3",
+    "feishu.hr.identity_changed": "contact.user.updated_v3",
 }
 
 

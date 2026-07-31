@@ -1,0 +1,7 @@
+name: haitun.handoff.needed
+source: haitun
+kind: synthetic
+description: >
+  工作交接 / 代答需求。payload: owner_open_id (str), optional requester_open_id,
+  topic (str), reason (leave|busy|explicit), ledger_ref (str). 对接交接台账 /
+  请假场景；默认 produce 空转。

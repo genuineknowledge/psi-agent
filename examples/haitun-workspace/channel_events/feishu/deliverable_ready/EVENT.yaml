@@ -1,0 +1,6 @@
+name: haitun.deliverable.ready
+source: haitun
+kind: synthetic
+description: >
+  交付物就绪（可预览 / 入库）。payload: name (str), path (str), optional
+  session_id, mime, actor_open_id. 对接 [SEND:] / 宝箱交付；默认 produce 空转。

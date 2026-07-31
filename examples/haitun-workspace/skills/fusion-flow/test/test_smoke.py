@@ -193,8 +193,6 @@ async def test_agent_and_program_execute_as_one_checked_dag(tmp_path: Path) -> N
 const dispatch: Workflow;
 const analyze_step: Step;
 const program_step: Step;
-const analyze_name: StepName;
-const program_name: StepName;
 const analyst: Agent, Executor;
 const worker: Program, Executor;
 const request: Artifact;
@@ -204,12 +202,12 @@ const result: Artifact;
 workflow dispatch {
     input_workflow(dispatch) == [request];
     output_workflow(dispatch) == [result];
-    step_name(analyze_step) == analyze_name;
+    step_name(analyze_step) == "Analyze";
     step_instruction(analyze_step) == "Analyze the request.";
     step_executor(analyze_step) == analyst;
     consumes(analyze_step) == [request];
     produces(analyze_step) == [analysis];
-    step_name(program_step) == program_name;
+    step_name(program_step) == "Transform";
     step_instruction(program_step) == "Transform the analysis.";
     step_executor(program_step) == worker;
     program_path(worker) == "./bin/worker";

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 import os
 import socket
 from dataclasses import dataclass
@@ -58,6 +59,29 @@ def loopback_port() -> int:
     if raw.isdigit() and 1 <= int(raw) <= 65535:
         return int(raw)
     return _DEFAULT_LOOPBACK_PORT
+
+
+def is_private_callback(redirect_uri: str = "") -> bool:
+    """回调地址是不是只有内网/本机才打得到。
+
+    ``gateway`` 通道成立的前提是**用户的浏览器**能打开这个地址, 而配成内网 IP 时这个
+    前提只对在内网的人成立: 外网用户点完「同意授权」, 浏览器跳不过去, 回调永远到不了
+    取件箱 —— 而工具这边只看见「配了通道」, 便一直承诺「不用复制」, 两头落空。
+
+    判到私网并不改变通道选择 (内网用户照样自动回流), 只是让调用方知道要额外备一条
+    后路: 让用户把地址栏那整条 URL 贴回来, ``_extract_code`` 能直接从里面取 code。
+    """
+    host = (urlsplit(redirect_uri or callback_base()).hostname or "").strip().lower()
+    if not host:
+        return False
+    if host in ("localhost", "127.0.0.1", "::1") or host.endswith(".local"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        # 域名一律当作公网可达: 内网 DNS 名无从判断, 而误判成私网会让每次授权都
+        # 多挂一段没必要的手工提示。
+        return False
 
 
 def gateway_redirect_uri() -> str:

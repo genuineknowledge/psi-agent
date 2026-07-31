@@ -27,7 +27,7 @@ TriggerRegistry 匹配 triggers/ → fire
 
 加事件按需加目录；**不要**指望任意 NL「xx 事」永远可行。
 
-**后续开发对接（必读交付物）**：`docs/superpowers/specs/2026-07-29-channel-events-developer-guide.md` —— 有定事需求时默认在 `channel_events/` 反复注册事件。
+**后续开发对接（必读交付物）**：`docs/superpowers/specs/2026-07-29-channel-events-developer-guide.md` —— 有触发器需求时默认在 `channel_events/` 反复注册事件。
 
 ---
 

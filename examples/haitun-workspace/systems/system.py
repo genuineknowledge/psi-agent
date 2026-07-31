@@ -80,6 +80,7 @@ from prompt_sections import (
     SILENT_REPLIES_SECTION,
     SILENT_TOKEN,
     SESSION_MANAGEMENT_SECTION,
+    SKILL_AUTHORING_SECTION,
     SYSTEM_CLI_TOOLS_SECTION,
     STRUCTURED_TABLES_SECTION,
     TASK_PLANNING_SECTION,
@@ -1019,15 +1020,19 @@ Use them only when the task produces reusable knowledge or the user asks to main
 workspace. Never silently rewrite user-authored assets.
 
 Rules:
-1. Keep both `skills/fusion-flow/` and `skills/fusion-flow-legacy/` immutable.
-2. Treat skills without `created_by: agent` as read-only.
-3. New learned procedures -> `skills/<skill-name>/SKILL.md` via `skill_manage(action="create")`.
-4. Reusable Fusion Flow Next declarations ->
+1. Keep both `skills/fusion-flow/` and `skills/fusion-flow-legacy/` immutable - they are runtime
+   bundles, not generated skills.
+2. Treat skills without `created_by: agent` and without `agent_editable: true` as read-only.
+3. Before create: `skill_manage(list)` - if a similar domain skill exists, `patch` it (never create parallel skills).
+4. New learned procedures only when nothing similar exists -> `skill_manage(action="create")`.
+5. Reusable Fusion Flow Next declarations ->
    `flows/workflows/<slug>/<slug>.workflow` or
    `flows/workflows/<slug>/<slug>.g4` via workspace file tools
    (`.workflow` takes precedence when both exist).
    `flows/curated/<flow-name>/FLOW.md` via `flow_manage` remains a compatibility catalog.
-5. One-off task executions -> `flows/<task-slug>/`.
+6. One-off task executions -> `flows/<task-slug>/`.
+Follow `skills/skill-authoring-when` then `skill-authoring-how`
+(prefer update over create; do this before self-evolution invents a new skill).
 
 The following existing runtime and credential handoff remains available unchanged for the
 explicit legacy `.flow.ts` fallback:
@@ -1167,6 +1172,9 @@ this workspace, generated workflows, instruction files, or committed `.env` file
 
         if "todo" in tools:
             stable_parts += ["", TASK_PLANNING_SECTION]
+
+        if "skill_manage" in tools:
+            stable_parts += ["", SKILL_AUTHORING_SECTION]
 
         skills_section = build_skills_section(skills_xml)
         if skills_section:

@@ -1,10 +1,19 @@
-"""Feishu/Lark messaging tools — send, reply-in-thread, recall, and list messages.
+"""Feishu/Lark messaging tools — send, edit, react to, reply-in-thread, recall, and list messages.
 
 These let the bot proactively post to a group/user, form a native Feishu
 **thread** (topic) by replying in-thread, take back a message that shouldn't have
 been sent, and read the messages under a chat or thread. For example: post a topic
 root message, then read the thread's replies and post per-reply feedback back into
 the same thread.
+
+Beyond plain text, a message can carry an image, a file, a voice clip, a video, rich
+text or an interactive card — each with its own tool below, because the two-step
+upload dance and the ``image_key`` / ``file_key`` split are exactly what goes wrong
+when it's left to the caller.
+
+Fixing a sent message is ``feishu_message_edit`` (content changes in place, the
+``message_id`` survives), not recall-and-resend. Acknowledging one without adding to
+the conversation is ``feishu_message_react``.
 
 To @-mention someone, embed ``<at user_id="ou_xxx"></at>`` in the ``text`` (the
 value is the person's open_id). ``feishu_message_send`` auto-detects such tags and
@@ -227,6 +236,291 @@ async def feishu_message_recall(message_id: str, user_key: str = "") -> str:
             (tenant is always tried first regardless).
     """
     return _f.dumps_result(await _f.recall_message_impl(message_id, user_key))
+
+
+async def feishu_message_edit(message_id: str, text: str, user_key: str = "") -> str:
+    """Edit an **already-sent** message in place — no recall, no re-send.
+
+    Use this whenever a sent message's *content* was wrong ("把刚才那条改成…",
+    "数字写错了", "补一句"): the bubble keeps its ``message_id``, its position in the
+    chat and its thread, and Feishu just marks it 已编辑. Recall+resend loses the id
+    (breaking replies and threads that point at it) and shows everyone a
+    "撤回了一条消息" notice, so prefer editing and keep ``feishu_message_recall`` for
+    messages that should not exist at all.
+
+    Editing replaces the **whole** content, so pass the full corrected text, not a diff.
+    ``<at user_id="ou_xxx"></at>`` works here too (sent as rich text so the mention renders).
+
+    Only text and rich-text messages can be edited. An interactive card has its own tool
+    (``feishu_message_edit_card``); image/file/audio/video messages cannot be edited at
+    all and do have to be recalled and re-sent. Three limits are worth knowing before
+    promising the user anything: only the **sender** may edit (the bot can only edit its
+    own messages), a message can be edited **20 times** at most, and the tenant admin
+    configures how long a message stays editable. Each failure comes back with a ``hint``
+    naming the blocker — relay it instead of retrying or claiming success.
+
+    Args:
+        message_id: The message to edit (``om_...``) — from ``feishu_message_send``'s
+            return, ``<feishu_context>``, or a ``feishu_message_list`` item. A chat_id
+            (``oc_...``) / open_id (``ou_...``) is not a message id and is rejected.
+        text: The new full message text. May contain ``<at user_id="ou_xxx"></at>``.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to edit as
+            that user, which is what makes editing **their own** message possible;
+            empty uses the bot's tenant identity (tenant is always tried first).
+    """
+    return _f.dumps_result(await _f.edit_message_impl(message_id, text, user_key))
+
+
+async def feishu_message_edit_card(message_id: str, card_json: str, user_key: str = "") -> str:
+    """Update an already-sent **interactive card** in place, keeping its ``message_id``.
+
+    The card counterpart of ``feishu_message_edit`` (cards use a different endpoint).
+    Use it to reflect new state on a card the recipient already has — mark an approval
+    已通过, grey out buttons after a decision, refresh a dashboard — instead of sending a
+    second card that leaves the stale one clickable.
+
+    Pass the **whole** replacement card in ``card_json``, same formats as
+    ``feishu_message_send_card``. Its ``config.update_multi`` is set automatically for
+    legacy cards (without it Feishu updates the card for only one viewer).
+
+    The card's **callback context is not re-registered**: button handlers were
+    snapshotted when the card was sent and are consumed on first click. So this changes
+    what the card *shows*, not what its buttons dispatch — if the available actions must
+    change, send a new card with ``feishu_message_send_card``. Cards are updatable for
+    14 days and only by the identity that sent them.
+
+    Args:
+        message_id: The card message to update (``om_...``).
+        card_json: The full new Feishu card as a JSON object string.
+        user_key: The sender's open_id (from ``<feishu_context>``) as a fallback
+            identity; empty uses the bot's tenant identity.
+    """
+    return _f.dumps_result(await _f.edit_card_impl(message_id, card_json, user_key))
+
+
+async def feishu_message_react(message_id: str, emoji_type: str = "THUMBSUP", user_key: str = "") -> str:
+    """Add an emoji **reaction** to a message — acknowledge without sending a message.
+
+    The right answer to "收到就行"/"给这条点个赞"/"标记一下已处理": a reaction lands on
+    the existing bubble and adds nothing to the chat, where a "好的" message would.
+
+    ``emoji_type`` takes a Feishu key (``THUMBSUP``, ``OK``, ``DONE``, ``OnIt``,
+    ``THANKS``, ``Fire``, ``PARTY``), a Chinese word (``赞``, ``收到``, ``完成``,
+    ``感谢``) or the emoji itself (``👍``, ``✅``, ``🎉``) — all are mapped to the key
+    Feishu wants, whose casing is irregular (``THUMBSUP`` but ``Fire``, ``OnIt``) and
+    otherwise fails with 231001.
+
+    Returns a ``reaction_id``; ``feishu_message_unreact`` can also find it from the emoji.
+
+    Args:
+        message_id: The message to react to (``om_...``).
+        emoji_type: Which emoji (default ``THUMBSUP``).
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to react as
+            that person; empty reacts as the bot.
+    """
+    return _f.dumps_result(await _f.add_reaction_impl(message_id, emoji_type, user_key))
+
+
+async def feishu_message_unreact(
+    message_id: str, emoji_type: str = "", reaction_id: str = "", user_key: str = ""
+) -> str:
+    """Remove an emoji reaction from a message ("把那个赞取消").
+
+    Address it either by ``emoji_type`` (looked up on the message, so the same argument
+    that added it removes it) or by an exact ``reaction_id``. Only the identity that
+    added a reaction can remove it, so pass the same ``user_key`` used to add it.
+
+    If several people reacted with that emoji, nothing is deleted and the candidate
+    ``reaction_id``s are returned — pick one rather than having someone else's reaction
+    removed by guess.
+
+    Args:
+        message_id: The message to remove a reaction from (``om_...``).
+        emoji_type: The emoji to take back (``THUMBSUP`` / ``赞`` / ``👍``). Optional if
+            ``reaction_id`` is given.
+        reaction_id: The exact reaction to delete, from ``feishu_message_react`` or
+            ``feishu_message_reactions``.
+        user_key: The open_id whose reaction is being removed; empty means the bot's own.
+    """
+    return _f.dumps_result(await _f.remove_reaction_impl(message_id, emoji_type, reaction_id, user_key))
+
+
+async def feishu_message_reactions(
+    message_id: str, emoji_type: str = "", page_size: int = 50, page_token: str = "", user_key: str = ""
+) -> str:
+    """List a message's emoji reactions — who reacted with what.
+
+    Use it to read a lightweight poll or roll-call ("谁点了收到"), or to get the
+    ``reaction_id`` needed to remove a specific reaction.
+
+    Args:
+        message_id: The message to inspect (``om_...``).
+        emoji_type: Only list this emoji (optional; empty lists all).
+        page_size: Reactions per page (default 50, max 50).
+        page_token: Pagination cursor from a previous call's ``page_token``.
+        user_key: The sender's open_id as a fallback identity (optional).
+    """
+    return _f.dumps_result(await _f.list_reactions_impl(message_id, emoji_type, page_size, page_token, user_key))
+
+
+async def feishu_message_send_image(
+    receive_id: str, image_path: str, receive_id_type: str = "chat_id", user_key: str = ""
+) -> str:
+    """Send a local **image** as a picture message (uploads it first).
+
+    The one way to put a picture in a chat: a URL in a text message stays a link, and a
+    drive file is not a message attachment. Use it for charts you just rendered,
+    screenshots, or a photo the user asked to be forwarded.
+
+    Handles both halves (upload → send) so the ``image_key`` can't get crossed with a
+    file_key. Max 10MB; JPG/JPEG/PNG/WEBP/GIF/BMP/ICO/TIFF/HEIC.
+
+    Args:
+        receive_id: Target — chat_id (``oc_...``), open_id (``ou_...``), user_id,
+            union_id or email. Type is auto-detected from the prefix.
+        image_path: Local path to the picture.
+        receive_id_type: Only set explicitly for a bare user_id.
+        user_key: The sender's open_id as a fallback identity (optional).
+    """
+    return _f.dumps_result(
+        await _f.send_media_message_impl(receive_id, image_path, "image", receive_id_type, user_key=user_key)
+    )
+
+
+async def feishu_message_send_file(
+    receive_id: str,
+    file_path: str,
+    receive_id_type: str = "chat_id",
+    file_name: str = "",
+    user_key: str = "",
+) -> str:
+    """Send a local **file** as a chat attachment — PDF/Word/Excel/PPT/zip/anything.
+
+    The recipient gets a real downloadable attachment in the chat. For a file that
+    should live in the cloud drive instead (to be shared by link or edited), use
+    ``feishu_drive_upload``. Max 30MB.
+
+    Args:
+        receive_id: Target — chat_id, open_id, user_id, union_id or email.
+        file_path: Local path to the file.
+        receive_id_type: Only set explicitly for a bare user_id.
+        file_name: Display name in the chat (defaults to the file's own name).
+        user_key: The sender's open_id as a fallback identity (optional).
+    """
+    return _f.dumps_result(
+        await _f.send_media_message_impl(
+            receive_id, file_path, "file", receive_id_type, file_name=file_name, user_key=user_key
+        )
+    )
+
+
+async def feishu_message_send_audio(
+    receive_id: str,
+    audio_path: str,
+    receive_id_type: str = "chat_id",
+    duration_ms: int = 0,
+    user_key: str = "",
+) -> str:
+    """Send a local **audio** file as a playable voice message.
+
+    Feishu only plays ``audio`` messages that are genuinely **OPUS**; an .mp3 sent as
+    audio is rejected (230055). Convert first::
+
+        ffmpeg -i in.mp3 -acodec libopus -ac 1 -ar 16000 out.opus
+
+    — or send the .mp3 with ``feishu_message_send_file`` as a plain attachment. The
+    ``text_to_speech`` tool produces MP3, so it needs converting before it can be a
+    voice message.
+
+    Args:
+        receive_id: Target — chat_id, open_id, user_id, union_id or email.
+        audio_path: Local path to the .opus file.
+        receive_id_type: Only set explicitly for a bare user_id.
+        duration_ms: Length in milliseconds; shown next to the voice bubble when given.
+        user_key: The sender's open_id as a fallback identity (optional).
+    """
+    return _f.dumps_result(
+        await _f.send_media_message_impl(
+            receive_id, audio_path, "audio", receive_id_type, duration_ms=duration_ms, user_key=user_key
+        )
+    )
+
+
+async def feishu_message_send_video(
+    receive_id: str,
+    video_path: str,
+    receive_id_type: str = "chat_id",
+    cover_image_path: str = "",
+    duration_ms: int = 0,
+    user_key: str = "",
+) -> str:
+    """Send a local **video** (mp4) as a playable video message, optionally with a cover.
+
+    The video must be **mp4** (Feishu's only video type). Max 30MB — a larger one goes
+    to the drive via ``feishu_drive_upload`` and gets shared as a link instead.
+
+    Without ``cover_image_path`` the video shows no preview frame. If a cover is given
+    but its upload fails, the video is still sent (coverless) rather than lost.
+
+    Args:
+        receive_id: Target — chat_id, open_id, user_id, union_id or email.
+        video_path: Local path to the .mp4 file.
+        receive_id_type: Only set explicitly for a bare user_id.
+        cover_image_path: Local image used as the thumbnail (optional).
+        duration_ms: Length in milliseconds, shown on the video bubble.
+        user_key: The sender's open_id as a fallback identity (optional).
+    """
+    return _f.dumps_result(
+        await _f.send_media_message_impl(
+            receive_id,
+            video_path,
+            "media",
+            receive_id_type,
+            cover_image_path=cover_image_path,
+            duration_ms=duration_ms,
+            user_key=user_key,
+        )
+    )
+
+
+async def feishu_message_send_post(
+    receive_id: str,
+    blocks_json: str,
+    title: str = "",
+    receive_id_type: str = "chat_id",
+    user_key: str = "",
+) -> str:
+    """Send a **rich text** message: styled text, links, mentions and images in one bubble.
+
+    Use it when a plain text message can't carry the shape — a titled weekly report
+    with a bold summary, a chart inline with its commentary, a checklist with links and
+    @-mentions. Unlike a card it needs no card JSON and no callback wiring; unlike
+    several separate messages it stays one bubble.
+
+    ``blocks_json`` is a JSON array of blocks, in order::
+
+        [{"tag": "text", "text": "本周进展", "style": ["bold"]},
+         {"tag": "at", "user_id": "ou_xxx"},
+         {"tag": "a", "text": "看板", "href": "https://example.com"},
+         {"tag": "img", "image_path": "C:/tmp/chart.png"},
+         {"tag": "md", "text": "1. 第一项\\n2. 第二项"},
+         {"tag": "hr"}]
+
+    Tags: ``text`` (optional ``style``: bold/italic/underline/lineThrough), ``a``
+    (``href``), ``at`` (``user_id``, ``"all"`` for everyone), ``img``
+    (``image_path`` for a local file — uploaded here — or an existing ``image_key``),
+    ``code_block`` (optional ``language``), ``md`` (Markdown), ``hr``.
+    Paragraph grouping is handled for you: images, separators and markdown each take
+    their own line, adjacent text/link/mention nodes share one.
+
+    Args:
+        receive_id: Target — chat_id, open_id, user_id, union_id or email.
+        blocks_json: JSON array of blocks as above.
+        title: Optional title shown above the content.
+        receive_id_type: Only set explicitly for a bare user_id.
+        user_key: The sender's open_id as a fallback identity (optional).
+    """
+    return _f.dumps_result(await _f.send_post_message_impl(receive_id, blocks_json, title, receive_id_type, user_key))
 
 
 async def feishu_message_list(

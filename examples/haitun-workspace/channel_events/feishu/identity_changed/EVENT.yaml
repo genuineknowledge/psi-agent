@@ -1,0 +1,9 @@
+# HR identity change — Feishu contact user updated (filtered).
+name: feishu.hr.identity_changed
+source: feishu
+kind: platform_map
+platform_event: contact.user.updated_v3
+description: >
+  人事身份转变：通讯录员工信息变更中，仅当部门 / 职务 / 员工类型 / 职级序列 /
+  直属主管 / 在职状态 等身份相关字段变化时发出信封（头像、手机号等无关变更忽略）。
+  需在飞书开放平台订阅 contact.user.updated_v3，并开通通讯录相关权限。

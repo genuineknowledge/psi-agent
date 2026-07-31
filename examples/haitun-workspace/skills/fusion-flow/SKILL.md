@@ -248,7 +248,7 @@ This is the flagship: turn a natural-language intent into a runnable FusionFlow 
 1. **Understand intent** — restate the user's goal in 1 sentence. If genuinely ambiguous, ask **one** clarifying question (don't grill them). Note whether the user looks like a *developer* (asked to edit FusionFlow G4 source or mentioned operators) — that's the only case where you show technical detail later. Everyone else gets the minimal plain-language summary.
 2. **Model the workflow** — match the intent to one of the executable reference patterns below. Identify inputs, outputs, Agent-, Human-, or Program-backed Steps, Artifacts, dependencies, concurrency, resources, and timeouts. Let information dependencies determine graph depth: add an intermediate aggregation layer only when downstream work needs a coherent result from a distinct group of upstream Artifacts.
 3. **Author one FusionFlow G4 source** — before writing, read `grammar/FusionFlow.g4` completely and treat it as the sole source of truth for FusionFlow syntax and preset operators. Use only declarations, assertions, terms, and operators documented there. Use the workspace-provided target path; never invent a second copy.
-4. **Static self-check** — compare the source against `grammar/FusionFlow.g4` and the executable guardrails in this Skill. There is no separate validation tool.
+4. **Static self-check** — compare the source against `grammar/FusionFlow.g4` and the executable guardrails in this Skill. `run_flow` repeats this with its built-in `check_workflow` pass before dispatch; there is no separate validation tool or CLI.
 5. **Start it once** — the user asked you to do a task, not to receive an implementation artifact. After the static self-check, say ONE friendly heads-up line ("🚀 方案定了，正在帮你跑，预计几分钟…" — a notice, NOT a question), then call `run_flow` once. A declared Human Step may later ask its own task-specific question through the Human protocol; that is part of execution, not an extra pre-run gate. **Do NOT ask "要不要跑 / 跑不跑" and do NOT wait for `跑`.** The only exception is when the user explicitly says "只生成别跑 / 先给我看看别执行".
 
 Never mention the source file, its path, G4, operator names, static-check stages, or internal runnable artifacts to a non-technical user. From their side you are just doing the task they asked for. If they ask "你在干嘛 / 怎么做的", answer in plain business language ("我让几个分析分头跑、再汇总").
@@ -309,7 +309,8 @@ Read `grammar/FusionFlow.g4` completely before using these patterns. The grammar
 | Pattern | FusionFlow shape | When to use |
 | --- | --- | --- |
 | **Fan-out + fan-in** | Several Steps each use `consumes(step) == [shared_artifact]`; one final Step uses `consumes(final_step) == [result_a, result_b]`. Set `max_concurrency` on the workflow when needed. | PR review, multi-perspective audit, content moderation. |
-| **Artifact pipeline** | Each Step produces the Artifact consumed by the next Step. Keep `max_attempts` omitted or equal to `1`. | Writing, ETL, and refine-and-check work. |
+| **Artifact pipeline** | Each Step produces the Artifact consumed by the next Step. Use `max_attempts` only when rerunning that individual Step is safe. | Writing, ETL, and refine-and-check work. |
+| **Per-item map** | Bind one List-valued source Artifact with `foreach_item`; use workflow `max_concurrency` or resources when a limit is needed. | Parallel processing with ordered results; ordinary failures are raised together after siblings finish. |
 | **Named Artifact selection** | Keep every candidate result explicit, then bind `selected_artifact == if(formula, artifact_a, artifact_b)` and use `selected_artifact` in ordinary dataflow. For priority selection, chain named intermediate Artifacts. | Eagerly run all candidate producers, then choose one value for downstream Steps. |
 | **Composite workflow** | Combine artifact chains, fan-out/fan-in, explicit bounded Agent Steps, and named Artifact selections. | When one simple pattern does not cover the task. |
 
@@ -332,11 +333,6 @@ const security_review: Step;
 const performance_review: Step;
 const readability_review: Step;
 const synthesize_report: Step;
-
-const security_review_name: StepName;
-const performance_review_name: StepName;
-const readability_review_name: StepName;
-const synthesize_report_name: StepName;
 
 const security_agent: Agent, Executor;
 const performance_agent: Agent, Executor;
@@ -365,16 +361,16 @@ workflow code_review {
   step_executor(synthesize_report) == editor_agent;
 
   -- STEP CONFIGURATION
-  step_name(security_review) == security_review_name;
+  step_name(security_review) == "Security Review";
   step_instruction(security_review) == "Inspect the source for exploitable behavior and unsafe trust boundaries. Return prioritized findings with concrete evidence and remediation.";
   step_timeout(security_review) == 300;
-  step_name(performance_review) == performance_review_name;
+  step_name(performance_review) == "Performance Review";
   step_instruction(performance_review) == "Identify material performance risks in the source. Explain the triggering workload, likely impact, evidence, and practical fixes.";
   step_timeout(performance_review) == 300;
-  step_name(readability_review) == readability_review_name;
+  step_name(readability_review) == "Readability Review";
   step_instruction(readability_review) == "Review maintainability and clarity. Return specific high-impact issues, why they matter, and focused improvements.";
   step_timeout(readability_review) == 300;
-  step_name(synthesize_report) == synthesize_report_name;
+  step_name(synthesize_report) == "Synthesize Report";
   step_instruction(synthesize_report) == "Combine the three reviews into one deduplicated report. Preserve evidence, resolve conflicts explicitly, prioritize actions, and separate findings from inference.";
 
   -- WORKFLOW CONFIGURATION
@@ -402,6 +398,7 @@ Runner-specific typed catalog extensions use the grammar's generic operator-call
 - In `DATA FLOW`, declare the complete external input List once, then every Step's `consumes`/`produces` edges and named Artifact selections in dependency order, then the complete external output List once.
 - Use exactly one symmetric Artifact dataflow contract: `input_workflow(workflow) == [artifact_a, artifact_b];`, `consumes(step) == [artifact_a, artifact_b];`, `produces(step) == [artifact_a, artifact_b];`, and `output_workflow(workflow) == [artifact_a, artifact_b];`. All four operators return `List`; even one Artifact requires an explicit List literal such as `[artifact]`. Never use these calls as standalone assertions, with `== True`, with an Artifact as a second argument, or through alternate multi variants.
 - Bool shorthand is only for supported non-dataflow Bool operators such as `independent(step)` and `depends_on(step, predecessor)`. Keep `== False` explicit. Retain the right-hand value for every non-Bool operator.
+- Write each Step display name directly as a JSON string, for example `step_name(security_review) == "Security Review";`. Do not declare an intermediate `StepName` constant or emit a symbolic display name ending in `_name`; symbolic StepName values are rejected before compilation.
 - When the user supplies a grammar-valid literal as a typed constant name, including a restricted quoted ID or `"./..."` path, preserve that literal and use it directly as the required preset value; do not hide it behind an alias constant and an extra equality.
 - Write every `step_instruction` as an executable task specification, not a label. State the objective, how to interpret consumed Artifacts, important constraints or evidence requirements, and the expected result. A name such as `"task_name"` is not an instruction.
 - Keep each Step independently understandable and bounded. Let information dependencies determine the hierarchy: synthesize a distinct group of upstream Artifacts before combining it with other groups only when that intermediate result is genuinely consumed downstream. Do not add layers merely because a request is large, and do not collapse separable work into coarse Steps merely to minimize node count.
@@ -410,20 +407,68 @@ Runner-specific typed catalog extensions use the grammar's generic operator-call
 - Emit every explicitly requested relation. Every operand must be a declared grammar term: `_` and `...` are not wildcards. Declare typed constants for required operands, or omit an optional configuration instead of inserting placeholders.
 - Model fan-out by making several steps consume the same artifact.
 - Model fan-in with `consumes(step) == [artifact_a, artifact_b];`.
-- Expand a known, bounded item set into explicit Agent Steps. The current runner does not execute `foreach_item`.
+- Use `foreach_item(step, source_artifact) == item_binding` when a source Artifact contains a finite JSON List. The item binding is local to the expanded Step and is added to that iteration's inputs; do not also declare it as a workflow input.
+- Foreach iterations run in parallel by default. Only workflow `max_concurrency` and resource capacity bound them; there is no per-foreach limit.
+- Normal foreach outputs become source-ordered Lists only after every iteration succeeds; an empty source produces empty Lists. Iteration failures are raised, never declared or returned as G4 Artifacts.
 - Bind each step to its executor with `step_executor`.
-- Configure concurrency, timeouts, and resources with the corresponding supported operators; keep `max_attempts` omitted or set to `1`.
+- Configure concurrency, timeouts, retries, and resources with the corresponding supported operators. Resources, `step_timeout`, `max_attempts`, and checkpoint progress apply independently to each foreach iteration.
 - Treat `independent(step)` only as a hint. Artifact dependencies and `depends_on` still decide when the Step is ready.
 - Declare resource demand with `resource_requirement(step, resource)`. Resource capacities or concrete IDs come from runner configuration, never from `.workflow` source.
-- The current graph runner supports resource scheduling and explicit `depends_on` ordering but still rejects `foreach_item` execution and `max_attempts` values other than `1`.
+- Agent- and Program-backed foreach Steps are executable. Human-backed foreach is rejected before dispatch until Human requests and responses carry iteration identity.
+- A Program failure inside foreach participates in that Step's `max_attempts` and then joins the aggregate exception. Outside foreach, preserve the existing `$fusion_flow/program_error` error-valued Artifact behavior.
+- Ordinary terminal foreach failures do not cancel siblings; after all ordinary iterations finish, the runner raises them together. Successful iteration checkpoints are reused on resume. Cancellation, workflow timeout, Human suspension, and graph/checkpoint/allocator invariant failures still escape immediately.
 - Unknown or unsupported assertions remain residual and stop execution. Never delete them, comment them out, or bypass residual validation to make a run start.
 - Lower executable `if` as a named Artifact selection: `selected_artifact == if(formula, artifact_a, artifact_b);`, followed by ordinary list dataflow such as `consumes(final_step) == [selected_artifact];`.
 - Variables, quantifiers, rules, implications, biconditionals, query/SAT/optimization requests, local concept declarations, local operator declarations, and imperative blocks are outside this language.
 - Never emit imports, imperative runtime calls, `run(...)`, or invented `parallel`/`pipeline`/`for` blocks.
 
+#### Foreach example
+
+```fusionflow
+const enrich_batch: Workflow;
+const enrich_item: Step;
+const worker: Agent, Executor;
+const items: Artifact;
+const item: Artifact;
+const enriched_items: Artifact;
+
+workflow enrich_batch {
+  -- DATA FLOW
+  input_workflow(enrich_batch) == [items];
+  foreach_item(enrich_item, items) == item;
+  produces(enrich_item) == [enriched_items];
+  output_workflow(enrich_batch) == [enriched_items];
+
+  -- EXECUTOR ASSIGNMENT
+  step_executor(enrich_item) == worker;
+
+  -- STEP CONFIGURATION
+  step_name(enrich_item) == "Enrich Item";
+  step_instruction(enrich_item) == "Enrich the local item input and return the enriched_items value.";
+  step_timeout(enrich_item) == 120;
+  max_attempts(enrich_item) == 2;
+
+  -- WORKFLOW CONFIGURATION
+  max_concurrency(enrich_batch) == 8;
+}
+```
+
+At runtime `items` must be a JSON List. Iterations run in parallel and
+`enriched_items` preserves source order. If ordinary iterations fail, siblings
+finish and the failures are raised together; successful iteration checkpoints
+can be reused on resume.
+
 #### Executor configuration
 
-Declare every executor as exactly one of `Agent, Executor`, `Human, Executor`, or `Program, Executor`, bind it with `step_executor`, and give each Step a `step_instruction`. `allowed_tool` and `agent_system_prompt` are unsupported residual declarations and must not be emitted.
+Declare every executor as exactly one of `Agent, Executor`, `Human, Executor`, or `Program, Executor`, bind it with `step_executor`, and give each Step a `step_instruction`.
+
+Agent configuration may use `agent_config`, `agent_system_prompt`,
+`allowed_tool`, `max_output_tokens`, `temperature`, `reasoning_effort`, and
+`max_turns`. The declared system prompt augments the fixed Step safety/output
+protocol; it cannot replace it. `allowed_tool` narrows the host-safe tool
+registry and cannot re-enable a denied workflow launcher. The current workspace
+AI socket fixes provider routing, so a non-default `model`, `engine`, or
+`api_base` is rejected explicitly instead of being ignored.
 
 A Human Step may request an approval, choose among up to four options, or accept open-ended/structured input. Its dedicated preparation Agent receives the resolved instruction text, consumed Artifacts, and output contract, then emits the arguments for the existing `clarify` tool. It never asks the user itself, and its question text never becomes a produced Artifact. The next user response becomes the Human Step result after `run_flow_resume`. Multiple output Artifacts require a JSON object keyed exactly by those Artifact IDs; a zero-output Human Step acts as a pure gate.
 
@@ -487,11 +532,6 @@ const review_handler_step: Step;
 const fallback_handler_step: Step;
 const final_step: Step;
 
-const triage_name: StepName;
-const primary_handler_name: StepName;
-const review_handler_name: StepName;
-const fallback_handler_name: StepName;
-const final_name: StepName;
 const triage_agent: Agent, Executor;
 const primary_handler: Agent, Executor;
 const review_handler: Agent, Executor;
@@ -533,15 +573,15 @@ workflow priority_routing {
   step_executor(final_step) == final_consumer;
 
   -- STEP CONFIGURATION
-  step_name(triage_step) == triage_name;
+  step_name(triage_step) == "Triage";
   step_instruction(triage_step) == "Evaluate incoming_case against each supplied criterion. Produce one observation Artifact per criterion, citing the relevant evidence and marking uncertainty.";
-  step_name(primary_handler_step) == primary_handler_name;
+  step_name(primary_handler_step) == "Primary Handler";
   step_instruction(primary_handler_step) == "Produce the primary handling result for incoming_case. Explain the decision, preserve material constraints, and return a result suitable for downstream selection.";
-  step_name(review_handler_step) == review_handler_name;
+  step_name(review_handler_step) == "Review Handler";
   step_instruction(review_handler_step) == "Produce a reviewed handling result for incoming_case. Identify risks or ambiguities, resolve what the available evidence supports, and state any remaining uncertainty.";
-  step_name(fallback_handler_step) == fallback_handler_name;
+  step_name(fallback_handler_step) == "Fallback Handler";
   step_instruction(fallback_handler_step) == "Produce a safe fallback result for incoming_case when stronger handling criteria are not met. Explain limitations and preserve enough context for finalization.";
-  step_name(final_step) == final_name;
+  step_name(final_step) == "Finalize Result";
   step_instruction(final_step) == "Turn the selected_result into the final response. Preserve its supported conclusions, remove routing metadata, and make unresolved uncertainty explicit.";
 }
 ```
@@ -554,7 +594,7 @@ workflow priority_routing {
 - Never place `if(...)` inline inside `input_workflow`, `consumes`, `produces`, or `output_workflow`; those operators still take explicit Artifact Lists.
 - Do not replace candidate Artifacts with Boolean Step payloads or invent `switch`, `choice`, or conditional blocks.
 
-Use free-form quoted text only where the typed catalog expects an `Instruction`. Do not encode shell commands, code, large source documents, or secrets as instruction text. Put a long instruction in a companion Markdown file; pass source material through input Artifacts.
+Use free-form quoted text only where the typed catalog expects an `Instruction` or `StepName`. Do not encode shell commands, code, large source documents, or secrets as instruction text. Put a long instruction in a companion Markdown file; pass source material through input Artifacts.
 
 ### Anti-patterns to refuse
 
@@ -579,7 +619,6 @@ Every authored workflow follows this shape:
 const input_artifact: Artifact;
 const output_artifact: Artifact;
 const work_step: Step;
-const work_name: StepName;
 const worker: Agent, Executor;
 
 workflow workflow_name {
@@ -593,7 +632,7 @@ workflow workflow_name {
   step_executor(work_step) == worker;
 
   -- STEP CONFIGURATION
-  step_name(work_step) == work_name;
+  step_name(work_step) == "Work";
   step_instruction(work_step) == "Complete the requested transformation using input_artifact, follow the user's stated constraints, and return the concrete result as output_artifact.";
 }
 ```
@@ -604,13 +643,14 @@ Extend this skeleton only with syntax and preset operators documented in `gramma
 
 Before the initial `run_flow` call, inspect the source in order:
 
-- every identity is declared with a supported concept;
+- graph values may be untyped; when explicitly typed, their concepts include `Artifact`;
+- every other identity is declared with a supported concept;
 - assertions use `==`, while formulas use comparison operators;
 - each operator uses the documented arity and supported shape;
 - each Step has a supported Agent, Human, or Program executor, name, instruction, and explicit data/control dependencies;
 - no residual or unsupported operator is emitted.
 
-This is a source review, not a second tool or CLI invocation. Actual parsing and compilation occur inside `run_flow`.
+This manual source review is not a second tool or CLI invocation. Inside `run_flow`, `check_workflow` requires exactly one workflow, delegates graph semantics to `WorkflowGraphCompiler`, rejects unsupported residual assertions and graph values with explicit concepts that omit `Artifact`, requires every Step instruction and Program path, rejects ambiguous executor typing, and emits preflight warning logs for legacy untyped executors. Parsing, checking, and compilation all occur before dispatch.
 
 ### Running it (automatic, right after the self-check)
 
@@ -630,7 +670,7 @@ This is a source review, not a second tool or CLI invocation. Actual parsing and
 When the user asks whether a workflow can run:
 
 1. Confirm the source is a readable workspace-relative `.workflow` or `.g4` file.
-2. Perform the static self-check above without invoking a separate validator.
+2. Perform the static self-check above. The same checks run inside `run_flow`; there is no separate validator tool or CLI.
 3. Confirm that required resource capacities can be supplied.
 
 If the static check finds an issue, report:

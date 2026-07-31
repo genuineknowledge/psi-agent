@@ -1,10 +1,11 @@
-"""Compile and execute one Fusion Flow Next workflow."""
+"""Compile and execute one FusionFlow G4 workflow."""
 
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
+import marshal
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import aclosing, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
@@ -40,6 +42,16 @@ for _import_dir in (_TOOLS_DIR, _SKILL_DIR):
 _paths = __import__("_runtime_paths")
 
 from fusion_flow.artifact_store import ArtifactStore  # noqa: E402
+from fusion_flow.contracts import Diagnostic  # noqa: E402
+from fusion_flow.execution import (  # noqa: E402
+    AgentConfig,
+    AgentHandle,
+    AgentInvocation,
+    SessionResult,
+    assert_safe_name,
+    flow,
+)
+from fusion_flow.execution import run as _run_execution  # noqa: E402
 from fusion_flow.job_store import (  # noqa: E402
     HumanRequestSpec,
     HumanWorkflowRun,
@@ -49,7 +61,9 @@ from fusion_flow.job_store import (  # noqa: E402
 )
 from fusion_flow.workflow_execution import (  # noqa: E402
     ExecutionCheckpoint,
+    ExecutionPlanError,
     ResourceCapacity,
+    WorkflowControlSignal,
     create_execution_checkpoint,
     generate_plan,
 )
@@ -152,7 +166,23 @@ _PROGRAM_STDERR_LIMIT_BYTES = 1 * 1024 * 1024
 _PROGRAM_TERMINATION_GRACE_SECONDS = 1.0
 _PROGRAM_STDOUT_LIMIT_ENV = "PSI_FUSION_FLOW_PROGRAM_STDOUT_LIMIT_BYTES"
 _PROGRAM_STDERR_LIMIT_ENV = "PSI_FUSION_FLOW_PROGRAM_STDERR_LIMIT_BYTES"
+_PROGRAM_FOREACH_ERROR_MESSAGE_LIMIT = 240
 _JOB_STORE_RELATIVE_PATH = Path(".psi") / "fusion-flow" / "runs"
+_SESSION_RUNS_RELATIVE_PATH = Path(".psi") / "fusion-flow" / "session-runs"
+_AGENT_SESSION_CONTEXT_KEY = "fusion_flow_step"
+_AGENT_SESSION_ADAPTER_VERSION = 1
+_CURRENT_AGENT_COMPLETION: ContextVar[CompletionContext | None] = ContextVar(
+    "fusion_flow_agent_completion",
+    default=None,
+)
+_CURRENT_AGENT_TOOLS: ContextVar[ToolRegistry | None] = ContextVar(
+    "fusion_flow_agent_tools",
+    default=None,
+)
+_CURRENT_AGENT_CONFIG: ContextVar[AgentConfig | None] = ContextVar(
+    "fusion_flow_agent_config",
+    default=None,
+)
 
 
 def _workspace_dir() -> Path:
@@ -266,7 +296,7 @@ class _WindowsJob:
     handle: int | None
 
 
-class _HumanInputRequiredError(Exception):
+class _HumanInputRequiredError(WorkflowControlSignal):
     """Internal control flow used to end a turn at one Human Step."""
 
     def __init__(self, request: HumanRequestSpec) -> None:
@@ -295,6 +325,272 @@ class _StepToolRegistry(ToolRegistry):
 class _StepScheduleRegistry(ScheduleRegistry):
     async def refresh(self) -> dict[str, str]:
         return {}
+
+
+def _agent_binding_name(context: CompletionContext) -> str:
+    """Return one stable binding for a logical Step or foreach iteration."""
+
+    invocation_id = context.dispatch.invocation_id or context.step_id
+    candidate = f"g4.{invocation_id}"
+    try:
+        return assert_safe_name(candidate)
+    except ValueError:
+        digest = hashlib.sha256(invocation_id.encode()).hexdigest()
+        return f"g4.{digest}"
+
+
+def _select_agent_tools(
+    source: ToolRegistry,
+    allowed_tools: tuple[str, ...],
+) -> ToolRegistry:
+    """Apply a declared allowlist without mutating the shared tool snapshot."""
+
+    available = source.tools
+    if allowed_tools:
+        unknown = sorted(set(allowed_tools) - available.keys())
+        if unknown:
+            raise ExecutionPlanError(f"Agent allowed_tool names are unavailable: {unknown}")
+        selected_names = frozenset(allowed_tools)
+    else:
+        selected_names = frozenset(available)
+    tools = {name: available[name] for name in sorted(selected_names)}
+    funcs = {name: function for name in tools if (function := source.get(name)) is not None}
+    return _StepToolRegistry(
+        files={
+            "__fusion_flow_allowed_step_tools__": FileEntry(
+                file_hash="",
+                tools=tools,
+                funcs=funcs,
+            )
+        }
+    )
+
+
+def _agent_tool_fingerprint(tool_registry: ToolRegistry) -> str:
+    """Hash the exact tool schemas and Python implementations exposed."""
+
+    tools = tool_registry.tools
+    payload = [
+        {
+            "name": name,
+            "description": tools[name].description,
+            "parameters": tools[name].parameters,
+        }
+        for name in sorted(tools)
+    ]
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    )
+    visited: set[int] = set()
+
+    def add_callable(function: object) -> None:
+        identity = id(function)
+        if identity in visited:
+            return
+        visited.add(identity)
+        digest.update(f"{type(function).__module__}.{type(function).__qualname__}".encode())
+        code = getattr(function, "__code__", None)
+        if code is not None:
+            digest.update(marshal.dumps(code))
+        closure = getattr(function, "__closure__", None)
+        if closure is not None:
+            for cell in closure:
+                with suppress(ValueError):
+                    value = cell.cell_contents
+                    if callable(value):
+                        add_callable(value)
+
+    for name in sorted(tools):
+        function = tool_registry.get(name)
+        if function is not None:
+            add_callable(function)
+    return digest.hexdigest()
+
+
+def _reject_unsupported_agent_routing(config: AgentConfig) -> None:
+    """Reject per-Agent routing until the active AI socket can resolve it."""
+
+    unsupported = {
+        "model": config.model,
+        "engine": config.engine,
+        "api_base": config.api_base,
+    }
+    requested = sorted(name for name, value in unsupported.items() if value is not None)
+    if requested:
+        raise ExecutionPlanError(f"G4 Agent routing cannot be honored by the current Session AI socket: {requested}")
+
+
+class _AgentSessionAdapter:
+    """Bridge G4 Agent leaves through ``flow.agent`` and ``flow.session``."""
+
+    def __init__(
+        self,
+        *,
+        ai_socket: str,
+        get_tool_registry: Callable[[], Awaitable[ToolRegistry]],
+    ) -> None:
+        self._ai_socket = ai_socket
+        self._get_tool_registry = get_tool_registry
+        self._handles: dict[str, AgentHandle] = {}
+
+    def _handle(self, context: CompletionContext) -> AgentHandle:
+        compiled = context.agent_config
+        config = (
+            AgentConfig(
+                name=context.executor_id,
+                system_prompt=_STEP_SYSTEM_PROMPT,
+            )
+            if compiled is None
+            else compiled.to_agent_config(_STEP_SYSTEM_PROMPT)
+        )
+        config = replace(
+            config,
+            context_schema=(_AGENT_SESSION_CONTEXT_KEY,),
+        )
+        _reject_unsupported_agent_routing(config)
+        existing = self._handles.get(context.executor_id)
+        if existing is not None:
+            if existing.config != config:
+                raise ExecutionPlanError(
+                    f"Agent executor {context.executor_id!r} resolved to inconsistent configurations"
+                )
+            return existing
+        handle = flow.agent(config)
+        self._handles[context.executor_id] = handle
+        return handle
+
+    async def complete(
+        self,
+        prompt: str,
+        context: CompletionContext,
+    ) -> dict[str, object]:
+        """Execute or resume one schema-bound Agent Step session."""
+
+        handle = self._handle(context)
+        selected_tools = _select_agent_tools(
+            await self._get_tool_registry(),
+            handle.config.tools,
+        )
+        invocation_id = context.dispatch.invocation_id or context.step_id
+        # Concrete resource instance IDs are execution-time leases, not part of
+        # the logical invocation. A retry may receive another instance and must
+        # still be able to reuse a fully validated binding from the first one.
+        session_context = json.dumps(
+            {
+                "adapter_version": _AGENT_SESSION_ADAPTER_VERSION,
+                "invocation_id": invocation_id,
+                "iteration_index": context.dispatch.iteration_index,
+                "step_id": context.step_id,
+                "inputs": dict(context.inputs),
+                "output_ids": list(context.output_ids),
+                "tool_fingerprint": _agent_tool_fingerprint(selected_tools),
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        completion_token = _CURRENT_AGENT_COMPLETION.set(context)
+        tools_token = _CURRENT_AGENT_TOOLS.set(selected_tools)
+        try:
+            encoded = await flow.session(
+                handle,
+                prompt,
+                context={_AGENT_SESSION_CONTEXT_KEY: session_context},
+                binding_name=_agent_binding_name(context),
+            )
+        finally:
+            _CURRENT_AGENT_TOOLS.reset(tools_token)
+            _CURRENT_AGENT_COMPLETION.reset(completion_token)
+        return _parse_agent_step_result(
+            encoded,
+            step_id=context.step_id,
+            output_ids=context.output_ids,
+        )
+
+    async def run_session(
+        self,
+        config: AgentConfig,
+        invocation: AgentInvocation,
+    ) -> SessionResult:
+        """Run the existing structured SessionAgent loop before binding commit."""
+
+        context = _CURRENT_AGENT_COMPLETION.get()
+        tool_registry = _CURRENT_AGENT_TOOLS.get()
+        if context is None or tool_registry is None:
+            raise ExecutionPlanError("G4 Agent SessionRunner was invoked outside an Agent Step")
+        if invocation.context is None or set(invocation.context) != {_AGENT_SESSION_CONTEXT_KEY}:
+            raise ExecutionPlanError("G4 Agent SessionRunner received an invalid invocation context")
+        _reject_unsupported_agent_routing(config)
+        config_token = _CURRENT_AGENT_CONFIG.set(config)
+        try:
+            outputs = await _complete_agent_step(
+                invocation.prompt,
+                context,
+                ai_socket=self._ai_socket,
+                tool_registry=tool_registry,
+            )
+        finally:
+            _CURRENT_AGENT_CONFIG.reset(config_token)
+        encoded = json.dumps(
+            outputs,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        validated = _parse_agent_step_result(
+            encoded,
+            step_id=context.step_id,
+            output_ids=context.output_ids,
+        )
+        return SessionResult(
+            text=json.dumps(
+                validated,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        )
+
+
+async def _run_with_agent_sessions(
+    operation: Callable[[], Awaitable[dict[str, object]]],
+    *,
+    adapter: _AgentSessionAdapter,
+    run_id: str,
+) -> dict[str, object]:
+    """Run one G4 execution phase inside its durable flow session context."""
+
+    result: dict[str, object] | None = None
+
+    async def program(_context: object) -> None:
+        nonlocal result
+        result = await operation()
+
+    runs_dir = _workspace_dir() / _SESSION_RUNS_RELATIVE_PATH
+    run_path = anyio.Path(runs_dir, run_id)
+    resume = await run_path.exists()
+    await _run_execution(
+        program,
+        runs_dir=runs_dir,
+        runner=adapter.run_session,
+        run_id=None if resume else run_id,
+        resume_from_run_id=run_id if resume else None,
+        throw_on_error=True,
+        keep_count=0,
+        keep_days=0,
+    )
+    if result is None:
+        raise AssertionError("FusionFlow session runtime completed without workflow outputs")
+    return result
 
 
 def _reject_json_constant(value: str) -> object:
@@ -549,6 +845,7 @@ def _checkpoint_human_response(
         values=values,
         completed_step_ids=tuple(sorted((*checkpoint.completed_step_ids, request.step_id))),
         completed_selection_ids=checkpoint.completed_selection_ids,
+        foreach_iterations=checkpoint.foreach_iterations,
     )
 
 
@@ -694,6 +991,27 @@ def _legacy_instruction_identities(compiled: CompiledWorkflow) -> dict[str, str]
         for step in compiled.graph.steps
         if step.instruction_id is not None and step.instruction_id.startswith("./")
     }
+
+
+def _compile_workflow_for_run(source: str, *, flow_path: str) -> CompiledWorkflow:
+    """Compile one workflow and surface every non-fatal preflight diagnostic."""
+
+    def log_diagnostic(diagnostic: Diagnostic) -> None:
+        logger.bind(
+            event="fusion_flow.preflight_warning",
+            flow_path=flow_path,
+            diagnostic_severity=diagnostic.severity,
+            design_reference=diagnostic.design_reference,
+        ).warning(f"FusionFlow preflight warning: {diagnostic.message}")
+
+    # Use the callback instead of reading CompiledWorkflow.diagnostics after
+    # return: strict executor validation can raise after warnings are known,
+    # leaving no result object for this tool entry point to inspect.
+    return compile_workflow(
+        source,
+        strict_executors=True,
+        diagnostic_callback=log_diagnostic,
+    )
 
 
 def _cached_instruction_resolver(
@@ -1090,6 +1408,14 @@ def _program_error_outputs(
     message: str,
     attempts: list[_ProgramProcessResult],
 ) -> dict[str, object]:
+    if getattr(invocation.dispatch, "iteration_index", None) is not None:
+        invocation_id = getattr(invocation.dispatch, "invocation_id", "") or invocation.binding_name
+        summary = " ".join(message.split())
+        if len(summary) > _PROGRAM_FOREACH_ERROR_MESSAGE_LIMIT:
+            summary = f"{summary[: _PROGRAM_FOREACH_ERROR_MESSAGE_LIMIT - 3]}..."
+        detail = "" if not summary else f": {summary}"
+        raise RuntimeError(f"Program step {invocation_id!r} failed ({phase}/{kind}){detail}")
+
     error_value: dict[str, object] = {
         _PROGRAM_ERROR_KEY: {
             "phase": phase,
@@ -1691,6 +2017,7 @@ async def _create_step_agent(
     tool_registry: ToolRegistry,
     *,
     system_prompt: str = _STEP_SYSTEM_PROMPT,
+    max_turns: int | None = None,
 ) -> tuple[SessionAgent, Conversation]:
     conversation = Conversation(
         messages=[{"role": "system", "content": system_prompt}],
@@ -1700,6 +2027,9 @@ async def _create_step_agent(
         conversation=conversation,
         schedule_registry=_StepScheduleRegistry(),
         tool_registry=tool_registry,
+        # One FusionFlow turn is one SessionAgent model/tool-loop round.
+        # A submit_step_result tool call can end that round immediately.
+        max_tool_rounds=128 if max_turns is None else max_turns,
         workspace_path=_workspace_dir(),
         agent_path=_AGENT_DIR,
     )
@@ -1712,9 +2042,17 @@ async def _complete_step_agent(
     message: str,
     *,
     stop_when: Callable[[], bool] | None = None,
+    extra_params: Mapping[str, object] | None = None,
 ) -> str:
     outcome = AgentRunOutcome()
-    async with aclosing(agent.run({"role": "user", "content": message}, outcome=outcome)) as chunks:
+    run_params = None if extra_params is None else dict(extra_params)
+    user_message = {"role": "user", "content": message}
+    stream = (
+        agent.run(user_message, outcome=outcome)
+        if run_params is None
+        else agent.run(user_message, run_params, outcome=outcome)
+    )
+    async with aclosing(stream) as chunks:
         async for _ in chunks:
             if stop_when is not None and stop_when():
                 return ""
@@ -1738,6 +2076,7 @@ async def _complete_agent_step(
     tool_registry: ToolRegistry,
 ) -> dict[str, object]:
     workspace = _workspace_dir()
+    agent_config = _CURRENT_AGENT_CONFIG.get()
     submitted: dict[str, object] | None = None
     submission_error: ValueError | None = None
 
@@ -1770,18 +2109,38 @@ async def _complete_agent_step(
         },
     )
     funcs["submit_step_result"] = submit_step_result
-    agent, conversation = await _create_step_agent(
-        ai_socket,
-        _StepToolRegistry(
-            files={
-                "__fusion_flow_step_result__": FileEntry(
-                    file_hash="",
-                    tools=tools,
-                    funcs=funcs,
-                )
-            }
-        ),
+    agent_tools = _StepToolRegistry(
+        files={
+            "__fusion_flow_step_result__": FileEntry(
+                file_hash="",
+                tools=tools,
+                funcs=funcs,
+            )
+        }
     )
+    if agent_config is None or (agent_config.system_prompt == _STEP_SYSTEM_PROMPT and agent_config.max_turns is None):
+        agent, conversation = await _create_step_agent(
+            ai_socket,
+            agent_tools,
+        )
+    else:
+        agent, conversation = await _create_step_agent(
+            ai_socket,
+            agent_tools,
+            system_prompt=cast(str, agent_config.system_prompt),
+            max_turns=agent_config.max_turns,
+        )
+    extra_params: dict[str, object] | None = None
+    if agent_config is not None:
+        extra_params = {
+            "max_tokens": agent_config.max_tokens,
+            "temperature": agent_config.temperature,
+        }
+        if agent_config.thinking_budget_tokens is not None:
+            extra_params["thinking_budget_tokens"] = agent_config.thinking_budget_tokens
+        if agent_config.reasoning_effort is not None:
+            extra_params["reasoning_effort"] = agent_config.reasoning_effort
+        extra_params = {name: value for name, value in extra_params.items() if value is not None}
     message = (
         "Execute exactly one assigned FusionFlow step. Do not start another workflow.\n"
         f"Workspace root: {workspace}\n"
@@ -1821,6 +2180,7 @@ async def _complete_agent_step(
             conversation,
             message,
             stop_when=stop_after_submission,
+            extra_params=extra_params,
         )
         if submission_error is not None:
             submitted = None
@@ -1959,7 +2319,7 @@ async def _execute_persisted_run(
     )
     await artifact_store.persist(run.checkpoint.values)
     if instruction_files is None:
-        compiled = compile_workflow(source, strict_executors=True)
+        compiled = _compile_workflow_for_run(source, flow_path=run.flow_path)
         instruction_files = _legacy_instruction_identities(compiled)
     step_tools: ToolRegistry | None = None
     human_tools: ToolRegistry | None = None
@@ -1981,13 +2341,10 @@ async def _execute_persisted_run(
             human_tools = _build_human_preparer_tools(await get_step_tools())
         return human_tools
 
-    async def complete(prompt: str, context: CompletionContext) -> dict[str, object]:
-        return await _complete_agent_step(
-            prompt,
-            context,
-            ai_socket=ai_socket,
-            tool_registry=await get_step_tools(),
-        )
+    agent_sessions = _AgentSessionAdapter(
+        ai_socket=ai_socket,
+        get_tool_registry=get_step_tools,
+    )
 
     async def complete_program(invocation: ProgramInvocation) -> dict[str, object]:
         return await _complete_program_step(
@@ -2035,33 +2392,37 @@ async def _execute_persisted_run(
 
     async def observe_checkpoint(checkpoint: ExecutionCheckpoint) -> None:
         nonlocal run_state
-        await artifact_store.persist(checkpoint.values)
-        updated = replace(
-            run_state,
-            checkpoint=checkpoint,
-        )
         with anyio.CancelScope(shield=True):
+            await artifact_store.persist(checkpoint.values)
+            updated = replace(
+                run_state,
+                checkpoint=checkpoint,
+            )
             await lease.save(updated)
-        run_state = updated
+            run_state = updated
 
     human_requests: list[HumanRequestSpec] = []
     outputs: dict[str, object] | None = None
     try:
         try:
-            outputs = await _execute_workflow(
-                source,
-                inputs=run.inputs,
-                contextual_complete=complete,
-                resource_capacities=run.resource_capacities,
-                strict_executors=True,
-                supported_executor_kinds=("Agent", "Human", "Program"),
-                work_dir=_workspace_dir(),
-                run_program=complete_program,
-                contextual_prepare_human_instruction=prepare_human,
-                contextual_request_human=request_human,
-                resolve_instruction=_cached_instruction_resolver(instruction_files),
-                checkpoint=run.checkpoint,
-                checkpoint_observer=observe_checkpoint,
+            outputs = await _run_with_agent_sessions(
+                lambda: _execute_workflow(
+                    source,
+                    inputs=run.inputs,
+                    contextual_complete=agent_sessions.complete,
+                    resource_capacities=run.resource_capacities,
+                    strict_executors=True,
+                    supported_executor_kinds=("Agent", "Human", "Program"),
+                    work_dir=_workspace_dir(),
+                    run_program=complete_program,
+                    contextual_prepare_human_instruction=prepare_human,
+                    contextual_request_human=request_human,
+                    resolve_instruction=_cached_instruction_resolver(instruction_files),
+                    checkpoint=run.checkpoint,
+                    checkpoint_observer=observe_checkpoint,
+                ),
+                adapter=agent_sessions,
+                run_id=run.run_id,
             )
         except* _HumanInputRequiredError as error_group:
             human_requests.extend(_collect_human_requests(error_group))
@@ -2140,7 +2501,7 @@ async def run_flow(
     source = await _read_flow_source(flow_path)
     inputs = _parse_mapping(inputs_json, label="inputs_json")
     resource_capacities = _parse_resource_capacities(resource_capacities_json)
-    compiled = compile_workflow(source, strict_executors=True)
+    compiled = _compile_workflow_for_run(source, flow_path=flow_path)
     instruction_files = await _materialize_instruction_files(compiled, flow_path)
     initial_checkpoint = create_execution_checkpoint(
         generate_plan(compiled.graph),
@@ -2178,14 +2539,6 @@ async def run_flow(
                     step_tools = await _load_step_tools()
         return step_tools
 
-    async def complete(prompt: str, context: CompletionContext) -> dict[str, object]:
-        return await _complete_agent_step(
-            prompt,
-            context,
-            ai_socket=ai_socket,
-            tool_registry=await get_step_tools(),
-        )
-
     async def complete_program(invocation: ProgramInvocation) -> dict[str, object]:
         return await _complete_program_step(
             invocation,
@@ -2195,22 +2548,30 @@ async def run_flow(
 
     artifact_store = await _new_artifact_store(flow_path)
     await artifact_store.persist(initial_checkpoint.values)
+    agent_sessions = _AgentSessionAdapter(
+        ai_socket=ai_socket,
+        get_tool_registry=get_step_tools,
+    )
 
     async def observe_checkpoint(checkpoint: ExecutionCheckpoint) -> None:
         await artifact_store.persist(checkpoint.values)
 
-    outputs = await _execute_workflow(
-        source,
-        inputs=inputs,
-        contextual_complete=complete,
-        resource_capacities=resource_capacities,
-        strict_executors=True,
-        supported_executor_kinds=("Agent", "Program"),
-        resolve_instruction=_cached_instruction_resolver(instruction_files),
-        work_dir=_workspace_dir(),
-        run_program=complete_program,
-        checkpoint=initial_checkpoint,
-        checkpoint_observer=observe_checkpoint,
+    outputs = await _run_with_agent_sessions(
+        lambda: _execute_workflow(
+            source,
+            inputs=inputs,
+            contextual_complete=agent_sessions.complete,
+            resource_capacities=resource_capacities,
+            strict_executors=True,
+            supported_executor_kinds=("Agent", "Program"),
+            resolve_instruction=_cached_instruction_resolver(instruction_files),
+            work_dir=_workspace_dir(),
+            run_program=complete_program,
+            checkpoint=initial_checkpoint,
+            checkpoint_observer=observe_checkpoint,
+        ),
+        adapter=agent_sessions,
+        run_id=artifact_store.run_dir.name,
     )
     return json.dumps(outputs, ensure_ascii=False, sort_keys=True)
 
@@ -2261,7 +2622,7 @@ async def run_flow_resume(
         definition_error: Exception | None = None
         if run.flow_source_digest != source_digest:
             try:
-                compiled = compile_workflow(source, strict_executors=True)
+                compiled = _compile_workflow_for_run(source, flow_path=run.flow_path)
                 instruction_files = await _materialize_instruction_files(compiled, run.flow_path)
                 definition_changed = _workflow_definition_digest(source, instruction_files) != run.flow_source_digest
             except Exception as error:

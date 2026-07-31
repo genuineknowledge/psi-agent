@@ -1,0 +1,5 @@
+name: haitun.handoff.activated
+source: haitun
+kind: synthetic
+description: >
+  成员开启交接/代答原则（本人不在时 Haitun 可代答）。payload: owner_open_id, principles_ref, optional until. SOP-8。

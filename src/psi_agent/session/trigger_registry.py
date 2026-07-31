@@ -7,8 +7,10 @@ push + ``event``/``filter`` match. Fire semantics reuse ``fire=tool|prompt``.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 from collections import OrderedDict
+from collections.abc import Callable
 from contextlib import aclosing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,6 +36,43 @@ if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent
 
 _IDEMPOTENCY_MAX = 2048
+
+
+def merge_event_tool_args(
+    func: Callable[..., Any],
+    tool_args: dict[str, Any],
+    envelope: EventEnvelope,
+) -> dict[str, Any]:
+    """Fill envelope fields into tool kwargs when the callable accepts them.
+
+    Intentional: ``fire=tool`` ``tool_args`` in TRIGGER.md are static and cannot
+    hard-code each hire's ``open_id``. If the tool declares any of the parameters
+    below and YAML left them empty, inject from the envelope so tools like
+    ``handbook_onboarding_send_welcome`` can address ``payload.open_id``:
+
+    - ``event_payload_json`` — ``json.dumps(payload)``
+    - ``event_name`` — ``envelope.event``
+    - ``raw_event`` — ``envelope.raw_event``
+    - ``event_source`` — ``envelope.source``
+    """
+    merged = dict(tool_args)
+    try:
+        params = inspect.signature(func).parameters
+    except TypeError, ValueError:
+        return merged
+    injections: dict[str, Any] = {
+        "event_payload_json": json.dumps(envelope.payload, ensure_ascii=False),
+        "event_name": envelope.event,
+        "raw_event": envelope.raw_event or "",
+        "event_source": envelope.source,
+    }
+    for key, value in injections.items():
+        if key not in params:
+            continue
+        existing = merged.get(key)
+        if existing is None or (isinstance(existing, str) and not existing.strip()):
+            merged[key] = value
+    return merged
 
 
 @dataclass
@@ -238,6 +277,7 @@ class TriggerRegistry:
                 result = f"Error: Tool {tool_name!r} not found"
                 logger.error(f"Trigger {trigger.name!r}: {result}")
             else:
+                args = merge_event_tool_args(func, args, envelope)
                 try:
                     raw = await func(**args)
                     result = str(raw)

@@ -85,8 +85,9 @@ _AUTH_PROMPT = (
     "1. tier=card —— 卡片授权, 用户点一下就好. **这一轮立刻收尾**, 别等待、也别再把链接"
     "当文本发一遍; 等飞书把点击回调给你 (一条 <feishu_card_action>, dispatch.handler 是 "
     "feishu_auth_wait), **那一轮**才调 feishu_auth_wait (用回调 value 里的 user_key).\n"
-    "2. tier=link_auto —— 网站授权但不用复制 code. 把 authorize_url 发给用户, 紧接着调 "
-    "feishu_auth_wait 等授权码自动回流.\n"
+    "2. tier=link_auto —— 网站授权但不用复制 code. 把 authorize_url 发给用户后**这一轮收尾**, "
+    "请他点完「同意授权」回你一句; 那一轮再调 feishu_auth_check 查一眼即可完成. 别在发链接这轮"
+    "调 feishu_auth_wait 干等 —— 阻塞占住 turn 锁, 用户这期间说什么都排队, 看着就是机器人卡死.\n"
     "3. tier=link_manual —— 网站授权且需要复制 code (兜底). 把 authorize_url 发给用户, "
     "再让他从浏览器**地址栏**复制 code= 后面那一串 (或整段网址) 交给 feishu_auth_complete. "
     "想帮用户彻底免掉复制 (把这个部署升到前两级), 调 feishu_auth_env_check 查出确切缺哪一项"
@@ -1313,6 +1314,822 @@ async def recall_message_impl(message_id: str, user_key: str = "") -> dict[str, 
     return {"ok": True, "message_id": mid, "recalled": True}
 
 
+# ── Edit a message that was already sent ──────────────────────────────────────
+#
+# PUT /open-apis/im/v1/messages/:message_id replaces a sent message's content in
+# place: the bubble keeps its id, its position in the chat and its thread, and
+# Feishu just marks it 已编辑. That is the difference from recall+resend, which
+# loses the id (breaking replies/threads that point at it) and shows everyone a
+# "撤回了一条消息" notice.
+#
+# Only text and post messages can be edited this way. An interactive card is
+# updated through PATCH on the same path (``edit_card_impl`` below); image / file /
+# audio / media messages cannot be edited at all (230054) and do have to be
+# recalled and re-sent.
+#
+# Three limits are invisible in the raw error text and are the ones editing
+# actually trips over: only the *sender* may edit (230071), a message can be
+# edited at most 20 times (230072), and the tenant admin configures how long a
+# message stays editable (230075).
+
+_EDIT_ERROR_HINTS = {
+    230001: "请求参数不合法; 编辑只支持文本(text)和富文本(post)消息, 卡片要用 feishu_message_edit_card。",
+    230002: "机器人不在该群里, 先把机器人加入群再编辑。",
+    230006: "应用未启用机器人能力, 到开发者后台开启后再试。",
+    230011: "该消息已被撤回, 无法再编辑。",
+    230013: "机器人对该用户不可用 (不在应用可用范围, 或该用户已离职)。",
+    230018: "该群的设置不允许这次操作 (如全员禁言)。",
+    230025: "内容超长 (文本上限约 150KB, 富文本约 30KB), 缩短后再编辑。",
+    230027: "缺少编辑所需权限 (im:message / im:message:send_as_bot / im:message:update)。",
+    230054: "该消息类型不支持编辑; 图片/文件/音频/视频消息只能撤回重发, 卡片用 feishu_message_edit_card。",
+    230071: "只有消息的发送者能编辑它: 这条不是当前身份发的。机器人只能改自己发的消息; "
+    "要改某人自己发的消息, 传该用户的 user_key 并让其完成授权。",
+    230072: "该消息已达到 20 次编辑上限, 无法继续编辑。",
+    230073: "密聊消息不支持编辑。",
+    230074: "第三方加密群的消息不支持编辑。",
+    230075: "已超出可编辑时限 (受企业管理员配置约束), 只能撤回重发。",
+    230110: "该消息已被删除, 无法编辑。",
+    232009: "群组已解散, 无法编辑。",
+}
+
+
+def _build_edit_message_request(message_id: str, msg_type: str, content: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.PUT
+    req.uri = "/open-apis/im/v1/messages/:message_id"
+    req.paths["message_id"] = message_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"msg_type": msg_type, "content": content}
+    return req
+
+
+def _require_message_id(message_id: str, what: str) -> tuple[str, dict[str, Any] | None]:
+    """Normalize an ``om_...`` message id, or explain why the given value can't be one."""
+    mid = message_id.strip()
+    if not mid:
+        return "", _error(f"message_id is required (the om_... id of the message to {what}).")
+    if not mid.startswith("om_"):
+        return "", _error(
+            f"message_id must be a message id starting with 'om_', got {mid!r}. "
+            "chat_id (oc_...) / open_id (ou_...) 不是消息 id; "
+            "消息 id 来自 feishu_message_send 的返回、<feishu_context>, 或 feishu_message_list。",
+        )
+    return mid, None
+
+
+def _with_hint(res: dict[str, Any], hints: dict[int, str]) -> dict[str, Any]:
+    """Attach the human-readable cause for a known Feishu error code, if we have one."""
+    hint = hints.get(res.get("code"))  # type: ignore[arg-type]
+    return {**res, "hint": hint} if hint else res
+
+
+async def edit_message_impl(message_id: str, text: str, user_key: str = "") -> dict[str, Any]:
+    """Replace the content of an already-sent text/post message, keeping its message_id.
+
+    ``<at>`` tags in *text* are turned into a real ``post`` mention exactly as in
+    ``send_message_impl`` — a plain-text ``<at>`` renders as a raw tag — so editing a
+    message to add or fix a mention works.
+
+    Tenant-first with a UAT fallback: the bot edits its own messages with its own
+    token, and passing the sender's ``user_key`` is what makes editing *that person's*
+    own message possible (Feishu only lets the sender edit).
+    """
+    mid, bad = _require_message_id(message_id, "edit")
+    if bad is not None:
+        return bad
+    if not text.strip():
+        return _error(
+            "text is required: editing replaces the whole message content, and Feishu has no empty message. "
+            "要让消息消失请用 feishu_message_recall。"
+        )
+    stripped, at_open_ids = _extract_and_strip_at_tags(text)
+    if at_open_ids:
+        # Mentions only render in a post message; a plain-text <at> shows the raw tag.
+        msg_type = "post"
+        content = _build_post_at_content(stripped, at_open_ids, at_all=False)
+    else:
+        msg_type = "text"
+        content = json.dumps({"text": text}, ensure_ascii=False)
+    res = await _invoke(_build_edit_message_request(mid, msg_type, content), user_key=user_key, prefer="tenant")
+    if not res["ok"]:
+        return _with_hint(res, _EDIT_ERROR_HINTS)
+    return {"ok": True, "message_id": mid, "edited": True, "msg_type": msg_type}
+
+
+# A card is not edited by the text/post PUT above — it has its own PATCH on the same
+# path, taking only ``content`` (the whole new card). Two extra rules apply:
+# the card must declare ``config.update_multi`` (both the old and the new card;
+# without it Feishu refuses or updates the card for only one viewer), and a card is
+# only updatable for 14 days after it was sent.
+_CARD_EDIT_ERROR_HINTS = {
+    230001: "请求参数不合法; 这个接口只能更新**交互卡片**消息, 文本/富文本消息用 feishu_message_edit。",
+    230011: "该卡片消息已被撤回, 无法再更新。",
+    230025: "卡片超长 (上限约 30KB), 精简后再更新。",
+    230027: "缺少更新所需权限 (im:message / im:message:send_as_bot / im:message:update)。",
+    230054: "该消息不是交互卡片, 不支持卡片更新; 文本/富文本用 feishu_message_edit。",
+    230071: "只有卡片的发送者能更新它: 这条不是当前身份发的。",
+    230075: "已超出可更新时限 (卡片发送 14 天内可更新)。",
+    230110: "该消息已被删除, 无法更新。",
+    232009: "群组已解散, 无法更新。",
+}
+
+
+def _build_edit_card_request(message_id: str, content: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.PATCH
+    req.uri = "/open-apis/im/v1/messages/:message_id"
+    req.paths["message_id"] = message_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"content": content}
+    return req
+
+
+def _ensure_update_multi(card: dict[str, Any]) -> dict[str, Any]:
+    """Make a legacy card updatable-for-everyone, which Feishu requires opt-in for.
+
+    A legacy card without ``config.update_multi = true`` either refuses the update or
+    applies it for a single viewer only — a silently half-broken result. Card 2.0
+    (``{"schema": "2.0", ...}``) has no such flag and is left alone.
+    """
+    if str(card.get("schema", "")).startswith("2"):
+        return card
+    config = card.get("config")
+    merged = dict(config) if isinstance(config, dict) else {}
+    merged["update_multi"] = True
+    return {**card, "config": merged}
+
+
+async def edit_card_impl(message_id: str, card_json: str, user_key: str = "") -> dict[str, Any]:
+    """Replace a sent interactive card's content in place, keeping its message_id.
+
+    Its own endpoint (PATCH, not the text/post PUT) and its own payload: just the whole
+    new card. Used to reflect state on a card that is already in the chat — mark an
+    approval 已通过, disable buttons, refresh a dashboard — without the recipient losing
+    the original bubble.
+
+    The card's callback context is **not** re-registered: an already-sent card's
+    handlers were snapshotted at send time and consumed on first click, so an update
+    changes what the card *shows*, not what its buttons dispatch. Send a new card with
+    ``send_card_impl`` when the actions themselves must change.
+    """
+    mid, bad = _require_message_id(message_id, "update")
+    if bad is not None:
+        return bad
+    if not isinstance(card_json, str):
+        return _error("card_json must be a JSON string containing an object")
+    try:
+        card = json.loads(card_json)
+    except ValueError as exc:
+        return _error(f"card_json is not valid JSON: {exc}")
+    if not isinstance(card, dict):
+        return _error(
+            "card_json must be a JSON object — the full replacement card, e.g. "
+            '{"schema":"2.0","body":{"elements":[...]}} or {"config":...,"elements":[...]}.'
+        )
+    content = json.dumps(_ensure_update_multi(card), ensure_ascii=False)
+    res = await _invoke(_build_edit_card_request(mid, content), user_key=user_key, prefer="tenant")
+    if not res["ok"]:
+        return _with_hint(res, _CARD_EDIT_ERROR_HINTS)
+    return {"ok": True, "message_id": mid, "edited": True, "msg_type": "interactive"}
+
+
+# ── Emoji reactions on a message ───────────────────────────────────────────────
+#
+# A reaction is the lightest possible acknowledgement: 收到 / 已处理 / 赞 without
+# adding a message to the chat. Three endpoints under
+# im/v1/messages/:message_id/reactions — POST to add (returns a reaction_id), DELETE
+# .../:reaction_id to remove, GET to list.
+#
+# Removal needs the reaction_id, and only the identity that added a reaction can
+# remove it. Rather than make the caller carry ids around, ``remove_reaction_impl``
+# accepts an ``emoji_type`` and resolves it through the list endpoint, keeping the
+# tool symmetric with add (same argument removes what it added).
+#
+# ``emoji_type`` values come from Feishu's emoji table and are **case-sensitive and
+# inconsistently cased** (``THUMBSUP``/``OK``/``DONE`` but ``Fire``/``OnIt``/``Get``),
+# so a wrong guess yields 231001. The common ones are aliased below.
+_REACTION_ERROR_HINTS = {
+    230110: "该消息已被删除, 无法操作表情回应。",
+    231001: "emoji_type 不是飞书支持的值 (大小写敏感, 如 THUMBSUP / OK / DONE / Fire); 换一个再试。",
+    231002: "当前身份不在该消息所在会话里, 先把机器人加入群 (或换成群内成员的 user_key)。",
+    231003: "找不到该消息 (id 有误或已撤回)。",
+    231004: "该会话不存在、已解散或已归档。",
+    231008: "当前身份无权访问该消息。",
+    231017: "该消息类型不支持表情回应 (如系统消息)。",
+    231018: "该消息对当前身份不可见。",
+    231021: "外部群里没有操作表情回应的权限。",
+    231022: "机器人对该用户不可用 (把该用户加入应用可用范围后重新发布)。",
+    232009: "群组已解散, 无法操作表情回应。",
+}
+
+# 中文/口语说法 → 飞书 emoji_type。飞书的枚举大小写混乱 (THUMBSUP 全大写, Fire 首字母大写),
+# 模型按字面猜十次错九次, 所以常用的这些一律先过一遍映射, 并且大小写不敏感地兜住。
+_EMOJI_ALIASES = {
+    "赞": "THUMBSUP",
+    "点赞": "THUMBSUP",
+    "👍": "THUMBSUP",
+    "好的": "OK",
+    "ok": "OK",
+    "👌": "OK",
+    "完成": "DONE",
+    "已完成": "DONE",
+    "收到": "OnIt",
+    "在办": "OnIt",
+    "处理中": "OnIt",
+    "感谢": "THANKS",
+    "谢谢": "THANKS",
+    "鼓掌": "APPLAUSE",
+    "👏": "APPLAUSE",
+    "笑": "SMILE",
+    "😄": "SMILE",
+    "心": "HEART",
+    "❤️": "HEART",
+    "爱心": "HEART",
+    "火": "Fire",
+    "🔥": "Fire",
+    "庆祝": "PARTY",
+    "🎉": "PARTY",
+    "加油": "JIAYI",
+    "对勾": "CheckMark",
+    "✅": "DONE",
+    "打勾": "CheckMark",
+    "叉": "CrossMark",
+    "❌": "CrossMark",
+}
+# The canonical spelling for values whose casing is the usual mistake, keyed lowercase.
+_EMOJI_CANONICAL = {
+    v.lower(): v
+    for v in (
+        "THUMBSUP",
+        "OK",
+        "DONE",
+        "SMILE",
+        "HEART",
+        "APPLAUSE",
+        "CLAP",
+        "PRAISE",
+        "THANKS",
+        "LGTM",
+        "Fire",
+        "PARTY",
+        "OnIt",
+        "JIAYI",
+        "Get",
+        "CheckMark",
+        "CrossMark",
+        "Hundred",
+        "Trophy",
+        "FIREWORKS",
+        "ROSE",
+        "MUSCLE",
+        "WAVE",
+        "LAUGH",
+        "CRY",
+        "THINKING",
+        "ThumbsDown",
+        "MinusOne",
+    )
+}
+
+
+def _normalize_emoji_type(emoji_type: str) -> str:
+    """Map a Chinese word / emoji character / mis-cased key onto a Feishu ``emoji_type``.
+
+    Unknown values pass through untouched: Feishu's table is ~130 entries and grows,
+    so an unrecognized value is sent as given (and answered with 231001) rather than
+    rejected here by a list that would go stale.
+    """
+    raw = emoji_type.strip()
+    if not raw:
+        return ""
+    alias = _EMOJI_ALIASES.get(raw) or _EMOJI_ALIASES.get(raw.lower())
+    if alias:
+        return alias
+    return _EMOJI_CANONICAL.get(raw.lower(), raw)
+
+
+def _build_add_reaction_request(message_id: str, emoji_type: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/im/v1/messages/:message_id/reactions"
+    req.paths["message_id"] = message_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    req.body = {"reaction_type": {"emoji_type": emoji_type}}
+    return req
+
+
+def _build_remove_reaction_request(message_id: str, reaction_id: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.DELETE
+    req.uri = "/open-apis/im/v1/messages/:message_id/reactions/:reaction_id"
+    req.paths["message_id"] = message_id
+    req.paths["reaction_id"] = reaction_id
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+def _build_list_reactions_request(message_id: str, emoji_type: str, page_size: int, page_token: str) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.GET
+    req.uri = "/open-apis/im/v1/messages/:message_id/reactions"
+    req.paths["message_id"] = message_id
+    if emoji_type:
+        req.add_query("reaction_type", emoji_type)
+    req.add_query("page_size", max(1, min(page_size, 50)))
+    if page_token:
+        req.add_query("page_token", page_token)
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    return req
+
+
+def _reaction_record(item: Any) -> dict[str, Any]:
+    """One reaction as {reaction_id, emoji_type, operator_id, operator_type, action_time}."""
+    if not isinstance(item, dict):
+        return {}
+    reaction_type = item.get("reaction_type")
+    operator = item.get("operator")
+    return {
+        "reaction_id": item.get("reaction_id", ""),
+        "emoji_type": (reaction_type or {}).get("emoji_type", "") if isinstance(reaction_type, dict) else "",
+        "operator_id": (operator or {}).get("operator_id", "") if isinstance(operator, dict) else "",
+        "operator_type": (operator or {}).get("operator_type", "") if isinstance(operator, dict) else "",
+        "action_time": item.get("action_time", ""),
+    }
+
+
+async def add_reaction_impl(message_id: str, emoji_type: str, user_key: str = "") -> dict[str, Any]:
+    """React to a message with an emoji — an acknowledgement that adds no message.
+
+    ``emoji_type`` accepts a Feishu key (``THUMBSUP``), a Chinese word (``赞``,
+    ``收到``) or the emoji itself (``👍``); all three are normalized to the key
+    Feishu expects, whose casing is irregular enough that a literal guess usually
+    fails with 231001.
+
+    Returns the ``reaction_id``. Keep it if you want to remove exactly this reaction
+    later, though ``remove_reaction_impl`` can also find it from the emoji.
+    """
+    mid, bad = _require_message_id(message_id, "react to")
+    if bad is not None:
+        return bad
+    emoji = _normalize_emoji_type(emoji_type)
+    if not emoji:
+        return _error("emoji_type is required (e.g. THUMBSUP / OK / DONE / OnIt, or 赞 / 收到 / 完成).")
+    res = await _invoke(_build_add_reaction_request(mid, emoji), user_key=user_key, prefer="tenant")
+    if not res["ok"]:
+        return _with_hint(res, _REACTION_ERROR_HINTS)
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {"ok": True, "message_id": mid, **_reaction_record(data), "emoji_type": emoji}
+
+
+async def list_reactions_impl(
+    message_id: str, emoji_type: str = "", page_size: int = 50, page_token: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """List a message's reactions — who reacted with what, and each ``reaction_id``."""
+    mid, bad = _require_message_id(message_id, "list reactions of")
+    if bad is not None:
+        return bad
+    emoji = _normalize_emoji_type(emoji_type)
+    res = await _invoke(
+        _build_list_reactions_request(mid, emoji, page_size, page_token.strip()),
+        user_key=user_key,
+        prefer="tenant",
+    )
+    if not res["ok"]:
+        return _with_hint(res, _REACTION_ERROR_HINTS)
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    raw_items = data.get("items")
+    items: list[Any] = raw_items if isinstance(raw_items, list) else []
+    reactions = [r for r in (_reaction_record(i) for i in items) if r]
+    return {
+        "ok": True,
+        "message_id": mid,
+        "reactions": reactions,
+        "count": len(reactions),
+        "has_more": bool(data.get("has_more")),
+        "page_token": data.get("page_token", ""),
+    }
+
+
+async def remove_reaction_impl(
+    message_id: str, emoji_type: str = "", reaction_id: str = "", user_key: str = ""
+) -> dict[str, Any]:
+    """Remove a reaction, addressed either by ``reaction_id`` or by its emoji.
+
+    Feishu deletes by ``reaction_id`` and only lets the identity that added a reaction
+    remove it. Given an ``emoji_type`` instead, the message's reactions are listed and
+    the matching one is resolved — so "把刚才那个赞取消" works from the same argument
+    that added it, without the caller having stored an id.
+
+    Resolution stays deliberately strict: if several reactions share that emoji (added
+    by different people), the ids are returned and nothing is deleted rather than
+    guessing whose to take back.
+    """
+    mid, bad = _require_message_id(message_id, "remove a reaction from")
+    if bad is not None:
+        return bad
+    rid = reaction_id.strip()
+    emoji = _normalize_emoji_type(emoji_type)
+    if not rid:
+        if not emoji:
+            return _error("pass either reaction_id, or emoji_type (e.g. THUMBSUP / 赞) to look it up.")
+        listed = await list_reactions_impl(mid, emoji, page_size=50, user_key=user_key)
+        if not listed["ok"]:
+            return listed
+        matches = [r for r in listed["reactions"] if r["emoji_type"] == emoji and r["reaction_id"]]
+        if not matches:
+            return _error(
+                f"没有找到 emoji_type={emoji!r} 的表情回应 (可能本来没加, 或已被取消)。",
+                message_id=mid,
+                emoji_type=emoji,
+                code="reaction_not_found",
+            )
+        if len(matches) > 1:
+            return _error(
+                f"该消息上有 {len(matches)} 个 {emoji!r} 表情回应 (不同人加的), 无法确定要取消哪一个; "
+                "从 candidates 里挑一个 reaction_id 再调一次 (只能取消自己加的那个)。",
+                message_id=mid,
+                emoji_type=emoji,
+                candidates=matches,
+                code="reaction_ambiguous",
+            )
+        rid = matches[0]["reaction_id"]
+    res = await _invoke(_build_remove_reaction_request(mid, rid), user_key=user_key, prefer="tenant")
+    if not res["ok"]:
+        return _with_hint(res, _REACTION_ERROR_HINTS)
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    # The echoed record first, then the ids we know: Feishu's delete response omits
+    # fields for some message types, and an empty echo must not blank out the answer.
+    return {"ok": True, **_reaction_record(data), "message_id": mid, "reaction_id": rid, "removed": True}
+
+
+# ── Rich media messages — image / file / audio / video / rich text ──────────────
+#
+# Sending anything but text is always two calls: upload the bytes to get a key, then
+# send a message whose content references that key. Two *different* upload endpoints,
+# and picking the wrong one is the usual failure:
+#
+#   im/v1/images  → image_key (img_v3_...)  — pictures only, ≤10MB
+#   im/v1/files   → file_key  (file_v3_...) — documents, audio, video, ≤30MB
+#
+# These are IM-message uploads, unrelated to drive medias/upload_all (which puts a
+# file in the cloud drive / a doc block, see upload_media_impl). A drive file_token
+# cannot be sent as a message and vice versa.
+#
+# Both go out as multipart, which under this SDK means the binary must sit in the
+# request **body** as an io.IOBase carrying a .name — Client.arequest overwrites
+# req.files with Files.extract_files(req.body) right before sending, so a file put in
+# req.files is dropped and the request leaves as application/json ("boundary not
+# found"). Same reason _NamedBytes exists for drive uploads.
+_IMAGE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+_FILE_UPLOAD_MAX_BYTES = 30 * 1024 * 1024
+
+# What Feishu accepts for im/v1/images. TIFF/HEIC are converted to JPG server-side.
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".ico", ".tif", ".tiff", ".heic"}
+# file_type for im/v1/files is an enum, not the extension: audio must be opus, video
+# mp4, documents their own four, and anything else falls back to "stream" (which is
+# what a .zip/.csv/.txt attachment is sent as).
+_FILE_TYPE_BY_SUFFIX = {
+    ".opus": "opus",
+    ".mp4": "mp4",
+    ".pdf": "pdf",
+    ".doc": "doc",
+    ".docx": "doc",
+    ".xls": "xls",
+    ".xlsx": "xls",
+    ".ppt": "ppt",
+    ".pptx": "ppt",
+}
+_FILE_TYPES = {"opus", "mp4", "pdf", "doc", "xls", "ppt", "stream"}
+# msg_type → which upload endpoint feeds it, so one send path serves all of them.
+_MEDIA_MSG_TYPES = {"image": "image", "file": "file", "audio": "file", "media": "file"}
+_UPLOAD_ERROR_HINTS = {
+    234001: "上传参数不合法 (image_type / file_type / file_name 有问题)。",
+    234002: "上传鉴权失败, 检查 PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET。",
+    234006: "文件超过大小上限 (图片 10MB, 文件 30MB)。",
+    234007: "应用未启用机器人能力, 到开发者后台开启后再试。",
+    234010: "文件是空的 (0 字节), 飞书拒收。",
+    234011: "无法识别的图片格式; 支持 JPG/JPEG/PNG/WEBP/GIF/BMP/ICO/TIFF/HEIC。",
+    234039: "图片分辨率超限 (GIF 2000x2000, 其它 12000x12000); 改用文件方式发送。",
+}
+_SEND_MEDIA_ERROR_HINTS = {
+    230001: "请求参数不合法; 常见原因是 image_key 与 file_key 用反了 (图片用 image_key, 音视频/文件用 file_key)。",
+    230002: "机器人不在该群里, 先把机器人加入群。",
+    230013: "机器人对该用户不可用 (不在应用可用范围, 或该用户已离职)。",
+    230055: "上传时的 file_type 与消息类型不一致 (音频要 opus, 视频要 mp4)。",
+}
+
+
+def _build_image_upload_request(image_type: str, file_name: str, data: bytes) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/im/v1/images"
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    # Binary in the body (not req.files) — see the note above _IMAGE_UPLOAD_MAX_BYTES.
+    req.body = {"image_type": image_type, "image": _NamedBytes(data, file_name)}
+    return req
+
+
+def _build_file_upload_request(file_type: str, file_name: str, data: bytes, duration_ms: int) -> BaseRequest:
+    req = BaseRequest()
+    req.http_method = HttpMethod.POST
+    req.uri = "/open-apis/im/v1/files"
+    req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
+    body: dict[str, Any] = {"file_type": file_type, "file_name": file_name}
+    if duration_ms > 0:
+        body["duration"] = duration_ms
+    body["file"] = _NamedBytes(data, file_name)
+    req.body = body
+    return req
+
+
+async def _read_upload_bytes(file_path: str, limit: int, what: str) -> tuple[bytes, str, dict[str, Any] | None]:
+    """Read a local file for upload; returns (data, name, error) with error set on refusal."""
+    p = anyio.Path(file_path)
+    if not await p.is_file():
+        return b"", "", _error(f"file not found: {file_path}")
+    data = await p.read_bytes()
+    if not data:
+        return b"", "", _error(f"{file_path} is empty (0 bytes); Feishu rejects empty uploads.")
+    if len(data) > limit:
+        return (
+            b"",
+            "",
+            _error(
+                f"{what} is {len(data)} bytes, over the {limit // (1024 * 1024)}MB limit for this endpoint. "
+                "更大的文件先上传到云盘 (feishu_drive_upload) 再把链接发出去。",
+                size=len(data),
+            ),
+        )
+    return data, p.name, None
+
+
+async def upload_image_impl(image_path: str, user_key: str = "") -> dict[str, Any]:
+    """Upload a picture for use in messages; returns its ``image_key`` (``img_v3_...``).
+
+    Separate from ``upload_media_impl`` (cloud drive): only an IM ``image_key`` can be
+    sent as an image message or embedded in a post, and only a drive ``file_token``
+    can live in a document.
+    """
+    data, name, bad = await _read_upload_bytes(image_path, _IMAGE_UPLOAD_MAX_BYTES, "image")
+    if bad is not None:
+        return bad
+    suffix = pathlib.Path(name).suffix.lower()
+    if suffix and suffix not in _IMAGE_SUFFIXES:
+        return _error(
+            f"{name} is not an image Feishu accepts ({', '.join(sorted(_IMAGE_SUFFIXES))}). "
+            "非图片文件用 feishu_message_send_file 发送。",
+        )
+    # A factory: the SDK consumes the file entry on the first send, and this may be
+    # retried under a second identity.
+    res = await _invoke(
+        lambda: _build_image_upload_request("message", name, data),
+        user_key=user_key,
+        prefer="tenant",
+    )
+    if not res["ok"]:
+        return _with_hint(res, _UPLOAD_ERROR_HINTS)
+    rdata = res["data"] if isinstance(res["data"], dict) else {}
+    return {"ok": True, "image_key": rdata.get("image_key", ""), "file_name": name, "size": len(data)}
+
+
+async def upload_file_impl(
+    file_path: str, file_type: str = "", file_name: str = "", duration_ms: int = 0, user_key: str = ""
+) -> dict[str, Any]:
+    """Upload a document/audio/video for use in messages; returns its ``file_key``.
+
+    ``file_type`` is Feishu's enum, not the extension — it is derived from the suffix
+    (``.mp4``→mp4, ``.pdf``→pdf, ``.docx``→doc, …) and anything unmapped uploads as
+    ``stream``, which is how a .zip/.csv/.txt attachment is sent.
+
+    Audio must genuinely be OPUS: Feishu plays an ``audio`` message only for
+    ``file_type=opus``, and sending an .mp3 as audio is rejected with 230055. Convert
+    first (``ffmpeg -i in.mp3 -acodec libopus -ac 1 -ar 16000 out.opus``) or send the
+    .mp3 as a plain file instead.
+    """
+    data, name, bad = await _read_upload_bytes(file_path, _FILE_UPLOAD_MAX_BYTES, "file")
+    if bad is not None:
+        return bad
+    name = file_name.strip() or name
+    ftype = file_type.strip() or _FILE_TYPE_BY_SUFFIX.get(pathlib.Path(name).suffix.lower(), "stream")
+    if ftype not in _FILE_TYPES:
+        return _error(
+            f"file_type must be one of {', '.join(sorted(_FILE_TYPES))}, got {ftype!r} "
+            "(it is Feishu's enum, not the file extension; unlisted formats use 'stream').",
+        )
+    res = await _invoke(
+        lambda: _build_file_upload_request(ftype, name, data, max(0, duration_ms)),
+        user_key=user_key,
+        prefer="tenant",
+    )
+    if not res["ok"]:
+        return _with_hint(res, _UPLOAD_ERROR_HINTS)
+    rdata = res["data"] if isinstance(res["data"], dict) else {}
+    return {"ok": True, "file_key": rdata.get("file_key", ""), "file_name": name, "file_type": ftype, "size": len(data)}
+
+
+async def send_media_message_impl(
+    receive_id: str,
+    file_path: str,
+    msg_type: str,
+    receive_id_type: str = "chat_id",
+    cover_image_path: str = "",
+    file_name: str = "",
+    duration_ms: int = 0,
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Upload a local file and send it as an image / file / audio / video message.
+
+    Both halves of the two-call dance in one place, because doing them separately is
+    where the keys get crossed: ``msg_type`` decides which upload endpoint runs
+    (``image`` → im/v1/images → ``image_key``; everything else → im/v1/files →
+    ``file_key``) and what the message content looks like.
+
+    ``media`` (video) may carry a cover: ``cover_image_path`` is uploaded as an image
+    and referenced as the thumbnail. Without one the video shows no preview frame.
+    """
+    kind = msg_type.strip().lower()
+    if kind not in _MEDIA_MSG_TYPES:
+        return _error(
+            f"msg_type must be one of {', '.join(sorted(_MEDIA_MSG_TYPES))}, got {msg_type!r}. "
+            "image=图片, file=文档/附件, audio=语音(opus), media=视频(mp4)。",
+        )
+    if kind == "image":
+        uploaded = await upload_image_impl(file_path, user_key=user_key)
+        if not uploaded["ok"]:
+            return uploaded
+        content: dict[str, Any] = {"image_key": uploaded["image_key"]}
+        detail = {"image_key": uploaded["image_key"]}
+    else:
+        forced = {"audio": "opus", "media": "mp4"}.get(kind, "")
+        uploaded = await upload_file_impl(
+            file_path, file_type=forced, file_name=file_name, duration_ms=duration_ms, user_key=user_key
+        )
+        if not uploaded["ok"]:
+            return uploaded
+        content = {"file_key": uploaded["file_key"]}
+        detail = {"file_key": uploaded["file_key"], "file_type": uploaded["file_type"]}
+        if kind == "media" and cover_image_path.strip():
+            cover = await upload_image_impl(cover_image_path.strip(), user_key=user_key)
+            if not cover["ok"]:
+                # The video is uploaded and sendable; a missing cover must not lose it.
+                logger.warning(f"video cover upload failed, sending without a cover — {cover.get('message', '')}")
+            else:
+                content["image_key"] = cover["image_key"]
+                detail["cover_image_key"] = cover["image_key"]
+    rid_type = _infer_receive_id_type(receive_id, receive_id_type)
+    req = _build_send_message_request(receive_id, rid_type, kind, json.dumps(content, ensure_ascii=False))
+    res = await _invoke(req, user_key=user_key, prefer="tenant")
+    if not res["ok"]:
+        return _with_hint({**res, **detail}, _SEND_MEDIA_ERROR_HINTS)
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {
+        "ok": True,
+        "message_id": data.get("message_id", ""),
+        "thread_id": data.get("thread_id", ""),
+        "chat_id": data.get("chat_id", ""),
+        "msg_type": kind,
+        "size": uploaded["size"],
+        **detail,
+    }
+
+
+# A post message is the only way to put text, pictures, links and mentions in **one**
+# bubble. Its content is a list of paragraphs, each a list of nodes — so the tool takes
+# a compact block list and expands it, uploading any local image on the way. Feishu
+# requires img and media nodes to occupy a paragraph of their own, which the builder
+# enforces rather than leaving to the caller.
+_POST_BLOCK_TAGS = {"text", "a", "at", "img", "code_block", "hr", "md"}
+
+
+def _post_node(block: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """One post node from a compact block dict; returns (node, error message)."""
+    tag = str(block.get("tag", "text")).strip() or "text"
+    if tag not in _POST_BLOCK_TAGS:
+        return None, f"unsupported tag {tag!r}; use one of {', '.join(sorted(_POST_BLOCK_TAGS))}"
+    if tag == "hr":
+        return {"tag": "hr"}, ""
+    if tag == "at":
+        user_id = str(block.get("user_id", "")).strip()
+        if not user_id:
+            return None, "an 'at' block needs user_id (an ou_... open_id, or \"all\")"
+        return {"tag": "at", "user_id": user_id}, ""
+    if tag == "a":
+        href = str(block.get("href", "")).strip()
+        if not href:
+            return None, "an 'a' block needs href"
+        return {"tag": "a", "text": str(block.get("text", "")) or href, "href": href}, ""
+    if tag == "img":
+        # image_path is resolved to an image_key by the caller before we get here.
+        image_key = str(block.get("image_key", "")).strip()
+        if not image_key:
+            return None, "an 'img' block needs image_key or image_path"
+        return {"tag": "img", "image_key": image_key}, ""
+    text = block.get("text")
+    if not isinstance(text, str) or not text:
+        return None, f"a {tag!r} block needs non-empty text"
+    if tag == "code_block":
+        node: dict[str, Any] = {"tag": "code_block", "text": text}
+        language = str(block.get("language", "")).strip()
+        if language:
+            node["language"] = language
+        return node, ""
+    if tag == "md":
+        return {"tag": "md", "text": text}, ""
+    node = {"tag": "text", "text": text}
+    style = block.get("style")
+    if isinstance(style, list) and style:
+        node["style"] = [str(s) for s in style]
+    return node, ""
+
+
+def _build_post_content(title: str, nodes: list[dict[str, Any]]) -> str:
+    """Group post nodes into paragraphs: img/hr/md stand alone, runs of text merge."""
+    paragraphs: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for node in nodes:
+        if node["tag"] in {"img", "hr", "md"}:
+            if current:
+                paragraphs.append(current)
+                current = []
+            paragraphs.append([node])
+            continue
+        current.append(node)
+    if current:
+        paragraphs.append(current)
+    return json.dumps({"zh_cn": {"title": title, "content": paragraphs}}, ensure_ascii=False)
+
+
+async def send_post_message_impl(
+    receive_id: str,
+    blocks_json: str,
+    title: str = "",
+    receive_id_type: str = "chat_id",
+    user_key: str = "",
+) -> dict[str, Any]:
+    """Send a **rich text** (post) message: styled text, links, mentions and images in one bubble.
+
+    ``blocks_json`` is a JSON array of compact blocks, in order, e.g.::
+
+        [{"tag": "text", "text": "本周周报", "style": ["bold"]},
+         {"tag": "at", "user_id": "ou_xxx"},
+         {"tag": "a", "text": "看板", "href": "https://..."},
+         {"tag": "img", "image_path": "C:/tmp/chart.png"},
+         {"tag": "md", "text": "1. 第一项\\n2. 第二项"}]
+
+    An ``img`` block may name a local ``image_path`` (uploaded here) or an existing
+    ``image_key``. Blocks are grouped into paragraphs the way Feishu requires — images,
+    separators and markdown each get their own line, adjacent text/link/mention nodes
+    share one — so the caller writes a flat list and gets a correct layout.
+    """
+    if not isinstance(blocks_json, str):
+        return _error("blocks_json must be a JSON string containing an array of blocks")
+    try:
+        blocks = json.loads(blocks_json)
+    except ValueError as exc:
+        return _error(f"blocks_json is not valid JSON: {exc}")
+    if not isinstance(blocks, list) or not blocks:
+        return _error(
+            'blocks_json must be a non-empty JSON array, e.g. [{"tag":"text","text":"hi"},'
+            '{"tag":"img","image_path":"C:/tmp/a.png"}]'
+        )
+    nodes: list[dict[str, Any]] = []
+    uploaded_keys: list[str] = []
+    for position, raw_block in enumerate(blocks):
+        if not isinstance(raw_block, dict):
+            return _error(f"block #{position} is not a JSON object", block_index=position)
+        block: dict[str, Any] = {str(k): v for k, v in raw_block.items()}
+        if str(block.get("tag", "")).strip() == "img" and not str(block.get("image_key", "")).strip():
+            path = str(block.get("image_path", "")).strip()
+            if not path:
+                return _error(f"block #{position}: an 'img' block needs image_path or image_key", block_index=position)
+            up = await upload_image_impl(path, user_key=user_key)
+            if not up["ok"]:
+                return {**up, "block_index": position}
+            block["image_key"] = up["image_key"]
+            uploaded_keys.append(up["image_key"])
+        node, err = _post_node(block)
+        if node is None:
+            return _error(f"block #{position}: {err}", block_index=position)
+        nodes.append(node)
+    rid_type = _infer_receive_id_type(receive_id, receive_id_type)
+    content = _build_post_content(title.strip(), nodes)
+    res = await _invoke(
+        _build_send_message_request(receive_id, rid_type, "post", content), user_key=user_key, prefer="tenant"
+    )
+    if not res["ok"]:
+        return _with_hint(res, _SEND_MEDIA_ERROR_HINTS)
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    return {
+        "ok": True,
+        "message_id": data.get("message_id", ""),
+        "thread_id": data.get("thread_id", ""),
+        "chat_id": data.get("chat_id", ""),
+        "msg_type": "post",
+        "blocks": len(nodes),
+        "uploaded_image_keys": uploaded_keys,
+    }
+
+
 def _build_list_messages_request(
     container_id: str, container_id_type: str, sort_type: str, page_size: int, page_token: str
 ) -> BaseRequest:
@@ -2464,7 +3281,11 @@ async def auth_start_impl(capabilities: str = "", user_key: str = "") -> dict[st
     )
     authorize_url = f"{_AUTHORIZE_URL}?{query}"
     if plan.automatic:
-        return {
+        # 回调地址是内网 IP 时, 自动回流只对在内网的用户成立; 外网用户点完同意,
+        # 浏览器跳不到这个地址, 回调永远不来。此时仍走自动通道 (内网用户照样免复制),
+        # 但必须把这个前提说出来并备好后路, 否则外网用户就一直卡在「等回调」上。
+        private = _oauth_rx.is_private_callback(plan.redirect_uri)
+        result = {
             "ok": True,
             "authorize_url": authorize_url,
             "auto_receive": True,
@@ -2476,11 +3297,22 @@ async def auth_start_impl(capabilities: str = "", user_key: str = "") -> dict[st
             "message": (
                 f"请把 authorize_url 发给用户 (本次申请的权限: {', '.join(union)}), "
                 "让其打开并点「同意授权」-- **不用复制任何 code**, 授权码会自动回流.\n"
-                "发完链接后立刻调 feishu_auth_wait (同一个 user_key) 等待用户点完, 它会自己完成授权.\n"
+                "发完链接**这一轮就收尾**, 顺带请用户点完后回你一句; 别在同一轮调 feishu_auth_wait 干等 "
+                "(阻塞占住 turn 锁, 用户这期间说什么都得排队). 用户回话那一轮调 "
+                "feishu_auth_check (同一个 user_key) 查一眼即可完成授权.\n"
                 "授权一次即缓存并自动续期; 只有当以后的任务需要**新的**权限时才会再请你授权一次."
             ),
-            "next_step": "feishu_auth_wait",
+            "next_step": "结束本轮; 用户回话后调 feishu_auth_check",
         }
+        if private:
+            result["callback_is_private"] = True
+            result["fallback_hint"] = (
+                f"注意: 回调地址 {plan.redirect_uri} 只有**内网**打得到. 用户若在外网, "
+                "点「同意授权」后页面会打不开 (一直转圈或提示无法访问), 自动回流也就不会发生 —— "
+                "这不是授权失败. 遇到这种情况, 让用户把浏览器**地址栏里那一整条网址**复制回来, "
+                "整条交给 feishu_auth_complete 即可 (工具会自己从里面取 code, 用户不用找 code 在哪)."
+            )
+        return result
     return {
         "ok": True,
         "authorize_url": authorize_url,
@@ -2646,7 +3478,7 @@ async def auth_card_impl(
             "capabilities": granted,
             "fallback": "卡片没发出去: 可以把 authorize_url 直接发给用户, 再调 feishu_auth_wait 等回调.",
         }
-    return {
+    result = {
         "ok": True,
         "message_id": sent.get("message_id", ""),
         "receive_id": target,
@@ -2663,6 +3495,12 @@ async def auth_card_impl(
         ),
         "next_step": f"等卡片回调, 届时调 {_AUTH_CARD_HANDLER}",
     }
+    # 卡片按钮的 open_url 打开的就是这个 redirect 所属的授权页, 所以内网回调地址对
+    # 卡片同样成立: 外网用户点完「同意授权」照样跳不回来。第 1 级也得带上后路。
+    if started.get("callback_is_private"):
+        result["callback_is_private"] = True
+        result["fallback_hint"] = str(started.get("fallback_hint", ""))
+    return result
 
 
 # ── 授权方式的降级顺序 ────────────────────────────────────────────────────────
@@ -2692,6 +3530,10 @@ _TIER_LABEL = {
     TIER_MANUAL: "网站授权(需要复制 code)",
 }
 
+# ``auth_check_impl`` 的取件窗口: 只够跑完一次取件请求, 不做第二次轮询。取件箱 TTL 约
+# 10 分钟, 所以「看一眼就走」不会丢码 —— 这一点是它敢不阻塞的根据。
+_CHECK_TIMEOUT_SECONDS = 3.0
+
 
 async def auth_request_impl(
     user_key: str,
@@ -2711,7 +3553,8 @@ async def auth_request_impl(
     explicitly as ``tier``/``next_step``:
 
     - ``card`` — finish the turn now; wait only when the click callback arrives.
-    - ``link_auto`` — send ``authorize_url`` to the user, then ``feishu_auth_wait``.
+    - ``link_auto`` — send ``authorize_url``, finish the turn, then ``feishu_auth_check``
+      in the turn the user reports back. Never block in the sending turn.
     - ``link_manual`` — send ``authorize_url``, then ask for the code and pass it to
       ``feishu_auth_complete``.
     """
@@ -2729,7 +3572,13 @@ async def auth_request_impl(
     if not card_skip:
         card = await auth_card_impl(key, capabilities, reason, target)
         if card.get("ok"):
-            return {**card, "tier": TIER_CARD, "tier_label": _TIER_LABEL[TIER_CARD]}
+            tiered = {**card, "tier": TIER_CARD, "tier_label": _TIER_LABEL[TIER_CARD]}
+            if card.get("callback_is_private"):
+                tiered["next_step"] = (
+                    f"{card.get('next_step', '')}; 若用户在外网导致授权页跳不回来, "
+                    "改让他把地址栏整条网址发回来交给 feishu_auth_complete"
+                )
+            return tiered
         # manual_required means there is no automatic callback channel at all, so
         # tier 2 cannot work either — go straight to tier 3 and say so.
         card_skip = str(card.get("message") or "卡片发送失败")
@@ -2751,17 +3600,23 @@ async def auth_request_impl(
     if not started.get("ok"):
         return started
     tier = TIER_LINK if started.get("auto_receive") else TIER_MANUAL
+    next_step = (
+        "把 authorize_url 发给用户后**结束本轮**, 请他点完回你一句; 那一轮再调 feishu_auth_check 查一眼"
+        if tier == TIER_LINK
+        else "把 authorize_url 发给用户, 再让他把地址栏里的 code 交给 feishu_auth_complete"
+    )
+    # 第 2 级承诺「不用复制」, 但内网回调地址只能对内网用户兑现这句话。这里不降级
+    # (内网用户仍是免复制的), 而是把 auth_start 带回来的后路一并交给调用方 —— 承诺
+    # 兑现不了时得说实话, 这条规则对「地址不可达」同样适用。
+    if tier == TIER_LINK and started.get("callback_is_private"):
+        next_step += "; 若用户在外网导致页面打不开, 改让他把地址栏整条网址发回来交给 feishu_auth_complete"
     return {
         **started,
         "tier": tier,
         "tier_label": _TIER_LABEL[tier],
         "downgraded_from": TIER_CARD,
         "downgrade_reason": card_skip,
-        "next_step": (
-            "把 authorize_url 发给用户, 然后调 feishu_auth_wait 等授权码自动回流"
-            if tier == TIER_LINK
-            else "把 authorize_url 发给用户, 再让他把地址栏里的 code 交给 feishu_auth_complete"
-        ),
+        "next_step": next_step,
     }
 
 
@@ -2806,13 +3661,79 @@ async def auth_wait_impl(user_key: str = "", timeout_seconds: int = 480) -> dict
     if not got:
         # 别把超时当失败报给用户: 取件箱 TTL 600 秒, 用户晚点几十秒点完, code 仍在里面等着取。
         # (实测过一次真实场景: 等待窗口比用户点击早关了 12 秒, 而回调随后就到了。)
-        return _error(
+        base = (
             f"等了 {int(timeout)} 秒还没收到授权回调 -- 这不代表失败: 用户可能还没点完. "
-            "授权码在 Gateway 取件箱里可留存约 10 分钟, 所以**先再调一次 feishu_auth_wait 继续等**, "
-            "拿到就照样能完成授权; 别急着让用户手抄 code, 也别告诉他失败了. "
-            "只有再等一轮仍然没有, 才去确认用户是否真的点了「同意授权」.",
+            "授权码在 Gateway 取件箱里可留存约 10 分钟, 所以**这一轮就此收尾**, 告诉用户「点完同意后回我一句」; "
+            "下一轮再用 feishu_auth_check 查一眼即可完成授权, 别急着让用户手抄 code, 也别告诉他失败了. "
+            "**不要在本轮里再调一次 feishu_auth_wait 继续等** —— 阻塞占着 Session 的 turn 锁, "
+            "用户这期间说什么都得排队, 表现出来就是「机器人卡住不回话」."
+        )
+        # 回调地址只有内网可达时, 「一直重等」对外网用户是个死循环: 他的浏览器根本跳不到
+        # 那个地址, 等到取件箱过期也不会有回调。所以这里必须给出另一条出路, 而不是让
+        # agent 反复安慰用户再等等。
+        redirect = str(pending.get("redirect_uri") or "")
+        if _oauth_rx.is_private_callback(redirect):
+            return _error(
+                base + "\n"
+                f"另外: 本次回调地址 {redirect} 只有内网打得到. 如果用户在外网, 他点完同意后页面会"
+                "打不开, 回调也就永远不会来 —— 再等无用. 这时问他一句「授权后那个打不开的页面, "
+                "地址栏里的网址是什么」, 把他发回来的**整条网址**交给 feishu_auth_complete 就能完成授权 "
+                "(不用让他自己找 code).",
+                timed_out=True,
+                callback_is_private=True,
+                retry_hint=(
+                    "本轮收尾; 下一轮用 feishu_auth_check 查一眼. "
+                    "仍然没有就让用户把地址栏整条网址发回来, 交给 feishu_auth_complete"
+                ),
+            )
+        return _error(
+            base,
             timed_out=True,
-            retry_hint="再调一次 feishu_auth_wait (同一个 user_key) 即可继续等待",
+            retry_hint="本轮收尾, 下一轮用 feishu_auth_check (同一个 user_key) 查一眼, 别再阻塞等待",
+        )
+    if got.get("error"):
+        return _error(f"用户侧授权失败: {got['error']}")
+    return await auth_complete_impl(got.get("code", ""), user_key)
+
+
+async def auth_check_impl(user_key: str = "") -> dict[str, Any]:
+    """查一眼授权码到没到, 不阻塞 —— 到了就完成授权, 没到立刻返回。
+
+    与 ``auth_wait_impl`` 是同一条取件通道, 区别只在等待时长: 这里用一个极短的窗口
+    「看一眼就走」, 所以不会占住 Session 的 turn 锁。Gateway 取件箱 TTL 约 10 分钟,
+    用户晚点几分钟点完「同意授权」, 下一轮再查照样拿得到, 因此**推迟取码是安全的**,
+    不需要谁在原地干等。
+
+    ``pending=True`` 表示还没到 (不是失败): 收尾本轮, 等用户说「点好了」再查一次。
+    """
+    pending = await _read_pending(user_key)
+    state = str(pending.get("state") or "")
+    mode = str(pending.get("mode") or "manual")
+    if not state:
+        return _error("没有待完成的授权, 请先调 feishu_auth_request.")
+    if mode == "manual":
+        return _error(
+            "当前环境无法自动接收授权码, 请让用户从浏览器地址栏复制 code 后交给 feishu_auth_complete. "
+            "(想免掉复制: 调 feishu_auth_env_check 看确切缺哪一项配置, 它会给出修法.)",
+            manual_required=True,
+            next_step="feishu_auth_env_check",
+        )
+    if mode == "gateway":
+        got = await _oauth_rx.poll_gateway(state, _CHECK_TIMEOUT_SECONDS)
+    else:
+        port = _oauth_rx.loopback_port()
+        with contextlib.suppress(ValueError):
+            from urllib.parse import urlsplit  # noqa: PLC0415
+
+            port = urlsplit(str(pending.get("redirect_uri") or "")).port or port
+        got = await _oauth_rx.wait_loopback(port, state, _CHECK_TIMEOUT_SECONDS)
+    if not got:
+        return _error(
+            "授权码还没到 —— 这不是失败, 只说明用户还没在授权页点「同意授权」. "
+            "**本轮就此收尾**, 请用户点完后回你一句, 那一轮再调一次 feishu_auth_check. "
+            "授权码在取件箱里可留存约 10 分钟, 晚点查照样能完成.",
+            pending=True,
+            retry_hint="等用户说点好了, 再调 feishu_auth_check (同一个 user_key)",
         )
     if got.get("error"):
         return _error(f"用户侧授权失败: {got['error']}")
@@ -6251,6 +7172,282 @@ async def append_doc_swimlane_impl(
     )
 
 
+# ── Embedded spreadsheets (block_type 30) and bitables (18) inside a doc ────────
+#
+# A native table block (31, above) is part of the document: it holds text, and nothing
+# more. What people mean by "在文档里放一个可编辑的飞书表格" is usually the other thing —
+# an embedded *spreadsheet*, with a formula bar, cell formats and filters, editable in
+# place and openable as its own sheet. That is block_type 30, and Feishu provisions the
+# backing spreadsheet itself: creating the block with a `row_size`/`column_size` returns
+# `sheet.token` of the form "<spreadsheetToken>_<sheetId>" (verified live — an empty
+# `sheet: {}` is rejected with 1770001 invalid param). Block 18 is the same story for a
+# 多维表格, whose token is "<appToken>_<tableId>" and which needs a `view_type`.
+#
+# The point of splitting that token is that no new write path is needed: the two halves
+# are exactly the (spreadsheet_token, sheet_id) pair the sheets/v2 values API already
+# takes, so the existing write/append/format helpers fill an in-document sheet as-is.
+# Writing past the declared size is fine — the worksheet grows to fit (measured: an 8-row
+# write into a 5-row block left the block reporting 8 rows).
+_SHEET_BLOCK_TYPE = 30
+_BITABLE_BLOCK_TYPE = 18
+
+# Largest row_size/column_size the *create block* call accepts. Measured against the live
+# API: 9 passes, 10 is refused with 99992402 "field validation failed" whatever the other
+# dimension is. Nothing in the docs mentions it, and the error names no field, so the
+# number is empirical — a bigger grid is reached by writing into the sheet afterwards,
+# which does grow it (30x4 written into a 9x4 block leaves the worksheet at 30x4).
+_SHEET_BLOCK_CREATE_MAX = 9
+
+# view_type 1 = grid (表格视图), the default a person sees when opening a new 多维表格.
+_BITABLE_DEFAULT_VIEW = 1
+
+
+def _column_letter(count: int) -> str:
+    """Spreadsheet column label for the ``count``-th column (1 → A, 27 → AA)."""
+    if count < 1:
+        return "A"
+    label = ""
+    while count:
+        count, rem = divmod(count - 1, 26)
+        label = chr(ord("A") + rem) + label
+    return label
+
+
+def split_embedded_sheet_token(block_token: str) -> tuple[str, str]:
+    """Split an embedded block's token into its ``(container_token, child_id)`` halves.
+
+    A sheet block's token is ``"<spreadsheetToken>_<sheetId>"`` and a bitable block's is
+    ``"<appToken>_<tableId>"``. Only the *first* underscore separates them: Feishu tokens
+    are alphanumeric, but splitting from the right would break the moment one contains an
+    underscore, so partition from the left. Returns ``("", "")`` when there is no
+    separator, letting callers report a clear error instead of writing to a half-token.
+    """
+    head, sep, tail = (block_token or "").strip().partition("_")
+    if not sep or not head or not tail:
+        return "", ""
+    return head, tail
+
+
+def _embedded_block_token(block: dict[str, Any], key: str) -> str:
+    """The ``token`` of an embedded block's payload (``"sheet"`` / ``"bitable"``), or ``""``."""
+    payload = block.get(key)
+    return str(payload.get("token", "")) if isinstance(payload, dict) else ""
+
+
+def _embedded_sheet_result(document_id: str, child: dict[str, Any], *, rows: int, columns: int) -> dict[str, Any]:
+    """Shape a created sheet block into the tool result, including its write coordinates.
+
+    ``spreadsheet_token`` + ``sheet_id`` are returned because they are the whole point:
+    they are what ``feishu_sheet_write`` needs to fill the embedded grid, and an agent
+    that only got the ``block_id`` back would have no way to write into it.
+    """
+    token = _embedded_block_token(child, "sheet")
+    spreadsheet, sheet_id = split_embedded_sheet_token(token)
+    return {
+        "ok": True,
+        "document_id": document_id,
+        "block_id": child.get("block_id", ""),
+        "block_token": token,
+        "spreadsheet_token": spreadsheet,
+        "sheet_id": sheet_id,
+        "range": f"{sheet_id}!A1" if sheet_id else "",
+        "rows": rows,
+        "columns": columns,
+        "url": f"{_DOC_BASE_URL}/sheets/{spreadsheet}" if spreadsheet else "",
+    }
+
+
+def _first_child(res: dict[str, Any], block_type: int) -> dict[str, Any] | None:
+    """Pick the created block of the wanted type out of a /children or /descendant reply."""
+    data = res.get("data") if isinstance(res.get("data"), dict) else {}
+    children = data.get("children") if isinstance(data, dict) else None
+    if not isinstance(children, list):
+        return None
+    for child in children:
+        if isinstance(child, dict) and child.get("block_type") == block_type:
+            return child
+    return None
+
+
+async def append_doc_sheet_impl(
+    document_id: str,
+    rows: int = 10,
+    columns: int = 5,
+    values_json: str = "",
+    header_row: bool = True,
+    user_key: str = "",
+    identity: str = "",
+    caption: str = "",
+    auto_number: bool = True,
+) -> dict[str, Any]:
+    """Append an embedded, editable Feishu spreadsheet (block_type 30) to a docx body.
+
+    When ``values_json`` is given, the grid is written into the new sheet, so one call
+    produces a filled in-document spreadsheet. The write goes through the ordinary
+    sheets/v2 path, which means ``=``-prefixed cells become live formulas — the reason to
+    embed a sheet rather than use a plain table block.
+
+    The block is created at most 9x9 (the API's undocumented creation cap) and grown to
+    the requested/data size by the write that follows, including for an empty sheet, whose
+    area is written as blank cells. So the size asked for is the size that appears.
+
+    A failed *write* still returns the block's coordinates with ``ok: False``: the sheet
+    exists in the document at that point, and silently dropping its token would leave an
+    empty embed nobody can fill.
+    """
+    if not document_id.strip():
+        return _error("document_id is required.")
+    doc = document_id.strip()
+
+    values: list[list[Any]] | None = None
+    if values_json.strip():
+        values, err = _parse_values_json(values_json)
+        if err or values is None:
+            return _error(err or "values_json produced no rows.")
+    if rows < 1 or columns < 1:
+        return _error("rows and columns must both be at least 1.")
+    if rows > _SHEET_MAX_ROWS or columns > _SHEET_MAX_COLS:
+        return _error(f"an embedded sheet is capped at {_SHEET_MAX_ROWS} rows x {_SHEET_MAX_COLS} columns.")
+
+    # The wanted final size, which is usually *larger* than the block can be created at.
+    # With data, the data decides: padding a 4-column table out to the default 5 would add
+    # a stray empty column the caller never asked for.
+    want_rows, want_columns = rows, columns
+    if values:
+        want_rows = len(values)
+        want_columns = max((len(r) for r in values), default=0)
+    # Creating the block is capped at 9x9 (measured: row_size or column_size of 10 is
+    # refused with 99992402 field validation failed, 9 is accepted). The cap only applies
+    # to *creation*: a subsequent ranged write grows the worksheet, so a big table starts
+    # from a clamped block and is expanded by its own write.
+    create_rows = min(want_rows, _SHEET_BLOCK_CREATE_MAX)
+    create_columns = min(want_columns, _SHEET_BLOCK_CREATE_MAX)
+    rows, columns = create_rows, create_columns
+
+    result_extra: dict[str, Any] = {}
+    if caption.strip():
+        # Same convention as the table tools: a 表 caption goes above what it labels, and
+        # it is written first so a failed caption never numbers a sheet that isn't there.
+        text, fields = await _resolve_table_caption(doc, caption, auto_number, user_key, identity)
+        result_extra.update(fields)
+        note = await append_doc_content_impl(doc, text, user_key, identity)
+        result_extra["caption_written"] = bool(note.get("ok"))
+        if not note.get("ok"):
+            result_extra["caption_error"] = note.get("message", "")
+
+    block = {"block_type": _SHEET_BLOCK_TYPE, "sheet": {"row_size": rows, "column_size": columns}}
+    res = await _invoke(_build_blocks_append_request(doc, [block]), user_key=user_key, prefer="user", identity=identity)
+    if not res["ok"]:
+        return res
+    child = _first_child(res, _SHEET_BLOCK_TYPE)
+    if child is None:
+        return _error("Feishu created the block but returned no sheet block to write into.")
+    out = {**_embedded_sheet_result(doc, child, rows=want_rows, columns=want_columns), **result_extra}
+    needs_growing = values is None and (want_rows > create_rows or want_columns > create_columns)
+    if values is None and not needs_growing:
+        return out
+    # Split again into plain strings rather than reading them back out of ``out``, whose
+    # value type is the union of everything in the result dict.
+    block_token = _embedded_block_token(child, "sheet")
+    spreadsheet, sheet_id = split_embedded_sheet_token(block_token)
+    if not spreadsheet or not sheet_id:
+        return {
+            **out,
+            "ok": False,
+            "message": (
+                f"embedded sheet created but its token {block_token!r} could not be split into "
+                "spreadsheet_token/sheet_id — write the values with feishu_sheet_write once you have them."
+            ),
+        }
+
+    # An empty sheet asked to be bigger than the creation cap is grown by writing blank
+    # cells over the wanted area — the same ranged write, just with nothing in it, so the
+    # person gets the 20 empty rows they asked to type into rather than a silent 9.
+    payload = values if values is not None else [[None] * want_columns for _ in range(want_rows)]
+    # The range must span the grid. A bare "<sheetId>!A1" is accepted by Feishu and comes
+    # back ok=True with an empty updatedRange having written *nothing* — data silently
+    # lost — so the end cell is always spelled out.
+    end = f"{_column_letter(want_columns)}{want_rows}"
+    wrote = await write_sheet_impl(
+        spreadsheet,
+        f"{sheet_id}!A1:{end}",
+        json.dumps(payload, ensure_ascii=False),
+        user_key,
+        identity,
+    )
+    if not wrote["ok"]:
+        return {
+            **out,
+            "ok": False,
+            "values_written": False,
+            "message": f"Embedded sheet created but writing its values failed: {wrote.get('message', '')}",
+            **({"need_auth": True} if wrote.get("need_auth") else {}),
+        }
+    if values is not None:
+        out["values_written"] = True
+    out["updated_cells"] = wrote.get("updated_cells")
+    if header_row and values:
+        # Bold header, matching what feishu_doc_append_table's header row looks like. A
+        # style failure is reported but doesn't fail the call: the data is already there.
+        styled = await format_sheet_impl(
+            spreadsheet,
+            f"{sheet_id}!A1:{_column_letter(len(values[0]))}1",
+            json.dumps({"font": {"bold": True}}),
+            user_key,
+            identity,
+        )
+        out["header_styled"] = bool(styled.get("ok"))
+    return out
+
+
+async def append_doc_bitable_impl(
+    document_id: str,
+    view_type: int = _BITABLE_DEFAULT_VIEW,
+    user_key: str = "",
+    identity: str = "",
+    caption: str = "",
+    auto_number: bool = True,
+) -> dict[str, Any]:
+    """Append an embedded 多维表格 (bitable, block_type 18) to a docx body.
+
+    Returns the new bitable's ``app_token`` and ``table_id`` — split out of the block's
+    ``"<appToken>_<tableId>"`` token — so the existing ``feishu_bitable_*`` tools can add
+    fields and records to it. Feishu creates the bitable itself; it starts with default
+    fields, which ``feishu_bitable_create_field`` can extend.
+    """
+    if not document_id.strip():
+        return _error("document_id is required.")
+    doc = document_id.strip()
+    result_extra: dict[str, Any] = {}
+    if caption.strip():
+        text, fields = await _resolve_table_caption(doc, caption, auto_number, user_key, identity)
+        result_extra.update(fields)
+        note = await append_doc_content_impl(doc, text, user_key, identity)
+        result_extra["caption_written"] = bool(note.get("ok"))
+        if not note.get("ok"):
+            result_extra["caption_error"] = note.get("message", "")
+
+    block = {"block_type": _BITABLE_BLOCK_TYPE, "bitable": {"view_type": int(view_type or _BITABLE_DEFAULT_VIEW)}}
+    res = await _invoke(_build_blocks_append_request(doc, [block]), user_key=user_key, prefer="user", identity=identity)
+    if not res["ok"]:
+        return res
+    child = _first_child(res, _BITABLE_BLOCK_TYPE)
+    if child is None:
+        return _error("Feishu created the block but returned no bitable block.")
+    token = _embedded_block_token(child, "bitable")
+    app_token, table_id = split_embedded_sheet_token(token)
+    return {
+        "ok": True,
+        "document_id": doc,
+        "block_id": child.get("block_id", ""),
+        "block_token": token,
+        "app_token": app_token,
+        "table_id": table_id,
+        "url": f"{_DOC_BASE_URL}/base/{app_token}" if app_token else "",
+        **result_extra,
+    }
+
+
 async def append_doc_content_impl(
     document_id: str,
     content: str,
@@ -6875,6 +8072,7 @@ _BLOCK_TYPE_NAMES = {
     14: "code",
     15: "quote",
     17: "todo",
+    18: "bitable",
     19: "callout",
     22: "divider",
     23: "file",
@@ -6978,6 +8176,29 @@ def _block_plain_text(block: dict[str, Any]) -> str:
 _BLOCKS_LIST_PAGE_MAX = 500
 
 
+def _embedded_block_coordinates(raw: dict[str, Any], block_type: int) -> dict[str, Any]:
+    """Write coordinates for an embedded sheet/bitable block, or ``{}`` for anything else.
+
+    Keyed by what the caller does next: a sheet block yields the
+    ``spreadsheet_token``/``sheet_id``/``range`` that ``feishu_sheet_*`` takes, a bitable
+    block the ``app_token``/``table_id`` that ``feishu_bitable_*`` takes.
+    """
+    if block_type == _SHEET_BLOCK_TYPE:
+        token = _embedded_block_token(raw, "sheet")
+        spreadsheet, sheet_id = split_embedded_sheet_token(token)
+        return {
+            "block_token": token,
+            "spreadsheet_token": spreadsheet,
+            "sheet_id": sheet_id,
+            "range": f"{sheet_id}!A1" if sheet_id else "",
+        }
+    if block_type == _BITABLE_BLOCK_TYPE:
+        token = _embedded_block_token(raw, "bitable")
+        app_token, table_id = split_embedded_sheet_token(token)
+        return {"block_token": token, "app_token": app_token, "table_id": table_id}
+    return {}
+
+
 async def list_doc_blocks_impl(
     document_id: str,
     max_blocks: int = 200,
@@ -7021,16 +8242,21 @@ async def list_doc_blocks_impl(
                 break
             block_type = raw.get("block_type") or 0
             text = _block_plain_text(raw)
-            items.append(
-                {
-                    "block_id": raw.get("block_id", ""),
-                    "block_type": block_type,
-                    "type_name": _BLOCK_TYPE_NAMES.get(block_type, str(block_type)),
-                    "parent_id": raw.get("parent_id", ""),
-                    "text": text if len(text) <= 200 else text[:200] + "…",
-                    "editable_text": block_type in _TEXTUAL_BLOCK_KEYS,
-                }
-            )
+            entry = {
+                "block_id": raw.get("block_id", ""),
+                "block_type": block_type,
+                "type_name": _BLOCK_TYPE_NAMES.get(block_type, str(block_type)),
+                "parent_id": raw.get("parent_id", ""),
+                "text": text if len(text) <= 200 else text[:200] + "…",
+                "editable_text": block_type in _TEXTUAL_BLOCK_KEYS,
+            }
+            # An embedded sheet/bitable holds no text, so the fields above say nothing
+            # about it: its content lives in a separate spreadsheet addressed by the
+            # block's token. Surfacing the split token here is what makes an *existing*
+            # in-document table editable — otherwise finding one and updating a cell
+            # would be impossible, since only the create call ever returned its token.
+            entry.update(_embedded_block_coordinates(raw, block_type))
+            items.append(entry)
         page_token = str(data.get("page_token") or "")
         if truncated or not page_token or len(items) >= limit:
             truncated = truncated or bool(page_token)

@@ -26,7 +26,11 @@ import anyio
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
 from loguru import logger
 
-from .workflow_execution import ExecutionCheckpoint, ResourceCapacity
+from .workflow_execution import (
+    ExecutionCheckpoint,
+    ForeachIterationCheckpoint,
+    ResourceCapacity,
+)
 
 STATE_VERSION = 2
 type RunStatus = Literal[
@@ -62,8 +66,10 @@ _CHECKPOINT_KEYS = frozenset(
         "values",
         "completed_step_ids",
         "completed_selection_ids",
+        "foreach_iterations",
     }
 )
+_LEGACY_CHECKPOINT_KEYS = _CHECKPOINT_KEYS - {"foreach_iterations"}
 _REQUEST_KEYS = frozenset(
     {
         "request_id",
@@ -535,6 +541,16 @@ def _run_to_json(run: HumanWorkflowRun) -> dict[str, object]:
             ),
             "completed_step_ids": list(run.checkpoint.completed_step_ids),
             "completed_selection_ids": list(run.checkpoint.completed_selection_ids),
+            "foreach_iterations": [
+                {
+                    "step_id": iteration.step_id,
+                    "iteration_index": iteration.iteration_index,
+                    "attempts": iteration.attempts,
+                    "outputs": iteration.outputs,
+                    "error": iteration.error,
+                }
+                for iteration in run.checkpoint.foreach_iterations
+            ],
         }
     request: dict[str, object] | None = None
     if run.prepared_request is not None:
@@ -582,8 +598,66 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
         if not isinstance(checkpoint_payload, dict):
             raise InvalidRunStateError("checkpoint must be an object or null")
         checkpoint_payload = cast(dict[str, object], checkpoint_payload)
-        _require_exact_keys(checkpoint_payload, _CHECKPOINT_KEYS, "checkpoint")
+        checkpoint_keys = frozenset(checkpoint_payload)
+        if checkpoint_keys not in {
+            _CHECKPOINT_KEYS,
+            _LEGACY_CHECKPOINT_KEYS,
+        }:
+            _require_exact_keys(checkpoint_payload, _CHECKPOINT_KEYS, "checkpoint")
         try:
+            iteration_payloads = checkpoint_payload.get("foreach_iterations", [])
+            if not isinstance(iteration_payloads, list):
+                raise InvalidRunStateError("checkpoint.foreach_iterations must be a list")
+            foreach_iterations: list[ForeachIterationCheckpoint] = []
+            for index, raw_iteration in enumerate(iteration_payloads):
+                if not isinstance(raw_iteration, dict):
+                    raise InvalidRunStateError(f"checkpoint.foreach_iterations[{index}] must be an object")
+                raw_iteration = cast(dict[str, object], raw_iteration)
+                _require_exact_keys(
+                    raw_iteration,
+                    frozenset(
+                        {
+                            "step_id",
+                            "iteration_index",
+                            "attempts",
+                            "outputs",
+                            "error",
+                        }
+                    ),
+                    f"checkpoint.foreach_iterations[{index}]",
+                )
+                foreach_iterations.append(
+                    ForeachIterationCheckpoint(
+                        step_id=_require_string(
+                            raw_iteration["step_id"],
+                            context=f"checkpoint.foreach_iterations[{index}].step_id",
+                        ),
+                        iteration_index=_require_int(
+                            raw_iteration["iteration_index"],
+                            context=(f"checkpoint.foreach_iterations[{index}].iteration_index"),
+                        ),
+                        attempts=_require_int(
+                            raw_iteration["attempts"],
+                            context=f"checkpoint.foreach_iterations[{index}].attempts",
+                        ),
+                        outputs=(
+                            None
+                            if raw_iteration["outputs"] is None
+                            else _require_json_mapping(
+                                raw_iteration["outputs"],
+                                context=(f"checkpoint.foreach_iterations[{index}].outputs"),
+                            )
+                        ),
+                        error=(
+                            None
+                            if raw_iteration["error"] is None
+                            else _require_json_mapping(
+                                raw_iteration["error"],
+                                context=(f"checkpoint.foreach_iterations[{index}].error"),
+                            )
+                        ),
+                    )
+                )
             checkpoint = ExecutionCheckpoint(
                 workflow_id=_require_string(
                     checkpoint_payload["workflow_id"],
@@ -605,6 +679,7 @@ def _run_from_json(payload: object) -> HumanWorkflowRun:
                     checkpoint_payload["completed_selection_ids"],
                     context="checkpoint.completed_selection_ids",
                 ),
+                foreach_iterations=tuple(foreach_iterations),
             )
         except ValueError as error:
             raise InvalidRunStateError(str(error)) from error
@@ -705,6 +780,7 @@ def _copy_checkpoint(
         ),
         completed_step_ids=tuple(checkpoint.completed_step_ids),
         completed_selection_ids=tuple(checkpoint.completed_selection_ids),
+        foreach_iterations=tuple(checkpoint.foreach_iterations),
     )
 
 

@@ -1,0 +1,36 @@
+# 入职管理制度确认卡 — 本地联调可改链接 / HR 通知目标。
+# 也可用环境变量覆盖：HAITUN_HANDBOOK_HR_NOTIFY_ID、HAITUN_HANDBOOK_HR_NOTIFY_ID_TYPE
+
+company_name: 海豚
+welcome_title: 欢迎加入 · 请确认管理制度
+welcome_intro: |
+  你好！欢迎加入团队。请先阅读下方管理制度文档，完成确认后提交。
+  提交后系统会校验你的填写；不通过会再发一张新确认卡（旧卡已失效）。
+
+handbook_links:
+  - title: 员工手册（示例链接，上线前请替换）
+    url: https://example.com/handbook
+  - title: 信息安全与合规须知（示例）
+    url: https://example.com/security
+
+# 通过后通知 HR / 行政（open_id 或 chat_id）。空则只通知新员工本人。
+hr_notify_id: ""
+hr_notify_id_type: open_id
+
+# 表单校验：全部满足才算通过。失败文案会写进新卡。
+required_form_fields:
+  - name: acked
+    equals: "true"
+    fail_message: 请选择「是，我已阅读管理制度」后再提交。
+  - name: confirm_text
+    contains: 我已阅读并同意
+    fail_message: 确认语须包含「我已阅读并同意」（可复制提示原文）。
+
+confirm_input_placeholder: 请输入：我已阅读并同意管理制度
+acked_placeholder: 是否已阅读管理制度
+acked_yes_label: 是，我已阅读管理制度
+acked_no_label: 否
+submit_button_label: 提交确认
+pass_employee_text: ✅ 管理制度确认已通过。感谢你的配合，如有疑问请联系 HR。
+pass_hr_text_template: "✅ 新员工 {name}（{open_id}）已通过管理制度确认。"
+fail_employee_prefix: "❌ 确认未通过："

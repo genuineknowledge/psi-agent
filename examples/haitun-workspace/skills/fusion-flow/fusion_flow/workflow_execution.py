@@ -1,4 +1,4 @@
-"""Compile workflow graphs into inspectable one-shot async plans."""
+"""Compile and execute durable acyclic workflow plans."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from typing import cast
 import anyio
 from loguru import logger
 
+from .execution.flow import _retry_operation, _run_parallel_tasks
 from .workflow_graph import (
     ArtifactOperand,
     ComparisonCondition,
@@ -31,6 +32,24 @@ from .workflow_graph import (
 
 class ExecutionPlanError(ValueError):
     """A workflow graph cannot be lowered to the supported execution plan."""
+
+
+class WorkflowControlError(Exception):
+    """A dispatcher signal that suspends or redirects workflow execution.
+
+    Unlike an ordinary step failure, a control signal must escape foreach
+    error collection unchanged.  Human-input suspension is the first caller,
+    but the marker intentionally contains no Human-specific state.
+    """
+
+
+# Public compatibility spelling emphasizes that this exception carries
+# interpreter control flow rather than an ordinary execution failure.
+WorkflowControlSignal = WorkflowControlError
+
+
+class StepOutputError(ExecutionPlanError):
+    """A dispatcher returned an invalid output mapping for one invocation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +140,9 @@ class DispatchContext:
     """Runtime-only scheduling information supplied to a contextual dispatcher."""
 
     resource_lease: ResourceLease = ResourceLease()
+    invocation_id: str = ""
+    iteration_index: int | None = None
+    attempt: int = 1
 
 
 type ContextualStepDispatcher = Callable[
@@ -128,6 +150,50 @@ type ContextualStepDispatcher = Callable[
     Awaitable[Mapping[str, object]],
 ]
 type ResourceCapacity = int | Sequence[str]
+
+
+@dataclass(frozen=True, slots=True)
+class ForeachIterationCheckpoint:
+    """One terminal foreach StepInstance result stored outside global artifacts."""
+
+    step_id: str
+    iteration_index: int
+    attempts: int
+    outputs: dict[str, object] | None = None
+    error: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        """Validate a successful-or-failed terminal record and copy its JSON."""
+
+        if not isinstance(self.step_id, str) or not self.step_id:
+            raise ValueError("foreach iteration step_id must be a non-empty string")
+        if type(self.iteration_index) is not int or self.iteration_index < 0:
+            raise ValueError("foreach iteration_index must be a non-negative integer")
+        if type(self.attempts) is not int or self.attempts < 1:
+            raise ValueError("foreach attempts must be a positive integer")
+        if (self.outputs is None) == (self.error is None):
+            raise ValueError("foreach iteration must contain exactly one of outputs or error")
+        if self.outputs is not None:
+            object.__setattr__(
+                self,
+                "outputs",
+                _copy_json_mapping(
+                    self.outputs,
+                    context="foreach iteration outputs",
+                ),
+            )
+        if self.error is not None:
+            copied_error = _copy_json_mapping(
+                self.error,
+                context="foreach iteration error",
+            )
+            if set(copied_error) != {"kind", "message"}:
+                raise ValueError("foreach iteration error must contain exactly kind and message")
+            if not isinstance(copied_error["kind"], str) or not copied_error["kind"]:
+                raise ValueError("foreach iteration error kind must be a non-empty string")
+            if not isinstance(copied_error["message"], str):
+                raise ValueError("foreach iteration error message must be a string")
+            object.__setattr__(self, "error", copied_error)
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +205,7 @@ class ExecutionCheckpoint:
     values: dict[str, object]
     completed_step_ids: tuple[str, ...] = ()
     completed_selection_ids: tuple[str, ...] = ()
+    foreach_iterations: tuple[ForeachIterationCheckpoint, ...] = ()
 
     def __post_init__(self) -> None:
         """Validate the execution identity and defensively copy JSON values."""
@@ -171,6 +238,33 @@ class ExecutionCheckpoint:
             if len(set(normalized)) != len(normalized):
                 raise ValueError(f"checkpoint {field_name} must not contain duplicates")
             object.__setattr__(self, field_name, normalized)
+        if not isinstance(self.foreach_iterations, tuple):
+            raise ValueError("checkpoint foreach_iterations must be a tuple")
+        if not all(isinstance(iteration, ForeachIterationCheckpoint) for iteration in self.foreach_iterations):
+            raise ValueError("checkpoint foreach_iterations must contain only ForeachIterationCheckpoint")
+        copied_iterations = tuple(
+            ForeachIterationCheckpoint(
+                step_id=iteration.step_id,
+                iteration_index=iteration.iteration_index,
+                attempts=iteration.attempts,
+                outputs=iteration.outputs,
+                error=iteration.error,
+            )
+            for iteration in self.foreach_iterations
+        )
+        ordered_iterations = tuple(
+            sorted(
+                copied_iterations,
+                key=lambda iteration: (
+                    iteration.step_id,
+                    iteration.iteration_index,
+                ),
+            )
+        )
+        identities = [(iteration.step_id, iteration.iteration_index) for iteration in ordered_iterations]
+        if len(set(identities)) != len(identities):
+            raise ValueError("checkpoint foreach_iterations must not contain duplicates")
+        object.__setattr__(self, "foreach_iterations", ordered_iterations)
 
 
 type CheckpointObserver = Callable[[ExecutionCheckpoint], Awaitable[None]]
@@ -255,6 +349,7 @@ def create_execution_checkpoint(
     values: Mapping[str, object],
     completed_step_ids: Sequence[str] = (),
     completed_selection_ids: Sequence[str] = (),
+    foreach_iterations: Sequence[ForeachIterationCheckpoint] = (),
 ) -> ExecutionCheckpoint:
     """Create a checkpoint bound to exactly one workflow and execution plan."""
 
@@ -264,6 +359,7 @@ def create_execution_checkpoint(
         values=dict(values),
         completed_step_ids=tuple(completed_step_ids),
         completed_selection_ids=tuple(completed_selection_ids),
+        foreach_iterations=tuple(foreach_iterations),
     )
 
 
@@ -271,7 +367,7 @@ def create_execution_checkpoint(
 class _AdmissionState:
     """Run-local counters committed under one allocator condition."""
 
-    max_concurrency: int
+    max_concurrency: int | None
     running: int = 0
 
 
@@ -368,19 +464,29 @@ class ResourceAllocator:
 
         lease: ResourceLease | None = None
         try:
-            lease = await self._acquire(
-                requirements,
-                state=state,
-            )
+            try:
+                lease = await self._acquire(
+                    requirements,
+                    state=state,
+                )
+            except ExecutionPlanError:
+                raise
+            except Exception as error:
+                raise ExecutionPlanError("workflow resource admission failed") from error
             yield lease
         finally:
             if lease is not None:
                 # A no-resource step still owns a run admission counter.
                 with anyio.CancelScope(shield=True):
-                    await self._release(
-                        lease,
-                        state=state,
-                    )
+                    try:
+                        await self._release(
+                            lease,
+                            state=state,
+                        )
+                    except ExecutionPlanError:
+                        raise
+                    except Exception as error:
+                        raise ExecutionPlanError("workflow resource release failed") from error
 
     async def _acquire(
         self,
@@ -395,7 +501,9 @@ class ResourceAllocator:
             return ResourceLease()
 
         async with self._condition:
-            while (state is not None and state.running >= state.max_concurrency) or any(
+            while (
+                state is not None and state.max_concurrency is not None and state.running >= state.max_concurrency
+            ) or any(
                 requirement.resource_id not in self._available
                 or len(self._available[requirement.resource_id]) < requirement.amount
                 for requirement in ordered
@@ -443,13 +551,7 @@ class ResourceAllocator:
 
 
 def generate_plan(graph: WorkflowGraph) -> ExecutionPlan:
-    """Lower one-shot data and explicit step dependencies into async fibers."""
-
-    if any(isinstance(edge, ForeachEdge) for edge in graph.edges):
-        raise ExecutionPlanError("foreach execution is not supported")
-    for step in graph.steps:
-        if step.max_attempts != 1:
-            raise ExecutionPlanError("step retries are not supported")
+    """Lower static data dependencies and dynamic foreach steps into fibers."""
 
     step_producers = {edge.artifact_id: edge.step_id for edge in graph.edges if isinstance(edge, ProducesEdge)}
     selection_producers = {selector.output_artifact_id: selector.output_artifact_id for selector in graph.selectors}
@@ -469,7 +571,7 @@ def generate_plan(graph: WorkflowGraph) -> ExecutionPlan:
         awaited_steps_by_step[step.step_id] = explicit_dependencies
     awaited_selections_by_step: dict[str, set[str]] = {step.step_id: set() for step in graph.steps}
     for edge in graph.edges:
-        if not isinstance(edge, ConsumesEdge):
+        if not isinstance(edge, ConsumesEdge | ForeachEdge):
             continue
         step_producer = step_producers.get(edge.artifact_id)
         if step_producer is not None:
@@ -574,14 +676,25 @@ async def execute_plan(
     selectors = {selector.output_artifact_id: selector for selector in graph.selectors}
     consumed = {step_id: [] for step_id in steps}
     produced = {step_id: [] for step_id in steps}
+    artifacts = {artifact.artifact_id: artifact for artifact in graph.artifacts}
+    foreach_by_step = {edge.step_id: edge for edge in graph.edges if isinstance(edge, ForeachEdge)}
     step_producer_by_artifact = {
         edge.artifact_id: edge.step_id for edge in graph.edges if isinstance(edge, ProducesEdge)
     }
     for edge in graph.edges:
         if isinstance(edge, ConsumesEdge):
-            consumed[edge.step_id].append(edge.artifact_id)
+            if artifacts[edge.artifact_id].binding_step_id is None:
+                consumed[edge.step_id].append(edge.artifact_id)
         elif isinstance(edge, ProducesEdge):
             produced[edge.step_id].append(edge.artifact_id)
+
+    required_artifacts_by_step = {
+        step_id: [
+            *artifact_ids,
+            *((foreach_by_step[step_id].artifact_id,) if step_id in foreach_by_step else ()),
+        ]
+        for step_id, artifact_ids in consumed.items()
+    }
 
     invoked = [
         instruction.step_id
@@ -635,7 +748,7 @@ async def execute_plan(
                 required_steps = set(steps[instruction.step_id].depends_on)
                 required_steps.update(
                     step_producer_by_artifact[artifact_id]
-                    for artifact_id in consumed[instruction.step_id]
+                    for artifact_id in required_artifacts_by_step[instruction.step_id]
                     if artifact_id in step_producer_by_artifact
                 )
                 missing_steps = required_steps - satisfied_steps
@@ -644,7 +757,9 @@ async def execute_plan(
                         f"plan is missing dependencies for {instruction.step_id}: {sorted(missing_steps)}"
                     )
                 required_selections = {
-                    artifact_id for artifact_id in consumed[instruction.step_id] if artifact_id in selectors
+                    artifact_id
+                    for artifact_id in required_artifacts_by_step[instruction.step_id]
+                    if artifact_id in selectors
                 }
                 missing_selections = required_selections - satisfied_selections
                 if missing_selections:
@@ -687,6 +802,10 @@ async def execute_plan(
 
     completed_step_ids: set[str] = set()
     completed_selection_ids: set[str] = set()
+    foreach_iterations: dict[
+        tuple[str, int],
+        ForeachIterationCheckpoint,
+    ] = {}
     if checkpoint is not None:
         if not isinstance(checkpoint, ExecutionCheckpoint):
             raise ExecutionPlanError("checkpoint must be an ExecutionCheckpoint")
@@ -707,6 +826,9 @@ async def execute_plan(
 
         completed_step_ids.update(checkpoint.completed_step_ids)
         completed_selection_ids.update(checkpoint.completed_selection_ids)
+        foreach_iterations.update(
+            {(iteration.step_id, iteration.iteration_index): iteration for iteration in checkpoint.foreach_iterations}
+        )
         unknown_completed_steps = completed_step_ids - steps.keys()
         if unknown_completed_steps:
             raise ExecutionPlanError(f"checkpoint contains unknown completed steps: {sorted(unknown_completed_steps)}")
@@ -747,6 +869,86 @@ async def execute_plan(
             if not _json_values_equal(checkpoint.values[artifact_id], inputs[artifact_id]):
                 raise ExecutionPlanError(f"checkpoint input does not match current input: {artifact_id}")
 
+        for (step_id, iteration_index), iteration in foreach_iterations.items():
+            edge = foreach_by_step.get(step_id)
+            if edge is None:
+                raise ExecutionPlanError(f"checkpoint contains iteration for non-foreach step: {step_id}")
+            if iteration.attempts > steps[step_id].max_attempts:
+                raise ExecutionPlanError(
+                    f"checkpoint iteration attempts exceed max_attempts: {step_id}[{iteration_index}]"
+                )
+            if iteration.error is not None and iteration.attempts != steps[step_id].max_attempts:
+                raise ExecutionPlanError(
+                    f"checkpoint failed iteration has not exhausted max_attempts: {step_id}[{iteration_index}]"
+                )
+            try:
+                source = checkpoint.values[edge.artifact_id]
+            except KeyError:
+                raise ExecutionPlanError(f"checkpoint foreach source is unavailable: {edge.artifact_id}") from None
+            if not isinstance(source, list):
+                raise ExecutionPlanError(f"foreach source {edge.artifact_id!r} must be a List")
+            if iteration_index >= len(source):
+                raise ExecutionPlanError(
+                    f"checkpoint foreach iteration index is out of range: {step_id}[{iteration_index}]"
+                )
+            if iteration.outputs is not None and set(iteration.outputs) != set(produced[step_id]):
+                raise ExecutionPlanError(
+                    f"checkpoint foreach outputs for {step_id}[{iteration_index}] "
+                    f"must match exactly: expected {sorted(produced[step_id])}, "
+                    f"got {sorted(iteration.outputs)}"
+                )
+
+            dependency_operations = plan_dependencies[("step", step_id)]
+            completed_operations = {
+                *(("step", completed_step_id) for completed_step_id in completed_step_ids),
+                *(("select", artifact_id) for artifact_id in completed_selection_ids),
+            }
+            missing_dependencies = dependency_operations - completed_operations
+            if missing_dependencies:
+                formatted_missing = sorted(f"{kind}:{identity}" for kind, identity in missing_dependencies)
+                raise ExecutionPlanError(
+                    f"checkpoint foreach iteration is not dependency-closed for "
+                    f"{step_id}[{iteration_index}]: missing {formatted_missing}"
+                )
+
+        for step_id in sorted(completed_step_ids & foreach_by_step.keys()):
+            edge = foreach_by_step[step_id]
+            source = checkpoint.values[edge.artifact_id]
+            if not isinstance(source, list):
+                raise ExecutionPlanError(f"foreach source {edge.artifact_id!r} must be a List")
+            expected_indices = set(range(len(source)))
+            actual_indices = {
+                iteration_index
+                for candidate_step_id, iteration_index in foreach_iterations
+                if candidate_step_id == step_id
+            }
+            if actual_indices != expected_indices:
+                raise ExecutionPlanError(
+                    f"completed foreach checkpoint for {step_id!r} must contain "
+                    f"every iteration: expected {sorted(expected_indices)}, "
+                    f"got {sorted(actual_indices)}"
+                )
+            iteration_records = [
+                foreach_iterations[(step_id, iteration_index)] for iteration_index in range(len(source))
+            ]
+            if any(iteration.outputs is None for iteration in iteration_records):
+                raise ExecutionPlanError(f"completed foreach checkpoint for {step_id!r} contains a failed iteration")
+            rebuilt_aggregates = {
+                artifact_id: [
+                    cast(dict[str, object], iteration.outputs)[artifact_id] for iteration in iteration_records
+                ]
+                for artifact_id in produced[step_id]
+            }
+            for artifact_id, rebuilt_value in rebuilt_aggregates.items():
+                if not _json_values_equal(
+                    checkpoint.values[artifact_id],
+                    rebuilt_value,
+                ):
+                    raise ExecutionPlanError(
+                        f"completed foreach checkpoint aggregate {artifact_id!r} "
+                        f"does not match terminal iterations for step {step_id!r}"
+                    )
+
     requirements_by_step = {
         step.step_id: step.resources for step in graph.steps if step.step_id not in completed_step_ids
     }
@@ -768,7 +970,7 @@ async def execute_plan(
     for artifact_id in completed_selection_ids:
         completed_selections[artifact_id].set()
     checkpoint_lock = anyio.Lock()
-    capacity = graph.policy.max_concurrency or max(1, len(steps))
+    capacity = graph.policy.max_concurrency
     admission_state = _AdmissionState(
         max_concurrency=capacity,
     )
@@ -776,28 +978,240 @@ async def execute_plan(
     async def invoke_step(
         step: StepNode,
         step_inputs: Mapping[str, object],
-    ) -> Mapping[str, object]:
-        async with allocator._admit(
-            step.resources,
-            state=admission_state,
-        ) as resource_lease:
-            logger.debug(f"Dispatching workflow step: {step.step_id}")
-            context = DispatchContext(
-                resource_lease=resource_lease,
-            )
-            if step.timeout_seconds is None:
-                if contextual_dispatch is not None:
-                    return await contextual_dispatch(step, step_inputs, context)
-                if dispatch is None:
-                    raise AssertionError("dispatcher preflight did not select a dispatcher")
-                return await dispatch(step, step_inputs)
+        *,
+        iteration_index: int | None = None,
+    ) -> tuple[dict[str, object], int]:
+        """Invoke and validate one logical StepInstance with per-attempt leases."""
 
-            with anyio.fail_after(step.timeout_seconds):
-                if contextual_dispatch is not None:
-                    return await contextual_dispatch(step, step_inputs, context)
-                if dispatch is None:
-                    raise AssertionError("dispatcher preflight did not select a dispatcher")
-                return await dispatch(step, step_inputs)
+        invocation_id = step.step_id if iteration_index is None else f"{step.step_id}[{iteration_index}]"
+
+        async def call_dispatcher(
+            context: DispatchContext,
+            invocation_inputs: Mapping[str, object],
+        ) -> Mapping[str, object]:
+            if contextual_dispatch is not None:
+                return await contextual_dispatch(
+                    step,
+                    invocation_inputs,
+                    context,
+                )
+            if dispatch is None:
+                raise ExecutionPlanError("dispatcher preflight did not select a dispatcher")
+            return await dispatch(step, invocation_inputs)
+
+        async def run_attempt(attempt: int) -> dict[str, object]:
+            """Adapt one graph Step attempt to the shared Flow retry kernel."""
+
+            async with allocator._admit(
+                step.resources,
+                state=admission_state,
+            ) as resource_lease:
+                logger.debug(f"Dispatching workflow step: {invocation_id} (attempt {attempt}/{step.max_attempts})")
+                context = DispatchContext(
+                    resource_lease=resource_lease,
+                    invocation_id=invocation_id,
+                    iteration_index=iteration_index,
+                    attempt=attempt,
+                )
+                attempt_inputs = (
+                    _copy_json_mapping(
+                        step_inputs,
+                        context=f"inputs for {invocation_id} attempt {attempt}",
+                    )
+                    if iteration_index is not None
+                    else step_inputs
+                )
+                if step.timeout_seconds is None:
+                    outputs = await call_dispatcher(
+                        context,
+                        attempt_inputs,
+                    )
+                else:
+                    with anyio.fail_after(step.timeout_seconds):
+                        outputs = await call_dispatcher(
+                            context,
+                            attempt_inputs,
+                        )
+                return _validate_step_outputs(
+                    step.step_id,
+                    outputs,
+                    expected_output_ids=produced[step.step_id],
+                )
+
+        def should_retry(error: Exception, attempt: int) -> bool:
+            """Retry ordinary executor/output failures, never graph control."""
+
+            del attempt
+            return _is_ordinary_step_error(error)
+
+        def warn_retry(error: Exception, attempt: int) -> None:
+            """Keep the graph-specific retry diagnostic outside the kernel."""
+
+            del attempt
+            logger.warning(f"Retrying workflow step {invocation_id} after {type(error).__name__}: {error}")
+
+        return await _retry_operation(
+            run_attempt,
+            max_attempts=step.max_attempts,
+            initial_delay=0,
+            backoff_factor=1,
+            max_delay=0,
+            should_retry=should_retry,
+            on_retry=warn_retry,
+        )
+
+    def checkpoint_iterations() -> tuple[ForeachIterationCheckpoint, ...]:
+        """Return the current terminal iteration records in stable order."""
+
+        return tuple(iteration for _, iteration in sorted(foreach_iterations.items()))
+
+    async def observe_checkpoint() -> None:
+        """Persist one snapshot; the caller must hold checkpoint_lock."""
+
+        if checkpoint_observer is None:
+            return
+        await checkpoint_observer(
+            create_execution_checkpoint(
+                plan,
+                graph,
+                values=values,
+                completed_step_ids=tuple(sorted(completed_step_ids)),
+                completed_selection_ids=tuple(sorted(completed_selection_ids)),
+                foreach_iterations=checkpoint_iterations(),
+            )
+        )
+
+    async def commit_step_outputs(
+        step_id: str,
+        outputs: Mapping[str, object],
+    ) -> None:
+        """Atomically materialize one logical step and checkpoint its completion."""
+
+        if checkpoint_observer is None:
+            values.update(outputs)
+            completed_step_ids.add(step_id)
+            return
+        async with checkpoint_lock:
+            values.update(outputs)
+            completed_step_ids.add(step_id)
+            await observe_checkpoint()
+
+    async def commit_iteration(
+        iteration: ForeachIterationCheckpoint,
+    ) -> None:
+        """Record one terminal iteration before other iterations finish."""
+
+        identity = (iteration.step_id, iteration.iteration_index)
+        if checkpoint_observer is None:
+            foreach_iterations[identity] = iteration
+            return
+        async with checkpoint_lock:
+            foreach_iterations[identity] = iteration
+            await observe_checkpoint()
+
+    async def invoke_foreach_step(step: StepNode) -> dict[str, object]:
+        """Expand, execute, and deterministically collect one foreach step."""
+
+        edge = foreach_by_step[step.step_id]
+        try:
+            source = values[edge.artifact_id]
+        except KeyError:
+            raise ExecutionPlanError(f"foreach source artifact is unavailable: {edge.artifact_id}") from None
+        if not isinstance(source, list):
+            raise ExecutionPlanError(f"foreach source {edge.artifact_id!r} must be a List")
+        source = cast(
+            list[object],
+            _copy_json_value(
+                source,
+                context=f"foreach source {edge.artifact_id}",
+                active=set(),
+            ),
+        )
+
+        pending = tuple(
+            (iteration_index, item)
+            for iteration_index, item in enumerate(source)
+            if (
+                (iteration := foreach_iterations.get((step.step_id, iteration_index))) is None
+                or iteration.outputs is None
+            )
+        )
+        iteration_failures: dict[int, Exception] = {}
+
+        async def run_iteration(
+            iteration_index: int,
+            item: object,
+        ) -> ForeachIterationCheckpoint:
+            """Execute and checkpoint one expanded StepInstance."""
+
+            try:
+                step_inputs = {artifact_id: values[artifact_id] for artifact_id in consumed[step.step_id]}
+            except KeyError as error:
+                raise ExecutionPlanError(
+                    f"foreach step {step.step_id!r} input artifact is unavailable: {error.args[0]!r}"
+                ) from None
+            step_inputs[edge.item_binding_id] = item
+            step_inputs = _copy_json_mapping(
+                step_inputs,
+                context=f"inputs for {step.step_id}[{iteration_index}]",
+            )
+            try:
+                outputs, attempts = await invoke_step(
+                    step,
+                    step_inputs,
+                    iteration_index=iteration_index,
+                )
+            except Exception as error:
+                if not _is_ordinary_step_error(error):
+                    raise
+                iteration_failures[iteration_index] = error
+                iteration = _failed_iteration(
+                    step.step_id,
+                    iteration_index,
+                    step.max_attempts,
+                    error,
+                )
+            else:
+                iteration = ForeachIterationCheckpoint(
+                    step_id=step.step_id,
+                    iteration_index=iteration_index,
+                    attempts=attempts,
+                    outputs=outputs,
+                )
+            await commit_iteration(iteration)
+            return iteration
+
+        tasks: list[Callable[[], Awaitable[ForeachIterationCheckpoint]]] = []
+        for iteration_index, item in pending:
+
+            async def visit(
+                iteration_index: int = iteration_index,
+                item: object = item,
+            ) -> ForeachIterationCheckpoint:
+                return await run_iteration(iteration_index, item)
+
+            tasks.append(visit)
+
+        await _run_parallel_tasks(
+            tasks,
+            join="all",
+            required=len(tasks),
+            max_concurrency=capacity,
+        )
+
+        iteration_records = [
+            foreach_iterations[(step.step_id, iteration_index)] for iteration_index in range(len(source))
+        ]
+        failed = [iteration for iteration in iteration_records if iteration.error is not None]
+        if failed:
+            raise ExceptionGroup(
+                f"foreach step {step.step_id!r} failed",
+                [iteration_failures[iteration.iteration_index] for iteration in failed],
+            )
+        return {
+            artifact_id: [cast(dict[str, object], iteration.outputs)[artifact_id] for iteration in iteration_records]
+            for artifact_id in produced[step.step_id]
+        }
 
     async def run_fiber(fiber: Fiber) -> None:
         for instruction in fiber.instructions:
@@ -823,35 +1237,13 @@ async def execute_plan(
                 step = steps.get(instruction.step_id)
                 if step is None:
                     raise ExecutionPlanError(f"plan invokes unknown step: {instruction.step_id}")
-                step_inputs = {artifact_id: values[artifact_id] for artifact_id in consumed[step.step_id]}
-                outputs = await invoke_step(step, step_inputs)
-
-                if not isinstance(outputs, Mapping) or not all(isinstance(artifact_id, str) for artifact_id in outputs):
-                    raise ExecutionPlanError(f"outputs for {step.step_id} must be a mapping with string keys")
-                expected_outputs = set(produced[step.step_id])
-                actual_outputs = set(outputs)
-                if actual_outputs != expected_outputs:
-                    raise ExecutionPlanError(
-                        f"outputs for {step.step_id} must match exactly: "
-                        f"expected {sorted(expected_outputs)}, "
-                        f"got {sorted(actual_outputs)}"
-                    )
-                if checkpoint_observer is None:
-                    values.update(outputs)
-                    completed_step_ids.add(step.step_id)
+                if step.step_id in foreach_by_step:
+                    outputs = await invoke_foreach_step(step)
                 else:
-                    async with checkpoint_lock:
-                        values.update(outputs)
-                        completed_step_ids.add(step.step_id)
-                        await checkpoint_observer(
-                            create_execution_checkpoint(
-                                plan,
-                                graph,
-                                values=values,
-                                completed_step_ids=tuple(sorted(completed_step_ids)),
-                                completed_selection_ids=tuple(sorted(completed_selection_ids)),
-                            )
-                        )
+                    step_inputs = {artifact_id: values[artifact_id] for artifact_id in consumed[step.step_id]}
+                    outputs, _ = await invoke_step(step, step_inputs)
+
+                await commit_step_outputs(step.step_id, outputs)
                 completed_steps[step.step_id].set()
                 logger.debug(f"Completed workflow step: {step.step_id}")
                 continue
@@ -881,15 +1273,7 @@ async def execute_plan(
                     async with checkpoint_lock:
                         values[selector.output_artifact_id] = selected_value
                         completed_selection_ids.add(selector.output_artifact_id)
-                        await checkpoint_observer(
-                            create_execution_checkpoint(
-                                plan,
-                                graph,
-                                values=values,
-                                completed_step_ids=tuple(sorted(completed_step_ids)),
-                                completed_selection_ids=tuple(sorted(completed_selection_ids)),
-                            )
-                        )
+                        await observe_checkpoint()
                 completed_selections[selector.output_artifact_id].set()
                 logger.debug(f"Completed workflow select: {selector.output_artifact_id}")
                 continue
@@ -908,6 +1292,64 @@ async def execute_plan(
             await run_fibers()
 
     return {artifact.artifact_id: values[artifact.artifact_id] for artifact in graph.artifacts if artifact.is_output}
+
+
+def _validate_step_outputs(
+    step_id: str,
+    outputs: object,
+    *,
+    expected_output_ids: Sequence[str],
+) -> dict[str, object]:
+    """Require one exact finite-JSON output object from a dispatcher."""
+
+    if not isinstance(outputs, Mapping) or not all(isinstance(artifact_id, str) for artifact_id in outputs):
+        raise StepOutputError(f"outputs for {step_id} must be a mapping with string keys")
+    outputs_by_id = cast(Mapping[str, object], outputs)
+    expected_outputs = set(expected_output_ids)
+    actual_outputs = set(outputs_by_id)
+    if actual_outputs != expected_outputs:
+        raise StepOutputError(
+            f"outputs for {step_id} must match exactly: "
+            f"expected {sorted(expected_outputs)}, "
+            f"got {sorted(actual_outputs)}"
+        )
+    try:
+        return _copy_json_mapping(
+            outputs_by_id,
+            context=f"outputs for {step_id}",
+        )
+    except ExecutionPlanError as error:
+        raise StepOutputError(str(error)) from error
+
+
+def _failed_iteration(
+    step_id: str,
+    iteration_index: int,
+    attempts: int,
+    error: Exception,
+) -> ForeachIterationCheckpoint:
+    """Convert one exhausted ordinary failure into a stable JSON record."""
+
+    return ForeachIterationCheckpoint(
+        step_id=step_id,
+        iteration_index=iteration_index,
+        attempts=attempts,
+        error={
+            "kind": type(error).__name__,
+            "message": str(error),
+        },
+    )
+
+
+def _is_ordinary_step_error(error: Exception) -> bool:
+    """Return whether retry/foreach may handle a dispatcher failure."""
+
+    if isinstance(error, BaseExceptionGroup):
+        return all(isinstance(nested, Exception) and _is_ordinary_step_error(nested) for nested in error.exceptions)
+    return isinstance(error, StepOutputError) or not isinstance(
+        error,
+        WorkflowControlSignal | ExecutionPlanError,
+    )
 
 
 def _copy_json_mapping(

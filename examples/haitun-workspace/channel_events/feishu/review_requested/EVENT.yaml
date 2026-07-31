@@ -1,0 +1,7 @@
+name: haitun.review.requested
+source: haitun
+kind: synthetic
+description: >
+  需要人审 / Agent 审的事项。payload: review_id (str), subject (str), optional
+  kind (contract|doc|expense|other), assignee_open_id, requester_open_id,
+  artifact_ref. 对接合同/文档审阅；默认 produce 空转。

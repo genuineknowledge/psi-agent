@@ -9,8 +9,8 @@ Agent can prepare or install runtimes, dependencies, compilers, and other
 toolchain components for multiple languages, while the host fixes or registers
 the authoritative launch and captures its process result. Human-backed Steps use a dedicated instruction-preparation Agent, the
 existing Haitun `clarify` flow, and a private checkpoint that crosses conversation
-turns. The `fusion_flow.execution` compatibility package is retained for
-historical parity tests but is not part of the active workspace path.
+turns. The `fusion_flow.execution` package owns the shared `flow.agent`,
+`flow.session`, retry, and bounded-parallel primitives that the G4 runtime reuses.
 
 Every active G4 run also writes each materialized Artifact to the workflow
 bundle's `runs/<run-id>/artifacts/` directory. Text values remain Markdown;
@@ -20,10 +20,11 @@ state under `.psi/fusion-flow/runs/`.
 
 ## Workspace integration
 
-Reusable declarations use the fixed path
-`flows/workflows/<slug>/<slug>.workflow`. Saving, listing, and loading are
-upper-layer instructions implemented with existing file tools; this feature
-does not add a workflow-management operator or manifest protocol.
+Reusable declarations use one fixed bundle under `flows/workflows/<slug>/`.
+The canonical source is `<slug>.workflow`, falling back to `<slug>.g4` when the
+preferred file is absent. Saving, listing, and loading are upper-layer
+instructions implemented with existing file tools; this feature does not add a
+workflow-management operator or manifest protocol.
 
 The frontend reuse command is exactly:
 
@@ -61,7 +62,7 @@ canonical reusable declarations under `flows/workflows/<slug>/`.
 - `fusion_flow/artifact_store.py`: atomic, workflow-local Markdown persistence for every materialized G4 Artifact.
 - `fusion_flow/job_store.py`: strict v2 JSON state plus non-blocking, OS-released advisory leases and an in-process guard for G4 runs waiting on Human input.
 - `fusion_flow/planning.py`: before workflow authoring, checks the syntax mappings declared for each planned step against the syntax names actually available. Each planned step maps to one catalog `Step` identity, which authoring expands into a typed constant and its assertions.
-- `fusion_flow/execution/`: inactive Python parity port of legacy `flow.*` primitives; `run_flow` does not import or dispatch through it.
+- `fusion_flow/execution/`: shared Python `flow.*` primitives; `run_flow` uses its Agent/session, retry, and bounded-parallel behavior.
 - `test/test_workspace_integration.py`: canonical and legacy entry-point routing checks.
 
 The obsolete Node/TypeScript compiler prototype has been removed. The Python
@@ -79,7 +80,7 @@ The language contract now covers file-level identity declarations, assertions, `
 
 For a compact, readable BNF and consistency with KEDispatcher, preset operators remain syntax sugar over the same flexible call rule instead of receiving separate arity-constrained grammar productions. After syntax parsing, the checker/catalog validates their arity and types. Because that information is intentionally not encoded structurally in the BNF, every preset operator in `FusionFlow.g4` documents its parameter types, return type, and explicit arity for human and agent readers; the grammar contract test enforces this documentation invariant.
 
-The generated Python lexer and parser are committed under `fusion_flow/generated/` and wired into the handwritten Python Core IR visitor. Syntax failures return one-based, half-open source spans without partial Core IR. Repeated equivalent constant declarations reuse one identity, conflicting declarations fail, and every named or quoted constant must be declared with at least one concept before use. Numeric and Boolean literals use the KEDispatcher builtin symbols and concepts `ComplexNumber` and `Bool`, while quoted identifiers remain distinct from those literals. Standalone calls require a catalog output concept of `Bool` and become an ordinary `Assertion` against `True`; explicit `== True` remains equivalent. Formula equality becomes an `Assertion`, `!=` intentionally remains `NOT` over an `Assertion`, and ordered comparisons become the corresponding KEDispatcher `comparison_*_op` application asserted equal to `True`. `WorkflowFile` retains global declarations and multiple workflow blocks, while `IfTerm` retains conditional terms without approximation. Shorthand eligibility uses the catalog return concept; operator registration and arity, other catalog type compatibility, workflow legality, and backend support remain static-checker responsibilities.
+The generated Python lexer and parser are committed under `fusion_flow/generated/` and wired into the handwritten Python Core IR visitor. Syntax failures return one-based, half-open source spans without partial Core IR. Repeated equivalent constant declarations reuse one identity, conflicting declarations fail, and every symbolic or restricted quoted-ID constant must be declared with at least one concept before use. Direct JSON text literals are accepted where the catalog expects `Instruction` or `StepName`; `step_name` requires that readable string form and rejects symbolic `StepName` values. Numeric and Boolean literals use the KEDispatcher builtin symbols and concepts `ComplexNumber` and `Bool`, while quoted identifiers remain distinct from those literals. Standalone calls require a catalog output concept of `Bool` and become an ordinary `Assertion` against `True`; explicit `== True` remains equivalent. Formula equality becomes an `Assertion`, `!=` intentionally remains `NOT` over an `Assertion`, and ordered comparisons become the corresponding KEDispatcher `comparison_*_op` application asserted equal to `True`. `WorkflowFile` retains global declarations and multiple workflow blocks, while `IfTerm` retains conditional terms without approximation. Shorthand eligibility uses the catalog return concept; operator registration and arity, other catalog type compatibility, workflow legality, and backend support remain static-checker responsibilities.
 
 The Core IR contains catalog-owned `Concept` and `Operator` references, typed constants, recursive compound and conditional terms, ordered list terms, equality assertions, and `NOT`/`AND`/`OR` formulas. `WorkflowFile` stores declarations and ordered workflow blocks; each `Workflow` stores one syntax-level block name with its assertions. The workflow does not redeclare concepts or operators.
 
@@ -101,9 +102,11 @@ Downstream dataflow consumes `[selected]`. Priority selection uses named
 intermediate Artifacts; inline or nested `if` terms fail closed.
 The graph compiler preserves `program_path`, `agent_system_prompt`, and
 `allowed_tool` as residual catalog/dispatcher configuration. The official
-workflow runner consumes and validates `program_path`; `agent_system_prompt`
-and `allowed_tool` remain unsupported residuals and stop execution. Malformed
-supported relations and unsupported recursive terms fail explicitly. An
+workflow runner consumes and validates all three, and Agent leaves execute
+through shared `flow.agent` and `flow.session` primitives. Agent
+`model`/`engine`/`api_base` overrides are parsed but fail explicitly until the
+fixed AI socket can route them. Malformed supported relations and unsupported
+recursive terms fail explicitly. An
 official execution entry point must reject any final residual rather than skip
 or delete it. The graph is serializable, but the compilation is not a
 replacement for the original Core IR.
@@ -126,7 +129,7 @@ The runner materializes every `./...` Step instruction through one injected
 instruction resolver before dispatching any Step, caches shared references, and
 passes the resulting text consistently to Agent, Human, and Program executors.
 The public workspace adapter accepts UTF-8 Markdown files relative to the
-containing `.workflow` file and rejects bundle escapes. If a validated
+containing `.workflow` or `.g4` file and rejects bundle escapes. If a validated
 instruction file in a workflow whose executors are all Agent cannot be read,
 the adapter delegates its normalized
 workspace-relative reference through that Agent's Step prompt; unreadable Human
@@ -200,12 +203,13 @@ No paraphrase or input/tool/output content enables it. An authorized script or
 stdin adaptation must include a concrete `adaptation_reason`, and consumed input
 Artifact values remain immutable.
 
-For a successful attempt, zero-output Programs must write no stdout, one output
-receives valid UTF-8 stdout verbatim, and multiple outputs require one strict,
+For a successful non-foreach attempt, zero-output Programs must write no stdout,
+one output receives valid UTF-8 stdout verbatim, and multiple outputs require one strict,
 finite JSON object keyed by all and only the declared Artifact IDs. Non-standard
 constants such as `NaN` and `Infinity`, numeric overflow to infinity, nested
 non-finite values, and duplicate object keys are rejected. A launch error,
-nonzero exit, invalid UTF-8 stream, or output-contract failure produces the same
+nonzero exit, invalid UTF-8 stream, or output-contract failure in a non-foreach
+Program produces the same
 error value for every declared output:
 
 ```json
@@ -230,7 +234,9 @@ error value for every declared output:
 ```
 
 A failing zero-output Program raises because no Artifact can carry the error.
-Do not treat an error-valued Artifact as a repaired success.
+Do not treat an error-valued Artifact as a repaired success. Inside `foreach`,
+each Program iteration applies its own retry policy; terminal iteration failures
+are checkpointed and reported together after the remaining iterations finish.
 
 `execute_program` creates a separate POSIX process group or Windows Job Object
 and performs shielded cleanup after normal direct-child exit, failure, timeout,
@@ -304,19 +310,23 @@ forces the first Step to wait for the second even when no Artifact flows
 between them; repeat the relation for multiple predecessors. Declaration order
 has no scheduling meaning.
 
-`ForeachEdge`, `max_attempts != 1`, feedback/input-plus-producer graphs, and
-circular Artifact or explicit control awaits remain fail-closed execution-plan
-boundaries.
+`ForeachEdge` expands one Step into bounded-parallel iterations, preserves input
+order in each output List, returns empty Lists for empty input, and checkpoints
+each iteration independently. Retry, timeout, resources, and crash recovery are
+per iteration; ordinary terminal failures are collected and raised together.
+Human `foreach`, feedback/input-plus-producer graphs, and circular Artifact or
+explicit control awaits remain fail-closed execution-plan boundaries.
 
 This remains a workspace-local package rather than a wheel dependency. The
-execution subpackage is a compatibility boundary, not the G4 runtime. Run all
+graph interpreter stays in `workflow_execution.py`, while executor behavior is
+reused from `execution/flow.py` wherever the shared primitive exists. Run all
 tests from this directory so `fusion_flow` is on the runtime import path:
 
 ```powershell
 uv run python -m pytest -q
 ```
 
-Resource pools stay outside `.workflow` source and are supplied by the
+Resource pools stay outside `.workflow`/`.g4` source and are supplied by the
 embedding tool or application as counts or concrete instance IDs.
 
 Variables, quantifiers, truth formulas, theories, rules, and query/SAT/optimization requests are intentionally absent because the reviewed workflow surface does not use them. Operator execution, concept registries and matching, validation, parsing, backend compilation, and Haitun activation remain separate workstreams.
@@ -348,13 +358,14 @@ system prompt. `AgentInvocation.prompt` remains the per-call prompt. The removed
 compatibility aliases. Because the serialized config key changes to
 `system_prompt`, an old cached Agent call may execute again after this migration.
 
-The workspace activation path now points at this directory. `skills/fusion-flow/`
-is the source of truth; the former Node/TypeScript Skill and `.flow.ts` runner
-are no longer shipped.
+The workspace activation path points at this directory for G4 source.
+`skills/fusion-flow-legacy/` separately preserves the Node/TypeScript
+`.flow.ts` runtime; callers must select that legacy skill explicitly rather
+than translating between formats.
 
 `/workflow:<slug>` has explicit priority and resolves to
-`flows/workflows/<slug>/<slug>.workflow`. It is an upper-layer command, not a
-new operator.
+`flows/workflows/<slug>/<slug>.workflow`, falling back to `<slug>.g4`. It is an
+upper-layer command, not a new operator.
 
 ## Regenerating the Python parser
 
@@ -376,6 +387,6 @@ Commit only `FusionFlowLexer.py` and `FusionFlowParser.py`; the generated `.inte
 6. **Workflow Graph backend** owns `fusion_flow/graph_compiler.py`: compile real Core IR through the shared hooks into the `fusion_flow.workflow_graph` model while retaining residual assertions.
 7. **Planning warnings** owns `fusion_flow/planning.py`: after Haitun lists planned steps and before it authors the DSL, check their declared syntax mappings and warn about missing or unavailable names. Each item is already at `Step` granularity; this phase does not introduce a higher-level requirement model and cannot detect steps that Haitun failed to list.
 8. **Haitun integration** keeps the prompt, `run_flow`, and `flow_manage` entry points aligned with the G4 runtime.
-9. **Compatibility** preserves the external `flow` Skill identity and natural-language UX while failing closed on legacy `.flow.ts` input.
+9. **Compatibility** preserves the `fusion-flow` G4 Skill identity and routes explicit legacy `.flow.ts` requests to `fusion-flow-legacy` without implicit translation.
 
 Dependency order: 1 + 2 -> 3 -> 4 -> 5 -> 6; 2 -> 7; 4 + 5 + 7 -> 8. Workstream 9 runs throughout and gates activation.

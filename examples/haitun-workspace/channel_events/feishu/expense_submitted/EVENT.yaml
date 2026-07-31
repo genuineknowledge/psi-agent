@@ -1,0 +1,5 @@
+name: haitun.finance.expense_submitted
+source: haitun
+kind: synthetic
+description: >
+  报销单提交待自动审核。payload: instance_code|approval_id, applicant_open_id, optional amount, attachment_count. SOP-4。
