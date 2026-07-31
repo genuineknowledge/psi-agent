@@ -5,8 +5,8 @@ on:
   pull_request:
 
 jobs:
-  # Legacy Fusion Flow 未配置专属测试任务；G4 runtime 的完整测试也暂不接入主 CI。
-  # 本任务只重新生成 ANTLR Lexer/Parser 并与仓库文件比对，防止语法文件与生成源码不一致。
+  # Legacy Fusion Flow 未配置专属测试任务；G4 runtime 只保留关键 smoke tests。
+  # 本任务重新生成 ANTLR Lexer/Parser 并与仓库文件比对，防止语法文件与生成源码不一致。
   generated-sources:
     runs-on: ubuntu-latest
     steps:
@@ -55,6 +55,12 @@ jobs:
           python-version: "3.14"
       - run: uv sync
       - run: uv run pytest -v
+      - name: Test Fusion Flow Next smoke contracts
+        run: >-
+          uv run pytest -q
+          examples/haitun-workspace/skills/fusion-flow/test/test_smoke.py
+          examples/haitun-workspace/skills/fusion-flow/test/test_workspace_integration.py
+          examples/haitun-workspace/tests/test_fusion_workflow_prompt.py
 
   publish:
     needs: [lint, test]

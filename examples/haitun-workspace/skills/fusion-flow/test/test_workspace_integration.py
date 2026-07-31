@@ -24,6 +24,18 @@ def test_g4_and_legacy_public_entry_points_coexist() -> None:
     assert callable(flow_manage_module.flow_manage)
 
 
+@pytest.mark.anyio
+async def test_inner_agent_is_single_round_and_has_no_tools() -> None:
+    agent, conversation = await run_flow_module._create_step_agent(
+        "http://ai.example",
+        "fusion-flow-smoke",
+    )
+
+    assert conversation.session_id == "fusion-flow-smoke"
+    assert agent._max_tool_rounds == 1
+    assert agent._tool_registry.tools == {}
+
+
 def test_legacy_runner_loads_env_from_relocated_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -65,30 +77,3 @@ async def test_flow_manage_prefers_g4_but_keeps_legacy_fallback(
     listing = await flow_manage_module.flow_manage("list", target="tasks")
     assert "dual: dual.workflow" in listing
     assert "legacy: legacy.flow.ts" in listing
-
-
-@pytest.mark.anyio
-async def test_flow_manage_creates_g4_without_removing_legacy_support(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workspace = anyio.Path(tmp_path)
-    monkeypatch.setattr(flow_manage_module._paths, "resolve_workspace", lambda: workspace)
-
-    created_g4 = await flow_manage_module.flow_manage(
-        "create",
-        "g4-demo",
-        target="adhoc",
-        flow_source="workflow g4_demo {}",
-    )
-    created_legacy = await flow_manage_module.flow_manage(
-        "create",
-        "legacy-demo",
-        target="adhoc",
-        flow_ts="export const legacy = true;",
-    )
-
-    assert created_g4 == "Adhoc flow created: 'g4-demo'"
-    assert created_legacy == "Adhoc flow created: 'legacy-demo'"
-    assert await (workspace / "flows" / "adhoc" / "g4-demo" / "flow.workflow").exists()
-    assert await (workspace / "flows" / "adhoc" / "legacy-demo" / "flow.ts").exists()

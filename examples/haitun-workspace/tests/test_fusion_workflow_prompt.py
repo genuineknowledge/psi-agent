@@ -48,21 +48,6 @@ async def test_fusion_prompt_prefers_g4_with_safe_step_boundary(tmp_path: Path) 
     assert "`instructions_json` as an exact mapping" in section
     assert "at most 32 Steps, concurrency 8" in section
     assert "15 minutes total" in section
-
-
-@pytest.mark.anyio
-async def test_fusion_prompt_keeps_explicit_legacy_route(tmp_path: Path) -> None:
-    module_name = f"haitun_fusion_legacy_test_{id(tmp_path)}"
-    module = _load_system(module_name)
-    try:
-        system = module.System(
-            anyio.Path(str(AGENT_ROOT)),
-            user_workspace=anyio.Path(tmp_path),
-        )
-        section = await system._build_fusion_section()
-    finally:
-        sys.modules.pop(module_name, None)
-
     assert "existing `.flow.ts` file" in section
     assert "`skills/fusion-flow-legacy/SKILL.md`" in section
     assert "legacy `flow_run` path" in section
