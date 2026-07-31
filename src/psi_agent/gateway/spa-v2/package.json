@@ -12,7 +12,7 @@
     "docx-preview": "^0.4.0",
     "highlight.js": "^11.11.1",
     "katex": "^0.18.1",
-    "lucide-react": "^1.26.0",
+    "lucide-react": "^1.27.0",
     "marked": "^18.0.7",
     "papaparse": "^5.5.4",
     "pdfjs-dist": "^6.1.200",
