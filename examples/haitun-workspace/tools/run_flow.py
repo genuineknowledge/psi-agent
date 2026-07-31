@@ -1,4 +1,4 @@
-"""Compile and execute one bounded FusionFlow Next G4 workflow."""
+"""Compile and execute one bounded FusionFlow G4 workflow."""
 
 from __future__ import annotations
 
@@ -22,18 +22,18 @@ _TOOLS_DIR = Path(__file__).resolve().parent
 _AGENT_DIR = _TOOLS_DIR.parent
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
-_SKILL_DIR = _AGENT_DIR / "skills" / "fusion-flow-next"
+_SKILL_DIR = _AGENT_DIR / "skills" / "fusion-flow"
 if str(_SKILL_DIR) not in sys.path:
     sys.path.insert(0, str(_SKILL_DIR))
 
 import _runtime_paths as _paths  # noqa: E402
-from fusion_flow_next.workflow_execution import ResourceCapacity  # noqa: E402
-from fusion_flow_next.workflow_runner import (  # noqa: E402
+from fusion_flow.workflow_execution import ResourceCapacity  # noqa: E402
+from fusion_flow.workflow_runner import (  # noqa: E402
     CompletionContext,
     compile_workflow,
     validate_instruction_bodies,
 )
-from fusion_flow_next.workflow_runner import execute_workflow as _execute_workflow  # noqa: E402
+from fusion_flow.workflow_runner import execute_workflow as _execute_workflow  # noqa: E402
 
 _MAX_INSTRUCTIONS_JSON_BYTES = 256 * 1024
 _MAX_INPUTS_JSON_BYTES = 1024 * 1024
@@ -186,7 +186,7 @@ async def _complete_agent_step(
     *,
     ai_socket: str,
 ) -> dict[str, object]:
-    session_id = f"fusion-flow-next-{uuid.uuid4().hex}"
+    session_id = f"fusion-flow-{uuid.uuid4().hex}"
     agent, conversation = await _create_step_agent(ai_socket, session_id)
     message = (
         "Execute exactly one assigned FusionFlow step.\n"
@@ -225,7 +225,7 @@ async def run_flow(
     inputs_json: str = "{}",
     resource_capacities_json: str = "",
 ) -> str:
-    """Run one FusionFlow Next workflow and return its output artifacts.
+    """Run one FusionFlow workflow and return its output artifacts.
 
     Args:
         flow_path: Workspace-relative path to a UTF-8 ``.workflow`` or ``.g4`` file.

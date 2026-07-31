@@ -85,7 +85,7 @@ def _load_flow_env(flow: Path) -> dict[str, str]:
     The runtime bundle loads config via ``dotenvConfig()`` with no path, i.e. from
     ``process.cwd()``. But this tool runs the flow from the flow file's own dir
     (or a caller-supplied cwd), which is not where the operator put ``.env`` — the
-    convention (see bin/env.stateful.template) is ``skills/fusion-flow/.env``.
+    convention (see bin/env.stateful.template) is ``skills/fusion-flow-legacy/.env``.
     When cwd has no ``.env`` the bundle silently falls back to the default engine
     (``claude``) instead of the configured ``psi``, so every session spawns the
     wrong CLI and fails. Read the skill ``.env`` ourselves and pass it through the
@@ -95,7 +95,7 @@ def _load_flow_env(flow: Path) -> dict[str, str]:
     # Walk up from the flow to find the workspace root (holds skills/), then the
     # skill's .env. Bounded search so we never scan the whole disk.
     for base in [flow.resolve().parent, *flow.resolve().parents][:6]:
-        dotenv = base / "skills" / "fusion-flow" / ".env"
+        dotenv = base / "skills" / "fusion-flow-legacy" / ".env"
         if dotenv.is_file():
             for raw in dotenv.read_text(encoding="utf-8", errors="replace").splitlines():
                 line = raw.strip()
@@ -140,7 +140,7 @@ def _spawn_flow(flow: Path, workdir: str, log_path: Path) -> tuple[int, str, str
     its start header within the timeout (start likely failed).
     """
     # tsx needs an ESM package.json in scope for the flow's top-level await, and
-    # the runtime needs the engine wiring from skills/fusion-flow/.env regardless
+    # the runtime needs the engine wiring from skills/fusion-flow-legacy/.env regardless
     # of cwd — set both up before spawning.
     _ensure_esm_package_json(flow.resolve().parent)
     child_env = _load_flow_env(flow)

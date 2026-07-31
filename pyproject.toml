@@ -81,7 +81,7 @@ artifacts = [
 [tool.ruff]
 target-version = "py314"
 line-length = 120
-extend-exclude = ["examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/generated"]
+extend-exclude = ["examples/haitun-workspace/skills/fusion-flow/fusion_flow/generated"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "ASYNC", "SIM", "C4", "B", "RUF", "N", "T20", "PLC"]
@@ -98,10 +98,10 @@ addopts = ["--strict-markers", "-ra", "--cov"]
 markers = ["schedule: schedule-based tests (> 30s)"]
 
 [tool.ty.environment]
-extra-paths = ["examples/haitun-workspace/skills/fusion-flow-next"]
+extra-paths = ["examples/haitun-workspace/skills/fusion-flow"]
 
 [tool.ty.src]
-exclude = ["examples/haitun-workspace/skills/fusion-flow-next/fusion_flow_next/generated"]
+exclude = ["examples/haitun-workspace/skills/fusion-flow/fusion_flow/generated"]
 
 [tool.coverage.run]
 source = ["src/psi_agent"]

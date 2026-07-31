@@ -21,11 +21,11 @@ skills/.curator_report.md
 __pycache__/
 *.pyc
 
-# Fusion Flow node runtime + generated artifacts
-skills/fusion-flow/node_modules/
-skills/fusion-flow/runs/
-skills/fusion-flow/.env
-skills/fusion-flow-next/.pytest_cache/
+# Fusion Flow legacy Node runtime + generated artifacts
+skills/fusion-flow-legacy/node_modules/
+skills/fusion-flow-legacy/runs/
+skills/fusion-flow-legacy/.env
+skills/fusion-flow/.pytest_cache/
 
 # multimodal API credentials (local dev only)
 .env.multimodal
@@ -33,9 +33,9 @@ skills/fusion-flow-next/.pytest_cache/
 # local desktop runtime env (vbs injects into psi-agent.exe; never commit)
 .env
 bin/apply_multimodal_test_api.ps1
-skills/fusion-flow/examples/*.flow.ts
-skills/fusion-flow/examples/*.flow.mts
-!skills/fusion-flow/examples/_placeholder.ts
+skills/fusion-flow-legacy/examples/*.flow.ts
+skills/fusion-flow-legacy/examples/*.flow.mts
+!skills/fusion-flow-legacy/examples/_placeholder.ts
 flows/*
 !flows/.gitkeep
 !flows/curated/
@@ -45,8 +45,8 @@ flows/curated/**/runs/
 
 # image generation output (placeholder / inference)
 generated/
-!skills/fusion-flow-next/fusion_flow_next/generated/
-!skills/fusion-flow-next/fusion_flow_next/generated/*.py
+!skills/fusion-flow/fusion_flow/generated/
+!skills/fusion-flow/fusion_flow/generated/*.py
 
 psi-agent.exe
 psi-agent

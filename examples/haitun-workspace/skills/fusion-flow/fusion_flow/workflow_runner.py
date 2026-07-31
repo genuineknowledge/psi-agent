@@ -387,7 +387,7 @@ async def execute_workflow(
     )
     if unsupported:
         details = ", ".join(f"{step_id}={kind}" for step_id, kind in unsupported)
-        raise ValueError(f"fusion-flow-next currently supports Agent executors only: {details}")
+        raise ValueError(f"fusion-flow currently supports Agent executors only: {details}")
 
     graph = compiled.graph
     if len(graph.steps) > MAX_STEPS:

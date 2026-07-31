@@ -125,7 +125,7 @@ async def flow_manage(
         body: FLOW.md body text, excluding frontmatter and source block.
         flow_ts: Legacy TypeScript flow content to store in FLOW.md.
         target: For list/view/create. Use "curated", "tasks", "adhoc", or "all".
-        flow_source: Preferred FusionFlow Next G4 source to store in FLOW.md.
+        flow_source: Preferred FusionFlow G4 source to store in FLOW.md.
 
     Returns:
         A result message, list output, or flow content.
@@ -134,7 +134,7 @@ async def flow_manage(
     action = action.strip().lower()
     target = target.strip().lower() or "curated"
     if flow_source.strip() and flow_ts.strip():
-        return "[Error] Provide only one of flow_source (Next) or flow_ts (legacy)."
+        return "[Error] Provide only one of flow_source (G4) or flow_ts (legacy)."
 
     if action == "list":
         lines: list[str] = []

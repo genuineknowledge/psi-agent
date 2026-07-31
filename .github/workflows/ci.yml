@@ -5,7 +5,7 @@ on:
   pull_request:
 
 jobs:
-  # 旧版 Fusion Flow 未配置专属测试任务；为保持并行期行为一致，Next 的专属测试也不接入主 CI。
+  # Legacy Fusion Flow 未配置专属测试任务；G4 runtime 的完整测试也暂不接入主 CI。
   # 本任务只重新生成 ANTLR Lexer/Parser 并与仓库文件比对，防止语法文件与生成源码不一致。
   generated-sources:
     runs-on: ubuntu-latest
@@ -23,15 +23,15 @@ jobs:
           echo "eae2dfa119a64327444672aff63e9ec35a20180dc5b8090b7a6ab85125df4d76  $RUNNER_TEMP/antlr-4.13.2-complete.jar" \
             | sha256sum --check
       - name: Verify FusionFlow generated sources
-        working-directory: examples/haitun-workspace/skills/fusion-flow-next
+        working-directory: examples/haitun-workspace/skills/fusion-flow
         run: |
           output="$RUNNER_TEMP/fusion-flow-generated"
           mkdir "$output"
           java -jar "$RUNNER_TEMP/antlr-4.13.2-complete.jar" \
             -Dlanguage=Python3 -no-listener -Xexact-output-dir \
             -o "$output" grammar/FusionFlow.g4
-          diff -u fusion_flow_next/generated/FusionFlowLexer.py "$output/FusionFlowLexer.py"
-          diff -u fusion_flow_next/generated/FusionFlowParser.py "$output/FusionFlowParser.py"
+          diff -u fusion_flow/generated/FusionFlowLexer.py "$output/FusionFlowLexer.py"
+          diff -u fusion_flow/generated/FusionFlowParser.py "$output/FusionFlowParser.py"
 
   lint:
     runs-on: ubuntu-latest

@@ -4,10 +4,10 @@ from collections.abc import Callable, Mapping
 from typing import cast
 
 import anyio
-import fusion_flow_next.workflow_execution as workflow_execution
+import fusion_flow.workflow_execution as workflow_execution
 import pytest
 from anyio.lowlevel import checkpoint
-from fusion_flow_next.workflow_execution import (
+from fusion_flow.workflow_execution import (
     Await,
     DispatchContext,
     ExecutionPlan,
@@ -20,7 +20,7 @@ from fusion_flow_next.workflow_execution import (
     execute_plan,
     generate_plan,
 )
-from fusion_flow_next.workflow_graph import (
+from fusion_flow.workflow_graph import (
     ArtifactNode,
     ArtifactOperand,
     ComparisonCondition,

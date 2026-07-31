@@ -1,4 +1,4 @@
-"""Lower checked FusionFlow Core IR into the FusionFlow Next graph model.
+"""Lower checked FusionFlow Core IR into the FusionFlow graph model.
 
 The shared :class:`CoreIRCompiler` owns traversal.  This module only implements
 the target-specific hooks: it classifies graph assertions, collects their

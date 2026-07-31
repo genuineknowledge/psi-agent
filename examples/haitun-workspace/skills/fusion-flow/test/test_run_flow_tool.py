@@ -26,7 +26,7 @@ def _load_module(name: str, path: Path) -> Any:
     return cast(Any, module)
 
 
-run_flow_tool = _load_module("fusion_flow_next_run_flow_tool", _RUNNER_PATH)
+run_flow_tool = _load_module("fusion_flow_run_flow_tool", _RUNNER_PATH)
 
 _ORDERED_RESOURCE_WORKFLOW = """
 const ordered: Workflow;
@@ -85,15 +85,15 @@ def test_run_flow_is_the_only_public_async_tool() -> None:
 async def test_inner_agent_is_ephemeral_single_round_and_has_no_tools() -> None:
     first_agent, first_conversation = await run_flow_tool._create_step_agent(
         "http://ai.example",
-        "fusion-flow-next-first",
+        "fusion-flow-first",
     )
     second_agent, second_conversation = await run_flow_tool._create_step_agent(
         "http://ai.example",
-        "fusion-flow-next-second",
+        "fusion-flow-second",
     )
 
-    assert first_conversation.session_id == "fusion-flow-next-first"
-    assert second_conversation.session_id == "fusion-flow-next-second"
+    assert first_conversation.session_id == "fusion-flow-first"
+    assert second_conversation.session_id == "fusion-flow-second"
     assert first_conversation.session_id != second_conversation.session_id
     assert first_agent._max_tool_rounds == 1
     assert second_agent._max_tool_rounds == 1

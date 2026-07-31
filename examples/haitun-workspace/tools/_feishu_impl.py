@@ -2530,7 +2530,15 @@ def _auth_card_content(
     the clicker's own private session, where the sender's context is not available.
     """
     why = reason.strip() or "需要用你的飞书身份授权一次才能继续 (机器人自己的权限做不了这一步)."
-    body = f"**{why}**\n\n本次申请的权限: {', '.join(capabilities) or '(默认)'}"
+    # 这行操作提示原来是个 note 组件, 但卡片 2.0 删掉了 note, 而且 2.0 对不认识的
+    # 标签/属性是**报错**而非像 1.0 那样忽略 (整张卡被拒: 200861 unsupported tag note)。
+    # 官方替代是「普通文本组件配小字号灰字」, 这里改用同一张卡里已经在用的 markdown
+    # 承载: 不引入任何未经验证的属性名, 免得再撞一次同类拒收。
+    body = (
+        f"**{why}**\n\n"
+        f"本次申请的权限: {', '.join(capabilities) or '(默认)'}\n\n"
+        "_点下面的按钮会打开飞书授权页, 在页面上点「同意授权」即可, 不用复制任何东西._"
+    )
     return {
         "schema": "2.0",
         "header": {
@@ -2551,15 +2559,6 @@ def _auth_card_content(
                             "type": "callback",
                             "value": {"action": _AUTH_CARD_ACTION, "user_key": user_key},
                         },
-                    ],
-                },
-                {
-                    "tag": "note",
-                    "elements": [
-                        {
-                            "tag": "plain_text",
-                            "content": "点按钮会打开飞书授权页, 在页面上点「同意授权」即可, 不用复制任何东西.",
-                        }
                     ],
                 },
             ]

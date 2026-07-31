@@ -18,14 +18,33 @@ flow_run_module = cast(Any, importlib.import_module("flow_run"))
 run_flow_module = cast(Any, importlib.import_module("run_flow"))
 
 
-def test_next_and_legacy_public_entry_points_coexist() -> None:
+def test_g4_and_legacy_public_entry_points_coexist() -> None:
     assert callable(run_flow_module.run_flow)
     assert callable(flow_run_module.flow_run)
     assert callable(flow_manage_module.flow_manage)
 
 
+def test_legacy_runner_loads_env_from_relocated_skill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = "FUSION_FLOW_LEGACY_ENV_TEST"
+    flow = tmp_path / "flows" / "demo.flow.ts"
+    canonical = tmp_path / "skills" / "fusion-flow"
+    legacy = tmp_path / "skills" / "fusion-flow-legacy"
+    flow.parent.mkdir(parents=True)
+    canonical.mkdir(parents=True)
+    legacy.mkdir(parents=True)
+    flow.write_text("", encoding="utf-8")
+    (canonical / ".env").write_text(f"{key}=wrong\n", encoding="utf-8")
+    (legacy / ".env").write_text(f"{key}=relocated\n", encoding="utf-8")
+    monkeypatch.delenv(key, raising=False)
+
+    assert flow_run_module._load_flow_env(flow)[key] == "relocated"
+
+
 @pytest.mark.anyio
-async def test_flow_manage_prefers_next_but_keeps_legacy_fallback(
+async def test_flow_manage_prefers_g4_but_keeps_legacy_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -36,11 +55,11 @@ async def test_flow_manage_prefers_next_but_keeps_legacy_fallback(
     await dual.mkdir(parents=True)
     await legacy.mkdir(parents=True)
     await (dual / "dual.flow.ts").write_text("legacy source", encoding="utf-8")
-    await (dual / "dual.workflow").write_text("next source", encoding="utf-8")
+    await (dual / "dual.workflow").write_text("g4 source", encoding="utf-8")
     await (legacy / "legacy.flow.ts").write_text("legacy only", encoding="utf-8")
     monkeypatch.setattr(flow_manage_module._paths, "resolve_workspace", lambda: workspace)
 
-    assert await flow_manage_module.flow_manage("view", "dual", target="tasks") == "next source"
+    assert await flow_manage_module.flow_manage("view", "dual", target="tasks") == "g4 source"
     assert await flow_manage_module.flow_manage("view", "legacy", target="tasks") == "legacy only"
 
     listing = await flow_manage_module.flow_manage("list", target="tasks")
@@ -49,18 +68,18 @@ async def test_flow_manage_prefers_next_but_keeps_legacy_fallback(
 
 
 @pytest.mark.anyio
-async def test_flow_manage_creates_next_without_removing_legacy_support(
+async def test_flow_manage_creates_g4_without_removing_legacy_support(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = anyio.Path(tmp_path)
     monkeypatch.setattr(flow_manage_module._paths, "resolve_workspace", lambda: workspace)
 
-    created_next = await flow_manage_module.flow_manage(
+    created_g4 = await flow_manage_module.flow_manage(
         "create",
-        "next-demo",
+        "g4-demo",
         target="adhoc",
-        flow_source="workflow next_demo {}",
+        flow_source="workflow g4_demo {}",
     )
     created_legacy = await flow_manage_module.flow_manage(
         "create",
@@ -69,7 +88,7 @@ async def test_flow_manage_creates_next_without_removing_legacy_support(
         flow_ts="export const legacy = true;",
     )
 
-    assert created_next == "Adhoc flow created: 'next-demo'"
+    assert created_g4 == "Adhoc flow created: 'g4-demo'"
     assert created_legacy == "Adhoc flow created: 'legacy-demo'"
-    assert await (workspace / "flows" / "adhoc" / "next-demo" / "flow.workflow").exists()
+    assert await (workspace / "flows" / "adhoc" / "g4-demo" / "flow.workflow").exists()
     assert await (workspace / "flows" / "adhoc" / "legacy-demo" / "flow.ts").exists()

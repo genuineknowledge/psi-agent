@@ -911,36 +911,35 @@ class System:
         self._previous_summary: str | None = None
 
     async def _build_fusion_section(self) -> str:
-        """Fusion Flow authoring guidance with Next preferred over legacy.
+        """Fusion Flow G4 authoring guidance with an explicit legacy fallback.
 
-        Returns empty string if the fusion-flow-next runtime skill is not present.
+        Returns empty string if the fusion-flow runtime skill is not present.
         Skill/runtime live under the **agent** package; generated ``flows/`` under
         the **user workspace**.
         """
         agent_resolved = await self._agent_dir.resolve()
         user_resolved = await self._user_workspace.resolve()
         skills_dir = agent_resolved / "skills"
-        fusion_next_dir = skills_dir / "fusion-flow-next"
-        fusion_next_md = fusion_next_dir / "SKILL.md"
-        if not await fusion_next_md.exists():
+        fusion_dir = skills_dir / "fusion-flow"
+        fusion_md = fusion_dir / "SKILL.md"
+        if not await fusion_md.exists():
             return ""
 
-        fusion_skill_dir = skills_dir / "fusion-flow"
-        fusion_skill_md = fusion_skill_dir / "SKILL.md"
+        legacy_dir = skills_dir / "fusion-flow-legacy"
+        legacy_md = legacy_dir / "SKILL.md"
         flows_dir = user_resolved / "flows"
-        # Preserve the existing legacy runtime handoff paths during the parallel
-        # rollout so explicit .flow.ts work keeps its current setup contract.
+        # Preserve the legacy runtime handoff for explicit .flow.ts work.
         _ws_parents = Path(str(agent_resolved)).parents
         repo_root = _ws_parents[1] if len(_ws_parents) > 1 else Path(str(agent_resolved))
         default_executor_workspace = repo_root / "examples" / "hermes-style-workspace"
-        runtime_bundle = fusion_skill_dir / "runtime" / "agent-flow-core.bundle.mjs"
+        runtime_bundle = legacy_dir / "runtime" / "agent-flow-core.bundle.mjs"
         session_shim_posix = (Path(str(agent_resolved)) / "bin" / "session_shim.py").as_posix()
         flows_index = await _build_flows_index(flows_dir)
 
-        return f"""## Fusion Flow (Next preferred; legacy available)
+        return f"""## Fusion Flow (formal G4 runtime; legacy .flow.ts fallback)
 
-Use `fusion-flow-next` and `run_flow` by default for multi-agent or multi-step work.
-Keep the existing `fusion-flow` + `flow_run` path available only for an explicit
+Use `fusion-flow` and `run_flow` by default for multi-agent or multi-step work.
+Keep `fusion-flow-legacy` + `flow_run` available only for an explicit
 legacy Fuclaw/TypeScript request or an existing `.flow.ts` file.
 
 ### Reusable Flows
@@ -948,7 +947,7 @@ legacy Fuclaw/TypeScript request or an existing `.flow.ts` file.
 
 ### When to activate
 When the user describes a workflow-shaped task - multi-agent collaboration, parallel review,
-fan-out/fan-in, pipelines, multi-step research or scoring - activate Fusion Flow Next.
+fan-out/fan-in, pipelines, multi-step research or scoring - activate Fusion Flow.
 
 **Multi-agent simulation is workflow-shaped - build a flow, do NOT role-play it yourself.**
 Any task that simulates several distinct agents/personas interacting is a Fusion Flow task:
@@ -956,15 +955,15 @@ a debate among N sides (三方辩论), a role-play conversation or roundtable (�
 a negotiation (谈判), red-team vs blue-team (红蓝对抗), a panel of experts / multi-expert
 review (多专家会诊/多角度评审), interviewer-vs-candidate, or any "let a few AIs each play a
 role and interact" request. When you recognize one, your DEFAULT action is to enter the Fusion
-Flow Next Authoring Mode and build a `.workflow` where each role is its own Agent Step.
+Flow Authoring Mode and build a `.workflow` where each role is its own Agent Step.
 Use named Artifacts and explicit dependencies for parallel branches and a final synthesizer.
 Do NOT play the roles yourself in a single reply.
 Only skip the flow if the user explicitly says they want a one-off answer and not a tool.
 
 To activate:
 1. Read the full skill instructions at:
-   {fusion_next_md}
-   Relative path: skills/fusion-flow-next/SKILL.md
+   {fusion_md}
+   Relative path: skills/fusion-flow/SKILL.md
 2. Keep the skill itself immutable. Author generated task files under:
    {flows_dir}/<task-slug>/
    Layout:
@@ -976,24 +975,24 @@ To activate:
 5. Call `run_flow` once with `flow_path`, `instructions_json`, `inputs_json`, and declared
    resource capacities. It parses, plans, and executes synchronously.
 
-Next is intentionally bounded to Agent-only one-shot DAGs: at most 32 Steps, concurrency 8,
+The G4 runtime is intentionally bounded to Agent-only one-shot DAGs: at most 32 Steps, concurrency 8,
 one model round per Step, and 15 minutes total. Program/Human executors, nested workflow calls,
 Step tools, persistence, and resume are not supported.
 
 If the user explicitly supplies `.flow.ts` or asks for Fuclaw/TypeScript compatibility, read
-`skills/fusion-flow/SKILL.md` and use the legacy `flow_run` path instead. Do not translate or
+`skills/fusion-flow-legacy/SKILL.md` and use the legacy `flow_run` path instead. Do not translate or
 delete the legacy flow silently.
 
 ### Self-evolution tools
 - `skill_manage`: list, view, create, and patch workspace skills.
-- `flow_manage`: list, view, create, patch, and promote both Next and legacy assets; when both
-  exist for one task, it returns the Next `.workflow`/`.g4` asset first.
+- `flow_manage`: list, view, create, patch, and promote both G4 and legacy assets; when both
+  exist for one task, it returns the G4 `.workflow`/`.g4` asset first.
 
 Use them only when the task produces reusable knowledge or the user asks to maintain the
 workspace. Never silently rewrite user-authored assets.
 
 Rules:
-1. Keep both `skills/fusion-flow-next/` and `skills/fusion-flow/` immutable.
+1. Keep both `skills/fusion-flow/` and `skills/fusion-flow-legacy/` immutable.
 2. Treat skills without `created_by: agent` as read-only.
 3. New learned procedures -> `skills/<skill-name>/SKILL.md` via `skill_manage(action="create")`.
 4. Reusable workflow templates -> `flows/curated/<flow-name>/FLOW.md` via `flow_manage`.
@@ -1004,8 +1003,8 @@ explicit legacy `.flow.ts` fallback:
 
 To activate:
 1. Read the full skill instructions at:
-   {fusion_skill_md}
-   Relative path: skills/fusion-flow/SKILL.md
+   {legacy_md}
+   Relative path: skills/fusion-flow-legacy/SKILL.md
 2. Keep the skill itself immutable. Author generated task files under:
    {flows_dir}/<task-slug>/
    Layout:
@@ -1014,11 +1013,11 @@ To activate:
 3. Use the Fusion Flow runtime from:
    {runtime_bundle}
    Generated flows import it with:
-   ../../skills/fusion-flow/runtime/agent-flow-core.bundle.mjs
+   ../../skills/fusion-flow-legacy/runtime/agent-flow-core.bundle.mjs
 4. Typecheck from the Fusion Flow skill directory (its tsconfig includes ../../flows/**/*.ts):
-   cd "{fusion_skill_dir}" && npm run typecheck
+   cd "{legacy_dir}" && npm run typecheck
 5. Run generated flows from the Fusion Flow skill directory:
-   cd "{fusion_skill_dir}" && npx tsx ../../flows/<task-slug>/<task-slug>.flow.ts
+   cd "{legacy_dir}" && npx tsx ../../flows/<task-slug>/<task-slug>.flow.ts
 
 When generating the run(...) options, always include both:
 - programPath normalized from import.meta.url
@@ -1055,7 +1054,7 @@ hand-copying the key.
 
 Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files.
 
-Next reuses the invoking psi-agent Session's configured AI socket. Never write API keys into
+The G4 runtime reuses the invoking psi-agent Session's configured AI socket. Never write API keys into
 this workspace, generated workflows, `instructions_json`, or committed `.env` files."""
 
     async def build_system_prompt(

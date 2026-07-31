@@ -1,4 +1,4 @@
-# Fusion Flow — Fuclaw skill bundle (v0.7.3)
+# Fusion Flow Legacy — Fuclaw skill bundle (v0.7.3)
 
 Self-contained skill: SKILL.md + bundled runtime. This bundle ships **no demo flows** —
 you describe what you want in natural language and the LLM (reading SKILL.md) authors a
@@ -9,9 +9,9 @@ you describe what you want in natural language and the LLM (reading SKILL.md) au
 ```bash
 # 0. (if you cloned the source repo) copy this folder somewhere outside the repo.
 #    git-bash / macOS / Linux:
-cp -r dist/fusion-flow ~/my-flow-test && cd ~/my-flow-test
+cp -r dist/fusion-flow-legacy ~/my-flow-test && cd ~/my-flow-test
 #    Windows PowerShell:
-#      Copy-Item -Recurse dist\fusion-flow $HOME\my-flow-test; cd $HOME\my-flow-test
+#      Copy-Item -Recurse dist\fusion-flow-legacy $HOME\my-flow-test; cd $HOME\my-flow-test
 
 # 1. install (only once)
 npm install

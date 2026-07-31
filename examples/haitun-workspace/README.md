@@ -3,8 +3,8 @@
 A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combines:
 
 - a de-branded OpenClaw-style system-prompt engine (all config kept **inside** the workspace),
-- full **Fusion Flow** workflow authoring (`fusion-flow-next` preferred, legacy
-  TypeScript fallback retained, plus `flow_manage` + `flows/`),
+- full **Fusion Flow** workflow authoring (formal G4 `fusion-flow` runtime, explicit
+  TypeScript fallback under `fusion-flow-legacy`, plus `flow_manage` + `flows/`),
 - the hermes domain skill set + curated skills, and
 - clean async file/shell tools, Serper web search, and environment-configured
   iFLYTEK STT/TTS tools.
@@ -45,13 +45,13 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 
 - **First run** triggers a short onboarding (from `BOOTSTRAP.md`). Delete `BOOTSTRAP.md` to
   skip it.
-- **Fusion Flow Next** is the default for new workflows and uses the bundled Python G4
+- **Fusion Flow** is the default for new workflows and uses the bundled Python G4
   parser/compiler plus `run_flow`; no separate runtime setup is required. The existing
-  `fusion-flow` Node/Fuclaw runtime remains available for explicit `.flow.ts` work:
-  first use `cd examples/haitun-workspace/skills/fusion-flow && npm install`.
+  `fusion-flow-legacy` Node/Fuclaw runtime remains available for explicit `.flow.ts` work:
+  first use `cd examples/haitun-workspace/skills/fusion-flow-legacy && npm install`.
   Generated flows go under `flows/<task-slug>/`; reusable templates under `flows/curated/`.
   For stateful sub-agent sessions, copy `bin/env.stateful.template` to
-  `skills/fusion-flow/.env` and fill in the paths.
+  `skills/fusion-flow-legacy/.env` and fill in the paths.
 - **Serper search** needs psi-agent installed with the `mcp` extra and `uvx` on PATH.
 - **Haibao ChatBI** needs the required operator-provisioned private MCP server and the three
   deployment-managed variables documented in `docs/haibao-integration.md`. The bundled Adapter,

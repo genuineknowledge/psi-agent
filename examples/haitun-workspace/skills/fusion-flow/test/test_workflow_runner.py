@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import pytest
 
-run_workflow = cast(Any, importlib.import_module("fusion_flow_next.workflow_runner"))
+run_workflow = cast(Any, importlib.import_module("fusion_flow.workflow_runner"))
 
 
 def _dispatch_workflow(
