@@ -134,7 +134,7 @@ async def test_main_prompt_injects_one_valid_advice_section(tmp_path: Path, monk
     assert prompt.count("## 旁路监督建议") == 1
     assert prompt.count("## 当前知识点学习画像") == 1
     assert prompt.count("## 强制监督规则") == 1
-    assert "若当前请求是 Fusion Flow 编排或执行, 跳过以下教学规则" in prompt
+    assert "若当前请求是 Fusion Flow Next 编排或执行, 跳过以下教学规则" in prompt
     assert prompt.index("## 当前知识点学习画像") < prompt.index("## 旁路监督建议")
     assert prompt.index("## 旁路监督建议") < prompt.index("## 强制监督规则")
 
