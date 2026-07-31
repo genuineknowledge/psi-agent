@@ -1,12 +1,12 @@
 ---
 name: fusion-flow
-description: Author or run declarative FusionFlow workflows defined by the formal G4 language and lowered into checked Step–Artifact plans. Use for coordinated agents, parallel sub-tasks, and multi-step pipelines; use the legacy `flow` skill under `skills/fusion-flow-legacy/` only for explicit `.flow.ts` or Fuclaw compatibility requests.
+description: Author or run Fusion Flow Next, a declarative workflow system defined by the formal FusionFlow G4 language and lowered into checked Step–Artifact plans. Use for coordinated agents, parallel sub-tasks, and multi-step pipelines; use the legacy `flow` skill under `skills/fusion-flow-legacy/` only for explicit `.flow.ts` or Fuclaw compatibility requests.
 metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fuclaw" } }
 ---
 
-# FusionFlow G4 Skill
+# Fusion Flow Next Skill
 
-This skill authors and runs declarative FusionFlow G4 workflows in psi-agent. The workspace tool compiles G4 source into Core IR, lowers it to a `WorkflowGraph`, generates an execution plan, and synchronously executes Agent-backed Steps.
+Fusion Flow Next is a formal-language workflow system defined by `grammar/FusionFlow.g4`. This skill authors its declarative programs in psi-agent; the workspace tool compiles them into Core IR, lowers them to a `WorkflowGraph`, generates a checked execution plan, and synchronously executes Agent-backed Steps. Bounded, Agent-only, and one-shot describe the current executor, not the language itself.
 
 > **Workspace boundary.** Store authored G4 files under the workspace-managed `flows/` directory. The skill ships no runnable example workflows and creates no background run directory.
 

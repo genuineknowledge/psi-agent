@@ -1,4 +1,4 @@
-"""Fusion Flow prompt routing must prefer formal G4 and preserve explicit legacy fallback."""
+"""Fusion Flow Next routing must prefer the formal G4 path and preserve legacy fallback."""
 
 from __future__ import annotations
 
@@ -42,6 +42,7 @@ async def test_fusion_prompt_prefers_g4_with_safe_step_boundary(tmp_path: Path) 
     finally:
         sys.modules.pop(module_name, None)
 
+    assert "## Fusion Flow Next (G4 formal-language workflow;" in section
     assert "Use `fusion-flow` and `run_flow` by default" in section
     assert "Inner Agent Steps have no tools" in section
     assert "`instructions_json` as an exact mapping" in section

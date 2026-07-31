@@ -1,4 +1,4 @@
-"""Compile and execute one bounded FusionFlow G4 workflow."""
+"""Compile and execute one Fusion Flow Next program."""
 
 from __future__ import annotations
 
@@ -225,7 +225,7 @@ async def run_flow(
     inputs_json: str = "{}",
     resource_capacities_json: str = "",
 ) -> str:
-    """Run one FusionFlow workflow and return its output artifacts.
+    """Run one Fusion Flow Next program and return its output artifacts.
 
     Args:
         flow_path: Workspace-relative path to a UTF-8 ``.workflow`` or ``.g4`` file.

@@ -125,7 +125,7 @@ async def flow_manage(
         body: FLOW.md body text, excluding frontmatter and source block.
         flow_ts: Legacy TypeScript flow content to store in FLOW.md.
         target: For list/view/create. Use "curated", "tasks", "adhoc", or "all".
-        flow_source: Preferred FusionFlow G4 source to store in FLOW.md.
+        flow_source: Preferred Fusion Flow Next G4 source to store in FLOW.md.
 
     Returns:
         A result message, list output, or flow content.

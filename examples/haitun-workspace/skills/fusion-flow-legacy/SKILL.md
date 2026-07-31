@@ -8,7 +8,7 @@ metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fucla
 
 This skill is the author + run protocol for **`@agent-flow/core`** (alias: Fuclaw) — a TypeScript runtime that executes multi-agent workflows and emits a full **execution graph** for replay. Unlike OpenProse, where the LLM *is* the VM, here the VM is a Node.js process; the LLM only orchestrates running it and reading its artifacts.
 
-> **Compatibility boundary.** Use this runtime only for explicit legacy `.flow.ts` work. New workflows use `fusion-flow` and the formal G4 `run_flow` path.
+> **Compatibility boundary.** Use this runtime only for explicit legacy `.flow.ts` work. New workflows use Fusion Flow Next through the `fusion-flow` skill and its formal G4 `run_flow` path.
 
 > **What you're working in.** The normal delivery is a **self-contained bundle**: the user copied the `fusion-flow-legacy/` folder somewhere, ran `npm install` once, and works inside it. Call that directory `<workDir>`. Everything below — generated `.flow.ts`, the `.env`, the `runs/` artifacts — lives **relative to `<workDir>`** (the directory you `cd` into and run `npx tsx` from), NOT inside any `core/` subfolder. The only time `<workDir>` is a `core/` is when the user happens to be inside a cloned Fuclaw source repo (see "Runtime mode detection"). This skill runs in any long-context LLM client (Claude Code / Cursor / Cherry Studio / Claude.ai); it does not depend on OpenClaw or any plugin install.
 

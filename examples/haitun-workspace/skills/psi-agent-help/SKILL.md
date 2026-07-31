@@ -42,7 +42,7 @@ Explain tools by capability, because exact runtime availability may vary by sess
 - File operations: `read`, `write`, `edit`
 - Shell execution: `bash`, `powershell`
 - Skill management: `skill_manage`
-- Fusion Flow execution and management: `run_flow` (formal G4), `flow_run` (legacy), `flow_manage`
+- Fusion Flow execution and management: `run_flow` (Fusion Flow Next formal language), `flow_run` (legacy), `flow_manage`
 - Durable memory, if enabled: `memory_add`, `memory_search`, `memory_answer_context`
 - Spreadsheet creation: `write_excel`
 - Web/search tools, if configured in the current runtime
@@ -63,7 +63,7 @@ Common useful skills in this workspace include:
 - `python-async-basics`: Python async guidance.
 - `python-static-analysis`: Python static analysis.
 - `user-preferences-and-language`: user preference and language handling.
-- `fusion-flow`: formal G4 authoring and checked Step–Artifact execution for new workflows.
+- `fusion-flow`: Fusion Flow Next formal-language authoring and checked Step–Artifact execution.
 - `flow` (`skills/fusion-flow-legacy/`): legacy Fuclaw/TypeScript fallback for explicit `.flow.ts` work.
 - `fusion-memory-setup`: setting up durable Fusion Memory.
 - Domain skills for systems, data/text processing, ML, media, circuits, cryptanalysis, and other specialized work.
