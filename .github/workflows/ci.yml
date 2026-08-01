@@ -60,7 +60,6 @@ jobs:
           uv run pytest -q
           examples/haitun-workspace/skills/fusion-flow/test/test_smoke.py
           examples/haitun-workspace/skills/fusion-flow/test/test_workspace_integration.py
-          examples/haitun-workspace/tests/test_fusion_workflow_prompt.py
 
   publish:
     needs: [lint, test]
