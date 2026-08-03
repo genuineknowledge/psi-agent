@@ -4,24 +4,22 @@ Pure (transport-free) encode/decode for the ``[RECV:/path]`` (input) and
 ``[SEND:/path]`` (output) markers exchanged over the message content. Kept
 separate from ``ChannelCore`` so the wire protocol has a single authoritative
 definition and can be unit-tested without any HTTP/SSE machinery.
+
+The patterns themselves live in ``psi_agent._transfer_markers`` and are shared
+with the Session-side display projection — see that module for why detecting
+and stripping must use byte-identical regexes.
 """
 
 from __future__ import annotations
 
-import re
-
 from loguru import logger
 
+from psi_agent._transfer_markers import SEND_RE
 from psi_agent.channel._types import FileChunk, InputChunk, TextChunk
 
 RECV_MARKER = "[RECV:{path}]"
-# 刻意为之: tolerate whitespace inside the brackets and around the path, and
-# accept any letter case. Models routinely emit ``[ SEND:/tmp/a.docx ]`` or
-# ``[Send:…]`` (a marker they wrote as prose, often after a Chinese sentence),
-# and a strict ``\[SEND:(.+?)\]`` silently matches nothing — the file is
-# written, announced, and never delivered. The path itself is stripped by the
-# caller, so leading/trailing spaces cannot reach the FS.
-SEND_RE = re.compile(r"\[\s*SEND\s*:(.+?)\]", re.IGNORECASE)
+
+__all__ = ["RECV_MARKER", "SEND_RE", "SendMarkerScanner", "encode_input"]
 
 
 def encode_input(chunks: list[InputChunk]) -> str:

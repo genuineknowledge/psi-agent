@@ -63,6 +63,7 @@ src/
     ├── _yaml.py               # 共享 YAML header 解析（scheduler + workspace system.py）
     ├── _sockets.py             # 共享 socket 工具（prefix-based transport 解析）
     ├── _appdata.py             # AppData 路径助手（todos/history/state；Session↔Gateway 共享）
+    ├── _transfer_markers.py    # [SEND:]/[RECV:] 正则唯一真源（Channel 上传扫描 ↔ Session 展示剥离共享，禁止各自 re.compile）
     ├── _run.py                 # YAML 配置批量启动（psi-agent run config.yml）
     ├── _logging.py              # loguru 配置，verbose→DEBUG
     ├── ai/

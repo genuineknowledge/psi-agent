@@ -28,6 +28,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from psi_agent._transfer_markers import TRANSFER_MARKER_RE, send_paths
+
 KIND_CHAT = "chat"
 KIND_SCHEDULE_SILENT = "schedule.silent"
 KIND_SCHEDULE_DISPLAY = "schedule.display"
@@ -69,12 +71,11 @@ _KNOWN_KINDS = frozenset(
 )
 
 # Presentation-only strip of wire transfer markers (Gateway history projection).
-# Whitespace and letter-case tolerance mirrors ``channel._markers.SEND_RE`` on
-# purpose: whatever the Channel accepts as a marker must also be stripped from
-# the bubble and projected as an attachment, or a ``[ SEND:… ]`` file gets
-# uploaded while its raw marker stays visible in the transcript.
-_TRANSFER_MARKER_RE = re.compile(r"\[\s*(?:SEND|RECV)\s*:[^\]]*\]", re.IGNORECASE)
-_SEND_PATH_RE = re.compile(r"\[\s*SEND\s*:([^\]]*)\]", re.IGNORECASE)
+# Imported rather than re-declared: whatever the Channel accepts as a marker must
+# also be stripped from the bubble and projected as an attachment, or a
+# ``[ SEND:… ]`` file gets uploaded while its raw marker stays visible in the
+# transcript. See ``psi_agent._transfer_markers``.
+_TRANSFER_MARKER_RE = TRANSFER_MARKER_RE
 
 
 def normalize_kind(raw: object) -> str:
@@ -233,15 +234,12 @@ def strip_transfer_markers(text: str) -> str:
 
 
 def extract_send_paths(text: str) -> list[str]:
-    """Return ``[SEND:…]`` paths in order (stripped); empty / whitespace skipped."""
-    if not isinstance(text, str) or not text:
-        return []
-    out: list[str] = []
-    for match in _SEND_PATH_RE.finditer(text):
-        path = match.group(1).strip()
-        if path:
-            out.append(path)
-    return out
+    """Return ``[SEND:…]`` paths in order (stripped); empty / whitespace skipped.
+
+    Delegates to the shared implementation so this projection and the Channel's
+    upload scanner can never disagree about what counts as a marker.
+    """
+    return send_paths(text)
 
 
 def is_displayable_chat_message(msg: dict[str, Any]) -> bool:

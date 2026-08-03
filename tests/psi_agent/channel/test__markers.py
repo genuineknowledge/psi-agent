@@ -109,3 +109,27 @@ def test_scanner_advances_past_ignored_empty_marker():
     """An empty marker must not wedge the scan pointer and hide later files."""
     scanner = SendMarkerScanner()
     assert scanner.feed("[SEND: ] then [SEND:/tmp/b.txt]") == [FileChunk("/tmp/b.txt")]
+
+
+def test_scanner_empty_marker_does_not_swallow_the_next_real_marker():
+    """Regression: ``[SEND:]`` used to capture prose plus the following marker.
+
+    A ``+`` quantifier cannot match ``[SEND:]`` at its own ``]``, so the engine
+    ran on to the next ``]`` and emitted one bogus ``FileChunk`` whose "path"
+    was the intervening sentence — the real file was never uploaded.
+    """
+    scanner = SendMarkerScanner()
+    assert scanner.feed("报表好了[SEND:] 正式的在这里 [SEND:/tmp/real.docx]") == [FileChunk("/tmp/real.docx")]
+
+
+def test_scanner_ignores_marker_broken_across_lines():
+    """A path must not span a newline, matching the display-side strip."""
+    scanner = SendMarkerScanner()
+    assert scanner.feed("文件已生成\n[SEND:\n/tmp/a.docx\n]") == []
+
+
+def test_scanner_marker_split_across_feeds_still_detected_after_newline():
+    """Streaming splits are fine; only newlines *inside* the marker are not."""
+    scanner = SendMarkerScanner()
+    assert scanner.feed("done\n[SEND:/tmp/") == []
+    assert scanner.feed("a.docx]") == [FileChunk("/tmp/a.docx")]

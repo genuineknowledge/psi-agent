@@ -6,7 +6,7 @@
 channel/
 ├── _types.py          # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
 ├── _errors.py         # ChannelError 基类（传输/协议/session 错误统一抛出）
-├── _markers.py        # [RECV:]/[SEND:] 标记协议（纯函数 encode_input + 有状态扫描器 SendMarkerScanner）
+├── _markers.py        # [RECV:]/[SEND:] 标记协议（纯函数 encode_input + 有状态扫描器 SendMarkerScanner）；正则来自 psi_agent._transfer_markers，与 Session 展示层共用一份
 ├── _stream.py         # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
 ├── _core.py           # ChannelCore — 连接管理 + post() 编排
 ├── cli/
