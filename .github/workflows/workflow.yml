@@ -1,0 +1,30 @@
+name: Generated Sources
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  antlr:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "11"
+      - name: Install ANTLR tools
+        run: pip install antlr4-tools==0.2.2
+      - name: Verify Workflow generated sources
+        working-directory: examples/haitun-workspace/skills/workflow
+        run: |
+          output="$RUNNER_TEMP/workflow-generated"
+          mkdir "$output"
+          antlr4 -v 4.13.2 \
+            -Dlanguage=Python3 -no-listener -Xexact-output-dir \
+            -o "$output" grammar/FusionFlow.g4
+          diff -u fusion_flow/generated/FusionFlowLexer.py "$output/FusionFlowLexer.py"
+          diff -u fusion_flow/generated/FusionFlowParser.py "$output/FusionFlowParser.py"

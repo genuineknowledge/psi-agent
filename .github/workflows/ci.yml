@@ -5,34 +5,6 @@ on:
   pull_request:
 
 jobs:
-  # Legacy Fusion Flow 未配置专属测试任务；G4 runtime 只保留关键 smoke tests。
-  # 本任务重新生成 ANTLR Lexer/Parser 并与仓库文件比对，防止语法文件与生成源码不一致。
-  generated-sources:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "11"
-      - name: Download ANTLR 4.13.2
-        run: |
-          curl --fail --location --silent --show-error \
-            --output "$RUNNER_TEMP/antlr-4.13.2-complete.jar" \
-            https://www.antlr.org/download/antlr-4.13.2-complete.jar
-          echo "eae2dfa119a64327444672aff63e9ec35a20180dc5b8090b7a6ab85125df4d76  $RUNNER_TEMP/antlr-4.13.2-complete.jar" \
-            | sha256sum --check
-      - name: Verify Workflow generated sources
-        working-directory: examples/haitun-workspace/skills/workflow
-        run: |
-          output="$RUNNER_TEMP/workflow-generated"
-          mkdir "$output"
-          java -jar "$RUNNER_TEMP/antlr-4.13.2-complete.jar" \
-            -Dlanguage=Python3 -no-listener -Xexact-output-dir \
-            -o "$output" grammar/FusionFlow.g4
-          diff -u fusion_flow/generated/FusionFlowLexer.py "$output/FusionFlowLexer.py"
-          diff -u fusion_flow/generated/FusionFlowParser.py "$output/FusionFlowParser.py"
-
   lint:
     runs-on: ubuntu-latest
     steps:
