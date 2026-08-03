@@ -8,6 +8,9 @@ from typing import Any, cast
 import anyio
 import pytest
 
+from psi_agent.session.conversation import Conversation
+from psi_agent.session.protocol import AgentRunResult, AgentRunStatus, AgentStopCause
+
 _WORKSPACE_DIR = Path(__file__).resolve().parents[3]
 _TOOLS_DIR = _WORKSPACE_DIR / "tools"
 if str(_TOOLS_DIR) not in sys.path:
@@ -16,6 +19,34 @@ if str(_TOOLS_DIR) not in sys.path:
 flow_manage_module = cast(Any, importlib.import_module("flow_manage"))
 flow_run_module = cast(Any, importlib.import_module("flow_run"))
 run_flow_module = cast(Any, importlib.import_module("run_flow"))
+
+
+class _StubRun:
+    def __init__(self, result: AgentRunResult | None) -> None:
+        self.result = result
+
+    def __aiter__(self) -> _StubRun:
+        return self
+
+    async def __anext__(self) -> Any:
+        raise StopAsyncIteration
+
+    async def aclose(self) -> None:
+        pass
+
+
+class _StubAgent:
+    def __init__(self, run: _StubRun) -> None:
+        self._run = run
+
+    def run_streamed(
+        self,
+        user_message: dict[str, Any],
+        extra_params: dict[str, Any] | None = None,
+    ) -> _StubRun:
+        assert user_message == {"role": "user", "content": "do the step"}
+        assert extra_params is None
+        return self._run
 
 
 def test_g4_and_legacy_public_entry_points_coexist() -> None:
@@ -91,3 +122,46 @@ async def test_run_flow_accepts_workflow_and_g4_sources(
     assert g4_path.name == "second.g4"
     with pytest.raises(ValueError, match=r"\.workflow or \.g4"):
         await run_flow_module._resolve_flow_path("flows/unsupported.txt")
+
+
+@pytest.mark.anyio
+async def test_step_agent_requires_a_complete_structured_result() -> None:
+    conversation = Conversation(messages=[{"role": "assistant", "content": "done"}])
+    completed = AgentRunResult(
+        status=AgentRunStatus.COMPLETED,
+        stop_cause=AgentStopCause.MODEL_COMPLETED,
+        model_finish_reason="stop",
+        model_turns=1,
+    )
+
+    assert (
+        await run_flow_module._complete_step_agent(
+            _StubAgent(_StubRun(completed)),
+            conversation,
+            "do the step",
+        )
+        == "done"
+    )
+
+    incomplete = AgentRunResult(
+        status=AgentRunStatus.INCOMPLETE,
+        stop_cause=AgentStopCause.AGENT_TURN_LIMIT,
+        model_finish_reason="tool_calls",
+        model_turns=2,
+    )
+    with pytest.raises(
+        RuntimeError,
+        match=r"stop_cause=agent_turn_limit, model_finish_reason='tool_calls', model_turns=2",
+    ):
+        await run_flow_module._complete_step_agent(
+            _StubAgent(_StubRun(incomplete)),
+            conversation,
+            "do the step",
+        )
+
+    with pytest.raises(RuntimeError, match="without a terminal result"):
+        await run_flow_module._complete_step_agent(
+            _StubAgent(_StubRun(None)),
+            conversation,
+            "do the step",
+        )

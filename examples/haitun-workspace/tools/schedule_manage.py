@@ -7,9 +7,11 @@ Session's ``ScheduleRegistry`` loads those files and runs them on cron.
 from __future__ import annotations
 
 import json
+import os
 import re
 from contextlib import suppress
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import _runtime_paths as _paths
 import anyio
@@ -56,6 +58,39 @@ def _validate_visibility(visibility: str) -> str | None:
     return None
 
 
+def _schedule_tz() -> ZoneInfo | None:
+    """Resolve the zone cron fields are interpreted in, exactly as Session does.
+
+    刻意为之: this mirrors ``ScheduleRegistry._schedule_tz`` rather than importing
+    it. Workspace tools are loaded standalone by the tool loader and must not
+    depend on psi_agent internals; the contract that has to match is the env var
+    (``TZ``) and the fallback (``None`` → machine-local naive clock), not the code.
+    """
+    name = os.environ.get("TZ", "").strip()
+    if not name:
+        return None
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError, ValueError:
+        return None
+
+
+def _now_local() -> datetime:
+    """Now as a naive value on the same clock ``once_at`` / cron fields are read on.
+
+    刻意为之: ``datetime.now()`` alone was wrong here. Session fires cron against
+    ``datetime.now(ZoneInfo(TZ))`` (``ScheduleRegistry._seconds_until_next``),
+    while this tool validated "is it in the future?" against the *bare machine*
+    clock. On the 214 deployment — a UTC base image with ``TZ=Asia/Shanghai`` —
+    those two clocks sit 8 hours apart, so a moment already past in Beijing but
+    still ahead in UTC passed validation, got written as a bare
+    ``minute hour day month *`` cron, and was then scheduled by Session for that
+    date *next year*: a reminder that silently never arrives.
+    """
+    tz = _schedule_tz()
+    return datetime.now(tz).replace(tzinfo=None) if tz is not None else datetime.now()
+
+
 def _parse_once_at(once_at: str) -> tuple[datetime | None, str | None]:
     """Parse once_at into a naive local datetime. Returns (dt, error)."""
     raw = once_at.strip()
@@ -73,10 +108,30 @@ def _parse_once_at(once_at: str) -> tuple[datetime | None, str | None]:
             parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except ValueError:
             return None, (f"Invalid once_at {once_at!r}: use 'YYYY-MM-DD HH:MM' (local time) or an ISO-8601 datetime.")
-        dt = parsed.astimezone().replace(tzinfo=None) if parsed.tzinfo is not None else parsed
-    if dt <= datetime.now():
-        return None, f"once_at {once_at!r} is not in the future (local time)."
+        if parsed.tzinfo is not None:
+            # Convert into the schedule zone, not the machine's — astimezone()
+            # with no argument would reintroduce the UTC/Beijing skew above.
+            tz = _schedule_tz()
+            parsed = parsed.astimezone(tz) if tz is not None else parsed.astimezone()
+            dt = parsed.replace(tzinfo=None)
+        else:
+            dt = parsed
+    now = _now_local()
+    if dt <= now:
+        return None, (
+            f"once_at {once_at!r} is not in the future — it is {dt:%Y-%m-%d %H:%M} "
+            f"but the current schedule-zone time is {now:%Y-%m-%d %H:%M} "
+            f"({os.environ.get('TZ', '').strip() or 'machine-local'})."
+        )
     return dt, None
+
+
+_WEEKDAY_ZH = ("一", "二", "三", "四", "五", "六", "日")
+
+
+def _describe_instant(dt: datetime) -> str:
+    """``2026-08-03 20:30 Monday 周一`` — the weekday spelled out, not implied."""
+    return f"{dt:%Y-%m-%d %H:%M} {dt:%A} 周{_WEEKDAY_ZH[dt.weekday()]}"
 
 
 def _cron_from_once_at(dt: datetime) -> str:
@@ -309,12 +364,14 @@ async def schedule_manage(
             return "[Error] Pass either once_at (one-shot) or cron (recurring), not both."
 
         run_once = False
+        fires_at: datetime | None = None
         if once_raw:
             dt, perr = _parse_once_at(once_raw)
             if perr or dt is None:
                 return f"[Error] {perr}"
             cron_raw = _cron_from_once_at(dt)
             run_once = True
+            fires_at = dt
         elif not cron_raw:
             return "[Error] Provide cron (recurring) or once_at (one-shot) when creating."
 
@@ -354,6 +411,11 @@ async def schedule_manage(
         extra = f", fire={fire_mode!r}"
         if fire_mode == "tool":
             extra += f", tool={tool.strip()!r}"
+        if fires_at is not None:
+            # Echo the resolved instant with its weekday: the caller supplied an
+            # absolute date it had to derive from something like "周一晚上", and
+            # this is the one place a wrong derivation is still cheap to catch.
+            extra += f", fires at {_describe_instant(fires_at)}"
         return f"Schedule created: {schedule_name!r} ({kind}, cron: {cron_raw!r}, visibility: {vis!r}{extra})"
 
     if action == "patch":

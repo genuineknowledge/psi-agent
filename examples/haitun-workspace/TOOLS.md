@@ -113,8 +113,8 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
 
 | 优先级 | `tier` | 用户要做什么 | 你接下来做什么 |
 | --- | --- | --- | --- |
-| 1 | `card` | 点一下卡片按钮 | **这一轮立刻收尾**，等回调那轮再 `feishu_auth_wait` |
-| 2 | `link_auto` | 打开链接点「同意」，**不用复制 code** | 发 `authorize_url`，**这一轮收尾**，用户回话那轮再 `feishu_auth_check` |
+| 1 | `card` | 点一下卡片按钮 | **这一轮立刻收尾**，回调那轮调 `feishu_auth_collect`（不阻塞，那轮也立刻收尾） |
+| 2 | `link_auto` | 打开链接点「同意」，**不用复制 code** | 发 `authorize_url`，**这一轮收尾**；调 `feishu_auth_collect` 让码自己回来，或等用户回话那轮 `feishu_auth_check` |
 | 3 | `link_manual` | 打开链接点「同意」，**还要复制 code** | 发 `authorize_url`，再拿 code 调 `feishu_auth_complete` |
 
 降级原因写在返回的 `downgraded_from` / `downgrade_reason` 里：**如实告诉用户**为什么用了更麻烦的
@@ -128,12 +128,15 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
 **第 1 级 `tier=card` 的细节**：卡上「点此授权」按钮同时做两件事——打开飞书授权页（`open_url`）
 + 把这次点击回调给你（`callback`）。
 
-- **发完卡这一轮就收尾**：别在同一轮里调 `feishu_auth_wait`，也别把链接再当文本发一遍。
-  同一轮等待会占住 Session 的 turn 锁，用户这期间说什么都得排队几分钟；
+- **发完卡这一轮就收尾**：别在同一轮里等待，也别把链接再当文本发一遍。
+  在轮次里等待会占住 Session 的 turn 锁，用户这期间说什么都得排队几分钟；
 - 用户点按钮后，你会收到一条 `<feishu_card_action>`，其 `dispatch.handler` 是
-  `feishu_auth_wait`、`action.value.user_key` 是该用户。**那一轮**才调
-  `feishu_auth_wait(user_key=...)` 等授权码自动回流（此时用户正对着授权页，等待是应该的），
-  拿到 token 后接着做原来被卡住的那件事；
+  `feishu_auth_collect`、`action.value.user_key` 是该用户。**那一轮**调
+  `feishu_auth_collect(user_key=...)`：它把「等授权码」交给一个脱离本轮的后台任务，
+  **本轮同样立刻收尾**。收到点击时用户才刚要在浏览器上点「同意」，在这一轮原地等就又把
+  会话占住了；码回流后后台自己换好 token 并私聊告诉用户可以继续；
+- 想主动确认进度，再调一次 `feishu_auth_collect` 即可（它返回 `status`：`watching` /
+  `granted` / `failed` / `timeout`，且不会起第二个收码任务）；
 - **卡片是一次性的**：用户点了按钮但没在授权页点「同意」时，这张卡已作废（原卡被改写成
   「已选择」），重新调 `feishu_auth_request` 发一张新的，别让用户再点旧卡；
 - 授权卡只能**私聊**发给本人（`receive_id` 默认就是 `user_key`）。待完成的授权记录存在发卡方
@@ -141,10 +144,11 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
 
 **第 2、3 级的细节**：把返回的 `authorize_url` **原样发给用户**，让其打开并点「同意授权」，然后
 
-- `tier=link_auto`：**不要向用户索要任何 code**，也**别在发链接这一轮调 `feishu_auth_wait` 干等**。
-  发完链接就收尾，顺带请用户点完「同意授权」后回你一句（他会看到「授权成功」页）；用户回话那一轮调
-  `feishu_auth_check(user_key=...)` 查一眼即可完成授权。返回 `pending=True` 只是还没点完，不是失败，
-  再收尾一轮等他回话即可——授权码在取件箱里留存约 10 分钟，晚一轮取毫无损失；
+- `tier=link_auto`：**不要向用户索要任何 code**，也**任何一轮都别在工具里干等**。
+  发完链接就收尾，然后二选一：调 `feishu_auth_collect(user_key=...)` 让码自己回来（推荐，
+  用户不必再回话；后台收到后私聊告知他可以继续），或者请用户点完「同意授权」后回你一句
+  （他会看到「授权成功」页），那一轮调 `feishu_auth_check(user_key=...)` 查一眼。返回
+  `pending=True` 只是还没点完，不是失败——授权码在取件箱里留存约 10 分钟，晚一轮取毫无损失；
 - `tier=link_manual`：才需要**明确告诉用户**看浏览器地址栏，地址形如
   `http://localhost/?code=xxxxxxxx&state=...`，把 `code=` 后面、`&` 之前那一串复制回来
   （整段网址也行），然后调 `feishu_auth_complete(code, user_key=...)`。
@@ -181,11 +185,18 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
   一次完成「建节点 + 写正文」，避免分两步（`feishu_wiki_create_doc` 再 `feishu_doc_append_content`）
   时留下**空文档**。若正文写入失败，它会连 `node_token`/`obj_token` 一并回报，可用相同 `user_key`
   调 `feishu_doc_append_content` 补写。
-- **在文档里放表格 / 流程图 / 泳道图**：`feishu_doc_append_content` 只能写标题和段落，
-  **写不出真正的表格**，更画不了图。要真正的表格/图，用下面三个专门工具（都吃 docx 的
-  `document_id`，也就是 `feishu_doc_create` 返回的 id，或 wiki 节点的 `obj_token`；带 `user_key`）：
-  - 表格：`feishu_doc_append_table(document_id, rows_json, header_row, column_width_json, user_key, caption)`——
-    `rows_json` 是二维 JSON 数组，如 `[["姓名","部门"],["张三","研发"]]`，会生成飞书原生表格块。
+- **在文档里放表格 / 流程图 / 泳道图**：`feishu_doc_append_content` 直接吃 Markdown，
+  **表格、列表、待办、引用、代码块、分割线、行内粗体/斜体/删除线/行内码/链接都会被飞书
+  转成原生块**——`| 姓名 | 部门 |` 写进去就是一张真正的飞书表格（能拖列宽、能排序、能编辑），
+  不再是一堆竖线和横线。所以**普通「文档里带个表格」直接写 Markdown 就行**，不用另外调工具。
+  下面几个专门工具解决 Markdown 表达不了的事（都吃 docx 的 `document_id`，也就是
+  `feishu_doc_create` 返回的 id，或 wiki 节点的 `obj_token`；带 `user_key`）：
+  - 表格（要给**表题自动编号**、或要指定**列宽**、或数据本来就是二维数组不想拼 Markdown 时用）：
+    `feishu_doc_append_table(document_id, rows_json, header_row, column_width_json, user_key, caption)`——
+    `rows_json` 是二维 JSON 数组，如 `[["姓名","部门"],["张三","研发"]]`，生成飞书原生表格块。
+    **和直接写 Markdown 表格怎么选**：只是正文里要一张表 → 直接 Markdown；要自动编号的表题
+    或指定列宽 → 用这个。
+
   - **可编辑的内嵌电子表格**：`feishu_doc_append_sheet(document_id, rows, columns, values_json, header_row, user_key, caption)`——
     在文档里嵌一张**真正的飞书电子表格**（block_type 30，飞书自动新建后端表格），带公式栏、
     单元格格式、筛选，能在文档里直接编辑，也能单独打开。返回 `spreadsheet_token` / `sheet_id` /
@@ -195,7 +206,8 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     先建小再靠写入撑到你要的尺寸，所以要 30 行就真给 30 行）。
     **和上面 `append_table` 怎么选**：内容是「数据」（要公式、会反复更新、要筛选排序、想当独立
     表格用）→ 用 `append_sheet`；内容是「排成格子的文字」（一小段对照说明，读起来是正文的一部分）
-    → 用 `append_table`。`append_table` 的表格块只装文字，**没有公式也不能筛选**。
+    → 直接写 Markdown 表格或用 `append_table`。这两种表格块只装文字，**没有公式也不能筛选**。
+
   - **内嵌多维表格**：`feishu_doc_append_bitable(document_id, view_type, user_key, caption)`——
     内容是「一条条记录」（台账、问题列表、报名表：要字段类型、多视图、逐行协作）时用它，
     返回 `app_token` / `table_id`，接着用 `feishu_bitable_create_field` / `_create_record` 建字段填数据。
@@ -205,9 +217,10 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
   - 泳道图：`feishu_doc_append_swimlane(document_id, lanes_json, stages_json, user_key, caption)`——
     `lanes_json` 可传对象 `{"客户":["下单","付款"],"仓库":["发货"]}`（列=泳道，自动排格），
     或传泳道名数组 `["客户","客服","仓库"]` 再用 `stages_json` 给二维正文行。同样用表格如实呈现。
-  三个都收 `caption`（表题）：**只写内容不写「表N：」**，工具读文档已有的「表 N」自动续号，
+  这几个都收 `caption`（表题）：**只写内容不写「表N：」**，工具读文档已有的「表 N」自动续号，
   按学术体例写在**表格上方**（图注在下、表题在上），且「表」和「图」是两条互不干扰的序列。
-  一句话：用户要「表格/流程图/泳道图」时别再往正文里塞纯文本，改用这三个工具。
+  一句话：正文里的表格直接写 Markdown；要编号表题、要能算数筛选、要逐行协作，才换上面的工具。
+
 - **改文档里已有的内容（不是追加）**：上面的 `append_*` 只会往末尾加，写错一段不必重开一篇——
   用这三个「块级编辑」工具改稿（都吃 docx 的 `document_id` 或 wiki 节点的 `obj_token`）：
   - 先列块拿 id：`feishu_doc_list_blocks(document_id, max_blocks, user_key)` 返回
@@ -465,3 +478,48 @@ feishu_auth_request(user_key=<sender_open_id>, capabilities=<工具给的 need_c
     （图片走 `im/v1/images` 得 `image_key`，音视频文件走 `im/v1/files` 得 `file_key`，用反了报 230001）。
     要给用户**发一个你刚生成的本地文件**、又不关心细节，最省事的仍是在回复里输出 `[SEND:<绝对路径>]`（第 14 条）；
     这几个工具用在**指定发给谁、指定发成哪种消息类型**（比如把图表发到某个群、把视频带封面发给某人）的时候。
+23. **查消息已读未读（谁看了、谁还没看）**：用户说"这条通知大家看了吗""还有谁没读""催一下没看的人"时，用
+    `feishu_message_read_status(message_id=<om_...>)`。飞书只开放**已读**名单、**没有**未读接口，所以未读是
+    工具自己算的：拉该会话成员名单减掉已读的人（发送者两边都不算）。这一步是**尽力而为**——群成员列表拉不到时
+    已读名单照样返回，但只带一句 `note`，所以**先看有没有 `unread_users` 字段再报数**，别把"算不出来"说成"0 人未读"。
+    两条飞书硬限制绕不过去，工具会带 `hint`：只能查**机器人自己发**的消息（别人发的报 230012），且只能查
+    **7 天内**发的（超期报 230033）。碰上这两种就**如实说查不了**，别编一个已读数字。只要已读名单、不要未读时
+    传 `include_unread=False`，省两次调用（大群里尤其值）。
+24. **置顶/取消置顶消息**：用户说"把这条置顶""钉在群顶上""取消置顶"时，用
+    `feishu_message_pin(message_id)` / `feishu_message_unpin(message_id)`，想知道群里现在置顶了什么用
+    `feishu_message_pins(chat_id)`（按置顶时间倒序，只给 message_id + 谁置顶的 + 什么时候，**不含消息正文**，
+    要正文再去 `feishu_message_list` 读）。公告、会议链接、群规这类"别让它被刷走"的内容用置顶，比反复重发干净。
+    两个方向都是**幂等**的：已置顶的再置顶返回原来那条 pin；**没置顶过的取消置顶飞书也报成功**——所以取消成功
+    只说明"现在没置顶"，**别据此说"我把置顶取消了"**，要确认原本有没有先查 `feishu_message_pins`。
+    最常见的失败是 **230046：多数群只允许群主/管理员置顶**，机器人通常两者都不是——这时传该管理员本人的
+    `user_key`（并让其完成授权）以其身份操作，或让群主放开权限；`hint` 会说明卡在哪一种。
+25. **把消息转发给别人/别的群**：用户说"把这条转给张三""同步到那个群""把刚才那段讨论转给老板"时，用
+    `feishu_message_forward(message_id, receive_id)`，一次转**多条**用
+    `feishu_message_merge_forward(message_ids_json, receive_id)`（合并成一张折叠卡片）。
+    **别读出内容再用 `feishu_message_send` 重发**——那样会丢掉**原作者署名**，消息里的图片/附件也会**悄悄没了**；
+    转发能原样保留，这在"把客户这句话转给研发"这种要留证据的场合是关键差别。代价是转发**不能改内容**，
+    要加说明就转发完再单独发一条。目标类型按前缀自动判断：群 `oc_`、私聊 `ou_`、`on_`、邮箱，以及
+    **话题 `omt_`**（转发是唯一能直接投进话题的接口，`feishu_message_send` 做不到）。
+    合并转发一次 1-100 条，且这些消息必须来自**同一个会话**（跨群报 230069，普通消息混话题回复报 230067）；
+    被飞书单独拒掉的 id 会放在 `invalid_message_ids` 里返回，**报数前先看这个字段**。
+    红包/投票/语音/日程转让/系统消息/加密消息，以及合并转发里的子消息，**都不能转发**（230061/230064），
+    碰上就如实转告 `hint`，别改用重发假装转发成功。
+26. **在文档里画图表**：一个工具 `feishu_chart(chart_type, data_json, title, options_json, document_id, ...)`
+    覆盖 21 种图（饼图 `pie`、折线 `line`、柱状 `column`、散点 `scatter`、雷达 `radar`、甘特 `gantt`……）。
+    数据按字段名放进 `data_json`（`{"labels_json": [...], "values_json": [...]}`），该类型专属参数放
+    `options_json`（`unit` / `percent` / `highlight` 之类）；**放错键会被拒并列出接受的键**，不会悄悄忽略——
+    否则 `percent` 被丢掉就会画出一张没人要的图。**先读 `feishu-charts` 技能再选类型**：工具只管画，
+    「哪种图能回答这个问题」是技能里的判断表。多面板拼一张图（`(a)(b)(c)` 共用一个图注）用
+    `feishu_chart_figure`。`document_id` 留空就只出 PNG（返回 `image_path`），可拿去塞进 Word/PPT 或
+    `[SEND:]` 发给用户。图注**自动按文档里已有的序号续「图 N」**，别自己写编号。返回里带 `warning`
+    说明本机缺中文字体、中文会变方框，**要如实告诉用户**，别报成功了事。
+27. **飞书没有专用工具的接口**：用 `feishu_api(method, uri, body_json, query_json, paths_json, prefer, ...)`
+    直接打任意开放平台端点。它走的是和专用工具**同一条 `_invoke`**，所以鉴权、tenant→user 令牌降级、
+    429 重试、错误码 `hint` 全都照旧。**端点清单在 `feishu-api` 技能里**（通讯录 / 考勤 / 云文档搜索 /
+    审批查询 / 日历读取 / 任务 / 群 / 知识库 / 培训），先读技能再拼 `uri`。`uri` 里的 `:name` 占位符
+    **原样留着**、值放 `paths_json`（让 SDK 转义）——没填的占位符会在**发请求前**被拒（`missing_path_params`），
+    不会变成一个莫名的 404。只认 UAT 的端点（全组织搜人、全库搜文档）传 `prefer="user"`。
+    **动手前先想有没有专用工具**：传二进制的上传端点会被直接拒并告诉你该用哪个工具
+    （`use_dedicated_tool`，文件句柄塞不进 JSON 字符串）；sheet / bitable / authen 路径会带 `warning`
+    点名你正在绕过谁的护栏（裸 `!A1` 静默丢数据、列名对不上静默丢值都是这么来的）。
+    这里 `uri` 写错就是一次真实写入，**炸的范围比任何一个窄工具都大**。

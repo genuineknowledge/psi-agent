@@ -19,6 +19,9 @@ from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._event_defs import ChannelEventDef, load_channel_event_defs
 from psi_agent.channel._synthetic import start_synthetic_producers
 
+# Guard against cycles / pathological nesting while unwrapping SDK models.
+_PLAINIFY_MAX_DEPTH = 12
+
 _CustomizedEventProcessor: Any = None
 try:
     from lark_channel.event.custom import CustomizedEventProcessor
@@ -36,26 +39,55 @@ class FeishuAgentEventsStats:
     synthetic_producers: int
 
 
+def _plainify(value: Any, _depth: int = 0) -> Any:
+    """Recursively turn lark SDK model objects into plain dicts/lists.
+
+    lark_channel models (``P2ImChatMemberUserAddedV1Data``, ``UserId``, …) are
+    hand-rolled classes with no ``dict()``/``model_dump()``/``to_dict()`` — their
+    fields live in ``__dict__``. Without unwrapping them, every P2 payload
+    reaches ``map_event`` as ``repr()`` text and no mapper can read a field.
+    """
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if _depth >= _PLAINIFY_MAX_DEPTH:
+        return repr(value)
+    if isinstance(value, dict):
+        return {str(k): _plainify(v, _depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_plainify(v, _depth + 1) for v in value]
+    inner = getattr(value, "__dict__", None)
+    if isinstance(inner, dict):
+        return {k: _plainify(v, _depth + 1) for k, v in inner.items() if not k.startswith("_")}
+    return repr(value)
+
+
 def _raw_to_dict(raw: Any) -> dict[str, Any]:
     """Best-effort normalize SDK event objects to a plain dict for map_event."""
     if isinstance(raw, dict):
-        return dict(raw)
+        return {str(k): _plainify(v) for k, v in raw.items()}
     for attr in ("dict", "model_dump", "to_dict"):
         fn = getattr(raw, attr, None)
         if callable(fn):
             try:
                 out = fn()
                 if isinstance(out, dict):
-                    return out
+                    return {str(k): _plainify(v) for k, v in out.items()}
             except Exception:
                 pass
     # lark events often nest under .event
     nested = getattr(raw, "event", None)
-    if isinstance(nested, dict):
-        return {"event": nested, "header": getattr(raw, "header", None)}
     if nested is not None:
-        inner = _raw_to_dict(nested)
-        return {"event": inner, "type": getattr(raw, "type", None)}
+        out = {"event": _plainify(nested)}
+        # Keep header/type: mappers need ``header.event_id`` to build an
+        # idempotency key that is unique per delivery.
+        for attr in ("header", "type", "schema", "ts", "uuid"):
+            got = getattr(raw, attr, None)
+            if got is not None:
+                out[attr] = _plainify(got)
+        return out
+    plain = _plainify(raw)
+    if isinstance(plain, dict):
+        return plain
     return {"raw": repr(raw)}
 
 
@@ -129,6 +161,19 @@ def _register_platform_map(
     return registered
 
 
+def _delivery_id(raw_dict: dict[str, Any]) -> str:
+    """Return Feishu's per-delivery id (``header.event_id``, or P1 ``uuid``)."""
+    header = raw_dict.get("header")
+    if isinstance(header, dict):
+        got = header.get("event_id")
+        if isinstance(got, str) and got.strip():
+            return got.strip()
+    got = raw_dict.get("uuid")
+    if isinstance(got, str) and got.strip():
+        return got.strip()
+    return ""
+
+
 async def _forward_one(
     edef: ChannelEventDef,
     raw: Any,
@@ -143,7 +188,8 @@ async def _forward_one(
         if not isinstance(envelopes, list):
             logger.error(f"{edef.name}: map_event must return list[dict], got {type(envelopes)!r}")
             return
-        for env in envelopes:
+        delivery_id = _delivery_id(raw_dict)
+        for index, env in enumerate(envelopes):
             if not isinstance(env, dict):
                 logger.error(f"{edef.name}: envelope is not a dict")
                 continue
@@ -152,6 +198,11 @@ async def _forward_one(
             env.setdefault("source", edef.source)
             env.setdefault("event", edef.name)
             env.setdefault("raw_event", edef.platform_event)
+            # Without a key Session cannot dedupe Feishu's own retries; scope it
+            # to this delivery so distinct occurrences never collide.
+            key = env.get("idempotency_key")
+            if (not isinstance(key, str) or not key.strip()) and delivery_id:
+                env["idempotency_key"] = f"{edef.name}:{delivery_id}:{index}"
             routing = env.get("routing") if isinstance(env.get("routing"), dict) else {}
             open_id = None
             if isinstance(routing, dict):

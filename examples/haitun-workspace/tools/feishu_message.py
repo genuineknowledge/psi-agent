@@ -15,6 +15,13 @@ Fixing a sent message is ``feishu_message_edit`` (content changes in place, the
 ``message_id`` survives), not recall-and-resend. Acknowledging one without adding to
 the conversation is ``feishu_message_react``.
 
+Around a message that already exists there are three more moves: ask who has
+**read** it (``feishu_message_read_status`` — and who hasn't, which Feishu itself
+won't tell you), **pin** it to the top of the chat (``feishu_message_pin`` /
+``_unpin`` / ``_pins``), and **forward** it elsewhere with its author and
+attachments preserved (``feishu_message_forward``, or ``_merge_forward`` for a
+whole stretch of conversation as one card).
+
 To @-mention someone, embed ``<at user_id="ou_xxx"></at>`` in the ``text`` (the
 value is the person's open_id). ``feishu_message_send`` auto-detects such tags and
 sends a rich-text ``post`` so the mention renders — a raw ``<at>`` in a plain text
@@ -523,6 +530,74 @@ async def feishu_message_send_post(
     return _f.dumps_result(await _f.send_post_message_impl(receive_id, blocks_json, title, receive_id_type, user_key))
 
 
+async def feishu_message_upload_image(image_path: str, user_key: str = "") -> str:
+    """Upload a local image to Feishu **without sending it**, returning its ``image_key``.
+
+    ``feishu_message_send_image`` uploads and sends in one step and is what you want for
+    "把这张图发给他". Use *this* when the same picture is needed **more than once**, since
+    an ``image_key`` is reusable and re-uploading the same file wastes a call each time:
+
+    - sending one chart to several people or groups — upload once, then pass the
+      ``image_key`` in each ``feishu_message_send_post`` block (``{"tag": "img",
+      "image_key": "img_v3_..."}``);
+    - putting a picture inside an **interactive card** (``feishu_message_send_card``),
+      whose ``img`` element takes only an ``image_key`` and has no upload of its own.
+
+    The key is an IM key and is **not** interchangeable with a drive ``file_token`` from
+    ``feishu_drive_upload`` (a drive token can't be sent in a message, and an
+    ``image_key`` can't live in a document), nor with the ``file_key`` from
+    ``feishu_message_upload_file`` — swapping those two is Feishu error 230001.
+
+    Max 10MB; JPG/JPEG/PNG/WEBP/GIF/BMP/ICO/TIFF/HEIC. Larger or other formats go
+    through ``feishu_message_upload_file`` / ``feishu_drive_upload`` instead.
+
+    Args:
+        image_path: Local path to the picture.
+        user_key: The sender's open_id as a fallback identity (optional).
+    """
+    return _f.dumps_result(await _f.upload_image_impl(image_path, user_key))
+
+
+async def feishu_message_upload_file(
+    file_path: str,
+    file_type: str = "",
+    file_name: str = "",
+    duration_ms: int = 0,
+    user_key: str = "",
+) -> str:
+    """Upload a local file/audio/video to Feishu **without sending it**, returning its ``file_key``.
+
+    ``feishu_message_send_file`` / ``_send_audio`` / ``_send_video`` upload and send in
+    one step — use those for a one-off delivery. Use *this* when the same attachment goes
+    to **several** conversations (upload once, reuse the ``file_key``) or when you want to
+    verify the upload succeeded before deciding where to send it.
+
+    ``file_type`` is Feishu's own enum, not the extension, and is derived from the suffix
+    when omitted (``.mp4``→mp4, ``.pdf``→pdf, ``.docx``→doc, ``.xlsx``→xls,
+    ``.pptx``→ppt, ``.opus``→opus; anything unmapped → ``stream``, which is how a
+    .zip/.csv/.txt is sent). A file uploaded as ``stream`` is sent as a ``file`` message;
+    ``opus`` is required for a playable voice message (an .mp3 sent as audio is rejected
+    with 230055 — convert first: ``ffmpeg -i in.mp3 -acodec libopus -ac 1 -ar 16000
+    out.opus``) and ``mp4`` for a video message.
+
+    The returned ``file_key`` is **not** an ``image_key`` (pictures go through
+    ``feishu_message_upload_image``; crossing the two is error 230001) and **not** a drive
+    ``file_token`` from ``feishu_drive_upload``.
+
+    Max 30MB — a bigger file belongs in the cloud drive (``feishu_drive_upload``) and gets
+    shared as a link.
+
+    Args:
+        file_path: Local path to the file.
+        file_type: Feishu's type enum — opus/mp4/pdf/doc/xls/ppt/stream. Leave empty to
+            derive it from the file's suffix.
+        file_name: Name to store/display it as (defaults to the file's own name).
+        duration_ms: Length in milliseconds, for audio/video.
+        user_key: The sender's open_id as a fallback identity (optional).
+    """
+    return _f.dumps_result(await _f.upload_file_impl(file_path, file_type, file_name, duration_ms, user_key))
+
+
 async def feishu_message_list(
     container_id: str,
     container_id_type: str = "chat",
@@ -544,6 +619,64 @@ async def feishu_message_list(
     """
     return _f.dumps_result(
         await _f.list_messages_impl(container_id, container_id_type, sort_type, page_size, page_token)
+    )
+
+
+async def feishu_message_search(
+    query: str,
+    chat_ids: list[str] | None = None,
+    from_ids: list[str] | None = None,
+    message_type: str = "",
+    from_type: str = "",
+    chat_type: str = "",
+    start_time: str = "",
+    end_time: str = "",
+    limit: int = 20,
+    user_key: str = "",
+) -> str:
+    """Search Feishu/Lark **message content** by keyword across chats (全局消息搜索).
+
+    The one way to answer 「上周谁说过发布时间」/「搜一下关于报销的消息」 without knowing which
+    group it was in: ``feishu_message_list`` can only walk one chat you already have the
+    id for, this searches by words.
+
+    Searches **as the asking person**, so it finds what they can see — Feishu accepts no
+    bot token here, which is why ``user_key`` is required rather than optional, and why
+    there is no bot-wide variant to fall back on. The person must have authorized once
+    (``feishu_auth_card`` / ``feishu_auth_start``).
+
+    Feishu returns message ids only, so each hit is read back: results carry the actual
+    ``text``, ``chat_id``, sender and time. Hits the bot cannot read come back with
+    ``readable: false`` and just their id — normally a chat the bot isn't in — rather than
+    being silently dropped, so a partial answer is visible as partial.
+
+    Args:
+        query: The keyword(s) to search for.
+        chat_ids: Restrict to these chats (``oc_...``); empty searches all the person's chats.
+        from_ids: Restrict to messages sent by these people (ids, not names).
+        message_type: Restrict to messages **carrying an attachment** — ``file`` / ``image``
+            / ``media``. Leave empty to search ordinary text messages.
+        from_type: ``user`` or ``bot`` — who sent it.
+        chat_type: ``group_chat`` (群聊) or ``p2p_chat`` (单聊).
+        start_time: Earliest send time as a **second**-level Unix timestamp string (e.g.
+            ``"1609296809"``). Milliseconds are refused — they would match nothing.
+        end_time: Latest send time, same format.
+        limit: Max hits to return and read back (default 20, cap 50).
+        user_key: The caller's open_id from ``<feishu_context>``. **Required.**
+    """
+    return _f.dumps_result(
+        await _f.search_messages_impl(
+            query,
+            chat_ids,
+            from_ids,
+            message_type,
+            from_type,
+            chat_type,
+            start_time,
+            end_time,
+            limit,
+            user_key,
+        )
     )
 
 
@@ -603,3 +736,181 @@ async def feishu_image_get(
             tenant token (tenant is always tried first regardless).
     """
     return _f.dumps_result(await _f.get_message_image_impl(message_id, file_key, save_path, resource_type, user_key))
+
+
+async def feishu_message_read_status(
+    message_id: str, include_unread: bool = True, page_size: int = 100, user_key: str = ""
+) -> str:
+    """Check who has **read** a message the bot sent — and who hasn't ("谁还没看").
+
+    The answer to "这条通知大家看了吗", "还有谁没读", "催一下没看的人". Returns
+    ``read_users`` (each with the millisecond ``read_time``) and, unless you turn it
+    off, ``unread_users`` with names.
+
+    Feishu only exposes the **readers**; there is no unread endpoint. So the unread
+    list is computed here by subtracting the readers from the chat's member roster
+    (the sender is excluded from both). That part is best-effort: if the chat's
+    roster can't be listed, the read list is still returned along with a ``note``
+    explaining why the unread half is missing — so check for ``unread_users``
+    before reporting a count rather than assuming zero means everyone read it.
+
+    Two hard limits are Feishu's, not ours, and both come back as a ``hint``:
+    only messages the **bot itself sent** can be queried (someone else's message
+    gives 230012 — there is no way around it), and only within **7 days** of
+    sending (230033). Don't promise a read report on an older or third-party
+    message; say it isn't available.
+
+    Args:
+        message_id: The message to check (``om_...``) — from ``feishu_message_send``'s
+            return value, ``<feishu_context>``, or a ``feishu_message_list`` item.
+            Must be a message the bot sent, within the last 7 days.
+        include_unread: True (default) also lists who hasn't read it, by diffing
+            against the group roster. Set False to skip the extra roster calls when
+            only the reader list matters (or in a large group, to keep it cheap).
+        page_size: Readers fetched per request (1-100, default 100). All pages are
+            walked regardless, so this only tunes the request count.
+        user_key: The sender's open_id (from ``<feishu_context>``) as a permission
+            fallback; empty uses the bot's own tenant identity (tried first anyway).
+    """
+    return _f.dumps_result(await _f.read_status_impl(message_id, include_unread, page_size, user_key))
+
+
+async def feishu_message_pin(message_id: str, user_key: str = "") -> str:
+    """**Pin** a message to the top of its chat ("置顶这条", "把这条钉在群顶上").
+
+    A pin puts the message in the group's 置顶 bar where everyone sees it on open —
+    the right move for a notice, a meeting link or a rule that new arrivals need,
+    and better than re-sending the message so it doesn't scroll away.
+
+    Pinning is idempotent: a message that's already pinned comes back ok with the
+    existing pin's info, so re-pinning is safe.
+
+    The common failure is 230046 — many groups only let the **owner/admin** pin.
+    The bot usually isn't one, so pass that person's ``user_key`` (they must have
+    authorized) to pin as them, or ask the owner to open the permission. The
+    returned ``hint`` says which of the two applies.
+
+    Args:
+        message_id: The message to pin (``om_...``). A chat_id (``oc_...``) is not a
+            message id and is rejected.
+        user_key: The open_id of the person to pin as (from ``<feishu_context>``) —
+            what makes pinning possible in an owner/admin-only group; empty pins as
+            the bot (tenant identity is tried first regardless).
+    """
+    return _f.dumps_result(await _f.pin_message_impl(message_id, user_key))
+
+
+async def feishu_message_unpin(message_id: str, user_key: str = "") -> str:
+    """Remove a message's pin ("取消置顶", "把置顶撤了").
+
+    Note that Feishu also reports success when the message was **never pinned**, so
+    a successful result means "not pinned now", not "a pin was removed" — don't
+    claim you took down a pin you never confirmed existed. ``feishu_message_pins``
+    tells you what is actually pinned.
+
+    Same owner/admin restriction as pinning (230046): pass a ``user_key`` to act as
+    someone with the right.
+
+    Args:
+        message_id: The pinned message to unpin (``om_...``), e.g. from
+            ``feishu_message_pins``.
+        user_key: The open_id to act as; empty uses the bot's own identity.
+    """
+    return _f.dumps_result(await _f.unpin_message_impl(message_id, user_key))
+
+
+async def feishu_message_pins(
+    chat_id: str,
+    start_time: str = "",
+    end_time: str = "",
+    page_size: int = 50,
+    page_token: str = "",
+    user_key: str = "",
+) -> str:
+    """List a group's **pinned** messages, newest pin first ("群里置顶了什么").
+
+    Use it to review what's currently pinned before adding another, to find the
+    ``message_id`` needed by ``feishu_message_unpin``, or to answer "置顶的公告是哪条".
+
+    Only pin **records** come back — ``message_id``, who pinned it, and when. The
+    pinned messages' text is not included; read it with ``feishu_message_list`` if
+    the content matters.
+
+    Args:
+        chat_id: The group whose pins you want (``oc_...``, from ``feishu_chat_find``
+            or ``<feishu_context>``). Pins can only be listed per group.
+        start_time: Only pins created at/after this millisecond timestamp (optional;
+            empty reaches back to the group's oldest pin).
+        end_time: Only pins created before this millisecond timestamp (optional;
+            empty starts from the newest). Must be greater than ``start_time``.
+        page_size: Pins per page (1-50, default 50).
+        page_token: Continue from a previous call's ``page_token`` (when ``has_more``).
+        user_key: The sender's open_id as a permission fallback; empty uses the bot's.
+    """
+    return _f.dumps_result(await _f.list_pins_impl(chat_id, start_time, end_time, page_size, page_token, user_key))
+
+
+async def feishu_message_forward(
+    message_id: str, receive_id: str, receive_id_type: str = "chat_id", user_key: str = ""
+) -> str:
+    """**Forward** a message to another chat, person or thread ("转发给…", "同步到那个群").
+
+    Forwarding keeps the original's **author and content intact** — the recipient
+    sees who said it. That's the difference from reading the text and re-sending it
+    with ``feishu_message_send``, which silently drops the attribution and any
+    image/file the message carried. Use forwarding whenever the original matters as
+    evidence ("把客户这句话转给研发"); the content can't be modified in the process,
+    so add your own remark as a separate message afterwards.
+
+    Not everything can be forwarded: red packets, polls, voice messages, calendar
+    handovers, system and encrypted messages are refused (230061), as are messages
+    already recalled (230065) and sub-messages inside a 合并转发 bundle (230064).
+    Each comes back with a ``hint`` — relay it rather than retrying.
+
+    To forward **several** messages at once as one bundle, use
+    ``feishu_message_merge_forward``.
+
+    Args:
+        message_id: The message to forward (``om_...``).
+        receive_id: Where to forward it — a group ``chat_id`` (``oc_...``), a person's
+            ``open_id`` (``ou_...``) for a DM, a ``union_id`` (``on_...``), an email,
+            or a ``thread_id`` (``omt_...``) to drop it into a topic.
+        receive_id_type: Type of ``receive_id``. Usually leave as-is: it's inferred
+            from the prefix (``oc_``→chat_id, ``ou_``→open_id, ``on_``→union_id,
+            ``omt_``→thread_id, contains ``@``→email). Only set it for a bare user_id.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it to forward
+            as that person (e.g. when the bot can't see the source message); empty
+            forwards as the bot.
+    """
+    return _f.dumps_result(await _f.forward_message_impl(message_id, receive_id, receive_id_type, user_key))
+
+
+async def feishu_message_merge_forward(
+    message_ids_json: str, receive_id: str, receive_id_type: str = "chat_id", user_key: str = ""
+) -> str:
+    """Forward **several messages as one bundle** (合并转发) — a single collapsed card.
+
+    Better than forwarding one-by-one when you're passing on a *conversation*
+    ("把刚才那段讨论转给老板"): the recipient gets one 合并转发 card holding all of
+    them in order, instead of N separate bubbles, and each keeps its own author.
+
+    All the ids must come from the **same conversation** — Feishu refuses a batch
+    that spans groups (230069), and won't mix a topic's replies with ordinary
+    messages (230067). Individual ids it rejects are returned in
+    ``invalid_message_ids`` rather than dropped silently, so check that field
+    before reporting how many went through.
+
+    Args:
+        message_ids_json: The messages to bundle, as a JSON array of ``om_...`` ids
+            (1-100, all from one chat), e.g. ``["om_a", "om_b", "om_c"]``. Collect
+            them from ``feishu_message_list`` / ``feishu_thread_read``. A plain
+            comma-separated list is also accepted.
+        receive_id: The target — ``chat_id`` (``oc_...``), ``open_id`` (``ou_...``),
+            ``union_id``, email, or ``thread_id`` (``omt_...``).
+        receive_id_type: Type of ``receive_id``; inferred from its prefix, so it
+            usually needs no change.
+        user_key: The open_id to forward as; empty forwards as the bot.
+    """
+    return _f.dumps_result(
+        await _f.merge_forward_messages_impl(message_ids_json, receive_id, receive_id_type, user_key)
+    )

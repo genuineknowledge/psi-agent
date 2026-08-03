@@ -70,3 +70,6 @@ haitun.ico
 # iFLYTEK speech credentials and generated audio
 .env.xfyun
 generated/audio/
+
+# rendered chart PNGs (runtime output of feishu_chart, also written by its tests)
+charts/

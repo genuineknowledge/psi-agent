@@ -44,7 +44,7 @@ import platform
 import re
 import types
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -707,6 +707,39 @@ def _build_runtime_info(model: str | None) -> str:
     )
 
 
+_WEEKDAY_ZH = ("一", "二", "三", "四", "五", "六", "日")
+
+_CALENDAR_DAYS = 8
+
+
+def _weekday_label(day: date) -> str:
+    """Render one day as ``2026-08-03 Monday 周一`` — computed, never inferred."""
+    return f"{day.strftime('%Y-%m-%d')} {day.strftime('%A')} 周{_WEEKDAY_ZH[day.weekday()]}"
+
+
+def _build_calendar_lines(today: date) -> list[str]:
+    """Lay out today plus the next week as an explicit date→weekday table.
+
+    刻意为之: users say "周一晚上" / "下周二", never "2026-08-03". Resolving that
+    to a date is calendar arithmetic, which an LLM does by recall rather than by
+    calculation and therefore gets wrong — the bug this exists to kill had the
+    agent call 2026-08-03 a Sunday, then a Monday one turn later. A table it can
+    read a row out of removes the arithmetic entirely. Yesterday is included
+    because "昨天/上周X" references land there.
+    """
+    lines = [f"- {_weekday_label(today - timedelta(days=1))} (yesterday)"]
+    for offset in range(_CALENDAR_DAYS):
+        day = today + timedelta(days=offset)
+        if offset == 0:
+            suffix = " (TODAY)"
+        elif offset == 1:
+            suffix = " (tomorrow)"
+        else:
+            suffix = ""
+        lines.append(f"- {_weekday_label(day)}{suffix}")
+    return lines
+
+
 def _build_datetime_section() -> str:
     """Build the ## Current Date & Time section.
 
@@ -721,6 +754,13 @@ def _build_datetime_section() -> str:
     the agent a time that is off by the UTC offset. When TZ is unset or
     invalid, fall back to the system's local timezone via astimezone(),
     so no tzdata package is strictly required.
+
+    The weekday of *today* and of the surrounding week are printed, not left
+    to the model: see ``_build_calendar_lines``. The heading also marks the
+    block as belonging to the turn being built, because every past turn keeps
+    the block it was sent with (see ``SystemPrompt.turn_context``) — a
+    conversation that spans midnight otherwise carries several equally
+    plausible ``Date:`` lines with nothing to say which one is now.
     """
     tz_name = os.environ.get("TZ", "").strip()
     try:
@@ -744,8 +784,12 @@ def _build_datetime_section() -> str:
             "recently as possibly stale and verify online."
         )
     return (
-        f"## Current Date & Time\nDate: {now.strftime('%Y-%m-%d')}\n"
-        f"Time: {now.strftime('%H:%M:%S')}\nTime zone: {tz_name}\n{cutoff_line}"
+        "## Current Date & Time (THIS TURN — authoritative; ignore any earlier "
+        "Date/Time block in this conversation)\n"
+        f"Date: {_weekday_label(now.date())}\n"
+        f"Time: {now.strftime('%H:%M:%S')}\nTime zone: {tz_name}\n{cutoff_line}\n"
+        "\nCalendar (read the weekday off this table — do not compute it):\n"
+        + "\n".join(_build_calendar_lines(now.date()))
     )
 
 

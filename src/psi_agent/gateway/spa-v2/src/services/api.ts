@@ -119,6 +119,11 @@ export async function generateSummary(sessionId: string, userText: string, assis
   })
 }
 
+export type HistoryToolCall = {
+  name: string
+  arguments: string
+}
+
 export type HistoryMessage = {
   role: 'user' | 'assistant'
   text: string
@@ -126,6 +131,10 @@ export type HistoryMessage = {
   kind?: string
   /** ``[SEND:]`` paths extracted before marker strip (assistant turns). */
   sends?: string[]
+  /** Session JSONL thinking prose only (not tool markers). */
+  reasoning?: string
+  /** Structured tool_calls projected for SPA tool list (separate from reasoning). */
+  tools?: HistoryToolCall[]
 }
 
 export async function fetchHistory(sessionId: string) {

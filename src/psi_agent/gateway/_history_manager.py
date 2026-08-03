@@ -11,12 +11,75 @@ from psi_agent._appdata import (
     resolve_history_read_path,
 )
 from psi_agent.session.history_display import (
+    KIND_CHAT,
     extract_send_paths,
     is_displayable_chat_message,
     message_kind,
     strip_transfer_markers,
     wire_role,
 )
+
+
+def _merge_reasoning(existing: object, extra: str) -> str:
+    parts: list[str] = []
+    if isinstance(existing, str) and existing.strip():
+        parts.append(existing.strip())
+    if extra.strip():
+        parts.append(extra.strip())
+    return "\n".join(parts)
+
+
+def _tool_calls_payload(msg: dict[str, object]) -> list[dict[str, str]]:
+    """Project JSONL ``tool_calls`` to ``[{name, arguments}, …]`` for SPA tool UI.
+
+    Session streams ``[Tool Call:…]`` only on the live SSE; JSONL keeps structured
+    ``tool_calls``. History exposes them as a separate ``tools`` field — never
+    stuffed into ``reasoning``.
+    """
+    raw = msg.get("tool_calls")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for tc in raw:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        args = fn.get("arguments", "{}")
+        if not isinstance(args, str):
+            args = "{}"
+        out.append({"name": name.strip(), "arguments": args})
+    return out
+
+
+def _extend_tools(existing: object, extra: list[dict[str, str]]) -> list[dict[str, str]]:
+    base: list[dict[str, str]] = []
+    if isinstance(existing, list):
+        for item in existing:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            arguments = item.get("arguments")
+            if isinstance(name, str) and isinstance(arguments, str):
+                base.append({"name": name, "arguments": arguments})
+    base.extend(extra)
+    return base
+
+
+def _attach_process(
+    row: dict[str, object],
+    *,
+    reasoning: str,
+    tools: list[dict[str, str]],
+) -> None:
+    if reasoning:
+        row["reasoning"] = reasoning
+    if tools:
+        row["tools"] = tools
 
 
 class HistoryManager:
@@ -28,6 +91,9 @@ class HistoryManager:
             session_id=session_id,
         )
         messages: list[dict[str, object]] = []
+        # Tool-round thinking / tools held until the next displayable assistant.
+        pending_reasoning = ""
+        pending_tools: list[dict[str, str]] = []
         try:
             content = await path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -45,14 +111,48 @@ class HistoryManager:
                 continue
             if not isinstance(msg, dict):
                 continue
-            if not is_displayable_chat_message(msg):
-                continue
+
             role = wire_role(msg.get("role"))
+            kind = message_kind(msg)
+            reasoning_raw = msg.get("reasoning")
+            reasoning = reasoning_raw.strip() if isinstance(reasoning_raw, str) and reasoning_raw.strip() else ""
+            tools = _tool_calls_payload(msg)
+
+            if not is_displayable_chat_message(msg):
+                # Tool rounds: assistant + tool_calls (+ optional thinking), no chat content.
+                if role == "assistant" and kind == KIND_CHAT and (reasoning or tools):
+                    if messages and messages[-1].get("role") == "assistant":
+                        prev = messages[-1]
+                        if reasoning:
+                            prev["reasoning"] = _merge_reasoning(prev.get("reasoning"), reasoning)
+                        if tools:
+                            prev["tools"] = _extend_tools(prev.get("tools"), tools)
+                    else:
+                        if reasoning:
+                            pending_reasoning = _merge_reasoning(pending_reasoning, reasoning)
+                        if tools:
+                            pending_tools = _extend_tools(pending_tools, tools)
+                continue
+
             text = msg.get("content", "")
             if role not in ("user", "assistant") or not isinstance(text, str):
                 continue
             sends = extract_send_paths(text) if role == "assistant" else []
             cleaned = strip_transfer_markers(text)
+
+            if role == "user" and (pending_reasoning or pending_tools):
+                if messages and messages[-1].get("role") == "assistant":
+                    prev = messages[-1]
+                    if pending_reasoning:
+                        prev["reasoning"] = _merge_reasoning(
+                            prev.get("reasoning"),
+                            pending_reasoning,
+                        )
+                    if pending_tools:
+                        prev["tools"] = _extend_tools(prev.get("tools"), pending_tools)
+                pending_reasoning = ""
+                pending_tools = []
+
             # SEND-only assistant turns: fold paths into the previous assistant
             # bubble so spa v1 does not render an empty message.
             if not cleaned and sends:
@@ -62,18 +162,62 @@ class HistoryManager:
                     prev_sends = list(prev_raw) if isinstance(prev_raw, list) else []
                     prev_sends.extend(sends)
                     prev["sends"] = prev_sends
+                    if reasoning or pending_reasoning:
+                        prev["reasoning"] = _merge_reasoning(
+                            prev.get("reasoning"),
+                            _merge_reasoning(pending_reasoning, reasoning),
+                        )
+                        pending_reasoning = ""
+                    if tools or pending_tools:
+                        prev["tools"] = _extend_tools(
+                            prev.get("tools"),
+                            _extend_tools(pending_tools, tools),
+                        )
+                        pending_tools = []
                 else:
-                    messages.append({"role": role, "text": "", "sends": sends})
+                    row: dict[str, object] = {"role": role, "text": "", "sends": sends}
+                    merged = _merge_reasoning(pending_reasoning, reasoning)
+                    merged_tools = _extend_tools(pending_tools, tools)
+                    pending_reasoning = ""
+                    pending_tools = []
+                    _attach_process(row, reasoning=merged, tools=merged_tools)
+                    messages.append(row)
                 continue
             if not cleaned:
+                if reasoning or tools:
+                    if messages and messages[-1].get("role") == "assistant":
+                        prev = messages[-1]
+                        if reasoning:
+                            prev["reasoning"] = _merge_reasoning(prev.get("reasoning"), reasoning)
+                        if tools:
+                            prev["tools"] = _extend_tools(prev.get("tools"), tools)
+                    else:
+                        if reasoning:
+                            pending_reasoning = _merge_reasoning(pending_reasoning, reasoning)
+                        if tools:
+                            pending_tools = _extend_tools(pending_tools, tools)
                 continue
+
             row: dict[str, object] = {"role": role, "text": cleaned}
-            kind = message_kind(msg)
             if kind != "chat":
                 row["kind"] = kind
             if sends:
                 row["sends"] = sends
+            if role == "assistant":
+                merged = _merge_reasoning(pending_reasoning, reasoning)
+                merged_tools = _extend_tools(pending_tools, tools)
+                pending_reasoning = ""
+                pending_tools = []
+                _attach_process(row, reasoning=merged, tools=merged_tools)
             messages.append(row)
+
+        if messages and messages[-1].get("role") == "assistant":
+            prev = messages[-1]
+            if pending_reasoning:
+                prev["reasoning"] = _merge_reasoning(prev.get("reasoning"), pending_reasoning)
+            if pending_tools:
+                prev["tools"] = _extend_tools(prev.get("tools"), pending_tools)
+
         logger.debug(f"History for session {session_id!r}: {len(messages)} displayable message(s)")
         return messages
 

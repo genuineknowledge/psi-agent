@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import inspect
 import io
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+import anyio
 import pytest
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +19,34 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 _impl: Any = importlib.import_module("_feishu_impl")
+_watch: Any = importlib.import_module("_feishu_auth_watch")
+
+
+async def _instant(value: Any) -> Any:
+    """把一个现成的值包成 awaitable (给 monkeypatch 当替身用)。"""
+    return value
+
+
+def _record_dm(sink: list[tuple[str, str]]) -> Any:
+    """替掉 send_message_impl, 把后台回告的私聊记下来。"""
+
+    async def _send(receive_id: str, text: str, receive_id_type: str, on_behalf_of: str = "") -> dict[str, Any]:
+        sink.append((receive_id, text))
+        return {"ok": True, "message_id": "om_x"}
+
+    return _send
+
+
+async def _settle(impl: Any, user_key: str, *, seconds: float = 2.0) -> None:
+    """等后台 watcher 跑完 —— 它是脱离本轮的任务, 不等就会在断言时还没写结果。
+
+    直接 await 它自己的 task (而不是轮询状态位): 任务结束时 ``_run`` 已经把结果和回告都写
+    完了, 所以这是「跑完」唯一准确的信号。
+    """
+    state = _watch.status(impl._norm_user_key(user_key))
+    assert state is not None and state.task is not None
+    with anyio.fail_after(seconds):
+        await asyncio.shield(state.task)
 
 
 @pytest.fixture(autouse=True)
@@ -1295,6 +1325,220 @@ async def test_chat_create_tool_returns_json(monkeypatch: pytest.MonkeyPatch) ->
     assert json.loads(out)["chat_id"] == "oc_new"
 
 
+# ── Group administration — chat details, add/remove members ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_chat_builds_request_and_translates_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "name": "项目群",
+            "description": "季度冲刺",
+            "owner_id": "ou_owner",
+            "owner_id_type": "open_id",
+            "user_count": "42",
+            "bot_count": "2",
+            "user_manager_id_list": ["ou_admin"],
+            "bot_manager_id_list": ["cli_x"],
+            "chat_mode": "group",
+            "chat_type": "private",
+            "chat_status": "normal",
+            "add_member_permission": "only_owner",
+            "at_all_permission": "all_members",
+            "share_card_permission": "not_allowed",
+            "membership_approval": "approval_required",
+            "external": False,
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.get_chat_impl("oc_x")
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/im/v1/chats/:chat_id"
+    assert req.paths["chat_id"] == "oc_x"
+    assert _qdict(req).get("user_id_type") == "open_id"
+    assert result["owner_id"] == "ou_owner"
+    assert result["owner_is_bot"] is False
+    # Counts arrive as strings from Feishu; a count is only useful as a number.
+    assert result["user_count"] == 42
+    assert result["bot_count"] == 2
+    assert result["user_manager_ids"] == ["ou_admin"]
+    # Bare enums are translated so the model doesn't have to guess what only_owner means.
+    assert result["settings"]["谁可以加人"] == "仅群主和管理员"
+    assert result["settings"]["谁可以@所有人"] == "所有群成员"
+    assert result["settings"]["是否可分享群名片"] == "不允许"
+    assert result["settings"]["入群是否需审批"] == "需审批"
+    assert result["partial"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_chat_reports_partial_and_bot_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Feishu answers a non-member with only name/avatar/counts/status — a thin result
+    # must not read as "这个群没有群主/没有设置".
+    monkeypatch.setattr(_impl, "_invoke", _CapturedInvoke({"name": "外部群", "user_count": "3"}))
+    stub = await _impl.get_chat_impl("oc_x")
+    assert stub["partial"] is True
+    assert stub["settings"] == {}
+
+    # A bot-owned group returns no owner_id at all; that is not the same as partial.
+    monkeypatch.setattr(_impl, "_invoke", _CapturedInvoke({"name": "群", "chat_mode": "group"}))
+    bot_owned = await _impl.get_chat_impl("oc_x")
+    assert bot_owned["owner_is_bot"] is True
+    assert bot_owned["partial"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_chat_restricted_mode_expands(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "chat_mode": "group",
+            "restricted_mode_setting": {
+                "status": True,
+                "screenshot_has_permission_setting": "not_anyone",
+                "download_has_permission_setting": "all_members",
+            },
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    settings = (await _impl.get_chat_impl("oc_x"))["settings"]
+    assert settings["保密模式"] == "已开启"
+    assert settings["可截屏录屏"] == "任何人都不可"
+    assert settings["可下载图片/视频/文件"] == "所有群成员"
+
+
+@pytest.mark.asyncio
+async def test_get_chat_requires_chat_id_and_hints_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    assert "chat_id is required" in (await _impl.get_chat_impl("  "))["message"]
+    assert cap.request is None  # rejected before spending a request
+
+    async def _fail(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": False, "code": 232011, "msg": "out of chat", "message": "err"}
+
+    monkeypatch.setattr(_impl, "_invoke", _fail)
+    assert "机器人不在该群里" in (await _impl.get_chat_impl("oc_x"))["hint"]
+
+
+@pytest.mark.asyncio
+async def test_add_chat_members_builds_post_and_classifies_leftovers(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "invalid_id_list": ["ou_gone"],
+            "not_existed_id_list": ["ou_nope"],
+            "pending_approval_id_list": ["ou_wait"],
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.add_chat_members_impl("oc_x", ["ou_a", "ou_gone", "ou_nope", "ou_wait"])
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/im/v1/chats/:chat_id/members"
+    assert req.paths["chat_id"] == "oc_x"
+    assert req.body == {"id_list": ["ou_a", "ou_gone", "ou_nope", "ou_wait"]}
+    q = _qdict(req)
+    assert q.get("member_id_type") == "open_id"
+    # succeed_type=1 by default: Feishu's own default (0) would add nobody over one bad id.
+    assert q.get("succeed_type") == "1"
+    assert result["added"] == ["ou_a"]
+    assert result["added_count"] == 1
+    # Kept apart because the fixes differ (scope/离职 vs no such id vs owner approval).
+    assert result["invalid_ids"] == ["ou_gone"]
+    assert result["not_existed_ids"] == ["ou_nope"]
+    assert result["pending_approval_ids"] == ["ou_wait"]
+
+
+@pytest.mark.asyncio
+async def test_add_chat_members_validates_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    assert "chat_id is required" in (await _impl.add_chat_members_impl("", ["ou_a"]))["message"]
+    assert "user_ids is required" in (await _impl.add_chat_members_impl("oc_x", []))["message"]
+    assert "user_ids is required" in (await _impl.add_chat_members_impl("oc_x", ["  "]))["message"]
+    assert "member_id_type must be" in (await _impl.add_chat_members_impl("oc_x", ["ou_a"], "email"))["message"]
+    assert "at most 50" in (await _impl.add_chat_members_impl("oc_x", [f"ou_{i}" for i in range(51)]))["message"]
+    assert "succeed_type must be" in (await _impl.add_chat_members_impl("oc_x", ["ou_a"], succeed_type=7))["message"]
+    assert cap.request is None  # all rejected before spending a request
+
+
+@pytest.mark.asyncio
+async def test_add_chat_members_dedupes_and_takes_app_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.add_chat_members_impl("oc_x", ["ou_a", " ou_a ", "ou_b"], "app_id", user_key="ou_owner")
+    assert cap.request.body == {"id_list": ["ou_a", "ou_b"]}
+    assert _qdict(cap.request).get("member_id_type") == "app_id"
+    assert cap.user_key == "ou_owner"  # acts as the owner when the bot isn't an admin
+    assert result["requested"] == ["ou_a", "ou_b"]
+
+
+@pytest.mark.asyncio
+async def test_add_chat_members_hints_permission_and_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    for code, needle in ((232017, "群主"), (232013, "上限"), (232006, "chat_id 无效"), (232028, "外部成员")):
+
+        async def _fail(*a: Any, _code: int = code, **k: Any) -> dict[str, Any]:
+            return {"ok": False, "code": _code, "msg": "nope", "message": "err"}
+
+        monkeypatch.setattr(_impl, "_invoke", _fail)
+        result = await _impl.add_chat_members_impl("oc_x", ["ou_a"])
+        assert needle in result["hint"], code
+        assert result["requested"] == ["ou_a"]  # what was attempted survives the failure
+
+
+@pytest.mark.asyncio
+async def test_remove_chat_members_builds_delete(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"invalid_id_list": ["ou_bad"]})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.remove_chat_members_impl("oc_x", ["ou_a", "ou_bad"])
+    req = cap.request
+    assert req.http_method.name == "DELETE"
+    assert req.uri == "/open-apis/im/v1/chats/:chat_id/members"
+    assert req.body == {"id_list": ["ou_a", "ou_bad"]}
+    # succeed_type is an add-only query; sending it on a DELETE would be noise.
+    assert "succeed_type" not in _qdict(req)
+    assert result["removed"] == ["ou_a"]
+    assert result["removed_count"] == 1
+    assert result["invalid_ids"] == ["ou_bad"]
+
+
+@pytest.mark.asyncio
+async def test_remove_chat_members_validates_and_hints_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    assert "chat_id is required" in (await _impl.remove_chat_members_impl("", ["ou_a"]))["message"]
+    assert "user_ids is required" in (await _impl.remove_chat_members_impl("oc_x", None))["message"]
+    assert cap.request is None
+
+    async def _fail(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": False, "code": 232076, "msg": "cannot kick owner", "message": "err"}
+
+    monkeypatch.setattr(_impl, "_invoke", _fail)
+    assert "群主不能被移出" in (await _impl.remove_chat_members_impl("oc_x", ["ou_owner"]))["hint"]
+
+
+@pytest.mark.asyncio
+async def test_chat_admin_tools_return_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = importlib.import_module("feishu_chat")
+
+    async def _get(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": True, "chat_id": "oc_x", "owner_id": "ou_o", "user_count": 7}
+
+    async def _add(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": True, "added": ["ou_a"], "added_count": 1}
+
+    async def _remove(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": True, "removed": ["ou_a"], "removed_count": 1}
+
+    monkeypatch.setattr(_impl, "get_chat_impl", _get)
+    monkeypatch.setattr(_impl, "add_chat_members_impl", _add)
+    monkeypatch.setattr(_impl, "remove_chat_members_impl", _remove)
+    assert json.loads(await mod.feishu_chat_get(chat_id="oc_x"))["user_count"] == 7
+    assert json.loads(await mod.feishu_chat_add_members(chat_id="oc_x", user_ids=["ou_a"]))["added_count"] == 1
+    assert json.loads(await mod.feishu_chat_remove_members(chat_id="oc_x", user_ids=["ou_a"]))["removed_count"] == 1
+    for fn in (mod.feishu_chat_get, mod.feishu_chat_add_members, mod.feishu_chat_remove_members):
+        assert inspect.iscoroutinefunction(fn)
+
+
 # ── Approval — list tasks, read instance, approve/reject ──────────────────────
 
 
@@ -1718,7 +1962,7 @@ async def test_auth_start_builds_authorize_url(monkeypatch: pytest.MonkeyPatch, 
 
 @pytest.mark.asyncio
 async def test_auth_start_prefers_automatic_receive(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    """有自动通道时不再让用户复制 code, 而是引导到 feishu_auth_wait。"""
+    """有自动通道时不再让用户复制 code, 而是引导到非阻塞的 feishu_auth_check / collect。"""
     monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
     monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
     monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "pending.json"))
@@ -1735,7 +1979,6 @@ async def test_auth_start_prefers_automatic_receive(monkeypatch: pytest.MonkeyPa
     # 自动通道下要把 agent 引到非阻塞的 check, 且明说本轮收尾 —— 发链接那轮阻塞等待会
     # 占住 Session 的 turn 锁, 用户这期间说什么都排队。
     assert "feishu_auth_check" in result["next_step"]
-    assert "feishu_auth_wait" not in result["next_step"]
     q = parse_qs(urlparse(result["authorize_url"]).query)
     assert q["redirect_uri"] == ["https://gw.example.com/oauth/callback"]
     # 自动路径的提示里不能再出现「从地址栏复制」的指令
@@ -1819,7 +2062,8 @@ def test_auth_tools_are_async_with_docstrings() -> None:
         "feishu_auth_start",
         "feishu_auth_request",
         "feishu_auth_card",
-        "feishu_auth_wait",
+        "feishu_auth_collect",
+        "feishu_auth_check",
         "feishu_auth_complete",
     ):
         fn = getattr(mod, name)
@@ -1880,86 +2124,6 @@ async def test_auth_complete_exchanges_code(monkeypatch: pytest.MonkeyPatch, tmp
     assert exchange[1]["code_verifier"] == "v" * 64
     assert exchange[1]["redirect_uri"] == "http://localhost/"
     assert stored["uat"].access_token == "u-tok"
-
-
-@pytest.mark.asyncio
-async def test_auth_wait_receives_code_and_completes(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    """自动通道拿回 code 后直接完成授权 —— 用户不复制任何东西。"""
-    pending = tmp_path / "pending.json"
-    pending.write_text(
-        json.dumps({"state": "st", "code_verifier": "v" * 64, "redirect_uri": "https://gw/x", "mode": "gateway"}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
-
-    async def _fake_poll(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
-        assert state == "st"
-        return {"code": "AUTOCODE"}
-
-    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _fake_poll)
-
-    completed: dict[str, Any] = {}
-
-    async def _fake_complete(code: str, user_key: str = "") -> dict[str, Any]:
-        completed["code"] = code
-        return {"ok": True}
-
-    monkeypatch.setattr(_impl, "auth_complete_impl", _fake_complete)
-    result = await _impl.auth_wait_impl("", 30)
-    assert result["ok"] is True
-    assert completed["code"] == "AUTOCODE"
-
-
-@pytest.mark.asyncio
-async def test_auth_wait_without_pending_asks_for_start(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "missing.json"))
-    result = await _impl.auth_wait_impl("")
-    assert result["ok"] is False
-    assert "feishu_auth_start" in result["message"]
-
-
-@pytest.mark.asyncio
-async def test_auth_wait_manual_mode_says_so(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    pending = tmp_path / "pending.json"
-    pending.write_text(json.dumps({"state": "st", "mode": "manual"}), encoding="utf-8")
-    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
-    result = await _impl.auth_wait_impl("")
-    assert result["ok"] is False
-    assert result["manual_required"] is True
-
-
-@pytest.mark.asyncio
-async def test_auth_wait_timeout_is_retryable(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    pending = tmp_path / "pending.json"
-    pending.write_text(json.dumps({"state": "st", "mode": "gateway"}), encoding="utf-8")
-    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
-
-    async def _no_code(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
-        return {}
-
-    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _no_code)
-    result = await _impl.auth_wait_impl("", 10)
-    assert result["ok"] is False
-    assert result["timed_out"] is True
-    # 超时必须把 agent 引到非阻塞的 check 上, 而不是「再等一轮」—— 后者会一直占着
-    # Session 的 turn 锁, 用户看到的就是机器人卡死不回话。
-    assert "feishu_auth_check" in result["message"]
-    assert "feishu_auth_check" in result["retry_hint"]
-
-
-@pytest.mark.asyncio
-async def test_auth_wait_surfaces_user_denial(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    pending = tmp_path / "pending.json"
-    pending.write_text(json.dumps({"state": "st", "mode": "gateway"}), encoding="utf-8")
-    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
-
-    async def _denied(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
-        return {"error": "access_denied"}
-
-    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _denied)
-    result = await _impl.auth_wait_impl("", 10)
-    assert result["ok"] is False
-    assert "access_denied" in result["message"]
 
 
 @pytest.mark.asyncio
@@ -2040,6 +2204,302 @@ async def test_auth_check_surfaces_user_denial(monkeypatch: pytest.MonkeyPatch, 
     assert "access_denied" in result["message"]
 
 
+def _pending_gateway(tmp_path: Any, monkeypatch: pytest.MonkeyPatch, state: str = "st") -> None:
+    """写一份 gateway 模式的 pending 记录 (后台收码的前提)。"""
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps({"state": state, "mode": "gateway"}), encoding="utf-8")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
+
+
+@pytest.fixture(autouse=True)
+def _clean_auth_watchers() -> Any:
+    """watcher 表是模块级的; 不清会让上一个用例的结果被下一个当成自己的。"""
+    _watch.reset_all()
+    yield
+    _watch.reset_all()
+
+
+@pytest.mark.asyncio
+async def test_auth_collect_returns_before_the_code_arrives(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """这条链路的全部意义: 收码要多久, 这次工具调用都不能等 —— 等待占的是 Session 的 turn 锁。"""
+    _pending_gateway(tmp_path, monkeypatch)
+    released = anyio.Event()
+
+    async def _slow_poll(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
+        await released.wait()  # 模拟用户半天没点「同意」
+        return {"code": "LATE"}
+
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _slow_poll)
+
+    completed: dict[str, Any] = {}
+
+    async def _fake_complete(code: str, user_key: str = "") -> dict[str, Any]:
+        completed["code"] = code
+        return {"ok": True, "message": "授权成功"}
+
+    monkeypatch.setattr(_impl, "auth_complete_impl", _fake_complete)
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm(dms := []))
+
+    # 码还没到就已经返回 —— 且返回的是「在后台等着」而不是超时/失败。
+    with anyio.fail_after(2):
+        result = await _impl.auth_collect_impl("ou_a")
+    assert result["ok"] is True
+    assert result["background"] is True
+    assert result["status"] == _watch.STATUS_WATCHING
+    assert completed == {}
+
+    released.set()
+    await _settle(_impl, "ou_a")
+    assert completed["code"] == "LATE"
+    assert _watch.status("ou_a").status == _watch.STATUS_GRANTED
+    # 后台任务不在任何轮次里, 不私聊回告用户就等于悄悄成功了。
+    assert dms and dms[0][0] == "ou_a"
+    assert "授权成功" in dms[0][1]
+
+
+@pytest.mark.asyncio
+async def test_auth_collect_does_not_start_a_second_watcher(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """取件箱取走即删: 两个 watcher 会抢同一个码, 抢输的白等到超时。"""
+    _pending_gateway(tmp_path, monkeypatch)
+    polls = 0
+    polling = anyio.Event()
+    released = anyio.Event()
+
+    async def _counting_poll(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
+        nonlocal polls
+        polls += 1
+        polling.set()
+        await released.wait()
+        return {}
+
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _counting_poll)
+    first = await _impl.auth_collect_impl("ou_a")
+    # 先确认后台任务真跑到了取件那一步, 否则「没起第二个」会因为一个都没跑而假成立。
+    with anyio.fail_after(2):
+        await polling.wait()
+    second = await _impl.auth_collect_impl("ou_a")
+    assert first["already_watching"] is False
+    assert second["already_watching"] is True
+    assert polls == 1
+    released.set()
+
+
+@pytest.mark.asyncio
+async def test_auth_collect_refuses_manual_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """没有自动回流通道时后台也无从收码, 得说实话而不是假装在等。"""
+    pending = tmp_path / "pending.json"
+    pending.write_text(json.dumps({"state": "st", "mode": "manual"}), encoding="utf-8")
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(pending))
+    result = await _impl.auth_collect_impl("ou_a")
+    assert result["ok"] is False
+    assert result["manual_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_auth_collect_reports_a_finished_background_grant(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """后台收完后再调不该去等一个已被取走的码, 而是直接给结论。"""
+    _pending_gateway(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        _impl._oauth_rx, "poll_gateway", lambda state, timeout_seconds, interval=1.0: _instant({"code": "C"})
+    )
+    monkeypatch.setattr(_impl, "auth_complete_impl", lambda code, user_key="": _instant({"ok": True}))
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm([]))
+    await _impl.auth_collect_impl("ou_a")
+    await _settle(_impl, "ou_a")
+    again = await _impl.auth_collect_impl("ou_a")
+    assert again["ok"] is True
+    assert again["collected_in_background"] is True
+    assert again["status"] == _watch.STATUS_GRANTED
+
+
+@pytest.mark.asyncio
+async def test_auth_collect_timeout_tells_the_user_instead_of_going_silent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """守到超时也得回告: 后台任务没有轮次, 不说话用户就一直等一个不会来的回音。"""
+    _pending_gateway(tmp_path, monkeypatch)
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", lambda state, timeout_seconds, interval=1.0: _instant({}))
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm(dms := []))
+    await _impl.auth_collect_impl("ou_a", 10)
+    await _settle(_impl, "ou_a")
+    assert _watch.status("ou_a").status == _watch.STATUS_TIMEOUT
+    assert dms and dms[0][0] == "ou_a"
+
+
+@pytest.mark.asyncio
+async def test_auth_collect_never_dms_the_default_slot(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """本机单用户槽位没有收件人; 拿 "default" 当 open_id 发消息只会换来一个 API 报错。"""
+    _pending_gateway(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        _impl._oauth_rx, "poll_gateway", lambda state, timeout_seconds, interval=1.0: _instant({"code": "C"})
+    )
+    monkeypatch.setattr(_impl, "auth_complete_impl", lambda code, user_key="": _instant({"ok": True}))
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm(dms := []))
+    await _impl.auth_collect_impl("")
+    await _settle(_impl, "")
+    assert _watch.status("default").status == _watch.STATUS_GRANTED
+    assert dms == []
+
+
+@pytest.mark.asyncio
+async def test_auth_collect_admits_when_it_cannot_go_to_the_background(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """起不了后台任务时不能假装在收: agent 会据此收尾, 而实际上没人取码, 授权永远不落地。"""
+    _pending_gateway(tmp_path, monkeypatch)
+
+    def _no_loop(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("no running event loop")
+
+    monkeypatch.setattr(_watch, "start", _no_loop)
+    result = await _impl.auth_collect_impl("ou_a")
+    assert result["ok"] is False
+    assert result["background"] is False
+    # 退路必须是下一轮 check (非阻塞), 而不是在这一轮原地等。
+    assert result["pending"] is True
+    assert "feishu_auth_check" in result["retry_hint"]
+
+
+@pytest.mark.asyncio
+async def test_auth_collect_survives_a_failing_collector(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """后台任务抛错必须落进状态并回告 —— 否则只剩一条 "never retrieved" 日志, 用户干等。"""
+    _pending_gateway(tmp_path, monkeypatch)
+
+    async def _boom(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
+        raise RuntimeError("relay exploded")
+
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _boom)
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm(dms := []))
+    await _impl.auth_collect_impl("ou_a")
+    await _settle(_impl, "ou_a")
+    state = _watch.status("ou_a")
+    assert state.status == _watch.STATUS_FAILED
+    assert "relay exploded" in state.message
+    assert dms and dms[0][0] == "ou_a"
+
+
+@pytest.mark.asyncio
+async def test_auth_check_defers_to_a_running_collector(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """check 也不该和后台抢码: 抢走一个, 另一边就白等到窗口关闭。"""
+    _pending_gateway(tmp_path, monkeypatch)
+    polls = 0
+    polling = anyio.Event()
+    released = anyio.Event()
+
+    async def _counting_poll(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
+        nonlocal polls
+        polls += 1
+        polling.set()
+        await released.wait()
+        return {}
+
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _counting_poll)
+    await _impl.auth_collect_impl("ou_a")
+    with anyio.fail_after(2):
+        await polling.wait()
+    result = await _impl.auth_check_impl("ou_a")
+    assert result["ok"] is True
+    assert result["status"] == _watch.STATUS_WATCHING
+    assert polls == 1  # check 没有自己再取一次
+    released.set()
+
+
+@pytest.mark.asyncio
+async def test_auth_check_reports_background_grant_not_missing_pending(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """后台成功会删掉 pending 文件; 若不看 watcher, check 会把已成功说成「请重新发起」。"""
+    _pending_gateway(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        _impl._oauth_rx, "poll_gateway", lambda state, timeout_seconds, interval=1.0: _instant({"code": "C"})
+    )
+    monkeypatch.setattr(
+        _impl, "auth_complete_impl", lambda code, user_key="": _instant({"ok": True, "message": "授权成功"})
+    )
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm([]))
+    await _impl.auth_collect_impl("ou_a")
+    await _settle(_impl, "ou_a")
+    (tmp_path / "pending.json").unlink()  # auth_complete 成功后就是这个状态
+    result = await _impl.auth_check_impl("ou_a")
+    assert result["ok"] is True
+    assert result["collected_in_background"] is True
+    assert "feishu_auth_request" not in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_reauth_keeps_the_loopback_channel_after_a_watcher_held_the_port(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """撤 watcher 必须**等它真关掉监听**, 否则重新授权会被静默降级成手工贴码。
+
+    实测过的回归: 只 cancel 不等待时, plan_receiver 的端口探测撞上仍未关闭的回环监听,
+    mode 从 loopback 掉到 manual —— 用户白白多了一步手抄 code。
+    """
+    monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
+    monkeypatch.delenv("PSI_OAUTH_CALLBACK_BASE", raising=False)
+    monkeypatch.delenv("PSI_FEISHU_REDIRECT_URI", raising=False)
+    monkeypatch.setattr(_impl, "_pending_auth_path", lambda user_key="": str(tmp_path / "pending.json"))
+    monkeypatch.setattr(_impl, "_granted_scopes_path", lambda: str(tmp_path / "granted.json"))
+
+    # 真的占住端口才测得到那个 bug, 所以这里包一层真实的 wait_loopback: 它绑上端口后
+    # 置位 bound, 我们等这个信号 (而不是轮询端口), 之后才让第二次授权去重新选通道。
+    bound = anyio.Event()
+    real_wait_loopback = _impl._oauth_rx.wait_loopback
+
+    async def _wait_loopback_signalling(port: int, expected_state: str, timeout_seconds: float) -> dict[str, str]:
+        async with anyio.create_task_group() as tg:
+
+            async def _flag() -> None:
+                # 让出调度, 让 real_wait_loopback 先跑到 create_tcp_listener 那一步
+                await anyio.sleep(0.05)
+                bound.set()
+
+            tg.start_soon(_flag)
+            return await real_wait_loopback(port, expected_state, timeout_seconds)
+
+    monkeypatch.setattr(_impl._oauth_rx, "wait_loopback", _wait_loopback_signalling)
+
+    first = await _impl.auth_start_impl("docx_write", "ou_a")
+    assert first["mode"] == "loopback"
+    await _impl.auth_collect_impl("ou_a", 600)
+    with anyio.fail_after(2):
+        await bound.wait()
+    assert not _impl._oauth_rx._port_is_free(_impl._oauth_rx.loopback_port()), "前提不成立: watcher 没占住端口"
+
+    monkeypatch.setattr(_impl._oauth_rx, "wait_loopback", real_wait_loopback)
+    second = await _impl.auth_start_impl("docx_write", "ou_a")
+    assert second["mode"] == "loopback", "重新授权被降级了 —— 旧 watcher 的监听还没关"
+    assert second["auto_receive"] is True
+    assert _watch.status("ou_a") is None
+
+
+@pytest.mark.asyncio
+async def test_auth_start_forgets_a_stale_watcher(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """新一轮授权作废旧 state; 留着旧 watcher 的结果会被当成本次的。"""
+    monkeypatch.setenv("PSI_FEISHU_APP_ID", "cli_x")
+    monkeypatch.setenv("PSI_FEISHU_APP_SECRET", "sec")
+    _pending_gateway(tmp_path, monkeypatch)
+    monkeypatch.setattr(_impl, "_granted_scopes_path", lambda: str(tmp_path / "granted.json"))
+    monkeypatch.setattr(
+        _impl._oauth_rx,
+        "plan_receiver",
+        lambda explicit="": _impl._oauth_rx.ReceiverPlan(mode="gateway", redirect_uri="https://gw/x"),
+    )
+    released = anyio.Event()
+
+    async def _slow_poll(state: str, timeout_seconds: float, interval: float = 1.0) -> dict[str, str]:
+        await released.wait()
+        return {}
+
+    monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _slow_poll)
+    await _impl.auth_collect_impl("ou_a")
+    assert _watch.is_watching("ou_a") is True
+    await _impl.auth_start_impl("docx_write", "ou_a")
+    assert _watch.status("ou_a") is None
+    released.set()
+
+
 @pytest.mark.parametrize(
     ("uri", "private"),
     [
@@ -2103,8 +2563,8 @@ async def test_auth_start_public_callback_has_no_fallback(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_auth_wait_timeout_offers_url_paste_when_private(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    """内网回调超时不能只叫「再等一轮」: 外网用户再等也不会有回调, 得给另一条出路。"""
+async def test_collect_timeout_offers_url_paste_when_private(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """内网回调超时不能只叫「再等等」: 外网用户再等也不会有回调, 得给另一条出路。"""
     pending = tmp_path / "pending.json"
     pending.write_text(
         json.dumps(
@@ -2122,14 +2582,17 @@ async def test_auth_wait_timeout_offers_url_paste_when_private(monkeypatch: pyte
         return {}
 
     monkeypatch.setattr(_impl._oauth_rx, "poll_gateway", _no_code)
-    result = await _impl.auth_wait_impl("", 10)
+    monkeypatch.setattr(_impl, "send_message_impl", _record_dm([]))
+    await _impl.auth_collect_impl("ou_a", 10)
+    await _settle(_impl, "ou_a")
+    # 结论落在 watcher 的 result 上 —— 后台超时没有「工具返回值」可看, agent 是再调一次
+    # collect 才读到它的, 所以这条出路必须写在结果里而不是只写在日志里。
+    result = _watch.status("ou_a").result
     assert result["ok"] is False
     assert result["timed_out"] is True
     assert result["callback_is_private"] is True
-    # 先再等一轮的建议要保留 (取件箱还有 TTL), 同时给出贴网址的出路。
-    assert "feishu_auth_wait" in result["message"]
     assert "整条网址" in result["message"]
-    assert "feishu_auth_complete" in result["retry_hint"]
+    assert "feishu_auth_complete" in result["message"]
 
 
 @pytest.mark.asyncio
@@ -2232,7 +2695,9 @@ async def test_auth_card_button_both_opens_url_and_calls_back(monkeypatch: pytes
     assert "bitable:app" in parse_qs(urlparse(authorize_url).query)["scope"][0]
     # the callback carries the action name the handler map is keyed on, plus whose auth it is
     assert by_type["callback"]["value"] == {"action": _impl._AUTH_CARD_ACTION, "user_key": "ou_a"}
-    assert captured["action_handlers"] == {_impl._AUTH_CARD_ACTION: "feishu_auth_wait"}
+    # 点击那轮走非阻塞的 collect: 收到点击时用户才刚要点「同意」, 在那一轮原地等就又把
+    # 会话锁住几分钟 —— 那正是这条链路要消灭的症状。
+    assert captured["action_handlers"] == {_impl._AUTH_CARD_ACTION: "feishu_auth_collect"}
     assert captured["business_context"]["user_key"] == "ou_a"
     assert captured["business_context"]["capabilities"] == ["bitable_write"]
     assert "要把台账建在你名下" in json.dumps(captured["card"], ensure_ascii=False)
@@ -2274,10 +2739,10 @@ async def test_auth_card_tells_the_agent_to_end_its_turn(monkeypatch: pytest.Mon
     """Waiting in the sending turn would hold the Session turn lock for minutes."""
     _auth_card_env(monkeypatch, tmp_path)
     result = await _impl.auth_card_impl("ou_a")
-    assert result["action_handler"] == "feishu_auth_wait"
+    assert result["action_handler"] == "feishu_auth_collect"
     msg = result["message"]
     assert "这一轮到此为止" in msg
-    assert "feishu_auth_wait" in msg
+    assert "feishu_auth_collect" in msg
     # single-use cards: the recovery path must be a fresh card, not another tap
     assert "feishu_auth_card" in msg
 
@@ -2352,7 +2817,6 @@ async def test_auth_request_falls_back_to_link_without_copy(monkeypatch: pytest.
     assert "ou_" in result["downgrade_reason"]  # says why, so the agent can be honest
     # 第 2 级同样不许在发链接那轮阻塞: 收尾 + 下一轮 check。
     assert "feishu_auth_check" in result["next_step"]
-    assert "feishu_auth_wait" not in result["next_step"]
     assert captured == {}  # no card was sent
 
 
@@ -2445,7 +2909,9 @@ def test_auth_prompt_states_the_tier_order_and_keeps_the_manual_fallback() -> No
     assert "feishu_auth_request" in prompt
     # the three tiers, named and in descending order of how little the user must do
     assert prompt.index(_impl.TIER_CARD) < prompt.index(_impl.TIER_LINK) < prompt.index(_impl.TIER_MANUAL)
-    assert "feishu_auth_wait" in prompt
+    # 收码一律走非阻塞的 collect, 且提示里不该再留下任何「干等」的工具名可供模型调用。
+    assert "feishu_auth_collect" in prompt
+    assert "feishu_auth_wait" not in prompt
     assert "地址栏" in prompt
     assert "feishu_auth_complete" in prompt
 
@@ -6929,6 +7395,54 @@ async def test_send_media_returns_upload_failure_without_sending(
 
 
 @pytest.mark.asyncio
+async def test_upload_tools_return_keys_without_sending(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    mod = importlib.import_module("feishu_message")
+    img = tmp_path / "chart.png"
+    img.write_bytes(b"png")
+    doc = tmp_path / "report.pdf"
+    doc.write_bytes(b"pdf")
+    cap = _MediaInvoke()
+    monkeypatch.setattr(_impl, "_invoke", cap)
+
+    image_out = json.loads(await mod.feishu_message_upload_image(image_path=str(img)))
+    assert image_out["image_key"] == "img_v3_1"
+    file_out = json.loads(await mod.feishu_message_upload_file(file_path=str(doc)))
+    assert file_out["file_key"] == "file_v3_1"
+    assert file_out["file_type"] == "pdf"  # derived from the suffix, not Feishu's enum by hand
+    # Uploading is deliberately *not* sending: only the two upload endpoints were called.
+    assert [r.uri for r in cap.requests] == ["/open-apis/im/v1/images", "/open-apis/im/v1/files"]
+    for fn in (mod.feishu_message_upload_image, mod.feishu_message_upload_file):
+        assert inspect.iscoroutinefunction(fn)
+
+
+@pytest.mark.asyncio
+async def test_upload_file_tool_passes_type_name_duration(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    mod = importlib.import_module("feishu_message")
+    captured: dict[str, Any] = {}
+
+    async def _fake(
+        file_path: str, file_type: str = "", file_name: str = "", duration_ms: int = 0, user_key: str = ""
+    ) -> dict[str, Any]:
+        captured.update(
+            file_path=file_path, file_type=file_type, file_name=file_name, duration_ms=duration_ms, user_key=user_key
+        )
+        return {"ok": True, "file_key": "file_v3_9"}
+
+    monkeypatch.setattr(_impl, "upload_file_impl", _fake)
+    out = await mod.feishu_message_upload_file(
+        file_path="C:/tmp/voice.opus", file_type="opus", file_name="留言.opus", duration_ms=3200, user_key="ou_me"
+    )
+    assert json.loads(out)["file_key"] == "file_v3_9"
+    assert captured == {
+        "file_path": "C:/tmp/voice.opus",
+        "file_type": "opus",
+        "file_name": "留言.opus",
+        "duration_ms": 3200,
+        "user_key": "ou_me",
+    }
+
+
+@pytest.mark.asyncio
 async def test_send_post_builds_paragraphs_and_uploads_images(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     img = tmp_path / "chart.png"
     img.write_bytes(b"png")
@@ -7020,3 +7534,354 @@ async def test_media_tools_return_json(monkeypatch: pytest.MonkeyPatch, tmp_path
     ):
         monkeypatch.setattr(_impl, "_invoke", _MediaInvoke())
         assert json.loads(await call)["message_id"] == "om_new"
+
+
+# ── Read status (已读 / 未读) ───────────────────────────────────────────────────
+
+
+class _SequencedInvoke:
+    """Replace _invoke; answer each call from a queue, recording every request.
+
+    Read-status makes several *different* calls (read_users pages, then the message,
+    then the roster), so a single canned reply can't drive it.
+    """
+
+    def __init__(self, replies: list[dict[str, Any]]) -> None:
+        self.replies = list(replies)
+        self.requests: list[Any] = []
+        self.user_keys: list[Any] = []
+
+    async def __call__(
+        self,
+        request: Any,
+        user_key: str | None = None,
+        prefer: str = "tenant",
+        identity: str = "",
+        capabilities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.requests.append(request() if callable(request) else request)
+        self.user_keys.append(user_key)
+        reply = self.replies.pop(0) if self.replies else {"ok": True, "code": 0, "msg": "", "data": {}}
+        return {"ok": True, "code": 0, "msg": "", **reply} if "ok" not in reply else reply
+
+
+def _ok(data: dict[str, Any]) -> dict[str, Any]:
+    return {"ok": True, "code": 0, "msg": "", "data": data}
+
+
+@pytest.mark.asyncio
+async def test_read_status_builds_get_request_and_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    seq = _SequencedInvoke(
+        [
+            _ok({"items": [{"user_id": "ou_a", "timestamp": "1699"}], "has_more": True, "page_token": "pt2"}),
+            _ok({"items": [{"user_id": "ou_b", "timestamp": "1700"}], "has_more": False}),
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", seq)
+    result = await _impl.read_status_impl("om_abc", include_unread=False, user_key="ou_me")
+    req = seq.requests[0]
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/im/v1/messages/:message_id/read_users"
+    assert req.paths["message_id"] == "om_abc"
+    q = _qdict(req)
+    assert q.get("user_id_type") == "open_id"
+    assert q.get("page_size") == "100"
+    # the second page must carry the token from the first
+    assert _qdict(seq.requests[1]).get("page_token") == "pt2"
+    assert seq.user_keys[0] == "ou_me"
+    assert result["read_count"] == 2
+    assert result["read_users"] == [
+        {"open_id": "ou_a", "read_time": "1699"},
+        {"open_id": "ou_b", "read_time": "1700"},
+    ]
+    # include_unread=False must not spend calls on the message + roster
+    assert len(seq.requests) == 2
+    assert "unread_users" not in result
+
+
+@pytest.mark.asyncio
+async def test_read_status_computes_unread_from_roster(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Feishu has no unread endpoint: unread = roster - readers - sender.
+    seq = _SequencedInvoke(
+        [
+            _ok({"items": [{"user_id": "ou_a", "timestamp": "1699"}], "has_more": False}),
+            _ok({"items": [{"chat_id": "oc_1", "sender": {"id": "ou_bot"}}]}),
+            _ok(
+                {
+                    "items": [
+                        {"member_id": "ou_a", "name": "读了的"},
+                        {"member_id": "ou_c", "name": "没读的"},
+                        {"member_id": "ou_bot", "name": "机器人"},
+                    ],
+                    "has_more": False,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", seq)
+    result = await _impl.read_status_impl("om_abc")
+    assert result["read_count"] == 1
+    assert result["chat_id"] == "oc_1"
+    # the sender is excluded from unread, and so is the reader
+    assert result["unread_users"] == [{"open_id": "ou_c", "name": "没读的"}]
+    assert result["unread_count"] == 1
+    assert result["member_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_read_status_keeps_read_list_when_roster_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The unread half is best-effort: losing it must not lose the read list.
+    seq = _SequencedInvoke(
+        [
+            _ok({"items": [{"user_id": "ou_a", "timestamp": "1"}], "has_more": False}),
+            {"ok": False, "code": 230110, "msg": "deleted", "message": "err"},
+        ]
+    )
+    monkeypatch.setattr(_impl, "_invoke", seq)
+    result = await _impl.read_status_impl("om_abc")
+    assert result["ok"] is True
+    assert result["read_count"] == 1
+    assert "unread_users" not in result
+    assert "未读名单" in result["note"]
+
+
+@pytest.mark.asyncio
+async def test_read_status_hints_own_message_and_seven_day_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    for code, expect in ((230012, "自己发出的消息"), (230033, "7 天")):
+
+        async def _fail(*a: Any, code: int = code, **k: Any) -> dict[str, Any]:
+            return {"ok": False, "code": code, "msg": "nope", "message": "err"}
+
+        monkeypatch.setattr(_impl, "_invoke", _fail)
+        result = await _impl.read_status_impl("om_abc")
+        assert result["ok"] is False
+        assert expect in result["hint"], code
+
+
+@pytest.mark.asyncio
+async def test_read_status_rejects_non_message_id() -> None:
+    for bad in ("", "  ", "oc_1", "ou_2"):
+        result = await _impl.read_status_impl(bad)
+        assert result["ok"] is False
+        assert "message_id" in result["message"]
+
+
+# ── Pin / unpin (置顶) ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_pin_message_builds_post_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"pin": {"message_id": "om_abc", "chat_id": "oc_1", "operator_id": "ou_x"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.pin_message_impl("om_abc", user_key="ou_admin")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/im/v1/pins"
+    assert req.body == {"message_id": "om_abc"}
+    assert cap.prefer == "tenant"
+    assert cap.user_key == "ou_admin"
+    assert result["pinned"] is True
+    assert result["chat_id"] == "oc_1"
+    assert result["operator_id"] == "ou_x"
+
+
+@pytest.mark.asyncio
+async def test_unpin_message_builds_delete_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.unpin_message_impl("om_abc")
+    req = cap.request
+    assert req.http_method.name == "DELETE"
+    assert req.uri == "/open-apis/im/v1/pins/:message_id"
+    assert req.paths["message_id"] == "om_abc"
+    assert result == {"ok": True, "message_id": "om_abc", "pinned": False}
+
+
+@pytest.mark.asyncio
+async def test_pin_hints_owner_admin_only_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    # 230046 is the usual blocker: the group restricts 置顶 to owner/admin.
+    async def _fail(*a: Any, **k: Any) -> dict[str, Any]:
+        return {"ok": False, "code": 230046, "msg": "No Permission to Pin", "message": "err"}
+
+    monkeypatch.setattr(_impl, "_invoke", _fail)
+    for result in (await _impl.pin_message_impl("om_a"), await _impl.unpin_message_impl("om_a")):
+        assert result["ok"] is False
+        assert "群主/管理员" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_pin_rejects_non_message_id() -> None:
+    for bad in ("", "oc_1"):
+        assert (await _impl.pin_message_impl(bad))["ok"] is False
+        assert (await _impl.unpin_message_impl(bad))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_pins_builds_get_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {
+            "items": [{"message_id": "om_1", "chat_id": "oc_1", "operator_id": "ou_x", "create_time": "170"}],
+            "has_more": True,
+            "page_token": "pt2",
+        }
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.list_pins_impl("oc_1", start_time="100", end_time="200", page_size=90)
+    req = cap.request
+    assert req.http_method.name == "GET"
+    assert req.uri == "/open-apis/im/v1/pins"
+    q = _qdict(req)
+    assert q.get("chat_id") == "oc_1"
+    assert q.get("start_time") == "100"
+    assert q.get("end_time") == "200"
+    assert q.get("page_size") == "50"  # clamped to the API max
+    assert result["count"] == 1
+    assert result["pins"][0]["message_id"] == "om_1"
+    assert result["has_more"] is True
+    assert result["page_token"] == "pt2"
+
+
+@pytest.mark.asyncio
+async def test_list_pins_omits_empty_time_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"items": []})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.list_pins_impl("oc_1")
+    q = _qdict(cap.request)
+    assert "start_time" not in q
+    assert "end_time" not in q
+
+
+@pytest.mark.asyncio
+async def test_list_pins_requires_group_chat_id() -> None:
+    for bad in ("", "om_1", "ou_2"):
+        result = await _impl.list_pins_impl(bad)
+        assert result["ok"] is False
+        assert "chat_id" in result["message"]
+
+
+# ── Forward / merge-forward (转发) ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_forward_builds_post_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"message_id": "om_new", "chat_id": "oc_2", "thread_id": "omt_9"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.forward_message_impl("om_abc", "oc_2", user_key="ou_me")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/im/v1/messages/:message_id/forward"
+    assert req.paths["message_id"] == "om_abc"
+    assert req.body == {"receive_id": "oc_2"}
+    assert _qdict(req).get("receive_id_type") == "chat_id"
+    assert cap.user_key == "ou_me"
+    assert result["forwarded"] is True
+    assert result["source_message_id"] == "om_abc"
+    assert result["message_id"] == "om_new"
+
+
+@pytest.mark.asyncio
+async def test_forward_infers_target_type_from_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A DM, a thread and an email each need a different receive_id_type; the default
+    # chat_id would earn 230034, so the prefix decides (omt_ is forward-only).
+    for rid, expected in (
+        ("ou_a", "open_id"),
+        ("on_b", "union_id"),
+        ("omt_c", "thread_id"),
+        ("a@b.com", "email"),
+        ("oc_d", "chat_id"),
+    ):
+        cap = _CapturedInvoke({"message_id": "om_new"})
+        monkeypatch.setattr(_impl, "_invoke", cap)
+        result = await _impl.forward_message_impl("om_abc", rid)
+        assert _qdict(cap.request).get("receive_id_type") == expected, rid
+        assert result["receive_id_type"] == expected
+
+
+@pytest.mark.asyncio
+async def test_forward_keeps_explicit_type_for_bare_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"message_id": "om_new"})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.forward_message_impl("om_abc", "employee_7", receive_id_type="user_id")
+    assert _qdict(cap.request).get("receive_id_type") == "user_id"
+
+
+@pytest.mark.asyncio
+async def test_forward_rejects_message_id_as_target() -> None:
+    result = await _impl.forward_message_impl("om_abc", "om_target")
+    assert result["ok"] is False
+    assert "receive_id" in result["message"]
+    for bad in ("", "  "):
+        assert (await _impl.forward_message_impl("om_abc", bad))["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_forward_hints_unforwardable_message_types(monkeypatch: pytest.MonkeyPatch) -> None:
+    for code, expect in ((230061, "不支持转发"), (230065, "已被撤回"), (230069, "同一个会话")):
+
+        async def _fail(*a: Any, code: int = code, **k: Any) -> dict[str, Any]:
+            return {"ok": False, "code": code, "msg": "nope", "message": "err"}
+
+        monkeypatch.setattr(_impl, "_invoke", _fail)
+        result = await _impl.forward_message_impl("om_abc", "oc_2")
+        assert expect in result["hint"], code
+
+
+@pytest.mark.asyncio
+async def test_merge_forward_builds_post_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke(
+        {"message": {"message_id": "om_bundle", "chat_id": "oc_2"}, "invalid_message_id_list": ["om_bad"]}
+    )
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.merge_forward_messages_impl('["om_a", "om_b"]', "oc_2")
+    req = cap.request
+    assert req.http_method.name == "POST"
+    assert req.uri == "/open-apis/im/v1/messages/merge_forward"
+    assert req.body == {"receive_id": "oc_2", "message_id_list": ["om_a", "om_b"]}
+    assert _qdict(req).get("receive_id_type") == "chat_id"
+    assert result["forwarded_count"] == 2
+    assert result["message_id"] == "om_bundle"
+    # ids Feishu refused are surfaced, not silently dropped
+    assert result["invalid_message_ids"] == ["om_bad"]
+
+
+@pytest.mark.asyncio
+async def test_merge_forward_accepts_comma_separated_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    cap = _CapturedInvoke({"message": {"message_id": "om_bundle"}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    await _impl.merge_forward_messages_impl("om_a, om_b", "oc_2")
+    assert cap.request.body["message_id_list"] == ["om_a", "om_b"]
+
+
+@pytest.mark.asyncio
+async def test_merge_forward_validates_ids() -> None:
+    empty = await _impl.merge_forward_messages_impl("", "oc_2")
+    assert empty["ok"] is False
+    not_ids = await _impl.merge_forward_messages_impl('["oc_1"]', "oc_2")
+    assert not_ids["ok"] is False
+    assert "om_" in not_ids["message"]
+    too_many = await _impl.merge_forward_messages_impl(json.dumps([f"om_{i}" for i in range(101)]), "oc_2")
+    assert too_many["ok"] is False
+    assert "100" in too_many["message"]
+
+
+@pytest.mark.asyncio
+async def test_read_pin_forward_tools_return_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = importlib.import_module("feishu_message")
+    monkeypatch.setattr(_impl, "read_status_impl", lambda *a, **k: _async({"ok": True, "read_count": 3}))
+    monkeypatch.setattr(_impl, "pin_message_impl", lambda *a, **k: _async({"ok": True, "pinned": True}))
+    monkeypatch.setattr(_impl, "unpin_message_impl", lambda *a, **k: _async({"ok": True, "pinned": False}))
+    monkeypatch.setattr(_impl, "list_pins_impl", lambda *a, **k: _async({"ok": True, "count": 1}))
+    monkeypatch.setattr(_impl, "forward_message_impl", lambda *a, **k: _async({"ok": True, "forwarded": True}))
+    monkeypatch.setattr(
+        _impl, "merge_forward_messages_impl", lambda *a, **k: _async({"ok": True, "forwarded_count": 2})
+    )
+    assert json.loads(await mod.feishu_message_read_status("om_1"))["read_count"] == 3
+    assert json.loads(await mod.feishu_message_pin("om_1"))["pinned"] is True
+    assert json.loads(await mod.feishu_message_unpin("om_1"))["pinned"] is False
+    assert json.loads(await mod.feishu_message_pins("oc_1"))["count"] == 1
+    assert json.loads(await mod.feishu_message_forward("om_1", "oc_2"))["forwarded"] is True
+    assert json.loads(await mod.feishu_message_merge_forward('["om_1"]', "oc_2"))["forwarded_count"] == 2
+
+
+async def _async(value: dict[str, Any]) -> dict[str, Any]:
+    return value

@@ -191,6 +191,10 @@ export default function HaiTunAgentWorkspace({
   const abortRef = useRef<AbortController | null>(null);
   /** Bumped each runChatTurn so a superseded/aborted turn cannot keep appending deltas. */
   const streamEpochRef = useRef(0);
+  /** Accumulate SSE reasoning (thinking + tool markers) for post-turn「已思考」expand. */
+  const turnReasoningRef = useRef("");
+  /** Sealed tool one-liners for the current turn (mirrors progress log ``lines``). */
+  const turnToolsRef = useRef<string[]>([]);
   /** After Stop, block submit briefly — Stop↔Send swap under the same click would re-send the restored draft. */
   const suppressSubmitUntilRef = useRef(0);
   const historyLoadedRef = useRef<Set<string>>(new Set(["overview"]));
@@ -388,6 +392,25 @@ export default function HaiTunAgentWorkspace({
       });
     }
   }, [refreshTodos, refreshTodoSegments, refreshTaskSummary, showToast]);
+
+  /** Re-read the authoritative /history after a turn so sends always surface. */
+  const refreshHistory = useCallback(async (taskId: string) => {
+    if (taskId === "overview") return;
+    try {
+      const hist = await fetchHistory(taskId);
+      const { names, paths } = historyToDeliverables(hist);
+      setTasks((current) =>
+        current.map((task) =>
+          task.id === taskId && names.length
+            ? withHistoricalDeliverables(task, names, paths)
+            : task,
+        ),
+      );
+      historyLoadedRef.current.add(taskId);
+    } catch {
+      // 保留现有状态；下次打开卡片时 ensureHistory 仍会重试
+    }
+  }, []);
 
   // While Agent runs, poll todos so middle step updates mid-turn (tool writes file).
   // Pass streaming=true so 「产出与确认」 stays working until the turn ends.
@@ -755,6 +778,8 @@ export default function HaiTunAgentWorkspace({
 
     setTypingCard(cardId);
     setTurnProgressLog(progressLogStart());
+    turnReasoningRef.current = "";
+    turnToolsRef.current = [];
     setTodoSegmentSelection((current) => ({ ...current, [cardId]: "live" }));
     const userVisible = titleSource ?? (text.trim() || "附件");
     let turnOk = false;
@@ -808,9 +833,12 @@ export default function HaiTunAgentWorkspace({
           },
           onReasoning: (delta, kind) => {
             if (!live()) return;
-            setTurnProgressLog((prev) =>
-              applyProgressEvent(prev ?? progressLogStart(), kind, delta),
-            );
+            if (delta) turnReasoningRef.current += delta;
+            setTurnProgressLog((prev) => {
+              const next = applyProgressEvent(prev ?? progressLogStart(), kind, delta);
+              turnToolsRef.current = next.lines;
+              return next;
+            });
           },
         },
       );
@@ -898,6 +926,24 @@ export default function HaiTunAgentWorkspace({
       showToast(err);
     } finally {
       if (epoch === streamEpochRef.current) {
+        const reasoningRaw = turnReasoningRef.current.trim();
+        const tools = [...turnToolsRef.current];
+        // Keep thinking + tools when the agent bubble still exists (not Stop).
+        if ((reasoningRaw || tools.length) && !controller.signal.aborted) {
+          setMessages((current) => {
+            const list = [...(current[cardId] ?? [])];
+            const last = list[list.length - 1];
+            if (last?.role === "agent") {
+              list[list.length - 1] = {
+                ...last,
+                ...(reasoningRaw ? { reasoning: reasoningRaw } : {}),
+                ...(tools.length ? { tools } : {}),
+              };
+              return { ...current, [cardId]: list };
+            }
+            return current;
+          });
+        }
         setTypingCard((current) => (current === cardId ? null : current));
         setTurnProgressLog(null);
         if (abortRef.current === controller) abortRef.current = null;
@@ -905,7 +951,11 @@ export default function HaiTunAgentWorkspace({
       void (async () => {
         const todosAfter = await refreshTodos(cardId, false);
         await refreshTodoSegments(cardId);
-        if (!turnOk || epoch !== streamEpochRef.current) return;
+        if (epoch !== streamEpochRef.current) return;
+        if (!turnOk) {
+          historyLoadedRef.current.delete(cardId);
+          return;
+        }
         setTasks((current) =>
           current.map((task) => (task.id === cardId ? withCompletedTurn(task) : task)),
         );
@@ -918,6 +968,8 @@ export default function HaiTunAgentWorkspace({
             4200,
           );
         }
+        // 服务端已提交本轮 history；回读 sends，补齐历史交付物（含路径）
+        await refreshHistory(cardId);
       })();
     }
   };
@@ -1170,7 +1222,6 @@ export default function HaiTunAgentWorkspace({
       }),
       category: category || "自由任务",
     };
-    historyLoadedRef.current.add(session.id);
     setTasks((current) => [...current, newTask]);
     const storedFiles = pendingFiles.length ? await filesToChatFiles(pendingFiles) : [];
     setMessages((current) => ({

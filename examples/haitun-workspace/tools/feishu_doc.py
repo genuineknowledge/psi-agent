@@ -2,9 +2,11 @@
 
 - ``feishu_doc_read`` — read a doc's plain-text body (docx/doc/sheet).
 - ``feishu_doc_create`` — create a new standalone docx cloud document.
-- ``feishu_doc_append_content`` — append headings/paragraphs to a docx body
-  (also works on the docx behind a wiki node via its ``obj_token``).
-- ``feishu_doc_append_table`` — append a native Feishu table (rows/columns).
+- ``feishu_doc_append_content`` — append Markdown to a docx body as **native blocks**
+  (tables, lists, quotes, code, styled runs — not literal Markdown source); also works
+  on the docx behind a wiki node via its ``obj_token``.
+- ``feishu_doc_append_table`` — append a native Feishu table from a 2-D array, with an
+  auto-numbered caption and explicit column widths.
 - ``feishu_doc_append_sheet`` — embed a live, editable *spreadsheet* (formulas,
   filters, its own URL) — for data, where a table block only holds text.
 - ``feishu_doc_append_bitable`` — embed a 多维表格 for record-shaped content.
@@ -77,17 +79,21 @@ async def feishu_doc_create(title: str, folder_token: str = "", user_key: str = 
 
 
 async def feishu_doc_append_content(document_id: str, content: str, user_key: str = "", identity: str = "") -> str:
-    """Append body content (headings + paragraphs) to a Feishu/Lark docx document.
+    """Append body content (Markdown) to a Feishu/Lark docx document, as native blocks.
 
     Writes into the document created by ``feishu_doc_create`` or the docx behind a
-    wiki node (pass that node's ``obj_token`` as ``document_id``). ``content`` is
-    plain text or light Markdown: a line starting with ``# ``..``###### `` becomes
-    a heading (levels 1-6), every other non-blank line becomes a paragraph; blank
-    lines are skipped. Blocks are appended to the end in batches of 50.
+    wiki node (pass that node's ``obj_token`` as ``document_id``). Pass ordinary
+    Markdown: ``# ``..``###### `` headings, ``|``-delimited tables, ``- ``/``1. ``
+    lists, ``- [ ] `` checklists, ``> `` quotes, ``` fences, ``---`` rules, and inline
+    ``**bold**`` / ``*italic*`` / ``~~strike~~`` / ``` `code` ``` / ``[text](url)``.
+    Markdown beyond plain headings is converted by Feishu into **real docx blocks** —
+    a ``|`` table becomes a genuine Feishu table you can drag, sort and edit, not a
+    row of pipe characters — so writing a table here is correct and needs no separate
+    tool. Blank lines separate blocks; within one block, single newlines are joined.
 
     Args:
         document_id: The docx document_id (or a wiki node's obj_token).
-        content: The text/Markdown body to append.
+        content: The Markdown body to append.
         user_key: The sender's open_id (from ``<feishu_context>``). Writing into a
             user-owned wiki generally requires their identity, since the bot isn't a
             collaborator there.
@@ -109,12 +115,14 @@ async def feishu_doc_append_table(
     caption: str = "",
     auto_number: bool = True,
 ) -> str:
-    """Append a native, editable Feishu table to a docx document.
+    """Append a native, editable Feishu table to a docx document, from a 2-D array.
 
-    Use this whenever the user wants a real table in a Feishu doc — plain
-    ``feishu_doc_append_content`` can only write headings/paragraphs, so a table
-    typed as text there would NOT render as a table. This creates a true table
-    block (rows x columns) via the docx descendant API.
+    ``feishu_doc_append_content`` can also produce a real table from a Markdown ``|``
+    table, and is the simpler choice for a table that is just part of the prose. Prefer
+    *this* tool when the data is already row-shaped (no Markdown to assemble and escape),
+    when the table needs an auto-numbered "表 N：…" caption, or when columns need explicit
+    pixel widths. Either way the result is a true table block (rows x columns) via the
+    docx descendant API — never Markdown text.
 
     Args:
         document_id: The docx document_id (or a wiki node's obj_token).

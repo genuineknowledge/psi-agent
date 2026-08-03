@@ -1,4 +1,4 @@
-"""Send one message to a running subagent Session (no bash, no reasoning dump)."""
+"""Send one message to a running subagent Session and verify file deliverables."""
 
 from __future__ import annotations
 
@@ -17,22 +17,32 @@ async def subagent_chat(
     channel_socket: str,
     message: str,
     timeout_seconds: float = 600.0,
+    workspace: str = "",
+    require_files: bool = False,
 ) -> str:
-    """Post *message* to a subagent Session and return final text only.
+    """Post *message* to a subagent Session; return final text plus verified files.
 
-    Reasoning chunks are not included in the returned text.
+    The child must write deliverables into its workspace with the ``write`` tool
+    and reply with one ``[SEND:<absolute path>]`` line per file. This tool verifies
+    every marker exists on disk; pass ``require_files=true`` when the deliverable is
+    files (novels, documents, reports). A reply without existing files is a failure.
+    Do NOT rescue content via sessions_export / sessions_history.
 
     Args:
         channel_socket: From ``subagent_plan`` output.
         message: Self-contained task brief for the child.
         timeout_seconds: Max wait for child reply (default 600).
+        workspace: Child workspace root from ``subagent_plan`` output.
+        require_files: Treat replies without existing ``[SEND:]`` files as failure.
 
     Returns:
-        JSON with ok, text, message.
+        JSON with ok, text, files, missing, message, errors.
     """
     result = await _h.chat_subagent(
         channel_socket=channel_socket,
         message=message,
         timeout_seconds=timeout_seconds,
+        workspace_raw=workspace,
+        require_files=require_files,
     )
     return _h.dumps_result(result)

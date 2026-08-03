@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import socket as _s
 import textwrap
+from contextlib import aclosing
 from pathlib import Path
 
 import anyio
 import pytest
 from aiohttp import web
 
-from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
+from psi_agent.session.agent import AgentRun, SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.protocol import AgentChunk, AgentError
+from psi_agent.session.protocol import (
+    AgentChunk,
+    AgentError,
+    AgentRunResult,
+    AgentRunStatus,
+    AgentStopCause,
+)
 from psi_agent.session.runtime_context import get_agent, get_workspace, runtime_scope
 from psi_agent.session.schedule_registry import ACTIVATE_ALL
 from psi_agent.session.system_prompt import SystemPrompt
@@ -1336,3 +1344,216 @@ async def test_agent_saves_on_max_tool_rounds(tmp_path: Path) -> None:
         assert any(m.get("content") == "[Max tool rounds reached]" for m in loaded)
     finally:
         await runner.cleanup()
+
+
+# --- AgentRunResult: terminal mapping (issue #585) ---
+
+
+async def _run_streamed_against(
+    tmp_path: Path,
+    sse_body: bytes,
+    *,
+    max_tool_rounds: int = 128,
+    tool: ToolFunction | None = None,
+) -> AgentRun:
+    """Drive one fully-consumed run against a canned SSE body, return the run."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(sse_body)
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    server = MockAIServer(tmp_path)
+    socket_path = await server.start(handler)
+    try:
+        registry = (
+            ToolRegistry(files={"__test__": FileEntry(file_hash="", tools={tool.name: tool}, funcs={})})
+            if tool is not None
+            else ToolRegistry()
+        )
+        agent = SessionAgent(
+            ai_client=AiClient(socket_path),
+            tool_registry=registry,
+            conversation=Conversation(path=tmp_path / "h.jsonl"),
+            max_tool_rounds=max_tool_rounds,
+        )
+        run = agent.run_streamed({"role": "user", "content": "hi"})
+        async for _ in run:
+            pass
+        return run
+    finally:
+        await server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_run_streamed_result_completed_on_model_stop(tmp_path: Path) -> None:
+    run = await _run_streamed_against(tmp_path, _sse_chunk(content="done", finish="stop").encode())
+
+    result = run.result
+    assert result is not None
+    assert result.status is AgentRunStatus.COMPLETED
+    assert result.stop_cause is AgentStopCause.MODEL_COMPLETED
+    assert result.model_finish_reason == "stop"
+    assert result.model_turns == 1
+    assert result.is_complete
+
+
+@pytest.mark.anyio
+async def test_run_streamed_result_incomplete_on_length(tmp_path: Path) -> None:
+    """A non-``stop`` model reason keeps its raw value and reads as incomplete."""
+    run = await _run_streamed_against(tmp_path, _sse_chunk(content="truncated", finish="length").encode())
+
+    result = run.result
+    assert result is not None
+    assert result.status is AgentRunStatus.INCOMPLETE
+    assert result.stop_cause is AgentStopCause.MODEL_STOPPED
+    assert result.model_finish_reason == "length"
+    assert not result.is_complete
+
+
+@pytest.mark.anyio
+async def test_run_streamed_result_invalid_stream_without_finish_reason(tmp_path: Path) -> None:
+    """No finish reason at all is a broken stream, not a model decision."""
+    run = await _run_streamed_against(tmp_path, _sse_chunk(content="dangling").encode())
+
+    result = run.result
+    assert result is not None
+    assert result.status is AgentRunStatus.INCOMPLETE
+    assert result.stop_cause is AgentStopCause.INVALID_MODEL_STREAM
+    assert result.model_finish_reason is None
+
+
+@pytest.mark.anyio
+async def test_run_streamed_result_turn_limit(tmp_path: Path) -> None:
+    tc = {
+        "id": "mock",
+        "choices": [
+            {
+                "index": 0,
+                "delta": {
+                    "tool_calls": [
+                        {"index": 0, "id": "c1", "type": "function", "function": {"name": "noop", "arguments": "{}"}}
+                    ]
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+    }
+    tf = ToolFunction(name="noop", description="X", parameters={"type": "object", "properties": {}, "required": []})
+    run = await _run_streamed_against(
+        tmp_path,
+        f"data: {json.dumps(tc)}\n\n".encode(),
+        max_tool_rounds=1,
+        tool=tf,
+    )
+
+    result = run.result
+    assert result is not None
+    assert result.status is AgentRunStatus.INCOMPLETE
+    assert result.stop_cause is AgentStopCause.AGENT_TURN_LIMIT
+    assert result.model_finish_reason == "tool_calls"
+    assert result.model_turns == 1
+
+
+@pytest.mark.anyio
+async def test_run_streamed_no_result_on_agent_error(tmp_path: Path) -> None:
+    """``AgentRunResult`` and ``AgentError`` are mutually exclusive."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return web.Response(status=500, text="boom")
+
+    server = MockAIServer(tmp_path)
+    socket_path = await server.start(handler)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(socket_path),
+            tool_registry=ToolRegistry(),
+            conversation=Conversation(path=tmp_path / "h.jsonl"),
+        )
+        run = agent.run_streamed({"role": "user", "content": "hi"})
+        with pytest.raises(AgentError):
+            async for _ in run:
+                pass
+        assert run.result is None
+    finally:
+        await server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_run_streamed_result_is_none_until_stream_exhausted(tmp_path: Path) -> None:
+    """Abandoning a run early leaves no result — it never reached a terminal state."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content="first").encode())
+        await resp.write(_sse_chunk(content="second", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    server = MockAIServer(tmp_path)
+    socket_path = await server.start(handler)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(socket_path),
+            tool_registry=ToolRegistry(),
+            conversation=Conversation(path=tmp_path / "h.jsonl"),
+        )
+        run = agent.run_streamed({"role": "user", "content": "hi"})
+        async with aclosing(run):
+            async for _ in run:
+                assert run.result is None
+                break
+        assert run.result is None
+    finally:
+        await server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_run_result_is_immutable() -> None:
+    """Frozen + slotted, asserted by introspection rather than by assignment.
+
+    A literal ``result.status = ...`` is a static type error on a frozen
+    dataclass, and routing around it via ``setattr`` would need a ``noqa`` —
+    the repo allows neither, so check the guarantee at its source.
+    """
+    result = AgentRunResult(
+        status=AgentRunStatus.COMPLETED,
+        stop_cause=AgentStopCause.MODEL_COMPLETED,
+        model_finish_reason="stop",
+        model_turns=1,
+    )
+    assert result.__dataclass_params__.frozen
+    assert not hasattr(result, "__dict__")  # slots=True
+
+    # Immutability is "derive a new value", not "mutate in place".
+    evolved = dataclasses.replace(result, status=AgentRunStatus.INCOMPLETE)
+    assert evolved.status is AgentRunStatus.INCOMPLETE
+    assert result.status is AgentRunStatus.COMPLETED
+
+
+@pytest.mark.anyio
+async def test_legacy_run_still_yields_chunks_without_result(tmp_path: Path) -> None:
+    """``run()`` stays a plain generator so existing callers are untouched."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content="hello", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    server = MockAIServer(tmp_path)
+    socket_path = await server.start(handler)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(socket_path),
+            tool_registry=ToolRegistry(),
+            conversation=Conversation(path=tmp_path / "h.jsonl"),
+        )
+        chunks = [c async for c in agent.run({"role": "user", "content": "hi"})]
+        assert "".join(c.content or "" for c in chunks) == "hello"
+    finally:
+        await server.cleanup()

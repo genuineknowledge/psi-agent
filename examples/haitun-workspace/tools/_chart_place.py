@@ -189,6 +189,12 @@ async def _finish(
             user_key=user_key,
             identity=identity,
         )
+        # Report the caption actually written: the caller passed a body without a number,
+        # so the numbered text is only knowable from here. Without it the caller can see
+        # ``caption_number`` but not the line it ended up under. Empty means nothing was
+        # written, and an empty ``caption`` field would read as if something was.
+        if text:
+            result["caption"] = text
         result.update(caption_fields)
         placed = await _f.append_doc_image_impl(document_id, rendered, text, user_key, identity)
         if not placed.get("ok"):

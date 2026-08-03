@@ -6,14 +6,30 @@ agent/lock/``run()`` references.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import aclosing
-from typing import Any
+from typing import Any, Protocol
 
 from aiohttp import web
 from loguru import logger
 
 from psi_agent.session.protocol import AgentChunk, AgentError, ChatCompletionChunk, DeltaMessage, StreamChoice
+
+
+class _ChunkStream(Protocol):
+    """A closeable ``AgentChunk`` stream — ``AgentRun`` or a bare generator.
+
+    Structural on purpose: importing ``AgentRun`` here would make
+    ``agent`` ↔ ``channel_adapter`` a cycle, and the adapter needs nothing from
+    a run beyond iterating and closing it.
+
+    ``aclose`` is a plain def returning ``Awaitable[None]`` rather than an
+    ``async def``: the latter pins the return type to ``CoroutineType``, which a
+    bare ``AsyncGenerator`` (returning ``Coroutine``) then fails to satisfy.
+    """
+
+    def __aiter__(self) -> AsyncIterator[AgentChunk]: ...
+    def aclose(self) -> Awaitable[None]: ...
 
 
 class ChannelAdapter:
@@ -49,11 +65,16 @@ class ChannelAdapter:
         return user_message, body
 
     @staticmethod
-    async def write(response: web.StreamResponse, chunks: AsyncGenerator[AgentChunk]) -> None:
+    async def write(response: web.StreamResponse, chunks: _ChunkStream) -> None:
         """Consume the agent's ``AgentChunk`` iterator and write SSE to *response*.
 
         Handles ``AgentError`` and unexpected exceptions by writing an error
         ``ChatCompletionChunk`` (with ``finish_reason="error"``) before returning.
+
+        Accepts a bare ``AgentChunk`` generator or an ``AgentRun``; both are just
+        closeable async iterables here.  The SSE wire shape does not change
+        either way — a run's terminal result is the caller's to read, never a
+        chunk on the stream.
         """
         try:
             async with aclosing(chunks):

@@ -9,10 +9,24 @@ from __future__ import annotations
 from typing import Any
 
 
+def _delivery_id(raw: dict[str, Any]) -> str:
+    """Feishu's per-delivery id: ``header.event_id`` (P2) or ``uuid`` (P1)."""
+    header = raw.get("header")
+    if isinstance(header, dict):
+        got = header.get("event_id")
+        if isinstance(got, str) and got.strip():
+            return got.strip()
+    got = raw.get("uuid")
+    if isinstance(got, str) and got.strip():
+        return got.strip()
+    return ""
+
+
 def map_event(raw: dict[str, Any]) -> list[dict[str, Any]]:
     event = raw.get("event") if isinstance(raw.get("event"), dict) else raw
     if not isinstance(event, dict):
         return []
+    delivery_id = _delivery_id(raw)
 
     chat_id = str(event.get("chat_id") or "").strip()
     if not chat_id:
@@ -62,7 +76,13 @@ def map_event(raw: dict[str, Any]) -> list[dict[str, Any]]:
                 "payload": payload,
                 "raw_event": "im.chat.member.user.added_v1",
                 "raw_payload": {"chat_id": chat_id, "member_open_id": member_open_id},
-                "idempotency_key": f"feishu:member_added:{chat_id}:{member_open_id}",
+                # Scope the key to this delivery: dedupes Feishu retries, while
+                # letting the same person be welcomed again on a later re-join.
+                "idempotency_key": (
+                    f"feishu:member_added:{chat_id}:{member_open_id}:{delivery_id}"
+                    if delivery_id
+                    else f"feishu:member_added:{chat_id}:{member_open_id}"
+                ),
                 "routing": routing,
             }
         )

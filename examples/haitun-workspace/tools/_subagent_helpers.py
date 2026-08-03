@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import socket
 import sys
@@ -739,18 +740,43 @@ async def wait_socket(addr: str, *, timeout_seconds: float = 30.0) -> dict[str, 
     }
 
 
+def _resolve_deliverable_path(raw_path: str, *, workspace_raw: str = "") -> anyio.Path:
+    raw = (raw_path or "").strip() or "."
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        return anyio.Path(str(candidate))
+    return anyio.Path(str(resolve_workspace(workspace_raw))) / raw
+
+
+_SEND_MARKER_RE = re.compile(r"\[SEND:([^\]]+)\]")
+
+
 async def chat_subagent(
     *,
     channel_socket: str,
     message: str,
     timeout_seconds: float = 600.0,
+    workspace_raw: str = "",
+    require_files: bool = False,
 ) -> dict[str, Any]:
     message = message.strip()
     channel_socket = channel_socket.strip()
     if not channel_socket:
-        return {"ok": False, "message": "channel_socket must not be empty", "text": ""}
+        return {
+            "ok": False,
+            "message": "channel_socket must not be empty",
+            "text": "",
+            "files": [],
+            "missing": [],
+        }
     if not message:
-        return {"ok": False, "message": "message must not be empty", "text": ""}
+        return {
+            "ok": False,
+            "message": "message must not be empty",
+            "text": "",
+            "files": [],
+            "missing": [],
+        }
 
     text_parts: list[str] = []
     errors: list[str] = []
@@ -766,6 +792,8 @@ async def chat_subagent(
             "ok": False,
             "message": f"timed out after {timeout_seconds}s",
             "text": "".join(text_parts),
+            "files": [],
+            "missing": [],
             "errors": errors,
         }
     except Exception as exc:
@@ -773,14 +801,43 @@ async def chat_subagent(
             "ok": False,
             "message": str(exc),
             "text": "".join(text_parts),
+            "files": [],
+            "missing": [],
             "errors": errors,
         }
 
     text = "".join(text_parts)
+    files: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for raw_path in _SEND_MARKER_RE.findall(text):
+        try:
+            path = _resolve_deliverable_path(raw_path, workspace_raw=workspace_raw)
+            if await path.is_file():
+                stat = await path.stat()
+                files.append({"path": str(path), "bytes": stat.st_size})
+            else:
+                missing.append(str(path))
+        except OSError, ValueError:
+            missing.append(raw_path.strip())
+
+    if require_files and not files:
+        status_message = (
+            "child reply referenced missing files" if missing else "child reply contained no existing [SEND:] files"
+        )
+        ok = False
+    elif not text.strip():
+        status_message = "empty response from child"
+        ok = False
+    else:
+        status_message = "ok"
+        ok = True
+
     return {
-        "ok": bool(text.strip()),
-        "message": "ok" if text.strip() else "empty response from child",
+        "ok": ok,
+        "message": status_message,
         "text": text,
+        "files": files,
+        "missing": missing,
         "errors": errors,
     }
 

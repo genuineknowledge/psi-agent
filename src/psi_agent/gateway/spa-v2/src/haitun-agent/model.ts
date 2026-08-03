@@ -71,6 +71,16 @@ export type ChatMessage = {
   role: "agent" | "user";
   text: string;
   files?: ChatFile[];
+  /**
+   * Thinking prose for this assistant turn (may still contain live SSE tool markers;
+   * display strips them). History refresh uses prose-only ``reasoning`` plus ``tools``.
+   */
+  reasoning?: string;
+  /**
+   * Cursor-style tool activity one-liners for this turn (from live progress log
+   * and/or history ``tools`` projection). Rendered separately from「已思考」.
+   */
+  tools?: string[];
   /** Local-only: like / dislike on agent replies (spa v1 parity). */
   feedback?: MessageFeedback;
   /** User turn did not get a complete agent reply. */

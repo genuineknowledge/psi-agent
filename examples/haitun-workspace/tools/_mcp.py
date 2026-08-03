@@ -40,6 +40,32 @@ def _is_fatal(exc: BaseException) -> bool:
     return False
 
 
+def _describe(exc: BaseException) -> str:
+    """Human-readable cause of *exc*, unwrapping anyio/httpx exception groups.
+
+    The MCP streamable-HTTP client runs its transport in an anyio task group, so a plain
+    "connection refused" reaches us as ``ExceptionGroup: unhandled errors in a TaskGroup
+    (1 sub-exception)`` — a message that names neither the endpoint nor the real error and
+    sent debugging down the wrong path (it reads like a bug in our own task handling).
+    Flatten the group and report the leaf exceptions instead.
+    """
+    leaves: list[str] = []
+
+    def _walk(e: BaseException, depth: int = 0) -> None:
+        if isinstance(e, BaseExceptionGroup) and depth < 5:
+            for sub in e.exceptions:
+                _walk(sub, depth + 1)
+            return
+        text = str(e).strip()
+        leaves.append(f"{type(e).__name__}: {text}" if text else type(e).__name__)
+
+    _walk(exc)
+    # Preserve order while dropping duplicates (a group often repeats the same leaf).
+    seen: set[str] = set()
+    unique = [x for x in leaves if not (x in seen or seen.add(x))]
+    return "; ".join(unique) if unique else repr(exc)
+
+
 _T = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
 
 
@@ -81,21 +107,31 @@ def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
        ``browser_*``/``canvas_*`` tool set is stable, so a committed cache is
        authoritative.
     2. Defer the real config — and therefore ``ensure_server()`` / spawning —
-       to **first call** of a generated tool (see ``_build``'s ``config_provider``).
+       to **call time** of a generated tool (see ``config_provider``). It is
+       re-resolved on every call, so a server that died can be respawned.
     3. Fall back to live discovery only on a cache miss, then **persist** the
        result so subsequent imports are instant.
     """
     prefix_hint = getattr(func, "__name__", "mcp")
     name = prefix_hint
 
-    # Deferred config: resolved once, on first tool call, off the import path.
-    _cached_config: dict[str, Any] | None = None
-
     def config_provider() -> dict[str, Any]:
-        nonlocal _cached_config
-        if _cached_config is None:
-            _cached_config = _resolve(func())
-        return _cached_config
+        """Resolve the transport config on **every** tool call, never once.
+
+        This used to memoize the first result, which quietly broke self-healing for
+        declarations whose body *supervises a server* (``browser`` calls
+        ``_browser_impl.ensure_server()``). With the config cached, the declaration body
+        ran exactly once per process: if the Playwright MCP server later died or went
+        half-dead, every subsequent call kept dialing the stale endpoint and there was no
+        code path left that could notice or respawn it — the browser tools stayed broken
+        until the whole gateway was restarted.
+
+        Re-resolving per call puts ``ensure_server()`` back in the request path, where its
+        own health check can replace a dead server. The declaration bodies are cheap and
+        idempotent by contract (a healthy server is a lock + a poll + an HTTP probe), so
+        this costs microseconds on the happy path.
+        """
+        return _resolve(func())
 
     prefix, schemas = _load_cached_schemas(name)
     if schemas is None:
@@ -185,8 +221,9 @@ def _build(
     """Build one workspace tool function from an MCP tool *schema*.
 
     *config_provider* returns the resolved MCP transport config, evaluated
-    **lazily on first call** — so a cache-backed tool never touches the server
-    (or ``ensure_server()``) until the agent actually invokes it."""
+    **lazily on each call** — so a cache-backed tool never touches the server
+    (or ``ensure_server()``) until the agent actually invokes it, and a server
+    that has since died gets a chance to be respawned."""
     props = schema.get("inputSchema", {}).get("properties", {})
     req: list[str] = schema.get("inputSchema", {}).get("required", [])
     params: list[inspect.Parameter] = []
@@ -269,7 +306,7 @@ def _build(
             # letting it (possibly a BaseExceptionGroup from the transport teardown)
             # propagate and crash the session/gateway.
             logger.warning(f"MCP tool {tn!r} call failed: {exc!r}")
-            return f"Error: MCP tool {tn!r} failed: {exc}"
+            return f"Error: MCP tool {tn!r} failed: {_describe(exc)}"
 
     _fn.__name__ = name
     _fn.__qualname__ = name

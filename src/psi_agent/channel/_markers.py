@@ -15,7 +15,7 @@ from loguru import logger
 from psi_agent.channel._types import FileChunk, InputChunk, TextChunk
 
 RECV_MARKER = "[RECV:{path}]"
-SEND_RE = re.compile(r"\[SEND:(.+?)\]")
+SEND_RE = re.compile(r"\[\s*SEND\s*:\s*(.+?)\s*\]", re.IGNORECASE)
 
 
 def encode_input(chunks: list[InputChunk]) -> str:
@@ -54,7 +54,7 @@ class SendMarkerScanner:
         base = self._scan_ptr
         new = self._full[base:]
         for match in SEND_RE.finditer(new):
-            path = match.group(1)
+            path = match.group(1).strip()
             if path not in self._emitted:
                 logger.debug(f"[SEND] detected → FileChunk({path})")
                 out.append(FileChunk(path))

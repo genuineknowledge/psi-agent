@@ -116,8 +116,10 @@ Gateway 模式（`reuse_parent_ai: true`）跳过。
 | `channel_socket` | plan 的 `channel_socket` |
 | `message` | 自包含 task 正文（见模板） |
 | `timeout_seconds` | `600`（可调） |
+| `workspace` | `plan.workspace`（必须与子 Session 的 `--workspace` 一致） |
+| `require_files` | 交付物是文件时为 `true` |
 
-**出参：** `{ "ok": true, "text": "<子 Agent 回复正文>" }` — 只含最终文本，**无 reasoning 流**。
+**出参：** `{ "ok": true, "text": "<子 Agent 回复正文>", "files": [...], "missing": [...] }` — text 只含最终文本，**无 reasoning 流**；`files` 为已校验存在的 `[SEND:]` 文件。
 
 同一子 Agent 跟进：保留 `session_id`，**只重复 Step 6**（Step 3–5 跳过）。
 
@@ -131,7 +133,10 @@ Gateway 模式（`reuse_parent_ai: true`）跳过。
 Workspace: <path>
 
 ## Deliverable
-<要点 / 表格 / 文件>
+必须用 write 工具把每份成果写成文件（每章一个 .md），路径必须在 Workspace 下。
+回复正文只输出文件清单，每行一个：
+[SEND:<绝对路径>]
+禁止粘贴正文全文；没有写文件视为未完成。
 
 ## Constraints
 勿启动 Gateway 或其它 psi-agent。
@@ -139,6 +144,21 @@ Workspace: <path>
 ## Context
 <仅必要路径与片段>
 ```
+
+---
+
+## Step 6.5 — 校验与纠正（文件交付时必做）
+
+1. 仅当 `require_files=true`（交付物是文件）时校验文件：
+   - `ok=false` 或 `files=[]` → 子 Agent 没有交付文件。
+   - 纯文本子任务（`require_files=false`）：只校验 `ok` 和 `text`，`files=[]` 属正常。
+2. 纠正（最多一次）：用同一 `session_id` 再发一条 `subagent_chat`，
+   消息内容 = 原任务 + 子 Agent 缺失清单/错误原文，
+   要求“调用 write 写文件，然后回复 [SEND:绝对路径] 清单”。
+3. 再次校验仍失败 → 标记该子任务失败，停止该路。
+4. 合并 .docx / 汇总：用 bash / python 直接读 `files` 里的路径，
+   工具结果只返回统计（字数、章节数、文件大小）。
+5. 禁止用 sessions_export / sessions_history 把子会话正文搬回父上下文。
 
 ---
 
@@ -174,6 +194,8 @@ Workspace: <path>
 | Git Bash + `channel cli` + Named Pipe | `subagent_plan` + `subagent_chat` |
 | 省略 `shell`（Windows 默认 bash） | `background_start(..., shell=plan.shell)` |
 | spawn 后不 stop | Step 7 |
+| 子 Agent 只回正文不写文件，父任务把正文当交付物 | `subagent_chat(..., workspace=plan.workspace, require_files=true)`，`files=[]` 即纠正子 Agent |
+| 用 sessions_export / sessions_history 把全文搬回对话补救 | 禁止；直接读磁盘文件路径，只回传统计 |
 
 ---
 
@@ -183,3 +205,6 @@ Workspace: <path>
 - [ ] 无逐步自言自语
 - [ ] `background_stop` 已执行
 - [ ] 未起 Gateway
+- [ ] 子任务回复含 `[SEND:绝对路径]`，`files` 非空
+- [ ] 未用 sessions_export / sessions_history 补救正文
+- [ ] 子任务未落盘时先纠正，而不是把正文当结果

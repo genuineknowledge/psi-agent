@@ -31,6 +31,16 @@ def test_scanner_detects_send_marker():
     assert scanner.feed("Here is [SEND:/tmp/output.py] the file. more text") == [FileChunk("/tmp/output.py")]
 
 
+def test_scanner_detects_spaced_send_marker():
+    scanner = SendMarkerScanner()
+    assert scanner.feed("Here is [ SEND:/tmp/output.py ] the file. more text") == [FileChunk("/tmp/output.py")]
+
+
+def test_scanner_detects_lowercase_send_marker():
+    scanner = SendMarkerScanner()
+    assert scanner.feed("Here is [Send:/tmp/output.py] the file. more text") == [FileChunk("/tmp/output.py")]
+
+
 def test_scanner_dedup_within_feed():
     scanner = SendMarkerScanner()
     assert scanner.feed("[SEND:/a.py] chunk1 [SEND:/a.py] chunk2") == [FileChunk("/a.py")]

@@ -36,7 +36,20 @@ _canvas_impl: Any = importlib.import_module("_canvas_impl")
 
 
 @pytest.fixture
-def _fake_discover(monkeypatch: pytest.MonkeyPatch) -> None:
+def _bypass_schema_cache(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force live discovery, and never touch the committed cache file.
+
+    ``mcp()`` prefers ``.mcp_cache/<name>.json`` and only calls ``_discover`` on a miss.
+    With ``canvas.json`` committed, tests that patch ``_discover`` were silently bypassed —
+    they asserted against the real cached schemas instead of their fakes. Stubbing the
+    *save* side too keeps a test run from overwriting the committed cache.
+    """
+    monkeypatch.setattr(_mcp, "_load_cached_schemas", lambda _name: (None, None))
+    monkeypatch.setattr(_mcp, "_save_cached_schemas", lambda _name, _prefix, _schemas: None)
+
+
+@pytest.fixture
+def _fake_discover(monkeypatch: pytest.MonkeyPatch, _bypass_schema_cache: None) -> None:
     """Make ``mcp()`` skip the subprocess: return two canned Excalidraw schemas."""
 
     def _discover(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -87,7 +100,7 @@ def test_generated_canvas_tool_is_async_with_signature(_fake_discover: None) -> 
     assert "type" in inspect.signature(fn).parameters
 
 
-def test_union_type_property_does_not_crash_build(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_union_type_property_does_not_crash_build(monkeypatch: pytest.MonkeyPatch, _bypass_schema_cache: None) -> None:
     """Regression: Excalidraw emits union types (``"type": ["number", "array"]``).
 
     ``_build`` used to do ``_T.get(ps["type"])`` with the raw list, raising
@@ -131,7 +144,9 @@ def test_union_type_property_does_not_crash_build(monkeypatch: pytest.MonkeyPatc
     assert set(sig.parameters) == {"width", "label", "points"}
 
 
-def test_object_and_object_array_params_degrade_to_json_string(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_object_and_object_array_params_degrade_to_json_string(
+    monkeypatch: pytest.MonkeyPatch, _bypass_schema_cache: None
+) -> None:
     """Regression: batch_create_elements / apply have object & array-of-object params.
 
     The tool runtime only accepts str/int/float/bool/list[scalar], so it *skipped*
@@ -180,7 +195,7 @@ def test_object_and_object_array_params_degrade_to_json_string(monkeypatch: pyte
         assert ann is str
 
 
-def test_json_string_param_is_decoded_before_call(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_json_string_param_is_decoded_before_call(monkeypatch: pytest.MonkeyPatch, _bypass_schema_cache: None) -> None:
     """A JSON-string arg for an object/array param is parsed back before call_tool."""
 
     def _discover(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -257,7 +272,7 @@ def test_stdio_config_resolves(_fake_discover: None) -> None:
 # ── discovery-failure containment (must not crash tool loading) ───────────────
 
 
-def test_discovery_failure_is_contained(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discovery_failure_is_contained(monkeypatch: pytest.MonkeyPatch, _bypass_schema_cache: None) -> None:
     """A plain Exception during discovery must not escape ``@mcp``; no tools registered."""
 
     def _boom(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -276,7 +291,9 @@ def test_discovery_failure_is_contained(monkeypatch: pytest.MonkeyPatch) -> None
     assert "canvas" in ns  # the decorated declaration itself is still returned
 
 
-def test_discovery_base_exception_group_is_contained(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_discovery_base_exception_group_is_contained(
+    monkeypatch: pytest.MonkeyPatch, _bypass_schema_cache: None
+) -> None:
     """A ``BaseExceptionGroup`` from stdio/anyio teardown must be caught, not propagate."""
 
     def _boom(_config: dict[str, Any]) -> dict[str, dict[str, Any]]:

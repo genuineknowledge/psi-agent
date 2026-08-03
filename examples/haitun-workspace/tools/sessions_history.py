@@ -1,4 +1,8 @@
-"""Read message history for one workspace session."""
+"""Read message history for one session.
+
+Debugging only: never paste the full messages content into the model request
+or the user-facing reply.
+"""
 
 from __future__ import annotations
 

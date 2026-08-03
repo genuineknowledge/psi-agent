@@ -2403,7 +2403,7 @@ def draw_progress(
 # A combined figure can't take 21 tools' worth of flat arguments, so a panel is a dict:
 # ``{"chart": "line", "title": …, "labels": [...], "series": {...}}``. The field names are
 # the single-chart tools' argument names minus the ``_json`` suffix, so an agent that
-# knows ``feishu_chart_line(labels_json=…, series_json=…)`` already knows the panel form.
+# knows ``chart_type="line"(labels_json=…, series_json=…)`` already knows the panel form.
 #
 # Values arrive already decoded (the whole ``panels_json`` was one JSON document), but
 # validation still goes through the same ``parse_*`` helpers by re-encoding each field.

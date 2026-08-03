@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -247,3 +249,125 @@ async def test_created_task_is_loadable_by_registry(workspace: Path) -> None:
     registry = await ScheduleRegistry.load(workspace / "schedules")
     names = {s.name for s in registry.schedules}
     assert "loadable" in names
+
+
+# -- once_at must be judged on the same clock Session fires cron on ------------
+#
+# The 214 deployment is a UTC base image with ``TZ=Asia/Shanghai``. Session
+# resolves the next fire with ``datetime.now(ZoneInfo(TZ))``
+# (``ScheduleRegistry._seconds_until_next``), so ``once_at``'s "is this in the
+# future?" check has to read the same clock. It used to read the bare machine
+# clock, which in that container trails Beijing by 8 hours — long enough for a
+# moment already past to be accepted and then scheduled for next year.
+
+
+def test_now_local_follows_tz_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_now_local tracks TZ, not the machine zone."""
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    shanghai = tool._now_local()
+    monkeypatch.setenv("TZ", "America/New_York")
+    new_york = tool._now_local()
+
+    expected = (
+        datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+        - datetime.now(ZoneInfo("America/New_York")).replace(tzinfo=None)
+    ).total_seconds()
+    assert abs((shanghai - new_york).total_seconds() - expected) < 5
+
+
+def test_now_local_falls_back_to_machine_clock_on_bad_tz(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unresolvable TZ must not crash the tool; behave as before."""
+    monkeypatch.setenv("TZ", "Not/AZone")
+    assert abs((tool._now_local() - datetime.now()).total_seconds()) < 5
+
+
+def test_once_at_already_past_in_schedule_zone_is_rejected(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The regression: past-in-Beijing but future-in-UTC must not be accepted.
+
+    Pinned by construction rather than by wall clock — the offending instant is
+    derived from the schedule zone's own "now", so this holds whatever zone the
+    machine running the tests happens to be in.
+    """
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    past_in_beijing = tool._now_local() - timedelta(hours=2)
+
+    dt, err = tool._parse_once_at(past_in_beijing.strftime("%Y-%m-%d %H:%M"))
+
+    assert dt is None
+    assert err is not None
+    assert "not in the future" in err
+    # The message has to say which clock it judged on, or the caller cannot tell
+    # a wrong date from a wrong timezone.
+    assert "Asia/Shanghai" in err
+
+
+def test_once_at_future_in_schedule_zone_is_accepted(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    soon = tool._now_local() + timedelta(hours=2)
+
+    dt, err = tool._parse_once_at(soon.strftime("%Y-%m-%d %H:%M"))
+
+    assert err is None
+    assert dt is not None
+    assert dt.strftime("%Y-%m-%d %H:%M") == soon.strftime("%Y-%m-%d %H:%M")
+
+
+def test_iso_offset_once_at_converts_into_schedule_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicit-offset input lands on schedule-zone wall time, not machine time."""
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+
+    dt, err = tool._parse_once_at("2099-07-24T15:30:00+00:00")
+
+    assert err is None
+    assert dt is not None
+    # 15:30 UTC is 23:30 Beijing on the same day.
+    assert dt.strftime("%Y-%m-%d %H:%M") == "2099-07-24 23:30"
+
+
+async def test_created_one_shot_fires_at_the_requested_instant(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: what the tool writes is what Session will fire, to the minute.
+
+    This is the check that would have caught the year-long slip — it runs the
+    tool's own cron output back through the registry's countdown instead of
+    trusting that both sides read the clock the same way.
+    """
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+    target = (tool._now_local() + timedelta(hours=3)).replace(second=0, microsecond=0)
+
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="one-shot-tz",
+        once_at=target.strftime("%Y-%m-%d %H:%M"),
+        fire="tool",
+        tool="feishu_message_send",
+        tool_args='{"receive_id":"oc_real_chat","text":"到点啦"}',
+    )
+    assert not msg.startswith("[Error]"), msg
+
+    registry = await ScheduleRegistry.load(workspace / "schedules")
+    schedule = next(s for s in registry.schedules if s.name == "one-shot-tz")
+    seconds = ScheduleRegistry._seconds_until_next(schedule.cron)
+
+    expected = (target - tool._now_local()).total_seconds()
+    assert abs(seconds - expected) < 90, f"fires in {seconds}s, wanted ~{expected}s"
+
+
+async def test_create_echoes_resolved_instant_with_weekday(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The confirmation states the weekday, so a bad date derivation is visible."""
+    monkeypatch.setenv("TZ", "Asia/Shanghai")
+
+    msg = await tool.schedule_manage(
+        action="create",
+        schedule_name="echo-instant",
+        once_at="2099-07-24 15:30",
+        fire="tool",
+        tool="feishu_message_send",
+        tool_args='{"receive_id":"oc_real_chat","text":"hi"}',
+    )
+
+    assert "fires at 2099-07-24 15:30" in msg
+    # 2099-07-24 is a Friday.
+    assert "Friday" in msg
+    assert "周五" in msg

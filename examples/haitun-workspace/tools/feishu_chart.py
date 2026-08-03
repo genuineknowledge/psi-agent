@@ -5,10 +5,12 @@ only way to get a genuine data chart into a Feishu document is to render an imag
 append it as an image block (block_type 27). These tools do exactly that: each one
 takes tidy data, renders a house-styled PNG, and places it in the doc with a caption.
 
-One tool per chart type, because picking the right chart is the hard part and a tool
-name that says ``pie`` / ``line`` / ``pareto`` makes the choice explicit — as do the
-"use this when" lines in each docstring. Pair with the ``feishu-charts`` skill, which
-carries the full chart-selection rules.
+One tool with a ``chart_type`` argument rather than one tool per type: the 21 types
+share only six arguments, so separate schemas cost ~13k tokens of context in every
+turn while the thing that actually matters — *which* chart answers the question — is
+a judgement the ``feishu-charts`` skill already carries. The renderers below keep
+their individual signatures and their "use this when" guidance; ``_CHART_SPECS`` maps
+each ``chart_type`` to one of them.
 
 Part-of-whole:  ``pie`` ``donut`` ``funnel``
 Trend:          ``line`` ``area`` ``stacked_area``
@@ -34,8 +36,10 @@ from __future__ import annotations
 # RUF002: these docstrings are read by the agent (and by Chinese-speaking users) as
 # prose, so full-width CJK punctuation is correct typography here, not an ASCII typo.
 # ruff: noqa: RUF002
+import json
 import sys
 from pathlib import Path
+from typing import Any
 
 TOOLS_DIR = Path(__file__).resolve().parent
 if str(TOOLS_DIR) not in sys.path:
@@ -47,7 +51,7 @@ import _chart_render as _cr
 # ── Part-of-whole ──────────────────────────────────────────────────────────────
 
 
-async def feishu_chart_pie(
+async def _render_pie(
     labels_json: str,
     values_json: str,
     title: str = "",
@@ -67,7 +71,7 @@ async def feishu_chart_pie(
     split by department, headcount by function, traffic by channel. Slices are sorted
     largest-first with percentages on each; anything past the 6 biggest is folded into
     "其他" so labels stay legible (the response reports how many were folded). For more
-    categories, or to compare magnitudes precisely, use ``feishu_chart_bar`` instead —
+    categories, or to compare magnitudes precisely, use ``chart_type="bar"`` instead —
     people read bar length far more accurately than slice angle.
 
     Args:
@@ -118,7 +122,7 @@ async def feishu_chart_pie(
     )
 
 
-async def feishu_chart_donut(
+async def _render_donut(
     labels_json: str,
     values_json: str,
     title: str = "",
@@ -134,7 +138,7 @@ async def feishu_chart_donut(
 ) -> str:
     """Append a donut chart to a Feishu doc — shares of a whole, with the total in the middle.
 
-    Same rules as ``feishu_chart_pie`` (2-6 categories, parts of one whole); prefer the
+    Same rules as ``chart_type="pie"`` (2-6 categories, parts of one whole); prefer the
     donut when the **total itself matters** — "1,240 万营收，华东占 42%" — because the hole
     displays that total instead of wasting the centre. Also reads better than a pie at
     small sizes in a dense report.
@@ -186,7 +190,7 @@ async def feishu_chart_donut(
     )
 
 
-async def feishu_chart_funnel(
+async def _render_funnel(
     stages_json: str,
     values_json: str,
     title: str = "",
@@ -240,7 +244,7 @@ async def feishu_chart_funnel(
 # ── Trend over an ordered axis ─────────────────────────────────────────────────
 
 
-async def feishu_chart_line(
+async def _render_line(
     labels_json: str,
     series_json: str,
     title: str = "",
@@ -309,7 +313,7 @@ async def feishu_chart_line(
     )
 
 
-async def feishu_chart_area(
+async def _render_area(
     labels_json: str,
     series_json: str,
     title: str = "",
@@ -329,7 +333,7 @@ async def feishu_chart_area(
     the magnitude under the curve carries meaning (累计用户量, 库存水位, 带宽占用); the fill
     always sits on a zero baseline, since a filled area above a truncated axis
     misrepresents volume. Three or more overlapping fills get muddy — use
-    ``feishu_chart_line`` for those, or ``feishu_chart_stacked_area`` for composition.
+    ``chart_type="line"`` for those, or ``chart_type="stacked_area"`` for composition.
 
     Args:
         labels_json: JSON array of x-axis points in order.
@@ -375,7 +379,7 @@ async def feishu_chart_area(
     )
 
 
-async def feishu_chart_stacked_area(
+async def _render_stacked_area(
     labels_json: str,
     series_json: str,
     title: str = "",
@@ -446,7 +450,7 @@ async def feishu_chart_stacked_area(
 # ── Comparison across categories ───────────────────────────────────────────────
 
 
-async def feishu_chart_column(
+async def _render_column(
     labels_json: str,
     values_json: str,
     title: str = "",
@@ -467,7 +471,7 @@ async def feishu_chart_column(
     The safest default for comparing magnitudes: bar length is judged far more
     accurately than angle or area. Use for **up to ~8 categories with short names**
     (部门人数, 各月工单量); beyond that, or with long Chinese names, use
-    ``feishu_chart_bar`` (horizontal) so labels stay readable. Every bar is labelled
+    ``chart_type="bar"`` (horizontal) so labels stay readable. Every bar is labelled
     with its value and starts at zero. ``highlight`` greys the rest to spotlight one
     category — useful when the doc is arguing about that one.
 
@@ -519,7 +523,7 @@ async def feishu_chart_column(
     )
 
 
-async def feishu_chart_bar(
+async def _render_bar(
     labels_json: str,
     values_json: str,
     title: str = "",
@@ -537,7 +541,7 @@ async def feishu_chart_bar(
 ) -> str:
     """Append a horizontal bar chart to a Feishu doc — rankings and long category names.
 
-    Prefer this over ``feishu_chart_column`` whenever there are **many categories
+    Prefer this over ``chart_type="column"`` whenever there are **many categories
     (8+)** or the names are long Chinese phrases (区域名, 部门全称, 缺陷类型): horizontal
     bars give labels a full line each instead of rotating them into unreadable
     diagonals. Sorted largest-first by default, which is what makes a ranking scannable.
@@ -591,7 +595,7 @@ async def feishu_chart_bar(
     )
 
 
-async def feishu_chart_grouped_column(
+async def _render_grouped_column(
     labels_json: str,
     series_json: str,
     title: str = "",
@@ -658,7 +662,7 @@ async def feishu_chart_grouped_column(
     )
 
 
-async def feishu_chart_stacked_column(
+async def _render_stacked_column(
     labels_json: str,
     series_json: str,
     title: str = "",
@@ -680,7 +684,7 @@ async def feishu_chart_stacked_column(
     各部门人数按职级. ``percent=true`` makes every column 100% tall, which compares
     **mix** across categories of very different sizes (that's the right choice when
     "大区之间结构差异" is the question, not "谁的总量大"). To compare individual components
-    precisely, use ``feishu_chart_grouped_column`` — stacked segments don't share a
+    precisely, use ``chart_type="grouped_column"`` — stacked segments don't share a
     baseline, so only the bottom one is easy to read. Values must be non-negative.
 
     Args:
@@ -730,7 +734,7 @@ async def feishu_chart_stacked_column(
     )
 
 
-async def feishu_chart_waterfall(
+async def _render_waterfall(
     labels_json: str,
     deltas_json: str,
     title: str = "",
@@ -791,7 +795,7 @@ async def feishu_chart_waterfall(
 # ── Distribution & correlation ─────────────────────────────────────────────────
 
 
-async def feishu_chart_histogram(
+async def _render_histogram(
     values_json: str,
     title: str = "",
     document_id: str = "",
@@ -811,7 +815,7 @@ async def feishu_chart_histogram(
     接口响应耗时. This is the chart that exposes what an average hides — a long tail, two
     clusters, a wall at a SLA boundary. Mean and median lines are drawn so skew is
     visible. Pass the **raw observations**, not pre-counted buckets; to compare
-    distributions across groups use ``feishu_chart_box``.
+    distributions across groups use ``chart_type="box"``.
 
     Args:
         values_json: JSON array of raw numeric observations (at least 2), e.g. '[3,4,4,5,7,12]'.
@@ -848,7 +852,7 @@ async def feishu_chart_histogram(
     )
 
 
-async def feishu_chart_box(
+async def _render_box(
     groups_json: str,
     title: str = "",
     document_id: str = "",
@@ -866,7 +870,7 @@ async def feishu_chart_box(
     Use when "平均值差不多" would be misleading: 各部门响应时长, 各产线良率, 各校招批次评分.
     Each box shows median, quartiles, whiskers and outliers, so a group that looks
     average but is wildly inconsistent stands out. Every group needs at least 2
-    observations; for a single group's shape use ``feishu_chart_histogram``.
+    observations; for a single group's shape use ``chart_type="histogram"``.
 
     Args:
         groups_json: JSON object of group→raw observations, e.g.
@@ -901,7 +905,7 @@ async def feishu_chart_box(
     )
 
 
-async def feishu_chart_scatter(
+async def _render_scatter(
     points_json: str,
     title: str = "",
     document_id: str = "",
@@ -968,7 +972,7 @@ async def feishu_chart_scatter(
     )
 
 
-async def feishu_chart_bubble(
+async def _render_bubble(
     points_json: str,
     title: str = "",
     document_id: str = "",
@@ -988,7 +992,7 @@ async def feishu_chart_bubble(
     vs 营收规模, 优先级 vs 工作量 vs 影响用户数. Bubble **area** scales with the third value
     (area, not radius — that's what the eye actually judges). Keep to ~12 bubbles; more
     and they overlap into noise. If the third variable isn't important, use
-    ``feishu_chart_scatter``.
+    ``chart_type="scatter"``.
 
     Args:
         points_json: JSON array of [x,y,size] triples, e.g. '[[10,22,300],[15,30,800]]'.
@@ -1034,7 +1038,7 @@ async def feishu_chart_bubble(
     )
 
 
-async def feishu_chart_heatmap(
+async def _render_heatmap(
     row_labels_json: str,
     col_labels_json: str,
     values_json: str,
@@ -1104,7 +1108,7 @@ async def feishu_chart_heatmap(
 # ── Purpose-built ──────────────────────────────────────────────────────────────
 
 
-async def feishu_chart_radar(
+async def _render_radar(
     axes_json: str,
     series_json: str,
     title: str = "",
@@ -1158,7 +1162,7 @@ async def feishu_chart_radar(
     )
 
 
-async def feishu_chart_pareto(
+async def _render_pareto(
     labels_json: str,
     values_json: str,
     title: str = "",
@@ -1216,7 +1220,7 @@ async def feishu_chart_pareto(
     )
 
 
-async def feishu_chart_combo(
+async def _render_combo(
     labels_json: str,
     bar_series_json: str,
     line_series_json: str,
@@ -1291,7 +1295,7 @@ async def feishu_chart_combo(
     )
 
 
-async def feishu_chart_gantt(
+async def _render_gantt(
     tasks_json: str,
     title: str = "",
     document_id: str = "",
@@ -1345,7 +1349,7 @@ async def feishu_chart_gantt(
     )
 
 
-async def feishu_chart_progress(
+async def _render_progress(
     items_json: str,
     title: str = "",
     document_id: str = "",
@@ -1464,6 +1468,218 @@ async def feishu_chart_figure(
         source=source,
         document_id=document_id,
         caption=caption,
+        auto_number=auto_number,
+        user_key=user_key,
+        identity=identity,
+    )
+
+
+# ── Dispatch ───────────────────────────────────────────────────────────────────
+# One public tool instead of 21. Each renderer above keeps its own signature; the
+# table below is the only place that knows which data keys and options it takes, so
+# adding a chart type means one row plus a renderer, not a new tool schema.
+#
+# `data` keys are required; `opts` keys are optional. Both are named exactly as the
+# renderer's parameters, so dispatch is a plain **kwargs call with no translation.
+
+_CHART_SPECS: dict[str, dict[str, Any]] = {
+    "pie": {"fn": _render_pie, "data": ["labels_json", "values_json"], "opts": ["unit", "show_values", "highlight"]},
+    "donut": {
+        "fn": _render_donut,
+        "data": ["labels_json", "values_json"],
+        "opts": ["unit", "show_values", "highlight"],
+    },
+    "funnel": {"fn": _render_funnel, "data": ["stages_json", "values_json"], "opts": ["unit"]},
+    "line": {
+        "fn": _render_line,
+        "data": ["labels_json", "series_json"],
+        "opts": ["x_label", "y_label", "unit", "zero_baseline"],
+    },
+    "area": {"fn": _render_area, "data": ["labels_json", "series_json"], "opts": ["x_label", "y_label", "unit"]},
+    "stacked_area": {
+        "fn": _render_stacked_area,
+        "data": ["labels_json", "series_json"],
+        "opts": ["x_label", "y_label", "unit", "percent"],
+    },
+    "column": {
+        "fn": _render_column,
+        "data": ["labels_json", "values_json"],
+        "opts": ["x_label", "y_label", "unit", "sort_desc", "highlight"],
+    },
+    "bar": {
+        "fn": _render_bar,
+        "data": ["labels_json", "values_json"],
+        "opts": ["x_label", "y_label", "unit", "sort_desc", "highlight"],
+    },
+    "grouped_column": {
+        "fn": _render_grouped_column,
+        "data": ["labels_json", "series_json"],
+        "opts": ["x_label", "y_label", "unit", "horizontal"],
+    },
+    "stacked_column": {
+        "fn": _render_stacked_column,
+        "data": ["labels_json", "series_json"],
+        "opts": ["x_label", "y_label", "unit", "percent", "horizontal"],
+    },
+    "waterfall": {
+        "fn": _render_waterfall,
+        "data": ["labels_json", "deltas_json"],
+        "opts": ["y_label", "unit", "total_label"],
+    },
+    "histogram": {"fn": _render_histogram, "data": ["values_json"], "opts": ["bins", "x_label", "y_label", "unit"]},
+    "box": {"fn": _render_box, "data": ["groups_json"], "opts": ["x_label", "y_label", "unit"]},
+    "scatter": {
+        "fn": _render_scatter,
+        "data": ["points_json"],
+        "opts": ["x_label", "y_label", "trend", "point_labels_json"],
+    },
+    "bubble": {
+        "fn": _render_bubble,
+        "data": ["points_json"],
+        "opts": ["x_label", "y_label", "size_label", "labels_json"],
+    },
+    "heatmap": {
+        "fn": _render_heatmap,
+        "data": ["row_labels_json", "col_labels_json", "values_json"],
+        "opts": ["unit", "color_label", "show_values"],
+    },
+    "radar": {"fn": _render_radar, "data": ["axes_json", "series_json"], "opts": ["max_value"]},
+    "pareto": {"fn": _render_pareto, "data": ["labels_json", "values_json"], "opts": ["y_label", "unit", "threshold"]},
+    "combo": {
+        "fn": _render_combo,
+        "data": ["labels_json", "bar_series_json", "line_series_json"],
+        "opts": ["y_label", "y2_label", "unit", "line_unit", "line_percent"],
+    },
+    "gantt": {"fn": _render_gantt, "data": ["tasks_json"], "opts": ["start_date", "today"]},
+    "progress": {"fn": _render_progress, "data": ["items_json"], "opts": ["target", "unit"]},
+}
+
+
+def _spec_summary(chart_type: str) -> str:
+    """The data/options contract for one chart type, for use in an error message."""
+    spec = _CHART_SPECS[chart_type]
+    data = ", ".join(spec["data"])
+    opts = ", ".join(spec["opts"]) or "(none)"
+    return f"data_json keys: {data} | options_json keys: {opts}"
+
+
+def _coerce_data_values(raw: dict[str, Any]) -> dict[str, str]:
+    """Re-serialize each data value to the JSON *string* the renderers parse.
+
+    The caller writes ``{"labels_json": ["a","b"]}`` — the natural form — but the
+    renderers take strings and parse them themselves (that parsing carries the
+    per-chart validation). A value already given as a string is passed through, so
+    both spellings work.
+    """
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        out[key] = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    return out
+
+
+async def feishu_chart(
+    chart_type: str,
+    data_json: str,
+    title: str = "",
+    options_json: str = "",
+    document_id: str = "",
+    caption: str = "",
+    source: str = "",
+    auto_number: bool = True,
+    user_key: str = "",
+    identity: str = "",
+) -> str:
+    """Render a data chart and append it to a Feishu doc (or return the PNG path).
+
+    Feishu's docx API has no chart block, so the chart is rendered as a house-styled
+    PNG and placed as a native image block. With *document_id* empty you get the PNG
+    only — useful for embedding in Word/PPT or sending with ``[SEND:path]``.
+
+    **Picking the right chart is the hard part** and this tool will not do it for you:
+    read the ``feishu-charts`` skill, which maps the question being asked to a
+    *chart_type* and states each one's preconditions. A wrong chart type renders
+    cleanly and still misleads.
+
+    Args:
+        chart_type: Which chart. Part-of-whole: ``pie`` ``donut`` ``funnel``. Trend:
+            ``line`` ``area`` ``stacked_area``. Comparison: ``column`` ``bar``
+            ``grouped_column`` ``stacked_column`` ``waterfall``. Distribution:
+            ``histogram`` ``box`` ``scatter`` ``bubble`` ``heatmap``. Purpose-built:
+            ``radar`` ``pareto`` ``combo`` ``gantt`` ``progress``. For a multi-panel
+            figure use ``feishu_chart_figure`` instead.
+        data_json: JSON object holding this chart type's data, e.g. for ``pie``
+            ``'{"labels_json":["研发","市场"],"values_json":[42,28]}'``. Each chart type
+            takes different keys — an unknown or missing key is reported with the exact
+            list it expects. Values may be given as arrays or as JSON strings.
+        title: Chart title — state the takeaway ("研发占人力一半"), not just the dimension.
+        options_json: JSON object of per-type extras, e.g.
+            ``'{"unit":"人","show_values":true}'``. Valid keys depend on *chart_type*;
+            an unknown key is rejected with the accepted list rather than ignored.
+        document_id: Target docx document_id (or a wiki node's obj_token). Empty renders
+            the PNG only and returns its path.
+        caption: Caption text WITHOUT a number — write "人力分布", not "图1：人力分布".
+            The "图 N" prefix is added automatically, continuing the document's sequence.
+        source: Data provenance footnote, e.g. "HR 系统 2026-07".
+        auto_number: Number the caption from the document's existing 图 captions
+            (default true). Set false only when the caller manages numbering itself.
+        user_key: The sender's open_id (from ``<feishu_context>``); needed when the doc
+            is user-owned and the bot isn't a collaborator.
+        identity: ``"user"`` / ``"bot"`` — who owns the chart's document.
+    """
+    kind = (chart_type or "").strip().lower()
+    if kind not in _CHART_SPECS:
+        if kind in ("figure", "panels", "combined"):
+            return _place.fail("multi-panel figures have their own tool: use feishu_chart_figure(panels_json=…).")
+        return _place.fail(
+            f"unknown chart_type {chart_type!r}. Pick one of: {', '.join(sorted(_CHART_SPECS))}. "
+            "The feishu-charts skill maps the question being asked to the right one."
+        )
+
+    spec = _CHART_SPECS[kind]
+    try:
+        raw_data = json.loads(data_json) if (data_json or "").strip() else {}
+    except json.JSONDecodeError as exc:
+        return _place.fail(f"data_json is not valid JSON: {exc}. Expected an object — {_spec_summary(kind)}.")
+    if not isinstance(raw_data, dict):
+        return _place.fail(
+            f"data_json must be a JSON object keyed by field name, got {type(raw_data).__name__}. {_spec_summary(kind)}"
+        )
+    try:
+        raw_opts = json.loads(options_json) if (options_json or "").strip() else {}
+    except json.JSONDecodeError as exc:
+        return _place.fail(f"options_json is not valid JSON: {exc}. {_spec_summary(kind)}")
+    if not isinstance(raw_opts, dict):
+        return _place.fail(f"options_json must be a JSON object, got {type(raw_opts).__name__}.")
+
+    data = _coerce_data_values({str(k): v for k, v in raw_data.items()})
+    missing = [key for key in spec["data"] if key not in data]
+    if missing:
+        return _place.fail(f"chart_type={kind!r} needs {missing} in data_json. {_spec_summary(kind)}")
+    unknown_data = [key for key in data if key not in spec["data"]]
+    if unknown_data:
+        return _place.fail(
+            f"data_json has {unknown_data}, which chart_type={kind!r} does not take. {_spec_summary(kind)}"
+        )
+    unknown_opts = [key for key in raw_opts if key not in spec["opts"]]
+    if unknown_opts:
+        return _place.fail(
+            f"options_json has {unknown_opts}, which chart_type={kind!r} does not take. {_spec_summary(kind)}"
+        )
+
+    # `point_labels_json` / `labels_json` are options on some types but still want the
+    # array-or-string flexibility the data keys get.
+    opts = {
+        key: (json.dumps(v, ensure_ascii=False) if key.endswith("_json") and not isinstance(v, str) else v)
+        for key, v in raw_opts.items()
+    }
+
+    return await spec["fn"](
+        **data,
+        **opts,
+        title=title,
+        document_id=document_id,
+        caption=caption,
+        source=source,
         auto_number=auto_number,
         user_key=user_key,
         identity=identity,

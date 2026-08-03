@@ -19,6 +19,7 @@ bundled. ``vision`` (screenshots) and ``devtools`` (raw CDP) capabilities are en
 from __future__ import annotations
 
 import atexit
+import http.client
 import os
 import shutil
 import signal
@@ -28,8 +29,11 @@ import sys
 import threading
 import time
 from contextlib import suppress
+from pathlib import Path
+from urllib.parse import urlparse
 
 import _runtime_paths as _paths
+import platformdirs
 from loguru import logger
 
 _IS_WINDOWS = sys.platform == "win32"
@@ -42,7 +46,16 @@ _IS_WINDOWS = sys.platform == "win32"
 _MCP_PACKAGE = os.environ.get("BROWSER_MCP_PACKAGE", "@playwright/mcp@latest")
 _BROWSER_CHANNEL = os.environ.get("BROWSER_CHANNEL", "msedge")
 _CAPS = os.environ.get("BROWSER_CAPS", "vision,devtools")
+# Our own profile directory, so a *previous* run's orphaned browser cannot hold the lock
+# on the profile this run needs (see _reclaim_profile). Left to itself, Playwright MCP
+# derives the profile path from a hash of the server's cwd, which means every gateway
+# restart lands on the same directory as whatever leaked last time and then fails every
+# tool call with "Browser is already in use for <dir>".
+_PROFILE_DIR = os.environ.get("BROWSER_PROFILE_DIR", "").strip()
 _STARTUP_TIMEOUT = float(os.environ.get("BROWSER_STARTUP_TIMEOUT", "90"))
+# How long the liveness probe waits for the server's HTTP listener to answer. Short: this
+# runs on the tool-call path against a loopback socket.
+_HEALTH_TIMEOUT = float(os.environ.get("BROWSER_HEALTH_TIMEOUT", "5"))
 
 _lock = threading.Lock()
 _proc: subprocess.Popen[str] | None = None
@@ -78,7 +91,72 @@ def _headless_flag() -> bool:
     return os.environ.get("BROWSER_HEADLESS", "0").strip().lower() in {"1", "true", "yes"}
 
 
-def _build_command(npx: str, port: int) -> list[str]:
+def profile_dir() -> str:
+    """Path of the browser profile this server should use.
+
+    A *stable* directory (so cookies/logins survive a gateway restart, which is the point
+    of using a persistent profile) that we also control — letting us clear a stale lock
+    left behind by an orphaned browser from a previous run.
+    """
+    if _PROFILE_DIR:
+        return _PROFILE_DIR
+    return str(Path(platformdirs.user_cache_dir("psi-agent")) / "browser-profile")
+
+
+def _lock_path(directory: str) -> Path:
+    return Path(directory) / ("lockfile" if _IS_WINDOWS else "SingletonLock")
+
+
+def _reclaim_profile(directory: str) -> bool:
+    """Try to make *directory* usable as a browser profile; return True if it is.
+
+    Chromium refuses to launch on a profile another process already holds — Playwright MCP
+    turns that into ``Browser is already in use for <dir>``. Because our server itself
+    starts up *fine* in that case, the failure surfaced on every single tool call with
+    nothing in the server log to explain it.
+
+    Two situations, distinguished by whether the lock file can be removed:
+
+    - **Stale lock** (previous browser is gone): unlink succeeds, the profile is ours.
+    - **Live holder** (an orphaned browser from an earlier run is still running): the OS
+      keeps the file busy. We report False and leave that browser strictly alone — it may
+      be showing the user a login/QR page, so killing it is exactly the behaviour the tool
+      contract forbids.
+    """
+    lock = _lock_path(directory)
+    if not lock.exists() and not lock.is_symlink():
+        return True
+    try:
+        lock.unlink()
+    except OSError as exc:
+        logger.debug(f"Browser profile {directory} is still held (lock busy): {exc}")
+        return False
+    logger.info(f"Cleared a stale browser profile lock at {lock}")
+    return True
+
+
+def _launch_profile_dir() -> str:
+    """Pick the profile directory to launch on, avoiding a profile still in use.
+
+    Prefers the stable profile (so cookies/logins persist across restarts). If an orphaned
+    browser from an earlier run still holds it, fall back to a sibling directory instead of
+    failing every tool call — a fresh profile is a far better outcome than a browser tool
+    that is permanently broken until the host is rebooted.
+    """
+    primary = profile_dir()
+    with suppress(OSError):
+        Path(primary).mkdir(parents=True, exist_ok=True)
+    if _reclaim_profile(primary):
+        return primary
+    fallback = f"{primary}-{os.getpid()}"
+    with suppress(OSError):
+        Path(fallback).mkdir(parents=True, exist_ok=True)
+    _reclaim_profile(fallback)
+    logger.warning(f"Browser profile {primary} is in use by another browser; using {fallback} instead.")
+    return fallback
+
+
+def _build_command(npx: str, port: int, user_data_dir: str | None = None) -> list[str]:
     cmd = [
         npx,
         "-y",
@@ -88,6 +166,10 @@ def _build_command(npx: str, port: int) -> list[str]:
         "--browser",
         _BROWSER_CHANNEL,
         "--shared-browser-context",
+        # Pin the profile instead of letting Playwright MCP hash it from the cwd, so we can
+        # clear a stale lock before launch (see _reclaim_profile).
+        "--user-data-dir",
+        user_data_dir or profile_dir(),
         # Inline snapshots/console/network into the tool response instead of writing
         # them to files the agent cannot read.
         "--output-mode",
@@ -163,20 +245,65 @@ def _drain_stdout(proc: subprocess.Popen[str]) -> None:
         logger.debug(f"[playwright-mcp] {line.rstrip()}")
 
 
+def _is_endpoint_alive(endpoint: str) -> bool:
+    """True if the MCP endpoint's HTTP listener still answers requests.
+
+    ``proc.poll() is None`` only proves the *process* exists — a Playwright MCP server
+    can go half-dead: the port stays bound (so a TCP connect succeeds) while the server
+    no longer serves MCP. A liveness check therefore has to send a real request and read
+    a real status line.
+
+    We POST an empty body to the endpoint. A healthy server rejects it with a 4xx
+    (``400 Bad Request`` — it wanted a JSON-RPC body), which is exactly the signal we
+    want: *something is listening and speaking HTTP*. Any status at all counts as alive;
+    only a refused/hung/socket-level failure counts as dead.
+    """
+    parsed = urlparse(endpoint)
+    host, port, path = parsed.hostname, parsed.port, parsed.path or "/"
+    if not host or not port:
+        return False
+    conn = http.client.HTTPConnection(host, port, timeout=_HEALTH_TIMEOUT)
+    try:
+        conn.request("POST", path, body=b"", headers={"Content-Type": "application/json"})
+        conn.getresponse().read(0)
+        return True
+    except OSError, http.client.HTTPException:
+        return False
+    finally:
+        with suppress(Exception):
+            conn.close()
+
+
 def ensure_server() -> str:
     """Start the Playwright MCP server if needed and return its endpoint URL.
 
-    Idempotent and thread-safe: repeated calls reuse the running process. Raises
-    :class:`BrowserServerError` if Node/npx is missing or the server fails to start.
+    Idempotent and thread-safe: repeated calls reuse a **healthy** running process.
+
+    Reuse used to be decided by ``proc.poll() is None`` alone, which made a broken server
+    permanent: once Playwright MCP went half-dead (port still bound, requests failing) or
+    was killed out from under us, every later call was handed back the same stale endpoint
+    and the browser tools stayed broken for the life of the gateway. Now an existing server
+    must also pass :func:`_is_endpoint_alive`; an unhealthy one is torn down (freeing its
+    browser profile lock) and replaced.
+
+    Raises :class:`BrowserServerError` if Node/npx is missing or the server fails to start.
     """
     global _proc, _endpoint
     with _lock:
-        if _proc is not None and _proc.poll() is None and _endpoint:
-            return _endpoint
+        proc, endpoint = _proc, _endpoint
+        if proc is not None and endpoint:
+            if proc.poll() is None and _is_endpoint_alive(endpoint):
+                return endpoint
+            logger.warning(
+                f"Playwright MCP server at {endpoint} is not healthy "
+                f"(exit={proc.poll()}); replacing it with a fresh server."
+            )
+            _proc, _endpoint = None, None
+            _terminate_tree(proc)
 
         npx = _find_npx()
         port = _free_port()
-        cmd = _build_command(npx, port)
+        cmd = _build_command(npx, port, _launch_profile_dir())
         logger.info(f"Starting Playwright MCP server: {' '.join(cmd)}")
         # npx spawns a Node child that is the real server; give it its own process
         # group / job so we can terminate the whole tree at exit rather than orphaning

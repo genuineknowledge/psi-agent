@@ -84,13 +84,13 @@ src/
     │   ├── __init__.py             # Session dataclass + run()，入口编排
     │   ├── server.py               # serve_session — aiohttp HTTP/SSE scaffold
     │   ├── channel_adapter.py       # ChannelAdapter — 纯无状态编解码（parse_request + write）
-    │   ├── agent.py                # SessionAgent — agent loop + 编排（委托给 4 个组件）
+    │   ├── agent.py                # SessionAgent — agent loop + 编排（委托给 4 个组件）；AgentRun = chunk 流 + 终态
     │   ├── tool_registry.py        # ToolRegistry — 工具集（加载/重载/查询）
     │   ├── conversation.py         # Conversation — 对话历史 + 持久化
     │   ├── system_prompt.py        # SystemPrompt — 系统 prompt 生命周期
     │   ├── schedule_registry.py    # ScheduleRegistry — 定时任务集
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
-    │   ├── protocol.py             # Session 层类型
+    │   ├── protocol.py             # Session 层类型（含 `AgentRunResult` 运行终态）
     ├── channel/
     │   ├── AGENTS.md                # Channel 层设计文档
     │   ├── __init__.py              # package marker
@@ -221,7 +221,7 @@ SSE 流中的特殊字段：
 
 15. **Log 中两处同类操作应格式一致**：如 build prompt 和 rebuild prompt 都应该 log `({len(sp)} chars)`，否则排查时信息不对等。
 
-16. **消费 async generator 必须用 `aclosing()`**：`async for` 在提前退出或被 cancel 时不调用 generator 的 `aclose()`，导致 generator 内 `async with` 持有的资源（aiohttp 连接、文件句柄等）被遗弃给 GC。正确做法：`async with aclosing(gen) as g: async for chunk in g: ...`。对标 `ai/server.py` 的 `finally` + shielded `aclose()` 模式。参见 `agent.py`、`channel_adapter.py`、`schedule_registry.py`。
+16. **消费 async generator 必须用 `aclosing()`**：`async for` 在提前退出或被 cancel 时不调用 generator 的 `aclose()`，导致 generator 内 `async with` 持有的资源（aiohttp 连接、文件句柄等）被遗弃给 GC。正确做法：`async with aclosing(gen) as g: async for chunk in g: ...`。对标 `ai/server.py` 的 `finally` + shielded `aclose()` 模式。参见 `agent.py`、`channel_adapter.py`、`schedule_registry.py`。**推论：任何包装 generator 的自定义 async iterable 必须自己转发 `aclose()`**——否则包装一层就把这条约定连同上游连接一起漏掉（`AgentRun` 因此显式实现 `aclose()`，见 `session/AGENTS.md`「运行终态」）。
 
 17. **Windows 上裸路径地址直接拒绝（刻意为之，勿"修掉"）**：`_sockets.py` 的 `resolve_connector_and_endpoint` / `create_site` 在 `sys.platform == "win32"` 且地址落到 Unix 分支时**主动 `raise ValueError`**。因为 Windows 的 asyncio 没有 `create_unix_connection` / `create_unix_server`，若继续走 `UnixConnector` / `UnixSite`，aiohttp 会在 connect/listen 深处抛一个**不带任何上下文的 `NotImplementedError`**，极难定位（曾导致飞书 channel 每条消息崩、只显示 `generation interrupted`）。真实诱因：`channel feishu --session-socket \\.\pipe\...` 经 POSIX shell 传参时反斜杠被吞成单反斜杠 `\.\pipe\...`，匹配不上命名管道前缀而落到裸路径分支。**这是 fail-fast 前置校验，不是可删的多余检查**——非 Windows（POSIX）行为完全不变，Unix socket 照常工作。Windows/bash 下传管道地址需用四反斜杠 `'\\\\.\\pipe\\...'` 才能让程序收到两根反斜杠开头的 `\\.\pipe\...`。反方向同样门控：非 Windows 上传 `\\.\pipe\name` 也**主动 `raise ValueError`**，因为命名管道要 `ProactorEventLoop`，而 asyncio 在非 win32 平台根本不导出 `ProactorEventLoop`（`asyncio/__init__.py` 只在 `sys.platform == 'win32'` 时 `from .windows_events import *`），aiohttp 那句 `isinstance(loop, asyncio.ProactorEventLoop)` 门控自己会先抛裸 `AttributeError`。两个方向都是 fail-fast 前置校验。
 

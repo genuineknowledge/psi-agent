@@ -1,4 +1,8 @@
-"""Export a session transcript to a file (markdown, json, jsonl, or text)."""
+"""Export a session transcript to a file on disk.
+
+Agent use: return only ``output_path`` and stats; NEVER paste the transcript
+back into the model request or reply.
+"""
 
 from __future__ import annotations
 

@@ -66,9 +66,13 @@ def test_strip_transfer_markers() -> None:
     assert strip_transfer_markers("见附件\n[SEND:/tmp/a.html]\n\n") == "见附件"
     assert strip_transfer_markers("分析\n[RECV:C:\\Users\\Z\\a.png]") == "分析"
     assert strip_transfer_markers("[RECV:/only.png]") == ""
+    assert strip_transfer_markers("see attachment\n[ SEND:/tmp/a.html ]\n\n") == "see attachment"
+    assert strip_transfer_markers("see attachment\n[Send:/tmp/a.html]\n\n") == "see attachment"
 
 
 def test_extract_send_paths() -> None:
     assert extract_send_paths("见\n[SEND:/tmp/a.html]\n[SEND: b.md ]") == ["/tmp/a.html", "b.md"]
+    assert extract_send_paths("see\n[ SEND:/tmp/a.html ]\n[SEND: b.md ]") == ["/tmp/a.html", "b.md"]
+    assert extract_send_paths("see\n[Send:/tmp/a.html]\n[send: b.md ]") == ["/tmp/a.html", "b.md"]
     assert extract_send_paths("[RECV:/x]") == []
     assert extract_send_paths("") == []

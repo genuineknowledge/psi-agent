@@ -277,31 +277,31 @@ async def test_render_to_png_writes_a_real_png(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("tool", "args", "kwargs"),
     [
-        (lambda: _chart.feishu_chart_pie, ('["研发","市场"]', "[3,1]"), {"unit": "人"}),
-        (lambda: _chart.feishu_chart_donut, ('["华东","华北"]', "[520,310]"), {"unit": "万"}),
-        (lambda: _chart.feishu_chart_funnel, ('["访问","付费"]', "[100,20]"), {}),
-        (lambda: _chart.feishu_chart_line, ('["1月","2月"]', '{"A":[1,2]}'), {}),
-        (lambda: _chart.feishu_chart_area, ('["1月","2月"]', '{"A":[1,2]}'), {}),
-        (lambda: _chart.feishu_chart_stacked_area, ('["Q1","Q2"]', '{"a":[1,2],"b":[2,3]}'), {"percent": True}),
-        (lambda: _chart.feishu_chart_column, ('["研发","市场"]', "[42,28]"), {"highlight": 0}),
-        (lambda: _chart.feishu_chart_bar, ('["华东区域","华北区域"]', "[520,310]"), {}),
-        (lambda: _chart.feishu_chart_grouped_column, ('["Q1","Q2"]', '{"计划":[1,2],"实际":[2,3]}'), {}),
-        (lambda: _chart.feishu_chart_stacked_column, ('["Q1","Q2"]', '{"a":[1,2],"b":[2,3]}'), {}),
-        (lambda: _chart.feishu_chart_waterfall, ('["期初","新签","流失"]', "[500,220,-90]"), {}),
-        (lambda: _chart.feishu_chart_histogram, ("[1,2,2,3,4,5,6]",), {}),
-        (lambda: _chart.feishu_chart_box, ('{"研发":[1,2,3],"市场":[2,3,4]}',), {}),
-        (lambda: _chart.feishu_chart_scatter, ("[[1,2],[3,4],[5,7]]",), {}),
-        (lambda: _chart.feishu_chart_bubble, ("[[1,2,10],[3,4,20]]",), {"size_label": "规模"}),
-        (lambda: _chart.feishu_chart_heatmap, ('["周一","周二"]', '["上午","下午"]', "[[1,2],[3,4]]"), {}),
-        (lambda: _chart.feishu_chart_radar, ('["技术","沟通","交付"]', '{"张三":[4,3,5]}'), {"max_value": 5}),
-        (lambda: _chart.feishu_chart_pareto, ('["A","B","C"]', "[120,85,10]"), {}),
-        (lambda: _chart.feishu_chart_combo, ('["1月","2月"]', '{"营收":[1,2]}', '{"毛利率":[30,35]}'), {}),
+        (lambda: _chart._render_pie, ('["研发","市场"]', "[3,1]"), {"unit": "人"}),
+        (lambda: _chart._render_donut, ('["华东","华北"]', "[520,310]"), {"unit": "万"}),
+        (lambda: _chart._render_funnel, ('["访问","付费"]', "[100,20]"), {}),
+        (lambda: _chart._render_line, ('["1月","2月"]', '{"A":[1,2]}'), {}),
+        (lambda: _chart._render_area, ('["1月","2月"]', '{"A":[1,2]}'), {}),
+        (lambda: _chart._render_stacked_area, ('["Q1","Q2"]', '{"a":[1,2],"b":[2,3]}'), {"percent": True}),
+        (lambda: _chart._render_column, ('["研发","市场"]', "[42,28]"), {"highlight": 0}),
+        (lambda: _chart._render_bar, ('["华东区域","华北区域"]', "[520,310]"), {}),
+        (lambda: _chart._render_grouped_column, ('["Q1","Q2"]', '{"计划":[1,2],"实际":[2,3]}'), {}),
+        (lambda: _chart._render_stacked_column, ('["Q1","Q2"]', '{"a":[1,2],"b":[2,3]}'), {}),
+        (lambda: _chart._render_waterfall, ('["期初","新签","流失"]', "[500,220,-90]"), {}),
+        (lambda: _chart._render_histogram, ("[1,2,2,3,4,5,6]",), {}),
+        (lambda: _chart._render_box, ('{"研发":[1,2,3],"市场":[2,3,4]}',), {}),
+        (lambda: _chart._render_scatter, ("[[1,2],[3,4],[5,7]]",), {}),
+        (lambda: _chart._render_bubble, ("[[1,2,10],[3,4,20]]",), {"size_label": "规模"}),
+        (lambda: _chart._render_heatmap, ('["周一","周二"]', '["上午","下午"]', "[[1,2],[3,4]]"), {}),
+        (lambda: _chart._render_radar, ('["技术","沟通","交付"]', '{"张三":[4,3,5]}'), {"max_value": 5}),
+        (lambda: _chart._render_pareto, ('["A","B","C"]', "[120,85,10]"), {}),
+        (lambda: _chart._render_combo, ('["1月","2月"]', '{"营收":[1,2]}', '{"毛利率":[30,35]}'), {}),
         (
-            lambda: _chart.feishu_chart_gantt,
+            lambda: _chart._render_gantt,
             ('[{"name":"开发","start":"2026-08-01","days":5,"group":"研发"}]',),
             {"today": "2026-08-03"},
         ),
-        (lambda: _chart.feishu_chart_progress, ('{"华东":118,"华北":92}',), {"target": 100}),
+        (lambda: _chart._render_progress, ('{"华东":118,"华北":92}',), {"target": 100}),
     ],
 )
 async def test_every_chart_tool_renders(tool: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
@@ -315,27 +315,27 @@ async def test_every_chart_tool_renders(tool: Any, args: tuple[Any, ...], kwargs
 
 @pytest.mark.asyncio
 async def test_tool_reports_data_error_as_result_not_exception() -> None:
-    result = json.loads(await _chart.feishu_chart_pie('["a","b"]', "[1,2,3]"))
+    result = json.loads(await _chart._render_pie('["a","b"]', "[1,2,3]"))
     assert result["ok"] is False
     assert "2 labels but 3 values" in result["message"]
 
 
 @pytest.mark.asyncio
 async def test_scatter_accepts_grouped_input() -> None:
-    result = json.loads(await _chart.feishu_chart_scatter('{"直营":[[1,2],[3,4]],"加盟":[[2,1],[4,3]]}'))
+    result = json.loads(await _chart._render_scatter('{"直营":[[1,2],[3,4]],"加盟":[[2,1],[4,3]]}'))
     assert result["ok"] is True
 
 
 @pytest.mark.asyncio
 async def test_bubble_rejects_label_count_mismatch() -> None:
-    result = json.loads(await _chart.feishu_chart_bubble("[[1,2,3]]", labels_json='["a","b"]'))
+    result = json.loads(await _chart._render_bubble("[[1,2,3]]", labels_json='["a","b"]'))
     assert result["ok"] is False
     assert "2 labels but 1 bubbles" in result["message"]
 
 
 @pytest.mark.asyncio
 async def test_chart_filename_includes_type_and_title() -> None:
-    result = json.loads(await _chart.feishu_chart_pie('["a"]', "[1]", title="人力占比"))
+    result = json.loads(await _chart._render_pie('["a"]', "[1]", title="人力占比"))
     name = Path(result["image_path"]).name
     assert name.startswith("pie-")
     assert "人力占比" in name
@@ -700,7 +700,7 @@ async def test_chart_tool_places_into_document(monkeypatch: pytest.MonkeyPatch) 
     fake = _FakeFeishu()
     monkeypatch.setattr(_impl, "_invoke", fake)
     result = json.loads(
-        await _chart.feishu_chart_pie(
+        await _chart._render_pie(
             '["研发","市场"]',
             "[3,1]",
             document_id="doc1",
@@ -717,7 +717,7 @@ async def test_chart_tool_places_into_document(monkeypatch: pytest.MonkeyPatch) 
 async def test_chart_tool_keeps_png_when_placement_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeFeishu(fail_at="upload")
     monkeypatch.setattr(_impl, "_invoke", fake)
-    result = json.loads(await _chart.feishu_chart_pie('["研发","市场"]', "[3,1]", document_id="doc1"))
+    result = json.loads(await _chart._render_pie('["研发","市场"]', "[3,1]", document_id="doc1"))
     assert result["ok"] is False
     # the rendered chart is still usable — say so rather than implying total failure
     assert await anyio.Path(result["image_path"]).exists()
@@ -728,7 +728,7 @@ async def test_chart_tool_keeps_png_when_placement_fails(monkeypatch: pytest.Mon
 async def test_pie_reports_folded_slices_to_the_caller() -> None:
     labels = json.dumps([f"部门{i}" for i in range(9)], ensure_ascii=False)
     values = json.dumps(list(range(1, 10)))
-    result = json.loads(await _chart.feishu_chart_pie(labels, values))
+    result = json.loads(await _chart._render_pie(labels, values))
     assert result["ok"] is True
     assert result["folded_into_other"] == 3
 
@@ -1319,21 +1319,31 @@ class _FakeDoc:
 async def test_caption_numbers_continue_the_document(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeDoc("图 1：已有的图\n")  # noqa: RUF001
     monkeypatch.setattr(_impl, "_invoke", fake)
-    first = json.loads(
-        await _chart.feishu_chart_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="人力分布")
-    )
-    second = json.loads(
-        await _chart.feishu_chart_bar('["华东","华北"]', "[3,1]", document_id="doc1", caption="区域排名")
-    )
+    first = json.loads(await _chart._render_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="人力分布"))
+    second = json.loads(await _chart._render_bar('["华东","华北"]', "[3,1]", document_id="doc1", caption="区域排名"))
     assert (first["caption_number"], second["caption_number"]) == (2, 3)
     assert fake.written == ["图 2：人力分布", "图 3：区域排名"]  # noqa: RUF001
+    # The caller numbers nothing itself, so the returned caption is its only way to know
+    # which line the chart landed under. It must be the text actually written.
+    assert [first["caption"], second["caption"]] == fake.written
+
+
+@pytest.mark.asyncio
+async def test_no_caption_given_reports_no_caption_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty ``caption`` field would read as if a blank caption had been written."""
+    fake = _FakeDoc("")
+    monkeypatch.setattr(_impl, "_invoke", fake)
+    result = json.loads(await _chart._render_pie('["研发","市场"]', "[3,1]", document_id="doc1"))
+    assert result["ok"] is True
+    assert "caption" not in result
+    assert fake.written == []
 
 
 @pytest.mark.asyncio
 async def test_a_hand_written_number_is_not_doubled(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeDoc()
     monkeypatch.setattr(_impl, "_invoke", fake)
-    await _chart.feishu_chart_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="图9：人力分布")  # noqa: RUF001
+    await _chart._render_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="图9：人力分布")  # noqa: RUF001
     assert fake.written == ["图 1：人力分布"]  # noqa: RUF001
 
 
@@ -1342,9 +1352,7 @@ async def test_auto_number_off_writes_the_caption_as_given(monkeypatch: pytest.M
     fake = _FakeDoc("图 7：已有的图\n")  # noqa: RUF001
     monkeypatch.setattr(_impl, "_invoke", fake)
     result = json.loads(
-        await _chart.feishu_chart_pie(
-            '["研发","市场"]', "[3,1]", document_id="doc1", caption="人力分布", auto_number=False
-        )
+        await _chart._render_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="人力分布", auto_number=False)
     )
     assert "caption_number" not in result
     assert fake.written == ["图：人力分布"]  # noqa: RUF001
@@ -1366,9 +1374,7 @@ async def test_an_unreadable_document_still_gets_its_caption(monkeypatch: pytest
         return {"ok": True, "data": {}}
 
     monkeypatch.setattr(_impl, "_invoke", fake)
-    result = json.loads(
-        await _chart.feishu_chart_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="人力分布")
-    )
+    result = json.loads(await _chart._render_pie('["研发","市场"]', "[3,1]", document_id="doc1", caption="人力分布"))
     assert result["ok"] is True
     assert "no permission" in result["caption_number_skipped"]
     assert result["caption_written"] is True

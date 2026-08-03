@@ -104,6 +104,7 @@ Hub「使用免费模型」→ clearAiPool → hydrateAiForSessions(全部 sessi
   - **封存行**：仅 `tool_call` 短句（如 `读取 \`a.py\``）；thinking / `tool_result` **不**封存（`tool_result` 尾行回「规划下一步…」，刻意不要「整理结果…」行）。
   - **尾行**：只活「规划下一步…」/「撰写回复…」；**刻意**永不把「规划下一步」推进 `lines`。
   - **`hideAgentProse`（刻意为之，对标 Cursor）**：仅在过程轴仍为「规划下一步…」（工具 / thinking）时藏正文，避免半截计划与过程轴抢戏；一旦 SSE `content` 到达、尾行切到「撰写回复…」，**正文必须边到边显示**（过程轴仍可挂在上方）。回合结束再收起过程轴。
+  - **回合结束后过程拆分封装（对标 Cursor）**：流式期间仍只显示过程轴；回合结束把思考挂到 `message.reasoning`、把过程轴封存行挂到 `message.tools`（短句列表）。`FocusChatThread` **分开两块**（工具优先）：①「已调用 N 个工具」——读 `message.tools`（**默认展开**）；②「已思考」——`stripToolMarkersFromReasoning(reasoning)` 散文（**默认收起**）。`/history` 透出 JSONL `reasoning`（仅思考），并把各轮结构化 ``tool_calls`` 投影为独立字段 ``tools: [{name, arguments}]``（**刻意为之**：不塞进 reasoning；Session 的 `[Tool Call:]` 只走 SSE）。`historyToChat` 用 `summarizeToolCall` 生成短句并在合并连续 assistant 时拼接。刷新同任务即可还原工具列表 + 思考。
   - **`preferResultBelowRule`（刻意为之）**：仅展示层——短计划在 `---` 之上时偏好渲染下半段结果；**不改** JSONL / 复制源可选策略以实现为准。
   - **任务摘要 `summary`（刻意为之）**：不再截取助手末条回复。回合成功后（及历史缺摘要时）`POST /summaries/generate` 另开一轮模型写 1～2 句；Gateway `SummaryManager` 持久化到 AppData state（与 titles 同级）。左栏标题为「任务摘要」；任务卡正文同字段。展示侧仍 `plainTextFromMarkdown` 兜底。对话气泡仍走完整 Markdown。段标题（P1）可复用该 summary 写入 open todo-segment。
 
@@ -145,6 +146,7 @@ History 在剥 `[SEND:]` 前抽出路径放进消息的 `sends`；纯 SEND、无
 
 ```bash
 # 终端 1 — Gateway（端口以日志为准，若不是 8765 则设 GATEWAY_ORIGIN）
+# 勿传 --appdata / PSI_APPDATA：与安装包一致，软默认 platformdirs（%LocalAppData%\Haitun）
 uv run psi-agent gateway --listen tcp:127.0.0.1:8765
 
 # 终端 2
@@ -153,6 +155,8 @@ cd src/psi_agent/gateway/spa-v2
 npm run dev
 # → http://localhost:5174/spa-v2/
 ```
+
+**刻意为之**：本地联调不要再用仓库内 `.appdata-spa-dev` 等沙盒记忆区；安装包 / CLI / spa 开发共用同一 AppData 软默认，会话与「已思考」等状态才一致。
 
 生产/联调：`npm run build` 后 Gateway 自动挂载 `spa-v2/dist` → `http://<gateway>/spa-v2/`。
 
@@ -165,8 +169,8 @@ npm run dev
 src/
   App.tsx                 # 工作区门禁 → 工作台
   components/WorkspaceGate.tsx
-  services/               # api / sse / chatStream / sessionBridge / bootstrapAi
-  haitun-agent/           # 任务 UI（设计包）
+  services/               # api / sse / chatStream / sessionBridge / bootstrapAi / turnProgress / reasoningDisplay
+  haitun-agent/           # 任务 UI（设计包）；focus-chat-thread 含「已思考」展开
   components/user-hub/    # 用户中心（自 v1：资料 / 大模型 / 登录 / 设置）
   styles/globals.css
 ```

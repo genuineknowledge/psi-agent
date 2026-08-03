@@ -403,7 +403,7 @@ OAuth 回调中继（`_oauth_manager.py`）：让**授权码自己回到发起�
 | DELETE | `/sessions/{session_id}` | 删除 Session + history JSONL + 标题（200/404） |
 | GET | `/sessions` | 列出所有 Session（含 `agent`） |
 | POST | `/sessions/{session_id}/chat` | Web UI chat（SSE） |
-| GET | `/sessions/{session_id}/history` | 获取会话历史（AppData ``histories/`` 优先 + legacy 双读；``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`；assistant 行另附 ``sends``） |
+| GET | `/sessions/{session_id}/history` | 获取会话历史（AppData ``histories/`` 优先 + legacy 双读；``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`；assistant 行另附 ``sends``；JSONL ``reasoning``（思考散文）透出供 SPA「已思考」。**刻意为之**：无正文的 tool_calls 轮不进气泡，但其 ``reasoning`` 折叠进下一（或上一）条可展示 assistant；结构化 ``tool_calls`` 另投影为 ``tools: [{name, arguments}]``（**不**塞进 ``reasoning``），SPA 单独渲染「已调用 N 个工具」） |
 | GET | `/sessions/{session_id}/todos` | 读取 todos（AppData ``todos/{id}.json`` 优先，否则 legacy workspace ``.psi/todos``）；返回 ``{todos, summary}``，文件缺失则为空列表 |
 | GET | `/sessions/{session_id}/todo-segments` | 子任务分段列表（``todos/{id}.segments.json``，新→旧）；``merge=false`` 开新段；返回 ``[{id,label,closed_at,summary,…}]`` |
 | GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 单段含 ``todos[]``（历史 checklist 回放） |
@@ -730,7 +730,7 @@ psi-agent.exe gateway --tray --browser --icon haitun.ico --verbose
   --default-workspace "{Desktop}/haitun交付"
 ```
 
-`{app}` / 桌面路径在运行时解析（安装目录 + `SHGetFolderPath`），**禁止**写死本机用户路径。`--appdata` 可不传（软默认 `platformdirs`）。另：Gateway 软默认在 cwd 含 `tools/`+`skills/` 时也会把 cwd 当 agent（兜底直接跑 `psi-agent.exe`）。
+`{app}` / 桌面路径在运行时解析（安装目录 + `SHGetFolderPath`），**禁止**写死本机用户路径。`--appdata` 可不传（软默认 `platformdirs`；**刻意为之**不显式传，安装包与 CLI 共用同一解析）。另：Gateway 软默认在 cwd 含 `tools/`+`skills/` 时也会把 cwd 当 agent（兜底直接跑 `psi-agent.exe`）。
 
 `--feishu-ai-id ID` 指定飞书 Session（经 `POST /feishu/route` 按需 spawn）默认挂载的 AI 实例 id。未配时若请求也不带 `ai_id`，`/feishu/route` 返回 400。`--feishu-workspace-root DIR` 指定各飞书会话独立 workspace 的父目录（私聊每个 open_id 得 `<root>/<open_id>`，群聊每个 chat_id 得 `<root>/chat-<chat_id>`）；空则以 Gateway 进程 cwd 为父。两者均为飞书多会话独立渠道服务（配合飞书 channel 的 `--gateway-url`，见 `channel/AGENTS.md`）。
 

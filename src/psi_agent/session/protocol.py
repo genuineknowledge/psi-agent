@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 # Provenance for ``delta.reasoning`` / ``AgentChunk.reasoning`` (UI whitelist).
@@ -107,11 +108,57 @@ class AgentError(Exception):
         super().__init__(message)
 
 
-@dataclass(slots=True)
-class AgentRunOutcome:
-    """Optional per-invocation terminal state populated by ``SessionAgent.run()``."""
+class AgentRunStatus(StrEnum):
+    """Whether a normally-returning run produced a *complete* answer.
 
-    termination_reason: str | None = None
+    Only describes normal return.  Execution failure raises ``AgentError``
+    instead and yields no result at all — the two are mutually exclusive.
+    """
+
+    COMPLETED = "completed"
+    INCOMPLETE = "incomplete"
+
+
+class AgentStopCause(StrEnum):
+    """Why the agent runtime stopped, expressed in *runtime* terms.
+
+    Distinct from ``model_finish_reason`` (the model's raw diagnostic string):
+    several finish reasons — and the absence of one — collapse into a single
+    runtime cause, and ``AGENT_TURN_LIMIT`` has no model-side equivalent at all.
+    """
+
+    MODEL_COMPLETED = "model_completed"
+    """Model finished on its own with ``stop``."""
+    MODEL_STOPPED = "model_stopped"
+    """Model stopped for its own reason other than ``stop`` (e.g. ``length``)."""
+    AGENT_TURN_LIMIT = "agent_turn_limit"
+    """Agent loop hit ``max_tool_rounds``.  The limit counts *rounds*, and one
+    round may carry several tool calls — hence "turn limit", not "tool limit"."""
+    INVALID_MODEL_STREAM = "invalid_model_stream"
+    """Stream ended without ever reporting a finish reason."""
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunResult:
+    """Immutable terminal state of one fully-consumed ``SessionAgent`` run.
+
+    Available as ``AgentRun.result`` once the chunk stream is exhausted; stays
+    ``None`` while the run is in flight, and is never set when the run raises
+    ``AgentError`` (failure is signalled by the exception, not by a result).
+    """
+
+    status: AgentRunStatus
+    stop_cause: AgentStopCause
+    model_finish_reason: str | None
+    """The model's raw ``finish_reason``, kept verbatim for logs and triage —
+    including reasons this code does not know about.  ``None`` when the stream
+    never reported one."""
+    model_turns: int
+    """How many model requests this run issued (rounds of the agent loop)."""
+
+    @property
+    def is_complete(self) -> bool:
+        return self.status is AgentRunStatus.COMPLETED
 
 
 @dataclass

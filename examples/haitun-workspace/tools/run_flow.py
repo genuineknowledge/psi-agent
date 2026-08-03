@@ -27,7 +27,6 @@ from loguru import logger
 from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.protocol import AgentRunOutcome
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
@@ -2033,21 +2032,24 @@ async def _complete_step_agent(
     stop_when: Callable[[], bool] | None = None,
     extra_params: Mapping[str, object] | None = None,
 ) -> str:
-    outcome = AgentRunOutcome()
     run_params = None if extra_params is None else dict(extra_params)
     user_message = {"role": "user", "content": message}
-    stream = (
-        agent.run(user_message, outcome=outcome)
-        if run_params is None
-        else agent.run(user_message, run_params, outcome=outcome)
-    )
-    async with aclosing(stream) as chunks:
+    run = agent.run_streamed(user_message, run_params)
+    async with aclosing(run) as chunks:
         async for _ in chunks:
             if stop_when is not None and stop_when():
                 return ""
 
-    if outcome.termination_reason != "stop":
-        raise RuntimeError(f"step agent ended with finish reason {outcome.termination_reason!r}")
+    result = run.result
+    if result is None:
+        raise RuntimeError("step agent ended without a terminal result")
+    if not result.is_complete:
+        raise RuntimeError(
+            "step agent ended incomplete: "
+            f"stop_cause={result.stop_cause}, "
+            f"model_finish_reason={result.model_finish_reason!r}, "
+            f"model_turns={result.model_turns}"
+        )
     if not conversation.messages:
         raise RuntimeError("step agent produced no final assistant text")
     final = conversation.messages[-1]

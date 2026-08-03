@@ -22,7 +22,9 @@ tools are skipped at load time with a logged error rather than crashing tool loa
 Env knobs (all optional): ``BROWSER_CHANNEL`` (default ``msedge``),
 ``BROWSER_HEADLESS`` (default headed/visible; set ``1`` for headless on displayless
 hosts), ``BROWSER_CAPS`` (default ``vision,devtools``), ``BROWSER_MCP_PACKAGE``,
-``BROWSER_STARTUP_TIMEOUT``.
+``BROWSER_STARTUP_TIMEOUT``, ``BROWSER_PROFILE_DIR`` (where the browser profile lives;
+defaults to a stable per-user cache dir so cookies and logins survive restarts),
+``BROWSER_HEALTH_TIMEOUT`` (seconds allowed for the server health probe, default ``5``).
 """
 
 from __future__ import annotations

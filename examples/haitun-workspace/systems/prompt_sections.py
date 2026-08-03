@@ -13,6 +13,10 @@ authorized senders, sandbox, sub-agent delegation) have been dropped.
 
 # ruff: noqa: E501
 
+# RUF001: these prompt constants are agent-facing Chinese prose; full-width CJK
+# punctuation is correct typography here, not an ASCII typo.
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
@@ -74,7 +78,7 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "todo": "Session task list for multi-step work (read with no args; write with todos[])",
     "subagent_plan": "Plan subagent sockets and spawn commands (does not start processes)",
     "subagent_wait": "Wait until subagent AI or Session socket is ready",
-    "subagent_chat": "Send one message to a subagent; returns final text only",
+    "subagent_chat": "Send one message to a subagent; returns final text plus verified [SEND:] files",
     "skill_manage": "Create, patch, view, and list workspace skills",
     "flow_manage": "Create, patch, view, list, and promote reusable workflow assets",
     "memory_add": "Store durable user preferences, project facts, or decisions",
@@ -343,7 +347,10 @@ Separate fact from guess, and let the user trust factual claims by checking them
 
 SUBAGENT_DELEGATION_SECTION = """\
 ## Subagent delegation
-Subagent = **new background Session** (Gateway: reuse parent AI via `subagent_plan`; standalone: spawn ai+session). Use `subagent_plan` → `background_start` / `subagent_wait` → `subagent_chat` → `background_stop`. **Silent:** do not narrate each internal step to the user. When `reuse_parent_ai` is true, skip child AI spawn. Full recipe: `skills/subagent-orchestration/SKILL.md`.\
+Subagent = **new background Session** (Gateway: reuse parent AI via `subagent_plan`; standalone: spawn ai+session). Use `subagent_plan` → `background_start` / `subagent_wait` → `subagent_chat` → `background_stop`. **Silent:** do not narrate each internal step to the user. When `reuse_parent_ai` is true, skip child AI spawn. Full recipe: `skills/subagent-orchestration/SKILL.md`.
+交付物是文件（小说、文档、报告等）时，子 Agent 必须先真实落盘：subagent_chat(..., workspace=plan.workspace, require_files=true)；
+回复不含已存在的 [SEND:绝对路径] 即视为未完成，先纠正子 Agent；纯文本/小内容子任务用 require_files=false，无需写文件。
+不要用 sessions_export / sessions_history 把子会话正文搬回模型上下文补救。\
 """
 
 # ---------------------------------------------------------------------------
@@ -416,7 +423,8 @@ Cross-session work uses workspace session tools (not Fusion Memory transcripts):
 
 LOAD `skills/session-management/SKILL.md` when the user references another chat, exports a transcript, \
 hands off work to another session, or asks for session list/status. Follow its recipes (search → inspect → \
-export / create → handoff). After a successful handoff, stop executing the transferred task in the source session.\
+export / create → handoff). After a successful handoff, stop executing the transferred task in the source session.
+禁止用 sessions_export / sessions_history 把子会话正文全文搬回父模型上下文补救交付；用户主动要求读取/导出/总结历史时正常使用，给出摘要与关键信息，不要无脑粘贴全文。\
 """
 
 TASK_PLANNING_SECTION = """\
