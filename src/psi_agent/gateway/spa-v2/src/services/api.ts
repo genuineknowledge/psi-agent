@@ -226,21 +226,6 @@ export async function browseWorkspace(
   return api<BrowseResult>('GET', `/workspace/browse?${params.toString()}`)
 }
 
-export type WorkspaceWorkflow = {
-  name: string
-  path: string
-}
-
-/** Reusable ``.workflow`` / ``.g4`` definitions exposed by the active workspace. */
-export async function listWorkspaceWorkflows(path: string) {
-  const params = new URLSearchParams()
-  if (path) params.set('path', path)
-  const query = params.toString()
-  const suffix = query ? `?${query}` : ''
-  const data = await api<{ workflows?: WorkspaceWorkflow[] }>('GET', `/workspace/workflows${suffix}`)
-  return Array.isArray(data.workflows) ? data.workflows : []
-}
-
 export async function streamChat(
   sessionId: string,
   formData: FormData,

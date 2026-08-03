@@ -28,19 +28,15 @@ preferred file is absent. Saving, listing, and loading are upper-layer
 instructions implemented with existing file tools; this feature does not add a
 workflow-management operator or manifest protocol.
 
-The frontend reuse command is exactly:
-
-```text
-/workflow:<slug>
-```
-
-It accepts no suffix or inline parameters. The command maps to the canonical
-path. Read the declaration and collect every declared input through normal
-conversation before the initial `run_flow` call; never use a call with the
-default empty input object as an input probe. Each initial call starts a fresh
-run. If it reaches a Human Step, only the returned active request may continue
-through `run_flow_resume`. An Agent Step may save a self-contained child
-declaration but must not launch another workflow. Its relative
+To reuse a saved declaration, ask for it by name (for example,
+`调用 daily-brief 的 workflow`). Resolve only an existing slug under the
+canonical path, prefer `<slug>.workflow`, and fall back to
+`<slug>.g4`. Read the declaration and collect every declared input through
+normal conversation before the initial `run_flow` call; never use a call with
+the default empty input object as an input probe. Each initial call starts a
+fresh run. If it reaches a Human Step, only the returned active request may
+continue through `run_flow_resume`. An Agent Step may save a self-contained
+child declaration but must not launch another workflow. Its relative
 `read`/`write`/`edit` paths resolve against the psi workspace root, not the
 launcher process CWD.
 
@@ -375,9 +371,9 @@ The workspace activation path points at this directory for G4 source.
 `.flow.ts` runtime; callers must select that legacy skill explicitly rather
 than translating between formats.
 
-`/workflow:<slug>` has explicit priority and resolves to
-`flows/workflows/<slug>/<slug>.workflow`, falling back to `<slug>.g4`. It is an
-upper-layer command, not a new operator.
+Saved workflow reuse resolves to `flows/workflows/<slug>/<slug>.workflow`,
+falling back to `<slug>.g4`. This is an upper-layer storage convention, not a
+new operator.
 
 ## Regenerating the Python parser
 

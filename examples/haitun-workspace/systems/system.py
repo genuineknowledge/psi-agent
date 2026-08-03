@@ -943,17 +943,14 @@ class System:
 Fusion Flow Next is defined by `FusionFlow.g4`. Use `fusion-flow` and
 `run_flow` by default for multi-agent or multi-step work.
 
-### `/workflow:<slug>` — saved workflow command
+### Reusable workflow registry
 
-Any trimmed user message matching exactly `/workflow:<slug>` invokes one saved
-Fusion Flow Next declaration. Accept no suffix, inline parameters, or trailing
-argument syntax.
-
-For this command:
+When the user asks in natural language to save, list, load, or reuse a saved
+Fusion Flow Next declaration (for example, `调用 daily-brief 的 workflow`):
 1. Read the full skill instructions at:
    {fusion_md}
    Relative path: skills/fusion-flow/SKILL.md
-2. Resolve the slug under `flows/workflows/<slug>/`: prefer
+2. Resolve an existing slug under `flows/workflows/<slug>/`: prefer
    `<slug>.workflow`, otherwise use `<slug>.g4`; fail if neither file exists.
 3. Read the declaration and inspect `input_workflow(...)` before execution.
 4. Resolve every required input from the conversation. If a value is missing,

@@ -51,7 +51,7 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
   Human waits continue through `run_flow_resume`. No separate setup is required. The existing
   `fusion-flow-legacy` Node/Fuclaw runtime remains available for explicit `.flow.ts` work:
   first use `cd examples/haitun-workspace/skills/fusion-flow-legacy && npm install`.
-  One-off flows go under `flows/<task-slug>/`; saved `/workflow:<slug>` declarations go under
+  One-off flows go under `flows/<task-slug>/`; saved reusable declarations go under
   `flows/workflows/<slug>/`. `flows/curated/` remains only as a compatibility catalog for
   `flow_manage` and legacy assets.
   For stateful sub-agent sessions, copy `bin/env.stateful.template` to

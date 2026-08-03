@@ -1,6 +1,6 @@
 ---
 name: fusion-flow
-description: Author, save, reuse, or run Fusion Flow Next, the formal-language workflow system defined by FusionFlow.g4. Use for /workflow:<slug>, coordinated agents, Program Steps, Human checkpoints, parallel sub-tasks, or multi-step pipelines. Use the legacy flow skill only for explicit .flow.ts or Fuclaw compatibility work.
+description: Author, save, reuse, or run Fusion Flow Next, the formal-language workflow system defined by FusionFlow.g4. Use for saved workflow reuse by name, coordinated agents, Program Steps, Human checkpoints, parallel sub-tasks, or multi-step pipelines. Use the legacy flow skill only for explicit .flow.ts or Fuclaw compatibility work.
 metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fuclaw" } }
 ---
 
@@ -15,8 +15,6 @@ structured process capture, and checkpoints Human-backed Steps across turns.
 
 > **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical bundle: `flows/workflows/<slug>/`, containing `<slug>.workflow` or `<slug>.g4` (`.workflow` takes precedence if both exist). The skill ships no runnable example workflows. Every run persists all materialized Artifacts as Markdown under its workflow bundle's `runs/<run-id>/artifacts/` directory. Human Steps additionally persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; non-Human runs remain non-resumable.
 
-> **Explicit reuse command.** `/workflow:<slug>` is the one supported shortcut for running a saved workflow. It accepts no suffix or inline parameters. If inputs are needed, collect them through normal conversation. Do not invent `/flow run`, `/flow show`, or `/flow author` commands.
-
 > **Legacy handoff.** An explicit `.flow.ts`, Fuclaw, or `@agent-flow/core`
 > request belongs to the `flow` skill under `skills/fusion-flow-legacy/`.
 > Do not silently translate between the two runtimes.
@@ -25,7 +23,6 @@ structured process capture, and checkpoints Human-backed Steps across turns.
 
 Activate this skill when the user:
 
-- Invokes `/workflow:<slug>` to reuse a saved workflow.
 - Asks to run a FusionFlow G4 workflow they already have ("跑一下这个 / 帮我跑 / 执行"). This skill does **not** ship runnable demo examples; "run" always means a concrete workflow the user has.
 - Asks to save, list, load, or reuse a workflow declaration.
 - Mentions FusionFlow or agent-flow
@@ -76,12 +73,12 @@ The skill's job is to:
 
 ## Intent Routing
 
-Natural-language requests and the explicit `/workflow:` reuse command both map to these actions:
+Natural-language workflow requests map to these actions:
 
 | What the user says (examples) | Action |
 | --- | --- |
 | "我能用这个干嘛 / 你能帮我做什么" | Describe capabilities in plain language (see "Capabilities" at the bottom) + offer to build a flow |
-| `/workflow:<slug>` | Resolve `flows/workflows/<slug>/<slug>.workflow`, falling back to `<slug>.g4`, collect its declared inputs, and start one fresh run with `run_flow(flow_path=...)`. |
+| "调用 daily-brief 的 workflow / 运行已保存的 daily-brief / reuse saved daily-brief" | Resolve `flows/workflows/daily-brief/daily-brief.workflow`, falling back to `daily-brief.g4`, collect its declared inputs, and start one fresh run with `run_flow(flow_path=...)`. |
 | "有哪些保存的工作流 / list workflows" | List the fixed `flows/workflows/` directory with existing file tools. |
 | "加载 X / 看看保存的 X" | Read the saved `.workflow` or `.g4` file with existing file tools, preferring `.workflow` if both exist. |
 | "把刚生成的这个保存为 X" | After self-check, save the self-contained bundle at `flows/workflows/<slug>/`: one `.workflow` or `.g4` source file plus every referenced instruction Markdown file, preserving relative paths. |
@@ -96,33 +93,22 @@ Natural-language requests and the explicit `/workflow:` reuse command both map t
 
 Use the workspace `run_flow` tool for FusionFlow G4 source. It validates the workflow and returns either the final output Artifacts or one persisted Human request under the reserved `$fusion_flow/control` key.
 
-### Saved workflow command
+### Saved workflow reuse
 
-The exact command form is:
+When the user asks to run a saved workflow by name, resolve only an existing
+slug directory under `flows/workflows/`; never treat the name as an arbitrary
+path. Prefer `<slug>.workflow` and fall back to `<slug>.g4`. If the name is
+ambiguous or neither source exists, ask the user to choose an existing saved
+workflow.
 
-```text
-/workflow:<slug>
-```
-
-For example:
-
-```text
-/workflow:daily-brief
-```
-
-Treat the slug as a workflow name, never as a path. Do not accept a suffix or
-trailing text. Read the canonical declaration and inspect `input_workflow(...)`
-before execution. Resolve every declared input from the conversation; if any
-value is missing, ask for it in normal conversation and end the turn without
-calling `run_flow`. Do not invent command arguments, guess values, or call once
-with the default empty input object merely to discover missing inputs.
-
-Under `flows/workflows/<slug>/`, resolve `<slug>.workflow` first and fall back
-to `<slug>.g4`. If neither exists, report that the saved workflow is missing.
-Once all inputs are available, invoke `run_flow` exactly once with that
-`flow_path` and the complete `inputs_json`. Use an empty input object only when
-the declaration has no inputs. Every initial invocation is a fresh run; only a
-returned active Human request may continue through `run_flow_resume`.
+Read the declaration and inspect `input_workflow(...)` before execution.
+Resolve every declared input from the conversation; if any value is missing,
+ask for it and end the turn without calling `run_flow`. Do not guess values or
+call once with the default empty input object merely to discover missing
+inputs. Once all inputs are available, invoke `run_flow` exactly once with the
+resolved `flow_path` and complete `inputs_json`. Use an empty input object only
+when the declaration has no inputs. Every initial invocation is a fresh run;
+only a returned active Human request may continue through `run_flow_resume`.
 
 ### Fixed-path reuse
 
@@ -237,7 +223,7 @@ Paths are relative to the workspace:
 
 ## Authoring Mode
 
-This is the flagship: turn a natural-language intent into a runnable FusionFlow G4 workflow. The user normally describes what they want in plain words ("帮我写个工作流做 X"). `/workflow:<slug>` reuses an already-saved workflow; it is not an authoring command.
+This is the flagship: turn a natural-language intent into a runnable FusionFlow G4 workflow. The user normally describes what they want in plain words ("帮我写个工作流做 X"). A request to run an already-saved workflow by name is reuse, not an authoring request.
 
 > **NO-MOCK RULE (global, applies to all of Authoring Mode).** When you build a flow for the user, author **exactly one** real FusionFlow G4 workflow and NEVER fabricate a mock/offline/simplified twin to "test" or "demonstrate" it. A twin with hardcoded sample output, fake numbers, or a fake executor standing in for the real work is a **forgery** — it always "passes" regardless of what the real flow does, so it proves nothing and misleads the user. Validate the one real workflow, then actually run it. If the user *explicitly* later asks for an offline twin, that's a separate request you confirm first — never self-initiate one.
 >
@@ -702,15 +688,15 @@ Otherwise:
 
 ## Capabilities
 
-When the user asks what this skill can do ("你能帮我做什么 / 我能用这个干嘛"), lead with natural-language examples and mention the saved-workflow shortcut:
+When the user asks what this skill can do ("你能帮我做什么 / 我能用这个干嘛"), lead with natural-language examples and mention saved-workflow reuse:
 
 ```
 🐾 FusionFlow G4
-用自然语言驱动多 Agent 工作流，也可以保存后用固定短指令复用：
+用自然语言驱动多 Agent 工作流，也可以保存后按名称复用：
 
   • "帮我写个工作流做 X / 帮我编排 ..."           → 用大白话描述需求，我帮你搭好并运行
   • "把这个保存为 daily-brief"                   → 保存到固定的 workflow 文件夹
-  • "/workflow:daily-brief"                       → 按名称加载并全新运行一次
+  • "调用 daily-brief 的 workflow"               → 按名称加载并全新运行一次
   • "跑一下刚才那个 / 帮我跑这个 workflow"        → 执行 G4 workflow；需要你审批或输入时直接在对话里问
   • "环境齐不齐 / 能不能跑"                        → 检查 G4、Agent/Human/Program executor 和资源声明
 

@@ -336,50 +336,6 @@ async def test_gateway_rest_errors(tmp_path: str) -> None:
 
 
 @pytest.mark.anyio
-async def test_gateway_lists_workflows_for_requested_workspace(tmp_path: str) -> None:
-    workspace = anyio.Path(str(tmp_path)) / "workspace with spaces"
-    workflow_dir = workspace / "flows" / "workflows" / "daily-brief"
-    await workflow_dir.mkdir(parents=True)
-    await (workflow_dir / "daily-brief.g4").write_text(
-        "workflow daily_brief {}",
-        encoding="utf-8",
-    )
-
-    tg = anyio.create_task_group()
-    await tg.__aenter__()
-    aim = AIManager(_prefix="gw-test", _tg=tg)
-    sm = SessionManager(_aim=aim, _prefix="gw-test", _tg=tg)
-    app = await create_app(aim, sm, TitleManager())
-    base_url, runner = await _start_app_on_free_port(app)
-
-    try:
-        timeout = ClientTimeout(total=10)
-        async with ClientSession(timeout=timeout) as session:
-            async with session.get(
-                f"{base_url}/workspace/workflows",
-                params={"path": str(workspace)},
-            ) as resp:
-                assert resp.status == 200
-                assert await resp.json() == {
-                    "workflows": [
-                        {
-                            "name": "daily-brief",
-                            "path": "flows/workflows/daily-brief/daily-brief.g4",
-                        }
-                    ]
-                }
-
-            async with session.get(
-                f"{base_url}/workspace/workflows",
-                params={"path": str(workspace / "missing")},
-            ) as resp:
-                assert resp.status == 400
-    finally:
-        await runner.cleanup()
-        await tg.__aexit__(None, None, None)
-
-
-@pytest.mark.anyio
 async def test_gateway_chat_sse(tmp_path: str, mock_ai_server: MockAIServer) -> None:
     mock_ai_server.set_responses(
         [

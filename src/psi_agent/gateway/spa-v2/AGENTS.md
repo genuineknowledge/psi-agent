@@ -49,7 +49,6 @@
 ```
 
 **新建任务输入**：单个大框（对齐总览 `context-chat`）——框内上部是预设快捷按钮（单行），底部是细条真输入（回形针 + 文本框 + 发送）；附件 chip 在细条上方。发送时随首轮 `streamSessionChat` 上传；可纯附件无文案。页内「返回任务总览」始终回总览（`goHome`）；顶栏在从模板进入时可显示「返回模板库」（`newTaskReturnView`）。
-**Workflow 斜杠指令**：新建任务与已有任务输入框共用 `GET /workspace/workflows?path=...`。输入 `/` / `/workflow:` 时显示 `.workflow` 与 `.g4` 候选，支持上下键、Enter、Esc 和 IME；发送精确 `/workflow:<slug>` 前必须确认候选真实存在，并拒绝非法 slug、任何参数后缀及附件混用。普通消息与换行行为不变。
 **模型选择（防踩坑） / 启动渲染管线（刷新稳定）**：
 
 ```text
