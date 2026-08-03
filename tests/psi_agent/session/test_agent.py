@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket as _s
 import textwrap
+from contextlib import aclosing
 from pathlib import Path
 
 import anyio
@@ -12,9 +13,10 @@ from aiohttp import web
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
+from psi_agent.session.history_display import KIND_SCHEDULE_SILENT
 from psi_agent.session.protocol import AgentChunk, AgentError
 from psi_agent.session.runtime_context import get_agent, get_workspace, runtime_scope
-from psi_agent.session.schedule_registry import ACTIVATE_ALL
+from psi_agent.session.schedule_registry import ACTIVATE_ALL, Schedule, ScheduleRegistry
 from psi_agent.session.system_prompt import SystemPrompt
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
@@ -1180,3 +1182,121 @@ async def test_agent_saves_on_max_tool_rounds(tmp_path: Path) -> None:
         assert any(m.get("content") == "[Max tool rounds reached]" for m in loaded)
     finally:
         await runner.cleanup()
+
+
+# ── turn boundary: history must never end on an unanswered user row ───────────
+
+
+@pytest.mark.anyio
+async def test_aborted_turn_drops_unanswered_user_row(tmp_path: Path) -> None:
+    """A turn abandoned mid-stream must not leave the user row with no reply.
+
+    Regression: the user row is committed immediately, so ``rollback()`` could no
+    longer remove it and history ended on a ``user`` row. The next AI request then
+    carried that orphan as the latest user turn, so when a silent schedule (the
+    30-min heartbeat) fired, the model answered the *user's* stale request and
+    every row it wrote was stamped ``schedule.silent`` — making the user's own
+    deliverable invisible.
+    """
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content="thinking...").encode())
+        await anyio.sleep(30)  # never finishes; client gives up first
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry())
+
+        # Consume one chunk then abandon the generator == client disconnect / "stop".
+        with anyio.move_on_after(3):
+            async with aclosing(agent.run({"role": "user", "content": "给我做个文档"})) as gen:
+                async for _chunk in gen:
+                    break
+
+        # The system row is created during the turn and legitimately stays; what
+        # must not survive is the user row nothing ever replied to.
+        roles = [m.get("role") for m in agent._conversation.messages]
+        assert "user" not in roles
+        assert roles == ["system"]
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_aborted_turn_keeps_user_row_once_answered(tmp_path: Path) -> None:
+    """Only an *unanswered* row is dropped — a replied-to turn is never rewritten."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(_sse_chunk(content="done", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry())
+        async for _chunk in agent.run({"role": "user", "content": "hi"}):
+            pass
+
+        roles = [m.get("role") for m in agent._conversation.messages]
+        assert roles[-2:] == ["user", "assistant"]
+
+        # A later abort must leave the answered turn intact.
+        await agent._drop_unanswered_user_row()
+        assert [m.get("role") for m in agent._conversation.messages] == roles
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_silent_schedule_does_not_inherit_aborted_user_request(tmp_path: Path) -> None:
+    """The end-to-end symptom: a heartbeat must not be handed the user's stale ask.
+
+    With the orphan gone, the silent fire's AI request contains only the schedule
+    body as the latest user turn — so the model has no user question to answer and
+    cannot produce a deliverable stamped ``schedule.silent``.
+    """
+    seen: list[list[dict]] = []
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        seen.append(body["messages"])
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        if len(seen) == 1:
+            await resp.write(_sse_chunk(content="thinking...").encode())
+            await anyio.sleep(30)
+            return resp
+        await resp.write(_sse_chunk(content="HEARTBEAT_OK", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    try:
+        agent = SessionAgent(ai_client=AiClient(ai_socket), tool_registry=ToolRegistry())
+        with anyio.move_on_after(3):
+            async with aclosing(agent.run({"role": "user", "content": "帮我做个文档"})) as gen:
+                async for _chunk in gen:
+                    break
+
+        schedule = Schedule(
+            name="heartbeat",
+            cron="*/30 * * * *",
+            task_content="Respond with exactly HEARTBEAT_OK and nothing else.",
+            visibility="silent",
+        )
+        await ScheduleRegistry._fire_prompt(schedule, agent, KIND_SCHEDULE_SILENT)
+
+        user_rows = [m for m in seen[-1] if m.get("role") == "user"]
+        assert len(user_rows) == 1
+        assert "HEARTBEAT_OK" in str(user_rows[0].get("content"))
+        assert not any("文档" in str(m.get("content")) for m in seen[-1])
+    finally:
+        await mock_server.cleanup()

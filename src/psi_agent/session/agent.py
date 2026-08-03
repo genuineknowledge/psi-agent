@@ -19,6 +19,7 @@ from psi_agent.session.history_display import (
     TURN_CONTEXT_KEY,
     message_kind,
     messages_for_ai,
+    wire_role,
     with_kind,
 )
 from psi_agent.session.protocol import (
@@ -242,6 +243,64 @@ class SessionAgent:
     # -- agent loop -----------------------------------------------------------
 
     async def run(
+        self,
+        user_message: dict[str, Any],
+        extra_params: dict[str, Any] | None = None,
+        *,
+        response_kind: str | None = None,
+    ) -> AsyncGenerator[AgentChunk]:
+        """Run one turn, guaranteeing history never ends on an unanswered user row.
+
+        Delegates to ``_run_turn``; this wrapper only enforces the turn-boundary
+        invariant when a turn aborts (client disconnect / "stop" / cancellation).
+
+        刻意为之: ``_run_turn`` commits the user row immediately — that is what
+        makes the pending-chunk clear durable (see
+        ``test_agent_rollback_restores_pending_on_error``) — so the turn snapshot
+        is already gone and ``Conversation.rollback()`` can no longer remove it.
+        An aborted turn therefore used to leave history ending on a *user* row
+        with no reply, and that orphan is not cosmetic: the next AI request
+        carries it as the latest real user turn, so when a silent schedule (the
+        30-min heartbeat) fires, the model answers the user's stale request
+        instead of the schedule — and every row it writes is stamped with the
+        *fire's* kind (``schedule.silent``), making the user's own deliverable
+        invisible in ``/history``. Dropping the orphan restores the documented
+        contract: the caller can safely retry the same user message.
+        """
+        turn = self._run_turn(user_message, extra_params, response_kind=response_kind)
+        try:
+            # aclosing on purpose: the inner turn must be finalized (its
+            # ``async with Conversation`` rollback included) *before* the cleanup
+            # below, or that rollback runs afterwards and resurrects the row we
+            # just trimmed.
+            async with aclosing(turn):
+                async for chunk in turn:
+                    yield chunk
+        except BaseException as exc:
+            # Only genuine *aborts* — GeneratorExit (aclosing on disconnect /
+            # "stop") and cancellation. An ``AgentError`` is deliberately excluded:
+            # the Channel reports it to the user as an error chunk, so the question
+            # stays a visible, acknowledged part of history and the user decides
+            # whether to retry (locked in by ``test_agent_ai_error_not_in_history``,
+            # ``test_history_not_saved_on_error``). A normal return is likewise not
+            # covered, so a complete-but-empty answer keeps its user row.
+            if isinstance(exc, GeneratorExit | anyio.get_cancelled_exc_class()):
+                await self._drop_unanswered_user_row()
+            raise
+
+    async def _drop_unanswered_user_row(self) -> None:
+        """Remove a trailing user row left by an aborted turn, then persist."""
+        messages = self._conversation.messages
+        if not messages or wire_role(messages[-1].get("role")) != "user":
+            return
+        logger.info("Turn aborted before any reply; dropping unanswered user row")
+        self._conversation.trim_after(len(messages) - 2)
+        # Shielded: the abort is usually a cancellation, and the trimmed history
+        # still has to reach disk (same pattern as ChannelCore.__aexit__).
+        with anyio.CancelScope(shield=True):
+            await self._conversation.commit()
+
+    async def _run_turn(
         self,
         user_message: dict[str, Any],
         extra_params: dict[str, Any] | None = None,
