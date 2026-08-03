@@ -12,7 +12,14 @@ from croniter import croniter
 from psi_agent._yaml import parse_yaml_header
 from psi_agent.session import schedule_registry as schedule_registry_module
 from psi_agent.session.conversation import Conversation
-from psi_agent.session.schedule_registry import ACTIVATE_ALL, Schedule, ScheduleEntry, ScheduleRegistry
+from psi_agent.session.protocol import AgentChunk
+from psi_agent.session.schedule_registry import (
+    ACTIVATE_ALL,
+    Schedule,
+    ScheduleEntry,
+    ScheduleRegistry,
+    file_delivery_chunks,
+)
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -887,3 +894,128 @@ def test_parse_yaml_header_success() -> None:
     header, body = parse_yaml_header(content)
     assert header == {"name": "daily-report", "cron": "0 12 * * *"}
     assert body == "请生成日报。"
+
+
+# ── silent fires still deliver files ──────────────────────────────────────────
+
+
+def test_file_delivery_chunks_keeps_only_markers() -> None:
+    """Prose is dropped, markers survive — a silent fire delivers files only.
+
+    Regression: a silent turn that wrote a file and emitted ``[SEND:]`` produced
+    a deliverable no one could receive, because the Channel (the only uploader)
+    never saw the turn. Narration stays suppressed on purpose.
+    """
+    chunks = [
+        AgentChunk(reasoning="[Tool Call: write_word(...)]"),
+        AgentChunk(content="文档已生成 16 人\n\n[SEND:D:\\Haitun Agent\\问卷结果汇总.docx]"),
+    ]
+    out = file_delivery_chunks(chunks)
+    assert [c.content for c in out] == ["[SEND:D:\\Haitun Agent\\问卷结果汇总.docx]"]
+    assert all(c.reasoning is None for c in out)
+
+
+def test_file_delivery_chunks_normalizes_spaced_marker() -> None:
+    out = file_delivery_chunks([AgentChunk(content="见附件\n[ SEND:/tmp/a.docx ]")])
+    assert [c.content for c in out] == ["[SEND:/tmp/a.docx]"]
+
+
+def test_file_delivery_chunks_multiple_files_in_order() -> None:
+    out = file_delivery_chunks([AgentChunk(content="[SEND:/a.html]\n[SEND:/b.html]")])
+    assert [c.content for c in out] == ["[SEND:/a.html]", "[SEND:/b.html]"]
+
+
+def test_file_delivery_chunks_empty_without_markers() -> None:
+    """No file → nothing pends, so ordinary silent fires stay silent."""
+    assert file_delivery_chunks([AgentChunk(content="HEARTBEAT_OK")]) == []
+    assert file_delivery_chunks([AgentChunk(reasoning="[Tool Result: ok]")]) == []
+    assert file_delivery_chunks([]) == []
+
+
+@pytest.mark.anyio
+async def test_run_one_silent_stashes_files_but_not_prose() -> None:
+    """A silent schedule that produced a file pends the marker and nothing else."""
+    stashed: list[list[AgentChunk]] = []
+
+    class _FileAgent:
+        _lock = anyio.Lock()
+
+        async def run(self, msg: object, **_kwargs: object) -> Any:
+            yield AgentChunk(reasoning="[Tool Call: write_word(...)]")
+            yield AgentChunk(content="报表已写好。\n[SEND:/tmp/report.xlsx]")
+
+        def set_pending_schedule_chunks(self, chunks: Any) -> None:
+            stashed.append(list(chunks))
+
+    s = Schedule(name="rep", cron="* * * * * *", task_content="做报表", visibility="silent")
+    cancel_scope = anyio.CancelScope()
+    with anyio.move_on_after(3):
+        await ScheduleRegistry._run_one(s, cast(Any, _FileAgent()), cancel_scope, ScheduleRegistry())
+
+    assert stashed, "silent fire produced a file but stashed nothing"
+    assert [c.content for c in stashed[0]] == ["[SEND:/tmp/report.xlsx]"]
+
+
+@pytest.mark.anyio
+async def test_run_one_silent_without_file_stashes_nothing() -> None:
+    """Guards the original fix: silent prose must never ride along (heartbeats)."""
+    stashed: list[list[AgentChunk]] = []
+
+    class _ChattyAgent:
+        _lock = anyio.Lock()
+
+        async def run(self, msg: object, **_kwargs: object) -> Any:
+            yield AgentChunk(content="已在群里发提醒 ✅")
+
+        def set_pending_schedule_chunks(self, chunks: Any) -> None:
+            stashed.append(list(chunks))
+
+    s = Schedule(name="ping", cron="* * * * * *", task_content="ping", visibility="silent")
+    cancel_scope = anyio.CancelScope()
+    with anyio.move_on_after(3):
+        await ScheduleRegistry._run_one(s, cast(Any, _ChattyAgent()), cancel_scope, ScheduleRegistry())
+
+    assert stashed == []
+
+
+@pytest.mark.anyio
+async def test_fire_tool_silent_surfaces_send_marker_as_content() -> None:
+    """``fire=tool`` puts the result in reasoning, where ``[SEND:]`` is not scanned.
+
+    So a silent direct-tool fire that produced a file must emit the marker as a
+    content chunk, or the file can never be uploaded.
+    """
+
+    async def make_report() -> str:
+        return "written\n[SEND:/tmp/daily.xlsx]"
+
+    class _ToolAgent:
+        _lock = anyio.Lock()
+
+        def __init__(self) -> None:
+            self._conversation = Conversation()
+            self._tool_registry = ToolRegistry()
+            tf = ToolFunction.from_callable(make_report)
+            self._tool_registry._files["x"] = FileEntry(
+                file_hash="h",
+                tools={tf.name: tf},
+                funcs={tf.name: make_report},
+                fresh=True,
+            )
+
+        async def reload_tools(self) -> dict[str, str]:
+            return {}
+
+        def set_pending_schedule_chunks(self, chunks: object) -> None:
+            pass
+
+    s = Schedule(
+        name="daily",
+        cron="0 12 * * *",
+        task_content="",
+        fire="tool",
+        tool_name="make_report",
+        visibility="silent",
+    )
+    chunks = await ScheduleRegistry._fire_tool(s, cast(Any, _ToolAgent()), "schedule.silent")
+    assert [c.content for c in chunks if c.content] == ["[SEND:/tmp/daily.xlsx]"]

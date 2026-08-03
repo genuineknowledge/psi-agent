@@ -76,3 +76,25 @@ def test_extract_send_paths() -> None:
     assert extract_send_paths("see\n[Send:/tmp/a.html]\n[send: b.md ]") == ["/tmp/a.html", "b.md"]
     assert extract_send_paths("[RECV:/x]") == []
     assert extract_send_paths("") == []
+
+
+def test_strip_transfer_markers_tolerates_whitespace_in_brackets() -> None:
+    """Whatever the Channel uploads must also be stripped from the bubble.
+
+    Mirrors ``channel._markers.SEND_RE``; otherwise a ``[ SEND:… ]`` file is
+    delivered while its raw marker stays visible in the transcript.
+    """
+    assert strip_transfer_markers("见附件\n[ SEND:/tmp/a.docx ]") == "见附件"
+    assert strip_transfer_markers("分析\n[ RECV:C:\\Users\\Z\\a.png ]") == "分析"
+    assert strip_transfer_markers("[SEND :/tmp/a.docx]") == ""
+
+
+def test_extract_send_paths_tolerates_whitespace_in_brackets() -> None:
+    assert extract_send_paths("[ SEND:/tmp/a.docx ]") == ["/tmp/a.docx"]
+    assert extract_send_paths("[SEND :/tmp/b.pdf]") == ["/tmp/b.pdf"]
+    assert extract_send_paths("[ SEND: ]") == []
+
+
+def test_extract_send_paths_keeps_interior_spaces() -> None:
+    """Only padding is stripped — a Windows path may contain real spaces."""
+    assert extract_send_paths(r"[ SEND:D:\Haitun Agent\报表.xlsx ]") == [r"D:\Haitun Agent\报表.xlsx"]

@@ -27,10 +27,11 @@ from psi_agent.session.event_protocol import (
 from psi_agent.session.history_display import (
     KIND_TRIGGER_DISPLAY,
     KIND_TRIGGER_SILENT,
+    extract_send_paths,
     with_kind,
 )
 from psi_agent.session.protocol import AgentChunk
-from psi_agent.session.schedule_registry import FIRE_PROMPT, FIRE_TOOL
+from psi_agent.session.schedule_registry import FIRE_PROMPT, FIRE_TOOL, file_delivery_chunks
 
 if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent
@@ -240,6 +241,11 @@ class TriggerRegistry:
                 pending.append(chunk)
         if trigger.visibility == "display" and pending:
             agent.set_pending_schedule_chunks(pending)
+        else:
+            # silent → files still ride out (see ``file_delivery_chunks``).
+            files = file_delivery_chunks(pending)
+            if files:
+                agent.set_pending_schedule_chunks(files)
         return pending
 
     @staticmethod
@@ -290,6 +296,11 @@ class TriggerRegistry:
             chunks.append(AgentChunk(reasoning=f"[Tool Result: {result[:1000]}]"))
             if trigger.visibility == "display":
                 chunks.append(AgentChunk(content=result[:2000]))
+            else:
+                # See the same branch in ``ScheduleRegistry._fire_tool``: a silent
+                # tool result lives in reasoning, where ``[SEND:]`` is never scanned.
+                for path in extract_send_paths(result):
+                    chunks.append(AgentChunk(content=f"[SEND:{path}]"))
 
             agent._conversation.add(
                 with_kind(
@@ -308,6 +319,10 @@ class TriggerRegistry:
 
         if trigger.visibility == "display" and chunks:
             agent.set_pending_schedule_chunks(chunks)
+        else:
+            files = file_delivery_chunks(chunks)
+            if files:
+                agent.set_pending_schedule_chunks(files)
         return chunks
 
     @staticmethod

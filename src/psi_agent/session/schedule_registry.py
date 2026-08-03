@@ -25,6 +25,7 @@ from psi_agent._yaml import parse_yaml_header
 from psi_agent.session.history_display import (
     KIND_SCHEDULE_DISPLAY,
     KIND_SCHEDULE_SILENT,
+    extract_send_paths,
     with_kind,
 )
 from psi_agent.session.protocol import (
@@ -49,6 +50,31 @@ _WATCH_INTERVAL_SECONDS = 30.0
 # Wildcard in either activation list: this Session activates *every* schedule
 # under the workspace.
 ACTIVATE_ALL = "*"
+
+
+def file_delivery_chunks(chunks: list[AgentChunk]) -> list[AgentChunk]:
+    """Keep only the ``[SEND:…]`` markers from a fire's chunks, as bare content.
+
+    刻意为之: a *silent* fire must not ride along on the user's next message with
+    prose (that ride-along reporting was removed on purpose — the user does not
+    want "已在群里发提醒✅" prepended to an unrelated answer). But a file is
+    different: ``[SEND:]`` is the **only** delivery mechanism in the system, and
+    it is the Channel — not the Session — that performs the upload. A silent turn
+    that wrote a file and emitted the marker therefore produced a deliverable
+    that can never reach the user; it is announced in a history nobody reads.
+    This keeps the markers (which the Channel turns into ``FileChunk`` → upload)
+    and drops every other word, so the file arrives with no narration attached.
+
+    Reasoning chunks are dropped too: ``[SEND:]`` is only ever scanned in
+    ``content`` by ``ChannelCore``.
+    """
+    out: list[AgentChunk] = []
+    for chunk in chunks:
+        if not chunk.content:
+            continue
+        for path in extract_send_paths(chunk.content):
+            out.append(AgentChunk(content=f"[SEND:{path}]"))
+    return out
 
 
 @dataclass
@@ -398,7 +424,8 @@ class ScheduleRegistry:
                                 pending_chunks = await ScheduleRegistry._fire_tool(schedule, agent, response_kind)
                             else:
                                 pending_chunks = await ScheduleRegistry._fire_prompt(schedule, agent, response_kind)
-                            # silent → never push into the next Channel turn
+                            # silent → no prose rides along, but files must still
+                            # be delivered (the Channel is the only uploader).
                             if schedule.visibility == "display" and pending_chunks:
                                 agent.set_pending_schedule_chunks(pending_chunks)
                                 logger.info(
@@ -406,11 +433,15 @@ class ScheduleRegistry:
                                     f"({len(pending_chunks)} chunks, visibility=display)"
                                 )
                             else:
+                                files = file_delivery_chunks(pending_chunks)
+                                if files:
+                                    agent.set_pending_schedule_chunks(files)
                                 logger.info(
                                     f"Schedule {schedule.name!r} completed "
                                     f"(visibility={schedule.visibility!r}, "
                                     f"fire={schedule.fire!r}, "
-                                    f"chunks={len(pending_chunks)}, not pending)"
+                                    f"chunks={len(pending_chunks)}, "
+                                    f"files_pending={len(files)})"
                                 )
 
                         if schedule.run_once:
@@ -498,6 +529,12 @@ class ScheduleRegistry:
             )
             if schedule.visibility == "display":
                 chunks.append(AgentChunk(content=result[:2000]))
+            else:
+                # fire=tool puts the result in *reasoning*, and ``[SEND:]`` is only
+                # ever scanned in content — so a silent tool that produced a file
+                # must surface its markers explicitly or the file is undeliverable.
+                for path in extract_send_paths(result):
+                    chunks.append(AgentChunk(content=f"[SEND:{path}]"))
 
             # Do not invent OpenAI tool_calls rows — they can confuse later AI turns.
             agent._conversation.add(

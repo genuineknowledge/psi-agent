@@ -69,3 +69,43 @@ def test_scanner_third_marker_after_trailing_text_regression():
     assert scanner.feed("[SEND:/a.py]TAIL") == [FileChunk("/a.py")]
     assert scanner.feed("[SEND:/b.py]") == [FileChunk("/b.py")]
     assert scanner.feed("[SEND:/c.py]") == [FileChunk("/c.py")]
+
+
+def test_scanner_tolerates_whitespace_inside_brackets():
+    r"""``[ SEND:/path ]`` must deliver — models write the marker as prose.
+
+    Regression: the strict ``\[SEND:(.+?)\]`` matched nothing here, so the file
+    was written, announced in the reply, and silently never uploaded.
+    """
+    scanner = SendMarkerScanner()
+    assert scanner.feed("[ SEND:/tmp/out.docx ]") == [FileChunk("/tmp/out.docx")]
+
+
+def test_scanner_tolerates_space_before_colon():
+    scanner = SendMarkerScanner()
+    assert scanner.feed("[SEND :/tmp/a.pdf]") == [FileChunk("/tmp/a.pdf")]
+
+
+def test_scanner_spaced_and_bare_markers_dedup_to_one_file():
+    """Padding is not part of the path, so the same file is emitted once."""
+    scanner = SendMarkerScanner()
+    assert scanner.feed("[SEND:/tmp/a.docx]") == [FileChunk("/tmp/a.docx")]
+    assert scanner.feed("[ SEND:/tmp/a.docx ]") == []
+
+
+def test_scanner_windows_path_with_spaces_is_preserved():
+    """Only the padding is stripped — interior spaces belong to the path."""
+    scanner = SendMarkerScanner()
+    result = scanner.feed(r"[ SEND:D:\Programs\Haitun Agent\报表.xlsx ]")
+    assert result == [FileChunk(r"D:\Programs\Haitun Agent\报表.xlsx")]
+
+
+def test_scanner_empty_path_is_ignored():
+    scanner = SendMarkerScanner()
+    assert scanner.feed("[ SEND: ]") == []
+
+
+def test_scanner_advances_past_ignored_empty_marker():
+    """An empty marker must not wedge the scan pointer and hide later files."""
+    scanner = SendMarkerScanner()
+    assert scanner.feed("[SEND: ] then [SEND:/tmp/b.txt]") == [FileChunk("/tmp/b.txt")]

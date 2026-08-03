@@ -318,3 +318,62 @@ async def test_post_events_http(tmp_path: Path) -> None:
     finally:
         await runner.cleanup()
         sock.close()
+
+
+@pytest.mark.anyio
+async def test_silent_trigger_tool_stashes_file_marker(tmp_path: Path) -> None:
+    """A silent trigger whose tool wrote a file must still deliver it.
+
+    Same defect as the schedule path: ``[SEND:]`` is the only delivery
+    mechanism and the Channel is the only uploader, so a silent turn's file
+    was unreachable. Prose stays suppressed — only the marker pends.
+    """
+
+    async def make_report() -> str:
+        return "written\n[SEND:/tmp/joined.xlsx]"
+
+    tools = ToolRegistry()
+    tools._files["r.py"] = FileEntry(
+        file_hash="x",
+        tools={"make_report": ToolFunction.from_callable(make_report)},
+        funcs={"make_report": make_report},
+        fresh=True,
+    )
+
+    trig_dir = tmp_path / "triggers" / "t1"
+    await anyio.Path(trig_dir).mkdir(parents=True)
+    await anyio.Path(trig_dir / "TRIGGER.md").write_text(
+        textwrap.dedent(
+            f"""\
+            ---
+            name: t1
+            event: {EVENT_FEISHU_CHAT_MEMBER_ADDED}
+            fire: tool
+            tool: make_report
+            visibility: silent
+            ---
+            """
+        ),
+        encoding="utf-8",
+    )
+    registry = await TriggerRegistry.load(tmp_path / "triggers")
+    agent = SessionAgent(
+        ai_client=AiClient("http://nonexistent/v1"),
+        tool_registry=tools,
+        trigger_registry=registry,
+        workspace_path=tmp_path,
+    )
+    env = parse_event_envelope(
+        {
+            "schema_version": 1,
+            "source": "feishu",
+            "event": EVENT_FEISHU_CHAT_MEMBER_ADDED,
+            "payload": {"chat_id": "oc_1"},
+            "idempotency_key": "once-1",
+        }
+    )
+    async with agent._lock:
+        assert await registry.dispatch(env, agent) == ["t1"]
+
+    pending = agent._conversation.peek_pending()
+    assert [c.content for c in pending] == ["[SEND:/tmp/joined.xlsx]"]

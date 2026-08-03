@@ -69,9 +69,12 @@ _KNOWN_KINDS = frozenset(
 )
 
 # Presentation-only strip of wire transfer markers (Gateway history projection).
-# Tolerates the space-padded variant ``[ SEND:path ]`` emitted by some models.
-_TRANSFER_MARKER_RE = re.compile(r"\[\s*(?:SEND|RECV)\s*:\s*[^\]]*?\]", re.IGNORECASE)
-_SEND_PATH_RE = re.compile(r"\[\s*SEND\s*:\s*([^\]]*?)\s*\]", re.IGNORECASE)
+# Whitespace and letter-case tolerance mirrors ``channel._markers.SEND_RE`` on
+# purpose: whatever the Channel accepts as a marker must also be stripped from
+# the bubble and projected as an attachment, or a ``[ SEND:… ]`` file gets
+# uploaded while its raw marker stays visible in the transcript.
+_TRANSFER_MARKER_RE = re.compile(r"\[\s*(?:SEND|RECV)\s*:[^\]]*\]", re.IGNORECASE)
+_SEND_PATH_RE = re.compile(r"\[\s*SEND\s*:([^\]]*)\]", re.IGNORECASE)
 
 
 def normalize_kind(raw: object) -> str:
