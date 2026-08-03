@@ -77,6 +77,23 @@ def _learning_advice() -> dict[str, Any]:
 
 
 @pytest.mark.anyio
+async def test_main_fusion_section_keeps_named_natural_language_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    system = _load_main_system(monkeypatch)
+    agent_dir = Path(__file__).parents[2] / "examples" / "haitun-workspace"
+
+    section = await system.System(
+        anyio.Path(agent_dir),
+        user_workspace=anyio.Path(tmp_path),
+    )._build_fusion_section()
+
+    assert "调用 daily-brief 的 workflow" in section
+    assert "flows/workflows/<slug>/" in section
+    assert f"{tmp_path.as_posix()}/flows/workflows" in section
+
+
+@pytest.mark.anyio
 async def test_main_before_turn_returns_supervisor_advice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     system = _load_main_system(monkeypatch)
     advice = _learning_advice()
