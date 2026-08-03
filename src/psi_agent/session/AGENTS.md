@@ -74,7 +74,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
    - finish_reason="error" → 回滚到快照 → `raise AgentError(message)`
    - 任何未捕获异常 → 回滚到快照 → 向上传播
 6. 最多 `max_tool_rounds` 轮 tool call，达到上限时追加关闭 assistant 消息 + commit
-7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。
+7. **Turn 级别原子性**：``run()`` 所有正常出口调用 ``commit()``（save + clear snapshot）；异常时 ``async with`` 上下文管理器自动 ``rollback()``。内存和磁盘仅在同一检查点同步更新。**唯一例外是被中断的回合**：user 行在步骤 2 已 ``commit()``，快照随之清空，``rollback()`` 再也删不掉它，所以 ``run()`` 是一层薄包装——真正的回合逻辑在 ``_run_turn()``，包装只在 ``GeneratorExit`` / cancelled 时删掉尾部那条无人应答的 user 行（见「中断回合不留孤儿 user 行」）
 
 **注意**：
 - Channel 不发送 history。每次请求只带最新一条 user message，Session 自己维护完整 history。
@@ -246,7 +246,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
       else:  # fire == prompt（缺省）
         user = {role:user, content:TASK.md, kind:schedule.silent}  ← user 始终 silent
         agent.run(user, response_kind=display|silent)              ← 由 TASK.md visibility 决定
-      ← 整轮写入 JSONL（带 kind）；display 才 stash pending；silent 不注入下一轮 SSE
+      ← 整轮写入 JSONL（带 kind）；display 才 stash 全部 pending；silent 只 stash `[SEND:]` 标记（文件照发、旁白静音）
       ← run_once 成功后删 TASK.md 并结束 runner
 ```
 
@@ -256,7 +256,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 - **`run_once: true`（刻意为之）**：成功跑完一轮后删除对应 `TASK.md`（及空目录）并结束该 runner，避免「单次提醒」因 5 段 cron 无年份而次年再触发。workspace 工具 `schedule_manage` 的 `once_at` 会写入此字段
 - **cron 按本地时间解释（刻意为之，勿改回 UTC）**：`_seconds_until_next` 用 `datetime.now()` + `croniter`，**禁止**把 Unix timestamp 交给 `croniter` 当 base——后者会把 5 段字段当 UTC，导致 `once_at` 写的本地时刻在非 UTC 机器上晚数小时才触发。workspace `schedule_manage` 的 `once_at`/`cron` 语义都是本机墙钟。此外若设了标准 `TZ` 环境变量，`ScheduleRegistry._schedule_tz()` 解析成 `ZoneInfo` 并以 `datetime.now(tz)` 作 base，让 cron 字段按该时区解释（如 UTC 容器设 `TZ=Asia/Shanghai` 则 `0 9 * * *` 按北京 9 点触发）；`TZ` 未设 / 非法时退回 naive `datetime.now()`，行为与默认一致，不额外依赖 `tzdata`
 - **消息 ``kind``（JSONL provenance，敲定协议）**：OpenAI ``role`` 不变；用正交字段区分对话来源（``chat`` / ``schedule.display`` / ``schedule.silent`` / …）。Gateway ``/history`` 只返回 ``is_displayable_chat_message``。AI 请求经 ``messages_for_ai`` 剥掉消息 ``kind``/遗留 ``chat_type``。**≠** SSE / ``AgentChunk.kind``（``thinking`` / ``tool_call`` / ``tool_result``）——后者只标过程流 provenance，不进 history 白名单语义
-- ``visibility: silent`` 的 schedule（heartbeat）结果永不 pending、永不展示
+- ``visibility: silent`` 的 schedule（heartbeat）**正文**永不 pending、永不展示；**但 `[SEND:]` 交付例外（刻意为之，勿"修"回整轮丢弃）**：`file_delivery_chunks()` 从这一轮的 chunks 里只挑出 `[SEND:]` 标记、丢掉其余每一个字，再 stash 成 pending。因为上传由 **Channel** 执行而非 Session，silent 轮写出来的文件若不 pending 就永远到不了用户手上，只在没人看的 history 里被宣布过；而只留标记就不会出现「已在群里发提醒 ✅」抢在用户下一条回答前面的搭便车汇报。`fire: tool` 另需单独处理——它的结果只进 `reasoning`，而 `[SEND:]` 只在 `content` 里扫，故 silent 时把标记显式补成 content chunk
 - ``visibility: display`` 的 schedule 结果可进 history，并通过 pending 随下次 ``POST /chat`` 带回（``/events/schedule`` 推送通道仍待定）
 - `fire: prompt` 触发只是 Session 内再跑一轮 agent（TASK 正文当 user message）——**不会**自动往飞书推 IM；`fire: tool` 才按 YAML 直调工具（如 `feishu_message_send`）
 - Schedule 响应的 content 和 reasoning 各自存在于各自的消息周期，不会交错
@@ -322,7 +322,7 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 | `schedule.silent` / `trigger.silent` / `compacted` | 否 |
 | 遗留 `chat_type=schedule` / `*_schedule` role | 视为 silent |
 
-Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记。
+Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记——正则来自 ``psi_agent._transfer_markers``（包顶层唯一真源，与 Channel 的上传扫描共用一份）。**不要在本层另 `re.compile` 一份**：Channel 认得的标记必须同时被剥掉并投影成附件，否则两侧会静默分叉（只有上传侧认 → 文件发了但气泡里还留着裸标记；只有展示侧认 → 标记被剥掉、文件从未上传，回复凭空承诺一个不存在的附件）。
 
 ## History 持久化
 
@@ -332,14 +332,15 @@ Session 支持将对话历史持久化到 AppData `histories/{session_id}.jsonl`
 - **读**：优先 AppData 文件；缺则双读 legacy `{workspace}/histories/{session_id}.jsonl`
 - `Session.session_id: str | None = None` — None 时自动生成 UUID，给定字符串时可 resume
 - 加载：`SessionAgent.create()` → `Conversation.from_workspace(..., appdata_root=…)` 双读
-- **Turn 级别原子性**：`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；任何异常（AI error、连接断开、cancellation）都会通过 ``__aexit__`` 自动触发 `Conversation.rollback()` 恢复到快照，保证内存和磁盘始终同步于最近一个成功阶段。
+- **Turn 级别原子性**：`SessionAgent.run()` 每次调用通过 ``async with self._conversation`` 进入上下文管理器，首次 `add()` / `replace_system()` 自动建立快照。user message 追加后立即 `commit()`（早期落盘，崩溃恢复基线），后续仅在对 AI 响应成功的检查点再次 `commit()` 更新；任何异常（AI error、连接断开、cancellation）都会通过 ``__aexit__`` 自动触发 `Conversation.rollback()` 恢复到快照，保证内存和磁盘始终同步于最近一个成功阶段。**注意 `rollback()` 删不掉那条已 `commit()` 的 user 行**——中断回合的清理由 `run()` 包装单独负责（见下文「中断回合不留孤儿 user 行」）。
 - 保存时机（一致性检查点）：
   - `finish_reason="stop"` — assistant 响应追加后立即 `commit()`，随后刷新 schedule registry（完整回合）；若收到 compaction 信号则 `_maybe_compact()` 插入 `compacted` 消息并 `commit()`
   - `finish_reason="tool_calls"` — 所有 tool 结果追加后立即 `commit()`（子回合）
   - unexpected `finish_reason` — 累积 content 追加后 `commit()`
   - 达到 `max_tool_rounds` — 追加 `[Max tool rounds reached]` assistant 消息后 `commit()`
 - `Conversation.save()` 使用 tempfile + `os.replace()` 实现原子写入；`commit()` 封装 save + 清除快照
-- **部分保存**的场景：`finish_reason="error"`、AI 连接断开、channel 断开、schedule runner 异常——user message 已通过早期 `commit()` 落盘，AI 响应部分通过 `rollback()` 回滚，不写入磁盘
+- **部分保存**的场景：`finish_reason="error"`、AI 连接断开、schedule runner 异常——user message 已通过早期 `commit()` 落盘，AI 响应部分通过 `rollback()` 回滚，不写入磁盘。**channel 断开 / 点「停止」（`GeneratorExit`）与 cancellation 例外**：这两种是「回合被中断」而非「回合失败」，`run()` 包装会把那条已落盘、无人应答的 user 行删掉并重新 `commit()`（下一条）
+- **中断回合不留孤儿 user 行（刻意为之，勿"简化"掉 `run()` 这层包装）**：`run()` 只做包装，回合逻辑在 `_run_turn()`；仅当抛出 `GeneratorExit` 或 cancelled 时删掉尾部无人应答的 user 行。因为 user 行是 `add` 完**立刻** `commit` 的（这一步让 pending 清空变持久，见 `test_agent_rollback_restores_pending_on_error`），快照已清、`rollback()` 删不掉它。留着不是美观问题：下一次请求会把这条孤儿行当作「最近的真实用户提问」带给模型，于是 silent 心跳一触发，模型回答的是用户那条陈旧请求，且那一轮写下的每一行都盖上**触发方**的 kind（`schedule.silent`），用户自己要的产物在 `/history` 里变成不可见。**刻意不覆盖另两种情形**：`AgentError` 时 Channel 会把错误作为 error chunk 回给用户，提问是已被知会的历史，重试与否由用户决定（`test_agent_ai_error_not_in_history` / `test_history_not_saved_on_error` 锁定）；正常返回时即使回答为空也保留 user 行，不能把用户的问题悄悄删掉。两个实现约束：必须 `aclosing` 先把内层 `_run_turn` 收尾，否则它的 rollback 在 trim 之后跑、把刚删掉的行又复活；`commit` 要 `CancelScope(shield=True)`，因为中断多半就是 cancel。`except BaseException` + 无条件 `raise` 与 `system_prompt.py` / `tool_registry.py` 同款，不吞取消信号
 - 首次使用时自动创建 AppData `histories/` 目录 + `.gitignore`（忽略全部文件）
 
 ## Context Compaction

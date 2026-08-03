@@ -75,7 +75,6 @@ _KNOWN_KINDS = frozenset(
 # also be stripped from the bubble and projected as an attachment, or a
 # ``[ SEND:… ]`` file gets uploaded while its raw marker stays visible in the
 # transcript. See ``psi_agent._transfer_markers``.
-_TRANSFER_MARKER_RE = TRANSFER_MARKER_RE
 
 
 def normalize_kind(raw: object) -> str:
@@ -229,7 +228,7 @@ def _fold_turn_context(content: Any, turn_context: str) -> Any:
 
 def strip_transfer_markers(text: str) -> str:
     """Remove ``[SEND:…]`` / ``[RECV:…]`` from display text (Gateway projection)."""
-    cleaned = _TRANSFER_MARKER_RE.sub("", text)
+    cleaned = TRANSFER_MARKER_RE.sub("", text)
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
 
 
