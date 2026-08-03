@@ -22,10 +22,10 @@ jobs:
             https://www.antlr.org/download/antlr-4.13.2-complete.jar
           echo "eae2dfa119a64327444672aff63e9ec35a20180dc5b8090b7a6ab85125df4d76  $RUNNER_TEMP/antlr-4.13.2-complete.jar" \
             | sha256sum --check
-      - name: Verify FusionFlow generated sources
-        working-directory: examples/haitun-workspace/skills/fusion-flow
+      - name: Verify Workflow generated sources
+        working-directory: examples/haitun-workspace/skills/workflow
         run: |
-          output="$RUNNER_TEMP/fusion-flow-generated"
+          output="$RUNNER_TEMP/workflow-generated"
           mkdir "$output"
           java -jar "$RUNNER_TEMP/antlr-4.13.2-complete.jar" \
             -Dlanguage=Python3 -no-listener -Xexact-output-dir \
@@ -55,11 +55,11 @@ jobs:
           python-version: "3.14"
       - run: uv sync
       - run: uv run pytest -v
-      - name: Test Fusion Flow Next smoke contracts
+      - name: Test Workflow smoke contracts
         run: >-
           uv run pytest -q
-          examples/haitun-workspace/skills/fusion-flow/test/test_smoke.py
-          examples/haitun-workspace/skills/fusion-flow/test/test_workspace_integration.py
+          examples/haitun-workspace/skills/workflow/test/test_smoke.py
+          examples/haitun-workspace/skills/workflow/test/test_workspace_integration.py
 
   publish:
     needs: [lint, test]

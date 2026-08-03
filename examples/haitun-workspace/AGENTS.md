@@ -10,7 +10,7 @@ in the system prompt). It merges the most useful parts of the other example work
   `turn_context_builder()` and delivered at the *tail* of the request, on the turn's own user
   message, so staying current leaves the prompt and every earlier turn untouched. `USER.md` and the dynamic
   context files stay in the prompt and trigger a rebuild only when their **content** changes.
-- **Fusion Flow Next** — `fusion-flow` hosts the formal-language workflow system
+- **Workflow** — `workflow` hosts the formal-language workflow system
   defined by `FusionFlow.g4`; `workflow_graph` stores checked Step–Artifact
   structure, `workflow_execution` executes inspectable plans, and the workspace
   runner dispatches Agent and Program Steps plus resumable Human waits.
@@ -152,8 +152,8 @@ service tools:
 | `write_excel` | Build a real `.xlsx` from a 2D array (bold header, column-width fitting). |
 | `write_word` | Build a real `.docx` from structured blocks (headings/paragraphs/tables); sets the East-Asian font (`w:eastAsia`) on every style so Chinese text isn't "字体不齐". |
 | `skill_manage` | CRUD on **agent** `skills/<name>/SKILL.md`（经 `get_agent()`）。**先 list 再 create**：同类 skill 已存在则 `patch`，禁止平行新建。`patch` 允许 `created_by: agent` 或 `agent_editable: true`（如 `feishu-resume-review`）。判定/写法：`skill-authoring-when` / `skill-authoring-how`（**先于**自进化落库）。 |
-| `flow_manage` | CRUD + promote on Fusion Flow assets under **workspace** `flows/`; prefers `.workflow` / `.g4` over `.flow.ts`. |
-| `run_flow` / `run_flow_resume` | Execute Fusion Flow Next plans. Runs without Human Steps finish in the initial call; Human Steps return a checkpointed request that resumes only through `run_flow_resume`. |
+| `flow_manage` | CRUD + promote on workflow assets under **workspace** `flows/`; prefers `.workflow` / `.g4` over `.flow.ts`. |
+| `run_flow` / `run_flow_resume` | Execute Workflow plans. Runs without Human Steps finish in the initial call; Human Steps return a checkpointed request that resumes only through `run_flow_resume`. |
 | `flow_run` | Legacy Node/Fuclaw `.flow.ts` runner retained for explicit fallback use. |
 | `schedule_manage` | CRUD on **workspace** `schedules/<name>/TASK.md`. **Recurring**: `action=create` + `cron`. **One-shot**: `action=create` + `once_at` (`YYYY-MM-DD HH:MM` local) → writes cron + `run_once: true` (Session deletes TASK.md after first successful fire). **`fire=tool`**: Session calls `tool(**tool_args)` at fire time with no LLM (required for Feishu IM reminders via `feishu_message_send`). `fire=prompt` (default) injects TASK body for an agent turn. Also `visibility` (`display`/`silent`), list/view/patch/delete. |
 | `trigger_manage` | CRUD on **agent** `triggers/<name>/TRIGGER.md`。`event` 名应对齐 agent ``channel_events/`` 已接通能力；Session 不再用 catalog 硬拒。`fire=tool` 命中后直调工具。见 `skills/feishu-event-remind`；事件定义见 ``channel_events/README.md``。 |
@@ -252,7 +252,7 @@ service tools:
   `NO_REPLY`、发送确认或重复卡片内容/按钮；若仍有卡片未承载的必要信息（风险、部分失败、必要后续步骤），
   则必须只回复这些信息。若卡片已发送但 snapshot 保存失败，工具返回
   `ok=false, sent=true, callback_context_saved=false`；必须告知这项必要的部分失败，且不要重发卡片造成重复。
-- `fusion-flow` — immutable Fusion Flow Next skill for the formal G4 language and checked Step–Artifact plans.
+- `workflow` — immutable Workflow skill for the formal G4 language and checked Step–Artifact plans.
 - `flow` (`skills/fusion-flow-legacy/`) — immutable legacy Node/Fuclaw `.flow.ts` fallback.
 
 ## Schedules (`schedules/`)
@@ -302,7 +302,7 @@ service tools:
   a token or token map; do not authenticate from `<feishu_context>`, create a
   local memory service, or use another public memory transport.
 
-- **Fusion Flow Next**: bundled Python parser/compiler and executor; no separate setup.
+- **Workflow**: bundled Python parser/compiler and executor; no separate setup.
 - **Fusion Flow Legacy**: Node.js / `npm` / `npx`. First use:
   `cd skills/fusion-flow-legacy && npm install`.
 - **Serper search**: install psi-agent with the `mcp` extra and have `uvx` available.

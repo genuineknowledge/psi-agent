@@ -3,8 +3,8 @@
 A consolidated psi-agent workspace whose agent is **Haitun (海豚)**. It combines:
 
 - a de-branded OpenClaw-style system-prompt engine (all config kept **inside** the workspace),
-- full **Fusion Flow Next** workflow authoring (the formal language defined by
-  `FusionFlow.g4`, hosted by the `fusion-flow` skill, with an explicit
+- full **Workflow** authoring (the formal language defined by
+  `FusionFlow.g4`, hosted by the `workflow` skill, with an explicit
   TypeScript fallback under `fusion-flow-legacy`, plus `flow_manage` + `flows/`),
 - the hermes domain skill set + curated skills, and
 - clean async file/shell tools, Serper web search, and environment-configured
@@ -46,7 +46,7 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 
 - **First run** triggers a short onboarding (from `BOOTSTRAP.md`). Delete `BOOTSTRAP.md` to
   skip it.
-- **Fusion Flow Next** is the default for new workflows. Its formal G4 language uses the
+- **Workflow** is the default for new workflows. Its formal G4 language uses the
   bundled Python parser/compiler and checked `run_flow` executor for Agent and Program Steps;
   Human waits continue through `run_flow_resume`. No separate setup is required. The existing
   `fusion-flow-legacy` Node/Fuclaw runtime remains available for explicit `.flow.ts` work:

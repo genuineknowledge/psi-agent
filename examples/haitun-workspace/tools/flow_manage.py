@@ -1,4 +1,4 @@
-"""Manage reusable Fusion Flow assets."""
+"""Manage reusable workflow assets."""
 
 from __future__ import annotations
 
@@ -115,7 +115,7 @@ async def flow_manage(
     target: str = "curated",
     flow_source: str = "",
 ) -> str:
-    """Create, patch, view, list, or promote reusable Fusion Flow assets.
+    """Create, patch, view, list, or promote reusable workflow assets.
 
     Args:
         action: One of "list", "view", "create", "patch", or "promote".
@@ -125,7 +125,7 @@ async def flow_manage(
         body: FLOW.md body text, excluding frontmatter and source block.
         flow_ts: Legacy TypeScript flow content to store in FLOW.md.
         target: For list/view/create. Use "curated", "tasks", "adhoc", or "all".
-        flow_source: Preferred Fusion Flow Next G4 source to store in FLOW.md.
+        flow_source: Preferred G4 source to store in FLOW.md.
 
     Returns:
         A result message, list output, or flow content.

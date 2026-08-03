@@ -76,7 +76,7 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "subagent_wait": "Wait until subagent AI or Session socket is ready",
     "subagent_chat": "Send one message to a subagent; returns final text only",
     "skill_manage": "Create, patch, view, and list workspace skills",
-    "flow_manage": "Create, patch, view, list, and promote reusable Fusion Flow assets",
+    "flow_manage": "Create, patch, view, list, and promote reusable workflow assets",
     "memory_add": "Store durable user preferences, project facts, or decisions",
     "memory_search": "Search Fusion Memory for raw evidence",
     "memory_answer_context": "Retrieve a query-grounded Fusion Memory context pack",

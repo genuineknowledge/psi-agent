@@ -1,4 +1,4 @@
-"""Compile and execute one FusionFlow G4 workflow."""
+"""Compile and execute one G4 workflow."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistr
 _TOOLS_DIR = Path(__file__).parent
 _AGENT_DIR = _TOOLS_DIR.parent
 _WORKSPACE_DIR = _AGENT_DIR
-_SKILL_DIR = _AGENT_DIR / "skills" / "fusion-flow"
+_SKILL_DIR = _AGENT_DIR / "skills" / "workflow"
 for _import_dir in (_TOOLS_DIR, _SKILL_DIR):
     if str(_import_dir) not in sys.path:
         sys.path.insert(0, str(_import_dir))

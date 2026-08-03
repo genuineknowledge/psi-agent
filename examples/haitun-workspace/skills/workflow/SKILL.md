@@ -1,12 +1,11 @@
 ---
-name: fusion-flow
-description: Author, save, reuse, or run Fusion Flow Next, the formal-language workflow system defined by FusionFlow.g4. Use for saved workflow reuse by name, coordinated agents, Program Steps, Human checkpoints, parallel sub-tasks, or multi-step pipelines. Use the legacy flow skill only for explicit .flow.ts or Fuclaw compatibility work.
-metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fuclaw" } }
+name: workflow
+description: Author, save, reuse, or run formal-language workflows defined by FusionFlow.g4. Use for saved workflow reuse by name, coordinated agents, Program Steps, Human checkpoints, parallel sub-tasks, or multi-step pipelines. Use the legacy flow skill only for explicit .flow.ts or Fuclaw compatibility work.
 ---
 
-# Fusion Flow Next Skill
+# Workflow
 
-Fusion Flow Next is the formal-language workflow system defined by
+Workflow is the formal-language workflow system defined by
 `grammar/FusionFlow.g4`. This skill authors and runs its declarative programs in
 psi-agent. The workspace tool compiles source into Core IR, lowers it to a
 `WorkflowGraph`, executes a checked plan, runs Agent-backed Steps in ephemeral
@@ -23,7 +22,7 @@ structured process capture, and checkpoints Human-backed Steps across turns.
 
 Activate this skill when the user:
 
-- Asks to run a FusionFlow G4 workflow they already have ("跑一下这个 / 帮我跑 / 执行"). This skill does **not** ship runnable demo examples; "run" always means a concrete workflow the user has.
+- Asks to run a G4 workflow they already have ("跑一下这个 / 帮我跑 / 执行"). This skill does **not** ship runnable demo examples; "run" always means a concrete workflow the user has.
 - Asks to save, list, load, or reuse a workflow declaration.
 - Mentions FusionFlow or agent-flow
 - **Describes any task that needs a multi-agent workflow or agent collaboration**, even without saying "flow" — e.g. "让几个 agent 分别审一遍再汇总", "并行跑 N 个子任务再合并", "一步接一步处理(先 A 再 B 再 C)", "多角度评审后汇总", "把这件事拆成多个 agent 协作". If the task clearly benefits from orchestrating more than one agent / parallel branches / a multi-step pipeline, enter **Authoring Mode** (below) and offer to build a flow.
@@ -32,7 +31,7 @@ When in doubt about whether a task is "workflow-shaped": if it would take **two 
 
 ### HARD RULE: when you recognize a multi-agent task, your job is to BUILD A FLOW — not to do it yourself
 
-Once a task is workflow-shaped (multiple agents / parallel branches / multi-step pipeline / per-item work), your **one default action** is to enter Authoring Mode and build a FusionFlow G4 workflow. That is the entire point of this skill — the flow runtime spawns and coordinates the sub-agents; **you do not play those sub-agents yourself**.
+Once a task is workflow-shaped (multiple agents / parallel branches / multi-step pipeline / per-item work), your **one default action** is to enter Authoring Mode and build a G4 workflow. That is the entire point of this skill — the flow runtime spawns and coordinates the sub-agents; **you do not play those sub-agents yourself**.
 
 Do **NOT** offer "我直接帮你做这一次" as an option, and especially do **NOT** make it the default. Building the flow IS how you help: doing it by hand throws away explicit dependencies, graph concurrency, named Artifacts, and the reusable G4 source.
 
@@ -65,7 +64,7 @@ not compatibility alternatives.
 
 The skill's job is to:
 
-1. Turn the user's intent into valid FusionFlow G4 source, or resolve the concrete G4 workflow they pointed to.
+1. Turn the user's intent into valid Workflow G4 source, or resolve the concrete G4 workflow they pointed to.
 2. Save reusable source at the fixed path with existing file tools when requested.
 3. Start it through `run_flow`.
 4. If it reaches a Human Step, pass the nested `$fusion_flow/control.request` fields to the existing `clarify` tool, end the turn, and resume from the next user message.
@@ -86,12 +85,12 @@ Natural-language workflow requests map to these actions:
 | "接着上次那个跑 / 只重跑改动的部分" | Use `run_flow_resume` only for the active Human request already returned in this conversation. Arbitrary cache/resume is unsupported; otherwise offer a fresh run. |
 | "看看结果 / 刚才那个跑完了吗" | Use the result already returned. A Human wait is not completion; wait for the user's answer rather than polling. |
 | "环境齐不齐 / 能不能跑 / 帮我检查下" | Confirm that the G4 source parses and that all Steps use supported Agent, Human, or Program executors. |
-| **"帮我写个工作流做 X / 帮我编排 / 我想让几个 agent ..."** | **Author a new FusionFlow G4 workflow from natural language. See "Authoring Mode" below.** |
+| **"帮我写个工作流做 X / 帮我编排 / 我想让几个 agent ..."** | **Author a new G4 workflow from natural language. See "Authoring Mode" below.** |
 | Anything else workflow-shaped | Interpret intent against this table |
 
 ## Running a Workflow
 
-Use the workspace `run_flow` tool for FusionFlow G4 source. It validates the workflow and returns either the final output Artifacts or one persisted Human request under the reserved `$fusion_flow/control` key.
+Use the workspace `run_flow` tool for Workflow G4 source. It validates the workflow and returns either the final output Artifacts or one persisted Human request under the reserved `$fusion_flow/control` key.
 
 ### Saved workflow reuse
 
@@ -126,7 +125,7 @@ only a returned active Human request may continue through `run_flow_resume`.
 
 ### G4-only boundary
 
-Only author and run FusionFlow G4 source. If the user points to any non-G4 workflow file, do not execute it, treat it as supported, or translate it implicitly. State that this skill accepts G4 source only. If the user explicitly asks to migrate that workflow, enter Authoring Mode and author one new G4 workflow from its intent.
+Only author and run Workflow G4 source. If the user points to any non-G4 workflow file, do not execute it, treat it as supported, or translate it implicitly. State that this skill accepts G4 source only. If the user explicitly asks to migrate that workflow, enter Authoring Mode and author one new G4 workflow from its intent.
 
 Use a workspace-relative `.workflow` or `.g4` path under `flows/`. Never guess, scan for, or execute a path outside the workspace.
 
@@ -155,7 +154,7 @@ Never invent, reuse, or guess a run/request ID. A changed workflow source, stale
 
 ## Agent-, Human-, and Program-backed execution
 
-Before executing a FusionFlow G4 workflow:
+Before executing a G4 workflow:
 
 1. Ensure every Step executor is declared as exactly one of `Agent`, `Human`, or `Program`. Every Program must declare an explicit workspace-relative `program_path`.
 2. Internally estimate cost and latency from the number of Agent and Program Steps. Fold that into one plain-language heads-up line.
@@ -214,7 +213,7 @@ Paths are relative to the workspace:
 
 | File | Location | Purpose |
 | --- | --- | --- |
-| `flows/<task-slug>/` | one-off authored FusionFlow G4 source |
+| `flows/<task-slug>/` | one-off authored Workflow G4 source |
 | `flows/<task-slug>/instructions/*.md` | optional long-form instructions for that one-off source |
 | `flows/workflows/<slug>/<slug>.workflow` or `<slug>.g4` | reusable G4 source (`.workflow` preferred when both exist) |
 | `flows/workflows/<slug>/instructions/*.md` | optional long-form instructions for that reusable source |
@@ -223,9 +222,9 @@ Paths are relative to the workspace:
 
 ## Authoring Mode
 
-This is the flagship: turn a natural-language intent into a runnable FusionFlow G4 workflow. The user normally describes what they want in plain words ("帮我写个工作流做 X"). A request to run an already-saved workflow by name is reuse, not an authoring request.
+This is the flagship: turn a natural-language intent into a runnable G4 workflow. The user normally describes what they want in plain words ("帮我写个工作流做 X"). A request to run an already-saved workflow by name is reuse, not an authoring request.
 
-> **NO-MOCK RULE (global, applies to all of Authoring Mode).** When you build a flow for the user, author **exactly one** real FusionFlow G4 workflow and NEVER fabricate a mock/offline/simplified twin to "test" or "demonstrate" it. A twin with hardcoded sample output, fake numbers, or a fake executor standing in for the real work is a **forgery** — it always "passes" regardless of what the real flow does, so it proves nothing and misleads the user. Validate the one real workflow, then actually run it. If the user *explicitly* later asks for an offline twin, that's a separate request you confirm first — never self-initiate one.
+> **NO-MOCK RULE (global, applies to all of Authoring Mode).** When you build a flow for the user, author **exactly one** real G4 workflow and NEVER fabricate a mock/offline/simplified twin to "test" or "demonstrate" it. A twin with hardcoded sample output, fake numbers, or a fake executor standing in for the real work is a **forgery** — it always "passes" regardless of what the real flow does, so it proves nothing and misleads the user. Validate the one real workflow, then actually run it. If the user *explicitly* later asks for an offline twin, that's a separate request you confirm first — never self-initiate one.
 >
 > Inlined source snippets in this Skill are authoring guidance, not runnable bundled workflows. The ban is on fabricating a second version of the user's flow.
 
@@ -233,14 +232,14 @@ This is the flagship: turn a natural-language intent into a runnable FusionFlow 
 
 - User describes a workflow they want built: "帮我写个工作流 ..." / "make a flow that ..." / "帮我编排 ..." / similar.
 - User asks "帮我写一个 flow ..." / "make a flow that ..." / similar in any LLM client.
-- User edits existing FusionFlow G4 source and asks you to "rewrite" or "扩展".
+- User edits existing Workflow G4 source and asks you to "rewrite" or "扩展".
 - **User describes a workflow-shaped task without naming "flow"** — anything needing two or more coordinated agents / parallel branches / a multi-step pipeline / per-item work (see "When to Activate"). In that case, don't wait for the word "flow": offer to build one, then run the author loop below.
 
 ### The 5-step author loop
 
-1. **Understand intent** — restate the user's goal in 1 sentence. If genuinely ambiguous, ask **one** clarifying question (don't grill them). Note whether the user looks like a *developer* (asked to edit FusionFlow G4 source or mentioned operators) — that's the only case where you show technical detail later. Everyone else gets the minimal plain-language summary.
+1. **Understand intent** — restate the user's goal in 1 sentence. If genuinely ambiguous, ask **one** clarifying question (don't grill them). Note whether the user looks like a *developer* (asked to edit Workflow G4 source or mentioned operators) — that's the only case where you show technical detail later. Everyone else gets the minimal plain-language summary.
 2. **Model the workflow** — match the intent to one of the executable reference patterns below. Identify inputs, outputs, Agent-, Human-, or Program-backed Steps, Artifacts, dependencies, concurrency, resources, and timeouts. Let information dependencies determine graph depth: add an intermediate aggregation layer only when downstream work needs a coherent result from a distinct group of upstream Artifacts.
-3. **Author one FusionFlow G4 source** — before writing, read `grammar/FusionFlow.g4` completely and treat it as the sole source of truth for FusionFlow syntax and preset operators. Use only declarations, assertions, terms, and operators documented there. Use the workspace-provided target path; never invent a second copy.
+3. **Author one Workflow G4 source** — before writing, read `grammar/FusionFlow.g4` completely and treat it as the sole source of truth for FusionFlow syntax and preset operators. Use only declarations, assertions, terms, and operators documented there. Use the workspace-provided target path; never invent a second copy.
 4. **Static self-check** — compare the source against `grammar/FusionFlow.g4` and the executable guardrails in this Skill. `run_flow` repeats this with its built-in `check_workflow` pass before dispatch; there is no separate validation tool or CLI.
 5. **Start it once** — the user asked you to do a task, not to receive an implementation artifact. After the static self-check, say ONE friendly heads-up line ("🚀 方案定了，正在帮你跑，预计几分钟…" — a notice, NOT a question), then call `run_flow` once. A declared Human Step may later ask its own task-specific question through the Human protocol; that is part of execution, not an extra pre-run gate. **Do NOT ask "要不要跑 / 跑不跑" and do NOT wait for `跑`.** The only exception is when the user explicitly says "只生成别跑 / 先给我看看别执行".
 
@@ -272,7 +271,7 @@ Keep this **minimal**. A real investor ("悠悠") and an internal teammate ("张
 🚀 我来帮你做：<一句话讲清楚要产出什么，e.g. "并行调研 5 个 AI 方向，汇总打分后给你一份带『重点关注 / 投资机会』的总报告">，预计几分钟，这就开始。
 ```
 
-That's it — one line, then you run. Do **not** add `做什么 / 要多久 / 你会拿到` as separate fields, do not list steps, do not show 🔧/🎯/📝 lines, do not show the file path, do not ask for approval. If the user is clearly a **developer** (asked to edit FusionFlow G4 source, mentioned operators, or explicitly asks "用了哪些语法 / 给我看结构 / 文件在哪"), you may then show technical detail **on demand**:
+That's it — one line, then you run. Do **not** add `做什么 / 要多久 / 你会拿到` as separate fields, do not list steps, do not show 🔧/🎯/📝 lines, do not show the file path, do not ask for approval. If the user is clearly a **developer** (asked to edit Workflow G4 source, mentioned operators, or explicitly asks "用了哪些语法 / 给我看结构 / 文件在哪"), you may then show technical detail **on demand**:
 
 ```
 🔧 3 个审查 Step 共用输入，1 个汇总 Step 消费三个结果 ｜ `max_concurrency = 3`
@@ -299,7 +298,7 @@ Token estimate rule of thumb: each ordinary LLM work step ≈ 1500 input + 800 o
 
 Read `grammar/FusionFlow.g4` completely before using these patterns. The grammar is authoritative; these patterns illustrate artifact dependencies and do not add syntax or operators.
 
-| Pattern | FusionFlow shape | When to use |
+| Pattern | Workflow shape | When to use |
 | --- | --- | --- |
 | **Fan-out + fan-in** | Several Steps each use `consumes(step) == [shared_artifact]`; one final Step uses `consumes(final_step) == [result_a, result_b]`. Set `max_concurrency` on the workflow when needed. | PR review, multi-perspective audit, content moderation. |
 | **Artifact pipeline** | Each Step produces the Artifact consumed by the next Step. Use `max_attempts` only when rerunning that individual Step is safe. | Writing, ETL, and refine-and-check work. |
@@ -598,7 +597,7 @@ Use free-form quoted text only where the typed catalog expects an `Instruction` 
 
 ### Anti-patterns to refuse
 
-1. **Hand-writing imports or imperative runtime calls.** The authored program is FusionFlow G4 source.
+1. **Hand-writing imports or imperative runtime calls.** The authored program is Workflow G4 source.
 2. **Inventing a keyword or operator.** Flexible call syntax does not make unknown names valid.
 3. **Using `==` inside a condition or `=` for a workflow assertion.** These have different grammar roles.
 4. **Using a symbolic instruction label as the task.** A Step needs actionable instruction text or a companion instruction file, not only a name such as `"task_label"`.
@@ -663,7 +662,7 @@ This manual source review is not a second tool or CLI invocation. Inside `run_fl
 
 - It is **not** a guarantee the workflow gets good *content*. We control structure and execution; the task instructions still depend on the user's domain.
 - It is **not** auto-iterating on content. The user reads the result and asks for changes, but there is no "要不要跑" gate before the first run.
-- It is **not** a reason to show implementation details to a business user. Technical users can ask for the FusionFlow G4 source and structure on demand.
+- It is **not** a reason to show implementation details to a business user. Technical users can ask for the Workflow G4 source and structure on demand.
 
 ## Doctor Checks
 
@@ -676,14 +675,14 @@ When the user asks whether a workflow can run:
 If the static check finds an issue, report:
 
 ```
-✗ FusionFlow source is not ready to run
+✗ Workflow source is not ready to run
   Reason: <first source-contract issue>
 ```
 
 Otherwise:
 
 ```
-✓ FusionFlow source is ready for run_flow
+✓ Workflow source is ready for run_flow
 ```
 
 ## Capabilities
@@ -691,7 +690,7 @@ Otherwise:
 When the user asks what this skill can do ("你能帮我做什么 / 我能用这个干嘛"), lead with natural-language examples and mention saved-workflow reuse:
 
 ```
-🐾 FusionFlow G4
+🐾 Workflow
 用自然语言驱动多 Agent 工作流，也可以保存后按名称复用：
 
   • "帮我写个工作流做 X / 帮我编排 ..."           → 用大白话描述需求，我帮你搭好并运行

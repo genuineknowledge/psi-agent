@@ -1,6 +1,6 @@
 ---
 name: flow
-description: Legacy fallback for authoring or running existing `@agent-flow/core` (Fuclaw) TypeScript `.flow.ts` workflows. Activate only for an explicit `.flow.ts`, Fuclaw, or `@agent-flow/core` request; use `fusion-flow` for new multi-agent workflows.
+description: Legacy fallback for authoring or running existing `@agent-flow/core` (Fuclaw) TypeScript `.flow.ts` workflows. Activate only for an explicit `.flow.ts`, Fuclaw, or `@agent-flow/core` request; use `workflow` for new multi-agent workflows.
 metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fuclaw" } }
 ---
 
@@ -8,7 +8,7 @@ metadata: { "openclaw": { "emoji": "🐾", "homepage": "https://github.com/fucla
 
 This skill is the author + run protocol for **`@agent-flow/core`** (alias: Fuclaw) — a TypeScript runtime that executes multi-agent workflows and emits a full **execution graph** for replay. Unlike OpenProse, where the LLM *is* the VM, here the VM is a Node.js process; the LLM only orchestrates running it and reading its artifacts.
 
-> **Compatibility boundary.** Use this runtime only for explicit legacy `.flow.ts` work. New workflows use Fusion Flow Next through the `fusion-flow` skill and its formal G4 `run_flow` path.
+> **Compatibility boundary.** Use this runtime only for explicit legacy `.flow.ts` work. New workflows use the `workflow` skill and its formal G4 `run_flow` path.
 
 > **What you're working in.** The normal delivery is a **self-contained bundle**: the user copied the `fusion-flow-legacy/` folder somewhere, ran `npm install` once, and works inside it. Call that directory `<workDir>`. Everything below — generated `.flow.ts`, the `.env`, the `runs/` artifacts — lives **relative to `<workDir>`** (the directory you `cd` into and run `npx tsx` from), NOT inside any `core/` subfolder. The only time `<workDir>` is a `core/` is when the user happens to be inside a cloned Fuclaw source repo (see "Runtime mode detection"). This skill runs in any long-context LLM client (Claude Code / Cursor / Cherry Studio / Claude.ai); it does not depend on OpenClaw or any plugin install.
 
@@ -23,7 +23,7 @@ Activate this skill when the user:
 - Mentions "agent-flow", "Fuclaw", or "@agent-flow/core"
 - Explicitly asks to keep or migrate behavior tied to the legacy TypeScript runtime.
 
-For generic multi-agent, parallel, or multi-step intent without a legacy marker, activate `fusion-flow` instead.
+For generic multi-agent, parallel, or multi-step intent without a legacy marker, activate `workflow` instead.
 
 ### HARD RULE: when you recognize a multi-agent task, your job is to BUILD A FLOW — not to do it yourself
 
@@ -82,7 +82,7 @@ npx tsx <path-to-flow-file>
 
 1. **Default: it's the bundle folder.** If you see `runtime/agent-flow-core.bundle.mjs` + a sibling `examples/` (and a `package.json` with `"name": "fusion-flow-legacy"`), that folder IS `<workDir>`. Generated flows go in `<workDir>/examples/`, artifacts land in `<workDir>/runs/`. No config, no plugin, nothing to look up.
 2. **Source-repo case:** if instead you see `core/src/index.ts`, the user is inside a cloned Fuclaw repo — then `<workDir>` is the `core/` directory (see "Runtime mode detection" for the import-path difference).
-3. **If you genuinely can't tell which folder to work in** (e.g. several candidates), ask the user once in plain language: "你把 fusion-flow 文件夹拷到哪了？我在那个目录里帮你跑。" Then **remember it for the rest of this session** — don't re-ask.
+3. **If you genuinely can't tell which folder to work in** (e.g. several candidates), ask the user once in plain language: "你把 fusion-flow-legacy 文件夹拷到哪了？我在那个目录里帮你跑。" Then **remember it for the rest of this session** — don't re-ask.
 
 Never guess a path without verification. Never hardcode `D:/...` or any machine-specific path. Don't go scanning the filesystem for "a flow project" — work in the folder the user is actually in (see Hard-stop #4 in Authoring Mode).
 

@@ -1,6 +1,6 @@
-# Fusion Flow Next
+# Workflow
 
-Fusion Flow Next is the workspace-local formal-language workflow system defined
+Workflow is the workspace-local formal-language workflow system defined
 by `grammar/FusionFlow.g4`. It includes the parser/compiler, graph compiler,
 workflow runner, and authoring Skill. Program-backed Steps use an injected Program runner
 contract; the workspace entry point implements it with a specialized Program
@@ -70,7 +70,7 @@ repository root `pyproject.toml` and locked by the root `uv.lock`; this Skill
 has no independent npm install or per-Skill package lock.
 `graph_compiler.py` is one concrete backend. The graph model and plan executor
 remain internally decoupled from the parser/compiler/runner even though the
-FusionFlow Skill owns all of them.
+Workflow skill owns all of them.
 
 ## Current scope and known gaps
 
@@ -395,6 +395,6 @@ Commit only `FusionFlowLexer.py` and `FusionFlowParser.py`; the generated `.inte
 6. **Workflow Graph backend** owns `fusion_flow/graph_compiler.py`: compile real Core IR through the shared hooks into the `fusion_flow.workflow_graph` model while retaining residual assertions.
 7. **Planning warnings** owns `fusion_flow/planning.py`: after Haitun lists planned steps and before it authors the DSL, check their declared syntax mappings and warn about missing or unavailable names. Each item is already at `Step` granularity; this phase does not introduce a higher-level requirement model and cannot detect steps that Haitun failed to list.
 8. **Haitun integration** keeps the prompt, `run_flow`, and `flow_manage` entry points aligned with the G4 runtime.
-9. **Compatibility** preserves the `fusion-flow` G4 Skill identity and routes explicit legacy `.flow.ts` requests to `fusion-flow-legacy` without implicit translation.
+9. **Compatibility** exposes the `workflow` Skill identity while preserving the internal `fusion_flow` package, `FusionFlow.g4` grammar, and persisted protocol names; explicit legacy `.flow.ts` requests still route to `fusion-flow-legacy` without implicit translation.
 
 Dependency order: 1 + 2 -> 3 -> 4 -> 5 -> 6; 2 -> 7; 4 + 5 + 7 -> 8. Workstream 9 runs throughout and gates activation.

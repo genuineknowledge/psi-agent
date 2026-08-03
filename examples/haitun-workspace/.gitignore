@@ -25,7 +25,7 @@ __pycache__/
 skills/fusion-flow-legacy/node_modules/
 skills/fusion-flow-legacy/runs/
 skills/fusion-flow-legacy/.env
-skills/fusion-flow/.pytest_cache/
+skills/workflow/.pytest_cache/
 
 # multimodal API credentials (local dev only)
 .env.multimodal
@@ -56,8 +56,8 @@ flows/curated/**/runs/
 
 # image generation output (placeholder / inference)
 generated/
-!skills/fusion-flow/fusion_flow/generated/
-!skills/fusion-flow/fusion_flow/generated/*.py
+!skills/workflow/fusion_flow/generated/
+!skills/workflow/fusion_flow/generated/*.py
 
 psi-agent.exe
 psi-agent

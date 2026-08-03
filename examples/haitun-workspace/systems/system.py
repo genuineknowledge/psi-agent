@@ -7,8 +7,8 @@ This merges three ideas into one workspace:
 * An OpenClaw-style prompt engine (layered builder + a per-turn context block,
   skills index, bootstrap context files) - **de-branded**, with **all
   configuration kept inside the workspace** (there is no global config dir).
-* The Fusion Flow Next authoring capability (flows index + authoring guidance),
-  fully merged from the fusion-flow workspace.
+* The Workflow authoring capability (flows index + authoring guidance),
+  fully merged from the standalone workflow workspace.
 * A fixed Haitun agent persona, always stated in the system prompt.
 
 ``system_prompt_builder()``, ``system_prompt_rebuild_checker()``,
@@ -153,11 +153,11 @@ Only update workspace assets when the conversation produced reusable knowledge:
 - corrections to an agent-created skill or a new class-level skill
 
 Use `skill_manage` for reusable non-flow procedures.
-Use `flow_manage` for reusable Fusion Flow templates.
+Use `flow_manage` for reusable workflow templates.
 
 Rules:
 1. Do not update anything for one-off task facts, transient errors, secrets, local credentials, or user-private data.
-2. Do not patch user-authored skills or the immutable `skills/fusion-flow/` runtime skill.
+2. Do not patch user-authored skills or the immutable `skills/workflow/` runtime skill.
 3. Prefer patching an existing agent-created asset over creating a narrow duplicate.
 4. If nothing is worth saving, reply exactly: Nothing to save.
 """
@@ -561,7 +561,7 @@ async def _build_skills_index(workspace_dir: anyio.Path) -> str:
 
 
 async def _build_flows_index(flows_dir: anyio.Path) -> str:
-    """Index curated + generated Fusion Flow assets (merged from fusion-flow)."""
+    """Index curated + generated workflow assets."""
     curated_dir = flows_dir / "curated"
     task_lines: list[str] = []
     curated_lines: list[str] = []
@@ -816,7 +816,7 @@ def _build_self_evolution_tool_schemas() -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "flow_manage",
-                "description": "Create, patch, view, list, or promote reusable Fusion Flow assets.",
+                "description": "Create, patch, view, list, or promote reusable workflow assets.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -911,19 +911,19 @@ class System:
         self._user_workspace = user_workspace if user_workspace is not None else agent_dir
         self._previous_summary: str | None = None
 
-    async def _build_fusion_section(self) -> str:
-        """Fusion Flow Next authoring guidance with an explicit legacy fallback.
+    async def _build_workflow_section(self) -> str:
+        """Workflow authoring guidance with an explicit legacy fallback.
 
-        Returns empty string if the fusion-flow runtime skill is not present.
+        Returns empty string if the workflow runtime skill is not present.
         Skill/runtime live under the **agent** package; generated ``flows/`` under
         the **user workspace**.
         """
         agent_resolved = await self._agent_dir.resolve()
         user_resolved = await self._user_workspace.resolve()
         skills_dir = agent_resolved / "skills"
-        fusion_dir = skills_dir / "fusion-flow"
-        fusion_md = fusion_dir / "SKILL.md"
-        if not await fusion_md.exists():
+        workflow_dir = skills_dir / "workflow"
+        workflow_md = workflow_dir / "SKILL.md"
+        if not await workflow_md.exists():
             return ""
 
         legacy_dir = skills_dir / "fusion-flow-legacy"
@@ -938,18 +938,18 @@ class System:
         workflow_registry_dir = flows_dir / "workflows"
         flows_index = await _build_flows_index(flows_dir)
 
-        return f"""## Fusion Flow Next (formal-language workflow; explicit legacy fallback)
+        return f"""## Workflow (formal language; explicit legacy fallback)
 
-Fusion Flow Next is defined by `FusionFlow.g4`. Use `fusion-flow` and
+Workflow is defined by `FusionFlow.g4`. Use `workflow` and
 `run_flow` by default for multi-agent or multi-step work.
 
 ### Reusable workflow registry
 
 When the user asks in natural language to save, list, load, or reuse a saved
-Fusion Flow Next declaration (for example, `调用 daily-brief 的 workflow`):
+Workflow declaration (for example, `调用 daily-brief 的 workflow`):
 1. Read the full skill instructions at:
-   {fusion_md}
-   Relative path: skills/fusion-flow/SKILL.md
+   {workflow_md}
+   Relative path: skills/workflow/SKILL.md
 2. Resolve an existing slug under `flows/workflows/<slug>/`: prefer
    `<slug>.workflow`, otherwise use `<slug>.g4`; fail if neither file exists.
 3. Read the declaration and inspect `input_workflow(...)` before execution.
@@ -969,28 +969,28 @@ The reusable registry root is fixed at {workflow_registry_dir}.
 ### When to activate
 When the user describes a workflow-shaped task - multi-agent collaboration, parallel review,
 fan-out/fan-in, pipelines, multi-step research or scoring, or running a `.workflow`
-or `.g4` file - activate Fusion Flow Next.
+or `.g4` file - activate Workflow.
 
 **Multi-agent simulation is workflow-shaped - build a flow, do NOT role-play it yourself.**
-Any task that simulates several distinct agents/personas interacting is a Fusion Flow Next task:
+Any task that simulates several distinct agents/personas interacting is a Workflow task:
 a debate among N sides (三方辩论), a role-play conversation or roundtable (多角色对话/圆桌),
 a negotiation (谈判), red-team vs blue-team (红蓝对抗), a panel of experts / multi-expert
 review (多专家会诊/多角度评审), interviewer-vs-candidate, or any "let a few AIs each play a
-role and interact" request. When you recognize one, your DEFAULT action is to enter Fusion Flow
-Next Authoring Mode and build a `.workflow` where each role is its own Agent Step.
+role and interact" request. When you recognize one, your DEFAULT action is to enter Workflow
+Authoring Mode and build a `.workflow` where each role is its own Agent Step.
 Use named Artifacts and explicit dependencies for parallel branches and a final synthesizer.
 Do NOT play the roles yourself in a single reply.
 Only skip the flow if the user explicitly says they want a one-off answer and not a tool.
 
 To activate:
 1. Read the full skill instructions at:
-   {fusion_md}
-   Relative path: skills/fusion-flow/SKILL.md
+   {workflow_md}
+   Relative path: skills/workflow/SKILL.md
 2. Keep the skill itself immutable. Author generated task files under:
    {flows_dir}/<task-slug>/
    Layout:
    - {flows_dir}/<task-slug>/<task-slug>.workflow
-3. Review the source against `skills/fusion-flow/grammar/FusionFlow.g4`.
+3. Review the source against `skills/workflow/grammar/FusionFlow.g4`.
 4. Call `run_flow` once with all declared inputs and resource pools.
 5. Report the output Artifact mapping. For `$fusion_flow/control`, use
    `clarify` and next-turn `run_flow_resume` as described above.
@@ -1017,12 +1017,12 @@ Use them only when the task produces reusable knowledge or the user asks to main
 workspace. Never silently rewrite user-authored assets.
 
 Rules:
-1. Keep both `skills/fusion-flow/` and `skills/fusion-flow-legacy/` immutable - they are runtime
+1. Keep both `skills/workflow/` and `skills/fusion-flow-legacy/` immutable - they are runtime
    bundles, not generated skills.
 2. Treat skills without `created_by: agent` and without `agent_editable: true` as read-only.
 3. Before create: `skill_manage(list)` - if a similar domain skill exists, `patch` it (never create parallel skills).
 4. New learned procedures only when nothing similar exists -> `skill_manage(action="create")`.
-5. Reusable Fusion Flow Next declarations ->
+5. Reusable Workflow declarations ->
    `flows/workflows/<slug>/<slug>.workflow` or
    `flows/workflows/<slug>/<slug>.g4` via workspace file tools
    (`.workflow` takes precedence when both exist).
@@ -1087,7 +1087,7 @@ hand-copying the key.
 
 Never write API keys into this workspace, generated `.flow.ts` files, or committed `.env` files.
 
-Fusion Flow Next's executor reuses the invoking psi-agent Session's configured AI socket. Never write API keys into
+Workflow's executor reuses the invoking psi-agent Session's configured AI socket. Never write API keys into
 this workspace, generated workflows, instruction files, or committed `.env` files."""
 
     async def build_system_prompt(
@@ -1104,7 +1104,7 @@ this workspace, generated workflows, instruction files, or committed `.env` file
         # -- Stable prefix ------------------------------------------------
         identity = await _load_soul_md(ws)
         skills_xml = await _build_skills_index(ws)
-        fusion_section = await self._build_fusion_section()
+        workflow_section = await self._build_workflow_section()
         context_file = await _build_context_file(ws)
         bootstrap = await _build_bootstrap_files(ws)
         global_agents_md = await _build_global_agents_md()
@@ -1177,8 +1177,8 @@ this workspace, generated workflows, instruction files, or committed `.env` file
         if skills_section:
             stable_parts += ["", skills_section]
 
-        if fusion_section:
-            stable_parts += ["", fusion_section]
+        if workflow_section:
+            stable_parts += ["", workflow_section]
 
         workspace_abs = str(await user_ws.resolve())
         stable_parts += ["", build_workspace_section(workspace_abs)]
@@ -1365,7 +1365,7 @@ def _build_profile_policy(topic_profile: dict[str, Any]) -> str:
     socratic = "3. **苏格拉底提问**: 本轮必须提问!" if current_turn % 3 == 0 else "3. 本轮不强制提问。"
     return (
         "## 强制监督规则\n\n"
-        "0. **任务执行优先**: 若当前请求是 Fusion Flow Next 编排或执行, 跳过以下教学规则, "
+        "0. **任务执行优先**: 若当前请求是 Workflow 编排或执行, 跳过以下教学规则, "
         "以流程构建、运行结果和用户交付要求为准。\n"
         "1. **确定性标记**: 事实性陈述使用 `[已确认]`、`[推断]` 或 `[需验证]`。\n"
         "2. **反例注入**: 每个核心概念给出一个反例或边界场景。\n"

@@ -47,5 +47,5 @@ category: knowledge-base
 ## Boundaries
 
 - 自进化也必须遵守「先 list → patch 优先 → 最后 create」。  
-- 不可变包（如 `fusion-flow`）禁止 patch/create 同名。  
+- 不可变包（如 `workflow`）禁止 patch/create 同名。
 - 细节写法见 `skill-authoring-how`。

@@ -57,7 +57,7 @@ skill_manage(
 ### 命名
 
 - 类级、稳定：`feishu-resume-review`，不要 `fix-pr-123`、`debug-today`。  
-- 禁止保留名：`fusion-flow`、`skill-authoring-when`、`skill-authoring-how`、`_universal`、`_*`。
+- 禁止保留名：`workflow`、`fusion-flow`、`skill-authoring-when`、`skill-authoring-how`、`_universal`、`_*`。
 
 ## Boundaries
 

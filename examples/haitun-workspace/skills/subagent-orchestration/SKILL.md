@@ -23,7 +23,7 @@ category: agent
 ## 何时使用
 
 需要**单独 Session** 做有界任务 → 用本配方。固定多步流水线 → 优先
-`fusion-flow`；仅显式 `.flow.ts`/Fuclaw 请求用 `flow`（`skills/fusion-flow-legacy/`）。一两步能做完
+`workflow`；仅显式 `.flow.ts`/Fuclaw 请求用 `flow`（`skills/fusion-flow-legacy/`）。一两步能做完
 → 主 Session 直接做。**禁止**起第二个 Gateway。
 
 ---
