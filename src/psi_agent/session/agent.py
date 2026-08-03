@@ -284,7 +284,10 @@ class SessionAgent:
             # whether to retry (locked in by ``test_agent_ai_error_not_in_history``,
             # ``test_history_not_saved_on_error``). A normal return is likewise not
             # covered, so a complete-but-empty answer keeps its user row.
-            if isinstance(exc, GeneratorExit | anyio.get_cancelled_exc_class()):
+            # Tuple, not ``X | Y``: ``get_cancelled_exc_class()`` returns a value,
+            # so a UnionType built from it has a non-class element and ``ty``
+            # rejects it as an ``isinstance`` argument.
+            if isinstance(exc, (GeneratorExit, anyio.get_cancelled_exc_class())):
                 await self._drop_unanswered_user_row()
             raise
 
