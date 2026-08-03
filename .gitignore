@@ -6,7 +6,6 @@ __pycache__/
 dist/
 .ruff_cache/
 .pytest_cache/
-pytest-of-root/
 *.sock
 .coverage
 /result
