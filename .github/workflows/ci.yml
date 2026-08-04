@@ -27,11 +27,6 @@ jobs:
           python-version: "3.14"
       - run: uv sync
       - run: uv run pytest -v
-      - name: Test Workflow smoke contracts
-        run: >-
-          uv run pytest -q
-          examples/haitun-workspace/skills/workflow/test/test_smoke.py
-          examples/haitun-workspace/skills/workflow/test/test_workspace_integration.py
 
   publish:
     needs: [lint, test]

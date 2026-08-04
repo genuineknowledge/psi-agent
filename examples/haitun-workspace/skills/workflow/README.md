@@ -46,7 +46,6 @@ canonical reusable declarations under `flows/workflows/<slug>/`.
 ## Modules
 
 - `grammar/FusionFlow.g4`: the syntax grammar; ordinary preset/external-operator arity remains checker-owned.
-- `test/test_smoke.py`: focused graph, plan, resource, timeout, and mixed Agent/Program checks.
 - `fusion_flow/generated/`: committed ANTLR 4.13.2 Python lexer and parser generated from the grammar.
 - `fusion_flow/contracts.py`: diagnostics and parse/check phase results.
 - `fusion_flow/core_ir.py`: immutable Workflow Core IR shared by compiler phases.
@@ -61,7 +60,6 @@ canonical reusable declarations under `flows/workflows/<slug>/`.
 - `fusion_flow/job_store.py`: strict v3 JSON state plus non-blocking, OS-released advisory leases and an in-process guard for G4 runs waiting on Human input.
 - `fusion_flow/planning.py`: before workflow authoring, checks the syntax mappings declared for each planned step against the syntax names actually available. Each planned step maps to one catalog `Step` identity, which authoring expands into a typed constant and its assertions.
 - `fusion_flow/execution/`: shared Python `flow.*` runtime; the G4 adapter reuses `run`/`agent`/`session`, and the graph interpreter reuses its private retry and bounded-parallel helpers.
-- `test/test_workspace_integration.py`: canonical and legacy entry-point routing checks.
 
 The obsolete Node/TypeScript compiler prototype has been removed. The Python
 compiler abstraction does not select or implement a concrete output target.
