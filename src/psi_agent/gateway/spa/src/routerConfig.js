@@ -1,20 +1,35 @@
+export function routerAiRole(mode) {
+  return mode === 'aggregation' ? 'Aggregator' : 'Selector'
+}
+
+function nullablePositiveNumber(value) {
+  return value === '' || value == null ? null : Number(value)
+}
+
 export function validateRouterForm(form, ais) {
   const ids = new Set(ais.map(item => item.id))
-  if (!form.mode) return '请选择路由模式'
+  if (!['routing', 'aggregation'].includes(form.mode)) return '请选择路由模式'
   if (!form.name.trim()) return '请输入路由服务名称'
-  if (!ids.has(form.router_ai_id)) return '请选择已连接的路由判断模型'
+  if (!ids.has(form.router_ai_id)) return `请选择已连接的 ${routerAiRole(form.mode)} 模型`
   if (!form.upstreams.length) return '请至少添加一个候选模型'
   const candidateIds = form.upstreams.map(item => item.ai_id)
   if (candidateIds.some(id => !ids.has(id))) return '候选模型不存在'
   if (form.upstreams.some(item => !item.description.trim())) return '请填写每个候选模型擅长的任务'
   if (new Set(candidateIds).size !== candidateIds.length) return '候选模型不能重复'
-  if (!candidateIds.includes(form.default_ai_id)) return '默认模型必须是候选模型之一'
-  const timeout = form.router_timeout
-  if (timeout !== '' && timeout != null && (!(Number(timeout) > 0) || !Number.isFinite(Number(timeout)))) {
-    return '路由超时必须是正数'
+  if (form.mode === 'aggregation' && candidateIds.includes(form.router_ai_id)) {
+    return '聚合模式下 Aggregator 不能同时作为候选模型'
   }
-  if (!Number.isInteger(Number(form.max_context_length)) || Number(form.max_context_length) <= 0) {
-    return '最大上下文长度必须是正整数'
+  for (const [field, label] of [
+    ['router_timeout', 'Router 超时'],
+    ['target_timeout', '候选模型超时'],
+  ]) {
+    const value = form[field]
+    if (value !== '' && value != null && (!(Number(value) > 0) || !Number.isFinite(Number(value)))) {
+      return `${label}必须是正数`
+    }
+  }
+  if (!Number.isInteger(Number(form.max_context_chars)) || Number(form.max_context_chars) <= 0) {
+    return '最大上下文字符数必须是正整数'
   }
   return null
 }
@@ -28,8 +43,8 @@ export function buildRouterPayload(form) {
       ai_id: item.ai_id,
       description: item.description.trim(),
     })),
-    default_ai_id: form.default_ai_id,
-    router_timeout: form.router_timeout === '' || form.router_timeout == null ? null : Number(form.router_timeout),
-    max_context_length: Number(form.max_context_length),
+    router_timeout: nullablePositiveNumber(form.router_timeout),
+    target_timeout: nullablePositiveNumber(form.target_timeout),
+    max_context_chars: Number(form.max_context_chars),
   }
 }

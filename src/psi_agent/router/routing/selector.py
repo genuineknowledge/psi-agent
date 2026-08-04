@@ -42,9 +42,7 @@ class RouteSelector:
             timeout=self.config.selector_timeout,
         )
         if result.finish_reason != "stop":
-            raise RouteSelectionError(
-                f"Selector returned unsupported finish reason {result.finish_reason!r}"
-            )
+            raise RouteSelectionError(f"Selector returned unsupported finish reason {result.finish_reason!r}")
         if result.tool_calls:
             raise RouteSelectionError("Selector returned tool calls instead of a routing decision")
         try:
@@ -71,8 +69,7 @@ class RouteSelector:
             raise InvalidRouterRequestError("tools must be a list of objects")
 
         candidates = [
-            {"candidate_id": target.candidate_id, "description": target.description}
-            for target in self.config.targets
+            {"candidate_id": target.candidate_id, "description": target.description} for target in self.config.targets
         ]
         return {
             "messages": build_selector_messages(
@@ -94,9 +91,7 @@ class RouteSelector:
             if isinstance(content, str):
                 normalized.append({"role": role, "content": content})
             elif isinstance(content, list):
-                normalized.append(
-                    {"role": role, "content": f"[multimodal content with {len(content)} block(s)]"}
-                )
+                normalized.append({"role": role, "content": f"[multimodal content with {len(content)} block(s)]"})
 
         selected: list[dict[str, str]] = []
         remaining = self.config.max_selection_chars

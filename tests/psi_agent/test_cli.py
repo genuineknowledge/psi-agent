@@ -6,7 +6,7 @@ from psi_agent.cli import Command
 from psi_agent.router import Router
 
 
-def test_router_subcommand_parses_native_upstream_tuples() -> None:
+def test_router_subcommand_parses_timeouts_and_context_budget() -> None:
     command = tyro.cli(
         Command,
         args=[
@@ -14,19 +14,26 @@ def test_router_subcommand_parses_native_upstream_tuples() -> None:
             "--session-socket",
             "router.sock",
             "--router-socket",
-            "planner.sock",
-            "--default-socket",
-            "default.sock",
+            "aggregate.sock",
             "--mode",
-            "routing",
+            "aggregation",
             "--upstream",
-            "research.sock",
+            "one.sock",
+            "coding",
+            "two.sock",
             "research",
-            "analysis.sock",
-            "structured analysis",
+            "--router-timeout",
+            "30",
+            "--target-timeout",
+            "8",
+            "--max-context-chars",
+            "9000",
         ],
     )
 
     assert isinstance(command, Router)
-    assert command.mode == "routing"
-    assert command.upstream == [("research.sock", "research"), ("analysis.sock", "structured analysis")]
+    assert command.mode == "aggregation"
+    assert command.upstream == [("one.sock", "coding"), ("two.sock", "research")]
+    assert (command.router_timeout, command.target_timeout, command.max_context_chars) == (30, 8, 9000)
+    assert not hasattr(command, "default_socket")
+    assert not hasattr(command, "max_context_length")

@@ -1,78 +1,52 @@
 from __future__ import annotations
 
 import json
-import socket
 from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+import anyio
 import pytest
 from aiohttp import ClientSession, web
+from anyio.lowlevel import checkpoint
 
-from psi_agent.router.aggregation.orchestrator import OrchestrationError
-from psi_agent.router.client import RouterUpstreamError, UpstreamResult
-from psi_agent.router.protocol import RouterConfig
-from psi_agent.router.server import (
-    _ROUTER_CLIENT_KEY,
-    _ROUTER_CONFIG_KEY,
-    _ROUTER_STRATEGY_KEY,
-    handle_chat_completions,
-    serve_router,
-)
+from psi_agent.router.errors import RouterError
+from psi_agent.router.server import create_router_app, serve_router
 
 
 @dataclass
-class FakeOrchestrator:
-    outcome: UpstreamResult | Exception
+class FakeStrategy:
+    events: list[dict[str, Any]] = field(default_factory=list)
+    error: Exception | None = None
+    release_after_first: anyio.Event | None = None
+    closed: anyio.Event = field(default_factory=anyio.Event)
     received: list[dict[str, Any]] = field(default_factory=list)
     discarded: list[str] = field(default_factory=list)
+    clear_calls: int = 0
 
-    async def process(self, *, body: dict[str, Any]) -> UpstreamResult:
+    async def stream(self, *, body: dict[str, Any]) -> AsyncGenerator[dict[str, Any]]:
         self.received.append(body)
-        if isinstance(self.outcome, Exception):
-            raise self.outcome
-        return self.outcome
+        try:
+            for index, event in enumerate(self.events):
+                yield event
+                if index == 0 and self.release_after_first is not None:
+                    await self.release_after_first.wait()
+            if self.error is not None:
+                raise self.error
+        finally:
+            self.closed.set()
 
     def discard(self, session_id: str) -> None:
         self.discarded.append(session_id)
 
     def clear(self) -> None:
-        return None
+        self.clear_calls += 1
 
 
-@dataclass
-class FakeClient:
-    chunks: list[bytes] = field(default_factory=list)
-    error: Exception | None = None
-    calls: list[tuple[str, dict[str, Any], float | None]] = field(default_factory=list)
-    fail_after_first_chunk: bool = False
-
-    async def stream_raw(self, *, socket: str, body: dict[str, Any], **options: Any) -> AsyncGenerator[bytes]:
-        timeout = options.get("timeout")
-        assert timeout is None or isinstance(timeout, (float, int))
-        self.calls.append((socket, body, timeout))
-        if self.error is not None and not self.fail_after_first_chunk:
-            raise self.error
-        for index, chunk in enumerate(self.chunks):
-            yield chunk
-            if index == 0 and self.error is not None:
-                raise self.error
-
-
-async def _serve(*, strategy: FakeOrchestrator, client: FakeClient) -> AsyncIterator[str]:
-    app = web.Application()
-    app[_ROUTER_CONFIG_KEY] = RouterConfig(
-        session_socket="router-listener",
-        router_socket="router-ai",
-        default_socket="default-ai",
-        mode="aggregation",
-        upstream=[("branch-ai", "general")],
-        router_timeout=12.0,
-    )
-    app[_ROUTER_STRATEGY_KEY] = strategy
-    app[_ROUTER_CLIENT_KEY] = client
-    app.router.add_post("/chat/completions", handle_chat_completions)
-    runner = web.AppRunner(app)
+@asynccontextmanager
+async def _serve(strategy: FakeStrategy) -> AsyncIterator[str]:
+    runner = web.AppRunner(create_router_app(strategy=strategy), handler_cancellation=True)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
@@ -89,24 +63,16 @@ def _body() -> dict[str, Any]:
     return {
         "messages": [{"role": "user", "content": "hello"}],
         "tools": [{"type": "function", "function": {"name": "search"}}],
-        "temperature": 0.3,
-        "unknown_parameter": {"preserved": True},
+        "stream": True,
         "routing": {"session_id": "session-a"},
-        "model": "internal-routing-model",
     }
 
 
-def _unused_tcp_port() -> int:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-    finally:
-        sock.close()
-
-
 async def _post(
-    url: str, *, payload: object | None = None, raw: bytes | None = None
+    url: str,
+    *,
+    payload: object | None = None,
+    raw: bytes | None = None,
 ) -> tuple[int, str, dict[str, str]]:
     async with ClientSession() as session:
         if raw is None:
@@ -116,133 +82,212 @@ async def _post(
         return response.status, await response.text(), dict(response.headers)
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize("raw", [b"{", b"[]"])
-async def test_handler_returns_http_400_before_streaming_for_invalid_or_non_object_json(raw: bytes) -> None:
-    orchestrator = FakeOrchestrator(UpstreamResult(content="unused", finish_reason="stop"))
-    async for url in _serve(strategy=orchestrator, client=FakeClient()):
-        status, text, headers = await _post(url, raw=raw)
-
-    assert status == 400
-    assert headers["Content-Type"].startswith("application/json")
-    assert json.loads(text)["error"]["type"] == "invalid_request_error"
-    assert orchestrator.received == []
-
-
-@pytest.mark.anyio
-async def test_handler_encodes_a_successful_result_as_one_choice_sse_chunk() -> None:
-    orchestrator = FakeOrchestrator(UpstreamResult(content="final answer", finish_reason="stop"))
-    async for url in _serve(strategy=orchestrator, client=FakeClient()):
-        status, text, headers = await _post(url, payload=_body())
-
-    assert status == 200
-    assert headers["Content-Type"].startswith("text/event-stream")
-    payload = json.loads(text.removeprefix("data: ").strip())
-    assert payload["choices"] == [{"index": 0, "delta": {"content": "final answer"}, "finish_reason": "stop"}]
-    assert orchestrator.received == [_body()]
-
-
-@pytest.mark.anyio
-async def test_handler_encodes_branch_tool_calls_as_one_choice_sse_chunk() -> None:
-    tool_calls = [{"id": "call-1", "type": "function", "function": {"name": "search", "arguments": "{}"}}]
-    orchestrator = FakeOrchestrator(
-        UpstreamResult(content="Processing subtask 1: search", tool_calls=tool_calls, finish_reason="tool_calls")
-    )
-    async for url in _serve(strategy=orchestrator, client=FakeClient()):
-        status, text, _ = await _post(url, payload=_body())
-
-    assert status == 200
-    payload = json.loads(text.removeprefix("data: ").strip())
-    assert len(payload["choices"]) == 1
-    assert payload["choices"][0]["delta"] == {"content": "Processing subtask 1: search", "tool_calls": tool_calls}
-    assert payload["choices"][0]["finish_reason"] == "tool_calls"
+def _sse_payloads(text: str) -> list[object]:
+    return [
+        "[DONE]" if line == "data: [DONE]" else json.loads(line.removeprefix("data: "))
+        for line in text.splitlines()
+        if line.startswith("data: ")
+    ]
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
-    "error",
+    ("payload", "raw"),
     [
-        OrchestrationError("planner failure"),
-        RouterUpstreamError("branch failure"),
-        OrchestrationError("aggregation failure"),
+        (None, b"{"),
+        (None, b"[]"),
+        ({"messages": "bad"}, None),
+        ({"messages": ["bad"]}, None),
+        ({"messages": [], "tools": "bad"}, None),
+        ({"messages": [], "tools": ["bad"]}, None),
+        ({"messages": [], "stream": False}, None),
+        ({"messages": [], "routing": "bad"}, None),
+        ({"messages": [], "routing": {"session_id": " "}}, None),
+        ({"messages": [], "routing": {"session_id": 7}}, None),
     ],
 )
-async def test_handler_falls_back_once_and_preserves_only_public_request_fields(error: Exception) -> None:
-    orchestrator = FakeOrchestrator(error)
-    client = FakeClient(chunks=[b"data: default answer\n\n"])
-    async for url in _serve(strategy=orchestrator, client=client):
-        status, text, _ = await _post(url, payload=_body())
+async def test_invalid_request_returns_openai_http_error_before_prepare(
+    payload: object | None,
+    raw: bytes | None,
+) -> None:
+    strategy = FakeStrategy()
+    async with _serve(strategy) as url:
+        status, text, headers = await _post(url, payload=payload, raw=raw)
 
-    assert status == 200
-    assert text == "data: default answer\n\n"
-    assert orchestrator.discarded == ["session-a"]
-    assert client.calls == [
-        (
-            "default-ai",
-            {
-                "messages": [{"role": "user", "content": "hello"}],
-                "tools": [{"type": "function", "function": {"name": "search"}}],
-                "temperature": 0.3,
-                "unknown_parameter": {"preserved": True},
-            },
-            12.0,
-        )
-    ]
+    error = json.loads(text)["error"]
+    assert status == 400
+    assert headers["Content-Type"].startswith("application/json")
+    assert error["type"] == "invalid_request_error"
+    assert error["param"] is None
+    assert error["code"] == 400
+    assert strategy.received == []
 
 
 @pytest.mark.anyio
-async def test_handler_returns_http_502_if_default_fallback_fails_before_response_prepare() -> None:
-    orchestrator = FakeOrchestrator(OrchestrationError("planner failure"))
-    client = FakeClient(error=RouterUpstreamError("default unavailable"))
-    async for url in _serve(strategy=orchestrator, client=client):
+async def test_valid_strategy_events_are_single_choice_sse_followed_by_done() -> None:
+    events = [
+        {"choices": [{"index": 0, "delta": {"content": "final"}, "finish_reason": None}]},
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]
+    strategy = FakeStrategy(events=events)
+
+    async with _serve(strategy) as url:
         status, text, headers = await _post(url, payload=_body())
 
-    assert status == 502
-    assert headers["Content-Type"].startswith("application/json")
-    assert json.loads(text)["error"]["code"] == 502
-    assert len(client.calls) == 1
+    assert status == 200
+    assert headers["Content-Type"].startswith("text/event-stream")
+    assert _sse_payloads(text) == [*events, "[DONE]"]
+    assert all(len(cast(dict[str, Any], event)["choices"]) == 1 for event in _sse_payloads(text)[:-1])
 
 
 @pytest.mark.anyio
-async def test_handler_emits_one_choice_sse_error_if_default_stream_fails_after_prepare() -> None:
-    orchestrator = FakeOrchestrator(OrchestrationError("branch failure"))
-    client = FakeClient(
-        chunks=[b"data: partial default\n\n"],
-        error=RouterUpstreamError("default stream interrupted"),
-        fail_after_first_chunk=True,
-    )
-    async for url in _serve(strategy=orchestrator, client=client):
+async def test_strategy_exception_after_prepare_emits_one_router_error_frame() -> None:
+    strategy = FakeStrategy(error=RouterError("strategy failed"))
+
+    async with _serve(strategy) as url:
         status, text, _ = await _post(url, payload=_body())
 
+    payloads = _sse_payloads(text)
     assert status == 200
-    lines = [line for line in text.splitlines() if line.startswith("data: ")]
-    assert lines[0] == "data: partial default"
-    error_chunk = json.loads(lines[1].removeprefix("data: "))
-    assert error_chunk["choices"] == [
+    assert len(payloads) == 1
+    assert cast(dict[str, Any], payloads[0])["choices"] == [
         {
             "index": 0,
-            "delta": {"content": "[Router Error]: default stream interrupted"},
+            "delta": {"content": "[Router Error]: strategy failed"},
             "finish_reason": "error",
         }
     ]
-    assert len(client.calls) == 1
+    assert strategy.discarded == ["session-a"]
 
 
 @pytest.mark.anyio
-async def test_serve_router_accepts_strategy_protocol_and_streams_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    strategy = FakeOrchestrator(UpstreamResult(content="strategy answer", finish_reason="stop"))
-
-    async def fake_sleep_forever() -> None:
-        return None
-
-    monkeypatch.setattr("psi_agent.router.server.anyio.sleep_forever", fake_sleep_forever)
-    config = RouterConfig(
-        session_socket=f"http://127.0.0.1:{_unused_tcp_port()}",
-        router_socket="router-ai",
-        default_socket="default-ai",
-        mode="aggregation",
-        upstream=[("branch-ai", "general")],
+async def test_non_single_choice_strategy_event_becomes_one_router_error_frame() -> None:
+    strategy = FakeStrategy(
+        events=[
+            {
+                "choices": [
+                    {"index": 0, "delta": {"content": "one"}, "finish_reason": None},
+                    {"index": 1, "delta": {"content": "two"}, "finish_reason": None},
+                ]
+            }
+        ]
     )
-    await serve_router(config=config, strategy=strategy, client=FakeClient())
 
-    assert strategy.received == []
+    async with _serve(strategy) as url:
+        _, text, _ = await _post(url, payload=_body())
+
+    payloads = _sse_payloads(text)
+    assert len(payloads) == 1
+    assert cast(dict[str, Any], payloads[0])["choices"][0]["finish_reason"] == "error"
+
+
+@pytest.mark.anyio
+async def test_client_disconnect_closes_strategy_generator() -> None:
+    release = anyio.Event()
+    strategy = FakeStrategy(
+        events=[
+            {"choices": [{"index": 0, "delta": {"content": "first"}, "finish_reason": None}]},
+            {"choices": [{"index": 0, "delta": {"content": "second"}, "finish_reason": "stop"}]},
+        ],
+        release_after_first=release,
+    )
+
+    async with _serve(strategy) as url, ClientSession() as session:
+        response = await session.post(f"{url}/chat/completions", json=_body())
+        assert await response.content.readline() == (
+            b'data: {"choices": [{"index": 0, "delta": {"content": "first"}, "finish_reason": null}]}\n'
+        )
+        response.close()
+        release.set()
+        with anyio.fail_after(2):
+            await strategy.closed.wait()
+
+
+@pytest.mark.anyio
+async def test_startup_failure_clears_strategy_and_completes_shielded_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = FakeStrategy()
+    cleaned = anyio.Event()
+    outer_scope = anyio.CancelScope()
+
+    class FailingRunner:
+        async def setup(self) -> None:
+            outer_scope.cancel()
+            raise RuntimeError("setup failed")
+
+        async def cleanup(self) -> None:
+            await checkpoint()
+            cleaned.set()
+
+    monkeypatch.setattr("psi_agent.router.server.web.AppRunner", lambda *args, **kwargs: FailingRunner())
+
+    with pytest.raises(RuntimeError, match="setup failed"), outer_scope:
+        await serve_router(session_socket="router.sock", strategy=strategy)
+
+    assert strategy.clear_calls == 1
+    assert cleaned.is_set()
+
+
+@pytest.mark.anyio
+async def test_startup_cancellation_clears_strategy_and_completes_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strategy = FakeStrategy()
+    setup_started = anyio.Event()
+    cleaned = anyio.Event()
+
+    class PendingRunner:
+        async def setup(self) -> None:
+            setup_started.set()
+            await anyio.sleep_forever()
+
+        async def cleanup(self) -> None:
+            await checkpoint()
+            cleaned.set()
+
+    monkeypatch.setattr("psi_agent.router.server.web.AppRunner", lambda *args, **kwargs: PendingRunner())
+
+    async def run_server() -> None:
+        await serve_router(session_socket="router.sock", strategy=strategy)
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(run_server)
+        await setup_started.wait()
+        task_group.cancel_scope.cancel()
+
+    assert strategy.clear_calls == 1
+    assert cleaned.is_set()
+
+
+@pytest.mark.anyio
+async def test_cancellation_clears_strategy_and_completes_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = FakeStrategy()
+    started = anyio.Event()
+    cleaned = anyio.Event()
+
+    class FakeRunner:
+        async def setup(self) -> None:
+            return None
+
+        async def cleanup(self) -> None:
+            await checkpoint()
+            cleaned.set()
+
+    class FakeSite:
+        async def start(self) -> None:
+            started.set()
+
+    monkeypatch.setattr("psi_agent.router.server.web.AppRunner", lambda *args, **kwargs: FakeRunner())
+    monkeypatch.setattr("psi_agent.router.server.create_site", lambda runner, socket: FakeSite())
+
+    async def run_server() -> None:
+        await serve_router(session_socket="router.sock", strategy=strategy)
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(run_server)
+        await started.wait()
+        task_group.cancel_scope.cancel()
+
+    assert strategy.clear_calls == 1
+    assert cleaned.is_set()

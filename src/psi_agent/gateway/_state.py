@@ -73,13 +73,44 @@ class GatewayState:
             return _empty_snapshot()
         if read_path == self._path:
             logger.debug(f"Loaded Gateway state from {read_path}")
-        return {
-            "ais": data.get("ais", []),
-            "routers": data.get("routers", []),
-            "sessions": data.get("sessions", []),
-            "titles": data.get("titles", []),
-            "summaries": data.get("summaries", []),
-        }
+        snapshot = _empty_snapshot()
+        for key in _EMPTY_KEYS:
+            rows = data.get(key, [])
+            if isinstance(rows, list):
+                snapshot[key] = [row for row in rows if isinstance(row, dict)]
+
+        normalized_routers: list[dict[str, Any]] = []
+        for router in snapshot["routers"]:
+            raw_upstreams = router.get("upstreams", [])
+            upstreams = (
+                [
+                    {
+                        "ai_id": item.get("ai_id", ""),
+                        "description": item.get("description", ""),
+                    }
+                    for item in raw_upstreams
+                    if isinstance(item, dict)
+                ]
+                if isinstance(raw_upstreams, list)
+                else []
+            )
+            normalized_routers.append(
+                {
+                    "id": router.get("id", ""),
+                    "name": router.get("name", ""),
+                    "mode": router.get("mode", ""),
+                    "router_ai_id": router.get("router_ai_id", ""),
+                    "upstreams": upstreams,
+                    "router_timeout": router.get("router_timeout"),
+                    "target_timeout": router.get("target_timeout"),
+                    "max_context_chars": router.get(
+                        "max_context_chars",
+                        router.get("max_context_length", 12_000),
+                    ),
+                }
+            )
+        snapshot["routers"] = normalized_routers
+        return snapshot
 
     async def save(
         self,
@@ -91,6 +122,35 @@ class GatewayState:
     ) -> None:
         routers = routers or []
         summaries = summaries or []
+        normalized_routers: list[dict[str, Any]] = []
+        for router in routers:
+            if not isinstance(router, dict):
+                continue
+            raw_upstreams = router.get("upstreams", [])
+            upstreams = (
+                [
+                    {
+                        "ai_id": item.get("ai_id", ""),
+                        "description": item.get("description", ""),
+                    }
+                    for item in raw_upstreams
+                    if isinstance(item, dict)
+                ]
+                if isinstance(raw_upstreams, list)
+                else []
+            )
+            normalized_routers.append(
+                {
+                    "id": router.get("id", ""),
+                    "name": router.get("name", ""),
+                    "mode": router.get("mode", ""),
+                    "router_ai_id": router.get("router_ai_id", ""),
+                    "upstreams": upstreams,
+                    "router_timeout": router.get("router_timeout"),
+                    "target_timeout": router.get("target_timeout"),
+                    "max_context_chars": router.get("max_context_chars", 12_000),
+                }
+            )
         data = {
             "ais": [
                 {
@@ -106,7 +166,7 @@ class GatewayState:
                 }
                 for a in ais
             ],
-            "routers": routers,
+            "routers": normalized_routers,
             "sessions": [
                 {
                     "id": s["id"],

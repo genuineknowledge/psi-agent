@@ -1,61 +1,182 @@
 from __future__ import annotations
 
 import math
+from dataclasses import MISSING, fields
 from typing import Any, cast
 
 import pytest
 
-from psi_agent.router import Router, serve_router
-from psi_agent.router.aggregation import Orchestrator as AggregationOrchestrator
-from psi_agent.router.routing import Orchestrator as RoutingOrchestrator
+import psi_agent.router as router_package
+from psi_agent.router import (
+    AggregationConfig,
+    AggregationStrategy,
+    Router,
+    RouterHttpClient,
+    RouterMode,
+    RouterStrategy,
+    RoutingConfig,
+    RoutingStrategy,
+)
 
 
 def _router_kwargs(**overrides: Any) -> dict[str, Any]:
     values: dict[str, Any] = {
         "session_socket": "router.sock",
-        "router_socket": "planner.sock",
-        "default_socket": "default.sock",
+        "router_socket": "router-ai.sock",
         "mode": "routing",
-        "upstream": [("research.sock", "research")],
+        "upstream": [("one.sock", "one"), ("two.sock", "two")],
     }
     values.update(overrides)
     return values
 
 
 @pytest.mark.anyio
-async def test_router_run_configures_logging_before_validating_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
-    configured: list[bool] = []
+@pytest.mark.parametrize("mode", ["routing", RouterMode.AGGREGATION])
+async def test_router_assigns_stable_candidate_ids_and_builds_selected_strategy(
+    mode: RouterMode | str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[RouterStrategy] = []
 
-    monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: configured.append(verbose))
+    async def fake_serve(*, session_socket: str, strategy: RouterStrategy) -> None:
+        assert session_socket == "router.sock"
+        captured.append(strategy)
 
-    with pytest.raises(ValueError, match="session_socket"):
-        await Router(**_router_kwargs(session_socket="")).run()
+    monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve)
+    await Router(
+        session_socket="router.sock",
+        router_socket="router-ai.sock",
+        mode=mode,
+        upstream=[("one.sock", "one"), ("two.sock", "two")],
+        target_timeout=5,
+    ).run()
 
-    assert configured == [False]
+    strategy = cast(Any, captured[0])
+    assert [target.candidate_id for target in strategy.config.targets] == [
+        "candidate-1",
+        "candidate-2",
+    ]
+    if mode == "routing":
+        assert isinstance(captured[0], RoutingStrategy)
+    else:
+        assert isinstance(captured[0], AggregationStrategy)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("mode", "config_type", "timeout_field", "context_field"),
+    [
+        (RouterMode.ROUTING, RoutingConfig, "selector_timeout", "max_selection_chars"),
+        (RouterMode.AGGREGATION, AggregationConfig, "aggregator_timeout", "max_context_chars"),
+    ],
+)
+async def test_router_maps_shared_limits_to_selected_mode_config(
+    mode: RouterMode,
+    config_type: type[RoutingConfig] | type[AggregationConfig],
+    timeout_field: str,
+    context_field: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[RouterStrategy] = []
+
+    async def fake_serve(*, session_socket: str, strategy: RouterStrategy) -> None:
+        del session_socket
+        captured.append(strategy)
+
+    monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve)
+    await Router(
+        **_router_kwargs(
+            mode=mode,
+            router_timeout=7.5,
+            target_timeout=2.5,
+            max_context_chars=9876,
+        )
+    ).run()
+
+    config = cast(Any, captured[0]).config
+    assert isinstance(config, config_type)
+    assert getattr(config, timeout_field) == 7.5
+    assert config.target_timeout == 2.5
+    assert getattr(config, context_field) == 9876
+
+
+@pytest.mark.anyio
+async def test_router_constructs_one_http_client_per_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    clients: list[object] = []
+    strategies: list[RouterStrategy] = []
+
+    class FakeClient(RouterHttpClient):
+        def __init__(self) -> None:
+            clients.append(self)
+
+    async def fake_serve(*, session_socket: str, strategy: RouterStrategy) -> None:
+        del session_socket
+        strategies.append(strategy)
+
+    monkeypatch.setattr("psi_agent.router.entry.RouterHttpClient", FakeClient)
+    monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve)
+    await Router(**_router_kwargs(mode="aggregation")).run()
+
+    assert len(clients) == 1
+    assert cast(Any, strategies[0]).client is clients[0]
+
+
+@pytest.mark.anyio
+async def test_router_configures_logging_before_invalid_mode_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def fake_setup_logging(*, verbose: bool) -> None:
+        calls.append(("logging", verbose))
+
+    monkeypatch.setattr("psi_agent.router.entry.setup_logging", fake_setup_logging)
+    with pytest.raises(ValueError, match="mode"):
+        await Router(**_router_kwargs(mode="fallback", verbose=True)).run()
+
+    assert calls == [("logging", True)]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "upstream",
+    [
+        (("one.sock", "one"),),
+        [],
+        [("one.sock",)],
+        [("one.sock", "one", "extra")],
+        [["one.sock", "one"]],
+        [(1, "one")],
+        [("one.sock", 1)],
+    ],
+)
+async def test_router_rejects_non_list_or_malformed_upstream_pairs(
+    upstream: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: None)
+
+    with pytest.raises(ValueError, match="upstream"):
+        await Router(**_router_kwargs(upstream=upstream)).run()
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"session_socket": ""},
-        {"router_socket": " "},
-        {"default_socket": ""},
-        {"upstream": []},
-        {"upstream": [("", "research")]},
-        {"upstream": [("research.sock", "")]},
-        {"max_tool_rounds": 0},
-        {"max_tool_rounds": False},
-        {"router_timeout": 0.0},
-        {"branch_timeout": -1.0},
-        {"aggregate_timeout": math.nan},
-        {"run_ttl": 0.0},
-        {"run_ttl": math.nan},
-        {"default_socket": "router.sock"},
+        {"upstream": [("one.sock", "one"), ("one.sock", "duplicate")]},
+        {"session_socket": "one.sock"},
+        {"mode": "aggregation", "router_socket": "one.sock"},
+        {"router_timeout": False},
+        {"router_timeout": math.nan},
+        {"target_timeout": math.inf},
+        {"max_context_chars": False},
+        {"max_context_chars": 0},
     ],
 )
-async def test_router_run_rejects_invalid_configuration(
-    monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any]
+async def test_router_selected_config_owns_collision_and_limit_validation(
+    overrides: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: None)
 
@@ -63,113 +184,46 @@ async def test_router_run_rejects_invalid_configuration(
         await Router(**_router_kwargs(**overrides)).run()
 
 
-@pytest.mark.anyio
-async def test_router_run_builds_config_and_orchestrator_then_serves(monkeypatch: pytest.MonkeyPatch) -> None:
-    configured: list[bool] = []
-    served: list[tuple[object, object]] = []
-
-    monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: configured.append(verbose))
-
-    async def fake_serve_router(*, config: object, strategy: object, client: object) -> None:
-        del client
-        served.append((config, strategy))
-
-    monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve_router)
-    router = Router(
-        **_router_kwargs(
-            upstream=[("research.sock", "research"), ("research.sock", "recent sources")],
-            max_tool_rounds=3,
-            router_timeout=10.0,
-            branch_timeout=20.0,
-            aggregate_timeout=None,
-            run_ttl=30.0,
-            verbose=True,
-        )
-    )
-
-    await router.run()
-
-    assert configured == [True]
-    assert len(served) == 1
-    config, orchestrator = cast(tuple[Any, Any], served[0])
-    assert config.session_socket == "router.sock"
-    assert config.router_socket == "planner.sock"
-    assert config.default_socket == "default.sock"
-    assert config.upstream == (("research.sock", "research"), ("research.sock", "recent sources"))
-    assert config.max_tool_rounds == 3
-    assert config.router_timeout == 10.0
-    assert config.branch_timeout == 20.0
-    assert config.aggregate_timeout is None
-    assert config.run_ttl == 30.0
-    assert orchestrator.config is config
-
-
-@pytest.mark.anyio
-@pytest.mark.parametrize(
-    ("mode", "expected_type"),
-    [
-        ("routing", RoutingOrchestrator),
-        ("aggregation", AggregationOrchestrator),
-    ],
-)
-async def test_router_run_wires_strategy_from_mode(
-    monkeypatch: pytest.MonkeyPatch, mode: str, expected_type: type[object]
-) -> None:
-    served: list[object] = []
-
-    monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: None)
-
-    async def fake_serve_router(*, config: object, strategy: object, client: object) -> None:
-        del client
-        served.append((config, strategy))
-
-    monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve_router)
-
-    await Router(**_router_kwargs(mode=mode)).run()
-
-    assert len(served) == 1
-    _, strategy = cast(tuple[Any, Any], served[0])
-    assert isinstance(strategy, expected_type)
-
-
-@pytest.mark.anyio
-async def test_router_run_accepts_supported_transport_addresses(monkeypatch: pytest.MonkeyPatch) -> None:
-    served: list[object] = []
-
-    monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: None)
-
-    async def fake_serve_router(*, config: object, strategy: object, client: object) -> None:
-        del strategy, client
-        served.append(config)
-
-    monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve_router)
-
-    await Router(
-        **_router_kwargs(
-            session_socket="http://127.0.0.1:8000",
-            router_socket=r"\\.\pipe\planner",
-            default_socket="https://default.example",
-            upstream=[("http://127.0.0.1:8100", "research")],
-        )
-    ).run()
-
-    config = cast(Any, served[0])
-    assert config.session_socket == "http://127.0.0.1:8000"
-    assert config.router_socket == r"\\.\pipe\planner"
-    assert config.default_socket == "https://default.example"
-    assert config.upstream == (("http://127.0.0.1:8100", "research"),)
-
-
-def test_router_dataclass_requires_mode() -> None:
+def test_router_facade_has_only_current_required_and_optional_fields() -> None:
+    assert [(field.name, field.default) for field in fields(Router)] == [
+        ("session_socket", MISSING),
+        ("router_socket", MISSING),
+        ("mode", MISSING),
+        ("upstream", MISSING),
+        ("router_timeout", 30.0),
+        ("target_timeout", None),
+        ("max_context_chars", 12_000),
+        ("verbose", False),
+    ]
     with pytest.raises(TypeError):
-        Router(  # ty: ignore[missing-argument]
+        cast(Any, Router)(
             session_socket="router.sock",
-            router_socket="planner.sock",
-            default_socket="default.sock",
-            upstream=[("research.sock", "research")],
+            router_socket="router-ai.sock",
+            upstream=[("one.sock", "one")],
         )
 
 
-def test_router_is_exported_with_its_server_function() -> None:
-    assert Router.__name__ == "Router"
-    assert serve_router.__name__ == "serve_router"
+def test_router_root_exports_current_modes_without_removed_process_apis() -> None:
+    expected = {
+        "AggregationConfig",
+        "AggregationError",
+        "AggregationFeedback",
+        "AggregationRouter",
+        "AggregationStrategy",
+        "Router",
+        "RouterMode",
+        "RouterTarget",
+        "RoutingConfig",
+        "RoutingRouter",
+        "RoutingStrategy",
+        "compact_feedback",
+        "build_aggregation_messages",
+    }
+    assert expected <= set(router_package.__all__)
+    assert not {
+        "Planner",
+        "RouterClient",
+        "UpstreamResult",
+        "stream_raw",
+        "Orchestrator",
+    } & set(router_package.__all__)

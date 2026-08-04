@@ -87,9 +87,7 @@ class RouterHttpClient:
             logger.info(f"Router upstream response status: socket={socket!r}, status={response.status}")
             if response.status != 200:
                 error_text = await response.text()
-                raise RouterUpstreamError(
-                    f"Upstream {socket!r} returned HTTP {response.status}: {error_text[:1000]}"
-                )
+                raise RouterUpstreamError(f"Upstream {socket!r} returned HTTP {response.status}: {error_text[:1000]}")
 
             data_lines: list[str] = []
             while True:
@@ -101,10 +99,7 @@ class RouterHttpClient:
                             event = self._decode_event(payload)
                             if event is not None:
                                 finish = event["choices"][0].get("finish_reason")
-                                saw_completion_finish = (
-                                    saw_completion_finish
-                                    or self._is_completion_finish(finish)
-                                )
+                                saw_completion_finish = saw_completion_finish or self._is_completion_finish(finish)
                                 yield event
                     break
 
@@ -124,15 +119,11 @@ class RouterHttpClient:
                 if event is None:
                     continue
                 finish = event["choices"][0].get("finish_reason")
-                saw_completion_finish = (
-                    saw_completion_finish or self._is_completion_finish(finish)
-                )
+                saw_completion_finish = saw_completion_finish or self._is_completion_finish(finish)
                 yield event
 
             if not saw_completion_finish:
-                raise RouterUpstreamError(
-                    f"Upstream {socket!r} ended without a completion finish reason"
-                )
+                raise RouterUpstreamError(f"Upstream {socket!r} ended without a completion finish reason")
         except RouterUpstreamError:
             raise
         except (aiohttp.ClientError, TimeoutError) as error:
@@ -213,9 +204,7 @@ class RouterHttpClient:
 
     @staticmethod
     def _validate_tool_calls(tool_calls: list[dict[str, Any]], finish_reason: str) -> None:
-        if finish_reason != "tool_calls":
-            return
-        if not tool_calls:
+        if finish_reason == "tool_calls" and not tool_calls:
             raise RouterUpstreamError("Upstream finished with tool_calls but supplied none")
         for call in tool_calls:
             function = call.get("function")
@@ -235,9 +224,7 @@ class RouterHttpClient:
             names = ", ".join(sorted(unsupported))
             raise TypeError(f"Unexpected RouterHttpClient option(s): {names}")
         value = options.get("timeout")
-        if value is not None and (
-            not isinstance(value, int | float) or isinstance(value, bool)
-        ):
+        if value is not None and (not isinstance(value, int | float) or isinstance(value, bool)):
             raise TypeError("timeout must be a number or None")
         return value
 

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
-from copy import deepcopy
 from typing import Any, Protocol
 
 from loguru import logger
 
 from ..errors import InvalidRouterRequestError
+from ..request import copy_public_request_body
 from .models import RoutingConfig, SelectionResult
 
 
@@ -44,9 +44,7 @@ class RoutingStrategy:
         if routing is not None and not isinstance(routing, dict):
             raise InvalidRouterRequestError("routing must be an object when present")
         raw_session_id = routing.get("session_id") if isinstance(routing, dict) else None
-        if raw_session_id is not None and (
-            not isinstance(raw_session_id, str) or not raw_session_id.strip()
-        ):
+        if raw_session_id is not None and (not isinstance(raw_session_id, str) or not raw_session_id.strip()):
             raise InvalidRouterRequestError("routing.session_id must be a non-empty string")
         session_id = raw_session_id.strip() if isinstance(raw_session_id, str) else None
         is_tool_iteration = bool(messages) and messages[-1].get("role") == "tool"
@@ -64,7 +62,7 @@ class RoutingStrategy:
                 f"for tool iteration in session {session_id!r}"
             )
 
-        target_body = self.forward_body(body=body)
+        target_body = copy_public_request_body(body=body)
         logger.info(f"Routing request to candidate {selection.candidate_id!r}")
         target_stream = self.client.stream(
             socket=selection.target.socket,
@@ -96,18 +94,6 @@ class RoutingStrategy:
         """Forget every sticky target, normally during Router shutdown."""
 
         self._sticky_targets.clear()
-
-    @staticmethod
-    def forward_body(*, body: dict[str, Any]) -> dict[str, Any]:
-        """Copy public completion fields while withholding Router-local metadata."""
-
-        forwarded = {
-            key: deepcopy(value)
-            for key, value in body.items()
-            if key not in {"model", "routing"}
-        }
-        forwarded["stream"] = True
-        return forwarded
 
     @staticmethod
     def _validate_request(body: dict[str, Any]) -> list[dict[str, Any]]:

@@ -100,6 +100,11 @@ async def serve_router(*, session_socket: str, strategy: RouterStrategy) -> None
         await runner.setup()
         site = create_site(runner, session_socket)
         await site.start()
+    except anyio.get_cancelled_exc_class():
+        strategy.clear()
+        with anyio.CancelScope(shield=True):
+            await runner.cleanup()
+        raise
     except Exception as error:
         logger.error(f"Failed to start experimental Router on {session_socket}: {error}")
         strategy.clear()
@@ -119,6 +124,18 @@ async def serve_router(*, session_socket: str, strategy: RouterStrategy) -> None
 
 
 async def _write_event(*, response: web.StreamResponse, event: dict[str, Any]) -> None:
+    choices = event.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        raise RouterError("Router strategy events must contain exactly one choice")
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise RouterError("Router strategy choice must be an object")
+    delta = choice.get("delta")
+    if not isinstance(delta, dict):
+        raise RouterError("Router strategy choice delta must be an object")
+    finish_reason = choice.get("finish_reason")
+    if finish_reason is not None and not isinstance(finish_reason, str):
+        raise RouterError("Router strategy finish reason must be a string or null")
     encoded = json.dumps(event, ensure_ascii=False)
     logger.debug(f"Experimental Router outgoing SSE chunk: {encoded[:1000]}")
     await response.write(f"data: {encoded}\n\n".encode())
@@ -161,9 +178,7 @@ def _validate_request_body(body: dict[str, Any]) -> None:
     if routing is not None and not isinstance(routing, dict):
         raise InvalidRouterRequestError("routing must be an object when present")
     session_id = routing.get("session_id") if isinstance(routing, dict) else None
-    if session_id is not None and (
-        not isinstance(session_id, str) or not session_id.strip()
-    ):
+    if session_id is not None and (not isinstance(session_id, str) or not session_id.strip()):
         raise InvalidRouterRequestError("routing.session_id must be a non-empty string")
 
 

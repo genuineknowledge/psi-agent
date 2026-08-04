@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import anyio
@@ -87,6 +88,87 @@ async def test_state_roundtrip_preserves_max_context_tokens(tmp_path: Path) -> N
     assert snapshot["ais"][0]["max_context_tokens"] == 150_000
     assert snapshot["ais"][1]["max_context_tokens"] == 0
     assert snapshot["ais"][2]["max_context_tokens"] == -1
+
+
+@pytest.mark.anyio
+async def test_state_load_migrates_legacy_router_fields_without_rewriting_source(tmp_path: Path) -> None:
+    state = GatewayState(
+        _path=anyio.Path(tmp_path) / "state" / "latest.json",
+        _legacy_path=anyio.Path(tmp_path) / "legacy" / "latest.json",
+        _startup_ts="",
+    )
+    legacy = {
+        "id": "r1",
+        "name": "legacy",
+        "mode": "routing",
+        "router_ai_id": "selector",
+        "upstreams": [{"ai_id": "one", "description": "one"}],
+        "default_ai_id": "one",
+        "router_timeout": 30,
+        "max_context_length": 7_777,
+    }
+    raw = json.dumps({"ais": [], "routers": [legacy], "sessions": [], "titles": [], "summaries": []})
+    await state._path.parent.mkdir(parents=True)
+    await state._path.write_text(raw, encoding="utf-8")
+
+    snapshot = await state.load()
+
+    assert snapshot["routers"] == [
+        {
+            "id": "r1",
+            "name": "legacy",
+            "mode": "routing",
+            "router_ai_id": "selector",
+            "upstreams": [{"ai_id": "one", "description": "one"}],
+            "router_timeout": 30,
+            "target_timeout": None,
+            "max_context_chars": 7_777,
+        }
+    ]
+    assert await state._path.read_text(encoding="utf-8") == raw
+
+
+@pytest.mark.anyio
+async def test_state_save_whitelists_current_router_fields(tmp_path: Path) -> None:
+    state = GatewayState(
+        _path=anyio.Path(tmp_path) / "state" / "latest.json",
+        _legacy_path=anyio.Path(tmp_path) / "legacy" / "latest.json",
+        _startup_ts="",
+    )
+    await state.save(
+        ais=[],
+        sessions=[],
+        titles=[],
+        routers=[
+            {
+                "id": "r1",
+                "name": "aggregate",
+                "mode": "aggregation",
+                "router_ai_id": "aggregator",
+                "upstreams": [{"ai_id": "one", "description": "one", "socket": "private"}],
+                "router_timeout": 30,
+                "target_timeout": 8,
+                "max_context_chars": 9_000,
+                "default_ai_id": "one",
+                "max_context_length": 1,
+                "private": "discard me",
+            }
+        ],
+    )
+
+    saved = json.loads(await state._path.read_text(encoding="utf-8"))
+    assert saved["routers"] == [
+        {
+            "id": "r1",
+            "name": "aggregate",
+            "mode": "aggregation",
+            "router_ai_id": "aggregator",
+            "upstreams": [{"ai_id": "one", "description": "one"}],
+            "router_timeout": 30,
+            "target_timeout": 8,
+            "max_context_chars": 9_000,
+        }
+    ]
 
 
 @pytest.mark.anyio

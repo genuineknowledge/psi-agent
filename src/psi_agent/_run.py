@@ -33,10 +33,13 @@ Config format (``run-config.yml``):
     - type: router
       mode: aggregation
       session_socket: ./router.sock
-      router_socket: ./router-ai.sock
-      default_socket: ./ai.sock
+      router_socket: ./aggregate-ai.sock
       upstream:
-        - [./ai.sock, general-purpose backend]
+        - [./code.sock, coding]
+        - [./research.sock, research]
+      router_timeout: 30
+      target_timeout: null
+      max_context_chars: 12000
 
     - type: channel
       name: repl                    # "cli", "repl", "telegram", or "feishu"

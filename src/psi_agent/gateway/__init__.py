@@ -170,9 +170,9 @@ class Gateway:
                             RouterUpstreamInfo(item.get("ai_id", ""), item.get("description", ""))
                             for item in cfg.get("upstreams", [])
                         ],
-                        default_ai_id=cfg.get("default_ai_id", ""),
                         router_timeout=cfg.get("router_timeout"),
-                        max_context_length=cfg.get("max_context_length", 12_000),
+                        target_timeout=cfg.get("target_timeout"),
+                        max_context_chars=cfg.get("max_context_chars", 12_000),
                         id=cfg.get("id", ""),
                     )
                     logger.info(f"Restored Router {cfg.get('id', '?')!r}")
@@ -257,9 +257,9 @@ class Gateway:
                             "upstreams": [
                                 {"ai_id": item.ai_id, "description": item.description} for item in info.upstreams
                             ],
-                            "default_ai_id": info.default_ai_id,
                             "router_timeout": info.router_timeout,
-                            "max_context_length": info.max_context_length,
+                            "target_timeout": info.target_timeout,
+                            "max_context_chars": info.max_context_chars,
                         }
                         for info in await rm.list_all()
                     ],

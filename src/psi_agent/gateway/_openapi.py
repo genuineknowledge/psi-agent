@@ -64,6 +64,64 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/routers": {
+            "post": {
+                "summary": "Create and start a Router backend",
+                "operationId": "createRouter",
+                "requestBody": {
+                    "required": True,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RouterCreateRequest"}}},
+                },
+                "responses": {
+                    "201": {
+                        "description": "Router created",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RouterInfo"}}},
+                    },
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
+                },
+            },
+            "get": {
+                "summary": "List all Router backends",
+                "operationId": "listRouters",
+                "responses": {
+                    "200": {
+                        "description": "List of Routers",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {"$ref": "#/components/schemas/RouterInfo"},
+                                }
+                            }
+                        },
+                    }
+                },
+            },
+        },
+        "/routers/{router_id}": {
+            "delete": {
+                "summary": "Stop and delete a Router backend",
+                "operationId": "deleteRouter",
+                "parameters": [
+                    {
+                        "name": "router_id",
+                        "in": "path",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Router deleted",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteResponse"}}},
+                    },
+                    "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
+                },
+            }
+        },
         "/sessions": {
             "post": {
                 "summary": "Create a Session",
@@ -620,6 +678,61 @@ OPENAPI_SPEC = {
                     "provider": {"type": "string"},
                     "model": {"type": "string"},
                     "max_context_tokens": {"type": "integer"},
+                },
+            },
+            "RouterUpstreamInfo": {
+                "type": "object",
+                "required": ["ai_id", "description"],
+                "properties": {
+                    "ai_id": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+            },
+            "RouterCreateRequest": {
+                "type": "object",
+                "required": ["name", "mode", "router_ai_id", "upstreams"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["routing", "aggregation"]},
+                    "router_ai_id": {"type": "string"},
+                    "upstreams": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"$ref": "#/components/schemas/RouterUpstreamInfo"},
+                    },
+                    "router_timeout": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "nullable": True,
+                    },
+                    "target_timeout": {
+                        "type": "number",
+                        "exclusiveMinimum": 0,
+                        "nullable": True,
+                    },
+                    "max_context_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "default": 12_000,
+                    },
+                },
+            },
+            "RouterInfo": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "socket": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["routing", "aggregation"]},
+                    "router_ai_id": {"type": "string"},
+                    "upstreams": {
+                        "type": "array",
+                        "items": {"$ref": "#/components/schemas/RouterUpstreamInfo"},
+                    },
+                    "router_timeout": {"type": "number", "nullable": True},
+                    "target_timeout": {"type": "number", "nullable": True},
+                    "max_context_chars": {"type": "integer", "minimum": 1},
                 },
             },
             "SessionCreateRequest": {

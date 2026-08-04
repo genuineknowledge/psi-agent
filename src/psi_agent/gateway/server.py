@@ -304,9 +304,9 @@ async def _create_router(request: web.Request) -> web.Response:
             mode=body["mode"],
             router_ai_id=body["router_ai_id"],
             upstreams=[RouterUpstreamInfo(item["ai_id"], item["description"]) for item in body["upstreams"]],
-            default_ai_id=body["default_ai_id"],
             router_timeout=body.get("router_timeout"),
-            max_context_length=body.get("max_context_length", 12_000),
+            target_timeout=body.get("target_timeout"),
+            max_context_chars=body.get("max_context_chars", 12_000),
             id=body.get("id", ""),
         )
         return _json(asdict(info), status=201)
@@ -530,7 +530,7 @@ async def _session_ai_socket(request: web.Request, sid: str) -> str:
     rm: RouterManager | None = request.app["rm"]
     if rm is None:
         raise LookupError("Router manager is not configured")
-    return aim.get_socket(rm.get(sess.backend_id).default_ai_id)
+    return aim.get_socket(rm.get(sess.backend_id).router_ai_id)
 
 
 async def _generate_title(request: web.Request) -> web.Response:

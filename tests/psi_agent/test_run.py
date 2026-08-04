@@ -99,10 +99,13 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
         "- type: router\n"
         "  mode: aggregation\n"
         "  session_socket: ./router.sock\n"
-        "  router_socket: ./ai.sock\n"
-        "  default_socket: ./ai.sock\n"
+        "  router_socket: ./aggregate-ai.sock\n"
         "  upstream:\n"
-        "    - [./ai.sock, general]\n"
+        "    - [./code.sock, coding]\n"
+        "    - [./research.sock, research]\n"
+        "  router_timeout: 30\n"
+        "  target_timeout: null\n"
+        "  max_context_chars: 12000\n"
         "- type: channel\n"
         "  name: repl\n"
         "  session_socket: ./ch.sock\n",
@@ -112,4 +115,12 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
     assert len(instances) == 4
     assert all(c.ran for c in instances)
     assert instances[2].kwargs["mode"] == "aggregation"
-    assert instances[2].kwargs["upstream"] == [("./ai.sock", "general")]
+    assert instances[2].kwargs["upstream"] == [
+        ("./code.sock", "coding"),
+        ("./research.sock", "research"),
+    ]
+    assert instances[2].kwargs["router_timeout"] == 30
+    assert instances[2].kwargs["target_timeout"] is None
+    assert instances[2].kwargs["max_context_chars"] == 12000
+    assert "default_socket" not in instances[2].kwargs
+    assert "max_context_length" not in instances[2].kwargs

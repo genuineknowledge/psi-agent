@@ -247,11 +247,17 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 
 ## RouterManager
 
-路由判断模型和所有候选模型都是 `AIManager` 中已经启动的普通 AI。Router 通过
-`POST /routers` 单独启动，前端/REST 配置只保存 `router_ai_id`、候选
-`ai_id + description` 和 `default_ai_id`；`RouterManager` 在运行时将这些 ID
-解析为 socket，并延迟调用合并后由 `psi_agent.router.Router` 提供的路由服务。
-Gateway 不重复实现语义选择或 SSE 代理。状态恢复顺序固定为 AI → Router → Session。
+Router 专用模型和所有候选模型都是 `AIManager` 中已经启动的普通 AI。Router 通过
+`POST /routers` 单独启动，前端/REST 只保存 `mode`、`router_ai_id`、候选
+`ai_id + description`、`router_timeout`、`target_timeout` 和 `max_context_chars`；
+`RouterManager` 仅在启动服务时把 AI ID 映射为 Socket，再调用
+`psi_agent.router.Router`。Gateway 不重复实现选择、广播或 SSE 代理。
+
+`mode=routing` 时 `router_ai_id` 是 Selector，并允许它同时出现在候选中；
+`mode=aggregation` 时它是专用 Aggregator，禁止同时作为 upstream。Gateway state 加载
+旧 Router 行时忽略 `default_ai_id`，并把 `max_context_length` 单向迁移为
+`max_context_chars`；新 state、REST、OpenAPI 和 SPA 不再输出旧字段。Router-backed
+Session 的标题/摘要生成使用 `router_ai_id`。状态恢复顺序固定为 AI → Router → Session。
 
 ## SessionManager
 

@@ -81,6 +81,13 @@ src/
     │   ├── schedule_registry.py    # ScheduleRegistry — 定时任务集
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
     │   ├── protocol.py             # Session 层类型（含 `AgentRunResult` 运行终态）
+    ├── router/
+    │   ├── AGENTS.md               # Router 层设计与不变量
+    │   ├── entry.py                # Router 统一入口（routing / aggregation）
+    │   ├── client.py               # Socket-aware Chat Completions/SSE 客户端
+    │   ├── server.py               # 共享 HTTP/SSE 服务边界
+    │   ├── routing/                # Selector 单目标分流 + 工具链 sticky
+    │   └── aggregation/            # 全候选并发广播 + 专用 Aggregator 汇总
     ├── channel/
     │   ├── AGENTS.md                # Channel 层设计文档
     │   ├── __init__.py              # package marker
@@ -122,6 +129,7 @@ src/
 各层的详细设计文档见：
 - **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理、context compaction 触发
 - **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化、context compaction
+- **Router 层**: `src/psi_agent/router/AGENTS.md` — 单目标分流、广播聚合、SSE/隐私/取消不变量
 - **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
 - **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包
 
@@ -129,7 +137,8 @@ src/
 
 所有组件通过 **aiohttp** 以 **OpenAI Chat Completions HTTP/SSE** 格式通信。传输支持 Unix socket（仅 POSIX）、TCP、Windows Named Pipe（仅 Windows），由地址前缀自动检测（`psi_agent._sockets`）；平台与地址不匹配时抛 `ValueError` 快速失败，详见「关键注意事项」第 17 条：
 
-- **AI socket**: Session 作为客户端访问，`POST /chat/completions`
+- **AI socket**: Session 作为客户端访问，`POST /chat/completions`；可直连 AI，也可指向 Router 的 `session_socket`
+- **Router upstream socket**: Router 作为客户端访问 Selector/Aggregator 与候选 AI 的 `POST /chat/completions`
 - **Channel socket**: Session 作为服务端，`POST /chat/completions`
 
 SSE 流中的特殊字段：

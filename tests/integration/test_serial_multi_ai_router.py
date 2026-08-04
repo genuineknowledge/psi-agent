@@ -1,4 +1,4 @@
-"""End-to-end serial Router flow through a real Session tool loop."""
+"""End-to-end broadcast aggregation through a real Session agent loop."""
 
 from __future__ import annotations
 
@@ -11,34 +11,35 @@ import anyio
 import pytest
 from aiohttp import web
 
-from psi_agent.router.aggregation.orchestrator import Orchestrator
-from psi_agent.router.client import RouterClient
-from psi_agent.router.protocol import RouterConfig
-from psi_agent.router.server import (
-    _ROUTER_CLIENT_KEY,
-    _ROUTER_CONFIG_KEY,
-    _ROUTER_STRATEGY_KEY,
-    handle_chat_completions,
-)
+from psi_agent.router.aggregation import AggregationConfig, AggregationStrategy
+from psi_agent.router.client import RouterHttpClient
+from psi_agent.router.models import RouterTarget
+from psi_agent.router.server import create_router_app
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 
-def _chunk(*, content: str = "", tool_calls: list[dict[str, Any]] | None = None, finish: str) -> bytes:
+def _chunk(
+    *,
+    content: str = "",
+    tool_calls: list[dict[str, Any]] | None = None,
+    finish: str,
+) -> bytes:
     delta: dict[str, Any] = {}
     if content:
         delta["content"] = content
     if tool_calls:
         delta["tool_calls"] = tool_calls
-    payload = {"id": "mock", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+    payload = {
+        "id": "mock",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }
     return f"data: {json.dumps(payload)}\n\n".encode()
 
 
-async def _start(handler: Any) -> tuple[web.AppRunner, str]:
-    app = web.Application()
-    app.router.add_post("/chat/completions", handler)
+async def _start_app(app: web.Application) -> tuple[web.AppRunner, str]:
     runner = web.AppRunner(app)
     await runner.setup()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -47,135 +48,196 @@ async def _start(handler: Any) -> tuple[web.AppRunner, str]:
     return runner, f"http://127.0.0.1:{sock.getsockname()[1]}"
 
 
-async def _sse(request: web.Request, chunk: bytes) -> web.StreamResponse:
+async def _start_handler(handler: Any) -> tuple[web.AppRunner, str]:
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    return await _start_app(app)
+
+
+async def _sse(request: web.Request, *chunks: bytes) -> web.StreamResponse:
     response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
     await response.prepare(request)
-    await response.write(chunk)
+    for chunk in chunks:
+        await response.write(chunk)
     await response.write(b"data: [DONE]\n\n")
     return response
 
 
+async def _start_aggregation_router(
+    *,
+    aggregator_url: str,
+    targets: list[RouterTarget],
+) -> tuple[web.AppRunner, str]:
+    config = AggregationConfig(
+        session_socket="router-listener",
+        aggregator_socket=aggregator_url,
+        targets=targets,
+        aggregator_timeout=10,
+        target_timeout=10,
+    )
+    strategy = AggregationStrategy(config=config, client=RouterHttpClient())
+    return await _start_app(create_router_app(strategy=strategy))
+
+
+async def _run_session(
+    *,
+    router_url: str,
+    history_path: Path,
+    tools: dict[str, Any] | None = None,
+) -> list[Any]:
+    tool_functions = {name: ToolFunction.from_callable(function) for name, function in (tools or {}).items()}
+    registry = ToolRegistry(files={"test": FileEntry("", tool_functions, tools or {})} if tools else {})
+    await anyio.Path(history_path.parent).mkdir(parents=True, exist_ok=True)
+    agent = SessionAgent(
+        ai_client=AiClient(router_url),
+        conversation=Conversation(path=history_path),
+        tool_registry=registry,
+    )
+    return [chunk async for chunk in agent.run({"role": "user", "content": "solve it"})]
+
+
 @pytest.mark.anyio
-async def test_session_router_executes_three_planned_subtasks_serially_with_exact_socket_mapping(
+async def test_session_aggregation_broadcasts_all_targets_and_tolerates_partial_failure(
     tmp_path: Path,
 ) -> None:
-    """Tools round-trip through Session while Router keeps every branch serial."""
-
-    requests: dict[str, list[dict[str, Any]]] = {name: [] for name in ("router", "one", "two", "three")}
-
-    async def router_ai(request: web.Request) -> web.StreamResponse:
-        body = await request.json()
-        requests["router"].append(body)
-        if len(requests["router"]) == 1:
-            plan = json.dumps(
-                {
-                    "tasks": [
-                        {"subtask": "first", "socket": branch_one_url},
-                        {"subtask": "second", "socket": branch_two_url},
-                        {"subtask": "third", "socket": branch_three_url},
-                    ]
-                }
-            )
-            return await _sse(request, _chunk(content=plan, finish="stop"))
-        return await _sse(request, _chunk(content="combined", finish="stop"))
+    requests: dict[str, list[dict[str, Any]]] = {name: [] for name in ("one", "two", "three", "aggregator")}
 
     async def branch_one(request: web.Request) -> web.StreamResponse:
-        body = await request.json()
-        requests["one"].append(body)
-        if len(requests["one"]) == 1:
-            return await _sse(
-                request,
-                _chunk(
-                    tool_calls=[
-                        {
-                            "index": 0,
-                            "id": "one-local",
-                            "type": "function",
-                            "function": {"name": "first_tool", "arguments": "{}"},
-                        }
-                    ],
-                    finish="tool_calls",
-                ),
-            )
-        assert body["messages"][-1]["content"] == "one-result"
+        requests["one"].append(await request.json())
         return await _sse(request, _chunk(content="answer one", finish="stop"))
 
     async def branch_two(request: web.Request) -> web.StreamResponse:
+        requests["two"].append(await request.json())
+        return web.Response(status=503, text="branch unavailable")
+
+    async def branch_three(request: web.Request) -> web.StreamResponse:
+        requests["three"].append(await request.json())
+        return await _sse(request, _chunk(content="answer three", finish="stop"))
+
+    async def aggregator(request: web.Request) -> web.StreamResponse:
         body = await request.json()
-        requests["two"].append(body)
-        if len(requests["two"]) == 1:
+        requests["aggregator"].append(body)
+        evidence = json.loads(body["messages"][-1]["content"].split("\n\n", 1)[1])
+        feedback = evidence["aggregation_feedback"]
+        assert [item["candidate_id"] for item in feedback] == [
+            "candidate-1",
+            "candidate-2",
+            "candidate-3",
+        ]
+        assert [item["status"] for item in feedback] == ["success", "error", "success"]
+        return await _sse(request, _chunk(content="combined partial answer", finish="stop"))
+
+    runners: list[web.AppRunner] = []
+    try:
+        one_runner, one_url = await _start_handler(branch_one)
+        runners.append(one_runner)
+        two_runner, two_url = await _start_handler(branch_two)
+        runners.append(two_runner)
+        three_runner, three_url = await _start_handler(branch_three)
+        runners.append(three_runner)
+        aggregator_runner, aggregator_url = await _start_handler(aggregator)
+        runners.append(aggregator_runner)
+        router_runner, router_url = await _start_aggregation_router(
+            aggregator_url=aggregator_url,
+            targets=[
+                RouterTarget("candidate-1", one_url, "first"),
+                RouterTarget("candidate-2", two_url, "second"),
+                RouterTarget("candidate-3", three_url, "third"),
+            ],
+        )
+        runners.append(router_runner)
+
+        chunks = await _run_session(
+            router_url=router_url,
+            history_path=tmp_path / "histories" / "partial.jsonl",
+        )
+    finally:
+        for runner in reversed(runners):
+            await runner.cleanup()
+
+    assert "".join(chunk.content or "" for chunk in chunks).endswith("combined partial answer")
+    assert [len(requests[name]) for name in ("one", "two", "three", "aggregator")] == [
+        1,
+        1,
+        1,
+        1,
+    ]
+
+
+@pytest.mark.anyio
+async def test_aggregator_tool_round_rebroadcasts_updated_session_history(tmp_path: Path) -> None:
+    requests: dict[str, list[dict[str, Any]]] = {name: [] for name in ("one", "two", "aggregator")}
+    tool_runs = 0
+
+    async def branch(name: str, request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        requests[name].append(body)
+        if len(requests[name]) == 2:
+            assert body["messages"][-1]["role"] == "tool"
+            assert "lookup-result" in body["messages"][-1]["content"]
+        return await _sse(
+            request,
+            _chunk(content=f"{name} answer round {len(requests[name])}", finish="stop"),
+        )
+
+    async def branch_one(request: web.Request) -> web.StreamResponse:
+        return await branch("one", request)
+
+    async def branch_two(request: web.Request) -> web.StreamResponse:
+        return await branch("two", request)
+
+    async def aggregator(request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        requests["aggregator"].append(body)
+        if len(requests["aggregator"]) == 1:
             return await _sse(
                 request,
                 _chunk(
                     tool_calls=[
                         {
                             "index": 0,
-                            "id": "two-local",
+                            "id": "aggregate-tool",
                             "type": "function",
-                            "function": {"name": "second_tool", "arguments": "{}"},
+                            "function": {"name": "lookup", "arguments": "{}"},
                         }
                     ],
                     finish="tool_calls",
                 ),
             )
-        assert body["messages"][-1]["content"] == "two-result"
-        return await _sse(request, _chunk(content="answer two", finish="stop"))
+        assert body["messages"][-2]["role"] == "tool"
+        return await _sse(request, _chunk(content="combined after tool", finish="stop"))
 
-    async def branch_three(request: web.Request) -> web.StreamResponse:
-        body = await request.json()
-        requests["three"].append(body)
-        return await _sse(request, _chunk(content="answer three", finish="stop"))
+    async def lookup() -> str:
+        nonlocal tool_runs
+        tool_runs += 1
+        return "lookup-result"
 
-    one_runner, branch_one_url = await _start(branch_one)
-    two_runner, branch_two_url = await _start(branch_two)
-    three_runner, branch_three_url = await _start(branch_three)
-    router_ai_runner, router_ai_url = await _start(router_ai)
-    router_config = RouterConfig(
-        session_socket="router-listener",
-        router_socket=router_ai_url,
-        default_socket=router_ai_url,
-        mode="aggregation",
-        upstream=[(branch_one_url, "first"), (branch_two_url, "second"), (branch_three_url, "third")],
-    )
-    client = RouterClient()
-    router_app = web.Application()
-    router_app[_ROUTER_CONFIG_KEY] = router_config
-    router_app[_ROUTER_CLIENT_KEY] = client
-    router_app[_ROUTER_STRATEGY_KEY] = Orchestrator(config=router_config, client=client)
-    router_app.router.add_post("/chat/completions", handle_chat_completions)
-    router_runner = web.AppRunner(router_app)
-    await router_runner.setup()
-    router_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    router_sock.bind(("127.0.0.1", 0))
-    await web.SockSite(router_runner, router_sock).start()
-
-    async def first_tool() -> str:
-        return "one-result"
-
-    async def second_tool() -> str:
-        return "two-result"
-
-    history_path = tmp_path / "histories" / "serial-session.jsonl"
-    await anyio.Path(history_path.parent).mkdir()
-    tools = {
-        "first_tool": ToolFunction.from_callable(first_tool),
-        "second_tool": ToolFunction.from_callable(second_tool),
-    }
-    agent = SessionAgent(
-        ai_client=AiClient(f"http://127.0.0.1:{router_sock.getsockname()[1]}"),
-        conversation=Conversation(path=history_path),
-        tool_registry=ToolRegistry(
-            files={"test": FileEntry("", tools, {"first_tool": first_tool, "second_tool": second_tool})}
-        ),
-    )
+    runners: list[web.AppRunner] = []
     try:
-        chunks = [chunk async for chunk in agent.run({"role": "user", "content": "solve it"})]
-    finally:
-        await router_runner.cleanup()
-        await router_ai_runner.cleanup()
-        await three_runner.cleanup()
-        await two_runner.cleanup()
-        await one_runner.cleanup()
+        one_runner, one_url = await _start_handler(branch_one)
+        runners.append(one_runner)
+        two_runner, two_url = await _start_handler(branch_two)
+        runners.append(two_runner)
+        aggregator_runner, aggregator_url = await _start_handler(aggregator)
+        runners.append(aggregator_runner)
+        router_runner, router_url = await _start_aggregation_router(
+            aggregator_url=aggregator_url,
+            targets=[
+                RouterTarget("candidate-1", one_url, "first"),
+                RouterTarget("candidate-2", two_url, "second"),
+            ],
+        )
+        runners.append(router_runner)
 
-    assert "".join(chunk.content or "" for chunk in chunks).endswith("combined")
-    assert [len(requests[name]) for name in ("router", "one", "two", "three")] == [2, 1, 1, 1]
+        chunks = await _run_session(
+            router_url=router_url,
+            history_path=tmp_path / "histories" / "tool.jsonl",
+            tools={"lookup": lookup},
+        )
+    finally:
+        for runner in reversed(runners):
+            await runner.cleanup()
+
+    assert tool_runs == 1
+    assert "".join(chunk.content or "" for chunk in chunks).endswith("combined after tool")
+    assert [len(requests[name]) for name in ("one", "two", "aggregator")] == [2, 2, 2]

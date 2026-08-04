@@ -120,29 +120,51 @@ async def test_gateway_rest_crud(tmp_path: str, monkeypatch: pytest.MonkeyPatch)
                 assert resp.status == 201
                 data = await resp.json()
                 assert data["provider"] == "openai"
-                ai_id = data["id"]
+                aggregator_ai_id = data["id"]
+
+            async with session.post(
+                f"{base_url}/ais",
+                json={
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "api_key": "sk-upstream",
+                    "base_url": "https://api.example.com",
+                },
+            ) as resp:
+                assert resp.status == 201
+                upstream_ai_id = (await resp.json())["id"]
 
             async with session.get(f"{base_url}/ais") as resp:
                 assert resp.status == 200
                 items = await resp.json()
-                assert len(items) == 1
+                assert len(items) == 2
 
             async with session.post(
                 f"{base_url}/routers",
                 json={
                     "name": "smart",
                     "mode": "aggregation",
-                    "router_ai_id": ai_id,
-                    "upstreams": [{"ai_id": ai_id, "description": "general tasks"}],
-                    "default_ai_id": ai_id,
+                    "router_ai_id": aggregator_ai_id,
+                    "upstreams": [{"ai_id": upstream_ai_id, "description": "general tasks"}],
+                    "router_timeout": 30,
+                    "target_timeout": 8,
+                    "max_context_chars": 9_000,
                 },
             ) as resp:
                 assert resp.status == 201
-                router_id = (await resp.json())["id"]
+                router_info = await resp.json()
+                router_id = router_info["id"]
+                assert router_info["router_ai_id"] == aggregator_ai_id
+                assert router_info["target_timeout"] == 8
+                assert router_info["max_context_chars"] == 9_000
+                assert "default_ai_id" not in router_info
+                assert "max_context_length" not in router_info
 
             async with session.get(f"{base_url}/routers") as resp:
                 assert resp.status == 200
-                assert len(await resp.json()) == 1
+                routers = await resp.json()
+                assert len(routers) == 1
+                assert routers[0]["upstreams"] == [{"ai_id": upstream_ai_id, "description": "general tasks"}]
 
             workspace = await _make_workspace(str(tmp_path))
             async with session.post(
@@ -170,11 +192,15 @@ async def test_gateway_rest_crud(tmp_path: str, monkeypatch: pytest.MonkeyPatch)
             async with session.delete(f"{base_url}/routers/{router_id}") as resp:
                 assert resp.status == 200
 
-            async with session.delete(f"{base_url}/ais/{ai_id}") as resp:
+            async with session.delete(f"{base_url}/ais/{upstream_ai_id}") as resp:
+                assert resp.status == 200
+
+            async with session.delete(f"{base_url}/ais/{aggregator_ai_id}") as resp:
                 assert resp.status == 200
 
     finally:
         await runner.cleanup()
+        tg.cancel_scope.cancel()
         await tg.__aexit__(None, None, None)
 
 

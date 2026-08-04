@@ -15,7 +15,7 @@
           <option value="aggregation">聚合模式</option>
         </select>
       </label>
-      <label class="field">负责路由判断的模型
+      <label class="field">{{ routerAiRole(routerForm.mode) }} 模型
         <select v-model="routerForm.router_ai_id"><option value="">请选择</option><option v-for="a in ais" :key="a.id" :value="a.id">{{ a.model || a.id }}</option></select>
       </label>
       <div class="section-title">候选模型</div>
@@ -25,12 +25,10 @@
         <button class="icon-btn" title="删除候选" @click="removeUpstream(index)"><span class="material-symbols-outlined">delete</span></button>
       </div>
       <button class="add-btn" @click="addUpstream">+ 添加候选模型</button>
-      <label class="field">默认模型
-        <select v-model="routerForm.default_ai_id"><option value="">请选择</option><option v-for="item in routerForm.upstreams" :key="item.ai_id" :value="item.ai_id">{{ aiLabel(item.ai_id) }}</option></select>
-      </label>
       <div class="advanced">
-        <label class="field">路由超时（秒）<input v-model="routerForm.router_timeout" type="number" min="0" placeholder="不限制"></label>
-        <label class="field">最大上下文长度<input v-model="routerForm.max_context_length" type="number" min="1"></label>
+        <label class="field">Router 超时（秒）<input v-model="routerForm.router_timeout" type="number" min="0.001" step="any" placeholder="不限制"></label>
+        <label class="field">候选模型超时（秒）<input v-model="routerForm.target_timeout" type="number" min="0.001" step="any" placeholder="不限制"></label>
+        <label class="field">最大上下文字符数<input v-model="routerForm.max_context_chars" type="number" min="1" step="1"></label>
       </div>
     </div>
     <template #actions>
@@ -45,7 +43,7 @@ import { ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useAiStore } from '../stores/ai.js'
 import { useRouterStore } from '../stores/router.js'
-import { buildRouterPayload, validateRouterForm } from '../routerConfig.js'
+import { buildRouterPayload, routerAiRole, validateRouterForm } from '../routerConfig.js'
 import { useUiStore } from '../stores/ui.js'
 import BaseDialog from './BaseDialog.vue'
 
@@ -57,7 +55,6 @@ const { routerForm } = storeToRefs(router)
 const ui = useUiStore()
 const submitting = ref(false)
 
-function aiLabel(id) { return ais.value.find(a => a.id === id)?.model || id || '请选择' }
 function addUpstream() { routerForm.value.upstreams.push({ ai_id: '', description: '' }) }
 function removeUpstream(index) { routerForm.value.upstreams.splice(index, 1) }
 async function submit() {

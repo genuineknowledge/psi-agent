@@ -3,36 +3,11 @@
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass
 
-_CANDIDATE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+from ..models import RouterTarget
 
-
-@dataclass(frozen=True)
-class RoutingTarget:
-    """One selector-visible candidate mapped to a private transport address."""
-
-    candidate_id: str
-    socket: str
-    description: str
-
-    def __post_init__(self) -> None:
-        candidate_id = self.candidate_id.strip()
-        socket = self.socket.strip()
-        description = self.description.strip()
-        if not _CANDIDATE_ID.fullmatch(candidate_id):
-            raise ValueError(
-                "candidate_id must start with an ASCII letter or digit and contain at most 64 "
-                "letters, digits, dots, underscores, or hyphens"
-            )
-        if not socket:
-            raise ValueError("target socket must be a non-empty string")
-        if not description:
-            raise ValueError("target description must be a non-empty string")
-        object.__setattr__(self, "candidate_id", candidate_id)
-        object.__setattr__(self, "socket", socket)
-        object.__setattr__(self, "description", description)
+RoutingTarget = RouterTarget
 
 
 @dataclass(frozen=True)
@@ -73,10 +48,7 @@ class RoutingConfig:
         for name in ("selector_timeout", "target_timeout"):
             value = getattr(self, name)
             if value is not None and (
-                not isinstance(value, int | float)
-                or isinstance(value, bool)
-                or not math.isfinite(value)
-                or value <= 0
+                not isinstance(value, int | float) or isinstance(value, bool) or not math.isfinite(value) or value <= 0
             ):
                 raise ValueError(f"{name} must be a finite positive number or None")
         if (

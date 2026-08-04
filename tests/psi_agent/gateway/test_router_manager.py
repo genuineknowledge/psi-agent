@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from types import ModuleType
 from typing import cast
 
 import anyio
 import pytest
+from anyio.lowlevel import checkpoint
 
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._router_manager import RouterManager, RouterUpstreamInfo, _run_router_service
@@ -13,7 +12,11 @@ from psi_agent.gateway._router_manager import RouterManager, RouterUpstreamInfo,
 
 class FakeAIManager:
     def __init__(self) -> None:
-        self.sockets = {"route": "http://route", "simple": "http://simple", "complex": "http://complex"}
+        self.sockets = {
+            "route": "http://route",
+            "simple": "http://simple",
+            "complex": "http://complex",
+        }
 
     def has(self, ai_id: str) -> bool:
         return ai_id in self.sockets
@@ -23,7 +26,7 @@ class FakeAIManager:
 
 
 @pytest.mark.anyio
-async def test_run_router_service_builds_merged_router(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_run_router_service_builds_current_router(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[dict[str, object]] = []
 
     class FakeRouter:
@@ -33,85 +36,222 @@ async def test_run_router_service_builds_merged_router(monkeypatch: pytest.Monke
         async def run(self) -> None:
             return None
 
-    class FakeModule:
-        Router = FakeRouter
-
-    original_import = __import__
-
-    def fake_import(
-        name: str,
-        globals: Mapping[str, object] | None = None,
-        locals: Mapping[str, object] | None = None,
-        fromlist: Sequence[str] = (),
-        level: int = 0,
-    ) -> ModuleType | object:
-        if name == "psi_agent.router":
-            return FakeModule()
-        return original_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr("builtins.__import__", fake_import)
+    monkeypatch.setattr("psi_agent.gateway._router_manager.Router", FakeRouter)
     await _run_router_service(
         session_socket="router.sock",
         mode="aggregation",
-        router_socket="route-ai.sock",
+        router_socket="aggregate.sock",
         upstreams=(("simple.sock", "simple tasks"),),
-        default_socket="simple.sock",
-        router_timeout=None,
-        max_context_length=12_000,
+        router_timeout=30,
+        target_timeout=8,
+        max_context_chars=9_000,
     )
-    assert captured[0]["session_socket"] == "router.sock"
-    assert captured[0]["mode"] == "aggregation"
-    assert captured[0]["router_socket"] == "route-ai.sock"
-    assert captured[0]["upstream"] == [("simple.sock", "simple tasks")]
-    assert captured[0]["max_context_length"] == 12_000
+
+    assert captured == [
+        {
+            "session_socket": "router.sock",
+            "mode": "aggregation",
+            "router_socket": "aggregate.sock",
+            "upstream": [("simple.sock", "simple tasks")],
+            "router_timeout": 30,
+            "target_timeout": 8,
+            "max_context_chars": 9_000,
+        }
+    ]
 
 
 @pytest.mark.anyio
-async def test_create_and_delete_router(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_create_aggregation_router_maps_ai_ids_and_current_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
     async def ready(_path: str) -> None:
-        await anyio.sleep(0.001)
+        return None
+
+    async def remove(_path: str) -> None:
+        return None
+
+    async def serve(**kwargs: object) -> None:
+        captured.append(kwargs)
+        await anyio.sleep_forever()
+
+    monkeypatch.setattr("psi_agent.gateway._router_manager._wait_socket", ready)
+    monkeypatch.setattr("psi_agent.gateway._router_manager._remove_socket", remove)
+    monkeypatch.setattr("psi_agent.gateway._router_manager._run_router_service", serve)
+    async with anyio.create_task_group() as tg:
+        try:
+            manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", tg)
+            info = await manager.create(
+                "  Broadcaster  ",
+                " aggregation ",
+                " route ",
+                [
+                    RouterUpstreamInfo(" simple ", " simple tasks "),
+                    RouterUpstreamInfo(" complex ", " complex tasks "),
+                ],
+                router_timeout=30,
+                target_timeout=8,
+                max_context_chars=9_000,
+                id="router-1",
+            )
+            await checkpoint()
+
+            assert info.id == "router-1"
+            assert info.name == "Broadcaster"
+            assert info.mode == "aggregation"
+            assert info.router_ai_id == "route"
+            assert info.upstreams == (
+                RouterUpstreamInfo("simple", "simple tasks"),
+                RouterUpstreamInfo("complex", "complex tasks"),
+            )
+            assert info.router_timeout == 30
+            assert info.target_timeout == 8
+            assert info.max_context_chars == 9_000
+            assert captured == [
+                {
+                    "session_socket": info.socket,
+                    "mode": "aggregation",
+                    "router_socket": "http://route",
+                    "upstreams": (("http://simple", "simple tasks"), ("http://complex", "complex tasks")),
+                    "router_timeout": 30,
+                    "target_timeout": 8,
+                    "max_context_chars": 9_000,
+                }
+            ]
+            await manager.delete("router-1")
+            assert not manager.has("router-1")
+        finally:
+            tg.cancel_scope.cancel()
+
+
+@pytest.mark.anyio
+async def test_aggregation_rejects_router_ai_reused_as_upstream() -> None:
+    async with anyio.create_task_group() as tg:
+        try:
+            manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", tg)
+            with pytest.raises(ValueError, match="must not also be an upstream"):
+                await manager.create(
+                    "aggregate",
+                    "aggregation",
+                    "route",
+                    [RouterUpstreamInfo("route", "aggregate responses")],
+                )
+        finally:
+            tg.cancel_scope.cancel()
+
+
+@pytest.mark.anyio
+async def test_routing_allows_selector_ai_as_upstream(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def ready(_path: str) -> None:
+        return None
+
+    async def remove(_path: str) -> None:
+        return None
 
     async def serve(**_kwargs: object) -> None:
         await anyio.sleep_forever()
 
     monkeypatch.setattr("psi_agent.gateway._router_manager._wait_socket", ready)
-    monkeypatch.setattr("psi_agent.gateway._router_manager._remove_socket", ready)
+    monkeypatch.setattr("psi_agent.gateway._router_manager._remove_socket", remove)
     monkeypatch.setattr("psi_agent.gateway._router_manager._run_router_service", serve)
     async with anyio.create_task_group() as tg:
-        manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", tg)
-        info = await manager.create(
-            "smart",
-            "routing",
-            "route",
-            [RouterUpstreamInfo("simple", "simple tasks"), RouterUpstreamInfo("complex", "complex tasks")],
-            "simple",
-            id="router-1",
-        )
-        assert manager.get_socket("router-1") == info.socket
-        assert [item.ai_id for item in info.upstreams] == ["simple", "complex"]
-        await manager.delete("router-1")
-        assert not manager.has("router-1")
-        tg.cancel_scope.cancel()
+        try:
+            manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", tg)
+            info = await manager.create(
+                "routing",
+                "routing",
+                "route",
+                [RouterUpstreamInfo("route", "selected responses")],
+                id="router-1",
+            )
+            assert info.router_ai_id == info.upstreams[0].ai_id == "route"
+            await manager.delete("router-1")
+        finally:
+            tg.cancel_scope.cancel()
 
 
 @pytest.mark.anyio
-async def test_rejects_invalid_router_configuration() -> None:
-    async with anyio.create_task_group() as tg:
-        manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", tg)
-        with pytest.raises(ValueError, match="duplicate"):
+async def test_rejects_invalid_router_configuration_before_spawning() -> None:
+    class RecordingTaskGroup:
+        def __init__(self) -> None:
+            self.started = False
+
+        def start_soon(self, _func: object) -> None:
+            self.started = True
+
+    task_group = RecordingTaskGroup()
+    manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", task_group)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        await manager.create(
+            "smart",
+            "routing",
+            "route",
+            [RouterUpstreamInfo("simple", "one"), RouterUpstreamInfo("simple", "two")],
+        )
+    with pytest.raises(LookupError, match="missing"):
+        await manager.create(
+            "smart",
+            "routing",
+            "missing",
+            [RouterUpstreamInfo("simple", "one")],
+        )
+    assert not task_group.started
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("field_name", ["router_timeout", "target_timeout"])
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan"), True, "30"])
+async def test_rejects_invalid_timeouts_before_spawning(field_name: str, value: object) -> None:
+    class RecordingTaskGroup:
+        def __init__(self) -> None:
+            self.started = False
+
+        def start_soon(self, _func: object) -> None:
+            self.started = True
+
+    task_group = RecordingTaskGroup()
+    manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", task_group)
+    with pytest.raises(ValueError, match=f"{field_name} must be a finite positive number or None"):
+        if field_name == "router_timeout":
             await manager.create(
                 "smart",
                 "routing",
                 "route",
-                [RouterUpstreamInfo("simple", "one"), RouterUpstreamInfo("simple", "two")],
-                "simple",
+                [RouterUpstreamInfo("simple", "one")],
+                router_timeout=cast(float | None, value),
             )
-        with pytest.raises(LookupError, match="missing"):
+        else:
             await manager.create(
                 "smart",
                 "routing",
-                "missing",
+                "route",
                 [RouterUpstreamInfo("simple", "one")],
-                "simple",
+                target_timeout=cast(float | None, value),
             )
-        tg.cancel_scope.cancel()
+    assert not task_group.started
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "9000"])
+async def test_rejects_invalid_context_budget_before_spawning(value: object) -> None:
+    class RecordingTaskGroup:
+        def __init__(self) -> None:
+            self.started = False
+
+        def start_soon(self, _func: object) -> None:
+            self.started = True
+
+    task_group = RecordingTaskGroup()
+    manager = RouterManager(cast(AIManager, FakeAIManager()), "gw", task_group)
+
+    with pytest.raises(ValueError, match="max_context_chars must be a positive integer"):
+        await manager.create(
+            "smart",
+            "routing",
+            "route",
+            [RouterUpstreamInfo("simple", "one")],
+            max_context_chars=cast(int, value),
+        )
+    assert not task_group.started

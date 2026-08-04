@@ -32,7 +32,7 @@
       <ul v-else class="ai-list">
         <li v-for="r in routers" :key="r.id" class="ai-row">
           <span class="material-symbols-outlined ai-icon">route</span>
-          <div class="ai-info"><div class="ai-model">{{ r.name || r.id }}</div><div class="ai-provider">{{ r.upstreams.length }} 个候选 · 默认 {{ aiName(r.default_ai_id) }}</div></div>
+          <div class="ai-info"><div class="ai-model">{{ r.name || r.id }}</div><div class="ai-provider">{{ r.upstreams.length }} 个候选 · {{ routerAiRole(r.mode) }} {{ aiName(r.router_ai_id) }}</div></div>
           <button type="button" class="advanced-link" @click="requestDeleteRouter(r)">停止</button>
         </li>
       </ul>
@@ -96,6 +96,7 @@ import { useRouterStore } from '../stores/router.js'
 import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
 import { MODEL_PRESETS, getModelPreset, presetToAiPayload } from '../modelPresets.js'
+import { routerAiRole } from '../routerConfig.js'
 import BaseDialog from './BaseDialog.vue'
 
 const props = defineProps({
