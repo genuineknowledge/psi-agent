@@ -1,10 +1,10 @@
-"""Socket-aware OpenAI Chat Completions SSE client for Router upstreams."""
+"""Socket-aware OpenAI Chat Completions client used by the routing module."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, field
+from contextlib import aclosing
 from typing import Any
 
 import aiohttp
@@ -13,73 +13,32 @@ from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
 
-
-class RouterUpstreamError(Exception):
-    """An upstream response cannot be safely used by the Router."""
-
-
-@dataclass
-class UpstreamResult:
-    """The accumulated result from one single-choice upstream completion."""
-
-    content: str = ""
-    reasoning: str = ""
-    tool_calls: list[dict[str, Any]] = field(default_factory=list)
-    finish_reason: str = ""
+from .errors import RouterUpstreamError
+from .models import CompletionResult
 
 
-class RouterClient:
-    """Perform one buffered completion or proxy a raw upstream SSE stream."""
+class RouterHttpClient:
+    """Perform buffered and streaming calls for any Router strategy."""
 
-    async def complete(self, *, socket: str, body: dict[str, Any], **options: Any) -> UpstreamResult:
-        """Return an accumulated, validated result from a single-choice SSE response."""
+    async def complete(
+        self,
+        *,
+        socket: str,
+        body: dict[str, Any],
+        **options: Any,
+    ) -> CompletionResult:
+        """Accumulate one single-choice SSE completion."""
 
-        timeout = self._timeout_from_options(options)
-        connector, endpoint = resolve_connector_and_endpoint(socket)
-        session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=timeout))
-        response: aiohttp.ClientResponse | None = None
+        request_timeout = self._timeout_from_options(options)
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
-        try:
-            response = await session.post(endpoint, json=self._sanitize_body(body))
-            logger.info(f"Router upstream response status: {response.status}")
-            if response.status != 200:
-                error_text = await response.text()
-                raise RouterUpstreamError(f"Upstream {socket!r} returned HTTP {response.status}: {error_text[:1000]}")
-
-            async for raw_line in response.content:
-                logger.debug(f"Router upstream SSE chunk: {raw_line[:1000]!r}")
-                line = raw_line.decode(errors="replace").strip()
-                if not line or not line.startswith("data:"):
-                    continue
-                payload = line[5:].lstrip()
-                if payload == "[DONE]":
-                    break
-                try:
-                    data = json.loads(payload)
-                except json.JSONDecodeError:
-                    logger.warning(f"Skipping malformed router SSE JSON: {payload[:1000]!r}")
-                    continue
-                if not isinstance(data, dict):
-                    logger.warning(f"Skipping non-object router SSE payload: {type(data).__name__}")
-                    continue
-                choices = data.get("choices", [])
-                if not isinstance(choices, list):
-                    logger.warning(f"Skipping router SSE with non-list choices: {type(choices).__name__}")
-                    continue
-                if not choices:
-                    continue
-                if len(choices) != 1:
-                    raise RouterUpstreamError(f"Expected exactly 1 choice, got {len(choices)}")
-                choice = choices[0]
-                if not isinstance(choice, dict):
-                    logger.warning(f"Skipping non-object router choice: {type(choice).__name__}")
-                    continue
-                delta = choice.get("delta")
-                if not isinstance(delta, dict):
-                    delta = {}
+        stream = self.stream(socket=socket, body=body, timeout=request_timeout)
+        async with aclosing(stream) as events:
+            async for event in events:
+                choice = event["choices"][0]
+                delta = choice.get("delta", {})
                 part = delta.get("content")
                 if isinstance(part, str):
                     content_parts.append(part)
@@ -87,52 +46,134 @@ class RouterClient:
                 if isinstance(reasoning, str):
                     reasoning_parts.append(reasoning)
                 self._accumulate_tool_calls(tool_calls, delta.get("tool_calls"))
-                current_finish_reason = choice.get("finish_reason")
-                if current_finish_reason is not None:
-                    if not isinstance(current_finish_reason, str):
-                        raise RouterUpstreamError("Upstream finish reason must be a string")
-                    if current_finish_reason == "error":
-                        detail = "".join(content_parts) or "unknown error"
-                        raise RouterUpstreamError(f"Upstream reported an error: {detail}")
-                    finish_reason = current_finish_reason
+                current_finish = choice.get("finish_reason")
+                # Compaction is an auxiliary signal sent after the model's
+                # actual terminal frame. It must not replace stop/tool_calls.
+                if current_finish == "compaction_needed":
+                    continue
+                if isinstance(current_finish, str):
+                    if current_finish == "error":
+                        detail = "".join(content_parts) or "unknown upstream error"
+                        raise RouterUpstreamError(f"Upstream {socket!r} reported an error: {detail}")
+                    finish_reason = current_finish
 
-            if finish_reason is None:
-                raise RouterUpstreamError("Upstream stream ended without a finish reason")
-            ordered_calls = [tool_calls[index] for index in sorted(tool_calls)]
-            self._validate_tool_calls(ordered_calls, finish_reason)
-            return UpstreamResult(
-                content="".join(content_parts),
-                reasoning="".join(reasoning_parts),
-                tool_calls=ordered_calls,
-                finish_reason=finish_reason,
-            )
-        finally:
-            if response is not None:
-                response.close()
-            with anyio.CancelScope(shield=True):
-                await session.close()
+        if finish_reason is None:
+            raise RouterUpstreamError(f"Upstream {socket!r} ended without a finish reason")
+        ordered_calls = [tool_calls[index] for index in sorted(tool_calls)]
+        self._validate_tool_calls(ordered_calls, finish_reason)
+        return CompletionResult(
+            content="".join(content_parts),
+            reasoning="".join(reasoning_parts),
+            tool_calls=ordered_calls,
+            finish_reason=finish_reason,
+        )
 
-    async def stream_raw(self, *, socket: str, body: dict[str, Any], **options: Any) -> AsyncGenerator[bytes]:
-        """Yield upstream bytes unchanged, validating its HTTP response first."""
+    async def stream(
+        self,
+        *,
+        socket: str,
+        body: dict[str, Any],
+        **options: Any,
+    ) -> AsyncGenerator[dict[str, Any]]:
+        """Yield validated single-choice SSE events from one upstream."""
 
-        timeout = self._timeout_from_options(options)
+        request_timeout = self._timeout_from_options(options)
         connector, endpoint = resolve_connector_and_endpoint(socket)
-        session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=timeout))
+        session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=request_timeout))
         response: aiohttp.ClientResponse | None = None
+        saw_completion_finish = False
         try:
-            response = await session.post(endpoint, json=self._sanitize_body(body))
-            logger.info(f"Router raw upstream response status: {response.status}")
+            response = await session.post(endpoint, json=body)
+            logger.info(f"Router upstream response status: socket={socket!r}, status={response.status}")
             if response.status != 200:
                 error_text = await response.text()
-                raise RouterUpstreamError(f"Upstream {socket!r} returned HTTP {response.status}: {error_text[:1000]}")
-            async for chunk in response.content.iter_any():
-                logger.debug(f"Router raw upstream SSE chunk: {chunk[:1000]!r}")
-                yield chunk
+                raise RouterUpstreamError(
+                    f"Upstream {socket!r} returned HTTP {response.status}: {error_text[:1000]}"
+                )
+
+            data_lines: list[str] = []
+            while True:
+                raw_line = await response.content.readline()
+                if not raw_line:
+                    if data_lines:
+                        payload = "\n".join(data_lines)
+                        if payload != "[DONE]":
+                            event = self._decode_event(payload)
+                            if event is not None:
+                                finish = event["choices"][0].get("finish_reason")
+                                saw_completion_finish = (
+                                    saw_completion_finish
+                                    or self._is_completion_finish(finish)
+                                )
+                                yield event
+                    break
+
+                logger.debug(f"Router upstream SSE line: {raw_line[:1000]!r}")
+                line = raw_line.decode(errors="replace").rstrip("\r\n")
+                if line:
+                    if line.startswith("data:"):
+                        data_lines.append(line[5:].lstrip())
+                    continue
+                if not data_lines:
+                    continue
+                payload = "\n".join(data_lines)
+                data_lines.clear()
+                if payload == "[DONE]":
+                    break
+                event = self._decode_event(payload)
+                if event is None:
+                    continue
+                finish = event["choices"][0].get("finish_reason")
+                saw_completion_finish = (
+                    saw_completion_finish or self._is_completion_finish(finish)
+                )
+                yield event
+
+            if not saw_completion_finish:
+                raise RouterUpstreamError(
+                    f"Upstream {socket!r} ended without a completion finish reason"
+                )
+        except RouterUpstreamError:
+            raise
+        except (aiohttp.ClientError, TimeoutError) as error:
+            raise RouterUpstreamError(f"Upstream {socket!r} request failed: {error}") from error
         finally:
             if response is not None:
                 response.close()
             with anyio.CancelScope(shield=True):
                 await session.close()
+
+    @staticmethod
+    def _decode_event(payload: str) -> dict[str, Any] | None:
+        try:
+            raw_event = json.loads(payload)
+        except json.JSONDecodeError as error:
+            raise RouterUpstreamError(f"Upstream returned malformed SSE JSON: {error.msg}") from error
+        if not isinstance(raw_event, dict):
+            raise RouterUpstreamError("Upstream SSE payload must be an object")
+        choices = raw_event.get("choices")
+        if not isinstance(choices, list):
+            raise RouterUpstreamError("Upstream SSE choices must be a list")
+        if not choices:
+            return None
+        if len(choices) != 1:
+            raise RouterUpstreamError(f"Expected exactly one upstream choice, got {len(choices)}")
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            raise RouterUpstreamError("Upstream choice must be an object")
+        delta = choice.get("delta")
+        if delta is None:
+            choice["delta"] = {}
+        elif not isinstance(delta, dict):
+            raise RouterUpstreamError("Upstream choice delta must be an object")
+        finish_reason = choice.get("finish_reason")
+        if finish_reason is not None and not isinstance(finish_reason, str):
+            raise RouterUpstreamError("Upstream finish reason must be a string or null")
+        return raw_event
+
+    @staticmethod
+    def _is_completion_finish(value: object) -> bool:
+        return isinstance(value, str) and value != "compaction_needed"
 
     @staticmethod
     def _accumulate_tool_calls(accumulated: dict[int, dict[str, Any]], raw_calls: object) -> None:
@@ -189,19 +230,16 @@ class RouterClient:
 
     @staticmethod
     def _timeout_from_options(options: dict[str, Any]) -> float | None:
-        """Read the public ``timeout`` keyword without exposing a lint-forbidden name."""
-
         unsupported = set(options) - {"timeout"}
         if unsupported:
             names = ", ".join(sorted(unsupported))
-            raise TypeError(f"Unexpected RouterClient option(s): {names}")
-        timeout = options.get("timeout")
-        if timeout is not None and (not isinstance(timeout, (int, float)) or isinstance(timeout, bool)):
+            raise TypeError(f"Unexpected RouterHttpClient option(s): {names}")
+        value = options.get("timeout")
+        if value is not None and (
+            not isinstance(value, int | float) or isinstance(value, bool)
+        ):
             raise TypeError("timeout must be a number or None")
-        return timeout
+        return value
 
-    @staticmethod
-    def _sanitize_body(body: dict[str, Any]) -> dict[str, Any]:
-        """Copy a request body while withholding Router-internal selection fields."""
 
-        return {key: value for key, value in body.items() if key not in {"routing", "model"}}
+__all__ = ["RouterHttpClient"]

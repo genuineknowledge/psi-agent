@@ -1,29 +1,19 @@
-"""Routing strategy package for single-upstream selection."""
+"""Single-target LLM routing strategy."""
 
-from __future__ import annotations
-
-from psi_agent.router.client import RouterClient, UpstreamResult
-from psi_agent.router.protocol import PlannedTask, RouterConfig
-from psi_agent.router.routing.orchestrator import (
-    OrchestrationError,
-    Orchestrator,
-    Planner,
-    PlanValidationError,
-    RoutingOrchestrator,
-    parse_plan,
-)
-from psi_agent.router.routing.prompts import build_routing_messages
+from .entry import RoutingRouter
+from .errors import RouteSelectionError
+from .models import RoutingConfig, RoutingTarget, SelectionResult
+from .prompts import build_selector_messages
+from .selector import RouteSelector
+from .strategy import RoutingStrategy
 
 __all__ = [
-    "OrchestrationError",
-    "Orchestrator",
-    "PlanValidationError",
-    "PlannedTask",
-    "Planner",
-    "RouterClient",
-    "RouterConfig",
-    "RoutingOrchestrator",
-    "UpstreamResult",
-    "build_routing_messages",
-    "parse_plan",
+    "RouteSelectionError",
+    "RouteSelector",
+    "RoutingConfig",
+    "RoutingRouter",
+    "RoutingStrategy",
+    "RoutingTarget",
+    "SelectionResult",
+    "build_selector_messages",
 ]
