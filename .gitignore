@@ -9,3 +9,4 @@ dist/
 *.sock
 .coverage
 /result
+.worktrees/
