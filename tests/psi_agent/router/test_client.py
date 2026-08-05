@@ -61,6 +61,43 @@ async def test_complete_skips_zero_choice_heartbeats() -> None:
 
 
 @pytest.mark.anyio
+async def test_buffered_complete_preserves_events_and_compaction_metadata() -> None:
+    content_event = {
+        "id": "answer",
+        "model": "model-a",
+        "custom": {"preserved": True},
+        "choices": [{"index": 0, "delta": {"content": "ok", "reasoning": "why"}, "finish_reason": "stop"}],
+    }
+    compaction_event = {
+        "id": "answer",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "compaction_needed"}],
+        "psi_compaction": {"needed": True, "prompt_tokens": 100, "threshold": 80},
+    }
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return await _sse_response(
+            request,
+            [
+                f"data: {json.dumps(content_event)}\n\n".encode(),
+                f"data: {json.dumps(compaction_event)}\n\n".encode(),
+                b"data: [DONE]\n\n",
+            ],
+        )
+
+    async with _serve(handler) as server_url:
+        result = await RouterHttpClient().buffered_complete(
+            socket=server_url,
+            body={"messages": [], "stream": True},
+            timeout=None,
+        )
+
+    assert result.events == (content_event, compaction_event)
+    assert result.completion.content == "ok"
+    assert result.completion.reasoning == "why"
+    assert result.completion.finish_reason == "stop"
+
+
+@pytest.mark.anyio
 async def test_complete_rejects_multiple_choices() -> None:
     async def handler(request: web.Request) -> web.StreamResponse:
         return await _sse_response(request, [b'data: {"choices": [{"delta": {}}, {"delta": {}}]}\n\n'])

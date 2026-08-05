@@ -10,15 +10,15 @@ from loguru import logger
 
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._manager import _ensure_socket_dir, _new_uuid, _noop, _remove_socket, _socket_path, _wait_socket
-from psi_agent.router import Router
+from psi_agent.router import Router, RouterBackendType, RouterUpstream
 
 
 async def _run_router_service(
     *,
     session_socket: str,
     mode: str,
-    router_socket: str,
-    upstreams: tuple[tuple[str, str], ...],
+    router_socket: str | None,
+    upstreams: tuple[RouterUpstream, ...],
     router_timeout: float | None,
     target_timeout: float | None,
     max_context_chars: int,
@@ -37,7 +37,8 @@ async def _run_router_service(
 
 @dataclass(frozen=True)
 class RouterUpstreamInfo:
-    ai_id: str
+    backend_type: RouterBackendType
+    backend_id: str
     description: str
 
 
@@ -47,7 +48,7 @@ class RouterInfo:
     name: str
     socket: str
     mode: str
-    router_ai_id: str
+    router_ai_id: str | None
     upstreams: tuple[RouterUpstreamInfo, ...]
     router_timeout: float | None
     target_timeout: float | None
@@ -58,6 +59,10 @@ class RouterInfo:
 class _RouterEntry:
     scope: anyio.CancelScope
     info: RouterInfo
+
+
+class RouterDependencyError(RuntimeError):
+    """A Router cannot be deleted while another Router references it."""
 
 
 @dataclass
@@ -73,7 +78,7 @@ class RouterManager:
         self,
         name: str,
         mode: str,
-        router_ai_id: str,
+        router_ai_id: str | None,
         upstreams: Sequence[RouterUpstreamInfo],
         *,
         router_timeout: float | None = None,
@@ -83,25 +88,48 @@ class RouterManager:
     ) -> RouterInfo:
         router_id = id or _new_uuid()
         if not isinstance(mode, str):
-            raise ValueError("mode must be 'routing' or 'aggregation'")
-        if not isinstance(name, str) or not isinstance(router_ai_id, str):
-            raise ValueError("name and router_ai_id must be non-empty")
-        if any(not isinstance(item.ai_id, str) or not isinstance(item.description, str) for item in upstreams):
-            raise ValueError("upstreams must contain non-empty ai_id and description values")
-        targets = tuple(RouterUpstreamInfo(item.ai_id.strip(), item.description.strip()) for item in upstreams)
-        candidate_ids = [x.ai_id for x in targets]
+            raise ValueError("mode must be 'routing', 'aggregation', or 'fallback'")
+        if not isinstance(name, str):
+            raise ValueError("name must be non-empty")
+        if any(not isinstance(item, RouterUpstreamInfo) for item in upstreams):
+            raise ValueError("upstreams must contain RouterUpstreamInfo values")
+        if any(
+            not isinstance(item.backend_type, str)
+            or not isinstance(item.backend_id, str)
+            or not isinstance(item.description, str)
+            for item in upstreams
+        ):
+            raise ValueError("upstreams must contain non-empty backend references and descriptions")
+        targets = tuple(
+            RouterUpstreamInfo(
+                backend_type=item.backend_type,
+                backend_id=item.backend_id.strip(),
+                description=item.description.strip(),
+            )
+            for item in upstreams
+        )
+        backend_keys = [(item.backend_type, item.backend_id) for item in targets]
         normalized_mode = mode.strip()
         normalized_name = name.strip()
-        normalized_router_ai_id = router_ai_id.strip()
-        if normalized_mode not in {"routing", "aggregation"}:
-            raise ValueError("mode must be 'routing' or 'aggregation'")
-        if not normalized_name or not normalized_router_ai_id:
-            raise ValueError("name and router_ai_id must be non-empty")
-        if not targets or any(not x.ai_id or not x.description for x in targets):
-            raise ValueError("upstreams must contain non-empty ai_id and description values")
-        if len(candidate_ids) != len(set(candidate_ids)):
-            raise ValueError("upstreams contain duplicate ai_id values")
-        if normalized_mode == "aggregation" and normalized_router_ai_id in candidate_ids:
+        if normalized_mode not in {"routing", "aggregation", "fallback"}:
+            raise ValueError("mode must be 'routing', 'aggregation', or 'fallback'")
+        if not normalized_name:
+            raise ValueError("name must be non-empty")
+        if normalized_mode == "fallback":
+            if router_ai_id is not None:
+                raise ValueError("fallback mode requires router_ai_id=None")
+            normalized_router_ai_id = None
+        else:
+            if not isinstance(router_ai_id, str) or not router_ai_id.strip():
+                raise ValueError("routing and aggregation modes require a non-empty router_ai_id")
+            normalized_router_ai_id = router_ai_id.strip()
+        if not targets or any(
+            item.backend_type not in {"ai", "router"} or not item.backend_id or not item.description for item in targets
+        ):
+            raise ValueError("upstreams must contain non-empty typed backend references and descriptions")
+        if len(backend_keys) != len(set(backend_keys)):
+            raise ValueError("upstreams contain duplicate backend references")
+        if normalized_mode == "aggregation" and ("ai", normalized_router_ai_id) in backend_keys:
             raise ValueError("aggregation router_ai_id must not also be an upstream")
         for field_name, value in (("router_timeout", router_timeout), ("target_timeout", target_timeout)):
             if value is not None and (
@@ -110,12 +138,23 @@ class RouterManager:
                 raise ValueError(f"{field_name} must be a finite positive number or None")
         if not isinstance(max_context_chars, int) or isinstance(max_context_chars, bool) or max_context_chars <= 0:
             raise ValueError("max_context_chars must be a positive integer")
-        for ai_id in (normalized_router_ai_id, *candidate_ids):
-            if not self._aim.has(ai_id):
-                raise LookupError(f"AI {ai_id!r} not found")
         async with self._lock:
             if router_id in self._entries:
                 raise ValueError(f"Router {router_id!r} already exists")
+            if normalized_router_ai_id is not None and not self._aim.has(normalized_router_ai_id):
+                raise LookupError(f"AI {normalized_router_ai_id!r} not found")
+            router_socket = (
+                self._aim.get_socket(normalized_router_ai_id) if normalized_router_ai_id is not None else None
+            )
+            resolved_upstreams: list[RouterUpstream] = []
+            for item in targets:
+                if item.backend_type == "ai":
+                    if not self._aim.has(item.backend_id):
+                        raise LookupError(f"AI {item.backend_id!r} not found")
+                    backend_socket = self._aim.get_socket(item.backend_id)
+                else:
+                    backend_socket = self.get_socket(item.backend_id)
+                resolved_upstreams.append((backend_socket, item.description, item.backend_type))
             socket = _socket_path(self._prefix, "routers", router_id)
             await _ensure_socket_dir(socket)
             scope = anyio.CancelScope()
@@ -126,8 +165,8 @@ class RouterManager:
                         await _run_router_service(
                             session_socket=socket,
                             mode=normalized_mode,
-                            router_socket=self._aim.get_socket(normalized_router_ai_id),
-                            upstreams=tuple((self._aim.get_socket(item.ai_id), item.description) for item in targets),
+                            router_socket=router_socket,
+                            upstreams=tuple(resolved_upstreams),
                             router_timeout=router_timeout,
                             target_timeout=target_timeout,
                             max_context_chars=max_context_chars,
@@ -140,17 +179,17 @@ class RouterManager:
 
             self._tg.start_soon(run_router)
             info = RouterInfo(
-                router_id,
-                normalized_name,
-                socket,
-                normalized_mode,
-                normalized_router_ai_id,
-                targets,
-                router_timeout,
-                target_timeout,
-                max_context_chars,
+                id=router_id,
+                name=normalized_name,
+                socket=socket,
+                mode=normalized_mode,
+                router_ai_id=normalized_router_ai_id,
+                upstreams=targets,
+                router_timeout=router_timeout,
+                target_timeout=target_timeout,
+                max_context_chars=max_context_chars,
             )
-            self._entries[router_id] = _RouterEntry(scope, info)
+            self._entries[router_id] = _RouterEntry(scope=scope, info=info)
         try:
             await _wait_socket(socket)
         except Exception:
@@ -169,6 +208,18 @@ class RouterManager:
         async with self._lock:
             if router_id not in self._entries:
                 raise LookupError(f"Router {router_id!r} not found")
+            dependents = sorted(
+                item.info.id
+                for item in self._entries.values()
+                if item.info.id != router_id
+                and any(
+                    upstream.backend_type == "router" and upstream.backend_id == router_id
+                    for upstream in item.info.upstreams
+                )
+            )
+            if dependents:
+                names = ", ".join(repr(item) for item in dependents)
+                raise RouterDependencyError(f"Router {router_id!r} is referenced by Router(s): {names}")
             entry = self._entries.pop(router_id)
             entry.scope.cancel()
             await _remove_socket(entry.info.socket)

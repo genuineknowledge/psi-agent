@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
-from psi_agent.router.models import RouterMode, RouterTarget
+from psi_agent.router.models import RouterBackendType, RouterMode, RouterTarget
 from psi_agent.router.routing import RoutingTarget
 
 
 def test_routing_target_is_shared_router_target_alias() -> None:
     assert RoutingTarget is RouterTarget
     assert RouterMode("aggregation") is RouterMode.AGGREGATION
+    assert RouterMode("fallback") is RouterMode.FALLBACK
 
 
 def test_router_target_normalizes_surrounding_whitespace() -> None:
@@ -23,6 +26,17 @@ def test_router_target_normalizes_surrounding_whitespace() -> None:
         socket="http://candidate",
         description="General-purpose candidate",
     )
+
+
+def test_router_target_accepts_an_explicit_router_backend() -> None:
+    target = RouterTarget(
+        candidate_id="nested",
+        socket="nested.sock",
+        description="nested router",
+        backend_type="router",
+    )
+
+    assert target.backend_type == "router"
 
 
 @pytest.mark.parametrize(
@@ -41,3 +55,14 @@ def test_router_target_rejects_invalid_public_values(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         RouterTarget(candidate_id=candidate_id, socket=socket, description=description)
+
+
+@pytest.mark.parametrize("backend_type", ["session", "", 1, None])
+def test_router_target_rejects_unknown_backend_type(backend_type: object) -> None:
+    with pytest.raises(ValueError, match="backend_type"):
+        RouterTarget(
+            candidate_id="valid",
+            socket="socket",
+            description="description",
+            backend_type=cast(RouterBackendType, backend_type),
+        )

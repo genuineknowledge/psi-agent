@@ -36,7 +36,7 @@ Gateway 进程
 | `__init__.py` | `Gateway` dataclass + `run()` 入口 |
 | `_manager.py` | 共享 helpers（_new_uuid/_noop/_socket_path/_ensure_socket_dir/_remove_socket/_wait_socket） |
 | `_ai_manager.py` | `AIManager` — AI 实例注册表 + 生命周期 + AiInfo |
-| `_router_manager.py` | `RouterManager` — Router 实例注册表、AI ID 到 socket 解析和生命周期管理 |
+| `_router_manager.py` | `RouterManager` — Router 实例注册表、类型化 AI/Router 依赖解析和生命周期管理 |
 | `_session_manager.py` | `SessionManager` — Session 实例注册表 + 生命周期 + SessionInfo（含 `agent`、`active_schedules` / `deactive_schedules`） |
 | `_scheduler_manager.py` | `SchedulerManager` — 每个 workspace 恰好一个**全量激活**（`active_schedules=("*",)`）的调度 Session，按需 spawn，对 SPA / state 隐藏 |
 | `_defaults.py` | `resolve_default_agent` / `resolve_default_workspace`；再导出 ``psi_agent._appdata`` 路径助手 — CLI / `GET /defaults` 用 |
@@ -247,17 +247,24 @@ AI 运行时 crash 时，`_run_ai` 的 except 块从 `_entries` 中移除该 ent
 
 ## RouterManager
 
-Router 专用模型和所有候选模型都是 `AIManager` 中已经启动的普通 AI。Router 通过
-`POST /routers` 单独启动，前端/REST 只保存 `mode`、`router_ai_id`、候选
-`ai_id + description`、`router_timeout`、`target_timeout` 和 `max_context_chars`；
-`RouterManager` 仅在启动服务时把 AI ID 映射为 Socket，再调用
-`psi_agent.router.Router`。Gateway 不重复实现选择、广播或 SSE 代理。
+Router 通过 `POST /routers` 单独启动。每个 upstream 使用
+`backend_type + backend_id + description` 显式引用已启动的普通 AI 或已存在 Router；
+`RouterManager` 在启动服务时分别通过 `AIManager.get_socket()` 或自身 `get_socket()`
+解析地址，再调用 `psi_agent.router.Router`。Gateway 不重复实现选择、广播、回退或 SSE 代理。
 
-`mode=routing` 时 `router_ai_id` 是 Selector，并允许它同时出现在候选中；
-`mode=aggregation` 时它是专用 Aggregator，禁止同时作为 upstream。Gateway state 加载
-旧 Router 行时忽略 `default_ai_id`，并把 `max_context_length` 单向迁移为
-`max_context_chars`；新 state、REST、OpenAPI 和 SPA 不再输出旧字段。Router-backed
-Session 的标题/摘要生成使用 `router_ai_id`。状态恢复顺序固定为 AI → Router → Session。
+`mode=routing` 时 `router_ai_id` 是 Selector，并允许同一 AI 同时作为候选；
+`mode=aggregation` 时它是专用 Aggregator，禁止以 AI upstream 身份复用；
+`mode=fallback` 时没有控制 AI，`router_ai_id` 与 `router_timeout` 均为 `None`。
+Gateway 只允许引用创建时已存在的 Router，因此 UI/API 按叶到根构建依赖图；Router 不支持
+原地修改依赖。删除前扫描所有活动 Router，仍被引用时抛 `RouterDependencyError`，REST 返回
+HTTP 409，保证不会留下悬空依赖。
+
+Gateway state 加载旧 Router upstream 时把 `ai_id + description` 单向迁移为
+`backend_type="ai" + backend_id + description`，加载本身不覆写文件；下一次正常保存只写
+规范格式。旧 `default_ai_id` 继续忽略，`max_context_length` 单向迁移为
+`max_context_chars`。Routing/Aggregation-backed Session 的标题/摘要使用控制 AI；Fallback-backed
+Session 没有控制 AI，改为调用 Fallback 自己的公开 Socket。状态恢复顺序固定为
+AI → Router（按持久化顺序）→ Session；依赖缺失的 Router 记录 warning 并跳过。
 
 ## SessionManager
 
@@ -401,7 +408,7 @@ OAuth 回调中继（`_oauth_manager.py`）：让**授权码自己回到发起�
 |--------|----------|-------------|
 | POST | `/ais` | 创建 AI（201） |
 | POST | `/routers` | 创建并启动 Router（201） |
-| DELETE | `/routers/{router_id}` | 停止并删除 Router（200/404） |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router（200/404；仍被 Router 引用时 409） |
 | GET | `/routers` | 列出所有 Router |
 | DELETE | `/ais/{ai_id}` | 删除 AI（200/404） |
 | GET | `/ais` | 列出所有 AI |

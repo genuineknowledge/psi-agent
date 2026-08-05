@@ -85,7 +85,14 @@ class GatewayState:
             upstreams = (
                 [
                     {
-                        "ai_id": item.get("ai_id", ""),
+                        "backend_type": (
+                            item.get("backend_type", "") if "backend_type" in item or "backend_id" in item else "ai"
+                        ),
+                        "backend_id": (
+                            item.get("backend_id", "")
+                            if "backend_type" in item or "backend_id" in item
+                            else item.get("ai_id", "")
+                        ),
                         "description": item.get("description", ""),
                     }
                     for item in raw_upstreams
@@ -99,7 +106,7 @@ class GatewayState:
                     "id": router.get("id", ""),
                     "name": router.get("name", ""),
                     "mode": router.get("mode", ""),
-                    "router_ai_id": router.get("router_ai_id", ""),
+                    "router_ai_id": router.get("router_ai_id"),
                     "upstreams": upstreams,
                     "router_timeout": router.get("router_timeout"),
                     "target_timeout": router.get("target_timeout"),
@@ -130,7 +137,8 @@ class GatewayState:
             upstreams = (
                 [
                     {
-                        "ai_id": item.get("ai_id", ""),
+                        "backend_type": item.get("backend_type", ""),
+                        "backend_id": item.get("backend_id", ""),
                         "description": item.get("description", ""),
                     }
                     for item in raw_upstreams
@@ -144,7 +152,7 @@ class GatewayState:
                     "id": router.get("id", ""),
                     "name": router.get("name", ""),
                     "mode": router.get("mode", ""),
-                    "router_ai_id": router.get("router_ai_id", ""),
+                    "router_ai_id": router.get("router_ai_id"),
                     "upstreams": upstreams,
                     "router_timeout": router.get("router_timeout"),
                     "target_timeout": router.get("target_timeout"),

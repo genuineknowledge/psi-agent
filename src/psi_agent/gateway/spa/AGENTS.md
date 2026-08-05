@@ -8,10 +8,13 @@ Web 控制台是一个本地打包、无外部 CDN 依赖的 Vue 3 单页应用�
 
 ### Gateway Router 前端接入
 
-Router 是由已连接普通 AI 组合出的可选服务。`stores/router.js` 保存服务端
-`GET /routers` 列表和创建表单，`RouterDialog.vue` 只能选择现有 AI 作为路由
-专用模型和候选模型，禁止输入 socket/provider/API key。routing 模式将专用模型标为
-Selector；aggregation 模式标为 Aggregator，并禁止它同时作为候选。表单只发送
+Router 是由已连接普通 AI 和已存在 Router 组合出的可选服务。`stores/router.js` 保存服务端
+`GET /routers` 列表和创建表单，`RouterDialog.vue` 禁止输入 socket/provider/API key；每行
+upstream 必须先选择 `ai`/`router` 类型，再从对应资源池选择 backend。routing 模式将控制
+AI 标为 Selector；aggregation 模式标为 Aggregator，并禁止它以 AI upstream 身份复用；
+fallback 模式隐藏控制 AI 并提交 `router_ai_id: null`、`router_timeout: null`。Router 依赖按
+叶到根创建，被其他 Router 引用时服务端拒绝删除，`App.vue` 必须向用户显示该 409 错误。
+表单只发送
 `name/mode/router_ai_id/upstreams/router_timeout/target_timeout/max_context_chars`，不再包含
 默认模型或旧上下文字段。表单校验与 payload 构造位于 `routerConfig.js`，AI/Router backend 显示逻辑位于
 `backendOptions.js`。Session 使用 `selectedBackendType + selectedBackendId`，

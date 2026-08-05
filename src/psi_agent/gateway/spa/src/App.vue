@@ -260,8 +260,12 @@ async function executeConfirmedAction() {
   }
 
   if (dlgConfirm.value.actionType === 'router') {
-    await api('DELETE', '/routers/' + id).catch(() => {})
-    await refreshRouters()
+    try {
+      await api('DELETE', '/routers/' + id)
+      await refreshRouters()
+    } catch (error) {
+      ui.showAlert(error.message || '路由服务停止失败')
+    }
     return
   }
 

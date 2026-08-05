@@ -165,9 +165,13 @@ class Gateway:
                     await rm.create(
                         name=cfg.get("name", ""),
                         mode=cfg.get("mode", ""),
-                        router_ai_id=cfg.get("router_ai_id", ""),
+                        router_ai_id=cfg.get("router_ai_id"),
                         upstreams=[
-                            RouterUpstreamInfo(item.get("ai_id", ""), item.get("description", ""))
+                            RouterUpstreamInfo(
+                                backend_type=item.get("backend_type", ""),
+                                backend_id=item.get("backend_id", ""),
+                                description=item.get("description", ""),
+                            )
                             for item in cfg.get("upstreams", [])
                         ],
                         router_timeout=cfg.get("router_timeout"),
@@ -255,7 +259,12 @@ class Gateway:
                             "mode": info.mode,
                             "router_ai_id": info.router_ai_id,
                             "upstreams": [
-                                {"ai_id": item.ai_id, "description": item.description} for item in info.upstreams
+                                {
+                                    "backend_type": item.backend_type,
+                                    "backend_id": item.backend_id,
+                                    "description": item.description,
+                                }
+                                for item in info.upstreams
                             ],
                             "router_timeout": info.router_timeout,
                             "target_timeout": info.target_timeout,

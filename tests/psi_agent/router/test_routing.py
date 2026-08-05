@@ -122,3 +122,49 @@ async def test_routing_reuses_sticky_target_for_one_tool_iteration() -> None:
 
     assert selector.requests == [first_body, next_body]
     assert [socket for socket, _, _ in client.calls] == ["code-socket"] * 3
+
+
+@pytest.mark.anyio
+async def test_routing_sticky_is_isolated_by_composition_path() -> None:
+    target = RouterTarget(
+        candidate_id="nested",
+        socket="nested-socket",
+        description="Nested Router",
+        backend_type="router",
+    )
+    selection = SelectionResult(candidate_id="nested", target=target)
+    selector = FakeSelector([selection, selection])
+    client = FakeClient(
+        [
+            [{"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}],
+            [{"choices": [{"delta": {}, "finish_reason": "stop"}]}],
+            [{"choices": [{"delta": {}, "finish_reason": "stop"}]}],
+        ]
+    )
+    strategy = RoutingStrategy(config=_config(target), selector=selector, client=client)
+    left_user = {
+        "messages": [{"role": "user", "content": "left"}],
+        "routing": {"session_id": "session-a", "path": ["left"]},
+        "stream": True,
+    }
+    right_tool = {
+        "messages": [{"role": "tool", "content": "right result"}],
+        "routing": {"session_id": "session-a", "path": ["right"]},
+        "stream": True,
+    }
+    left_tool = {
+        "messages": [{"role": "tool", "content": "left result"}],
+        "routing": {"session_id": "session-a", "path": ["left"]},
+        "stream": True,
+    }
+
+    await _collect(strategy.stream(body=left_user))
+    await _collect(strategy.stream(body=right_tool))
+    await _collect(strategy.stream(body=left_tool))
+
+    assert selector.requests == [left_user, right_tool]
+    assert [body["routing"]["path"] for _, body, _ in client.calls] == [
+        ["left", "nested"],
+        ["right", "nested"],
+        ["left", "nested"],
+    ]

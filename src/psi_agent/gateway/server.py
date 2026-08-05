@@ -23,7 +23,7 @@ from psi_agent.gateway._feishu_manager import FeishuManager
 from psi_agent.gateway._history_manager import HistoryManager
 from psi_agent.gateway._oauth_manager import OAuthRelay
 from psi_agent.gateway._openapi import render_openapi
-from psi_agent.gateway._router_manager import RouterManager, RouterUpstreamInfo
+from psi_agent.gateway._router_manager import RouterDependencyError, RouterManager, RouterUpstreamInfo
 from psi_agent.gateway._scheduler_manager import SchedulerManager
 from psi_agent.gateway._session_manager import SessionInfo, SessionManager
 from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME, inject_app_name, read_spa_index_template
@@ -303,7 +303,14 @@ async def _create_router(request: web.Request) -> web.Response:
             name=body["name"],
             mode=body["mode"],
             router_ai_id=body["router_ai_id"],
-            upstreams=[RouterUpstreamInfo(item["ai_id"], item["description"]) for item in body["upstreams"]],
+            upstreams=[
+                RouterUpstreamInfo(
+                    backend_type=item["backend_type"],
+                    backend_id=item["backend_id"],
+                    description=item["description"],
+                )
+                for item in body["upstreams"]
+            ],
             router_timeout=body.get("router_timeout"),
             target_timeout=body.get("target_timeout"),
             max_context_chars=body.get("max_context_chars", 12_000),
@@ -327,6 +334,8 @@ async def _delete_router(request: web.Request) -> web.Response:
     try:
         await rm.delete(router_id)
         return _json({"id": router_id, "status": "stopped"})
+    except RouterDependencyError as e:
+        return _error(str(e), status=409)
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
@@ -530,7 +539,12 @@ async def _session_ai_socket(request: web.Request, sid: str) -> str:
     rm: RouterManager | None = request.app["rm"]
     if rm is None:
         raise LookupError("Router manager is not configured")
-    return aim.get_socket(rm.get(sess.backend_id).router_ai_id)
+    info = rm.get(sess.backend_id)
+    if info.mode == "fallback":
+        return rm.get_socket(sess.backend_id)
+    if info.router_ai_id is None:
+        raise LookupError("Router control AI is not configured")
+    return aim.get_socket(info.router_ai_id)
 
 
 async def _generate_title(request: web.Request) -> web.Response:

@@ -99,8 +99,9 @@ Socket 或原始完整请求。
 
 - 共享边界：`tests/psi_agent/router/test_*.py`
 - aggregation：`tests/psi_agent/router/aggregation/`
-- fallback（后续外部测试阶段补齐）：`tests/psi_agent/router/fallback/`
+- fallback：`tests/psi_agent/router/fallback/`
 - 真实 Session 链路：`tests/integration/test_serial_multi_ai_router.py`
+- 3×3 组合矩阵、六种三层排列与分支图：`tests/integration/test_fallback_router_composition.py`
 
 并发测试用 `anyio.Event` / cancel scope，不用固定 sleep。测试提前退出任务组前先 cancel，避免
 常驻 aiohttp server 把 `__aexit__(None, None, None)` 永久挂住。

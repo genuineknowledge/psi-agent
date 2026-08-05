@@ -103,6 +103,7 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
         "  upstream:\n"
         "    - [./code.sock, coding]\n"
         "    - [./research.sock, research]\n"
+        "    - [./nested.sock, nested router, router]\n"
         "  router_timeout: 30\n"
         "  target_timeout: null\n"
         "  max_context_chars: 12000\n"
@@ -118,6 +119,7 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
     assert instances[2].kwargs["upstream"] == [
         ("./code.sock", "coding"),
         ("./research.sock", "research"),
+        ("./nested.sock", "nested router", "router"),
     ]
     assert instances[2].kwargs["router_timeout"] == 30
     assert instances[2].kwargs["target_timeout"] is None

@@ -118,6 +118,7 @@ OPENAPI_SPEC = {
                         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DeleteResponse"}}},
                     },
                     "404": {"$ref": "#/components/responses/Error"},
+                    "409": {"$ref": "#/components/responses/Error"},
                     "500": {"$ref": "#/components/responses/Error"},
                 },
             }
@@ -682,9 +683,10 @@ OPENAPI_SPEC = {
             },
             "RouterUpstreamInfo": {
                 "type": "object",
-                "required": ["ai_id", "description"],
+                "required": ["backend_type", "backend_id", "description"],
                 "properties": {
-                    "ai_id": {"type": "string"},
+                    "backend_type": {"type": "string", "enum": ["ai", "router"]},
+                    "backend_id": {"type": "string"},
                     "description": {"type": "string"},
                 },
             },
@@ -694,8 +696,8 @@ OPENAPI_SPEC = {
                 "properties": {
                     "id": {"type": "string"},
                     "name": {"type": "string"},
-                    "mode": {"type": "string", "enum": ["routing", "aggregation"]},
-                    "router_ai_id": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["routing", "aggregation", "fallback"]},
+                    "router_ai_id": {"type": "string", "nullable": True},
                     "upstreams": {
                         "type": "array",
                         "minItems": 1,
@@ -717,6 +719,20 @@ OPENAPI_SPEC = {
                         "default": 12_000,
                     },
                 },
+                "oneOf": [
+                    {
+                        "properties": {
+                            "mode": {"enum": ["fallback"]},
+                            "router_ai_id": {"enum": [None]},
+                        }
+                    },
+                    {
+                        "properties": {
+                            "mode": {"enum": ["routing", "aggregation"]},
+                            "router_ai_id": {"type": "string", "minLength": 1},
+                        }
+                    },
+                ],
             },
             "RouterInfo": {
                 "type": "object",
@@ -724,8 +740,8 @@ OPENAPI_SPEC = {
                     "id": {"type": "string"},
                     "name": {"type": "string"},
                     "socket": {"type": "string"},
-                    "mode": {"type": "string", "enum": ["routing", "aggregation"]},
-                    "router_ai_id": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["routing", "aggregation", "fallback"]},
+                    "router_ai_id": {"type": "string", "nullable": True},
                     "upstreams": {
                         "type": "array",
                         "items": {"$ref": "#/components/schemas/RouterUpstreamInfo"},

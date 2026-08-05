@@ -31,13 +31,24 @@ class FakeSessionManager:
 
 @dataclass(frozen=True)
 class FakeRouter:
-    router_ai_id: str
+    mode: str
+    router_ai_id: str | None
 
 
 class FakeRouterManager:
+    def __init__(self, mode: str = "aggregation") -> None:
+        self.mode = mode
+
     def get(self, router_id: str) -> FakeRouter:
         assert router_id == "router-1"
-        return FakeRouter(router_ai_id="aggregator")
+        return FakeRouter(
+            mode=self.mode,
+            router_ai_id=None if self.mode == "fallback" else "aggregator",
+        )
+
+    def get_socket(self, router_id: str) -> str:
+        assert router_id == "router-1"
+        return "fallback-public.sock"
 
 
 @pytest.mark.anyio
@@ -49,3 +60,14 @@ async def test_title_socket_for_router_backend_uses_router_ai_id() -> None:
     request = make_mocked_request("POST", "/titles/generate", app=app)
 
     assert await _session_ai_socket(request, "session-1") == "aggregate.sock"
+
+
+@pytest.mark.anyio
+async def test_title_socket_for_fallback_backend_uses_public_router_socket() -> None:
+    app = web.Application()
+    app["aim"] = FakeAIManager({"aggregator": "aggregate.sock"})
+    app["sm"] = FakeSessionManager()
+    app["rm"] = FakeRouterManager(mode="fallback")
+    request = make_mocked_request("POST", "/titles/generate", app=app)
+
+    assert await _session_ai_socket(request, "session-1") == "fallback-public.sock"

@@ -37,3 +37,33 @@ def test_router_subcommand_parses_timeouts_and_context_budget() -> None:
     assert (command.router_timeout, command.target_timeout, command.max_context_chars) == (30, 8, 9000)
     assert not hasattr(command, "default_socket")
     assert not hasattr(command, "max_context_length")
+
+
+def test_fallback_router_subcommand_parses_typed_upstreams() -> None:
+    command = tyro.cli(
+        Command,
+        args=[
+            "router",
+            "--session-socket",
+            "fallback.sock",
+            "--router-socket",
+            "None",
+            "--mode",
+            "fallback",
+            "--upstream",
+            "one.sock",
+            "primary",
+            "nested.sock",
+            "nested",
+            "--upstream-types",
+            "ai",
+            "router",
+            "--target-timeout",
+            "8",
+        ],
+    )
+
+    assert isinstance(command, Router)
+    assert command.router_socket is None
+    assert command.upstream == [("one.sock", "primary"), ("nested.sock", "nested")]
+    assert command.upstream_types == ["ai", "router"]

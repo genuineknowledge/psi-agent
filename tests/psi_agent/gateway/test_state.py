@@ -119,7 +119,7 @@ async def test_state_load_migrates_legacy_router_fields_without_rewriting_source
             "name": "legacy",
             "mode": "routing",
             "router_ai_id": "selector",
-            "upstreams": [{"ai_id": "one", "description": "one"}],
+            "upstreams": [{"backend_type": "ai", "backend_id": "one", "description": "one"}],
             "router_timeout": 30,
             "target_timeout": None,
             "max_context_chars": 7_777,
@@ -145,7 +145,14 @@ async def test_state_save_whitelists_current_router_fields(tmp_path: Path) -> No
                 "name": "aggregate",
                 "mode": "aggregation",
                 "router_ai_id": "aggregator",
-                "upstreams": [{"ai_id": "one", "description": "one", "socket": "private"}],
+                "upstreams": [
+                    {
+                        "backend_type": "ai",
+                        "backend_id": "one",
+                        "description": "one",
+                        "socket": "private",
+                    }
+                ],
                 "router_timeout": 30,
                 "target_timeout": 8,
                 "max_context_chars": 9_000,
@@ -163,12 +170,40 @@ async def test_state_save_whitelists_current_router_fields(tmp_path: Path) -> No
             "name": "aggregate",
             "mode": "aggregation",
             "router_ai_id": "aggregator",
-            "upstreams": [{"ai_id": "one", "description": "one"}],
+            "upstreams": [{"backend_type": "ai", "backend_id": "one", "description": "one"}],
             "router_timeout": 30,
             "target_timeout": 8,
             "max_context_chars": 9_000,
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_state_roundtrip_preserves_fallback_graph(tmp_path: Path) -> None:
+    state = GatewayState(
+        _path=anyio.Path(tmp_path) / "state" / "latest.json",
+        _legacy_path=anyio.Path(tmp_path) / "legacy" / "latest.json",
+        _startup_ts="",
+    )
+    routers = [
+        {
+            "id": "fallback",
+            "name": "resilient",
+            "mode": "fallback",
+            "router_ai_id": None,
+            "upstreams": [
+                {"backend_type": "ai", "backend_id": "primary", "description": "primary"},
+                {"backend_type": "router", "backend_id": "nested", "description": "secondary"},
+            ],
+            "router_timeout": None,
+            "target_timeout": 8,
+            "max_context_chars": 12_000,
+        }
+    ]
+
+    await state.save(ais=[], sessions=[], titles=[], routers=routers)
+
+    assert (await state.load())["routers"] == routers
 
 
 @pytest.mark.anyio

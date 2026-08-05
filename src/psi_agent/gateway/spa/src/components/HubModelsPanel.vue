@@ -28,11 +28,11 @@
         <h4 class="section-label">智能路由</h4>
         <button type="button" class="advanced-link" @click="openRouter">启动路由服务</button>
       </div>
-      <p v-if="!routers.length" class="router-empty">从已连接模型中选择路由判断模型和候选模型。</p>
+      <p v-if="!routers.length" class="router-empty">组合已连接的 AI 或 Router，创建分流、聚合或 Fallback 服务。</p>
       <ul v-else class="ai-list">
         <li v-for="r in routers" :key="r.id" class="ai-row">
           <span class="material-symbols-outlined ai-icon">route</span>
-          <div class="ai-info"><div class="ai-model">{{ r.name || r.id }}</div><div class="ai-provider">{{ r.upstreams.length }} 个候选 · {{ routerAiRole(r.mode) }} {{ aiName(r.router_ai_id) }}</div></div>
+          <div class="ai-info"><div class="ai-model">{{ r.name || r.id }}</div><div class="ai-provider" :title="routerSummary(r, ais, routers)">{{ routerSummary(r, ais, routers) }}</div></div>
           <button type="button" class="advanced-link" @click="requestDeleteRouter(r)">停止</button>
         </li>
       </ul>
@@ -96,7 +96,7 @@ import { useRouterStore } from '../stores/router.js'
 import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
 import { MODEL_PRESETS, getModelPreset, presetToAiPayload } from '../modelPresets.js'
-import { routerAiRole } from '../routerConfig.js'
+import { routerSummary } from '../routerConfig.js'
 import BaseDialog from './BaseDialog.vue'
 
 const props = defineProps({
@@ -114,7 +114,6 @@ const selectedPresetId = ref(null)
 const apiKey = ref('')
 const connecting = ref(false)
 
-function aiName(id) { return ais.value.find(item => item.id === id)?.model || id }
 function openRouter() { emit('close'); ui.dlgRouter = true }
 function requestDeleteRouter(router) {
   ui.dlgConfirm = { show: true, message: `确认停止路由服务「${router.name || router.id}」？`, actionType: 'router', actionArgs: router.id }

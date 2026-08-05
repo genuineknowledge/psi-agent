@@ -142,10 +142,46 @@ async def test_gateway_rest_crud(tmp_path: str, monkeypatch: pytest.MonkeyPatch)
             async with session.post(
                 f"{base_url}/routers",
                 json={
+                    "name": "fallback-leaf",
+                    "mode": "fallback",
+                    "router_ai_id": None,
+                    "upstreams": [
+                        {
+                            "backend_type": "ai",
+                            "backend_id": upstream_ai_id,
+                            "description": "general tasks",
+                        }
+                    ],
+                    "router_timeout": None,
+                    "target_timeout": 8,
+                    "max_context_chars": 9_000,
+                },
+            ) as resp:
+                assert resp.status == 201
+                fallback_info = await resp.json()
+                fallback_id = fallback_info["id"]
+                assert fallback_info["router_ai_id"] is None
+                assert fallback_info["upstreams"] == [
+                    {
+                        "backend_type": "ai",
+                        "backend_id": upstream_ai_id,
+                        "description": "general tasks",
+                    }
+                ]
+
+            async with session.post(
+                f"{base_url}/routers",
+                json={
                     "name": "smart",
                     "mode": "aggregation",
                     "router_ai_id": aggregator_ai_id,
-                    "upstreams": [{"ai_id": upstream_ai_id, "description": "general tasks"}],
+                    "upstreams": [
+                        {
+                            "backend_type": "router",
+                            "backend_id": fallback_id,
+                            "description": "resilient general tasks",
+                        }
+                    ],
                     "router_timeout": 30,
                     "target_timeout": 8,
                     "max_context_chars": 9_000,
@@ -163,8 +199,18 @@ async def test_gateway_rest_crud(tmp_path: str, monkeypatch: pytest.MonkeyPatch)
             async with session.get(f"{base_url}/routers") as resp:
                 assert resp.status == 200
                 routers = await resp.json()
-                assert len(routers) == 1
-                assert routers[0]["upstreams"] == [{"ai_id": upstream_ai_id, "description": "general tasks"}]
+                assert len(routers) == 2
+                assert routers[1]["upstreams"] == [
+                    {
+                        "backend_type": "router",
+                        "backend_id": fallback_id,
+                        "description": "resilient general tasks",
+                    }
+                ]
+
+            async with session.delete(f"{base_url}/routers/{fallback_id}") as resp:
+                assert resp.status == 409
+                assert router_id in (await resp.json())["error"]
 
             workspace = await _make_workspace(str(tmp_path))
             async with session.post(
@@ -190,6 +236,9 @@ async def test_gateway_rest_crud(tmp_path: str, monkeypatch: pytest.MonkeyPatch)
                 assert resp.status == 200
 
             async with session.delete(f"{base_url}/routers/{router_id}") as resp:
+                assert resp.status == 200
+
+            async with session.delete(f"{base_url}/routers/{fallback_id}") as resp:
                 assert resp.status == 200
 
             async with session.delete(f"{base_url}/ais/{upstream_ai_id}") as resp:
@@ -436,7 +485,7 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer, mo
     # Inbound blobs land in ~/Downloads/.psi/, so redirect Path.home() to keep
     # the run from littering the developer's real Downloads folder.
     monkeypatch.setattr(Path, "home", lambda: Path(str(tmp_path)))
-    data_dir = tempfile.mkdtemp(dir="/tmp", prefix="gwb")
+    data_dir = tempfile.mkdtemp(dir=str(tmp_path), prefix="gwb")
     test_file = data_dir + "/test-out.txt"
     await anyio.Path(test_file).write_text("blob response content", encoding="utf-8")
 
@@ -515,7 +564,7 @@ async def test_gateway_blob_send(tmp_path: str, mock_ai_server: MockAIServer, mo
 
 @pytest.mark.anyio
 async def test_gateway_favicon(tmp_path: str) -> None:
-    icon_dir = tempfile.mkdtemp(dir="/tmp", prefix="gwfav")
+    icon_dir = tempfile.mkdtemp(dir=str(tmp_path), prefix="gwfav")
     icon_path = icon_dir + "/icon.png"
     icon_bytes = b"\x89PNG\r\n\x1a\n-fake-favicon-bytes"
     await anyio.Path(icon_path).write_bytes(icon_bytes)

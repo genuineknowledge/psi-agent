@@ -67,29 +67,53 @@ fallback = Router(
 
 ```text
 psi-agent router \
-  --mode aggregation \
-  --session-socket ./router.sock \
-  --router-socket ./aggregator.sock \
-  --upstream ./code.sock "coding" ./research.sock "research" \
-  --router-timeout 30 \
+  --mode fallback \
+  --session-socket ./fallback.sock \
+  --router-socket None \
+  --upstream ./primary.sock "primary" ./nested.sock "nested router" \
+  --upstream-types ai router \
   --target-timeout 60 \
   --max-context-chars 12000
 ```
+
+CLI 的 `--upstream` 仍是同序的 Socket/description 二元序列；组合时用等长的
+`--upstream-types` 标记每项为 `ai` 或 `router`。省略该选项时全部默认为 AI。Fallback 的
+`--router-socket` 必须传 `None`；Routing/Aggregation 则必须传控制 AI Socket。
 
 ### YAML
 
 ```yaml
 - type: router
-  mode: aggregation
-  session_socket: ./router.sock
-  router_socket: ./aggregator.sock
+  mode: fallback
+  session_socket: ./fallback.sock
+  router_socket: null
   upstream:
-    - [./code.sock, coding]
-    - [./research.sock, research]
-  router_timeout: 30
-  target_timeout: null
+    - [./primary-ai.sock, primary model]
+    - [./backup-ai.sock, backup model]
+  router_timeout: null
+  target_timeout: 60
+
+- type: router
+  mode: routing
+  session_socket: ./routing.sock
+  router_socket: ./selector-ai.sock
+  upstream:
+    - [./fallback.sock, resilient general model, router]
+    - [./specialist-ai.sock, specialist model, ai]
+
+- type: router
+  mode: aggregation
+  session_socket: ./aggregation.sock
+  router_socket: ./aggregator-ai.sock
+  upstream:
+    - [./routing.sock, routed answer, router]
+    - [./review-ai.sock, independent review, ai]
   max_context_chars: 12000
 ```
+
+以上配置表达 `Aggregation → Routing → Fallback`；改变引用方向即可构造其他无环顺序。
+每层独立应用自己的 `target_timeout`。外层 timeout 若短于内层最坏执行时间，会取消整个
+内层调用；系统不会按嵌套深度自动放大 timeout。
 
 ## 请求边界
 
@@ -149,7 +173,7 @@ function name 始终保留。
 
 ```text
 uv run pytest -q tests/psi_agent/router
-uv run pytest -q tests/integration/test_serial_multi_ai_router.py
+uv run pytest -q tests/integration/test_serial_multi_ai_router.py tests/integration/test_fallback_router_composition.py
 uv run ruff check src/psi_agent/router tests/psi_agent/router
 uv run ty check src/psi_agent/router tests/psi_agent/router
 ```

@@ -10,6 +10,8 @@ import psi_agent.router as router_package
 from psi_agent.router import (
     AggregationConfig,
     AggregationStrategy,
+    FallbackConfig,
+    FallbackStrategy,
     Router,
     RouterHttpClient,
     RouterMode,
@@ -31,7 +33,7 @@ def _router_kwargs(**overrides: Any) -> dict[str, Any]:
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("mode", ["routing", RouterMode.AGGREGATION])
+@pytest.mark.parametrize("mode", ["routing", RouterMode.AGGREGATION, RouterMode.FALLBACK])
 async def test_router_assigns_stable_candidate_ids_and_builds_selected_strategy(
     mode: RouterMode | str,
     monkeypatch: pytest.MonkeyPatch,
@@ -45,7 +47,7 @@ async def test_router_assigns_stable_candidate_ids_and_builds_selected_strategy(
     monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve)
     await Router(
         session_socket="router.sock",
-        router_socket="router-ai.sock",
+        router_socket=None if mode is RouterMode.FALLBACK else "router-ai.sock",
         mode=mode,
         upstream=[("one.sock", "one"), ("two.sock", "two")],
         target_timeout=5,
@@ -58,8 +60,10 @@ async def test_router_assigns_stable_candidate_ids_and_builds_selected_strategy(
     ]
     if mode == "routing":
         assert isinstance(captured[0], RoutingStrategy)
-    else:
+    elif mode is RouterMode.AGGREGATION:
         assert isinstance(captured[0], AggregationStrategy)
+    else:
+        assert isinstance(captured[0], FallbackStrategy)
 
 
 @pytest.mark.anyio
@@ -132,7 +136,7 @@ async def test_router_configures_logging_before_invalid_mode_validation(
 
     monkeypatch.setattr("psi_agent.router.entry.setup_logging", fake_setup_logging)
     with pytest.raises(ValueError, match="mode"):
-        await Router(**_router_kwargs(mode="fallback", verbose=True)).run()
+        await Router(**_router_kwargs(mode="unknown", verbose=True)).run()
 
     assert calls == [("logging", True)]
 
@@ -190,6 +194,7 @@ def test_router_facade_has_only_current_required_and_optional_fields() -> None:
         ("router_socket", MISSING),
         ("mode", MISSING),
         ("upstream", MISSING),
+        ("upstream_types", MISSING),
         ("router_timeout", 30.0),
         ("target_timeout", None),
         ("max_context_chars", 12_000),
@@ -210,6 +215,10 @@ def test_router_root_exports_current_modes_without_removed_process_apis() -> Non
         "AggregationFeedback",
         "AggregationRouter",
         "AggregationStrategy",
+        "FallbackConfig",
+        "FallbackError",
+        "FallbackRouter",
+        "FallbackStrategy",
         "Router",
         "RouterMode",
         "RouterTarget",
@@ -227,3 +236,46 @@ def test_router_root_exports_current_modes_without_removed_process_apis() -> Non
         "stream_raw",
         "Orchestrator",
     } & set(router_package.__all__)
+
+
+@pytest.mark.anyio
+async def test_router_builds_fallback_with_typed_upstreams(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[RouterStrategy] = []
+
+    async def fake_serve(*, session_socket: str, strategy: RouterStrategy) -> None:
+        assert session_socket == "router.sock"
+        captured.append(strategy)
+
+    monkeypatch.setattr("psi_agent.router.entry.serve_router", fake_serve)
+    await Router(
+        session_socket="router.sock",
+        router_socket=None,
+        mode="fallback",
+        upstream=[("one.sock", "one"), ("nested.sock", "nested")],
+        upstream_types=["ai", "router"],
+        target_timeout=5,
+    ).run()
+
+    strategy = cast(FallbackStrategy, captured[0])
+    assert isinstance(strategy.config, FallbackConfig)
+    assert [target.backend_type for target in strategy.config.targets] == ["ai", "router"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"mode": "fallback", "router_socket": "control.sock"},
+        {"mode": "routing", "router_socket": None},
+        {"upstream": [("one.sock", "one", "router")], "upstream_types": ["router"]},
+        {"upstream_types": ["ai"]},
+        {"upstream_types": ["unknown", "ai"]},
+    ],
+)
+async def test_router_rejects_invalid_mode_specific_or_typed_configuration(
+    overrides: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("psi_agent.router.entry.setup_logging", lambda *, verbose: None)
+    with pytest.raises(ValueError):
+        await Router(**_router_kwargs(**overrides)).run()
