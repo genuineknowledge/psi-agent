@@ -24,7 +24,7 @@ type Props = {
   selectedAiId: string | null
   onSelectAi: (id: string | null) => void
   onOpenAdvanced: () => void
-  onToast?: (message: string) => void
+  onToast?: (message: string, durationMs?: number) => void
   onAisChanged?: (ais: AiInfo[]) => void
 }
 
@@ -108,7 +108,7 @@ export default function HubModelsPanel({
       if (preferred?.id) {
         onSelectAi(preferred.id)
         writeStoredAiId(preferred.id)
-        onToast?.('已切换为免费模型（远程 deepseek-v4-flash）')
+        onToast?.('已切换为免费模型（远程 deepseek-v4-flash）。免费模型由远程服务提供，响应速度受服务负载与网络影响，可能较慢或出现波动', 6000)
       } else {
         onSelectAi(null)
         onToast?.('免费模型暂时不可用，请检查网络或改连自有 API')

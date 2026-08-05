@@ -201,13 +201,6 @@ export function TaskFocusDetails({
             <Zap size={13} />
             {task ? (task.hasTodoTrack ? "执行步骤" : "活动状态") : "任务运行状态"}
           </span>
-          <em>
-            {viewingHistory
-              ? "历史快照 · 只读"
-              : task?.hasTodoTrack
-                ? "来自 Session todo"
-                : "无清单时只显示忙闲，不伪造步骤"}
-          </em>
         </header>
         <div>
           {(task ? task.steps : tasks.slice(0, 4).map((item) => ({ label: item.shortTitle, state: item.status === "completed" ? "done" as const : item.status === "attention" ? "waiting" as const : "working" as const, detail: undefined as string | undefined }))).map((step, index) => (
