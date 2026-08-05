@@ -1,4 +1,4 @@
-# Router：分流、广播聚合与串行容灾
+# Router：分流、广播聚合与 Fallback
 
 `psi_agent.router` 把一组 OpenAI Chat Completions 兼容的 AI 服务暴露为一个统一
 `POST /chat/completions` 端点，支持三种显式模式：

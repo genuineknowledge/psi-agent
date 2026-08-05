@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为 psi-agent Router 增加按配置顺序串行容灾的 Fallback 模式，并让 Routing、Aggregation、Fallback 与普通 AI 通过类型化 upstream 任意组成无环调用图。
+**Goal:** 为 psi-agent Router 增加按配置顺序尝试上游的 Fallback 模式，并让 Routing、Aggregation、Fallback 与普通 AI 通过类型化 upstream 任意组成无环调用图。
 
 **Architecture:** Router 根包继续提供 mode-neutral HTTP/SSE、Socket 客户端、请求复制和隐私工具；新增共享 `buffered_complete()`，让 `fallback/` 在确认一个候选完整成功后才重放原始 events。类型化 AI/Router 边决定是否传播私有 `routing.session_id/path`，Gateway 用 backend type/ID 表达同一依赖图，所有策略只依赖统一 Chat Completions/SSE 契约。
 

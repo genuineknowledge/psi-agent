@@ -13,7 +13,7 @@
           <option value="">请选择</option>
           <option value="routing">分流模式</option>
           <option value="aggregation">聚合模式</option>
-          <option value="fallback">Fallback 容灾模式</option>
+          <option value="fallback">Fallback</option>
         </select>
       </label>
       <label v-if="routerForm.mode !== 'fallback'" class="field">{{ routerAiRole(routerForm.mode) }} 模型

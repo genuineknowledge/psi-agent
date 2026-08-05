@@ -10,7 +10,7 @@
 - `routing`：由 Selector 从多个 target 中选择一个并流式转发；
 - `aggregation`：并发调用全部 target，再由专用 Aggregator 综合输出。
 
-两者都把多个 OpenAI Chat Completions 兼容 Socket 暴露为一个统一 Socket，但尚未提供按优先级串行容灾的策略。当前 Router 文档还把 fallback 列为明确不支持的功能。
+两者都把多个 OpenAI Chat Completions 兼容 Socket 暴露为一个统一 Socket，但尚未提供按优先级尝试上游的 Fallback 策略。当前 Router 文档还把 fallback 列为明确不支持的功能。
 
 本设计新增第三个同级策略 `fallback`。它按配置顺序逐一尝试 target：当前 target 完整失败后才尝试下一个；首个完整成功的响应成为唯一外部输出；全部失败则返回 Router SSE error。
 

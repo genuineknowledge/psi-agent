@@ -140,7 +140,7 @@ src/
 各层的详细设计文档见：
 - **AI 层**: `src/psi_agent/ai/AGENTS.md` — provider 配置、请求透传、错误处理、context compaction 触发
 - **Session 层**: `src/psi_agent/session/AGENTS.md` — workspace 启动、agent loop、tool 加载调用、schedule 机制、history 持久化、context compaction
-- **Router 层**: `src/psi_agent/router/AGENTS.md` — 单目标分流、广播聚合、串行容灾、组合与 SSE/隐私/取消不变量
+- **Router 层**: `src/psi_agent/router/AGENTS.md` — 单目标分流、广播聚合、Fallback、组合与 SSE/隐私/取消不变量
 - **Channel 层**: `src/psi_agent/channel/AGENTS.md` — ChannelCore 公共部件、REPL/CLI/Telegram/Feishu 约定
 - **Gateway 层**: `src/psi_agent/gateway/AGENTS.md` — 生命周期管理、REST API、Web Console SPA、CI 打包
 
