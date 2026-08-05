@@ -14,7 +14,7 @@ from loguru import logger
 from psi_agent._sockets import resolve_connector_and_endpoint
 
 from .errors import RouterUpstreamError
-from .models import CompletionResult
+from .models import BufferedCompletion, CompletionResult
 
 
 class RouterHttpClient:
@@ -29,7 +29,20 @@ class RouterHttpClient:
     ) -> CompletionResult:
         """Accumulate one single-choice SSE completion."""
 
+        result = await self.buffered_complete(socket=socket, body=body, **options)
+        return result.completion
+
+    async def buffered_complete(
+        self,
+        *,
+        socket: str,
+        body: dict[str, Any],
+        **options: Any,
+    ) -> BufferedCompletion:
+        """Accumulate a completion while retaining its validated SSE events."""
+
         request_timeout = self._timeout_from_options(options)
+        buffered_events: list[dict[str, Any]] = []
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: dict[int, dict[str, Any]] = {}
@@ -37,6 +50,7 @@ class RouterHttpClient:
         stream = self.stream(socket=socket, body=body, timeout=request_timeout)
         async with aclosing(stream) as events:
             async for event in events:
+                buffered_events.append(event)
                 choice = event["choices"][0]
                 delta = choice.get("delta", {})
                 part = delta.get("content")
@@ -61,11 +75,14 @@ class RouterHttpClient:
             raise RouterUpstreamError(f"Upstream {socket!r} ended without a finish reason")
         ordered_calls = [tool_calls[index] for index in sorted(tool_calls)]
         self._validate_tool_calls(ordered_calls, finish_reason)
-        return CompletionResult(
-            content="".join(content_parts),
-            reasoning="".join(reasoning_parts),
-            tool_calls=ordered_calls,
-            finish_reason=finish_reason,
+        return BufferedCompletion(
+            events=tuple(buffered_events),
+            completion=CompletionResult(
+                content="".join(content_parts),
+                reasoning="".join(reasoning_parts),
+                tool_calls=ordered_calls,
+                finish_reason=finish_reason,
+            ),
         )
 
     async def stream(
@@ -84,7 +101,7 @@ class RouterHttpClient:
         saw_completion_finish = False
         try:
             response = await session.post(endpoint, json=body)
-            logger.info(f"Router upstream response status: socket={socket!r}, status={response.status}")
+            logger.info(f"Router upstream response status: status={response.status}")
             if response.status != 200:
                 error_text = await response.text()
                 raise RouterUpstreamError(f"Upstream {socket!r} returned HTTP {response.status}: {error_text[:1000]}")

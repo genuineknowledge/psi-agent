@@ -65,7 +65,7 @@ export const MODEL_PRESETS = [
     label: '通义千问',
     mark: 'Q',
     accent: '#615ced',
-    provider: 'qwen',
+    provider: 'dashscope',
     model: 'qwen-max',
     base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     hint: '阿里云 DashScope 兼容模式',

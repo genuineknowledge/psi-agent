@@ -12,7 +12,8 @@ from loguru import logger
 
 from ..errors import RouterUpstreamError
 from ..models import CompletionResult, RouterTarget
-from ..request import copy_public_request_body
+from ..privacy import redact_private_sockets
+from ..request import copy_public_request_body, copy_target_request_body
 from .errors import AggregationError
 from .models import AggregationConfig, AggregationFeedback
 from .prompts import build_aggregation_messages
@@ -47,23 +48,16 @@ class AggregationStrategy:
         """Collect ordered branch evidence, then yield validated synthesis events."""
 
         slots: list[AggregationFeedback | None] = [None] * len(self.config.targets)
-        private_socket_representations: set[str] = set()
-        for private_socket in (
+        private_sockets = (
             self.config.aggregator_socket,
             *(item.socket for item in self.config.targets),
-        ):
-            represented_socket = repr(private_socket)
-            private_socket_representations.update((private_socket, represented_socket, represented_socket[1:-1]))
-        ordered_private_socket_representations = sorted(
-            private_socket_representations,
-            key=lambda value: (-len(value), value),
         )
 
         async def collect(index: int, target: RouterTarget) -> None:
             try:
                 result = await self.client.complete(
                     socket=target.socket,
-                    body=copy_public_request_body(body=body),
+                    body=copy_target_request_body(body=body, target=target),
                     timeout=self.config.target_timeout,
                 )
                 if not result.content.strip() and not result.tool_calls:
@@ -77,15 +71,12 @@ class AggregationStrategy:
                     tool_calls=tuple(deepcopy(result.tool_calls)),
                 )
             except Exception as error:
-                summary = str(error)
-                for representation in ordered_private_socket_representations:
-                    summary = summary.replace(representation, "<private-socket>")
                 slots[index] = AggregationFeedback(
                     candidate_id=target.candidate_id,
                     description=target.description,
                     status="error",
                     error_type=type(error).__name__,
-                    error=summary[:512],
+                    error=redact_private_sockets(text=str(error), sockets=private_sockets),
                 )
 
         async with anyio.create_task_group() as task_group:

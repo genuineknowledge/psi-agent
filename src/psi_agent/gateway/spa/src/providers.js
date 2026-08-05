@@ -7,7 +7,7 @@ export const PROVIDERS = [
     models: ['claude-opus-4-8', 'claude-sonnet-5', 'claude-fable-5', 'claude-sonnet-4-6'] },
   { v: 'gemini',   l: 'Gemini',   base: 'https://generativelanguage.googleapis.com',
     models: ['gemini-3.5-flash', 'gemini-3.1-pro'] },
-  { v: 'qwen',     l: '通义千问 Qwen', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  { v: 'dashscope', l: '通义千问 Qwen', base: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     models: ['qwen3.7-max', 'qwen3.7-plus', 'qwen-max', 'qwen-plus'] },
   { v: 'zhipu',    l: '智谱 GLM', base: 'https://open.bigmodel.cn/api/paas/v4',
     models: ['glm-4.6', 'glm-4.6-flash', 'glm-4.5'] },

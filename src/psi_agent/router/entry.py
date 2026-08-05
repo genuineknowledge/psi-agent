@@ -1,4 +1,4 @@
-"""Unified Router entry point for routing and broadcast aggregation."""
+"""Unified Router entry point for routing, aggregation, and fallback."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from psi_agent._logging import setup_logging
 
 from .aggregation import AggregationConfig, AggregationStrategy
 from .client import RouterHttpClient
-from .models import RouterMode, RouterTarget
+from .fallback import FallbackConfig, FallbackStrategy
+from .models import RouterBackendType, RouterMode, RouterTarget, RouterUpstream
 from .routing import RouteSelector, RoutingConfig, RoutingStrategy
 from .server import RouterStrategy, serve_router
 
@@ -18,9 +19,9 @@ class Router:
     """Expose one explicitly selected Router mode through a shared facade."""
 
     session_socket: str
-    router_socket: str
+    router_socket: str | None
     mode: RouterMode | str
-    upstream: list[tuple[str, str]]
+    upstream: list[RouterUpstream]
     router_timeout: float | None = 30.0
     target_timeout: float | None = None
     max_context_chars: int = 12_000
@@ -33,25 +34,35 @@ class Router:
         try:
             mode = RouterMode(self.mode)
         except TypeError, ValueError:
-            raise ValueError("mode must be 'routing' or 'aggregation'") from None
+            raise ValueError("mode must be 'routing', 'aggregation', or 'fallback'") from None
         if not isinstance(self.upstream, list) or not self.upstream:
-            raise ValueError("upstream must be a non-empty list of two-string tuples")
-        if any(
-            not isinstance(item, tuple) or len(item) != 2 or any(not isinstance(value, str) for value in item)
-            for item in self.upstream
-        ):
-            raise ValueError("upstream must be a non-empty list of two-string tuples")
+            raise ValueError("upstream must be a non-empty list of two- or three-string tuples")
 
-        targets = [
-            RouterTarget(
-                candidate_id=f"candidate-{index}",
-                socket=socket,
-                description=description,
+        targets: list[RouterTarget] = []
+        for index, item in enumerate(self.upstream, start=1):
+            if not isinstance(item, tuple) or len(item) not in {2, 3}:
+                raise ValueError("upstream must be a non-empty list of two- or three-string tuples")
+            if any(not isinstance(value, str) for value in item):
+                raise ValueError("upstream must be a non-empty list of two- or three-string tuples")
+            backend_type: RouterBackendType = "ai"
+            if len(item) == 3:
+                raw_backend_type = item[2]
+                if raw_backend_type not in {"ai", "router"}:
+                    raise ValueError("upstream backend type must be 'ai' or 'router'")
+                backend_type = raw_backend_type
+            targets.append(
+                RouterTarget(
+                    candidate_id=f"candidate-{index}",
+                    socket=item[0],
+                    description=item[1],
+                    backend_type=backend_type,
+                )
             )
-            for index, (socket, description) in enumerate(self.upstream, start=1)
-        ]
+
         client = RouterHttpClient()
         if mode is RouterMode.ROUTING:
+            if not isinstance(self.router_socket, str) or not self.router_socket.strip():
+                raise ValueError("routing mode requires a non-empty router_socket")
             config = RoutingConfig(
                 session_socket=self.session_socket,
                 selector_socket=self.router_socket,
@@ -66,7 +77,10 @@ class Router:
                 selector=selector,
                 client=client,
             )
-        else:
+            session_socket = config.session_socket
+        elif mode is RouterMode.AGGREGATION:
+            if not isinstance(self.router_socket, str) or not self.router_socket.strip():
+                raise ValueError("aggregation mode requires a non-empty router_socket")
             config = AggregationConfig(
                 session_socket=self.session_socket,
                 aggregator_socket=self.router_socket,
@@ -76,7 +90,18 @@ class Router:
                 max_context_chars=self.max_context_chars,
             )
             strategy = AggregationStrategy(config=config, client=client)
-        await serve_router(session_socket=config.session_socket, strategy=strategy)
+            session_socket = config.session_socket
+        else:
+            if self.router_socket is not None:
+                raise ValueError("fallback mode requires router_socket=None")
+            fallback_config = FallbackConfig(
+                session_socket=self.session_socket,
+                targets=targets,
+                target_timeout=self.target_timeout,
+            )
+            strategy = FallbackStrategy(config=fallback_config, client=client)
+            session_socket = fallback_config.session_socket
+        await serve_router(session_socket=session_socket, strategy=strategy)
 
 
 __all__ = ["Router"]

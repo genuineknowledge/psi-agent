@@ -14,6 +14,7 @@ from loguru import logger
 from psi_agent._sockets import create_site
 
 from .errors import InvalidRouterRequestError, RouterError
+from .request import routing_scope_from_body
 
 
 class RouterStrategy(Protocol):
@@ -174,19 +175,13 @@ def _validate_request_body(body: dict[str, Any]) -> None:
         raise InvalidRouterRequestError("tools must be a list of objects")
     if body.get("stream", True) is not True:
         raise InvalidRouterRequestError("Router service requires stream=true")
-    routing = body.get("routing")
-    if routing is not None and not isinstance(routing, dict):
-        raise InvalidRouterRequestError("routing must be an object when present")
-    session_id = routing.get("session_id") if isinstance(routing, dict) else None
-    if session_id is not None and (not isinstance(session_id, str) or not session_id.strip()):
-        raise InvalidRouterRequestError("routing.session_id must be a non-empty string")
+    routing_scope_from_body(body=body)
 
 
 def _discard_session_state(*, strategy: RouterStrategy, body: dict[str, Any]) -> None:
-    routing = body.get("routing")
-    session_id = routing.get("session_id") if isinstance(routing, dict) else None
-    if isinstance(session_id, str) and session_id.strip():
-        strategy.discard(session_id.strip())
+    scope = routing_scope_from_body(body=body)
+    if scope is not None:
+        strategy.discard(scope[0])
 
 
 __all__ = ["RouterStrategy", "create_router_app", "handle_chat_completions", "serve_router"]

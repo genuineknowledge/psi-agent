@@ -6,10 +6,14 @@ from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Any, Protocol
 
+import anyio
 from loguru import logger
 
-from ..errors import InvalidRouterRequestError
-from ..request import copy_public_request_body
+from ..errors import InvalidRouterRequestError, RouterUpstreamError
+from ..models import RoutingScopeKey
+from ..privacy import redact_private_sockets
+from ..request import copy_target_request_body, routing_scope_from_body
+from .errors import RouteSelectionError
 from .models import RoutingConfig, SelectionResult
 
 
@@ -34,35 +38,38 @@ class RoutingStrategy:
         self.config = config
         self.selector = selector
         self.client = client
-        self._sticky_targets: dict[str, SelectionResult] = {}
+        self._sticky_targets: dict[RoutingScopeKey, SelectionResult] = {}
 
     async def stream(self, *, body: dict[str, Any]) -> AsyncGenerator[dict[str, Any]]:
         """Select one target and yield its validated SSE events."""
 
         messages = self._validate_request(body)
-        routing = body.get("routing")
-        if routing is not None and not isinstance(routing, dict):
-            raise InvalidRouterRequestError("routing must be an object when present")
-        raw_session_id = routing.get("session_id") if isinstance(routing, dict) else None
-        if raw_session_id is not None and (not isinstance(raw_session_id, str) or not raw_session_id.strip()):
-            raise InvalidRouterRequestError("routing.session_id must be a non-empty string")
-        session_id = raw_session_id.strip() if isinstance(raw_session_id, str) else None
+        scope = routing_scope_from_body(body=body)
+        scope_session_id = scope[0] if scope is not None else None
         is_tool_iteration = bool(messages) and messages[-1].get("role") == "tool"
+        private_sockets = (self.config.selector_socket, *(target.socket for target in self.config.targets))
+        cancelled_error = anyio.get_cancelled_exc_class()
 
-        selection = self._sticky_targets.get(session_id) if session_id and is_tool_iteration else None
+        selection = self._sticky_targets.get(scope) if scope is not None and is_tool_iteration else None
         if selection is None:
-            if session_id and not is_tool_iteration:
-                self.discard(session_id)
-            selection = await self.selector.select(request_body=body)
-            if session_id:
-                self._sticky_targets[session_id] = selection
+            if scope is not None and not is_tool_iteration:
+                self._sticky_targets.pop(scope, None)
+            try:
+                selection = await self.selector.select(request_body=body)
+            except cancelled_error:
+                raise
+            except Exception as error:
+                summary = redact_private_sockets(text=str(error), sockets=private_sockets)
+                raise RouteSelectionError(f"Selector request failed: {summary}") from error
+            if scope is not None:
+                self._sticky_targets[scope] = selection
         else:
             logger.info(
                 f"Reusing sticky routing candidate {selection.candidate_id!r} "
-                f"for tool iteration in session {session_id!r}"
+                f"for tool iteration in session {scope_session_id!r}"
             )
 
-        target_body = copy_public_request_body(body=body)
+        target_body = copy_target_request_body(body=body, target=selection.target)
         logger.info(f"Routing request to candidate {selection.candidate_id!r}")
         target_stream = self.client.stream(
             socket=selection.target.socket,
@@ -79,16 +86,23 @@ class RoutingStrategy:
                         finish_reason = current_finish
                     yield event
                 completed = True
+        except cancelled_error:
+            raise
+        except Exception as error:
+            summary = redact_private_sockets(text=str(error), sockets=private_sockets)
+            raise RouterUpstreamError(f"Routing candidate {selection.candidate_id!r} failed: {summary}") from error
         finally:
-            if session_id and (not completed or finish_reason != "tool_calls"):
-                self.discard(session_id)
+            if scope is not None and (not completed or finish_reason != "tool_calls"):
+                self._sticky_targets.pop(scope, None)
 
     def discard(self, session_id: str) -> None:
         """Forget the sticky target for one Session."""
 
         normalized = session_id.strip()
         if normalized:
-            self._sticky_targets.pop(normalized, None)
+            stale_scopes = [scope for scope in self._sticky_targets if scope[0] == normalized]
+            for scope in stale_scopes:
+                self._sticky_targets.pop(scope, None)
 
     def clear(self) -> None:
         """Forget every sticky target, normally during Router shutdown."""

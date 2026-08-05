@@ -10,34 +10,40 @@ Router 是无状态的 Chat Completions/SSE 组合层。修改本目录时同时
 router/
 ├── entry.py          # 统一 Router facade，只按显式 mode 组装策略
 ├── client.py         # Socket-aware HTTP/SSE 客户端
-├── request.py        # 公开请求深拷贝与私有字段剥离
-├── models.py         # RouterMode、RouterTarget、CompletionResult
+├── request.py        # 类型化 target 请求复制与私有 routing scope
+├── privacy.py        # 私有 Socket 错误摘要脱敏
+├── models.py         # 共享 mode、target、scope 与 completion 类型
 ├── server.py         # 公共 HTTP/SSE 边界，不写 mode 分支
 ├── routing/          # Selector 选择一个目标 + 工具链 sticky
-└── aggregation/      # 全目标并发广播 + 专用 Aggregator 综合
+├── aggregation/      # 全目标并发广播 + 专用 Aggregator 综合
+└── fallback/         # 按序完整尝试 + 首个成功响应重放
 ```
 
-共享传输、错误和模型放根包；模式特有逻辑必须留在同名子包。不要把 aggregation 分支塞进
-`RoutingStrategy`，也不要让 server 理解 Selector 或 Aggregator。
+共享传输、请求复制、错误脱敏和模型放根包；模式特有逻辑必须留在同名子包。不要在策略中
+判断相邻 Router 的具体 mode，也不要让 server 理解 Selector、Aggregator 或 Fallback。
 
 ## Socket 所有权
 
 - `session_socket`：Router 对 Session 监听的地址。
-- `router_socket`：统一入口的专用 Router AI；routing 为 Selector，aggregation 为 Aggregator。
+- `router_socket`：统一入口的专用控制 AI；routing 为 Selector，aggregation 为 Aggregator，
+  fallback 必须为 `None`。
 - target Socket：只存在于本地配置，绝不进入 prompt、日志反馈或外部请求元数据。
 - aggregation 的 Aggregator 必须专用，不得复用为 target；routing 允许 Selector 同时是候选。
+- target 必须用 `backend_type="ai"` 或 `backend_type="router"` 显式标记组合边；不得按 Socket
+  字符串猜测下游类型。
 
 所有地址经 `psi_agent._sockets` 解析。Windows 裸路径和非 Windows Named Pipe 的 fail-fast
 检查是刻意设计，不得绕过。
 
 ## 请求复制
 
-两个策略统一调用 `copy_public_request_body()`：
+控制 AI 始终调用 `copy_public_request_body()`；策略 target 调用 `copy_target_request_body()`：
 
 1. 深拷贝输入，禁止修改 caller dict。
-2. 只删除 `model` 与 `routing`。
-3. 强制 `stream=True`。
-4. 其余字段（含未知扩展字段）全部透传。
+2. 所有边删除 `model`；AI/control AI 边删除 `routing`。
+3. Router 边规范化 `routing`，并把当前 candidate ID 追加到 `routing.path`。
+4. `routing.path` 只允许稳定 candidate ID，且必须与非空 `routing.session_id` 同时出现。
+5. 强制 `stream=True`，其余字段（含未知扩展字段）全部透传。
 
 Selector prompt 是例外：它只接收候选编号/描述、压缩后的对话与工具摘要，不接收私有
 Socket 或原始完整请求。
@@ -55,7 +61,7 @@ Socket 或原始完整请求。
 
 - 每个普通用户轮次重新调用 Selector。
 - Selector 只能返回严格 `{"candidate_id":"..."}`，再由本地映射解析 Socket。
-- `routing.session_id` 只为一次 Session 工具链保存 sticky target。
+- sticky key 是 `(routing.session_id, routing.path)`，同一 Session 的不同组合路径必须隔离。
 - 仅 `finish_reason="tool_calls"` 保留 sticky；正常结束、错误、断连或新用户轮次均清理。
 
 ## aggregation 不变量
@@ -70,10 +76,22 @@ Socket 或原始完整请求。
 - 失败摘要须替换原始、repr 和转义形式的私有 Socket，并截到 512 字符。
 - 动态材料压缩必须确定、可复现，不得依赖异步完成顺序。
 
+## fallback 不变量
+
+- targets 严格按配置顺序串行尝试；同一时刻只能运行一个 attempt，不并发、不回绕。
+- 每个 attempt 必须通过共享 `buffered_complete()` 完整消费和验证；失败 attempt 的任何 event
+  都不得发送给调用方。
+- 非空白 content 或结构完整的 tool calls 才是可用结果；reasoning-only 和空完成均失败。
+- 首个可用结果按原始顺序重放全部已验证 events，保留未知顶层扩展和 compaction 辅助帧。
+- 工具轮从相同 sticky 索引开始；该候选失败后只尝试其后的 targets。
+- 取消立即传播并清理 scope；重放阶段断连不得触发新 attempt。
+- 全部失败抛 `FallbackError`；摘要按配置顺序记录 candidate ID、异常类型和脱敏后的有限文本。
+
 ## 有意不支持
 
 - Planner、动态任务拆分、请求选择候选 Socket。
-- fallback、默认模型、自动重试、熔断、健康检查、负载均衡。
+- 默认模型、同 target 自动重试、熔断、健康检查、负载均衡。
+- 自动拓扑发现、运行时循环检测和跨进程 sticky 持久化。
 - Router 内会话持久化或 workspace tool 执行。
 - 已删除的 `RouterClient`、`UpstreamResult`、`stream_raw`、`Orchestrator` 等旧 API。
 
@@ -81,6 +99,7 @@ Socket 或原始完整请求。
 
 - 共享边界：`tests/psi_agent/router/test_*.py`
 - aggregation：`tests/psi_agent/router/aggregation/`
+- fallback（后续外部测试阶段补齐）：`tests/psi_agent/router/fallback/`
 - 真实 Session 链路：`tests/integration/test_serial_multi_ai_router.py`
 
 并发测试用 `anyio.Event` / cancel scope，不用固定 sleep。测试提前退出任务组前先 cancel，避免

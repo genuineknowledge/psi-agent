@@ -12,7 +12,16 @@ from .aggregation import (
 from .client import RouterHttpClient
 from .entry import Router
 from .errors import InvalidRouterRequestError, RouterError, RouterUpstreamError
-from .models import CompletionResult, RouterMode, RouterTarget
+from .fallback import FallbackConfig, FallbackError, FallbackRouter, FallbackStrategy
+from .models import (
+    BufferedCompletion,
+    CompletionResult,
+    RouterBackendType,
+    RouterMode,
+    RouterTarget,
+    RouterUpstream,
+    RoutingScopeKey,
+)
 from .routing import (
     RouteSelectionError,
     RouteSelector,
@@ -31,19 +40,27 @@ __all__ = [
     "AggregationFeedback",
     "AggregationRouter",
     "AggregationStrategy",
+    "BufferedCompletion",
     "CompletionResult",
+    "FallbackConfig",
+    "FallbackError",
+    "FallbackRouter",
+    "FallbackStrategy",
     "InvalidRouterRequestError",
     "RouteSelectionError",
     "RouteSelector",
     "Router",
+    "RouterBackendType",
     "RouterError",
     "RouterHttpClient",
     "RouterMode",
     "RouterStrategy",
     "RouterTarget",
+    "RouterUpstream",
     "RouterUpstreamError",
     "RoutingConfig",
     "RoutingRouter",
+    "RoutingScopeKey",
     "RoutingStrategy",
     "RoutingTarget",
     "SelectionResult",
