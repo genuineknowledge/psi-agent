@@ -99,11 +99,6 @@ logger = logging.getLogger(__name__)
 
 HEARTBEAT_OK = "HEARTBEAT_OK"
 
-# Last-seen digest of the per-turn context files, keyed by workspace — drives
-# ``system_prompt_rebuild_checker``. Process-wide: Gateway runs many Sessions in
-# one process and they read the same files, and the worst a shared entry costs
-# is one extra rebuild for a Session that had already picked the change up.
-_CONTEXT_FILE_DIGESTS: dict[str, str] = {}
 
 # Skill whose presence injects the ## Help guidance section.
 HELP_SKILL_NAME = "psi-agent-help"
@@ -1630,28 +1625,6 @@ async def compact_history(history: list[dict[str, Any]], complete_fn) -> str:
         fallback = ("\n".join(parts)) if not previous_summary else previous_summary + "\n" + "\n".join(parts)
         return _cap_summary(fallback) + "\n" + recent_text
     return _cap_summary(summary) + "\n" + recent_text
-
-
-async def _context_files_changed(workspace_dir: anyio.Path) -> bool:
-    """Whether ``USER.md`` / dynamic context files differ from the last check.
-
-    First call per process primes the digest and returns False — the prompt was
-    just built from these same files, so there is nothing to rebuild for.
-    """
-    try:
-        digest = hashlib.sha256(
-            (await _build_volatile(workspace_dir) + "\0" + await _build_dynamic_context_files(workspace_dir)).encode(
-                "utf-8"
-            )
-        ).hexdigest()
-    except Exception as exc:
-        logger.debug("Context file digest failed, skipping rebuild: %r", exc)
-        return False
-
-    key = str(workspace_dir)
-    previous = _CONTEXT_FILE_DIGESTS.get(key)
-    _CONTEXT_FILE_DIGESTS[key] = digest
-    return previous is not None and previous != digest
 
 
 async def turn_context_builder() -> str:
