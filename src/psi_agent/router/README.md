@@ -177,3 +177,7 @@ uv run pytest -q tests/integration/test_serial_multi_ai_router.py tests/integrat
 uv run ruff check src/psi_agent/router tests/psi_agent/router
 uv run ty check src/psi_agent/router tests/psi_agent/router
 ```
+
+以上命令验证协议与组合不变量。真实后端之间的质量、可靠性、成本和时延对照实验见
+[`evals/router/README.md`](../../../evals/router/README.md)；付费且存在随机性的效果评测刻意不进入常规
+pytest。
