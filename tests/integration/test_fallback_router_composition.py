@@ -27,6 +27,15 @@ from psi_agent.session.conversation import Conversation
 from psi_agent.session.tool_registry import ToolRegistry
 
 
+def _aggregation_feedback(content: str) -> list[dict[str, Any]]:
+    serialized = content.split("<aggregation_feedback_json>\n", maxsplit=1)[1].split(
+        "\n</aggregation_feedback_json>", maxsplit=1
+    )[0]
+    value = json.loads(serialized)["aggregation_feedback"]
+    assert isinstance(value, list)
+    return value
+
+
 class RecordingStrategy:
     """Record public Router requests without changing strategy behavior."""
 
@@ -254,8 +263,7 @@ async def test_aggregation_branch_graph_treats_child_router_error_as_one_failed_
 
     async def aggregator(request: web.Request) -> web.StreamResponse:
         body = await request.json()
-        evidence = json.loads(body["messages"][-1]["content"].split("\n\n", 1)[1])
-        aggregation_feedback.extend(evidence["aggregation_feedback"])
+        aggregation_feedback.extend(_aggregation_feedback(body["messages"][-1]["content"]))
         return await _sse(request, _chunk(content="branch graph combined"))
 
     try:

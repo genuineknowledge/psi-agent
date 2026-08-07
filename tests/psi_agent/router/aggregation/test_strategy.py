@@ -16,6 +16,15 @@ from psi_agent.router.errors import RouterUpstreamError
 from psi_agent.router.models import CompletionResult, RouterTarget
 
 
+def _aggregation_feedback(content: str) -> list[dict[str, Any]]:
+    serialized = content.split("<aggregation_feedback_json>\n", maxsplit=1)[1].split(
+        "\n</aggregation_feedback_json>", maxsplit=1
+    )[0]
+    value = json.loads(serialized)["aggregation_feedback"]
+    assert isinstance(value, list)
+    return value
+
+
 class FakeAggregationClient:
     def __init__(
         self,
@@ -161,13 +170,13 @@ async def test_partial_failure_builds_ordered_sanitized_feedback_and_calls_aggre
     assert collected[0][-1]["choices"][0]["finish_reason"] == "stop"
     assert client.aggregator_socket == "aggregate.sock"
     assert client.aggregator_body is not None
-    tail = json.loads(client.aggregator_body["messages"][-1]["content"].split("\n\n", 1)[1])
-    assert [item["candidate_id"] for item in tail["aggregation_feedback"]] == [
+    feedback = _aggregation_feedback(client.aggregator_body["messages"][-1]["content"])
+    assert [item["candidate_id"] for item in feedback] == [
         "candidate-1",
         "candidate-2",
         "candidate-3",
     ]
-    assert tail["aggregation_feedback"][2]["status"] == "error"
+    assert feedback[2]["status"] == "error"
     assert "private-3.sock" not in client.aggregator_body["messages"][-1]["content"]
     assert "<private-socket>" in client.aggregator_body["messages"][-1]["content"]
 
@@ -301,7 +310,8 @@ async def test_aggregator_body_replaces_only_messages_and_preserves_public_param
 
     assert client.aggregator_body is not None
     assert client.aggregator_options == {"timeout": 9}
-    assert client.aggregator_body["messages"][:-1] == _body()["messages"]
+    assert client.aggregator_body["messages"][0]["role"] == "system"
+    assert client.aggregator_body["messages"][1:-1] == _body()["messages"]
     assert client.aggregator_body["messages"] != _body()["messages"]
     assert {key: value for key, value in client.aggregator_body.items() if key != "messages"} == {
         "tools": [{"type": "function", "function": {"name": "search"}}],
@@ -376,7 +386,7 @@ async def test_branch_reasoning_is_dropped_and_branch_tool_calls_are_feedback_on
 
     assert client.aggregator_body is not None
     serialized = client.aggregator_body["messages"][-1]["content"]
-    feedback = json.loads(serialized.split("\n\n", 1)[1])["aggregation_feedback"][0]
+    feedback = _aggregation_feedback(serialized)[0]
     assert "private chain of thought" not in serialized
     assert feedback["tool_calls"][0]["function"]["arguments"] == "original"
     assert branch_tool["function"]["arguments"] == "mutated"
@@ -397,9 +407,7 @@ async def test_branch_error_summary_replaces_every_private_socket_and_caps_at_51
     await _collect(AggregationStrategy(config=_config(targets), client=client).stream(body=_body()))
 
     assert client.aggregator_body is not None
-    feedback = json.loads(client.aggregator_body["messages"][-1]["content"].split("\n\n", 1)[1])[
-        "aggregation_feedback"
-    ][0]
+    feedback = _aggregation_feedback(client.aggregator_body["messages"][-1]["content"])[0]
     assert len(feedback["error"]) == 512
     assert "<private-socket>" in feedback["error"]
     assert all(socket not in feedback["error"] for socket in [targets[0].socket, targets[1].socket, "aggregate.sock"])
@@ -432,9 +440,7 @@ async def test_branch_error_summary_sanitizes_windows_named_pipe_repr_forms() ->
     )
 
     assert client.aggregator_body is not None
-    error = json.loads(client.aggregator_body["messages"][-1]["content"].split("\n\n", 1)[1])["aggregation_feedback"][
-        0
-    ]["error"]
+    error = _aggregation_feedback(client.aggregator_body["messages"][-1]["content"])[0]["error"]
     assert "<private-socket>" in error
     assert error == (
         "Upstream <private-socket> <private-socket> <private-socket> "
@@ -460,7 +466,7 @@ async def test_empty_branch_response_is_failure_but_does_not_cancel_successful_b
     await _collect(AggregationStrategy(config=_config(targets), client=client).stream(body=_body()))
 
     assert client.aggregator_body is not None
-    feedback = json.loads(client.aggregator_body["messages"][-1]["content"].split("\n\n", 1)[1])["aggregation_feedback"]
+    feedback = _aggregation_feedback(client.aggregator_body["messages"][-1]["content"])
     assert [item["status"] for item in feedback] == ["error", "success"]
 
 

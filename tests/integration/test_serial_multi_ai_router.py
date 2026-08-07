@@ -21,6 +21,15 @@ from psi_agent.session.conversation import Conversation
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
 
+def _aggregation_feedback(content: str) -> list[dict[str, Any]]:
+    serialized = content.split("<aggregation_feedback_json>\n", maxsplit=1)[1].split(
+        "\n</aggregation_feedback_json>", maxsplit=1
+    )[0]
+    value = json.loads(serialized)["aggregation_feedback"]
+    assert isinstance(value, list)
+    return value
+
+
 def _chunk(
     *,
     content: str = "",
@@ -117,8 +126,7 @@ async def test_session_aggregation_broadcasts_all_targets_and_tolerates_partial_
     async def aggregator(request: web.Request) -> web.StreamResponse:
         body = await request.json()
         requests["aggregator"].append(body)
-        evidence = json.loads(body["messages"][-1]["content"].split("\n\n", 1)[1])
-        feedback = evidence["aggregation_feedback"]
+        feedback = _aggregation_feedback(body["messages"][-1]["content"])
         assert [item["candidate_id"] for item in feedback] == [
             "candidate-1",
             "candidate-2",
