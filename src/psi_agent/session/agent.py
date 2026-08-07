@@ -197,6 +197,14 @@ class SessionAgent:
         trigger_registry = await TriggerRegistry.load(agent_root / "triggers")
         system_prompt = await SystemPrompt.from_workspace(agent_root, conversation.session_id)
 
+        # Fail here, not three weeks later in a log nobody reads: if the prompt
+        # advertises tools the registry cannot dispatch (or hides ones it can),
+        # the model has been told something untrue about its own capabilities.
+        await system_prompt.check_exposure(
+            registered=set(tool_registry.tools),
+            load_failures=tool_registry.load_failures,
+        )
+
         return cls(
             ai_client=ai_client,
             conversation=conversation,
@@ -404,7 +412,11 @@ class SessionAgent:
                     hook_message |= await self._system_prompt.run_before_turn(hook_message)
 
                 # system prompt (lazy + optional rebuild)
-                await self._system_prompt.ensure(self._conversation, hook_message)
+                await self._system_prompt.ensure(
+                    self._conversation,
+                    hook_message,
+                    tool_names=sorted(self._tool_registry.tools),
+                )
 
                 # peek pending schedule chunks — yield first, clear only after yield
                 # (only schedule.display results are stashed; silent never enters pending)

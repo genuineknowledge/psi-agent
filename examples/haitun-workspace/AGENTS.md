@@ -123,6 +123,28 @@ service tools:
 
 ## Tools (`tools/`)
 
+### 工具名 = 函数名，且两侧必须相等（启动即断言）
+
+- **一个文件可以定义多个工具**：`browser.py` 展开 41 个、`canvas.py` 26 个、`feishu_message.py` 17 个。
+  所以 `tools/*.py` 的**文件数不是工具数**（实测 90 个文件 / 262 个工具），提示词里也不能拿文件名当工具名——
+  `browser` 调不通，真名是 `browser_click`。
+- **`## Tooling` 段只列 `TOOL_ORDER` 里的核心工具 + 一行计数**，不再逐个列全。全部工具连完整参数
+  本来就以 `tools` schema 进请求体；散文段的价值在**排序和一句导语**（schema 是无序字典，不会告诉模型
+  先伸手拿 `read` 而不是 `bash`）。
+- **别用 `from _helper import some_async_fn` 再导出**：注册依据是 `dir(module)`，再导出的协程会被注册成
+  模型可调用的工具。这样漏出过 `get_profile`（`profile_tools.py`）和 `send_card_impl` / `edit_card_impl`
+  （`assignment_feedback.py`）。要么加 `_` 前缀，要么 `import _user_profile` 后限定调用。
+- **工具文件名不能和 stdlib 模块撞名**：加载期 `tools/` 在 `sys.path` 首位，一个 `tools/secrets.py`
+  会让进程里任何 `import secrets` 拿到该工具文件，且结果进 `sys.modules` **活过加载窗口**，
+  连框架自己都中招。当前 0 处撞名（`json` / `types` / `select` / `secrets` / `signal` 这类都别用）。
+- **改 `_` helper 后必须重启 Session**：helper 以裸名长驻 `sys.modules`，热重载只覆盖工具文件、
+  不覆盖 helper。改了 `_feishu_impl.py` 却发现行为没变，先重启再怀疑代码。
+- **`systems/system.py` 的两个 hook 必须跟着工具目录一起改**：`advertised_tool_names()`（AST 静态解析，
+  含 `.mcp_cache` 展开名与再导出协程）和 `indexed_skill_entries()`。启动期框架会拿它们和
+  `ToolRegistry` 实际注册的集合比对，不等即抛 `ExposureMismatchError` 拒绝启动
+  （`PSI_ALLOW_EXPOSURE_MISMATCH=1` 可降级）。**新增 `@mcp` 工具后若 `.mcp_cache` 没生成，启动会直接报错**——
+  这是有意的，说明该部署里那些工具其实拿不到。详见根 `AGENTS.md` 坑 22。
+
 ### Path roots（workspace / agent ContextVar + AppData）
 
 当 Session `agent ≠ workspace` 时，工具必须分清两根目录。统一入口：
@@ -195,6 +217,13 @@ service tools:
 | `c_drive_cleanup` (`c_drive_cleanup.py` + `_c_drive_cleanup_impl.py`) | Windows C-drive `scan` / `status` / `clean` tool. The first scan in a Session requires confirmation; cleanup requires the user's affirmation and deletes only unchanged candidates from allowlisted temporary/cache locations. Large files, exact duplicates, and stale Downloads are report-only. See `skills/windows-c-drive-cleanup/SKILL.md` for the agent workflow. |
 
 ## Skills (`skills/`)
+
+> **技能在提示词里的名字一律是目录名**，frontmatter 只供 description / category 等元数据。
+> 因为这个名字既是提示词让模型读的路径（`skills/<name>/SKILL.md`），也是 `skill_manage`
+> 解析的路径——frontmatter 里的 `name` 若赢了，两者都指向不存在的目录。
+> `fusion-flow-legacy/SKILL.md` 声明 `name: flow`，索引曾因此出 `flow`、模型去读
+> `skills/flow/` 读不到；它是**上游打包的 immutable 运行时技能**，所以让索引取目录名、
+> 不动那个文件。写自己的技能时 `name:` 可省（本来就不生效）。详见根 `AGENTS.md` 坑 22。
 
 - `_universal` — always-relevant working discipline.
 - `skill-authoring-when` — **whether** to create/patch（复用价值门 + **先 list，有同类则 patch，无则 create**；自进化前同样遵守）。

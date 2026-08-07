@@ -259,7 +259,7 @@ async def test_generated_prompt_has_one_profile_and_policy_section(
 ) -> None:
     module = _load_system_module(monkeypatch)
 
-    async def base_prompt(_self) -> str:
+    async def base_prompt(_self, tool_names: list[str] | None = None) -> str:
         return "stable<!-- HAITUN_CACHE_BOUNDARY -->dynamic"
 
     monkeypatch.setattr(module.System, "build_system_prompt", base_prompt)
@@ -352,3 +352,33 @@ async def test_legacy_history_migrates_to_topic_aggregates(tmp_path: Path, monke
     assert "history:" not in saved
     assert "旧回复原文" not in saved
     assert "过拟合" in saved
+
+
+@pytest.mark.anyio
+async def test_skills_index_names_come_from_the_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Frontmatter ``name:`` must not decide what the prompt calls a skill.
+
+    The index name is the path the prompt tells the model to read
+    (``skills/<name>/SKILL.md``) and the one ``skill_manage`` resolves against, so
+    it has to be the real directory. ``fusion-flow-legacy/SKILL.md`` declares
+    ``name: flow`` and is an upstream-packaged immutable runtime skill — the index
+    yields to the directory rather than the file being edited.
+    """
+    module = _load_system_module(monkeypatch)
+    skills = tmp_path / "skills"
+    (skills / "renamed-by-frontmatter").mkdir(parents=True)
+    (skills / "renamed-by-frontmatter" / "SKILL.md").write_text(
+        "---\nname: something-else\ndescription: metadata still applies\ncategory: demo\n---\n\n# body\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "_GLOBAL_AGENT_SKILLS_DIR", anyio.Path(tmp_path / "no-global"))
+
+    xml = await module._build_skills_index(anyio.Path(tmp_path))
+
+    assert 'name="renamed-by-frontmatter"' in xml, "index should use the directory name"
+    assert 'name="something-else"' not in xml, "frontmatter name must not win"
+    assert "metadata still applies" in xml, "frontmatter should still supply description"
+    assert 'category name="demo"' in xml, "frontmatter should still supply category"
+
+    entries = dict(await module.indexed_skill_entries())
+    assert "something-else" not in entries
