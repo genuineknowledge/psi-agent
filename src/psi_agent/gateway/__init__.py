@@ -106,6 +106,35 @@ class Gateway:
     空 = 回落 ``--feishu-ai-id``; 两者都空则不启动调度 Session (记 warning)。
     """
 
+    docs_addon_token: str = ""
+    """云文档小组件的预共享访问密钥。小组件在飞书托管的 iframe 里跑, 请求带
+    ``X-Psi-Addon-Token`` 头, 与此值常量时间比对。
+
+    **空 = 整个 ``/docs-addon/*`` 端点不启用** (返回 404)。这是刻意的: 小组件的身份
+    (``user_id``) 是客户端自报的, 服务端无从验证, 若没有这道密钥, 任何能访问到本端口的人
+    都能驱动 agent。密钥请用足够长的随机串。
+    """
+
+    docs_addon_origins: tuple[str, ...] = ()
+    """允许跨源访问 ``/docs-addon/*`` 的 Origin 白名单 (精确匹配, 逐个写全)。
+
+    小组件页面由飞书 CDN 托管, 故其请求的 Origin 不是 Gateway 自己。**不支持通配符**,
+    也不做后缀匹配 —— ``*`` 等于让互联网上任意页面驱动 agent, 而 ``endswith(".feishu.cn")``
+    会被 ``evil-feishu.cn`` 绕过。本地 ``npm start`` 调试时把 dev server 的 Origin 加进来。
+    """
+
+    docs_addon_ai_id: str = ""
+    """小组件 Session 默认挂载的 AI 实例 id。空 = 回落 ``--feishu-ai-id``。"""
+
+    docs_addon_workspace_root: str = ""
+    """小组件各会话独立 workspace 的父目录。每个 (文档, 人) 得到
+    ``<root>/docsaddon-<doc_token 哈希>/<user_id 哈希>``。空 = 以 Gateway 进程 cwd 为父目录。
+
+    目录名用哈希而非原文, 与 session_id 的派生保持一致 —— 理由见
+    ``_docs_addon.DocsAddonManager._workspace_for``。要把哈希对回是哪篇文档/哪个人, 查
+    ``GET /docs-addon/routes``。
+    """
+
     verbose: bool = False
     """Enable DEBUG-level logging."""
 
@@ -220,6 +249,10 @@ class Gateway:
                 scheduler_ai_id=self.scheduler_ai_id,
                 schedm=schedm,
                 sum_m=sum_m,
+                docs_addon_token=self.docs_addon_token,
+                docs_addon_origins=tuple(self.docs_addon_origins),
+                docs_addon_ai_id=self.docs_addon_ai_id,
+                docs_addon_workspace_root=self.docs_addon_workspace_root,
             )
 
             # Restored sessions need a scheduler Session for their workspace too

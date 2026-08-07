@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "appID": "cli_REPLACE_WITH_YOUR_APP_ID",
+  "appType": "docs-addon",
+  "blockTypeID": "blk_6a606854d7004bb97110da1a",
+  "projectName": "haitun-docs-addon",
+  "contributes": {
+    "addPanel": {
+      "view": "index.html",
+      "initialHeight": 420,
+      "useHostLoading": true,
+      "resizeType": "vertical",
+      "align": "center"
+    }
+  },
+  "environments": {
+    "feishu": {
+      "appID": "cli_REPLACE_WITH_YOUR_APP_ID",
+      "blockTypeID": "blk_6a606854d7004bb97110da1a"
+    }
+  }
+}
