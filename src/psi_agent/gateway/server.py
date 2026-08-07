@@ -271,7 +271,7 @@ async def _create_ai(request: web.Request) -> web.Response:
     except (TypeError, ValueError, KeyError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error creating AI: {e!r}")
+        logger.exception("Unexpected error creating AI")
         return _error(str(e), status=500)
 
 
@@ -284,7 +284,7 @@ async def _delete_ai(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting AI {ai_id!r}: {e!r}")
+        logger.exception(f"Unexpected error deleting AI {ai_id!r}")
         return _error(str(e), status=500)
 
 
@@ -322,7 +322,7 @@ async def _create_router(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error creating Router: {e!r}")
+        logger.exception("Unexpected error creating Router")
         return _error(str(e), status=500)
 
 
@@ -339,7 +339,7 @@ async def _delete_router(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting Router {router_id!r}: {e!r}")
+        logger.exception(f"Unexpected error deleting Router {router_id!r}")
         return _error(str(e), status=500)
 
 
@@ -372,7 +372,7 @@ async def _create_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error creating session: {e!r}")
+        logger.exception("Unexpected error creating session")
         return _error(str(e), status=500)
 
 
@@ -393,7 +393,7 @@ async def _delete_session(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error deleting session {session_id!r}: {e!r}")
+        logger.exception(f"Unexpected error deleting session {session_id!r}")
         return _error(str(e), status=500)
 
 
@@ -448,7 +448,7 @@ async def _feishu_route(request: web.Request) -> web.Response:
     except LookupError as e:
         return _error(str(e), status=404)
     except Exception as e:
-        logger.error(f"Unexpected error routing feishu open_id: {e!r}")
+        logger.exception("Unexpected error routing feishu open_id")
         return _error(str(e), status=500)
 
 
@@ -522,7 +522,7 @@ async def _set_title(request: web.Request) -> web.Response:
     except (KeyError, TypeError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error setting title: {e!r}")
+        logger.exception("Unexpected error setting title")
         return _error(str(e), status=500)
 
 
@@ -584,7 +584,7 @@ async def _set_summary(request: web.Request) -> web.Response:
     except (KeyError, TypeError) as e:
         return _error(str(e), status=400)
     except Exception as e:
-        logger.error(f"Unexpected error setting summary: {e!r}")
+        logger.exception("Unexpected error setting summary")
         return _error(str(e), status=500)
 
 

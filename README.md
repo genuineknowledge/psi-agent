@@ -308,18 +308,35 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
+| POST | `/routers` | 创建并启动 Router |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router（仍被引用时返回 409） |
+| GET | `/routers` | 列出所有 Router |
 | POST | `/sessions` | 创建 Session |
-| DELETE | `/sessions/{session_id}` | 删除 Session |
+| DELETE | `/sessions/{session_id}` | 删除 Session 及其历史与标题 |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/todos` | 读取 Session todos |
+| GET | `/sessions/{session_id}/todo-segments` | 获取 todo 子任务分段列表 |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 获取单个 todo 分段 |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 修改 todo 分段标题 |
 | POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
+| GET | `/oauth/callback` | OAuth 重定向落地并暂存 |
+| GET | `/oauth/code` | 发起方按 state 一次性取回 OAuth code |
+| GET | `/defaults` | 获取默认 agent、workspace、appdata 路径 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
-| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
+| GET | `/summaries` | 获取所有会话任务摘要 |
+| POST | `/summaries` | 设置会话任务摘要 |
+| POST | `/summaries/generate` | AI 自动生成任务摘要 |
+| POST | `/ui/attention` | 背景任务完成时，闪烁托盘或 webview 提示 |
 | GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/places` | 获取 PathPicker 快捷位置和盘符 |
+| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
+| GET | `/workspace/file` | 读取文件为 base64 |
+| POST | `/workspace/reveal` | 在本机文件管理器中显示路径 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 
