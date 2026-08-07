@@ -113,7 +113,7 @@ export function ArtifactDrawer({
     }
     const path = selectedBlob?.path?.trim() || task.deliverablePaths[selectedName];
     if (!path) {
-      setLoadError("历史记录中没有该文件的路径，无法从工作区读取。");
+      setLoadError("历史记录中没有该文件的路径，无法从海豚工作室读取。");
       return;
     }
     let cancelled = false;
@@ -276,7 +276,7 @@ export function ArtifactDrawer({
               ) : loading ? (
                 <div className="artifact-preview-missing">
                   <FileText size={28} />
-                  <strong>正在从工作区读取…</strong>
+                  <strong>正在从海豚工作室读取…</strong>
                 </div>
               ) : (
                 <div className="artifact-preview-missing">
@@ -284,7 +284,7 @@ export function ArtifactDrawer({
                   <strong>暂无文件内容可预览</strong>
                   <p>
                     {loadError
-                      ?? "本会话尚未收到该文件的附件数据，且无法从工作区路径读取。请让 Agent 再次通过 [SEND:] 交付。"}
+                      ?? "本会话尚未收到该文件的附件数据，且无法从海豚工作室路径读取。请让 Agent 再次通过 [SEND:] 交付。"}
                   </p>
                 </div>
               )}

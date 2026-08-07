@@ -121,7 +121,7 @@ import {
 
 const OVERVIEW_WELCOME: ChatMessage = {
   role: "agent",
-  text: "工作区已连接 Gateway。新建任务/聊天或从侧栏打开历史 Session，即可与 Agent 真实对话。",
+  text: "海豚工作室已连接 Gateway。新建任务/聊天或从侧栏打开历史 Session，即可与 Agent 真实对话。",
 };
 
 import {
@@ -188,6 +188,7 @@ export default function HaiTunAgentWorkspace({
   const [artifactInitialFile, setArtifactInitialFile] = useState<string | undefined>(undefined);
   const [mainView, setMainView] = useState<MainView>("workspace");
   const [newTaskReturnView, setNewTaskReturnView] = useState<MainView>("workspace");
+  const [newTaskReturnExpanded, setNewTaskReturnExpanded] = useState(false);
   const [newTaskSession, setNewTaskSession] = useState(0);
   const [newTaskDraft, setNewTaskDraft] = useState("");
   const [newTaskCategory, setNewTaskCategory] = useState("自由任务");
@@ -535,7 +536,7 @@ export default function HaiTunAgentWorkspace({
     };
   }, [workspaceNorm, showToast]);
 
-  // Refresh landing: with history tasks open the card workspace; with none, go to new task/chat.
+  // Refresh landing: with history tasks open new task/chat directly; with none stay on the empty workspace.
   useEffect(() => {
     if (!bootReady || bootLandingRef.current) return;
     bootLandingRef.current = true;
@@ -612,6 +613,7 @@ export default function HaiTunAgentWorkspace({
     const index = tasks.findIndex((item) => item.id === task.id);
     if (index < 0) return;
     const next = cardIndexForTask(index);
+    const fromNonWorkspace = mainView !== "workspace";
     setMainView("workspace");
     setSidebarOpen(false);
     setSearchOpen(false);
@@ -639,6 +641,13 @@ export default function HaiTunAgentWorkspace({
     }
 
     if (!needsSwitch || prefersReducedMotion()) {
+      setChatExpanded(true);
+      return;
+    }
+
+    // From new-task/templates there is no visible card to morph from; expand
+    // immediately so the intermediate collapsed card page never flashes.
+    if (fromNonWorkspace) {
       setChatExpanded(true);
       return;
     }
@@ -677,6 +686,21 @@ export default function HaiTunAgentWorkspace({
     }
     goTo(0);
   }, [goTo, tasks.length]);
+
+  const returnToPreviousView = useCallback(() => {
+    if (mainView === "new-task" && newTaskReturnView === "templates" && SHOW_OVERVIEW_AND_TEMPLATES) {
+      setMainView("templates");
+      return;
+    }
+    if (newTaskReturnExpanded || (!SHOW_OVERVIEW_AND_TEMPLATES && tasks.length > 0)) {
+      setMainView("workspace");
+      setSidebarPanel(null);
+      setSidebarOpen(false);
+      setChatExpanded(true);
+      return;
+    }
+    goHome();
+  }, [goHome, mainView, newTaskReturnExpanded, newTaskReturnView, tasks.length]);
 
   // Keep card index in range after hide-overview or task deletes.
   useEffect(() => {
@@ -749,6 +773,7 @@ export default function HaiTunAgentWorkspace({
   }, [artifactTask?.id, currentIndex, goHome, showToast, tasks, typingCard]);
 
   const openNewTask = useCallback((draft?: string, category = "自由任务", returnView: MainView = "workspace") => {
+    setNewTaskReturnExpanded(chatExpanded);
     collapseChat();
     // Keep an unsent draft when re-opening the page; explicit presets still replace it.
     if (draft !== undefined) {
@@ -760,7 +785,7 @@ export default function HaiTunAgentWorkspace({
     setMainView("new-task");
     setSidebarPanel(null);
     setSidebarOpen(false);
-  }, [collapseChat]);
+  }, [chatExpanded, collapseChat]);
 
   const openTemplates = useCallback(() => {
     if (!SHOW_OVERVIEW_AND_TEMPLATES) return;
@@ -1561,7 +1586,7 @@ export default function HaiTunAgentWorkspace({
       if (inField) return;
       if (mainView !== "workspace") {
         if (event.key === "Escape") {
-          if (mainView === "new-task") setMainView(newTaskReturnView);
+          if (mainView === "new-task") returnToPreviousView();
           else goHome();
         }
         return;
@@ -1570,7 +1595,7 @@ export default function HaiTunAgentWorkspace({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [artifactTask, chatExpanded, collapseChat, currentIndex, goHome, goTo, mainView, newTaskReturnView, openNewTask, searchOpen]);
+  }, [artifactTask, chatExpanded, collapseChat, currentIndex, goHome, goTo, mainView, returnToPreviousView, searchOpen]);
 
   useEffect(() => () => {
     if (transitionTimer.current) window.clearTimeout(transitionTimer.current);
@@ -1734,7 +1759,7 @@ export default function HaiTunAgentWorkspace({
                   <PanelLeftOpen size={15} />
                 </button>
               )}
-              <AgentMark /><span>{expanded ? "任务工作区" : "关于"} <strong>{unitCard.title}</strong>{!expanded && " 的对话"}</span>
+              <AgentMark /><span>{expanded ? "任务海豚工作室" : "关于"} <strong>{unitCard.title}</strong>{!expanded && " 的对话"}</span>
             </div>
             {expanded && interactive && cards.length > 0 && (
               <div className="focus-card-pager" role="navigation" aria-label="任务翻页">
@@ -2185,13 +2210,7 @@ export default function HaiTunAgentWorkspace({
               <button
                 type="button"
                 className="view-back-button"
-                onClick={() => {
-                  if (mainView === "new-task" && newTaskReturnView === "templates" && SHOW_OVERVIEW_AND_TEMPLATES) {
-                    setMainView("templates");
-                    return;
-                  }
-                  goHome();
-                }}
+                onClick={() => returnToPreviousView()}
                 aria-label="返回上一页"
               >
                 <ArrowLeft size={17} />

@@ -18,7 +18,7 @@ const STEP_COPY: Record<1 | 2, { title: string; desc: string }> = {
   },
   2: {
     title: "模型池与设置",
-    desc: "模型池：用于选择可用模型，设置：可切换工作区与 Agent 包。",
+    desc: "模型池：用于选择可用模型，设置：可切换海豚工作室与 Agent 包。",
   },
 };
 

@@ -524,6 +524,30 @@
   color: var(--ink-soft);
 }
 
+.hub-free-notice-backdrop {
+  cursor: default;
+}
+
+.hub-free-notice-dialog .hub-dialog-actions {
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.hub-free-notice-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 750;
+  color: var(--ink);
+}
+
+.hub-free-notice-text {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.7;
+  font-weight: 750;
+  color: var(--ink-soft);
+}
+
 .hub-settings-section {
   margin-bottom: 16px;
 }

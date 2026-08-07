@@ -19,7 +19,7 @@ export function titleFromPrompt(description: string): string {
 export function workspaceLabel(path: string): string {
   const p = path.replace(/\\/g, '/').replace(/\/+$/, '')
   const parts = p.split('/').filter(Boolean)
-  return parts[parts.length - 1] || p || '工作区'
+  return parts[parts.length - 1] || p || '海豚工作室'
 }
 
 export function basenameOf(path: string): string {
