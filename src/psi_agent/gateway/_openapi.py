@@ -276,6 +276,90 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/docs-addon/session": {
+            "post": {
+                "summary": "Route a docs add-on conversation to its Session (per document, per user)",
+                "operationId": "docsAddonSession",
+                "parameters": [
+                    {
+                        "name": "X-Psi-Addon-Token",
+                        "in": "header",
+                        "required": True,
+                        "schema": {"type": "string"},
+                        "description": "Pre-shared token matching --docs-addon-token; 404 when unset, 401 when wrong",
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {"schema": {"$ref": "#/components/schemas/DocsAddonSessionRequest"}}
+                    },
+                },
+                "responses": {
+                    "201": {
+                        "description": "Routed (channel_socket is deliberately withheld from browser clients)",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DocsAddonRoute"}}},
+                    },
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "401": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/docs-addon/chat": {
+            "post": {
+                "summary": "One docs add-on chat turn, streamed as SSE (session derived, never client-supplied)",
+                "operationId": "docsAddonChat",
+                "parameters": [
+                    {
+                        "name": "X-Psi-Addon-Token",
+                        "in": "header",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    },
+                ],
+                "requestBody": {
+                    "required": True,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/DocsAddonChatRequest"}}},
+                },
+                "responses": {
+                    "200": {"description": "SSE stream of Chunk objects"},
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "401": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/docs-addon/routes": {
+            "get": {
+                "summary": "List all docs add-on -> Session routes",
+                "operationId": "listDocsAddonRoutes",
+                "parameters": [
+                    {
+                        "name": "X-Psi-Addon-Token",
+                        "in": "header",
+                        "required": True,
+                        "schema": {"type": "string"},
+                    },
+                ],
+                "responses": {
+                    "200": {
+                        "description": "List of routes",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {"$ref": "#/components/schemas/DocsAddonRoute"},
+                                }
+                            }
+                        },
+                    },
+                    "401": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
         "/oauth/callback": {
             "get": {
                 "summary": "OAuth redirect landing point (relays the code, no manual copy)",
@@ -870,6 +954,65 @@ OPENAPI_SPEC = {
                 "properties": {
                     "open_id": {"type": "string"},
                     "chat_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                },
+            },
+            "DocsAddonSessionRequest": {
+                "type": "object",
+                "description": (
+                    "Both keys are required. user_id comes from the add-on's Service.User.getUserId() and is "
+                    "client-asserted: it scopes the conversation but is NOT authentication — the pre-shared "
+                    "X-Psi-Addon-Token is."
+                ),
+                "properties": {
+                    "doc_token": {
+                        "type": "string",
+                        "description": "The document the add-on block lives in.",
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": "Feishu user id, used only to isolate conversations within a document.",
+                    },
+                    "ai_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional, overrides Gateway --docs-addon-ai-id (which falls back to --feishu-ai-id)"
+                        ),
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": (
+                            "Optional, defaults to <docs_addon_workspace_root>/docsaddon-<doc_token>/<user_id>"
+                        ),
+                    },
+                },
+            },
+            "DocsAddonChatRequest": {
+                "type": "object",
+                "description": (
+                    "No session_id field by design: the Session is re-derived from (doc_token, user_id), so a "
+                    "token holder cannot address someone else's conversation."
+                ),
+                "properties": {
+                    "doc_token": {"type": "string"},
+                    "user_id": {"type": "string"},
+                    "chunks": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {"type": "string"},
+                                "text": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+            },
+            "DocsAddonRoute": {
+                "type": "object",
+                "properties": {
+                    "doc_token": {"type": "string"},
+                    "user_id": {"type": "string"},
                     "session_id": {"type": "string"},
                 },
             },

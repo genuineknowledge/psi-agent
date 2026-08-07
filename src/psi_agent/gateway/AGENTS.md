@@ -41,6 +41,7 @@ Gateway 进程
 | `_scheduler_manager.py` | `SchedulerManager` — 每个 workspace 恰好一个**全量激活**（`active_schedules=("*",)`）的调度 Session，按需 spawn，对 SPA / state 隐藏 |
 | `_defaults.py` | `resolve_default_agent` / `resolve_default_workspace`；再导出 ``psi_agent._appdata`` 路径助手 — CLI / `GET /defaults` 用 |
 | `_feishu_manager.py` | `FeishuManager` — 飞书会话 → Session 路由表（私聊按 `open_id`、群聊按 `chat_id`；复用 SessionManager 按需 spawn）+ FeishuRoute |
+| `_docs_addon.py` | `DocsAddonManager` — 云文档小组件会话 → Session 路由表，键是 `(doc_token, user_id)`（**与群聊刻意相反**：同人不同文档、同文档不同人都各自隔离，因为文档里各人是各自在用工具）+ 预共享 token 鉴权（`enabled` / `check_token`，常量时间比对）+ DocsAddonRoute |
 | `_oauth_manager.py` | `OAuthRelay` — OAuth 回调中继（`state → code` 一次性信箱，带 TTL；供 `GET /oauth/callback` + `GET /oauth/code`），让授权码免用户手工复制 |
 | `_title_manager.py` | 会话标题 CRUD + AI 自动生成 |
 | `_summary_manager.py` | 任务摘要 CRUD + AI 自动生成（spa-v2；与 title 同级持久化） |
@@ -423,6 +424,9 @@ OAuth 回调中继（`_oauth_manager.py`）：让**授权码自己回到发起�
 | POST | `/sessions/{session_id}/todo-segments/{segment_id}` | P1：改段标题 ``{label}``（spa-v2 可用回合 summary 覆盖） |
 | POST | `/feishu/route` | 幂等路由一次飞书会话到其 Session（首次按需 spawn）`{open_id, chat_id?, chat_type?, ai_id?, workspace?}` → 201 `{open_id, chat_id, session_id, channel_socket}`。`chat_type` 为 `group`/`topic` 且 `chat_id` 非空 → 按 `chat_id` 整群共用一个 Session；否则按 `open_id` 一人一个。缺路由键（私聊无 open_id）/ 无 ai_id → 400 |
 | GET | `/feishu/routes` | 列出所有飞书会话 → Session 路由 `[{open_id, chat_id, session_id}]`（群聊记录只有 `chat_id`，私聊只有 `open_id`） |
+| POST | `/docs-addon/session` | 幂等路由一次云文档小组件会话到其 Session `{doc_token, user_id, ai_id?, workspace?}` → 201 `{doc_token, user_id, session_id}`。**刻意不回 `channel_socket`**——那是本机 socket/pipe 路径，对浏览器无用而泄漏本机情报。需 `X-Psi-Addon-Token`；未配 `--docs-addon-token` → 404，token 错 → 401 |
+| POST | `/docs-addon/chat` | 一轮小组件对话，SSE 流式返回，事件格式与 `/sessions/{id}/chat` 完全一致 `{doc_token, user_id, chunks}`。**不接受 `session_id`**——由 `(doc_token, user_id)` 重新路由，否则拿到 token 的人能把话灌进别人的会话 |
+| GET | `/docs-addon/routes` | 列出小组件会话 → Session 路由 `[{doc_token, user_id, session_id}]`（同样需 token） |
 | GET | `/oauth/callback` | OAuth 重定向落地点：收下 `?code=&state=` 交给 `OAuthRelay` 暂存，回一张「授权成功」页；缺 state → 400。用户因此**不必**手工复制 code |
 | GET | `/oauth/code` | 发起方（workspace 工具，通常在另一进程）按 `?state=` 取件，命中返回 `{state, code}` 并作废（一次性）；回调带错误则 `{state, error}`；未到达 → 404 |
 | GET | `/defaults` | 默认 `agent` + `workspace` + `appdata`（建 Session 调用方可读；`appdata` 为记忆区根：todos / history / Gateway state） |
@@ -746,6 +750,8 @@ psi-agent.exe gateway --tray --browser --icon haitun.ico --verbose
 `{app}` / 桌面路径在运行时解析（安装目录 + `SHGetFolderPath`），**禁止**写死本机用户路径。`--appdata` 可不传（软默认 `platformdirs`；**刻意为之**不显式传，安装包与 CLI 共用同一解析）。另：Gateway 软默认在 cwd 含 `tools/`+`skills/` 时也会把 cwd 当 agent（兜底直接跑 `psi-agent.exe`）。
 
 `--feishu-ai-id ID` 指定飞书 Session（经 `POST /feishu/route` 按需 spawn）默认挂载的 AI 实例 id。未配时若请求也不带 `ai_id`，`/feishu/route` 返回 400。`--feishu-workspace-root DIR` 指定各飞书会话独立 workspace 的父目录（私聊每个 open_id 得 `<root>/<open_id>`，群聊每个 chat_id 得 `<root>/chat-<chat_id>`）；空则以 Gateway 进程 cwd 为父。两者均为飞书多会话独立渠道服务（配合飞书 channel 的 `--gateway-url`，见 `channel/AGENTS.md`）。
+
+`--docs-addon-token TOKEN` 是云文档小组件的**预共享访问密钥**，也是 `/docs-addon/*` 的总开关：**未配则整组端点 404**。这是刻意的——小组件的 `user_id` 来自前端 `Service.User.getUserId()`，是客户端自报值、服务端无从验证，若没有这道密钥，任何能访问到本端口的人都能驱动 agent。故 `user_id` **只用于会话隔离，不构成身份认证**。`--docs-addon-origins ORIGIN` 是允许跨源的 Origin 白名单（**精确匹配**，可重复传）：小组件页面由飞书 CDN 托管，其 Origin 不是 Gateway 自己，故必须开 CORS——但**不支持通配符也不做后缀匹配**，`*` 等于让互联网上任意页面驱动 agent，而 `endswith(".feishu.cn")` 会被 `evil-feishu.cn` 绕过。CORS 只作用于 `/docs-addon/*`（见 `_CORS_PATH_PREFIXES`），其余端点即使带白名单 Origin 也不会拿到 CORS 头，以免整套 REST 变成网页可驱动。`--docs-addon-ai-id` 空则回落 `--feishu-ai-id`；`--docs-addon-workspace-root DIR` 下每个 (文档, 人) 得 `<root>/docsaddon-<doc_token>/<user_id>`。前端工程在 `examples/feishu-docs-addon/`（由 opdev 上传到飞书 CDN，**不经 Gateway 提供**，故不在 `spa*/` 下、不进 wheel）。
 
 Gateway 不在 `_run.py` 的批量启动中。
 
