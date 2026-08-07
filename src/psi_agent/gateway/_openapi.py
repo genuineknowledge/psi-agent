@@ -982,7 +982,9 @@ OPENAPI_SPEC = {
                     "workspace": {
                         "type": "string",
                         "description": (
-                            "Optional, defaults to <docs_addon_workspace_root>/docsaddon-<doc_token>/<user_id>"
+                            "Optional, defaults to "
+                            "<docs_addon_workspace_root>/docsaddon-<doc_token hash>/<user_id hash> "
+                            "(hashed to match how session_id is derived; map back via GET /docs-addon/routes)"
                         ),
                     },
                 },

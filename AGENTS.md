@@ -120,6 +120,7 @@ src/
         ├── _scheduler_manager.py  # SchedulerManager — 每 workspace 一个全量激活的调度 Session（触发其 schedules/）
         ├── _router_manager.py      # RouterManager — 内部语义路由服务注册表
         ├── _feishu_manager.py      # FeishuManager — 飞书 open_id → Session 路由
+        ├── _docs_addon.py          # DocsAddonManager — 云文档小组件 (doc_token, user_id) → Session 路由 + 预共享 token 鉴权
         ├── _oauth_manager.py       # OAuthRelay — OAuth 回调中继（免手抄授权码）
         ├── _title_manager.py       # 会话标题 CRUD + AI 生成
         ├── _state.py               # GatewayState — 状态持久化 (state/latest.json)

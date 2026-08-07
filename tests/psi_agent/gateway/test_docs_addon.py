@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import socket
+from contextlib import suppress
 from typing import Any
 
 import anyio
@@ -15,6 +16,7 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, web
 from anyio.abc import TaskGroup
 
+from psi_agent.gateway import server as gateway_server
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._docs_addon import DocsAddonManager
 from psi_agent.gateway._session_manager import SessionManager
@@ -71,6 +73,26 @@ def test_route_keys_isolate_docs_and_users() -> None:
     assert dam._session_id("docA", "userB") != same, "换人必须换 session"
     # ("ab","c") 与 ("a","bc") 拼出的键不能相撞。
     assert dam._route_key("ab", "c") != dam._route_key("a", "bc")
+
+
+def test_workspace_does_not_collide_where_session_id_does_not() -> None:
+    """workspace 的隔离粒度必须与 session_id 一致 —— 回归「session 分开了目录还共用」。
+
+    这是根 AGENTS.md 坑 19 那一类偏斜: 若 workspace 用替换式净化 (白名单外字符换 ``_``)
+    而 session_id 用哈希, 则 ``a/b`` 与 ``a_b`` 两个不同文档会 session 分开、**目录相同**,
+    两篇文档的文件互相覆盖。
+    """
+    dam = _manager(_token=_TOKEN, _workspace_root="/root")
+    lossy_pairs = [("a/b", "ou_1"), ("a_b", "ou_1")]
+    sids = {dam._session_id(d, u) for d, u in lossy_pairs}
+    workspaces = {dam._workspace_for(d, u) for d, u in lossy_pairs}
+    assert len(sids) == 2, "前提: 这两个 doc_token 的 session_id 本就不同"
+    assert len(workspaces) == 2, "workspace 也必须不同, 否则两篇文档共享目录"
+
+    # 同一 (文档, 人) 仍要稳定映射到同一个目录。
+    assert dam._workspace_for("docA", "ou_1") == dam._workspace_for("docA", "ou_1")
+    # 换人必须换目录 —— 否则同事之间文件互看。
+    assert dam._workspace_for("docA", "ou_1") != dam._workspace_for("docA", "ou_2")
 
 
 @pytest.mark.anyio
@@ -181,6 +203,50 @@ async def test_other_paths_never_get_cors_headers() -> None:
             for path in ("/sessions", "/ais", "/defaults"):
                 async with http.get(f"{base_url}{path}", headers={"Origin": _ALLOWED_ORIGIN}) as resp:
                     assert "Access-Control-Allow-Origin" not in resp.headers, path
+    finally:
+        await runner.cleanup()
+        tg.cancel_scope.cancel()
+        await tg.__aexit__(None, None, None)
+
+
+@pytest.mark.anyio
+async def test_both_routes_hook_up_the_scheduler(monkeypatch: pytest.MonkeyPatch) -> None:
+    """两条会 spawn Session 的路径都必须调 `SchedulerManager.ensure`。
+
+    只在 `/docs-addon/session` 调是不够的: 正常链路根本不碰那个端点, 于是「从文档里建的
+    定时任务永不触发」—— 症状隐蔽, 故用测试钉住两条路径。
+    """
+    calls: list[str] = []
+
+    async def fake_ensure(request: web.Request, session_id: str) -> None:
+        calls.append(session_id)
+
+    monkeypatch.setattr(gateway_server, "_ensure_scheduler_for", fake_ensure)
+
+    # route 不真起 Session, 只回一个假 socket, 让 handler 走到 ensure 那一步。
+    async def fake_route(self: DocsAddonManager, doc_token: str, user_id: str, **kwargs: Any) -> tuple[str, str]:
+        return "fake.sock", "docsaddon-x-y"
+
+    monkeypatch.setattr(DocsAddonManager, "route", fake_route)
+
+    tg = anyio.create_task_group()
+    await tg.__aenter__()
+    app = await _make_app(tg, **_app_kwargs())
+    base_url, runner = await _start_app_on_free_port(app)
+    timeout = ClientTimeout(total=10)
+    headers = {"X-Psi-Addon-Token": _TOKEN}
+    body = {"doc_token": "doccn1", "user_id": "ou_1", "chunks": []}
+    try:
+        async with ClientSession(timeout=timeout) as http:
+            async with http.post(f"{base_url}/docs-addon/session", json=body, headers=headers) as resp:
+                assert resp.status == 201
+            assert calls == ["docsaddon-x-y"], "/session 必须调 ensure"
+
+            # chat 会真去连那个假 socket 而失败, 但 ensure 应在流式开始前就已调用。
+            with suppress(Exception):
+                async with http.post(f"{base_url}/docs-addon/chat", json=body, headers=headers):
+                    pass
+            assert len(calls) == 2, "/chat 也必须调 ensure, 否则文档里建的定时任务永不触发"
     finally:
         await runner.cleanup()
         tg.cancel_scope.cancel()

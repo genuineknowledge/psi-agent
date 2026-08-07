@@ -549,12 +549,35 @@ def _docs_addon_guard(request: web.Request) -> web.Response | None:
     return None
 
 
+async def _ensure_scheduler_for(request: web.Request, session_id: str) -> None:
+    """Give this session's workspace its dedicated scheduler Session.
+
+    Schedules belong to the workspace but firing rights are per (session x schedule),
+    so they must run on the scheduler Session rather than the add-on one. **Every**
+    path that can spawn an add-on Session has to call this — the chat route spawns
+    too, and skipping it there would mean schedules created from a document never
+    fire until someone happens to hit the session route.
+    """
+    sm: SessionManager = request.app["sm"]
+    schedm: SchedulerManager = request.app["schedm"]
+    await schedm.ensure(
+        sm.get_workspace(session_id),
+        ai_id=sm.get_backend_id(session_id),
+        agent=sm.get_agent(session_id),
+    )
+
+
 async def _docs_addon_session(request: web.Request) -> web.Response:
     """幂等地把一次「文档小组件会话」路由到其 Session, 首次见到时按需 spawn。
 
     body: ``{doc_token, user_id, ai_id?, workspace?}`` →
-    ``201 {doc_token, user_id, session_id}``。小组件拿回 ``session_id`` 后走既有的
-    ``POST /sessions/{session_id}/chat`` 流式对话。
+    ``201 {doc_token, user_id, session_id}``。
+
+    **对话不走这里, 走 ``POST /docs-addon/chat``** —— 那个端点自己会重新路由, 所以小组件
+    的正常链路根本不需要先调本端点。本端点的用处是「预热」(让 Session 先起来) 与运维排查,
+    回的 ``session_id`` 可用于对照 ``GET /sessions`` / 历史文件。别把它理解成「先拿
+    session_id 再去 ``/sessions/{id}/chat``」: 那条路径不在 CORS 白名单里 (刻意的, 见
+    ``_CORS_PATH_PREFIXES``), 浏览器端调不通。
 
     ``channel_socket`` **刻意不返回** —— 它是本机 socket/pipe 路径, 对浏览器端毫无用处,
     而泄漏本机路径只会给攻击者送情报 (feishu channel 是进程内可信客户端, 故那边照旧返回)。
@@ -567,7 +590,6 @@ async def _docs_addon_session(request: web.Request) -> web.Response:
         return denied
 
     dam: DocsAddonManager = request.app["dam"]
-    schedm: SchedulerManager = request.app["schedm"]
     try:
         body = await request.json()
         if not isinstance(body, dict):
@@ -580,14 +602,7 @@ async def _docs_addon_session(request: web.Request) -> web.Response:
             ai_id=body.get("ai_id"),
             workspace=body.get("workspace"),
         )
-        # Schedules under this session's workspace belong to its dedicated scheduler
-        # Session, not to the add-on session — same split as the feishu route.
-        sm: SessionManager = request.app["sm"]
-        await schedm.ensure(
-            sm.get_workspace(session_id),
-            ai_id=sm.get_backend_id(session_id),
-            agent=sm.get_agent(session_id),
-        )
+        await _ensure_scheduler_for(request, session_id)
         return _json(
             {
                 "doc_token": doc_token,
@@ -642,6 +657,10 @@ async def _docs_addon_chat(request: web.Request) -> web.StreamResponse:
         return _error(str(e), status=400)
     except LookupError as e:
         return _error(str(e), status=404)
+
+    # This route spawns Sessions too, so it owes the same scheduler hookup as
+    # /docs-addon/session — see _ensure_scheduler_for.
+    await _ensure_scheduler_for(request, session_id)
 
     return await _stream_chat_response(
         request,

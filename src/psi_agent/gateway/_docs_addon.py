@@ -29,7 +29,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-import re
 from dataclasses import dataclass, field
 
 import anyio
@@ -37,20 +36,18 @@ from loguru import logger
 
 from psi_agent.gateway._session_manager import SessionManager
 
-_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-
 # doc_token / user_id 原样进 session_id 会太长 (doc_token 27 字符 + open_id 27 字符 + 前缀,
 # 在 Windows 命名管道和 Unix socket 路径长度上都危险), 故各取哈希前若干位。
 _HASH_LEN = 12
 
 
-def _sanitize(value: str) -> str:
-    """把 token/id 净化成安全的 socket/pipe/path 段(防御层, 正常输入是恒等变换)。"""
-    return _UNSAFE.sub("_", value)
-
-
 def _short_hash(value: str) -> str:
-    """稳定的短摘要 —— 让 session_id 长度可控且不随平台变化。"""
+    """稳定的短摘要 —— 让 session_id / workspace 目录名长度可控且不随平台变化。
+
+    同时兼作**净化**: 十六进制输出天然落在 socket 路径与文件名的安全字符集内, 所以不需要
+    另一套替换式 sanitize —— 后者是有损的 (白名单外字符统统换成 ``_``), 会让两个不同的
+    token 撞成同一个目录名, 见 ``_workspace_for``。
+    """
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:_HASH_LEN]
 
 
@@ -108,9 +105,20 @@ class DocsAddonManager:
         return f"docsaddon-{_short_hash(doc_token)}-{_short_hash(user_id)}"
 
     def _workspace_for(self, doc_token: str, user_id: str) -> str:
-        """每个 (文档, 人) 得到独立子目录 (root 空则以 cwd 为父)。"""
+        """每个 (文档, 人) 得到独立子目录 (root 空则以 cwd 为父)。
+
+        **目录名用与 ``_session_id`` 同一个哈希, 不用净化后的原文 (刻意为之, 勿"改回可读
+        路径")**: 替换式净化是**有损**的 —— 把白名单外的字符统统换成 ``_``, 于是
+        ``doc_token`` 为 ``a/b`` 与 ``a_b`` 的两个不同文档会得到同一个目录名。而
+        ``_session_id`` 走哈希、不会撞, 结果就是「session 分开了, workspace 还是同一个
+        目录」—— 两篇文档的文件互相覆盖。两边同用哈希, 这个偏斜就不存在。
+
+        真实的飞书 doc_token / open_id 是 ``[A-Za-z0-9_]``, 撞不上; 这与
+        ``_feishu_manager`` 的 ``-`` 转义同属防御层。可读性由
+        ``GET /docs-addon/routes`` 提供 (那里回的是原始 doc_token/user_id)。
+        """
         root = self._workspace_root or os.getcwd()
-        return os.path.join(root, f"docsaddon-{_sanitize(doc_token)}", _sanitize(user_id))
+        return os.path.join(root, f"docsaddon-{_short_hash(doc_token)}", _short_hash(user_id))
 
     async def route(
         self,

@@ -128,7 +128,12 @@ class Gateway:
 
     docs_addon_workspace_root: str = ""
     """小组件各会话独立 workspace 的父目录。每个 (文档, 人) 得到
-    ``<root>/docsaddon-<doc_token>/<user_id>``。空 = 以 Gateway 进程 cwd 为父目录。"""
+    ``<root>/docsaddon-<doc_token 哈希>/<user_id 哈希>``。空 = 以 Gateway 进程 cwd 为父目录。
+
+    目录名用哈希而非原文, 与 session_id 的派生保持一致 —— 理由见
+    ``_docs_addon.DocsAddonManager._workspace_for``。要把哈希对回是哪篇文档/哪个人, 查
+    ``GET /docs-addon/routes``。
+    """
 
     verbose: bool = False
     """Enable DEBUG-level logging."""
