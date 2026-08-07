@@ -13,6 +13,7 @@ from typing import Any
 import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, web
+from anyio.abc import TaskGroup
 
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._docs_addon import DocsAddonManager
@@ -89,7 +90,7 @@ def _app_kwargs(*, token: str = _TOKEN) -> dict[str, Any]:
     }
 
 
-async def _make_app(tg: anyio.abc.TaskGroup, **kwargs: Any) -> web.Application:
+async def _make_app(tg: TaskGroup, **kwargs: Any) -> web.Application:
     aim = AIManager(_prefix="docs-addon-test", _tg=tg)
     sm = SessionManager(_aim=aim, _prefix="docs-addon-test", _tg=tg)
     return await create_app(aim, sm, TitleManager(), **kwargs)
