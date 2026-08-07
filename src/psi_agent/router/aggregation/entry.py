@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from psi_agent._logging import setup_logging
 
@@ -23,6 +24,8 @@ class AggregationRouter:
     aggregator_timeout: float | None = 30.0
     target_timeout: float | None = None
     max_context_chars: int = 12_000
+    require_all_targets: bool = False
+    aggregator_request_overrides: dict[str, Any] = field(default_factory=dict)
     verbose: bool = False
 
     async def run(self) -> None:
@@ -36,6 +39,8 @@ class AggregationRouter:
             aggregator_timeout=self.aggregator_timeout,
             target_timeout=self.target_timeout,
             max_context_chars=self.max_context_chars,
+            require_all_targets=self.require_all_targets,
+            aggregator_request_overrides=self.aggregator_request_overrides,
         )
         client = RouterHttpClient()
         strategy = AggregationStrategy(config=config, client=client)

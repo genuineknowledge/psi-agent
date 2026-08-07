@@ -5,10 +5,10 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from ..models import RouterTarget
+from ..models import RouterTarget, normalize_request_overrides
 
 _TRUNCATION_MARKER = "…<truncated>…"
 
@@ -40,6 +40,8 @@ class AggregationConfig:
     aggregator_timeout: float | None = 30.0
     target_timeout: float | None = None
     max_context_chars: int = 12_000
+    require_all_targets: bool = False
+    aggregator_request_overrides: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.session_socket, str):
@@ -83,10 +85,20 @@ class AggregationConfig:
             or self.max_context_chars <= 0
         ):
             raise ValueError("max_context_chars must be a positive integer")
+        if not isinstance(self.require_all_targets, bool):
+            raise ValueError("require_all_targets must be a boolean")
 
         object.__setattr__(self, "session_socket", session_socket)
         object.__setattr__(self, "aggregator_socket", aggregator_socket)
         object.__setattr__(self, "targets", targets)
+        object.__setattr__(
+            self,
+            "aggregator_request_overrides",
+            normalize_request_overrides(
+                value=self.aggregator_request_overrides,
+                label="aggregator_request_overrides",
+            ),
+        )
 
 
 def compact_feedback(*, feedback: Sequence[AggregationFeedback], max_context_chars: int) -> list[dict[str, Any]]:

@@ -10,4 +10,4 @@ dist/
 .coverage
 /result
 .worktrees/
-evals/router/router-test.yml
+evals/

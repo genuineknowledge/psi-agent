@@ -31,7 +31,12 @@ def _targets() -> list[RouterTarget]:
     ]
 
 
-def _selector(result: CompletionResult, *, max_chars: int = 12_000) -> tuple[RouteSelector, FakeCompletionClient]:
+def _selector(
+    result: CompletionResult,
+    *,
+    max_chars: int = 12_000,
+    request_overrides: dict[str, Any] | None = None,
+) -> tuple[RouteSelector, FakeCompletionClient]:
     client = FakeCompletionClient(result)
     config = RoutingConfig(
         session_socket="router.sock",
@@ -39,6 +44,7 @@ def _selector(result: CompletionResult, *, max_chars: int = 12_000) -> tuple[Rou
         targets=_targets(),
         selector_timeout=7,
         max_selection_chars=max_chars,
+        selector_request_overrides=request_overrides or {},
     )
     return RouteSelector(config=config, client=client), client
 
@@ -67,6 +73,29 @@ async def test_select_maps_strict_candidate_id_without_exposing_private_sockets(
     assert "private-math.sock" not in serialized
     assert "private-session" not in serialized
     assert "private-model" not in serialized
+
+
+@pytest.mark.anyio
+async def test_selector_request_overrides_apply_to_the_actual_control_request() -> None:
+    overrides: dict[str, Any] = {
+        "temperature": 0.6,
+        "max_tokens": 32,
+        "provider_option": {"nested": ["original"]},
+    }
+    selector, client = _selector(
+        CompletionResult(content='{"candidate_id":"code"}', finish_reason="stop"),
+        request_overrides=overrides,
+    )
+    overrides["provider_option"]["nested"].append("mutated")
+
+    await selector.select(request_body={"messages": [{"role": "user", "content": "solve"}]})
+
+    _, body, _ = client.calls[0]
+    assert body["temperature"] == 0.6
+    assert body["max_tokens"] == 32
+    assert body["provider_option"] == {"nested": ["original"]}
+    assert body["stream"] is True
+    assert body["messages"][0]["role"] == "system"
 
 
 @pytest.mark.parametrize(

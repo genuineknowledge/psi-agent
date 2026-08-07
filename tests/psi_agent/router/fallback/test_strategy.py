@@ -185,6 +185,35 @@ async def test_failure_events_are_discarded_and_attempts_are_strictly_serial() -
 
 
 @pytest.mark.anyio
+async def test_candidate_timeout_overrides_fallback_target_timeout_per_attempt() -> None:
+    targets = [
+        RouterTarget("candidate-1", "private-1.sock", "primary", timeout=2.5),
+        RouterTarget("candidate-2", "private-2.sock", "secondary"),
+    ]
+    client = FakeBufferedClient(
+        {
+            "private-1.sock": [RouterUpstreamError("temporary")],
+            "private-2.sock": [_completion(content="winner")],
+        }
+    )
+    strategy = FallbackStrategy(
+        config=FallbackConfig(
+            session_socket="fallback.sock",
+            targets=targets,
+            target_timeout=7,
+        ),
+        client=client,
+    )
+
+    await _collect(strategy.stream(body=_body()))
+
+    assert [(socket, options) for socket, _, options in client.calls] == [
+        ("private-1.sock", {"timeout": 2.5}),
+        ("private-2.sock", {"timeout": 7}),
+    ]
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "result",
     [

@@ -173,6 +173,46 @@ async def test_partial_failure_builds_ordered_sanitized_feedback_and_calls_aggre
 
 
 @pytest.mark.anyio
+async def test_strict_aggregation_rejects_partial_failure_before_synthesis() -> None:
+    targets = _targets(2)
+    client = FakeAggregationClient(
+        results={
+            targets[0].socket: CompletionResult(content="usable", finish_reason="stop"),
+            targets[1].socket: RouterUpstreamError("failed"),
+        }
+    )
+    strategy = AggregationStrategy(
+        config=_config(targets, require_all_targets=True),
+        client=client,
+    )
+
+    with pytest.raises(AggregationError, match="requires every target"):
+        await _collect(strategy.stream(body=_body()))
+
+    assert not client.aggregator_called.is_set()
+
+
+@pytest.mark.anyio
+async def test_strict_aggregation_rejects_incomplete_branch_finish() -> None:
+    targets = _targets(2)
+    client = FakeAggregationClient(
+        results={
+            targets[0].socket: CompletionResult(content="complete", finish_reason="stop"),
+            targets[1].socket: CompletionResult(content="truncated", finish_reason="length"),
+        }
+    )
+    strategy = AggregationStrategy(
+        config=_config(targets, require_all_targets=True),
+        client=client,
+    )
+
+    with pytest.raises(AggregationError, match="requires every target"):
+        await _collect(strategy.stream(body=_body()))
+
+    assert not client.aggregator_called.is_set()
+
+
+@pytest.mark.anyio
 async def test_fanout_starts_every_upstream_before_any_branch_is_released() -> None:
     targets = _targets()
     client = FakeAggregationClient(
@@ -230,6 +270,27 @@ async def test_each_upstream_gets_an_equal_but_independent_public_request_copy()
 
 
 @pytest.mark.anyio
+async def test_candidate_timeout_overrides_aggregation_target_timeout_per_branch() -> None:
+    targets = [
+        RouterTarget("candidate-1", "private-1.sock", "one", timeout=2.5),
+        RouterTarget("candidate-2", "private-2.sock", "two"),
+    ]
+    client = FakeAggregationClient(
+        results={
+            target.socket: CompletionResult(content=target.candidate_id, finish_reason="stop") for target in targets
+        }
+    )
+
+    await _collect(AggregationStrategy(config=_config(targets), client=client).stream(body=_body()))
+
+    options_by_socket = {socket: options for socket, _, options in client.complete_calls}
+    assert options_by_socket == {
+        "private-1.sock": {"timeout": 2.5},
+        "private-2.sock": {"timeout": 4},
+    }
+
+
+@pytest.mark.anyio
 async def test_aggregator_body_replaces_only_messages_and_preserves_public_parameters() -> None:
     targets = _targets(1)
     client = FakeAggregationClient(
@@ -248,6 +309,48 @@ async def test_aggregator_body_replaces_only_messages_and_preserves_public_param
         "future_parameter": {"preserved": True},
         "stream": True,
     }
+
+
+@pytest.mark.anyio
+async def test_target_and_aggregator_request_overrides_apply_with_shallow_precedence() -> None:
+    target_overrides: dict[str, Any] = {
+        "temperature": 0.7,
+        "max_tokens": 4096,
+        "future_parameter": {"role": "target"},
+        "detached": {"values": ["target-original"]},
+    }
+    aggregator_overrides: dict[str, Any] = {
+        "temperature": 0.4,
+        "max_tokens": 2048,
+        "future_parameter": {"role": "aggregator"},
+        "detached": {"values": ["aggregator-original"]},
+    }
+    target = RouterTarget(
+        "candidate-1",
+        "private-1.sock",
+        "description-1",
+        request_overrides=target_overrides,
+    )
+    config = _config([target], aggregator_request_overrides=aggregator_overrides)
+    client = FakeAggregationClient(results={target.socket: CompletionResult(content="branch", finish_reason="stop")})
+    target_overrides["detached"]["values"].append("mutated")
+    aggregator_overrides["detached"]["values"].append("mutated")
+
+    await _collect(AggregationStrategy(config=config, client=client).stream(body=_body()))
+
+    target_body = client.complete_snapshots[target.socket]
+    assert target_body["temperature"] == 0.7
+    assert target_body["max_tokens"] == 4096
+    assert target_body["future_parameter"] == {"role": "target"}
+    assert target_body["detached"] == {"values": ["target-original"]}
+    assert target_body["stream"] is True
+    assert client.aggregator_body is not None
+    assert client.aggregator_body["temperature"] == 0.4
+    assert client.aggregator_body["max_tokens"] == 2048
+    assert client.aggregator_body["future_parameter"] == {"role": "aggregator"}
+    assert client.aggregator_body["detached"] == {"values": ["aggregator-original"]}
+    assert client.aggregator_body["stream"] is True
+    assert client.aggregator_body["messages"] != _body()["messages"]
 
 
 @pytest.mark.anyio

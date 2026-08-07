@@ -43,6 +43,11 @@ router = Router(
     router_timeout=30,
     target_timeout=None,
     max_context_chars=12_000,
+    require_all_targets=True,
+    control_request_overrides={"max_tokens": 256},
+    target_request_overrides={"max_tokens": 4096},
+    candidate_request_overrides={"candidate-2": {"max_tokens": 8192}},
+    candidate_timeouts={"candidate-2": 180},
 )
 await router.run()
 ```
@@ -109,11 +114,32 @@ CLI 的 `--upstream` 仍是同序的 Socket/description 二元序列；组合时
     - [./routing.sock, routed answer, router]
     - [./review-ai.sock, independent review, ai]
   max_context_chars: 12000
+  require_all_targets: true
+  control_request_overrides:
+    max_tokens: 8192
+  target_request_overrides:
+    max_tokens: 4096
+  candidate_request_overrides:
+    candidate-2:
+      max_tokens: 8192
+  candidate_timeouts:
+    candidate-2: 180
 ```
 
 以上配置表达 `Aggregation → Routing → Fallback`；改变引用方向即可构造其他无环顺序。
 每层独立应用自己的 `target_timeout`。外层 timeout 若短于内层最坏执行时间，会取消整个
 内层调用；系统不会按嵌套深度自动放大 timeout。
+
+`control_request_overrides` 只作用于当前层的 Selector 或 Aggregator；fallback 没有控制模型，
+因此该字段必须为空。`target_request_overrides` 作用于当前层全部 targets，
+`candidate_request_overrides` 再按稳定的 `candidate-N` 做浅层覆盖。优先级为
+“调用方公开请求 < 全体 target 覆盖 < 单 candidate 覆盖”，嵌套 Router 到达下一层后再应用
+下一层自己的配置。`candidate_timeouts` 同样按 candidate 覆盖共享 `target_timeout`。
+
+请求覆盖是顶层浅合并，不递归合并嵌套 object；所有值都会深拷贝，调用方对象不会被修改。
+`messages`、`model`、`routing`、`stream` 是协议保护字段，不能通过上述覆盖项改写。
+这使 Selector、evidence leaf、Aggregator 和最终回答模型可以使用不同的 `max_tokens`、
+供应商扩展参数与 timeout，而不会把内部路由元数据暴露给普通 AI。
 
 ## 请求边界
 
@@ -130,7 +156,9 @@ Router 深拷贝公开请求，删除客户端 `model`，强制 `stream=true`，
 1. 为每个 target 创建独立请求副本，并在一个 AnyIO task group 中同时调用。
 2. 普通分支失败只写入对应结果槽，不取消其他分支；调用者取消会取消整个 task group。
 3. 反馈按配置顺序排列，而不是按异步完成顺序排列。
-4. 至少一个分支成功时，将成功材料和脱敏失败摘要交给 Aggregator；全部失败直接报错。
+4. 默认至少一个分支成功时，将成功材料和脱敏失败摘要交给 Aggregator；全部失败直接报错。
+   `require_all_targets=True` 时，每个分支都必须成功并以 `stop` / `tool_calls` 完整结束，否则报错且
+   不调用 Aggregator。该严格模式适合需要保证处理忠实度的受控实验。
 5. Aggregator 的流式响应是唯一对 Session 可见的最终响应。
 
 反馈不包含分支 `reasoning` 或真实 Socket。错误摘要中的所有私有 Socket 表示都会替换为
@@ -163,6 +191,7 @@ function name 始终保留。
 | 状况 | 行为 |
 |---|---|
 | 一个或多个 upstream 成功 | 带成功材料和失败摘要调用 Aggregator |
+| strict aggregation 任一 upstream 失败或未完整结束 | Router SSE error；不调用 Aggregator |
 | 全部 upstream 失败 | Router SSE error；不调用 Aggregator |
 | Aggregator 失败、空响应或 error finish | Router SSE error；不 fallback |
 | Fallback 当前 target 失败 | 丢弃其全部缓冲 events，串行尝试下一 target |
@@ -179,5 +208,5 @@ uv run ty check src/psi_agent/router tests/psi_agent/router
 ```
 
 以上命令验证协议与组合不变量。真实后端之间的质量、可靠性、成本和时延对照实验见
-[`evals/router/README.md`](../../../evals/router/README.md)；付费且存在随机性的效果评测刻意不进入常规
+[`tests/evals/router/README.md`](../../../tests/evals/router/README.md)；付费且存在随机性的效果评测刻意不进入常规
 pytest。

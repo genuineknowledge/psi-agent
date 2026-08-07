@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from psi_agent.router.errors import InvalidRouterRequestError
@@ -30,6 +32,43 @@ def test_copy_public_request_body_is_deep_and_strips_only_private_fields() -> No
     copied["messages"][0]["content"] = "changed"
     assert source["messages"][0]["content"] == "hello"
     assert source["stream"] is False
+
+
+def test_copy_public_request_overrides_are_shallow_and_detached() -> None:
+    source: dict[str, Any] = {
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.2,
+        "future_parameter": {"preserved": True, "nested": {"source": True}},
+        "stream": False,
+    }
+    overrides: dict[str, Any] = {
+        "temperature": 0.8,
+        "future_parameter": {"replacement": True},
+    }
+
+    copied = copy_public_request_body(body=source, request_overrides=overrides)
+
+    assert copied == {
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.8,
+        "future_parameter": {"replacement": True},
+        "stream": True,
+    }
+    copied["future_parameter"]["replacement"] = False
+    assert overrides == {
+        "temperature": 0.8,
+        "future_parameter": {"replacement": True},
+    }
+    assert source["future_parameter"] == {"preserved": True, "nested": {"source": True}}
+
+
+@pytest.mark.parametrize("field", ["messages", "model", "routing", "stream"])
+def test_copy_public_request_overrides_reject_protected_fields(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        copy_public_request_body(
+            body={"messages": [{"role": "user", "content": "hello"}]},
+            request_overrides={field: "blocked"},
+        )
 
 
 def test_ai_target_strips_private_routing_metadata() -> None:

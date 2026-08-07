@@ -61,7 +61,7 @@ class FallbackStrategy:
                 result = await self.client.buffered_complete(
                     socket=target.socket,
                     body=copy_target_request_body(body=body, target=target),
-                    timeout=self.config.target_timeout,
+                    timeout=target.timeout if target.timeout is not None else self.config.target_timeout,
                 )
                 if not self._is_usable(result.completion):
                     raise RouterUpstreamError("upstream returned no usable content or tool calls")

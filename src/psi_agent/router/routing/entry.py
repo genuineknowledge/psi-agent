@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from psi_agent._logging import setup_logging
 
@@ -23,6 +24,7 @@ class RoutingRouter:
     selector_timeout: float | None = 30.0
     target_timeout: float | None = None
     max_selection_chars: int = 12_000
+    selector_request_overrides: dict[str, Any] = field(default_factory=dict)
     verbose: bool = False
 
     async def run(self) -> None:
@@ -36,6 +38,7 @@ class RoutingRouter:
             selector_timeout=self.selector_timeout,
             target_timeout=self.target_timeout,
             max_selection_chars=self.max_selection_chars,
+            selector_request_overrides=self.selector_request_overrides,
         )
         client = RouterHttpClient()
         selector = RouteSelector(config=config, client=client)

@@ -132,6 +132,32 @@ async def test_target_failure_is_wrapped_redacted_and_clears_tool_sticky() -> No
 
 
 @pytest.mark.anyio
+async def test_candidate_timeout_overrides_routing_target_timeout() -> None:
+    target = RouterTarget(
+        "candidate-1",
+        "private-target.sock",
+        "general",
+        timeout=2.5,
+    )
+    selector = SequenceSelector(selections=[SelectionResult(candidate_id=target.candidate_id, target=target)])
+    client = SequenceClient(event_sets=[[_event("stop")]])
+    strategy = RoutingStrategy(
+        config=RoutingConfig(
+            session_socket="router.sock",
+            selector_socket="private-selector.sock",
+            targets=[target],
+            target_timeout=9,
+        ),
+        selector=selector,
+        client=client,
+    )
+
+    await _collect(strategy.stream(body={"messages": [], "stream": True}))
+
+    assert client.calls[0][2] == {"timeout": 2.5}
+
+
+@pytest.mark.anyio
 async def test_discard_and_clear_remove_sticky_scopes_through_public_behavior() -> None:
     selection = _selection()
     selector = SequenceSelector(selections=[selection] * 5)

@@ -58,7 +58,7 @@ class AggregationStrategy:
                 result = await self.client.complete(
                     socket=target.socket,
                     body=copy_target_request_body(body=body, target=target),
-                    timeout=self.config.target_timeout,
+                    timeout=target.timeout if target.timeout is not None else self.config.target_timeout,
                 )
                 if not result.content.strip() and not result.tool_calls:
                     raise RouterUpstreamError("upstream returned no usable content or tool calls")
@@ -93,8 +93,15 @@ class AggregationStrategy:
             )
         if not any(item.status == "success" for item in feedback):
             raise AggregationError("All aggregation upstreams failed")
+        if self.config.require_all_targets and any(
+            item.status != "success" or item.finish_reason not in {"stop", "tool_calls"} for item in feedback
+        ):
+            raise AggregationError("Strict aggregation requires every target to complete successfully")
 
-        aggregator_body = copy_public_request_body(body=body)
+        aggregator_body = copy_public_request_body(
+            body=body,
+            request_overrides=self.config.aggregator_request_overrides,
+        )
         aggregator_body["messages"] = build_aggregation_messages(
             original_messages=cast(list[dict[str, Any]], body["messages"]),
             feedback=feedback,

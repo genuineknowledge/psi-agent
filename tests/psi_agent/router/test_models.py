@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import cast
+import math
+from typing import Any, cast
 
 import pytest
 
@@ -37,6 +38,59 @@ def test_router_target_accepts_an_explicit_router_backend() -> None:
     )
 
     assert target.backend_type == "router"
+
+
+def test_router_target_normalizes_candidate_timeout() -> None:
+    target = RouterTarget(
+        candidate_id="candidate-1",
+        socket="target.sock",
+        description="candidate",
+        timeout=3,
+    )
+
+    assert target.timeout == 3.0
+
+
+@pytest.mark.parametrize("timeout", [0, -1, math.inf, -math.inf, math.nan, True, "3"])
+def test_router_target_rejects_invalid_candidate_timeout(timeout: object) -> None:
+    with pytest.raises(ValueError, match="timeout"):
+        RouterTarget(
+            candidate_id="candidate-1",
+            socket="target.sock",
+            description="candidate",
+            timeout=cast(float | None, timeout),
+        )
+
+
+def test_router_target_detaches_request_overrides() -> None:
+    overrides: dict[str, Any] = {
+        "max_tokens": 512,
+        "provider_option": {"nested": ["original"]},
+    }
+
+    target = RouterTarget(
+        candidate_id="candidate-1",
+        socket="target.sock",
+        description="candidate",
+        request_overrides=overrides,
+    )
+    overrides["provider_option"]["nested"].append("changed")
+
+    assert target.request_overrides == {
+        "max_tokens": 512,
+        "provider_option": {"nested": ["original"]},
+    }
+
+
+@pytest.mark.parametrize("field", ["messages", "model", "routing", "stream"])
+def test_router_target_rejects_protected_request_overrides(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        RouterTarget(
+            candidate_id="candidate-1",
+            socket="target.sock",
+            description="candidate",
+            request_overrides={field: "blocked"},
+        )
 
 
 @pytest.mark.parametrize(

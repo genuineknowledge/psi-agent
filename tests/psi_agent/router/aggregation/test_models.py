@@ -42,6 +42,17 @@ def test_aggregation_config_normalizes_socket_fields_and_targets() -> None:
     assert config.targets == (_target(),)
 
 
+@pytest.mark.parametrize("value", [None, 0, 1, "true"])
+def test_aggregation_config_requires_boolean_strict_target_mode(value: object) -> None:
+    with pytest.raises(ValueError, match="require_all_targets"):
+        AggregationConfig(
+            session_socket="router.sock",
+            aggregator_socket="aggregate.sock",
+            targets=[_target()],
+            require_all_targets=cast(bool, value),
+        )
+
+
 @pytest.mark.parametrize(
     ("aggregator_socket", "targets", "match"),
     [

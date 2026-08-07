@@ -10,6 +10,7 @@ from loguru import logger
 
 from ..errors import InvalidRouterRequestError
 from ..models import CompletionResult
+from ..request import copy_public_request_body
 from .errors import RouteSelectionError
 from .models import RoutingConfig, SelectionResult
 from .prompts import build_selector_messages
@@ -71,7 +72,7 @@ class RouteSelector:
         candidates = [
             {"candidate_id": target.candidate_id, "description": target.description} for target in self.config.targets
         ]
-        return {
+        selector_body = {
             "messages": build_selector_messages(
                 candidates=candidates,
                 conversation=self._compact_messages(messages),
@@ -80,6 +81,10 @@ class RouteSelector:
             "stream": True,
             "temperature": 0,
         }
+        return copy_public_request_body(
+            body=selector_body,
+            request_overrides=self.config.selector_request_overrides,
+        )
 
     def _compact_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, str]]:
         normalized: list[dict[str, str]] = []

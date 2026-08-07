@@ -54,6 +54,7 @@ async def test_aggregation_router_builds_one_client_and_serves_strategy(
         session_socket="router.sock",
         aggregator_socket="aggregate.sock",
         targets=[RouterTarget("candidate-1", "target.sock", "general")],
+        require_all_targets=True,
         verbose=True,
     ).run()
 
@@ -64,3 +65,4 @@ async def test_aggregation_router_builds_one_client_and_serves_strategy(
     assert session_socket == "router.sock"
     assert isinstance(strategy, AggregationStrategy)
     assert strategy.client is created_clients[0]
+    assert strategy.config.require_all_targets is True

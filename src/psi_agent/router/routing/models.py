@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
-from ..models import RouterTarget
+from ..models import RouterTarget, normalize_request_overrides
 
 RoutingTarget = RouterTarget
 
@@ -20,6 +21,7 @@ class RoutingConfig:
     selector_timeout: float | None = 30.0
     target_timeout: float | None = None
     max_selection_chars: int = 12_000
+    selector_request_overrides: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         session_socket = self.session_socket.strip()
@@ -61,6 +63,14 @@ class RoutingConfig:
         object.__setattr__(self, "session_socket", session_socket)
         object.__setattr__(self, "selector_socket", selector_socket)
         object.__setattr__(self, "targets", targets)
+        object.__setattr__(
+            self,
+            "selector_request_overrides",
+            normalize_request_overrides(
+                value=self.selector_request_overrides,
+                label="selector_request_overrides",
+            ),
+        )
 
 
 @dataclass(frozen=True)

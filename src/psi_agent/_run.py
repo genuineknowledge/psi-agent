@@ -40,6 +40,13 @@ Config format (``run-config.yml``):
       router_timeout: null
       target_timeout: 60
       max_context_chars: 12000
+      target_request_overrides:
+        max_tokens: 4096
+      candidate_request_overrides:
+        candidate-2:
+          max_tokens: 8192
+      candidate_timeouts:
+        candidate-2: 120
 
     - type: router
       mode: aggregation
@@ -49,6 +56,8 @@ Config format (``run-config.yml``):
         - [./fallback.sock, resilient answer, router]
         - [./research.sock, independent research]
       router_timeout: 30
+      control_request_overrides:
+        max_tokens: 2048
 
     - type: channel
       name: repl                    # "cli", "repl", "telegram", or "feishu"
@@ -103,7 +112,7 @@ class Run:
     """Path to a YAML config file listing components to run."""
 
     async def run(self) -> None:
-        setup_logging(verbose=True)
+        setup_logging(verbose=False)
         await _run_config(self.config)
 
 

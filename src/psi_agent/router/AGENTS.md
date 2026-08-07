@@ -45,6 +45,13 @@ router/
 4. `routing.path` 只允许稳定 candidate ID，且必须与非空 `routing.session_id` 同时出现。
 5. 强制 `stream=True`，其余字段（含未知扩展字段）全部透传。
 
+本地请求预算通过三层显式覆盖实现：控制模型使用 mode config 的
+`selector_request_overrides` / `aggregator_request_overrides`；所有 targets 使用
+`target_request_overrides`；单个 target 再使用 `candidate_request_overrides`。覆盖是顶层浅合并，
+但输入和值都必须深拷贝。`messages`、`model`、`routing`、`stream` 永远是保护字段，任何配置层都
+不得改写。fallback 不存在控制模型，非空 `control_request_overrides` 必须 fail-fast。
+`RouterTarget.timeout` 非空时优先于 mode config 的共享 `target_timeout`。
+
 Selector prompt 是例外：它只接收候选编号/描述、压缩后的对话与工具摘要，不接收私有
 Socket 或原始完整请求。
 
@@ -70,6 +77,8 @@ Socket 或原始完整请求。
 - 用预分配 slot 保证反馈始终按配置顺序，不按完成顺序。
 - 普通分支异常隔离；取消异常必须继续传播并取消整个 task group。
 - 至少一个分支成功才调用 Aggregator；全部失败直接 `AggregationError`。
+- `require_all_targets=False` 保持上述部署态降级语义；严格实验可设为 `True`，此时每个分支都必须
+  成功并以 `stop` / `tool_calls` 完整结束，否则不进入 Aggregator。
 - 分支 reasoning 永不进入反馈；分支 tool calls 只作为材料。
 - 只有 Aggregator 的 content/reasoning/tool_calls 可以返回 Session。
 - `discard()` / `clear()` 是显式无状态 no-op；工具结果轮重新广播全部 targets。

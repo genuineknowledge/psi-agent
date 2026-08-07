@@ -6,13 +6,24 @@ from copy import deepcopy
 from typing import Any
 
 from .errors import InvalidRouterRequestError
-from .models import RouterTarget, RoutingScopeKey, is_candidate_id
+from .models import RouterTarget, RoutingScopeKey, is_candidate_id, normalize_request_overrides
 
 
-def copy_public_request_body(*, body: dict[str, Any]) -> dict[str, Any]:
+def copy_public_request_body(
+    *,
+    body: dict[str, Any],
+    request_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Deep-copy public completion fields and force streaming upstream."""
 
     forwarded = {key: deepcopy(value) for key, value in body.items() if key not in {"model", "routing"}}
+    if request_overrides is not None:
+        forwarded.update(
+            normalize_request_overrides(
+                value=request_overrides,
+                label="request_overrides",
+            )
+        )
     forwarded["stream"] = True
     return forwarded
 
@@ -20,7 +31,10 @@ def copy_public_request_body(*, body: dict[str, Any]) -> dict[str, Any]:
 def copy_target_request_body(*, body: dict[str, Any], target: RouterTarget) -> dict[str, Any]:
     """Copy a request for one explicitly typed AI or Router target."""
 
-    forwarded = copy_public_request_body(body=body)
+    forwarded = copy_public_request_body(
+        body=body,
+        request_overrides=target.request_overrides,
+    )
     if target.backend_type == "router":
         scope = routing_scope_from_body(body=body)
         if scope is not None:
