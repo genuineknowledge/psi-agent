@@ -172,7 +172,7 @@ export default function HaiTunAgentWorkspace({
   const [openModelsOnce, setOpenModelsOnce] = useState(false);
   /** First-run guide: shows only for a fresh workspace with no historical tasks. */
   const [firstRunOpen, setFirstRunOpen] = useState(false);
-  const [firstRunSpotlightStep, setFirstRunSpotlightStep] = useState<0 | 1 | 2>(0);
+  const [firstRunSpotlightStep, setFirstRunSpotlightStep] = useState<0 | 1 | 2 | 3 | 4>(0);
   const [isFirstRunUser, setIsFirstRunUser] = useState(false);
   const [taskStatusTipVisible, setTaskStatusTipVisible] = useState(false);
   const taskStatusTipAcknowledgedRef = useRef(false);
@@ -807,9 +807,15 @@ export default function HaiTunAgentWorkspace({
     setFirstRunOpen(false);
   }, []);
 
-  const confirmFirstRunSpotlight = useCallback((step: 1 | 2) => {
-    if (step === 1) {
-      setFirstRunSpotlightStep(2);
+  const skipFirstRunGuide = useCallback(() => {
+    setFirstRunSpotlightStep(0);
+    setFirstRunOpen(false);
+    setIsFirstRunUser(false);
+  }, []);
+
+  const confirmFirstRunSpotlight = useCallback((step: 1 | 2 | 3 | 4) => {
+    if (step < 4) {
+      setFirstRunSpotlightStep((step + 1) as 2 | 3 | 4);
       return;
     }
     setFirstRunSpotlightStep(0);
@@ -2350,10 +2356,16 @@ export default function HaiTunAgentWorkspace({
         />
       )}
       {firstRunSpotlightStep === 1 && (
-        <FirstRunSpotlight step={1} onConfirm={() => confirmFirstRunSpotlight(1)} />
+        <FirstRunSpotlight step={1} onConfirm={() => confirmFirstRunSpotlight(1)} onSkip={skipFirstRunGuide} />
       )}
       {firstRunSpotlightStep === 2 && (
-        <FirstRunSpotlight step={2} onConfirm={() => confirmFirstRunSpotlight(2)} />
+        <FirstRunSpotlight step={2} onConfirm={() => confirmFirstRunSpotlight(2)} onSkip={skipFirstRunGuide} />
+      )}
+      {firstRunSpotlightStep === 3 && (
+        <FirstRunSpotlight step={3} onConfirm={() => confirmFirstRunSpotlight(3)} onSkip={skipFirstRunGuide} />
+      )}
+      {firstRunSpotlightStep === 4 && (
+        <FirstRunSpotlight step={4} onConfirm={() => confirmFirstRunSpotlight(4)} onSkip={skipFirstRunGuide} />
       )}
       {taskStatusTipVisible &&
         mainView === "workspace" &&
