@@ -33,22 +33,22 @@ Reply in Chinese unless the user clearly uses another language.
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
-prs = Presentation()                         # blank deck, 4:3 by default
+prs = Presentation()  # blank deck, 4:3 by default
 
 # title slide (layout 0)
 s = prs.slides.add_slide(prs.slide_layouts[0])
 s.shapes.title.text = "2026 Q2 运营报告"
-s.placeholders[1].text = "数据团队 · 2026-07"   # subtitle placeholder
+s.placeholders[1].text = "数据团队 · 2026-07"  # subtitle placeholder
 
 # bullet slide (layout 1 = Title and Content)
 s = prs.slides.add_slide(prs.slide_layouts[1])
 s.shapes.title.text = "本季度要点"
 tf = s.placeholders[1].text_frame
-tf.text = "收入同比 +18%"                       # first bullet
+tf.text = "收入同比 +18%"  # first bullet
 for line in ["新客占比提升", "退款率下降至 2.1%"]:
     p = tf.add_paragraph()
     p.text = line
-    p.level = 1                              # indent level (0-based)
+    p.level = 1  # indent level (0-based)
 
 prs.save("deck.pptx")
 ```
@@ -64,6 +64,7 @@ The default template is 4:3. For widescreen set the slide size **before** adding
 
 ```python
 from pptx.util import Inches
+
 prs.slide_width = Inches(13.333)
 prs.slide_height = Inches(7.5)
 ```
@@ -111,7 +112,7 @@ prs.slides[0].shapes.title.text = "新标题"
 
 # replace body bullets on slide 1
 tf = prs.slides[1].placeholders[1].text_frame
-tf.clear()                                   # drops all but keeps one empty paragraph
+tf.clear()  # drops all but keeps one empty paragraph
 tf.text = "第一条"
 tf.add_paragraph().text = "第二条"
 
@@ -132,9 +133,9 @@ prs.save("deck.pptx")
 
 ```python
 slide = prs.slides[0]
-slide.notes_slide.notes_text_frame.text = "开场先讲背景，再进数据"   # write (creates notes if absent)
+slide.notes_slide.notes_text_frame.text = "开场先讲背景，再进数据"  # write (creates notes if absent)
 
-if slide.has_notes_slide:                                          # read (don't create)
+if slide.has_notes_slide:  # read (don't create)
     print(slide.notes_slide.notes_text_frame.text)
 ```
 
@@ -148,7 +149,7 @@ from pptx.util import Inches
 from pptx.chart.data import CategoryChartData
 from pptx.enum.chart import XL_CHART_TYPE
 
-s = prs.slides.add_slide(prs.slide_layouts[5])   # title only
+s = prs.slides.add_slide(prs.slide_layouts[5])  # title only
 s.shapes.title.text = "数据"
 
 # table
@@ -163,8 +164,7 @@ s.shapes.add_picture("chart.png", Inches(1), Inches(4), width=Inches(4))
 data = CategoryChartData()
 data.categories = ["4月", "5月", "6月"]
 data.add_series("收入", (120, 135, 158))
-s.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED,
-                   Inches(1), Inches(1.5), Inches(6), Inches(4), data)
+s.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1.5), Inches(6), Inches(4), data)
 ```
 
 Native charts stay editable inside PowerPoint and need no image file — prefer them over
@@ -178,8 +178,9 @@ slide's id entry removes it from the deck:
 ```python
 def delete_slide(prs, index):
     """Remove the slide at `index` from the presentation."""
-    id_lst = prs.slides._sldIdLst           # <p:sldIdLst> element
+    id_lst = prs.slides._sldIdLst  # <p:sldIdLst> element
     id_lst.remove(list(id_lst)[index])
+
 
 def move_slide(prs, old_index, new_index):
     """Reorder: move the slide at old_index to new_index."""
@@ -203,8 +204,8 @@ def move_slide(prs, old_index, new_index):
 - To use a supplied template, open it as the base and add slides using its layouts:
 
 ```python
-prs = Presentation("brand-template.pptx")    # inherits its theme, master, layouts
-layout = prs.slide_layouts[1]                # template's own layouts
+prs = Presentation("brand-template.pptx")  # inherits its theme, master, layouts
+layout = prs.slide_layouts[1]  # template's own layouts
 prs.slides.add_slide(layout)
 ```
 
@@ -222,13 +223,13 @@ on the run explicitly:
 ```python
 from pptx.oxml.ns import qn
 
-run.font.name = "微软雅黑"                       # sets <a:latin> (Latin font) only
+run.font.name = "微软雅黑"  # sets <a:latin> (Latin font) only
 rpr = run._r.get_or_add_rPr()
 ea = rpr.find(qn("a:ea"))
 if ea is None:
-    ea = rpr.makeelement(qn("a:ea"), {})       # add the East-Asian font child element
+    ea = rpr.makeelement(qn("a:ea"), {})  # add the East-Asian font child element
     rpr.append(ea)
-ea.set("typeface", "微软雅黑")                   # <a:ea typeface="..."> alongside <a:latin>
+ea.set("typeface", "微软雅黑")  # <a:ea typeface="..."> alongside <a:latin>
 ```
 
 PowerPoint uses the DrawingML namespace (`a:`), unlike Word's WordprocessingML (`w:`), and the

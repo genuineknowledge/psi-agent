@@ -35,7 +35,13 @@ async def test_state_save_and_load_roundtrip(tmp_path: str) -> None:
 
     await state.save(
         ais=[
-            {"id": "a1", "provider": "openai", "model": "gpt-4o", "api_key": "sk-abc", "base_url": "https://api.oai.com"},
+            {
+                "id": "a1",
+                "provider": "openai",
+                "model": "gpt-4o",
+                "api_key": "sk-abc",
+                "base_url": "https://api.oai.com",
+            },
             {"id": "a2", "provider": "anthropic", "model": "claude-3", "api_key": "sk-xyz", "base_url": ""},
         ],
         sessions=[
@@ -134,7 +140,15 @@ class GatewayState:
         titles: dict[str, str],
     ) -> None:
         data = {
-            "ais": {a["id"]: {"provider": a["provider"], "model": a["model"], "api_key": a["api_key"], "base_url": a["base_url"]} for a in ais},
+            "ais": {
+                a["id"]: {
+                    "provider": a["provider"],
+                    "model": a["model"],
+                    "api_key": a["api_key"],
+                    "base_url": a["base_url"],
+                }
+                for a in ais
+            },
             "sessions": {s["id"]: {"ai_id": s["ai_id"], "workspace": s["workspace"]} for s in sessions},
             "titles": dict(titles),
         }
@@ -194,7 +208,9 @@ class AiInfo:
 
 In `create()`, update the `_AiEntry(...)` construction to include `api_key` and `base_url`:
 ```python
-            self._entries[ai_id] = _AiEntry(scope=scope, socket=socket, provider=provider, model=model, api_key=api_key, base_url=base_url)
+self._entries[ai_id] = _AiEntry(
+    scope=scope, socket=socket, provider=provider, model=model, api_key=api_key, base_url=base_url
+)
 ```
 
 In `create()`, update the `AiInfo(...)` return to include `api_key` and `base_url`:
@@ -476,104 +492,115 @@ git commit -m "feat: add _persist callback to TitleManager, make set() async"
 Replace the `run()` method:
 
 ```python
-    async def run(self) -> None:
-        setup_logging(verbose=self.verbose)
+async def run(self) -> None:
+    setup_logging(verbose=self.verbose)
 
-        addr = self.listen or f"http://127.0.0.1:{_random_port()}"
-        logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
+    addr = self.listen or f"http://127.0.0.1:{_random_port()}"
+    logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
 
-        state = GatewayState(_path=anyio.Path("state/latest.json"))
-        snapshot = await state.load()
+    state = GatewayState(_path=anyio.Path("state/latest.json"))
+    snapshot = await state.load()
 
-        async with anyio.create_task_group() as tg:
-            aim = AIManager(_prefix=self.socket_path, _tg=tg)
-            sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
+    async with anyio.create_task_group() as tg:
+        aim = AIManager(_prefix=self.socket_path, _tg=tg)
+        sm = SessionManager(_aim=aim, _prefix=self.socket_path, _tg=tg)
 
-            for ai_id, cfg in snapshot.get("ais", {}).items():
-                try:
-                    await aim.create(
-                        provider=cfg.get("provider", ""),
-                        model=cfg.get("model", ""),
-                        api_key=cfg.get("api_key", ""),
-                        base_url=cfg.get("base_url", ""),
-                        id=ai_id,
-                    )
-                    logger.info(f"Restored AI {ai_id!r}")
-                except Exception as e:
-                    logger.warning(f"Failed to restore AI {ai_id!r}: {e!r}")
-
-            for sess_id, cfg in snapshot.get("sessions", {}).items():
-                try:
-                    await sm.create(
-                        ai_id=cfg.get("ai_id", ""),
-                        workspace=cfg.get("workspace", ""),
-                        id=sess_id,
-                    )
-                    logger.info(f"Restored Session {sess_id!r}")
-                except Exception as e:
-                    logger.warning(f"Failed to restore Session {sess_id!r}: {e!r}")
-
-            app = await create_app(aim, sm, favicon_path=self.icon)
-            tm: TitleManager = app["tm"]
-
-            async def _do_persist() -> None:
-                ais_snapshot = [{"id": info.id, "provider": info.provider, "model": info.model, "api_key": info.api_key, "base_url": info.base_url} for info in await aim.list_all()]  # noqa: E501
-                sessions_snapshot = [{"id": info.id, "ai_id": info.ai_id, "workspace": info.workspace} for info in await sm.list_all()]  # noqa: E501
-                await state.save(
-                    ais=ais_snapshot,
-                    sessions=sessions_snapshot,
-                    titles=tm.get_all(),
-                )
-
-            aim._persist = _do_persist
-            sm._persist = _do_persist
-            tm._persist = _do_persist
-
-            for sid, title in snapshot.get("titles", {}).items():
-                await tm.set(sid, title)
-
-            await _do_persist()
-
-            runner = web.AppRunner(app)
+        for ai_id, cfg in snapshot.get("ais", {}).items():
             try:
+                await aim.create(
+                    provider=cfg.get("provider", ""),
+                    model=cfg.get("model", ""),
+                    api_key=cfg.get("api_key", ""),
+                    base_url=cfg.get("base_url", ""),
+                    id=ai_id,
+                )
+                logger.info(f"Restored AI {ai_id!r}")
+            except Exception as e:
+                logger.warning(f"Failed to restore AI {ai_id!r}: {e!r}")
+
+        for sess_id, cfg in snapshot.get("sessions", {}).items():
+            try:
+                await sm.create(
+                    ai_id=cfg.get("ai_id", ""),
+                    workspace=cfg.get("workspace", ""),
+                    id=sess_id,
+                )
+                logger.info(f"Restored Session {sess_id!r}")
+            except Exception as e:
+                logger.warning(f"Failed to restore Session {sess_id!r}: {e!r}")
+
+        app = await create_app(aim, sm, favicon_path=self.icon)
+        tm: TitleManager = app["tm"]
+
+        async def _do_persist() -> None:
+            ais_snapshot = [
+                {
+                    "id": info.id,
+                    "provider": info.provider,
+                    "model": info.model,
+                    "api_key": info.api_key,
+                    "base_url": info.base_url,
+                }
+                for info in await aim.list_all()
+            ]  # noqa: E501
+            sessions_snapshot = [
+                {"id": info.id, "ai_id": info.ai_id, "workspace": info.workspace} for info in await sm.list_all()
+            ]  # noqa: E501
+            await state.save(
+                ais=ais_snapshot,
+                sessions=sessions_snapshot,
+                titles=tm.get_all(),
+            )
+
+        aim._persist = _do_persist
+        sm._persist = _do_persist
+        tm._persist = _do_persist
+
+        for sid, title in snapshot.get("titles", {}).items():
+            await tm.set(sid, title)
+
+        await _do_persist()
+
+        runner = web.AppRunner(app)
+        try:
+            try:
+                await runner.setup()
+                site = create_site(runner, addr)
+                await site.start()
+            except Exception as e:
+                logger.error(f"Failed to start Gateway on {addr}: {e!r}")
+                raise
+
+            logger.info(f"Gateway listening on {addr}")
+
+            if self.browser:
+                await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
+
+            if self.tray and self.icon is None:
+                raise ValueError("--tray requires --icon to be set")
+
+            tray = None
+            if self.tray:
+                tray = GatewayTray(addr, self.icon)  # type: ignore[arg-type]
                 try:
-                    await runner.setup()
-                    site = create_site(runner, addr)
-                    await site.start()
+                    tray.start()
                 except Exception as e:
-                    logger.error(f"Failed to start Gateway on {addr}: {e!r}")
-                    raise
+                    logger.warning(f"Failed to start system tray: {e!r}")
 
-                logger.info(f"Gateway listening on {addr}")
-
-                if self.browser:
-                    await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
-
-                if self.tray and self.icon is None:
-                    raise ValueError("--tray requires --icon to be set")
-
-                tray = None
-                if self.tray:
-                    tray = GatewayTray(addr, self.icon)  # type: ignore[arg-type]
-                    try:
-                        tray.start()
-                    except Exception as e:
-                        logger.warning(f"Failed to start system tray: {e!r}")
-
-                try:
-                    if tray is not None and tray.is_running():
-                        await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
-                    else:
-                        await anyio.sleep_forever()
-                finally:
-                    if tray is not None:
-                        tray.stop()
+            try:
+                if tray is not None and tray.is_running():
+                    await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
+                else:
+                    await anyio.sleep_forever()
             finally:
-                logger.info("Shutting down Gateway")
-                with anyio.CancelScope(shield=True):
-                    await runner.cleanup()
-                tg.cancel_scope.cancel()
-        logger.info("Gateway shutdown complete")
+                if tray is not None:
+                    tray.stop()
+        finally:
+            logger.info("Shutting down Gateway")
+            with anyio.CancelScope(shield=True):
+                await runner.cleanup()
+            tg.cancel_scope.cancel()
+    logger.info("Gateway shutdown complete")
 ```
 
 Add import at top:
@@ -665,7 +692,13 @@ async def test_gateway_state_persistence_roundtrip(tmp_path: str) -> None:
     state = GatewayState(_path=state_path)
 
     ais_data = {
-        "a1": {"id": "a1", "provider": "openai", "model": "gpt-4o", "api_key": "sk-abc", "base_url": "https://api.oai.com"},
+        "a1": {
+            "id": "a1",
+            "provider": "openai",
+            "model": "gpt-4o",
+            "api_key": "sk-abc",
+            "base_url": "https://api.oai.com",
+        },
     }
     sessions_data = {
         "s1": {"id": "s1", "ai_id": "a1", "workspace": str(tmp_path)},

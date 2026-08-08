@@ -83,13 +83,12 @@ async def _handle_message(ctx: MessageContext) -> None:
     if ctx.content_text:
         chunks.append(TextChunk(ctx.content_text))
     for r in ctx.resources:
-        saved = await channel.download_resource_to_file(
-            r.file_key, resource_type=r.resource_type, dest_dir=downloads
-        )
+        saved = await channel.download_resource_to_file(r.file_key, resource_type=r.resource_type, dest_dir=downloads)
         chunks.append(FileChunk(str(saved)))
 
     if not chunks:
         return
+
     # channel.stream() 内置卡片流式渲染
     async def _produce(stream):
         async for chunk in core.post(chunks):

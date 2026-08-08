@@ -118,6 +118,7 @@ part of the workspace and can be hot-reloaded by the session on user messages.
 ```python
 import anyio
 
+
 async def tool(file_path: str) -> str:
     """Read a file.
 

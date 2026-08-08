@@ -327,9 +327,7 @@ async def buffered_complete(
             if isinstance(current_finish, str):
                 if current_finish == "error":
                     detail = "".join(content_parts) or "unknown upstream error"
-                    raise RouterUpstreamError(
-                        f"Upstream {socket!r} reported an error: {detail}"
-                    )
+                    raise RouterUpstreamError(f"Upstream {socket!r} reported an error: {detail}")
                 finish_reason = current_finish
 
     if finish_reason is None:
@@ -515,11 +513,13 @@ Cover these exact outcomes:
 ```python
 @pytest.mark.anyio
 async def test_first_complete_usable_candidate_is_replayed_and_stops_polling() -> None:
-    client = FakeFallbackClient({
-        "one.sock": RouterUpstreamError("one failed"),
-        "two.sock": buffered(content="winner", finish="stop", marker="two"),
-        "three.sock": buffered(content="unused", finish="stop", marker="three"),
-    })
+    client = FakeFallbackClient(
+        {
+            "one.sock": RouterUpstreamError("one failed"),
+            "two.sock": buffered(content="winner", finish="stop", marker="two"),
+            "three.sock": buffered(content="unused", finish="stop", marker="three"),
+        }
+    )
     events = await collect(strategy(client).stream(body=user_body()))
     assert [call.socket for call in client.calls] == ["one.sock", "two.sock"]
     assert client.max_in_flight == 1
@@ -547,8 +547,10 @@ Assert call order exactly:
 
 ```python
 assert sockets == [
-    "one.sock", "two.sock",
-    "two.sock", "three.sock",
+    "one.sock",
+    "two.sock",
+    "two.sock",
+    "three.sock",
     "three.sock",
     "one.sock",
 ]
@@ -620,10 +622,7 @@ for index in range(start_index, len(self.config.targets)):
 if selected is None:
     if scope is not None:
         self._sticky_targets.pop(scope, None)
-    detail = "; ".join(
-        f"{target.candidate_id} ({error_type}): {summary}"
-        for target, error_type, summary in failures
-    )
+    detail = "; ".join(f"{target.candidate_id} ({error_type}): {summary}" for target, error_type, summary in failures)
     raise FallbackError(f"All fallback upstreams failed: {detail}")
 
 selected_index, buffered = selected
@@ -715,12 +714,22 @@ command = tyro.cli(
     Command,
     args=[
         "router",
-        "--session-socket", "fallback.sock",
-        "--router-socket", "None",
-        "--mode", "fallback",
-        "--upstream", "one.sock", "primary", "nested.sock", "nested",
-        "--upstream-types", "ai", "router",
-        "--target-timeout", "8",
+        "--session-socket",
+        "fallback.sock",
+        "--router-socket",
+        "None",
+        "--mode",
+        "fallback",
+        "--upstream",
+        "one.sock",
+        "primary",
+        "nested.sock",
+        "nested",
+        "--upstream-types",
+        "ai",
+        "router",
+        "--target-timeout",
+        "8",
     ],
 )
 assert command.router_socket is None
@@ -767,10 +776,7 @@ Keep `server.py` unaware of the mode. Do not validate indirect cycles.
 Convert list entries of length 2 or 3 to tuples:
 
 ```python
-item["upstream"] = [
-    tuple(entry) if isinstance(entry, list) and len(entry) in {2, 3} else entry
-    for entry in upstream
-]
+item["upstream"] = [tuple(entry) if isinstance(entry, list) and len(entry) in {2, 3} else entry for entry in upstream]
 ```
 
 Add a Fallback/nested Router example while preserving existing batch behavior and `setup_logging(verbose=True)` ownership.
@@ -812,6 +818,7 @@ In the new test module, reuse the existing `_start_app`, `_start_handler`, `_sse
 ```python
 type Mode = Literal["routing", "aggregation", "fallback"]
 
+
 async def _start_mode(
     mode: Mode,
     *,
@@ -830,9 +837,7 @@ async def _start_mode(
         selector = StaticSelector(SelectionResult(targets[0].candidate_id, targets[0]))
         strategy: RouterStrategy = RoutingStrategy(config=config, selector=selector, client=client)
     elif mode == "aggregation":
-        aggregator_runner, aggregator_url = await _start_handler(
-            recording_aggregator(observed)
-        )
+        aggregator_runner, aggregator_url = await _start_handler(recording_aggregator(observed))
         runners.append(aggregator_runner)
         config = AggregationConfig(
             session_socket="aggregation-listener",
@@ -941,7 +946,7 @@ RouterUpstreamInfo(backend_type="router", backend_id="fallback-1", description="
 Add tests that a parent resolves an AI through `AIManager` and an existing Router through `RouterManager.get_socket()`, then passes:
 
 ```python
-upstreams=(
+upstreams = (
     ("http://simple", "simple", "ai"),
     ("fallback.sock", "resilient", "router"),
 )
@@ -1042,9 +1047,7 @@ git commit -m "feat(gateway): manage composable fallback routers"
 Update the legacy assertion to:
 
 ```python
-assert snapshot["routers"][0]["upstreams"] == [
-    {"backend_type": "ai", "backend_id": "one", "description": "one"}
-]
+assert snapshot["routers"][0]["upstreams"] == [{"backend_type": "ai", "backend_id": "one", "description": "one"}]
 assert await state._path.read_text(encoding="utf-8") == raw
 ```
 
@@ -1075,9 +1078,7 @@ assert await _session_ai_socket(fallback_request, "session-1") == "fallback-publ
 OpenAPI assertions:
 
 ```python
-assert schemas["RouterCreateRequest"]["properties"]["mode"]["enum"] == [
-    "routing", "aggregation", "fallback"
-]
+assert schemas["RouterCreateRequest"]["properties"]["mode"]["enum"] == ["routing", "aggregation", "fallback"]
 upstream = schemas["RouterUpstreamInfo"]
 assert upstream["required"] == ["backend_type", "backend_id", "description"]
 assert upstream["properties"]["backend_type"]["enum"] == ["ai", "router"]

@@ -268,6 +268,7 @@ async def _download_file(ctx: object, file_obj: object, downloads: str) -> str |
 
 async def _build_chunks(ctx: object, downloads: str) -> list[Chunk]:
     from psi_agent.channel._types import Chunk
+
     chunks: list[Chunk] = []
 
     if ctx.is_text or ctx.is_post:

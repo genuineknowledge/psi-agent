@@ -389,6 +389,7 @@ ChannelGroup = Annotated[
     conf.subcommand(name="channel", description="User interface channels"),
 ]
 
+
 def main() -> None:
     cmd = tyro.cli(Run | Ai | Session | ChannelGroup)
     anyio.run(cmd.run)
@@ -416,6 +417,7 @@ psi-agent run config.yml
 ```python
 from loguru import logger
 
+
 def setup_logging(*, verbose: bool = False) -> None:
     logger.remove()
     level = "DEBUG" if verbose else "INFO"
@@ -423,8 +425,8 @@ def setup_logging(*, verbose: bool = False) -> None:
         sys.stderr,
         level=level,
         format="<green>{time:HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | "
-               "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
-               "<level>{message}</level>",
+        "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+        "<level>{message}</level>",
     )
 ```
 
@@ -489,7 +491,9 @@ source = "vcs"
 ### `tools/bash.py`
 ```python
 """Execute bash commands."""
+
 import anyio
+
 
 async def bash(command: str) -> str:
     """Execute a bash command and return stdout.
@@ -504,9 +508,11 @@ async def bash(command: str) -> str:
 ### `systems/system.py`
 ```python
 """Build the system prompt for the bash-only agent."""
+
 import inspect
 from pathlib import Path
 from psi_agent._yaml import parse_yaml_header
+
 
 async def system_prompt_builder() -> str:
     current_file = Path(inspect.getfile(system_prompt_builder))

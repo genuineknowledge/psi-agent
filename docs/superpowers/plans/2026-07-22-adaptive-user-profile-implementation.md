@@ -108,12 +108,14 @@ git commit -m "fix: resolve session agent lifecycle conflict"
 ```python
 @pytest.mark.anyio
 async def test_parse_request_reserves_profile_metadata(make_request) -> None:
-    request = make_request({
-        "messages": [{"role": "user", "content": "hello"}],
-        "profile_id": "alice",
-        "user_id": "telegram:42",
-        "temperature": 0.2,
-    })
+    request = make_request(
+        {
+            "messages": [{"role": "user", "content": "hello"}],
+            "profile_id": "alice",
+            "user_id": "telegram:42",
+            "temperature": 0.2,
+        }
+    )
     user, ai_params, identity = await ChannelAdapter.parse_request(request)
     assert identity == {"profile_id": "alice", "user_id": "telegram:42"}
     assert ai_params == {"temperature": 0.2}
@@ -237,6 +239,7 @@ def test_style_instruction_inherits_last_topic(profile) -> None:
     key = profile.update("解释数据库事务", "unused")
     assert profile.update("继续详细推导底层原理和公式", "unused") == key
 
+
 def test_signed_volatility_detects_low_to_high_switch(profile) -> None:
     key = profile.update("简单说", "unused")
     profile.update("详细推导", "unused")
@@ -280,9 +283,7 @@ git commit -m "feat: add adaptive topic and double-speed profile updates"
 ```python
 @pytest.mark.anyio
 async def test_prompt_contains_exactly_one_adaptive_policy(haitun_system, context) -> None:
-    prompt = await haitun_system.system_prompt_builder(
-        {"role": "user", "content": "简单解释过拟合"}, context
-    )
+    prompt = await haitun_system.system_prompt_builder({"role": "user", "content": "简单解释过拟合"}, context)
     assert prompt.count("## 当前知识点学习画像") == 1
     assert prompt.count("## 强制监督规则") == 1
     assert "基于当前知识点画像的学习监督规则" not in prompt

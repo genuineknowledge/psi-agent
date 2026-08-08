@@ -60,12 +60,12 @@ src/psi_agent/gateway/
 ```python
 @dataclass
 class Gateway:
-    listen: str = ""                          # 空 = 127.0.0.1 随机高端口
-    socket_path: str = "psi"                 # socket 路径前缀
-    icon: str | None = None                 # 图标文件路径（favicon + 托盘共用）
-    browser: bool = False                   # 启动时打开浏览器
-    tray: bool = False                      # 启用系统托盘（需 --icon）
-    verbose: bool = False                   # DEBUG 日志
+    listen: str = ""  # 空 = 127.0.0.1 随机高端口
+    socket_path: str = "psi"  # socket 路径前缀
+    icon: str | None = None  # 图标文件路径（favicon + 托盘共用）
+    browser: bool = False  # 启动时打开浏览器
+    tray: bool = False  # 启用系统托盘（需 --icon）
+    verbose: bool = False  # DEBUG 日志
 ```
 
 ### 3.2 `Gateway.run()` 启动流程
@@ -91,10 +91,11 @@ class AIManager:
     _entries: dict[str, _AiEntry]
     _lock: anyio.Lock
 
+
 @dataclass
 class _AiEntry:
     scope: anyio.CancelScope
-    socket: str             # /tmp/{socket_path}/ais/{ai_id}.sock
+    socket: str  # /tmp/{socket_path}/ais/{ai_id}.sock
     provider: str
     model: str
 ```
@@ -127,6 +128,7 @@ class _AiEntry:
 class SessionManager:
     _entries: dict[str, _SessionEntry]
     _lock: anyio.Lock
+
 
 @dataclass
 class _SessionEntry:
