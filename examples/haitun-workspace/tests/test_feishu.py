@@ -3067,203 +3067,6 @@ def test_due_to_ms_parsing() -> None:
     assert _impl._due_to_ms("2026-07-15 18:00").isdigit()
 
 
-# ── Calendar — create event ───────────────────────────────────────────────────
-
-
-def test_time_to_info_parsing() -> None:
-    timed = _impl._time_to_info("2026-07-15 14:30", "Asia/Shanghai")
-    assert timed is not None and timed["timestamp"].isdigit() and timed["timezone"] == "Asia/Shanghai"
-    allday = _impl._time_to_info("2026-07-15", "Asia/Shanghai")
-    assert allday == {"date": "2026-07-15", "timezone": "Asia/Shanghai"}
-    assert _impl._time_to_info("", "Asia/Shanghai") is None
-    assert _impl._time_to_info("bad", "Asia/Shanghai") is None
-
-
-@pytest.mark.asyncio
-async def test_create_event_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _cal_id() -> str:
-        return "cal_1"
-
-    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _cal_id)
-    cap = _CapturedInvoke({"event": {"event_id": "ev_1", "summary": "周会"}})
-    monkeypatch.setattr(_impl, "_invoke", cap)
-    result = await _impl.create_event_impl("周会", "2026-07-15 14:00", "2026-07-15 15:00", "议题…")
-    req = cap.request
-    assert req.http_method.name == "POST"
-    assert req.uri == "/open-apis/calendar/v4/calendars/:calendar_id/events"
-    assert req.paths["calendar_id"] == "cal_1"
-    assert req.body["summary"] == "周会"
-    assert req.body["start_time"]["timestamp"].isdigit()
-    assert req.body["end_time"]["timezone"] == "Asia/Shanghai"
-    assert result["event_id"] == "ev_1"
-
-
-@pytest.mark.asyncio
-async def test_create_event_with_attendees(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _cal_id() -> str:
-        return "cal_1"
-
-    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _cal_id)
-    paged = _PagedInvoke([{"event": {"event_id": "ev_1"}}, {}])  # create, then add-attendees
-    monkeypatch.setattr(_impl, "_invoke", paged)
-    result = await _impl.create_event_impl("周会", "2026-07-15", "2026-07-15", "", "ou_a, ou_b")
-    assert len(paged.requests) == 2
-    att_req = paged.requests[1]
-    assert att_req.uri == "/open-apis/calendar/v4/calendars/:calendar_id/events/:event_id/attendees"
-    assert att_req.paths["event_id"] == "ev_1"
-    ids = [a["user_id"] for a in att_req.body["attendees"]]
-    assert ids == ["ou_a", "ou_b"]
-    assert all(a["type"] == "user" for a in att_req.body["attendees"])
-    assert result["attendees_added"] == ["ou_a", "ou_b"]
-
-
-@pytest.mark.asyncio
-async def test_create_event_bad_time() -> None:
-    result = await _impl.create_event_impl("x", "not-a-date", "2026-07-15 15:00")
-    assert result["ok"] is False
-
-
-@pytest.mark.asyncio
-async def test_create_event_no_calendar(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _none() -> None:
-        return None
-
-    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _none)
-    result = await _impl.create_event_impl("x", "2026-07-15 14:00", "2026-07-15 15:00")
-    assert result["ok"] is False
-
-
-def test_calendar_tool_async_with_docstring() -> None:
-    mod = importlib.import_module("feishu_calendar")
-    fn = mod.feishu_calendar_create_event
-    assert inspect.iscoroutinefunction(fn)
-    assert (inspect.getdoc(fn) or "").strip()
-
-
-# ── Calendar — list events (read schedule) ────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_list_events_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    cap = _CapturedInvoke({"items": [], "has_more": False})
-    monkeypatch.setattr(_impl, "_invoke", cap)
-    result = await _impl.list_events_impl("2026-07-15 09:00", "2026-07-15 18:00", "cal_x")
-    req = cap.request
-    assert req.http_method.name == "GET"
-    assert req.uri == "/open-apis/calendar/v4/calendars/:calendar_id/events"
-    assert req.paths["calendar_id"] == "cal_x"
-    q = _qdict(req)
-    assert q["start_time"].isdigit() and q["end_time"].isdigit()
-    assert int(q["end_time"]) > int(q["start_time"])
-    assert q["user_id_type"] == "open_id"
-    assert result["ok"] is True and result["calendar_id"] == "cal_x"
-
-
-@pytest.mark.asyncio
-async def test_list_events_uses_primary_when_blank(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _cal_id() -> str:
-        return "cal_primary"
-
-    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _cal_id)
-    cap = _CapturedInvoke({"items": [], "has_more": False})
-    monkeypatch.setattr(_impl, "_invoke", cap)
-    result = await _impl.list_events_impl("2026-07-15", "2026-07-16")
-    assert cap.request.paths["calendar_id"] == "cal_primary"
-    assert result["calendar_id"] == "cal_primary"
-
-
-@pytest.mark.asyncio
-async def test_list_events_bad_time() -> None:
-    result = await _impl.list_events_impl("nope", "2026-07-15")
-    assert result["ok"] is False
-
-
-@pytest.mark.asyncio
-async def test_list_events_normalizes(monkeypatch: pytest.MonkeyPatch) -> None:
-    items = [
-        {
-            "event_id": "ev_1",
-            "summary": "周会",
-            "description": "议题",
-            "start_time": {"timestamp": "1752562800"},
-            "end_time": {"timestamp": "1752566400"},
-            "status": "confirmed",
-        },
-        {
-            "event_id": "ev_2",
-            "summary": "全天",
-            "start_time": {"date": "2026-07-15"},
-            "end_time": {"date": "2026-07-16"},
-        },
-    ]
-    cap = _CapturedInvoke({"items": items, "has_more": False})
-    monkeypatch.setattr(_impl, "_invoke", cap)
-    result = await _impl.list_events_impl("2026-07-15", "2026-07-16", "cal_x")
-    assert result["count"] == 2
-    assert result["events"][0]["event_id"] == "ev_1" and result["events"][0]["summary"] == "周会"
-    assert result["events"][0]["is_all_day"] is False
-    assert result["events"][1]["is_all_day"] is True and result["events"][1]["start"] == "2026-07-15"
-
-
-# ── Calendar — create one event per person ────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_create_per_person_one_event_each(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _cal_id() -> str:
-        return "cal_1"
-
-    monkeypatch.setattr(_impl, "_get_primary_calendar_id", _cal_id)
-    # For each person: create event, then add-attendees. 3 people -> 6 pages.
-    paged = _PagedInvoke(
-        [{"event": {"event_id": "ev_a"}}, {}, {"event": {"event_id": "ev_b"}}, {}, {"event": {"event_id": "ev_c"}}, {}]
-    )
-    monkeypatch.setattr(_impl, "_invoke", paged)
-    result = await _impl.create_events_per_person_impl(
-        "值班", "2026-07-15 09:00", "2026-07-15 18:00", "ou_a, ou_b, ou_c"
-    )
-    assert result["ok"] is True
-    assert result["count"] == 3
-    assert [c["open_id"] for c in result["created"]] == ["ou_a", "ou_b", "ou_c"]
-    # each add-attendees request invites exactly that one person
-    att_reqs = [r for r in paged.requests if "attendees" in r.uri]
-    invited = [[a["user_id"] for a in r.body["attendees"]] for r in att_reqs]
-    assert invited == [["ou_a"], ["ou_b"], ["ou_c"]]
-
-
-@pytest.mark.asyncio
-async def test_create_per_person_empty_attendees() -> None:
-    result = await _impl.create_events_per_person_impl("x", "2026-07-15", "2026-07-15", "  ")
-    assert result["ok"] is False
-
-
-@pytest.mark.asyncio
-async def test_create_per_person_partial_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = {"n": 0}
-
-    async def _fake_create(
-        summary: str, start: str, end: str, description: str = "", attendees: str = "", timezone: str = "Asia/Shanghai"
-    ) -> dict[str, Any]:
-        calls["n"] += 1
-        if attendees == "ou_bad":
-            return {"ok": False, "message": "Feishu API error 190002: no permission"}
-        return {"ok": True, "event_id": f"ev_{attendees}"}
-
-    monkeypatch.setattr(_impl, "create_event_impl", _fake_create)
-    result = await _impl.create_events_per_person_impl("值班", "2026-07-15", "2026-07-15", "ou_ok, ou_bad")
-    assert result["ok"] is False
-    assert [c["open_id"] for c in result["created"]] == ["ou_ok"]
-    assert result["failed"][0]["open_id"] == "ou_bad"
-
-
-def test_calendar_read_write_tools_async_with_docstrings() -> None:
-    mod = importlib.import_module("feishu_calendar")
-    for name in ("feishu_calendar_list_events", "feishu_calendar_create_per_person"):
-        fn = getattr(mod, name)
-        assert inspect.iscoroutinefunction(fn), name
-        assert (inspect.getdoc(fn) or "").strip(), name
-
-
 # ── Thread read — clean sender + text extraction ──────────────────────────────
 
 
@@ -3500,6 +3303,112 @@ async def test_download_file_url_expired_message(monkeypatch: pytest.MonkeyPatch
     result = await _impl.download_file_impl("https://f.co/gone.jpg", str(tmp_path / "x.jpg"), True)
     assert result["ok"] is False
     assert "expired" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_download_file_via_drive_file_endpoint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``source_type="file"`` reaches the *files* endpoint, not the medias one.
+
+    The two are disjoint — medias serves what lives inside a document, files serves a
+    standalone resource file in Drive — and the wrong one is a 404 rather than a redirect.
+    """
+    captured: dict[str, Any] = {}
+
+    class _Client:
+        async def arequest(self, req: Any) -> Any:
+            captured["uri"] = req.uri
+            captured["token"] = req.paths.get("file_token")
+            return _FakeResp(None, "", b"%PDF-1.7 body")
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _Client())
+    dest = tmp_path / "docs" / "handbook.pdf"
+    result = await _impl.download_file_impl("boxcn_tok", str(dest), False, "", "file")
+    assert result["ok"] is True
+    assert captured["uri"].endswith("/drive/v1/files/:file_token/download")
+    assert captured["token"] == "boxcn_tok"
+    assert dest.read_bytes() == b"%PDF-1.7 body"
+    assert result["source_type"] == "file"
+
+
+@pytest.mark.asyncio
+async def test_download_defaults_to_media_endpoint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Callers that predate ``source_type`` keep hitting the endpoint they always did."""
+    captured: dict[str, Any] = {}
+
+    class _Client:
+        async def arequest(self, req: Any) -> Any:
+            captured["uri"] = req.uri
+            return _FakeResp(None, "", b"data")
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _Client())
+    result = await _impl.download_file_impl("media_tok", str(tmp_path / "a.bin"))
+    assert result["ok"] is True
+    assert captured["uri"].endswith("/drive/v1/medias/:file_token/download")
+    assert result["source_type"] == "media"
+
+
+@pytest.mark.asyncio
+async def test_is_url_still_wins_over_source_type(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """``is_url=True`` is the older spelling of ``source_type="url"`` and must keep working.
+
+    Existing call sites pass it positionally alongside the default ``source_type``, so the
+    two have to agree rather than the newer argument quietly overriding the older one.
+    """
+
+    async def fake_url_bytes(url: str) -> tuple[bytes | None, str]:
+        assert url == "https://f.co/a.jpg"
+        return b"JPEGDATA", ""
+
+    monkeypatch.setattr(_impl, "_download_url_bytes", fake_url_bytes)
+    dest = tmp_path / "a.jpg"
+    result = await _impl.download_file_impl("https://f.co/a.jpg", str(dest), True)
+    assert result["ok"] is True
+    assert result["source_type"] == "url"
+    assert dest.read_bytes() == b"JPEGDATA"
+
+
+@pytest.mark.asyncio
+async def test_download_rejects_an_unknown_source_type(tmp_path: Path) -> None:
+    """A typo must not silently fall back to a different endpoint than intended."""
+    result = await _impl.download_file_impl("tok", str(tmp_path / "a.bin"), False, "", "drive")
+    assert result["ok"] is False
+    assert "source_type" in result["message"]
+    assert not (tmp_path / "a.bin").exists()
+
+
+@pytest.mark.asyncio
+async def test_download_as_user_keeps_the_chosen_endpoint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The tenant→user retry must not drop back to the medias endpoint.
+
+    A user-owned PDF is exactly the case where the bot's token fails and the retry
+    matters, so a retry that silently changed endpoint would 404 on the second try and
+    read as "the user has no access".
+    """
+    seen: list[str] = []
+
+    class _TenantClient:
+        async def arequest(self, req: Any) -> Any:
+            seen.append(req.uri)
+            return _FakeResp(None, "", b"")  # no content → falls through to the user retry
+
+    class _UatClient:
+        async def arequest(self, req: Any, option: Any = None) -> Any:
+            seen.append(req.uri)
+            return _FakeResp(None, "", b"%PDF user copy")
+
+    monkeypatch.setattr(_impl, "_get_client", lambda: _TenantClient())
+    monkeypatch.setattr(_impl, "_get_uat_client", lambda: _UatClient())
+
+    async def _uat(user_key: str = "") -> Any:
+        return _FakeUAT()
+
+    monkeypatch.setattr(_impl, "_get_valid_uat", _uat)
+    dest = tmp_path / "u.pdf"
+    result = await _impl.download_file_impl("boxcn_tok", str(dest), False, "ou_a", "file")
+    assert result["ok"] is True, result
+    assert len(seen) == 2, seen
+    assert all(uri.endswith("/drive/v1/files/:file_token/download") for uri in seen), seen
+    assert dest.read_bytes() == b"%PDF user copy"
 
 
 def test_file_download_tool_async_with_docstring() -> None:

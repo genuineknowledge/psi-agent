@@ -27,6 +27,26 @@ is the plumbing between the two endpoints, plus the three things the pair gets w
 
 Plain prose (no Markdown beyond headings) is left on the old local path: it needs no
 round-trip, and one-paragraph-per-line is how existing haitun docs are written.
+
+``normalize_for_convert`` sits in front of the converter because "the Markdown didn't
+render" almost never means the converter is broken — it means the text never reached it,
+or reached it in a shape CommonMark doesn't read as a table. Four measured cases, all of
+which used to land in the document as literal Markdown source:
+
+* **Prose reflow.** The converter joins single newlines into one paragraph (CommonMark
+  soft breaks). One ``**bold**`` anywhere routed the *whole* body here, so a report
+  written one-paragraph-per-line collapsed into a single block. Prose lines are separated
+  by blank lines before converting, except where a construct spans them (an unclosed
+  ``**`` run, a fence, a table, a list/quote continuation).
+* **Ragged tables.** A delimiter row whose cell count differs from the header is not a
+  table to CommonMark at all — ``| a | b | c |`` over ``| --- | --- |`` came back as one
+  text block of pipes. Both rows are padded to the widest row instead.
+* **Missing delimiter row.** Two pipe rows with no ``| --- |`` between them is not a
+  table either; the delimiter is inserted when the block otherwise looks like one.
+* **Borderless tables.** ``a | b`` with no outer pipes is valid GFM and the converter
+  handles it — but ``has_rich_markdown`` never matched it, so it never got here.
+
+Fenced code is copied through verbatim: every rule above would corrupt it.
 """
 
 from __future__ import annotations
@@ -57,11 +77,14 @@ BATCH_UPDATE_MAX = 100
 # A heading is deliberately *not* in this list: "# 标题" plus paragraphs is what the old
 # local path already handled correctly, and routing those through the API would add a
 # network round-trip to the common case of writing plain prose — and Feishu's converter
-# joins single newlines into one paragraph, which would silently reflow prose written one
-# line per paragraph.
+# joins single newlines into one paragraph, which normalize_for_convert has to undo.
 _RICH_MARKDOWN_PATTERNS = (
     # A table row: at least two pipes with content between them.
     re.compile(r"^\s*\|.*\|\s*$", re.MULTILINE),
+    # A *borderless* table's delimiter row — "--- | ---" with no outer pipes. Valid GFM
+    # and the converter reads it fine, but nothing else here matches it, so a table
+    # written without edge pipes used to land as three lines of literal text.
+    re.compile(r"^\s*:?-{2,}:?\s*\|\s*:?-{2,}:?[\s|:-]*$", re.MULTILINE),
     # Bullet / numbered / task list items.
     re.compile(r"^\s*([-*+]|\d+[.)])\s+\S", re.MULTILINE),
     # Blockquote.
@@ -70,8 +93,26 @@ _RICH_MARKDOWN_PATTERNS = (
     re.compile(r"^\s*(```|~~~)", re.MULTILINE),
     # Horizontal rule.
     re.compile(r"^\s*([-*_])\s*(\1\s*){2,}$", re.MULTILINE),
-    # Inline emphasis / code / strikethrough / link / image.
-    re.compile(r"\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|`[^`\n]+`|!?\[[^\]\n]*\]\([^)\n]*\)"),
+    # Inline emphasis / code / strikethrough / link / image. "**"/"~~" runs are matched
+    # with DOTALL-ish classes ([^*]/[^~]) rather than [^*\n] so a run that spans a soft
+    # line break ("**加粗\n跨行**") is still recognised — the converter styles both lines.
+    #
+    # "__x__" is deliberately narrower than CommonMark. Feishu's converter *does* read
+    # "__init__" as emphasis and returns a bold "init" — the underscores are eaten, which
+    # is wrong for a technical doc. It is also ambiguous by nature, so the tie is broken
+    # towards the reading that cannot corrupt text: a run that is purely ASCII
+    # alphanumeric ("__init__", "__all__") is treated as an identifier and left on the
+    # local path, which writes it verbatim. A run containing a space or non-ASCII text
+    # ("__很重要__", "__two words__") is emphasis nobody writes by accident.
+    re.compile(
+        r"\*\*[^*]+\*\*|(?<!\w)__(?![A-Za-z0-9]+__)[^_]+__(?!\w)"
+        r"|~~[^~]+~~|`[^`\n]+`|!?\[[^\]\n]*\]\([^)\n]*\)"
+    ),
+    # Single-marker emphasis: *斜体* / _斜体_. Kept separate and deliberately tight —
+    # a lone "*" or "_" is ordinary punctuation ("3*4 元", "snake_case_name"), so the
+    # opener must not be followed by a space and the closer must not be preceded by one,
+    # and an "_" run may not sit against a word character (so __init__ / a_b_c are safe).
+    re.compile(r"(?<![*\w])\*(?![\s*])[^*\n]*[^\s*]\*(?![*\w])|(?<![_\w])_(?![\s_])[^_\n]*[^\s_]_(?![_\w])"),
 )
 
 
@@ -85,6 +126,158 @@ def has_rich_markdown(content: str) -> bool:
     Markdown grammar.
     """
     return any(p.search(content or "") for p in _RICH_MARKDOWN_PATTERNS)
+
+
+# ── Normalising what the converter is fussy about ───────────────────────────────
+# Everything below is about text that *looks* like Markdown to a person but doesn't
+# parse as such (or parses into the wrong shape). See the module docstring for why each
+# rule exists; all four were reproduced against the live convert endpoint.
+
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+# A row of a piped table: "| a | b |". Requires an opening pipe, so borderless rows are
+# left alone — repairing those would need to guess where the columns are.
+_PIPE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+# A delimiter row: every cell is dashes with optional alignment colons. A single-cell
+# "| --- |" counts too — it is a *wrong* delimiter for a wider header, which is precisely
+# the row repair_table has to recognise and replace.
+_DELIMITER_ROW_RE = re.compile(r"^\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$|^\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$")
+# Lines that continue the block above rather than starting a paragraph: list items,
+# quotes, headings, table rows, rules. A blank line must not be inserted before these.
+_BLOCK_LEAD_RE = re.compile(r"^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s*|\||:?-{2,}:?\s*\|)")
+
+
+def _split_cells(row: str) -> list[str]:
+    """The cells of one piped table row, without the outer pipes."""
+    body = row.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|"):
+        body = body[:-1]
+    return [c.strip() for c in body.split("|")]
+
+
+def _pad_row(cells: list[str], width: int) -> str:
+    """Render ``cells`` as a piped row of exactly ``width`` columns."""
+    padded = [*cells, *[""] * (width - len(cells))][:width]
+    return "| " + " | ".join(padded) + " |"
+
+
+def repair_table(lines: list[str]) -> list[str]:
+    """Make a run of pipe rows parse as a GFM table: rectangular, with a delimiter row.
+
+    CommonMark is all-or-nothing here — a delimiter row whose cell count differs from
+    the header's means *not a table*, and the whole run comes back as one paragraph of
+    literal pipes. So every row is padded to the widest one, and a delimiter row is
+    inserted after the header when the run has none. A single row is returned untouched:
+    one ``| a | b |`` line is not a table and guessing a header would invent structure.
+    """
+    if len(lines) < 2:
+        return lines
+    rows = [_split_cells(ln) for ln in lines]
+    delimiter_at = next((i for i, ln in enumerate(lines) if _DELIMITER_ROW_RE.match(ln)), -1)
+    # The delimiter's own cell count is what CommonMark compares against the header, and
+    # it is the thing most likely to be wrong, so it never votes on the table's width.
+    width = max((len(r) for i, r in enumerate(rows) if i != delimiter_at), default=0)
+    if width < 2:
+        return lines
+    body = [r for i, r in enumerate(rows) if i != delimiter_at]
+    if not body:
+        return lines
+    header, *rest = body
+    out = [_pad_row(header, width), "|" + "|".join([" --- "] * width) + "|"]
+    out.extend(_pad_row(r, width) for r in rest)
+    return out
+
+
+def _looks_like_table_run(lines: list[str]) -> bool:
+    """True when a run of consecutive lines is a piped table (with or without delimiter)."""
+    return len(lines) >= 2 and all(_PIPE_ROW_RE.match(ln) for ln in lines)
+
+
+def _delimited_table_count(content: str) -> int:
+    """How many tables ``content`` describes — counted as delimiter rows outside fences.
+
+    Used only to notice that a table the user wrote did not come back as a table block.
+    Counting delimiter rows (rather than runs of pipes) matches what CommonMark keys a
+    table on, so this stays in step with the converter after ``normalize_for_convert``
+    has inserted any missing delimiters.
+    """
+    count = 0
+    fence: str | None = None
+    for line in (content or "").split("\n"):
+        fence_here = _FENCE_RE.match(line)
+        if fence is not None:
+            if fence_here and line.strip().startswith(fence):
+                fence = None
+            continue
+        if fence_here:
+            fence = line.strip()[:3]
+            continue
+        if _DELIMITER_ROW_RE.match(line):
+            count += 1
+    return count
+
+
+def normalize_for_convert(content: str) -> str:
+    """Prepare Markdown for Feishu's converter without changing what it says.
+
+    Two transformations, both required for "the Markdown didn't render" cases (module
+    docstring): prose lines are separated by blank lines so the converter's soft-break
+    joining doesn't collapse a report into one paragraph, and piped table runs are made
+    rectangular with a delimiter row so they parse as tables at all.
+
+    Fenced code is copied verbatim — inside a fence, a blank line is content and a pipe
+    is a pipe.
+    """
+    lines = (content or "").split("\n")
+    out: list[str] = []
+    fence: str | None = None
+    table_run: list[str] = []
+    # A "**"/"__" run left open by the previous line: its closer is on a later line, so a
+    # blank line between them would break the emphasis into literal asterisks.
+    open_span = False
+
+    def flush_table() -> None:
+        nonlocal table_run
+        if table_run:
+            out.extend(repair_table(table_run) if _looks_like_table_run(table_run) else table_run)
+            table_run = []
+
+    for line in lines:
+        fence_here = _FENCE_RE.match(line)
+        if fence is not None:
+            out.append(line)
+            if fence_here and line.strip().startswith(fence):
+                fence = None
+            continue
+        if fence_here:
+            flush_table()
+            fence = line.strip()[:3]
+            out.append(line)
+            continue
+        if _PIPE_ROW_RE.match(line):
+            table_run.append(line)
+            continue
+        flush_table()
+        # Separate two prose lines with a blank one, so each stays its own paragraph.
+        # Skipped when the previous line left an emphasis run open, or when either side
+        # is a construct whose own lines belong together (list, quote, heading, rule).
+        if (
+            out
+            and line.strip()
+            and out[-1].strip()
+            and not open_span
+            and not _BLOCK_LEAD_RE.match(line)
+            and not _BLOCK_LEAD_RE.match(out[-1])
+        ):
+            out.append("")
+        if line.strip():
+            # Toggled, not recomputed: the parity carries across lines, so the closer on
+            # a later line ends the run instead of opening another one.
+            open_span ^= (line.count("**") % 2 == 1) or (line.count("__") % 2 == 1)
+        out.append(line)
+    flush_table()
+    return "\n".join(out)
 
 
 def build_convert_request(content: str) -> BaseRequest:
@@ -316,8 +509,16 @@ async def convert_markdown(content: str, user_key: str = "", identity: str = "")
 
     ``prefer="tenant"``: the conversion creates nothing and owns nothing, so it must not
     trigger an ownership question — only the write that follows does.
+
+    The Markdown is normalised first (see ``normalize_for_convert``). If it described a
+    table and no table came back, ``tables_not_converted`` says so: the converter reports
+    that case as a *success* holding literal pipes, and silently writing those is exactly
+    the "表格没渲染" symptom, so the caller gets told rather than guessing.
     """
-    res = await _f.invoke_request(build_convert_request(content), user_key=user_key, prefer="tenant", identity=identity)
+    normalized = normalize_for_convert(content)
+    res = await _f.invoke_request(
+        build_convert_request(normalized), user_key=user_key, prefer="tenant", identity=identity
+    )
     if not res["ok"]:
         return res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -325,7 +526,12 @@ async def convert_markdown(content: str, user_key: str = "", identity: str = "")
     first = data.get("first_level_block_ids")
     if not isinstance(blocks, list) or not isinstance(first, list) or not first:
         return _f.error_result("Feishu converted the Markdown but returned no blocks.")
-    return {"ok": True, "blocks": sanitize_converted(blocks), "first_level_ids": [str(i) for i in first]}
+    out = {"ok": True, "blocks": sanitize_converted(blocks), "first_level_ids": [str(i) for i in first]}
+    wanted = _delimited_table_count(normalized)
+    got = sum(1 for b in blocks if isinstance(b, dict) and b.get("block_type") == TABLE_BLOCK)
+    if wanted > got:
+        out["tables_not_converted"] = wanted - got
+    return out
 
 
 async def _grow_table(
@@ -432,6 +638,9 @@ async def append_markdown(
     progress is reported rather than hidden: a failure on batch three leaves batches one
     and two in the document, and ``blocks_written`` says so, because the caller needs to
     know whether to retry the whole thing or the remainder.
+
+    A ``note`` is added when a table the Markdown described stayed literal text, so the
+    agent can rewrite that table instead of reporting a doc that looks written but isn't.
     """
     doc = document_id.strip()
     if not doc:
@@ -445,6 +654,14 @@ async def append_markdown(
 
     written = 0
     extra: dict[str, Any] = {}
+    unconverted = int(converted.get("tables_not_converted") or 0)
+    if unconverted:
+        extra["tables_not_converted"] = unconverted
+        extra["note"] = (
+            f"{unconverted} Markdown 表格未能转成飞书原生表格块, 已按纯文本写入。"
+            "常见原因是行的列数与分隔行不一致或单元格内有未转义的 |; "
+            "修正后可用 feishu_doc_delete_blocks 删掉那段再重写, 或改用 feishu_doc_append_table。"
+        )
     for ids, payload in batches:
         if len(payload) > DESCENDANT_MAX_BLOCKS:
             # One first-level block too big for a single call. Only a table can be grown

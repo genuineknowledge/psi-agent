@@ -102,6 +102,70 @@ WAS: dict[str, dict[str, Any]] = {
     },
 }
 
+# The file-management endpoints added for the 云文档与云盘 gap list. These never had a
+# tool, so there is no deleted builder to compare against — the frozen shape here is the
+# request the *official documentation* describes, field for field, which is what the
+# generic path has to produce for the call to work at all.
+WAS_NEW: dict[str, dict[str, Any]] = {
+    "batch_meta": {
+        "method": HttpMethod.POST,
+        "uri": "/open-apis/drive/v1/metas/batch_query",
+        "paths": {},
+        "queries": [],
+        "body": {"request_docs": [{"doc_token": "doccnFT1", "doc_type": "docx"}], "with_url": True},
+    },
+    "list_folder": {
+        "method": HttpMethod.GET,
+        "uri": "/open-apis/drive/v1/files",
+        "paths": {},
+        "queries": [("folder_token", "fldrABC"), ("order_by", "EditedTime"), ("page_size", "100")],
+        "body": None,
+    },
+    "create_folder": {
+        "method": HttpMethod.POST,
+        "uri": "/open-apis/drive/v1/files/create_folder",
+        "paths": {},
+        "queries": [],
+        "body": {"name": "季度报告", "folder_token": "fldrABC"},
+    },
+    "copy_file": {
+        "method": HttpMethod.POST,
+        "uri": "/open-apis/drive/v1/files/:file_token/copy",
+        "paths": {"file_token": "doccnFT1"},
+        "queries": [],
+        "body": {"name": "副本", "type": "docx", "folder_token": "fldrABC"},
+    },
+    "move_file": {
+        "method": HttpMethod.POST,
+        "uri": "/open-apis/drive/v1/files/:file_token/move",
+        "paths": {"file_token": "doccnFT1"},
+        "queries": [],
+        "body": {"type": "docx", "folder_token": "fldrABC"},
+    },
+    "task_check": {
+        "method": HttpMethod.GET,
+        "uri": "/open-apis/drive/v1/files/task_check",
+        "paths": {},
+        "queries": [("task_id", "7360595374803812356")],
+        "body": None,
+    },
+    "create_shortcut": {
+        "method": HttpMethod.POST,
+        "uri": "/open-apis/drive/v1/files/create_shortcut",
+        "paths": {},
+        "queries": [],
+        "body": {"parent_token": "fldrABC", "refer_entity": {"refer_token": "doccnFT1", "refer_type": "docx"}},
+    },
+    "wiki_rename": {
+        "method": HttpMethod.POST,
+        "uri": "/open-apis/wiki/v2/spaces/:space_id/nodes/:node_token/update_title",
+        "paths": {"space_id": "SPC1", "node_token": "wikcnND1"},
+        "queries": [],
+        "body": {"title": "新标题"},
+    },
+}
+WAS.update(WAS_NEW)
+
 #: The four endpoints that keep a dedicated tool, and the shape the *tool* sent. Kept here
 #: so the refusal tests can prove the generic path never builds these requests at all.
 #: Note how much structure the two comment writes carry — that is the argument for keeping
@@ -191,10 +255,55 @@ CALLS: dict[str, dict[str, Any]] = {
         "paths": {"file_token": "fldrABC"},
         "query": {"type": "folder"},
     },
+    "batch_meta": {
+        "method": "POST",
+        "uri": "/open-apis/drive/v1/metas/batch_query",
+        "body": {"request_docs": [{"doc_token": "doccnFT1", "doc_type": "docx"}], "with_url": True},
+    },
+    # ``page_size`` is not passed: the rule's default supplies it, which is what makes a
+    # table row a full replacement for a tool that hardcoded one.
+    "list_folder": {
+        "method": "GET",
+        "uri": "/open-apis/drive/v1/files",
+        "query": {"folder_token": "fldrABC", "order_by": "EditedTime"},
+    },
+    "create_folder": {
+        "method": "POST",
+        "uri": "/open-apis/drive/v1/files/create_folder",
+        "body": {"name": "季度报告", "folder_token": "fldrABC"},
+    },
+    "copy_file": {
+        "method": "POST",
+        "uri": "/open-apis/drive/v1/files/:file_token/copy",
+        "paths": {"file_token": "doccnFT1"},
+        "body": {"name": "副本", "type": "docx", "folder_token": "fldrABC"},
+    },
+    "move_file": {
+        "method": "POST",
+        "uri": "/open-apis/drive/v1/files/:file_token/move",
+        "paths": {"file_token": "doccnFT1"},
+        "body": {"type": "docx", "folder_token": "fldrABC"},
+    },
+    "task_check": {
+        "method": "GET",
+        "uri": "/open-apis/drive/v1/files/task_check",
+        "query": {"task_id": "7360595374803812356"},
+    },
+    "create_shortcut": {
+        "method": "POST",
+        "uri": "/open-apis/drive/v1/files/create_shortcut",
+        "body": {"parent_token": "fldrABC", "refer_entity": {"refer_token": "doccnFT1", "refer_type": "docx"}},
+    },
+    "wiki_rename": {
+        "method": "POST",
+        "uri": "/open-apis/wiki/v2/spaces/:space_id/nodes/:node_token/update_title",
+        "paths": {"space_id": "SPC1", "node_token": "wikcnND1"},
+        "body": {"title": "新标题"},
+    },
 }
 
 #: Endpoints whose rule declares ``paginate``, so one call drains pages.
-PAGED = {"list_comments", "list_comments_paged", "list_replies", "list_replies_paged"}
+PAGED = {"list_comments", "list_comments_paged", "list_replies", "list_replies_paged", "list_folder"}
 
 
 def _sent(req: BaseRequest) -> dict[str, Any]:
@@ -254,11 +363,18 @@ def _generic(
     return cap, out
 
 
+#: Paged endpoints whose items live under a key other than ``items``. Listing a folder is
+#: the domain's one such endpoint — ``paginate: {items: files}`` — and getting this key
+#: wrong is not a crash: the loop reads an empty list, decides there is nothing more, and
+#: returns zero files for a folder that is full.
+PAGE_ITEMS_KEY = {"list_folder": "files"}
+
+
 def _pages_for(label: str) -> list[dict[str, Any]] | None:
     """A single terminal page, under whichever key this endpoint's rule declares."""
     if label not in PAGED:
         return None
-    return [{"ok": True, "data": {"items": [], "has_more": False}}]
+    return [{"ok": True, "data": {PAGE_ITEMS_KEY.get(label, "items"): [], "has_more": False}}]
 
 
 def _call(monkeypatch: pytest.MonkeyPatch, label: str, **overrides: Any) -> tuple[_CapturedInvoke, dict[str, Any]]:
@@ -290,7 +406,7 @@ def _rule(method: str, uri: str) -> Any:
 
 
 def test_skill_declares_every_migrated_endpoint() -> None:
-    """The 3 tabled endpoints, plus the 4 that exist only to point back at a tool."""
+    """Every tabled endpoint has a rule, and the only extras are the tool sign-posts."""
     got = {(r.method, r.uri) for r in _rules()}
     tabled = {(WAS[k]["method"].name, WAS[k]["uri"]) for k in WAS}
     assert tabled <= got, f"tabled endpoint missing a rule: {tabled - got}"
@@ -300,6 +416,12 @@ def test_skill_declares_every_migrated_endpoint() -> None:
         ("POST", "/open-apis/drive/v1/medias/upload_all"),
         ("POST", "/open-apis/drive/v1/files/upload_all"),
         ("GET", "/open-apis/drive/v1/medias/:file_token/download"),
+        # Downloading a Drive resource file and the three export steps: all four produce
+        # bytes rather than JSON, so they exist as rules only to name the tool.
+        ("GET", "/open-apis/drive/v1/files/:file_token/download"),
+        ("POST", "/open-apis/drive/v1/export_tasks"),
+        ("GET", "/open-apis/drive/v1/export_tasks/:ticket"),
+        ("GET", "/open-apis/drive/v1/export_tasks/file/:file_token/download"),
     }
 
 
@@ -349,7 +471,21 @@ KEPT_TOOLS = [
     ("POST", "/open-apis/drive/v1/medias/upload_all", "feishu_drive_upload"),
     ("POST", "/open-apis/drive/v1/files/upload_all", "feishu_drive_upload"),
     ("GET", "/open-apis/drive/v1/medias/:file_token/download", "feishu_file_download"),
+    ("GET", "/open-apis/drive/v1/files/:file_token/download", "feishu_file_download"),
+    ("POST", "/open-apis/drive/v1/export_tasks", "feishu_doc_export"),
+    ("GET", "/open-apis/drive/v1/export_tasks/:ticket", "feishu_doc_export"),
+    ("GET", "/open-apis/drive/v1/export_tasks/file/:file_token/download", "feishu_doc_export"),
 ]
+
+#: Which module each hard-refused endpoint's tool actually lives in, so the "still exists"
+#: check reads the right file rather than assuming one module per domain.
+TOOL_MODULES = {
+    "feishu_drive_add_comment": "feishu_drive.py",
+    "feishu_drive_reply_comment": "feishu_drive.py",
+    "feishu_drive_upload": "feishu_drive.py",
+    "feishu_file_download": "feishu_drive.py",
+    "feishu_doc_export": "feishu_doc_export.py",
+}
 
 
 @pytest.mark.parametrize(("method", "uri", "tool"), KEPT_TOOLS)
@@ -362,7 +498,9 @@ def test_kept_tool_endpoint_refuses_and_names_the_tool(
     successful-looking result would be indistinguishable from success, which for the
     comment writes means an empty comment posted with ``code: 0``.
     """
-    paths = {"file_token": "doccnFT1", "comment_id": "CMT1"}
+    # Every placeholder any of these endpoints declares, so the refusal is reached rather
+    # than pre-empted by ``missing_path_params``.
+    paths = {"file_token": "doccnFT1", "comment_id": "CMT1", "ticket": "TKT1"}
     cap, out = _generic(
         monkeypatch,
         method=method,
@@ -388,9 +526,10 @@ def test_kept_tool_rule_says_why(method: str, uri: str, tool: str) -> None:
 
 def test_kept_tools_still_exist() -> None:
     """A hard rule pointing at a deleted tool would be a dead end with no way forward."""
-    source = (TOOLS_DIR / "feishu_drive.py").read_text(encoding="utf-8")
     for _, _, tool in KEPT_TOOLS:
-        assert f"async def {tool}(" in source, f"{tool} is named by a hard rule but no longer exists"
+        module = TOOLS_DIR / TOOL_MODULES[tool]
+        source = module.read_text(encoding="utf-8")
+        assert f"async def {tool}(" in source, f"{tool} is named by a hard rule but no longer exists in {module.name}"
 
 
 def test_uploads_are_refused_by_the_generic_tool_itself() -> None:

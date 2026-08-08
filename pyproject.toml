@@ -23,7 +23,13 @@ dependencies = [
     "platformdirs>=4.10.1",
     "lark-channel-sdk>=1.2.0",
     "python-telegram-bot[socks]>=22.8",
-    "mcp>=1.28.1",
+    # Upper bound is load-bearing: mcp 2.0 removed the lowlevel
+    # ``@server.list_tools()`` / ``@server.call_tool()`` decorators that
+    # serper-mcp-server applies at import time, so an unbounded resolve to 2.x
+    # makes ``import serper_mcp_server`` raise AttributeError and takes every
+    # search down. Upstream recommends pinning below 2 until callers migrate. We
+    # only use mcp's *client* APIs, so 1.x costs us nothing.
+    "mcp>=1.28.1,<2.0.0",
     "serper-mcp-server>=0.0.10",
     "pystray>=0.19.5",
     "pillow>=12.3.0",

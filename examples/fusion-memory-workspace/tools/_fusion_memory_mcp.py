@@ -49,6 +49,7 @@ MemoryConfigError = _config_module["MemoryConfigError"]
 ResolvedMemoryConfig = _config_module["ResolvedMemoryConfig"]
 CONFIG = _config_module["CONFIG"]
 resolve_memory_config = _config_module["resolve_memory_config"]
+refresh_feishu_registration = _config_module["refresh_feishu_registration"]
 validate_mcp_url = _config_module["validate_mcp_url"]
 
 _, _history_module = _load_sibling_module("_fusion_memory_history")
@@ -66,6 +67,10 @@ class _Request:
     done: threading.Event = field(default_factory=threading.Event)
     result: dict[str, Any] | None = None
     completed: bool = False
+
+
+class _TransportAuthRejectedResult(dict[str, Any]):
+    """Process-local signal that HTTP authentication failed before MCP dispatch."""
 
 
 class MemoryMcpClient:
@@ -279,7 +284,9 @@ class MemoryMcpClient:
                 if isinstance(exc, httpx.HTTPStatusError):
                     status_code = exc.response.status_code
                     if status_code in {401, 403}:
-                        return _error("unauthorized", "Fusion Memory authentication failed", False)
+                        return _TransportAuthRejectedResult(
+                            _error("unauthorized", "Fusion Memory authentication failed", False)
+                        )
                     if status_code in {400, 405, 406, 415, 422}:
                         return _error("remote_request_error", "Fusion Memory rejected the request", False)
                 if not can_replay or attempts >= self.max_retries:
@@ -400,6 +407,24 @@ class MemoryMcpRouter:
     async def call_tool(self, name: str, arguments: dict[str, Any], *, retryable: bool) -> dict[str, Any]:
         return await self.call_tool_for_session(get_session_id(), name, arguments, retryable=retryable)
 
+    async def _call_with_refreshed_registration(
+        self,
+        session_id: str,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        retryable: bool,
+    ) -> dict[str, Any]:
+        try:
+            refreshed = await refresh_feishu_registration(session_id, self._config)
+        except MemoryConfigError as exc:
+            return _error(exc.code, str(exc), exc.retryable)
+        client, stale_client = self._client_for(session_id, refreshed)
+        if stale_client is not None:
+            stale_client.request_close()
+        result = await client.call_tool(name, arguments, retryable=retryable)
+        return dict(result) if isinstance(result, _TransportAuthRejectedResult) else result
+
     async def call_tool_for_session(
         self,
         session_id: str,
@@ -411,12 +436,24 @@ class MemoryMcpRouter:
         try:
             resolved = await resolve_memory_config(session_id, self._config)
         except MemoryConfigError as exc:
-            return _error(exc.code, str(exc), False)
+            return _error(exc.code, str(exc), exc.retryable)
 
         client, stale_client = self._client_for(session_id, resolved)
         if stale_client is not None:
             stale_client.request_close()
-        return await client.call_tool(name, arguments, retryable=retryable)
+        result = await client.call_tool(name, arguments, retryable=retryable)
+        if not isinstance(result, _TransportAuthRejectedResult):
+            return result
+        if not self._config.auto_register_feishu:
+            return dict(result)
+        # HTTP authentication rejects the request before MCP dispatch, so one
+        # replay with the replacement token cannot duplicate a tool write.
+        return await self._call_with_refreshed_registration(
+            session_id,
+            name,
+            arguments,
+            retryable=retryable,
+        )
 
     async def activate_current_session(self, workspace_root: Any) -> dict[str, Any]:
         session_id = get_session_id().strip()
@@ -429,7 +466,8 @@ class MemoryMcpRouter:
         try:
             await resolve_memory_config(session_id, self._config)
         except MemoryConfigError as exc:
-            return _error(exc.code, str(exc), False)
+            logger.warning("Fusion Memory activation skipped: {}", exc.code)
+            return _error(exc.code, str(exc), exc.retryable)
 
         workspace_anyio = await anyio.Path(str(workspace_root)).expanduser()
         workspace_anyio = await workspace_anyio.absolute()

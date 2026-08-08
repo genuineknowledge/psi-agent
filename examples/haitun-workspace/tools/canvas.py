@@ -47,7 +47,7 @@ import _canvas_impl as _c
 from _mcp import mcp
 
 
-@mcp
+@mcp(dispatch=True)
 def canvas() -> dict[str, object]:
     """Draw on and inspect a live Excalidraw canvas — a visual surface you and the user
     share. Reach for these tools when the task calls for a diagram or spatial layout

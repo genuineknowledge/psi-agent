@@ -42,6 +42,30 @@ def invalid_argument(message: str) -> str:
     )
 
 
+def result_object(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Unwrap a Fusion Memory payload out of the two envelopes it arrives in.
+
+    ``CLIENT.call_tool`` wraps the MCP transport result, and the Memory tool wraps
+    its own ``{"ok", "result"}`` inside that, so a payload sits two levels down:
+    ``{"ok": True, "result": {"ok": True, "result": {...}}}``. Peeling only one
+    level yields the inner envelope, whose ``state`` is absent — which read as
+    ``assignment_state_invalid`` for records that were plainly ``assigned``.
+
+    A payload that is not itself an envelope is returned as-is, so single-envelope
+    tools keep working. A failed inner envelope is reported as absent, letting
+    callers surface the error instead of treating ``{"ok": False, ...}`` as data.
+    """
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        return None
+    if "ok" not in payload and "result" not in payload:
+        return payload
+    if payload.get("ok") is not True:
+        return None
+    inner = payload.get("result")
+    return inner if isinstance(inner, dict) else None
+
+
 def bounded_limit(value: int) -> int:
     try:
         return max(1, min(50, int(value)))

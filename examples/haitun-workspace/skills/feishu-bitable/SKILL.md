@@ -1,6 +1,6 @@
 ---
 name: feishu-bitable
-description: 飞书多维表格（bitable）接口表 —— 建 base、建/删数据表、建/删字段、读写记录、复制 base、高级权限自定义角色。用 feishu_api 按表调用。批量写记录、改单元格、条件搜索、建带列的表、改字段定义仍然是专用工具。
+description: 飞书多维表格（bitable）接口表 —— 建 base、建/删数据表、建/删字段、读写记录、复制 base、视图增删改（表格/看板/画册/甘特/表单）、仪表盘列出与复制、自动化流程启停、记录附件上传、高级权限自定义角色。用 feishu_api 按表调用。批量写记录、改单元格、条件搜索、建带列的表、改字段定义仍然是专用工具。
 ---
 
 # 飞书多维表格接口
@@ -101,6 +101,72 @@ description: 飞书多维表格（bitable）接口表 —— 建 base、建/删�
 关联给 record_id 数组，地理位置给 `"lat,lng"`。
 公式、查找引用、创建时间、自动编号这些**算出来的列写不进去**。
 
+## 视图
+
+| 要做的事 | method | endpoint | 关键参数 |
+|---|---|---|---|
+| 列出表的视图 | GET | `/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views` | `page_size` |
+| 读一个视图 | GET | `/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id` | 无 |
+| 建视图 | POST | `/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views` | `view_name`、`view_type` |
+| 改视图（名字/筛选/隐藏列） | PATCH | `/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id` | `view_name`、`property` |
+| 删视图 | DELETE | `/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id` | 无 |
+
+`view_type` 只有五种：`grid`（表格，默认）、`kanban`（看板）、`gallery`（画册）、`gantt`（甘特）、
+`form`（表单）。别的写法返回 1254019。视图名最长 100 字符、不能含 `[` `]`，
+重名返回 1254020，一张表最多 **200** 个视图（公开+锁定+个人一起算，1254101）。
+
+**改视图的筛选条件按 `field_id` 写，不是列名。** `property` 是
+`{"filter_info":{"conjunction":"and","conditions":[{"field_id":"fldXXX","operator":"is","value":["进行中"]}]},"hidden_fields":["fldYYY"]}`
+—— `field_id` 从 `GET .../fields` 拿（返回里的 `field_id`），填列名会返回 1254009/1254044。
+`conditions` 最多 50 条、`hidden_fields` 最多 300 个。日期列**不支持** `isNot` / `contains` /
+`doesNotContain` / `isGreaterEqual` / `isLessEqual` 这几个 operator。
+
+PATCH 是顶层增量：不传 `view_name` 就不改名字。但 `property` 要**整个对象一起给** ——
+只想改筛选却漏了 `hidden_fields`，隐藏列设置可能被一起清掉，所以先 GET 读回当前 `property` 再改。
+
+**最后一个视图删不掉**，飞书返回 1254023。要「换一个视图」就先建新的再删旧的。
+同一张表**不支持并发写**（1254291），视图改完再改下一个，别并发发。
+
+## 仪表盘
+
+| 要做的事 | method | endpoint | 关键参数 |
+|---|---|---|---|
+| 列出仪表盘 | GET | `/open-apis/bitable/v1/apps/:app_token/dashboards` | `page_size`、`with_share_config` |
+| 复制一个仪表盘 | POST | `/open-apis/bitable/v1/apps/:app_token/dashboards/:block_id/copy` | `name` |
+
+**飞书没有「新建仪表盘」的接口**，也没有建图表的接口 —— 只能列出和复制已有的那份。
+所以「给这个 base 做个仪表盘」的做法是：让用户在客户端里手工搭一个当模板，
+之后按项目/按月 `copy`。要凭数据出图给用户看，用 `feishu_chart`（渲染 PNG 进文档），
+那是另一条路，不在这个 base 里。`block_id` 从上面那个列出接口拿。
+`page_size` 参数表写 500、错误码 1254011 写 0-100，按 **100** 填才稳。
+
+## 自动化流程
+
+| 要做的事 | method | endpoint | 关键参数 |
+|---|---|---|---|
+| 列出自动化流程 | GET | `/open-apis/bitable/v1/apps/:app_token/workflows` | 无 |
+| 启用 / 停用一条 | PUT | `/open-apis/bitable/v1/apps/:app_token/workflows/:workflow_id` | `status` |
+
+`status` 只有 `Enable`（开启）和 `Disable`（关闭）两个值。**建流程、改流程内容都没有接口** ——
+能做的只有把已经在客户端里配好的流程开关掉。列出接口**没有分页**，一次全回，
+返回里每条是 `{workflow_id, status, title}`。
+
+批量导数据前先 `Disable` 掉会触发通知/写回的流程、导完再 `Enable`，是这两个接口唯一常用的组合。
+关掉了记得开回来 —— 停用状态不会自己恢复。
+
+## 记录附件：先上传再写 token
+
+附件列（type 17）写不进本地文件路径，要两步：
+
+1. `feishu_drive_upload(file_path, parent_node=<app_token>, parent_type="bitable_file")`
+   上传，拿返回的 `file_token`。图片列用 `bitable_image`，`parent_node` 都是这个 base 的
+   `app_token`（不是 table_id）。单文件上限 20MB。
+2. 把 token 写进格子：`feishu_bitable_update_record` 的 `fields_json` 里
+   `{"合同扫描件": [{"file_token": "boxcnXXX"}]}`，建行时同理。
+
+值必须是**数组套对象**，直接给字符串 token 会被静默丢弃（这一域的老毛病）。
+一个格子放多个附件就多给几个对象。
+
 ## 高级权限与自定义角色
 
 | 要做的事 | method | endpoint | 关键参数 |
@@ -118,7 +184,9 @@ description: 飞书多维表格（bitable）接口表 —— 建 base、建/删�
 
 ## 字段类型表
 
-`type` 是整数，建字段和读字段都用它。**19（查找引用）建不出来**，API 不支持。
+`type` 是整数，建字段和读字段都用它。**19（查找引用）建不出来**：建字段接口的 `type` 可选值
+里没有 19，文档正文也写明「不支持新增 19 查找引用字段类型」。要这一列只能让用户在客户端里加。
+20（公式）能建，但**建的时候设不了公式表达式**，同样得用户手工补。
 
 | type | 含义 | type | 含义 |
 |---|---|---|---|
@@ -147,13 +215,15 @@ description: 飞书多维表格（bitable）接口表 —— 建 base、建/删�
 | `feishu_bitable_create_table` | 建带列的表。`fields` 是嵌套数组，要逐个检查 type、挡掉 19、并确认第一个字段能当索引列 —— 都在数组里面，rules 校验不到。 |
 | `feishu_bitable_update_field` | 改字段定义。飞书这个接口是**整体替换**，没传的东西会被清掉，所以工具先把当前定义读回来补齐（同类型时连 `property` 一起带上），否则改个名字就把单选选项全清了。 |
 | `feishu_bitable_clear_table` | 清空整表。要先翻页把所有 `record_id` 收齐再分批删 —— 两个不同接口串起来，一行表格表达不了。 |
+| `feishu_drive_upload` | 记录附件的第一步。二进制走 multipart，文件句柄塞不进 JSON 字符串，所以这个端点被通用接口直接拒掉（`code="use_dedicated_tool"`）。上传完再用上面的写值接口把 `file_token` 填进附件列。 |
 
 ```rules
 - endpoint: POST /open-apis/bitable/v1/apps
   token: user
   required: [name]
   fields:
-    name: {max: 255}
+    # pattern 而不是 max: max 用 float() 转换值, 对字符串一律放过, 长度根本没被拦。
+    name: {pattern: '^[\s\S]{1,255}$', on_fail: 'base 名字最长 255 字符'}
 
 - endpoint: GET /open-apis/bitable/v1/apps/:app_token
 
@@ -161,9 +231,11 @@ description: 飞书多维表格（bitable）接口表 —— 建 base、建/删�
   token: user
   fields:
     name:
-      max: 100
+      # 长度用 pattern 而不是 max(max 对字符串一律放过);两条共用一个 on_fail,
+      # 所以文案把长度和非法字符都写上。
+      pattern: '^[\s\S]{1,100}$'
       forbid: '[?/\\*:\[\]]'
-      on_fail: 'base 名字不能含 ? / \ * : [ ] (飞书返回 1254031)'
+      on_fail: 'base 名字最长 100 字符, 且不能含 ? / \ * : [ ] (飞书返回 1254031)'
   pitfalls:
     - 'base 在 wiki 里或被嵌进文档时开不了高级权限 (1254301)。'
     - '飞书先改名再切权限, 可能只成功一半; 看返回里的 changed。'
@@ -296,4 +368,73 @@ description: 飞书多维表格（bitable）接口表 —— 建 base、建/删�
   required: [member_id]
   fields:
     member_id_type: {choices: [open_id, union_id, user_id], default: open_id, in: query}
+
+- endpoint: GET /open-apis/bitable/v1/apps/:app_token/tables/:table_id/views
+  paginate: {items: items, page_size: 100}
+  pitfalls:
+    - '视图的 view_id 从这里拿; 改视图的筛选还要 GET .../fields 拿 field_id。'
+
+- endpoint: POST /open-apis/bitable/v1/apps/:app_token/tables/:table_id/views
+  token: user
+  required: [view_name]
+  fields:
+    view_name:
+      # 长度用 pattern: max 只比数字, 对字符串一律放过(见 _feishu_spec)。
+      pattern: '^[\s\S]{1,100}$'
+      forbid: '[\[\]]'
+      on_fail: '视图名 1-100 字符且不能含 [ ] (飞书返回 1254022)'
+    view_type:
+      choices: [grid, kanban, gallery, gantt, form]
+      on_fail: 'view_type 只有 grid/kanban/gallery/gantt/form 五种 (飞书返回 1254019)'
+  pitfalls:
+    - '视图重名返回 1254020; 一张表最多 200 个视图(公开+锁定+个人一起算, 1254101)。'
+    - '同一张表不支持并发写(1254291), 一个个建。'
+
+- endpoint: GET /open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id
+
+- endpoint: PATCH /open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id
+  token: user
+  fields:
+    view_name:
+      pattern: '^[\s\S]{1,100}$'
+      forbid: '[\[\]]'
+      on_fail: '视图名 1-100 字符且不能含 [ ] (飞书返回 1254022)'
+  pitfalls:
+    - 'filter_info 的 conditions 按 field_id 写, 不是列名; field_id 从 GET .../fields 拿, 填错返回 1254009/1254044。'
+    - 'property 要整个对象一起给: 只传 filter_info 可能把 hidden_fields 清掉, 先 GET 读回当前 property 再改。'
+    - 'conditions 最多 50 条、hidden_fields 最多 300 个; 日期列不支持 isNot/contains/doesNotContain/isGreaterEqual/isLessEqual。'
+
+- endpoint: DELETE /open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id
+  token: user
+  pitfalls:
+    - '最后一个视图删不掉, 返回 1254023; 要换视图就先建新的再删旧的。'
+    - '删视图不删数据 —— 行还在, 只是这个看法没了。'
+
+- endpoint: GET /open-apis/bitable/v1/apps/:app_token/dashboards
+  paginate: {items: dashboards, page_size: 100}
+  pitfalls:
+    - 'page_size 参数表写 500 但错误码 1254011 写 0-100, 按 100 填。'
+    - '飞书没有新建仪表盘/新建图表的接口, 只能列出和复制; 要凭数据出图用 feishu_chart。'
+
+- endpoint: POST /open-apis/bitable/v1/apps/:app_token/dashboards/:block_id/copy
+  token: user
+  required: [name]
+  pitfalls:
+    - 'block_id 从 GET /apps/:app_token/dashboards 拿。'
+    - '复制是唯一的「新增仪表盘」办法: 让用户先手工搭一个当模板, 之后按项目/按月复制。'
+
+- endpoint: GET /open-apis/bitable/v1/apps/:app_token/workflows
+  pitfalls:
+    - '这个接口没有分页, 一次全回; 每条是 {workflow_id, status, title}。'
+
+- endpoint: PUT /open-apis/bitable/v1/apps/:app_token/workflows/:workflow_id
+  token: user
+  required: [status]
+  fields:
+    status:
+      choices: [Enable, Disable]
+      on_fail: 'status 只有 Enable(开启) 和 Disable(关闭) 两个值'
+  pitfalls:
+    - '只能开关已有流程; 建流程、改流程内容都没有接口。'
+    - '批量导数据前 Disable、导完 Enable 是常用组合 —— 停用状态不会自己恢复, 记得开回来。'
 ```

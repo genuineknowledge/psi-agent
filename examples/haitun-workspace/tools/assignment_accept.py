@@ -8,6 +8,7 @@ import _feishu_impl
 from _assignment_delivery import advance_delivery as _advance_delivery
 from _assignment_delivery import sync_progress_card as _sync_progress_card
 from _assignment_tool_common import CLIENT, dumps_result, invalid_argument
+from _assignment_tool_common import result_object as _result_object
 from feishu_task import _feishu_task_create_once
 
 from psi_agent.session.runtime_context import get_session_id
@@ -353,11 +354,6 @@ def _operator_open_id(session_id: str) -> str | None:
         return None
     candidate = session_id[len(_SESSION_PREFIX) :]
     return candidate if _OPEN_ID_RE.fullmatch(candidate) else None
-
-
-def _result_object(result: dict[str, Any]) -> dict[str, Any] | None:
-    payload = result.get("result")
-    return payload if isinstance(payload, dict) else None
 
 
 def _is_invalid_request(result: dict[str, Any]) -> bool:

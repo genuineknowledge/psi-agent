@@ -1275,7 +1275,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "markdownify", specifier = ">=1.2.3" },
     { name = "matplotlib", specifier = ">=3.11.0" },
-    { name = "mcp", specifier = ">=1.28.1" },
+    { name = "mcp", specifier = ">=1.28.1,<2.0.0" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "platformdirs", specifier = ">=4.10.1" },

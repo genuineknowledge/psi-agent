@@ -13,7 +13,11 @@ from lark_channel import PolicyConfig
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import FileChunk, TextChunk
 from psi_agent.channel.feishu import ChannelFeishu, client
-from psi_agent.channel.feishu._card_action import _consumed_card_content
+from psi_agent.channel.feishu._card_action import (
+    _card_has_action_value,
+    _consumed_card_content,
+    _fallback_card_content,
+)
 from psi_agent.channel.feishu.client import (
     _EMOJI_FAILED,
     _EMOJI_PROCESSING,
@@ -398,6 +402,41 @@ def test_consumed_card_preserves_card_2_body_when_replacing_clicked_button():
     assert "已选择: 确认接收" in rendered
     assert "confirm_assignment_receipt" not in rendered
     assert '"tag": "note"' not in rendered
+
+
+def test_fallback_card_matches_schema_2_original():
+    """A v1 fallback for a 2.0 original is rejected with ErrCode 200830, leaving the
+    card untouched and the button still clickable."""
+    fallback = _fallback_card_content({"schema": "2.0", "body": {"elements": []}})
+
+    assert fallback["schema"] == "2.0"
+    assert fallback["body"]["elements"][0]["content"] == "你的操作已提交, 请查看本会话中的处理结果。"
+    assert fallback["header"]["template"] == "green"
+    assert "config" not in fallback
+    assert "elements" not in fallback
+
+
+def test_fallback_card_stays_v1_for_legacy_and_unknown_originals():
+    for original in ({"config": {}, "elements": []}, None, "not-a-card"):
+        fallback = _fallback_card_content(original)
+        assert "schema" not in fallback
+        assert fallback["elements"][0]["content"] == "你的操作已提交, 请查看本会话中的处理结果。"
+        assert fallback["header"]["title"]["content"] == "已提交"
+        assert "body" not in fallback
+
+
+def test_rendered_card_has_no_action_value():
+    """``fetch_message`` returns the rendered card, whose button loses ``value`` and
+    ``behaviors`` — so the clicked element can never be identified from it."""
+    rendered = {
+        "title": "新的工作安排",
+        "elements": [[{"tag": "button", "text": "确认接收并创建飞书任务", "type": "primary"}]],
+    }
+
+    assert not _card_has_action_value(rendered)
+    assert _consumed_card_content(rendered, {"action": "confirm_assignment_receipt"}) is None
+    assert _card_has_action_value({"elements": [{"tag": "button", "value": {"action": "x"}}]})
+    assert _card_has_action_value({"body": {"elements": [{"tag": "button", "behaviors": []}]}})
 
 
 @pytest.mark.anyio
@@ -809,10 +848,51 @@ class _FakeHttp:
     def __init__(self, responses: list[_FakeResp]) -> None:
         self._responses = responses
         self.post_calls: list[dict] = []
+        self.get_calls: list[dict] = []
 
     def post(self, url: str, json: dict, timeout: object) -> _FakeResp:
         self.post_calls.append({"url": url, "json": json})
         return self._responses.pop(0)
+
+    def get(self, url: str, timeout: object) -> _FakeResp:
+        self.get_calls.append({"url": url})
+        if not self._responses:
+            raise AssertionError(f"unexpected GET {url}")
+        return self._responses.pop(0)
+
+
+@pytest.mark.anyio
+async def test_resolve_shared_appdata_reads_gateway_defaults() -> None:
+    """The channel is a sibling process, so it cannot inherit the Gateway's PSI_APPDATA;
+    it has to ask, or card snapshots land where the callback handler never looks."""
+    http = _FakeHttp([_FakeResp(200, {"agent": "/ws", "workspace": "/ws", "appdata": " /ws/.psi/appdata "})])
+
+    resolved = await client._resolve_shared_appdata("http://127.0.0.1:9000/", cast("Any", http))
+
+    assert resolved == "/ws/.psi/appdata"
+    assert http.get_calls == [{"url": "http://127.0.0.1:9000/defaults"}]
+
+
+@pytest.mark.anyio
+async def test_resolve_shared_appdata_falls_back_to_empty_on_bad_reply() -> None:
+    """Startup must not hinge on the Gateway: an empty answer keeps the caller's own
+    resolution order (explicit flag → PSI_APPDATA → platformdirs)."""
+    for resp in (
+        _FakeResp(500, {}, "boom"),
+        _FakeResp(200, {"agent": "/ws"}),  # no appdata key
+        _FakeResp(200, {"appdata": 17}),  # wrong type
+        _FakeResp(200, {"appdata": "   "}),
+    ):
+        assert await client._resolve_shared_appdata("http://127.0.0.1:9000", cast("Any", _FakeHttp([resp]))) == ""
+
+
+@pytest.mark.anyio
+async def test_resolve_shared_appdata_swallows_transport_error() -> None:
+    class _Boom:
+        def get(self, url: str, timeout: object) -> object:
+            raise OSError("connection refused")
+
+    assert await client._resolve_shared_appdata("http://127.0.0.1:9000", cast("Any", _Boom())) == ""
 
 
 @pytest.mark.anyio

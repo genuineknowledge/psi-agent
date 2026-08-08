@@ -66,17 +66,23 @@ uv run psi-agent channel repl --session-socket /tmp/ch.sock
 ## Fusion Memory
 
 Haitun consumes an operator-provisioned Fusion Memory MCP service over
-**Streamable HTTP**. Before starting Haitun, the process starter manually
-configures the endpoint and token-map path:
+**Streamable HTTP**. Before starting Haitun, the process starter configures the
+endpoint. An explicit token-map path is optional when automatic registration is enabled:
 
 ```bash
 export FUSION_MEMORY_MCP_URL="https://memory.example.com/mcp"
+export FUSION_MEMORY_AUTO_REGISTER_FEISHU=1
+export FUSION_MEMORY_ORGANIZATION_ID="org_example"
+export PSI_FEISHU_APP_ID="cli_xxx"
+export PSI_FEISHU_APP_SECRET="..."
+# Optional override; default: {AppData}/fusion-memory/tokens.json
 export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 ```
 
 `FUSION_MEMORY_MCP_URL` is the remote endpoint; TLS is terminated by its
 reverse proxy. The map is keyed by Feishu `open_id`; each entry requires the
-operator-issued `token`. `workspace_id` is provenance only and may be empty or
+Memory-issued `token`. The default map is created with mode `0600` on first use.
+`workspace_id` is provenance only and may be empty or
 omitted, in which case it defaults to `haitun`. Keep the map outside this
 workspace and source control, and never log, print, or return token values.
 
@@ -93,11 +99,13 @@ remote Fusion Memory connection.
 Feishu delivery for those records should use `assignment_send_card`, which
 wraps the existing interactive-card sender with stable work-assignment actions.
 
-Users absent from the map can chat normally but receive no bearer token,
-connector, passive writer, checkpoint, or durable memory. Duplicate token
-assignments reject the map, and token-map mode never falls back to
-`FUSION_MEMORY_TOKEN`. When no map path is configured, the legacy single-user
-token/workspace/session variables remain compatible.
+When automatic registration is enabled, a missing private-chat user is added
+to the map on first use. Otherwise, users absent from the map can chat normally
+but receive no bearer token, connector, passive writer, checkpoint, or durable
+memory. Duplicate token assignments reject the map, and token-map mode never
+falls back to `FUSION_MEMORY_TOKEN`. When neither a map path nor automatic
+registration is configured, the legacy single-user token/workspace/session
+variables remain compatible.
 
 Passive persistence stores only completed ordinary chat turns. Schedule,
 heartbeat, compaction, tool-only, and incomplete rows are excluded. Unchanged

@@ -11,6 +11,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 import _pdf_ocr as _p
+import _runtime_paths as _paths
 
 
 async def read_pdf(
@@ -35,7 +36,8 @@ async def read_pdf(
     are unset, digital pages still return text and image pages report the gap.
 
     Args:
-        pdf_path: Absolute path to a ``.pdf`` file (max 100 MB).
+        pdf_path: Absolute path, or a path relative to the Session workspace,
+            to a ``.pdf`` file (max 100 MB).
         pages: 1-indexed page selection like ``"1-3,5,8"``; empty = all pages.
         max_pages: Cap on pages processed (default 20, hard max 100) to bound cost.
         force_ocr: OCR every selected page via vision even if a text layer exists.
@@ -45,10 +47,15 @@ async def read_pdf(
         total_pages, backend, message, pdf_path, and a per-page list
         (page, source ["text-layer"|"vision-ocr"|"error"], chars, message).
     """
+    workspace_raw = _paths.workspace_dir()
+    resolved_path = pdf_path
+    if pdf_path.strip():
+        resolved_path = str(_paths.resolve_user_path(pdf_path, workspace_raw=workspace_raw))
     result = await _p.read_pdf_impl(
-        pdf_path=pdf_path,
+        pdf_path=resolved_path,
         pages=pages,
         max_pages=max_pages,
         force_ocr=force_ocr,
+        workspace_raw=workspace_raw,
     )
     return _p.dumps_result(result)

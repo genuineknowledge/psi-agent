@@ -378,8 +378,10 @@ updated: <ISO-8601>
 ```
 
 如果用户已经用 [`taskflow`] 管理项目，把下一阶段的实战任务连接到对应 project/task，不另建重复看板。
-稳定且可跨会话复用的用户事实、项目决策或长期学习偏好，才使用 `memory_add`；普通聊天和临时练习不要
-重复写入 Fusion Memory。下一轮开始可先用 `memory_answer_context` 恢复相关背景，再读取上述成长记录。
+稳定且可跨会话复用的用户事实或长期学习偏好使用 `memory_add`；有来源、已确认且对其他成员有用的
+项目决策使用 `organization_memory_add`，并遵循 `organization-memory` skill。普通聊天和临时练习不要
+重复写入 Fusion Memory。下一轮开始可分别用 `memory_answer_context` 的 `visibility="personal"` 恢复
+用户背景、用 `visibility="organization"` 恢复共享项目背景，再读取上述成长记录。
 
 每轮最少更新以下状态：
 

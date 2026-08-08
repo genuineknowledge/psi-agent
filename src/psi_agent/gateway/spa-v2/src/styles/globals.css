@@ -913,31 +913,49 @@ textarea:focus-visible {
 }
 
 .workspace-empty {
-  max-width: 420px;
+  max-width: 630px;
   margin: 12vh auto 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 18px;
   text-align: center;
   color: #5a6b7a;
 }
 
 .workspace-empty h1 {
-  margin: 4px 0 0;
+  margin: 6px 0 0;
   color: #1d2c3b;
-  font-size: 22px;
+  font-size: 33px;
   font-weight: 760;
 }
 
 .workspace-empty p {
-  margin: 0 0 8px;
-  font-size: 13px;
+  margin: 0 0 12px;
+  font-size: 20px;
   line-height: 1.55;
 }
 
+.workspace-empty .brand-logo-mini {
+  width: 36px;
+  height: 36px;
+  padding: 3px;
+  border-radius: 12px;
+  box-shadow: 0 5px 12px rgba(0, 87, 189, 0.2);
+}
+
 .workspace-empty .topbar-create-button {
-  margin-top: 4px;
+  margin-top: 6px;
+  height: 54px;
+  padding: 0 20px;
+  gap: 11px;
+  border-radius: 16px;
+  font-size: 15px;
+}
+
+.workspace-empty .topbar-create-button svg {
+  width: 22px;
+  height: 22px;
 }
 
 .stage-topbar {
@@ -5170,6 +5188,28 @@ button.metric-cell:disabled {
   min-width: 56px;
   min-height: 40px;
   padding: 10px 16px;
+}
+.focus-chat-live-thinking {
+  max-height: 220px;
+  overflow: auto;
+  word-break: break-word;
+  color: var(--text-secondary, #4b5563);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.focus-chat-live-thinking-prose {
+  white-space: pre-wrap;
+}
+.focus-chat-live-thinking-step {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px dashed rgba(11, 47, 91, 0.28);
+  border-radius: 10px;
+  background: rgba(247, 249, 252, 0.92);
+  color: #3d5166;
+}
+.focus-chat-live-thinking-step > :last-child {
+  margin-bottom: 0;
 }
 .focus-chat-progress-log {
   display: flex;

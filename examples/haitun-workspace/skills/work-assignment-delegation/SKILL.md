@@ -28,7 +28,7 @@ category: productivity
 推荐流程：
 
 1. 从当前消息识别安排者、接收者、任务目标和明确约束。`original_request` 必须逐字保存安排者实际输入或语音转写；去掉系统注入的 `<feishu_context>` 包装，但不得润色、概括或加入 Agent 推导。语音把姓名转写错时，可以在身份字段中匹配正确成员，不能修改原始转写。
-2. 先调用 `assignment_list`，按接收者稳定 `user_id` 查看未结束安排和相近任务；再调用 `memory_search` 检索任务名称、项目名、客户名或仓库名相关背景。已有安排里的上下文、证据、风险和行动项必须实际用于本次整理，不能只用来猜工具 schema。
+2. 先调用 `assignment_list`，按接收者稳定 `user_id` 查看未结束安排和相近任务；再调用 `memory_search` 并传 `visibility="organization"`，检索任务名称、项目名、客户名或仓库名相关共享背景。已有安排里的上下文、证据、风险和行动项必须实际用于本次整理，不能只用来猜工具 schema。
 3. 判断是否是同一逻辑任务：安排者和接收者的稳定 `user_id` 相同、核心目标相同且历史安排未结束时，复用已有记录及其 `idempotency_key`。不要为同一逻辑任务生成新的 `idempotency_key`。如果仍存在多个等价候选，再向安排者确认。
 4. 将检索结果分成已确认事实、Agent 分析和待确认缺口。写入前至少准备 `context`、`expected_outcome`、`evidence_refs`、`gaps`、`risks`、`action_items`；每项证据保留来源 URI，每个行动项写负责人，截止时间已知时写入行动项。没有截止时间时，必须在 `gaps` 中加入结构化缺口，不能只写进 `original_request`。
 5. 只有缺失内容会改变任务目标、接收者、交付边界或验收决策时才打扰安排者；可通过仓库、内部资料和历史任务查明的信息自行补齐并保留证据，无法查明但不阻塞理解的信息标为缺口。
@@ -51,7 +51,7 @@ category: productivity
 10. 当前最新消息是 `<feishu_card_action>` 且 `dispatch.handler` 为 `assignment_feedback` 时，只调用一次 `assignment_feedback`，把标签内的完整 `card_action_json` 原样传入。工具会校验操作者并把快捷选项或 `form_value.custom_reply` 写成 `assigner_reply`；禁止调用 `tool_describe`、`tool_search_code`、`read` 或 `bash` 查找 action、schema 或工具源码。
 11. `assignment_feedback` 返回 `ok=true` 且 `assistant_reply_required=false` 时成功后静默结束；不能再调用 `feishu_message_send`、重复解释卡片内容或向接收者另发普通确认消息。工具已经更新安排者卡、写入 Memory，并在需要时投递接收者结果卡。
 12. 安排者答复后，原反馈卡片只读展示“已更新、待接收者确认”，不能在这张发给安排者且已经消费的卡片上生成接收者确认按钮。接收者从自己的 HaiTun 会话收到结果卡，核对更新后的理解并确认；确认后工具把同一反馈线程推进到可执行状态并原位更新双方卡片。
-13. 反馈卡片可见正文使用任务标题，不显示 `arrangement_id`、`task_id` 等内部原始 ID；这些 ID 只保留在隐藏的回调关联字段中。调用工具时尽量通过 `assignment_title` 提供稳定、简短的任务标题。
+13. 反馈卡片可见正文使用任务标题，不显示 `arrangement_id`、`task_id` 等内部原始 ID；这些 ID 只保留在隐藏的回调关联字段中。任务标题和反馈者姓名由工具按 `arrangement_id` 从权威安排记录中解析，不需要也不应该由对话提供或推测；读不到真实标题时显示“当前工作安排”。卡片上的每条反馈会标注可确认的姓名与角色；身份无法唯一确认时只显示角色，不要在 `raw_content` 里再手写“接收者：”这类前缀。
 
 接收者缺口询问：如果当前会话的接收者在已有安排上下文中询问截止时间、任务范围、交付格式、验收标准、资源或权限，且这些信息无法从安排、项目资料或组织资料确定，应把问题写入同一 `arrangement_id` 的 `assignment_feedback`，不能代接收者给安排者发普通消息或手工发卡。反馈工具负责通知安排者；当前回合立即告知接收者“已提交反馈，等待安排者处理”，不得等待真人回复或阻塞会话。工具返回校验错误时只修正同一工具的参数并重试一次，不能改用 `feishu_user_get`、`feishu_message_send`、`feishu_message_send_card` 或 `feishu_message_reply` 绕过反馈线程。
 

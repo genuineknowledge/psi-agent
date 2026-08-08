@@ -26,6 +26,7 @@ REQUIRED_TOOLS = {
     "feishu_wiki_list_nodes": "feishu_wiki.py",
     "memory_answer_context": "memory_answer_context.py",
     "memory_add": "memory_add.py",
+    "organization_memory_add": "organization_memory_add.py",
     "schedule_manage": "schedule_manage.py",
 }
 REQUIRED_SKILLS = {
@@ -35,6 +36,7 @@ REQUIRED_SKILLS = {
     "feishu-mentor-feedback",
     "llm-wiki",
     "ontology",
+    "organization-memory",
     "feishu-schedule-message",
 }
 
@@ -104,6 +106,7 @@ def test_skill_covers_existing_haitun_capabilities() -> None:
         "taskflow",
         "memory_answer_context",
         "memory_add",
+        "organization_memory_add",
         "feishu-blocker-routing",
         "feishu-mentor-feedback",
     )

@@ -1,8 +1,9 @@
 """Markdown → native Feishu docx blocks (``_feishu_md``).
 
-Covers the routing decision (rich Markdown vs plain prose), the two payload fixes the
-convert→descendant pair needs (``merge_info`` stripped, ``header_row`` set), the
-1000-block batching, and the clip-and-grow path for a table too big for one call.
+Covers the routing decision (rich Markdown vs plain prose), the normalisation that gets
+Markdown into a shape the converter actually reads as tables/paragraphs, the two payload
+fixes the convert→descendant pair needs (``merge_info`` stripped, ``header_row`` set),
+the 1000-block batching, and the clip-and-grow path for a table too big for one call.
 """
 
 from __future__ import annotations
@@ -82,6 +83,14 @@ def _table_payload(rows: int, columns: int, *, table_id: str = "tbl") -> list[di
         "带 ~~删除线~~ 的一段",
         "看 [链接](https://example.com)",
         "![图](https://example.com/x.png)",
+        # Single-marker emphasis: used to fall through to the local path and land in the
+        # document as literal "*斜体*".
+        "带 *斜体* 的一段",
+        "带 _斜体_ 的一段",
+        # A borderless table (valid GFM) — nothing used to match it.
+        "模块 | 状态\n--- | ---\nA | 好",
+        # Emphasis whose run spans a soft line break.
+        "这里**加粗\n跨行**结束",
     ],
 )
 def test_has_rich_markdown_detects_native_constructs(content: str) -> None:
@@ -97,10 +106,88 @@ def test_has_rich_markdown_detects_native_constructs(content: str) -> None:
         "含 - 连字符但不是列表",
         "价格是 3*4 元",
         "",
+        # Underscores inside identifiers are not emphasis: dunders and snake_case are
+        # ordinary words in a technical doc, and styling them would eat the underscores.
+        "变量 __init__ 与 snake_case_name 混排",
+        "字段 note_1 和 note_2 都要填",
+        # Lone markers, and an opener with no closer.
+        "乘法 2 * 3 * 4",
+        "半 *开头没闭合",
+        "范围 10*20*30 米",
     ],
 )
 def test_has_rich_markdown_leaves_plain_prose_local(content: str) -> None:
     assert _md.has_rich_markdown(content) is False
+
+
+# ── Normalising what the converter is fussy about ─────────────────────────────
+
+
+def test_normalize_separates_prose_lines_into_paragraphs() -> None:
+    """One-paragraph-per-line prose must not collapse: convert joins single newlines."""
+    out = _md.normalize_for_convert("第一段结论。\n第二段说明**很重要**。\n第三段补充。")
+    assert out == "第一段结论。\n\n第二段说明**很重要**。\n\n第三段补充。"
+
+
+def test_normalize_keeps_lines_of_one_construct_together() -> None:
+    """List items, quote lines and a heading's own line get no blank line wedged in."""
+    assert _md.normalize_for_convert("- 一\n- 二\n- 三") == "- 一\n- 二\n- 三"
+    assert _md.normalize_for_convert("> 第一行\n> 第二行") == "> 第一行\n> 第二行"
+    assert _md.normalize_for_convert("1. 一\n2. 二") == "1. 一\n2. 二"
+
+
+def test_normalize_does_not_break_an_emphasis_run_across_lines() -> None:
+    """A blank line inside "**加粗\\n跨行**" would turn the markers into literal asterisks."""
+    out = _md.normalize_for_convert("这里**加粗\n跨行**结束\n下一段。")
+    assert out == "这里**加粗\n跨行**结束\n\n下一段。"
+
+
+def test_normalize_leaves_fenced_code_verbatim() -> None:
+    """Inside a fence a blank line is content and a pipe is a pipe."""
+    src = "说明:\n```python\nx = 1\n\ny = 2\n```\n结束"
+    out = _md.normalize_for_convert(src)
+    assert "```python\nx = 1\n\ny = 2\n```" in out
+    # The prose after the fence still becomes its own paragraph.
+    assert out.endswith("```\n\n结束")
+
+
+def test_normalize_pads_a_ragged_table() -> None:
+    """A delimiter row that disagrees with the header means "not a table" to CommonMark."""
+    out = _md.normalize_for_convert("| a | b | c |\n| --- | --- |\n| 1 | 2 | 3 |")
+    assert out == "| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |"
+
+
+def test_normalize_pads_short_body_rows() -> None:
+    out = _md.normalize_for_convert("| a | b | c |\n| --- | --- | --- |\n| 1 | 2 |")
+    assert out.splitlines()[-1] == "| 1 | 2 |  |"
+
+
+def test_normalize_inserts_a_missing_delimiter_row() -> None:
+    """Two pipe rows with nothing between them is not a table either."""
+    out = _md.normalize_for_convert("| a | b |\n| 1 | 2 |")
+    assert out == "| a | b |\n| --- | --- |\n| 1 | 2 |"
+
+
+def test_normalize_leaves_a_lone_pipe_row_alone() -> None:
+    """One row is not a table: inventing a header would invent structure."""
+    assert _md.normalize_for_convert("| 只有一行 |") == "| 只有一行 |"
+
+
+def test_normalize_keeps_a_well_formed_table_parseable() -> None:
+    out = _md.normalize_for_convert("| a | b |\n|:---|---:|\n| 1 | 2 |")
+    assert _md._delimited_table_count(out) == 1
+    assert out.splitlines()[0] == "| a | b |"
+
+
+def test_normalize_does_not_touch_pipes_inside_a_fence() -> None:
+    src = "```\n| a | b |\n| 1 | 2 |\n```"
+    assert _md.normalize_for_convert(src) == src
+
+
+def test_repair_table_ignores_the_delimiter_when_sizing() -> None:
+    """The delimiter is the row most likely to be wrong, so it never sets the width."""
+    out = _md.repair_table(["| a | b | c |", "| --- |", "| 1 | 2 | 3 |"])
+    assert out == ["| a | b | c |", "| --- | --- | --- |", "| 1 | 2 | 3 |"]
 
 
 # ── Payload fixes: what convert emits vs what /descendant accepts ─────────────
@@ -358,6 +445,45 @@ async def test_append_markdown_requires_document_id() -> None:
     res = await _md.append_markdown("  ", "- 一")
     assert res["ok"] is False
     assert "document_id" in res["message"]
+
+
+@pytest.mark.asyncio
+async def test_convert_sends_the_normalized_markdown(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The converter receives the repaired text, not the user's ragged original."""
+    blocks = _table_payload(2, 2)
+    fake = _FakeFeishu(blocks, ["tbl"])
+    monkeypatch.setattr(_impl, "_invoke", fake)
+    await _md.convert_markdown("| a | b | c |\n| --- | --- |\n| 1 | 2 | 3 |")
+    sent = fake.sent[0].body["content"]
+    assert sent == "| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |"
+
+
+@pytest.mark.asyncio
+async def test_convert_reports_a_table_that_stayed_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """convert answers ok with a paragraph of pipes; that must not pass silently."""
+    paragraph = [{"block_id": "p1", "block_type": 2, "parent_id": "", "text": {"elements": []}}]
+    monkeypatch.setattr(_impl, "_invoke", _FakeFeishu(paragraph, ["p1"]))
+    res = await _md.convert_markdown("| a | b |\n| --- | --- |\n| 1 | 2 |")
+    assert res["ok"] is True
+    assert res["tables_not_converted"] == 1
+
+
+@pytest.mark.asyncio
+async def test_convert_is_quiet_when_the_table_did_convert(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_impl, "_invoke", _FakeFeishu(_table_payload(2, 2), ["tbl"]))
+    res = await _md.convert_markdown("| a | b |\n| --- | --- |\n| 1 | 2 |")
+    assert "tables_not_converted" not in res
+
+
+@pytest.mark.asyncio
+async def test_append_markdown_notes_an_unconverted_table(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The write still happens — but the result says the table is plain text."""
+    paragraph = [{"block_id": "p1", "block_type": 2, "parent_id": "", "text": {"elements": []}}]
+    monkeypatch.setattr(_impl, "_invoke", _FakeFeishu(paragraph, ["p1"]))
+    res = await _md.append_markdown("doc1", "| a | b |\n| --- | --- |\n| 1 | 2 |")
+    assert res["ok"] is True
+    assert res["tables_not_converted"] == 1
+    assert "表格" in res["note"]
 
 
 @pytest.mark.asyncio

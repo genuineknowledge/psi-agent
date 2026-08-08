@@ -8,7 +8,14 @@ primary calendar, then create), or bypasses ``_invoke`` outright. So these two r
 in ``skills/feishu-api/SKILL.md`` — beside the table rows they belong to — rather than in
 a new per-domain skill, and their sibling tools stay.
 
-Both endpoints already appear in that skill's endpoint tables. What the ``rules`` block
+``sheets/query`` has since moved on: when the spreadsheet domain got its own endpoint
+table (``skills/feishu-sheet``), its rule went with it, because a rule belongs beside the
+table a reader would look it up in — and because two rules for one endpoint at equal
+specificity are resolved by filename order rather than by anyone's decision. The wire
+parity asserted below is unaffected: both endpoints still go out through the same generic
+path. ``RULE_HOME`` records which file each one lives in.
+
+Both endpoints already appear in their skill's endpoint tables. What the ``rules`` block
 adds is the part a table cannot execute, and for these two it is the same shape of
 mistake in both: **a successful response that means nothing**.
 
@@ -166,39 +173,68 @@ def _call(
     )
 
 
-def _rules() -> list[Any]:
-    return _spec.parse_rules(API_SKILL.read_text(encoding="utf-8"))
+#: Which skill file each of the two rules lives in now. ``sheets/query`` started here and
+#: moved to ``feishu-sheet`` when that domain got its own endpoint table — an endpoint's
+#: rule belongs beside the table a reader would find it in, and a rule declared twice at
+#: equal specificity would be resolved by filename order rather than on purpose. The wire
+#: parity below is unchanged by the move: it goes through the same generic path either way.
+RULE_HOME = {
+    "sheet_tabs": SKILLS_DIR / "feishu-sheet" / "SKILL.md",
+    "wiki_get_node": API_SKILL,
+}
 
 
-def _rule(method: str, uri: str) -> Any:
-    match = [r for r in _rules() if r.method == method and r.uri == uri]
-    assert len(match) == 1, f"expected exactly one {method} {uri} rule, got {len(match)}"
+def _rules(skill: Path = API_SKILL) -> list[Any]:
+    return _spec.parse_rules(skill.read_text(encoding="utf-8"))
+
+
+def _rule(method: str, uri: str, skill: Path = API_SKILL) -> Any:
+    match = [r for r in _rules(skill) if r.method == method and r.uri == uri]
+    assert len(match) == 1, f"expected exactly one {method} {uri} rule in {skill.parent.name}, got {len(match)}"
     return match[0]
 
 
 # ------------------------------------------------------------------ the skill parses
 
 
-def test_skill_carries_exactly_these_two_rules() -> None:
-    """``feishu-api`` gained its first ``rules`` block, and it holds only these two.
+def test_api_skill_keeps_only_the_wiki_rule() -> None:
+    """``feishu-api``'s ``rules`` block holds one rule now, not two.
 
-    The skill's job is still the endpoint *tables*; rules live here only for endpoints
-    whose failure is silent. If a third rule shows up, it belongs to a domain skill
-    unless it earns the same argument.
+    The skill's job is the endpoint *tables*; a rule lives here only when its endpoint has
+    no domain skill to belong to. ``sheets/query`` acquired one (``feishu-sheet``) and its
+    rule went with it — see ``RULE_HOME``. If a second rule shows up here, it belongs to a
+    domain skill unless it earns the same argument this one does.
     """
-    assert {(r.method, r.uri) for r in _rules()} == {
-        ("GET", "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query"),
-        ("GET", "/open-apis/wiki/v2/spaces/get_node"),
-    }
+    assert {(r.method, r.uri) for r in _rules()} == {("GET", "/open-apis/wiki/v2/spaces/get_node")}
 
 
 @pytest.mark.parametrize("label", sorted(WAS))
 def test_every_endpoint_is_also_a_table_row(label: str) -> None:
-    """Both views of the fact exist: the human table row and the executable rule."""
-    text = API_SKILL.read_text(encoding="utf-8")
+    """Both views of the fact exist: the human table row and the executable rule.
+
+    They may live in different skill files, but each rule has to sit beside a table row in
+    *its own* file — a rule the reader of that document never sees documented is a rule
+    they will not know to use.
+    """
+    skill = RULE_HOME[label]
+    text = skill.read_text(encoding="utf-8")
     uri = WAS[label]["uri"]
     # Once in the table, once in the rules block — drift becomes a visible diff.
-    assert text.count(uri) >= 2, f"{uri} should appear in both the table and the rules"
+    assert text.count(uri) >= 2, f"{uri} should appear in both the table and the rules of {skill.parent.name}"
+
+
+def test_exactly_one_skill_declares_each_of_the_two() -> None:
+    """Neither endpoint may be declared twice across the whole skills tree.
+
+    Two rules for one endpoint at equal specificity are resolved by filename order, which
+    is not a decision anyone made. This is the check that would have caught the sheets
+    ``PATCH`` being declared in both ``feishu-drive`` and ``feishu-sheet``.
+    """
+    everything = _spec.load_rules(SKILLS_DIR)
+    for label, home in RULE_HOME.items():
+        method, uri = WAS[label]["method"].name, WAS[label]["uri"]
+        owners = [r.source for r in everything if r.method == method and r.uri == uri]
+        assert owners == [home.parent.name], f"{method} {uri} is declared by {owners}"
 
 
 # ------------------------------------------------------------------ wire-shape parity
@@ -305,7 +341,7 @@ def test_sheet_extent_pitfall_is_stated() -> None:
     could not have prevented it either — it returned the same number — but the rule can
     say what the number means.
     """
-    rule = _rule("GET", "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query")
+    rule = _rule("GET", "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query", RULE_HOME["sheet_tabs"])
     joined = " ".join(rule.pitfalls)
     assert "row_count" in joined
     assert "grid_properties" in joined, "the field's real location has to be stated"
@@ -313,8 +349,13 @@ def test_sheet_extent_pitfall_is_stated() -> None:
 
 
 def test_wiki_hosted_sheet_needs_obj_token_first() -> None:
-    """The two rules point at each other, because that is the real call order."""
-    rule = _rule("GET", "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query")
+    """The two rules point at each other, because that is the real call order.
+
+    Now that they live in different skill files, this cross-reference is the only thing
+    connecting them — a reader who opens ``feishu-sheet`` for a wiki-hosted spreadsheet has
+    no other way to learn they need the wiki lookup first.
+    """
+    rule = _rule("GET", "/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query", RULE_HOME["sheet_tabs"])
     assert any("get_node" in p for p in rule.pitfalls)
 
 

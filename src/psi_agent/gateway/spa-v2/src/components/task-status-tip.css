@@ -1,0 +1,66 @@
+/* Non-blocking tip for the task status icons. */
+
+.task-status-tip {
+  position: fixed;
+  z-index: 84;
+  width: 332px;
+  padding: 14px 16px 16px;
+  border: 1px solid rgba(0, 80, 173, 0.16);
+  border-radius: 14px;
+  background: var(--paper);
+  box-shadow: 0 18px 46px rgba(8, 24, 50, 0.2);
+  animation: fade-in 220ms ease both;
+}
+
+.task-status-tip-frame {
+  position: fixed;
+  z-index: 83;
+  pointer-events: none;
+  border: 1.5px solid rgba(0, 123, 255, 0.42);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.32);
+  box-shadow: 0 0 0 5px rgba(0, 123, 255, 0.1), 0 6px 18px rgba(0, 90, 190, 0.14);
+  animation: fade-in 180ms ease both;
+}
+
+.task-status-tip-arrow {
+  position: absolute;
+  top: -9px;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-bottom: 9px solid var(--paper);
+}
+
+.task-status-tip h3 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.task-status-tip p {
+  margin: 0 0 12px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.task-status-tip button {
+  min-width: 88px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid var(--brand-600);
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--brand-500), var(--brand-700));
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.task-status-tip button:hover {
+  filter: brightness(1.05);
+}

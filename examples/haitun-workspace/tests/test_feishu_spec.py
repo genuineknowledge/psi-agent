@@ -562,7 +562,11 @@ def test_nested_endpoint_with_its_own_rule_is_enforced(tmp_path: Path) -> None:
         ("GET", "/open-apis/im/v1/messages/om_x", "读单条消息"),
         ("POST", "/open-apis/im/v1/chats/oc_x/managers/add_managers", "加群管理员"),
         ("DELETE", "/open-apis/im/v1/chats/oc_x/managers/delete_managers", "删群管理员"),
-        ("POST", "/open-apis/bitable/v1/apps/app_x/tables/tbl_x/views", "建视图"),
+        # Nested under the hard `POST .../tables`. This was `.../tables/:table_id/views`
+        # until the views endpoints got rules of their own — a tabled endpoint's `required`
+        # is enforcement someone chose, so asserting it away would invert this test. Field
+        # groups is a real Feishu endpoint still absent from every table.
+        ("POST", "/open-apis/bitable/v1/apps/app_x/tables/tbl_x/field_groups", "建字段分组"),
         ("POST", "/open-apis/contact/v3/users/ou_x/resurrect", "恢复离职用户"),
     ],
 )

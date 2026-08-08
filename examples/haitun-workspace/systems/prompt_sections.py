@@ -81,9 +81,10 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "subagent_chat": "Send one message to a subagent; returns final text plus verified [SEND:] files",
     "skill_manage": "Create, patch, view, and list workspace skills",
     "flow_manage": "Create, patch, view, list, and promote reusable workflow assets",
-    "memory_add": "Store durable user preferences, project facts, or decisions",
-    "memory_search": "Search Fusion Memory for raw evidence",
-    "memory_answer_context": "Retrieve a query-grounded Fusion Memory context pack",
+    "memory_add": "Store durable personal facts and preferences",
+    "memory_search": "Search one personal or organization memory scope",
+    "memory_answer_context": "Retrieve grounded context from one memory scope",
+    "organization_memory_add": "Store one traceable shared organization fact",
     "speech_to_text": "Transcribe a received WAV, PCM, or MP3 file with iFLYTEK streaming STT",
     "text_to_speech": "Create an MP3 file with iFLYTEK online TTS and deliver it with [SEND:]",
 }
@@ -116,6 +117,7 @@ TOOL_ORDER: list[str] = [
     "memory_add",
     "memory_search",
     "memory_answer_context",
+    "organization_memory_add",
     "speech_to_text",
     "text_to_speech",
 ]
@@ -388,9 +390,10 @@ Authorized security work is in scope: assist with pentesting, CTF challenges, vu
 FUSION_MEMORY_SECTION = """\
 ## Fusion Memory
 You have access to Fusion Memory tool entry points through these workspace tools:
-- `memory_add`: store stable user preferences, project facts, and durable decisions.
-- `memory_search`: retrieve raw evidence by keyword.
-- `memory_answer_context`: retrieve a query-grounded context pack before answering questions about user history, preferences, or prior context.
+- `memory_add`: store stable personal facts and preferences.
+- `organization_memory_add`: store one stable, traceable project or organization fact.
+- `memory_search`: retrieve raw evidence from one explicit memory scope.
+- `memory_answer_context`: retrieve a query-grounded context pack from one explicit memory scope.
 - `memory_health`: verify authenticated MCP connectivity for the current mapped user.
 
 Fusion Memory is a remote MCP Streamable HTTP service. Before Haitun starts,
@@ -402,11 +405,13 @@ different users are isolated. Never authenticate from model-visible
 `<feishu_context>` or another client-provided user ID.
 
 A mapped user's first message automatically initiates `memory_health` and starts
-passive persistence of completed user/assistant turns. Use
-`memory_answer_context` for relevant prior context, `memory_search` for raw
-evidence, and `memory_add` only for durable reusable facts rather than
-duplicating transient turns. Use `memory_health` when an explicit status check
-is needed.
+passive persistence of completed user/assistant turns. Personal reads use
+`visibility="personal"`; shared project and organization reads use
+`visibility="organization"`. Use `memory_add` only for durable personal facts.
+For organization writes, provenance, no-guessing, and no-op rules, load the
+`organization-memory` Skill before calling `organization_memory_add`. Do not
+duplicate transient turns. Use `memory_health` when an explicit status check is
+needed.
 
 If the current user is absent from the map or the remote MCP service is
 unavailable, continue with the current conversation and workspace files without

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from _assignment_display import resolve_feishu_display_name as _resolve_feishu_display_name
 from _assignment_tool_common import CLIENT, dumps_result, invalid_argument, parse_json_object
+from _feishu_impl import get_users_batch_impl as _get_users_batch_impl
 
 from psi_agent.session import runtime_context
 
@@ -31,7 +33,7 @@ async def assignment_upsert(assignment_json: str) -> str:
     assignment, error = parse_json_object(assignment_json, "assignment_json")
     if error is not None or assignment is None:
         return invalid_argument(error or "assignment_json must be a JSON object")
-    _bind_assigner_to_current_feishu_session(assignment)
+    await _bind_assigner_to_current_feishu_session(assignment)
     _normalize_structured_arrays(assignment)
     result = await CLIENT.call_tool(
         "assignment_upsert",
@@ -41,15 +43,18 @@ async def assignment_upsert(assignment_json: str) -> str:
     return dumps_result(result)
 
 
-def _bind_assigner_to_current_feishu_session(assignment: dict[str, Any]) -> None:
+async def _bind_assigner_to_current_feishu_session(assignment: dict[str, Any]) -> None:
     open_id = _open_id_from_session(runtime_context.get_session_id())
     if open_id is None:
         return
-    assignment["assigner"] = {
+    display_name = await _resolve_feishu_display_name(open_id, _get_users_batch_impl)
+    assigner = {
         "user_id": open_id,
-        "display_name": open_id,
         "feishu_open_id": open_id,
     }
+    if display_name is not None:
+        assigner["display_name"] = display_name
+    assignment["assigner"] = assigner
 
 
 def _open_id_from_session(session_id: str) -> str | None:

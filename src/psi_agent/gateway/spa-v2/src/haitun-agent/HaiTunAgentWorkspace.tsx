@@ -146,6 +146,9 @@ import { ArtifactDrawer } from "./workspace-overlays";
 
 import { NewTaskWorkspace, TemplateLibrary } from "./secondary-views";
 import UserHub from "../components/user-hub/UserHub";
+import FirstRunGuide from "../components/FirstRunGuide";
+import FirstRunSpotlight from "../components/FirstRunSpotlight";
+import TaskStatusTip from "../components/TaskStatusTip";
 import { collectDeliverableFiles } from "../utils/filePreviewUtils";
 
 type Props = {
@@ -168,6 +171,14 @@ export default function HaiTunAgentWorkspace({
   const [bootReady, setBootReady] = useState(false);
   /** Only open Hub models when no AI is available after open-and-use (not on every refresh). */
   const [openModelsOnce, setOpenModelsOnce] = useState(false);
+  /** First-run guide: shows only for a fresh workspace with no historical tasks. */
+  const [firstRunOpen, setFirstRunOpen] = useState(false);
+  const [firstRunSpotlightStep, setFirstRunSpotlightStep] = useState<0 | 1 | 2>(0);
+  const [isFirstRunUser, setIsFirstRunUser] = useState(false);
+  const [taskStatusTipVisible, setTaskStatusTipVisible] = useState(false);
+  const taskStatusTipAcknowledgedRef = useRef(false);
+  const taskStatusTipTaskIdRef = useRef<string | null>(null);
+  const [hubOpenNonce, setHubOpenNonce] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -190,6 +201,8 @@ export default function HaiTunAgentWorkspace({
   const [typingCard, setTypingCard] = useState<string | null>(null);
   /** Growing process lines (规划下一步 + sealed steps); cleared when turn ends. */
   const [turnProgressLog, setTurnProgressLog] = useState<ProgressLog | null>(null);
+  /** Raw thinking prose shown live until the final body starts. */
+  const [liveThinkingText, setLiveThinkingText] = useState("");
   const [dragX, setDragX] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [cardTransition, setCardTransition] = useState<CardTransition | null>(null);
@@ -522,6 +535,33 @@ export default function HaiTunAgentWorkspace({
     };
   }, [workspaceNorm, showToast]);
 
+  // Refresh landing: with history tasks open the card workspace; with none, go to new task/chat.
+  useEffect(() => {
+    if (!bootReady || bootLandingRef.current) return;
+    bootLandingRef.current = true;
+    if (tasks.length > 0) {
+      setMainView("new-task");
+      setNewTaskReturnView("workspace");
+      setSidebarPanel(null);
+    }
+  }, [bootReady, tasks.length]);
+
+  // First-run guide: shown only for a fresh workspace with no historical tasks.
+  const hubOpenRequest = useMemo(
+    () => (hubOpenNonce > 0 ? { nonce: hubOpenNonce, panel: "models" as const } : null),
+    [hubOpenNonce],
+  );
+
+  const firstRunEligibilityCheckedRef = useRef(false);
+  const bootLandingRef = useRef(false);
+  useEffect(() => {
+    if (!bootReady || firstRunEligibilityCheckedRef.current) return;
+    firstRunEligibilityCheckedRef.current = true;
+    if (tasks.length > 0) return;
+    setIsFirstRunUser(true);
+    setFirstRunSpotlightStep(1);
+  }, [bootReady, tasks.length]);
+
   // Warm a few recent histories so sidebar → focus matches dialogue-bar snappiness.
   const historyWarmBootRef = useRef(false);
   useEffect(() => {
@@ -541,10 +581,10 @@ export default function HaiTunAgentWorkspace({
     activeChatInputRef.current?.blur();
   }, []);
 
-  const goTo = useCallback((index: number, animate = true) => {
+  const goTo = useCallback((index: number, animate = true, opts?: { keepExpanded?: boolean }) => {
     const next = Math.max(0, Math.min(index, cards.length - 1));
     const fromExpanded = chatExpanded;
-    collapseChat();
+    if (!opts?.keepExpanded) collapseChat();
     if (next === currentIndex) {
       setDragX(0);
       return;
@@ -618,7 +658,6 @@ export default function HaiTunAgentWorkspace({
    * pending 目前几乎恒空（attention 未接线）；filter 已集中在 taskSignals，后续填协议即可。
    */
   const openSignal = useCallback((kind: TaskSignalKind, opts?: { toggle?: boolean }) => {
-    setMainView("workspace");
     setSidebarOpen(true);
     setSidebarCollapsed(false);
     setSidebarPanel((current) => {
@@ -690,7 +729,17 @@ export default function HaiTunAgentWorkspace({
     if (deletedIndex >= 0) {
       const deletedCard = cardIndexForTask(deletedIndex);
       if (currentIndex === deletedCard) {
-        goHome();
+        // Jump to the next history task; fall back to the previous one when the
+        // deleted task was last; only then fall back to the empty card page.
+        if (deletedIndex + 1 < tasks.length) {
+          setCurrentIndex(cardIndexForTask(deletedIndex));
+        } else if (deletedIndex - 1 >= 0) {
+          setCurrentIndex(cardIndexForTask(deletedIndex - 1));
+        } else {
+          goHome();
+        }
+        setDragX(0);
+        setCardTransition(null);
       } else if (currentIndex > deletedCard) {
         setCurrentIndex((i) => Math.max(0, i - 1));
       }
@@ -699,10 +748,13 @@ export default function HaiTunAgentWorkspace({
     showToast(`已删除任务「${task.shortTitle}」`);
   }, [artifactTask?.id, currentIndex, goHome, showToast, tasks, typingCard]);
 
-  const openNewTask = useCallback((draft = "", category = "自由任务", returnView: MainView = "workspace") => {
+  const openNewTask = useCallback((draft?: string, category = "自由任务", returnView: MainView = "workspace") => {
     collapseChat();
-    setNewTaskDraft(draft);
-    setNewTaskCategory(category);
+    // Keep an unsent draft when re-opening the page; explicit presets still replace it.
+    if (draft !== undefined) {
+      setNewTaskDraft(draft);
+      setNewTaskCategory(category);
+    }
     setNewTaskReturnView(returnView);
     setNewTaskSession((current) => current + 1);
     setMainView("new-task");
@@ -718,6 +770,41 @@ export default function HaiTunAgentWorkspace({
     setSidebarPanel(null);
     setSidebarOpen(false);
   }, [collapseChat]);
+
+  const closeFirstRun = useCallback(() => {
+    setFirstRunOpen(false);
+  }, []);
+
+  const confirmFirstRunSpotlight = useCallback((step: 1 | 2) => {
+    if (step === 1) {
+      setFirstRunSpotlightStep(2);
+      return;
+    }
+    setFirstRunSpotlightStep(0);
+    setFirstRunOpen(true);
+  }, []);
+
+  const maybeShowTaskStatusTip = useCallback(() => {
+    if (!isFirstRunUser || taskStatusTipAcknowledgedRef.current) return;
+    window.setTimeout(() => setTaskStatusTipVisible(true), 450);
+  }, [isFirstRunUser]);
+
+  const closeTaskStatusTip = useCallback(() => {
+    taskStatusTipAcknowledgedRef.current = true;
+    setTaskStatusTipVisible(false);
+  }, []);
+
+  const configureFirstRun = useCallback(() => {
+    setFirstRunOpen(false);
+    setHubOpenNonce((n) => n + 1);
+    showToast("模型池已打开：选择模型后即可开始任务");
+  }, [showToast]);
+
+  const startTaskFirstRun = useCallback(() => {
+    setFirstRunOpen(false);
+    openNewTask();
+    showToast("在这里输入任务描述并发送，任务会出现在任务卡中");
+  }, [openNewTask, showToast]);
 
   const applyStreamBodies = (cardId: string, seg: ContentSegments) => {
     const { interimText, text } = streamSegmentBodies(seg);
@@ -839,6 +926,7 @@ export default function HaiTunAgentWorkspace({
     turnReasoningRef.current = "";
     turnToolsRef.current = [];
     turnContentSegRef.current = contentSegmentsStart();
+    setLiveThinkingText("");
     setTodoSegmentSelection((current) => ({ ...current, [cardId]: "live" }));
     const userVisible = titleSource ?? (text.trim() || "附件");
     let turnOk = false;
@@ -862,9 +950,6 @@ export default function HaiTunAgentWorkspace({
           onText: (delta) => {
             if (!live()) return;
             turnContentSegRef.current = appendContentSegment(turnContentSegRef.current, delta);
-            setTurnProgressLog((prev) =>
-              applyProgressEvent(prev ?? progressLogStart(), "content", ""),
-            );
             applyStreamBodies(cardId, turnContentSegRef.current);
           },
           onBlob: (name, data, path) => {
@@ -899,6 +984,13 @@ export default function HaiTunAgentWorkspace({
               applyStreamBodies(cardId, turnContentSegRef.current);
             }
             if (delta) turnReasoningRef.current += delta;
+            if (
+              delta
+              && kind !== "tool_call"
+              && kind !== "tool_result"
+            ) {
+              setLiveThinkingText((current) => current + delta);
+            }
             setTurnProgressLog((prev) => {
               const next = applyProgressEvent(prev ?? progressLogStart(), kind, delta);
               turnToolsRef.current = next.lines;
@@ -1014,6 +1106,7 @@ export default function HaiTunAgentWorkspace({
         }
         setTypingCard((current) => (current === cardId ? null : current));
         setTurnProgressLog(null);
+        setLiveThinkingText("");
         if (abortRef.current === controller) abortRef.current = null;
       }
       void (async () => {
@@ -1361,6 +1454,8 @@ export default function HaiTunAgentWorkspace({
     setDragX(0);
     setCardTransition(null);
     setChatExpanded(true);
+    taskStatusTipTaskIdRef.current = task.id;
+    maybeShowTaskStatusTip();
   };
 
   const useTemplate = (template: TaskTemplate) => {
@@ -1459,8 +1554,8 @@ export default function HaiTunAgentWorkspace({
         && (!inField || event.altKey)
       ) {
         event.preventDefault();
-        if (event.key === "ArrowLeft") goTo(currentIndex - 1);
-        else goTo(currentIndex + 1);
+        if (event.key === "ArrowLeft") goTo(currentIndex - 1, true, { keepExpanded: chatExpanded });
+        else goTo(currentIndex + 1, true, { keepExpanded: chatExpanded });
         return;
       }
       if (inField) return;
@@ -1605,7 +1700,7 @@ export default function HaiTunAgentWorkspace({
                 className="card-arrow previous chat-pane-arrow"
                 onClick={(event) => {
                   event.stopPropagation();
-                  goTo(index - 1);
+                  goTo(index - 1, true, { keepExpanded: true });
                 }}
                 disabled={index === 0}
                 aria-label="上一任务"
@@ -1617,7 +1712,7 @@ export default function HaiTunAgentWorkspace({
                 className="card-arrow next chat-pane-arrow"
                 onClick={(event) => {
                   event.stopPropagation();
-                  goTo(index + 1);
+                  goTo(index + 1, true, { keepExpanded: true });
                 }}
                 disabled={index === cards.length - 1}
                 aria-label="下一任务"
@@ -1646,7 +1741,7 @@ export default function HaiTunAgentWorkspace({
                 <button
                   type="button"
                   className="focus-card-pager-btn"
-                  onClick={() => goTo(index - 1)}
+                  onClick={() => goTo(index - 1, true, { keepExpanded: true })}
                   disabled={index === 0}
                   aria-label="上一任务"
                 >
@@ -1658,7 +1753,7 @@ export default function HaiTunAgentWorkspace({
                 <button
                   type="button"
                   className="focus-card-pager-btn"
-                  onClick={() => goTo(index + 1)}
+                  onClick={() => goTo(index + 1, true, { keepExpanded: true })}
                   disabled={index === cards.length - 1}
                   aria-label="下一任务"
                 >
@@ -1750,6 +1845,7 @@ export default function HaiTunAgentWorkspace({
                 typing={typingCard === unitCard.id}
                 title={unitCard.title}
                 progressLog={typingCard === unitCard.id ? turnProgressLog : null}
+                liveThinking={typingCard === unitCard.id ? liveThinkingText : ""}
                 workspaceRoot={workspace}
                 loadingHistory={historyLoadingIds.has(unitCard.id)}
                 onFeedback={(index, kind) => setMessageFeedback(unitCard.id, index, kind)}
@@ -1932,7 +2028,7 @@ export default function HaiTunAgentWorkspace({
           </div>
         </div>
 
-        <button type="button" className="brand-block" onClick={goHome} aria-label="返回 HaiTun Agent">
+        <button type="button" className="brand-block" onClick={() => openNewTask()} aria-label="新建任务/聊天">
           <BrandLogo />
           <div><strong>HaiTun</strong><span>Agent</span></div>
         </button>
@@ -1992,7 +2088,7 @@ export default function HaiTunAgentWorkspace({
               <Grid2X2 size={18} /> {OVERVIEW_LABEL} <ChevronRight size={15} />
             </button>
           )}
-          <button type="button" className={mainView === "workspace" && (sidebarPanel === "history" || sidebarPanel === "pending" || sidebarPanel === "deliveries" || sidebarPanel === "working" || (!SHOW_OVERVIEW_AND_TEMPLATES && !sidebarPanel)) ? "active" : ""} onClick={() => { setMainView("workspace"); setSidebarPanel((current) => current === "history" ? null : "history"); }}>
+          <button type="button" className={mainView === "workspace" && (sidebarPanel === "history" || sidebarPanel === "pending" || sidebarPanel === "deliveries" || sidebarPanel === "working" || (!SHOW_OVERVIEW_AND_TEMPLATES && !sidebarPanel)) ? "active" : ""} onClick={() => setSidebarPanel((current) => current === "history" ? null : "history")}>
             <History size={18} /> 历史任务 {(sidebarPanel === "history" || sidebarPanel === "pending" || sidebarPanel === "deliveries" || sidebarPanel === "working") ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           </button>
 
@@ -2053,6 +2149,7 @@ export default function HaiTunAgentWorkspace({
             onToast={showToast}
             openModelsOnMount={bootReady && openModelsOnce}
             onModelsAutoOpened={() => setOpenModelsOnce(false)}
+            openPanelRequest={hubOpenRequest}
             onAisChanged={(ais: AiInfo[]) => {
               if (ais.length === 0) {
                 setAiId(null);
@@ -2191,6 +2288,26 @@ export default function HaiTunAgentWorkspace({
           onRevise={reviseArtifact}
         />
       )}
+      {firstRunOpen && (
+        <FirstRunGuide
+          onClose={closeFirstRun}
+          onConfigureModels={configureFirstRun}
+          onStartTask={startTaskFirstRun}
+        />
+      )}
+      {firstRunSpotlightStep === 1 && (
+        <FirstRunSpotlight step={1} onConfirm={() => confirmFirstRunSpotlight(1)} />
+      )}
+      {firstRunSpotlightStep === 2 && (
+        <FirstRunSpotlight step={2} onConfirm={() => confirmFirstRunSpotlight(2)} />
+      )}
+      {taskStatusTipVisible &&
+        mainView === "workspace" &&
+        chatExpanded &&
+        (taskStatusTipTaskIdRef.current == null ||
+          currentTask?.id === taskStatusTipTaskIdRef.current) && (
+          <TaskStatusTip onClose={closeTaskStatusTip} />
+        )}
       {toast && <div className="toast" role="status" aria-live="polite"><Check size={16} /> {toast}</div>}
     </div>
   );

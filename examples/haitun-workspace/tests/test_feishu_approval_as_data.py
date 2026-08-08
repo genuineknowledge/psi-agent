@@ -474,7 +474,7 @@ def test_reading_an_instance_keeps_its_derived_attachments() -> None:
     endpoint would have handed the model a JSON string to parse and a distinction to
     rediscover, on the exact path where a missed expiry means the receipts are gone.
     """
-    impl_src = (TOOLS_DIR / "_feishu_impl.py").read_text(encoding="utf-8")
+    impl_src = (TOOLS_DIR / "_feishu" / "approval.py").read_text(encoding="utf-8")
     assert "def _parse_approval_attachments(" in impl_src
     assert "attachments" in impl_src
 
