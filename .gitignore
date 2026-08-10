@@ -11,3 +11,4 @@ dist/
 /result
 .worktrees/
 evals/
+state/

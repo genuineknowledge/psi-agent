@@ -320,18 +320,33 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
-| POST | `/sessions` | Create Session |
-| DELETE | `/sessions/{session_id}` | Delete Session |
+| POST | `/routers` | Create and start Router |
+| DELETE | `/routers/{router_id}` | Stop and delete Router (returns 409 if still referenced by other Routers) |
+| GET | `/routers` | List all Routers |
+| POST | `/sessions` | Create Session (optional `agent` / `workspace` parameters, falls back to Gateway defaults) |
+| DELETE | `/sessions/{session_id}` | Delete Session (cascade deletes history JSONL, session titles, and task summaries) |
 | GET | `/sessions` | List all Sessions |
-| POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
-| GET | `/sessions/{session_id}/history` | Get conversation history |
+| POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream, supports multipart file upload and blob channels) |
+| GET | `/sessions/{session_id}/history` | Get conversation history (including `reasoning` and structured `tools` calls) |
+| GET | `/sessions/{session_id}/todos` | Get session Todos list (reads from AppData root path first, dual-reads legacy workspace as fallback) |
+| GET | `/sessions/{session_id}/todo-segments` | Get todo sub-task segments list |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get a single todo segment detail (including `todos[]` history checklist) |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Modify a single todo segment title (can be overwritten with turn summary) |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
+| GET | `/summaries` | Get all session task summaries |
+| POST | `/summaries` | Set task summary |
+| POST | `/summaries/generate` | AI generate task summary |
+| GET | `/defaults` | Get default `agent`, `workspace` directories and `appdata` memory-area root path |
+| GET | `/workspace/cwd` | Get Gateway process current working directory |
+| GET | `/workspace/places` | Get PathPicker shortcut locations (cwd/home/desktop, etc.) and volume drives |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
-| GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/file` | Read the specified file content encoded as base64 |
+| POST | `/workspace/reveal` | Locate and open OS file manager at path |
+| POST | `/ui/attention` | Flash system tray or webview attention hint when a background chat turn finishes (best-effort) |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 

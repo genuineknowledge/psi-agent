@@ -3,25 +3,25 @@ from __future__ import annotations
 import anyio
 import pytest
 
-from psi_agent.gateway._summary_manager import SummaryManager
+from psi_agent.gateway._title_manager import TitleManager
 
 
 @pytest.mark.anyio
-async def test_summary_set_get_delete() -> None:
-    m = SummaryManager()
-    await m.set("s1", "为星辰科技写办公室剧本杀角色卡")
-    assert m.get_all() == {"s1": "为星辰科技写办公室剧本杀角色卡"}
+async def test_title_set_get_delete() -> None:
+    m = TitleManager()
+    await m.set("s1", "A Great Conversation Title")
+    assert m.get_all() == {"s1": "A Great Conversation Title"}
     await m.delete("s1")
     assert m.get_all() == {}
     await m.delete("s1")  # idempotent
 
 
 @pytest.mark.anyio
-async def test_summary_manager_concurrency() -> None:
-    m = SummaryManager()
+async def test_title_manager_concurrency() -> None:
+    m = TitleManager()
 
     async def task(i: int) -> None:
-        await m.set(f"session_{i}", f"Summary {i}")
+        await m.set(f"session_{i}", f"Title {i}")
         await anyio.sleep(0.001)
         await m.delete(f"session_{i}")
 

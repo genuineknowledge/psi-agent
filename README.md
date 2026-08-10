@@ -308,18 +308,33 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
-| POST | `/sessions` | 创建 Session |
-| DELETE | `/sessions/{session_id}` | 删除 Session |
+| POST | `/routers` | 创建并启动 Router |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router（如果被其它 Router 引用则返回 409） |
+| GET | `/routers` | 列出所有 Router |
+| POST | `/sessions` | 创建 Session（可选 `agent` / `workspace`，缺省用 Gateway defaults） |
+| DELETE | `/sessions/{session_id}` | 删除 Session，级联删除对话历史 JSONL、会话标题和任务摘要 |
 | GET | `/sessions` | 列出所有 Session |
-| POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
-| GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式，支持 multipart 文件上传和 blob 通道） |
+| GET | `/sessions/{session_id}/history` | 获取会话历史（包括 `reasoning` 与结构化 `tools` 调用） |
+| GET | `/sessions/{session_id}/todos` | 获取会话 Todos 列表（优先读取 AppData 路径，缺失则双读 legacy） |
+| GET | `/sessions/{session_id}/todo-segments` | 获取子任务分段列表 |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 获取单个子任务段详情（含 `todos[]` 历史列表） |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 修改单个子任务段标题（可以用回合 summary 覆盖） |
 | POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
+| GET | `/summaries` | 获取所有会话任务摘要 |
+| POST | `/summaries` | 设置任务摘要 |
+| POST | `/summaries/generate` | AI 生成任务摘要 |
+| GET | `/defaults` | 获取默认 `agent`、`workspace` 目录和 `appdata` 记忆区根路径 |
+| GET | `/workspace/cwd` | 获取 Gateway 进程当前工作目录 |
+| GET | `/workspace/places` | 获取 PathPicker 快捷位置列表（cwd/home/desktop 等）与盘符 |
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
-| GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/file` | 读取指定文件内容为 base64 |
+| POST | `/workspace/reveal` | 在本机文件管理器中定位并显示路径 |
+| POST | `/ui/attention` | 会话在后台完成时，触发闪烁系统托盘或 webview 注意力提示（best-effort） |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 
