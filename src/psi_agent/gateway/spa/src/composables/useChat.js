@@ -14,6 +14,7 @@ import {
 import { applyTurnOutcome, normalizeFailedTurns, resolveTurnOutcome } from '../messageTurn.js'
 import { hasAssistantSegmentAfterUser } from '../assistantSegments.js'
 import { stripTransferMarkers } from '../sendMarkers.js'
+import { normalizeRouterStatusEvent } from '../routerStatus.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
@@ -68,6 +69,16 @@ function mirrorVisibleMessages(sid, list) {
   }
 }
 
+function clearSessionRouterStatus(sid) {
+  const list = getMessagesList(sid)
+  for (const message of list) {
+    if (message.role === 'assistant' && message.routerStatus !== null) {
+      message.routerStatus = null
+    }
+  }
+  return list
+}
+
 function isSessionStreaming(sid) {
   return !!useSessionStore().sessionStreaming[sid]
 }
@@ -89,11 +100,16 @@ function setSessionStreaming(sid, value, { markDone = false } = {}) {
 /** Clear streaming flag when no live AbortController (tab refresh / crashed fetch). */
 export function clearStaleStreaming() {
   const sid = resolveActiveChatKey()
-  if (!sid || !isSessionStreaming(sid)) return
+  if (!sid) return
+  if (!isSessionStreaming(sid)) {
+    mirrorVisibleMessages(sid, clearSessionRouterStatus(sid))
+    return
+  }
   const session = useSessionStore()
   const chat = useChatStore()
   if (session.sessionAbortControllers[sid] || chat.abortController) return
   setSessionStreaming(sid, false)
+  mirrorVisibleMessages(sid, clearSessionRouterStatus(sid))
 }
 
 /** Ensure sidebar shows this session immediately with a placeholder title. */
@@ -124,6 +140,7 @@ function setSessionAbortController(sid, controller) {
 function addMessage(sid, role, id) {
   const list = getMessagesList(sid)
   const m = { id, role, text: '', html: '', files: [], stopped: false, failed: false }
+  if (role === 'assistant') m.routerStatus = null
   list.push(m)
   mirrorVisibleMessages(sid, list)
   if (isVisibleChatKey(sid)) {
@@ -135,7 +152,16 @@ function addMessage(sid, role, id) {
 function addAssistantAfter(sid, userMsg) {
   const list = getMessagesList(sid)
   const idx = list.indexOf(userMsg)
-  const m = { id: `a-${Date.now()}`, role: 'assistant', text: '', html: '', files: [], stopped: false, failed: false }
+  const m = {
+    id: `a-${Date.now()}`,
+    role: 'assistant',
+    text: '',
+    html: '',
+    files: [],
+    stopped: false,
+    failed: false,
+    routerStatus: null,
+  }
   if (idx >= 0) {
     list.splice(idx + 1, 0, m)
   } else {
@@ -213,6 +239,7 @@ function ensureStreamingAssistant(sid, userMsg, currentAsst) {
 
 async function runChatTurn(sid, { userMsg, text, files }) {
   ensureSessionMessageList(sid)
+  mirrorVisibleMessages(sid, clearSessionRouterStatus(sid))
   setSessionStreaming(sid, true)
   chatTurnScrollReset()
 
@@ -249,6 +276,13 @@ async function runChatTurn(sid, { userMsg, text, files }) {
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.text += '\n[Error: ' + chunkData.error + ']'
           asst.html = renderMd(stripTransferMarkers(asst.text))
+          clearSessionRouterStatus(sid)
+        } else if (chunkData.type === 'router_status') {
+          const routerStatus = normalizeRouterStatusEvent(chunkData)
+          if (routerStatus) {
+            asst = ensureStreamingAssistant(sid, userMsg, asst)
+            asst.routerStatus = routerStatus
+          }
         } else if (chunkData.type === 'reasoning') {
           // Thinking + tool markers arrive as reasoning. Do not start a new
           // bubble — keep one assistant message for the whole user turn.
@@ -267,7 +301,10 @@ async function runChatTurn(sid, { userMsg, text, files }) {
         asst.text += '\n[Error: ' + e.message + ']'
         asst.html = renderMd(stripTransferMarkers(asst.text))
       }
+      clearSessionRouterStatus(sid)
     }
+
+    clearSessionRouterStatus(sid)
 
     const msgs = getMessagesList(sid)
     const asstIdx = asst ? msgs.indexOf(asst) : -1
@@ -286,11 +323,13 @@ async function runChatTurn(sid, { userMsg, text, files }) {
     outcome = resolveTurnOutcome(msgs, userMsg, asst)
     if (streamError && outcome === 'incomplete') outcome = 'error'
     applyTurnOutcome(msgs, userMsg, asst, outcome)
+    clearSessionRouterStatus(sid)
     const normalized = normalizeFailedTurns(msgs)
     msgs.splice(0, msgs.length, ...normalized)
     mirrorVisibleMessages(sid, msgs)
     saveHistory(sid, msgs)
   } finally {
+    mirrorVisibleMessages(sid, clearSessionRouterStatus(sid))
     setSessionStreaming(sid, false, { markDone: true })
     setSessionAbortController(sid, null)
   }
@@ -310,8 +349,12 @@ function chatTurnScrollReset() {
 
 function abortOptimisticSend(sid, userMsg) {
   setSessionStreaming(sid, false)
-  if (!userMsg) return
   const list = getMessagesList(sid)
+  clearSessionRouterStatus(sid)
+  if (!userMsg) {
+    mirrorVisibleMessages(sid, list)
+    return
+  }
   userMsg.failed = true
   userMsg.failedReason = 'error'
   const idx = list.indexOf(userMsg)
@@ -333,6 +376,7 @@ export async function sendMessage() {
   // Recover stale streaming after Gateway restart or aborted fetch without finally.
   if (isSessionStreaming(sid) && !session.sessionAbortControllers[sid] && !chat.abortController) {
     setSessionStreaming(sid, false)
+    mirrorVisibleMessages(sid, clearSessionRouterStatus(sid))
   }
   if (isSessionStreaming(sid)) return
   const text = chat.inputText.trim()
@@ -445,6 +489,7 @@ export function stopMessage() {
   if (!sid) return
   const controller = session.sessionAbortControllers[sid] ?? chat.abortController
   if (controller) controller.abort()
+  mirrorVisibleMessages(sid, clearSessionRouterStatus(sid))
 }
 
 async function generateTitle(sid) {

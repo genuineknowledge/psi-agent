@@ -9,7 +9,11 @@
       </div>
       <div class="msg-content">
         <div class="msg-speaker">{{ speakerLabel }}</div>
-        <div class="bubble-wrap">
+        <RouterStatusIndicator
+          v-if="showRouterStatus"
+          :status="msg.routerStatus"
+        />
+        <div v-if="!showRouterStatus || hasVisibleContent" class="bubble-wrap">
           <div v-if="msg.role === 'user'" class="side-actions">
             <button class="copy-btn" @click="copyMessage" :title="copied ? '已复制' : '复制'">
               <span class="material-symbols-outlined">{{ copied ? 'check' : 'content_copy' }}</span>
@@ -111,6 +115,7 @@ import { useClipboard, useStorage } from '@vueuse/core'
 import { useChatStore } from '../stores/chat.js'
 import { resendFailedMessage, regenerateAssistantMessage } from '../composables/useChat.js'
 import FilePreview from './FilePreview.vue'
+import RouterStatusIndicator from './RouterStatusIndicator.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
 import { FAILED_REASON_LABEL } from '../messageTurn.js'
 import {
@@ -149,6 +154,12 @@ const hasVisibleContent = computed(() => {
   const hasFiles = Array.isArray(props.msg.files) && props.msg.files.length > 0
   return !!text || hasFiles
 })
+
+const showRouterStatus = computed(() => (
+  props.isStreamingTarget
+  && props.msg.role === 'assistant'
+  && !!props.msg.routerStatus
+))
 
 const userInitial = computed(() =>
   userName.value ? userName.value.trim().charAt(0).toUpperCase() : ''

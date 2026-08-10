@@ -101,6 +101,8 @@ spa/
 │   ├── sendMarkers.js               # stripTransferMarkers（剥掉气泡/历史展示里的 [SEND:]/[RECV:]，防绝对路径泄露）
 │   ├── mdTable.js                   # GFM 表格复制/下载（MessageBubble + FilePreview MD 预览共用）
 │   ├── assistantSegments.js         # 助手分段辅助（一轮 user → 至多一个主 assistant 气泡）
+│   ├── routerStatus.js              # Router 状态协议白名单归一化 + 3 模式/7 阶段展示文案
+│   ├── routerStatus.test.js         # Router 状态合法性、隐私字段剥离与展示文案单测
 │   ├── utils.test.js                # renderMd GFM 表格规范化单测（Vitest）
 │   ├── sendMarkers.test.js          # stripTransferMarkers 单测
 │   ├── api.js                       # fetch 封装(api) + chat 流请求(streamChat)
@@ -116,6 +118,7 @@ spa/
 │   │   ├── SessionStreamIndicator.vue # 侧栏流式 spinner / 后台完成未读蓝点
 │   │   ├── ChatArea.vue             # 消息列表容器 + 自动滚动 + 空状态
 │   │   ├── MessageBubble.vue        # 单条消息：Markdown + 附件 + 助手操作栏（赞踩/复制/重新生成）
+│   │   ├── RouterStatusIndicator.vue # Router routing/aggregation/fallback 的瞬时状态卡
 │   │   ├── ThinkingBubble.vue       # 等待首 token 的三个脉冲圆点
 │   │   ├── InputBar.vue             # 输入 UI：textarea 自适应高度 + 文件选择 + 发送按钮；发送逻辑委托给 useChat.js；内嵌 ModelPanel
 │   │   ├── ModelPanel.vue           # 输入栏旁模型切换（只切换/删除已连接；链接走 User Hub）
@@ -190,6 +193,8 @@ spa/
 | 文件 | 组件职责 | 关键逻辑 |
 |------|----------|----------|
 | `Sidebar.vue` | 会话列表侧栏 | 工作区树 + draft 虚拟行「新对话」（client-only）+ 真实 session 列表；「+」/底部按钮 emit `new-session` → `startDraftChat` |
+| `MessageBubble.vue` | 单条消息展示 | 流式 assistant 有合法 `routerStatus` 时显示 `RouterStatusIndicator`；状态与正文可同时存在，普通 AI 或非法状态仍使用 `ThinkingBubble` |
+| `RouterStatusIndicator.vue` | Router 运行状态卡 | 展示 routing / aggregation / fallback 的模式、阶段、并行或尝试进度及嵌套标记；`role=status` 礼貌播报，移动端换行并尊重 reduced-motion |
 | `InputBar.vue` | 输入区 UI | 仅 chat 态由 App 挂载；Enter 发送（`useChat.sendMessage`，首条发送时 `promoteDraftToSession`） |
 | `ModelPanel.vue` | 会话模型切换 | 由 InputBar 内嵌；chip 显示当前模型；浮层只切换/`delete` 已连接模型（**不**提供链接入口——链接走右上角 User Hub → 大模型） |
 | `BaseDialog.vue` | 弹窗外壳 | 所有弹窗的基类：overlay + dialog + `title`/默认/`actions` 三插槽；`show` prop 控制，overlay 点击 emit `close`；`.ok`/`.cancel` 按钮样式在此 scoped |
@@ -211,7 +216,7 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 / 导出 |
 |------|------|-----------------|
-| `useChat.js` | 发送消息 | `sendMessage()` 先乐观 UI（清输入、用户气泡、ThinkingBubble），再 `encodeFiles` / draft 时 `promoteDraftToSession` / `runChatTurn()`；失败时 `abortOptimisticSend`。流式结束后 `applyTurnOutcome` + `normalizeFailedTurns`；`outcome === 'ok'` 且当前未聚焦该会话时 `POST /ui/attention`（托盘脉冲 / webview 任务栏闪烁）。**刻意**：SSE `type:'reasoning'`（thinking + tool markers）**不分新气泡**——一轮 user → 至多一个主 assistant。`regenerateAssistantMessage` / `resendFailedMessage`。气泡文案经 `stripTransferMarkers`。滚动委托 `useScroll` |
+| `useChat.js` | 发送消息 | `sendMessage()` 先乐观 UI（清输入、用户气泡、ThinkingBubble），再 `encodeFiles` / draft 时 `promoteDraftToSession` / `runChatTurn()`；失败时 `abortOptimisticSend`。合法 SSE `type:'router_status'` 经 `normalizeRouterStatusEvent` 后只挂到当前 session 的流式 assistant，回合开始/结束、停止、错误及 stale 恢复时清理。流式结束后 `applyTurnOutcome` + `normalizeFailedTurns`；`outcome === 'ok'` 且当前未聚焦该会话时 `POST /ui/attention`（托盘脉冲 / webview 任务栏闪烁）。**刻意**：SSE `type:'reasoning'`（thinking + tool markers）**不分新气泡**——一轮 user → 至多一个主 assistant。`regenerateAssistantMessage` / `resendFailedMessage`。气泡文案经 `stripTransferMarkers`。滚动委托 `useScroll` |
 | `useSSE.js` | SSE 解析 | `async function* readSSE(reader)`：TextDecoder 累积 → `\r\n`→`\n` → 逐行取 `data:` → `[DONE]` 结束 / `JSON.parse` / 非 JSON 降级为 `{type:'text'}` |
 | `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → `restoreSessionView`（无 live AbortController 时清 stale `streaming`）→ 从 `/history` 或 localStorage 加载消息时对 **user/assistant** 均 `stripTransferMarkers`（防 `[RECV:]` 路径泄露）→ 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
 | `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |
@@ -347,6 +352,18 @@ ReadableStream reader
 
 **注意**：这是一个 `async function*` generator，`useChat.js` 中通过 `for await (const chunk of readSSE(reader))` 消费。
 
+### Router 状态展示（P0）
+
+Gateway 将 Router 生命周期输出为扁平 SSE 事件：
+
+```json
+{"type":"router_status","version":1,"trace_id":"…","mode":"fallback","phase":"attempting","depth":0,"attempt":2,"total":3}
+```
+
+`routerStatus.js:normalizeRouterStatusEvent` 是 SPA v1 的唯一协议入口：仅接受 version 1、合法 UUID、匹配的 mode/phase、非负 depth，以及 aggregation 的 `completed/total` 或 fallback 的 `attempt/total`；所有未知字段都通过白名单投影剥离，candidate/model/socket/error 等信息不得进入消息对象或 DOM。无效或不完整状态返回 `null`，界面继续显示普通 `ThinkingBubble`。
+
+合法状态只作为当前流式 assistant 的瞬时 `routerStatus` 字段存在。`MessageBubble` 在流式期间用 `RouterStatusIndicator` 展示 routing（选择/生成）、aggregation（并行收集/综合/降级）和 fallback（尝试/切换/回放）；已有正文时状态卡位于正文上方。状态按 session 写入 `sessionMessages[id]`，所以切换会话不会串流；回合开始/完成、停止、错误、Abort 和 stale streaming 恢复都会清理。`saveHistory` 不序列化该字段，Router 运行状态不会进入 localStorage 或服务端 history。
+
 ## 文件预览 (`FilePreview.vue`)
 
 MessageBubble 中点击附件 → 触发 `FilePreview` 组件（Teleport 到 `body` 的抽屉式面板）。组件按文件扩展名动态 import 对应预览库（懒加载，不进主 bundle）：
@@ -407,8 +424,9 @@ Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 6. for await (readSSE(reader)):
    - text chunk → asst.text += chunk.text → renderMd → 更新 v-html
    - blob chunk → asst.files.push({name, data})
+   - router_status chunk → 白名单校验 → asst.routerStatus → 更新瞬时状态卡（不进入正文/附件/reasoning）
    - scrollChatAreaIfLocked → 自动滚底（unless userHasScrolledUp）
-7. streaming=false → saveHistory → 仍为占位标题 → generateTitle → POST `/titles/generate`
+7. 清理 routerStatus → streaming=false → saveHistory → 仍为占位标题 → generateTitle → POST `/titles/generate`
 8. promote/encode/SSE 失败 → abortOptimisticSend（清 streaming、标 user failed、移除空 assistant）
 ```
 
