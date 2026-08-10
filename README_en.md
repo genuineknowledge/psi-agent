@@ -320,18 +320,35 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create and start Router |
+| DELETE | `/routers/{router_id}` | Stop and delete Router (returns 409 if still referenced) |
+| GET | `/routers` | List all Routers |
 | POST | `/sessions` | Create Session |
-| DELETE | `/sessions/{session_id}` | Delete Session |
+| DELETE | `/sessions/{session_id}` | Delete Session along with its history and titles |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/todos` | Read Session todos |
+| GET | `/sessions/{session_id}/todo-segments` | Get todo sub-task segments list |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get a single todo segment |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Modify todo segment label |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
+| GET | `/oauth/callback` | OAuth redirect landing and temporary storage |
+| GET | `/oauth/code` | Initiator retrieves OAuth code once by state |
+| GET | `/defaults` | Get default agent, workspace, and appdata paths |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
-| GET | `/workspace/browse` | Browse directory (`?path=...`) |
+| GET | `/summaries` | Get all session task summaries |
+| POST | `/summaries` | Set session task summary |
+| POST | `/summaries/generate` | AI auto-generate task summary |
+| POST | `/ui/attention` | Flash tray or webview notification when a background turn finishes |
 | GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | Get PathPicker shortcuts and drive letters |
+| GET | `/workspace/browse` | Browse directory (`?path=...`) |
+| GET | `/workspace/file` | Read file as base64 |
+| POST | `/workspace/reveal` | Show path in local OS file manager |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 

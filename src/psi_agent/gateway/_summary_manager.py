@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 
+import anyio
 from aiohttp import ClientSession, ClientTimeout
 from loguru import logger
 
@@ -20,20 +21,23 @@ class SummaryManager:
     def __init__(self, _persist: Callable[[], Awaitable[None]] | None = None) -> None:
         self._summaries: dict[str, str] = {}
         self._persist = _persist or _noop
+        self._lock = anyio.Lock()
 
     def get_all(self) -> dict[str, str]:
         return dict(self._summaries)
 
     async def set(self, session_id: str, summary: str) -> None:
-        self._summaries[session_id] = summary
-        await self._persist()
+        async with self._lock:
+            self._summaries[session_id] = summary
+            await self._persist()
 
     async def delete(self, session_id: str) -> None:
-        if session_id not in self._summaries:
-            return
-        del self._summaries[session_id]
-        await self._persist()
-        logger.debug(f"Summary deleted for session {session_id!r}")
+        async with self._lock:
+            if session_id not in self._summaries:
+                return
+            del self._summaries[session_id]
+            await self._persist()
+            logger.debug(f"Summary deleted for session {session_id!r}")
 
     async def generate(
         self,
@@ -57,7 +61,7 @@ class SummaryManager:
         }
         try:
             connector, endpoint = resolve_connector_and_endpoint(ai_socket)
-            timeout = ClientTimeout(total=None)
+            timeout = ClientTimeout(total=None, connect=30.0)
             async with (
                 ClientSession(connector=connector, timeout=timeout) as session,
                 session.post(endpoint, json=body) as resp,
@@ -99,8 +103,9 @@ class SummaryManager:
                 summary = " ".join(summary.strip().strip("'\"").split())
                 logger.info(f"Summary generation result: {summary!r}")
                 if summary:
-                    self._summaries[session_id] = summary
-                    await self._persist()
+                    async with self._lock:
+                        self._summaries[session_id] = summary
+                        await self._persist()
                     return summary
                 logger.warning(f"Summary generation empty for session {session_id!r}")
                 return None

@@ -1,0 +1,16 @@
+{
+  "ais": [
+    {
+      "id": "a2",
+      "provider": "x",
+      "model": "y",
+      "api_key": "k2",
+      "base_url": "",
+      "max_context_tokens": -1
+    }
+  ],
+  "routers": [],
+  "sessions": [],
+  "titles": [],
+  "summaries": []
+}
