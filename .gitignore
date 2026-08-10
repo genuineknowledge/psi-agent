@@ -13,3 +13,4 @@ dist/
 # Local-only evaluation assets
 /evals/
 /tests/evals/
+/tests/integration/test_fallback_reliability_eval.py
