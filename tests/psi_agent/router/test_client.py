@@ -108,6 +108,23 @@ async def test_complete_rejects_multiple_choices() -> None:
 
 
 @pytest.mark.anyio
+async def test_complete_rejects_malformed_router_status() -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return await _sse_response(
+            request,
+            [b'data: {"choices": [{"delta": {"router_status": {"version": 2}}, "finish_reason": null}]}\n\n'],
+        )
+
+    async with _serve(handler) as server_url:
+        with pytest.raises(RouterUpstreamError, match="invalid router_status"):
+            await RouterHttpClient().complete(
+                socket=server_url,
+                body={"messages": [], "stream": True},
+                timeout=None,
+            )
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("status", [400, 503])
 async def test_complete_raises_for_non_200_response(status: int) -> None:
     async def handler(request: web.Request) -> web.Response:

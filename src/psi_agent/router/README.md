@@ -145,11 +145,43 @@ CLI 的 `--upstream` 仍是同序的 Socket/description 二元序列；组合时
 
 Router 深拷贝公开请求，删除客户端 `model`，强制 `stream=true`，其余已知和未知参数均
 透传。AI 与 Selector/Aggregator 控制边删除内部 `routing`；显式 Router 边保留
-`routing.session_id`，并把当前 candidate ID 追加到 `routing.path`。请求必须包含 object
-列表形式的 `messages`；`tools` 存在时也必须是 object 列表。
+`routing.session_id` 和同一回合的 UUID `routing.trace_id`，并把当前 candidate ID 追加到
+`routing.path`。请求必须包含 object 列表形式的 `messages`；`tools` 存在时也必须是 object 列表。
 
 所有协议边界坚持显式单 choice：0 choice 作为心跳跳过，多 choice 拒绝。HTTP 响应提交前
 的请求错误返回 HTTP 400 JSON；提交后的错误返回 `finish_reason="error"` 的 SSE 帧。
+
+## Router 状态协议
+
+Router 在正文之外发送独立的 `delta.router_status` SSE 帧；旧客户端可忽略该未知字段，状态帧
+不占用 `content`、`reasoning` 或 `tool_calls`：
+
+```json
+{
+  "choices": [{
+    "index": 0,
+    "delta": {"router_status": {
+      "version": 1,
+      "trace_id": "123e4567-e89b-12d3-a456-426614174000",
+      "mode": "fallback",
+      "phase": "attempting",
+      "depth": 0,
+      "attempt": 2,
+      "total": 3
+    }},
+    "finish_reason": null
+  }]
+}
+```
+
+- routing：普通轮次发送 `selecting → generating`；工具 sticky 轮仅发送 `generating`。
+- aggregation：发送 `collecting → synthesizing`；部分分支失败但允许综合时，后者带
+  `degraded=true`，并用 `completed/total` 表示收集边界。
+- fallback：每个候选发送 `attempting`，失败且仍有后继时发送 `switching`，首个成功候选在
+  正文回放前发送 `replaying`；`attempt` 从 1 开始。
+- 嵌套 Router 共享 `trace_id`，`depth` 等于当前 `routing.path` 长度。fallback 不回放缓冲中的
+  内层状态，避免陈旧或失败候选进度泄漏。
+- 状态只包含生命周期与计数，不包含 candidate ID、Socket、模型名、prompt、正文或错误详情。
 
 ## aggregation 数据流
 

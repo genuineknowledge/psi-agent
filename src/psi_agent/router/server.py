@@ -14,7 +14,7 @@ from loguru import logger
 from psi_agent._sockets import create_site
 
 from .errors import InvalidRouterRequestError, RouterError
-from .request import routing_scope_from_body
+from .request import routing_scope_from_body, routing_trace_id_from_body
 
 
 class RouterStrategy(Protocol):
@@ -176,6 +176,7 @@ def _validate_request_body(body: dict[str, Any]) -> None:
     if body.get("stream", True) is not True:
         raise InvalidRouterRequestError("Router service requires stream=true")
     routing_scope_from_body(body=body)
+    routing_trace_id_from_body(body=body)
 
 
 def _discard_session_state(*, strategy: RouterStrategy, body: dict[str, Any]) -> None:

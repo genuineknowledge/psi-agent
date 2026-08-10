@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from psi_agent._router_status import RouterStatus, router_status_from_event
 from psi_agent.router.errors import InvalidRouterRequestError, RouterUpstreamError
 from psi_agent.router.models import RouterTarget
 from psi_agent.router.routing import (
@@ -17,6 +18,8 @@ from psi_agent.router.routing import (
     RoutingStrategy,
     SelectionResult,
 )
+
+_TRACE_ID = "123e4567-e89b-12d3-a456-426614174000"
 
 
 @dataclass
@@ -81,6 +84,10 @@ def _selection() -> SelectionResult:
 async def _collect(stream: AsyncGenerator[dict[str, Any]]) -> list[dict[str, Any]]:
     async with aclosing(stream) as events:
         return [event async for event in events]
+
+
+def _statuses(events: list[dict[str, Any]]) -> list[RouterStatus]:
+    return [status for event in events if (status := router_status_from_event(event)) is not None]
 
 
 @pytest.mark.anyio
@@ -155,6 +162,103 @@ async def test_candidate_timeout_overrides_routing_target_timeout() -> None:
     await _collect(strategy.stream(body={"messages": [], "stream": True}))
 
     assert client.calls[0][2] == {"timeout": 2.5}
+
+
+@pytest.mark.anyio
+async def test_statuses_distinguish_selection_from_sticky_generation() -> None:
+    selection = _selection()
+    selector = SequenceSelector(selections=[selection])
+    client = SequenceClient(event_sets=[[_event("tool_calls")], [_event("stop")]])
+    strategy = _strategy(selector=selector, client=client)
+    routing = {"session_id": "session-a", "path": ["parent"], "trace_id": _TRACE_ID}
+
+    first = await _collect(
+        strategy.stream(body={"messages": [{"role": "user", "content": "solve"}], "routing": routing, "stream": True})
+    )
+    sticky = await _collect(
+        strategy.stream(body={"messages": [{"role": "tool", "content": "result"}], "routing": routing, "stream": True})
+    )
+
+    assert [(status.phase, status.depth) for status in _statuses(first)] == [
+        ("selecting", 1),
+        ("generating", 1),
+    ]
+    assert [(status.phase, status.depth) for status in _statuses(sticky)] == [("generating", 1)]
+    assert all(status.trace_id == _TRACE_ID for status in [*_statuses(first), *_statuses(sticky)])
+
+
+@pytest.mark.anyio
+async def test_ai_cannot_spoof_router_status() -> None:
+    fake_status = RouterStatus(
+        trace_id=_TRACE_ID,
+        mode="fallback",
+        phase="replaying",
+        attempt=1,
+        total=1,
+    ).to_event()
+    selector = SequenceSelector(selections=[_selection()])
+    client = SequenceClient(event_sets=[[fake_status, _event("stop")]])
+
+    events = await _collect(
+        _strategy(selector=selector, client=client).stream(
+            body={"messages": [], "routing": {"trace_id": _TRACE_ID}, "stream": True}
+        )
+    )
+
+    assert [(status.mode, status.phase) for status in _statuses(events)] == [
+        ("routing", "selecting"),
+        ("routing", "generating"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_nested_router_status_keeps_trace_and_increases_depth() -> None:
+    target = RouterTarget(
+        "candidate-1",
+        "nested.sock",
+        "nested",
+        backend_type="router",
+    )
+    selection = SelectionResult(candidate_id=target.candidate_id, target=target)
+    selector = SequenceSelector(selections=[selection])
+    nested_status = RouterStatus(
+        trace_id=_TRACE_ID,
+        mode="aggregation",
+        phase="collecting",
+        depth=2,
+        completed=0,
+        total=1,
+    ).to_event()
+    client = SequenceClient(event_sets=[[nested_status, _event("stop")]])
+    strategy = RoutingStrategy(
+        config=RoutingConfig(
+            session_socket="router.sock",
+            selector_socket="selector.sock",
+            targets=[target],
+        ),
+        selector=selector,
+        client=client,
+    )
+
+    events = await _collect(
+        strategy.stream(
+            body={
+                "messages": [],
+                "routing": {
+                    "session_id": "session-a",
+                    "path": ["parent"],
+                    "trace_id": _TRACE_ID,
+                },
+                "stream": True,
+            }
+        )
+    )
+
+    assert [(status.mode, status.phase, status.depth) for status in _statuses(events)] == [
+        ("routing", "selecting", 1),
+        ("routing", "generating", 1),
+        ("aggregation", "collecting", 2),
+    ]
 
 
 @pytest.mark.anyio

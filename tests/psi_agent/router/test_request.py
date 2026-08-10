@@ -6,7 +6,15 @@ import pytest
 
 from psi_agent.router.errors import InvalidRouterRequestError
 from psi_agent.router.models import RouterTarget
-from psi_agent.router.request import copy_public_request_body, copy_target_request_body, routing_scope_from_body
+from psi_agent.router.request import (
+    copy_public_request_body,
+    copy_target_request_body,
+    ensure_routing_trace_id,
+    routing_scope_from_body,
+    routing_trace_id_from_body,
+)
+
+_TRACE_ID = "123e4567-e89b-12d3-a456-426614174000"
 
 
 def test_copy_public_request_body_is_deep_and_strips_only_private_fields() -> None:
@@ -87,7 +95,7 @@ def test_ai_target_strips_private_routing_metadata() -> None:
 def test_router_target_appends_candidate_to_an_independent_path_copy() -> None:
     source = {
         "messages": [{"role": "user", "content": "hello"}],
-        "routing": {"session_id": " session-a ", "path": ["parent"]},
+        "routing": {"session_id": " session-a ", "path": ["parent"], "trace_id": _TRACE_ID},
     }
     target = RouterTarget("candidate-2", "router.sock", "nested", backend_type="router")
 
@@ -96,6 +104,7 @@ def test_router_target_appends_candidate_to_an_independent_path_copy() -> None:
     assert copied["routing"] == {
         "session_id": "session-a",
         "path": ["parent", "candidate-2"],
+        "trace_id": _TRACE_ID,
     }
     copied["routing"]["path"].append("changed")
     assert source["routing"]["path"] == ["parent"]
@@ -125,3 +134,27 @@ def test_routing_scope_distinguishes_paths_for_the_same_session() -> None:
         "session-a",
         ("right",),
     )
+
+
+def test_routing_trace_id_is_generated_once_and_preserved_for_nested_routers() -> None:
+    source: dict[str, Any] = {"messages": [], "routing": {"session_id": "session-a"}}
+
+    trace_id = ensure_routing_trace_id(body=source)
+    copied = copy_target_request_body(
+        body=source,
+        target=RouterTarget("candidate-1", "router.sock", "nested", backend_type="router"),
+    )
+
+    assert ensure_routing_trace_id(body=source) == trace_id
+    assert routing_trace_id_from_body(body=source) == trace_id
+    assert copied["routing"] == {
+        "session_id": "session-a",
+        "path": ["candidate-1"],
+        "trace_id": trace_id,
+    }
+
+
+@pytest.mark.parametrize("trace_id", [123, "", "not-a-uuid"])
+def test_routing_trace_id_rejects_malformed_private_metadata(trace_id: object) -> None:
+    with pytest.raises(InvalidRouterRequestError, match="trace_id"):
+        routing_trace_id_from_body(body={"routing": {"trace_id": trace_id}})

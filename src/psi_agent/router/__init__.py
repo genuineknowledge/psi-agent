@@ -1,5 +1,7 @@
 """Experimental Router framework with shared transport and pluggable strategies."""
 
+from psi_agent._router_status import RouterStatus, router_status_from_event
+
 from .aggregation import (
     AggregationConfig,
     AggregationError,
@@ -54,6 +56,7 @@ __all__ = [
     "RouterError",
     "RouterHttpClient",
     "RouterMode",
+    "RouterStatus",
     "RouterStrategy",
     "RouterTarget",
     "RouterUpstream",
@@ -69,5 +72,6 @@ __all__ = [
     "compact_feedback",
     "create_router_app",
     "handle_chat_completions",
+    "router_status_from_event",
     "serve_router",
 ]

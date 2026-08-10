@@ -41,7 +41,8 @@ router/
 
 1. 深拷贝输入，禁止修改 caller dict。
 2. 所有边删除 `model`；AI/control AI 边删除 `routing`。
-3. Router 边规范化 `routing`，并把当前 candidate ID 追加到 `routing.path`。
+3. Router 边规范化 `routing`，保留同一回合的 UUID `routing.trace_id`，并把当前 candidate ID
+   追加到 `routing.path`；AI/control AI 边不得接收 trace。
 4. `routing.path` 只允许稳定 candidate ID，且必须与非空 `routing.session_id` 同时出现。
 5. 强制 `stream=True`，其余字段（含未知扩展字段）全部透传。
 
@@ -60,6 +61,15 @@ Socket 或原始完整请求。
 - 每个有效 event 恰好一个 choice；0 choice 静默跳过，多 choice 抛错。
 - `finish_reason="compaction_needed"` 是辅助帧，不覆盖真实 completion finish。
 - `finish_reason="error"` 转换为 Router 错误。
+- Router 进度只能使用独立的 `delta.router_status` 帧，不得复用 `reasoning` 或 `content`。
+  共享 schema 位于 `psi_agent._router_status.RouterStatus`，当前 `version=1`；所有状态均携带
+  `trace_id`、`mode`、`phase` 与非负 `depth`。状态帧的 `finish_reason` 恒为 `None`。
+- phase 按 mode 封闭：routing 为 `selecting/generating`，aggregation 为
+  `collecting/synthesizing`，fallback 为 `attempting/switching/replaying`。aggregation 可用
+  `completed/total/degraded`，fallback 可用 `attempt/total`。
+- `router_status` 是面向 UI 的安全元数据：不得包含 candidate ID、描述、Socket、prompt、响应正文、
+  错误详情或模型名。嵌套 Router 沿用同一 trace，并以 `routing.path` 长度作为 `depth`。
+- fallback 只回放外层状态；成功候选缓冲中的内层 `router_status` 必须丢弃，避免延迟回放陈旧进度。
 - 每个进入/离开 Router 的 chunk 都写 DEBUG 日志。
 - 每个 async generator 必须经 `aclosing()` 消费；提前退出和取消必须关闭上游连接。
 - aiohttp session/response/runner 的跨 await 清理放在 shielded CancelScope 中。

@@ -8,10 +8,12 @@ from typing import Any, Protocol
 import anyio
 from loguru import logger
 
+from psi_agent._router_status import RouterStatus, router_status_from_event
+
 from ..errors import InvalidRouterRequestError, RouterUpstreamError
 from ..models import BufferedCompletion, CompletionResult, RoutingScopeKey
 from ..privacy import redact_private_sockets
-from ..request import copy_target_request_body, routing_scope_from_body
+from ..request import copy_target_request_body, ensure_routing_trace_id, routing_scope_from_body
 from .errors import FallbackError
 from .models import FallbackConfig
 
@@ -39,6 +41,8 @@ class FallbackStrategy:
 
         messages = self._validate_request(body)
         scope = routing_scope_from_body(body=body)
+        trace_id = ensure_routing_trace_id(body=body)
+        depth = len(scope[1]) if scope is not None else 0
         is_tool_iteration = bool(messages) and messages[-1].get("role") == "tool"
         start_index = 0
         if scope is not None:
@@ -53,6 +57,14 @@ class FallbackStrategy:
         cancelled_error = anyio.get_cancelled_exc_class()
         for index in range(start_index, len(self.config.targets)):
             target = self.config.targets[index]
+            yield RouterStatus(
+                trace_id=trace_id,
+                mode="fallback",
+                phase="attempting",
+                depth=depth,
+                attempt=index + 1,
+                total=len(self.config.targets),
+            ).to_event()
             logger.info(
                 f"Fallback candidate attempt: candidate_id={target.candidate_id!r}, "
                 f"description={target.description!r}, status='started'"
@@ -80,6 +92,15 @@ class FallbackStrategy:
                     f"Fallback candidate attempt: candidate_id={target.candidate_id!r}, "
                     f"description={target.description!r}, status='failed'"
                 )
+                if index + 1 < len(self.config.targets):
+                    yield RouterStatus(
+                        trace_id=trace_id,
+                        mode="fallback",
+                        phase="switching",
+                        depth=depth,
+                        attempt=index + 2,
+                        total=len(self.config.targets),
+                    ).to_event()
                 continue
 
             selected = index, result
@@ -103,9 +124,19 @@ class FallbackStrategy:
             else:
                 self._sticky_targets.pop(scope, None)
 
+        yield RouterStatus(
+            trace_id=trace_id,
+            mode="fallback",
+            phase="replaying",
+            depth=depth,
+            attempt=selected_index + 1,
+            total=len(self.config.targets),
+        ).to_event()
         replayed_completely = False
         try:
             for event in result.events:
+                if router_status_from_event(event) is not None:
+                    continue
                 yield event
             replayed_completely = True
         finally:

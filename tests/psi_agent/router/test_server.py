@@ -11,6 +11,7 @@ import pytest
 from aiohttp import ClientSession, web
 from anyio.lowlevel import checkpoint
 
+from psi_agent._router_status import RouterStatus
 from psi_agent.router.errors import RouterError
 from psi_agent.router.server import create_router_app, serve_router
 
@@ -104,6 +105,7 @@ def _sse_payloads(text: str) -> list[object]:
         ({"messages": [], "routing": "bad"}, None),
         ({"messages": [], "routing": {"session_id": " "}}, None),
         ({"messages": [], "routing": {"session_id": 7}}, None),
+        ({"messages": [], "routing": {"trace_id": "not-a-uuid"}}, None),
     ],
 )
 async def test_invalid_request_returns_openai_http_error_before_prepare(
@@ -126,6 +128,11 @@ async def test_invalid_request_returns_openai_http_error_before_prepare(
 @pytest.mark.anyio
 async def test_valid_strategy_events_are_single_choice_sse_followed_by_done() -> None:
     events = [
+        RouterStatus(
+            trace_id="123e4567-e89b-12d3-a456-426614174000",
+            mode="routing",
+            phase="selecting",
+        ).to_event(),
         {"choices": [{"index": 0, "delta": {"content": "final"}, "finish_reason": None}]},
         {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
     ]

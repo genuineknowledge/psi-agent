@@ -11,6 +11,7 @@ import aiohttp
 import anyio
 from loguru import logger
 
+from psi_agent._router_status import router_status_from_event
 from psi_agent._sockets import resolve_connector_and_endpoint
 
 from .errors import RouterUpstreamError
@@ -177,6 +178,10 @@ class RouterHttpClient:
         finish_reason = choice.get("finish_reason")
         if finish_reason is not None and not isinstance(finish_reason, str):
             raise RouterUpstreamError("Upstream finish reason must be a string or null")
+        try:
+            router_status_from_event(raw_event)
+        except ValueError as error:
+            raise RouterUpstreamError(f"Upstream returned invalid router_status: {error}") from error
         return raw_event
 
     @staticmethod

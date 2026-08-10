@@ -10,10 +10,17 @@ from typing import Any, Protocol, cast
 import anyio
 from loguru import logger
 
+from psi_agent._router_status import RouterStatus, router_status_from_event
+
 from ..errors import RouterUpstreamError
 from ..models import CompletionResult, RouterTarget
 from ..privacy import redact_private_sockets
-from ..request import copy_public_request_body, copy_target_request_body
+from ..request import (
+    copy_public_request_body,
+    copy_target_request_body,
+    ensure_routing_trace_id,
+    routing_scope_from_body,
+)
 from .errors import AggregationError
 from .models import AggregationConfig, AggregationFeedback
 from .prompts import build_aggregation_messages
@@ -47,11 +54,22 @@ class AggregationStrategy:
     async def stream(self, *, body: dict[str, Any]) -> AsyncGenerator[dict[str, Any]]:
         """Collect ordered branch evidence, then yield validated synthesis events."""
 
+        scope = routing_scope_from_body(body=body)
+        trace_id = ensure_routing_trace_id(body=body)
+        depth = len(scope[1]) if scope is not None else 0
         slots: list[AggregationFeedback | None] = [None] * len(self.config.targets)
         private_sockets = (
             self.config.aggregator_socket,
             *(item.socket for item in self.config.targets),
         )
+        yield RouterStatus(
+            trace_id=trace_id,
+            mode="aggregation",
+            phase="collecting",
+            depth=depth,
+            completed=0,
+            total=len(self.config.targets),
+        ).to_event()
 
         async def collect(index: int, target: RouterTarget) -> None:
             try:
@@ -98,6 +116,18 @@ class AggregationStrategy:
         ):
             raise AggregationError("Strict aggregation requires every target to complete successfully")
 
+        degraded = any(
+            item.status != "success" or item.finish_reason not in {"stop", "tool_calls"} for item in feedback
+        )
+        yield RouterStatus(
+            trace_id=trace_id,
+            mode="aggregation",
+            phase="synthesizing",
+            depth=depth,
+            completed=len(self.config.targets),
+            total=len(self.config.targets),
+            degraded=degraded,
+        ).to_event()
         aggregator_body = copy_public_request_body(
             body=body,
             request_overrides=self.config.aggregator_request_overrides,
@@ -117,6 +147,8 @@ class AggregationStrategy:
         try:
             async with aclosing(aggregator_stream) as events:
                 async for event in events:
+                    if router_status_from_event(event) is not None:
+                        continue
                     choice = event["choices"][0]
                     current_finish = choice.get("finish_reason")
                     if current_finish == "error":
