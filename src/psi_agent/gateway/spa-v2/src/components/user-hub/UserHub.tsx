@@ -1,17 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
-import { Bot, LogIn, Settings2, UserRound } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Bot, Settings2 } from 'lucide-react'
 import type { AiInfo } from '../../services/api'
 import { listAis } from '../../services/api'
 import { readStoredAvatar, readStoredName } from '../../services/userProfile'
 import { dedupeAisForDisplay, readStoredAiId } from '../../services/bootstrapAi'
 import HubAdvancedPanel from './HubAdvancedPanel'
-import HubLoginPanel from './HubLoginPanel'
 import HubModelsPanel from './HubModelsPanel'
 import HubProfilePanel from './HubProfilePanel'
 import HubSettingsPanel from './HubSettingsPanel'
 import './user-hub.css'
 
-export type HubPanel = 'profile' | 'models' | 'login' | 'settings' | 'advanced' | null
+export type HubPanel = 'profile' | 'models' | 'settings' | 'advanced' | null
 
 type Props = {
   selectedAiId: string | null
@@ -26,10 +25,12 @@ type Props = {
   openModelsOnMount?: boolean
   /** Fired once after auto-opening models so the parent can clear the one-shot flag. */
   onModelsAutoOpened?: () => void
+  /** External open-panel request (e.g. first-run guide jumps into model pool). */
+  openPanelRequest?: { nonce: number; panel: HubPanel } | null
 }
 
 /**
- * 侧栏账户区：头像菜单（资料 / 登录）与模型池、设置分入口。
+ * 侧栏账户区：头像直达我的资料，模型池与设置分入口。
  */
 export default function UserHub({
   selectedAiId,
@@ -42,9 +43,8 @@ export default function UserHub({
   onAisChanged,
   openModelsOnMount = false,
   onModelsAutoOpened,
+  openPanelRequest,
 }: Props) {
-  const rootRef = useRef<HTMLDivElement | null>(null)
-  const [menuOpen, setMenuOpen] = useState(false)
   const [panel, setPanel] = useState<HubPanel>(null)
   const [userName, setUserName] = useState(readStoredName)
   const [userAvatar, setUserAvatar] = useState(readStoredAvatar)
@@ -57,6 +57,11 @@ export default function UserHub({
   }, [openModelsOnMount, onModelsAutoOpened])
 
   useEffect(() => {
+    if (!openPanelRequest) return
+    setPanel(openPanelRequest.panel)
+  }, [openPanelRequest])
+
+  useEffect(() => {
     void listAis()
       .then((list) => {
         const shown = dedupeAisForDisplay(list, selectedAiId ?? readStoredAiId())
@@ -64,16 +69,6 @@ export default function UserHub({
       })
       .catch(() => {})
   }, [selectedAiId])
-
-  useEffect(() => {
-    const onDoc = (event: MouseEvent) => {
-      if (!menuOpen) return
-      const el = rootRef.current
-      if (el && !el.contains(event.target as Node)) setMenuOpen(false)
-    }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [menuOpen])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -86,30 +81,26 @@ export default function UserHub({
         setPanel(null)
         return
       }
-      if (menuOpen) setMenuOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [panel, menuOpen])
+  }, [panel])
 
   const initial = userName.trim().charAt(0).toUpperCase()
   const displayName = userName.trim() || '用户'
 
   const openPanel = (next: HubPanel) => {
     setPanel(next)
-    setMenuOpen(false)
   }
 
   return (
-    <div className="user-hub" ref={rootRef}>
+    <div className="user-hub">
       <div className="user-hub-row">
         <button
           type="button"
           className="user-hub-trigger"
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
           title={`${displayName} — 账户`}
-          onClick={() => setMenuOpen((v) => !v)}
+          onClick={() => openPanel('profile')}
         >
           <span className="account-avatar user-hub-avatar">
             {userAvatar ? <img src={userAvatar} alt="" /> : initial || 'U'}
@@ -142,17 +133,6 @@ export default function UserHub({
         </div>
       </div>
 
-      {menuOpen && (
-        <div className="user-hub-menu" role="menu">
-          <button type="button" role="menuitem" onClick={() => openPanel('profile')}>
-            <UserRound size={15} /> 我的资料
-          </button>
-          <button type="button" role="menuitem" onClick={() => openPanel('login')}>
-            <LogIn size={15} /> 登录 <span className="muted">本地</span>
-          </button>
-        </div>
-      )}
-
       <HubProfilePanel
         show={panel === 'profile'}
         onClose={() => setPanel(null)}
@@ -174,7 +154,6 @@ export default function UserHub({
           onAisChanged?.(ais)
         }}
       />
-      <HubLoginPanel show={panel === 'login'} onClose={() => setPanel(null)} />
       <HubSettingsPanel
         show={panel === 'settings'}
         onClose={() => setPanel(null)}

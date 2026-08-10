@@ -412,12 +412,30 @@ def _rule(method: str, uri: str) -> Any:
 # ------------------------------------------------------------------ the skill parses
 
 
+#: Endpoints this skill declares that were never a tool, so there is no builder to compare
+#: against and they are absent from ``WAS`` above. Their wire shapes are frozen from the
+#: official docs in ``test_feishu_bitable_views_as_data.py`` instead. Listed here so this
+#: file's closed-set assertion stays closed: a rule appearing in neither set is a rule
+#: nobody documented a shape for.
+NEVER_A_TOOL = {
+    ("GET", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views"),
+    ("POST", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views"),
+    ("GET", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id"),
+    ("PATCH", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id"),
+    ("DELETE", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views/:view_id"),
+    ("GET", "/open-apis/bitable/v1/apps/:app_token/dashboards"),
+    ("POST", "/open-apis/bitable/v1/apps/:app_token/dashboards/:block_id/copy"),
+    ("GET", "/open-apis/bitable/v1/apps/:app_token/workflows"),
+    ("PUT", "/open-apis/bitable/v1/apps/:app_token/workflows/:workflow_id"),
+}
+
+
 def test_skill_declares_every_migrated_endpoint() -> None:
-    """The 17 tabled endpoints, plus the 6 that exist only to point back at a tool."""
+    """The 17 tabled endpoints, the 6 that point back at a tool, and the 9 with no tool."""
     got = {(r.method, r.uri) for r in _rules()}
     tabled = {(WAS[k]["method"].name, WAS[k]["uri"]) for k in WAS}
     assert tabled <= got, f"tabled endpoint missing a rule: {tabled - got}"
-    assert got - tabled == {
+    assert got - tabled - NEVER_A_TOOL == {
         ("POST", "/open-apis/bitable/v1/apps/:app_token/tables"),
         ("POST", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/batch_create"),
         ("POST", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/batch_update"),
@@ -425,6 +443,7 @@ def test_skill_declares_every_migrated_endpoint() -> None:
         ("PUT", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/fields/:field_id"),
         ("PUT", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/records/:record_id"),
     }
+    assert got >= NEVER_A_TOOL, f"declared-but-unruled: {NEVER_A_TOOL - got}"
 
 
 # ------------------------------------------------------- wire parity vs the builders
@@ -532,8 +551,16 @@ def test_kept_tools_still_exist() -> None:
 # blocking rule (``.../tables/batch_create`` and ``.../tables/batch_delete``) are covered by
 # the parity and confirmation tests instead — those are enforced on purpose.
 SHOULD_NOT_BE_SWALLOWED = [
-    # nested under the hard `POST .../tables`
-    ("POST", "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/views", {"app_token": "appA", "table_id": "tblA"}),
+    # nested under the hard `POST .../tables`. This used to be `.../tables/:table_id/views`,
+    # which stopped qualifying once the views endpoints got rules of their own — a declared
+    # endpoint is enforced on purpose, so proving it *isn't* enforced would assert the
+    # opposite of the intent. `field_groups` is a real Feishu endpoint the table still does
+    # not declare, so it keeps testing what this list is for.
+    (
+        "POST",
+        "/open-apis/bitable/v1/apps/:app_token/tables/:table_id/field_groups",
+        {"app_token": "appA", "table_id": "tblA"},
+    ),
     # nested under the hard `POST .../records/batch_create` and friends
     (
         "POST",

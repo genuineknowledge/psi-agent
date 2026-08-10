@@ -26,6 +26,7 @@ from lark_channel.core.model import BaseRequest
 from lark_channel.event.custom import CustomizedEventProcessor
 from loguru import logger
 
+from psi_agent._appdata import resolve_appdata_root
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._types import FileChunk, InputChunk, ReasoningChunk, TextChunk
@@ -145,6 +146,32 @@ class _GatewayRouteProvider:
                 return str(data["channel_socket"])
             body = await resp.text()
             raise RuntimeError(f"Gateway POST /feishu/route failed (status={resp.status}): {body}")
+
+
+async def _resolve_shared_appdata(base_url: str, http: aiohttp.ClientSession) -> str:
+    """Ask the Gateway for its AppData root via ``GET /defaults``.
+
+    The Gateway exports ``PSI_APPDATA`` into its own environment, but the channel is a
+    *sibling* process rather than a child, so it inherits nothing. A launcher that passes
+    ``--appdata`` to only one of the two therefore leaves them on different roots, and
+    card snapshots get written where the callback handler never looks — every click then
+    falls through to the generic fallback card and reports an unmatched handler. Asking
+    the Gateway keeps a single authority for the path.
+
+    Returns ``""`` on any failure, so the caller keeps its own resolution order
+    (explicit flag → ``PSI_APPDATA`` → platformdirs) and startup never hinges on this.
+    """
+    try:
+        async with http.get(f"{base_url.rstrip('/')}/defaults", timeout=_GATEWAY_TIMEOUT) as resp:
+            if resp.status != 200:
+                logger.warning(f"Gateway GET /defaults returned status={resp.status}, keeping local AppData root")
+                return ""
+            data = await resp.json()
+    except Exception as e:
+        logger.warning(f"Gateway GET /defaults failed, keeping local AppData root — {e!r}")
+        return ""
+    appdata = data.get("appdata") if isinstance(data, dict) else None
+    return appdata.strip() if isinstance(appdata, str) else ""
 
 
 async def _send_file(channel: Any, chat_id: str, path: str) -> None:
@@ -826,6 +853,12 @@ async def run_feishu(
         if gateway_url:
             http = await stack.enter_async_context(aiohttp.ClientSession())
             provider = _GatewayRouteProvider(gateway_url, http)
+            if not appdata.strip():
+                # Only when nothing was passed explicitly: an operator-supplied --appdata
+                # still wins, and this must run before the card-action handler closes over
+                # the value below.
+                appdata = await _resolve_shared_appdata(gateway_url, http)
+        logger.info(f"AppData root: {await resolve_appdata_root(appdata)}")
 
         async def resolve_core(open_id: str | None, *, chat_id: str = "", chat_type: str = "") -> ChannelCore:
             socket = session_socket  # 默认兜底 (无路由键、无 gateway、或路由失败都走这)

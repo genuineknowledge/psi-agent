@@ -231,7 +231,8 @@ feishu_api(
   token: tenant
   required: [name]
   fields:
-    name: {max: 100}
+    # pattern 而不是 max: max 用 float() 转换值, 对字符串一律放过, 长度根本没被拦。
+    name: {pattern: '^[\s\S]{1,100}$', on_fail: 用户组名最长 100 字符}
   pitfalls:
     - 42010 = 建用户组硬要求通讯录范围为全部成员(只有这个动作要求)
     - name 租户内唯一

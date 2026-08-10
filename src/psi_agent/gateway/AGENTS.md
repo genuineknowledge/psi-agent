@@ -102,7 +102,7 @@ Gateway state → `{appdata}/state/`（双读旧 cwd `state/`）          ← �
 schedules → `{workspace}/schedules/`（归 workspace，非 agent 包 / 非 AppData）
 ```
 
-路径助手：``psi_agent._appdata``（Session / Gateway / haitun 共用；**刻意**放在 gateway 包外以免循环导入）。``gateway._defaults`` 再导出同名助手。Gateway 启动把解析后的根写入 ``PSI_APPDATA``，同进程工具与 ``GET /defaults.appdata`` 一致。**禁止**把 AppData 根塞进 Session ContextVar。
+路径助手：``psi_agent._appdata``（Session / Gateway / haitun 共用；**刻意**放在 gateway 包外以免循环导入）。``gateway._defaults`` 再导出同名助手。Gateway 启动把解析后的根写入 ``PSI_APPDATA``，**同进程**工具与 ``GET /defaults.appdata`` 一致。**注意这个「同进程」是硬限制**：``os.environ`` 只对本进程及其之后 fork 的子进程有效，而飞书 channel 通常是**兄弟进程**（各自 `psi-agent gateway` / `psi-agent channel feishu`），继承不到这个 env。因此需要共享 AppData 的兄弟进程必须**要么**由启动脚本给**每一个**进程都传 `--appdata`/设 `PSI_APPDATA`，**要么**像 channel 那样经 ``GET /defaults`` 现问（见 `channel/AGENTS.md`「AppData 根向 Gateway 现问」）——`GET /defaults` 由此不只服务「建 Session 的调用方」，也是**跨进程 AppData 根的唯一权威**。**禁止**把 AppData 根塞进 Session ContextVar。
 
 | 已合 | 内容 |
 |------|------|

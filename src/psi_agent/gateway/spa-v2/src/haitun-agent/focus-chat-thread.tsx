@@ -2,7 +2,7 @@ import { Check, ChevronRight, Copy, FolderOpen, RefreshCw, RotateCcw, ThumbsDown
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { ChatFile, ChatMessage, MessageFeedback } from "./model";
 import { BrandLogo } from "./primitives";
-import { readStoredAvatar, readStoredName } from "../services/userProfile";
+import { readStoredAvatar, readStoredName, USER_PROFILE_EVENT } from "../services/userProfile";
 import { htmlEscape, renderMd } from "../services/renderMd";
 import { stripTransferMarkers } from "../services/sendMarkers";
 import { downloadMatrixXlsx, matrixToTsv, tableToMatrix } from "../services/mdTable";
@@ -33,9 +33,11 @@ function ChatAvatar({ role }: { role: "agent" | "user" }) {
     };
     window.addEventListener("storage", sync);
     window.addEventListener("focus", sync);
+    window.addEventListener(USER_PROFILE_EVENT, sync);
     return () => {
       window.removeEventListener("storage", sync);
       window.removeEventListener("focus", sync);
+      window.removeEventListener(USER_PROFILE_EVENT, sync);
     };
   }, []);
 
@@ -62,7 +64,19 @@ function ChatBlock({
   role: "agent" | "user";
   children: ReactNode;
 }) {
-  const speaker = role === "agent" ? "HaiTun Agent" : (readStoredName().trim() || "我");
+  const [userName, setUserName] = useState(readStoredName);
+  useEffect(() => {
+    const sync = () => setUserName(readStoredName());
+    window.addEventListener("storage", sync);
+    window.addEventListener("focus", sync);
+    window.addEventListener(USER_PROFILE_EVENT, sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("focus", sync);
+      window.removeEventListener(USER_PROFILE_EVENT, sync);
+    };
+  }, []);
+  const speaker = role === "agent" ? "HaiTun Agent" : (userName.trim() || "我");
   return (
     <div className={`focus-chat-msg ${role}`}>
       <ChatAvatar role={role} />
@@ -217,6 +231,7 @@ export function FocusChatThread({
   typing,
   title,
   progressLog,
+  liveThinking = "",
   workspaceRoot = "",
   loadingHistory = false,
   onFeedback,
@@ -228,6 +243,8 @@ export function FocusChatThread({
   title: string;
   /** Growing Cursor-style process log (summary lines + 规划下一步 trailer). */
   progressLog?: ProgressLog | null;
+  /** Raw thinking prose streamed live before the final body starts. */
+  liveThinking?: string;
   /** Session workspace — used to resolve relative SEND paths after refresh. */
   workspaceRoot?: string;
   /** Sidebar jump before GET /history resolves — avoid empty-prompt flash. */
@@ -240,6 +257,7 @@ export function FocusChatThread({
   /** Align with spa v1 / Cursor: only pin to bottom while the user is near the end. */
   const stickToBottomRef = useRef(true);
   const prevMessageCountRef = useRef(0);
+  const liveThinkingRef = useRef<HTMLDivElement | null>(null);
   const [preview, setPreview] = useState<ChatFile | null>(null);
   const [previewBusy, setPreviewBusy] = useState<string | null>(null);
   const [revealBusy, setRevealBusy] = useState<string | null>(null);
@@ -271,6 +289,11 @@ export function FocusChatThread({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [messages, typing, progressLog]);
+
+  useEffect(() => {
+    const el = liveThinkingRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [liveThinking, messages]);
 
   const openPreview = async (file: ChatFile) => {
     if (!isPreviewable(file.name)) return;
@@ -307,6 +330,10 @@ export function FocusChatThread({
 
   const hasContent =
     messages.some((m) => m.text.trim() || (m.interimText ?? "").trim() || (m.files?.length ?? 0) > 0) || typing;
+  const lastInterim = messages[messages.length - 1]?.interimText
+    ? stripTransferMarkers(messages[messages.length - 1]!.interimText ?? "")
+    : "";
+  const stepText = lastInterim;
 
   const showAgentActions = (msg: ChatMessage) => {
     if (msg.role !== "agent") return false;
@@ -316,19 +343,20 @@ export function FocusChatThread({
 
   const thinkingBubble = (
     <div className="focus-chat-bubble thinking focus-chat-progress-wrap">
-      {progressLog ? (
-        <div className="focus-chat-progress-log" aria-live="polite">
-          {progressLog.lines.map((line, i) => (
-            <div key={`p-${i}-${line}`} className="focus-chat-progress-line">{line}</div>
-          ))}
-          <div className="focus-chat-progress-line is-current">
-            <span>{progressLog.current}</span>
-            <span className="typing" aria-label="正在输入"><i /><i /><i /></span>
-          </div>
-        </div>
-      ) : (
-        <span className="typing" aria-label="正在输入"><i /><i /><i /></span>
-      )}
+      <div ref={liveThinkingRef} className="focus-chat-live-thinking" aria-live="polite">
+        {liveThinking.trim() ? (
+          <div className="focus-chat-live-thinking-prose">{liveThinking}</div>
+        ) : null}
+        {stepText.trim() ? (
+          <div
+            className="focus-chat-live-thinking-step"
+            dangerouslySetInnerHTML={{ __html: renderMd(stepText) }}
+          />
+        ) : null}
+        {!liveThinking.trim() && !stepText.trim() ? (
+          <span className="typing" aria-label="正在输入"><i /><i /><i /></span>
+        ) : null}
+      </div>
     </div>
   );
 
@@ -370,7 +398,7 @@ export function FocusChatThread({
         const displayText = isLiveAgent ? clean : preferResultBelowRule(clean);
         const interimDisplay = interimClean;
         const showFiles = (message.files?.length ?? 0) > 0;
-        const showLiveProgress = isLiveAgent && Boolean(progressLog);
+        const showLiveProgress = isLiveAgent;
         const showProse = Boolean(displayText.trim()) || Boolean(interimDisplay.trim()) || showFiles;
 
         if (isLiveAgent && !showProse) {
@@ -386,8 +414,6 @@ export function FocusChatThread({
         const finalHtml = message.role === "agent"
           ? renderMd(displayText)
           : htmlEscape(displayText).replace(/\n/g, "<br>");
-        const interimHtml = interimDisplay.trim() ? renderMd(interimDisplay) : "";
-
         const failedLabel = message.failed
           ? (FAILED_REASON_LABEL[message.failedReason ?? "incomplete"] ?? FAILED_REASON_LABEL.incomplete)
           : "";
@@ -468,14 +494,7 @@ export function FocusChatThread({
                   )}
                 </div>
               )}
-              {interimDisplay.trim() ? (
-                <div
-                  className="focus-chat-bubble is-interim"
-                  aria-label="步骤临时说明"
-                  dangerouslySetInnerHTML={{ __html: interimHtml }}
-                />
-              ) : null}
-              {displayText.trim() ? (
+              {(message.role === "user" || !isLiveAgent) && displayText.trim() ? (
                 <div
                   className="focus-chat-bubble"
                   dangerouslySetInnerHTML={{ __html: finalHtml }}

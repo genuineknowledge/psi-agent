@@ -1,6 +1,6 @@
 ---
 name: feishu-api
-description: "Calling any Feishu/Lark Open Platform endpoint through the generic feishu_api tool — 通讯录/组织架构查人、考勤组与班次配置、培训报名记录、云文档全局搜索、审批实例与任务查询、日历日程查询、任务(Task)增删改查、群信息与成员、知识库空间与节点。Use when a Feishu capability has no dedicated feishu_* tool, or when the user asks 查某人信息/查部门成员/查考勤配置/搜文档/查审批状态/查日程/管任务/查群成员/查知识库. Carries the endpoint tables, the token strategy, and the rule for when a dedicated tool must be used instead."
+description: "Calling any Feishu/Lark Open Platform endpoint through the generic feishu_api tool — 通讯录/组织架构查人、考勤组与班次配置、培训报名记录、云文档全局搜索、审批实例与任务查询、日历日程查询、任务(Task)增删改查、群信息与成员、知识库空间与节点。云盘文件管理看 feishu-drive、电子表格看 feishu-sheet。Use when a Feishu capability has no dedicated feishu_* tool, or when the user asks 查某人信息/查部门成员/查考勤配置/搜文档/查审批状态/查日程/管任务/查群成员/查知识库. Carries the endpoint tables, the token strategy, and the rule for when a dedicated tool must be used instead."
 category: integration
 ---
 
@@ -48,7 +48,8 @@ category: integration
 | 消息（撤回/表情回应/置顶/转发/消息列表） | `feishu-message` | 撤回时限、置顶权限、合并转发必须同源 |
 | 多维表格（表/字段/记录） | `feishu-bitable` | 列名对不上会被静默丢弃，所以字段先校验再写 |
 | 审批（读定义/查待办/列实例/同意拒绝/订阅） | `feishu-approval` | 同意拒绝要凑齐身份四元组；两张数字状态表在那份技能里 |
-| 云盘与文档评论（列评论/列回复/删文件） | `feishu-drive` | 删文件的 `type` 只认九个值；上传和下载是专用工具 |
+| 云盘与文档（元数据/建文件夹/列目录/复制移动改名/删文件/异步任务/评论） | `feishu-drive` | 删文件的 `type` 只认九个值；复制不支持文件夹而移动支持；改名没有统一接口；回收站无公开 API；上传下载导出是专用工具 |
+| 电子表格（建表/改名/工作表增删/行列增删插/合并/查找替换） | `feishu-sheet` | 插行列 0-based 半开 vs 删行列 1-based 全闭，索引基准相反；读写单元格仍是专用工具 |
 | 考勤（考勤组配置/班次配置） | `feishu-attendance` | `page_size` 上限 50 会硬拦；打卡记录是专用工具 |
 | 云文档协作者权限（加人/列人/移人） | `feishu-permission` | 三个不同的东西都叫 `type`；`member_type` 是 `openid` 不是 `open_id` |
 | 任务与培训（建改任务/完成/列任务/课程报名） | `feishu-task` | 空 `update_fields` 会被硬拦（飞书返回成功但一个字段都不改） |
@@ -187,12 +188,12 @@ scope 是 `contact:functional_role`（只读用 `contact:functional_role:readonl
 
 ### 日历
 
-| 要什么 | method + uri |
-|---|---|
-| 日程列表 | `GET /open-apis/calendar/v4/calendars/:calendar_id/events` — query: `start_time`/`end_time`（**秒级时间戳字符串**）、`page_size` |
-| 主日历 id | `POST /open-apis/calendar/v4/calendars/primary` | `prefer="user"` 拿本人主日历 |
-
-建日程仍用 `feishu_calendar_create_event` / `_create_per_person`。
+**看 `feishu-calendar` 那份接口表**（建/改/删日程、日程详情、日程列表与搜索、重复日程实例、
+参与人增删与 RSVP、日历本身的建删改与列表/订阅、忙闲查询都在里面）。挪过去是因为这个域
+有三处「照着别处写就会错」：**日程时间是秒级**而任务的 `due` 是毫秒；`timestamp` 与 `date`
+互斥；参与人对象**按 type 换 id 键名**（`user`→`user_id`、`chat`→`chat_id`、
+`resource`→`room_id`），写成统一的 `id` 会被拒成 194004。删日程和删共享日历都不可恢复，
+后者带 `confirm` 闸门。
 
 ### 任务 (Task v2)
 
@@ -219,19 +220,13 @@ wiki 节点的 `obj_token` 才是文档 id，读内容要用它而不是 `node_t
 或「节点不存在」—— 带上 `user_key` 用 `prefer="user"` 再问一次，以那个人的身份看。第二次
 还是空，才是真的空。
 
-### 电子表格（读工作表清单）
+### 电子表格
 
-| 要什么 | method + uri |
-|---|---|
-| 列工作表（拿 `sheet_id`） | `GET /open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query` |
-
-返回 `data.sheets[]`，每项里 `sheet_id`、`title`、`index`，行列数在 `grid_properties.row_count` /
-`.column_count`。**每个区间都写成 `"<sheet_id>!A1:B2"`，而 `sheet_id` 在表格网址里是没有的**，
-所以不知道时先打这个端点。`:spreadsheet_token` 是网址 `/sheets/` 后面那段；wiki 里的表格要先
-用节点详情换 `obj_token`。
-
-读区间、写入、套格式都还是专用工具（`feishu_sheet_read` / `_write` / `_append` / `_format`）——
-读要把 @人 和富文本压平成可见文字，写要校验网格坐标，裸 `!A1` 会静默丢数据。
+**看 `feishu-sheet` 那份接口表**（建表、改名、列工作表、工作表增删复制、行列增删插、合并拆分、
+查找替换、查保护范围都在里面）。挪过去是因为这个域有一处**索引基准相反**的坑：插行列是 0-based
+半开、删行列是 1-based 全闭，照抄另一个端点会多删一行或插错位置，而两边都返回成功。
+读区间、写入、套格式仍是专用工具（`feishu_sheet_read` / `_write` / `_append` / `_format`），
+裸 `!A1` 会静默丢数据；写入是 **PUT** 不是 POST。
 
 **群的运营看 `feishu-chat` 那份接口表**（建群拉人、群列表、群设置、禁言、转让群主、
 解散群、群菜单、群标签页都在里面）。这些端点各自都有一个「照着文档写也会错」的地方，
@@ -244,20 +239,13 @@ wiki 节点的 `obj_token` 才是文档 id，读内容要用它而不是 `node_t
 课程报名记录跟着任务一起搬走了，**看 `feishu-task` 那份接口表**。`user_ids` 是
 **重复同名 key** 的查询参数，逗号拼成一个串会得到一页空结果而不是报错。
 
-## 两条有护栏的端点
+## 一条有护栏的端点
 
-上面绝大多数端点是纯转发，填错了飞书会报错。这两条不是 —— 它们的错法是静默的，
-所以写成可执行的 `rules`，发请求之前就拦：
+上面绝大多数端点是纯转发，填错了飞书会报错。这条不是 —— 它的错法是静默的
+（返回成功但内容是空的），所以写成可执行的 `rules`，发请求之前就把这件事讲在眼前。
+表格那条 `sheets/query` 的护栏跟着接口表搬进了 `feishu-sheet`。
 
 ```rules
-- endpoint: GET /open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query
-  token: tenant_then_user
-  pitfalls:
-    - 返回的 sheet_id 才是区间前缀, 表格网址里没有它;区间一律写成 "<sheet_id>!A1:B2"。
-    - 行列数在 grid_properties.row_count / column_count 里, 不在 sheets[] 的顶层。
-    - row_count 是表格的上限而不是有数据的行数, 拿它当数据范围会读回一大片空行。
-    - wiki 里的表格要先用 GET /open-apis/wiki/v2/spaces/get_node 换 obj_token, 别拿 node token 打这里。
-
 - endpoint: GET /open-apis/wiki/v2/spaces/get_node
   token: tenant_then_user
   required: [query.token]
@@ -267,7 +255,7 @@ wiki 节点的 `obj_token` 才是文档 id，读内容要用它而不是 `node_t
     - 机器人不是知识库成员时飞书返回成功但 data.node 是空的, 不是报错。空了要带 user_key 用 prefer=user 再问一次, 别当成节点不存在。
 ```
 
-`token: tenant_then_user` 只在**被拒**时回落到用户身份，而空结果不是被拒 —— 所以第二条的
+`token: tenant_then_user` 只在**被拒**时回落到用户身份，而空结果不是被拒 —— 所以那个
 空结果重试要你自己发起，rules 只负责把这件事讲在你眼前。
 
 ## 分页

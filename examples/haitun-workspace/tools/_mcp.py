@@ -88,7 +88,12 @@ def _json_type(ps: Mapping[str, Any]) -> str:
     return t
 
 
-def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
+def mcp(
+    func: Callable[..., Any] | None = None,
+    *,
+    dispatch: bool = False,
+    keep: tuple[str, ...] = (),
+) -> Any:
     """Decorator: generate one workspace tool per MCP server tool.
 
     Generated tool names default to ``<func name>_<mcp tool name>`` (so
@@ -96,6 +101,21 @@ def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
     override this — e.g. ``prefix=""`` when the MCP server's own tool names
     already carry the desired prefix (Playwright MCP exposes ``browser_*``),
     which would otherwise double up to ``browser_browser_navigate``.
+
+    **Dispatch mode.** Every generated schema is resident in the request on
+    every turn, and an MCP server's schemas are written upstream — we cannot
+    shorten them, only choose how many to expose. ``dispatch=True`` therefore
+    generates a *single* ``<name>_call(tool, args_json)`` tool that can reach
+    every tool on the server, and moves the per-tool parameter documentation
+    into a skill the model reads on demand. Measured on this workspace, the
+    browser (42 tools) and canvas (26) groups cost 36% of all tool schema
+    bytes; dispatching both reclaims ~35%.
+
+    ``keep`` names the tools that stay as their own generated function anyway —
+    for the handful called often enough that an extra indirection is not worth
+    it. Names are matched after prefixing (``browser_navigate``), and a name
+    that the server does not expose is logged and ignored rather than failing
+    tool loading, so a rename upstream cannot break the workspace.
 
     **Lazy startup.** The workspace loader imports tool files *synchronously*
     (a blocking ``exec``), so anything a decorator does at import time — spawning
@@ -112,6 +132,24 @@ def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
     3. Fall back to live discovery only on a cache miss, then **persist** the
        result so subsequent imports are instant.
     """
+    # Support both bare ``@mcp`` and parameterised ``@mcp(dispatch=True)``.
+    if func is None:
+
+        def _defer(f: Callable[..., Any]) -> Callable[..., Any]:
+            return _apply(f, dispatch=dispatch, keep=keep, depth=2)
+
+        return _defer
+    return _apply(func, dispatch=dispatch, keep=keep, depth=2)
+
+
+def _apply(
+    func: Callable[..., Any],
+    *,
+    dispatch: bool,
+    keep: tuple[str, ...],
+    depth: int,
+) -> Callable[..., Any]:
+    """Do the work of :func:`mcp`. *depth* is the frame holding the caller's globals."""
     prefix_hint = getattr(func, "__name__", "mcp")
     name = prefix_hint
 
@@ -153,10 +191,27 @@ def mcp(func: Callable[..., Any]) -> Callable[..., Any]:
 
     if prefix is None:
         prefix = name + "_"
-    g = sys._getframe(1).f_globals
+    g = sys._getframe(depth).f_globals
     prepend = func.__doc__
+
+    if not dispatch:
+        for tool_name, schema in schemas.items():
+            g[prefix + tool_name] = _build(prefix + tool_name, schema, config_provider, prepend)
+        return func
+
+    # Dispatch mode: one generic entrypoint, plus the explicitly kept tools.
+    unknown = [k for k in keep if k[len(prefix) :] not in schemas and k not in schemas]
+    if unknown:
+        # An upstream rename must not break tool loading — the dispatcher can
+        # still reach whatever the server does expose.
+        logger.warning(f"@mcp(keep=...) for {name!r} names tool(s) the server does not expose: {unknown}")
+    kept = 0
     for tool_name, schema in schemas.items():
-        g[prefix + tool_name] = _build(prefix + tool_name, schema, config_provider, prepend)
+        if prefix + tool_name in keep or tool_name in keep:
+            g[prefix + tool_name] = _build(prefix + tool_name, schema, config_provider, prepend)
+            kept += 1
+    g[name + "_call"] = _build_dispatch(name, prefix, schemas, config_provider, prepend)
+    logger.debug(f"MCP {name!r} in dispatch mode: 1 dispatcher + {kept} kept of {len(schemas)} tool(s)")
     return func
 
 
@@ -210,6 +265,74 @@ def _discover(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         return pool.submit(anyio.run, _go).result()  # ty: ignore
+
+
+def _build_dispatch(
+    name: str,
+    prefix: str,
+    schemas: dict[str, dict[str, Any]],
+    config_provider: Callable[[], dict[str, Any]],
+    prepend_doc: str | None = None,
+) -> Any:
+    """Build the single ``<name>_call`` tool that can reach every server tool.
+
+    The call path is deliberately identical to :func:`_build`'s — resolve the
+    config in a worker thread, connect, ``session.call_tool``, format — so a
+    dispatched call behaves exactly like the generated wrapper it replaces
+    (verified byte-for-byte on canvas reads, writes, and the error path).
+
+    Two things here are load-bearing rather than incidental:
+
+    - The **same containment** as ``_build``. Without it a transport failure
+      propagates instead of becoming a tool error, which is what takes the
+      gateway down (see ``_is_fatal``). This was caught by testing the two
+      paths against a server that would not start: they only agreed once the
+      dispatcher grew the identical ``except``.
+    - **Both spellings of the tool name are accepted.** The schema keys are the
+      server's own names, which may or may not already carry *prefix*
+      (Playwright exposes ``browser_navigate``; Excalidraw exposes
+      ``create_element`` and gets ``canvas_`` prepended). The skill documents
+      the prefixed name, so a model following it sends ``canvas_create_element``
+      while the server wants ``create_element``.
+    """
+    listing = ", ".join(sorted(prefix + t for t in schemas))
+    doc = (
+        (prepend_doc.strip() + "\n\n" if prepend_doc else "")
+        + f"Call any {name} tool. Read the ``{name}-mcp`` skill first: it documents each "
+        f"tool's arguments, which are NOT described here.\n\n"
+        "Args:\n"
+        f"    tool: Which tool to call. One of: {listing}\n"
+        "    args_json: That tool's arguments as a JSON object string, e.g. "
+        "``'{\"x\": 10}'``. Omit or pass ``{}`` for a tool that takes none.\n"
+    )
+
+    async def _fn(tool: str, args_json: str = "") -> str:
+        bare = tool[len(prefix) :] if prefix and tool.startswith(prefix) else tool
+        if bare not in schemas:
+            # Refuse locally: a typo must not reach the server as a real call.
+            return f"Error: unknown {name} tool {tool!r}. Available: {listing}"
+        try:
+            args = json.loads(args_json) if args_json.strip() else {}
+        except json.JSONDecodeError as exc:
+            return f"Error: args_json is not valid JSON ({exc}). Pass a JSON object string, e.g. '{{\"x\": 1}}'."
+        if not isinstance(args, dict):
+            return f"Error: args_json must be a JSON *object*, got {type(args).__name__}."
+        try:
+            cfg = await anyio.to_thread.run_sync(config_provider)  # ty: ignore
+            async with _connect(cfg) as session:
+                await session.initialize()
+                r = await session.call_tool(bare, args)
+            return _fmt(r)
+        except BaseException as exc:  # contain MCP/anyio teardown (see _is_fatal); re-raise only fatals
+            if _is_fatal(exc):
+                raise
+            logger.warning(f"MCP tool {bare!r} call failed: {exc!r}")
+            return f"Error: MCP tool {bare!r} failed: {_describe(exc)}"
+
+    _fn.__name__ = name + "_call"
+    _fn.__qualname__ = name + "_call"
+    _fn.__doc__ = doc
+    return _fn
 
 
 def _build(

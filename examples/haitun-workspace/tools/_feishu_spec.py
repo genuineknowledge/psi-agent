@@ -24,6 +24,13 @@ Rule fields, all optional except ``endpoint``:
     required      body/query field names that must be present
     fields        per-field: pattern / forbid / max / min / choices / default /
                   requires / max_items / min_items / in / on_fail
+
+``max``/``min`` are **numeric bounds**, not length limits: they coerce with ``float()``
+and give up quietly on anything that is not a number (see :func:`_check_field`), so
+``max: 255`` on a *title* checks nothing at all and reads as if it does. A length cap on
+a string is a ``pattern`` — ``'^[\\s\\S]{1,255}$'`` — with ``[\\s\\S]`` rather than ``.``
+so a value containing a newline is judged on its length like any other. Three rules
+carried the silent no-op spelling before this was noticed.
     pitfalls      free text surfaced on failure — never enforced, only explained
     paginate      true, or a mapping — follow ``page_token`` until ``has_more`` is false
     confirm       a token the caller must echo before an irreversible call goes out
@@ -69,9 +76,11 @@ operations under a collection URI: ``POST /im/v1/messages`` sends a message, whi
 ``POST /im/v1/chats`` requires ``name`` where ``POST /im/v1/chats/:chat_id/members``
 has no such field. Left to inherit, the parent's ``required``/``confirm``/``hard``
 would make every such child unreachable — refused for a field it does not take, or
-told to echo a confirm token belonging to a different irreversible call. So a rule
-enforces only its own endpoint, and lends the subtree nothing but its token strategy
-and pitfalls. See :meth:`Rule.as_advice`.
+told to echo a confirm token belonging to a different irreversible call. ``paginate``
+is inherited no more than those: a detail endpoint nested under a collection returns
+one object and never pages, so borrowing the collection's loop answers it with an
+empty list under ``ok: true``. So a rule enforces only its own endpoint, and lends the
+subtree nothing but its token strategy and pitfalls. See :meth:`Rule.as_advice`.
 """
 
 from __future__ import annotations
@@ -172,6 +181,18 @@ class Rule:
 
         So an inherited rule keeps its advice and drops its authority. An endpoint that
         needs enforcement gets its own row, which wins on specificity anyway.
+
+        ``paginate`` drops too, and for the same reason as ``required`` — it describes one
+        operation's *response*, not the subtree's. A collection and the detail endpoint
+        nested under it are exactly the pair this goes wrong for: ``GET /calendar/v4/
+        calendars`` returns a paged ``calendar_list``, while ``GET .../calendars/
+        :calendar_id`` returns one ``calendar`` object and never pages. Inheriting the
+        loop makes the detail read follow a ``page_token`` that isn't there and answer
+        with an empty ``calendar_list`` — a wrong answer wearing ``ok: true``, which is
+        the failure mode this whole module exists to prevent. Feishu nests detail under
+        collection routinely (``/im/v1/chats/:chat_id``, ``/drive/v1/files/:file_token/
+        versions/:version_id``, ``/bitable/v1/apps/:app_token/tables/:table_id/views``),
+        so the loop has to be declared per endpoint, never assumed.
         """
         quiet = copy.copy(self)
         quiet.required = []
@@ -179,6 +200,7 @@ class Rule:
         quiet.prefer_hard = False
         quiet.prefer_tool = ""
         quiet.why = ""
+        quiet.paginate = None
         # ``fields`` stays: its checks only fire on a field the caller actually sent, so
         # they cannot strand a child. Its ``default``\\s must go — those would inject a
         # body field the child endpoint never declared.

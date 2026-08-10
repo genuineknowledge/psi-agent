@@ -8,7 +8,9 @@ from typing import Any
 import anyio
 from loguru import logger
 
-_INTERVAL_SECONDS = 60
+# 刷新「已读 / 接收进度」不需要分钟级新鲜度。每分钟一轮会让每个已注册用户各点火一次
+# (线上实测 22 人 → 每分钟 22 次), 每次都要抢一次 Session 锁, 挤占正常对话。
+_INTERVAL_SECONDS = 900
 
 
 async def produce(ctx: Any) -> None:
@@ -19,6 +21,9 @@ async def produce(ctx: Any) -> None:
         except Exception as exc:
             logger.warning(f"Assignment delivery token map read failed: {exc}")
             open_ids = []
+        # 把一轮的投递摊到整个周期里, 而不是紧凑循环一次性发完: 后者会让所有人的
+        # Session 在同一瞬间抢锁 (thundering herd)。摊开后同一时刻只有一个在跑。
+        gap = _INTERVAL_SECONDS / max(len(open_ids), 1)
         for open_id in open_ids:
             try:
                 await ctx.emit(
@@ -30,7 +35,11 @@ async def produce(ctx: Any) -> None:
                 )
             except Exception as exc:
                 logger.warning(f"Assignment delivery event emit failed for {open_id}: {exc}")
-        await anyio.sleep(_INTERVAL_SECONDS)
+            # 睡在循环体内即等于走完一个完整周期, 所以循环末尾不再另外 sleep。
+            await anyio.sleep(gap)
+        if not open_ids:
+            # 没有已注册用户时上面一次都没睡, 这里补足一个周期免得空转。
+            await anyio.sleep(_INTERVAL_SECONDS)
 
 
 async def _registered_open_ids() -> list[str]:

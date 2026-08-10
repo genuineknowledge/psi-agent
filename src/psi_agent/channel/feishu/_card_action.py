@@ -221,6 +221,50 @@ def _consumed_card_content(card: Any, action_value: Any, *, multi_use: bool = Fa
     return consumed if selected_replaced and isinstance(consumed, dict) else None
 
 
+def _card_has_action_value(value: Any) -> bool:
+    """Report whether any interactive element still carries a callback value.
+
+    ``fetch_message`` returns the *rendered* card, where a button collapses to
+    ``{"tag": "button", "text": "...", "type": "primary"}`` with no ``value`` and no
+    ``behaviors``. Nothing downstream can then tell which button was clicked, so the
+    fetch fallback is structurally incapable of preserving such a card — as opposed to
+    merely having missed on this particular action. Distinguishing the two keeps the
+    warning honest about which situation the operator is looking at.
+    """
+    if isinstance(value, dict):
+        if "value" in value or "behaviors" in value:
+            return True
+        return any(_card_has_action_value(child) for child in value.values())
+    if isinstance(value, list):
+        return any(_card_has_action_value(child) for child in value)
+    return False
+
+
+def _fallback_card_content(original_card: Any) -> dict[str, Any]:
+    """Build the generic "已提交" card in the same schema as the card being replaced.
+
+    Feishu rejects a v1 body sent for a schema-2.0 original with
+    ``ErrCode: 200830; ErrMsg: schemaV2 card can not change schemaV1``, so a hardcoded
+    v1 fallback leaves 2.0 cards visibly untouched — the button stays clickable and the
+    operator gets no feedback at all. Mirroring the original's schema keeps the fallback
+    usable for both generations; an unknown original stays on v1, which is what the
+    legacy cards in this codebase use.
+    """
+    notice = {"tag": "markdown", "content": "你的操作已提交, 请查看本会话中的处理结果。"}
+    title = {"tag": "plain_text", "content": "已提交"}
+    if isinstance(original_card, dict) and original_card.get("schema") == "2.0":
+        return {
+            "schema": "2.0",
+            "header": {"title": title, "template": "green"},
+            "body": {"elements": [notice]},
+        }
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "green", "title": title},
+        "elements": [notice],
+    }
+
+
 def _card_action_context(
     event: Any,
     *,
@@ -423,24 +467,20 @@ async def handle_card_action(
                     original_card = fetched_card
                 replacement = _consumed_card_content(fetched_card, action_value, multi_use=multi_use)
                 if replacement is None:
-                    logger.warning(f"failed to preserve consumed card {message_id}, using fallback")
+                    if fetched_card is not None and not _card_has_action_value(fetched_card):
+                        logger.warning(
+                            f"cannot preserve consumed card {message_id}: the fetched card is the "
+                            "rendered form and carries no action value, so the clicked element "
+                            "cannot be identified — using fallback. Recover the snapshot instead "
+                            "(check that the channel and gateway resolve the same appdata root)."
+                        )
+                    else:
+                        logger.warning(f"failed to preserve consumed card {message_id}, using fallback")
             except Exception as e:
                 logger.warning(f"failed to fetch consumed card {message_id}, using fallback — {e!r}")
 
         if replacement is None:
-            replacement = {
-                "config": {"wide_screen_mode": True},
-                "header": {
-                    "template": "green",
-                    "title": {"tag": "plain_text", "content": "已提交"},
-                },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": "你的操作已提交, 请查看本会话中的处理结果。",
-                    }
-                ],
-            }
+            replacement = _fallback_card_content(original_card)
         try:
             result = await channel.update_card(message_id, replacement)
             if not getattr(result, "success", False):

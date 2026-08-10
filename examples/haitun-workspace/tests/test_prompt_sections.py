@@ -15,6 +15,16 @@ TOOLS_MD = Path(__file__).resolve().parents[1] / "TOOLS.md"
 sections = importlib.import_module("prompt_sections")
 
 
+def test_runtime_prompt_keeps_personal_and_organization_memory_separate() -> None:
+    guidance = sections.FUSION_MEMORY_SECTION
+
+    assert "`memory_add`: store stable personal" in guidance
+    assert "`organization_memory_add`" in guidance
+    assert 'visibility="organization"' in guidance
+    assert "organization-memory" in guidance
+    assert "memory_add`: store stable user preferences, project facts" not in guidance
+
+
 def test_document_guidance_uses_existing_tools_without_runtime_install() -> None:
     combined = sections.SEND_FILES_SECTION + sections.DELIVERABLES_AS_FILES_SECTION
 

@@ -11,11 +11,11 @@ Fusion Memory server, database, model, or HTTP memory API.
 ## Configure
 
 For multi-user Feishu deployments, the process starter must provide a
-Streamable HTTP MCP endpoint and token-map path before starting the Agent:
+Streamable HTTP MCP endpoint before starting the Agent. The token-map path is
+optional when automatic registration is enabled:
 
 ```bash
 export FUSION_MEMORY_MCP_URL="https://memory.example.com/mcp"
-export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 ```
 
 When the operator enables Feishu first-use registration, add:
@@ -25,11 +25,14 @@ export FUSION_MEMORY_AUTO_REGISTER_FEISHU=1
 export FUSION_MEMORY_ORGANIZATION_ID="org_example"
 export PSI_FEISHU_APP_ID="cli_xxx"
 export PSI_FEISHU_APP_SECRET="..."
+# Optional override; default: {AppData}/fusion-memory/tokens.json
+export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 ```
 
 The workspace signs a short-lived assertion for the trusted runtime
 `feishu-<open_id>` Session and asks Memory to register that user. The returned
-bearer token is written to the token-map file. Do not derive registration
+bearer token is written to the token-map file. If no path is configured, the
+workspace creates `{AppData}/fusion-memory/tokens.json` with mode `0600`. Do not derive registration
 identity from model-visible text.
 
 `FUSION_MEMORY_MCP_URL` must be exactly `/mcp`. HTTPS is required for remote
@@ -58,7 +61,7 @@ model-visible `<feishu_context>`. `FUSION_MEMORY_MCP_TIMEOUT_SECONDS`
 defaults to 30 seconds and is clamped to `0.1..120`; retryable reads and
 idempotent writes reconnect automatically after transport failures.
 
-When `FUSION_MEMORY_TOKEN_MAP_FILE` is absent, legacy single-user
+When `FUSION_MEMORY_TOKEN_MAP_FILE` and automatic registration are both absent, legacy single-user
 `FUSION_MEMORY_TOKEN`, `FUSION_MEMORY_WORKSPACE_ID`, and
 `FUSION_MEMORY_SESSION_ID` configuration remains supported. Map mode never
 falls back to the legacy shared token.

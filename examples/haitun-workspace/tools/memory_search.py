@@ -5,6 +5,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from typing import Literal
 
 TOOLS_DIR = Path(__file__).resolve().parent
 _mcp_path = TOOLS_DIR / "_fusion_memory_mcp.py"
@@ -18,8 +19,12 @@ if _mcp_module is None:
 CLIENT = _mcp_module.__dict__["CLIENT"]
 
 
-async def memory_search(query: str, limit: int = 8) -> str:
-    """Search Fusion Memory for raw evidence."""
+async def memory_search(
+    query: str,
+    limit: int = 8,
+    visibility: Literal["personal", "organization"] = "personal",
+) -> str:
+    """Search raw evidence in exactly one scope: personal or organization."""
     try:
         bounded_limit = max(1, min(32, int(limit)))
     except TypeError, ValueError:
@@ -30,9 +35,23 @@ async def memory_search(query: str, limit: int = 8) -> str:
             },
             ensure_ascii=False,
         )
-    result = await CLIENT.call_tool(
+    normalized_visibility = visibility.strip().lower() if isinstance(visibility, str) else ""
+    if normalized_visibility not in {"personal", "organization"}:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": {
+                    "code": "invalid_argument",
+                    "message": "visibility must be personal or organization",
+                    "retryable": False,
+                },
+            },
+            ensure_ascii=False,
+        )
+    caller = CLIENT.call_organization_read_tool if normalized_visibility == "organization" else CLIENT.call_tool
+    result = await caller(
         "memory_search",
-        {"query": query, "limit": bounded_limit},
+        {"query": query, "limit": bounded_limit, "visibility": normalized_visibility},
         retryable=True,
     )
     return json.dumps(result, ensure_ascii=False)

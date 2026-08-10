@@ -3,7 +3,9 @@
 - ``feishu_doc_read`` — read a doc's plain-text body (docx/doc/sheet).
 - ``feishu_doc_create`` — create a new standalone docx cloud document.
 - ``feishu_doc_append_content`` — append Markdown to a docx body as **native blocks**
-  (tables, lists, quotes, code, styled runs — not literal Markdown source); also works
+  (tables, lists, quotes, code, styled runs — not literal Markdown source); ragged or
+  delimiter-less tables are repaired and one-paragraph-per-line prose is preserved,
+  so ordinary Markdown renders rather than arriving as pipes and asterisks. Also works
   on the docx behind a wiki node via its ``obj_token``.
 - ``feishu_doc_append_table`` — append a native Feishu table from a 2-D array, with an
   auto-numbered caption and explicit column widths.
@@ -89,7 +91,18 @@ async def feishu_doc_append_content(document_id: str, content: str, user_key: st
     Markdown beyond plain headings is converted by Feishu into **real docx blocks** —
     a ``|`` table becomes a genuine Feishu table you can drag, sort and edit, not a
     row of pipe characters — so writing a table here is correct and needs no separate
-    tool. Blank lines separate blocks; within one block, single newlines are joined.
+    tool.
+
+    Write the Markdown the way you would anywhere else; the tool repairs the shapes
+    Feishu's converter is fussy about rather than writing them as literal source text:
+    a table whose rows and ``| --- |`` row disagree on column count is padded (and a
+    missing ``| --- |`` row inserted), a table written without outer pipes still lands
+    as a table, and prose written one paragraph per line **stays** one paragraph per
+    line instead of collapsing into a single block. Fenced code is written verbatim.
+    Blank lines always separate blocks. If a table still could not be made native, the
+    result carries ``tables_not_converted`` and a ``note`` saying so — the text is in
+    the document as plain text, so fix that table and rewrite it rather than reporting
+    the doc as done.
 
     Args:
         document_id: The docx document_id (or a wiki node's obj_token).

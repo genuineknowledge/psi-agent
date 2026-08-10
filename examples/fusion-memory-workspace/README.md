@@ -17,12 +17,11 @@ All listed tools call the Streamable HTTP MCP endpoint at
 
 ## Configuration
 
-For a multi-user Feishu deployment, the process starter manually configures the
-endpoint and operator-managed token-map path before starting the agent:
+For a multi-user Feishu deployment, the process starter configures the endpoint.
+The operator-managed token-map path is optional when automatic registration is enabled:
 
 ```bash
 export FUSION_MEMORY_MCP_URL="https://memory.example.com/mcp"
-export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 ```
 
 If the Memory service exposes Feishu first-use registration, the starter may
@@ -34,11 +33,15 @@ export FUSION_MEMORY_AUTO_REGISTER_FEISHU=1
 export FUSION_MEMORY_ORGANIZATION_ID="org_example"
 export PSI_FEISHU_APP_ID="cli_xxx"
 export PSI_FEISHU_APP_SECRET="..."
+# Optional override; default: {AppData}/fusion-memory/tokens.json
+export FUSION_MEMORY_TOKEN_MAP_FILE="/absolute/path/to/memory_tokens.json"
 ```
 
 The workspace signs a short-lived assertion for the runtime-observed
 `feishu-<open_id>` Session, calls `<FUSION_MEMORY_MCP_URL without /mcp>/feishu/register`,
-and writes the returned bearer token into the token map. Model-visible text
+and writes the returned bearer token into the token map. Without an explicit
+path, the workspace creates `{AppData}/fusion-memory/tokens.json` with mode
+`0600`. A rejected stored token is re-registered once. Model-visible text
 cannot choose or override the Feishu identity. When auto-registration is off,
 unknown users keep the existing behavior: they can chat, but durable memory is
 not activated.
@@ -79,7 +82,7 @@ authenticated principal. Strong isolation from forged Session IDs or
 workspace code that can read the complete map requires runtime authorization
 and a privileged credential broker outside this example workspace.
 
-When `FUSION_MEMORY_TOKEN_MAP_FILE` is absent, the legacy single-user variables
+When `FUSION_MEMORY_TOKEN_MAP_FILE` and automatic registration are both absent, the legacy single-user variables
 `FUSION_MEMORY_TOKEN`, `FUSION_MEMORY_WORKSPACE_ID`, and
 `FUSION_MEMORY_SESSION_ID` remain supported. Token-map mode never falls back to
 the shared legacy token.

@@ -12,9 +12,15 @@ four are not requests-with-arguments:
   lands empty and the call reports success.
 - ``feishu_file_download`` produces a *file on disk*. It never goes through ``_invoke``:
   it reads bytes off the raw response and writes them, falling back from the bot's token
-  to the user's authorization for files the bot cannot see.
+  to the user's authorization for files the bot cannot see. Its ``source_type`` picks
+  between the two download endpoints, which serve disjoint things — ``medias`` what is
+  inside a document, ``files`` a standalone resource file in Drive.
 - ``feishu_drive_upload`` needs a real file handle in the body, which a JSON argument
   cannot carry.
+
+Exporting a document (``feishu_doc_export``) and attaching a local image/file into one
+(``feishu_doc_attach``) are the two other flows this domain cannot table, and live in
+their own modules because both are multi-call chains rather than one request.
 
 Pair the comment tools with ``feishu_doc_read`` (which reads the document body).
 """
@@ -80,31 +86,48 @@ async def feishu_drive_reply_comment(
     )
 
 
-async def feishu_file_download(source: str, save_path: str, is_url: bool = False, user_key: str = "") -> str:
+async def feishu_file_download(
+    source: str,
+    save_path: str,
+    is_url: bool = False,
+    user_key: str = "",
+    source_type: str = "media",
+) -> str:
     """Download a Feishu file/attachment to a local path.
 
-    Two sources:
-    - is_url=False (default): ``source`` is a drive media file_token; downloads via
-      the drive medias endpoint.
-    - is_url=True: ``source`` is a direct URL. Approval-form attachments are direct
-      URLs valid only ~12 hours — pass them here and download promptly. If the link
-      has expired, re-read the approval instance for a fresh URL.
+    Three kinds of source, chosen with ``source_type``:
 
-    To read a PDF/attachment that lives in the user's wiki or drive: resolve it
-    (resolve it with ``feishu_api`` on ``GET /open-apis/wiki/v2/spaces/get_node`` → obj_token),
-    download here with
-    ``user_key`` so it's fetched as that user, then extract text with the
+    - ``"media"`` (default): ``source`` is the file_token of something that lives
+      **inside a document** — an image or an attachment block. Goes through
+      ``drive/v1/medias/:file_token/download``.
+    - ``"file"``: ``source`` is the file_token of a **standalone resource file in
+      Drive**, e.g. a PDF someone uploaded. Goes through
+      ``drive/v1/files/:file_token/download``.
+    - ``"url"``: ``source`` is a direct URL. Approval-form attachments are direct URLs
+      valid only ~12 hours — pass them here and download promptly. If the link has
+      expired, re-read the approval instance for a fresh URL. (``is_url=True`` is the
+      older spelling of this and still works.)
+
+    ``media`` and ``file`` are **not** interchangeable — the wrong one is a 404 rather
+    than a redirect. Neither serves Feishu's own online documents (docx / sheet /
+    bitable): to get one of those as a local file use ``feishu_doc_export``.
+
+    To read a PDF/attachment that lives in the user's wiki or drive: resolve it with
+    ``feishu_api`` on ``GET /open-apis/wiki/v2/spaces/get_node`` → obj_token, download
+    here with ``user_key`` so it's fetched as that user, then extract text with the
     ``ocr-and-documents`` skill (PyMuPDF).
 
     Args:
-        source: A drive media file_token, or a direct URL when is_url=True.
+        source: A file_token, or a direct URL when source_type="url" / is_url=True.
         save_path: Local filesystem path to write the file to (parent dirs are created).
-        is_url: True if source is a direct URL, False if it is a media file_token.
-        user_key: The sender's open_id (from ``<feishu_context>``). Pass it (is_url=False)
-            to download as that user — needed for files the bot can't see; empty uses
-            the bot's tenant token. Ignored for direct-URL downloads.
+        is_url: Deprecated spelling of source_type="url"; True still forces URL mode.
+        user_key: The sender's open_id (from ``<feishu_context>``). Pass it (for the
+            token modes) to download as that user — needed for files the bot can't see;
+            empty uses the bot's tenant token. Ignored for direct-URL downloads.
+        source_type: ``"media"`` (inside a document, default), ``"file"`` (a resource
+            file in Drive), or ``"url"`` (a direct link).
     """
-    return _f.dumps_result(await _f.download_file_impl(source, save_path, is_url, user_key))
+    return _f.dumps_result(await _f.download_file_impl(source, save_path, is_url, user_key, source_type))
 
 
 async def feishu_drive_upload(

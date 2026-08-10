@@ -1,6 +1,8 @@
 /** localStorage keys — same as spa v1 (`gw-user-*`). */
 export const LS_USER_NAME = 'gw-user-name'
 export const LS_USER_AVATAR = 'gw-user-avatar'
+/** Same-tab notification after saving profile (storage/focus do not fire locally). */
+export const USER_PROFILE_EVENT = 'psi:user-profile-updated'
 
 export function readStoredName(): string {
   try {
@@ -21,6 +23,7 @@ export function readStoredAvatar(): string {
 export function writeStoredProfile(name: string, avatar: string) {
   window.localStorage.setItem(LS_USER_NAME, name.trim())
   window.localStorage.setItem(LS_USER_AVATAR, avatar)
+  window.dispatchEvent(new Event(USER_PROFILE_EVENT))
 }
 
 export function readAvatarDataUrl(file: File): Promise<string> {
@@ -29,8 +32,8 @@ export function readAvatarDataUrl(file: File): Promise<string> {
       reject(new Error('请选择图片文件'))
       return
     }
-    if (file.size > 512 * 1024) {
-      reject(new Error('图片请小于 512KB'))
+    if (file.size > 3 * 1024 * 1024) {
+      reject(new Error('图片请小于 3MB'))
       return
     }
     const reader = new FileReader()

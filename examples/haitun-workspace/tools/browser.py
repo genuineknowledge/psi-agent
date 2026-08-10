@@ -41,7 +41,21 @@ import _browser_impl as _b
 from _mcp import mcp
 
 
-@mcp
+@mcp(
+    dispatch=True,
+    # Kept as their own tools because they carry nearly all real traffic: across
+    # 146 recorded sessions these six are every browser call with >= 8 uses
+    # (navigate 75, snapshot 46, click 12, tabs 11, take_screenshot 8), and
+    # navigate + snapshot are the two that open every browsing sequence.
+    keep=(
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_tabs",
+        "browser_take_screenshot",
+        "browser_type",
+    ),
+)
 def browser() -> dict[str, object]:
     """For simple page reads prefer ``search`` + ``fetch`` (faster, cheaper). Reach for
     the browser tools when you need real interaction: clicking, typing into forms,

@@ -6,7 +6,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from _assignment_delivery import parse_tool_result, progress_card
+from _assignment_display import readable_name
+from _assignment_display import resolve_feishu_display_names as _resolve_feishu_display_names
 from _assignment_tool_common import CLIENT, dumps_result, invalid_argument
+from _assignment_tool_common import result_object as _result_object
+from _feishu_impl import get_users_batch_impl as _get_users_batch_impl
 from feishu_message import feishu_message_send_card as _feishu_message_send_card
 
 from psi_agent.session.runtime_context import get_session_id
@@ -50,8 +54,8 @@ async def assignment_send_card(
     )
     if not fetched.get("ok"):
         return dumps_result(fetched)
-    assignment = fetched.get("result")
-    if not isinstance(assignment, dict):
+    assignment = _result_object(fetched)
+    if assignment is None:
         return invalid_argument("Fusion Memory returned an invalid assignment")
     if assignment.get("state") not in _DELIVERABLE_STATES:
         return dumps_result(
@@ -95,10 +99,14 @@ async def assignment_send_card(
             "Only the assignment assigner may deliver this work",
         )
 
+    participant_names = await _resolve_feishu_display_names(
+        {operator_open_id, *recipient_open_ids},
+        _get_users_batch_impl,
+    )
     title = _required_text(assignment.get("title"))
-    assigner_name = _participant_name(assignment.get("assigner"))
-    if title is None or assigner_name is None:
-        return invalid_argument("assignment title and assigner are required")
+    assigner_name = participant_names.get(operator_open_id) or "安排者"
+    if title is None:
+        return invalid_argument("assignment title is required")
 
     tracked = await CLIENT.call_tool(
         "assignment_delivery",
@@ -145,6 +153,7 @@ async def assignment_send_card(
             assignment_id=normalized_assignment_id,
             title=title,
             assigner_name=assigner_name,
+            participant_names=participant_names,
         )
         business_context = {
             "type": "work_assignment",
@@ -287,9 +296,11 @@ def _build_assignment_card(
     assignment_id: str,
     title: str,
     assigner_name: str,
+    participant_names: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    safe_assigner_name = readable_name(assigner_name) or "安排者"
     elements: list[dict[str, Any]] = [
-        _plain_text_element(f"任务: {title}\n安排者: {assigner_name}"),
+        _plain_text_element(f"任务: {title}\n安排者: {safe_assigner_name}"),
     ]
     original_request = assignment.get("original_request")
     if isinstance(original_request, str) and original_request.strip():
@@ -302,9 +313,9 @@ def _build_assignment_card(
     analysis: list[str] = []
     _append_labeled_text(analysis, "背景", assignment.get("context"))
     _append_labeled_text(analysis, "期望结果", assignment.get("expected_outcome"))
-    _append_items(analysis, "待确认缺口", assignment.get("gaps"))
-    _append_items(analysis, "已识别风险", assignment.get("risks"))
-    _append_items(analysis, "行动项", assignment.get("action_items"))
+    _append_items(analysis, "待确认缺口", assignment.get("gaps"), participant_names)
+    _append_items(analysis, "已识别风险", assignment.get("risks"), participant_names)
+    _append_items(analysis, "行动项", assignment.get("action_items"), participant_names)
     if analysis:
         elements.extend(
             [
@@ -333,6 +344,12 @@ def _build_assignment_card(
             ],
         }
     )
+    elements.append(
+        _plain_text_element(
+            "遇到任务范围、截止时间、验收标准、资源或权限等无法自行确认的问题。"
+            "可以直接告诉 HaiTun。反馈会保留在本任务中并同步给安排者。"
+        )
+    )
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -341,12 +358,6 @@ def _build_assignment_card(
         },
         "elements": elements,
     }
-
-
-def _participant_name(value: Any) -> str | None:
-    if not isinstance(value, dict):
-        return None
-    return _optional_text(value.get("display_name")) or _optional_text(value.get("user_id"))
 
 
 def _participant_open_ids(value: Any) -> set[str]:
@@ -493,11 +504,6 @@ def _error(code: str, message: str, *, sent: bool = False) -> str:
     )
 
 
-def _result_object(result: dict[str, Any]) -> dict[str, Any] | None:
-    payload = result.get("result")
-    return payload if isinstance(payload, dict) else None
-
-
 def _result_object_field(value: dict[str, Any], field: str) -> dict[str, Any] | None:
     payload = value.get(field)
     return payload if isinstance(payload, dict) else None
@@ -524,10 +530,15 @@ def _append_labeled_text(lines: list[str], label: str, value: Any) -> None:
         lines.append(f"{label}: {text}")
 
 
-def _append_items(lines: list[str], label: str, value: Any) -> None:
+def _append_items(
+    lines: list[str],
+    label: str,
+    value: Any,
+    participant_names: dict[str, str] | None,
+) -> None:
     if not isinstance(value, list):
         return
-    normalized = [text for item in value if (text := _item_text(item))]
+    normalized = [text for item in value if (text := _item_text(item, participant_names))]
     lines.extend(f"{label}: {item}" for item in normalized)
 
 
@@ -544,7 +555,7 @@ def _source_texts(value: Any) -> list[str]:
     return sources
 
 
-def _item_text(value: Any) -> str | None:
+def _item_text(value: Any, participant_names: dict[str, str] | None) -> str | None:
     if not isinstance(value, dict):
         return None
     content = None
@@ -556,7 +567,11 @@ def _item_text(value: Any) -> str | None:
     if content is None:
         return None
     details: list[str] = []
-    owner = _first_participant_name(value, ("owner", "responsible", "assignee"))
+    owner = _first_participant_name(
+        value,
+        ("owner", "responsible", "assignee"),
+        participant_names,
+    )
     if owner is not None:
         details.append(f"负责人: {owner}")
     deadline = _first_text(value, ("deadline", "due", "due_at"))
@@ -568,12 +583,19 @@ def _item_text(value: Any) -> str | None:
     return " | ".join([content, *details])
 
 
-def _first_participant_name(value: dict[str, Any], fields: tuple[str, ...]) -> str | None:
+def _first_participant_name(
+    value: dict[str, Any],
+    fields: tuple[str, ...],
+    participant_names: dict[str, str] | None,
+) -> str | None:
+    if not participant_names:
+        return None
     for field in fields:
         participant = value.get(field)
-        text = _optional_text(participant) if isinstance(participant, str) else _participant_name(participant)
-        if text is not None:
-            return text
+        open_ids = {participant} if isinstance(participant, str) else _participant_open_ids(participant)
+        for open_id in sorted(open_ids):
+            if name := participant_names.get(open_id):
+                return name
     return None
 
 
