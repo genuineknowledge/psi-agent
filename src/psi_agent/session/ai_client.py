@@ -11,6 +11,7 @@ from collections.abc import AsyncGenerator
 import aiohttp
 from loguru import logger
 
+from psi_agent._router_status import router_status_from_event
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.session.protocol import AiDelta
 
@@ -70,6 +71,10 @@ class AiClient:
                     logger.warning(f"Failed to parse SSE data: {data_str[:1000]!r}")
                     continue
 
+                if not isinstance(data, dict):
+                    logger.warning(f"Expected SSE data as object, got {type(data).__name__}")
+                    continue
+
                 choices_data = data.get("choices", [])
                 if not isinstance(choices_data, list):
                     logger.warning(f"Expected choices as list, got {type(choices_data).__name__}")
@@ -90,6 +95,20 @@ class AiClient:
                 delta_data = c.get("delta")
                 if not isinstance(delta_data, dict):
                     delta_data = {}
+                if "router_status" in delta_data:
+                    try:
+                        router_status = router_status_from_event(data)
+                    except ValueError:
+                        # The invalid payload and parser detail may carry private
+                        # upstream metadata, so expose only a stable safe error.
+                        logger.warning("Rejected invalid router_status event from upstream")
+                        yield AiDelta(
+                            finish_reason="error",
+                            content="[AI Error: invalid router_status event]",
+                        )
+                        return
+                    yield AiDelta(router_status=router_status)
+                    continue
                 compaction_signal = data.get("psi_compaction", {})
                 compaction_needed = isinstance(compaction_signal, dict) and compaction_signal.get("needed", False)
                 yield AiDelta(

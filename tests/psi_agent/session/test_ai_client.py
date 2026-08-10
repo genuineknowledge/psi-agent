@@ -6,7 +6,10 @@ import socket as _s
 import pytest
 from aiohttp import web
 
+from psi_agent._router_status import RouterStatus
 from psi_agent.session.ai_client import AiClient
+
+_ROUTER_TRACE_ID = "12345678-1234-5678-1234-567812345678"
 
 
 @pytest.mark.anyio
@@ -256,6 +259,139 @@ async def test_ai_client_reasoning_field():
         assert len(deltas) == 1
         assert deltas[0].reasoning == "Let me think..."
         assert deltas[0].finish_reason == "stop"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_ai_client_router_status_is_parsed_as_an_independent_delta() -> None:
+    status = RouterStatus(
+        trace_id=_ROUTER_TRACE_ID,
+        mode="aggregation",
+        phase="collecting",
+        completed=1,
+        total=2,
+    )
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(f"data: {json.dumps(status.to_event())}\n\n".encode())
+        final = {
+            "id": "final",
+            "choices": [{"delta": {"content": "done"}, "finish_reason": "stop"}],
+        }
+        await resp.write(f"data: {json.dumps(final)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [delta async for delta in client.stream({"messages": [], "stream": True})]
+
+        assert len(deltas) == 2
+        assert deltas[0].router_status == status
+        assert deltas[0].content is None
+        assert deltas[0].reasoning is None
+        assert deltas[0].finish_reason is None
+        assert deltas[1].content == "done"
+        assert deltas[1].finish_reason == "stop"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "router_status": RouterStatus(
+                            trace_id=_ROUTER_TRACE_ID,
+                            mode="routing",
+                            phase="selecting",
+                        ).to_dict(),
+                        "content": "candidate-secret",
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "router_status": RouterStatus(
+                            trace_id=_ROUTER_TRACE_ID,
+                            mode="routing",
+                            phase="selecting",
+                        ).to_dict()
+                    },
+                    "finish_reason": "candidate-secret",
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "router_status": {
+                            **RouterStatus(
+                                trace_id=_ROUTER_TRACE_ID,
+                                mode="routing",
+                                phase="selecting",
+                            ).to_dict(),
+                            "version": 2,
+                            "phase": "candidate-secret",
+                        }
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+    ],
+    ids=["mixed-delta", "non-null-finish", "unsupported-version"],
+)
+async def test_ai_client_invalid_router_status_becomes_safe_terminal_error(event: dict) -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(f"data: {json.dumps(event)}\n\n".encode())
+        later = {"choices": [{"delta": {"content": "must not be consumed"}, "finish_reason": "stop"}]}
+        await resp.write(f"data: {json.dumps(later)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [delta async for delta in client.stream({"messages": [], "stream": True})]
+
+        assert len(deltas) == 1
+        assert deltas[0].finish_reason == "error"
+        assert deltas[0].router_status is None
+        assert deltas[0].content == "[AI Error: invalid router_status event]"
+        assert "candidate-secret" not in (deltas[0].content or "")
     finally:
         await runner.cleanup()
 

@@ -470,11 +470,15 @@ class SessionAgent:
 
                     async with aclosing(self._ai_client.stream(request_body)) as stream:
                         async for delta in stream:
+                            router_status = delta.router_status.to_dict() if delta.router_status is not None else None
                             logger.debug(
                                 f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
+                                f"router_status={router_status!r}, "
                                 f"finish_reason={delta.finish_reason!r}, "
                                 f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
                             )
+                            if delta.router_status is not None:
+                                yield AgentChunk(router_status=delta.router_status)
                             if delta.content:
                                 yield AgentChunk(content=delta.content)
                                 accumulated_content += delta.content

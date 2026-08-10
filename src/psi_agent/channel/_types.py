@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from psi_agent._router_status import RouterStatus
+
 
 @dataclass
 class FileChunk:
@@ -33,5 +35,12 @@ class ReasoningChunk:
     kind: str | None = None
 
 
+@dataclass
+class RouterStatusChunk:
+    """A validated Router lifecycle snapshot. Output only and never persisted."""
+
+    status: RouterStatus
+
+
 InputChunk = FileChunk | TextChunk
-OutputChunk = FileChunk | TextChunk | ReasoningChunk
+OutputChunk = FileChunk | TextChunk | ReasoningChunk | RouterStatusChunk

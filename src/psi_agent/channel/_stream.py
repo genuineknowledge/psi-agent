@@ -6,8 +6,8 @@ unit-tested without HTTP/sockets:
 - ``iter_sse_events`` — turns a raw byte-line stream into validated ``delta``
   dicts (handles ``data:`` framing, ``[DONE]``, heartbeats, error chunks).
 - ``StreamBuffer`` — merges a ``(kind, text)`` event stream into interval-sized
-  blocks (flushed on kind switch, on the next ``append`` after the interval, or at
-  stream end).
+  blocks (flushed on kind switch, Router-status boundary, the next ``append``
+  after the interval, or stream end).
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from typing import Any
 
 from loguru import logger
 
+from psi_agent._router_status import router_status_from_event
 from psi_agent.channel._errors import ChannelError
 
 
@@ -28,7 +29,9 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
     Skips blank/non-``data:`` lines, malformed JSON and zero-choice heartbeats;
     stops at ``[DONE]``; raises on multi-choice chunks and ``finish_reason=error``.
     Non-list ``choices`` and non-dict ``choice`` are skipped; a missing or ``null``
-    ``delta`` is coerced to ``{}`` so the caller always receives a dict.
+    ``delta`` is coerced to ``{}`` so the caller always receives a dict. A valid
+    ``delta.router_status`` is normalized to a shared ``RouterStatus`` object;
+    malformed, mixed, or terminal status frames raise ``ChannelError``.
     """
     async for raw_line in lines:
         line = raw_line.decode().strip()
@@ -43,6 +46,10 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
             data = json.loads(data_str)
         except json.JSONDecodeError:
             logger.warning(f"skip malformed SSE: {line[:1000]!r}")
+            continue
+
+        if not isinstance(data, dict):
+            logger.warning(f"skip non-object SSE JSON: {type(data).__name__}")
             continue
 
         choices = data.get("choices", [])
@@ -64,6 +71,18 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             delta = {}
+
+        if "router_status" in delta:
+            try:
+                router_status = router_status_from_event(data)
+            except ValueError as error:
+                # Parser details can echo untrusted status fields. Keep the
+                # user-facing error stable, just as Session's AiClient does.
+                logger.warning("Rejected invalid router_status event from Session")
+                raise ChannelError("Invalid router_status event") from error
+            if router_status is None:
+                raise ChannelError("Invalid router_status event")
+            delta = {"router_status": router_status}
 
         if choice.get("finish_reason") == "error":
             msg = delta.get("content", "Session error")
@@ -88,7 +107,7 @@ class StreamBuffer:
     **Input.** The caller drives the buffer per SSE delta: ``switch(kind)``
     declares the kind of the text about to arrive (``"reasoning"`` vs anything
     else, treated as content), then ``append(text)`` adds that text. ``flush()``
-    is called once when the stream ends.
+    is called at non-text Router-status boundaries and when the stream ends.
 
     **Output.** Every method returns ``list[tuple[str, str]]`` — the ``(kind,
     merged_text)`` blocks to emit *right now* (in practice 0 or 1). The kind is
@@ -108,8 +127,9 @@ class StreamBuffer:
     inside ``append`` — there is no background timer. A block is emitted on the
     first ``append`` after the window elapses (or at the next ``switch`` / at
     ``flush``), not exactly at the window edge. This avoids an extra anyio task and
-    its cancellation surface; ``flush()`` always drains the tail at stream end. One
-    ``StreamBuffer`` is created per ``post()`` call, so state never crosses requests.
+    its cancellation surface; ``flush()`` always drains the tail at status boundaries
+    and stream end. One ``StreamBuffer`` is created per ``post()`` call, so state never
+    crosses requests.
     """
 
     def __init__(self, interval: float) -> None:
@@ -162,10 +182,11 @@ class StreamBuffer:
         return []
 
     def flush(self) -> list[tuple[str, str]]:
-        """Emit any text still buffered — called once when the stream ends."""
+        """Emit buffered text and reset timing for the next stream boundary."""
+        out: list[tuple[str, str]] = []
         if self._buf and self._kind is not None:
-            logger.debug(f"stream end flush → {self._label()} ({len(self._buf)} chars)")
-            out: list[tuple[str, str]] = [(self._kind, self._buf)]
+            logger.debug(f"buffer flush → {self._label()} ({len(self._buf)} chars)")
+            out.append((self._kind, self._buf))
             self._buf = ""
-            return out
-        return []
+        self._timer_target = None
+        return out

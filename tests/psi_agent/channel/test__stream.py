@@ -5,8 +5,11 @@ from collections.abc import AsyncIterator
 
 import pytest
 
+from psi_agent._router_status import RouterStatus
 from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._stream import StreamBuffer, iter_sse_events
+
+_TRACE_ID = "12345678-1234-5678-1234-567812345678"
 
 
 def test_buffer_merges_within_interval():
@@ -51,6 +54,19 @@ def test_buffer_flush_empty_returns_empty():
     assert b.flush() == []
 
 
+def test_buffer_flush_resets_interval_window(monkeypatch):
+    times = iter((100.0, 100.0, 200.0, 200.0))
+    monkeypatch.setattr("psi_agent.channel._stream.time.monotonic", lambda: next(times))
+    b = StreamBuffer(10.0)
+    b.switch("text")
+    assert b.append("before") == []
+    assert b.flush() == [("text", "before")]
+
+    b.switch("text")
+    assert b.append("after") == []
+    assert b.flush() == [("text", "after")]
+
+
 async def _alines(*items: bytes) -> AsyncIterator[bytes]:
     for it in items:
         yield it
@@ -65,6 +81,97 @@ async def test_sse_yields_delta():
     chunk = {"choices": [{"index": 0, "delta": {"content": "hi"}}]}
     events = [d async for d in iter_sse_events(_alines(_sse(chunk)))]
     assert events == [{"content": "hi"}]
+
+
+@pytest.mark.anyio
+async def test_sse_validates_and_normalizes_router_status():
+    status = RouterStatus(trace_id=_TRACE_ID, mode="routing", phase="selecting")
+
+    events = [d async for d in iter_sse_events(_alines(_sse(status.to_event())))]
+
+    assert events == [{"router_status": status}]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "router_status": {
+                            "version": 2,
+                            "trace_id": _TRACE_ID,
+                            "mode": "routing",
+                            "phase": "selecting",
+                            "depth": 0,
+                        }
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "router_status": {
+                            "version": 1,
+                            "trace_id": _TRACE_ID,
+                            "mode": "routing",
+                            "phase": "selecting",
+                            "depth": 0,
+                        },
+                        "content": "candidate-secret",
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "router_status": {
+                            "version": 1,
+                            "trace_id": _TRACE_ID,
+                            "mode": "routing",
+                            "phase": "selecting",
+                            "depth": 0,
+                        }
+                    },
+                    "finish_reason": "candidate-secret",
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "router_status": {
+                            "version": 1,
+                            "trace_id": _TRACE_ID,
+                            "mode": "routing",
+                            "phase": "candidate-secret",
+                            "depth": 0,
+                        }
+                    },
+                    "finish_reason": None,
+                }
+            ]
+        },
+    ],
+)
+async def test_sse_rejects_invalid_router_status_without_echoing_fields(chunk):
+    with pytest.raises(ChannelError, match="Invalid router_status event") as exc_info:
+        _ = [d async for d in iter_sse_events(_alines(_sse(chunk)))]
+
+    assert "candidate-secret" not in str(exc_info.value)
 
 
 @pytest.mark.anyio

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import os
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,13 @@ import anyio
 from loguru import logger
 
 from psi_agent.channel._core import ChannelCore
-from psi_agent.channel._types import FileChunk, InputChunk, ReasoningChunk, TextChunk
+from psi_agent.channel._types import (
+    FileChunk,
+    InputChunk,
+    ReasoningChunk,
+    RouterStatusChunk,
+    TextChunk,
+)
 
 
 class ChatManager:
@@ -37,6 +44,8 @@ class ChatManager:
 
             - ``{"type": "text", "text": "..."}``
             - ``{"type": "reasoning", "text": "...", "kind": "thinking"|"tool_call"|"tool_result"?}``
+            - ``{"type": "router_status", ...}`` — a validated, UI-safe
+              Router lifecycle snapshot
             - ``{"type": "blob", "name": "...", "data": "<base64>"}``
             - ``{"type": "error", "error": "..."}`` — on blob read failure
         """
@@ -70,8 +79,11 @@ class ChatManager:
             logger.debug(f"Inbound chunk type={t!r} (total {len(chunks)})")
 
         logger.info(f"Chat: posting {len(chunks)} chunk(s) to {channel_socket!r}")
-        async with ChannelCore(session_socket=channel_socket, interval=0.0) as core:
-            async for chunk in core.post(chunks):
+        async with (
+            ChannelCore(session_socket=channel_socket, interval=0.0) as core,
+            aclosing(core.post(chunks)) as stream,
+        ):
+            async for chunk in stream:
                 if isinstance(chunk, TextChunk):
                     yield {"type": "text", "text": chunk.text}
                 elif isinstance(chunk, ReasoningChunk):
@@ -79,6 +91,8 @@ class ChatManager:
                     if chunk.kind:
                         event["kind"] = chunk.kind
                     yield event
+                elif isinstance(chunk, RouterStatusChunk):
+                    yield {"type": "router_status", **chunk.status.to_dict()}
                 elif isinstance(chunk, FileChunk):
                     yield await self._file_blob(chunk.path)
 

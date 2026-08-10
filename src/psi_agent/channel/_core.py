@@ -10,11 +10,19 @@ import anyio
 from aiohttp import ClientTimeout
 from loguru import logger
 
+from psi_agent._router_status import RouterStatus
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._markers import SendMarkerScanner, encode_input
 from psi_agent.channel._stream import StreamBuffer, iter_sse_events
-from psi_agent.channel._types import FileChunk, InputChunk, OutputChunk, ReasoningChunk, TextChunk
+from psi_agent.channel._types import (
+    FileChunk,
+    InputChunk,
+    OutputChunk,
+    ReasoningChunk,
+    RouterStatusChunk,
+    TextChunk,
+)
 
 _CHAT_PATH = "/chat/completions"
 _EVENTS_PATH = "/events"
@@ -104,6 +112,16 @@ class ChannelCore:
             async with aclosing(iter_sse_events(resp.content)) as events:
                 logger.debug("Starting to consume SSE stream")
                 async for delta in events:
+                    router_status = delta.get("router_status")
+                    if router_status is not None:
+                        if not isinstance(router_status, RouterStatus):
+                            raise ChannelError("Invalid router_status: expected validated RouterStatus")
+                        for k, t in buffer.flush():
+                            yield self._to_chunk(k, t)
+                        logger.debug(f"delta.router_status: {router_status.to_dict()!r}")
+                        yield RouterStatusChunk(status=router_status)
+                        continue
+
                     reasoning_text = delta.get("reasoning") or ""
                     content_text = delta.get("content") or ""
                     raw_kind = delta.get("kind")

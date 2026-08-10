@@ -11,6 +11,7 @@ import anyio
 import pytest
 from aiohttp import web
 
+from psi_agent._router_status import RouterStatus
 from psi_agent.session.agent import AgentRun, SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
@@ -92,6 +93,44 @@ async def test_agent_simple_response(tmp_path: Path) -> None:
 
         all_content = "".join(c.content or "" for c in chunks)
         assert "Hello world" in all_content
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_passes_router_status_without_persisting_it(tmp_path: Path) -> None:
+    status = RouterStatus(
+        trace_id="12345678-1234-5678-1234-567812345678",
+        mode="aggregation",
+        phase="collecting",
+        completed=1,
+        total=2,
+    )
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(f"data: {json.dumps(status.to_event())}\n\n".encode())
+        await resp.write(_sse_chunk(content="answer", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    history_path = tmp_path / "router-status.jsonl"
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            conversation=Conversation(path=history_path),
+            tool_registry=ToolRegistry(),
+        )
+        chunks = [chunk async for chunk in agent.run({"role": "user", "content": "hi"})]
+
+        assert chunks[0] == AgentChunk(router_status=status)
+        assert "".join(chunk.content or "" for chunk in chunks) == "answer"
+        assert all("router_status" not in message for message in agent._conversation.messages)
+        persisted = await anyio.Path(history_path).read_text(encoding="utf-8")
+        assert "router_status" not in persisted
     finally:
         await mock_server.cleanup()
 

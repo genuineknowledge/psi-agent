@@ -80,9 +80,12 @@ class ChannelAdapter:
             async with aclosing(chunks):
                 async for chunk in chunks:
                     await response.write(ChannelAdapter._to_sse(chunk))
-                    logger.debug(
-                        f"SSE chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}, kind={chunk.kind!r}"
-                    )
+                    if chunk.router_status is not None:
+                        logger.debug(f"SSE router status: {chunk.router_status.to_dict()!r}")
+                    else:
+                        logger.debug(
+                            f"SSE chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}, kind={chunk.kind!r}"
+                        )
                 await response.write(b"data: [DONE]\n\n")
         except AgentError as e:
             await ChannelAdapter._write_error(response, e.message)
@@ -97,7 +100,12 @@ class ChannelAdapter:
 
     @staticmethod
     def _to_sse(chunk: AgentChunk) -> bytes:
-        delta = DeltaMessage(content=chunk.content, reasoning=chunk.reasoning, kind=chunk.kind)
+        if chunk.router_status is not None:
+            if chunk.content is not None or chunk.reasoning is not None or chunk.kind is not None:
+                raise ValueError("router_status must use an independent AgentChunk")
+            delta = DeltaMessage(router_status=chunk.router_status)
+        else:
+            delta = DeltaMessage(content=chunk.content, reasoning=chunk.reasoning, kind=chunk.kind)
         cc = ChatCompletionChunk(choices=[StreamChoice(index=0, delta=delta)])
         return cc.to_sse().encode()
 
