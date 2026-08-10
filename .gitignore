@@ -10,4 +10,6 @@ dist/
 .coverage
 /result
 .worktrees/
-evals/
+# Local-only evaluation assets
+/evals/
+/tests/evals/
