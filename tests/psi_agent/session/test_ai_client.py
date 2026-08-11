@@ -274,7 +274,15 @@ async def test_ai_client_router_status_is_parsed_as_an_independent_delta() -> No
     )
 
     async def handler(request: web.Request) -> web.StreamResponse:
-        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        assert request.headers["X-Psi-Trace-Id"] == _ROUTER_TRACE_ID
+        resp = web.StreamResponse(
+            status=200,
+            reason="OK",
+            headers={
+                "Content-Type": "text/event-stream",
+                "X-Psi-Trace-Id": _ROUTER_TRACE_ID,
+            },
+        )
         await resp.prepare(request)
         await resp.write(f"data: {json.dumps(status.to_event())}\n\n".encode())
         final = {
@@ -295,7 +303,16 @@ async def test_ai_client_router_status_is_parsed_as_an_independent_delta() -> No
     await web.SockSite(runner, sock).start()
     try:
         client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
-        deltas = [delta async for delta in client.stream({"messages": [], "stream": True})]
+        deltas = [
+            delta
+            async for delta in client.stream(
+                {
+                    "messages": [],
+                    "stream": True,
+                    "routing": {"trace_id": _ROUTER_TRACE_ID},
+                }
+            )
+        ]
 
         assert len(deltas) == 2
         assert deltas[0].router_status == status
@@ -385,7 +402,16 @@ async def test_ai_client_invalid_router_status_becomes_safe_terminal_error(event
     await web.SockSite(runner, sock).start()
     try:
         client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
-        deltas = [delta async for delta in client.stream({"messages": [], "stream": True})]
+        deltas = [
+            delta
+            async for delta in client.stream(
+                {
+                    "messages": [],
+                    "stream": True,
+                    "routing": {"trace_id": _ROUTER_TRACE_ID},
+                }
+            )
+        ]
 
         assert len(deltas) == 1
         assert deltas[0].finish_reason == "error"

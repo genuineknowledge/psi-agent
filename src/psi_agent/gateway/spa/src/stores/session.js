@@ -21,11 +21,11 @@ export const useSessionStore = defineStore('session', () => {
   const sessionTitles = ref({})
   const sessionMessages = ref({})
   const sessionInputs = ref({})
-  /** Per-session SSE in flight; survives sidebar switches without aborting backend. */
+  /** Per-session turn in flight, including pre-stream work; survives sidebar switches. */
   const sessionStreaming = ref({})
   /** Sidebar dot after stream ends; cleared when the session streams again. */
   const sessionStreamMarks = ref({})
-  /** Per-session AbortController for stop button (in-memory only). */
+  /** Per-session whole-turn AbortController for stop button (in-memory only). */
   const sessionAbortControllers = ref({})
   /** Gateway process cwd — used when session.workspace is empty. */
   const gatewayCwd = ref('')

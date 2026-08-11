@@ -157,7 +157,7 @@ async def test_first_success_stops_without_calling_later_candidates() -> None:
         ("replaying", 1, 3),
     ]
     assert [call[0] for call in client.calls] == ["private-1.sock"]
-    assert client.calls[0][2] == {"timeout": 7}
+    assert client.calls[0][2] == {"timeout": 7, "trace_id": _TRACE_ID}
 
 
 @pytest.mark.anyio
@@ -233,8 +233,8 @@ async def test_candidate_timeout_overrides_fallback_target_timeout_per_attempt()
     await _collect(strategy.stream(body=_body()))
 
     assert [(socket, options) for socket, _, options in client.calls] == [
-        ("private-1.sock", {"timeout": 2.5}),
-        ("private-2.sock", {"timeout": 7}),
+        ("private-1.sock", {"timeout": 2.5, "trace_id": _TRACE_ID}),
+        ("private-2.sock", {"timeout": 7, "trace_id": _TRACE_ID}),
     ]
 
 

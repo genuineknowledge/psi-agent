@@ -80,7 +80,7 @@ async def test_routing_forwards_only_public_parameters_to_selected_target() -> N
                 "future_parameter": {"enabled": True},
                 "stream": True,
             },
-            {"timeout": 12.0},
+            {"timeout": 12.0, "trace_id": source["routing"]["trace_id"]},
         )
     ]
     client.calls[0][1]["messages"][0]["content"] = "changed"

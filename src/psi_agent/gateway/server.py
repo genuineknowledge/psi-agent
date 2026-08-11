@@ -11,6 +11,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._trace import TRACE_ID_HEADER, resolve_trace_id
 from psi_agent.gateway._ai_manager import AIManager
 from psi_agent.gateway._attention import AttentionHub
 from psi_agent.gateway._chat_manager import ChatManager
@@ -41,6 +42,7 @@ async def _write_chat_sse_with_keepalive(
     chunks: AsyncGenerator[dict[str, Any]],
     *,
     session_id: str,
+    trace_id: str,
     keepalive_sec: float = _SSE_KEEPALIVE_SEC,
 ) -> None:
     """Write chat SSE chunks, emitting comment keepalives on idle.
@@ -67,13 +69,13 @@ async def _write_chat_sse_with_keepalive(
                 except TimeoutError:
                     with suppress(Exception):
                         await resp.write(b": keepalive\n\n")
-                        logger.debug(f"Chat SSE keepalive for session {session_id!r}")
+                        logger.debug(f"Chat SSE keepalive for session {session_id!r} trace_id={trace_id}")
                     continue
                 except anyio.EndOfStream:
                     break
                 data = f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
                 await resp.write(data.encode())
-                logger.debug(f"Chat SSE chunk: {data[:1000]}")
+                logger.debug(f"Chat SSE chunk trace_id={trace_id}: {data[:1000]}")
 
 
 async def _handle_spa(request: web.Request) -> web.HTTPFound:
@@ -763,9 +765,16 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
     cm: ChatManager = request.app["cm"]
     session_id = request.match_info["session_id"]
     try:
+        trace_id = resolve_trace_id(headers=request.headers)
+    except ValueError as e:
+        return _error(f"Invalid trace ID: {e}", status=400)
+
+    try:
         channel_socket = sm.get_socket(session_id)
     except LookupError:
-        return _error(f"Session '{session_id}' not found", status=404)
+        error_response = _error(f"Session '{session_id}' not found", status=404)
+        error_response.headers[TRACE_ID_HEADER] = trace_id
+        return error_response
 
     try:
         if request.content_type and "multipart" in request.content_type:
@@ -773,7 +782,9 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
             raw = data.get("chunks")
             raw_chunks = json.loads(str(raw)) if raw else []
             if not isinstance(raw_chunks, list):
-                return _error("chunks must be a JSON array", status=400)
+                error_response = _error("chunks must be a JSON array", status=400)
+                error_response.headers[TRACE_ID_HEADER] = trace_id
+                return error_response
             body: dict[str, Any] = {"chunks": raw_chunks}
             for file_field in data.getall("file", []):
                 fname = getattr(file_field, "filename", None)
@@ -784,9 +795,13 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
         else:
             body = await request.json()
             if not isinstance(body, dict):
-                return _error("Request body must be a JSON object", status=400)
+                error_response = _error("Request body must be a JSON object", status=400)
+                error_response.headers[TRACE_ID_HEADER] = trace_id
+                return error_response
     except (ValueError, TypeError) as e:
-        return _error(f"Invalid request: {e}", status=400)
+        error_response = _error(f"Invalid request: {e}", status=400)
+        error_response.headers[TRACE_ID_HEADER] = trace_id
+        return error_response
 
     resp = web.StreamResponse(
         status=200,
@@ -796,6 +811,7 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            TRACE_ID_HEADER: trace_id,
         },
     )
     try:
@@ -810,13 +826,21 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
         # the upstream ChatManager generator — see `_write_chat_sse_with_keepalive`.
         await _write_chat_sse_with_keepalive(
             resp,
-            cm.handle(channel_socket, body),
+            cm.handle(channel_socket, body, trace_id=trace_id),
             session_id=session_id,
+            trace_id=trace_id,
         )
     except Exception as e:
-        logger.warning(f"Chat error for session {session_id!r}: {e!r}")
+        logger.warning(f"Chat error for session {session_id!r} trace_id={trace_id}: {e!r}")
         with suppress(Exception):
-            await resp.write(f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n".encode())
+            event = {
+                "type": "error",
+                "severity": "fatal",
+                "code": "chat_failed",
+                "trace_id": trace_id,
+                "error": str(e),
+            }
+            await resp.write(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode())
     finally:
         with suppress(Exception):
             await resp.write(b"data: [DONE]\n\n")

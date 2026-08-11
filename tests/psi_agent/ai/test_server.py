@@ -118,6 +118,7 @@ async def test_handler_strips_internal_routing_before_calling_the_external_provi
     """Provider-facing calls must never receive the Router's Session metadata."""
 
     received_provider_kwargs: dict[str, Any] = {}
+    trace_id = "123e4567-e89b-12d3-a456-426614174000"
     stream = _TrackingStream([_FakeChunk()])
     runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream, received_provider_kwargs)
     try:
@@ -128,12 +129,14 @@ async def test_handler_strips_internal_routing_before_calling_the_external_provi
                 json={
                     "messages": [{"role": "user", "content": "hi"}],
                     "stream": True,
-                    "routing": {"session_id": "private-session"},
+                    "routing": {"session_id": "private-session", "trace_id": trace_id},
                     "temperature": 0.2,
                 },
+                headers={"X-Psi-Trace-Id": trace_id},
             ) as response,
         ):
             assert response.status == 200
+            assert response.headers["X-Psi-Trace-Id"] == trace_id
             async for _ in response.content:
                 pass
     finally:

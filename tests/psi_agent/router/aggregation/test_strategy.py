@@ -328,8 +328,8 @@ async def test_candidate_timeout_overrides_aggregation_target_timeout_per_branch
 
     options_by_socket = {socket: options for socket, _, options in client.complete_calls}
     assert options_by_socket == {
-        "private-1.sock": {"timeout": 2.5},
-        "private-2.sock": {"timeout": 4},
+        "private-1.sock": {"timeout": 2.5, "trace_id": _TRACE_ID},
+        "private-2.sock": {"timeout": 4, "trace_id": _TRACE_ID},
     }
 
 
@@ -343,7 +343,7 @@ async def test_aggregator_body_replaces_only_messages_and_preserves_public_param
     await _collect(AggregationStrategy(config=_config(targets), client=client).stream(body=_body()))
 
     assert client.aggregator_body is not None
-    assert client.aggregator_options == {"timeout": 9}
+    assert client.aggregator_options == {"timeout": 9, "trace_id": _TRACE_ID}
     assert client.aggregator_body["messages"][0]["role"] == "system"
     assert client.aggregator_body["messages"][1:-1] == _body()["messages"]
     assert client.aggregator_body["messages"] != _body()["messages"]

@@ -11,10 +11,9 @@
       <label class="field">路由模式
         <select v-model="routerForm.mode">
           <option value="">请选择</option>
-          <option value="routing">分流模式</option>
-          <option value="aggregation">聚合模式</option>
-          <option value="fallback">Fallback</option>
+          <option v-for="mode in ROUTER_MODE_OPTIONS" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
         </select>
+        <span v-if="routerForm.mode" class="field-hint">{{ routerModeHint(routerForm.mode) }}</span>
       </label>
       <label v-if="routerForm.mode !== 'fallback'" class="field">{{ routerAiRole(routerForm.mode) }} 模型
         <select v-model="routerForm.router_ai_id"><option value="">请选择</option><option v-for="a in ais" :key="a.id" :value="a.id">{{ a.model || a.id }}</option></select>
@@ -53,6 +52,7 @@ import { useAiStore } from '../stores/ai.js'
 import { useRouterStore } from '../stores/router.js'
 import { backendValues as valuesForType, getBackendLabel } from '../backendOptions.js'
 import { buildRouterPayload, routerAiRole, validateRouterForm } from '../routerConfig.js'
+import { ROUTER_MODE_OPTIONS, routerModeHint } from '../routerMode.js'
 import { useUiStore } from '../stores/ui.js'
 import BaseDialog from './BaseDialog.vue'
 
@@ -85,6 +85,7 @@ async function submit() {
 <style scoped>
 .router-form { display: flex; flex-direction: column; gap: 14px; }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--md-text-secondary); }
+.field-hint { color: var(--md-text-secondary); font-size: 12px; line-height: 1.45; }
 .field input, .field select, .upstream-row input, .upstream-row select { padding: 10px 12px; border: 1px solid var(--md-outline-variant); border-radius: 10px; background: var(--md-surface-container); color: var(--md-text-primary); }
 .section-title { font-size: 13px; font-weight: 600; }
 .upstream-row { display: grid; grid-template-columns: 100px 180px 1fr auto; gap: 8px; }

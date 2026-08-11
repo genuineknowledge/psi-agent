@@ -2,8 +2,8 @@
   <div class="model-zone">
     <div v-if="modelPanelOpen" class="model-panel-backdrop" @click="modelPanelOpen = false"></div>
 
-    <div class="model-chip" :class="{ open: modelPanelOpen }" @click="modelPanelOpen = !modelPanelOpen" :title="currentModelLabel">
-      <span class="material-symbols-outlined chip-icon">smart_toy</span>
+    <div class="model-chip" :class="{ open: modelPanelOpen }" @click="modelPanelOpen = !modelPanelOpen" :title="currentBackendTitle">
+      <span class="material-symbols-outlined chip-icon">{{ currentBackendIcon }}</span>
       <span class="chip-label">{{ currentModelLabel }}</span>
       <span class="material-symbols-outlined chip-arrow">expand_more</span>
     </div>
@@ -34,8 +34,11 @@
         <div v-for="r in routers" :key="`router:${r.id}`" class="model-panel-item"
              :class="{ active: selectedBackendType === 'router' && r.id === selectedBackendId }"
              @click="selectBackend('router', r.id)">
-          <span class="material-symbols-outlined mpi-icon">route</span>
-          <div class="mpi-info"><div class="mpi-name">{{ r.name || r.id }}</div><div class="mpi-provider">{{ r.upstreams.length }} 个候选模型</div></div>
+          <span class="material-symbols-outlined mpi-icon">{{ routerModePresentation(r.mode).icon }}</span>
+          <div class="mpi-info">
+            <div class="mpi-name" :title="r.name || r.id">{{ r.name || r.id }}</div>
+            <div class="mpi-provider" :title="routerSummary(r, ais, routers)">{{ routerCompactSummary(r) }}</div>
+          </div>
           <span v-if="selectedBackendType === 'router' && r.id === selectedBackendId" class="material-symbols-outlined mpi-check">check_circle</span>
           <button class="mpi-del" @click.stop="requestDeleteRouter(r.id)" title="停止此路由"><span class="material-symbols-outlined">delete</span></button>
         </div>
@@ -51,6 +54,8 @@ import { useAiStore } from '../stores/ai.js'
 import { useRouterStore } from '../stores/router.js'
 import { useSessionStore } from '../stores/session.js'
 import { getBackendLabel } from '../backendOptions.js'
+import { routerCompactSummary, routerSummary } from '../routerConfig.js'
+import { routerModePresentation } from '../routerMode.js'
 
 const ai = useAiStore()
 const { modelPanelOpen, ais } = storeToRefs(ai)
@@ -62,6 +67,19 @@ const emit = defineEmits(['select-backend', 'delete-ai', 'delete-router'])
 const currentModelLabel = computed(() => {
   return getBackendLabel(selectedBackendType.value, selectedBackendId.value, ais.value, routers.value)
 })
+const currentRouter = computed(() => (
+  selectedBackendType.value === 'router'
+    ? routers.value.find(item => item.id === selectedBackendId.value)
+    : null
+))
+const currentBackendIcon = computed(() => (
+  currentRouter.value ? routerModePresentation(currentRouter.value.mode).icon : 'smart_toy'
+))
+const currentBackendTitle = computed(() => (
+  currentRouter.value
+    ? routerSummary(currentRouter.value, ais.value, routers.value)
+    : currentModelLabel.value
+))
 
 function selectBackend(type, id) {
   emit('select-backend', { type, id })

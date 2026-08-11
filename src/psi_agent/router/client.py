@@ -13,6 +13,7 @@ from loguru import logger
 
 from psi_agent._router_status import router_status_from_event
 from psi_agent._sockets import resolve_connector_and_endpoint
+from psi_agent._trace import TRACE_ID_HEADER, normalize_trace_id
 
 from .errors import RouterUpstreamError
 from .models import BufferedCompletion, CompletionResult
@@ -42,13 +43,13 @@ class RouterHttpClient:
     ) -> BufferedCompletion:
         """Accumulate a completion while retaining its validated SSE events."""
 
-        request_timeout = self._timeout_from_options(options)
+        request_timeout, trace_id = self._request_options(options)
         buffered_events: list[dict[str, Any]] = []
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_calls: dict[int, dict[str, Any]] = {}
         finish_reason: str | None = None
-        stream = self.stream(socket=socket, body=body, timeout=request_timeout)
+        stream = self.stream(socket=socket, body=body, timeout=request_timeout, trace_id=trace_id)
         async with aclosing(stream) as events:
             async for event in events:
                 buffered_events.append(event)
@@ -95,14 +96,23 @@ class RouterHttpClient:
     ) -> AsyncGenerator[dict[str, Any]]:
         """Yield validated single-choice SSE events from one upstream."""
 
-        request_timeout = self._timeout_from_options(options)
+        request_timeout, trace_id = self._request_options(options)
         connector, endpoint = resolve_connector_and_endpoint(socket)
         session = aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=request_timeout))
         response: aiohttp.ClientResponse | None = None
         saw_completion_finish = False
         try:
-            response = await session.post(endpoint, json=body)
-            logger.info(f"Router upstream response status: status={response.status}")
+            headers = {TRACE_ID_HEADER: trace_id} if trace_id is not None else None
+            response = await session.post(endpoint, json=body, headers=headers)
+            response_trace_id = response.headers.get(TRACE_ID_HEADER)
+            if trace_id is not None and response_trace_id is not None:
+                try:
+                    normalized_response_trace_id = normalize_trace_id(response_trace_id)
+                except ValueError as error:
+                    raise RouterUpstreamError("Upstream returned an invalid trace ID header") from error
+                if normalized_response_trace_id != trace_id:
+                    raise RouterUpstreamError("Upstream returned a mismatched trace ID header")
+            logger.info(f"Router upstream response trace_id={trace_id or '-'} status={response.status}")
             if response.status != 200:
                 error_text = await response.text()
                 raise RouterUpstreamError(f"Upstream {socket!r} returned HTTP {response.status}: {error_text[:1000]}")
@@ -121,7 +131,7 @@ class RouterHttpClient:
                                 yield event
                     break
 
-                logger.debug(f"Router upstream SSE line: {raw_line[:1000]!r}")
+                logger.debug(f"Router upstream SSE line trace_id={trace_id or '-'}: {raw_line[:1000]!r}")
                 line = raw_line.decode(errors="replace").rstrip("\r\n")
                 if line:
                     if line.startswith("data:"):
@@ -240,15 +250,22 @@ class RouterHttpClient:
                 raise RouterUpstreamError("Upstream returned an incomplete tool call")
 
     @staticmethod
-    def _timeout_from_options(options: dict[str, Any]) -> float | None:
-        unsupported = set(options) - {"timeout"}
+    def _request_options(options: dict[str, Any]) -> tuple[float | None, str | None]:
+        unsupported = set(options) - {"timeout", "trace_id"}
         if unsupported:
             names = ", ".join(sorted(unsupported))
             raise TypeError(f"Unexpected RouterHttpClient option(s): {names}")
         value = options.get("timeout")
         if value is not None and (not isinstance(value, int | float) or isinstance(value, bool)):
             raise TypeError("timeout must be a number or None")
-        return value
+        raw_trace_id = options.get("trace_id")
+        if raw_trace_id is None:
+            return value, None
+        try:
+            trace_id = normalize_trace_id(raw_trace_id)
+        except ValueError as error:
+            raise TypeError(str(error)) from error
+        return value, trace_id
 
 
 __all__ = ["RouterHttpClient"]

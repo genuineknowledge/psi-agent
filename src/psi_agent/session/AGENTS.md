@@ -4,6 +4,13 @@
 
 Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、tool 执行、schedule 调度以及面向 Channel 的 HTTP/SSE 服务。
 
+## 请求 trace_id
+
+`ChannelAdapter` 统一校验 `X-Psi-Trace-Id` 与 `routing.trace_id`，二者冲突时在进入 agent loop 前拒绝。
+Session 忽略调用方提供的 `routing.session_id/path`，使用可信 conversation session id 重建 scope，同时让同一 trace
+贯穿所有 tool round 和该轮触发的 compaction。`AiClient` 通过内部请求头传给 AI/Router，并校验响应头与
+`router_status.trace_id`；trace 不写入 history，也不传给 system hooks。
+
 ## Workspace / Agent 路径
 
 | 字段 | CLI | 用途 |

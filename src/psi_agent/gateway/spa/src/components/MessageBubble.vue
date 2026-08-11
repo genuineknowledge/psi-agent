@@ -41,6 +41,24 @@
           </div>
         </div>
         <div
+          v-if="msg.role === 'user' && msg.failed"
+          class="turn-failure"
+          role="alert"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">error</span>
+          <span>{{ failedLabel }}</span>
+        </div>
+        <div
+          v-if="warningMessages.length"
+          class="stream-warning"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span class="material-symbols-outlined" aria-hidden="true">info</span>
+          <span>{{ warningMessages.join(' ') }}</span>
+        </div>
+        <div
           v-if="showActions"
           class="msg-actions"
           role="toolbar"
@@ -118,6 +136,7 @@ import FilePreview from './FilePreview.vue'
 import RouterStatusIndicator from './RouterStatusIndicator.vue'
 import ThinkingBubble from './ThinkingBubble.vue'
 import { FAILED_REASON_LABEL } from '../messageTurn.js'
+import { describeStreamWarning, normalizeStreamWarningCodes } from '../streamIssue.js'
 import {
   downloadMatrixXlsx,
   matrixToTsv,
@@ -159,6 +178,12 @@ const showRouterStatus = computed(() => (
   props.isStreamingTarget
   && props.msg.role === 'assistant'
   && !!props.msg.routerStatus
+))
+
+const warningMessages = computed(() => (
+  props.msg.role === 'assistant'
+    ? normalizeStreamWarningCodes(props.msg.warnings).map(describeStreamWarning)
+    : []
 ))
 
 const userInitial = computed(() =>
@@ -677,6 +702,44 @@ async function retryMessage() {
   font-style: normal;
   line-height: 1.6;
   color: var(--md-text-secondary);
+}
+
+.stream-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--md-primary) 32%, var(--md-outline-variant));
+  border-radius: var(--md-shape-small);
+  background: color-mix(in srgb, var(--md-primary) 7%, var(--md-surface-container));
+  color: var(--md-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.stream-warning .material-symbols-outlined {
+  flex: 0 0 auto;
+  font-size: 17px;
+  line-height: 1.1;
+  color: var(--md-primary);
+}
+
+.turn-failure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 5px;
+  color: var(--md-text-error);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.turn-failure .material-symbols-outlined {
+  flex: 0 0 auto;
+  font-size: 16px;
 }
 
 .copy-btn {

@@ -8,17 +8,19 @@ import { loadHistory, htmlEscape, renderMd, saveActiveState } from '../utils.js'
 import { stripTransferMarkers } from '../sendMarkers.js'
 import { normalizeFailedTurns } from '../messageTurn.js'
 import { normalizeWorkspacePath, resolveSessionWorkspace } from '../sessionList.js'
+import { isAbortError, throwIfAborted } from '../turnCancellation.js'
 
 function origin() {
   return window.location.origin.replace(/\/+$/, '')
 }
 
 /** Step 2: resolve Gateway default agent package (empty if unset / unreachable). */
-async function defaultAgentFromGateway() {
+async function defaultAgentFromGateway(signal) {
   try {
-    const d = await fetchDefaults()
+    const d = await fetchDefaults(signal)
     return (d?.agent || '').trim()
-  } catch {
+  } catch (error) {
+    if (isAbortError(error)) throw error
     return ''
   }
 }
@@ -116,11 +118,12 @@ function restoreDraftView(draftId) {
 }
 
 /** Promote client draft to a Gateway session on first send. */
-export async function promoteDraftToSession() {
+export async function promoteDraftToSession({ signal } = {}) {
   const session = useSessionStore()
   const ai = useAiStore()
   const draft = session.draftSession
   if (!draft) return session.selectedSessionId
+  throwIfAborted(signal)
 
   const backendType = draft.backendType || 'ai'
   const backendId = draft.backendId || draft.aiId || ai.selectedAiId
@@ -131,9 +134,10 @@ export async function promoteDraftToSession() {
     backend_id: backendId,
     workspace: draft.workspace,
   }
-  const agent = await defaultAgentFromGateway()
+  const agent = await defaultAgentFromGateway(signal)
+  throwIfAborted(signal)
   if (agent) body.agent = agent
-  const info = await api('POST', '/sessions', body)
+  const info = await api('POST', '/sessions', body, { signal })
   const sid = info.id
   const draftId = draft.draftId
 
@@ -164,9 +168,9 @@ export async function promoteDraftToSession() {
   session.selectedSessionId = sid
 
   try {
-    session.sessions = await api('GET', '/sessions')
-  } catch (_) {
-    session.sessions = []
+    session.sessions = await api('GET', '/sessions', undefined, { signal })
+  } catch (error) {
+    if (!isAbortError(error)) session.sessions = []
   }
   session.syncRegisteredWorkspaces()
   saveActiveState(ai.selectedAiId, sid, session.selectedWorkspacePath)
@@ -309,6 +313,7 @@ export async function selectSession(id) {
             failed: local ? local.failed || false : false,
             failedReason: local?.failedReason || '',
             feedback: local?.feedback || '',
+            warnings: local?.warnings || [],
           })
         })
         if (localHist.length > built.length) {
@@ -323,6 +328,7 @@ export async function selectSession(id) {
               failed: h.failed || false,
               failedReason: h.failedReason || '',
               feedback: h.feedback || '',
+              warnings: h.warnings || [],
             })
           }
         }
@@ -338,6 +344,7 @@ export async function selectSession(id) {
           failed: h.failed || false,
           failedReason: h.failedReason || '',
           feedback: h.feedback || '',
+          warnings: h.warnings || [],
         })
       })
     }

@@ -1,4 +1,5 @@
 import { backendExists, getBackendLabel } from './backendOptions.js'
+import { routerModePresentation } from './routerMode.js'
 
 export function routerAiRole(mode) {
   if (mode === 'aggregation') return 'Aggregator'
@@ -7,24 +8,41 @@ export function routerAiRole(mode) {
 }
 
 export function routerSummary(item, ais, routers) {
-  const modeLabel = {
-    routing: 'Routing',
-    aggregation: 'Aggregation',
-    fallback: 'Fallback',
-  }[item.mode] || item.mode
-  const upstreams = Array.isArray(item.upstreams)
+  const mode = item?.mode
+  const modeLabel = routerModePresentation(mode).label
+  const candidates = Array.isArray(item?.upstreams)
     ? item.upstreams.map(upstream => {
       const typeLabel = upstream.backend_type === 'router' ? 'Router' : 'AI'
       return `${typeLabel} ${getBackendLabel(upstream.backend_type, upstream.backend_id, ais, routers)}`
-    }).join(' → ')
-    : ''
-  const targetTimeout = item.target_timeout == null ? '候选不限时' : `候选 ${item.target_timeout}s`
-  if (item.mode === 'fallback') return `${modeLabel} · ${upstreams} · ${targetTimeout}`
+    })
+    : []
+  if (!['routing', 'aggregation', 'fallback'].includes(mode)) {
+    return `${modeLabel} · Router 配置不可用`
+  }
 
-  const role = routerAiRole(item.mode)
+  const targetTimeout = item.target_timeout == null ? '候选不限时' : `候选 ${item.target_timeout}s`
+  if (mode === 'fallback') {
+    return `${modeLabel} · ${candidates.join(' → ')} · ${targetTimeout}`
+  }
+
+  const role = routerAiRole(mode)
   const controller = getBackendLabel('ai', item.router_ai_id, ais, routers)
   const controllerTimeout = item.router_timeout == null ? `${role} 不限时` : `${role} ${item.router_timeout}s`
-  return `${modeLabel} · ${role} ${controller} · ${upstreams} · ${controllerTimeout} · ${targetTimeout}`
+  const topology = mode === 'aggregation'
+    ? `${candidates.join(' ∥ ')} → ${role} ${controller}`
+    : `${role} ${controller} 从 ${candidates.join('、')} 中选择 1 个`
+  return `${modeLabel} · ${topology} · ${controllerTimeout} · ${targetTimeout}`
+}
+
+/** Concise, topology-aware Router metadata for the model switcher. */
+export function routerCompactSummary(item) {
+  const mode = item?.mode
+  const modeLabel = routerModePresentation(mode).label
+  const count = Array.isArray(item?.upstreams) ? item.upstreams.length : 0
+  if (mode === 'aggregation') return `${modeLabel} · ${count} 个并行候选`
+  if (mode === 'fallback') return `${modeLabel} · ${count} 级顺序`
+  if (mode === 'routing') return `${modeLabel} · ${count} 个候选`
+  return `${modeLabel} · 配置不可用`
 }
 
 function nullablePositiveNumber(value) {
@@ -36,7 +54,7 @@ export function validateRouterForm(form, ais, routers = []) {
   if (!['routing', 'aggregation', 'fallback'].includes(form.mode)) return '请选择路由模式'
   if (!form.name.trim()) return '请输入路由服务名称'
   if (form.mode === 'fallback') {
-    if (form.router_ai_id) return 'Fallback 模式不能配置 Selector 或 Aggregator'
+    if (form.router_ai_id) return '顺序回退模式不能配置 Selector 或 Aggregator'
   } else if (!aiIds.has(form.router_ai_id)) {
     return `请选择已连接的 ${routerAiRole(form.mode)} 模型`
   }
@@ -54,7 +72,7 @@ export function validateRouterForm(form, ais, routers = []) {
     form.mode === 'aggregation'
     && form.upstreams.some(item => item.backend_type === 'ai' && item.backend_id === form.router_ai_id)
   ) {
-    return '聚合模式下 Aggregator 不能同时作为候选模型'
+    return '并行聚合模式下 Aggregator 不能同时作为候选模型'
   }
   const timeoutFields = [['target_timeout', '候选服务超时']]
   if (form.mode !== 'fallback') timeoutFields.unshift(['router_timeout', 'Router 超时'])

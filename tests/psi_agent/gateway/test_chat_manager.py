@@ -20,6 +20,8 @@ from psi_agent.channel._types import (
 from psi_agent.gateway import _chat_manager
 from psi_agent.gateway._chat_manager import ChatManager
 
+TRACE_ID = "123e4567-e89b-12d3-a456-426614174000"
+
 
 @pytest.fixture
 def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -58,6 +60,21 @@ async def test__save_upload_sanitizes_filename(fake_home: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test__file_blob_returns_warning_without_leaking_path(tmp_path: Path) -> None:
+    missing = str(tmp_path / "private" / "missing.txt")
+
+    event = await ChatManager()._file_blob(missing)
+
+    assert event == {
+        "type": "error",
+        "severity": "warning",
+        "code": "output_file_unavailable",
+        "error": "Generated file could not be read",
+    }
+    assert missing not in str(event)
+
+
+@pytest.mark.anyio
 async def test_handle_preserves_router_status_order_and_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -88,8 +105,14 @@ async def test_handle_preserves_router_status_order_and_payload(
         async def __aexit__(self, *args: object) -> None:
             return None
 
-        async def post(self, chunks: list[InputChunk]) -> AsyncIterator[OutputChunk]:
+        async def post(
+            self,
+            chunks: list[InputChunk],
+            *,
+            trace_id: str | None = None,
+        ) -> AsyncIterator[OutputChunk]:
             observed["input_chunks"] = chunks
+            observed["trace_id"] = trace_id
             for chunk in output_chunks:
                 yield chunk
 
@@ -100,6 +123,7 @@ async def test_handle_preserves_router_status_order_and_payload(
         async for event in ChatManager().handle(
             "unused-channel-socket",
             {"chunks": [{"type": "text", "text": "hello"}]},
+            trace_id=TRACE_ID,
         )
     ]
 
@@ -107,9 +131,10 @@ async def test_handle_preserves_router_status_order_and_payload(
         "session_socket": "unused-channel-socket",
         "interval": 0.0,
         "input_chunks": [TextChunk(text="hello")],
+        "trace_id": TRACE_ID,
     }
     assert events == [
-        {"type": "text", "text": "before"},
+        {"type": "text", "trace_id": TRACE_ID, "text": "before"},
         {
             "type": "router_status",
             "version": 1,
@@ -121,7 +146,7 @@ async def test_handle_preserves_router_status_order_and_payload(
             "total": 3,
             "degraded": True,
         },
-        {"type": "reasoning", "text": "after", "kind": "tool_result"},
+        {"type": "reasoning", "trace_id": TRACE_ID, "text": "after", "kind": "tool_result"},
     ]
 
 
@@ -146,7 +171,13 @@ async def test_handle_closes_channel_stream_after_early_disconnect(
         async def __aexit__(self, *args: object) -> None:
             return None
 
-        async def post(self, chunks: list[InputChunk]) -> AsyncIterator[OutputChunk]:
+        async def post(
+            self,
+            chunks: list[InputChunk],
+            *,
+            trace_id: str | None = None,
+        ) -> AsyncIterator[OutputChunk]:
+            assert trace_id == TRACE_ID
             try:
                 yield RouterStatusChunk(status=status)
                 yield TextChunk(text="must not be consumed")
@@ -158,6 +189,7 @@ async def test_handle_closes_channel_stream_after_early_disconnect(
     events = ChatManager().handle(
         "unused-channel-socket",
         {"chunks": [{"type": "text", "text": "hello"}]},
+        trace_id=TRACE_ID,
     )
     async with aclosing(events) as stream:
         first = await anext(stream)

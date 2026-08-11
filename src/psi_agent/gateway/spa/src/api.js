@@ -1,10 +1,13 @@
+import { assertMatchingTraceId, TRACE_ID_HEADER } from './traceId.js'
+
 const G = () => window.location.origin.replace(/\/+$/, '')
 
-export async function api(method, path, body) {
+export async function api(method, path, body, { signal } = {}) {
   const r = await fetch(G() + path, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   })
   if (!r.ok) {
     const e = await r.json().catch(() => ({ error: r.statusText }))
@@ -30,8 +33,17 @@ export async function browseWorkspace(path, { kind = 'directory', q = '' } = {})
   return r.json()
 }
 
-export async function streamChat(sessionId, formData, signal) {
-  const r = await fetch(G() + '/sessions/' + sessionId + '/chat', { method: 'POST', body: formData, signal })
+export async function streamChat(sessionId, formData, signal, traceId) {
+  const r = await fetch(G() + '/sessions/' + sessionId + '/chat', {
+    method: 'POST',
+    body: formData,
+    headers: { [TRACE_ID_HEADER]: traceId },
+    signal,
+  })
+  const responseTraceId = r.headers?.get?.(TRACE_ID_HEADER)
+  if (responseTraceId !== null && responseTraceId !== undefined) {
+    assertMatchingTraceId(responseTraceId, traceId)
+  }
   if (!r.ok) {
     const e = await r.json().catch(() => ({ error: r.statusText }))
     throw new Error(e.error || 'HTTP ' + r.status)
@@ -40,6 +52,6 @@ export async function streamChat(sessionId, formData, signal) {
 }
 
 /** Step 2: GET /defaults (agent package + user workspace). Same contract as spa-v2. */
-export async function fetchDefaults() {
-  return api('GET', '/defaults')
+export async function fetchDefaults(signal) {
+  return api('GET', '/defaults', undefined, { signal })
 }

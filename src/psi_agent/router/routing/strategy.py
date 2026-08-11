@@ -75,7 +75,7 @@ class RoutingStrategy:
                 self._sticky_targets[scope] = selection
         else:
             logger.info(
-                f"Reusing sticky routing candidate {selection.candidate_id!r} "
+                f"Reusing sticky routing candidate {selection.candidate_id!r} trace_id={trace_id} "
                 f"for tool iteration in session {scope_session_id!r}"
             )
 
@@ -86,11 +86,12 @@ class RoutingStrategy:
             depth=depth,
         ).to_event()
         target_body = copy_target_request_body(body=body, target=selection.target)
-        logger.info(f"Routing request to candidate {selection.candidate_id!r}")
+        logger.info(f"Routing request to candidate {selection.candidate_id!r} trace_id={trace_id}")
         target_stream = self.client.stream(
             socket=selection.target.socket,
             body=target_body,
             timeout=selection.target.timeout if selection.target.timeout is not None else self.config.target_timeout,
+            trace_id=trace_id,
         )
         completed = False
         finish_reason: str | None = None

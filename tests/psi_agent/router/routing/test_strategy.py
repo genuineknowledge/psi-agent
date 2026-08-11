@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -161,7 +162,8 @@ async def test_candidate_timeout_overrides_routing_target_timeout() -> None:
 
     await _collect(strategy.stream(body={"messages": [], "stream": True}))
 
-    assert client.calls[0][2] == {"timeout": 2.5}
+    assert client.calls[0][2]["timeout"] == 2.5
+    assert str(UUID(client.calls[0][2]["trace_id"])) == client.calls[0][2]["trace_id"]
 
 
 @pytest.mark.anyio

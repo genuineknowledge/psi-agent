@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 from typing import Any
-from uuid import UUID, uuid4
+
+from psi_agent._trace import ensure_trace_id, trace_id_from_routing
 
 from .errors import InvalidRouterRequestError
 from .models import RouterTarget, RoutingScopeKey, is_candidate_id, normalize_request_overrides
@@ -80,28 +81,17 @@ def routing_scope_from_body(*, body: dict[str, Any]) -> RoutingScopeKey | None:
 def routing_trace_id_from_body(*, body: dict[str, Any]) -> str | None:
     """Validate and normalize the private Router trace identifier."""
 
-    routing = body.get("routing")
-    if routing is None:
-        return None
-    if not isinstance(routing, dict):
-        raise InvalidRouterRequestError("routing must be an object when present")
-    raw_trace_id = routing.get("trace_id")
-    if raw_trace_id is None:
-        return None
-    if not isinstance(raw_trace_id, str):
-        raise InvalidRouterRequestError("routing.trace_id must be a UUID string")
     try:
-        return str(UUID(raw_trace_id.strip()))
+        return trace_id_from_routing(body.get("routing"))
     except ValueError as error:
-        raise InvalidRouterRequestError("routing.trace_id must be a UUID string") from error
+        raise InvalidRouterRequestError(str(error).replace("trace_id", "routing.trace_id", 1)) from error
 
 
 def ensure_routing_trace_id(*, body: dict[str, Any]) -> str:
     """Return this Router turn's trace ID, creating private metadata once."""
 
     trace_id = routing_trace_id_from_body(body=body)
-    if trace_id is None:
-        trace_id = str(uuid4())
+    trace_id = ensure_trace_id(trace_id)
     routing = body.get("routing")
     detached = dict(routing) if isinstance(routing, dict) else {}
     detached["trace_id"] = trace_id

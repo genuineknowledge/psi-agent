@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._trace import resolve_trace_id
 from psi_agent.session.protocol import AgentChunk, AgentError, ChatCompletionChunk, DeltaMessage, StreamChoice
 
 
@@ -51,6 +52,14 @@ class ChannelAdapter:
 
         if not isinstance(body, dict):
             raise ChannelAdapter.ParseError("Request body must be a JSON object")
+
+        try:
+            trace_id = resolve_trace_id(headers=request.headers, routing=body.get("routing"))
+        except ValueError as error:
+            raise ChannelAdapter.ParseError(str(error)) from error
+        # The caller may provide only the trace. Session owns the trusted
+        # session_id/path scope and rebuilds those fields in SessionAgent.
+        body["routing"] = {"trace_id": trace_id}
 
         messages = body.pop("messages", [])
         if not isinstance(messages, list) or not messages:

@@ -163,7 +163,7 @@ describe('describeRouterStatus', () => {
     [
       event({ phase: 'selecting' }),
       {
-        label: '智能路由',
+        label: '智能分流',
         message: '正在选择最合适的模型',
         icon: 'alt_route',
         badge: '',
@@ -173,7 +173,7 @@ describe('describeRouterStatus', () => {
     [
       event({ phase: 'generating', depth: 2 }),
       {
-        label: '智能路由',
+        label: '智能分流',
         message: '已选定模型，正在生成回复',
         icon: 'alt_route',
         badge: '',
@@ -183,7 +183,7 @@ describe('describeRouterStatus', () => {
     [
       event({ mode: 'aggregation', phase: 'collecting', completed: 0, total: 3 }),
       {
-        label: '多模型汇总',
+        label: '并行聚合',
         message: '正在并行获取 3 个模型的回答',
         icon: 'hub',
         badge: '3 路并行',
@@ -193,7 +193,7 @@ describe('describeRouterStatus', () => {
     [
       event({ mode: 'aggregation', phase: 'synthesizing', completed: 3, total: 3 }),
       {
-        label: '多模型汇总',
+        label: '并行聚合',
         message: '正在综合多个模型的回答',
         icon: 'hub',
         badge: '3 路并行',
@@ -209,7 +209,7 @@ describe('describeRouterStatus', () => {
         degraded: true,
       }),
       {
-        label: '多模型汇总',
+        label: '并行聚合',
         message: '部分模型未完成，正在综合可用回答',
         icon: 'hub',
         badge: '降级汇总',
@@ -219,7 +219,7 @@ describe('describeRouterStatus', () => {
     [
       event({ mode: 'fallback', phase: 'attempting', attempt: 2, total: 3 }),
       {
-        label: '自动切换',
+        label: '顺序回退',
         message: '正在尝试第 2 个模型',
         icon: 'swap_horiz',
         badge: '2/3',
@@ -229,7 +229,7 @@ describe('describeRouterStatus', () => {
     [
       event({ mode: 'fallback', phase: 'switching', attempt: 2, total: 3 }),
       {
-        label: '自动切换',
+        label: '顺序回退',
         message: '当前模型未完成，正在切换',
         icon: 'swap_horiz',
         badge: '2/3',
@@ -239,7 +239,7 @@ describe('describeRouterStatus', () => {
     [
       event({ mode: 'fallback', phase: 'replaying', attempt: 2, total: 3, depth: 1 }),
       {
-        label: '自动切换',
+        label: '顺序回退',
         message: '已找到可用模型，正在返回结果',
         icon: 'swap_horiz',
         badge: '2/3',

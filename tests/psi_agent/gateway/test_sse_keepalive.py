@@ -37,6 +37,7 @@ async def test_keepalive_does_not_cancel_slow_chunk_generator() -> None:
         cast(web.StreamResponse, resp),
         slow_chunks(),
         session_id="test",
+        trace_id="123e4567-e89b-12d3-a456-426614174000",
         keepalive_sec=0.1,
     )
 

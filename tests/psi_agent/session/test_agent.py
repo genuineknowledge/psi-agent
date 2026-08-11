@@ -124,7 +124,13 @@ async def test_agent_passes_router_status_without_persisting_it(tmp_path: Path) 
             conversation=Conversation(path=history_path),
             tool_registry=ToolRegistry(),
         )
-        chunks = [chunk async for chunk in agent.run({"role": "user", "content": "hi"})]
+        chunks = [
+            chunk
+            async for chunk in agent.run(
+                {"role": "user", "content": "hi"},
+                {"routing": {"trace_id": status.trace_id}},
+            )
+        ]
 
         assert chunks[0] == AgentChunk(router_status=status)
         assert "".join(chunk.content or "" for chunk in chunks) == "answer"
@@ -312,6 +318,7 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
 async def test_agent_attaches_the_same_routing_session_id_to_every_tool_round_request(tmp_path: Path) -> None:
     """Router continuations can associate both requests with this Session."""
 
+    trace_id = "123e4567-e89b-12d3-a456-426614174000"
     requests: list[dict] = []
     request_count = 0
 
@@ -368,14 +375,19 @@ async def test_agent_attaches_the_same_routing_session_id_to_every_tool_round_re
             conversation=Conversation(path=history_path),
             tool_registry=ToolRegistry(files={"test": FileEntry("", {"echo": tool}, {"echo": echo})}),
         )
-        _ = [chunk async for chunk in agent.run({"role": "user", "content": "run a tool"})]
+        _ = [
+            chunk
+            async for chunk in agent.run(
+                {"role": "user", "content": "run a tool"},
+                {"routing": {"trace_id": trace_id}},
+            )
+        ]
     finally:
         await mock_server.cleanup()
 
-    assert [body["routing"] for body in requests] == [
-        {"session_id": "stable-session"},
-        {"session_id": "stable-session"},
-    ]
+    routing = [body["routing"] for body in requests]
+    assert [item["session_id"] for item in routing] == ["stable-session", "stable-session"]
+    assert [item["trace_id"] for item in routing] == [trace_id, trace_id]
 
 
 @pytest.mark.anyio

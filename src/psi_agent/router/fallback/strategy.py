@@ -66,7 +66,7 @@ class FallbackStrategy:
                 total=len(self.config.targets),
             ).to_event()
             logger.info(
-                f"Fallback candidate attempt: candidate_id={target.candidate_id!r}, "
+                f"Fallback candidate attempt: trace_id={trace_id}, candidate_id={target.candidate_id!r}, "
                 f"description={target.description!r}, status='started'"
             )
             try:
@@ -74,6 +74,7 @@ class FallbackStrategy:
                     socket=target.socket,
                     body=copy_target_request_body(body=body, target=target),
                     timeout=target.timeout if target.timeout is not None else self.config.target_timeout,
+                    trace_id=trace_id,
                 )
                 if not self._is_usable(result.completion):
                     raise RouterUpstreamError("upstream returned no usable content or tool calls")
@@ -81,7 +82,7 @@ class FallbackStrategy:
                 if scope is not None:
                     self._sticky_targets.pop(scope, None)
                 logger.info(
-                    f"Fallback candidate attempt: candidate_id={target.candidate_id!r}, "
+                    f"Fallback candidate attempt: trace_id={trace_id}, candidate_id={target.candidate_id!r}, "
                     f"description={target.description!r}, status='cancelled'"
                 )
                 raise
@@ -89,7 +90,7 @@ class FallbackStrategy:
                 summary = redact_private_sockets(text=str(error), sockets=private_sockets)
                 failures.append(f"{target.candidate_id} ({type(error).__name__}): {summary}")
                 logger.info(
-                    f"Fallback candidate attempt: candidate_id={target.candidate_id!r}, "
+                    f"Fallback candidate attempt: trace_id={trace_id}, candidate_id={target.candidate_id!r}, "
                     f"description={target.description!r}, status='failed'"
                 )
                 if index + 1 < len(self.config.targets):
@@ -105,7 +106,7 @@ class FallbackStrategy:
 
             selected = index, result
             logger.info(
-                f"Fallback candidate attempt: candidate_id={target.candidate_id!r}, "
+                f"Fallback candidate attempt: trace_id={trace_id}, candidate_id={target.candidate_id!r}, "
                 f"description={target.description!r}, status='success'"
             )
             break

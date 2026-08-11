@@ -11,7 +11,9 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._router_status import router_status_from_event
 from psi_agent._sockets import create_site
+from psi_agent._trace import TRACE_ID_HEADER, resolve_trace_id
 
 from .errors import InvalidRouterRequestError, RouterError
 from .request import routing_scope_from_body, routing_trace_id_from_body
@@ -46,7 +48,6 @@ def create_router_app(*, strategy: RouterStrategy) -> web.Application:
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     """Run one Router strategy and proxy its validated SSE response."""
 
-    logger.info("Received experimental Router request")
     try:
         raw_body = await request.json()
     except Exception as error:
@@ -60,12 +61,24 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     body: dict[str, Any] = raw_body
     try:
         _validate_request_body(body)
+        trace_id = resolve_trace_id(headers=request.headers, routing=body.get("routing"))
     except InvalidRouterRequestError as error:
         return _http_error(status=400, message=str(error), error_type="invalid_request_error")
+    except ValueError as error:
+        return _http_error(status=400, message=str(error), error_type="invalid_request_error")
+    raw_routing = body.get("routing")
+    routing = dict(raw_routing) if isinstance(raw_routing, dict) else {}
+    routing["trace_id"] = trace_id
+    body["routing"] = routing
+    logger.info(f"Received experimental Router request trace_id={trace_id}")
 
     strategy = cast(RouterStrategy, request.app[_STRATEGY_KEY])
     stream = strategy.stream(body=body)
-    response = web.StreamResponse(status=200, reason="OK", headers=_SSE_HEADERS)
+    response = web.StreamResponse(
+        status=200,
+        reason="OK",
+        headers={**_SSE_HEADERS, TRACE_ID_HEADER: trace_id},
+    )
     async with aclosing(stream) as events:
         try:
             await response.prepare(request)
@@ -77,17 +90,17 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             saw_event = False
             async for event in events:
                 saw_event = True
-                await _write_event(response=response, event=event)
+                await _write_event(response=response, event=event, trace_id=trace_id)
             if not saw_event:
                 raise RouterError("Router strategy returned no completion events")
             await response.write(b"data: [DONE]\n\n")
         except ConnectionResetError:
             _discard_session_state(strategy=strategy, body=body)
-            logger.info("Router client disconnected")
+            logger.info(f"Router client disconnected trace_id={trace_id}")
         except Exception as error:
             _discard_session_state(strategy=strategy, body=body)
-            logger.error(f"Router stream failed after response prepare: {error!r}")
-            await _write_sse_error(response=response, error=error)
+            logger.error(f"Router stream failed after response prepare trace_id={trace_id}: {error!r}")
+            await _write_sse_error(response=response, error=error, trace_id=trace_id)
         return response
 
 
@@ -124,7 +137,7 @@ async def serve_router(*, session_socket: str, strategy: RouterStrategy) -> None
         logger.info(f"Experimental Router shutdown complete on {session_socket}")
 
 
-async def _write_event(*, response: web.StreamResponse, event: dict[str, Any]) -> None:
+async def _write_event(*, response: web.StreamResponse, event: dict[str, Any], trace_id: str) -> None:
     choices = event.get("choices")
     if not isinstance(choices, list) or len(choices) != 1:
         raise RouterError("Router strategy events must contain exactly one choice")
@@ -137,12 +150,15 @@ async def _write_event(*, response: web.StreamResponse, event: dict[str, Any]) -
     finish_reason = choice.get("finish_reason")
     if finish_reason is not None and not isinstance(finish_reason, str):
         raise RouterError("Router strategy finish reason must be a string or null")
+    status = router_status_from_event(event)
+    if status is not None and status.trace_id != trace_id:
+        raise RouterError("Router strategy emitted a status for a different trace ID")
     encoded = json.dumps(event, ensure_ascii=False)
-    logger.debug(f"Experimental Router outgoing SSE chunk: {encoded[:1000]}")
+    logger.debug(f"Experimental Router outgoing SSE chunk trace_id={trace_id}: {encoded[:1000]}")
     await response.write(f"data: {encoded}\n\n".encode())
 
 
-async def _write_sse_error(*, response: web.StreamResponse, error: Exception) -> None:
+async def _write_sse_error(*, response: web.StreamResponse, error: Exception, trace_id: str) -> None:
     event = {
         "id": "error",
         "choices": [
@@ -154,7 +170,7 @@ async def _write_sse_error(*, response: web.StreamResponse, error: Exception) ->
         ],
     }
     try:
-        await _write_event(response=response, event=event)
+        await _write_event(response=response, event=event, trace_id=trace_id)
     except Exception as write_error:
         logger.warning(f"Failed to send Router SSE error: {write_error!r}")
 

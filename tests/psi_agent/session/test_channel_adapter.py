@@ -28,6 +28,46 @@ class _MockResponse(web.StreamResponse):
         self.written.append(bytes(data))
 
 
+class _JsonRequest:
+    def __init__(self, body: object, headers: dict[str, str] | None = None) -> None:
+        self._body = body
+        self.headers = headers or {}
+
+    async def json(self) -> object:
+        return self._body
+
+
+@pytest.mark.anyio
+async def test_parse_request_reconciles_trace_header_and_routing() -> None:
+    trace_id = "123e4567-e89b-12d3-a456-426614174000"
+    request = _JsonRequest(
+        {
+            "messages": [{"role": "user", "content": "hi"}],
+            "routing": {"trace_id": trace_id, "session_id": "untrusted"},
+        },
+        {"X-Psi-Trace-Id": trace_id},
+    )
+
+    user_message, extra_params = await ChannelAdapter.parse_request(cast(web.Request, request))
+
+    assert user_message == {"role": "user", "content": "hi"}
+    assert extra_params["routing"] == {"trace_id": trace_id}
+
+
+@pytest.mark.anyio
+async def test_parse_request_rejects_conflicting_trace_sources() -> None:
+    request = _JsonRequest(
+        {
+            "messages": [{"role": "user", "content": "hi"}],
+            "routing": {"trace_id": "123e4567-e89b-12d3-a456-426614174000"},
+        },
+        {"X-Psi-Trace-Id": "123e4567-e89b-12d3-a456-426614174001"},
+    )
+
+    with pytest.raises(ChannelAdapter.ParseError, match="must match"):
+        await ChannelAdapter.parse_request(cast(web.Request, request))
+
+
 @pytest.mark.anyio
 async def test_write_streams_agent_chunks():
     """write() consumes AgentChunk iterator and produces SSE."""

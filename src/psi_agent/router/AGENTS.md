@@ -4,6 +4,13 @@ Router 是无状态的 Chat Completions/SSE 组合层。修改本目录时同时
 `AGENTS.md`，尤其是 AnyIO、单 choice、`aclosing()`、Socket 平台门控、零 suppressions
 和 `setup_logging` 第一行约束。
 
+## 请求 trace_id
+
+Router 同时接受内部请求头 `X-Psi-Trace-Id` 与 `routing.trace_id`；缺失时在入口创建，二者同时存在时必须一致。
+同一 UUID 进入 Router 状态、边界日志、Selector、候选、Aggregator 和嵌套 Router 调用。跨内部 HTTP 边界使用请求头；
+仅嵌套 Router 的请求体保留 `routing.trace_id/path`。控制模型和普通 AI 的 body 必须继续剥离 `routing`，防止内部元数据
+进入外部 Provider。上游响应头或嵌套状态 trace 不一致时按协议错误处理。
+
 ## 模块边界
 
 ```text

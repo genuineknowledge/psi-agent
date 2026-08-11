@@ -13,6 +13,7 @@ from loguru import logger
 
 from psi_agent._router_status import router_status_from_event
 from psi_agent._sockets import resolve_connector_and_endpoint
+from psi_agent._trace import TRACE_ID_HEADER, normalize_trace_id, resolve_trace_id
 from psi_agent.session.protocol import AiDelta
 
 
@@ -44,19 +45,32 @@ class AiClient:
         return 0
 
     async def stream(self, request_body: dict) -> AsyncGenerator[AiDelta]:
+        trace_id = resolve_trace_id(routing=request_body.get("routing"))
         connector, endpoint = self._build_connector_and_endpoint()
         async with (
             aiohttp.ClientSession(connector=connector, timeout=aiohttp.ClientTimeout(total=None)) as session,
-            session.post(endpoint, json=request_body) as resp,
+            session.post(endpoint, json=request_body, headers={TRACE_ID_HEADER: trace_id}) as resp,
         ):
-            logger.info(f"AI response status: {resp.status}")
+            response_trace_id = resp.headers.get(TRACE_ID_HEADER)
+            if response_trace_id is not None:
+                try:
+                    normalized_response_trace_id = normalize_trace_id(response_trace_id)
+                except ValueError:
+                    logger.warning(f"AI returned invalid trace ID header for trace_id={trace_id}")
+                    yield AiDelta(finish_reason="error", content="[AI Error: invalid trace ID header]")
+                    return
+                if normalized_response_trace_id != trace_id:
+                    logger.warning(f"AI returned mismatched trace ID header for trace_id={trace_id}")
+                    yield AiDelta(finish_reason="error", content="[AI Error: mismatched trace ID header]")
+                    return
+            logger.info(f"AI response trace_id={trace_id} status={resp.status}")
             if resp.status != 200:
                 error_text = await resp.text()
                 logger.error(f"AI error from {self.ai_socket!r}: {error_text[:1000]!r}")
                 yield AiDelta(finish_reason="error", content=f"[AI Error: {resp.status}]")
                 return
 
-            logger.debug("Starting to consume SSE stream")
+            logger.debug(f"Starting to consume SSE stream trace_id={trace_id}")
             async for raw_line in resp.content:
                 line = raw_line.decode().strip()
                 if not line or not line.startswith("data: "):
@@ -107,6 +121,13 @@ class AiClient:
                             content="[AI Error: invalid router_status event]",
                         )
                         return
+                    if router_status is None or router_status.trace_id != trace_id:
+                        logger.warning(f"Rejected mismatched router_status trace_id for request {trace_id}")
+                        yield AiDelta(
+                            finish_reason="error",
+                            content="[AI Error: mismatched router_status trace ID]",
+                        )
+                        return
                     yield AiDelta(router_status=router_status)
                     continue
                 compaction_signal = data.get("psi_compaction", {})
@@ -125,4 +146,4 @@ class AiClient:
                     if isinstance(compaction_signal, dict)
                     else 0,
                 )
-            logger.debug("SSE stream consumed successfully")
+            logger.debug(f"SSE stream consumed successfully trace_id={trace_id}")

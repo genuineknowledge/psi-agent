@@ -1,15 +1,10 @@
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+import { routerModePresentation } from './routerMode.js'
+import { normalizeTraceId } from './traceId.js'
 
 const PHASES_BY_MODE = Object.freeze({
   routing: new Set(['selecting', 'generating']),
   aggregation: new Set(['collecting', 'synthesizing']),
   fallback: new Set(['attempting', 'switching', 'replaying']),
-})
-
-const MODE_PRESENTATION = Object.freeze({
-  routing: { label: '智能路由', icon: 'alt_route' },
-  aggregation: { label: '多模型汇总', icon: 'hub' },
-  fallback: { label: '自动切换', icon: 'swap_horiz' },
 })
 
 const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key)
@@ -23,10 +18,8 @@ const isPositiveInteger = value => Number.isInteger(value) && value > 0
 export function normalizeRouterStatusEvent(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   if (value.type !== 'router_status' || value.version !== 1) return null
-  if (typeof value.trace_id !== 'string') return null
-
-  const traceId = value.trace_id.trim().toLowerCase()
-  if (!UUID_PATTERN.test(traceId)) return null
+  const traceId = normalizeTraceId(value.trace_id)
+  if (!traceId) return null
 
   if (!hasOwn(PHASES_BY_MODE, value.mode)) return null
   const phases = PHASES_BY_MODE[value.mode]
@@ -75,7 +68,7 @@ export function normalizeRouterStatusEvent(value) {
 
 /** Convert a normalized Router status into concise user-facing copy. */
 export function describeRouterStatus(status) {
-  const presentation = MODE_PRESENTATION[status.mode]
+  const presentation = routerModePresentation(status.mode)
   let message = ''
   let badge = ''
 

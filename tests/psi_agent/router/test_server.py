@@ -15,6 +15,8 @@ from psi_agent._router_status import RouterStatus
 from psi_agent.router.errors import RouterError
 from psi_agent.router.server import create_router_app, serve_router
 
+TRACE_ID = "123e4567-e89b-12d3-a456-426614174000"
+
 
 @dataclass
 class FakeStrategy:
@@ -65,7 +67,7 @@ def _body() -> dict[str, Any]:
         "messages": [{"role": "user", "content": "hello"}],
         "tools": [{"type": "function", "function": {"name": "search"}}],
         "stream": True,
-        "routing": {"session_id": "session-a"},
+        "routing": {"session_id": "session-a", "trace_id": TRACE_ID},
     }
 
 
@@ -74,12 +76,13 @@ async def _post(
     *,
     payload: object | None = None,
     raw: bytes | None = None,
+    headers: dict[str, str] | None = None,
 ) -> tuple[int, str, dict[str, str]]:
     async with ClientSession() as session:
         if raw is None:
-            response = await session.post(f"{url}/chat/completions", json=payload)
+            response = await session.post(f"{url}/chat/completions", json=payload, headers=headers)
         else:
-            response = await session.post(f"{url}/chat/completions", data=raw)
+            response = await session.post(f"{url}/chat/completions", data=raw, headers=headers)
         return response.status, await response.text(), dict(response.headers)
 
 
@@ -129,7 +132,7 @@ async def test_invalid_request_returns_openai_http_error_before_prepare(
 async def test_valid_strategy_events_are_single_choice_sse_followed_by_done() -> None:
     events = [
         RouterStatus(
-            trace_id="123e4567-e89b-12d3-a456-426614174000",
+            trace_id=TRACE_ID,
             mode="routing",
             phase="selecting",
         ).to_event(),
@@ -143,8 +146,24 @@ async def test_valid_strategy_events_are_single_choice_sse_followed_by_done() ->
 
     assert status == 200
     assert headers["Content-Type"].startswith("text/event-stream")
+    assert headers["X-Psi-Trace-Id"] == TRACE_ID
     assert _sse_payloads(text) == [*events, "[DONE]"]
     assert all(len(cast(dict[str, Any], event)["choices"]) == 1 for event in _sse_payloads(text)[:-1])
+
+
+@pytest.mark.anyio
+async def test_trace_header_must_match_router_metadata() -> None:
+    strategy = FakeStrategy()
+    async with _serve(strategy) as url:
+        status, text, _ = await _post(
+            url,
+            payload=_body(),
+            headers={"X-Psi-Trace-Id": "123e4567-e89b-12d3-a456-426614174001"},
+        )
+
+    assert status == 400
+    assert "must match" in text
+    assert strategy.received == []
 
 
 @pytest.mark.anyio

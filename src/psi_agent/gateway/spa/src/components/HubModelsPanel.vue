@@ -28,10 +28,10 @@
         <h4 class="section-label">智能路由</h4>
         <button type="button" class="advanced-link" @click="openRouter">启动路由服务</button>
       </div>
-      <p v-if="!routers.length" class="router-empty">组合已连接的 AI 或 Router，创建分流、聚合或 Fallback 服务。</p>
+      <p v-if="!routers.length" class="router-empty">组合已连接的 AI 或 Router，创建智能分流、并行聚合或顺序回退服务。</p>
       <ul v-else class="ai-list">
         <li v-for="r in routers" :key="r.id" class="ai-row">
-          <span class="material-symbols-outlined ai-icon">route</span>
+          <span class="material-symbols-outlined ai-icon">{{ routerModePresentation(r.mode).icon }}</span>
           <div class="ai-info"><div class="ai-model">{{ r.name || r.id }}</div><div class="ai-provider" :title="routerSummary(r, ais, routers)">{{ routerSummary(r, ais, routers) }}</div></div>
           <button type="button" class="advanced-link" @click="requestDeleteRouter(r)">停止</button>
         </li>
@@ -97,6 +97,7 @@ import { useUiStore } from '../stores/ui.js'
 import { api } from '../api.js'
 import { MODEL_PRESETS, getModelPreset, presetToAiPayload } from '../modelPresets.js'
 import { routerSummary } from '../routerConfig.js'
+import { routerModePresentation } from '../routerMode.js'
 import BaseDialog from './BaseDialog.vue'
 
 const props = defineProps({

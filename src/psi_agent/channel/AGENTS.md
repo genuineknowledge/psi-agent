@@ -1,5 +1,11 @@
 # Channel 层设计文档
 
+## 请求 trace_id
+
+`ChannelCore.post(..., trace_id=...)` 以 `X-Psi-Trace-Id` 请求头和私有 `routing.trace_id` 同时发送同一 UUID。
+缺失时在 Channel 边界创建；Session 响应头和 `router_status.trace_id` 若存在则必须与当前请求一致。
+普通 CLI/REPL/Telegram/Feishu 调用无需自行生成，Gateway 可传入由 SPA 创建的值。
+
 ## Channel 层架构
 
 ```

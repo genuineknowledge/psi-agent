@@ -11,6 +11,7 @@ from typing import Any
 import anyio
 from loguru import logger
 
+from psi_agent._trace import ensure_trace_id
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._types import (
     FileChunk,
@@ -26,6 +27,8 @@ class ChatManager:
         self,
         channel_socket: str,
         body: dict[str, Any],
+        *,
+        trace_id: str | None = None,
     ) -> AsyncGenerator[dict[str, Any]]:
         """Send chat chunks to a Session and yield SSE-ready dicts.
 
@@ -47,8 +50,10 @@ class ChatManager:
             - ``{"type": "router_status", ...}`` — a validated, UI-safe
               Router lifecycle snapshot
             - ``{"type": "blob", "name": "...", "data": "<base64>"}``
-            - ``{"type": "error", "error": "..."}`` — on blob read failure
+            - ``{"type": "error", "severity": "warning", ...}`` — on
+              recoverable blob read failure
         """
+        trace_id = ensure_trace_id(trace_id)
         chunks: list[InputChunk] = []
 
         raw_chunks = body.get("chunks", [])
@@ -78,23 +83,31 @@ class ChatManager:
                     raise ValueError(f"Unknown chunk type: {t!r}")
             logger.debug(f"Inbound chunk type={t!r} (total {len(chunks)})")
 
-        logger.info(f"Chat: posting {len(chunks)} chunk(s) to {channel_socket!r}")
+        logger.info(f"Chat trace_id={trace_id}: posting {len(chunks)} chunk(s) to {channel_socket!r}")
         async with (
             ChannelCore(session_socket=channel_socket, interval=0.0) as core,
-            aclosing(core.post(chunks)) as stream,
+            aclosing(core.post(chunks, trace_id=trace_id)) as stream,
         ):
             async for chunk in stream:
                 if isinstance(chunk, TextChunk):
-                    yield {"type": "text", "text": chunk.text}
+                    yield {"type": "text", "trace_id": trace_id, "text": chunk.text}
                 elif isinstance(chunk, ReasoningChunk):
-                    event: dict[str, Any] = {"type": "reasoning", "text": chunk.text}
+                    event: dict[str, Any] = {
+                        "type": "reasoning",
+                        "trace_id": trace_id,
+                        "text": chunk.text,
+                    }
                     if chunk.kind:
                         event["kind"] = chunk.kind
                     yield event
                 elif isinstance(chunk, RouterStatusChunk):
+                    if chunk.status.trace_id != trace_id:
+                        raise ValueError("Router status trace ID does not match the Gateway request")
                     yield {"type": "router_status", **chunk.status.to_dict()}
                 elif isinstance(chunk, FileChunk):
-                    yield await self._file_blob(chunk.path)
+                    event = await self._file_blob(chunk.path)
+                    event["trace_id"] = trace_id
+                    yield event
 
     async def _save_upload(self, name: str, data: bytes) -> str:
         """Persist an inbound file to ~/Downloads/.psi/{date}/ and return its path.
@@ -127,4 +140,9 @@ class ChatManager:
             }
         except Exception as e:
             logger.warning(f"Failed to read file blob {path!r}: {e!r}")
-            return {"type": "error", "error": str(e)}
+            return {
+                "type": "error",
+                "severity": "warning",
+                "code": "output_file_unavailable",
+                "error": "Generated file could not be read",
+            }

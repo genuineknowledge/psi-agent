@@ -77,6 +77,7 @@ class AggregationStrategy:
                     socket=target.socket,
                     body=copy_target_request_body(body=body, target=target),
                     timeout=target.timeout if target.timeout is not None else self.config.target_timeout,
+                    trace_id=trace_id,
                 )
                 if not result.content.strip() and not result.tool_calls:
                     raise RouterUpstreamError("upstream returned no usable content or tool calls")
@@ -106,7 +107,7 @@ class AggregationStrategy:
         feedback = cast(list[AggregationFeedback], slots)
         for item in feedback:
             logger.info(
-                f"Aggregation candidate status: candidate_id={item.candidate_id!r}, "
+                f"Aggregation candidate status: trace_id={trace_id}, candidate_id={item.candidate_id!r}, "
                 f"description={item.description!r}, status={item.status!r}"
             )
         if not any(item.status == "success" for item in feedback):
@@ -141,6 +142,7 @@ class AggregationStrategy:
             socket=self.config.aggregator_socket,
             body=aggregator_body,
             timeout=self.config.aggregator_timeout,
+            trace_id=trace_id,
         )
         saw_usable = False
         finish_reason: str | None = None

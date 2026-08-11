@@ -29,7 +29,7 @@
         @delete-router="$emit('delete-router', $event)"
       />
 
-      <button v-if="streaming" class="send stop" @click="stopMessage" title="停止生成">
+      <button v-if="streaming" class="send stop" @click="stopMessage" title="停止本次请求" aria-label="停止本次请求">
         <span class="material-symbols-outlined">stop</span>
       </button>
       <button v-else class="send" @click="sendMessage" title="发送消息">
