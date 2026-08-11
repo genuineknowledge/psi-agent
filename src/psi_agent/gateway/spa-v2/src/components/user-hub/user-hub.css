@@ -387,6 +387,35 @@
   background: rgba(var(--brand-rgb), 0.08);
 }
 
+.hub-ai-row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hub-ai-row-wrap .hub-ai-row {
+  flex: 1;
+  min-width: 0;
+}
+
+.hub-ai-delete {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.hub-ai-delete:hover {
+  color: #d64545;
+  background: rgba(214, 69, 69, 0.1);
+}
+
 .hub-ai-info {
   flex: 1;
   min-width: 0;
@@ -521,6 +550,30 @@
 .hub-login-hint {
   margin: 0;
   font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.hub-free-notice-backdrop {
+  cursor: default;
+}
+
+.hub-free-notice-dialog .hub-dialog-actions {
+  border-top: 0;
+  padding-top: 4px;
+}
+
+.hub-free-notice-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 750;
+  color: var(--ink);
+}
+
+.hub-free-notice-text {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.7;
+  font-weight: 750;
   color: var(--ink-soft);
 }
 

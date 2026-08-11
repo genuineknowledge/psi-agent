@@ -1,22 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Bot } from 'lucide-react'
+import { Bot, Trash2 } from 'lucide-react'
 import type { AiInfo } from '../../services/api'
-import { createAi, listAis, listSessions } from '../../services/api'
+import { createAi, deleteAi, listAis } from '../../services/api'
 import {
-  clearAiPool,
+  aiConfigKey,
+  DEFAULT_REMOTE_AI,
   dedupeAisForDisplay,
-  ensureDefaultAi,
   hydrateAiForSessions,
-  purgePlaceholderAis,
+  isPlaceholderAi,
   writeStoredAiId,
 } from '../../services/bootstrapAi'
-import { sessionBackendId } from '../../services/workspaceMatch'
 import {
   getModelPreset,
   MODEL_PRESETS,
   presetToAiPayload,
 } from '../../services/modelPresets'
 import HubDialog from './HubDialog'
+
+export const FREE_MODEL_NOTICE_TITLE = '已切换为免费模型（远程 deepseek-v4-flash）'
+export const FREE_MODEL_NOTICE_BODY = '免费模型由远程服务提供，响应速度受服务负载与网络影响，可能较慢或出现波动'
+export const FREE_MODEL_NOTICE = `${FREE_MODEL_NOTICE_TITLE}。${FREE_MODEL_NOTICE_BODY}`
 
 type Props = {
   show: boolean
@@ -25,6 +28,7 @@ type Props = {
   onSelectAi: (id: string | null) => void
   onOpenAdvanced: () => void
   onToast?: (message: string, durationMs?: number) => void
+  onFreeModelNotice?: () => void
   onAisChanged?: (ais: AiInfo[]) => void
 }
 
@@ -35,12 +39,14 @@ export default function HubModelsPanel({
   onSelectAi,
   onOpenAdvanced,
   onToast,
+  onFreeModelNotice,
   onAisChanged,
 }: Props) {
   const [ais, setAis] = useState<AiInfo[]>([])
   const [presetId, setPresetId] = useState<string | null>(null)
   const [apiKey, setApiKey] = useState('')
   const [connecting, setConnecting] = useState(false)
+  const [pendingConnectedId, setPendingConnectedId] = useState<string | null>(null)
 
   const preset = useMemo(
     () => (presetId ? getModelPreset(presetId) : undefined),
@@ -57,6 +63,7 @@ export default function HubModelsPanel({
     setPresetId(null)
     setApiKey('')
     setConnecting(false)
+    setPendingConnectedId(null)
     void listAis()
       .then((list) => {
         setAis(list)
@@ -66,11 +73,16 @@ export default function HubModelsPanel({
   }, [show, onAisChanged, onToast])
 
   const connect = async () => {
-    if (!preset || !apiKey.trim() || connecting) return
+    if (connecting) return
+    if (!pendingConnectedId && (!preset || !apiKey.trim())) return
     setConnecting(true)
     try {
-      // Connecting a real key: drop leftover free placeholders so they cannot stay ais[0].
-      await purgePlaceholderAis()
+      if (pendingConnectedId) {
+        onSelectAi(pendingConnectedId)
+        writeStoredAiId(pendingConnectedId)
+        onClose()
+        return
+      }
       const info = await createAi(presetToAiPayload(preset, apiKey))
       const list = await listAis()
       setAis(list)
@@ -86,29 +98,30 @@ export default function HubModelsPanel({
     }
   }
 
-  /** Free model = clear local keys, then revive Session backends (same id) as free
-   * remotes so existing tasks stay chatable after refresh. No sessions → create one
-   * free default via ensureDefaultAi. */
+  /** Free model = keep user-connected AIs, force-select the remote free entry.
+   * No free entry yet → create the default remote so the switch works even
+   * with real keys present. */
   const useFreeModel = async () => {
     if (connecting) return
     setConnecting(true)
     try {
-      await clearAiPool()
-      const sessions = await listSessions().catch(() => [])
-      let { ais, preferred } = await hydrateAiForSessions(
-        sessions.map((s) => sessionBackendId(s)),
-        null,
-      )
-      if (ais.length === 0) {
-        preferred = await ensureDefaultAi(null)
-        ais = preferred ? await listAis() : []
+      let { ais } = await hydrateAiForSessions(null)
+      let free = ais.find((a) => isPlaceholderAi(a)) ?? null
+      if (!free) {
+        try {
+          free = await createAi({ ...DEFAULT_REMOTE_AI })
+          if (free?.id) ais = await listAis()
+        } catch {
+          free = null
+        }
       }
       setAis(ais)
       onAisChanged?.(ais)
-      if (preferred?.id) {
-        onSelectAi(preferred.id)
-        writeStoredAiId(preferred.id)
-        onToast?.('已切换为免费模型（远程 deepseek-v4-flash）。免费模型由远程服务提供，响应速度受服务负载与网络影响，可能较慢或出现波动', 6000)
+      if (free?.id) {
+        onSelectAi(free.id)
+        writeStoredAiId(free.id)
+        onToast?.(FREE_MODEL_NOTICE, 6000)
+        onFreeModelNotice?.()
       } else {
         onSelectAi(null)
         onToast?.('免费模型暂时不可用，请检查网络或改连自有 API')
@@ -118,6 +131,30 @@ export default function HubModelsPanel({
       onToast?.(e instanceof Error ? e.message : '切换免费模型失败')
     } finally {
       setConnecting(false)
+    }
+  }
+
+  const removeAi = async (a: AiInfo) => {
+    const name = a.model || a.id
+    if (!window.confirm(`确认删除已连接模型「${name}」？`)) return
+    // One row can represent several same-config instances (e.g. free remotes
+    // revived per Session); delete the whole config group in one click.
+    const group = ais.filter((x) => aiConfigKey(x) === aiConfigKey(a))
+    const groupIds = new Set(group.map((x) => x.id))
+    const removedSelected = selectedAiId != null && groupIds.has(selectedAiId)
+    try {
+      await Promise.all(group.map((x) => deleteAi(x.id)))
+      if (removedSelected) {
+        onSelectAi(null)
+        writeStoredAiId(null)
+      }
+      setPendingConnectedId((cur) => (cur && groupIds.has(cur) ? null : cur))
+      const list = await listAis()
+      setAis(list)
+      onAisChanged?.(list)
+      onToast?.(`已删除 ${name}`)
+    } catch (e) {
+      onToast?.(e instanceof Error ? e.message : '删除失败')
     }
   }
 
@@ -154,7 +191,7 @@ export default function HubModelsPanel({
           <button
             type="button"
             className="hub-btn primary"
-            disabled={!preset || !apiKey.trim() || connecting}
+            disabled={connecting || !((preset && apiKey.trim()) || pendingConnectedId)}
             onClick={() => void connect()}
           >
             {connecting ? '连接中…' : '连接'}
@@ -168,18 +205,33 @@ export default function HubModelsPanel({
           <ul className="hub-ai-list">
             {visibleAis.map((a) => (
               <li key={a.id}>
-                <button
-                  type="button"
-                  className={`hub-ai-row ${a.id === selectedAiId ? 'active' : ''}`}
-                  onClick={() => onSelectAi(a.id)}
-                >
-                  <Bot size={18} />
-                  <span className="hub-ai-info">
-                    <strong>{a.model || a.id}</strong>
-                    <em>{a.provider}</em>
-                  </span>
-                  {a.id === selectedAiId ? <span className="hub-badge">当前</span> : null}
-                </button>
+                <div className="hub-ai-row-wrap">
+                  <button
+                    type="button"
+                    className={`hub-ai-row ${a.id === selectedAiId || a.id === pendingConnectedId ? 'active' : ''}`}
+                    onClick={() => {
+                      setPendingConnectedId(a.id)
+                      setPresetId(null)
+                      setApiKey('')
+                    }}
+                  >
+                    <Bot size={18} />
+                    <span className="hub-ai-info">
+                      <strong>{a.model || a.id}</strong>
+                      <em>{a.provider}</em>
+                    </span>
+                    {a.id === selectedAiId ? <span className="hub-badge">当前</span> : a.id === pendingConnectedId ? <span className="hub-badge">待连接</span> : null}
+                  </button>
+                  <button
+                    type="button"
+                    className="hub-ai-delete"
+                    onClick={() => void removeAi(a)}
+                    aria-label={`删除模型 ${a.model || a.id}`}
+                    title="删除"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
@@ -196,6 +248,7 @@ export default function HubModelsPanel({
               className={`hub-preset-card ${presetId === p.id ? 'active' : ''}`}
               title={p.hint || p.label}
               onClick={() => {
+                setPendingConnectedId(null)
                 setPresetId(p.id)
                 setApiKey('')
               }}

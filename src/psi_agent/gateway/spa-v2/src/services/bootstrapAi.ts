@@ -1,13 +1,12 @@
-import { createAi, deleteAi, listAis, type AiInfo } from './api'
+import { createAi, listAis, type AiInfo } from './api'
 
 /**
  * Remote free-model endpoint (company domain). Real upstream key lives only on
  * the VM behind this proxy; SPA ships a placeholder Bearer.
  *
  * Do NOT POST this on boot when the pool is empty and there are no Sessions —
- * open the models panel first. When Sessions already bind dangling ``ai_id``s,
- * ``hydrateAiForSessions`` / ``reviveMissingSessionAis`` recreate free AIs under
- * those ids so refresh does not break chat.
+ * open the models panel first. If a Session's bound AI was deleted, the next
+ * chat falls back to the currently selected model (see ``ensureSessionAi``).
  */
 /** Aligns with Hub model pool DeepSeek preset (`deepseek-v4-flash`); key injected on VPS. */
 export const DEFAULT_REMOTE_AI = {
@@ -78,55 +77,31 @@ export function writeStoredAiId(id: string | null): void {
 }
 
 /**
- * Prefer: explicit id (if still present) → stored id → first real key → first entry.
- * Never prefer a placeholder when any real AI exists.
+ * Prefer: user's explicit/stored id when it still exists (free placeholder
+ * included — they deliberately selected it) → first real key → first entry.
+ * Unselected `haitun-default` placeholders never win over real keys.
  */
 export function pickPreferredAi(
   ais: AiInfo[],
   preferredId?: string | null,
 ): AiInfo | null {
   if (!Array.isArray(ais) || ais.length === 0) return null
-  const real = ais.filter((a) => !isPlaceholderAi(a))
-  const pool = real.length > 0 ? real : ais
 
   const want = preferredId?.trim()
   if (want) {
-    const hit = pool.find((a) => a.id === want)
+    const hit = ais.find((a) => a.id === want)
     if (hit) return hit
-    // Preferred was a placeholder while real AIs exist — fall through.
-    const anyHit = ais.find((a) => a.id === want)
-    if (anyHit && real.length === 0) return anyHit
   }
 
   const stored = readStoredAiId()
   if (stored) {
-    const hit = pool.find((a) => a.id === stored)
+    const hit = ais.find((a) => a.id === stored)
     if (hit) return hit
   }
 
+  const real = ais.filter((a) => !isPlaceholderAi(a))
+  const pool = real.length > 0 ? real : ais
   return pool[0] ?? null
-}
-
-/** Wipe the local AI pool (user config). Empty pool = free/remote path. */
-export async function clearAiPool(): Promise<void> {
-  const existing = await listAis()
-  if (!Array.isArray(existing) || existing.length === 0) return
-  await Promise.all(existing.map((a) => deleteAi(a.id)))
-  writeStoredAiId(null)
-}
-
-/**
- * Remove placeholder free AIs when the user already has a real key configured.
- * Prevents boot/`ais[0]` from binding new sessions to `haitun-default`.
- */
-export async function purgePlaceholderAis(): Promise<AiInfo[]> {
-  const existing = await listAis()
-  if (!Array.isArray(existing) || existing.length === 0) return []
-  const placeholders = existing.filter((a) => isPlaceholderAi(a))
-  const real = existing.filter((a) => !isPlaceholderAi(a))
-  if (placeholders.length === 0 || real.length === 0) return existing
-  await Promise.all(placeholders.map((a) => deleteAi(a.id)))
-  return listAis()
 }
 
 /**
@@ -159,67 +134,16 @@ export async function ensureDefaultAi(
 }
 
 /**
- * Recreate free remote AIs for Session ``ai_id``s missing from the pool.
- *
- * Gateway does not cascade-delete Sessions when AIs are wiped; refresh / 「使用
- * 免费模型」 leave dangling backends. Same-id revive keeps history + titles.
- */
-export async function reviveMissingSessionAis(
-  sessionAiIds: Iterable<string | null | undefined>,
-): Promise<AiInfo[]> {
-  const want = [
-    ...new Set(
-      [...sessionAiIds]
-        .map((id) => (typeof id === 'string' ? id.trim() : ''))
-        .filter((id) => id.length > 0),
-    ),
-  ]
-  let existing: AiInfo[] = []
-  try {
-    existing = await listAis()
-  } catch {
-    return []
-  }
-  if (!Array.isArray(existing)) existing = []
-  const have = new Set(existing.map((a) => a.id))
-  for (const id of want) {
-    if (have.has(id)) continue
-    try {
-      const revived = await createAi({ ...DEFAULT_REMOTE_AI, id })
-      if (revived?.id) {
-        have.add(revived.id)
-        existing = [...existing, revived]
-      }
-    } catch {
-      // Race: already exists — refresh membership from server.
-      try {
-        existing = await listAis()
-        for (const a of existing) have.add(a.id)
-      } catch {
-        /* keep going */
-      }
-    }
-  }
-  try {
-    return await listAis()
-  } catch {
-    return existing
-  }
-}
-
-/**
  * Single workbench AI hydrate (boot + Hub free-switch share this).
  *
- * 1. Drop leftover free placeholders when a real key exists
- * 2. Revive dangling Session backends as free remotes (same id)
- * 3. Pick UI selection; only open models when the pool is still empty
+ * Loads the current pool and picks the UI selection; only opens models when the
+ * pool is still empty. Connected AIs are never removed or revived here — only
+ * the delete button removes models.
  */
 export async function hydrateAiForSessions(
-  sessionAiIds: Iterable<string | null | undefined>,
   preferredId?: string | null,
 ): Promise<{ ais: AiInfo[]; preferred: AiInfo | null; openModels: boolean }> {
-  await purgePlaceholderAis()
-  const ais = await reviveMissingSessionAis(sessionAiIds)
+  const ais = await listAis()
   const preferred = pickPreferredAi(ais, preferredId)
   if (preferred?.id) writeStoredAiId(preferred.id)
   return {
@@ -230,24 +154,52 @@ export async function hydrateAiForSessions(
 }
 
 /**
- * Keep an existing Session's backend alive after 「使用免费模型」 wiped the pool.
+ * Resolve the AI used for one chat turn.
  *
- * Sessions keep their ``ai_id``; ``clearAiPool`` deletes the AI entry, so chat
- * would hit a dead socket. Recreate the free remote AI under the **same id**
- * (no Session delete → history/titles stay). If there is no prior id, fall back
- * to ``ensureDefaultAi``.
+ * Prefer the Session's bound ``ai_id`` when it is still in the pool. If that
+ * model was deleted, rebind the old id to the currently selected model's
+ * config: the Session keeps its id (history/titles survive), but its AI socket
+ * comes back alive with the new model so the next chat actually uses it.
  */
 export async function ensureSessionAi(
   sessionAiId?: string | null,
 ): Promise<AiInfo | null> {
   const want = sessionAiId?.trim() || null
-  if (want) {
-    const revived = await reviveMissingSessionAis([want])
-    const hit = revived.find((a) => a.id === want)
-    if (hit) {
-      writeStoredAiId(hit.id)
-      return hit
+  let existing: AiInfo[] = []
+  try {
+    existing = await listAis()
+  } catch {
+    existing = []
+  }
+
+  const bound = want ? existing.find((a) => a.id === want) : undefined
+  if (bound) {
+    writeStoredAiId(bound.id)
+    return bound
+  }
+
+  let current = pickPreferredAi(existing, readStoredAiId())
+  if (!current) {
+    current = await ensureDefaultAi(want)
+    if (!current) return null
+  }
+
+  // Rebind the dangling Session id to the current model so its channel socket
+  // becomes reachable again (same id, current config).
+  if (want && current.id !== want) {
+    try {
+      await createAi({
+        provider: current.provider,
+        model: current.model,
+        api_key: current.api_key ?? '',
+        base_url: current.base_url,
+        id: want,
+      })
+    } catch {
+      // Race (already exists) or transient backend issue — next turn retries.
     }
   }
-  return ensureDefaultAi(want)
+
+  writeStoredAiId(current.id)
+  return current
 }

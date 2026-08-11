@@ -28,6 +28,15 @@ def _aggregation_feedback(content: str) -> list[dict[str, Any]]:
     return value
 
 
+def _aggregation_feedback(content: str) -> list[dict[str, Any]]:
+    serialized = content.split("<aggregation_feedback_json>\n", maxsplit=1)[1].split(
+        "\n</aggregation_feedback_json>", maxsplit=1
+    )[0]
+    value = json.loads(serialized)["aggregation_feedback"]
+    assert isinstance(value, list)
+    return value
+
+
 class FakeAggregationClient:
     def __init__(
         self,
