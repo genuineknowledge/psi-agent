@@ -2,6 +2,7 @@ import { marked } from 'marked'
 import katex from 'katex'
 import hljs from 'highlight.js/lib/common'
 import { wrapMdTableHtml } from './mdTable.js'
+import { normalizeStreamWarningCodes } from './streamIssue.js'
 
 // GFM tables + single-newline -> <br>. With breaks on, in-paragraph line
 // breaks become semantic <br>, so the chat bubble no longer needs
@@ -257,11 +258,19 @@ export function saveHistory(id, msgs) {
     failed: m.failed || false,
     failedReason: m.failedReason || '',
     feedback: m.feedback || '',
+    warnings: normalizeStreamWarningCodes(m.warnings),
   }))))
 }
 
 export function loadHistory(id) {
-  try { return JSON.parse(localStorage.getItem('gw-hist-' + id)) || [] }
+  try {
+    const messages = JSON.parse(localStorage.getItem('gw-hist-' + id)) || []
+    if (!Array.isArray(messages)) return []
+    return messages.map(message => ({
+      ...message,
+      warnings: normalizeStreamWarningCodes(message?.warnings),
+    }))
+  }
   catch (_) { return [] }
 }
 

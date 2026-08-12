@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from psi_agent._router_status import RouterStatus
 from psi_agent.session.protocol import (
     AgentChunk,
     AgentError,
@@ -115,6 +116,18 @@ def test_delta_message_to_dict() -> None:
 def test_delta_message_empty_to_dict() -> None:
     dm = DeltaMessage()
     assert dm.to_dict() == {}
+
+
+def test_delta_message_router_status_is_independent() -> None:
+    status = RouterStatus(
+        trace_id="12345678-1234-5678-1234-567812345678",
+        mode="routing",
+        phase="selecting",
+    )
+
+    assert DeltaMessage(router_status=status).to_dict() == {"router_status": status.to_dict()}
+    with pytest.raises(ValueError, match="independent DeltaMessage"):
+        DeltaMessage(content="must not mix", router_status=status).to_dict()
 
 
 def test_tool_function_from_callable_all_defaults() -> None:

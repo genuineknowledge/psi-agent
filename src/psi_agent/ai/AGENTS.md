@@ -4,6 +4,9 @@
 
 AI 层是一个统一的多 provider LLM 客户端，对外提供 OpenAI-compatible HTTP/SSE 服务。
 
+内部组件调用携带 `X-Psi-Trace-Id`；AI 服务规范化并在 SSE 响应头回显，用于与 Session/Router 日志关联。
+`routing` 仍须在调用外部 Provider 前整体删除，因此 trace_id 不会作为模型参数泄漏到供应商。
+
 核心能力：
 - 接收 OpenAI Chat Completions 格式的 HTTP 请求
 - 使用 [any-llm-sdk](https://github.com/mozilla-ai/any-llm) 转发到任意 LLM provider

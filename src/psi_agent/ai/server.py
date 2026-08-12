@@ -9,14 +9,18 @@ from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
 
-from psi_agent.protocol import make_compaction_signal, make_error_chunk
+from psi_agent._trace import TRACE_ID_HEADER, resolve_trace_id
+from psi_agent.protocol import make_compaction_signal
 
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
-    logger.info("Received chat completion request")
     try:
         body: dict[str, Any] = await request.json()
-        logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:1000]}")
+        if not isinstance(body, dict):
+            raise ValueError("Request body must be a JSON object")
+        trace_id = resolve_trace_id(headers=request.headers, routing=body.get("routing"))
+        logger.info(f"Received chat completion request trace_id={trace_id}")
+        logger.debug(f"Request body trace_id={trace_id}: {json.dumps(body, ensure_ascii=False)[:1000]}")
     except Exception as e:
         logger.error(f"Failed to parse request body: {e!r}")
         # OpenAI-compatible error response.
@@ -55,6 +59,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            TRACE_ID_HEADER: trace_id,
         },
     )
     try:
@@ -84,7 +89,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                 **body,
             ),
         )
-        logger.debug("Starting to consume upstream SSE stream")
+        logger.debug(f"Starting to consume upstream SSE stream trace_id={trace_id}")
         max_context_tokens: int = request.app.get("max_context_tokens", 0)
         compaction_usage: dict[str, int] = {}
         async for chunk in stream:
@@ -96,10 +101,11 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                     "total_tokens": chunk.usage.total_tokens,
                 }
                 logger.debug(
-                    f"Compaction needed: prompt_tokens={chunk.usage.prompt_tokens} > threshold={max_context_tokens}"
+                    f"Compaction needed trace_id={trace_id}: "
+                    f"prompt_tokens={chunk.usage.prompt_tokens} > threshold={max_context_tokens}"
                 )
             data = chunk.model_dump_json()
-            logger.debug(f"SSE chunk: {data[:1000]}")
+            logger.debug(f"SSE chunk trace_id={trace_id}: {data[:1000]}")
             await response.write(f"data: {data}\n\n".encode())
         if compaction_needed:
             signal = json.dumps(
@@ -108,27 +114,34 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
                     threshold=max_context_tokens,
                 )
             )
-            logger.debug(f"SSE compaction signal: {signal[:500]}")
+            logger.debug(f"SSE compaction signal trace_id={trace_id}: {signal[:500]}")
             await response.write(f"data: {signal}\n\n".encode())
     except ConnectionResetError:
         # Downstream client (session/channel) disconnected — e.g. user pressed
         # "stop". The finally block closes the upstream provider stream.
         client_gone = True
-        logger.info("Client disconnected; cancelling upstream stream")
+        logger.info(f"Client disconnected; cancelling upstream stream trace_id={trace_id}")
     except Exception as e:
         upstream_error = True
-        logger.error(f"Error forwarding to upstream (provider={provider!r}, model={model!r}): {e!r}")
-        err_chunk = json.dumps(make_error_chunk(f"[Upstream Error]: {e}"))
-        logger.debug(f"SSE error chunk: {err_chunk[:1000]}")
+        logger.error(
+            f"Error forwarding to upstream trace_id={trace_id} (provider={provider!r}, model={model!r}): {e!r}"
+        )
+        err_chunk = json.dumps(
+            {
+                "id": "error",
+                "choices": [{"index": 0, "delta": {"content": f"[Upstream Error]: {e}"}, "finish_reason": "error"}],
+            }
+        )
+        logger.debug(f"SSE error chunk trace_id={trace_id}: {err_chunk[:1000]}")
         try:
             await response.write(f"data: {err_chunk}\n\n".encode())
         except Exception:
-            logger.warning("Failed to send upstream error chunk to client")
+            logger.warning(f"Failed to send upstream error chunk to client trace_id={trace_id}")
     else:
         if compaction_needed:
-            logger.debug("Request completed with compaction signal")
+            logger.debug(f"Request completed with compaction signal trace_id={trace_id}")
         else:
-            logger.debug("Upstream stream completed successfully")
+            logger.debug(f"Upstream stream completed successfully trace_id={trace_id}")
     finally:
         # Always release the upstream connection, even on cancellation
         # (client disconnect / shutdown). Shielded so aclose() completes
@@ -136,17 +149,17 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         if stream is not None:
             aclose = getattr(stream, "aclose", None)
             if aclose is not None:
-                logger.debug("Closing upstream stream")
+                logger.debug(f"Closing upstream stream trace_id={trace_id}")
                 with anyio.CancelScope(shield=True):
                     try:
                         await aclose()
                     except Exception as close_err:
-                        logger.warning(f"Failed to close upstream stream: {close_err}")
+                        logger.warning(f"Failed to close upstream stream trace_id={trace_id}: {close_err}")
 
     if client_gone:
-        logger.info("Request cancelled by client disconnect")
+        logger.info(f"Request cancelled by client disconnect trace_id={trace_id}")
     elif upstream_error:
-        logger.info("Request completed with upstream error")
+        logger.info(f"Request completed with upstream error trace_id={trace_id}")
     else:
-        logger.info("Request completed successfully")
+        logger.info(f"Request completed successfully trace_id={trace_id}")
     return response

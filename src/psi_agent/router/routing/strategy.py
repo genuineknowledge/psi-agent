@@ -9,12 +9,13 @@ from typing import Any, Protocol
 import anyio
 from loguru import logger
 
+from psi_agent._router_status import RouterStatus, router_status_from_event
 from psi_agent.protocol import FINISH_REASON_TOOL_CALLS, is_terminal_finish
 
 from ..errors import InvalidRouterRequestError, RouterUpstreamError
 from ..models import RoutingScopeKey
 from ..privacy import redact_private_sockets
-from ..request import copy_target_request_body, routing_scope_from_body
+from ..request import copy_target_request_body, ensure_routing_trace_id, routing_scope_from_body
 from .errors import RouteSelectionError
 from .models import RoutingConfig, SelectionResult
 
@@ -47,6 +48,8 @@ class RoutingStrategy:
 
         messages = self._validate_request(body)
         scope = routing_scope_from_body(body=body)
+        trace_id = ensure_routing_trace_id(body=body)
+        depth = len(scope[1]) if scope is not None else 0
         scope_session_id = scope[0] if scope is not None else None
         is_tool_iteration = bool(messages) and messages[-1].get("role") == "tool"
         private_sockets = (self.config.selector_socket, *(target.socket for target in self.config.targets))
@@ -56,6 +59,12 @@ class RoutingStrategy:
         if selection is None:
             if scope is not None and not is_tool_iteration:
                 self._sticky_targets.pop(scope, None)
+            yield RouterStatus(
+                trace_id=trace_id,
+                mode="routing",
+                phase="selecting",
+                depth=depth,
+            ).to_event()
             try:
                 selection = await self.selector.select(request_body=body)
             except cancelled_error:
@@ -67,22 +76,35 @@ class RoutingStrategy:
                 self._sticky_targets[scope] = selection
         else:
             logger.info(
-                f"Reusing sticky routing candidate {selection.candidate_id!r} "
+                f"Reusing sticky routing candidate {selection.candidate_id!r} trace_id={trace_id} "
                 f"for tool iteration in session {scope_session_id!r}"
             )
 
+        yield RouterStatus(
+            trace_id=trace_id,
+            mode="routing",
+            phase="generating",
+            depth=depth,
+        ).to_event()
         target_body = copy_target_request_body(body=body, target=selection.target)
-        logger.info(f"Routing request to candidate {selection.candidate_id!r}")
+        logger.info(f"Routing request to candidate {selection.candidate_id!r} trace_id={trace_id}")
         target_stream = self.client.stream(
             socket=selection.target.socket,
             body=target_body,
             timeout=selection.target.timeout if selection.target.timeout is not None else self.config.target_timeout,
+            trace_id=trace_id,
         )
         completed = False
         finish_reason: str | None = None
         try:
             async with aclosing(target_stream) as events:
                 async for event in events:
+                    status = router_status_from_event(event)
+                    if status is not None:
+                        if selection.target.backend_type == "ai":
+                            continue
+                        if status.trace_id != trace_id or status.depth <= depth:
+                            raise RouterUpstreamError("Nested Router returned inconsistent status metadata")
                     current_finish = event["choices"][0].get("finish_reason")
                     if isinstance(current_finish, str) and is_terminal_finish(current_finish):
                         finish_reason = current_finish

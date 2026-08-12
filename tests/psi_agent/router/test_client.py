@@ -10,6 +10,8 @@ from aiohttp import web
 from psi_agent.router.client import RouterHttpClient
 from psi_agent.router.errors import RouterUpstreamError
 
+TRACE_ID = "123e4567-e89b-12d3-a456-426614174000"
+
 
 @asynccontextmanager
 async def _serve(
@@ -61,6 +63,53 @@ async def test_complete_skips_zero_choice_heartbeats() -> None:
 
 
 @pytest.mark.anyio
+async def test_client_propagates_and_verifies_trace_header() -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        assert request.headers["X-Psi-Trace-Id"] == TRACE_ID
+        response = web.StreamResponse(
+            headers={
+                "Content-Type": "text/event-stream",
+                "X-Psi-Trace-Id": TRACE_ID,
+            }
+        )
+        await response.prepare(request)
+        await response.write(b'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n')
+        await response.write(b"data: [DONE]\n\n")
+        return response
+
+    async with _serve(handler) as server_url:
+        result = await RouterHttpClient().complete(
+            socket=server_url,
+            body={"messages": [], "stream": True},
+            timeout=None,
+            trace_id=TRACE_ID,
+        )
+
+    assert result.content == "ok"
+
+
+@pytest.mark.anyio
+async def test_client_rejects_mismatched_trace_header() -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "X-Psi-Trace-Id": "123e4567-e89b-12d3-a456-426614174001",
+            },
+        )
+
+    async with _serve(handler) as server_url:
+        with pytest.raises(RouterUpstreamError, match="mismatched trace"):
+            await RouterHttpClient().complete(
+                socket=server_url,
+                body={"messages": [], "stream": True},
+                timeout=None,
+                trace_id=TRACE_ID,
+            )
+
+
+@pytest.mark.anyio
 async def test_buffered_complete_preserves_events_and_compaction_metadata() -> None:
     content_event = {
         "id": "answer",
@@ -105,6 +154,23 @@ async def test_complete_rejects_multiple_choices() -> None:
     async with _serve(handler) as server_url:
         with pytest.raises(RouterUpstreamError, match="exactly one upstream choice"):
             await RouterHttpClient().complete(socket=server_url, body={"messages": [], "stream": True}, timeout=None)
+
+
+@pytest.mark.anyio
+async def test_complete_rejects_malformed_router_status() -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        return await _sse_response(
+            request,
+            [b'data: {"choices": [{"delta": {"router_status": {"version": 2}}, "finish_reason": null}]}\n\n'],
+        )
+
+    async with _serve(handler) as server_url:
+        with pytest.raises(RouterUpstreamError, match="invalid router_status"):
+            await RouterHttpClient().complete(
+                socket=server_url,
+                body={"messages": [], "stream": True},
+                timeout=None,
+            )
 
 
 @pytest.mark.anyio
@@ -239,7 +305,10 @@ async def test_stream_close_after_one_event_closes_response_and_session(
 
     class Response:
         status = 200
-        content = Content()
+
+        def __init__(self) -> None:
+            self.content = Content()
+            self.headers: dict[str, str] = {}
 
         async def text(self) -> str:
             return ""
@@ -249,7 +318,13 @@ async def test_stream_close_after_one_event_closes_response_and_session(
             response_closed = True
 
     class Session:
-        async def post(self, endpoint: str, *, json: dict[str, object]) -> Response:
+        async def post(
+            self,
+            endpoint: str,
+            *,
+            json: dict[str, object],
+            headers: dict[str, str] | None,
+        ) -> Response:
             return Response()
 
         async def close(self) -> None:

@@ -15,10 +15,11 @@ describe('isCompleteAssistant', () => {
   it('rejects empty, stopped, and error-only assistant', () => {
     expect(isCompleteAssistant({ role: 'assistant', text: '' })).toBe(false)
     expect(isCompleteAssistant({ role: 'assistant', text: 'x', stopped: true })).toBe(false)
+    expect(isCompleteAssistant({ role: 'assistant', text: 'partial', fatal: true })).toBe(false)
     expect(isCompleteAssistant({ role: 'assistant', text: '[Error: bad]' })).toBe(false)
   })
 
-  it('soft-fails blob errors when text or files remain', () => {
+  it('keeps legacy blob annotations recoverable when text or files remain', () => {
     expect(isCompleteAssistant({ role: 'assistant', text: 'oops\n[Error: bad]' })).toBe(true)
     expect(isCompleteAssistant({
       role: 'assistant',
@@ -52,6 +53,26 @@ describe('normalizeFailedTurns', () => {
     expect(out[1]).toMatchObject({ text: 'q1 retry', failed: false })
     expect(out[2]).toMatchObject({ role: 'assistant', text: 'answer' })
   })
+
+  it('preserves an explicit fatal reason after its assistant is removed', () => {
+    const out = normalizeFailedTurns([{
+      role: 'user',
+      text: 'failed request',
+      failed: true,
+      failedReason: 'error',
+    }])
+    expect(out[0]).toMatchObject({ failed: true, failedReason: 'error' })
+  })
+
+  it('preserves an explicit stopped reason from pre-stream cancellation', () => {
+    const out = normalizeFailedTurns([{
+      role: 'user',
+      text: 'stopped request',
+      failed: true,
+      failedReason: 'stopped',
+    }])
+    expect(out[0]).toMatchObject({ failed: true, failedReason: 'stopped' })
+  })
 })
 
 describe('applyTurnOutcome', () => {
@@ -76,7 +97,14 @@ describe('resolveTurnOutcome', () => {
     expect(inferFailedReason({ role: 'assistant', text: '[Error: key expired]' })).toBe('error')
   })
 
-  it('keeps ok when error annotation coexists with content or files', () => {
+  it('treats an explicit fatal stream event as error even after partial content', () => {
+    const user = { role: 'user', text: 'hi' }
+    const assistant = { role: 'assistant', text: 'partial answer', fatal: true }
+    expect(resolveTurnOutcome([], user, assistant)).toBe('error')
+    expect(inferFailedReason(assistant)).toBe('error')
+  })
+
+  it('keeps legacy annotations recoverable when content or files remain', () => {
     const user = { role: 'user', text: 'hi' }
     expect(resolveTurnOutcome([], user, {
       role: 'assistant',

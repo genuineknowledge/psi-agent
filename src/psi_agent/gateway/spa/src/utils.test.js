@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { renderMd } from './utils.js'
+import { loadHistory, renderMd, saveHistory } from './utils.js'
 
 describe('renderMd tables', () => {
   it('renders a contiguous GFM table', () => {
@@ -36,5 +36,37 @@ describe('renderMd links', () => {
     const html = renderMd('see https://example.com/auto')
     expect(html).toContain('href="https://example.com/auto"')
     expect(html).toContain('target="_blank"')
+  })
+})
+
+describe('history stream warnings', () => {
+  it('persists only normalized warning codes', () => {
+    const values = new Map()
+    const originalStorage = globalThis.localStorage
+    globalThis.localStorage = {
+      getItem: key => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: key => values.delete(key),
+    }
+
+    try {
+      saveHistory('warnings', [{
+        role: 'assistant',
+        text: 'answer',
+        files: [],
+        warnings: ['output_file_unavailable', 'private_warning'],
+        fatal: true,
+      }])
+
+      expect(loadHistory('warnings')).toEqual([expect.objectContaining({
+        role: 'assistant',
+        warnings: ['output_file_unavailable', 'stream_warning'],
+      })])
+      expect(values.get('gw-hist-warnings')).not.toContain('private_warning')
+      expect(values.get('gw-hist-warnings')).not.toContain('fatal')
+    } finally {
+      if (originalStorage === undefined) delete globalThis.localStorage
+      else globalThis.localStorage = originalStorage
+    }
   })
 })

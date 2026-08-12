@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._trace import resolve_trace_id
 from psi_agent.protocol import FINISH_REASON_ERROR
 from psi_agent.session.protocol import AgentChunk, AgentError, ChatCompletionChunk, DeltaMessage, StreamChoice
 
@@ -53,6 +54,14 @@ class ChannelAdapter:
         if not isinstance(body, dict):
             raise ChannelAdapter.ParseError("Request body must be a JSON object")
 
+        try:
+            trace_id = resolve_trace_id(headers=request.headers, routing=body.get("routing"))
+        except ValueError as error:
+            raise ChannelAdapter.ParseError(str(error)) from error
+        # The caller may provide only the trace. Session owns the trusted
+        # session_id/path scope and rebuilds those fields in SessionAgent.
+        body["routing"] = {"trace_id": trace_id}
+
         messages = body.pop("messages", [])
         if not isinstance(messages, list) or not messages:
             raise ChannelAdapter.ParseError("No messages in request")
@@ -81,9 +90,12 @@ class ChannelAdapter:
             async with aclosing(chunks):
                 async for chunk in chunks:
                     await response.write(ChannelAdapter._to_sse(chunk))
-                    logger.debug(
-                        f"SSE chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}, kind={chunk.kind!r}"
-                    )
+                    if chunk.router_status is not None:
+                        logger.debug(f"SSE router status: {chunk.router_status.to_dict()!r}")
+                    else:
+                        logger.debug(
+                            f"SSE chunk: content={chunk.content!r}, reasoning={chunk.reasoning!r}, kind={chunk.kind!r}"
+                        )
                 await response.write(b"data: [DONE]\n\n")
         except AgentError as e:
             await ChannelAdapter._write_error(response, e.message)
@@ -98,7 +110,12 @@ class ChannelAdapter:
 
     @staticmethod
     def _to_sse(chunk: AgentChunk) -> bytes:
-        delta = DeltaMessage(content=chunk.content, reasoning=chunk.reasoning, kind=chunk.kind)
+        if chunk.router_status is not None:
+            if chunk.content is not None or chunk.reasoning is not None or chunk.kind is not None:
+                raise ValueError("router_status must use an independent AgentChunk")
+            delta = DeltaMessage(router_status=chunk.router_status)
+        else:
+            delta = DeltaMessage(content=chunk.content, reasoning=chunk.reasoning, kind=chunk.kind)
         cc = ChatCompletionChunk(choices=[StreamChoice(index=0, delta=delta)])
         return cc.to_sse().encode()
 

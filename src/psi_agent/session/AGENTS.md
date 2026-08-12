@@ -4,6 +4,13 @@
 
 Session 层是 psi-agent 的核心——负责 workspace 解析、agent loop、tool 执行、schedule 调度以及面向 Channel 的 HTTP/SSE 服务。
 
+## 请求 trace_id
+
+`ChannelAdapter` 统一校验 `X-Psi-Trace-Id` 与 `routing.trace_id`，二者冲突时在进入 agent loop 前拒绝。
+Session 忽略调用方提供的 `routing.session_id/path`，使用可信 conversation session id 重建 scope，同时让同一 trace
+贯穿所有 tool round 和该轮触发的 compaction。`AiClient` 通过内部请求头传给 AI/Router，并校验响应头与
+`router_status.trace_id`；trace 不写入 history，也不传给 system hooks。
+
 ## Workspace / Agent 路径
 
 | 字段 | CLI | 用途 |
@@ -66,6 +73,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 3. 获取 `anyio.Lock`（忙则 FIFO 排队等待）—— `handle_request()` 在调用 `run_streamed()` 前持有
 4. 通过 `AiClient.stream()` 发送 `history + tools + extra_params` 到 AI backend（streaming）
 5. 消费 `AiDelta` 流（AiClient 已做好 SSE 解析、错误检测）：
+   - router_status → `yield AgentChunk(router_status=...)` 原样交给 ChannelAdapter；状态帧独立、瞬时，不累积也不写入 history
    - content → `yield AgentChunk(content=...)` 给 ChannelAdapter
    - reasoning（模型 thinking）→ `yield AgentChunk(reasoning=..., kind="thinking")`（上游 `delta.kind` 优先）
    - tool 执行起止 → 仍写入 **同一** `reasoning` 槽（刻意压缩，便于 Session↔AI OpenAI 形同构），`kind="tool_call"|"tool_result"`；正文可继续带 `[Tool Call:]`/`[Tool Result:]` 过渡标记
@@ -146,7 +154,8 @@ Session 层使用两个对称的协议适配器，将 `SessionAgent.run()` 包�
 ### AiClient（`ai_client.py`）
 - 封装 HTTP/SSE 连接管理与原始解析
 - `stream(request_body) → AsyncIterator[AiDelta]`
-- 处理：非 200、多 choice 错误检测、心跳跳过、`[DONE]` 终止
+- 处理：非 200、多 choice 错误检测、心跳跳过、`[DONE]` 终止；用共享
+  `RouterStatus` schema 校验独立的 `delta.router_status`，非法状态转换为安全的终止错误
 
 ### ChannelAdapter（`channel_adapter.py`）
 - 纯无状态编解码——`parse_request()` 和 `write()` 两个入口
@@ -157,8 +166,8 @@ Session 层使用两个对称的协议适配器，将 `SessionAgent.run()` 包�
 ### 核心类型
 | 类型 | 方向 | 职责 |
 |------|------|------|
-| `AiDelta` | AI→SessionAgent | SSE 解析后的内部流元素 |
-| `AgentChunk` | SessionAgent→Channel | 纯语义输出（`content` / `reasoning` + 可选 `kind` provenance） |
+| `AiDelta` | AI→SessionAgent | SSE 解析后的内部流元素（含可选、已验证的 `router_status`） |
+| `AgentChunk` | SessionAgent→Channel | 纯语义输出（`content` / `reasoning` + 可选 `kind` provenance，或独立的 `router_status`） |
 | `AgentError` | SessionAgent→Channel | 不可恢复错误信号 |
 | `AgentRunResult` | SessionAgent→调用方 | 一次 run 的不可变终态（`status` / `stop_cause` / `model_finish_reason` / `model_turns`）；**不进 SSE** |
 

@@ -4,6 +4,10 @@
 
 Web 控制台是一个本地打包、无外部 CDN 依赖的 Vue 3 单页应用（SPA），由 Vite 构建为静态文件，通过 Gateway 的 `/spa/` 路由服务。支持多格式文件预览（代码/PDF/Word/PPT/Excel/CSV），依赖已显著增加，不再是轻量前端。
 
+每个聊天回合在 `sendMessage()`（重试/重新生成路径在 `runChatTurn()`）创建一个 UUID trace_id，经 `X-Psi-Trace-Id` 发送给 Gateway。响应头及每个带
+`trace_id` 的 SSE 数据事件必须与本回合一致；不一致时按 fatal 流错误处理。trace 只用于当前回合关联，
+不写入 `gw-hist-*`，也不在用户正文中展示。
+
 ## 前端设计约束
 
 ### Gateway Router 前端接入
@@ -20,6 +24,11 @@ fallback 模式隐藏控制 AI 并提交 `router_ai_id: null`、`router_timeout:
 `backendOptions.js`。Session 使用 `selectedBackendType + selectedBackendId`，
 创建请求发送 `backend_type/backend_id`；不启动 Router 时继续直连普通 AI。
 
+Router 模式名称、图标和拓扑说明以 `routerMode.js` 为唯一来源：routing=`智能分流`、
+aggregation=`并行聚合`、fallback=`顺序回退`。创建表单、ModelPanel、Hub 列表和运行状态卡不得各自维护
+另一套文案。配置摘要必须反映真实执行拓扑：routing 表示 Selector 从候选中选择 1 个；aggregation 使用
+`候选 A ∥ 候选 B → Aggregator`；只有 fallback 使用 `候选 A → 候选 B` 的串行箭头。
+
 以下是开发本 SPA 时必须遵守的约定，与根 `AGENTS.md` 的「设计理念」同级——凡新增/改动组件、样式、状态，先对照本节：
 
 1. **本地打包 / 无外链**：所有依赖经 npm 安装、由 Vite 打进 `dist/`。禁止在 `index.html` 或组件里引 `<script src="https://...">` / `<link href="https://...">` 外链——离线与二进制打包环境下外链会失效。字体、图标、CSS 一律走本地包（如 `material-symbols`）。
@@ -28,7 +37,7 @@ fallback 模式隐藏控制 AI 并提交 `router_ai_id: null`、`router_timeout:
 
 3. **技术栈封闭**：默认不再引入 **Vue Router**（单页无路由）、**TypeScript**、**CSS 预处理器**；已采用 **Pinia** 做领域 store 拆分（见下条）。确需新增第三方库时，先评估体积与是否可 tree-shake，并在「技术栈」表补一行「选择理由」。
 
-4. **按领域拆分 Pinia store**：全局/跨组件状态按领域拆进 `src/stores/` 下的 4 个 setup-store（`ai.js`/`session.js`/`chat.js`/`ui.js`），组件内经 `storeToRefs` 取 state（保响应式），action 直接从 store 实例调用；不再用 `provide/inject`。组件内裸 `ref` 只用于纯本地 UI 状态（如某个 input 的临时值）。跨组件副作用用 store 字段信号传递（如 `chat.uploadResetToken` 递增通知 InputBar 清空 file input），不要组件间直接互相调方法。新增状态先判断归属哪个领域 store，避免混进无关 store。
+4. **按领域拆分 Pinia store**：全局/跨组件状态按领域拆进 `src/stores/` 下的 5 个 setup-store（`ai.js`/`session.js`/`chat.js`/`ui.js`/`ux.js`），组件内经 `storeToRefs` 取 state（保响应式），action 直接从 store 实例调用；不再用 `provide/inject`。组件内裸 `ref` 只用于纯本地 UI 状态（如某个 input 的临时值）。跨组件副作用用 store 字段信号传递（如 `chat.uploadResetToken` 递增通知 InputBar 清空 file input），不要组件间直接互相调方法。新增状态先判断归属哪个领域 store，避免混进无关 store。
 
 5. **服务端是唯一数据源**：AI / Session 列表、标题从 Gateway REST GET 获取，`localStorage` 只存 UI 偏好与对话缓存（见「localhost 持久化策略」）。新增持久化项必须用 `gw-` 前缀 key，并同步更新持久化表。
 
@@ -93,14 +102,25 @@ spa/
 ├── src/
 │   ├── main.js                      # createApp + app.use(createPinia()) + import CSS + v-focus directive
 │   ├── App.vue                      # 根组件：编排层 — 跨组件 handler + 弹窗 + drag-drop；sidebar/input 业务逻辑已移入各组件
-│   ├── stores/                      # Pinia 领域 store（4 个 setup-store）
+│   ├── stores/                      # Pinia 领域 store（5 个 setup-store）
 │   │   ├── ai.js                    # useAiStore：ais, selectedAiId, aiForm, fetchedModels, loadingModels, modelPanelOpen
 │   │   ├── session.js               # useSessionStore：sessions, selectedSessionId, draftSession, sessionTitles, sessionMessages, sessionInputs, sessionStreaming, sessionAbortControllers, …
 │   │   ├── chat.js                  # useChatStore：messages, inputText, streaming, abortController, selectedFiles, userHasScrolledUp, uploadResetToken
-│   │   └── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken, hubMenuOpen, hubPanel + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch/toggleHubMenu/openHubPanel/…
+│   │   ├── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken, hubMenuOpen, hubPanel + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch/toggleHubMenu/openHubPanel/…
+│   │   └── ux.js                    # useUxStore：调试模式下的内存 UX 回合记录、汇总、清空与安全导出
 │   ├── sendMarkers.js               # stripTransferMarkers（剥掉气泡/历史展示里的 [SEND:]/[RECV:]，防绝对路径泄露）
 │   ├── mdTable.js                   # GFM 表格复制/下载（MessageBubble + FilePreview MD 预览共用）
 │   ├── assistantSegments.js         # 助手分段辅助（一轮 user → 至多一个主 assistant 气泡）
+│   ├── routerMode.js                # Router 三模式名称、图标与真实执行拓扑说明的唯一来源
+│   ├── routerConfig.js              # Router 表单校验/payload + 模式感知的完整/紧凑配置摘要
+│   ├── routerStatus.js              # Router 状态协议白名单归一化 + 3 模式/7 阶段展示文案
+│   ├── routerStatus.test.js         # Router 状态合法性、隐私字段剥离与展示文案单测
+│   ├── streamIssue.js               # Gateway error severity 归一化/应用 + warning 安全文案/持久化白名单
+│   ├── streamIssue.test.js          # fatal fail-closed、warning 隐私剥离与文案单测
+│   ├── turnCancellation.js          # 回合 AbortError 判定 + AbortSignal-aware FileReader
+│   ├── turnCancellation.test.js     # 发送前/文件编码中取消与成功清理单测
+│   ├── uxMetrics.js                 # 用户侧时间点、Router 阶段与成功/降级/恢复率的纯计算
+│   ├── uxMetrics.test.js            # UX 派生指标、分位数、隐私白名单与调试开关单测
 │   ├── utils.test.js                # renderMd GFM 表格规范化单测（Vitest）
 │   ├── sendMarkers.test.js          # stripTransferMarkers 单测
 │   ├── api.js                       # fetch 封装(api) + chat 流请求(streamChat)
@@ -116,6 +136,8 @@ spa/
 │   │   ├── SessionStreamIndicator.vue # 侧栏流式 spinner / 后台完成未读蓝点
 │   │   ├── ChatArea.vue             # 消息列表容器 + 自动滚动 + 空状态
 │   │   ├── MessageBubble.vue        # 单条消息：Markdown + 附件 + 助手操作栏（赞踩/复制/重新生成）
+│   │   ├── RouterStatusIndicator.vue # Router routing/aggregation/fallback 的瞬时状态卡
+│   │   ├── UxMetricsPanel.vue       # 仅 ?ux_debug=1 展示的内存 UX 指标面板与 JSON 导出
 │   │   ├── ThinkingBubble.vue       # 等待首 token 的三个脉冲圆点
 │   │   ├── InputBar.vue             # 输入 UI：textarea 自适应高度 + 文件选择 + 发送按钮；发送逻辑委托给 useChat.js；内嵌 ModelPanel
 │   │   ├── ModelPanel.vue           # 输入栏旁模型切换（只切换/删除已连接；链接走 User Hub）
@@ -171,10 +193,14 @@ spa/
 | `src/stores/session.js` | Session 领域 store | `useSessionStore` setup-store，导出 `sessions/selectedSessionId/draftSession/sessionTitles/sessionMessages/…`；`draftSession` 为 client-only 草稿（首条发送前不 POST）；`pinnedSessionIds` 在 setup 内经 `loadPinnedSessionIds(window.localStorage)` 初始化 |
 | `src/stores/chat.js` | Chat 领域 store | `useChatStore` setup-store，导出 `messages/inputText/streaming/abortController/selectedFiles/userHasScrolledUp/uploadResetToken` |
 | `src/stores/ui.js` | UI 领域 store | `useUiStore` setup-store，导出 `loadingEnv/isLightMode/isDragging/dlgAI/dlgSess/snackbar/dlgConfirm/isSidebarCollapsed/isMobileSidebarOpen/sessionSearchFocusToken/hubMenuOpen/hubPanel` + action `showAlert`/`toggleSidebar`/`closeMobileSidebar`/`focusSessionSearch`/`toggleHubMenu`/`openHubPanel`/`closeHubPanel` |
-| `src/api.js` | HTTP 封装 | `api(method,path,body)` — JSON fetch，非 2xx 抛错；`streamChat(sessionId,formData)` — POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
-| `src/utils.js` | 纯工具 + 持久化 | `renderMd`（marked+KaTeX，见「Markdown 渲染流程」）；`htmlEscape`（用户输入转义）；`mimeType`（扩展名→MIME）；localStorage 读写：`saveActiveState/loadActiveState`（`gw-active-ids`）、`saveHistory/loadHistory/clearHistory`（`gw-hist-<id>`：role/text/files + stopped/failed/failedReason/feedback） |
+| `src/stores/ux.js` | UX 调试 store | 仅 `?ux_debug=1` 启用；按 trace 维护回合内存记录，最多保留 200 条已完成样本，提供汇总/清空/内容无关 JSON 导出，不写 localStorage |
+| `src/api.js` | HTTP 封装 | `api(method,path,body,{signal})` — JSON fetch，非 2xx 抛错并可取消；`streamChat(sessionId,formData,signal)` — 可取消的 POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
+| `src/utils.js` | 纯工具 + 持久化 | `renderMd`（marked+KaTeX，见「Markdown 渲染流程」）；`htmlEscape`（用户输入转义）；`mimeType`（扩展名→MIME）；localStorage 读写：`saveActiveState/loadActiveState`（`gw-active-ids`）、`saveHistory/loadHistory/clearHistory`（`gw-hist-<id>`：role/text/files + stopped/failed/failedReason/feedback + warning code） |
 | `src/providers.js` | 预置 provider 表 | 导出 `PROVIDERS` 数组：13 家供应商的 `v`(值)/`l`(标签)/`base`(默认 base_url)/`models`(预置模型名)，供 AiDialog 高级下拉 |
 | `src/modelPresets.js` | Hub 快捷连接预设 | 导出 `MODEL_PRESETS`（id/label/mark/accent + provider/model/base_url）、`getModelPreset`、`presetToAiPayload`；HubModelsPanel 只填 api_key |
+| `src/routerMode.js` | Router 模式展示契约 | 导出 `ROUTER_MODE_OPTIONS/routerModePresentation/routerModeHint`；创建表单、配置摘要和运行状态共用同一套模式名称、图标与拓扑说明 |
+| `src/routerConfig.js` | Router 配置纯逻辑 | 校验并构造 Gateway canonical payload；`routerSummary` 按真实拓扑展示完整配置，`routerCompactSummary` 为模型切换面板提供模式和候选规模 |
+| `src/turnCancellation.js` | 回合取消纯逻辑 | `throwIfAborted/isAbortError` 统一 AbortError 语义；`readFileAsBase64` 将同一 AbortSignal 转发给 FileReader 并在结束后清理 listener |
 | `src/userProfile.js` | 用户资料持久化 | `LS_USER_NAME`/`LS_USER_AVATAR` + `readAvatarDataUrl(file)`（≤512KB 图片 → data URL） |
 | `src/sessionList.js` | 会话列表纯逻辑 | 无副作用工具（可单测）：`PINNED_SESSIONS_KEY`、`PLACEHOLDER_SESSION_TITLE`（「新对话」）、`isPlaceholderSessionTitle`、`getSessionDisplayName`(标题优先、回退 workspace/占位)、`loadPinnedSessionIds/savePinnedSessionIds/togglePinnedSessionId`(置顶持久化 + 去重规范化)、`buildSessionTitlePayload`、`buildVisibleSessions`(搜索过滤 + 置顶排在前) |
 | `src/shortcuts.js` | 快捷键判定纯逻辑 | `matchSidebarShortcut(event)` → `'new-session'`(Ctrl/Cmd+Shift+O) / `'focus-search'`(Ctrl/Cmd+Shift+K) / `null`；用 `event.code` 而非 `key`（规避 Shift 大小写/输入法差异），`ctrlKey||metaKey` 兼容 Windows/macOS。配套 `shortcuts.test.js` 单测 |
@@ -190,13 +216,16 @@ spa/
 | 文件 | 组件职责 | 关键逻辑 |
 |------|----------|----------|
 | `Sidebar.vue` | 会话列表侧栏 | 工作区树 + draft 虚拟行「新对话」（client-only）+ 真实 session 列表；「+」/底部按钮 emit `new-session` → `startDraftChat` |
+| `MessageBubble.vue` | 单条消息展示 | 流式 assistant 有合法 `routerStatus` 时显示 `RouterStatusIndicator`；状态与正文可同时存在，普通 AI 或非法状态仍使用 `ThinkingBubble`；recoverable warning 用非阻断信息条展示，不渲染原始异常文本；fatal/stopped/incomplete 在失败的 user 回合下显示明确原因并保留重试入口 |
+| `RouterStatusIndicator.vue` | Router 运行状态卡 | 展示 routing / aggregation / fallback 的模式、阶段、并行或尝试进度及嵌套标记；`role=status` 礼貌播报，移动端换行并尊重 reduced-motion |
 | `InputBar.vue` | 输入区 UI | 仅 chat 态由 App 挂载；Enter 发送（`useChat.sendMessage`，首条发送时 `promoteDraftToSession`） |
-| `ModelPanel.vue` | 会话模型切换 | 由 InputBar 内嵌；chip 显示当前模型；浮层只切换/`delete` 已连接模型（**不**提供链接入口——链接走右上角 User Hub → 大模型） |
+| `ModelPanel.vue` | 会话模型切换 | 由 InputBar 内嵌；普通 AI 显示模型/provider，Router 显示模式图标与 topology-aware 紧凑摘要，chip title 展示完整配置；浮层只切换/`delete` 已连接模型（**不**提供链接入口——链接走右上角 User Hub → 大模型） |
 | `BaseDialog.vue` | 弹窗外壳 | 所有弹窗的基类：overlay + dialog + `title`/默认/`actions` 三插槽；`show` prop 控制，overlay 点击 emit `close`；`.ok`/`.cancel` 按钮样式在此 scoped |
 | `UserHub.vue` | 用户菜单入口 | 头像下拉 → 打开 HubProfile/Models/Login/Settings 面板；桌面 `#topbar` + 移动 `#mobile-topbar` 共用 |
-| `HubModelsPanel.vue` | Hub 大模型配置 | 空池启动时由 App 打开；预设 + API Key → POST `/ais`；「使用免费模型」（蓝色）= `clearAiPool` 清空配置后关闭；对话时再惰性 `ensureDefaultAi`；「高级配置」→ AiDialog |
+| `HubModelsPanel.vue` | Hub 大模型配置 | 空池启动时由 App 打开；预设 + API Key → POST `/ais`；Router 行使用模式图标与真实拓扑摘要；「使用免费模型」（蓝色）= `clearAiPool` 清空配置后关闭；对话时再惰性 `ensureDefaultAi`；「高级配置」→ AiDialog |
 | `HubProfilePanel.vue` | Hub 我的资料 | 称呼 + 头像上传（写 `gw-user-name`/`gw-user-avatar`）；MessageBubble 与右上头像同步 |
 | `AiDialog.vue` | 链接大模型弹窗（高级） | 基于 BaseDialog；provider 自定义下拉（选中回填 base_url）；模型名自定义下拉（替代原生 datalist：↑↓/Enter/Esc 键盘导航 + 输入过滤 + `@mousedown.prevent` 防 blur）；base_url/api_key `@change` 触发 `fetchModels`；无 AI 时 `handleCancel` 拒绝关闭 |
+| `RouterDialog.vue` | 创建 Router 弹窗 | 模式下拉与说明来自 `routerMode.js`；候选必须先选 backend type，再选对应 AI/Router；提交前由 `routerConfig.js` 校验并构造 canonical payload |
 | `SessDialog.vue` | 创建会话弹窗 | 基于 BaseDialog；确认当前工作区 + 大模型后 emit `create` |
 | `PathPickerDialog.vue` | 路径选择器 | 资源管理器式 UI（左侧快捷位置 + 面包屑 + 列表 + 底部路径确认）；由 `usePathPicker.openPathPicker()` 控制；侧栏「打开工作区」直接调用，无中间 WorkspaceDialog |
 | `usePathPicker.js` | 路径选择 composable | `openPathPicker({ mode, title, initialPath, … }) → Promise<path\|null>`；fetch `/workspace/places` + `/workspace/browse` |
@@ -211,9 +240,9 @@ spa/
 
 | 文件 | 负责 | 关键逻辑 / 导出 |
 |------|------|-----------------|
-| `useChat.js` | 发送消息 | `sendMessage()` 先乐观 UI（清输入、用户气泡、ThinkingBubble），再 `encodeFiles` / draft 时 `promoteDraftToSession` / `runChatTurn()`；失败时 `abortOptimisticSend`。流式结束后 `applyTurnOutcome` + `normalizeFailedTurns`；`outcome === 'ok'` 且当前未聚焦该会话时 `POST /ui/attention`（托盘脉冲 / webview 任务栏闪烁）。**刻意**：SSE `type:'reasoning'`（thinking + tool markers）**不分新气泡**——一轮 user → 至多一个主 assistant。`regenerateAssistantMessage` / `resendFailedMessage`。气泡文案经 `stripTransferMarkers`。滚动委托 `useScroll` |
+| `useChat.js` | 发送消息 | `sendMessage()` 在展示 Stop 前创建并登记回合唯一 AbortController；同一 signal 贯穿 `encodeFiles` / draft `promoteDraftToSession` / `runChatTurn`，发送前停止也标记 `failedReason:'stopped'` 而非弹失败提示。合法 SSE `type:'router_status'` 经 `normalizeRouterStatusEvent` 后只挂到当前 session 的流式 assistant，回合开始/结束、停止、错误及 stale 恢复时清理。SSE `type:'error'` 经 `applyStreamIssueToAssistant` 分流：fatal 即使已有部分正文也整轮失败并移除 assistant，warning 只保存安全 code、保留可用回答。流式结束后 `applyTurnOutcome` + `normalizeFailedTurns`；`outcome === 'ok'` 且当前未聚焦该会话时 `POST /ui/attention`（托盘脉冲 / webview 任务栏闪烁）。**刻意**：SSE `type:'reasoning'`（thinking + tool markers）**不分新气泡**——一轮 user → 至多一个主 assistant。`regenerateAssistantMessage` / `resendFailedMessage`。气泡文案经 `stripTransferMarkers`。滚动委托 `useScroll` |
 | `useSSE.js` | SSE 解析 | `async function* readSSE(reader)`：TextDecoder 累积 → `\r\n`→`\n` → 逐行取 `data:` → `[DONE]` 结束 / `JSON.parse` / 非 JSON 降级为 `{type:'text'}` |
-| `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → `restoreSessionView`（无 live AbortController 时清 stale `streaming`）→ 从 `/history` 或 localStorage 加载消息时对 **user/assistant** 均 `stripTransferMarkers`（防 `[RECV:]` 路径泄露）→ 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。App.vue 与 Sidebar 共用 |
+| `useSession.js` | 会话切换 | `selectSession(id)`：保存旧会话 messages+inputs（含 files）→ 切 id → `restoreSessionView`（无 live AbortController 时清 stale `streaming`）→ 从 `/history` 或 localStorage 加载消息时对 **user/assistant** 均 `stripTransferMarkers`（防 `[RECV:]` 路径泄露）→ 同步 selectedAiId → `saveActiveState` → 滚底 + 关移动侧栏。`promoteDraftToSession({signal})` 让 defaults/session 创建/列表刷新可取消，并在创建成功后把同一 controller 从 draftId 迁移到真实 sid。App.vue 与 Sidebar 共用 |
 | `useScroll.js` | 滚动控制 | 模块级单例容器：`registerScrollContainer`（由 ChatArea 注册）；`onContainerScroll`（距底 >60px 视为手动上滚，置 `userHasScrolledUp`）；`scrollToBottomIfLocked`（未锁定则 `nextTick` 滚底） |
 | `useKeyboard.js` | 移动端视口适配 | `onMounted` 挂 `visualViewport` resize/scroll + window.resize 监听，同步 `#input-wrapper`/`#mobile-topbar`/`#messages`/`#sidebar`/`.mobile-overlay` 的键盘偏移内联样式；>768px 清空所有内联样式；textarea focus 时延迟滚底。移动端视口逻辑的唯一归属地（约束 11） |
 | `useTheme.js` | 主题切换 | `useTheme()` 函数体内部调用 `useUiStore()`（不在模块顶层）；用 VueUse `useColorMode` 管理主题（`modes: { light: 'light-mode', dark: '' }` 增删 `<html>` class，`storageKey: 'gw-theme'`）；显式配置 `disableTransition: false` / `emitAuto: false` / 自建 `storageRef`（`writeDefaults: false`）保持既有行为；`toggleTheme()` 切换 `mode`，`ui.isLightMode` 经 `watch` 同步 |
@@ -258,9 +287,9 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 
 **注意**：`#app` 在 `index.html` 中已经存在，`App.vue` 模板使用 `#root-layout` 作为内部根元素，避免 duplicate `#app`。
 
-## 状态管理 — `src/stores/`（4 个 Pinia setup-store）
+## 状态管理 — `src/stores/`（5 个 Pinia setup-store）
 
-按领域拆分为 4 个 store，均用 `defineStore(name, () => {...})` 的 setup 写法（内部用 `ref`，`return` 暴露给外部）。组件里用 `storeToRefs(store)` 取 state（保响应式），action 直接从 store 实例调用（如 `ui.showAlert(...)`）。
+按领域拆分为 5 个 store，均用 `defineStore(name, () => {...})` 的 setup 写法（内部用 `ref`，`return` 暴露给外部）。组件里用 `storeToRefs(store)` 取 state（保响应式），action 直接从 store 实例调用（如 `ui.showAlert(...)`）。
 
 ### `stores/ai.js` — `useAiStore`
 
@@ -316,6 +345,10 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 | `toggleSidebar(isMobile)` | `action` | 按 `isMobile` 切换移动端抽屉或桌面折叠状态 |
 | `closeMobileSidebar()` | `action` | 关闭移动端抽屉 |
 
+### `stores/ux.js` — `useUxStore`
+
+仅在 URL 带 `?ux_debug=1` 时采集。store 用 `performance.now()` 记录浏览器单调时钟，按 trace 聚合发送、可呈现 assistant、请求头、首 SSE、首 Router 状态、首可见输出、Stop 和清理完成时间；已完成记录最多保留 200 条且只驻留内存。导出内容只含 trace、相对时间、Router 白名单阶段、稳定 warning code 和派生结果，不含 prompt、回复正文、文件名/路径、socket、模型名、API key 或原始错误文本。
+
 ## Markdown 渲染流程 (`utils.js:renderMd`)
 
 ```
@@ -347,6 +380,45 @@ ReadableStream reader
 
 **注意**：这是一个 `async function*` generator，`useChat.js` 中通过 `for await (const chunk of readSSE(reader))` 消费。
 
+### Router 状态展示（P0）
+
+Gateway 将 Router 生命周期输出为扁平 SSE 事件：
+
+```json
+{"type":"router_status","version":1,"trace_id":"…","mode":"fallback","phase":"attempting","depth":0,"attempt":2,"total":3}
+```
+
+`routerStatus.js:normalizeRouterStatusEvent` 是 SPA v1 的唯一协议入口：仅接受 version 1、合法 UUID、匹配的 mode/phase、非负 depth，以及 aggregation 的 `completed/total` 或 fallback 的 `attempt/total`；所有未知字段都通过白名单投影剥离，candidate/model/socket/error 等信息不得进入消息对象或 DOM。无效或不完整状态返回 `null`，界面继续显示普通 `ThinkingBubble`。
+
+合法状态只作为当前流式 assistant 的瞬时 `routerStatus` 字段存在。`MessageBubble` 在流式期间用 `RouterStatusIndicator` 展示 routing（选择/生成）、aggregation（并行收集/综合/降级）和 fallback（尝试/切换/回放）；已有正文时状态卡位于正文上方。状态按 session 写入 `sessionMessages[id]`，所以切换会话不会串流；回合开始/完成、停止、错误、Abort 和 stale streaming 恢复都会清理。`saveHistory` 不序列化该字段，Router 运行状态不会进入 localStorage 或服务端 history。
+
+### fatal / warning 错误分级（P0）
+
+Gateway 的流式错误统一保持 `type:'error'`，并增加 `severity:'fatal'|'warning'` 与稳定 `code`。SPA v1 必须先经过 `streamIssue.js:normalizeStreamIssueEvent`，再由 `applyStreamIssueToAssistant` 只写入归一化状态；禁止把 `error` 原始异常文本拼进 assistant 正文：
+
+- `fatal`：聊天链路不可继续；assistant 即使已有部分正文也设置 `fatal`，`resolveTurnOutcome` 必须返回 `error`，随后移除不完整 assistant、将 user 标记为可重试失败，并直接显示失败原因。缺少 severity 的旧 Gateway 事件或未知 severity 一律 fail-closed 为 fatal。
+- `warning`：仅表示可恢复的局部交付失败；当前 `output_file_unavailable` 表示生成文件无法读取。保留已有正文/其他附件，只将白名单 warning code 写入 assistant，并由 `MessageBubble` 使用非错误色的信息条显示通用提示。未知 code 映射为 `stream_warning`，原始异常、路径和 socket 不进入 DOM/localStorage。
+
+warning code 会随 `gw-hist-<id>` 本地缓存恢复；fatal 标记只用于本轮终态判定，不持久化。warning 是非阻断状态：如果整轮没有任何正文或附件，仍按 `incomplete` 处理，不能用一条 warning 冒充有效回复。
+
+### Stop 全阶段有效（P0）
+
+Stop 按钮的可见条件是当前 session `streaming=true`，因此 `sendMessage()` 必须先创建并通过
+`setSessionAbortController` 登记 controller，再设置 streaming。该 controller 是一整个用户回合的唯一取消源，
+依次传给附件 FileReader、draft `/defaults`、draft `POST /sessions`、session 列表刷新和聊天 SSE；禁止在
+`runChatTurn()` 内无条件替换成新 controller。draft 晋升时 controller 随消息缓存从 draftId 迁移到真实 sid，
+所以切换发生前后 Stop 都命中同一个 signal。
+
+预流阶段收到 AbortError 时移除空 assistant、保留 user、写入 `failedReason:'stopped'` 并允许重试；不得显示
+“发送失败” snackbar。网络或编码的非取消异常仍走 `failedReason:'error'`。所有成功、停止和错误出口只清理
+与本回合 identity 相同的 controller，避免旧回合的 finally 清掉新回合控制器。
+
+### 用户侧 UX 指标（调试功能）
+
+访问 `/spa/?ux_debug=1` 才会启用 `useUxStore` 并显示 `UxMetricsPanel`；普通 `/spa/` 不采集、不渲染面板。指标是浏览器实际观察到的客户端时间：发送点击到 assistant 状态提交、响应头、首 SSE、首 Router 状态、首段正文经 `nextTick()` 可呈现、流结束，以及 Stop 点击到回合清理。Router 状态进一步派生 routing 选择耗时、aggregation 收集/综合等待、fallback 尝试/切换/恢复和回放到可见输出时间。
+
+面板汇总完成样本的 p50/p90/p95 与成功率、fatal/warning 率、trace 完整率、状态顺序/清理率、fallback 启用/恢复率、aggregation 降级率。数据仅存在当前标签页内存，最多 200 个完成回合；刷新即清空。导出 JSON 使用相对时间和协议白名单字段，禁止加入用户输入、AI 正文、文件名/路径、模型/候选名、socket、密钥或原始异常文本。这里的 UX TTFT 是“Vue 已完成首段可见状态更新”的客户端指标，不冒充浏览器绘制完成或服务端 token 时间。
+
 ## 文件预览 (`FilePreview.vue`)
 
 MessageBubble 中点击附件 → 触发 `FilePreview` 组件（Teleport 到 `body` 的抽屉式面板）。组件按文件扩展名动态 import 对应预览库（懒加载，不进主 bundle）：
@@ -373,7 +445,7 @@ props 含预览目标（文件名 + 数据），emit `close` 关闭抽屉。
 | Key | 内容 | 来源 |
 |-----|------|------|
 | `gw-active-ids` | `{aiId, sessId}` | 选中的 AI/Session ID |
-| `gw-hist-<id>` | `[{role, text, files}]` | 对话历史（文件 blob 合并服务端文本） |
+| `gw-hist-<id>` | `[{role, text, files, warnings}]` | 对话历史（文件 blob 合并服务端文本；warnings 仅保存白名单 code） |
 | `gw-sidebar-state` | `'expanded'/'collapsed'` | 侧栏折叠状态（由 `App.vue` 经 VueUse `useStorage` 读写） |
 | `gw-theme` | `'light'/'dark'` | 主题偏好 |
 | `gw-pinned-session-ids` | `string[]` | 置顶会话 id 列表（由 `sessionList.js` 的 `loadPinnedSessionIds`/`savePinnedSessionIds` 读写） |
@@ -400,15 +472,17 @@ Session 标题由服务端 `/titles` 维护，**不在** localStorage 存储。
 ### 发送消息 (`sendMessage` — `composables/useChat.js`)
 ```
 1. 提取 inputText + selectedFiles（数组，含拖放文件）
-2. 乐观 UI：清空输入/附件 → 用户气泡 (addMessage + htmlEscape) → streaming=true → 空 assistant（ThinkingBubble）
-3. encodeFiles → FileReader.readAsDataURL → base64 写入用户气泡
-4. draft 会话 → promoteDraftToSession（POST /sessions，~数秒）→ 消息列表迁移到新 sid
+2. 乐观 UI：清空输入/附件 → 用户气泡 (addMessage + htmlEscape) → 创建/登记 AbortController → streaming=true → 空 assistant（ThinkingBubble）
+3. encodeFiles(signal) → 可取消 FileReader.readAsDataURL → base64 写入用户气泡
+4. draft 会话 → promoteDraftToSession({signal})（GET /defaults + POST /sessions）→ 消息列表与 controller 迁移到新 sid
 5. ensureSessionSidebarTitle（fire-and-forget）→ runChatTurn → streamChat() POST /sessions/{id}/chat
 6. for await (readSSE(reader)):
    - text chunk → asst.text += chunk.text → renderMd → 更新 v-html
    - blob chunk → asst.files.push({name, data})
+   - router_status chunk → 白名单校验 → asst.routerStatus → 更新瞬时状态卡（不进入正文/附件/reasoning）
+   - error/fatal → asst.fatal=true → 整轮 error；error/warning → 保存白名单 warning code、保留可用回答
    - scrollChatAreaIfLocked → 自动滚底（unless userHasScrolledUp）
-7. streaming=false → saveHistory → 仍为占位标题 → generateTitle → POST `/titles/generate`
+7. 清理 routerStatus → streaming=false → saveHistory → 仍为占位标题 → generateTitle → POST `/titles/generate`
 8. promote/encode/SSE 失败 → abortOptimisticSend（清 streaming、标 user failed、移除空 assistant）
 ```
 

@@ -10,11 +10,20 @@ import anyio
 from aiohttp import ClientTimeout
 from loguru import logger
 
+from psi_agent._router_status import RouterStatus
 from psi_agent._sockets import resolve_connector_and_endpoint
+from psi_agent._trace import TRACE_ID_HEADER, ensure_trace_id, normalize_trace_id
 from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._markers import SendMarkerScanner, encode_input
 from psi_agent.channel._stream import StreamBuffer, iter_sse_events
-from psi_agent.channel._types import FileChunk, InputChunk, OutputChunk, ReasoningChunk, TextChunk
+from psi_agent.channel._types import (
+    FileChunk,
+    InputChunk,
+    OutputChunk,
+    ReasoningChunk,
+    RouterStatusChunk,
+    TextChunk,
+)
 
 _CHAT_PATH = "/chat/completions"
 _EVENTS_PATH = "/events"
@@ -74,7 +83,13 @@ class ChannelCore:
             )
             return data
 
-    async def post(self, chunks: list[InputChunk]) -> AsyncGenerator[OutputChunk]:
+    async def post(
+        self,
+        chunks: list[InputChunk],
+        *,
+        trace_id: str | None = None,
+    ) -> AsyncGenerator[OutputChunk]:
+        trace_id = ensure_trace_id(trace_id)
         logger.debug(
             f"{len(chunks)} chunk(s) — "
             f"FileChunks={sum(1 for c in chunks if isinstance(c, FileChunk))} "
@@ -82,14 +97,30 @@ class ChannelCore:
         )
 
         content = encode_input(chunks)
-        body = {"messages": [{"role": "user", "content": content}], "stream": True}
+        body = {
+            "messages": [{"role": "user", "content": content}],
+            "stream": True,
+            "routing": {"trace_id": trace_id},
+        }
 
         buffer = StreamBuffer(self.interval)
         scanner = SendMarkerScanner()
 
-        logger.debug(f"POST {self._endpoint} content_len={len(content)}")
-        async with self._session.post(self._endpoint, json=body) as resp:
-            logger.info(f"HTTP {resp.status}")
+        logger.debug(f"POST {self._endpoint} trace_id={trace_id} content_len={len(content)}")
+        async with self._session.post(
+            self._endpoint,
+            json=body,
+            headers={TRACE_ID_HEADER: trace_id},
+        ) as resp:
+            response_trace_id = resp.headers.get(TRACE_ID_HEADER)
+            if response_trace_id is not None:
+                try:
+                    normalized_response_trace_id = normalize_trace_id(response_trace_id)
+                except ValueError as error:
+                    raise ChannelError("Session returned an invalid trace ID header") from error
+                if normalized_response_trace_id != trace_id:
+                    raise ChannelError("Session returned a mismatched trace ID header")
+            logger.info(f"HTTP {resp.status} trace_id={trace_id}")
 
             if resp.status != 200:
                 msg = await resp.text()
@@ -102,8 +133,20 @@ class ChannelCore:
                 raise ChannelError(msg)
 
             async with aclosing(iter_sse_events(resp.content)) as events:
-                logger.debug("Starting to consume SSE stream")
+                logger.debug(f"Starting to consume SSE stream trace_id={trace_id}")
                 async for delta in events:
+                    router_status = delta.get("router_status")
+                    if router_status is not None:
+                        if not isinstance(router_status, RouterStatus):
+                            raise ChannelError("Invalid router_status: expected validated RouterStatus")
+                        if router_status.trace_id != trace_id:
+                            raise ChannelError("Router status trace ID does not match the Channel request")
+                        for k, t in buffer.flush():
+                            yield self._to_chunk(k, t)
+                        logger.debug(f"delta.router_status trace_id={trace_id}: {router_status.to_dict()!r}")
+                        yield RouterStatusChunk(status=router_status)
+                        continue
+
                     reasoning_text = delta.get("reasoning") or ""
                     content_text = delta.get("content") or ""
                     raw_kind = delta.get("kind")
@@ -122,15 +165,18 @@ class ChannelCore:
                             yield self._to_chunk(k, t)
 
                         if incoming_kind == "text":
-                            logger.debug(f"delta.content ({len(text)} chars): {text[:1000]!r}")
+                            logger.debug(f"delta.content trace_id={trace_id} ({len(text)} chars): {text[:1000]!r}")
                             for file_chunk in scanner.feed(text):
                                 yield file_chunk
                         else:
-                            logger.debug(f"delta.reasoning kind={raw_kind!r} ({len(text)} chars): {text[:1000]!r}")
+                            logger.debug(
+                                f"delta.reasoning trace_id={trace_id} kind={raw_kind!r} "
+                                f"({len(text)} chars): {text[:1000]!r}"
+                            )
 
                         for k, t in buffer.append(text):
                             yield self._to_chunk(k, t)
 
-        logger.debug("SSE stream consumed successfully")
+        logger.debug(f"SSE stream consumed successfully trace_id={trace_id}")
         for k, t in buffer.flush():
             yield self._to_chunk(k, t)

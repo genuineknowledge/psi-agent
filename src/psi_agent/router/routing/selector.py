@@ -12,7 +12,7 @@ from psi_agent.protocol import FINISH_REASON_STOP
 
 from ..errors import InvalidRouterRequestError
 from ..models import CompletionResult
-from ..request import copy_public_request_body
+from ..request import copy_public_request_body, routing_trace_id_from_body
 from .errors import RouteSelectionError
 from .models import RoutingConfig, SelectionResult
 from .prompts import build_selector_messages
@@ -39,10 +39,14 @@ class RouteSelector:
     async def select(self, *, request_body: dict[str, Any]) -> SelectionResult:
         """Return exactly one configured target for a Chat Completions request."""
 
+        options: dict[str, Any] = {"timeout": self.config.selector_timeout}
+        trace_id = routing_trace_id_from_body(body=request_body)
+        if trace_id is not None:
+            options["trace_id"] = trace_id
         result = await self.client.complete(
             socket=self.config.selector_socket,
             body=self.build_request(request_body=request_body),
-            timeout=self.config.selector_timeout,
+            **options,
         )
         if result.finish_reason != FINISH_REASON_STOP:
             raise RouteSelectionError(f"Selector returned unsupported finish reason {result.finish_reason!r}")

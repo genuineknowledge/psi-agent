@@ -9,6 +9,7 @@ import anyio
 import pytest
 from aiohttp import ClientSession, ClientTimeout, UnixConnector, web
 
+from psi_agent._router_status import RouterStatus
 from psi_agent.session.agent import SessionAgent
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
@@ -25,6 +26,46 @@ class _MockResponse(web.StreamResponse):
 
     async def write(self, data: bytes | bytearray | memoryview) -> None:
         self.written.append(bytes(data))
+
+
+class _JsonRequest:
+    def __init__(self, body: object, headers: dict[str, str] | None = None) -> None:
+        self._body = body
+        self.headers = headers or {}
+
+    async def json(self) -> object:
+        return self._body
+
+
+@pytest.mark.anyio
+async def test_parse_request_reconciles_trace_header_and_routing() -> None:
+    trace_id = "123e4567-e89b-12d3-a456-426614174000"
+    request = _JsonRequest(
+        {
+            "messages": [{"role": "user", "content": "hi"}],
+            "routing": {"trace_id": trace_id, "session_id": "untrusted"},
+        },
+        {"X-Psi-Trace-Id": trace_id},
+    )
+
+    user_message, extra_params = await ChannelAdapter.parse_request(cast(web.Request, request))
+
+    assert user_message == {"role": "user", "content": "hi"}
+    assert extra_params["routing"] == {"trace_id": trace_id}
+
+
+@pytest.mark.anyio
+async def test_parse_request_rejects_conflicting_trace_sources() -> None:
+    request = _JsonRequest(
+        {
+            "messages": [{"role": "user", "content": "hi"}],
+            "routing": {"trace_id": "123e4567-e89b-12d3-a456-426614174000"},
+        },
+        {"X-Psi-Trace-Id": "123e4567-e89b-12d3-a456-426614174001"},
+    )
+
+    with pytest.raises(ChannelAdapter.ParseError, match="must match"):
+        await ChannelAdapter.parse_request(cast(web.Request, request))
 
 
 @pytest.mark.anyio
@@ -45,6 +86,44 @@ async def test_write_streams_agent_chunks():
     assert "think" in text
     assert "world" in text
     assert text.endswith("data: [DONE]\n\n")
+
+
+@pytest.mark.anyio
+async def test_write_serializes_router_status_as_an_independent_delta() -> None:
+    status = RouterStatus(
+        trace_id="12345678-1234-5678-1234-567812345678",
+        mode="fallback",
+        phase="attempting",
+        attempt=2,
+        total=3,
+    )
+
+    async def chunks() -> AsyncGenerator[AgentChunk]:
+        yield AgentChunk(router_status=status)
+        yield AgentChunk(content="answer")
+
+    response = _MockResponse()
+    await ChannelAdapter.write(response, chunks())
+
+    events = [
+        json.loads(line[6:])
+        for line in b"".join(response.written).decode().splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    assert events[0]["choices"][0]["delta"] == {"router_status": status.to_dict()}
+    assert events[0]["choices"][0].get("finish_reason") is None
+    assert events[1]["choices"][0]["delta"] == {"content": "answer"}
+
+
+def test_router_status_cannot_share_an_agent_chunk_with_visible_output() -> None:
+    status = RouterStatus(
+        trace_id="12345678-1234-5678-1234-567812345678",
+        mode="routing",
+        phase="selecting",
+    )
+
+    with pytest.raises(ValueError, match="independent AgentChunk"):
+        ChannelAdapter._to_sse(AgentChunk(content="must not mix", router_status=status))
 
 
 @pytest.mark.anyio

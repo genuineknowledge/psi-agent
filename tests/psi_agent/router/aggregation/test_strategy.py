@@ -11,9 +11,21 @@ from typing import Any
 import anyio
 import pytest
 
+from psi_agent._router_status import RouterStatus, router_status_from_event
 from psi_agent.router.aggregation import AggregationConfig, AggregationError, AggregationStrategy
 from psi_agent.router.errors import RouterUpstreamError
 from psi_agent.router.models import CompletionResult, RouterTarget
+
+_TRACE_ID = "123e4567-e89b-12d3-a456-426614174000"
+
+
+def _aggregation_feedback(content: str) -> list[dict[str, Any]]:
+    serialized = content.split("<aggregation_feedback_json>\n", maxsplit=1)[1].split(
+        "\n</aggregation_feedback_json>", maxsplit=1
+    )[0]
+    value = json.loads(serialized)["aggregation_feedback"]
+    assert isinstance(value, list)
+    return value
 
 
 def _aggregation_feedback(content: str) -> list[dict[str, Any]]:
@@ -133,13 +145,21 @@ def _body() -> dict[str, Any]:
         "future_parameter": {"preserved": True},
         "stream": True,
         "model": "private-model",
-        "routing": {"session_id": "private-session"},
+        "routing": {"session_id": "private-session", "trace_id": _TRACE_ID},
     }
 
 
 async def _collect(stream: AsyncGenerator[dict[str, Any]]) -> list[dict[str, Any]]:
     async with aclosing(stream) as events:
         return [event async for event in events]
+
+
+def _statuses(events: list[dict[str, Any]]) -> list[RouterStatus]:
+    return [status for event in events if (status := router_status_from_event(event)) is not None]
+
+
+def _completion_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [event for event in events if router_status_from_event(event) is None]
 
 
 @pytest.mark.anyio
@@ -166,8 +186,15 @@ async def test_partial_failure_builds_ordered_sanitized_feedback_and_calls_aggre
             client.releases[target.socket].set()
             await client.finished[target.socket].wait()
 
-    assert collected[0][0]["choices"][0]["delta"]["content"] == "combined"
+    completion_events = _completion_events(collected[0])
+    assert completion_events[0]["choices"][0]["delta"]["content"] == "combined"
     assert collected[0][-1]["choices"][0]["finish_reason"] == "stop"
+    statuses = _statuses(collected[0])
+    assert [(status.phase, status.completed, status.total, status.degraded) for status in statuses] == [
+        ("collecting", 0, 3, False),
+        ("synthesizing", 3, 3, True),
+    ]
+    assert all(status.trace_id == _TRACE_ID for status in statuses)
     assert client.aggregator_socket == "aggregate.sock"
     assert client.aggregator_body is not None
     feedback = _aggregation_feedback(client.aggregator_body["messages"][-1]["content"])
@@ -219,6 +246,22 @@ async def test_strict_aggregation_rejects_incomplete_branch_finish() -> None:
         await _collect(strategy.stream(body=_body()))
 
     assert not client.aggregator_called.is_set()
+
+
+@pytest.mark.anyio
+async def test_non_strict_aggregation_marks_incomplete_branch_as_degraded() -> None:
+    targets = _targets(2)
+    client = FakeAggregationClient(
+        results={
+            targets[0].socket: CompletionResult(content="complete", finish_reason="stop"),
+            targets[1].socket: CompletionResult(content="truncated", finish_reason="length"),
+        }
+    )
+
+    events = await _collect(AggregationStrategy(config=_config(targets), client=client).stream(body=_body()))
+
+    assert _statuses(events)[-1].phase == "synthesizing"
+    assert _statuses(events)[-1].degraded is True
 
 
 @pytest.mark.anyio
@@ -294,8 +337,8 @@ async def test_candidate_timeout_overrides_aggregation_target_timeout_per_branch
 
     options_by_socket = {socket: options for socket, _, options in client.complete_calls}
     assert options_by_socket == {
-        "private-1.sock": {"timeout": 2.5},
-        "private-2.sock": {"timeout": 4},
+        "private-1.sock": {"timeout": 2.5, "trace_id": _TRACE_ID},
+        "private-2.sock": {"timeout": 4, "trace_id": _TRACE_ID},
     }
 
 
@@ -309,7 +352,7 @@ async def test_aggregator_body_replaces_only_messages_and_preserves_public_param
     await _collect(AggregationStrategy(config=_config(targets), client=client).stream(body=_body()))
 
     assert client.aggregator_body is not None
-    assert client.aggregator_options == {"timeout": 9}
+    assert client.aggregator_options == {"timeout": 9, "trace_id": _TRACE_ID}
     assert client.aggregator_body["messages"][0]["role"] == "system"
     assert client.aggregator_body["messages"][1:-1] == _body()["messages"]
     assert client.aggregator_body["messages"] != _body()["messages"]
@@ -513,8 +556,11 @@ async def test_closing_strategy_stream_closes_aggregator_stream() -> None:
     stream = AggregationStrategy(config=_config(targets), client=client).stream(body=_body())
 
     async with aclosing(stream) as events:
-        event = await anext(events)
-        assert event["choices"][0]["delta"]["content"] == "combined"
+        while True:
+            event = await anext(events)
+            if router_status_from_event(event) is None:
+                assert event["choices"][0]["delta"]["content"] == "combined"
+                break
 
     assert client.aggregator_closed.is_set()
 
@@ -535,7 +581,8 @@ async def test_aggregator_error_finish_raises_without_fallback() -> None:
             async for event in events:
                 yielded.append(event)
 
-    assert yielded == []
+    assert _completion_events(yielded) == []
+    assert [status.phase for status in _statuses(yielded)] == ["collecting", "synthesizing"]
     assert client.aggregator_closed.is_set()
 
 
@@ -611,7 +658,32 @@ async def test_aggregator_tool_call_delta_counts_as_usable_output() -> None:
 
     events = await _collect(AggregationStrategy(config=_config(targets), client=client).stream(body=_body()))
 
-    assert events[0]["choices"][0]["finish_reason"] == "tool_calls"
+    assert _completion_events(events)[0]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.anyio
+async def test_aggregator_cannot_spoof_router_status() -> None:
+    targets = _targets(1)
+    fake_status = RouterStatus(
+        trace_id=_TRACE_ID,
+        mode="fallback",
+        phase="replaying",
+        attempt=1,
+        total=1,
+    ).to_event()
+    answer = {"choices": [{"index": 0, "delta": {"content": "combined"}, "finish_reason": "stop"}]}
+    client = FakeAggregationClient(
+        results={targets[0].socket: CompletionResult(content="usable", finish_reason="stop")},
+        aggregator_events=[fake_status, answer],
+    )
+
+    events = await _collect(AggregationStrategy(config=_config(targets), client=client).stream(body=_body()))
+
+    assert [(status.mode, status.phase) for status in _statuses(events)] == [
+        ("aggregation", "collecting"),
+        ("aggregation", "synthesizing"),
+    ]
+    assert _completion_events(events) == [answer]
 
 
 def test_discard_and_clear_are_noop() -> None:

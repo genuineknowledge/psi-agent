@@ -105,7 +105,7 @@ src/
     ├── channel/
     │   ├── AGENTS.md                # Channel 层设计文档
     │   ├── __init__.py              # package marker
-    │   ├── _types.py               # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
+    │   ├── _types.py               # FileChunk, TextChunk, ReasoningChunk, RouterStatusChunk, InputChunk, OutputChunk
     │   ├── _errors.py              # ChannelError 异常基类
     │   ├── _markers.py             # [RECV:] 标记 + encode_input + 有状态扫描器 SendMarkerScanner（[SEND:] 解码重导出自 `_send_markers`）
     │   ├── _stream.py              # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
@@ -160,6 +160,10 @@ SSE 流中的特殊字段：
 - `delta.content` — AI 最终文本回复
 - `delta.tool_calls` — 部分 tool call 定义（流式累积；Agent 侧协议，与 UI 的 tool 进度 `kind` 不同）
 - `delta.kind` — 仅当本帧带 `reasoning` 时有效的 provenance（见上）
+- `delta.router_status` — Router 生命周期快照；必须独占一个非终止 delta，按
+  `Router → Session → Channel → Gateway` 原序透传，不进入会话历史或文本缓冲。共享
+  schema 为 `psi_agent._router_status.RouterStatus`，Gateway Web SSE 映射为
+  `{"type":"router_status", ...status_fields}`
 
 错误响应有两种形式：
 

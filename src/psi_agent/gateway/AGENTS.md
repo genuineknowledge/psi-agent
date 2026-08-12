@@ -4,6 +4,13 @@
 
 Gateway 是 psi-agent 的生命周期管理组件。它通过 OpenAPI REST 接口管理 AI 和 Session 的创建/删除/查询，并暴露面向 Web UI 的 Channel 端点。
 
+## 请求 trace_id
+
+聊天请求使用内部 HTTP 头 `X-Psi-Trace-Id` 关联 SPA、Gateway、Channel、Session、Router 与 AI。
+Gateway 接受合法 UUID；缺失时创建一个，并在 SSE 响应头及每个面向 SPA 的数据事件中回显同一规范化值。
+`ChatManager` 必须把它显式传给 `ChannelCore.post()`，Router 状态若携带不同 trace 必须终止当前流。
+该 ID 可进入日志和瞬时 UI 状态，但不写入 conversation/history，也不是认证凭证。
+
 Gateway 自身是一个独立的 aiohttp 进程，AI/Session 作为进程内 anyio task 运行。
 
 ## 架构
@@ -465,8 +472,10 @@ AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
 **Response (SSE)**：
 ```
 data: {"type": "reasoning", "text": "[Tool Call: read({…})]", "kind": "tool_call"}
+data: {"type": "router_status", "version": 1, "trace_id": "...", "mode": "fallback", "phase": "attempting", "depth": 0, "attempt": 2, "total": 3}
 data: {"type": "text", "text": "Hello! "}
 data: {"type": "blob", "name": "generated.png", "data": "base64...", "path": "C:/Users/.../Downloads/.psi/.../generated.png"}
+data: {"type": "error", "severity": "warning", "code": "output_file_unavailable", "error": "Generated file could not be read"}
 data: [DONE]
 ```
 
@@ -474,14 +483,16 @@ data: [DONE]
 |--------|------|------|
 | `text` | `text` | 助手正文（`TextChunk`） |
 | `reasoning` | `text` + 可选 `kind` | 过程流（thinking / tool 进度仍走同一槽）；`kind` 为 `thinking` \| `tool_call` \| `tool_result`（Session yield 打标）。**≠** JSONL 消息 provenance 的 `kind`（`chat` / `schedule.*`） |
+| `router_status` | `version`、`trace_id`、`mode`、`phase`、`depth` + 模式相关计数 | 已验证且面向 UI 安全的 Router 生命周期快照；瞬时事件，不写入 history |
 | `blob` | `name` + `data` + 可选 `path` | 交付物 base64（`FileChunk`）；`path` 为磁盘绝对路径，供 spa-v2「在文件夹中显示」 |
+| `error` | `severity` + `code` + `error` | `fatal/chat_failed` 表示聊天链路终止；`warning/output_file_unavailable` 表示仅单个交付文件读取失败。缺失 severity 的旧事件由客户端按 fatal 处理 |
 
 **内部实现**：
 - 查 `SessionManager.get_socket(session_id)` 获取 channel socket
 - 复用 `channel._core.ChannelCore` 构造连接
 - 输入：`TextChunk(text)`、blob（base64 解码后由 `_save_upload()` 落至 `~/Downloads/.psi/<date>/`，持久保留，转为 `FileChunk`）；multipart 文件上传通过 blob 通道走相同路径
 - **落盘到用户真实家目录是刻意的**（交付物要持久保留、用户能在文件管理器里找到），**因此凡碰 `_save_upload` / blob 入站的测试都必须先重定向家目录**，否则会往开发者真实的 `~/Downloads/.psi/` 里堆测试垃圾。`_downloads_path` 走 `Path.home()`，而它在 Windows 上读 `USERPROFILE`、在 POSIX 上才读 `HOME`——`monkeypatch.setenv("HOME", ...)` 在 Windows 上**完全不生效**。正确做法是 patch 函数本身：`monkeypatch.setattr(Path, "home", lambda: tmp_path)`，见 `tests/psi_agent/gateway/test_chat_manager.py` 的 `fake_home` fixture 与 `tests/integration/test_gateway.py::test_gateway_blob_send`
-- 输出：`TextChunk` → `{"type":"text"}`；`ReasoningChunk` → `{"type":"reasoning","text":…}`（有 `chunk.kind` 则附带）；`FileChunk` → 读盘 base64 → `{"type":"blob","name","data","path"}`
+- 输出：`TextChunk` → `{"type":"text"}`；`ReasoningChunk` → `{"type":"reasoning","text":…}`（有 `chunk.kind` 则附带）；`RouterStatusChunk` → `{"type":"router_status", ...status.to_dict()}`；`FileChunk` → 读盘 base64 → `{"type":"blob","name","data","path"}`。FileChunk 读盘失败由 `ChatManager` 发送 `warning/output_file_unavailable`；其余逃逸到 HTTP SSE 边界的异常由 `_handle_chat` 发送 `fatal/chat_failed`，两者不得混用
 
 ## Web Console (SPA)
 

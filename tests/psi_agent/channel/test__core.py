@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 
@@ -8,9 +9,10 @@ import anyio.lowlevel
 import pytest
 from aiohttp import web
 
+from psi_agent._router_status import RouterStatus
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._errors import ChannelError
-from psi_agent.channel._types import FileChunk, ReasoningChunk, TextChunk
+from psi_agent.channel._types import FileChunk, ReasoningChunk, RouterStatusChunk, TextChunk
 
 
 @pytest.mark.anyio
@@ -621,6 +623,7 @@ class _RecordingResp:
 
     def __init__(self, lines: list[bytes]) -> None:
         self.status = 200
+        self.headers: dict[str, str] = {}
         self.released = False
         self.content: AsyncIterator[bytes] = self._make_content(lines)
 
@@ -644,12 +647,75 @@ class _RecordingPostSession:
 
     def __init__(self, resp: _RecordingResp) -> None:
         self._resp = resp
+        self.json: dict[str, object] | None = None
+        self.headers: dict[str, str] | None = None
 
-    def post(self, endpoint: str, json: dict[str, object]) -> _RecordingResp:
+    def post(
+        self,
+        endpoint: str,
+        json: dict[str, object],
+        headers: dict[str, str],
+    ) -> _RecordingResp:
+        self.json = json
+        self.headers = headers
         return self._resp
 
     async def close(self) -> None:
         pass
+
+
+@pytest.mark.anyio
+async def test_post_flushes_text_around_router_status(monkeypatch):
+    status = RouterStatus(
+        trace_id="12345678-1234-5678-1234-567812345678",
+        mode="aggregation",
+        phase="collecting",
+        completed=1,
+        total=2,
+    )
+    status_line = f"data: {json.dumps(status.to_event())}\n\n".encode()
+    resp = _RecordingResp(
+        [
+            b'data: {"choices":[{"index":0,"delta":{"content":"before"}}]}\n\n',
+            status_line,
+            b'data: {"choices":[{"index":0,"delta":{"content":"after"}}]}\n\n',
+            b"data: [DONE]\n\n",
+        ]
+    )
+    core = ChannelCore(session_socket="/tmp/x.sock", interval=10.0)
+    monkeypatch.setattr(core, "_session", _RecordingPostSession(resp), raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://localhost/chat/completions", raising=False)
+
+    chunks = [
+        chunk
+        async for chunk in core.post(
+            [TextChunk("hi")],
+            trace_id=status.trace_id,
+        )
+    ]
+
+    assert chunks == [
+        TextChunk("before"),
+        RouterStatusChunk(status=status),
+        TextChunk("after"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_post_propagates_trace_in_header_and_private_routing(monkeypatch):
+    trace_id = "123e4567-e89b-12d3-a456-426614174000"
+    resp = _RecordingResp([b'data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n'])
+    session = _RecordingPostSession(resp)
+    core = ChannelCore(session_socket="/tmp/x.sock", interval=0.0)
+    monkeypatch.setattr(core, "_session", session, raising=False)
+    monkeypatch.setattr(core, "_endpoint", "http://localhost/chat/completions", raising=False)
+
+    chunks = [chunk async for chunk in core.post([TextChunk("hi")], trace_id=trace_id)]
+
+    assert chunks == [TextChunk("ok")]
+    assert session.headers == {"X-Psi-Trace-Id": trace_id}
+    assert session.json is not None
+    assert session.json["routing"] == {"trace_id": trace_id}
 
 
 @pytest.mark.anyio

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildRouterPayload, routerAiRole, routerSummary, validateRouterForm } from './routerConfig.js'
+import {
+  buildRouterPayload,
+  routerAiRole,
+  routerCompactSummary,
+  routerSummary,
+  validateRouterForm,
+} from './routerConfig.js'
 
 const ais = [{ id: 'route' }, { id: 'simple' }, { id: 'complex' }]
 const routers = [{ id: 'nested', name: 'Nested Router' }, { id: 'route', name: 'Same-name Router' }]
@@ -142,21 +148,41 @@ describe('router configuration', () => {
     expect(routerAiRole('fallback')).toBe('')
   })
 
-  it('summarizes mode, typed upstreams, controller, and timeouts', () => {
+  it('summarizes aggregation as parallel candidates followed by the Aggregator', () => {
     const aggregation = buildRouterPayload(form())
     expect(routerSummary(aggregation, ais, routers)).toBe(
-      'Aggregation · Aggregator route · AI simple → AI complex · Aggregator 30s · 候选 8s',
+      '并行聚合 · AI simple ∥ AI complex → Aggregator route · Aggregator 30s · 候选 8s',
     )
+    expect(routerCompactSummary(aggregation)).toBe('并行聚合 · 2 个并行候选')
+  })
+
+  it('summarizes routing as one selection rather than a serial chain', () => {
+    const routing = form()
+    routing.mode = 'routing'
+    routing.upstreams = [
+      { backend_type: 'ai', backend_id: 'simple', description: 'primary' },
+      { backend_type: 'router', backend_id: 'nested', description: 'secondary' },
+    ]
+
+    expect(routerSummary(buildRouterPayload(routing), ais, routers)).toBe(
+      '智能分流 · Selector route 从 AI simple、Router Nested Router 中选择 1 个 · Selector 30s · 候选 8s',
+    )
+    expect(routerCompactSummary(buildRouterPayload(routing))).toBe('智能分流 · 2 个候选')
+  })
+
+  it('summarizes fallback as an ordered chain', () => {
 
     const fallback = form()
     fallback.mode = 'fallback'
     fallback.router_ai_id = ''
     fallback.target_timeout = ''
     fallback.upstreams = [
+      { backend_type: 'ai', backend_id: 'simple', description: 'primary' },
       { backend_type: 'router', backend_id: 'nested', description: 'secondary' },
     ]
     expect(routerSummary(buildRouterPayload(fallback), ais, routers)).toBe(
-      'Fallback · Router Nested Router · 候选不限时',
+      '顺序回退 · AI simple → Router Nested Router · 候选不限时',
     )
+    expect(routerCompactSummary(buildRouterPayload(fallback))).toBe('顺序回退 · 2 级顺序')
   })
 })

@@ -2,7 +2,15 @@ from __future__ import annotations
 
 from typing import get_args
 
-from psi_agent.channel._types import FileChunk, InputChunk, OutputChunk, ReasoningChunk, TextChunk
+from psi_agent._router_status import RouterStatus
+from psi_agent.channel._types import (
+    FileChunk,
+    InputChunk,
+    OutputChunk,
+    ReasoningChunk,
+    RouterStatusChunk,
+    TextChunk,
+)
 
 
 def test_file_chunk_construction():
@@ -45,11 +53,24 @@ def test_reasoning_chunk_union_isinstance():
     assert not isinstance(fc, ReasoningChunk)
 
 
+def test_router_status_chunk_construction():
+    status = RouterStatus(
+        trace_id="12345678-1234-5678-1234-567812345678",
+        mode="routing",
+        phase="selecting",
+    )
+
+    chunk = RouterStatusChunk(status=status)
+
+    assert chunk.status is status
+
+
 def test_input_chunk_excludes_reasoning():
     args = get_args(InputChunk)
     assert FileChunk in args
     assert TextChunk in args
     assert ReasoningChunk not in args
+    assert RouterStatusChunk not in args
 
 
 def test_output_chunk_includes_reasoning():
@@ -57,3 +78,4 @@ def test_output_chunk_includes_reasoning():
     assert FileChunk in args
     assert TextChunk in args
     assert ReasoningChunk in args
+    assert RouterStatusChunk in args

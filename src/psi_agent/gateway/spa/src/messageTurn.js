@@ -1,6 +1,6 @@
 /** @typedef {'ok' | 'error' | 'stopped' | 'incomplete'} TurnOutcome */
 
-/** Remove trailing/inline `[Error: …]` annotations appended by soft stream failures. */
+/** Remove legacy `[Error: …]` annotations written by older SPA versions. */
 export function stripErrorAnnotations(text) {
   if (!text) return ''
   return String(text)
@@ -11,12 +11,12 @@ export function stripErrorAnnotations(text) {
 
 /**
  * Whether an assistant message counts as a complete reply to the preceding user turn.
- * Blob read failures may append `[Error:]` without canceling useful text/files.
+ * Legacy blob failures may coexist with useful text/files; new streams use warning codes.
  * @param {object | null | undefined} msg
  */
 export function isCompleteAssistant(msg) {
   if (!msg || msg.role !== 'assistant') return false
-  if (msg.stopped) return false
+  if (msg.stopped || msg.fatal) return false
   const text = typeof msg.text === 'string' ? msg.text : ''
   const hasFiles = Array.isArray(msg.files) && msg.files.length > 0
   const clean = stripErrorAnnotations(text)
@@ -32,6 +32,7 @@ export function isCompleteAssistant(msg) {
 export function inferFailedReason(assistantMsg) {
   if (!assistantMsg || assistantMsg.role !== 'assistant') return 'incomplete'
   if (assistantMsg.stopped) return 'stopped'
+  if (assistantMsg.fatal) return 'error'
   const text = typeof assistantMsg.text === 'string' ? assistantMsg.text : ''
   const hasFiles = Array.isArray(assistantMsg.files) && assistantMsg.files.length > 0
   const clean = stripErrorAnnotations(text)
@@ -44,6 +45,8 @@ export const FAILED_REASON_LABEL = {
   stopped: '未收到完整回复（已停止）',
   incomplete: '未收到回复',
 }
+
+const FAILED_REASONS = new Set(Object.keys(FAILED_REASON_LABEL))
 
 /**
  * Mark orphaned user turns failed and drop incomplete assistant stubs.
@@ -76,10 +79,14 @@ export function normalizeFailedTurns(msgs) {
       continue
     }
 
+    const inferredReason = inferFailedReason(next?.role === 'assistant' ? next : null)
+    const failedReason = m.failed && FAILED_REASONS.has(m.failedReason)
+      ? m.failedReason
+      : inferredReason
     out.push({
       ...m,
       failed: true,
-      failedReason: inferFailedReason(next?.role === 'assistant' ? next : null),
+      failedReason,
     })
     if (next?.role === 'assistant') i++
   }
@@ -124,6 +131,7 @@ export function resolveTurnOutcome(msgs, userMsg, assistantMsg) {
 
   if (!asst) return 'incomplete'
   if (asst.stopped) return 'stopped'
+  if (asst.fatal) return 'error'
   const text = typeof asst.text === 'string' ? asst.text : ''
   const hasFiles = Array.isArray(asst.files) && asst.files.length > 0
   const clean = stripErrorAnnotations(text)

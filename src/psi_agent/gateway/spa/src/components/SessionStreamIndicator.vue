@@ -2,7 +2,7 @@
   <span
     v-if="streaming || marked"
     class="session-stream-indicator"
-    :aria-label="streaming ? '正在回复' : '回复已完成'"
+    :aria-label="streaming ? '请求进行中' : '回复已完成'"
     role="status"
   >
     <span v-if="streaming" class="status-spinner" aria-hidden="true"></span>

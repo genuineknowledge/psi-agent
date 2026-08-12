@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from psi_agent._router_status import RouterStatus
 from psi_agent.protocol import (
     FINISH_REASON_COMPACTION_NEEDED,
     FINISH_REASON_ERROR,
@@ -121,7 +122,7 @@ class AgentRunResult:
 
 @dataclass
 class AgentChunk:
-    """Semantic output of ``SessionAgent.run()`` — content and/or reasoning.
+    """Semantic output of ``SessionAgent.run()`` — visible output or Router status.
 
     The agent loop yields these to ``ChannelAdapter``, which converts them to
     ``ChatCompletionChunk`` for SSE output.  Contains no protocol fields
@@ -130,12 +131,15 @@ class AgentChunk:
     ``kind`` is provenance for ``reasoning`` only (``thinking`` / ``tool_call`` /
     ``tool_result``). Tool progress remains in the ``reasoning`` slot on purpose
     (compressed process stream for OpenAI-shaped Session↔AI reuse); UI filters
-    by ``kind`` instead of splitting the wire field.
+    by ``kind`` instead of splitting the wire field. ``router_status`` is an
+    independent, ephemeral chunk and never shares a chunk with visible output.
     """
 
     content: str | None = None
     reasoning: str | None = None
     kind: str | None = None
+    router_status: RouterStatus | None = None
+    """Ephemeral Router progress; never accumulated into conversation history."""
 
 
 @dataclass
@@ -149,7 +153,8 @@ class AiDelta:
 
     Optional ``kind`` is passed through when the upstream delta already tags
     reasoning provenance; otherwise Session defaults model ``reasoning`` to
-    ``thinking``.
+    ``thinking``. Optional ``router_status`` is already validated by ``AiClient``
+    and occupies its own upstream delta.
 
     Never exposed to the Channel side.
     """
@@ -159,6 +164,8 @@ class AiDelta:
     kind: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
     finish_reason: str | None = None
+    router_status: RouterStatus | None = None
+    """Validated, independent Router progress received from the upstream SSE."""
     compaction_needed: bool = False
     prompt_tokens: int = 0
     """Upstream-reported prompt tokens carried by the compaction signal (0 = unknown)."""

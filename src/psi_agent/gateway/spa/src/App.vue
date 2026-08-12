@@ -79,6 +79,7 @@
     <PathPickerDialog />
     <ConfirmDialog @confirm="executeConfirmedAction" />
     <Snackbar />
+    <UxMetricsPanel />
   </div>
 </template>
 
@@ -128,6 +129,7 @@ import RouterDialog from './components/RouterDialog.vue'
 import PathPickerDialog from './components/PathPickerDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import Snackbar from './components/Snackbar.vue'
+import UxMetricsPanel from './components/UxMetricsPanel.vue'
 import UserHub from './components/UserHub.vue'
 import { LS_USER_NAME } from './userProfile.js'
 

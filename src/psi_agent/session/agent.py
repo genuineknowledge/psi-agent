@@ -11,6 +11,7 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._trace import TRACE_ID_HEADER, ensure_trace_id, trace_id_from_routing
 from psi_agent.protocol import (
     FINISH_REASON_COMPACTION_NEEDED,
     FINISH_REASON_ERROR,
@@ -249,6 +250,7 @@ class SessionAgent:
                 {"error": {"message": str(e), "type": "invalid_request_error", "param": None, "code": 400}},
                 status=400,
             )
+        trace_id = ensure_trace_id(trace_id_from_routing(extra_params.get("routing")))
 
         response = web.StreamResponse(
             status=200,
@@ -258,6 +260,7 @@ class SessionAgent:
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
+                TRACE_ID_HEADER: trace_id,
             },
         )
 
@@ -268,7 +271,7 @@ class SessionAgent:
                 logger.warning("Failed to prepare SSE response, client likely disconnected")
                 return response
 
-            logger.info("Acquired session lock, processing request")
+            logger.info(f"Acquired session lock, processing request trace_id={trace_id}")
             run = self.run_streamed(user_message, extra_params)
             await self._channel_adapter.write(response, run)
 
@@ -276,12 +279,16 @@ class SessionAgent:
         # diagnostics only — it tells the log whether the turn actually finished.
         result = run.result
         if result is None:
-            logger.info("Session request completed without a terminal result (failed or abandoned)")
+            logger.info(
+                f"Session request completed without a terminal result trace_id={trace_id} (failed or abandoned)"
+            )
         elif result.is_complete:
-            logger.info(f"Session request completed ({result.stop_cause}, model_turns={result.model_turns})")
+            logger.info(
+                f"Session request completed trace_id={trace_id} ({result.stop_cause}, model_turns={result.model_turns})"
+            )
         else:
             logger.warning(
-                f"Session request incomplete: stop_cause={result.stop_cause}, "
+                f"Session request incomplete trace_id={trace_id}: stop_cause={result.stop_cause}, "
                 f"model_finish_reason={result.model_finish_reason!r}, model_turns={result.model_turns}"
             )
         return response
@@ -384,6 +391,7 @@ class SessionAgent:
                 )
 
         request_params = dict(extra_params or {})
+        trace_id = ensure_trace_id(trace_id_from_routing(request_params.pop("routing", None)))
         hook_message = dict(user_message)
         hook_message |= request_params
         # Hooks must see the trusted Conversation identity. Request extras still
@@ -461,9 +469,12 @@ class SessionAgent:
                         request_params.pop("tools", None)
                         request_params.pop("stream", None)
                         request_body |= request_params
-                    request_body["routing"] = {"session_id": self._conversation.session_id}
+                    request_body["routing"] = {
+                        "session_id": self._conversation.session_id,
+                        "trace_id": trace_id,
+                    }
 
-                    logger.info("Sending request to AI via AiClient")
+                    logger.info(f"Sending request to AI via AiClient trace_id={trace_id}")
                     logger.debug(f"Request messages count: {len(ai_messages)}, tools: {len(tool_defs)}")
 
                     finish_reason: str | None = None
@@ -476,11 +487,18 @@ class SessionAgent:
 
                     async with aclosing(self._ai_client.stream(request_body)) as stream:
                         async for delta in stream:
+                            router_status = delta.router_status.to_dict() if delta.router_status is not None else None
                             logger.debug(
-                                f"AI delta: content={delta.content!r}, reasoning={delta.reasoning!r}, "
+                                f"AI delta trace_id={trace_id}: content={delta.content!r}, "
+                                f"reasoning={delta.reasoning!r}, "
+                                f"router_status={router_status!r}, "
                                 f"finish_reason={delta.finish_reason!r}, "
                                 f"tools={len(delta.tool_calls) if delta.tool_calls else 0}"
                             )
+                            if delta.router_status is not None:
+                                if delta.router_status.trace_id != trace_id:
+                                    raise AgentError("AI returned a Router status for a different trace ID")
+                                yield AgentChunk(router_status=delta.router_status)
                             if delta.content:
                                 yield AgentChunk(content=delta.content)
                                 accumulated_content += delta.content
@@ -632,7 +650,11 @@ class SessionAgent:
                         await self._system_prompt.run_after_turn(hook_message, assistant_msg)
                         await self._schedule_registry.refresh()
                         if _compaction_needed:
-                            await self._maybe_compact(_compaction_prompt_tokens, _compaction_threshold)
+                            await self._maybe_compact(
+                                _compaction_prompt_tokens,
+                                _compaction_threshold,
+                                trace_id=trace_id,
+                            )
                         _finish(
                             AgentRunStatus.COMPLETED,
                             AgentStopCause.MODEL_COMPLETED,
@@ -690,7 +712,13 @@ class SessionAgent:
                         model_turns,
                     )
 
-    async def _maybe_compact(self, prompt_tokens: int = 0, threshold: int = 0) -> None:
+    async def _maybe_compact(
+        self,
+        prompt_tokens: int = 0,
+        threshold: int = 0,
+        *,
+        trace_id: str | None = None,
+    ) -> None:
         """Invoke compact_history from system.py, insert compaction message
         into conversation.  system prompt merge + old-message trimming is
         deferred to ``messages_for_ai()``.
@@ -711,7 +739,14 @@ class SessionAgent:
             return
 
         async def complete_fn(messages: list[dict[str, Any]]) -> str:
-            body: dict[str, Any] = {"messages": messages, "stream": True}
+            body: dict[str, Any] = {
+                "messages": messages,
+                "stream": True,
+                "routing": {
+                    "session_id": self._conversation.session_id,
+                    "trace_id": ensure_trace_id(trace_id),
+                },
+            }
             parts: list[str] = []
             async with aclosing(self._ai_client.stream(body)) as stream:
                 async for delta in stream:

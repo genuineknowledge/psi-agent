@@ -1,10 +1,16 @@
 # Channel 层设计文档
 
+## 请求 trace_id
+
+`ChannelCore.post(..., trace_id=...)` 以 `X-Psi-Trace-Id` 请求头和私有 `routing.trace_id` 同时发送同一 UUID。
+缺失时在 Channel 边界创建；Session 响应头和 `router_status.trace_id` 若存在则必须与当前请求一致。
+普通 CLI/REPL/Telegram/Feishu 调用无需自行生成，Gateway 可传入由 SPA 创建的值。
+
 ## Channel 层架构
 
 ```
 channel/
-├── _types.py          # FileChunk, TextChunk, ReasoningChunk, InputChunk, OutputChunk
+├── _types.py          # FileChunk, TextChunk, ReasoningChunk, RouterStatusChunk, InputChunk, OutputChunk
 ├── _errors.py         # ChannelError 基类（传输/协议/session/附件下载错误统一抛出）
 ├── _markers.py        # [RECV:] 标记 + encode_input + 有状态扫描器 SendMarkerScanner；[SEND:] 解码重导出自 `psi_agent/_send_markers.py`
 ├── _stream.py         # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
@@ -38,6 +44,8 @@ ChannelCore 是所有 Channel（CLI、REPL、Telegram）共享的公共部件：
 - 将输入中的 FileChunk 转换为 `[RECV:/path]` 标记（session 端负责读文件）
 - 检测输出中的 `[SEND:/path]` 标记并产生 FileChunk。解码走 `iter_send_paths()`——它同时承载正则与**空路径过滤**：裸 `[SEND:]` 是模型笔误而非传输请求，放过去会让 `_send_file` 拿空 source path 发起上传。该函数定义在顶层 `psi_agent/_send_markers.py`（本模块重导出）：`session/history_display.py` 的 Gateway 投影复用同一函数，放在本层会让 Session import Channel 的私有模块
 - 将 SSE 的 `delta.reasoning` 流切分为 `ReasoningChunk`（透传可选 `delta.kind`），与 `content`（`TextChunk`）按到达顺序交错产出；同槽不同 `kind` 在 buffer 内视为不同活动类型（不合并）；`[SEND:...]` 仅扫描 content
+- 用共享 `RouterStatus` schema 校验独立的 `delta.router_status`，立即产出
+  `RouterStatusChunk`；状态不进入 interval 缓冲或 `[SEND:]` 扫描，且会先刷新前序文本以保持事件顺序
 - SSE 内容在 interval 窗口内缓冲合并为单个 TextChunk（默认 1s，可配置）
 - 终端通道（CLI/REPL）设置 interval=0 无需缓冲
 - 内部委托：marker 编解码 → `_markers.py`；SSE 解析与 interval 缓冲 → `_stream.py`（均与 HTTP 传输解耦、可独立单测）

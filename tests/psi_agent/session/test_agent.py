@@ -11,6 +11,7 @@ import anyio
 import pytest
 from aiohttp import web
 
+from psi_agent._router_status import RouterStatus
 from psi_agent.session.agent import AgentRun, SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
@@ -92,6 +93,50 @@ async def test_agent_simple_response(tmp_path: Path) -> None:
 
         all_content = "".join(c.content or "" for c in chunks)
         assert "Hello world" in all_content
+    finally:
+        await mock_server.cleanup()
+
+
+@pytest.mark.anyio
+async def test_agent_passes_router_status_without_persisting_it(tmp_path: Path) -> None:
+    status = RouterStatus(
+        trace_id="12345678-1234-5678-1234-567812345678",
+        mode="aggregation",
+        phase="collecting",
+        completed=1,
+        total=2,
+    )
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(f"data: {json.dumps(status.to_event())}\n\n".encode())
+        await resp.write(_sse_chunk(content="answer", finish="stop").encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    mock_server = MockAIServer(tmp_path)
+    ai_socket = await mock_server.start(handler)
+    history_path = tmp_path / "router-status.jsonl"
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(ai_socket),
+            conversation=Conversation(path=history_path),
+            tool_registry=ToolRegistry(),
+        )
+        chunks = [
+            chunk
+            async for chunk in agent.run(
+                {"role": "user", "content": "hi"},
+                {"routing": {"trace_id": status.trace_id}},
+            )
+        ]
+
+        assert chunks[0] == AgentChunk(router_status=status)
+        assert "".join(chunk.content or "" for chunk in chunks) == "answer"
+        assert all("router_status" not in message for message in agent._conversation.messages)
+        persisted = await anyio.Path(history_path).read_text(encoding="utf-8")
+        assert "router_status" not in persisted
     finally:
         await mock_server.cleanup()
 
@@ -273,6 +318,7 @@ async def test_agent_with_tool_call(tmp_path: Path) -> None:
 async def test_agent_attaches_the_same_routing_session_id_to_every_tool_round_request(tmp_path: Path) -> None:
     """Router continuations can associate both requests with this Session."""
 
+    trace_id = "123e4567-e89b-12d3-a456-426614174000"
     requests: list[dict] = []
     request_count = 0
 
@@ -329,14 +375,19 @@ async def test_agent_attaches_the_same_routing_session_id_to_every_tool_round_re
             conversation=Conversation(path=history_path),
             tool_registry=ToolRegistry(files={"test": FileEntry("", {"echo": tool}, {"echo": echo})}),
         )
-        _ = [chunk async for chunk in agent.run({"role": "user", "content": "run a tool"})]
+        _ = [
+            chunk
+            async for chunk in agent.run(
+                {"role": "user", "content": "run a tool"},
+                {"routing": {"trace_id": trace_id}},
+            )
+        ]
     finally:
         await mock_server.cleanup()
 
-    assert [body["routing"] for body in requests] == [
-        {"session_id": "stable-session"},
-        {"session_id": "stable-session"},
-    ]
+    routing = [body["routing"] for body in requests]
+    assert [item["session_id"] for item in routing] == ["stable-session", "stable-session"]
+    assert [item["trace_id"] for item in routing] == [trace_id, trace_id]
 
 
 @pytest.mark.anyio
