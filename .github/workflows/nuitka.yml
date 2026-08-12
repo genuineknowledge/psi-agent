@@ -13,12 +13,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 按触发方式挑平台。三平台是**并行**的, 所以一次 run 的墙钟 = 最慢那个平台
+  # (实测 macOS 116 min / ubuntu 104 min / windows 74 min, 其中 99% 花在单条
+  # Nuitka 编译命令上; `--jobs` 本来就默认取 CPU 核数, 没有并行度可捡)。
+  # 而发版链只消费 `psi-agent-nuitka-windows-latest` —— Linux/macOS 产物没有
+  # 任何下游。于是: 日常推 main 只编 Windows, 把 2 小时压到 ~75 分钟; 打 tag
+  # 和手动触发仍编全三平台, 保留跨平台可编译性的验证。
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.pick.outputs.os }}
+    steps:
+      - id: pick
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+            echo 'os=["windows-latest"]' >> "$GITHUB_OUTPUT"
+            echo "::notice::main push: 只编 Windows (发版链唯一消费的产物)"
+          else
+            echo 'os=["ubuntu-latest","windows-latest","macos-latest"]' >> "$GITHUB_OUTPUT"
+            echo "::notice::tag / 手动触发: 编全三平台"
+          fi
+
   nuitka:
+    needs: plan
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
     env:
       NUITKA_COMMON_FLAGS: >-
         --mode=app

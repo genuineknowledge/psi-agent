@@ -4,6 +4,9 @@
 
 1. 修改 `.github/inno-setup/haitun.iss` 里的 `MyAppVersion`，推送 `main`。
 2. `Nuitka` workflow 构建 Windows 安装包，产出 `haitun-agent-installer-nuitka` artifact。
+   推 `main` 时只编 Windows（约 75 分钟）；打 `v*` tag 或手动触发才编全三平台
+   （约 2 小时，墙钟取最慢的 macOS）。发版链只消费 Windows 产物，Linux/macOS
+   产物没有下游，所以日常推送不必等它们。
 3. `Publish Haitun Installer to OSS` workflow 检测该 commit 是否改动了 `haitun.iss`：
    - 如果 OSS 上的 `version.txt` 已等于本次版本，跳过；
    - 否则上传 `HaiTun_Agent_Setup.exe`、`HaiTun_Agent_Setup-<version>.exe` 和 `version.txt` 到阿里云 OSS。
