@@ -20,10 +20,11 @@ import inspect
 import math
 import re
 import sys
+import threading
 import types
 import typing
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -317,6 +318,44 @@ class FileEntry:
     fresh: bool = False
 
 
+# ── sys.path handling for helper imports ─────────────────────────────────────
+
+
+_SYS_PATH_LOCK = threading.Lock()
+_SYS_PATH_DEPTH: dict[str, int] = {}
+
+
+@asynccontextmanager
+async def _tools_dir_on_sys_path(entry: str) -> AsyncIterator[None]:
+    """Expose one tools directory while its files import sibling helpers.
+
+    Multiple Sessions may load the same agent concurrently. A per-path reference
+    count keeps exactly one temporary entry until the last overlapping load exits.
+    Entries owned by the host or a tool module are borrowed and never removed.
+    """
+    with _SYS_PATH_LOCK:
+        depth = _SYS_PATH_DEPTH.get(entry, 0)
+        if depth == 0 and entry in sys.path:
+            owned = False
+        else:
+            owned = True
+            _SYS_PATH_DEPTH[entry] = depth + 1
+            if depth == 0:
+                sys.path.insert(0, entry)
+    try:
+        yield
+    finally:
+        if owned:
+            with _SYS_PATH_LOCK:
+                remaining = _SYS_PATH_DEPTH.get(entry, 1) - 1
+                if remaining <= 0:
+                    _SYS_PATH_DEPTH.pop(entry, None)
+                    with suppress(ValueError):
+                        sys.path.remove(entry)
+                else:
+                    _SYS_PATH_DEPTH[entry] = remaining
+
+
 # ── ToolRegistry — loading, state, incremental refresh ───────────────────────
 
 
@@ -438,6 +477,7 @@ class ToolRegistry:
 
         try:
             tools_dir_exists = await tools_anyio.is_dir()
+            sys_path_entry = str(await tools_anyio.resolve())
         except Exception as e:
             logger.warning(f"Cannot access tools directory {tools_dir!r}: {e!r}")
             return files
@@ -446,68 +486,76 @@ class ToolRegistry:
             return files
 
         try:
-            async for py_file in tools_anyio.glob("*.py"):
-                if py_file.name.startswith("_"):
-                    continue
-
-                module_name = None
-                try:
-                    file_bytes = await py_file.read_bytes()
-                    file_hash = hashlib.sha256(file_bytes).hexdigest()
-                    str_path = str(py_file)
-
-                    if old_files is not None and str_path in old_files and old_files[str_path].file_hash == file_hash:
-                        logger.debug(f"Skipping unchanged file: {py_file!r}")
-                        old = old_files[str_path]
-                        files[str_path] = FileEntry(
-                            file_hash=old.file_hash, tools=old.tools, funcs=old.funcs, fresh=False
-                        )
+            async with _tools_dir_on_sys_path(sys_path_entry):
+                async for py_file in tools_anyio.glob("*.py"):
+                    if py_file.name.startswith("_"):
                         continue
 
-                    module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
+                    module_name = None
+                    try:
+                        file_bytes = await py_file.read_bytes()
+                        file_hash = hashlib.sha256(file_bytes).hexdigest()
+                        str_path = str(py_file)
 
-                    source = await py_file.read_text(encoding="utf-8")
-                    compiled = compile(source, str_path, "exec")
-
-                    module = types.ModuleType(module_name)
-                    module.__file__ = str_path
-                    sys.modules[module_name] = module
-                    registered_modules.append(module_name)
-
-                    exec(compiled, module.__dict__)
-
-                    attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
-                    tools: dict[str, ToolFunction] = {}
-                    funcs: dict[str, Callable[..., Any]] = {}
-
-                    for name in attr_names:
-                        func = getattr(module, name, None)
-                        if not inspect.iscoroutinefunction(func):
+                        if (
+                            old_files is not None
+                            and str_path in old_files
+                            and old_files[str_path].file_hash == file_hash
+                        ):
+                            logger.debug(f"Skipping unchanged file: {py_file!r}")
+                            old = old_files[str_path]
+                            files[str_path] = FileEntry(
+                                file_hash=old.file_hash, tools=old.tools, funcs=old.funcs, fresh=False
+                            )
                             continue
 
-                        try:
-                            tool_func = ToolFunction.from_callable(func)
-                        except Exception as e:
-                            logger.error(f"Skipping tool {name!r} in {py_file!r}: {e!r}")
-                            continue
+                        module_name = f"psi_tool_{py_file.stem}_{session_id}_{file_hash}"
 
-                        tools[name] = tool_func
-                        funcs[name] = func
-                        logger.debug(f"Loaded tool: {name!r} from {py_file!r}")
+                        source = await py_file.read_text(encoding="utf-8")
+                        compiled = compile(source, str_path, "exec")
 
-                    files[str_path] = FileEntry(
-                        file_hash=file_hash,
-                        tools=tools,
-                        funcs=funcs,
-                        fresh=True,
-                    )
-                except Exception as e:
-                    if module_name is not None:
-                        sys.modules.pop(module_name, None)
-                        with suppress(ValueError):
-                            registered_modules.remove(module_name)
-                    logger.error(f"Failed to load tool file {py_file!r}: {e!r}")
-                    continue
+                        module = types.ModuleType(module_name)
+                        module.__file__ = str_path
+                        sys.modules[module_name] = module
+                        registered_modules.append(module_name)
+
+                        exec(compiled, module.__dict__)
+
+                        attr_names = sorted(name for name in dir(module) if not name.startswith("_"))
+                        tools: dict[str, ToolFunction] = {}
+                        funcs: dict[str, Callable[..., Any]] = {}
+
+                        for name in attr_names:
+                            func = getattr(module, name, None)
+                            if not inspect.iscoroutinefunction(func):
+                                continue
+
+                            try:
+                                tool_func = ToolFunction.from_callable(func)
+                            except Exception as e:
+                                if getattr(func, "__module__", None) != module_name:
+                                    logger.debug(f"Skipping imported async helper {name!r} in {py_file!r}: {e!r}")
+                                else:
+                                    logger.error(f"Skipping tool {name!r} in {py_file!r}: {e!r}")
+                                continue
+
+                            tools[name] = tool_func
+                            funcs[name] = func
+                            logger.debug(f"Loaded tool: {name!r} from {py_file!r}")
+
+                        files[str_path] = FileEntry(
+                            file_hash=file_hash,
+                            tools=tools,
+                            funcs=funcs,
+                            fresh=True,
+                        )
+                    except Exception as e:
+                        if module_name is not None:
+                            sys.modules.pop(module_name, None)
+                            with suppress(ValueError):
+                                registered_modules.remove(module_name)
+                        logger.error(f"Failed to load tool file {py_file!r}: {e!r}")
+                        continue
         except BaseException:
             for mn in registered_modules:
                 sys.modules.pop(mn, None)

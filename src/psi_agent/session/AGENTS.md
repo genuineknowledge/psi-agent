@@ -226,6 +226,8 @@ result = run.result   # 正常耗尽后非 None
 
 - `workspace/tools/*.py` 中的每个 `.py` 文件（不含 `_` 开头）
 - 文件中所有非 `_` 开头的 `async def` 函数都会被加载为 tool
+- 加载期间会临时把当前 `tools/` 加到 `sys.path` 首位，并按规范化路径计数；并发 Session 的最后一个 loader 退出后才移除，原本就存在的路径不会被误删。由此同目录 `_helper.py` 的裸导入不再依赖 glob 顺序或其他工具的副作用
+- 从其他模块导入的公开 `async` 函数仍可作为 tool 转发；若其签名不符合 tool schema，则按内部辅助函数以 DEBUG 跳过，不再产生“当前工具文件损坏”的 ERROR
 - 内部以 per-file 结构存储（`FileEntry` dataclass），包含 `file_hash`、`tools`（ToolFunction dict）、`funcs`（callable dict）、`fresh`（是否本次导入）
 - `ToolRegistry.tools` 为 `@property`，展平所有 `FileEntry` 为 `dict[str, ToolFunction]`
 - 参数类型必须为 `str`、`int`、`float`、`bool`、`list[X]` 或 `X | None`（`Optional[X]`）

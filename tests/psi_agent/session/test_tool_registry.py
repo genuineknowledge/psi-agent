@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import sys
 import textwrap
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import anyio
 import pytest
+from loguru import logger
 
-from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
+from psi_agent.session.tool_registry import (
+    FileEntry,
+    ToolFunction,
+    ToolRegistry,
+    _tools_dir_on_sys_path,
+)
 
 # ── FileEntry ─────────────────────────────────────────────────────────────────
 
@@ -494,6 +501,92 @@ async def test_load_skips_non_async(tmp_path: Path) -> None:
     )
     tr = await ToolRegistry.load(tools_dir)
     assert set(tr.tools) == {"async_tool"}
+
+
+@pytest.mark.anyio
+async def test_load_resolves_sibling_helper_without_leaking_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "_helper.py").write_text("VALUE = 'from-helper'\n", encoding="utf-8")
+    await anyio.Path(tools_dir / "tool.py").write_text(
+        textwrap.dedent("""\
+        from _helper import VALUE
+
+        async def sibling_tool() -> str:
+            return VALUE
+    """),
+        encoding="utf-8",
+    )
+    path_entry = str(tools_dir.resolve())
+    monkeypatch.delitem(sys.modules, "_helper", raising=False)
+    assert path_entry not in sys.path
+
+    tr = await ToolRegistry.load(tools_dir)
+
+    sibling_tool = tr.get("sibling_tool")
+    assert sibling_tool is not None
+    assert await sibling_tool() == "from-helper"
+    assert path_entry not in sys.path
+
+
+@pytest.mark.anyio
+async def test_tools_path_remains_until_last_overlapping_loader_exits(tmp_path: Path) -> None:
+    path_entry = str((tmp_path / "tools").resolve())
+    assert path_entry not in sys.path
+
+    async with _tools_dir_on_sys_path(path_entry):
+        assert sys.path.count(path_entry) == 1
+        async with _tools_dir_on_sys_path(path_entry):
+            assert sys.path.count(path_entry) == 1
+        assert sys.path.count(path_entry) == 1
+
+    assert path_entry not in sys.path
+
+
+@pytest.mark.anyio
+async def test_tools_path_does_not_remove_preexisting_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path_entry = str((tmp_path / "tools").resolve())
+    monkeypatch.syspath_prepend(path_entry)
+
+    async with _tools_dir_on_sys_path(path_entry):
+        assert sys.path.count(path_entry) == 1
+
+    assert path_entry in sys.path
+
+
+@pytest.mark.anyio
+async def test_imported_invalid_async_helper_is_not_logged_as_broken_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "_helper.py").write_text(
+        "from pathlib import Path\n\nasync def load(path: Path) -> str:\n    return str(path)\n",
+        encoding="utf-8",
+    )
+    await anyio.Path(tools_dir / "tool.py").write_text(
+        textwrap.dedent("""\
+        from _helper import load
+
+        async def own_tool() -> str:
+            return "ok"
+    """),
+        encoding="utf-8",
+    )
+    monkeypatch.delitem(sys.modules, "_helper", raising=False)
+    messages: list[str] = []
+    sink_id = logger.add(messages.append, format="{level}:{message}")
+
+    try:
+        tr = await ToolRegistry.load(tools_dir)
+    finally:
+        logger.remove(sink_id)
+
+    assert set(tr.tools) == {"own_tool"}
+    assert not any(message.startswith("ERROR:Skipping tool 'load'") for message in messages)
+    assert any(message.startswith("DEBUG:Skipping imported async helper 'load'") for message in messages)
 
 
 # ── _load_from_dir skip logic ─────────────────────────────────────────────────
