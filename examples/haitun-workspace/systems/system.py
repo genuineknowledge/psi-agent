@@ -1189,9 +1189,17 @@ this workspace, generated workflows, instruction files, or committed `.env` file
             SUBAGENT_DELEGATION_SECTION,
             "",
             SAFETY_SECTION,
-            "",
-            FUSION_MEMORY_SECTION,
         ]
+
+        # 刻意为之: Fusion Memory 那一整段只在记忆服务真的配了的时候才注入。
+        # 它原先无条件进稳定前缀, 于是每个会话、每次构建提示都要带上约 30 行 ——
+        # 包括「不要改 .env / 去读 fusion-memory-setup 恢复指南」这类只对运维有用的话,
+        # 而记忆服务没配时模型压根用不上这些工具。
+        # 判据用 FUSION_MEMORY_MCP_URL 而不是工具名: _scan_tool_names 是按
+        # tools/*.py 的文件名扫的, memory_*.py 永远在磁盘上, 所以
+        # "memory_add" in tools 恒为真, 拿它做开关等于没开关。
+        if os.environ.get("FUSION_MEMORY_MCP_URL", "").strip():
+            stable_parts += ["", FUSION_MEMORY_SECTION]
 
         _session_tools = {
             "sessions_list",

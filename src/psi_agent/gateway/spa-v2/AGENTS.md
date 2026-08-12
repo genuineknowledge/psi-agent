@@ -40,7 +40,7 @@
 | Agent 包 | 与 workspace 合一 | ``GET /defaults``.agent → 新建任务/聊天 ``POST /sessions`` 带 `agent`（可与用户工作区不同）。设置「切换 Agent 包」与工作区同区；全屏 `WorkspaceGate kind=agent`；偏好 `gw-v2-agent`（覆盖 defaults）。**刻意为之**：只影响**新建** Session；已有任务仍用创建时绑定的 `agent` |
 | 任务模板库 | — | 卡片正文/分类/交付物/页脚等字号 ≥12–14px（勿回退 8–10px 设计稿字号）。「新建模板」抽屉经 `createPortal` 挂 `document.body`：全屏遮罩 + 右侧贴边抽屉（勿嵌在 `.main-stage` 内导致四边露白） |
 
-设置弹窗保留**切换工作区**与**切换 Agent 包**（真实功能）；通知/交付位置等占位项已去掉，避免空壳菜单。
+设置弹窗保留**切换工作区**与**切换 Agent 包**（真实功能）；设置 / 高级设置是**同一弹窗的两个页面**（点「高级设置」换页、可返回设置；`Esc` 先回主页再关闭），不要叠第二个 `HubDialog`。通知/交付位置等占位项已去掉，避免空壳菜单。
 | 任务删除 | 侧栏 trash → DELETE session + 清本地 hist | 侧栏/卡片删除 → ``DELETE /sessions/{id}``（顺带清 JSONL + 标题）+ 清本地状态 |
 | 消息操作栏 | 助手：赞/踩/复制/重新生成；用户：复制 + 失败重试 | 同左（`FocusChatThread`）；feedback 仅内存态，刷新历史后不保留 |
 | 停止生成 | 输入栏 Send ↔ Stop 切换 | 同左：流式时发送键变为停止（`abortRef.abort()`）；停止后草稿回填输入框 |
@@ -65,16 +65,14 @@
 GET /spa-v2/     → 302 → index.html（redirect 须先于 add_static，否则 403）
 App              → GET /defaults → 选定 workspace / agent（localStorage 覆盖 / defaults）
 Workbench boot   → GET /sessions + /titles + /summaries
-                 → hydrateAiForSessions(session.ai_id…)
-                      purgePlaceholderAis
-                      reviveMissingSessionAis（同 id 复活免费后端）
+                 → hydrateAiForSessions()（只读现有模型池，不复活/不删除）
                  → setTasks（**从不**因空 AI 池跳过 sessions）
                  → 仅池仍空时 openModelsOnce
-Hub「使用免费模型」→ clearAiPool → hydrateAiForSessions(全部 session) → 无 session 才 ensureDefaultAi
-发消息           → ensureSessionAi（同 id 复活，腰带）
+Hub「使用免费模型」→ **保留**已连接真实模型；hydrateAiForSessions() 读取现有池 → 无免费条目时 `createAi(DEFAULT_REMOTE_AI)` 并强制选中免费模型
+发消息           → ensureSessionAi（优先任务绑定的模型；已被删除则用当前模型配置重绑旧 id，通道继续可用）
 ```
 
-不盲选 `ais[0]`。池里若已有真实 key，清掉残留 `haitun-default`；优先 localStorage 选中 AI。Gateway **不**级联删 Session——AI 被清后 Session 仍挂旧 `ai_id`；boot / 免费切换必须 **同 id 复活**，刷新后任务卡与可聊性不变。模型池「已连接」按 `provider+model+api_key+base_url` **折叠展示**（仅 id 不同只显示一行；key 不同则分列）；无显式 id 的 `POST /ais` 同配置复用已有实例。workspace 过滤用 `sessionMatchesWorkspace`（空 workspace 视为本工作区）。
+不盲选 `ais[0]`。**不自动删除任何已连接模型**——只有「已连接」行的删除按钮会删除，且一次删除该配置（`provider+model+api_key+base_url`）的**全部实例**（同一模型被多个 Session 绑定的重复条目会一起删掉）；删除当前模型后回落到剩余模型，新连接/切免费都不影响其它模型，新连接的模型立即成为当前模型。优先 localStorage 选中 AI（含用户主动选的免费条目），免费条目与真实 key 可以同时保留在池中。Gateway **不**级联删 Session——AI 删除后 Session 仍挂旧 `ai_id`；该任务下一次对话用**当前选中模型**，并把旧 `ai_id` **重绑到当前模型配置**（池全空时才回落免费默认），Session 通道保持可用，刷新后任务卡与可聊性不变。模型池「已连接」按同配置 **折叠展示**（仅 id 不同只显示一行；key 不同则分列）；无显式 id 的 `POST /ais` 同配置复用已有实例。workspace 过滤用 `sessionMatchesWorkspace`（空 workspace 视为本工作区）。
 
 ### 任务卡三步进度（分层）
 
@@ -95,6 +93,7 @@ Hub「使用免费模型」→ clearAiPool → hydrateAiForSessions(全部 sessi
 - **任务总览左右划** → 仍是卡片面；点/轻触卡片主体（除宝箱 / 删除 / 步骤翻页 / **底部三格信号钮**）= 与点对话栏相同，进入分屏。**刻意为之**：滑动层 `setPointerCapture` 会吞掉子元素 `click`，因此在 `pointerup` 且未越过滑动阈值时打开分屏（不单靠 `onClick`）。
 - **总览三格信号（运行中 / 待您处理 / 新交付物）** → 可点，走 `openSignal(kind)`（`taskSignals.ts`）展开侧栏对应筛选列表。侧栏顶栏仍只有「待您处理 / 新交付物」两钮（与原先一致）；「运行中」仅卡片入口。**待您处理** 目前只认 `status===attention`（联调几乎恒空，接口预留）。`.overview-metrics` **无框内顶部 padding**（外框顶边与竖分隔线齐平），整块带 `data-card-interactive`，避免空白区点穿进卡片 → 对话。
 - **分屏「收起」旁** → 「新建任务/聊天」（顶栏新建在聚焦态仍隐藏，由此处补入口；样式与顶栏/侧栏蓝色主按钮一致）。左栏收起后对话栏左上角**只保留展开上下文钮**，不再并排「新建」按钮。
+- **任务并行执行（刻意为之）**：每个任务（Session）有独立的流式状态——`AbortController` / SSE epoch / 过程轴按任务维护；「新建任务/聊天」并发送**不会**打断正在执行的任务，停止按钮只停止当前任务。后端每个 Session 是独立 channel，天然支持并发。
 
 - 流式中：无 todo → `正在处理` + indeterminate；有交付物生成中可进 `deliver`（「正在整理交付」）。
 - 有 todo 且全部 completed 仍在流式 → `deliver`（追加「产出与确认」）。

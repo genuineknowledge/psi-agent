@@ -30,7 +30,7 @@
   content: "";
   position: absolute;
   top: -13px;
-  left: 30px;
+  left: var(--spotlight-arrow-left, 30px);
   border-left: 13px solid transparent;
   border-right: 13px solid transparent;
   border-bottom: 13px solid var(--paper);
@@ -40,7 +40,7 @@
   content: "";
   position: absolute;
   bottom: -13px;
-  left: 30px;
+  left: var(--spotlight-arrow-left, 30px);
   border-left: 13px solid transparent;
   border-right: 13px solid transparent;
   border-top: 13px solid var(--paper);
@@ -58,6 +58,27 @@
   color: var(--ink-soft);
   font-size: 18px;
   line-height: 1.5;
+}
+
+.spotlight-skip {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 2;
+  height: 48px;
+  padding: 0 22px;
+  border: 1px solid rgba(0, 80, 173, 0.2);
+  border-radius: 13px;
+  color: var(--brand-700);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 20px rgba(8, 24, 50, 0.12);
+  font-size: 17px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.spotlight-skip:hover {
+  background: #fff;
 }
 
 .spotlight-actions {

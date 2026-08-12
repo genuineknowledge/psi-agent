@@ -5,12 +5,13 @@ import { listAis } from '../../services/api'
 import { readStoredAvatar, readStoredName } from '../../services/userProfile'
 import { dedupeAisForDisplay, readStoredAiId } from '../../services/bootstrapAi'
 import HubAdvancedPanel from './HubAdvancedPanel'
-import HubModelsPanel from './HubModelsPanel'
+import HubAdvancedSettingsPanel from './HubAdvancedSettingsPanel'
+import HubModelsPanel, { FREE_MODEL_NOTICE_BODY, FREE_MODEL_NOTICE_TITLE } from './HubModelsPanel'
 import HubProfilePanel from './HubProfilePanel'
 import HubSettingsPanel from './HubSettingsPanel'
 import './user-hub.css'
 
-export type HubPanel = 'profile' | 'models' | 'settings' | 'advanced' | null
+export type HubPanel = 'profile' | 'models' | 'settings' | 'settingsAdvanced' | 'advanced' | null
 
 type Props = {
   selectedAiId: string | null
@@ -49,6 +50,7 @@ export default function UserHub({
   const [userName, setUserName] = useState(readStoredName)
   const [userAvatar, setUserAvatar] = useState(readStoredAvatar)
   const [aiCount, setAiCount] = useState(0)
+  const [freeModelNoticeOpen, setFreeModelNoticeOpen] = useState(false)
 
   useEffect(() => {
     if (!openModelsOnMount) return
@@ -73,6 +75,11 @@ export default function UserHub({
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
+      if (freeModelNoticeOpen) return
+      if (panel === 'settingsAdvanced') {
+        setPanel('settings')
+        return
+      }
       if (panel === 'advanced') {
         setPanel('models')
         return
@@ -84,7 +91,7 @@ export default function UserHub({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [panel])
+  }, [freeModelNoticeOpen, panel])
 
   const initial = userName.trim().charAt(0).toUpperCase()
   const displayName = userName.trim() || '用户'
@@ -123,7 +130,7 @@ export default function UserHub({
           </button>
           <button
             type="button"
-            className={`user-hub-shortcut${panel === 'settings' ? ' active' : ''}`}
+            className={`user-hub-shortcut${panel === 'settings' || panel === 'settingsAdvanced' ? ' active' : ''}`}
             title="设置"
             aria-label="设置"
             onClick={() => openPanel('settings')}
@@ -149,6 +156,7 @@ export default function UserHub({
         onSelectAi={onSelectAi}
         onOpenAdvanced={() => setPanel('advanced')}
         onToast={onToast}
+        onFreeModelNotice={() => setFreeModelNoticeOpen(true)}
         onAisChanged={(ais) => {
           setAiCount(dedupeAisForDisplay(ais, selectedAiId).length)
           onAisChanged?.(ais)
@@ -159,8 +167,17 @@ export default function UserHub({
         onClose={() => setPanel(null)}
         workspace={workspace}
         onChangeWorkspace={onChangeWorkspace}
+        onOpenAdvancedSettings={() => setPanel('settingsAdvanced')}
+      />
+      <HubAdvancedSettingsPanel
+        show={panel === 'settingsAdvanced'}
+        onClose={() => setPanel(null)}
+        onBackToSettings={() => setPanel('settings')}
         agent={agent}
-        onChangeAgent={onChangeAgent}
+        onChangeAgent={() => {
+          setPanel(null)
+          onChangeAgent?.()
+        }}
       />
       <HubAdvancedPanel
         show={panel === 'advanced'}
@@ -173,6 +190,27 @@ export default function UserHub({
           onAisChanged?.(ais)
         }}
       />
+
+      {freeModelNoticeOpen && (
+        <div className="hub-dialog-layer" role="dialog" aria-modal="true" aria-label="免费模型提示">
+          <div className="hub-dialog-backdrop hub-free-notice-backdrop" aria-hidden="true" />
+          <div className="hub-dialog hub-free-notice-dialog">
+            <div className="hub-dialog-body">
+              <p className="hub-free-notice-title">{FREE_MODEL_NOTICE_TITLE}</p>
+              <p className="hub-free-notice-text">{FREE_MODEL_NOTICE_BODY}</p>
+            </div>
+            <footer className="hub-dialog-actions">
+              <button
+                type="button"
+                className="hub-btn primary"
+                onClick={() => setFreeModelNoticeOpen(false)}
+              >
+                知道了
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

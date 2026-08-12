@@ -63,7 +63,7 @@ export default function WorkspaceGate({
     event.preventDefault()
     const clean = path.trim()
     if (!clean) {
-      setError(isAgent ? '请选择或输入 Agent 包路径' : '请选择或输入工作区路径')
+      setError(isAgent ? '请选择或输入 Agent 包路径' : '请选择或输入海豚工作室路径')
       return
     }
     onReady(clean)
@@ -76,17 +76,16 @@ export default function WorkspaceGate({
       <div className="workspace-gate-card">
         <BrandLogo size="hero" />
         <span className="eyebrow">HaiTun Agent</span>
-        <h1>{isAgent ? '选择 Agent 包' : '打开工作区'}</h1>
+        <h1>{isAgent ? '选择 Agent 包' : '打开海豚工作室'}</h1>
         <p>
           {isAgent ? (
             <>
               Agent 包是能力根目录（<code>tools/</code>、<code>schedules/</code>、<code>systems/</code>）。
-              可与用户工作区不同；切换后<strong>新建任务/聊天</strong>会挂上此包，已有任务仍用创建时绑定的包。
+              可与用户海豚工作室不同；切换后<strong>新建任务/聊天</strong>会挂上此包，已有任务仍用创建时绑定的包。
             </>
           ) : (
             <>
-              任务绑定到 Gateway Session。请选择本机<strong>用户工作区</strong>（工程目录）。
-              Agent 能力包可在设置中单独切换，可与工作区不同。
+              先选一个本地文件夹作为海豚工作室吧，之后的任务都会围绕这个文件夹进行。
             </>
           )}
         </p>
@@ -95,7 +94,7 @@ export default function WorkspaceGate({
         ) : (
           <form onSubmit={submit}>
             <label>
-              <span>{isAgent ? 'Agent 包路径' : '工作区路径'}</span>
+              <span>{isAgent ? 'Agent 包路径' : '海豚工作室路径'}</span>
               <div className="workspace-gate-path-row">
                 <button
                   type="button"
@@ -136,12 +135,12 @@ export default function WorkspaceGate({
       <PathPickerDialog
         open={pickerOpen}
         initialPath={path}
-        title={isAgent ? '选择 Agent 包' : '打开工作区'}
+        title={isAgent ? '选择 Agent 包' : '打开海豚工作室'}
         confirmLabel={isAgent ? '选择' : '打开'}
         hint={
           isAgent
             ? '选择含 tools / schedules / systems 的 Agent 能力包目录。'
-            : '选择本地文件夹作为用户工作区。'
+            : '选择本地文件夹作为用户海豚工作室。'
         }
         onCancel={() => setPickerOpen(false)}
         onConfirm={(picked) => {

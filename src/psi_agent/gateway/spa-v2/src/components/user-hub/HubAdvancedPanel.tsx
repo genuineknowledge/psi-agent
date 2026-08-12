@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createAi, listAis, type AiInfo } from '../../services/api'
-import { purgePlaceholderAis, writeStoredAiId } from '../../services/bootstrapAi'
+import { writeStoredAiId } from '../../services/bootstrapAi'
 import { PROVIDERS } from '../../services/providers'
 import HubDialog from './HubDialog'
 
@@ -53,7 +53,6 @@ export default function HubAdvancedPanel({
     if (!apiKey.trim() || !model.trim() || !baseUrl.trim() || connecting) return
     setConnecting(true)
     try {
-      await purgePlaceholderAis()
       const info = await createAi({
         provider,
         model: model.trim(),

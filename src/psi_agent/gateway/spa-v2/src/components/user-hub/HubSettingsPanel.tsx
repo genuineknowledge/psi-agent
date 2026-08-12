@@ -1,4 +1,4 @@
-import { ChevronRight, FolderOpen, Package } from 'lucide-react'
+import { ChevronRight, FolderOpen } from 'lucide-react'
 import HubDialog from './HubDialog'
 
 type Props = {
@@ -6,8 +6,7 @@ type Props = {
   onClose: () => void
   workspace?: string
   onChangeWorkspace?: () => void
-  agent?: string
-  onChangeAgent?: () => void
+  onOpenAdvancedSettings?: () => void
 }
 
 function pathLabel(path: string): string {
@@ -16,25 +15,34 @@ function pathLabel(path: string): string {
   return parts[parts.length - 1] || p || '未选择'
 }
 
-/** Settings dialog — workspace + agent package path switches. */
+/** Settings dialog — workspace switch + advanced settings entry. */
 export default function HubSettingsPanel({
   show,
   onClose,
   workspace,
   onChangeWorkspace,
-  agent,
-  onChangeAgent,
+  onOpenAdvancedSettings,
 }: Props) {
   return (
     <HubDialog
       show={show}
-      title="设置"
-      width={420}
+      title={(
+        <div className="hub-models-title">
+          <span>设置</span>
+          <button
+            type="button"
+            className="hub-link"
+            onClick={() => onOpenAdvancedSettings?.()}
+          >
+            高级设置
+          </button>
+        </div>
+      )}
+      width={480}
       onClose={onClose}
       actions={<button type="button" className="hub-btn primary" onClick={onClose}>关闭</button>}
     >
       <section className="hub-settings-section">
-        <h4>工作区与 Agent 包</h4>
         {onChangeWorkspace ? (
           <button
             type="button"
@@ -48,7 +56,7 @@ export default function HubSettingsPanel({
               <FolderOpen size={18} />
             </span>
             <span>
-              <strong>切换工作区</strong>
+              <strong>切换海豚工作室</strong>
               <em title={workspace || undefined}>
                 {workspace ? pathLabel(workspace) : '选择本机目录'}
               </em>
@@ -56,42 +64,14 @@ export default function HubSettingsPanel({
             <ChevronRight size={16} className="hub-settings-row-chevron" />
           </button>
         ) : (
-          <p className="hub-settings-workspace-path">{workspace || '未选择工作区'}</p>
+          <p className="hub-settings-workspace-path">{workspace || '未选择海豚工作室'}</p>
         )}
         {workspace && onChangeWorkspace ? (
           <p className="hub-settings-workspace-path" title={workspace}>{workspace}</p>
         ) : null}
-
-        {onChangeAgent ? (
-          <button
-            type="button"
-            className="hub-settings-row hub-settings-workspace"
-            onClick={() => {
-              onClose()
-              onChangeAgent()
-            }}
-          >
-            <span className="hub-settings-workspace-icon" aria-hidden="true">
-              <Package size={18} />
-            </span>
-            <span>
-              <strong>切换 Agent 包</strong>
-              <em title={agent || undefined}>
-                {agent ? pathLabel(agent) : '选择能力包目录'}
-              </em>
-            </span>
-            <ChevronRight size={16} className="hub-settings-row-chevron" />
-          </button>
-        ) : null}
-        {agent && onChangeAgent ? (
-          <p className="hub-settings-workspace-path" title={agent}>{agent}</p>
-        ) : null}
-        {onChangeAgent ? (
-          <p className="hub-settings-foot">
-            Agent 包含 tools / schedules / systems。切换后仅影响<strong>新建任务/聊天</strong>；
-            已有任务仍使用创建时绑定的包。
-          </p>
-        ) : null}
+        <p className="hub-settings-foot">
+          任务会绑定到这个文件夹，项目文件、历史记录和交付物都会保存在这里。
+        </p>
       </section>
     </HubDialog>
   )
