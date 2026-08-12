@@ -86,8 +86,33 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Download installer artifact
+      # Nuitka 现在只在 `haitun.iss` 变动时才真编译 (见 nuitka.yml 的 plan
+       # job), 所以非发版的 main 推送不会产出安装包。而上面的版本比对分支在
+      # "OSS 版本 != haitun.iss 版本" 时会放行 —— 若此时直接下载, artifact
+      # 不存在会让这个 job 变红。先查一下, 缺了就安静跳过。
+      - name: Ensure installer artifact exists
+        id: artifact
         if: steps.check.outputs.skip != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          FOUND="$(curl -fsS \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100" \
+            | grep -c '"name": *"haitun-agent-installer-nuitka"' || true)"
+          if [ "${FOUND:-0}" -gt 0 ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::触发本次的 Nuitka run 没有安装包产物 (haitun.iss 未变, 未编译); 跳过上传"
+          fi
+
+      - name: Download installer artifact
+        if: steps.check.outputs.skip != 'true' && steps.artifact.outputs.exists == 'true'
         uses: actions/download-artifact@v8
         with:
           name: haitun-agent-installer-nuitka
@@ -96,7 +121,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload installer and version.txt to Aliyun OSS
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip != 'true' && steps.artifact.outputs.exists == 'true'
         shell: bash
         env:
           ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
