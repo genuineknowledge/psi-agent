@@ -14,6 +14,7 @@ from loguru import logger
 from psi_agent._router_status import router_status_from_event
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent._trace import TRACE_ID_HEADER, normalize_trace_id, resolve_trace_id
+from psi_agent.protocol import FINISH_REASON_ERROR, SSE_DONE, parse_sse_data
 from psi_agent.session.protocol import AiDelta
 
 

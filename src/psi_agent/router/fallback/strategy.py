@@ -9,6 +9,7 @@ import anyio
 from loguru import logger
 
 from psi_agent._router_status import RouterStatus, router_status_from_event
+from psi_agent.protocol import FINISH_REASON_ERROR, FINISH_REASON_TOOL_CALLS, is_auxiliary_finish
 
 from ..errors import InvalidRouterRequestError, RouterUpstreamError
 from ..models import BufferedCompletion, CompletionResult, RoutingScopeKey

@@ -14,6 +14,14 @@ from loguru import logger
 from psi_agent._router_status import router_status_from_event
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent._trace import TRACE_ID_HEADER, normalize_trace_id
+from psi_agent.protocol import (
+    FINISH_REASON_ERROR,
+    FINISH_REASON_TOOL_CALLS,
+    SSE_DONE,
+    is_auxiliary_finish,
+    is_terminal_finish,
+    parse_sse_data,
+)
 
 from .errors import RouterUpstreamError
 from .models import BufferedCompletion, CompletionResult

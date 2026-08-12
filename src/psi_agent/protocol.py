@@ -16,6 +16,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from psi_agent._router_status import RouterStatus
+
 # Provenance for ``delta.reasoning`` / ``AgentChunk.reasoning`` (UI whitelist).
 # Thinking + tool progress stay in one ``reasoning`` slot (Session<->AI shape
 # isomorphism); ``kind`` discriminates render / filter without splitting the slot.
@@ -66,8 +68,14 @@ class DeltaMessage:
     reasoning: str | None = None
     kind: str | None = None
     tool_calls: list[dict[str, Any]] | None = None
+    router_status: RouterStatus | None = None
+    """Validated Router progress; serialized only in an independent delta."""
 
     def to_dict(self) -> dict[str, Any]:
+        if self.router_status is not None and any(
+            value is not None for value in (self.content, self.role, self.reasoning, self.kind, self.tool_calls)
+        ):
+            raise ValueError("router_status must use an independent DeltaMessage")
         d: dict[str, Any] = {}
         if self.content is not None:
             d["content"] = self.content
@@ -79,6 +87,8 @@ class DeltaMessage:
             d["kind"] = self.kind
         if self.tool_calls is not None:
             d["tool_calls"] = self.tool_calls
+        if self.router_status is not None:
+            d["router_status"] = self.router_status.to_dict()
         return d
 
 

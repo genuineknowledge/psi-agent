@@ -14,6 +14,7 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent._trace import resolve_trace_id
+from psi_agent.protocol import FINISH_REASON_ERROR
 from psi_agent.session.protocol import AgentChunk, AgentError, ChatCompletionChunk, DeltaMessage, StreamChoice
 
 

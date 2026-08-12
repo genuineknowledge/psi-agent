@@ -89,7 +89,7 @@ async def iter_sse_events(lines: AsyncIterable[bytes]) -> AsyncGenerator[dict[st
                 raise ChannelError("Invalid router_status event")
             delta = {"router_status": router_status}
 
-        if choice.get("finish_reason") == "error":
+        if choice.get("finish_reason") == FINISH_REASON_ERROR:
             msg = delta.get("content", "Session error")
             logger.warning(f"finish_reason=error: {msg!r}")
             raise ChannelError(msg)

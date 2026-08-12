@@ -12,6 +12,15 @@ from aiohttp import web
 from loguru import logger
 
 from psi_agent._trace import TRACE_ID_HEADER, ensure_trace_id, trace_id_from_routing
+from psi_agent.protocol import (
+    FINISH_REASON_COMPACTION_NEEDED,
+    FINISH_REASON_ERROR,
+    FINISH_REASON_STOP,
+    FINISH_REASON_TOOL_CALLS,
+    REASONING_KIND_THINKING,
+    REASONING_KIND_TOOL_CALL,
+    REASONING_KIND_TOOL_RESULT,
+)
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation

@@ -10,6 +10,7 @@ from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
 
 from psi_agent._trace import TRACE_ID_HEADER, resolve_trace_id
+from psi_agent.protocol import make_compaction_signal
 
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
