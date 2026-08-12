@@ -1,3 +1,5 @@
+import { nextTick } from 'vue'
+
 import { useChatStore } from '../stores/chat.js'
 import { useSessionStore } from '../stores/session.js'
 import { htmlEscape, renderMd, saveHistory, loadHistory } from '../utils.js'
@@ -6,6 +8,7 @@ import { api, streamChat } from '../api.js'
 import { scrollToBottomIfLocked } from './useScroll.js'
 import { promoteDraftToSession } from './useSession.js'
 import { useUiStore } from '../stores/ui.js'
+import { useUxStore } from '../stores/ux.js'
 import {
   buildSessionTitlePayload,
   isPlaceholderSessionTitle,
@@ -258,8 +261,12 @@ function ensureStreamingAssistant(sid, userMsg, currentAsst) {
   return addAssistantAfter(sid, userMsg)
 }
 
-async function runChatTurn(sid, { userMsg, text, files, controller = new AbortController() }) {
-  const traceId = createTraceId()
+async function runChatTurn(
+  sid,
+  { userMsg, text, files, controller = new AbortController(), traceId = createTraceId() },
+) {
+  const ux = useUxStore()
+  ux.startTurn({ traceId, sessionKey: sid })
   ensureSessionMessageList(sid)
   mirrorVisibleMessages(sid, clearSessionRouterStatus(sid))
   setSessionAbortController(sid, controller)
@@ -275,13 +282,26 @@ async function runChatTurn(sid, { userMsg, text, files, controller = new AbortCo
 
   let asst = findPendingAssistantAfter(getMessagesList(sid), userMsg)
   if (!asst) asst = addAssistantAfter(sid, userMsg)
+  ux.mark(traceId, 'assistant_ready')
+  let visibleOutputMarked = false
+
+  async function markFirstVisibleOutput() {
+    if (!ux.enabled || visibleOutputMarked) return
+    visibleOutputMarked = true
+    await nextTick()
+    ux.mark(traceId, 'first_visible_output')
+  }
 
   let outcome = null
   try {
     try {
       throwIfAborted(controller.signal)
+      ux.mark(traceId, 'request_start')
       const reader = await streamChat(sid, fd, controller.signal, traceId)
+      ux.mark(traceId, 'response_headers')
       for await (const chunkData of readSSE(reader)) {
+        ux.mark(traceId, 'first_sse')
+        ux.recordSse(traceId, chunkData?.trace_id)
         if (chunkData?.trace_id !== undefined) {
           assertMatchingTraceId(chunkData.trace_id, traceId)
         }
@@ -289,14 +309,17 @@ async function runChatTurn(sid, { userMsg, text, files, controller = new AbortCo
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.text += chunkData.text
           asst.html = renderMd(stripTransferMarkers(asst.text))
+          if (chunkData.text) await markFirstVisibleOutput()
         } else if (chunkData.type === 'blob') {
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           asst.files.push({ name: chunkData.name, data: chunkData.data })
+          await markFirstVisibleOutput()
           // SEND path succeeded as a chip — hide leftover markers from bubble text.
           asst.html = renderMd(stripTransferMarkers(asst.text))
         } else if (chunkData.type === 'error') {
           asst = ensureStreamingAssistant(sid, userMsg, asst)
           const issue = applyStreamIssueToAssistant(asst, chunkData)
+          ux.recordIssue(traceId, issue)
           if (issue?.severity !== 'warning') {
             clearSessionRouterStatus(sid)
           }
@@ -305,6 +328,7 @@ async function runChatTurn(sid, { userMsg, text, files, controller = new AbortCo
           if (routerStatus) {
             asst = ensureStreamingAssistant(sid, userMsg, asst)
             asst.routerStatus = routerStatus
+            ux.recordRouterStatus(traceId, routerStatus)
           }
         } else if (chunkData.type === 'reasoning') {
           // Thinking + tool markers arrive as reasoning. Do not start a new
@@ -321,6 +345,7 @@ async function runChatTurn(sid, { userMsg, text, files, controller = new AbortCo
         asst.stopped = true
       } else {
         asst.fatal = true
+        ux.recordIssue(traceId, { severity: 'fatal' })
       }
       clearSessionRouterStatus(sid)
     }
@@ -348,9 +373,14 @@ async function runChatTurn(sid, { userMsg, text, files, controller = new AbortCo
     mirrorVisibleMessages(sid, msgs)
     saveHistory(sid, msgs)
   } finally {
-    mirrorVisibleMessages(sid, clearSessionRouterStatus(sid))
+    const cleared = clearSessionRouterStatus(sid)
+    mirrorVisibleMessages(sid, cleared)
     setSessionStreaming(sid, false, { markDone: true })
     clearSessionAbortController(sid, controller)
+    ux.finishTurn(traceId, {
+      outcome: outcome ?? (controller.signal.aborted ? 'stopped' : 'incomplete'),
+      statusCleared: cleared.every(message => message.routerStatus == null),
+    })
   }
 
   if (outcome === 'ok') notifyAttentionIfNeeded(sid)
@@ -392,6 +422,7 @@ function abortOptimisticSend(sid, userMsg, failedReason = 'error') {
 export async function sendMessage() {
   const chat = useChatStore()
   const session = useSessionStore()
+  const ux = useUxStore()
 
   let sid = resolveActiveChatKey()
   if (!sid) return
@@ -404,6 +435,9 @@ export async function sendMessage() {
   const text = chat.inputText.trim()
   const files = [...chat.selectedFiles]
   if (!text && !files.length) return
+
+  const traceId = createTraceId()
+  ux.startTurn({ traceId, sessionKey: sid })
 
   ensureSessionMessageList(sid)
 
@@ -428,12 +462,15 @@ export async function sendMessage() {
   setSessionAbortController(sid, controller)
   setSessionStreaming(sid, true)
   addAssistantAfter(sid, um)
+  ux.mark(traceId, 'assistant_ready')
 
   try {
     await encodeFiles(files, um, controller.signal)
 
     if (session.draftSession) {
+      const draftId = sid
       sid = await promoteDraftToSession({ signal: controller.signal })
+      ux.moveTurn(traceId, draftId, sid)
       const list = getMessagesList(sid)
       if (!list.includes(um)) {
         um = list.filter(m => m.role === 'user').at(-1) ?? um
@@ -444,11 +481,16 @@ export async function sendMessage() {
 
     throwIfAborted(controller.signal)
     void ensureSessionSidebarTitle(sid)
-    await runChatTurn(sid, { userMsg: um, text: um.text, files, controller })
+    await runChatTurn(sid, { userMsg: um, text: um.text, files, controller, traceId })
   } catch (e) {
     const stopped = isAbortError(e) || controller.signal.aborted
     abortOptimisticSend(sid, um, stopped ? 'stopped' : 'error')
     clearSessionAbortController(sid, controller)
+    if (!stopped) ux.recordIssue(traceId, { severity: 'fatal' })
+    ux.finishTurn(traceId, {
+      outcome: stopped ? 'stopped' : 'error',
+      statusCleared: getMessagesList(sid).every(message => message.routerStatus == null),
+    })
     if (!stopped) useUiStore().showAlert(e.message || '发送失败')
   }
 }
@@ -512,10 +554,14 @@ export async function resendFailedMessage(userMsg) {
 export function stopMessage() {
   const session = useSessionStore()
   const chat = useChatStore()
+  const ux = useUxStore()
   const sid = resolveActiveChatKey()
   if (!sid) return
   const controller = session.sessionAbortControllers[sid] ?? chat.abortController
-  if (controller) controller.abort()
+  if (controller) {
+    ux.markStopForSession(sid)
+    controller.abort()
+  }
   mirrorVisibleMessages(sid, clearSessionRouterStatus(sid))
 }
 

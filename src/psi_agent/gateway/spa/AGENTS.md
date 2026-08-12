@@ -4,7 +4,7 @@
 
 Web 控制台是一个本地打包、无外部 CDN 依赖的 Vue 3 单页应用（SPA），由 Vite 构建为静态文件，通过 Gateway 的 `/spa/` 路由服务。支持多格式文件预览（代码/PDF/Word/PPT/Excel/CSV），依赖已显著增加，不再是轻量前端。
 
-每个聊天回合在 `runChatTurn()` 创建一个 UUID trace_id，经 `X-Psi-Trace-Id` 发送给 Gateway。响应头及每个带
+每个聊天回合在 `sendMessage()`（重试/重新生成路径在 `runChatTurn()`）创建一个 UUID trace_id，经 `X-Psi-Trace-Id` 发送给 Gateway。响应头及每个带
 `trace_id` 的 SSE 数据事件必须与本回合一致；不一致时按 fatal 流错误处理。trace 只用于当前回合关联，
 不写入 `gw-hist-*`，也不在用户正文中展示。
 
@@ -37,7 +37,7 @@ aggregation=`并行聚合`、fallback=`顺序回退`。创建表单、ModelPanel
 
 3. **技术栈封闭**：默认不再引入 **Vue Router**（单页无路由）、**TypeScript**、**CSS 预处理器**；已采用 **Pinia** 做领域 store 拆分（见下条）。确需新增第三方库时，先评估体积与是否可 tree-shake，并在「技术栈」表补一行「选择理由」。
 
-4. **按领域拆分 Pinia store**：全局/跨组件状态按领域拆进 `src/stores/` 下的 4 个 setup-store（`ai.js`/`session.js`/`chat.js`/`ui.js`），组件内经 `storeToRefs` 取 state（保响应式），action 直接从 store 实例调用；不再用 `provide/inject`。组件内裸 `ref` 只用于纯本地 UI 状态（如某个 input 的临时值）。跨组件副作用用 store 字段信号传递（如 `chat.uploadResetToken` 递增通知 InputBar 清空 file input），不要组件间直接互相调方法。新增状态先判断归属哪个领域 store，避免混进无关 store。
+4. **按领域拆分 Pinia store**：全局/跨组件状态按领域拆进 `src/stores/` 下的 5 个 setup-store（`ai.js`/`session.js`/`chat.js`/`ui.js`/`ux.js`），组件内经 `storeToRefs` 取 state（保响应式），action 直接从 store 实例调用；不再用 `provide/inject`。组件内裸 `ref` 只用于纯本地 UI 状态（如某个 input 的临时值）。跨组件副作用用 store 字段信号传递（如 `chat.uploadResetToken` 递增通知 InputBar 清空 file input），不要组件间直接互相调方法。新增状态先判断归属哪个领域 store，避免混进无关 store。
 
 5. **服务端是唯一数据源**：AI / Session 列表、标题从 Gateway REST GET 获取，`localStorage` 只存 UI 偏好与对话缓存（见「localhost 持久化策略」）。新增持久化项必须用 `gw-` 前缀 key，并同步更新持久化表。
 
@@ -102,11 +102,12 @@ spa/
 ├── src/
 │   ├── main.js                      # createApp + app.use(createPinia()) + import CSS + v-focus directive
 │   ├── App.vue                      # 根组件：编排层 — 跨组件 handler + 弹窗 + drag-drop；sidebar/input 业务逻辑已移入各组件
-│   ├── stores/                      # Pinia 领域 store（4 个 setup-store）
+│   ├── stores/                      # Pinia 领域 store（5 个 setup-store）
 │   │   ├── ai.js                    # useAiStore：ais, selectedAiId, aiForm, fetchedModels, loadingModels, modelPanelOpen
 │   │   ├── session.js               # useSessionStore：sessions, selectedSessionId, draftSession, sessionTitles, sessionMessages, sessionInputs, sessionStreaming, sessionAbortControllers, …
 │   │   ├── chat.js                  # useChatStore：messages, inputText, streaming, abortController, selectedFiles, userHasScrolledUp, uploadResetToken
-│   │   └── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken, hubMenuOpen, hubPanel + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch/toggleHubMenu/openHubPanel/…
+│   │   ├── ui.js                    # useUiStore：loadingEnv, isLightMode, isDragging, dlgAI, dlgSess, snackbar, dlgConfirm, isSidebarCollapsed, isMobileSidebarOpen, sessionSearchFocusToken, hubMenuOpen, hubPanel + action showAlert/toggleSidebar/closeMobileSidebar/focusSessionSearch/toggleHubMenu/openHubPanel/…
+│   │   └── ux.js                    # useUxStore：调试模式下的内存 UX 回合记录、汇总、清空与安全导出
 │   ├── sendMarkers.js               # stripTransferMarkers（剥掉气泡/历史展示里的 [SEND:]/[RECV:]，防绝对路径泄露）
 │   ├── mdTable.js                   # GFM 表格复制/下载（MessageBubble + FilePreview MD 预览共用）
 │   ├── assistantSegments.js         # 助手分段辅助（一轮 user → 至多一个主 assistant 气泡）
@@ -118,6 +119,8 @@ spa/
 │   ├── streamIssue.test.js          # fatal fail-closed、warning 隐私剥离与文案单测
 │   ├── turnCancellation.js          # 回合 AbortError 判定 + AbortSignal-aware FileReader
 │   ├── turnCancellation.test.js     # 发送前/文件编码中取消与成功清理单测
+│   ├── uxMetrics.js                 # 用户侧时间点、Router 阶段与成功/降级/恢复率的纯计算
+│   ├── uxMetrics.test.js            # UX 派生指标、分位数、隐私白名单与调试开关单测
 │   ├── utils.test.js                # renderMd GFM 表格规范化单测（Vitest）
 │   ├── sendMarkers.test.js          # stripTransferMarkers 单测
 │   ├── api.js                       # fetch 封装(api) + chat 流请求(streamChat)
@@ -134,6 +137,7 @@ spa/
 │   │   ├── ChatArea.vue             # 消息列表容器 + 自动滚动 + 空状态
 │   │   ├── MessageBubble.vue        # 单条消息：Markdown + 附件 + 助手操作栏（赞踩/复制/重新生成）
 │   │   ├── RouterStatusIndicator.vue # Router routing/aggregation/fallback 的瞬时状态卡
+│   │   ├── UxMetricsPanel.vue       # 仅 ?ux_debug=1 展示的内存 UX 指标面板与 JSON 导出
 │   │   ├── ThinkingBubble.vue       # 等待首 token 的三个脉冲圆点
 │   │   ├── InputBar.vue             # 输入 UI：textarea 自适应高度 + 文件选择 + 发送按钮；发送逻辑委托给 useChat.js；内嵌 ModelPanel
 │   │   ├── ModelPanel.vue           # 输入栏旁模型切换（只切换/删除已连接；链接走 User Hub）
@@ -189,6 +193,7 @@ spa/
 | `src/stores/session.js` | Session 领域 store | `useSessionStore` setup-store，导出 `sessions/selectedSessionId/draftSession/sessionTitles/sessionMessages/…`；`draftSession` 为 client-only 草稿（首条发送前不 POST）；`pinnedSessionIds` 在 setup 内经 `loadPinnedSessionIds(window.localStorage)` 初始化 |
 | `src/stores/chat.js` | Chat 领域 store | `useChatStore` setup-store，导出 `messages/inputText/streaming/abortController/selectedFiles/userHasScrolledUp/uploadResetToken` |
 | `src/stores/ui.js` | UI 领域 store | `useUiStore` setup-store，导出 `loadingEnv/isLightMode/isDragging/dlgAI/dlgSess/snackbar/dlgConfirm/isSidebarCollapsed/isMobileSidebarOpen/sessionSearchFocusToken/hubMenuOpen/hubPanel` + action `showAlert`/`toggleSidebar`/`closeMobileSidebar`/`focusSessionSearch`/`toggleHubMenu`/`openHubPanel`/`closeHubPanel` |
+| `src/stores/ux.js` | UX 调试 store | 仅 `?ux_debug=1` 启用；按 trace 维护回合内存记录，最多保留 200 条已完成样本，提供汇总/清空/内容无关 JSON 导出，不写 localStorage |
 | `src/api.js` | HTTP 封装 | `api(method,path,body,{signal})` — JSON fetch，非 2xx 抛错并可取消；`streamChat(sessionId,formData,signal)` — 可取消的 POST multipart，返回 `body.getReader()` 供 SSE 消费。`G()` 取 `window.location.origin` |
 | `src/utils.js` | 纯工具 + 持久化 | `renderMd`（marked+KaTeX，见「Markdown 渲染流程」）；`htmlEscape`（用户输入转义）；`mimeType`（扩展名→MIME）；localStorage 读写：`saveActiveState/loadActiveState`（`gw-active-ids`）、`saveHistory/loadHistory/clearHistory`（`gw-hist-<id>`：role/text/files + stopped/failed/failedReason/feedback + warning code） |
 | `src/providers.js` | 预置 provider 表 | 导出 `PROVIDERS` 数组：13 家供应商的 `v`(值)/`l`(标签)/`base`(默认 base_url)/`models`(预置模型名)，供 AiDialog 高级下拉 |
@@ -282,9 +287,9 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 
 **注意**：`#app` 在 `index.html` 中已经存在，`App.vue` 模板使用 `#root-layout` 作为内部根元素，避免 duplicate `#app`。
 
-## 状态管理 — `src/stores/`（4 个 Pinia setup-store）
+## 状态管理 — `src/stores/`（5 个 Pinia setup-store）
 
-按领域拆分为 4 个 store，均用 `defineStore(name, () => {...})` 的 setup 写法（内部用 `ref`，`return` 暴露给外部）。组件里用 `storeToRefs(store)` 取 state（保响应式），action 直接从 store 实例调用（如 `ui.showAlert(...)`）。
+按领域拆分为 5 个 store，均用 `defineStore(name, () => {...})` 的 setup 写法（内部用 `ref`，`return` 暴露给外部）。组件里用 `storeToRefs(store)` 取 state（保响应式），action 直接从 store 实例调用（如 `ui.showAlert(...)`）。
 
 ### `stores/ai.js` — `useAiStore`
 
@@ -339,6 +344,10 @@ App.vue 是**编排层**：负责跨组件事件处理、弹窗控制、drag-dro
 | `showAlert(message)` | `action` | 显示 snackbar 提示，4 秒后自动隐藏（若消息未被新提示覆盖） |
 | `toggleSidebar(isMobile)` | `action` | 按 `isMobile` 切换移动端抽屉或桌面折叠状态 |
 | `closeMobileSidebar()` | `action` | 关闭移动端抽屉 |
+
+### `stores/ux.js` — `useUxStore`
+
+仅在 URL 带 `?ux_debug=1` 时采集。store 用 `performance.now()` 记录浏览器单调时钟，按 trace 聚合发送、可呈现 assistant、请求头、首 SSE、首 Router 状态、首可见输出、Stop 和清理完成时间；已完成记录最多保留 200 条且只驻留内存。导出内容只含 trace、相对时间、Router 白名单阶段、稳定 warning code 和派生结果，不含 prompt、回复正文、文件名/路径、socket、模型名、API key 或原始错误文本。
 
 ## Markdown 渲染流程 (`utils.js:renderMd`)
 
@@ -403,6 +412,12 @@ Stop 按钮的可见条件是当前 session `streaming=true`，因此 `sendMessa
 预流阶段收到 AbortError 时移除空 assistant、保留 user、写入 `failedReason:'stopped'` 并允许重试；不得显示
 “发送失败” snackbar。网络或编码的非取消异常仍走 `failedReason:'error'`。所有成功、停止和错误出口只清理
 与本回合 identity 相同的 controller，避免旧回合的 finally 清掉新回合控制器。
+
+### 用户侧 UX 指标（调试功能）
+
+访问 `/spa/?ux_debug=1` 才会启用 `useUxStore` 并显示 `UxMetricsPanel`；普通 `/spa/` 不采集、不渲染面板。指标是浏览器实际观察到的客户端时间：发送点击到 assistant 状态提交、响应头、首 SSE、首 Router 状态、首段正文经 `nextTick()` 可呈现、流结束，以及 Stop 点击到回合清理。Router 状态进一步派生 routing 选择耗时、aggregation 收集/综合等待、fallback 尝试/切换/恢复和回放到可见输出时间。
+
+面板汇总完成样本的 p50/p90/p95 与成功率、fatal/warning 率、trace 完整率、状态顺序/清理率、fallback 启用/恢复率、aggregation 降级率。数据仅存在当前标签页内存，最多 200 个完成回合；刷新即清空。导出 JSON 使用相对时间和协议白名单字段，禁止加入用户输入、AI 正文、文件名/路径、模型/候选名、socket、密钥或原始异常文本。这里的 UX TTFT 是“Vue 已完成首段可见状态更新”的客户端指标，不冒充浏览器绘制完成或服务端 token 时间。
 
 ## 文件预览 (`FilePreview.vue`)
 
