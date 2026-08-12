@@ -191,6 +191,10 @@ AI 和 Session 组件无需关心通信介质——由 `_sockets.py` 统一处�
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 代理 |
 | `PSI_FEISHU_APP_ID` | 飞书 app ID |
 | `PSI_FEISHU_APP_SECRET` | 飞书 app secret |
+| `PSI_APPDATA` | AppData 记忆区根路径 |
+| `PSI_MAX_CONTEXT_TOKENS` | Token 阈值，超过时触发 compaction |
+| `PSI_AUTH_ENDPOINT` | 云端账号服务地址 |
+| `PSI_AUTH_PREFIX` | 云端账号服务前缀 |
 
 CLI 参数优先于环境变量。AI 参数（provider、model、api_key、base_url）及 channel 认证参数均可选，未传时回退到环境变量。Socket 路径参数（--session-socket、--channel-socket、--ai-socket）为必填。
 
@@ -308,18 +312,45 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
+| POST | `/routers` | 创建并启动 Router |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router |
+| GET | `/routers` | 列出所有 Router |
 | POST | `/sessions` | 创建 Session |
 | DELETE | `/sessions/{session_id}` | 删除 Session |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/todos` | 读取会话 todo 列表 |
+| GET | `/sessions/{session_id}/todo-segments` | 子任务分段列表 |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 单段含 todos 的历史 checklist |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 修改段标题/标签 |
 | POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
+| GET | `/oauth/callback` | OAuth 重定向落地端点 |
+| GET | `/oauth/code` | 发起方按 state 换取一次性 code |
+| GET | `/auth/status` | 登录态 + 链路自检信息 |
+| POST | `/auth/send-code` | 请求发送验证码 |
+| POST | `/auth/verify` | 验证验证码登录 |
+| POST | `/auth/complete` | 注册补充个人信息 |
+| POST | `/auth/bind` | 绑定手机/邮箱 |
+| DELETE | `/auth/identities/{provider}` | 解绑登录方式 |
+| GET | `/auth/me` | 获取当前账号信息 |
+| POST | `/auth/logout` | 退出登录并清除凭证 |
+| GET | `/auth/devices` | 获取已登录设备列表 |
+| DELETE | `/auth/devices/{device_id}` | 吊销设备登录态 |
+| GET | `/defaults` | 默认 agent、workspace 与 appdata 路径 |
+| GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/places` | PathPicker 快捷位置和盘符 |
+| GET | `/workspace/browse` | 浏览目录 |
+| GET | `/workspace/file` | 读取工作区文件 |
+| POST | `/workspace/reveal` | 在本机文件管理器中定位并显示路径 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
-| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
-| GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/summaries` | 获取所有会话任务摘要 |
+| POST | `/summaries` | 设置任务摘要 |
+| POST | `/summaries/generate` | AI 自动生成任务摘要 |
+| POST | `/ui/attention` | 触发注意力提示（闪烁托盘/webview） |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 

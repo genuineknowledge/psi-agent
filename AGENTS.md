@@ -94,6 +94,10 @@ src/
     │   ├── schedule_registry.py    # ScheduleRegistry — 定时任务集
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
     │   ├── protocol.py             # Session 专属类型（含 `AgentRunResult`）+ 重导出 `psi_agent.protocol` 共享定义
+    │   ├── event_protocol.py       # 定义 Event 协议与 payload 处理
+    │   ├── history_display.py      # 对话历史过滤白名单与标记处理
+    │   ├── runtime_context.py      # 存储 agent 和 workspace 等运行时 ContextVar
+    │   ├── trigger_registry.py     # 加载并管理 agent 能力包内的 Event 触发器
     ├── router/
     │   ├── AGENTS.md               # Router 层设计与不变量
     │   ├── entry.py                # Router 统一入口（routing / aggregation / fallback）
@@ -134,6 +138,12 @@ src/
         ├── _attention.py           # AttentionHub — tray/webview 注意力提示
         ├── _tray.py                # 系统托盘图标 (pystray)
         ├── _webview.py            # 原生 webview 窗口 (pywebview)
+        ├── _auth_manager.py        # AuthManager — 账号服务转发层与登录态持有者
+        ├── _auth_store.py          # 本机凭证加密落盘
+        ├── _defaults.py            # 默认 agent / workspace 路径解析
+        ├── _spa_shell.py           # SPA 模板外壳注入
+        ├── _summary_manager.py     # SummaryManager — 任务摘要生成与管理
+        ├── _todo_manager.py        # TodoManager — 会话 todo 与分段读取
         ├── spa/                    # Vue 3 SPA v1（Vite + SFC）
         └── spa-v2/                 # React SPA v2（任务工作台；默认 GET /）
 ```
