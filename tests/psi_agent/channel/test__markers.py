@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from psi_agent.channel._markers import SendMarkerScanner, encode_input
+from psi_agent.channel._markers import SendMarkerScanner, encode_input, iter_send_paths
 from psi_agent.channel._types import FileChunk, TextChunk
 
 
@@ -69,3 +69,45 @@ def test_scanner_third_marker_after_trailing_text_regression():
     assert scanner.feed("[SEND:/a.py]TAIL") == [FileChunk("/a.py")]
     assert scanner.feed("[SEND:/b.py]") == [FileChunk("/b.py")]
     assert scanner.feed("[SEND:/c.py]") == [FileChunk("/c.py")]
+
+
+def test_scanner_ignores_empty_path_marker():
+    """``[SEND:]`` 是模型笔误, 不是传输请求。
+
+    Channel 侧对 FileChunk 无空路径过滤 —— Feishu/Telegram 的 _send_file 会拿
+    空 source path 直接发起上传。故空路径必须在解码处就被丢掉。
+    """
+    scanner = SendMarkerScanner()
+    assert scanner.feed("oops [SEND:] nothing here") == []
+
+
+def test_scanner_ignores_whitespace_only_path_marker():
+    scanner = SendMarkerScanner()
+    assert scanner.feed("oops [ SEND:   ] nothing here") == []
+
+
+def test_scanner_still_detects_real_path_after_empty_marker():
+    """空标记不得吃掉扫描指针, 后续真实标记仍须被发现。"""
+    scanner = SendMarkerScanner()
+    assert scanner.feed("[SEND:] then [SEND:/real.py] end") == [FileChunk("/real.py")]
+
+
+def test_iter_send_paths_yields_path_and_match_end():
+    text = "a [SEND:/x.py] b"
+    assert list(iter_send_paths(text)) == [("/x.py", text.index("]") + 1)]
+
+
+def test_iter_send_paths_skips_empty_and_keeps_order():
+    paths = [path for path, _ in iter_send_paths("[SEND:/a] [SEND:] [SEND:/b]")]
+    assert paths == ["/a", "/b"]
+
+
+def test_iter_send_paths_unclosed_marker_does_not_swallow_next_line():
+    """An unclosed ``[SEND:`` must not eat the real marker on a later line.
+
+    The path class excludes ``\\n`` for this reason: with a newline-permissive
+    class the first (unclosed) marker matches all the way to the ``]`` below,
+    losing ``/tmp/report.pdf`` and handing ``_send_file`` a multi-line string.
+    """
+    text = "结果如下 [SEND: 写错了\n真正的文件是 [SEND:/tmp/report.pdf]"
+    assert [path for path, _ in iter_send_paths(text)] == ["/tmp/report.pdf"]

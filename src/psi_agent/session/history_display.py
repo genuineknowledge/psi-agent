@@ -28,6 +28,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from psi_agent._send_markers import iter_send_paths
+
 KIND_CHAT = "chat"
 KIND_SCHEDULE_SILENT = "schedule.silent"
 KIND_SCHEDULE_DISPLAY = "schedule.display"
@@ -71,7 +73,6 @@ _KNOWN_KINDS = frozenset(
 # Presentation-only strip of wire transfer markers (Gateway history projection).
 # Tolerates the space-padded variant ``[ SEND:path ]`` emitted by some models.
 _TRANSFER_MARKER_RE = re.compile(r"\[\s*(?:SEND|RECV)\s*:\s*[^\]]*?\]", re.IGNORECASE)
-_SEND_PATH_RE = re.compile(r"\[\s*SEND\s*:\s*([^\]]*?)\s*\]", re.IGNORECASE)
 
 
 def normalize_kind(raw: object) -> str:
@@ -240,15 +241,14 @@ def strip_transfer_markers(text: str) -> str:
 
 
 def extract_send_paths(text: str) -> list[str]:
-    """Return ``[SEND:…]`` paths in order (stripped); empty / whitespace skipped."""
+    """Return ``[SEND:…]`` paths in order (stripped); empty / whitespace skipped.
+
+    Decoding lives in ``psi_agent._send_markers`` so the Channel transport and
+    this Gateway projection cannot drift apart on what counts as a path.
+    """
     if not isinstance(text, str) or not text:
         return []
-    out: list[str] = []
-    for match in _SEND_PATH_RE.finditer(text):
-        path = match.group(1).strip()
-        if path:
-            out.append(path)
-    return out
+    return [path for path, _ in iter_send_paths(text)]
 
 
 def is_displayable_chat_message(msg: dict[str, Any]) -> bool:

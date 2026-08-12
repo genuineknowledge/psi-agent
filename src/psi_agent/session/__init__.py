@@ -10,8 +10,37 @@ from loguru import logger
 from psi_agent._appdata import resolve_appdata_root
 from psi_agent._logging import setup_logging
 from psi_agent.session.agent import SessionAgent
+from psi_agent.session.history_display import (
+    KIND_CHAT,
+    extract_send_paths,
+    is_displayable_chat_message,
+    message_kind,
+    strip_transfer_markers,
+    wire_role,
+)
 from psi_agent.session.schedule_registry import ACTIVATE_ALL
 from psi_agent.session.server import serve_session
+
+# Session's public facade. The history_display / schedule_registry names below
+# are depended on by Gateway (_history_manager projects /history from them;
+# _scheduler_manager / _session_manager use ACTIVATE_ALL to decide which
+# schedules run). The dependency is deliberate -- Gateway's display projection
+# must match Session's on-disk semantics byte for byte, or the same history
+# renders two different ways -- so this gives it a formal channel rather than
+# leaving Gateway to import Session's internal modules directly. Existing
+# Gateway import paths remain valid; this is an additional channel, not a
+# forced migration.
+__all__ = [
+    "ACTIVATE_ALL",
+    "KIND_CHAT",
+    "Session",
+    "SessionAgent",
+    "extract_send_paths",
+    "is_displayable_chat_message",
+    "message_kind",
+    "strip_transfer_markers",
+    "wire_role",
+]
 
 
 @dataclass

@@ -108,15 +108,10 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
             await response.write(f"data: {data}\n\n".encode())
         if compaction_needed:
             signal = json.dumps(
-                {
-                    "id": "compaction",
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "compaction_needed"}],
-                    "psi_compaction": {
-                        "needed": True,
-                        "prompt_tokens": compaction_usage.get("prompt_tokens", 0),
-                        "threshold": max_context_tokens,
-                    },
-                }
+                make_compaction_signal(
+                    prompt_tokens=compaction_usage.get("prompt_tokens", 0),
+                    threshold=max_context_tokens,
+                )
             )
             logger.debug(f"SSE compaction signal trace_id={trace_id}: {signal[:500]}")
             await response.write(f"data: {signal}\n\n".encode())

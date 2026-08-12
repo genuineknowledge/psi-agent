@@ -1,9 +1,15 @@
-"""Types shared across the session layer — data models and serialisation."""
+"""Types shared across the session layer — data models and serialisation.
+
+The wire-format types and every shared protocol constant now live in
+``psi_agent.protocol`` (the cross-component owner) and are re-exported here so
+existing ``psi_agent.session.protocol`` imports keep working.  Prefer importing
+shared names from ``psi_agent.protocol`` in new code; this module's own
+contribution is the Session-only types below.
+"""
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 

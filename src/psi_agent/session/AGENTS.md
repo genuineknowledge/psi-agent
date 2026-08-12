@@ -171,6 +171,8 @@ Session 层使用两个对称的协议适配器，将 `SessionAgent.run()` 包�
 | `AgentError` | SessionAgent→Channel | 不可恢复错误信号 |
 | `AgentRunResult` | SessionAgent→调用方 | 一次 run 的不可变终态（`status` / `stop_cause` / `model_finish_reason` / `model_turns`）；**不进 SSE** |
 
+`protocol.py` 持有上表这些 Session 专属类型，并重导出 `psi_agent/protocol.py` 的共享线格式与常量（`ChatCompletionChunk` / `FINISH_REASON_*` / `REASONING_KIND_*` 等）。新代码优先从 `psi_agent.protocol` 导入共享名。
+
 ### 运行终态（`AgentRunResult`，issue #585）
 
 `run_streamed()` 返回 `AgentRun`——照旧 `async for` 迭代，迭代耗尽后读 `run.result` 得知这一轮**是怎么结束的**：
@@ -363,7 +365,9 @@ AI 的 tool_calls 通过 SSE 流式传输——多个 chunk 中的 `delta.tool_c
 | `schedule.silent` / `trigger.silent` / `compacted` | 否 |
 | 遗留 `chat_type=schedule` / `*_schedule` role | 视为 silent |
 
-Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记。
+Gateway ``HistoryManager`` 同时投影剥掉 ``[SEND:]``/``[RECV:]`` 标记。本节这几个符号（``KIND_CHAT`` / ``message_kind`` / ``wire_role`` / ``is_displayable_chat_message`` / ``strip_transfer_markers`` / ``extract_send_paths``）经 ``session/__init__.py`` 的 ``__all__`` 正式导出给 Gateway（同表还有 ``Session`` / ``SessionAgent`` / ``ACTIVATE_ALL``，共 9 个）——**依赖是刻意的**：Gateway 的展示投影必须与 Session 的落盘语义逐字一致，否则同一条历史两处渲染会分叉。此前 Gateway 按内部模块路径导入（依赖刻意、通道非正式），现已补上公开门面；旧 import 路径仍然有效，这是新增通道而非强制迁移。
+
+``[SEND:]`` 的解码（正则 + 空路径过滤）归属顶层 ``psi_agent/_send_markers.py`` 的 ``iter_send_paths()``，本层不再自持正则——两处正则曾经写法不同，而 Channel 侧没有空路径过滤。放在顶层而非 ``channel/`` 内，是为了不让本层 import Channel 的私有模块（同 ``_feishu_routing``）。
 
 ## History 持久化
 

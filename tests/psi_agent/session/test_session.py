@@ -6,6 +6,7 @@ from typing import Any
 import anyio
 import pytest
 
+import psi_agent.session as session_pkg
 from psi_agent.session import Session
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.schedule_registry import ACTIVATE_ALL
@@ -220,3 +221,26 @@ def test_name_set_splits_and_trims() -> None:
 def test_name_set_wildcard_with_names() -> None:
     """Wildcard alongside names: is_active already covers all, so the names are redundant but harmless."""
     assert Session._name_set("*, daily") == {ACTIVATE_ALL, "daily"}
+
+
+def test_public_exports_cover_gateway_dependencies():
+    """Gateway 依赖的符号必须走 Session 的公开门面。
+
+    gateway/_history_manager.py 与 _scheduler_manager.py 此前直接从
+    session.history_display / session.schedule_registry 导入 —— 依赖是刻意的,
+    通道却是非正式的。这条测试钉住正式导出面。
+    """
+    expected = {
+        "ACTIVATE_ALL",
+        "KIND_CHAT",
+        "Session",
+        "SessionAgent",
+        "extract_send_paths",
+        "is_displayable_chat_message",
+        "message_kind",
+        "strip_transfer_markers",
+        "wire_role",
+    }
+    assert expected <= set(session_pkg.__all__)
+    for name in expected:
+        assert hasattr(session_pkg, name), f"{name} declared in __all__ but not importable"

@@ -231,6 +231,45 @@ async def test_ai_client_non_data_sse_skipped():
 
 
 @pytest.mark.anyio
+async def test_ai_client_data_without_space_and_empty_payload():
+    """`data:` needs no space after the colon, and empty payloads are heartbeats.
+
+    Guards the shared ``parse_sse_data`` wiring: the old ``startswith("data: ")``
+    guard dropped space-less frames whole, and an empty ``data:`` must be
+    skipped silently rather than reaching ``json.loads``.
+    """
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        await resp.write(b"data:\n\n")
+        await resp.write(
+            b"data:"
+            + json.dumps({"id": "n", "choices": [{"delta": {"content": "nospace"}, "finish_reason": "stop"}]}).encode()
+            + b"\n\n"
+        )
+        await resp.write(b"data:[DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [d async for d in client.stream({"messages": [], "stream": True})]
+        assert len(deltas) == 1
+        assert deltas[0].content == "nospace"
+        assert deltas[0].finish_reason == "stop"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_ai_client_reasoning_field():
     """AiClient yields AiDelta with reasoning from SSE."""
 

@@ -360,10 +360,10 @@ Gateway：``list_segments`` / ``get_segment`` 只读；``set_segment_label`` 允
 - 加 `feishu-` 前缀与 SPA 手建 session 命名空间隔离；`sanitize` 用正则 `[^A-Za-z0-9._-] → _`（飞书 id 本身即安全字符，此为防御层）
 - 路由键加 `chat:` 前缀隔离两个命名空间（open_id 里不会有冒号）
 - **私聊侧把 `-` 转义成 `_`（刻意为之，勿"简化"掉）**：`sanitize` 的白名单**允许** `-`，若不转义，某人 open_id 恰为 `chat-oc_x` 时派生出的 `feishu-chat-oc_x` 会与群 `oc_x` 的 session id **逐字节相同**——两个陌生人共享同一份上下文与 workspace，是隐私事故而非美观问题。`_session_id` 与 `_workspace_for` 两处必须同步转义，否则 session 分开了 workspace 还是同一个目录。飞书真实 open_id 不含 `-`，这纯属防御层
-- **`chat_id` 为空时不按群路由（刻意为之）**：`_is_group` 要求 `chat_type in {group, topic}` **且** `chat_id` 非空，否则退回按 `open_id`。宁可这条消息不隔离，也不要建出 `feishu-chat-` 这种无主 session
+- **`chat_id` 为空时不按群路由（刻意为之）**：判定要求 `chat_type in {group, topic}` **且** `chat_id` 非空，否则退回按 `open_id`。宁可这条消息不隔离，也不要建出 `feishu-chat-` 这种无主 session。判定与 Channel 侧共用 `psi_agent/_feishu_routing.py` 的 `is_group_chat()` / `route_key()`（此前两侧各写一遍，判定漂移是隐私事故），本层只保留 `_sanitize_open_id` 的 `-` → `_` 转义——那只服务 session_id / workspace 派生，Channel 不派生这些
 
 **route(open_id, *, chat_id="", chat_type="", ai_id=None, workspace=None) → (channel_socket, session_id) 流程**（持 lock）：
-1. `_route_key` 定键 → `_session_id` 派生 sid；键为空 → `raise ValueError`（群聊不要求 `open_id`，私聊要求）
+1. `route_key()`（共享模块）定键 → `_session_id` 派生 sid；键为空 → `raise ValueError`（群聊不要求 `open_id`，私聊要求）
 2. 命中 `_routes` 且 `_sm.has(sid)` → 直接返回 `get_socket`
 3. 否则 `_sm.has(sid)`（重启后 Session 被 state 恢复，或 SPA 侧同名建过）→ **adopt** 该 Session，写回 `_routes`
 4. 否则 `mkdir(workspace)` + `_sm.create(ai_id=ai_id or _ai_id, id=sid, workspace=ws)`；捕获 `ValueError("already exists")` 竞态 → 回退 `get_socket`
@@ -401,6 +401,8 @@ OAuth 回调中继（`_oauth_manager.py`）：让**授权码自己回到发起�
 
 **generate(session_id, ai_socket, user_text, assistant_text)** — 通过 AI 自动生成标题，成功后写入 `_titles` 并调用 `_persist`。返回生成的 title 字符串，失败返回 None。
 
+`_title_manager` / `_summary_manager` 的 SSE `data:` 行解析用 `psi_agent.protocol.parse_sse_data()`。
+
 ## SummaryManager
 
 与 TitleManager 对称：session_id → 任务摘要（1～2 句，spa-v2「任务摘要」/ 任务卡正文）。
@@ -423,7 +425,7 @@ OAuth 回调中继（`_oauth_manager.py`）：让**授权码自己回到发起�
 | DELETE | `/sessions/{session_id}` | 删除 Session + history JSONL + 标题（200/404） |
 | GET | `/sessions` | 列出所有 Session（含 `agent`） |
 | POST | `/sessions/{session_id}/chat` | Web UI chat（SSE） |
-| GET | `/sessions/{session_id}/history` | 获取会话历史（AppData ``histories/`` 优先 + legacy 双读；``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`；assistant 行另附 ``sends``；JSONL ``reasoning``（思考散文）透出供 SPA「已思考」。**刻意为之**：无正文的 tool_calls 轮不进气泡，但其 ``reasoning`` 折叠进下一（或上一）条可展示 assistant；结构化 ``tool_calls`` 另投影为 ``tools: [{name, arguments}]``（**不**塞进 ``reasoning``），SPA 单独渲染「已调用 N 个工具」） |
+| GET | `/sessions/{session_id}/history` | 获取会话历史（AppData ``histories/`` 优先 + legacy 双读；``is_displayable_chat_message`` 白名单 + 剥 `[SEND:]`/`[RECV:]`；assistant 行另附 ``sends``；JSONL ``reasoning``（思考散文）透出供 SPA「已思考」。**刻意为之**：无正文的 tool_calls 轮不进气泡，但其 ``reasoning`` 折叠进下一（或上一）条可展示 assistant；结构化 ``tool_calls`` 另投影为 ``tools: [{name, arguments}]``（**不**塞进 ``reasoning``），SPA 单独渲染「已调用 N 个工具」）（`is_displayable_chat_message` / `strip_transfer_markers` / `extract_send_paths` 等符号经 `psi_agent.session` 的公开导出取得，见 `session/AGENTS.md`「History 展示白名单」） |
 | GET | `/sessions/{session_id}/todos` | 读取 todos（AppData ``todos/{id}.json`` 优先，否则 legacy workspace ``.psi/todos``）；返回 ``{todos, summary}``，文件缺失则为空列表 |
 | GET | `/sessions/{session_id}/todo-segments` | 子任务分段列表（``todos/{id}.segments.json``，新→旧）；``merge=false`` 开新段；返回 ``[{id,label,closed_at,summary,…}]`` |
 | GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 单段含 ``todos[]``（历史 checklist 回放） |

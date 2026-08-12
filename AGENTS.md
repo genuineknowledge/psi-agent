@@ -73,6 +73,9 @@ src/
     ├── _yaml.py               # 共享 YAML header 解析（scheduler + workspace system.py）
     ├── _sockets.py             # 共享 socket 工具（prefix-based transport 解析）
     ├── _appdata.py             # AppData 路径助手（todos/history/state；Session↔Gateway 共享）
+    ├── protocol.py             # 跨组件 SSE 协议归属（线格式类型 + finish_reason 常量 + 辅助帧/终止帧规则）
+    ├── _feishu_routing.py      # 飞书群聊/私聊判定与路由键（Gateway↔Channel 共享）
+    ├── _send_markers.py        # [SEND:] 解码：正则 + 空路径过滤（Channel↔Session 共享）
     ├── _run.py                 # YAML 配置批量启动（psi-agent run config.yml）
     ├── _logging.py              # loguru 配置，verbose→DEBUG
     ├── ai/
@@ -90,7 +93,7 @@ src/
     │   ├── system_prompt.py        # SystemPrompt — 系统 prompt 生命周期
     │   ├── schedule_registry.py    # ScheduleRegistry — 定时任务集
     │   ├── ai_client.py            # AiClient — AI 侧协议适配（HTTP/SSE → AiDelta）
-    │   ├── protocol.py             # Session 层类型（含 `AgentRunResult` 运行终态）
+    │   ├── protocol.py             # Session 专属类型（含 `AgentRunResult`）+ 重导出 `psi_agent.protocol` 共享定义
     ├── router/
     │   ├── AGENTS.md               # Router 层设计与不变量
     │   ├── entry.py                # Router 统一入口（routing / aggregation / fallback）
@@ -104,7 +107,7 @@ src/
     │   ├── __init__.py              # package marker
     │   ├── _types.py               # FileChunk, TextChunk, ReasoningChunk, RouterStatusChunk, InputChunk, OutputChunk
     │   ├── _errors.py              # ChannelError 异常基类
-    │   ├── _markers.py             # [RECV:]/[SEND:] 标记协议（纯函数 encode_input + 有状态扫描器 SendMarkerScanner）
+    │   ├── _markers.py             # [RECV:] 标记 + encode_input + 有状态扫描器 SendMarkerScanner（[SEND:] 解码重导出自 `_send_markers`）
     │   ├── _stream.py              # SSE 解析 iter_sse_events + interval 缓冲 StreamBuffer（与传输解耦）
     │   ├── _core.py                # ChannelCore — 连接管理 + post() 编排
     │   ├── repl/                   # 交互式 REPL thin client
@@ -186,6 +189,26 @@ SSE 流中的特殊字段：
    其中 `prompt_tokens` / `threshold` **不是纯日志字段**：Session 用它们做压缩冷却判断
    （`session/AGENTS.md`「压缩冷却」），省略会让冷却退化成 fail-open、退回连续重压。
 
+### 协议归属
+
+上述格式的**唯一定义处**是 `psi_agent/protocol.py`（与五个组件平级，因为它描述的是层与层之间的约定）：
+
+| 层次 | 内容 |
+|------|------|
+| 格式层 | `DeltaMessage` / `StreamChoice` / `ChatCompletionChunk`；`make_error_chunk()` / `make_compaction_signal()` / `parse_sse_data()` |
+| 常量层 | `FINISH_REASON_STOP` / `_TOOL_CALLS` / `_ERROR` / `_COMPACTION_NEEDED`、`REASONING_KIND_*`、`SSE_DONE` |
+| 语义层 | `AUXILIARY_FINISH_REASONS` frozenset、`is_terminal_finish()` / `is_auxiliary_finish()` |
+
+三条规则：
+
+1. **新增或改动 `finish_reason` 值，只改这一个文件。** 辅助帧（不终止流、不得覆盖终止帧）加进 `AUXILIARY_FINISH_REASONS` 即全局生效——此前这条规则在 Router 里被独立实现了 5 次，每次都是人读文档后手写的 `if`。
+2. **未知 `finish_reason` 视为终止**。`is_terminal_finish()` 只把辅助帧集合排除在外；`None` 既不终止也不辅助（流尚未报告结束）。
+3. **解析 `data:` 行一律用 `parse_sse_data()`**。SSE 规范中 `data:` 后的空格是**可选的**，不要写 `line[6:]` 或 `startswith("data: ")`——曾有四处这么写，无空格的帧会被整帧静默丢弃。该函数只做切片：空载荷（`data:` 心跳帧）返回 `""`，绝大多数调用方应先 `if not data_str: continue` 静默跳过，别让它走到 `json.loads` 去每拍记一条 warning；例外是 `router/client.py`——它把多行 `data:` 累积后 `"\n"` join，空载荷合法地贡献一个 `""`，故那里必须判 `is not None`。`[DONE]` 也原样返回，**语义由调用方定**——`session/ai_client.py` 是 `continue`、`channel/_stream.py` 是 `return`、`gateway` 的标题/摘要两处是 `break`，三者不同，所以这个函数刻意不接管终止动作。
+
+`session/protocol.py` 重导出这些共享定义（保持既有 import 路径有效），并额外持有 Session 专属类型（`AgentError` / `AgentRunStatus` / `AgentStopCause` / `AgentRunResult` / `AgentChunk` / `AiDelta`）。新代码优先从 `psi_agent.protocol` 导入。
+
+`any_llm.api.ChatCompletionChunk`（`ai/server.py`）与本仓的同名 dataclass **不同源**：前者是接收上游 provider 响应的 Pydantic 模型，后者用于构造下游 SSE。刻意不统一，靠模块路径区分。
+
 ## 日志约定
 
 - 所有模块使用 `from loguru import logger`
@@ -241,7 +264,7 @@ SSE 流中的特殊字段：
 
 18. **定时任务归 workspace，触发权归 (session × schedule)（刻意为之，勿"修"回每个 Session 都触发、也勿退回单个布尔）**：`schedules/` 从 **workspace** 加载（不是 agent 包）；每个 Session 都读到全部条目，但**是否起 runner 逐条决定**——`ScheduleRegistry(active_names=…, deactive_names=…)`：白名单 `None`/空 → 一条都不触发（所有用户会话的默认），`{"*"}` → 全部，具名集合 → 仅这些；黑名单**优先**做减法。两个名单都要，因为白名单是枚举、覆盖不到启动后新建的 `TASK.md`——「除某几条以外全归我」只能写成 `*` + 黑名单。未激活的条目照旧被加载进 `ScheduleRegistry.schedules` 并计入 `refresh()` 的 added/updated/removed 统计，只是 `_start_runner` no-op（想只看会触发的用 `active_schedules` property）。因为 Gateway 一进程多 Session、飞书按会话各 spawn 一个（私聊按 `open_id` 每人一个、群聊按 `chat_id` 每群一个），若同一条被多个 Session 激活，一条定时提醒会被在线会话数乘一遍；不变式是**一条 schedule 恰好被一个 Session 激活**。粒度是逐条而非整个 Session 一个布尔：布尔只能表达「全触发 / 全不触发」，表达不了「A 条归调度 Session、B 条归某个用户会话」。Gateway 侧 `SchedulerManager.ensure()` 为每个 workspace 维护唯一一个全量激活（`("*",)`）的调度 Session——去重发生在**构造期**，因此没有租约 / 选主 / 接管这类运行时协调。详见 `session/AGENTS.md`「调度归属 workspace，触发权归属 (session × schedule)」与 `gateway/AGENTS.md`「SchedulerManager」。
 
-19. **飞书群聊整群共用一个 Session，且私聊 session_id 里的 `-` 必须转义（两条都刻意为之，勿"修掉"）**：飞书路由键分两支——私聊按发送者 `open_id`（`feishu-<open_id>`，一人一份上下文），**群聊按 `chat_id`**（`feishu-chat-<chat_id>`，**整群共用一份**）。群聊不按发言者拆，因为群里的对话本就是共享的：A 问完 B 追问「那第二点呢」，机器人必须看得见 A 那轮；要区分谁在说话靠 `_context_header` 每条消息注入的 `sender_open_id`（已有机制），不靠拆 session。第二条：`_sanitize_open_id` 的白名单 `[^A-Za-z0-9._-]` **允许** `-` 通过，所以私聊侧派生 session_id / workspace 时必须额外把 `-` 换成 `_`——否则某人 open_id 恰为 `chat-oc_x` 时派生出的 `feishu-chat-oc_x` 与群 `oc_x` 的 session id **逐字节相同**，两个陌生人共享同一份上下文与 workspace，是**隐私事故**而非美观问题。`_session_id` 与 `_workspace_for` 两处必须同步转义，只改一处会「session 分开了、workspace 还是同一个目录」。同理 `chat_id` 为空时**不**按群路由（否则建出 `feishu-chat-` 无主 session），宁可这条消息不隔离。channel 侧 `_GatewayRouteProvider._cache_key` 复制了同款群聊判定（同群不同发言者须命中同一条缓存，否则每人各打一次 Gateway），**两处判定改动时必须同步**。详见 `gateway/AGENTS.md`「FeishuManager」与 `channel/AGENTS.md`「按会话独立渠道」。
+19. **飞书群聊整群共用一个 Session，且私聊 session_id 里的 `-` 必须转义（两条都刻意为之，勿"修掉"）**：飞书路由键分两支——私聊按发送者 `open_id`（`feishu-<open_id>`，一人一份上下文），**群聊按 `chat_id`**（`feishu-chat-<chat_id>`，**整群共用一份**）。群聊不按发言者拆，因为群里的对话本就是共享的：A 问完 B 追问「那第二点呢」，机器人必须看得见 A 那轮；要区分谁在说话靠 `_context_header` 每条消息注入的 `sender_open_id`（已有机制），不靠拆 session。第二条：`_sanitize_open_id` 的白名单 `[^A-Za-z0-9._-]` **允许** `-` 通过，所以私聊侧派生 session_id / workspace 时必须额外把 `-` 换成 `_`——否则某人 open_id 恰为 `chat-oc_x` 时派生出的 `feishu-chat-oc_x` 与群 `oc_x` 的 session id **逐字节相同**，两个陌生人共享同一份上下文与 workspace，是**隐私事故**而非美观问题。`_session_id` 与 `_workspace_for` 两处必须同步转义，只改一处会「session 分开了、workspace 还是同一个目录」。同理 `chat_id` 为空时**不**按群路由（否则建出 `feishu-chat-` 无主 session），宁可这条消息不隔离。channel 侧 socket 缓存需要同款判定（同群不同发言者须命中同一条缓存，否则每人各打一次 Gateway），故群聊判定与路由键已收敛到 `psi_agent/_feishu_routing.py`（`is_group_chat()` / `route_key()`）——改那一处即全局生效，不再需要人工同步两侧。详见 `gateway/AGENTS.md`「FeishuManager」与 `channel/AGENTS.md`「按会话独立渠道」。
 
 19. **`tg.__aexit__(None, None, None)` 不取消子任务——常驻任务会把它挂死**：传三个 `None` 是「正常退出」语义，anyio 于是**等**子任务自己结束。若任务组里有 `start_soon` 起的常驻 server（Gateway 的 AI / Session、channel core），它们永不返回，`__aexit__` 就永久阻塞。在测试里这最阴：`finally: await tg.__aexit__(None, None, None)` 会把测试体内**任何**断言失败从「失败」放大成「挂死」，traceback 都看不到（曾让 `test_manager.py` 在 Windows 上整个文件跑不完，且因 CI 只跑 Linux 而长期隐身）。退组前必须先 `tg.cancel_scope.cancel()`，或显式 `delete()` 掉每个 spawn 出来的实体。参见 `tests/psi_agent/gateway/test_manager.py` 的 `_close()` 与 `test_feishu_manager.py` 的 `_drain()`。
 
@@ -343,7 +366,7 @@ uv build                         # 构建
 
 任何代码改动完成后、提交前，必须逐条核对以下四项：
 
-1. **文档同步**：检查 `AGENTS.md`（含各层 `*/AGENTS.md`）、`README.md` / `README_en.md`、`docs/`、`specs/`、`plans/` 中是否有因本次改动而过时或缺失的内容。凡改了行为 / 协议 / 配置项 / 默认值，就同步对应文档；新增任何刻意为之的「反直觉」行为，必须在 AGENTS.md 留痕，避免后人误当 bug 修掉。
+1. **文档同步**：检查 `AGENTS.md`（含各层 `*/AGENTS.md`）、`README.md` / `README_en.md`、`docs/`、`specs/`、`plans/` 中是否有因本次改动而过时或缺失的内容。凡改了行为 / 协议 / 配置项 / 默认值，就同步对应文档；新增任何刻意为之的「反直觉」行为，必须在 AGENTS.md 留痕，避免后人误当 bug 修掉。凡改协议格式 / `finish_reason` 常量 / 辅助帧规则，必须同步 `psi_agent/protocol.py` 的 docstring 与本文件「核心通信协议 → 协议归属」；子层 `AGENTS.md` 只引用函数名，不重复写格式定义。
 
 2. **日志粒度对齐**：检查 loguru 日志是否完整——不要漏掉应有的日志（关键分支、IO、错误、生命周期）。新增日志的 level 必须与**周围既有代码**保持一致：每个 SSE chunk / tool 执行 / 锁获取释放走 DEBUG，启动 / 关闭 / 请求完成走 INFO，可恢复异常走 WARNING，不可恢复错误走 ERROR。不要凭空拔高或压低 level。
 

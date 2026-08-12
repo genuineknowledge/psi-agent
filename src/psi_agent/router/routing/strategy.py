@@ -105,7 +105,7 @@ class RoutingStrategy:
                         if status.trace_id != trace_id or status.depth <= depth:
                             raise RouterUpstreamError("Nested Router returned inconsistent status metadata")
                     current_finish = event["choices"][0].get("finish_reason")
-                    if isinstance(current_finish, str) and current_finish != "compaction_needed":
+                    if isinstance(current_finish, str) and is_terminal_finish(current_finish):
                         finish_reason = current_finish
                     yield event
                 completed = True
@@ -115,7 +115,7 @@ class RoutingStrategy:
             summary = redact_private_sockets(text=str(error), sockets=private_sockets)
             raise RouterUpstreamError(f"Routing candidate {selection.candidate_id!r} failed: {summary}") from error
         finally:
-            if scope is not None and (not completed or finish_reason != "tool_calls"):
+            if scope is not None and (not completed or finish_reason != FINISH_REASON_TOOL_CALLS):
                 self._sticky_targets.pop(scope, None)
 
     def discard(self, session_id: str) -> None:

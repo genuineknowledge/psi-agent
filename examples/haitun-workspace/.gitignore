@@ -33,6 +33,9 @@ skills/workflow/.pytest_cache/
 # local desktop runtime env (vbs injects into psi-agent.exe; never commit)
 .env
 bin/apply_multimodal_test_api.ps1
+
+# generated at package build time (version + CDN updater endpoint)
+haitun-update.conf
 skills/fusion-flow-legacy/examples/*.flow.ts
 skills/fusion-flow-legacy/examples/*.flow.mts
 !skills/fusion-flow-legacy/examples/_placeholder.ts

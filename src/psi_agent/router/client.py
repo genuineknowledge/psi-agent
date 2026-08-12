@@ -65,10 +65,10 @@ class RouterHttpClient:
                 current_finish = choice.get("finish_reason")
                 # Compaction is an auxiliary signal sent after the model's
                 # actual terminal frame. It must not replace stop/tool_calls.
-                if current_finish == "compaction_needed":
+                if is_auxiliary_finish(current_finish):
                     continue
                 if isinstance(current_finish, str):
-                    if current_finish == "error":
+                    if current_finish == FINISH_REASON_ERROR:
                         detail = "".join(content_parts) or "unknown upstream error"
                         raise RouterUpstreamError(f"Upstream {socket!r} reported an error: {detail}")
                     finish_reason = current_finish
@@ -123,7 +123,7 @@ class RouterHttpClient:
                 if not raw_line:
                     if data_lines:
                         payload = "\n".join(data_lines)
-                        if payload != "[DONE]":
+                        if payload != SSE_DONE:
                             event = self._decode_event(payload)
                             if event is not None:
                                 finish = event["choices"][0].get("finish_reason")
@@ -134,14 +134,15 @@ class RouterHttpClient:
                 logger.debug(f"Router upstream SSE line trace_id={trace_id or '-'}: {raw_line[:1000]!r}")
                 line = raw_line.decode(errors="replace").rstrip("\r\n")
                 if line:
-                    if line.startswith("data:"):
-                        data_lines.append(line[5:].lstrip())
+                    payload_part = parse_sse_data(line)
+                    if payload_part is not None:
+                        data_lines.append(payload_part)
                     continue
                 if not data_lines:
                     continue
                 payload = "\n".join(data_lines)
                 data_lines.clear()
-                if payload == "[DONE]":
+                if payload == SSE_DONE:
                     break
                 event = self._decode_event(payload)
                 if event is None:
@@ -196,7 +197,7 @@ class RouterHttpClient:
 
     @staticmethod
     def _is_completion_finish(value: object) -> bool:
-        return isinstance(value, str) and value != "compaction_needed"
+        return isinstance(value, str) and is_terminal_finish(value)
 
     @staticmethod
     def _accumulate_tool_calls(accumulated: dict[int, dict[str, Any]], raw_calls: object) -> None:
@@ -236,7 +237,7 @@ class RouterHttpClient:
 
     @staticmethod
     def _validate_tool_calls(tool_calls: list[dict[str, Any]], finish_reason: str) -> None:
-        if finish_reason == "tool_calls" and not tool_calls:
+        if finish_reason == FINISH_REASON_TOOL_CALLS and not tool_calls:
             raise RouterUpstreamError("Upstream finished with tool_calls but supplied none")
         for call in tool_calls:
             function = call.get("function")

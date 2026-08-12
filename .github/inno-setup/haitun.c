@@ -1,5 +1,10 @@
 #include <windows.h>
+#include <objbase.h>
 #include <shlobj.h>
+#include <wininet.h>
+#include <urlmon.h>
+#include <shellapi.h>
+#include <string.h>
 #include <stdio.h>
 
 #define MAX_ENV 32767
@@ -11,6 +16,22 @@
 static WCHAR g_dir[MAX_PATH];
 static WCHAR g_env[MAX_ENV * 2];  /* double size: wide-char bytes */
 static int   g_env_len;
+
+/* Updater config is generated at package build time into the installed workspace. */
+#define HAITUN_UPDATE_CONF L"haitun-update.conf"
+#define MAX_UPDATE_URL 4096
+#define UPDATE_VERSION_BUF 128
+
+#ifndef HAITUN_UPDATE_INTERVAL_HOURS
+#define HAITUN_UPDATE_INTERVAL_HOURS 24
+#endif
+#define HAITUN_UPDATE_INTERVAL_MS \
+    ((DWORD)((HAITUN_UPDATE_INTERVAL_HOURS) * 60ULL * 60ULL * 1000ULL))
+
+static WCHAR g_local_version[64];
+static WCHAR g_version_url[MAX_UPDATE_URL];
+static WCHAR g_installer_url[MAX_UPDATE_URL];
+static DWORD g_update_interval_ms = HAITUN_UPDATE_INTERVAL_MS;
 
 /* ---- helpers ---- */
 
@@ -75,6 +96,12 @@ static void replace_env(const WCHAR *name, const WCHAR *val)
     }
 }
 
+static const WCHAR *get_env_value(const WCHAR *name)
+{
+    WCHAR *pos = find_env_var(name);
+    return pos ? pos + lstrlenW(name) + 1 : NULL;
+}
+
 static void load_env_file(const WCHAR *path)
 {
     HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ,
@@ -86,7 +113,7 @@ static void load_env_file(const WCHAR *path)
 
     char *buf = HeapAlloc(GetProcessHeap(), 0, size + 1);
     if (!buf) { CloseHandle(h); return; }
-    DWORD read;
+    DWORD read = 0;
     ReadFile(h, buf, size, &read, NULL);
     buf[read] = '\0';
     CloseHandle(h);
@@ -135,10 +162,180 @@ static void load_env_file(const WCHAR *path)
     HeapFree(GetProcessHeap(), 0, buf);
 }
 
+/* ---- update check ---- */
+
+static void trim_whitespace(WCHAR *s)
+{
+    int n = lstrlenW(s);
+    int a = 0;
+    int b = n;
+    while (a < b && (s[a] == L' ' || s[a] == L'\t' || s[a] == L'\r' || s[a] == L'\n'))
+        a++;
+    while (b > a && (s[b - 1] == L' ' || s[b - 1] == L'\t' || s[b - 1] == L'\r' || s[b - 1] == L'\n'))
+        b--;
+    if (a != 0 || b != n) {
+        memmove(s, s + a, (size_t)(b - a) * sizeof(WCHAR));
+        s[b - a] = L'\0';
+    }
+}
+
+static int fetch_remote_text(const WCHAR *url, WCHAR *out, int out_cch)
+{
+    HINTERNET hNet;
+    HINTERNET hUrl;
+    char raw[4097];
+    DWORD total = 0;
+    DWORD read = 0;
+    DWORD status = 0;
+    DWORD status_len = sizeof(status);
+
+    hNet = InternetOpenW(L"HaiTun Agent Updater", INTERNET_OPEN_TYPE_PRECONFIG,
+                         NULL, NULL, 0);
+    if (!hNet)
+        return 0;
+    hUrl = InternetOpenUrlW(hNet, url, NULL, 0,
+                            INTERNET_FLAG_RELOAD | INTERNET_FLAG_NO_CACHE_WRITE |
+                                INTERNET_FLAG_KEEP_CONNECTION,
+                            0);
+    if (!hUrl) {
+        InternetCloseHandle(hNet);
+        return 0;
+    }
+
+    if (HttpQueryInfoW(hUrl, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER,
+                       &status, &status_len, NULL) && status >= 400) {
+        InternetCloseHandle(hUrl);
+        InternetCloseHandle(hNet);
+        return 0;
+    }
+
+    while (total < sizeof(raw) - 1 &&
+           InternetReadFile(hUrl, raw + total, (DWORD)(sizeof(raw) - 1 - total), &read) &&
+           read > 0) {
+        total += read;
+    }
+    InternetCloseHandle(hUrl);
+    InternetCloseHandle(hNet);
+
+    if (!total)
+        return 0;
+    raw[total] = '\0';
+    {
+        int n = MultiByteToWideChar(CP_UTF8, 0, raw, (int)total, out, out_cch - 1);
+        if (n <= 0)
+            out[0] = L'\0';
+        else
+            out[n] = L'\0';
+    }
+    trim_whitespace(out);
+    return 1;
+}
+
+static void join_url(WCHAR *out, int out_cch, const WCHAR *base, const WCHAR *suffix)
+{
+    int n = lstrlenW(base);
+    int m = lstrlenW(suffix);
+    if (n <= 0 || n + 1 + m + 1 > out_cch)
+        return;
+    lstrcpyW(out, base);
+    if (out[n - 1] != L'/') {
+        out[n++] = L'/';
+        out[n] = L'\0';
+    }
+    lstrcatW(out, suffix);
+}
+
+static int starts_with_https(const WCHAR *s)
+{
+    static const WCHAR prefix[] = L"https://";
+    int i;
+    for (i = 0; i < 8; i++) {
+        if (s[i] != prefix[i])
+            return 0;
+    }
+    return s[8] != L'\0';
+}
+
+static void configure_updater(void)
+{
+    const WCHAR *v = get_env_value(L"HAITUN_VERSION");
+    const WCHAR *base = get_env_value(L"HAITUN_UPDATE_BASE_URL");
+    const WCHAR *interval = get_env_value(L"HAITUN_UPDATE_INTERVAL_HOURS");
+    const WCHAR *installer = get_env_value(L"HAITUN_UPDATE_INSTALLER_NAME");
+
+    g_local_version[0] = L'\0';
+    g_version_url[0] = L'\0';
+    g_installer_url[0] = L'\0';
+
+    if (v && v[0])
+        lstrcpynW(g_local_version, v, 64);
+    if (interval && interval[0]) {
+        int hours = 0;
+        const WCHAR *p;
+        for (p = interval; *p >= L'0' && *p <= L'9'; p++)
+            hours = hours * 10 + (*p - L'0');
+        if (hours > 0 && hours <= 24 * 30)
+            g_update_interval_ms = (DWORD)((DWORD)hours * 60u * 60u * 1000u);
+    }
+    if (base && base[0] && starts_with_https(base)) {
+        const WCHAR *installer_name =
+            (installer && installer[0]) ? installer : L"HaiTun_Agent_Setup.exe";
+        join_url(g_version_url, MAX_UPDATE_URL, base, L"version.txt");
+        join_url(g_installer_url, MAX_UPDATE_URL, base, installer_name);
+    }
+}
+
+static DWORD WINAPI update_check_thread(LPVOID unused)
+{
+    (void)unused;
+    if (!g_local_version[0] || !g_version_url[0] || !g_installer_url[0])
+        return 0;
+
+    for (;;) {
+        WCHAR latest[UPDATE_VERSION_BUF];
+        latest[0] = L'\0';
+        if (fetch_remote_text(g_version_url, latest, UPDATE_VERSION_BUF) &&
+            latest[0] && lstrcmpW(latest, g_local_version) != 0) {
+            WCHAR msg[512];
+            wsprintfW(msg,
+                      L"HaiTun Agent 发现新版本 %s，当前版本为 %s。\n\n"
+                      L"是否现在下载并更新？",
+                      latest, g_local_version);
+            if (MessageBoxW(NULL, msg, L"发现新版本",
+                            MB_YESNO | MB_ICONQUESTION | MB_SETFOREGROUND | MB_TOPMOST) == IDYES) {
+                WCHAR temp_dir[MAX_PATH];
+                WCHAR temp_path[MAX_PATH];
+                HRESULT hr;
+                if (GetTempPathW(MAX_PATH, temp_dir) && temp_dir[0]) {
+                    wsprintfW(temp_path, L"%sHaiTun-Agent-Setup-%s.exe", temp_dir, latest);
+                    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+                    hr = URLDownloadToFileW(NULL, g_installer_url, temp_path, 0, NULL);
+                    CoUninitialize();
+                    if (hr == S_OK) {
+                        if ((INT_PTR)ShellExecuteW(NULL, L"open", temp_path, NULL, NULL,
+                                                   SW_SHOWNORMAL) <= 32) {
+                            ShellExecuteW(NULL, L"open", g_installer_url, NULL, NULL,
+                                          SW_SHOWNORMAL);
+                        }
+                    } else {
+                        ShellExecuteW(NULL, L"open", g_installer_url, NULL, NULL, SW_SHOWNORMAL);
+                    }
+                } else {
+                    ShellExecuteW(NULL, L"open", g_installer_url, NULL, NULL, SW_SHOWNORMAL);
+                }
+            }
+        }
+        Sleep(g_update_interval_ms);
+    }
+    return 0;
+}
+
 /* ---- entry ---- */
 
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
 {
+    HANDLE hAppProcess = NULL;
+
     /* 1. get our own directory */
     DWORD dlen = GetModuleFileNameW(NULL, g_dir, MAX_PATH);
     if (!dlen || dlen >= MAX_PATH) return 1;
@@ -163,6 +360,14 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
         lstrcpyW(env_path, g_dir);
         lstrcatW(env_path, L"\\.env");
         load_env_file(env_path);
+    }
+
+    /* 3.5. load generated update config (version + download base URL) */
+    {
+        WCHAR conf_path[512];
+        lstrcpyW(conf_path, g_dir);
+        lstrcatW(conf_path, L"\\" HAITUN_UPDATE_CONF);
+        load_env_file(conf_path);
     }
 
     /* 4. prepend MSYS2 to PATH */
@@ -268,11 +473,25 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmdLine, int nShow)
                        CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
                        g_env, g_dir, &si, &pi);
         if (pi.hThread) CloseHandle(pi.hThread);
-        if (pi.hProcess) CloseHandle(pi.hProcess);
+        hAppProcess = pi.hProcess;
         if (hOut != INVALID_HANDLE_VALUE) CloseHandle(hOut);
         if (hErr != INVALID_HANDLE_VALUE) CloseHandle(hErr);
         if (hIn != INVALID_HANDLE_VALUE && hIn != GetStdHandle(STD_INPUT_HANDLE))
             CloseHandle(hIn);
+    }
+
+    /* 8. background update checker (checks download server version.txt) */
+    configure_updater();
+    if (g_local_version[0] && g_version_url[0] && g_installer_url[0]) {
+        HANDLE hThread = CreateThread(NULL, 0, update_check_thread, NULL, 0, NULL);
+        if (hThread)
+            CloseHandle(hThread);
+    }
+
+    /* Keep the launcher alive while the app runs so the updater thread stays up. */
+    if (hAppProcess) {
+        WaitForSingleObject(hAppProcess, INFINITE);
+        CloseHandle(hAppProcess);
     }
 
     return 0;

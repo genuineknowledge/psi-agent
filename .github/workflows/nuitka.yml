@@ -115,13 +115,17 @@ jobs:
       - shell: pwsh
         run: Remove-Item -Recurse -Force "examples\haitun-workspace\msys64\var\cache\pacman\pkg\*" -ErrorAction SilentlyContinue
       - run: choco install innosetup --no-progress
-      - shell: pwsh
+      - name: Build launcher with updater config
+        shell: pwsh
+        env:
+          HAITUN_DOWNLOAD_BASE_URL: ${{ vars.HAITUN_DOWNLOAD_BASE_URL }}
+          HAITUN_UPDATE_INTERVAL_HOURS: ${{ vars.HAITUN_UPDATE_INTERVAL_HOURS }}
+          HAITUN_UPDATE_INSTALLER_NAME: ${{ vars.HAITUN_UPDATE_INSTALLER_NAME }}
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=amd64"
-          rc /nologo ".github\inno-setup\haitun.rc"
-          cl /nologo /O2 ".github\inno-setup\haitun.c" ".github\inno-setup\haitun.res" /Fe:".github\inno-setup\haitun.exe" /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib
+          & ".github\inno-setup\build-haitun-launcher.ps1"
       - shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"

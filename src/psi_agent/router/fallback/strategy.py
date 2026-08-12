@@ -118,7 +118,7 @@ class FallbackStrategy:
             raise FallbackError(f"All fallback upstreams failed: {detail}")
 
         selected_index, result = selected
-        keeps_sticky = result.completion.finish_reason == "tool_calls"
+        keeps_sticky = result.completion.finish_reason == FINISH_REASON_TOOL_CALLS
         if scope is not None:
             if keeps_sticky:
                 self._sticky_targets[scope] = selected_index
@@ -173,7 +173,7 @@ class FallbackStrategy:
     @staticmethod
     def _is_usable(completion: CompletionResult) -> bool:
         finish_reason = completion.finish_reason
-        if not finish_reason or finish_reason in {"error", "compaction_needed"}:
+        if not finish_reason or finish_reason == FINISH_REASON_ERROR or is_auxiliary_finish(finish_reason):
             return False
         for call in completion.tool_calls:
             function = call.get("function")

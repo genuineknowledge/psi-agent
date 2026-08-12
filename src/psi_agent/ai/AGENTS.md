@@ -69,23 +69,16 @@ Anthropic→OpenAI 格式转换由 any-llm-sdk 自动完成，包括 `thinking_d
 ## 错误处理
 
 - **HTTP 层**（`response.prepare()` 之前）：返回 OpenAI 格式 `{"error": {...}}` JSON + HTTP 4xx/5xx
-- **SSE 层**（`response.prepare()` 之后）：ChatCompletionChunk error chunk → `finish_reason="error"`（psi-agent 内部扩展，非 OpenAI 标准）
+- **SSE 层**（`response.prepare()` 之后）：`make_error_chunk()` 构造 error chunk → `finish_reason="error"`（psi-agent 内部扩展，非 OpenAI 标准；构造函数在 `psi_agent/protocol.py`，前缀 `[Upstream Error]: ` 由本层拼好后传入）
 - **取消/断开安全**：上游 stream 在 `finally` 中用 `anyio.CancelScope(shield=True)` 调 `stream.aclose()` 关闭（`getattr` 守卫兼容无 `aclose` 的流），确保客户端断开 / 进程关闭被 cancel 时不泄露上游连接
 
 ## Context Compaction
 
-AI 层强制 `stream_options={"include_usage": True}` 获取上游 token 用量。当 `chunk.usage.prompt_tokens > max_context_tokens`（0 禁用），在上游 stream 结束后发送 **额外 SSE 事件** 通知 Session 触发 compaction：
+AI 层强制 `stream_options={"include_usage": True}` 获取上游 token 用量。当 `chunk.usage.prompt_tokens > max_context_tokens`（0 禁用），在上游 stream 结束后发送 **额外 SSE 事件** 通知 Session 触发 compaction。
 
-```json
-{"choices": [{"delta": {}, "finish_reason": "compaction_needed"}],
- "psi_compaction": {"needed": true, "prompt_tokens": N, "threshold": M}}
-```
+信号由 `psi_agent.protocol.make_compaction_signal(prompt_tokens=…, threshold=…)` 构造，形状见根 `AGENTS.md`「核心通信协议」。`prompt_tokens` / `threshold` 不是日志字段——Session 用它们做压缩冷却判断（见 `session/AGENTS.md`），省略会让冷却退化成 fail-open。
 
 `psi_compaction` 是 psi-agent 内部扩展字段，非 OpenAI 标准。仅 OpenAI / Anthropic / Gemini 及兼容 provider 支持 `usage` 返回；Groq / Mistral / Ollama 等 strip `stream_options`，compaction 不触发。
-
-Session 侧会读取信号里的 `prompt_tokens` / `threshold` 做压缩冷却判断（见
-`session/AGENTS.md`），所以这两个字段**不是纯日志用途**，改动或省略会让冷却退化成
-fail-open。
 
 `max_context_tokens` 除 CLI / 环境变量外，也可经 Gateway `POST /ais` 的同名 body 字段
 按 AI 后端配置（见 `gateway/AGENTS.md`）。**阈值应显著小于模型真实上下文窗口**：压缩

@@ -22,16 +22,16 @@ from croniter import croniter
 from loguru import logger
 
 from psi_agent._yaml import parse_yaml_header
+from psi_agent.protocol import (
+    REASONING_KIND_TOOL_CALL,
+    REASONING_KIND_TOOL_RESULT,
+)
 from psi_agent.session.history_display import (
     KIND_SCHEDULE_DISPLAY,
     KIND_SCHEDULE_SILENT,
     with_kind,
 )
-from psi_agent.session.protocol import (
-    REASONING_KIND_TOOL_CALL,
-    REASONING_KIND_TOOL_RESULT,
-    AgentChunk,
-)
+from psi_agent.session.protocol import AgentChunk
 
 if TYPE_CHECKING:
     from psi_agent.session.agent import SessionAgent

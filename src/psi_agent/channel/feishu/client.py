@@ -27,6 +27,7 @@ from lark_channel.event.custom import CustomizedEventProcessor
 from loguru import logger
 
 from psi_agent._appdata import resolve_appdata_root
+from psi_agent._feishu_routing import is_group_chat, route_key
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._errors import ChannelError
 from psi_agent.channel._types import FileChunk, InputChunk, ReasoningChunk, TextChunk
@@ -87,9 +88,6 @@ class _CoreRegistry:
 _GATEWAY_TIMEOUT = aiohttp.ClientTimeout(total=10)
 
 
-_GROUP_CHAT_TYPES = frozenset({"group", "topic"})
-
-
 class _GatewayRouteProvider:
     """给一次会话 → 幂等返回其 Gateway session 的 ``channel_socket``; 面向动态任意用户/群。
 
@@ -110,18 +108,10 @@ class _GatewayRouteProvider:
         self._sockets: dict[str, str] = {}  # 路由键 -> channel_socket
         self._lock = anyio.Lock()
 
-    @staticmethod
-    def _cache_key(open_id: str, chat_id: str, chat_type: str) -> str:
-        """与 Gateway ``FeishuManager`` 同款判定: 群聊按 chat_id, 其余按 open_id。
-
-        加 ``chat:`` 前缀隔离两个命名空间, 免得 chat_id 与 open_id 相撞。
-        """
-        if chat_type in _GROUP_CHAT_TYPES and chat_id:
-            return f"chat:{chat_id}"
-        return open_id
-
     async def ensure(self, open_id: str, *, chat_id: str = "", chat_type: str = "") -> str:
-        key = self._cache_key(open_id, chat_id, chat_type)
+        # 本地缓存键与 Gateway FeishuManager 的路由键共用 psi_agent._feishu_routing,
+        # 必须严格一致 —— 否则同群不同发言者会各打一次 Gateway。
+        key = route_key(open_id, chat_id, chat_type)
         hit = self._sockets.get(key)  # 快路径
         if hit is not None:
             return hit
@@ -862,7 +852,7 @@ async def run_feishu(
 
         async def resolve_core(open_id: str | None, *, chat_id: str = "", chat_type: str = "") -> ChannelCore:
             socket = session_socket  # 默认兜底 (无路由键、无 gateway、或路由失败都走这)
-            is_group = chat_type in _GROUP_CHAT_TYPES and bool(chat_id)
+            is_group = is_group_chat(chat_id, chat_type)
             if provider is not None and (open_id or is_group):
                 try:
                     socket = await provider.ensure(open_id or "", chat_id=chat_id, chat_type=chat_type)

@@ -24,12 +24,10 @@ from dataclasses import dataclass, field
 import anyio
 from loguru import logger
 
+from psi_agent._feishu_routing import route_key
 from psi_agent.gateway._session_manager import SessionManager
 
 _SOCKET_UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-_GROUP_CHAT_TYPES = frozenset({"group", "topic"})
 
 
 def _sanitize_open_id(open_id: str) -> str:
@@ -64,24 +62,6 @@ class FeishuManager:
     _workspace_root: str = ""
     _routes: dict[str, str] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
-
-    @staticmethod
-    def _is_group(chat_id: str, chat_type: str) -> bool:
-        """群聊判定: 类型是 group/topic **且** chat_id 非空。
-
-        ``chat_id`` 缺失时不能按群路由 (否则会建出 ``feishu-chat-`` 这种无主 session),
-        故退回按发送者 open_id —— 宁可不隔离, 也不建垃圾 session。
-        """
-        return chat_type in _GROUP_CHAT_TYPES and bool(chat_id)
-
-    def _route_key(self, open_id: str, chat_id: str, chat_type: str) -> str:
-        """路由表/派生用的键: 群聊是 ``chat:<chat_id>``, 私聊是裸 ``open_id``。
-
-        加 ``chat:`` 前缀让两个命名空间不可能相撞 (open_id 里不会有冒号)。
-        """
-        if self._is_group(chat_id, chat_type):
-            return f"chat:{chat_id}"
-        return open_id
 
     def _session_id(self, key: str) -> str:
         """派生确定性 session_id, 加 ``feishu-`` 前缀与 SPA 手建 session 命名空间隔离。
@@ -121,7 +101,7 @@ class FeishuManager:
         Session; 之后命中缓存或 adopt 已存在 Session。``ai_id`` 最终为空时抛 ``ValueError``
         (由 handler 转 400); 私聊而 ``open_id`` 为空时同样抛 ``ValueError`` (群聊不要求)。
         """
-        key = self._route_key(open_id, chat_id, chat_type)
+        key = route_key(open_id, chat_id, chat_type)
         if not key:
             raise ValueError("open_id must not be empty")
         sid = self._session_id(key)

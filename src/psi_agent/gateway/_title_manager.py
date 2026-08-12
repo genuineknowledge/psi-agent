@@ -8,6 +8,7 @@ from loguru import logger
 
 from psi_agent._sockets import resolve_connector_and_endpoint
 from psi_agent.gateway._manager import _noop
+from psi_agent.protocol import SSE_DONE, parse_sse_data
 
 
 class TitleManager:
@@ -57,10 +58,12 @@ class TitleManager:
                     while b"\n" in buf:
                         line_bytes, buf = buf.split(b"\n", 1)
                         line = line_bytes.decode().strip()
-                        if not line or not line.startswith("data: "):
+                        data_str = parse_sse_data(line)
+                        # 空载荷是部分 OpenAI 兼容服务的心跳帧: 静默跳过, 不要让它走到
+                        # json.loads (旧的 startswith("data: ") guard 也是静默丢弃的)。
+                        if not data_str:
                             continue
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
+                        if data_str == SSE_DONE:
                             break
                         try:
                             chunk = json.loads(data_str)

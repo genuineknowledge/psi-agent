@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 from loguru import logger
 
+from psi_agent.protocol import FINISH_REASON_STOP
+
 from ..errors import InvalidRouterRequestError
 from ..models import CompletionResult
 from ..request import copy_public_request_body, routing_trace_id_from_body
@@ -46,7 +48,7 @@ class RouteSelector:
             body=self.build_request(request_body=request_body),
             **options,
         )
-        if result.finish_reason != "stop":
+        if result.finish_reason != FINISH_REASON_STOP:
             raise RouteSelectionError(f"Selector returned unsupported finish reason {result.finish_reason!r}")
         if result.tool_calls:
             raise RouteSelectionError("Selector returned tool calls instead of a routing decision")

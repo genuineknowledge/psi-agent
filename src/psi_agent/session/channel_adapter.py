@@ -126,7 +126,7 @@ class ChannelAdapter:
                 StreamChoice(
                     index=0,
                     delta=DeltaMessage(content=message),
-                    finish_reason="error",
+                    finish_reason=FINISH_REASON_ERROR,
                 )
             ],
         )

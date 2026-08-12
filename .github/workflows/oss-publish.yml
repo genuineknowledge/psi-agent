@@ -1,0 +1,111 @@
+name: Publish Haitun Installer to OSS
+
+on:
+  workflow_run:
+    workflows:
+      - Nuitka
+    types:
+      - completed
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: haitun-oss-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      (github.event.workflow_run.head_branch == 'main' ||
+       startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout triggering commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Check haitun.iss changed in this commit
+        id: changed
+        shell: bash
+        run: |
+          if git diff-tree --no-commit-id --name-only -r -m \
+            "${{ github.event.workflow_run.head_sha }}" | grep -qx '.github/inno-setup/haitun.iss'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::haitun.iss was not changed; upload only runs if OSS version differs"
+          fi
+
+      - name: Read installer version
+        id: metadata
+        shell: bash
+        run: |
+          VERSION="$(sed -n 's/^#define[[:space:]]\+MyAppVersion[[:space:]]\+"\([^"]*\)".*/\1/p' .github/inno-setup/haitun.iss)"
+          if [ -z "$VERSION" ]; then
+            echo "::error::Cannot parse MyAppVersion from .github/inno-setup/haitun.iss"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compare OSS version
+        id: check
+        shell: bash
+        env:
+          HAITUN_DOWNLOAD_BASE_URL: ${{ vars.HAITUN_DOWNLOAD_BASE_URL }}
+          NEXT_VERSION: ${{ steps.metadata.outputs.version }}
+          CHANGED: ${{ steps.changed.outputs.changed }}
+        run: |
+          if [ "$CHANGED" = "true" ]; then
+            echo "::notice::haitun.iss changed in this commit; publishing installer"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$HAITUN_DOWNLOAD_BASE_URL" ]; then
+            echo "::warning::HAITUN_DOWNLOAD_BASE_URL is not set; uploading without OSS version comparison"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          URL="${HAITUN_DOWNLOAD_BASE_URL%/}/version.txt"
+          CODE="$(curl -fsS -o /tmp/oss-version.txt -w '%{http_code}' "$URL" || true)"
+          if [ "$CODE" = "200" ]; then
+            CURRENT="$(tr -d '[:space:]' < /tmp/oss-version.txt)"
+            if [ -n "$CURRENT" ] && [ "$CURRENT" = "$NEXT_VERSION" ]; then
+              echo "::notice::OSS is already at $NEXT_VERSION; skipping upload"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::notice::OSS version (${CURRENT:-missing}) differs from $NEXT_VERSION; publishing"
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "::notice::OSS version.txt not available (HTTP ${CODE:-unknown}); publishing"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download installer artifact
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: haitun-agent-installer-nuitka
+          path: installer
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installer and version.txt to Aliyun OSS
+        if: steps.check.outputs.skip != 'true'
+        shell: bash
+        env:
+          ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+          ALIYUN_OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+          ALIYUN_OSS_ENDPOINT: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          ALIYUN_OSS_PREFIX: ${{ vars.ALIYUN_OSS_PREFIX }}
+          HAITUN_UPDATE_INSTALLER_NAME: ${{ vars.HAITUN_UPDATE_INSTALLER_NAME }}
+          HAITUN_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          python3 -m pip install --quiet oss2
+          python3 .github/inno-setup/upload_to_oss.py

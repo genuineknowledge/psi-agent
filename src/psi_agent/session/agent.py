@@ -24,9 +24,6 @@ from psi_agent.session.history_display import (
     with_kind,
 )
 from psi_agent.session.protocol import (
-    REASONING_KIND_THINKING,
-    REASONING_KIND_TOOL_CALL,
-    REASONING_KIND_TOOL_RESULT,
     AgentChunk,
     AgentError,
     AgentRunResult,
@@ -529,11 +526,11 @@ class SessionAgent:
                                     if func.get("arguments"):
                                         acc["function"]["arguments"] += func["arguments"]
 
-                            if finish_reason == "error":
+                            if finish_reason == FINISH_REASON_ERROR:
                                 logger.warning("AI returned error, stopping without saving to history")
                                 raise AgentError(accumulated_content or accumulated_reasoning or "Unknown AI error")
 
-                            if finish_reason == "tool_calls":
+                            if finish_reason == FINISH_REASON_TOOL_CALLS:
                                 logger.info("AI requested tool calls, processing...")
                                 ordered_calls = [accumulated_tool_calls[i] for i in sorted(accumulated_tool_calls)]
 
@@ -627,7 +624,7 @@ class SessionAgent:
 
                                 break
 
-                    if finish_reason == "stop":
+                    if finish_reason == FINISH_REASON_STOP:
                         logger.debug("AI finished with stop")
                         logger.debug(
                             f"Stop: content={len(accumulated_content)} chars, "
@@ -657,7 +654,12 @@ class SessionAgent:
                         )
                         return
 
-                    if finish_reason not in ("error", "stop", "tool_calls", "compaction_needed"):
+                    if finish_reason not in (
+                        FINISH_REASON_ERROR,
+                        FINISH_REASON_STOP,
+                        FINISH_REASON_TOOL_CALLS,
+                        FINISH_REASON_COMPACTION_NEEDED,
+                    ):
                         logger.warning(
                             f"Unexpected finish_reason={finish_reason!r}, "
                             f"saving {len(accumulated_content)} chars of content and stopping"
@@ -741,7 +743,7 @@ class SessionAgent:
                 async for delta in stream:
                     if delta.content:
                         parts.append(delta.content)
-                    if delta.finish_reason == "error":
+                    if delta.finish_reason == FINISH_REASON_ERROR:
                         raise AgentError(delta.content or "Compaction AI call failed")
             return "".join(parts)
 

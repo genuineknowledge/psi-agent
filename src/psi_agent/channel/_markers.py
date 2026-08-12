@@ -8,14 +8,17 @@ definition and can be unit-tested without any HTTP/SSE machinery.
 
 from __future__ import annotations
 
-import re
-
 from loguru import logger
 
+from psi_agent._send_markers import SEND_RE, iter_send_paths
 from psi_agent.channel._types import FileChunk, InputChunk, TextChunk
 
+# ``SEND_RE`` / ``iter_send_paths`` 的定义在 ``psi_agent._send_markers`` —— Session
+# 侧的 Gateway 投影也要用, 放在本模块会让 Session import Channel 的私有模块。此处
+# 重导出以保持既有 import 路径有效。
+__all__ = ["RECV_MARKER", "SEND_RE", "SendMarkerScanner", "encode_input", "iter_send_paths"]
+
 RECV_MARKER = "[RECV:{path}]"
-SEND_RE = re.compile(r"\[\s*SEND\s*:\s*(.+?)\s*\]", re.IGNORECASE)
 
 
 def encode_input(chunks: list[InputChunk]) -> str:
@@ -53,11 +56,10 @@ class SendMarkerScanner:
         self._full += text
         base = self._scan_ptr
         new = self._full[base:]
-        for match in SEND_RE.finditer(new):
-            path = match.group(1).strip()
+        for path, match_end in iter_send_paths(new):
             if path not in self._emitted:
                 logger.debug(f"[SEND] detected → FileChunk({path})")
                 out.append(FileChunk(path))
                 self._emitted.add(path)
-            self._scan_ptr = base + match.end()
+            self._scan_ptr = base + match_end
         return out
