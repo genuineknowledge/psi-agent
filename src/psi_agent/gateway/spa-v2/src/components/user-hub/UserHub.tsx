@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Bot, LogIn, Settings2, UserCog, UserRound } from 'lucide-react'
+import { Bot, ClipboardList, ExternalLink, LogIn, Settings2, UserCog, UserRound } from 'lucide-react'
 import type { AiInfo } from '../../services/api'
 import { listAis } from '../../services/api'
 import { readStoredAvatar, readStoredName } from '../../services/userProfile'
@@ -12,6 +12,10 @@ import HubModelsPanel, { FREE_MODEL_NOTICE_BODY, FREE_MODEL_NOTICE_TITLE } from 
 import HubProfilePanel from './HubProfilePanel'
 import HubSettingsPanel from './HubSettingsPanel'
 import './user-hub.css'
+
+/** 产品问卷反馈表单（飞书共享问卷，新窗口打开）。 */
+const FEEDBACK_SURVEY_URL =
+  'https://genuineknowledge.feishu.cn/share/base/form/shrcn7pp47SeGec2M4Srnbt75Rg?from=navigation'
 
 export type HubPanel = 'profile' | 'models' | 'login' | 'settings' | 'settingsAdvanced' | 'advanced' | null
 
@@ -144,6 +148,16 @@ export default function UserHub({
 
   return (
     <div className="user-hub" ref={rootRef}>
+      <a
+        className="user-hub-feedback"
+        href={FEEDBACK_SURVEY_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <ClipboardList size={15} aria-hidden="true" />
+        <span>反馈问卷</span>
+        <ExternalLink size={13} aria-hidden="true" />
+      </a>
       <div className="user-hub-row">
         <button
           type="button"

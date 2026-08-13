@@ -22,9 +22,6 @@ dependencies = [
     "any-llm-sdk>=1.21.0",
     "json-repair>=0.63.0,<0.64",
     "platformdirs>=4.10.1",
-    # 登录凭证的加密密钥存进 OS 钥匙串 (Windows 凭据管理器 / macOS Keychain /
-    # Linux Secret Service)。不装它 _auth_store 会降级成明文落盘并记 warning ——
-    # 那是给缺钥匙串服务的环境留的退路, 不该是默认状态, 故列为正式依赖。
     "keyring>=25.0.0",
     "lark-channel-sdk>=1.2.0",
     "python-telegram-bot[socks]>=22.8",

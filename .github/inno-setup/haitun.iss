@@ -2,7 +2,7 @@
 ; Packages the entire haitun-workspace (including psi-agent.exe, copied in at build time).
 
 #define MyAppName "HaiTun Agent"
-#define MyAppVersion "1.0.1"
+#define MyAppVersion "1.0.3"
 #define MyAppPublisher "Hefei Zhenzhi Artificial Intelligence Application Software Co., Ltd"
 #define MyAppExeName "haitun.exe"
 
@@ -49,7 +49,7 @@ var
 begin
   Result := '';
   NeedsRestart := False;
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM haitun.exe',
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM haitun.exe',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM psi-agent.exe',
        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);

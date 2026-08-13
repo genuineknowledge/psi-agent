@@ -1,5 +1,17 @@
 name: PyInstaller
 
+# 这条流水线有两个身份:
+#   1. 跨平台可编译性的兜底 —— 三平台全编, 编不过这里先红 (nuitka.yml 只在发版
+#      时才编, 不承担这个职责);
+#   2. OSS 发版通道的上游 —— `haitun-inno-setup` 产出的
+#      `haitun-agent-installer-pyinstaller` 由 oss-publish.yml 消费。
+#
+# 触发面保持宽口径 (任何分支的任何推送 + PR): 兜底职责要求编得越勤越好, 收窄
+# 会让特性分支上的编译问题拖到开 PR 才暴露。
+#
+# 接成 oss-publish.yml 的上游不需要在这里收窄: 下游自己在 `workflow_run` 上有
+# `branches: [main, v*]` 过滤, 特性分支和 PR 的 run 根本到不了它, 再加 job 级的
+# `head_branch == 'main'` 做第二道闸。管住发布面的是下游, 不是这里。
 on:
   push:
   pull_request:
@@ -37,6 +49,7 @@ jobs:
         --collect-submodules matplotlib
         --collect-submodules antlr4
         --collect-submodules json_repair
+        --collect-submodules keyring
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7

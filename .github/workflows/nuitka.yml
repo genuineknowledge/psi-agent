@@ -13,12 +13,99 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 决定这次编哪些平台。三平台是**并行**的, 所以一次 run 的墙钟 = 最慢那个
+  # (实测 macOS 117 min / ubuntu 105 min / windows 124 min, 其中 99% 花在单条
+  # Nuitka 编译命令上; `--jobs` 本来就默认取 CPU 核数, 没有并行度可捡)。唯一
+  # 的杠杆是少编平台, 而 Nuitka 的产物只有发版用得上 —— 所以门槛设在"这次是
+  # 不是发版"。
+  #
+  # 判据是 `haitun.iss` 有没有变: 它的 `MyAppVersion` 是用户可见版本号的唯一
+  # 来源, 也正是 oss-publish.yml 的发布判据 (见该文件 `Check haitun.iss
+  # changed`)。两边用同一个信号, 不会出现"编了不发"或"要发没编"。
+  #
+  # 跨平台可编译性不靠这条流水线兜: pyinstaller.yml 在每次 push 和 PR 上都编
+  # 全三平台, 编不过那边先红。
+  #
+  # 门槛只管"编不编", 不裁平台: 一旦判定为发版, 三平台照旧全编。
+  #
+  # **想恢复成"每次推送都编三平台"不需要改这个文件**: 把仓库 Variable
+  # `NUITKA_PLATFORMS` 设成 `ubuntu-latest,windows-latest,macos-latest`
+  # (Settings → Variables), 它会覆盖下面所有判断, 每次推送都编全三平台。
+  # 留空则按判据走。
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.pick.outputs.os }}
+      # "编不编"单独给一个布尔量。不能靠"空数组"表达跳过: GitHub 遇到空
+      # matrix 会直接报 `Matrix vector 'os' does not contain any values`,
+      # 整个 run 变红, 而不是安静跳过。
+      build: ${{ steps.pick.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - id: pick
+        shell: bash
+        env:
+          # 逗号分隔的平台列表。设了就无条件用它, 是恢复三平台的总开关。
+          FORCE_PLATFORMS: ${{ vars.NUITKA_PLATFORMS }}
+          # 发版时编哪些。默认三平台: 门槛只管"这次是不是发版", 发版了就把三个
+          # 平台的产物都留下 (ubuntu/macOS 产物眼下没有下游消费者, 但发版是留档
+          # 的时机)。想只编 Windows 省时间, 把仓库 Variable
+          # NUITKA_RELEASE_PLATFORMS 设成 windows-latest。
+          RELEASE_PLATFORMS: ${{ vars.NUITKA_RELEASE_PLATFORMS || 'ubuntu-latest,windows-latest,macos-latest' }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+
+          # 逗号分隔 → JSON 数组, 顺带去掉空白和空项。纯 shell, 不引入对
+          # runner 上 python3 的依赖。
+          to_json() {
+            printf '%s' "$1" | tr ',' '\n' | tr -d ' \t\r' | grep -v '^$' \
+              | sed 's/.*/"&"/' | paste -sd, - | sed 's/^/[/; s/$/]/'
+          }
+
+          ALL='ubuntu-latest,windows-latest,macos-latest'
+
+          if [ -n "${FORCE_PLATFORMS:-}" ]; then
+            PICKED="$FORCE_PLATFORMS"
+            WHY="仓库 Variable NUITKA_PLATFORMS 强制指定"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || [ "${REF#refs/tags/v}" != "$REF" ]; then
+            # tag 和手动触发一律编全三平台: 前者是正式发版, 后者是人工要产物
+            PICKED="$ALL"
+            WHY="tag / 手动触发"
+          # 只看本次提交自己改了什么, 和 oss-publish.yml 的 `git diff-tree`
+          # 判据一致。不用 `github.event.before`: force-push / 首次推分支时它
+          # 是全零 SHA, git diff 会失败。`-m` 让 merge commit 也能出文件名。
+          elif git diff-tree --no-commit-id --name-only -r -m "${{ github.sha }}" \
+               | grep -qx '.github/inno-setup/haitun.iss'; then
+            PICKED="$RELEASE_PLATFORMS"
+            WHY="haitun.iss 变了 (发版)"
+          else
+            PICKED=""
+            WHY="haitun.iss 未变, 跳过编译 (跨平台验证由 pyinstaller.yml 兜)"
+          fi
+
+          if [ -n "$PICKED" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            # matrix 不能为空, 给个占位值; nuitka job 的 `if` 会把它挡掉。
+            PICKED="windows-latest"
+          fi
+
+          echo "os=$(to_json "$PICKED")" >> "$GITHUB_OUTPUT"
+          echo "::notice::$WHY → 编译平台: ${PICKED:-(无)}"
+
   nuitka:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
     env:
       NUITKA_COMMON_FLAGS: >-
         --mode=app
@@ -45,6 +132,7 @@ jobs:
         --include-package=matplotlib
         --include-package=antlr4
         --include-package=json_repair
+        --include-package=keyring
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7

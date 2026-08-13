@@ -285,6 +285,123 @@ static void configure_updater(void)
     }
 }
 
+static void launch_installer_file(const WCHAR *path)
+{
+    WCHAR cmd[1024];
+    STARTUPINFOW si = {sizeof(si)};
+    PROCESS_INFORMATION pi = {0};
+
+    if (!path || !path[0])
+        return;
+    wsprintfW(cmd, L"\"%s\"", path);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_SHOWNORMAL;
+    if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        if (pi.hThread) CloseHandle(pi.hThread);
+        if (pi.hProcess) CloseHandle(pi.hProcess);
+        return;
+    }
+    ShellExecuteW(NULL, L"open", g_installer_url, NULL, NULL, SW_SHOWNORMAL);
+}
+
+/* ---- download progress window ---- */
+
+static HWND g_progress_hwnd = NULL;
+static WCHAR g_progress_version[64];
+
+static LRESULT CALLBACK progress_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg) {
+    case WM_CREATE:
+    {
+        HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        WCHAR text[256];
+        wsprintfW(text, L"正在下载新版本 %s 安装包，请稍候……", g_progress_version);
+        HWND label = CreateWindowExW(0, L"STATIC", text,
+                                     WS_CHILD | WS_VISIBLE | SS_CENTER,
+                                     18, 22, 324, 36,
+                                     hwnd, NULL, GetModuleHandleW(NULL), NULL);
+        if (label)
+            SendMessageW(label, WM_SETFONT, (WPARAM)font, TRUE);
+        return 0;
+    }
+    case WM_CLOSE:
+        DestroyWindow(hwnd);
+        g_progress_hwnd = NULL;
+        return 0;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static DWORD WINAPI progress_window_thread(LPVOID unused)
+{
+    (void)unused;
+    HINSTANCE hInst = GetModuleHandleW(NULL);
+    HWND hwnd;
+    WNDCLASSW wc = {0};
+    wc.lpfnWndProc = progress_wnd_proc;
+    wc.hInstance = hInst;
+    wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"HaiTunDownloadProgress";
+    if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return 0;
+
+    hwnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_DLGMODALFRAME,
+                           L"HaiTunDownloadProgress", L"正在更新",
+                           WS_POPUP | WS_CAPTION,
+                           CW_USEDEFAULT, CW_USEDEFAULT, 360, 100,
+                           NULL, NULL, hInst, NULL);
+    if (!hwnd)
+        return 0;
+    g_progress_hwnd = hwnd;
+
+    {
+        RECT r;
+        GetWindowRect(hwnd, &r);
+        SetWindowPos(hwnd, NULL,
+                     (GetSystemMetrics(SM_CXSCREEN) - (r.right - r.left)) / 2,
+                     (GetSystemMetrics(SM_CYSCREEN) - (r.bottom - r.top)) / 2,
+                     0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+
+    {
+        MSG msg;
+        while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+    return 0;
+}
+
+static HWND show_download_progress(const WCHAR *version)
+{
+    int i;
+    HANDLE hThread;
+    g_progress_hwnd = NULL;
+    g_progress_version[0] = L'\0';
+    if (version && version[0])
+        lstrcpynW(g_progress_version, version, 64);
+    hThread = CreateThread(NULL, 0, progress_window_thread, NULL, 0, NULL);
+    if (hThread)
+        CloseHandle(hThread);
+    for (i = 0; i < 50 && !g_progress_hwnd; i++)
+        Sleep(20);
+    return g_progress_hwnd;
+}
+
+static void hide_download_progress(HWND hwnd)
+{
+    if (hwnd && IsWindow(hwnd))
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+}
+
 static DWORD WINAPI update_check_thread(LPVOID unused)
 {
     (void)unused;
@@ -306,21 +423,24 @@ static DWORD WINAPI update_check_thread(LPVOID unused)
                 WCHAR temp_dir[MAX_PATH];
                 WCHAR temp_path[MAX_PATH];
                 HRESULT hr;
+                HWND progress;
                 if (GetTempPathW(MAX_PATH, temp_dir) && temp_dir[0]) {
                     wsprintfW(temp_path, L"%sHaiTun-Agent-Setup-%s.exe", temp_dir, latest);
+                    progress = show_download_progress(latest);
                     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
                     hr = URLDownloadToFileW(NULL, g_installer_url, temp_path, 0, NULL);
                     CoUninitialize();
+                    hide_download_progress(progress);
                     if (hr == S_OK) {
-                        if ((INT_PTR)ShellExecuteW(NULL, L"open", temp_path, NULL, NULL,
-                                                   SW_SHOWNORMAL) <= 32) {
-                            ShellExecuteW(NULL, L"open", g_installer_url, NULL, NULL,
-                                          SW_SHOWNORMAL);
-                        }
+                        launch_installer_file(temp_path);
                     } else {
+                        MessageBoxW(NULL, L"自动下载失败，将打开浏览器下载页面。", L"更新失败",
+                                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST);
                         ShellExecuteW(NULL, L"open", g_installer_url, NULL, NULL, SW_SHOWNORMAL);
                     }
                 } else {
+                    MessageBoxW(NULL, L"自动下载失败，将打开浏览器下载页面。", L"更新失败",
+                                MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST);
                     ShellExecuteW(NULL, L"open", g_installer_url, NULL, NULL, SW_SHOWNORMAL);
                 }
             }

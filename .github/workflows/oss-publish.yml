@@ -1,11 +1,20 @@
 name: Publish Haitun Installer to OSS
 
+# 发布通道的上游是 PyInstaller, 不是 Nuitka: 全链 17 min vs 2 h, 产物对发版是
+# 等价的 (launcher 硬编码 `psi-agent.exe`, 两个 builder 都往同一路径拷)。
+#
+# `branches` 过滤的是上游 run 的 head branch, 所以 PR / 特性分支上的 PyInstaller
+# run 根本不会触发这条流水线。下面 job 级的 `head_branch == 'main'` 判断保留着做
+# 第二道闸 —— 两道都在, 触发面窄了, 误发的防线也没减。
 on:
   workflow_run:
     workflows:
-      - Nuitka
+      - PyInstaller
     types:
       - completed
+    branches:
+      - main
+      - "v*"
 
 permissions:
   contents: read
@@ -90,7 +99,7 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         uses: actions/download-artifact@v8
         with:
-          name: haitun-agent-installer-nuitka
+          name: haitun-agent-installer-pyinstaller
           path: installer
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

@@ -143,6 +143,7 @@ import { FocusChatThread } from "./focus-chat-thread";
 import { ExecutionStepsPanel } from "./execution-steps-panel";
 
 import { ArtifactDrawer } from "./workspace-overlays";
+import SurveyPopup from "./SurveyPopup";
 
 import { NewTaskWorkspace, TemplateLibrary } from "./secondary-views";
 import UserHub from "../components/user-hub/UserHub";
@@ -2415,6 +2416,7 @@ export default function HaiTunAgentWorkspace({
           <TaskStatusTip onClose={closeTaskStatusTip} />
         )}
       {toast && <div className="toast" role="status" aria-live="polite"><Check size={16} /> {toast}</div>}
+      <SurveyPopup />
     </div>
   );
 }

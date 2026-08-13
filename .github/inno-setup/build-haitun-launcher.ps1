@@ -54,7 +54,7 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "rc failed with exit code $LASTEXITCODE"
     }
-    cl /nologo /O2 /utf-8 'haitun.c' 'haitun.res' /Fe:'haitun.exe' /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib wininet.lib urlmon.lib ole32.lib
+    cl /nologo /O2 /utf-8 'haitun.c' 'haitun.res' /Fe:'haitun.exe' /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib wininet.lib urlmon.lib ole32.lib gdi32.lib
     if ($LASTEXITCODE -ne 0) {
         throw "cl failed with exit code $LASTEXITCODE"
     }

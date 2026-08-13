@@ -5,6 +5,34 @@
   width: 100%;
 }
 
+.user-hub-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  margin-bottom: 8px;
+  padding: 0 10px;
+  border: 1px dashed rgba(var(--brand-rgb), 0.45);
+  border-radius: 10px;
+  background: rgba(var(--brand-rgb), 0.08);
+  color: #cfe2f5;
+  font-size: 12px;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.user-hub-feedback:hover {
+  border-style: solid;
+  border-color: var(--brand-500);
+  background: rgba(var(--brand-rgb), 0.16);
+  color: #eaf4ff;
+}
+
+.user-hub-feedback > svg {
+  flex-shrink: 0;
+}
+
 .user-hub-row {
   display: flex;
   align-items: center;
