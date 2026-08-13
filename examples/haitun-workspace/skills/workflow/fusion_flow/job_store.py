@@ -16,7 +16,7 @@ import re
 import secrets
 import threading
 from collections.abc import AsyncIterator, Mapping, Sequence
-from contextlib import ExitStack, asynccontextmanager, suppress
+from contextlib import ExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from os import PathLike
 from typing import BinaryIO, Literal, Protocol, cast
@@ -25,6 +25,7 @@ import anyio
 from anyio.to_thread import run_sync as run_sync_in_worker_thread
 from loguru import logger
 
+from ._atomic_io import atomic_write_text
 from .workflow_execution import (
     ExecutionCheckpoint,
     ForeachIterationCheckpoint,
@@ -442,13 +443,7 @@ class JobStore:
             sort_keys=True,
         )
         target = self._run_path(run.run_id)
-        temporary = self.root / f".{run.run_id}.{secrets.token_hex(8)}.tmp"
-        try:
-            await temporary.write_text(f"{encoded}\n", encoding="utf-8")
-            await temporary.replace(target)
-        finally:
-            with suppress(FileNotFoundError):
-                await temporary.unlink()
+        await atomic_write_text(target, f"{encoded}\n", newline=None)
 
 
 def _try_open_locked_file(path: str) -> BinaryIO | None:

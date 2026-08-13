@@ -5,13 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import secrets
 from collections.abc import Mapping
-from contextlib import suppress
 from pathlib import Path
 
 import anyio
 from loguru import logger
+
+from ._atomic_io import atomic_write_text
 
 _PORTABLE_FILENAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*")
 _FILENAME_SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
@@ -70,7 +70,7 @@ class ArtifactStore:
             if artifact_id in self._persisted_ids:
                 continue
             target = self.artifacts_dir / _artifact_filename(artifact_id)
-            await _atomic_write_text(target, _render_markdown(values[artifact_id]))
+            await atomic_write_text(target, _render_markdown(values[artifact_id]))
             self._persisted_ids.add(artifact_id)
             written += 1
         if written:
@@ -125,16 +125,3 @@ async def _regular_directory(
     if not Path(str(resolved)).is_relative_to(Path(str(boundary_resolved))):
         raise ValueError(f"FusionFlow Artifact path escapes its workflow directory: {path!r}")
     return resolved
-
-
-async def _atomic_write_text(path: anyio.Path, value: str) -> None:
-    """Publish one UTF-8 Artifact file with atomic replacement."""
-
-    temporary = path.parent / f".{path.name}.{secrets.token_hex(8)}.tmp"
-    try:
-        await temporary.write_text(value, encoding="utf-8", newline="")
-        await temporary.replace(path)
-    finally:
-        with anyio.CancelScope(shield=True):
-            with suppress(FileNotFoundError):
-                await temporary.unlink()

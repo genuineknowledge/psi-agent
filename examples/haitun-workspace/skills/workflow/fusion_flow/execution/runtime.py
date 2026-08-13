@@ -21,6 +21,7 @@ import anyio
 from anyio.lowlevel import checkpoint_if_cancelled
 from loguru import logger
 
+from .._atomic_io import atomic_write_bytes, atomic_write_text
 from .model import (
     ExecutionTrace,
     RunResult,
@@ -77,27 +78,12 @@ def stable_payload_hash(value: object) -> str:
 
 async def _atomic_write_bytes(path: anyio.Path, value: bytes) -> None:
     """以原子替换方式写入字节。"""
-    # 临时文件与目标文件同目录. 确保替换可保持原子性。
-    temporary = anyio.Path(path.parent, f".{path.name}.tmp-{uuid4().hex}")
-    try:
-        await temporary.write_bytes(value)
-        # 完整写入后再原子替换目标文件。
-        await temporary.replace(path)
-    finally:
-        with anyio.CancelScope(shield=True):
-            # 清理未被替换的临时文件。
-            try:
-                if await temporary.exists():
-                    await temporary.unlink()
-            except Exception as cleanup_error:
-                logger.warning(
-                    f'Failed to clean temporary FusionFlow file "{temporary}": {cleanup_error}',
-                )
+    await atomic_write_bytes(path, value)
 
 
 async def _atomic_write_text(path: anyio.Path, value: str) -> None:
     """以原子替换方式写入 UTF-8 文本文件。"""
-    await _atomic_write_bytes(path, value.encode("utf-8"))
+    await atomic_write_text(path, value)
 
 
 async def _atomic_write_json(
