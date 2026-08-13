@@ -44,6 +44,7 @@ jobs:
         --include-package=hikari
         --include-package=matplotlib
         --include-package=antlr4
+        --include-package=keyring
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7

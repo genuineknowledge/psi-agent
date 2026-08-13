@@ -36,6 +36,7 @@ jobs:
         --collect-submodules hikari
         --collect-submodules matplotlib
         --collect-submodules antlr4
+        --collect-submodules keyring
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
