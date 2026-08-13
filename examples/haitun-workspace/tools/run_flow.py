@@ -22,6 +22,7 @@ from typing import Any, cast
 import anyio
 import anyio.lowlevel
 from anyio.abc import ByteReceiveStream, Process
+from json_repair import repair_json
 from loguru import logger
 
 from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
@@ -707,6 +708,18 @@ def _remove_trailing_json_commas(value: str) -> tuple[str, int]:
     return "".join(repaired), repair_count
 
 
+def _canonical_json_value(value: object) -> str:
+    """Return a type-preserving canonical form of one parsed JSON value."""
+
+    return json.dumps(
+        value,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 def _parse_agent_step_result(
     value: str,
     *,
@@ -736,25 +749,52 @@ def _parse_agent_step_result(
     return result
 
 
-def _parse_agent_step_result_with_trailing_comma_repair(
+def _parse_agent_step_result_with_json_repair(
     value: str,
     *,
     step_id: str,
     output_ids: tuple[str, ...],
 ) -> tuple[dict[str, object], int, str]:
-    """Apply the sole semantics-preserving Agent JSON fallback."""
+    """Use json-repair, accepting only the trailing-comma-safe equivalent."""
 
     fenced = _extract_single_json_fence(value)
     candidate = value if fenced is None else fenced
     response_form = "raw" if fenced is None else "json_fence"
-    repaired, repair_count = _remove_trailing_json_commas(candidate)
+    trailing_comma_repaired, repair_count = _remove_trailing_json_commas(candidate)
     if repair_count == 0:
         raise _AgentStepResultParseError(f"response for step {step_id!r} has no repairable trailing comma")
-    result = _parse_agent_step_result(
-        repaired,
+
+    expected = _parse_agent_step_result(
+        trailing_comma_repaired,
         step_id=step_id,
         output_ids=output_ids,
     )
+
+    try:
+        repaired = repair_json(
+            candidate,
+            return_objects=False,
+            skip_json_loads=True,
+            logging=False,
+            stream_stable=False,
+            strict=True,
+            ensure_ascii=False,
+        )
+    except Exception as error:
+        raise _AgentStepResultParseError(f"json-repair failed for step {step_id!r}") from error
+    if not isinstance(repaired, str):
+        raise _AgentStepResultParseError(f"json-repair returned a non-string result for step {step_id!r}")
+
+    try:
+        result = _parse_agent_step_result(
+            repaired,
+            step_id=step_id,
+            output_ids=output_ids,
+        )
+    except ValueError as error:
+        raise _AgentStepResultParseError(f"json-repair returned invalid strict JSON for step {step_id!r}") from error
+    if _canonical_json_value(result) != _canonical_json_value(expected):
+        raise _AgentStepResultParseError(f"json-repair changed more than trailing commas for step {step_id!r}")
     return result, repair_count, response_form
 
 
@@ -2255,7 +2295,7 @@ async def _complete_agent_step(
         if attempt == 2:
             if repair_response is not None:
                 try:
-                    repaired, repair_count, response_form = _parse_agent_step_result_with_trailing_comma_repair(
+                    repaired, repair_count, response_form = _parse_agent_step_result_with_json_repair(
                         repair_response,
                         step_id=context.step_id,
                         output_ids=context.output_ids,
@@ -2271,10 +2311,10 @@ async def _complete_agent_step(
                         iteration_index=context.dispatch.iteration_index,
                         workflow_attempt=context.dispatch.attempt,
                         response_attempt=attempt + 1,
-                        repair_kind="trailing_comma",
+                        repair_kind="json_repair_trailing_comma",
                         repair_count=repair_count,
                         response_form=response_form,
-                    ).warning("FusionFlow Agent Step accepted JSON after removing trailing commas")
+                    ).warning("FusionFlow Agent Step accepted safe trailing-comma output from json-repair")
                     return repaired
             raise ValueError(f"step {context.step_id!r} result remained invalid after 3 attempts") from validation_error
         message = (

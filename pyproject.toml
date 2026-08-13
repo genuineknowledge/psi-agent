@@ -20,6 +20,7 @@ dependencies = [
     "prompt-toolkit>=3.0.52",
     "rich>=15.0.0",
     "any-llm-sdk>=1.21.0",
+    "json-repair>=0.63.0,<0.64",
     "platformdirs>=4.10.1",
     # 登录凭证的加密密钥存进 OS 钥匙串 (Windows 凭据管理器 / macOS Keychain /
     # Linux Secret Service)。不装它 _auth_store 会降级成明文落盘并记 warning ——

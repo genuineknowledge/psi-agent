@@ -756,6 +756,15 @@ wheels = [
 ]
 
 [[package]]
+name = "json-repair"
+version = "0.63.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/0b/29/e702c7237a55a07afcc0e77c974749c2850dd992b81443496faacd9e82f1/json_repair-0.63.1.tar.gz", hash = "sha256:78bf4f23aa30238049ea7111cb23f39047c29b5ade0550660065c619cd209aa0", size = 52347, upload-time = "2026-08-12T18:11:42.882Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/34/1e5355d8caa9b88bb18b950b26c2b57aee4717445b4860100b1a05e13335/json_repair-0.63.1-py3-none-any.whl", hash = "sha256:5d8c543275166a5fc6ca9e9f32e4e542c58237844aafb3510a83d559daaab171", size = 50776, upload-time = "2026-08-12T18:11:41.754Z" },
+]
+
+[[package]]
 name = "jsonschema"
 version = "4.26.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1299,6 +1308,7 @@ dependencies = [
     { name = "anyio" },
     { name = "croniter" },
     { name = "hikari" },
+    { name = "json-repair" },
     { name = "keyring" },
     { name = "lark-channel-sdk" },
     { name = "loguru" },
@@ -1340,6 +1350,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.14.2" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "hikari", specifier = ">=2.5.0" },
+    { name = "json-repair", specifier = ">=0.63.0,<0.64" },
     { name = "keyring", specifier = ">=25.0.0" },
     { name = "lark-channel-sdk", specifier = ">=1.2.0" },
     { name = "loguru", specifier = ">=0.7.3" },

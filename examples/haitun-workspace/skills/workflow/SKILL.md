@@ -470,9 +470,12 @@ Artifact IDs. A normally completed Agent turn may return either one strict JSON
 object or one standalone `json` fence. Malformed JSON is returned to the model
 for output-only correction without rerunning the Step. If the third ordinary
 text response is still invalid, the runtime may remove only unambiguous trailing
-commas in one string-aware pass, then repeats strict parsing and exact-key
-validation. Every other malformed result fails without publishing any Artifact,
-regardless of output cardinality; invalid raw text is never bound or broadcast.
+commas by trying `json-repair` once. The repaired result is accepted only when it
+is canonically identical, including JSON value types, to a string-aware pass that
+removes trailing commas and nothing else; strict parsing and exact-key validation
+then run again. Every other malformed result fails without publishing any
+Artifact, regardless of output cardinality; invalid raw text is never bound or
+broadcast.
 
 A Human Step may request an approval, choose among up to four options, or accept open-ended/structured input. Its dedicated preparation Agent receives the resolved instruction text, consumed Artifacts, and output contract, then emits the arguments for the existing `clarify` tool. It never asks the user itself, and its question text never becomes a produced Artifact. The next user response becomes the Human Step result after `run_flow_resume`. Multiple output Artifacts require a JSON object keyed exactly by those Artifact IDs; a zero-output Human Step acts as a pure gate.
 
