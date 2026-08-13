@@ -58,6 +58,7 @@ from fusion_flow.job_store import (  # noqa: E402
     RunLease,
     new_opaque_id,
 )
+from fusion_flow.step_timing import StepTimingReporter  # noqa: E402
 from fusion_flow.workflow_execution import (  # noqa: E402
     ExecutionCheckpoint,
     ExecutionPlanError,
@@ -2277,6 +2278,12 @@ async def _execute_persisted_run(
         run.run_id,
         reuse_existing=True,
     )
+    timing_reporter = await StepTimingReporter.open(
+        artifact_store.run_dir,
+        run_id=run.run_id,
+        workflow_id=run.checkpoint.workflow_id,
+        flow_path=run.flow_path,
+    )
     await artifact_store.persist(run.checkpoint.values)
     step_tools: ToolRegistry | None = None
     human_tools: ToolRegistry | None = None
@@ -2357,6 +2364,7 @@ async def _execute_persisted_run(
             )
             await lease.save(updated)
             run_state = updated
+            await timing_reporter.persist()
 
     human_requests: list[HumanRequestSpec] = []
     outputs: dict[str, object] | None = None
@@ -2376,6 +2384,7 @@ async def _execute_persisted_run(
                     resolve_instruction=_cached_instruction_resolver(instruction_files),
                     checkpoint=run.checkpoint,
                     checkpoint_observer=observe_checkpoint,
+                    timing_recorder=timing_reporter.record,
                 ),
                 adapter=agent_sessions,
                 run_id=run.run_id,
@@ -2400,6 +2409,13 @@ async def _execute_persisted_run(
         try:
             with anyio.CancelScope(shield=True):
                 await lease.save(recoverable)
+                if _is_cancellation(error):
+                    await timing_reporter.persist()
+                else:
+                    await timing_reporter.finalize(
+                        status="failed",
+                        error_type=type(error).__name__,
+                    )
         except Exception as persistence_error:
             error.add_note(f"also failed to persist terminal run state: {persistence_error}")
         raise
@@ -2416,6 +2432,7 @@ async def _execute_persisted_run(
         )
         with anyio.CancelScope(shield=True):
             await lease.save(waiting)
+            await timing_reporter.persist()
         return _human_request_payload(waiting.run_id, request)
 
     if outputs is None:
@@ -2428,6 +2445,10 @@ async def _execute_persisted_run(
     )
     with anyio.CancelScope(shield=True):
         await lease.save(completed)
+        await timing_reporter.finalize(
+            status="completed",
+            error_type=None,
+        )
     return json.dumps(outputs, ensure_ascii=False, sort_keys=True)
 
 
@@ -2502,6 +2523,12 @@ async def run_flow(
         )
 
     artifact_store = await _new_artifact_store(flow_path)
+    timing_reporter = await StepTimingReporter.open(
+        artifact_store.run_dir,
+        run_id=artifact_store.run_dir.name,
+        workflow_id=compiled.graph.workflow_id,
+        flow_path=flow_path,
+    )
     await artifact_store.persist(initial_checkpoint.values)
     agent_sessions = _AgentSessionAdapter(
         ai_socket=ai_socket,
@@ -2510,23 +2537,38 @@ async def run_flow(
 
     async def observe_checkpoint(checkpoint: ExecutionCheckpoint) -> None:
         await artifact_store.persist(checkpoint.values)
+        await timing_reporter.persist()
 
-    outputs = await _run_with_agent_sessions(
-        lambda: _execute_workflow(
-            source,
-            inputs=inputs,
-            complete=agent_sessions.complete,
-            resource_capacities=resource_capacities,
-            supported_executor_kinds=("Agent", "Program"),
-            resolve_instruction=_cached_instruction_resolver(instruction_files),
-            work_dir=_workspace_dir(),
-            run_program=complete_program,
-            checkpoint=initial_checkpoint,
-            checkpoint_observer=observe_checkpoint,
-        ),
-        adapter=agent_sessions,
-        run_id=artifact_store.run_dir.name,
-    )
+    try:
+        outputs = await _run_with_agent_sessions(
+            lambda: _execute_workflow(
+                source,
+                inputs=inputs,
+                complete=agent_sessions.complete,
+                resource_capacities=resource_capacities,
+                supported_executor_kinds=("Agent", "Program"),
+                resolve_instruction=_cached_instruction_resolver(instruction_files),
+                work_dir=_workspace_dir(),
+                run_program=complete_program,
+                checkpoint=initial_checkpoint,
+                checkpoint_observer=observe_checkpoint,
+                timing_recorder=timing_reporter.record,
+            ),
+            adapter=agent_sessions,
+            run_id=artifact_store.run_dir.name,
+        )
+    except BaseException as error:
+        with anyio.CancelScope(shield=True):
+            await timing_reporter.finalize(
+                status="cancelled" if _is_cancellation(error) else "failed",
+                error_type=type(error).__name__,
+            )
+        raise
+    with anyio.CancelScope(shield=True):
+        await timing_reporter.finalize(
+            status="completed",
+            error_type=None,
+        )
     return json.dumps(outputs, ensure_ascii=False, sort_keys=True)
 
 
@@ -2589,6 +2631,30 @@ async def run_flow_resume(
             )
             with anyio.CancelScope(shield=True):
                 await lease.save(failed)
+                if run.checkpoint is not None:
+                    try:
+                        artifact_store = await _artifact_store(
+                            run.flow_path,
+                            run.run_id,
+                            reuse_existing=True,
+                        )
+                        timing_reporter = await StepTimingReporter.open(
+                            artifact_store.run_dir,
+                            run_id=run.run_id,
+                            workflow_id=run.checkpoint.workflow_id,
+                            flow_path=run.flow_path,
+                        )
+                        await timing_reporter.finalize(
+                            status="failed",
+                            error_type=(
+                                type(definition_error).__name__ if definition_error is not None else "ValueError"
+                            ),
+                        )
+                    except Exception as timing_error:
+                        logger.warning(
+                            "Workflow timing sidecar finalization ignored after "
+                            f"{type(timing_error).__name__}: {timing_error}"
+                        )
             raise ValueError(f"workflow definition changed for FusionFlow run {run_id!r}") from definition_error
 
         if run.status == "running":

@@ -17,6 +17,7 @@ from .core_ir import Assertion, CompoundTerm, Concept, Constant, Operator
 from .execution.model import AgentConfig
 from .graph_compiler import WorkflowGraphCompilation, WorkflowGraphCompiler
 from .parser import ParseContext, parse_workflow
+from .step_timing import StepTiming, StepTimingMetadata
 from .workflow_execution import (
     CheckpointObserver,
     DispatchContext,
@@ -848,6 +849,7 @@ async def execute_workflow(
     request_human: HumanRequester | None = None,
     checkpoint: ExecutionCheckpoint | None = None,
     checkpoint_observer: CheckpointObserver | None = None,
+    timing_recorder: Callable[[StepTiming], None] | None = None,
 ) -> dict[str, object]:
     """Execute one checked workflow with explicit dispatcher/runtime injection."""
 
@@ -905,6 +907,19 @@ async def execute_workflow(
         prepare_human_instruction=prepare_human_instruction,
         request_human=request_human,
     )
+    timing_metadata = (
+        None
+        if timing_recorder is None
+        else {
+            step.step_id: StepTimingMetadata(
+                step_name=step.name_id,
+                executor_id=step.executor_id,
+                executor_kind=cast(Literal["Agent", "Program"], compiled.executor_kinds[step.executor_id]),
+            )
+            for step in graph.steps
+            if compiled.executor_kinds[step.executor_id] != "Human"
+        }
+    )
 
     return await execute_plan(
         plan,
@@ -915,4 +930,6 @@ async def execute_workflow(
         allocator=allocator,
         checkpoint=checkpoint,
         checkpoint_observer=checkpoint_observer,
+        timing_recorder=timing_recorder,
+        timing_metadata=timing_metadata,
     )
