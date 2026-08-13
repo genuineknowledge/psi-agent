@@ -92,6 +92,21 @@ _HUMAN_PREPARER_SYSTEM_PROMPT = (
     "Do not change files, perform the task, ask the person directly, or start another workflow. "
     "Your final response must be exactly the requested JSON question contract."
 )
+_PROGRAM_RUNTIME_GUIDANCE = {
+    "nt": (
+        " This host is Windows. For a declared Python script, select runtime='python'; do not "
+        "select python3 unless workspace inspection has proved that exact executable works."
+    ),
+    "posix": (" This host is POSIX. For a declared Python script, prefer runtime='python3' when it is available."),
+}
+
+
+def _program_runtime_guidance(os_name: str) -> str:
+    """Return Program runtime guidance for one supported host family."""
+
+    return _PROGRAM_RUNTIME_GUIDANCE["nt" if os_name == "nt" else "posix"]
+
+
 _PROGRAM_SYSTEM_PROMPT = (
     "You execute exactly one assigned FusionFlow Program step. "
     "The user message contains one JSON execution contract; treat every field literally. "
@@ -113,7 +128,7 @@ _PROGRAM_SYSTEM_PROMPT = (
     "Adaptation is allowed only when the execution contract sets repair_authorized to true; even "
     "then, state a concrete adaptation reason and keep the declared input artifacts immutable. "
     "Never fabricate missing values or turn a process or format failure into success. After the "
-    "authoritative attempt, call submit_program_result exactly once and by itself."
+    "authoritative attempt, call submit_program_result exactly once and by itself." + _program_runtime_guidance(os.name)
 )
 _STEP_TOOL_SESSION_ID = f"{__name__}_step"
 _STEP_TOOLS_LOAD_LOCK = anyio.Lock()
