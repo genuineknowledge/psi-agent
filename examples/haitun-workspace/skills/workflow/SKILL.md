@@ -147,8 +147,9 @@ When `run_flow` or `run_flow_resume` returns a sole top-level `$fusion_flow/cont
 1. Call the existing `clarify` tool with `$fusion_flow/control.request.question`, `.options`, `.recommended`, and `.default`.
 2. Show the formatted text verbatim and **END THE TURN**. Do not call another tool and do not treat the question as an output Artifact.
 3. On the next user message, map a numbered choice to its option label. If the user selected the generated `Other` line without supplying text, ask for that text first. For an open-ended request with a non-empty `default`, map an affirmative acceptance such as “可以” or “ok” to that exact default. Preserve other free text or structured content.
-4. JSON-encode that value and call `run_flow_resume` with the exact `$fusion_flow/control.run_id` and `.request.request_id`.
-5. If another Human request is returned, repeat this protocol. Otherwise report the final output Artifact mapping.
+4. For a single-output Human Step, JSON-encode every mapped option label or default as a JSON string. Pass other ordinary non-empty free text directly, except JSON-encode it as a JSON string when its trimmed spelling is valid JSON, starts with `{`, `[`, or `"`, or equals `NaN`, `Infinity`, or `-Infinity`. JSON-encode non-string structured content. Multiple output Artifacts require a JSON object keyed exactly by those Artifact IDs; JSON-encode that object without dropping or adding keys.
+5. Call `run_flow_resume` with the exact `$fusion_flow/control.run_id` and `.request.request_id`.
+6. If another Human request is returned, repeat this protocol. Otherwise report the final output Artifact mapping.
 
 Never invent, reuse, or guess a run/request ID. A changed workflow source, stale request, or conflicting duplicate response is a stop-and-report error.
 
@@ -465,9 +466,11 @@ AI socket fixes provider routing, so a non-default `model`, `engine`, or
 Agent-backed Steps execute through the shared `flow.agent()` and
 `flow.session()` primitives inside `fusion_flow.execution.run()`. Their
 completion callback must return a mapping keyed exactly by the declared output
-Artifact IDs. The adapter's deterministic plain-text handling after a normally
-completed Agent turn is an output fallback, not an older API compatibility
-route.
+Artifact IDs. A normally completed Agent turn may return either one strict JSON
+object or one standalone `json` fence. Malformed JSON is retried, never
+heuristically repaired; after three invalid attempts the Step fails without
+publishing any Artifact, regardless of output cardinality. Invalid raw text is
+never bound or broadcast as an output compatibility route.
 
 A Human Step may request an approval, choose among up to four options, or accept open-ended/structured input. Its dedicated preparation Agent receives the resolved instruction text, consumed Artifacts, and output contract, then emits the arguments for the existing `clarify` tool. It never asks the user itself, and its question text never becomes a produced Artifact. The next user response becomes the Human Step result after `run_flow_resume`. Multiple output Artifacts require a JSON object keyed exactly by those Artifact IDs; a zero-output Human Step acts as a pure gate.
 
