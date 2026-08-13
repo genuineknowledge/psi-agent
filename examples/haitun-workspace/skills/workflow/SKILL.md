@@ -467,10 +467,12 @@ Agent-backed Steps execute through the shared `flow.agent()` and
 `flow.session()` primitives inside `fusion_flow.execution.run()`. Their
 completion callback must return a mapping keyed exactly by the declared output
 Artifact IDs. A normally completed Agent turn may return either one strict JSON
-object or one standalone `json` fence. Malformed JSON is retried, never
-heuristically repaired; after three invalid attempts the Step fails without
-publishing any Artifact, regardless of output cardinality. Invalid raw text is
-never bound or broadcast as an output compatibility route.
+object or one standalone `json` fence. Malformed JSON is returned to the model
+for output-only correction without rerunning the Step. If the third ordinary
+text response is still invalid, the runtime may remove only unambiguous trailing
+commas in one string-aware pass, then repeats strict parsing and exact-key
+validation. Every other malformed result fails without publishing any Artifact,
+regardless of output cardinality; invalid raw text is never bound or broadcast.
 
 A Human Step may request an approval, choose among up to four options, or accept open-ended/structured input. Its dedicated preparation Agent receives the resolved instruction text, consumed Artifacts, and output contract, then emits the arguments for the existing `clarify` tool. It never asks the user itself, and its question text never becomes a produced Artifact. The next user response becomes the Human Step result after `run_flow_resume`. Multiple output Artifacts require a JSON object keyed exactly by those Artifact IDs; a zero-output Human Step acts as a pure gate.
 

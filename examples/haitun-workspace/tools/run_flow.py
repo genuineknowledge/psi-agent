@@ -84,6 +84,7 @@ _STEP_SYSTEM_PROMPT = (
 )
 _JSON_FENCE_OPEN = re.compile(r"[ \t]*(?P<fence>`{3,})json[ \t]*", re.IGNORECASE)
 _JSON_FENCE_CLOSE = re.compile(r"[ \t]*(?P<fence>`{3,})[ \t]*")
+_JSON_WHITESPACE = frozenset(" \t\r\n")
 _HUMAN_PREPARER_SYSTEM_PROMPT = (
     "You prepare exactly one assigned FusionFlow Human step for another person. "
     "Use the workspace-confined read tool only when useful to inspect an instruction reference. "
@@ -661,6 +662,51 @@ def _extract_single_json_fence(value: str) -> str | None:
     return None
 
 
+def _remove_trailing_json_commas(value: str) -> tuple[str, int]:
+    """Remove unambiguous JSON trailing commas in one string-aware pass."""
+
+    repaired: list[str] = []
+    in_string = False
+    escaped = False
+    previous_significant: str | None = None
+    repair_count = 0
+
+    for index, character in enumerate(value):
+        if in_string:
+            repaired.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+
+        if character == '"':
+            in_string = True
+            previous_significant = character
+            repaired.append(character)
+            continue
+
+        if character == ",":
+            lookahead = index + 1
+            while lookahead < len(value) and value[lookahead] in _JSON_WHITESPACE:
+                lookahead += 1
+            if (
+                lookahead < len(value)
+                and value[lookahead] in "}]"
+                and previous_significant not in {"{", "[", ",", ":", None}
+            ):
+                repair_count += 1
+                continue
+
+        repaired.append(character)
+        if character not in _JSON_WHITESPACE:
+            previous_significant = character
+
+    return "".join(repaired), repair_count
+
+
 def _parse_agent_step_result(
     value: str,
     *,
@@ -688,6 +734,28 @@ def _parse_agent_step_result(
             f"outputs for {step_id!r} must match exactly: expected {sorted(expected)}, got {sorted(actual)}"
         )
     return result
+
+
+def _parse_agent_step_result_with_trailing_comma_repair(
+    value: str,
+    *,
+    step_id: str,
+    output_ids: tuple[str, ...],
+) -> tuple[dict[str, object], int, str]:
+    """Apply the sole semantics-preserving Agent JSON fallback."""
+
+    fenced = _extract_single_json_fence(value)
+    candidate = value if fenced is None else fenced
+    response_form = "raw" if fenced is None else "json_fence"
+    repaired, repair_count = _remove_trailing_json_commas(candidate)
+    if repair_count == 0:
+        raise _AgentStepResultParseError(f"response for step {step_id!r} has no repairable trailing comma")
+    result = _parse_agent_step_result(
+        repaired,
+        step_id=step_id,
+        output_ids=output_ids,
+    )
+    return result, repair_count, response_form
 
 
 def _parse_resource_capacities(value: str) -> Mapping[str, ResourceCapacity] | None:
@@ -2159,6 +2227,7 @@ async def _complete_agent_step(
 
     for attempt in range(3):
         submission_error = None
+        repair_response: str | None = None
         response = await _complete_step_agent(
             agent,
             conversation,
@@ -2180,9 +2249,33 @@ async def _complete_agent_step(
                 )
             except _AgentStepResultParseError as error:
                 validation_error = error
+                repair_response = response
             except ValueError as error:
                 validation_error = error
         if attempt == 2:
+            if repair_response is not None:
+                try:
+                    repaired, repair_count, response_form = _parse_agent_step_result_with_trailing_comma_repair(
+                        repair_response,
+                        step_id=context.step_id,
+                        output_ids=context.output_ids,
+                    )
+                except ValueError:
+                    pass
+                else:
+                    logger.bind(
+                        event="fusion_flow.agent_step_json_repaired",
+                        step_id=context.step_id,
+                        executor_id=context.executor_id,
+                        invocation_id=context.dispatch.invocation_id or context.step_id,
+                        iteration_index=context.dispatch.iteration_index,
+                        workflow_attempt=context.dispatch.attempt,
+                        response_attempt=attempt + 1,
+                        repair_kind="trailing_comma",
+                        repair_count=repair_count,
+                        response_form=response_form,
+                    ).warning("FusionFlow Agent Step accepted JSON after removing trailing commas")
+                    return repaired
             raise ValueError(f"step {context.step_id!r} result remained invalid after 3 attempts") from validation_error
         message = (
             f"Your previous step result was invalid: {validation_error}\n"
