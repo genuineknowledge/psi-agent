@@ -317,21 +317,48 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/ais` | Create AI instance |
-| DELETE | `/ais/{ai_id}` | Delete AI |
+| POST | `/ais` | Create AI (201) |
+| DELETE | `/ais/{ai_id}` | Delete AI (200/404) |
 | GET | `/ais` | List all AIs |
-| POST | `/sessions` | Create Session |
-| DELETE | `/sessions/{session_id}` | Delete Session |
-| GET | `/sessions` | List all Sessions |
+| POST | `/routers` | Create and start Router (201) |
+| DELETE | `/routers/{router_id}` | Stop and delete Router (200/404; 409 if still referenced) |
+| GET | `/routers` | List all Routers |
+| POST | `/sessions` | Create Session (201); optional `agent` / `workspace` (falls back to Gateway defaults) |
+| DELETE | `/sessions/{session_id}` | Delete Session + history JSONL + title (200/404) |
+| GET | `/sessions` | List all Sessions (including `agent`) |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
-| GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/history` | Get conversation history (AppData histories/ preferred + legacy dual-read; white-listed + stripped of markers) |
+| GET | `/sessions/{session_id}/todos` | Get session todos (AppData todos/{id}.json preferred + legacy workspace dual-read) |
+| GET | `/sessions/{session_id}/todo-segments` | List todo segments (todos/{id}.segments.json, newest first) |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get a single todo segment including todos[] |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Patch segment label (can be overwritten by turn summary) |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
+| GET | `/oauth/callback` | OAuth redirect landing: captures ?code=&state= for OAuthRelay, shows success page |
+| GET | `/oauth/code` | Caller retrieves code by ?state=, invalidates after one-time use; 404 if not received |
+| GET | `/auth/status` | Current authentication status (endpoint, prefix, loggedIn, deviceKey, platform, credentialEncrypted) |
+| POST | `/auth/send-code` | Request cloud OTP code via {phone} or {email} (400 if both empty) |
+| POST | `/auth/verify` | Verify OTP code {code, phone?/email?}. Logs in existing user; returns registrationRequired for new users |
+| POST | `/auth/complete` | Complete registration with {displayName?}; tempToken retrieved from internal memory |
+| POST | `/auth/bind` | Bind phone/email to logged-in user; 409 identity_taken if already registered |
+| DELETE | `/auth/identities/{provider}` | Unbind phone or email; 409 last_identity if trying to unbind the last remaining identity |
+| GET | `/auth/me` | Current user details and bound identities |
+| POST | `/auth/logout` | Revoke session on cloud and clear local credentials |
+| GET | `/auth/devices` | List logged-in devices unified under {"devices": [...]} |
+| DELETE | `/auth/devices/{device_id}` | Revoke session of a specific device (401 on next request) |
+| GET | `/defaults` | Get default agent, workspace, and appdata |
+| GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | PathPicker shortcut locations and drive letters |
+| GET | `/workspace/browse` | Browse directory (?path=...) |
+| GET | `/workspace/file` | Read file content as base64 |
+| POST | `/workspace/reveal` | Show path in native OS file manager (body {path}) |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
-| GET | `/workspace/browse` | Browse directory (`?path=...`) |
-| GET | `/workspace/cwd` | Get working directory |
+| GET | `/summaries` | Get all session task summaries |
+| POST | `/summaries` | Set task summary {id, summary} |
+| POST | `/summaries/generate` | AI auto-generate task summary {id, user_text, assistant_text} |
+| POST | `/ui/attention` | Flash system tray/webview on background chat completion |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 

@@ -6,6 +6,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
+from psi_agent.gateway._keys import OAUTH_KEY
 from psi_agent.gateway._oauth_manager import OAuthRelay
 from psi_agent.gateway.server import _oauth_callback, _oauth_take_code
 
@@ -13,7 +14,7 @@ from psi_agent.gateway.server import _oauth_callback, _oauth_take_code
 def _request(path: str, relay: OAuthRelay) -> web.Request:
     """构造一个只带 ``app`` 与 query 的真 Request —— handler 只碰这两样。"""
     app = web.Application()
-    app["oauth"] = relay
+    app[OAUTH_KEY] = relay
     return make_mocked_request("GET", path, app=app)
 
 

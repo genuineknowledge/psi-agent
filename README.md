@@ -305,21 +305,48 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 
 | Method | Endpoint | 说明 |
 |--------|----------|------|
-| POST | `/ais` | 创建 AI 实例 |
-| DELETE | `/ais/{ai_id}` | 删除 AI |
+| POST | `/ais` | 创建 AI（201） |
+| DELETE | `/ais/{ai_id}` | 删除 AI（200/404） |
 | GET | `/ais` | 列出所有 AI |
-| POST | `/sessions` | 创建 Session |
-| DELETE | `/sessions/{session_id}` | 删除 Session |
-| GET | `/sessions` | 列出所有 Session |
+| POST | `/routers` | 创建并启动 Router（201） |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router（200/404；仍被 Router 引用时 409） |
+| GET | `/routers` | 列出所有 Router |
+| POST | `/sessions` | 创建 Session（201）；可选 `agent` / `workspace`（缺省用 Gateway defaults） |
+| DELETE | `/sessions/{session_id}` | 删除 Session + history JSONL + 标题（200/404） |
+| GET | `/sessions` | 列出所有 Session（含 `agent`） |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
-| GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/history` | 获取会话历史（AppData histories/ 优先 + legacy 双读；is_displayable_chat_message 白名单 + 剥 [SEND:]/[RECV:]；assistant 行另附 sends；JSONL reasoning（思考散文）透出供 SPA「已思考」） |
+| GET | `/sessions/{session_id}/todos` | 读取 todos（AppData todos/{id}.json 优先，否则 legacy workspace .psi/todos）；返回 {todos, summary}，文件缺失则为空列表 |
+| GET | `/sessions/{session_id}/todo-segments` | 子任务分段列表（todos/{id}.segments.json，新→旧）；merge=false 开新段；返回 [{id,label,closed_at,summary,…}] |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 单段含 todos[]（历史 checklist 回放） |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | P1：改段标题 {label}（spa-v2 可用回合 summary 覆盖） |
 | POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
+| GET | `/oauth/callback` | OAuth 重定向落地点：收下 ?code=&state= 交给 OAuthRelay 暂存，回一张「授权成功」页；缺 state → 400 |
+| GET | `/oauth/code` | 发起方（workspace 工具）按 ?state= 取件，命中返回 {state, code} 并作废（一次性）；未到达 → 404 |
+| GET | `/auth/status` | 登录态 + 链路自检信息 {endpoint, prefix, loggedIn, deviceKey, platform, credentialEncrypted}；不含 token |
+| POST | `/auth/send-code` | 请云端发验证码 {phone} 或 {email}（二选一，缺则 400） |
+| POST | `/auth/verify` | 校验验证码 {code, phone?/email?}。老用户当场登录；新用户回 {registrationRequired: true, isNewUser: true}，其 tempToken 由 Gateway 扣在进程内不下发 |
+| POST | `/auth/complete` | 两段式注册第二段 {displayName?}；tempToken 取自上一步暂存，用后即弃 |
+| POST | `/auth/bind` | 已登录态绑定手机号/邮箱 {code, phone?/email?}；已归他人 → 409 identity_taken |
+| DELETE | `/auth/identities/{provider}` | 解绑一种登录方式（phone/email）；解绑最后一个 → 409 last_identity |
+| GET | `/auth/me` | 当前账号 + 已绑定的登录方式 |
+| POST | `/auth/logout` | 撤销云端本会话并清本机凭证；云端不可达也清本机 |
+| GET | `/auth/devices` | 已登录设备列表，统一为 {"devices": [...]} |
+| DELETE | `/auth/devices/{device_id}` | 踢掉某台设备，该设备下次请求即 401 |
+| GET | `/defaults` | 默认 agent + workspace + appdata（建 Session 调用方可读） |
+| GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/places` | PathPicker 快捷位置（cwd / home / desktop / documents / downloads）+ 盘符 |
+| GET | `/workspace/browse` | 浏览目录（?path=...） |
+| GET | `/workspace/file` | 读取文件为 base64（?path=...&root=...）；root 非空时路径须落在该目录下 |
+| POST | `/workspace/reveal` | 在本机文件管理器中显示路径，body {path}；路径须已存在。供 spa-v2 交付物「在文件夹中显示」 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
-| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
-| GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/summaries` | 获取所有 session 任务摘要 |
+| POST | `/summaries` | 设置任务摘要 {id, summary} |
+| POST | `/summaries/generate` | AI 生成任务摘要 {id, user_text, assistant_text} |
+| POST | `/ui/attention` | 会话在后台完成时闪烁托盘/webview（best-effort，需 --tray / --webview） |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 

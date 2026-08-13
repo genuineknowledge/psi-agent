@@ -6,6 +6,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
+from psi_agent.gateway._keys import AIM_KEY, RM_KEY, SM_KEY
 from psi_agent.gateway.server import _session_ai_socket
 
 
@@ -54,9 +55,9 @@ class FakeRouterManager:
 @pytest.mark.anyio
 async def test_title_socket_for_router_backend_uses_router_ai_id() -> None:
     app = web.Application()
-    app["aim"] = FakeAIManager({"aggregator": "aggregate.sock", "upstream": "upstream.sock"})
-    app["sm"] = FakeSessionManager()
-    app["rm"] = FakeRouterManager()
+    app[AIM_KEY] = FakeAIManager({"aggregator": "aggregate.sock", "upstream": "upstream.sock"})
+    app[SM_KEY] = FakeSessionManager()
+    app[RM_KEY] = FakeRouterManager()
     request = make_mocked_request("POST", "/titles/generate", app=app)
 
     assert await _session_ai_socket(request, "session-1") == "aggregate.sock"
@@ -65,9 +66,9 @@ async def test_title_socket_for_router_backend_uses_router_ai_id() -> None:
 @pytest.mark.anyio
 async def test_title_socket_for_fallback_backend_uses_public_router_socket() -> None:
     app = web.Application()
-    app["aim"] = FakeAIManager({"aggregator": "aggregate.sock"})
-    app["sm"] = FakeSessionManager()
-    app["rm"] = FakeRouterManager(mode="fallback")
+    app[AIM_KEY] = FakeAIManager({"aggregator": "aggregate.sock"})
+    app[SM_KEY] = FakeSessionManager()
+    app[RM_KEY] = FakeRouterManager(mode="fallback")
     request = make_mocked_request("POST", "/titles/generate", app=app)
 
     assert await _session_ai_socket(request, "session-1") == "fallback-public.sock"

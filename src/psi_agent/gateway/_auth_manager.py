@@ -30,6 +30,7 @@ import aiohttp
 import anyio
 from loguru import logger
 
+from psi_agent._logging import trace_id_var
 from psi_agent.gateway._auth_store import AuthStore
 
 # 客户端拿到 401 即视为登录态失效: 清本地凭证、回登录界面。没有静默续期逻辑 ——
@@ -156,6 +157,7 @@ class AuthManager:
         if not self.endpoint:
             return 0, {"error": "auth_endpoint_not_configured"}
         headers: dict[str, str] = {}
+        headers["X-Trace-ID"] = trace_id_var.get()
         if auth:
             if not self._token:
                 return _UNAUTHORIZED, {"error": "unauthorized"}

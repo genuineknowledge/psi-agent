@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import anyio
+import httpx
 from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
@@ -68,6 +69,14 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     client_gone = False
     compaction_needed = False
     stream: AsyncIterator[ChatCompletionChunk] | None = None
+
+    client_args = body.get("client_args")
+    client_args = {} if client_args is None else dict(client_args)
+
+    if "timeout" not in client_args:
+        client_args["timeout"] = httpx.Timeout(connect=30.0, read=None, write=None, pool=None)
+    body["client_args"] = client_args
+
     try:
         stream = cast(
             AsyncIterator[ChatCompletionChunk],
