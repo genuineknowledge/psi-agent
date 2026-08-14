@@ -320,18 +320,45 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create and start Router |
+| DELETE | `/routers/{router_id}` | Stop and delete Router |
+| GET | `/routers` | List all Routers |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/todos` | Get session todos |
+| GET | `/sessions/{session_id}/todo-segments` | Get todo segment list |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get single todo segment history |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Update todo segment label |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
+| GET | `/oauth/callback` | OAuth redirect callback handler |
+| GET | `/oauth/code` | Fetch single-use OAuth authorization code |
+| GET | `/auth/status` | Get auth service status and diagnostic state |
+| POST | `/auth/send-code` | Send phone or email verification code |
+| POST | `/auth/verify` | Verify code and log in |
+| POST | `/auth/complete` | Complete account registration details |
+| POST | `/auth/bind` | Bind phone or email |
+| DELETE | `/auth/identities/{provider}` | Unbind specified identity provider |
+| GET | `/auth/me` | Get current user profile and linked identities |
+| POST | `/auth/logout` | Log out and revoke local credentials |
+| GET | `/auth/devices` | List active user devices |
+| DELETE | `/auth/devices/{device_id}` | Revoke session for a specific device |
+| GET | `/defaults` | Get default agent, workspace, and appdata paths |
+| GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | Get PathPicker shortcut locations |
+| GET | `/workspace/browse` | Browse directory (`?path=...`) |
+| GET | `/workspace/file` | Read workspace file content |
+| POST | `/workspace/reveal` | Open target path in system file manager |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
-| GET | `/workspace/browse` | Browse directory (`?path=...`) |
-| GET | `/workspace/cwd` | Get working directory |
+| GET | `/summaries` | Get all session summaries |
+| POST | `/summaries` | Set session summary |
+| POST | `/summaries/generate` | AI auto-generate task summary |
+| POST | `/ui/attention` | Trigger tray/webview background attention alert |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 
