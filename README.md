@@ -191,6 +191,10 @@ AI 和 Session 组件无需关心通信介质——由 `_sockets.py` 统一处�
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 代理 |
 | `PSI_FEISHU_APP_ID` | 飞书 app ID |
 | `PSI_FEISHU_APP_SECRET` | 飞书 app secret |
+| `PSI_APPDATA` | AppData 记忆区根目录 |
+| `PSI_MAX_CONTEXT_TOKENS` | AI 上下文 Compaction 阈值 |
+| `PSI_AUTH_ENDPOINT` | 云端账号服务地址 |
+| `PSI_AUTH_PREFIX` | 云端账号服务 API 前缀 |
 
 CLI 参数优先于环境变量。AI 参数（provider、model、api_key、base_url）及 channel 认证参数均可选，未传时回退到环境变量。Socket 路径参数（--session-socket、--channel-socket、--ai-socket）为必填。
 
@@ -308,18 +312,45 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
+| POST | `/routers` | 创建并启动 Router |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router |
+| GET | `/routers` | 列出所有 Router |
 | POST | `/sessions` | 创建 Session |
 | DELETE | `/sessions/{session_id}` | 删除 Session |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/todos` | 获取会话 todos 清单 |
+| GET | `/sessions/{session_id}/todo-segments` | 获取子任务分段列表 |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 获取单段含 todos[] |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 修改段标题 |
 | POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
+| GET | `/summaries` | 获取所有任务摘要 |
+| POST | `/summaries` | 设置任务摘要 |
+| POST | `/summaries/generate` | AI 自动生成任务摘要 |
+| POST | `/ui/attention` | 后台完成时闪烁托盘/webview |
+| GET | `/ui/prefs/survey` | 获取问卷弹窗偏好状态 |
+| POST | `/ui/prefs/survey` | 设置问卷弹窗偏好状态 |
+| GET | `/defaults` | 获取默认 agent / workspace / appdata 路径 |
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
 | GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/places` | 获取 PathPicker 快捷位置与盘符 |
+| GET | `/workspace/file` | 读取文件内容（base64） |
+| POST | `/workspace/reveal` | 在系统文件管理器中显示路径 |
+| GET | `/auth/status` | 获取云端账号服务登录状态 |
+| POST | `/auth/send-code` | 请求云端发送验证码 |
+| POST | `/auth/verify` | 校验验证码 |
+| POST | `/auth/complete` | 补充用户资料完成注册 |
+| POST | `/auth/bind` | 绑定手机号/邮箱 |
+| DELETE | `/auth/identities/{provider}` | 解绑某种登录方式 |
+| GET | `/auth/me` | 获取当前账号信息 |
+| POST | `/auth/logout` | 登出当前账号 |
+| GET | `/auth/devices` | 获取已登录设备列表 |
+| DELETE | `/auth/devices/{device_id}` | 剔除指定已登录设备 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 
