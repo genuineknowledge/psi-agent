@@ -244,10 +244,7 @@ class FallbackRouter:
 统一入口使用明确的配置别名：
 
 ```python
-type RouterUpstream = (
-    tuple[str, str]
-    | tuple[str, str, Literal["ai", "router"]]
-)
+type RouterUpstream = tuple[str, str] | tuple[str, str, Literal["ai", "router"]]
 ```
 
 `Router.router_socket` 的类型改为 `str | None`，`Router.upstream` 的类型改为
@@ -336,6 +333,7 @@ type RoutingScopeKey = tuple[str, tuple[str, ...]]
 
 ```python
 def copy_public_request_body(*, body: dict[str, Any]) -> dict[str, Any]: ...
+
 
 def copy_target_request_body(
     *,
@@ -584,6 +582,7 @@ class RouterUpstreamInfo:
     backend_type: Literal["ai", "router"]
     backend_id: str
     description: str
+
 
 @dataclass(frozen=True)
 class RouterInfo:

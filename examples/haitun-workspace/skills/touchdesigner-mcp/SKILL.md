@@ -73,6 +73,7 @@ curl -s http://127.0.0.1:40404/mcp | head -c 400
 # tools/touchdesigner.py  —— 仅当用户要把 td_* 工具常驻暴露时才加;默认按需用本 skill 即可
 from tools._mcp import mcp
 
+
 @mcp
 def td():
     """通过 twozero MCP 控制本机 TouchDesigner。需 TD 正在运行且 twozero MCP 已在 127.0.0.1:40404 启用。"""
@@ -134,15 +135,15 @@ op('/project1/bg').outputConnectors[0].connect(op('/project1/fx').inputConnector
 
 ```python
 # td_execute_python script:
-root = op('/project1')
+root = op("/project1")
 nodes = []
-for name, optype in [('bg', noiseTOP), ('fx', levelTOP), ('out', nullTOP)]:
+for name, optype in [("bg", noiseTOP), ("fx", levelTOP), ("out", nullTOP)]:
     n = root.create(optype, name)
     nodes.append(n.path)
 # 顺序连成链
 for i in range(len(nodes) - 1):
     op(nodes[i]).outputConnectors[0].connect(op(nodes[i + 1]).inputConnectors[0])
-result = {'created': nodes}
+result = {"created": nodes}
 ```
 
 ### 5. 验证 / 取画面
@@ -160,12 +161,12 @@ td_get_screenshot(path="/project1/out")             # 截某算子的输出,落�
 
 ```python
 # td_execute_python script:
-root = op('/project1')
-rec = root.create(moviefileoutTOP, 'recorder')
-op('/project1/out').outputConnectors[0].connect(rec.inputConnectors[0])
-rec.par.type = 'movie'
-rec.par.file = '/tmp/output.mov'
-rec.par.videocodec = 'prores'     # macOS;或 'mjpa' 兜底。H.264/H.265/AV1 需 Commercial license
+root = op("/project1")
+rec = root.create(moviefileoutTOP, "recorder")
+op("/project1/out").outputConnectors[0].connect(rec.inputConnectors[0])
+rec.par.type = "movie"
+rec.par.file = "/tmp/output.mov"
+rec.par.videocodec = "prores"  # macOS;或 'mjpa' 兜底。H.264/H.265/AV1 需 Commercial license
 rec.par.record = True
 ```
 

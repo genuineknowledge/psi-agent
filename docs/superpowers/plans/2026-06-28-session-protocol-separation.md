@@ -195,7 +195,12 @@ async def test_ai_client_tool_calls():
                     "index": 0,
                     "delta": {
                         "tool_calls": [
-                            {"index": 0, "id": "c1", "type": "function", "function": {"name": "get_weather", "arguments": '{"city":'}}
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": '{"city":'},
+                            }
                         ]
                     },
                     "finish_reason": None,
@@ -208,11 +213,7 @@ async def test_ai_client_tool_calls():
             "choices": [
                 {
                     "index": 0,
-                    "delta": {
-                        "tool_calls": [
-                            {"index": 0, "function": {"arguments": '"Beijing"}'}}
-                        ]
-                    },
+                    "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '"Beijing"}'}}]},
                     "finish_reason": "tool_calls",
                 }
             ],
@@ -305,9 +306,9 @@ async def test_ai_client_empty_choices_skipped():
         await resp.prepare(request)
         await resp.write(b'data: {"id":"h","choices":[]}\n\n')
         await resp.write(
-            b'data: '
+            b"data: "
             + json.dumps({"id": "r", "choices": [{"delta": {"content": "real"}, "finish_reason": "stop"}]}).encode()
-            + b'\n\n'
+            + b"\n\n"
         )
         await resp.write(b"data: [DONE]\n\n")
         return resp
@@ -488,7 +489,9 @@ class AiClient:
                 choices_data = data.get("choices", [])
                 if len(choices_data) > 1:
                     logger.warning(f"Expected 1 choice, got {len(choices_data)}, yielding error")
-                    yield AiDelta(finish_reason="error", content=f"[AI Error: expected 1 choice, got {len(choices_data)}]")
+                    yield AiDelta(
+                        finish_reason="error", content=f"[AI Error: expected 1 choice, got {len(choices_data)}]"
+                    )
                     return
                 if not choices_data:
                     continue
@@ -918,6 +921,7 @@ git commit -m "feat(session): add ChannelAdapter protocol adapter"
 
 from psi_agent.session.ai_client import AiClient
 
+
 class SessionAgent:
     def __init__(
         self,
@@ -1091,15 +1095,13 @@ async def run(self, user_message: dict, extra_params: dict | None = None) -> Asy
 
                     try:
                         args = json.loads(func_args_str)
-                    except (json.JSONDecodeError, TypeError):
+                    except json.JSONDecodeError, TypeError:
                         logger.warning(f"Failed to parse tool call arguments: {func_args_str[:200]}")
                         args = {}
 
                     logger.info(f"Executing tool: {func_name}({args})")
 
-                    yield AgentChunk(
-                        reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]"
-                    )
+                    yield AgentChunk(reasoning=f"[Tool Call: {func_name}({json.dumps(args, ensure_ascii=False)})]")
 
                     func = self._tool_funcs.get(func_name)
                     if func is None:
@@ -1622,6 +1624,7 @@ git commit -m "test(session): adapt agent tests to new AiClient/AgentChunk inter
 # 新 handler 模式：
 async def handler(request: web.Request) -> web.StreamResponse:
     return await ChannelAdapter.handle(request, agent, lock)
+
 
 app.router.add_post("/chat/completions", handler)
 ```

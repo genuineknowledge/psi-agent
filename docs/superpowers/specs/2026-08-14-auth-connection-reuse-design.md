@@ -67,8 +67,8 @@ https://github.com/python/cpython/pull/118960 is fixed in Python version 3.14.7
 
 ```python
 trace = aiohttp.TraceConfig()
-trace.on_connection_reuseconn.append(...)      # 复用了池里的连接
-trace.on_connection_create_start.append(...)   # 新建连接 = 池里那条已失效
+trace.on_connection_reuseconn.append(...)  # 复用了池里的连接
+trace.on_connection_create_start.append(...)  # 新建连接 = 池里那条已失效
 ```
 
 以 `keepalive_timeout` 设成远大于待测值（如 600s）的 session，按空闲梯度（10 / 30 / 60 / 90 / 120 / 180s）各发一次 `GET /auth/me`，记录每次触发的是 reuse 还是 create。**第一次出现 create 的梯度即服务端空闲超时上界**，`_KEEPALIVE_SECONDS` 取该值下方一档。

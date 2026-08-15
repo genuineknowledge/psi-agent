@@ -91,14 +91,14 @@ def parse_sse_data(line: str) -> str | None:
 ### 常量层
 
 ```python
-REASONING_KIND_THINKING = "thinking"       # 从 session/protocol.py 移入
-REASONING_KIND_TOOL_CALL = "tool_call"     # 同上
-REASONING_KIND_TOOL_RESULT = "tool_result" # 同上
+REASONING_KIND_THINKING = "thinking"  # 从 session/protocol.py 移入
+REASONING_KIND_TOOL_CALL = "tool_call"  # 同上
+REASONING_KIND_TOOL_RESULT = "tool_result"  # 同上
 
-FINISH_REASON_STOP = "stop"                              # OpenAI 标准
-FINISH_REASON_TOOL_CALLS = "tool_calls"                  # OpenAI 标准
-FINISH_REASON_ERROR = "error"                            # psi-agent 扩展
-FINISH_REASON_COMPACTION_NEEDED = "compaction_needed"    # psi-agent 扩展
+FINISH_REASON_STOP = "stop"  # OpenAI 标准
+FINISH_REASON_TOOL_CALLS = "tool_calls"  # OpenAI 标准
+FINISH_REASON_ERROR = "error"  # psi-agent 扩展
+FINISH_REASON_COMPACTION_NEEDED = "compaction_needed"  # psi-agent 扩展
 
 SSE_DONE = "[DONE]"
 ```

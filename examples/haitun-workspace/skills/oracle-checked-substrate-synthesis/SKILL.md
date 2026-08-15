@@ -186,14 +186,13 @@ This IS the loop the grader runs — never eyeball the artifact; replay this che
 before submitting. Implement the five hooks for your instance and keep the spine:
 
 ```python
-def synthesize_and_verify(build_artifact, run_artifact, oracle, budget_ok,
-                          inputs, label="domain"):
+def synthesize_and_verify(build_artifact, run_artifact, oracle, budget_ok, inputs, label="domain"):
     """Run the grader's own equivalence loop locally before you submit.
-      build_artifact()          -> emit the artifact (list of rules / gate lines / code)
-      run_artifact(artifact, x) -> execute the artifact on input x (the grader's loop)
-      oracle(x)                 -> ground-truth output for input x (reference impl)
-      budget_ok(artifact)       -> True iff the artifact respects the hard size cap
-      inputs()                  -> iterable of test inputs (RANDOM + EDGE cases)
+    build_artifact()          -> emit the artifact (list of rules / gate lines / code)
+    run_artifact(artifact, x) -> execute the artifact on input x (the grader's loop)
+    oracle(x)                 -> ground-truth output for input x (reference impl)
+    budget_ok(artifact)       -> True iff the artifact respects the hard size cap
+    inputs()                  -> iterable of test inputs (RANDOM + EDGE cases)
     """
     artifact = build_artifact()
     assert budget_ok(artifact), f"{label}: artifact exceeds budget"
@@ -212,23 +211,38 @@ order, and the oracle is the same function in the host language:
 
 ```python
 import re
-def _run_rules(rules, s):              # the substrate's executor: ordered re.sub
+
+
+def _run_rules(rules, s):  # the substrate's executor: ordered re.sub
     for pat, repl in rules:
         s = re.sub(pat, repl, s)
     return s
 
-def build_artifact():                  # GENERATE the rules, don't hand-author
-    rules = [(r"$", "C")]              # mark LSB carry for binary increment
-    rules += [(r"1C", "C0")] * 64      # propagate carry leftward (one pass/rule)
+
+def build_artifact():  # GENERATE the rules, don't hand-author
+    rules = [(r"$", "C")]  # mark LSB carry for binary increment
+    rules += [(r"1C", "C0")] * 64  # propagate carry leftward (one pass/rule)
     rules += [(r"0C", "1"), (r"^C", "1"), (r"C", "")]
     return rules
-def run_artifact(rules, x): return _run_rules(rules, x).lstrip("0") or "0"
-def oracle(x):       return bin(int(x, 2) + 1)[2:]      # reference = host language
-def budget_ok(art):  return len(art) < 1000             # the hard rule-count cap
-def inputs():        return ["0","1","11","111","1000","11111111","100000000"]
 
-print(synthesize_and_verify(build_artifact, run_artifact, oracle, budget_ok,
-                            inputs, label="rewrite-system increment"))
+
+def run_artifact(rules, x):
+    return _run_rules(rules, x).lstrip("0") or "0"
+
+
+def oracle(x):
+    return bin(int(x, 2) + 1)[2:]  # reference = host language
+
+
+def budget_ok(art):
+    return len(art) < 1000  # the hard rule-count cap
+
+
+def inputs():
+    return ["0", "1", "11", "111", "1000", "11111111", "100000000"]
+
+
+print(synthesize_and_verify(build_artifact, run_artifact, oracle, budget_ok, inputs, label="rewrite-system increment"))
 ```
 
 To use on a new instance: implement `build_artifact` (your generator's output),

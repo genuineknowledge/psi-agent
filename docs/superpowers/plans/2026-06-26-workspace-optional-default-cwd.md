@@ -80,11 +80,7 @@ git commit -m "test: add test for workspace empty string default"
 改为：
 
 ```python
-        workspace_path = (
-            Path.cwd()
-            if self.workspace == ""
-            else Path(str(await anyio.Path(self.workspace).resolve()))
-        )
+workspace_path = Path.cwd() if self.workspace == "" else Path(str(await anyio.Path(self.workspace).resolve()))
 ```
 
 - [ ] **Step 3: 运行 lint/type check**
@@ -136,19 +132,32 @@ async def test_session_with_empty_workspace_uses_cwd(tmp_path: Path, mock_ai_ser
 
     proc = await anyio.open_process(
         [
-            "uv", "run", "psi-agent", "session",
-            "--channel-socket", channel_socket,
-            "--ai-socket", ai_socket,
+            "uv",
+            "run",
+            "psi-agent",
+            "session",
+            "--channel-socket",
+            channel_socket,
+            "--ai-socket",
+            ai_socket,
         ]
     )
     ai_proc = await anyio.open_process(
         [
-            "uv", "run", "psi-agent", "ai",
-            "--provider", "openai",
-            "--session-socket", ai_socket,
-            "--model", "test",
-            "--api-key", "k",
-            "--base-url", base_url,
+            "uv",
+            "run",
+            "psi-agent",
+            "ai",
+            "--provider",
+            "openai",
+            "--session-socket",
+            ai_socket,
+            "--model",
+            "test",
+            "--api-key",
+            "k",
+            "--base-url",
+            base_url,
         ]
     )
 

@@ -265,6 +265,7 @@ def test_webview_double_start_raises():
     mock_module.start = lambda: None
 
     import sys
+
     sys.modules["webview"] = mock_module
     try:
         wv.start()

@@ -137,9 +137,7 @@ class ChannelCore:
 
     async def __aenter__(self) -> ChannelCore:
         connector, self._endpoint = resolve_connector_and_endpoint(self.session_socket)
-        self._session = aiohttp.ClientSession(
-            connector=connector, timeout=ClientTimeout(total=None)
-        )
+        self._session = aiohttp.ClientSession(connector=connector, timeout=ClientTimeout(total=None))
         return self
 
     async def __aexit__(self, *args: object) -> None:
@@ -461,7 +459,9 @@ async def test_post_detects_send_marker(tmp_path):
         resp = web.StreamResponse()
         resp.headers["Content-Type"] = "text/event-stream"
         await resp.prepare(request)
-        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"Here is [SEND:/tmp/output.py] the file. more text"}}]}\n\n')
+        await resp.write(
+            b'data: {"choices":[{"index":0,"delta":{"content":"Here is [SEND:/tmp/output.py] the file. more text"}}]}\n\n'
+        )
         await resp.write(b"data: [DONE]\n\n")
         return resp
 
@@ -501,7 +501,9 @@ async def test_post_send_dedup(tmp_path):
         resp = web.StreamResponse()
         resp.headers["Content-Type"] = "text/event-stream"
         await resp.prepare(request)
-        await resp.write(b'data: {"choices":[{"index":0,"delta":{"content":"[SEND:/a.py] chunk1 [SEND:/a.py] chunk2"}}]}\n\n')
+        await resp.write(
+            b'data: {"choices":[{"index":0,"delta":{"content":"[SEND:/a.py] chunk1 [SEND:/a.py] chunk2"}}]}\n\n'
+        )
         await resp.write(b"data: [DONE]\n\n")
         return resp
 
@@ -539,7 +541,9 @@ async def test_post_handles_error_chunk(tmp_path):
         resp = web.StreamResponse()
         resp.headers["Content-Type"] = "text/event-stream"
         await resp.prepare(request)
-        await resp.write(b'data: {"id":"error","choices":[{"index":0,"delta":{"content":"[Upstream Error 401]: bad key"},"finish_reason":"error"}]}\n\n')
+        await resp.write(
+            b'data: {"id":"error","choices":[{"index":0,"delta":{"content":"[Upstream Error 401]: bad key"},"finish_reason":"error"}]}\n\n'
+        )
         await resp.write(b"data: [DONE]\n\n")
         return resp
 
@@ -721,7 +725,7 @@ async def run_repl(session_socket: str) -> None:
             while True:
                 try:
                     user_input = await prompt_session.prompt_async("> ", prompt_continuation=". ")
-                except (EOFError, KeyboardInterrupt):
+                except EOFError, KeyboardInterrupt:
                     console.print("\nGoodbye!")
                     break
 

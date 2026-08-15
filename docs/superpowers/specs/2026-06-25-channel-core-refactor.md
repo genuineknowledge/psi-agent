@@ -24,9 +24,11 @@ ChannelCore 管理 aiohttp 连接和 SSH 管道，对外暴露 `post(list[Chunk]
 class FileChunk:
     path: str
 
+
 @dataclass
 class TextChunk:
     text: str
+
 
 Chunk = FileChunk | TextChunk
 ```
@@ -168,7 +170,7 @@ async def run_repl(session_socket: str) -> None:
             while True:
                 try:
                     user_input = await prompt_session.prompt_async("> ", ...)
-                except (EOFError, KeyboardInterrupt):
+                except EOFError, KeyboardInterrupt:
                     console.print("\nGoodbye!")
                     break
 

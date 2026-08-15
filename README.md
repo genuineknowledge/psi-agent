@@ -218,6 +218,7 @@ Tool 就是一个 async 函数——非 `_` 开头的 `.py` 文件中，所有�
 # tools/bash.py
 import anyio
 
+
 async def bash(command: str) -> str:
     """Execute a bash command.
     Args:
@@ -240,9 +241,11 @@ async def system_prompt_builder() -> str:
     """构造 system prompt，返回字符串。"""
     return "You are a helpful assistant."
 
+
 async def system_prompt_rebuild_checker() -> bool:
     """每次对话回合前调用。返回 True 则重建 system prompt。"""
     return False
+
 
 async def turn_context_builder() -> str:
     """每次对话回合前调用。返回本回合的易变块（时间等），挂在本回合 user 消息尾部。"""

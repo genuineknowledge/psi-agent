@@ -59,7 +59,7 @@ AI Backend (HTTP/SSE)
 class AiDelta:
     content: str | None = None
     reasoning: str | None = None
-    tool_calls: list[dict] | None = None   # partial, 按 index 累积
+    tool_calls: list[dict] | None = None  # partial, 按 index 累积
     finish_reason: str | None = None
 ```
 
@@ -80,6 +80,7 @@ class AgentChunk:
 ```python
 class AgentError(Exception):
     """Raised by run() when the agent encounters an unrecoverable error."""
+
     def __init__(self, message: str):
         self.message = message
         super().__init__(message)
@@ -120,17 +121,13 @@ class AiClient:
 ```python
 class ChannelAdapter:
     @staticmethod
-    async def handle(
-        request: web.Request, agent: SessionAgent, lock: anyio.Lock
-    ) -> web.StreamResponse: ...
+    async def handle(request: web.Request, agent: SessionAgent, lock: anyio.Lock) -> web.StreamResponse: ...
 
     @staticmethod
     async def parse_request(request: web.Request) -> tuple[dict, dict]: ...
 
     @staticmethod
-    async def write_stream(
-        chunks: AsyncIterator[AgentChunk], response: web.StreamResponse
-    ) -> None: ...
+    async def write_stream(chunks: AsyncIterator[AgentChunk], response: web.StreamResponse) -> None: ...
 
     @staticmethod
     def to_chat_completion_chunk(chunk: AgentChunk) -> ChatCompletionChunk: ...

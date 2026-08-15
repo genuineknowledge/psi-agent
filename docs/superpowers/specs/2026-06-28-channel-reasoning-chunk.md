@@ -41,13 +41,16 @@ Session 层已经通过 SSE 的 `delta.reasoning` 字段向 Channel 输出"思�
 class FileChunk:
     path: str
 
+
 @dataclass
 class TextChunk:
     text: str
 
+
 @dataclass
 class ReasoningChunk:
     text: str
+
 
 Chunk = FileChunk | TextChunk | ReasoningChunk
 ```
