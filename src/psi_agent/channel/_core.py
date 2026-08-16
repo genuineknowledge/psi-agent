@@ -96,8 +96,8 @@ class ChannelCore:
                 try:
                     error = json.loads(msg)
                     msg = error.get("error", {}).get("message", msg)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to parse non-200 error response JSON: {e!r}")
                 logger.debug(f"non-200 error: {msg!r}")
                 raise ChannelError(msg)
 
