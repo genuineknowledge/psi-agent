@@ -308,18 +308,30 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
+| POST | `/routers` | 创建语义 Router 路由服务 |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router |
+| GET | `/routers` | 列出所有 Router |
 | POST | `/sessions` | 创建 Session |
 | DELETE | `/sessions/{session_id}` | 删除 Session |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/todos` | 获取 Session 的 todo 清单 |
+| GET | `/sessions/{session_id}/todo-segments` | 列出子任务分段 |
 | POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
+| GET | `/summaries` | 获取所有任务摘要 |
+| POST | `/summaries` | 设置任务摘要 |
+| POST | `/summaries/generate` | AI 自动生成任务摘要 |
+| GET | `/defaults` | 获取默认 agent、workspace 与 appdata 路径 |
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
 | GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/places` | 获取 PathPicker 快捷位置 |
+| GET | `/workspace/file` | 读取文件为 base64（`?path=...`） |
+| POST | `/workspace/reveal` | 本机文件管理器显示路径 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 
