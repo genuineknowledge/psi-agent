@@ -58,7 +58,7 @@ class SummaryManager:
         }
         try:
             connector, endpoint = resolve_connector_and_endpoint(ai_socket)
-            timeout = ClientTimeout(total=None)
+            timeout = ClientTimeout(total=None, connect=30.0)
             async with (
                 ClientSession(connector=connector, timeout=timeout) as session,
                 session.post(endpoint, json=body) as resp,
@@ -108,5 +108,5 @@ class SummaryManager:
                 logger.warning(f"Summary generation empty for session {session_id!r}")
                 return None
         except Exception as e:
-            logger.warning(f"Summary generation failed for session {session_id!r}: {e!r}")
+            logger.warning(f"Summary generation failed for session {session_id!r}: {e!r}", exc_info=True)
         return None

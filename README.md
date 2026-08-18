@@ -308,6 +308,9 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
+| POST | `/routers` | 创建并启动 Router 实例 |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router 实例 |
+| GET | `/routers` | 列出所有 Router 实例 |
 | POST | `/sessions` | 创建 Session |
 | DELETE | `/sessions/{session_id}` | 删除 Session |
 | GET | `/sessions` | 列出所有 Session |

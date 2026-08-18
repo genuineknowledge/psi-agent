@@ -320,6 +320,9 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create and start Router instance |
+| DELETE | `/routers/{router_id}` | Stop and delete Router instance |
+| GET | `/routers` | List all Router instances |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |

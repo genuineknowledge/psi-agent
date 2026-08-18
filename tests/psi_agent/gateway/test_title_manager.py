@@ -6,25 +6,25 @@ import socket as _s
 import pytest
 from aiohttp import web
 
-from psi_agent.gateway._summary_manager import SummaryManager
+from psi_agent.gateway._title_manager import TitleManager
 
 
 @pytest.mark.anyio
-async def test_summary_set_get_delete() -> None:
-    m = SummaryManager()
-    await m.set("s1", "为星辰科技写办公室剧本杀角色卡")
-    assert m.get_all() == {"s1": "为星辰科技写办公室剧本杀角色卡"}
+async def test_title_manager_set_get_delete() -> None:
+    m = TitleManager()
+    await m.set("s1", "测试标题")
+    assert m.get_all() == {"s1": "测试标题"}
     await m.delete("s1")
     assert m.get_all() == {}
     await m.delete("s1")  # idempotent
 
 
 @pytest.mark.anyio
-async def test_summary_manager_generate_success() -> None:
+async def test_title_manager_generate_success() -> None:
     async def handler(request: web.Request) -> web.StreamResponse:
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
         await resp.prepare(request)
-        data = json.dumps({"choices": [{"delta": {"content": "用户探讨了剧本杀角色卡创作。"}}]})
+        data = json.dumps({"choices": [{"delta": {"content": "生成的标题"}}]})
         await resp.write(f"data: {data}\n\n".encode())
         await resp.write(b"data: [DONE]\n\n")
         return resp
@@ -38,14 +38,9 @@ async def test_summary_manager_generate_success() -> None:
     port = sock.getsockname()[1]
     await web.SockSite(runner, sock).start()
     try:
-        m = SummaryManager()
-        res = await m.generate(
-            "s1",
-            f"http://127.0.0.1:{port}",
-            "Write character cards",
-            "Sure, here are character cards...",
-        )
-        assert res == "用户探讨了剧本杀角色卡创作。"
-        assert m.get_all() == {"s1": "用户探讨了剧本杀角色卡创作。"}
+        m = TitleManager()
+        res = await m.generate("s1", f"http://127.0.0.1:{port}", "Hello", "Hello! How can I help you?")
+        assert res == "生成的标题"
+        assert m.get_all() == {"s1": "生成的标题"}
     finally:
         await runner.cleanup()
