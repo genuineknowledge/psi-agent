@@ -193,7 +193,11 @@ class SessionManager:
             if self._rm is None:
                 raise LookupError("Router manager is not configured")
             return self._rm.get_socket(backend_id)
-        raise ValueError("backend_type must be either 'ai' or 'router'")
+        if backend_type == "external":
+            if not backend_id.strip():
+                raise ValueError("external backend requires a non-empty socket")
+            return backend_id
+        raise ValueError("backend_type must be either 'ai', 'router', or 'external'")
 
     async def delete(self, session_id: str) -> None:
         async with self._lock:

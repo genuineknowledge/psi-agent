@@ -28,5 +28,8 @@ def test_resolve_ai_and_router_backend_sockets() -> None:
     )
     assert manager.resolve_backend_socket("ai", "ai-1") == "http://ai"
     assert manager.resolve_backend_socket("router", "router-1") == "http://router"
+    assert manager.resolve_backend_socket("external", "/tmp/shared-ai.sock") == "/tmp/shared-ai.sock"
+    with pytest.raises(ValueError, match="non-empty socket"):
+        manager.resolve_backend_socket("external", "")
     with pytest.raises(ValueError, match="backend_type"):
         manager.resolve_backend_socket("other", "x")

@@ -89,9 +89,9 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
     monkeypatch.setattr(_run, "Session", _FakeComponent)
     monkeypatch.setattr(_run, "ChannelRepl", _FakeComponent)
     monkeypatch.setattr(_run, "Router", _FakeComponent)
+    monkeypatch.setattr(_run, "Gateway", _FakeComponent)
 
-    cfg = tmp_path / "c.yml"
-    await anyio.Path(cfg).write_text(
+    config_text = (
         "- type: ai\n"
         "  session_socket: ./ai.sock\n"
         "- type: session\n"
@@ -107,13 +107,23 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
         "  router_timeout: 30\n"
         "  target_timeout: null\n"
         "  max_context_chars: 12000\n"
+        "- type: gateway\n"
+        "  listen: http://127.0.0.1:18080\n"
+        "  feishu_ai_socket: ./ai.sock\n"
         "- type: channel\n"
         "  name: repl\n"
-        "  session_socket: ./ch.sock\n",
-        encoding="utf-8",
+        "  session_socket: ./ch.sock\n"
     )
+    cfg = tmp_path / "c.yml"
+
+    async def read_config(*args: object, **kwargs: object) -> str:
+        return config_text
+
+    # Keep this a component-dispatch test. Avoid depending on anyio's
+    # worker-thread file IO, which is exercised by the config parsing tests.
+    monkeypatch.setattr(anyio.Path, "read_text", read_config)
     await _run_config(cfg)
-    assert len(instances) == 4
+    assert len(instances) == 5
     assert all(c.ran for c in instances)
     assert instances[2].kwargs["mode"] == "aggregation"
     assert instances[2].kwargs["upstream"] == [
@@ -126,3 +136,7 @@ async def test_dispatch_constructs_and_runs_components(tmp_path: Path, monkeypat
     assert instances[2].kwargs["max_context_chars"] == 12000
     assert "default_socket" not in instances[2].kwargs
     assert "max_context_length" not in instances[2].kwargs
+    assert instances[3].kwargs == {
+        "listen": "http://127.0.0.1:18080",
+        "feishu_ai_socket": "./ai.sock",
+    }

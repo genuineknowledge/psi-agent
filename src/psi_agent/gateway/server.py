@@ -206,7 +206,9 @@ async def create_app(
     app_name: str = DEFAULT_APP_NAME,
     attention: AttentionHub | None = None,
     feishu_ai_id: str = "",
+    feishu_ai_socket: str = "",
     feishu_workspace_root: str = "",
+    feishu_workspace: str = "",
     default_agent: str = "",
     default_workspace: str = "",
     appdata: str = "",
@@ -225,7 +227,13 @@ async def create_app(
     # from SPA / state. Gateway.run passes its own instance (also needed by
     # startup restore); standalone tests may omit it.
     app["schedm"] = schedm or SchedulerManager(_sm=sm, _ai_id=scheduler_ai_id or feishu_ai_id)
-    app["fm"] = FeishuManager(_sm=sm, _ai_id=feishu_ai_id, _workspace_root=feishu_workspace_root)
+    app["fm"] = FeishuManager(
+        _sm=sm,
+        _ai_id=feishu_ai_id,
+        _ai_socket=feishu_ai_socket,
+        _workspace_root=feishu_workspace_root,
+        _workspace=feishu_workspace,
+    )
     app["oauth"] = OAuthRelay()
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()

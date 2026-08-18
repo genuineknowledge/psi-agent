@@ -32,6 +32,12 @@ class ChannelFeishu:
     ``session_socket``。所挂 AI 及 workspace 由 Gateway 侧 ``--feishu-ai-id`` /
     ``--feishu-workspace-root`` 决定, channel 无需关心。"""
 
+    gateway_fallback: bool = True
+    """Gateway 路由失败时是否回退到 ``session_socket``。
+
+    多用户部署应设为 ``False``, 否则 Gateway 短暂不可达时会重新把陌生用户
+    放入共享历史; 默认 ``True`` 保持旧版兼容行为。"""
+
     agent: str = ""
     """Agent package root containing ``channel_events/`` (event defs for this Channel).
 
@@ -87,6 +93,7 @@ class ChannelFeishu:
             respond_to_mention_all=self.respond_to_mention_all,
             respond_to_comments=self.respond_to_comments,
             gateway_url=self.gateway_url,
+            gateway_fallback=self.gateway_fallback,
             appdata=self.appdata,
             agent_root=agent_root,
         )

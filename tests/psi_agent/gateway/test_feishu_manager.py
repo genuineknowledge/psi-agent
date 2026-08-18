@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
+from typing import Any, cast
 
 import anyio
 import pytest
@@ -31,6 +33,57 @@ async def _drain(sm: SessionManager, am: AIManager) -> None:
 def test_sanitize_open_id() -> None:
     assert _sanitize_open_id("ou_abc123") == "ou_abc123"
     assert _sanitize_open_id("a/b c:d") == "a_b_c_d"
+
+
+@pytest.mark.anyio
+async def test_route_uses_external_ai_socket_and_separate_sessions(
+    tmp_path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """部署可复用已有 AI socket, 但每个飞书路由键必须创建独立 Session。"""
+
+    class RecordingSessionManager:
+        def __init__(self) -> None:
+            self.created: list[dict[str, Any]] = []
+            self.sockets: dict[str, str] = {}
+
+        def has(self, session_id: str) -> bool:
+            return session_id in self.sockets
+
+        def get_socket(self, session_id: str) -> str:
+            return self.sockets[session_id]
+
+        async def create(self, **kwargs: Any) -> Any:
+            self.created.append(kwargs)
+            session_id = cast(str, kwargs["id"])
+            socket = f"/tmp/{session_id}.sock"
+            self.sockets[session_id] = socket
+            return SimpleNamespace(channel_socket=socket)
+
+    shared_workspace = os.path.join(str(tmp_path), "recruitment")
+
+    async def mkdir_without_io(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    # This unit test is about route/session arguments; directory creation is
+    # covered separately and would involve anyio's worker-thread machinery.
+    monkeypatch.setattr(anyio.Path, "mkdir", mkdir_without_io)
+    sm = RecordingSessionManager()
+    fm = FeishuManager(
+        _sm=cast(SessionManager, sm),
+        _ai_socket="/tmp/shared-ai.sock",
+        _workspace=shared_workspace,
+    )
+
+    _, alice_sid = await fm.route("ou_alice")
+    _, bob_sid = await fm.route("ou_bob")
+
+    assert (alice_sid, bob_sid) == ("feishu-ou_alice", "feishu-ou_bob")
+    assert [entry["backend_type"] for entry in sm.created] == ["external", "external"]
+    assert [entry["backend_id"] for entry in sm.created] == [
+        "/tmp/shared-ai.sock",
+        "/tmp/shared-ai.sock",
+    ]
+    assert [entry["workspace"] for entry in sm.created] == [shared_workspace, shared_workspace]
 
 
 @pytest.mark.anyio

@@ -85,6 +85,7 @@ from psi_agent.channel.cli import ChannelCli
 from psi_agent.channel.feishu import ChannelFeishu
 from psi_agent.channel.repl import ChannelRepl
 from psi_agent.channel.telegram import ChannelTelegram
+from psi_agent.gateway import Gateway
 from psi_agent.router import Router
 from psi_agent.session import Session
 
@@ -179,6 +180,12 @@ async def _run_config(config_path: Path) -> None:
                 logger.info(
                     f"Configured router: session_socket={item.get('session_socket')!r}, "
                     f"router_socket={item.get('router_socket')!r}"
+                )
+            case "gateway":
+                c = _build(Gateway, item)
+                logger.info(
+                    f"Configured gateway: listen={item.get('listen')!r}, "
+                    f"feishu_ai_socket={item.get('feishu_ai_socket')!r}"
                 )
             case "channel":
                 try:

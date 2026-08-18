@@ -820,6 +820,7 @@ async def run_feishu(
     respond_to_mention_all: bool = False,
     respond_to_comments: bool = True,
     gateway_url: str | None = None,
+    gateway_fallback: bool = True,
     appdata: str = "",
     agent_root: str = "",
 ) -> None:
@@ -851,17 +852,25 @@ async def run_feishu(
         logger.info(f"AppData root: {await resolve_appdata_root(appdata)}")
 
         async def resolve_core(open_id: str | None, *, chat_id: str = "", chat_type: str = "") -> ChannelCore:
-            socket = session_socket  # 默认兜底 (无路由键、无 gateway、或路由失败都走这)
+            socket = session_socket  # 未配置 Gateway 时的兼容路径
             is_group = is_group_chat(chat_id, chat_type)
-            if provider is not None and (open_id or is_group):
-                try:
-                    socket = await provider.ensure(open_id or "", chat_id=chat_id, chat_type=chat_type)
-                except Exception as e:  # gateway 不可达 / 路由失败 → 回退共享 socket
-                    logger.warning(
-                        f"Gateway route failed for open_id={open_id!r} chat_id={chat_id!r}, "
-                        f"falling back to shared socket {session_socket!r} — {e!r}"
-                    )
-                    socket = session_socket
+            if provider is not None:
+                if not (open_id or is_group):
+                    if not gateway_fallback:
+                        raise ValueError(
+                            "Gateway routing requires open_id for private chats or chat_id for group chats"
+                        )
+                else:
+                    try:
+                        socket = await provider.ensure(open_id or "", chat_id=chat_id, chat_type=chat_type)
+                    except Exception as e:  # gateway 不可达 / 路由失败
+                        logger.warning(
+                            f"Gateway route failed for open_id={open_id!r} chat_id={chat_id!r}, "
+                            f"fallback={gateway_fallback} — {e!r}"
+                        )
+                        if not gateway_fallback:
+                            raise
+                        socket = session_socket
             return await registry.get(socket)
 
         async def _on_message(ctx: Any) -> None:
