@@ -111,8 +111,11 @@ class Run:
     config: Annotated[Path, conf.Positional]
     """Path to a YAML config file listing components to run."""
 
+    verbose: bool = False
+    """Enable DEBUG-level logging for the batch and all child components."""
+
     async def run(self) -> None:
-        setup_logging(verbose=False)
+        setup_logging(verbose=self.verbose)
         await _run_config(self.config)
 
 

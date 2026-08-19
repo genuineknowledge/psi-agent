@@ -18,7 +18,9 @@ Every active G4 run also writes each materialized Artifact to the workflow
 bundle's `runs/<run-id>/artifacts/` directory. Text values remain Markdown;
 objects, arrays, numbers, booleans, and null are represented by a fenced
 `json` block. This user-visible history is separate from private Human resume
-state under `.psi/fusion-flow/runs/`.
+state under `.psi/fusion-flow/runs/`. DEBUG logging emits structured records for
+each Agent, Program, or Human step call, including duration, model/tool-call
+counts, retry attempts, and the foreach iteration index when applicable.
 
 ## Workspace integration
 

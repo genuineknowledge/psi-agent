@@ -12,7 +12,7 @@ psi-agent. The workspace tool compiles source into Core IR, lowers it to a
 Sessions, runs Program-backed Steps through specialized Program Agents with
 structured process capture, and checkpoints Human-backed Steps across turns.
 
-> **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical bundle: `flows/workflows/<slug>/`, containing `<slug>.workflow` or `<slug>.g4` (`.workflow` takes precedence if both exist). The skill ships no runnable example workflows. Every run persists all materialized Artifacts as Markdown under its workflow bundle's `runs/<run-id>/artifacts/` directory. Human Steps additionally persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; non-Human runs remain non-resumable.
+> **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical bundle: `flows/workflows/<slug>/`, containing `<slug>.workflow` or `<slug>.g4` (`.workflow` takes precedence if both exist). The skill ships no runnable example workflows. Every run persists all materialized Artifacts as Markdown under its workflow bundle's `runs/<run-id>/artifacts/` directory. When DEBUG logging is enabled, Agent, Program, and Human Step calls emit structured timing and model/tool-call metrics. Human Steps additionally persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; non-Human runs remain non-resumable.
 
 > **Legacy handoff.** An explicit `.flow.ts`, Fuclaw, or `@agent-flow/core`
 > request belongs to the `flow` skill under `skills/fusion-flow-legacy/`.
@@ -219,6 +219,7 @@ Paths are relative to the workspace:
 | `flows/workflows/<slug>/<slug>.workflow` or `<slug>.g4` | reusable G4 source (`.workflow` preferred when both exist) |
 | `flows/workflows/<slug>/instructions/*.md` | optional long-form instructions for that reusable source |
 | `<workflow-bundle>/runs/<run-id>/artifacts/*.md` | one Markdown file for every materialized Artifact in one run |
+| DEBUG log (`FusionFlow step call metrics`) | per-step duration, model/tool calls, retries, foreach iteration, and terminal status |
 | `.psi/fusion-flow/runs/<run-id>.json` | private resumable state for workflows containing Human Steps |
 
 ## Authoring Mode

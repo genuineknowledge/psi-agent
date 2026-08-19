@@ -12,10 +12,13 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
+from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import aclosing, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -199,6 +202,10 @@ _CURRENT_AGENT_TOOLS: ContextVar[ToolRegistry | None] = ContextVar(
 _CURRENT_AGENT_CONFIG: ContextVar[AgentConfig | None] = ContextVar(
     "fusion_flow_agent_config",
     default=None,
+)
+_CURRENT_WORKFLOW_RUN_ID: ContextVar[str] = ContextVar(
+    "fusion_flow_run_id",
+    default="",
 )
 
 
@@ -595,16 +602,20 @@ async def _run_with_agent_sessions(
     runs_dir = _workspace_dir() / _SESSION_RUNS_RELATIVE_PATH
     run_path = anyio.Path(runs_dir, run_id)
     resume = await run_path.exists()
-    await _run_execution(
-        program,
-        runs_dir=runs_dir,
-        runner=adapter.run_session,
-        run_id=None if resume else run_id,
-        resume_from_run_id=run_id if resume else None,
-        throw_on_error=True,
-        keep_count=0,
-        keep_days=0,
-    )
+    run_id_token = _CURRENT_WORKFLOW_RUN_ID.set(run_id)
+    try:
+        await _run_execution(
+            program,
+            runs_dir=runs_dir,
+            runner=adapter.run_session,
+            run_id=None if resume else run_id,
+            resume_from_run_id=run_id if resume else None,
+            throw_on_error=True,
+            keep_count=0,
+            keep_days=0,
+        )
+    finally:
+        _CURRENT_WORKFLOW_RUN_ID.reset(run_id_token)
     if result is None:
         raise AssertionError("FusionFlow session runtime completed without workflow outputs")
     return result
@@ -2025,6 +2036,15 @@ async def _complete_program_step(
         conversation,
         "Execute this exact Program contract:\n" + encoded_contract,
         stop_when=lambda: submitted is not None,
+        metric_context={
+            "executor_kind": "Program",
+            "executor_id": invocation.name,
+            "step_id": invocation.binding_name,
+            "invocation_id": invocation.dispatch.invocation_id or invocation.binding_name,
+            "iteration_index": invocation.dispatch.iteration_index,
+            "workflow_attempt": invocation.dispatch.attempt,
+            "agent_output_attempt": 1,
+        },
     )
     if submitted is not None:
         return submitted
@@ -2149,32 +2169,83 @@ async def _complete_step_agent(
     *,
     stop_when: Callable[[], bool] | None = None,
     extra_params: Mapping[str, object] | None = None,
+    metric_context: Mapping[str, object] | None = None,
 ) -> str:
+    started_at = datetime.now(UTC)
+    started = time.perf_counter()
+    message_offset = len(conversation.messages)
+    result = None
+    metric_status = "running"
+    metric_error_type: str | None = None
     run_params = None if extra_params is None else dict(extra_params)
     user_message = {"role": "user", "content": message}
     run = agent.run_streamed(user_message, run_params)
-    async with aclosing(run) as chunks:
-        async for _ in chunks:
-            if stop_when is not None and stop_when():
-                return ""
+    try:
+        async with aclosing(run) as chunks:
+            async for _ in chunks:
+                if stop_when is not None and stop_when():
+                    metric_status = "submitted"
+                    return ""
 
-    result = run.result
-    if result is None:
-        raise RuntimeError("step agent ended without a terminal result")
-    if not result.is_complete:
-        raise RuntimeError(
-            "step agent ended incomplete: "
-            f"stop_cause={result.stop_cause}, "
-            f"model_finish_reason={result.model_finish_reason!r}, "
-            f"model_turns={result.model_turns}"
-        )
-    if not conversation.messages:
-        raise RuntimeError("step agent produced no final assistant text")
-    final = conversation.messages[-1]
-    content = final.get("content")
-    if final.get("role") != "assistant" or final.get("tool_calls") or not isinstance(content, str):
-        raise RuntimeError("step agent produced no final assistant text")
-    return content
+        result = run.result
+        if result is None:
+            raise RuntimeError("step agent ended without a terminal result")
+        if not result.is_complete:
+            metric_status = "incomplete"
+            raise RuntimeError(
+                "step agent ended incomplete: "
+                f"stop_cause={result.stop_cause}, "
+                f"model_finish_reason={result.model_finish_reason!r}, "
+                f"model_turns={result.model_turns}"
+            )
+        if not conversation.messages:
+            raise RuntimeError("step agent produced no final assistant text")
+        final = conversation.messages[-1]
+        content = final.get("content")
+        if final.get("role") != "assistant" or final.get("tool_calls") or not isinstance(content, str):
+            raise RuntimeError("step agent produced no final assistant text")
+        metric_status = "completed"
+        return content
+    except BaseException as error:
+        metric_error_type = type(error).__name__
+        if metric_status == "running":
+            metric_status = "error"
+        raise
+    finally:
+        if metric_context is not None:
+            new_messages = conversation.messages[message_offset:]
+            assistant_messages = [message for message in new_messages if message.get("role") == "assistant"]
+            tool_names: Counter[str] = Counter()
+            for assistant_message in assistant_messages:
+                tool_calls = assistant_message.get("tool_calls")
+                if not isinstance(tool_calls, list):
+                    continue
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function")
+                    if isinstance(function, dict) and isinstance(function.get("name"), str):
+                        tool_names[function["name"]] += 1
+            model_calls = result.model_turns if result is not None else len(assistant_messages)
+            payload = {
+                "schema_version": 1,
+                "run_id": _CURRENT_WORKFLOW_RUN_ID.get(),
+                **dict(metric_context),
+                "started_at": started_at.isoformat(timespec="milliseconds"),
+                "finished_at": datetime.now(UTC).isoformat(timespec="milliseconds"),
+                "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+                "status": metric_status,
+                "error_type": metric_error_type,
+                "model_calls": model_calls,
+                "tool_calls": sum(tool_names.values()),
+                "tool_names": dict(sorted(tool_names.items())),
+                "terminal_stop_cause": str(result.stop_cause) if result is not None else None,
+                "terminal_finish_reason": result.model_finish_reason if result is not None else None,
+            }
+            logger.debug(
+                "FusionFlow step call metrics: "
+                + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            )
 
 
 async def _complete_agent_step(
@@ -2289,6 +2360,15 @@ async def _complete_agent_step(
             message,
             stop_when=stop_after_submission,
             extra_params=extra_params,
+            metric_context={
+                "executor_kind": "Agent",
+                "executor_id": context.executor_id,
+                "step_id": context.step_id,
+                "invocation_id": context.dispatch.invocation_id or context.step_id,
+                "iteration_index": context.dispatch.iteration_index,
+                "workflow_attempt": context.dispatch.attempt,
+                "agent_output_attempt": attempt + 1,
+            },
         )
         if submission_error is not None:
             submitted = None
@@ -2367,7 +2447,20 @@ async def _prepare_human_step(
         "options may contain at most four strings; recommended is a 1-based option index or 0; "
         "default is only for open-ended input. Do not add Markdown or prose."
     )
-    response = await _complete_step_agent(agent, conversation, message)
+    response = await _complete_step_agent(
+        agent,
+        conversation,
+        message,
+        metric_context={
+            "executor_kind": "Human",
+            "executor_id": context.executor_id,
+            "step_id": context.step_id,
+            "invocation_id": context.dispatch.invocation_id or context.step_id,
+            "iteration_index": context.dispatch.iteration_index,
+            "workflow_attempt": context.dispatch.attempt,
+            "agent_output_attempt": 1,
+        },
+    )
     return _prepared_question_json(_parse_prepared_human_question(response))
 
 

@@ -6,7 +6,7 @@ import anyio
 import pytest
 
 from psi_agent import _run
-from psi_agent._run import _build, _run_config
+from psi_agent._run import Run, _build, _run_config
 
 
 class _Dummy:
@@ -23,6 +23,25 @@ def test_build_success() -> None:
 def test_build_failure_reraises() -> None:
     with pytest.raises(TypeError):
         _build(_Dummy, {"y": 2})
+
+
+@pytest.mark.anyio
+async def test_run_passes_verbose_to_logging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[bool] = []
+
+    def fake_setup_logging(*, verbose: bool) -> int:
+        observed.append(verbose)
+        return 1
+
+    async def fake_run_config(config_path: Path) -> None:
+        assert config_path == tmp_path / "c.yml"
+
+    monkeypatch.setattr(_run, "setup_logging", fake_setup_logging)
+    monkeypatch.setattr(_run, "_run_config", fake_run_config)
+
+    await Run(config=tmp_path / "c.yml", verbose=True).run()
+
+    assert observed == [True]
 
 
 @pytest.mark.anyio
