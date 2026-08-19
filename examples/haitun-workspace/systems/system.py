@@ -996,7 +996,9 @@ Workflow declaration (for example, `调用 daily-brief 的 workflow`):
    ask for it and end the turn without probing `run_flow`.
 5. Call `run_flow` exactly once with `flow_path`, complete `inputs_json`, and
    declared `resource_capacities_json`.
-6. If the result contains `$fusion_flow/control`, pass its request fields to
+6. If execution fails and exposes a recoverable `run_id`, continue that exact
+   run through `run_flow_retry`; never call `run_flow` again or guess a run ID.
+7. If the result contains `$fusion_flow/control`, pass its request fields to
    `clarify`; on the next reply continue only through `run_flow_resume` with the
    matching `run_id` and `request_id`.
 
@@ -1031,14 +1033,17 @@ To activate:
    - {flows_dir}/<task-slug>/<task-slug>.workflow
 3. Review the source against `skills/workflow/grammar/FusionFlow.g4`.
 4. Call `run_flow` once with all declared inputs and resource pools.
-5. Report the output Artifact mapping. For `$fusion_flow/control`, use
+5. If execution fails with a recoverable `run_id`, use `run_flow_retry` for
+   that exact run. Do not edit the definition or replace its persisted inputs.
+6. Report the output Artifact mapping. For `$fusion_flow/control`, use
    `clarify` and next-turn `run_flow_resume` as described above.
 
 The runtime owns parsing, graph validation, plan generation, dependency
 scheduling, resource leasing, Agent/Program Step dispatch, and checkpointed
-Human waits. Workflows without Human Steps finish in the initial `run_flow`
-call; Human workflows continue only through `run_flow_resume`. Instructions may
-be inline text or bundle-relative Markdown references resolved by the runner.
+execution. Successful Steps and foreach items are persisted for every run. A
+failed or interrupted run continues only through `run_flow_retry` with its
+exact returned ID; Human workflows continue from user input only through
+`run_flow_resume`. Instructions may be inline text or bundle-relative Markdown references resolved by the runner.
 Each Step receives only its executor-specific, workspace-confined capability
 set. Every materialized Artifact is persisted under the workflow bundle's
 `runs/<run-id>/artifacts/` directory.

@@ -59,7 +59,9 @@ class FeishuManager:
 
     _sm: SessionManager
     _ai_id: str = ""
+    _ai_socket: str = ""
     _workspace_root: str = ""
+    _workspace: str = ""
     _routes: dict[str, str] = field(default_factory=dict)
     _lock: anyio.Lock = field(default_factory=anyio.Lock)
 
@@ -80,6 +82,8 @@ class FeishuManager:
         群聊 → ``<root>/chat-<chat_id>``, 私聊 → ``<root>/<open_id>`` (``-`` 同样转义,
         与 ``_session_id`` 一致, 免得两个键指到同一个 workspace 目录)。
         """
+        if self._workspace:
+            return self._workspace
         root = self._workspace_root or os.getcwd()
         if key.startswith("chat:"):
             return os.path.join(root, f"chat-{_sanitize_open_id(key.removeprefix('chat:'))}")
@@ -119,14 +123,25 @@ class FeishuManager:
                 return self._sm.get_socket(sid), sid
 
             resolved_ai = ai_id or self._ai_id
-            if not resolved_ai:
-                raise ValueError("no ai_id: set Gateway --feishu-ai-id or pass ai_id in the request")
+            if self._ai_socket:
+                backend_type = "external"
+                backend_id = self._ai_socket
+            else:
+                if not resolved_ai:
+                    raise ValueError("no ai_id: set Gateway --feishu-ai-id or pass ai_id in the request")
+                backend_type = "ai"
+                backend_id = resolved_ai
             ws = workspace or self._workspace_for(key)
             await anyio.Path(ws).mkdir(parents=True, exist_ok=True)
 
             try:
                 # agent omitted → SessionManager applies Gateway --default-agent
-                info = await self._sm.create(ai_id=resolved_ai, id=sid, workspace=ws)
+                info = await self._sm.create(
+                    backend_type=backend_type,
+                    backend_id=backend_id,
+                    id=sid,
+                    workspace=ws,
+                )
                 socket = info.channel_socket
             except ValueError as e:
                 # 并发竞态: 另一路已抢先建同名 session (锁内理论不会, 防御性兜底)。

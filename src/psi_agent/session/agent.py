@@ -25,6 +25,7 @@ from psi_agent.session.channel_adapter import ChannelAdapter
 from psi_agent.session.conversation import Conversation
 from psi_agent.session.event_protocol import EventProtocolError, parse_event_envelope
 from psi_agent.session.history_display import (
+    KIND_CHAT,
     KIND_COMPACTED,
     TURN_CONTEXT_KEY,
     message_kind,
@@ -97,6 +98,52 @@ _CURRENT_TOOL_AI_SOCKET: ContextVar[str | None] = ContextVar(
     "psi_agent_current_tool_ai_socket",
     default=None,
 )
+
+_WORKFLOW_TOOLS = frozenset({"run_flow", "run_flow_retry", "run_flow_resume"})
+_WORKFLOW_HUMAN_CONTROL_KEY = "$fusion_flow/control"
+_WORKFLOW_SUMMARY_KEY = "user_facing_summary"
+_WORKFLOW_SUMMARY_MAX_CHARS = 16_000
+_SAFE_WORKFLOW_FAILURE = (
+    "Workflow 未完成。失败步骤: Workflow 执行。"
+    "诊断: 执行工具返回失败, 未生成可安全展示的业务结论。"
+    "下一步: 检查失败步骤所需输入或运行配置后重试。"
+)
+
+
+def _workflow_fallback_text(tool_name: str, result: str) -> str | None:
+    """Extract the one explicitly user-safe workflow field from a tool result."""
+    if tool_name not in _WORKFLOW_TOOLS:
+        return None
+    if result.startswith(f"Error executing tool '{tool_name}':") or result.startswith(
+        f"Error: Tool '{tool_name}'"
+    ):
+        return _SAFE_WORKFLOW_FAILURE
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    control = payload.get(_WORKFLOW_HUMAN_CONTROL_KEY)
+    if isinstance(control, dict) and control.get("status") == "waiting_for_human":
+        return None
+    summary = payload.get(_WORKFLOW_SUMMARY_KEY)
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(summary, dict):
+        return None
+    if summary.get("schema_version") != "1.0":
+        return None
+    text = summary.get("text")
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped or len(stripped) > _WORKFLOW_SUMMARY_MAX_CHARS or "\x00" in stripped:
+        return None
+    return stripped
 
 
 RECENT_TURNS_MARKER = "\n[Recent turns]\n"
@@ -523,6 +570,7 @@ class SessionAgent:
                 logger.debug(f"History now has {len(self._conversation.messages)} messages")
 
                 model_turns = 0
+                workflow_fallback: str | None = None
                 for _round in range(self._max_tool_rounds):
                     logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
                     model_turns = _round + 1
@@ -685,6 +733,8 @@ class SessionAgent:
                                 # yield results in order, save
                                 for i, tc, func_name, _args, _argument_error in tool_args:
                                     result = results[i]
+                                    if func_name in _WORKFLOW_TOOLS:
+                                        workflow_fallback = _workflow_fallback_text(func_name, result)
                                     yield AgentChunk(
                                         reasoning=f"[Tool Result: {str(result)[:1000]}]",
                                         kind=REASONING_KIND_TOOL_RESULT,
@@ -717,6 +767,9 @@ class SessionAgent:
                             f"Stop: content={len(accumulated_content)} chars, "
                             f"reasoning={len(accumulated_reasoning)} chars"
                         )
+                        if not accumulated_content and turn_response_kind == KIND_CHAT and workflow_fallback:
+                            accumulated_content = workflow_fallback
+                            yield AgentChunk(content=accumulated_content)
                         assistant_msg: dict[str, Any] = {"role": "assistant"}
                         if accumulated_content:
                             assistant_msg["content"] = accumulated_content

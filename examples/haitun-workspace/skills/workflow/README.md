@@ -17,8 +17,12 @@ primitives that the G4 graph interpreter reuses.
 Every active G4 run also writes each materialized Artifact to the workflow
 bundle's `runs/<run-id>/artifacts/` directory. Text values remain Markdown;
 objects, arrays, numbers, booleans, and null are represented by a fenced
-`json` block. This user-visible history is separate from private Human resume
-state under `.psi/fusion-flow/runs/`.
+`json` block. This user-visible history is separate from private run and
+checkpoint state under `.psi/fusion-flow/runs/`. Agent and Program Steps also
+publish a resumable `step-timings.json` sidecar in the same run directory. It records
+wall-clock duration, terminal status, retry attempts, and per-item timings for
+foreach Steps; a running sidecar is merged when a failed run retries or a Human
+workflow resumes.
 
 ## Workspace integration
 
@@ -34,14 +38,33 @@ canonical path, prefer `<slug>.workflow`, and fall back to
 `<slug>.g4`. Read the declaration and collect every declared input through
 normal conversation before the initial `run_flow` call; never use a call with
 the default empty input object as an input probe. Each initial call starts a
-fresh run. If it reaches a Human Step, only the returned active request may
-continue through `run_flow_resume`. An Agent Step may save a self-contained
+fresh run. A failed or interrupted run may continue only through
+`run_flow_retry` with the exact recoverable run ID returned by that call. If it
+reaches a Human Step, only the returned active request may continue through
+`run_flow_resume`. An Agent Step may save a self-contained
 child declaration but must not launch another workflow. Its relative
 `read`/`write`/`edit` paths resolve against the psi workspace root, not the
 launcher process CWD.
 
 This Skill ships no runnable workflow registry. Workspace owners may commit
 canonical reusable declarations under `flows/workflows/<slug>/`.
+
+## User-facing completion
+
+Final Artifact mappings remain runtime data, not chat output. A workflow that
+needs deterministic user-visible completion publishes a
+`user_facing_summary` Artifact with schema `1.0` and an explicit `text` field.
+The parent Session presents only that text; it does not expose private handoff
+objects, technical IDs, destination configuration, or the full output mapping.
+
+For an ordinary `kind=chat` turn, Session has a narrow fallback when the model
+returns an empty final `stop`: only `run_flow`, `run_flow_retry`, and
+`run_flow_resume` results can
+supply `user_facing_summary.text`, and the fallback is persisted as an ordinary
+assistant reply. A `$fusion_flow/control.status=waiting_for_human` envelope is
+never completion. Background `schedule.*` and `trigger.*` turns retain their
+silent semantics, even if a workflow result contains a summary. Tool failures
+use a fixed sanitized failure receipt rather than exception text.
 
 ## Modules
 
@@ -57,7 +80,8 @@ canonical reusable declarations under `flows/workflows/<slug>/`.
 - `fusion_flow/graph_compiler.py`: concrete `CoreIRCompiler` backend that builds `fusion_flow.workflow_graph` models.
 - `fusion_flow/workflow_runner.py`: fail-closed compile/plan/execute entry point with Agent, Human, Program, and checkpoint injection boundaries.
 - `fusion_flow/artifact_store.py`: atomic, workflow-local Markdown persistence for every materialized G4 Artifact.
-- `fusion_flow/job_store.py`: strict v3 JSON state plus non-blocking, OS-released advisory leases and an in-process guard for G4 runs waiting on Human input.
+- `fusion_flow/job_store.py`: strict v3 JSON state plus non-blocking, OS-released advisory leases and an in-process guard for all G4 runs.
+- `examples/haitun-workspace/tools/run_flow.py`: workspace `run_flow`, explicit failed-run `run_flow_retry`, and Human-input `run_flow_resume` boundaries.
 - `fusion_flow/planning.py`: before workflow authoring, checks the syntax mappings declared for each planned step against the syntax names actually available. Each planned step maps to one catalog `Step` identity, which authoring expands into a typed constant and its assertions.
 - `fusion_flow/execution/`: shared Python `flow.*` runtime; the G4 adapter reuses `run`/`agent`/`session`, and the graph interpreter reuses its private retry and bounded-parallel helpers.
 
@@ -264,9 +288,18 @@ read-only `read` tool, validates its exact
 `question/options/recommended/default` JSON, and persists a
 `HumanRequestSpec`. It does not build a second approval UI.
 
-The initial `run_flow` call returns a `waiting_for_human` envelope under the
-reserved `$fusion_flow/control` key, which cannot collide with a G4 Artifact
-ID. The parent Session passes its nested request fields to the existing
+Every initial `run_flow` call creates private run state and persists validated
+checkpoints after successful Steps and foreach items. A failed or interrupted
+run can continue through `run_flow_retry` with its exact returned `run_id`;
+completed work is skipped only after the engine validates the original inputs,
+workflow and plan digests, dependency closure, and exact materialized Artifact
+set. The first incomplete Step starts a new execution phase with its ordinary
+retry budget beginning at attempt 1. The caller cannot replace persisted
+inputs, and source or referenced-instruction drift fails closed.
+
+When execution reaches a Human Step, the initial `run_flow` call returns a
+`waiting_for_human` envelope under the reserved `$fusion_flow/control` key,
+which cannot collide with a G4 Artifact ID. The parent Session passes its nested request fields to the existing
 `clarify` tool, shows that tool's formatted text verbatim, and ends the turn.
 The next user message is JSON-encoded and submitted with the matching `run_id`
 and `request_id` to `run_flow_resume`. The generic executor validates and
@@ -293,7 +326,7 @@ uncheckpointed side-effecting Step can run again after resume; workflows should
 not place such a Step concurrently with a Human frontier when exactly-once
 effects matter.
 
-Persisted Human-run documents use the strict state-v3 schema, including the
+Persisted run documents use the strict state-v3 schema, including the
 workflow/plan-bound checkpoint and per-iteration fields. State-v2 documents,
 other versions, and unknown or missing fields fail closed.
 
@@ -392,7 +425,7 @@ Commit only `FusionFlowLexer.py` and `FusionFlowParser.py`; the generated `.inte
 5. **Compiler** owns `fusion_flow/compiler.py`: lower checked Workflow Core IR through backend-specific hooks without selecting a target in the shared layer.
 6. **Workflow Graph backend** owns `fusion_flow/graph_compiler.py`: compile real Core IR through the shared hooks into the `fusion_flow.workflow_graph` model while retaining residual assertions.
 7. **Planning warnings** owns `fusion_flow/planning.py`: after Haitun lists planned steps and before it authors the DSL, check their declared syntax mappings and warn about missing or unavailable names. Each item is already at `Step` granularity; this phase does not introduce a higher-level requirement model and cannot detect steps that Haitun failed to list.
-8. **Haitun integration** keeps the prompt, `run_flow`, and `flow_manage` entry points aligned with the G4 runtime.
+8. **Haitun integration** keeps the prompt, `run_flow`, `run_flow_retry`, `run_flow_resume`, and `flow_manage` entry points aligned with the G4 runtime.
 9. **Compatibility** exposes the `workflow` Skill identity while preserving the internal `fusion_flow` package, `FusionFlow.g4` grammar, and persisted protocol names; explicit legacy `.flow.ts` requests still route to `fusion-flow-legacy` without implicit translation.
 
 Dependency order: 1 + 2 -> 3 -> 4 -> 5 -> 6; 2 -> 7; 4 + 5 + 7 -> 8. Workstream 9 runs throughout and gates activation.

@@ -1,0 +1,20 @@
+{
+  "schema_version": "3.0",
+  "role_requirements_file": "flows/workflows/resume-approval/role-requirements.json",
+  "default_role_id": "example-all-openings-v1",
+  "resume_scoring_document_url": "https://example.feishu.cn/wiki/exampleRecruitmentBase?table=ldxExampleScoringPage001",
+  "resume_scoring_document_token": "ExampleScoringDocxToken000000001",
+  "role_information_document_url": "https://example.feishu.cn/wiki/exampleRecruitmentBase?table=ldxExampleRolesPage00002",
+  "role_information_document_token": "ExampleRoleDocxToken000000000002",
+  "batch_prefix": "example-resume",
+  "feishu_config": {
+    "app_token": "appExampleRecruitmentBase0001",
+    "base_url": "https://example.feishu.cn/base/appExampleRecruitmentBase0001",
+    "talent_pool_table_id": "tblExampleTalentPool001",
+    "interview_table_id": "tblExampleInterview001",
+    "report_document_id": "doxcnExampleRecruitmentReport001",
+    "report_url": "https://example.feishu.cn/docx/doxcnExampleRecruitmentReport001",
+    "user_key": "ou_example_operator_001",
+    "identity": "bot"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "resume_files": [
+    "inbox/resumes/example-candidate-01.pdf",
+    {"path": "inbox/resumes/candidate-02.docx", "name": "candidate-02.docx"}
+  ]
+}

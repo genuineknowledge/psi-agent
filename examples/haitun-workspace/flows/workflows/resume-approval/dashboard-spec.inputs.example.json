@@ -1,0 +1,35 @@
+{
+  "schema_version": "2.0",
+  "dashboards": [
+    {
+      "config_key": "talent_pool_table_id",
+      "source_table": "候选人才库",
+      "views": [
+        {"name": "待初审", "filter": "初审状态=待审批", "sort": ["总分 DESC"]},
+        {"name": "初审通过", "filter": "初审状态=通过", "sort": ["总分 DESC"]},
+        {"name": "初审不通过", "filter": "初审状态=不通过", "sort": ["总分 DESC"]}
+      ],
+      "charts": [
+        {"name": "总分分布", "type": "histogram", "dimension": "总分", "metric": "记录数"},
+        {"name": "学历分布", "type": "bar", "dimension": "学历", "metric": "记录数"},
+        {"name": "岗位分布", "type": "bar", "dimension": "匹配岗位", "metric": "记录数"},
+        {"name": "初审状态", "type": "donut", "dimension": "初审状态", "metric": "记录数"}
+      ]
+    },
+    {
+      "config_key": "interview_table_id",
+      "source_table": "面试记录",
+      "views": [
+        {"name": "待安排", "filter": "面试状态=待安排", "sort": ["面试时间 ASC"]},
+        {"name": "面试中", "filter": "面试状态 IN (待面试,待补充)", "sort": ["面试时间 ASC"]},
+        {"name": "已结束", "filter": "面试状态 IN (已完成,录用,不录用,待定)", "sort": ["面试状态 ASC", "面试加权总分 DESC"]}
+      ],
+      "charts": [
+        {"name": "面试状态", "type": "donut", "dimension": "面试状态", "metric": "记录数"},
+        {"name": "面试得分分布", "type": "histogram", "dimension": "面试加权总分", "metric": "记录数"},
+        {"name": "面试岗位分布", "type": "bar", "dimension": "目标岗位", "metric": "记录数"}
+      ]
+    }
+  ],
+  "cross_table_note": "候选人才库和面试记录是分离事实源；不要在单表看板中伪造跨阶段漏斗。需要漏斗时，在外部 BI 中使用受验证的候选人与面试关联。"
+}

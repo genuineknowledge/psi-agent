@@ -51,7 +51,15 @@ flows/workflows/*/*
 !flows/workflows/*/README.md
 !flows/workflows/*/*.inputs.example.json
 !flows/workflows/*/instructions/
+flows/workflows/*/instructions/*
 !flows/workflows/*/instructions/*.md
+!flows/workflows/*/programs/
+flows/workflows/*/programs/*
+!flows/workflows/*/programs/*.py
+!flows/workflows/*/tests/
+flows/workflows/*/tests/*
+!flows/workflows/*/tests/test_*.py
+!flows/workflows/*/feishu-schema.json
 !flows/curated/
 !flows/curated/**/
 !flows/curated/**/FLOW.md

@@ -133,7 +133,7 @@ _PROGRAM_SYSTEM_PROMPT = (
 _STEP_TOOL_SESSION_ID = f"{__name__}_step"
 _STEP_TOOLS_LOAD_LOCK = anyio.Lock()
 _STEP_TOOLS_SOURCE: ToolRegistry | None = None
-_WORKFLOW_LAUNCHERS = frozenset({"flow_run", "run_flow", "run_flow_resume"})
+_WORKFLOW_LAUNCHERS = frozenset({"flow_run", "run_flow", "run_flow_resume", "run_flow_retry"})
 _WORKSPACE_PATH_PARAMETERS = {
     "edit": "file_path",
     "read": "file_path",
@@ -2415,6 +2415,8 @@ async def _execute_persisted_run(
     *,
     ai_socket: str,
     instruction_files: Mapping[str, str],
+    supported_executor_kinds: tuple[str, ...] = ("Agent", "Human", "Program"),
+    resume_terminal_timing: bool = False,
 ) -> str:
     if run.prepared_request is not None:
         raise ValueError("a Human response must be checkpointed before execution resumes")
@@ -2431,6 +2433,7 @@ async def _execute_persisted_run(
         run_id=run.run_id,
         workflow_id=run.checkpoint.workflow_id,
         flow_path=run.flow_path,
+        resume_terminal=resume_terminal_timing,
     )
     await artifact_store.persist(run.checkpoint.values)
     step_tools: ToolRegistry | None = None
@@ -2524,7 +2527,7 @@ async def _execute_persisted_run(
                     inputs=run.inputs,
                     complete=agent_sessions.complete,
                     resource_capacities=run.resource_capacities,
-                    supported_executor_kinds=("Agent", "Human", "Program"),
+                    supported_executor_kinds=supported_executor_kinds,
                     work_dir=_workspace_dir(),
                     run_program=complete_program,
                     prepare_human_instruction=prepare_human,
@@ -2566,6 +2569,10 @@ async def _execute_persisted_run(
                     )
         except Exception as persistence_error:
             error.add_note(f"also failed to persist terminal run state: {persistence_error}")
+        error.add_note(
+            f"FusionFlow run {run_state.run_id!r} retained its checkpoint; "
+            f"retry with run_flow_retry(run_id={run_state.run_id!r})"
+        )
         raise
 
     if human_requests:
@@ -2633,91 +2640,89 @@ async def run_flow(
         compiled.graph,
         values=inputs,
     )
-    has_human = any(compiled.executor_kinds[step.executor_id] == "Human" for step in compiled.graph.steps)
-    if has_human:
-        store = _job_store()
-        run = await store.create(
-            flow_path=flow_path,
-            definition_digest=_workflow_definition_digest(source, instruction_files),
-            inputs=inputs,
-            resource_capacities=resource_capacities,
-            checkpoint=initial_checkpoint,
-        )
-        async with store.acquire(run.run_id) as lease:
-            return await _execute_persisted_run(
-                source,
-                await lease.load(),
-                lease,
-                ai_socket=ai_socket,
-                instruction_files=instruction_files,
-            )
-
-    step_tools: ToolRegistry | None = None
-    step_tools_lock = anyio.Lock()
-
-    async def get_step_tools() -> ToolRegistry:
-        nonlocal step_tools
-        if step_tools is None:
-            async with step_tools_lock:
-                if step_tools is None:
-                    step_tools = await _load_step_tools()
-        return step_tools
-
-    async def complete_program(invocation: ProgramInvocation) -> dict[str, object]:
-        return await _complete_program_step(
-            invocation,
-            ai_socket=ai_socket,
-            tool_registry=await get_step_tools(),
-        )
-
-    artifact_store = await _new_artifact_store(flow_path)
-    timing_reporter = await StepTimingReporter.open(
-        artifact_store.run_dir,
-        run_id=artifact_store.run_dir.name,
-        workflow_id=compiled.graph.workflow_id,
+    store = _job_store()
+    run = await store.create(
         flow_path=flow_path,
+        definition_digest=_workflow_definition_digest(source, instruction_files),
+        inputs=inputs,
+        resource_capacities=resource_capacities,
+        checkpoint=initial_checkpoint,
     )
-    await artifact_store.persist(initial_checkpoint.values)
-    agent_sessions = _AgentSessionAdapter(
-        ai_socket=ai_socket,
-        get_tool_registry=get_step_tools,
+    supported_executor_kinds = tuple(
+        sorted({compiled.executor_kinds[step.executor_id] for step in compiled.graph.steps})
     )
-
-    async def observe_checkpoint(checkpoint: ExecutionCheckpoint) -> None:
-        await artifact_store.persist(checkpoint.values)
-        await timing_reporter.persist()
-
-    try:
-        outputs = await _run_with_agent_sessions(
-            lambda: _execute_workflow(
-                source,
-                inputs=inputs,
-                complete=agent_sessions.complete,
-                resource_capacities=resource_capacities,
-                supported_executor_kinds=("Agent", "Program"),
-                resolve_instruction=_cached_instruction_resolver(instruction_files),
-                work_dir=_workspace_dir(),
-                run_program=complete_program,
-                checkpoint=initial_checkpoint,
-                checkpoint_observer=observe_checkpoint,
-                timing_recorder=timing_reporter.record,
-            ),
-            adapter=agent_sessions,
-            run_id=artifact_store.run_dir.name,
+    async with store.acquire(run.run_id) as lease:
+        return await _execute_persisted_run(
+            source,
+            await lease.load(),
+            lease,
+            ai_socket=ai_socket,
+            instruction_files=instruction_files,
+            supported_executor_kinds=supported_executor_kinds,
         )
-    except BaseException as error:
-        with anyio.CancelScope(shield=True):
-            await timing_reporter.finalize(
-                status="cancelled" if _is_cancellation(error) else "failed",
-                error_type=type(error).__name__,
+
+
+async def run_flow_retry(run_id: str) -> str:
+    """Retry a failed or interrupted workflow from its checkpoint.
+
+    The run ID must be supplied explicitly. Stored inputs and the persisted
+    workflow definition digest are authoritative; callers cannot replace them
+    while recovering a run. Successful Steps and foreach items are reused only
+    after the execution engine validates their checkpoint Artifacts.
+    """
+
+    ai_socket = current_tool_ai_socket()
+    if ai_socket is None:
+        raise RuntimeError("run_flow_retry must be called by a psi-agent Session")
+    store = _job_store()
+
+    async with store.acquire(run_id) as lease:
+        run = await lease.load()
+        if run.status == "completed":
+            if run.outputs is None:
+                raise AssertionError("completed run has no outputs")
+            return json.dumps(run.outputs, ensure_ascii=False, sort_keys=True)
+        if run.status == "waiting_for_human":
+            raise ValueError(
+                f"FusionFlow run {run_id!r} is waiting for Human input; use run_flow_resume instead"
             )
-        raise
-    with anyio.CancelScope(shield=True):
-        await timing_reporter.finalize(
-            status="completed",
-            error_type=None,
+        if run.checkpoint is None:
+            raise ValueError(f"FusionFlow run {run_id!r} has no resumable checkpoint")
+
+        source = await _read_flow_source(run.flow_path)
+        compiled = _compile_workflow_for_run(source, flow_path=run.flow_path)
+        instruction_files = await _materialize_instruction_files(compiled, run.flow_path)
+        if _workflow_definition_digest(source, instruction_files) != run.definition_digest:
+            failed = replace(
+                run,
+                status="failed",
+                prepared_request=None,
+                error="workflow definition changed after the failed run was checkpointed",
+            )
+            with anyio.CancelScope(shield=True):
+                await lease.save(failed)
+            raise ValueError(f"workflow definition changed for FusionFlow run {run_id!r}")
+
+        supported_executor_kinds = tuple(
+            sorted({compiled.executor_kinds[step.executor_id] for step in compiled.graph.steps})
         )
-    return json.dumps(outputs, ensure_ascii=False, sort_keys=True)
+        resumed = replace(
+            run,
+            status="running",
+            prepared_request=None,
+            error=None,
+        )
+        with anyio.CancelScope(shield=True):
+            await lease.save(resumed)
+        return await _execute_persisted_run(
+            source,
+            resumed,
+            lease,
+            ai_socket=ai_socket,
+            instruction_files=instruction_files,
+            supported_executor_kinds=supported_executor_kinds,
+            resume_terminal_timing=True,
+        )
 
 
 async def run_flow_resume(

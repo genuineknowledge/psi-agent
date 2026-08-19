@@ -12,7 +12,7 @@ psi-agent. The workspace tool compiles source into Core IR, lowers it to a
 Sessions, runs Program-backed Steps through specialized Program Agents with
 structured process capture, and checkpoints Human-backed Steps across turns.
 
-> **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical bundle: `flows/workflows/<slug>/`, containing `<slug>.workflow` or `<slug>.g4` (`.workflow` takes precedence if both exist). The skill ships no runnable example workflows. Every run persists all materialized Artifacts as Markdown under its workflow bundle's `runs/<run-id>/artifacts/` directory. Human Steps additionally persist private checkpoints under the ignored workspace `.psi/fusion-flow/runs/` directory; non-Human runs remain non-resumable.
+> **Workspace boundary.** Store one-off authored G4 files under the workspace-managed `flows/` directory. Reusable declarations have one canonical bundle: `flows/workflows/<slug>/`, containing `<slug>.workflow` or `<slug>.g4` (`.workflow` takes precedence if both exist). The skill ships no runnable example workflows. Every run persists all materialized Artifacts as Markdown under its workflow bundle's `runs/<run-id>/artifacts/` directory. Agent and Program Steps additionally publish `runs/<run-id>/step-timings.json`, including retries and foreach iteration timing. Every run persists private state and its latest validated checkpoint under the ignored workspace `.psi/fusion-flow/runs/` directory so an explicitly identified failed or interrupted run can continue without repeating completed work.
 
 > **Legacy handoff.** An explicit `.flow.ts`, Fuclaw, or `@agent-flow/core`
 > request belongs to the `flow` skill under `skills/fusion-flow-legacy/`.
@@ -52,8 +52,8 @@ Do **not** activate this skill for `.prose` files — those belong to OpenProse.
 | `fusion_flow.workflow_runner` | Core IR to graph, plan, and checked dispatch |
 | `fusion_flow.workflow_execution` | graph interpretation, dependencies, concurrency, timeouts, resources, and validated checkpoints |
 | `fusion_flow.execution` | shared `flow.*` runtime; G4 Agent leaves reuse `run`/`agent`/`session` |
-| `fusion_flow.job_store` | private, strict state-v3 Human wait/checkpoint state |
-| workspace `run_flow` / `run_flow_resume` tools | file/JSON boundary, ephemeral Session-backed Agent/Program dispatch, and Human preparation/resume |
+| `fusion_flow.job_store` | private, strict state-v3 run/checkpoint state and non-blocking run leases |
+| workspace `run_flow` / `run_flow_retry` / `run_flow_resume` tools | file/JSON boundary, ephemeral Session-backed Agent/Program dispatch, failed-run recovery, and Human preparation/resume |
 | workspace `clarify` tool | existing user-facing choice or free-text question formatter |
 
 The Python runtime has one contract: `execute_workflow` requires `inputs=`;
@@ -67,8 +67,9 @@ The skill's job is to:
 1. Turn the user's intent into valid Workflow G4 source, or resolve the concrete G4 workflow they pointed to.
 2. Save reusable source at the fixed path with existing file tools when requested.
 3. Start it through `run_flow`.
-4. If it reaches a Human Step, pass the nested `$fusion_flow/control.request` fields to the existing `clarify` tool, end the turn, and resume from the next user message.
-5. Return only the final workflow output Artifact mapping.
+4. If execution fails after returning a recoverable run ID, retry that exact run through `run_flow_retry`; never start a replacement run or guess an older run ID.
+5. If it reaches a Human Step, pass the nested `$fusion_flow/control.request` fields to the existing `clarify` tool, end the turn, and resume from the next user message.
+6. Deliver the final business result without reproducing the raw output Artifact mapping. When the result contains `user_facing_summary`, use only its explicit `text` field for the user-facing completion.
 
 ## Intent Routing
 
@@ -82,7 +83,8 @@ Natural-language workflow requests map to these actions:
 | "加载 X / 看看保存的 X" | Read the saved `.workflow` or `.g4` file with existing file tools, preferring `.workflow` if both exist. |
 | "把刚生成的这个保存为 X" | After self-check, save the self-contained bundle at `flows/workflows/<slug>/`: one `.workflow` or `.g4` source file plus every referenced instruction Markdown file, preserving relative paths. |
 | "跑一下这个 / 帮我跑 X / 执行这个 workflow" | Start the concrete workspace G4 source with `run_flow`; return outputs, or handle its Human request with `clarify`. |
-| "接着上次那个跑 / 只重跑改动的部分" | Use `run_flow_resume` only for the active Human request already returned in this conversation. Arbitrary cache/resume is unsupported; otherwise offer a fresh run. |
+| "接着上次那个跑" | Use `run_flow_retry` only when this conversation has the exact recoverable run ID from a failed or interrupted call. Use `run_flow_resume` only for its exact active Human request. Do not guess a run, change inputs, or treat edited source as resumable. |
+| "只重跑改动的部分" | This is not supported. A definition change invalidates the checkpoint; offer a fresh run of the changed definition. |
 | "看看结果 / 刚才那个跑完了吗" | Use the result already returned. A Human wait is not completion; wait for the user's answer rather than polling. |
 | "环境齐不齐 / 能不能跑 / 帮我检查下" | Confirm that the G4 source parses and that all Steps use supported Agent, Human, or Program executors. |
 | **"帮我写个工作流做 X / 帮我编排 / 我想让几个 agent ..."** | **Author a new G4 workflow from natural language. See "Authoring Mode" below.** |
@@ -107,7 +109,9 @@ call once with the default empty input object merely to discover missing
 inputs. Once all inputs are available, invoke `run_flow` exactly once with the
 resolved `flow_path` and complete `inputs_json`. Use an empty input object only
 when the declaration has no inputs. Every initial invocation is a fresh run;
-only a returned active Human request may continue through `run_flow_resume`.
+a failed or interrupted invocation may continue only through `run_flow_retry`
+with the recoverable run ID returned by that call. A returned active Human
+request may continue only through `run_flow_resume`.
 
 ### Fixed-path reuse
 
@@ -136,11 +140,34 @@ Pass named workflow inputs through `inputs_json`. Do not rewrite the G4 source j
 
 Pass run-local resource pools through `resource_capacities_json` only when the workflow declares `resource_requirement`.
 
-Call `run_flow` once. If it returns output Artifacts, use them as the result. If it returns a `$fusion_flow/control` object with `status == "waiting_for_human"`, follow the Human protocol below. This reserved key cannot be a G4 Artifact ID, so an ordinary output Artifact named `status` is never control state.
+Call `run_flow` once. If it returns output Artifacts, use them as the result. If an explicit `user_facing_summary.text` is present, show that text rather than the tool JSON or full Artifact mapping. If it returns a `$fusion_flow/control` object with `status == "waiting_for_human"`, follow the Human protocol below. A Human wait is not a completed result. This reserved key cannot be a G4 Artifact ID, so an ordinary output Artifact named `status` is never control state.
+
+### Failed-run retry
+
+`run_flow_retry` is the explicit recovery API for a failed or interrupted run.
+Call it only with the exact recoverable `run_id` exposed by the failed
+`run_flow`, `run_flow_retry`, or `run_flow_resume` call in this conversation.
+Do not call `run_flow` again for that run, discover a recent run by scanning
+state, or substitute new inputs. The persisted original inputs are
+authoritative.
+
+Recovery re-reads the workflow source and referenced instruction files and
+requires their `definition_digest` to match. The executor also validates the
+checkpoint's workflow and plan digests, input values, operation closure, and
+exact Artifact set before skipping work. On success, completed Steps and
+completed foreach items are reused; the first incomplete Step or item starts a
+new execution phase. Its ordinary `max_attempts` budget starts again at attempt
+1 for that phase. A completed run returns its persisted outputs idempotently.
+
+If a definition, plan, input, or Artifact-integrity check fails, stop and
+report it. Source edits are never a recovery mechanism: a changed workflow
+must start as a fresh run only after the user has chosen to rerun it.
 
 ### Human wait and resume
 
-`run_flow_resume` is only for a pending Human request; it is not a general cache or arbitrary-step resume API.
+`run_flow_resume` is only for a pending Human request. Failed or interrupted
+runs use `run_flow_retry`; neither tool is a general cache or arbitrary-step
+resume API.
 
 When `run_flow` or `run_flow_resume` returns a sole top-level `$fusion_flow/control` object whose `status == "waiting_for_human"`:
 
@@ -149,7 +176,7 @@ When `run_flow` or `run_flow_resume` returns a sole top-level `$fusion_flow/cont
 3. On the next user message, map a numbered choice to its option label. If the user selected the generated `Other` line without supplying text, ask for that text first. For an open-ended request with a non-empty `default`, map an affirmative acceptance such as “可以” or “ok” to that exact default. Preserve other free text or structured content.
 4. For a single-output Human Step, JSON-encode every mapped option label or default as a JSON string. Pass other ordinary non-empty free text directly, except JSON-encode it as a JSON string when its trimmed spelling is valid JSON, starts with `{`, `[`, or `"`, or equals `NaN`, `Infinity`, or `-Infinity`. JSON-encode non-string structured content. Multiple output Artifacts require a JSON object keyed exactly by those Artifact IDs; JSON-encode that object without dropping or adding keys.
 5. Call `run_flow_resume` with the exact `$fusion_flow/control.run_id` and `.request.request_id`.
-6. If another Human request is returned, repeat this protocol. Otherwise report the final output Artifact mapping.
+6. If another Human request is returned, repeat this protocol. Otherwise deliver the final business result; prefer the explicit `user_facing_summary.text` and never reproduce the raw output mapping.
 
 Never invent, reuse, or guess a run/request ID. A changed workflow source, stale request, or conflicting duplicate response is a stop-and-report error.
 
@@ -163,7 +190,7 @@ Before executing a G4 workflow:
 
 ### Running is the runtime's job, not yours
 
-Resolve the workspace-relative G4 path, submit it to `run_flow`, and report the returned output mapping. Do not reproduce parsing, dependency scheduling, resource leasing, or Step execution in the parent Session.
+Resolve the workspace-relative G4 path and submit it to `run_flow`. Deliver its explicit safe summary or a concise business result, never the raw output mapping. Do not reproduce parsing, dependency scheduling, resource leasing, or Step execution in the parent Session.
 
 Agent-backed Steps must never invoke `run_flow` or start another workflow. A
 Step may save a self-contained child declaration to the fixed reusable folder;
@@ -173,23 +200,45 @@ independent of the launcher process working directory.
 
 ### Staged execution
 
-Workflows without Human Steps finish in the initial `run_flow` call. A Human workflow executes to the next Human frontier, persists a checkpoint, releases the current Session turn, and continues only through `run_flow_resume`. Do not call the legacy `.flow.ts` `flow_run(start/status/result)` tool for G4 source, and do not invent polling, PIDs, workers, or a separate approval inbox.
+Every workflow persists a checkpoint as successful Steps and foreach items
+finish. Normally a workflow without a Human Step finishes in its initial
+`run_flow` call; if that call fails or is interrupted, continue the exact run
+through `run_flow_retry`. A Human workflow executes to the next Human frontier,
+releases the current Session turn, and continues from user input only through
+`run_flow_resume`. Do not call the legacy `.flow.ts`
+`flow_run(start/status/result)` tool for G4 source, and do not invent polling,
+PIDs, workers, or a separate approval inbox.
 
 ### Checkpoint integrity and resume safety
 
 An `ExecutionCheckpoint` is valid only for its exact non-empty `workflow_id` and `plan_digest`. The digest is SHA-256 over a canonical serialization of the current graph semantics and explicit execution-plan fibers; matching Step and Artifact IDs from another workflow or graph version are not enough. Values must be strict, finite JSON values, and resume compares them recursively with type identity, so JSON `true` never matches JSON `1`. The executor also validates unique known operation IDs, dependency closure, and the exact set of materialized values before it skips any work.
 
-The public `run_flow_resume` boundary additionally validates the current workflow definition against the `definition_digest` recorded when the run was created; that definition includes the `.workflow` or `.g4` source and every referenced Markdown instruction. Persisted Human runs use the strict state-v3 schema; state-v2 and all other older versions are rejected rather than resumed through a compatibility path. Each resume is protected by an OS-released advisory file lock plus an in-process reservation guard; a leftover lock file is not ownership, and an abrupt process exit releases the live advisory lease. Do not copy checkpoints between workflows, edit persisted state, or bypass the matching `run_id` / `request_id` protocol.
+The public `run_flow_retry` and `run_flow_resume` boundaries additionally
+validate the current workflow definition against the `definition_digest`
+recorded when the run was created; that definition includes the `.workflow` or
+`.g4` source and every referenced Markdown instruction. Persisted runs use the
+strict state-v3 schema; state-v2 and all other older versions are rejected
+rather than resumed through a compatibility path. Each recovery or Human
+resume is protected by an OS-released advisory file lock plus an in-process
+reservation guard; a leftover lock file is not ownership, and an abrupt
+process exit releases the live advisory lease. Do not copy checkpoints between
+workflows, edit persisted state, or bypass the exact `run_id` protocol (plus
+the matching `request_id` for Human input).
 
 ### When a run fails
 
-A compilation or Step exception is a **STOP-and-report point**. Report the failing Step or diagnostic exposed by `run_flow`, state one best hypothesis, and hand back to the user.
+A compilation failure before a recoverable run ID exists is a
+**STOP-and-report point**. When a Step failure or interruption exposes a
+recoverable run ID, report the failed Step or diagnostic briefly and call
+`run_flow_retry` with that exact ID. If recovery fails without a recoverable ID
+or fails an integrity check, stop and report it.
 
 These actions are forbidden when a run fails:
 
 - editing the workflow or creating a modified copy to work around the failure;
 - bypassing `run_flow` and manually executing individual Steps;
-- silently retrying or approximating an unsupported operator or executor.
+- guessing a run ID, changing persisted inputs, or editing source before retry;
+- approximating an unsupported operator or executor.
 
 Do not create a mock or offline twin with baked-in output.
 
@@ -199,7 +248,9 @@ The tool does not expose intermediate progress. Do not invent node status while 
 
 ## Reading a Run
 
-When a call returns output Artifacts, summarize them. The runtime has already
+When a call returns output Artifacts, use `user_facing_summary.text` when that
+explicit field exists; otherwise summarize only the necessary business result.
+Never paste the tool JSON or raw output mapping into chat. The runtime has already
 persisted every materialized input, intermediate, selected, and final Artifact
 as one Markdown file under the workflow bundle's
 `runs/<run-id>/artifacts/` directory. String values are written verbatim;
@@ -219,6 +270,7 @@ Paths are relative to the workspace:
 | `flows/workflows/<slug>/<slug>.workflow` or `<slug>.g4` | reusable G4 source (`.workflow` preferred when both exist) |
 | `flows/workflows/<slug>/instructions/*.md` | optional long-form instructions for that reusable source |
 | `<workflow-bundle>/runs/<run-id>/artifacts/*.md` | one Markdown file for every materialized Artifact in one run |
+| `<workflow-bundle>/runs/<run-id>/step-timings.json` | resumable timing report for Agent/Program Steps; includes attempts and foreach iterations |
 | `.psi/fusion-flow/runs/<run-id>.json` | private resumable state for workflows containing Human Steps |
 
 ## Authoring Mode
@@ -663,7 +715,7 @@ This manual source review is not a second tool or CLI invocation. Inside `run_fl
 
 1. Call `run_flow(flow_path=..., inputs_json=..., resource_capacities_json=...)` once. Omit resource capacities when the graph declares no resource requirement.
 2. If it returns a `$fusion_flow/control` Human-wait envelope, follow the Human wait/resume protocol exactly. Do not present that envelope as the workflow result.
-3. When a call returns output Artifacts, summarize them in plain language.
+3. When a call returns output Artifacts, use its explicit `user_facing_summary.text` when present; otherwise summarize the necessary business result without exposing the raw mapping.
 4. On error, report the compiler diagnostic or failed Step without creating a second workflow or bypassing the runner.
 
 ### What Authoring Mode is NOT

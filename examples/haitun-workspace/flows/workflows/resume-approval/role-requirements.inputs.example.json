@@ -1,0 +1,70 @@
+{
+  "schema_version": "2.0",
+  "source_version": "example-role-catalog-v1",
+  "scoring_profiles": {
+    "engineering": {
+      "ai_technical": 25,
+      "experience": 20,
+      "engineering": 30,
+      "learning_growth": 15,
+      "stability": 10
+    }
+  },
+  "roles": [
+    {
+      "role_id": "example-all-openings-v1",
+      "name": "示例岗位自动匹配",
+      "status": "active",
+      "location": "示例城市或远程",
+      "description": "仅用于演示如何在配置清单内匹配启用岗位。",
+      "standard_version": "example-resume-v1",
+      "hard_requirements": [
+        {
+          "id": "example-delivery",
+          "description": "能够提供可验证的软件交付证据"
+        }
+      ],
+      "preferences": [
+        {
+          "id": "example-learning",
+          "description": "能够根据反馈持续迭代"
+        }
+      ],
+      "openings": [
+        {
+          "role_id": "example-software-engineer",
+          "name": "示例软件工程师",
+          "status": "active",
+          "type": "正式",
+          "count": 1,
+          "location": "示例城市或远程",
+          "scoring_profile": "engineering",
+          "description": "交付可维护的软件功能与自动化测试。",
+          "requirements": [
+            "具备一种主流编程语言的项目经验",
+            "能够编写并维护自动化测试"
+          ],
+          "preferences": [
+            "熟悉代码评审与持续集成"
+          ]
+        },
+        {
+          "role_id": "example-product-specialist",
+          "name": "示例产品专员",
+          "status": "active",
+          "type": "正式/实习",
+          "count": 1,
+          "location": "远程",
+          "scoring_profile": "engineering",
+          "description": "梳理用户需求并验证交付结果。",
+          "requirements": [
+            "能够将用户问题整理为可验证需求"
+          ],
+          "preferences": [
+            "具备跨职能协作经验"
+          ]
+        }
+      ]
+    }
+  ]
+}

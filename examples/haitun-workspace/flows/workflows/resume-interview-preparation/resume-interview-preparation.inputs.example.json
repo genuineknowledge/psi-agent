@@ -1,0 +1,12 @@
+{
+  "initial_review_handoff": {
+    "schema_version": "1.0",
+    "status": "ready_for_review",
+    "batch_id": "example-review-batch-001",
+    "expected_count": 1,
+    "path": ".psi/resume-approval/initial-review-handoffs/example-review-batch-001.json",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "next_workflow": "resume-interview-preparation",
+    "next_input": "initial_review_handoff"
+  }
+}

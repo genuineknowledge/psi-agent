@@ -1,0 +1,76 @@
+{
+  "schema_version": "4.0",
+  "storage_model": "concise-visible-talent-and-interview-with-local-handoff",
+  "tables": [
+    {
+      "config_key": "role_requirements_table_id",
+      "required_by_workflow": false,
+      "table_name": "岗位需求",
+      "default_view_name": "启用岗位",
+      "fields": [
+        {"field_name": "岗位ID", "type": 1},
+        {"field_name": "岗位名称", "type": 1},
+        {"field_name": "工作地点", "type": 1},
+        {"field_name": "岗位状态", "type": 3, "property": {"options": [{"name": "启用", "color": 0}, {"name": "停用", "color": 2}]}},
+        {"field_name": "岗位描述", "type": 1},
+        {"field_name": "硬性要求", "type": 1},
+        {"field_name": "偏好条件", "type": 1},
+        {"field_name": "优先级规则", "type": 1},
+        {"field_name": "标准版本", "type": 1}
+      ]
+    },
+    {
+      "config_key": "talent_pool_table_id",
+      "required_by_workflow": true,
+      "table_name": "候选人才库",
+      "default_view_name": "候选人看板",
+      "recommended_views": ["候选人看板"],
+      "fields": [
+        {"field_name": "姓名", "type": 1},
+        {"field_name": "简历附件", "type": 17},
+        {"field_name": "评级", "type": 3, "property": {"options": [{"name": "A", "color": 0}, {"name": "B", "color": 1}, {"name": "C", "color": 3}, {"name": "D", "color": 4}, {"name": "E", "color": 5}, {"name": "F", "color": 2}]}},
+        {"field_name": "学历", "type": 1},
+        {"field_name": "毕业院校/背景", "type": 1},
+        {"field_name": "总分", "type": 2},
+        {"field_name": "备注", "type": 1},
+        {"field_name": "匹配岗位", "type": 1},
+        {"field_name": "匹配点", "type": 1},
+        {"field_name": "不匹配点", "type": 1},
+        {"field_name": "面试建议", "type": 3, "property": {"options": [{"name": "建议面试", "color": 0}, {"name": "不建议面试", "color": 2}]}},
+        {"field_name": "面试建议理由", "type": 1},
+        {"field_name": "问题库", "type": 1},
+        {"field_name": "初审状态", "type": 3, "property": {"options": [{"name": "待审批", "color": 1}, {"name": "通过", "color": 0}, {"name": "不通过", "color": 2}]}},
+        {"field_name": "简历摘要", "type": 1}
+      ]
+    },
+    {
+      "config_key": "interview_table_id",
+      "required_by_workflow": true,
+      "table_name": "面试记录",
+      "default_view_name": "待完成面试",
+      "recommended_views": ["待安排", "待补充纪要", "已完成"],
+      "fields": [
+        {"field_name": "姓名", "type": 1},
+        {"field_name": "目标岗位", "type": 1},
+        {"field_name": "面试前摘要", "type": 1},
+        {"field_name": "面试重点", "type": 1},
+        {"field_name": "风险提示", "type": 1},
+        {"field_name": "建议问题", "type": 1},
+        {"field_name": "面试纪要", "type": 1},
+        {"field_name": "补充信息", "type": 1},
+        {"field_name": "靠谱评分", "type": 2},
+        {"field_name": "专业能力评分", "type": 2},
+        {"field_name": "学习行动评分", "type": 2},
+        {"field_name": "AI Native评分", "type": 2},
+        {"field_name": "面试加权总分", "type": 2},
+        {"field_name": "面试定级", "type": 3, "property": {"options": [{"name": "S", "color": 0}, {"name": "A", "color": 1}, {"name": "B", "color": 3}, {"name": "C", "color": 2}]}},
+        {"field_name": "聪明人等级", "type": 3, "property": {"options": [{"name": "T1", "color": 5}, {"name": "T2", "color": 4}, {"name": "T3", "color": 3}, {"name": "T4", "color": 1}, {"name": "T5", "color": 0}]}},
+        {"field_name": "疑问待验证", "type": 1},
+        {"field_name": "风险验证结果", "type": 1},
+        {"field_name": "面试结论", "type": 1},
+        {"field_name": "面试状态", "type": 3, "property": {"options": [{"name": "待安排", "color": 1}, {"name": "待面试", "color": 3}, {"name": "待补充", "color": 4}, {"name": "已完成", "color": 0}, {"name": "录用", "color": 0}, {"name": "不录用", "color": 2}, {"name": "待定", "color": 3}]}},
+        {"field_name": "面试时间", "type": 5}
+      ]
+    }
+  ]
+}

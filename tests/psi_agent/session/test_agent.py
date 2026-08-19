@@ -830,6 +830,189 @@ async def test_agent_empty_content_stop(tmp_path: Path) -> None:
         await runner.cleanup()
 
 
+async def _run_workflow_tool_then_empty_stop(
+    tmp_path: Path,
+    *,
+    tool_name: str = "run_flow",
+    tool_result: str = "",
+    tool_error: Exception | None = None,
+    response_kind: str | None = None,
+) -> tuple[list[AgentChunk], SessionAgent]:
+    if tool_name == "run_flow_retry":
+        tool_arguments = '{"run_id":"recoverable-run"}'
+        tool_parameters = {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
+            "required": ["run_id"],
+            "additionalProperties": False,
+        }
+    else:
+        tool_arguments = '{"flow_path":"flows/example.workflow"}'
+        tool_parameters = {
+            "type": "object",
+            "properties": {"flow_path": {"type": "string"}},
+            "required": ["flow_path"],
+            "additionalProperties": False,
+        }
+    handler = await _make_inline_ai_handler([_tc(tool_name, tool_arguments), _stop("")])
+    server = MockAIServer(tmp_path)
+    ai_socket = await server.start(handler)
+
+    async def workflow_tool(**kwargs: str) -> str:
+        del kwargs
+        if tool_error is not None:
+            raise tool_error
+        return tool_result
+
+    tool = ToolFunction(
+        name=tool_name,
+        description="Run a workflow.",
+        parameters=tool_parameters,
+    )
+    agent = SessionAgent(
+        ai_client=AiClient(ai_socket),
+        conversation=Conversation(path=tmp_path / "workflow-fallback.jsonl"),
+        tool_registry=ToolRegistry(
+            files={
+                "__test__": FileEntry(
+                    file_hash="",
+                    tools={tool_name: tool},
+                    funcs={tool_name: workflow_tool},
+                )
+            }
+        ),
+    )
+    try:
+        chunks = [
+            chunk
+            async for chunk in agent.run(
+                {"role": "user", "content": "run it"},
+                response_kind=response_kind,
+            )
+        ]
+    finally:
+        await server.cleanup()
+    return chunks, agent
+
+
+@pytest.mark.anyio
+async def test_agent_returns_safe_workflow_summary_when_model_stops_empty(tmp_path: Path) -> None:
+    summary = "Workflow: 简历审批\n状态: 已完成\n下一步: 请完成人工初审。"
+    tool_result = json.dumps(
+        {
+            "user_facing_summary": json.dumps(
+                {"schema_version": "1.0", "text": summary},
+                ensure_ascii=False,
+            ),
+            "private_handoff": {"run_id": "run-internal-123", "record_id": "rec-internal-456"},
+        },
+        ensure_ascii=False,
+    )
+
+    chunks, agent = await _run_workflow_tool_then_empty_stop(tmp_path, tool_result=tool_result)
+
+    content = "".join(chunk.content or "" for chunk in chunks)
+    assert content == summary
+    assert "run-internal-123" not in content
+    assert "rec-internal-456" not in content
+    assistants = [message for message in agent._conversation.messages if message.get("role") == "assistant"]
+    assert assistants[-1]["content"] == summary
+    assert assistants[-1]["kind"] == "chat"
+
+
+@pytest.mark.anyio
+async def test_agent_returns_safe_workflow_summary_after_retry(tmp_path: Path) -> None:
+    summary = "Workflow 已从断点恢复并完成。"
+    tool_result = json.dumps(
+        {"user_facing_summary": {"schema_version": "1.0", "text": summary}},
+        ensure_ascii=False,
+    )
+
+    chunks, agent = await _run_workflow_tool_then_empty_stop(
+        tmp_path,
+        tool_name="run_flow_retry",
+        tool_result=tool_result,
+    )
+
+    assert "".join(chunk.content or "" for chunk in chunks) == summary
+    assistants = [message for message in agent._conversation.messages if message.get("role") == "assistant"]
+    assert assistants[-1]["content"] == summary
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "summary",
+    [
+        {"text": "缺少版本的摘要"},
+        {"schema_version": "2.0", "text": "错误版本的摘要"},
+    ],
+)
+async def test_agent_rejects_workflow_summary_without_exact_schema_version(
+    tmp_path: Path,
+    summary: dict[str, str],
+) -> None:
+    tool_result = json.dumps({"user_facing_summary": summary}, ensure_ascii=False)
+
+    chunks, _agent = await _run_workflow_tool_then_empty_stop(tmp_path, tool_result=tool_result)
+
+    assert "".join(chunk.content or "" for chunk in chunks) == ""
+
+
+@pytest.mark.anyio
+async def test_agent_keeps_workflow_fallback_silent_for_background_turn(tmp_path: Path) -> None:
+    tool_result = json.dumps(
+        {"user_facing_summary": {"schema_version": "1.0", "text": "不应显示的摘要"}},
+        ensure_ascii=False,
+    )
+
+    chunks, agent = await _run_workflow_tool_then_empty_stop(
+        tmp_path,
+        tool_result=tool_result,
+        response_kind="schedule.silent",
+    )
+
+    assert "".join(chunk.content or "" for chunk in chunks) == ""
+    assert not any(
+        message.get("role") == "assistant" and message.get("content") == "不应显示的摘要"
+        for message in agent._conversation.messages
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_does_not_treat_workflow_human_wait_as_completion(tmp_path: Path) -> None:
+    tool_result = json.dumps(
+        {
+            "$fusion_flow/control": {
+                "status": "waiting_for_human",
+                "run_id": "run-private",
+                "request": {"request_id": "request-private", "question": "请确认"},
+            }
+        },
+        ensure_ascii=False,
+    )
+
+    chunks, _agent = await _run_workflow_tool_then_empty_stop(tmp_path, tool_result=tool_result)
+
+    assert "".join(chunk.content or "" for chunk in chunks) == ""
+
+
+@pytest.mark.anyio
+async def test_agent_returns_safe_workflow_failure_when_tool_errors_and_model_stops_empty(tmp_path: Path) -> None:
+    chunks, agent = await _run_workflow_tool_then_empty_stop(
+        tmp_path,
+        tool_error=RuntimeError("secret path /private/run/123 and record rec-internal"),
+    )
+
+    content = "".join(chunk.content or "" for chunk in chunks)
+    assert "Workflow 未完成" in content
+    assert "失败步骤" in content
+    assert "下一步" in content
+    assert "/private/run/123" not in content
+    assert "rec-internal" not in content
+    assistants = [message for message in agent._conversation.messages if message.get("role") == "assistant"]
+    assert assistants[-1]["content"] == content
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
 async def test_agent_reasoning_only_stop_does_not_persist_invalid_assistant(

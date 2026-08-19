@@ -276,6 +276,20 @@ provider 只认 `reasoning_content`（any-llm 的 `REASONING_FIELD_NAMES` 首项
 - Tool 函数可能抛异常 → 以错误文本作为 tool result 返回，不中断 agent loop
 - Tool 返回非字符串（int, None） → 通过 `str()` 强转
 
+### Workflow 空回复安全回执
+
+`run_flow` / `run_flow_retry` / `run_flow_resume` 的最终结果可以显式携带
+`user_facing_summary.text`。当且仅当普通 `kind=chat` 回合的最终模型响应以
+`finish_reason="stop"` 结束且 content 为空时，Session 才把该字段作为回复
+fallback，并按普通 assistant content 写入 history。Session 不解析或展示其他
+output Artifact、handoff、记录 ID 或目标配置。
+
+`$fusion_flow/control.status=waiting_for_human` 是跨回合等待，不是完成结果，不能
+触发 fallback。`schedule.*` / `trigger.*` 等后台 kind 继续静默；模型已经给出
+content 时也始终以模型回复为准。Workflow 工具执行错误只产生固定脱敏失败回执，
+不把异常正文、路径或技术 ID 暴露给调用用户。该行为属于 Session 业务编排，未改变
+Channel/SSE 协议。
+
 **单条 tool 结果上限 `MAX_TOOL_RESULT_CHARS = 20000`（`history_display.py`，刻意为之，勿"修掉"）**
 
 线上一个会话被两条 `feishu_api` 结果永久卡死：一次分页把整个飞书群的消息历史拉进单行

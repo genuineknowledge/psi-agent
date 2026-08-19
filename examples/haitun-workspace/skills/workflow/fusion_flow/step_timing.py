@@ -242,6 +242,7 @@ class StepTimingStore:
         run_id: str,
         workflow_id: str,
         flow_path: str,
+        resume_terminal: bool = False,
     ) -> StepTimingStore:
         await run_dir.mkdir(parents=True, exist_ok=True)
         report_path = run_dir / _FINAL_FILENAME
@@ -253,7 +254,10 @@ class StepTimingStore:
         elif await legacy_path.exists():
             source_path = legacy_path
         if source_path is not None:
-            payload = _load_payload(await source_path.read_text(encoding="utf-8"))
+            payload = _load_payload(
+                await source_path.read_text(encoding="utf-8"),
+                resume_terminal=resume_terminal,
+            )
             _require_identity(
                 payload,
                 run_id=run_id,
@@ -331,6 +335,7 @@ class StepTimingReporter:
         run_id: str,
         workflow_id: str,
         flow_path: str,
+        resume_terminal: bool = False,
     ) -> StepTimingReporter:
         try:
             store = await StepTimingStore.open(
@@ -338,7 +343,10 @@ class StepTimingReporter:
                 run_id=run_id,
                 workflow_id=workflow_id,
                 flow_path=flow_path,
+                resume_terminal=resume_terminal,
             )
+            if resume_terminal:
+                await store.persist()
         except Exception as error:
             logger.warning(f"Workflow timing sidecar disabled after {type(error).__name__}: {error}")
             store = None
@@ -427,7 +435,11 @@ async def _atomic_write_json(path: anyio.Path, payload: Mapping[str, object]) ->
     await atomic_write_text(path, f"{encoded}\n", newline="")
 
 
-def _load_payload(source: str) -> dict[str, object]:
+def _load_payload(
+    source: str,
+    *,
+    resume_terminal: bool = False,
+) -> dict[str, object]:
     try:
         raw = json.loads(source)
     except json.JSONDecodeError as error:
@@ -448,8 +460,15 @@ def _load_payload(source: str) -> dict[str, object]:
         raise ValueError("step timing sidecar has unexpected fields")
     if payload["version"] != _REPORT_VERSION:
         raise ValueError("unsupported step timing sidecar version")
-    if payload["status"] != "running" or payload["error_type"] is not None:
+    status = payload["status"]
+    error_type = payload["error_type"]
+    resumable_statuses = ("running", "failed", "cancelled") if resume_terminal else ("running",)
+    if status not in resumable_statuses:
         raise ValueError("resumable step timing report must have running status")
+    if status == "running" and error_type is not None:
+        raise ValueError("running step timing report must not have error_type")
+    if status in ("failed", "cancelled") and error_type is not None:
+        _require_non_empty(error_type, "error_type")
     return payload
 
 
