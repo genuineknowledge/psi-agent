@@ -187,6 +187,12 @@ Protocol errors between components take two forms:
 | `PSI_AI_MODEL` | Model name |
 | `PSI_AI_API_KEY` | API key |
 | `PSI_AI_BASE_URL` | Upstream base URL |
+| `PSI_APPDATA` | AppData memory root directory (fallback when `--appdata` omitted) |
+| `PSI_AGENT` | Agent package path (fallback when `--agent` omitted) |
+| `PSI_MAX_CONTEXT_TOKENS` | AI context compaction token threshold (default 100K, 0 to disable) |
+| `PSI_AUTH_ENDPOINT` | Cloud auth service endpoint (explicit empty string disables auth) |
+| `PSI_AUTH_PREFIX` | Cloud auth service API prefix (default `/auth`) |
+| `PSI_OAUTH_CALLBACK_BASE` | OAuth callback base URL |
 | `PSI_TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 proxy |
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
@@ -320,18 +326,47 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create Router instance |
+| DELETE | `/routers/{router_id}` | Delete Router instance |
+| GET | `/routers` | List all Routers |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/todos` | Get session live todo list |
+| GET | `/sessions/{session_id}/todo-segments` | List session task segments |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get task segment details |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Patch task segment label |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
+| GET | `/summaries` | Get all session task summaries |
+| POST | `/summaries` | Set session task summary |
+| POST | `/summaries/generate` | AI auto-generate task summary |
+| POST | `/ui/attention` | Set or clear frontend attention highlight |
+| GET | `/ui/prefs/survey` | Get survey popup completion status |
+| POST | `/ui/prefs/survey` | Mark survey popup status |
+| GET | `/defaults` | Get default agent, workspace, appdata root |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
 | GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | Get system quick places and drive list |
+| GET | `/workspace/file` | Read workspace file content (base64 preview) |
+| POST | `/workspace/reveal` | Reveal file in OS file manager |
+| GET | `/oauth/callback` | OAuth callback landing endpoint |
+| GET | `/oauth/code` | Query one-time OAuth authorization code |
+| GET | `/auth/status` | Query cloud auth status and warm connection |
+| POST | `/auth/send-code` | Send login/register verification code |
+| POST | `/auth/verify` | Verify login/register verification code |
+| POST | `/auth/complete` | Complete account registration |
+| POST | `/auth/bind` | Bind third-party identity |
+| DELETE | `/auth/identities/{provider}` | Unbind third-party identity |
+| GET | `/auth/me` | Get current cloud user info |
+| POST | `/auth/logout` | Logout current cloud account |
+| GET | `/auth/devices` | Get logged-in devices list |
+| DELETE | `/auth/devices/{device_id}` | Revoke specified device session |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 

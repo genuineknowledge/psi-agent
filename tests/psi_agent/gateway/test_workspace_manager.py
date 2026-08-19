@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import anyio
 import pytest
 
 from psi_agent.gateway._workspace_manager import WorkspaceManager
@@ -32,6 +33,29 @@ async def test_browse_file_kind_includes_files(tmp_path) -> None:
 
     kinds = {e["name"]: e["kind"] for e in result["entries"]}
     assert kinds.get("note.md") == "file"
+
+
+@pytest.mark.anyio
+async def test_browse_handles_os_error_entry(tmp_path, monkeypatch) -> None:
+    (tmp_path / "good.txt").write_text("ok", encoding="utf-8")
+    (tmp_path / "bad.txt").write_text("err", encoding="utf-8")
+
+    # Mock anyio.Path.resolve to raise PermissionError for bad.txt
+    original_resolve = anyio.Path.resolve
+
+    async def fake_resolve(self: anyio.Path) -> anyio.Path:
+        if self.name == "bad.txt":
+            raise PermissionError("Access denied")
+        return await original_resolve(self)
+
+    monkeypatch.setattr(anyio.Path, "resolve", fake_resolve)
+
+    wm = WorkspaceManager()
+    result = await wm.browse(str(tmp_path), kind="all")
+
+    names = [e["name"] for e in result["entries"]]
+    assert "good.txt" in names
+    assert "bad.txt" not in names
 
 
 @pytest.mark.anyio
