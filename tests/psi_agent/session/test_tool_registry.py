@@ -542,6 +542,16 @@ async def test_refresh_no_work_dir() -> None:
     assert await tr.refresh() == {}
 
 
+async def test_refresh_logs_exception_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reg = ToolRegistry(work_dir=tmp_path)
+
+    async def _failing_do_refresh():
+        raise RuntimeError("simulated tool refresh failure")
+
+    monkeypatch.setattr(reg, "_do_refresh", _failing_do_refresh)
+    assert await reg.refresh() == {}
+
+
 @pytest.mark.anyio
 async def test_refresh_adds_new_file(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"

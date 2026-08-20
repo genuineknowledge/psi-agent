@@ -351,3 +351,19 @@ async def test_manager_rejects_mode_controller_and_backend_contracts_before_spaw
             [RouterUpstreamInfo(backend_type=cast(Any, "unknown"), backend_id="simple", description="one")],
         )
     assert not task_group.started
+
+
+async def test_router_manager_wait_socket_rollback(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _failing_wait(_socket_path: str, timeout_sec: float = 2.0) -> None:
+        raise TimeoutError("socket failed to ready")
+
+    ai_manager = cast(AIManager, FakeAIManager())
+    monkeypatch.setattr("psi_agent.gateway._router_manager._wait_socket", _failing_wait)
+    async with anyio.create_task_group() as tg:
+        rm = RouterManager(_aim=ai_manager, _prefix=str(tmp_path), _tg=tg)
+        with pytest.raises(TimeoutError):
+            await rm.create("r1", "fallback", None, [RouterUpstreamInfo("ai", "simple", "u1")])
+        assert not rm.has("r1")

@@ -193,6 +193,7 @@ class RouterManager:
         try:
             await _wait_socket(socket)
         except Exception:
+            logger.warning(f"Router {router_id!r} did not become ready, rolling back")
             with anyio.CancelScope(shield=True):
                 async with self._lock:
                     self._entries.pop(router_id, None)

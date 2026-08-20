@@ -373,7 +373,7 @@ class ToolRegistry:
         try:
             return await self._do_refresh()
         except Exception:
-            logger.warning("Failed to refresh tools")
+            logger.exception("Failed to refresh tools")
             return {}
 
     async def _do_refresh(self) -> dict[str, str]:

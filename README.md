@@ -191,6 +191,11 @@ AI 和 Session 组件无需关心通信介质——由 `_sockets.py` 统一处�
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 代理 |
 | `PSI_FEISHU_APP_ID` | 飞书 app ID |
 | `PSI_FEISHU_APP_SECRET` | 飞书 app secret |
+| `PSI_AGENT` | 默认 Agent 包路径（飞书 Channel 等复用） |
+| `PSI_APPDATA` | AppData 记忆区根目录（默认 `platformdirs` 用户数据目录） |
+| `PSI_AUTH_ENDPOINT` | 云端账号服务地址（空串 `""` 表示关闭认证） |
+| `PSI_AUTH_PREFIX` | 云端账号服务 API 前缀（默认 `/auth`） |
+| `PSI_MAX_CONTEXT_TOKENS` | 上下文压缩触发 Token 阈值（默认 `100000`，`0` 禁用） |
 
 CLI 参数优先于环境变量。AI 参数（provider、model、api_key、base_url）及 channel 认证参数均可选，未传时回退到环境变量。Socket 路径参数（--session-socket、--channel-socket、--ai-socket）为必填。
 
@@ -318,8 +323,37 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
+| GET | `/summaries` | 获取所有会话摘要 |
+| POST | `/summaries` | 设置会话摘要 |
+| POST | `/summaries/generate` | AI 自动生成摘要 |
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
 | GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/places` | 获取常用快捷位置与磁盘盘符 |
+| GET | `/workspace/file` | 读取 workspace 内文件内容 |
+| POST | `/workspace/reveal` | 在系统文件管理器中打开指定路径 |
+| POST | `/ui/attention` | 触发原生托盘/webview 闪烁注意力提示 |
+| GET | `/ui/prefs/survey` | 获取 UI 问卷调查偏好 |
+| POST | `/ui/prefs/survey` | 保存 UI 问卷调查偏好 |
+| GET | `/defaults` | 获取网关默认配置（如 AppData 根等） |
+| POST | `/routers` | 创建 Router 实例 |
+| GET | `/routers` | 列出所有 Router |
+| DELETE | `/routers/{router_id}` | 删除 Router |
+| GET | `/sessions/{session_id}/todos` | 获取会话待办事项列表 |
+| GET | `/sessions/{session_id}/todo-segments` | 获取会话待办分段列表 |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 获取特定待办分段 |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 更新特定待办分段 |
+| GET | `/auth/status` | 获取认证状态 |
+| POST | `/auth/send-code` | 发送验证码 |
+| POST | `/auth/verify` | 验证登录/注册 |
+| POST | `/auth/complete` | 完成注册补全 |
+| GET | `/auth/me` | 获取当前用户信息 |
+| POST | `/auth/logout` | 退出登录 |
+| POST | `/auth/bind` | 绑定第三方身份 |
+| DELETE | `/auth/identities/{provider}` | 解绑第三方身份 |
+| GET | `/auth/devices` | 列出已绑定设备 |
+| DELETE | `/auth/devices/{device_id}` | 删除已绑定设备 |
+| GET | `/oauth/code` | 获取 OAuth 授权码 |
+| GET | `/oauth/callback` | OAuth 授权回调 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 

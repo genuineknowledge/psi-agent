@@ -129,7 +129,7 @@ class TriggerRegistry:
         try:
             return await self._do_refresh()
         except Exception:
-            logger.warning("Failed to refresh triggers")
+            logger.exception("Failed to refresh triggers")
             return {}
 
     async def _do_refresh(self) -> dict[str, str]:

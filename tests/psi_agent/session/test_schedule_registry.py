@@ -243,6 +243,16 @@ async def test_refresh_no_work_dir() -> None:
     assert await sr.refresh() == {}
 
 
+async def test_refresh_logs_exception_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reg = ScheduleRegistry(work_dir=tmp_path)
+
+    async def _failing_do_refresh():
+        raise RuntimeError("simulated refresh failure")
+
+    monkeypatch.setattr(reg, "_do_refresh", _failing_do_refresh)
+    assert await reg.refresh() == {}
+
+
 @pytest.mark.anyio
 async def test_refresh_no_task_group() -> None:
     sched_dir = Path("/tmp")

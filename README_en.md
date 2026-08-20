@@ -191,6 +191,11 @@ Protocol errors between components take two forms:
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 proxy |
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
 | `PSI_FEISHU_APP_SECRET` | Feishu app secret |
+| `PSI_AGENT` | Default Agent package path (reused by Feishu Channel, etc.) |
+| `PSI_APPDATA` | AppData memory root directory (defaults to `platformdirs` user data directory) |
+| `PSI_AUTH_ENDPOINT` | Cloud authentication service endpoint (empty string `""` disables auth) |
+| `PSI_AUTH_PREFIX` | Cloud authentication API prefix (defaults to `/auth`) |
+| `PSI_MAX_CONTEXT_TOKENS` | Token threshold for triggering context compaction (defaults to `100000`, `0` disables) |
 
 CLI args take precedence over environment variables. AI params (provider, model, api_key, base_url) and channel auth params are optional and fall back to env vars when omitted. Socket path params (--session-socket, --channel-socket, --ai-socket) are required.
 
@@ -330,8 +335,37 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
+| GET | `/summaries` | Get all session summaries |
+| POST | `/summaries` | Set session summary |
+| POST | `/summaries/generate` | AI auto-generate summary |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
 | GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | Get common shortcut locations and drive letters |
+| GET | `/workspace/file` | Read workspace file contents |
+| POST | `/workspace/reveal` | Open specified path in system file manager |
+| POST | `/ui/attention` | Trigger native tray/webview attention pulse |
+| GET | `/ui/prefs/survey` | Get UI survey preferences |
+| POST | `/ui/prefs/survey` | Save UI survey preferences |
+| GET | `/defaults` | Get Gateway defaults (e.g., AppData root) |
+| POST | `/routers` | Create Router instance |
+| GET | `/routers` | List all Routers |
+| DELETE | `/routers/{router_id}` | Delete Router |
+| GET | `/sessions/{session_id}/todos` | Get session todo items list |
+| GET | `/sessions/{session_id}/todo-segments` | Get session todo segments list |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get specific todo segment |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Update specific todo segment |
+| GET | `/auth/status` | Get auth status |
+| POST | `/auth/send-code` | Send verification code |
+| POST | `/auth/verify` | Verify login/registration |
+| POST | `/auth/complete` | Complete registration profile |
+| GET | `/auth/me` | Get current user info |
+| POST | `/auth/logout` | Logout |
+| POST | `/auth/bind` | Bind third-party identity |
+| DELETE | `/auth/identities/{provider}` | Unbind third-party identity |
+| GET | `/auth/devices` | List bound devices |
+| DELETE | `/auth/devices/{device_id}` | Remove bound device |
+| GET | `/oauth/code` | Get OAuth authorization code |
+| GET | `/oauth/callback` | OAuth authorization callback |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 
