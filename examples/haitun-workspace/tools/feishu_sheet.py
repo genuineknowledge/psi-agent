@@ -48,6 +48,12 @@ async def feishu_sheet_read(token: str, range: str, max_chars: int = 20000, user
             for the sheet's used range.
         max_chars: Stop after roughly this many characters of cell text (0 = no
             limit). Guards against pulling a huge board into the conversation.
+
+    Truncation is a hard rule: a result with ``truncated=true`` means only part
+    of the rows were read — you MUST keep reading with the returned
+    ``next_range``, looping until ``truncated=false``, before concluding
+    anything about the whole board. ``row_count``/``rows_read`` count the rows
+    returned in this call, not the table's total row count.
         user_key: The sender's open_id (from ``<feishu_context>``). Reads try the bot's
             tenant token first and only fall back to this user's identity when the bot
             is denied — pass it whenever the sheet may be user-owned.

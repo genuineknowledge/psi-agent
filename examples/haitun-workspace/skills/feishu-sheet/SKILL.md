@@ -136,6 +136,9 @@ description: 飞书电子表格（sheets）接口表 —— 建独立表格、�
 | 套单元格样式 | PUT | `/open-apis/sheets/v2/spreadsheets/:spreadsheet_token/style` | `feishu_sheet_format` |
 
 - `feishu_sheet_read` 要把 @人 和富文本**压平成可见文字**，不然读回来是一堆 `mention` / `text_run` 结构。
+- `feishu_sheet_read` 返回 `truncated=true` 时说明只读了部分行：用 `next_range` 继续读，
+  循环直到 `truncated=false`；在此之前不得下"全表只有 N 行有数据"的结论。
+  `row_count`/`rows_read` 是已返回行数不是总行数。
 - `feishu_sheet_write` / `_append` 校验网格坐标：裸 `"<sheet_id>!A1"` 飞书**返回成功却什么都没写**，
   这是要在发请求前拦掉的那类失败。注意写入是 **PUT** 不是 POST，按 POST 打会 404 得莫名其妙。
 - `feishu_sheet_format` 套样式，`style_json` 的形状比一行表格装得下的多。

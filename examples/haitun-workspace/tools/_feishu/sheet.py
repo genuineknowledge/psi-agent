@@ -10,6 +10,7 @@ entrypoints keep importing it and nothing else has to change.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import _feishu_impl as _core
@@ -72,6 +73,29 @@ def _flatten_sheet_cell(cell: Any) -> str:
     return str(cell)
 
 
+_RANGE_RE = re.compile(r"^(?P<sheet>[^!]+)!(?P<c1>[A-Za-z]+)(?P<r1>\d+)(?::(?P<c2>[A-Za-z]+)(?P<r2>\d+))?$")
+
+
+def _next_range_after(full_range: str, rows_read: int) -> str | None:
+    """Unread portion after a truncating read, e.g. ``46a582!A1:Z198`` + 8 rows → ``46a582!A9:Z198``.
+
+    The API's ``valueRange.range`` is always full A1 notation; a bare sheet id
+    (unit-test mocks use ``"S1"``) counts as starting at row 1. Unparseable
+    ranges return ``None`` — the caller then falls back to a generic note.
+    """
+    m = _RANGE_RE.match(full_range or "")
+    if not m:
+        if full_range and "!" not in full_range and rows_read > 0:
+            return f"{full_range}!A{1 + rows_read}"
+        return None
+    sheet, c1, r1 = m.group("sheet"), m.group("c1"), int(m.group("r1"))
+    if m.group("r2") is None:
+        return f"{sheet}!{c1}{r1 + rows_read}"
+    if r1 + rows_read > int(m.group("r2")):
+        return None
+    return f"{sheet}!{c1}{r1 + rows_read}:{m.group('c2')}{m.group('r2')}"
+
+
 async def read_sheet_range_impl(token: str, range_: str, max_chars: int = 20000, user_key: str = "") -> dict[str, Any]:
     """Read one explicit range of a spreadsheet as a grid of plain-text cells.
 
@@ -101,14 +125,27 @@ async def read_sheet_range_impl(token: str, range_: str, max_chars: int = 20000,
                 break
             budget -= spent
         rows.append(cells)
-    return {
+    result = {
         "ok": True,
         "token": token.strip(),
         "range": value_range.get("range", range_.strip()),
         "rows": rows,
-        "row_count": len(rows),
+        "row_count": len(rows),  # legacy name (tests assert it) = rows returned this call
+        "rows_read": len(rows),
+        "rows_total": len(raw_rows),
         "truncated": truncated,
     }
+    if truncated:
+        result["next_range"] = _next_range_after(result["range"], len(rows))
+        if result["next_range"]:
+            where = f"请用 range='{result['next_range']}' 继续调用 feishu_sheet_read 读剩余部分"
+        else:
+            where = "请用更小的行区间(如逐 10 行)继续读取"
+        result["note"] = (
+            f"⚠️ 内容超过 max_chars={max_chars},本次只返回前 {len(rows)}/{len(raw_rows)} 行。"
+            f"{where},直到 truncated=false。row_count/rows_read 是已返回行数,不是表格总行数。"
+        )
+    return result
 
 
 async def _read_sheet(token: str) -> dict[str, Any]:

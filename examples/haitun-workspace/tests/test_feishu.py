@@ -705,6 +705,20 @@ async def test_sheet_read_truncates_on_max_chars(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
+async def test_sheet_read_truncation_reports_remainder(monkeypatch: pytest.MonkeyPatch) -> None:
+    grid = [["x" * 40], ["y" * 40], ["z" * 40]]
+    cap = _CapturedInvoke({"valueRange": {"range": "S1!A1:A3", "values": grid}})
+    monkeypatch.setattr(_impl, "_invoke", cap)
+    result = await _impl.read_sheet_range_impl("sht1", "S1!A1:A3", max_chars=60)
+    assert result["truncated"] is True
+    assert result["row_count"] == 1
+    assert result["rows_read"] == 1
+    assert result["rows_total"] == 3
+    assert result["next_range"] == "S1!A2:A3"
+    assert "继续" in result["note"]
+
+
+@pytest.mark.asyncio
 async def test_sheet_read_no_limit_keeps_all_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     grid = [["x" * 40], ["y" * 40]]
     cap = _CapturedInvoke({"valueRange": {"range": "S1", "values": grid}})
