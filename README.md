@@ -187,6 +187,12 @@ AI 和 Session 组件无需关心通信介质——由 `_sockets.py` 统一处�
 | `PSI_AI_MODEL` | 模型名 |
 | `PSI_AI_API_KEY` | API key |
 | `PSI_AI_BASE_URL` | 上游 base URL |
+| `PSI_MAX_CONTEXT_TOKENS` | Token 阈值，超过时触发 context compaction（默认 100K，0 为禁用） |
+| `PSI_APPDATA` | AppData 记忆区根目录（空则使用 platformdirs 用户数据目录） |
+| `PSI_AUTH_ENDPOINT` | 云端账号/认证服务 URL（设为 `""` 表示显式关闭云端认证） |
+| `PSI_AUTH_PREFIX` | 云端认证接口前缀（默认 `/auth`） |
+| `PSI_OAUTH_CALLBACK_BASE` | OAuth 授权回调基准地址 |
+| `PSI_AGENT` | 框架可执行文件路径 / agent 包标识 |
 | `PSI_TELEGRAM_BOT_TOKEN` | Telegram bot token |
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 代理 |
 | `PSI_FEISHU_APP_ID` | 飞书 app ID |
@@ -308,18 +314,46 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
+| POST | `/routers` | 创建 Router 路由组 |
+| DELETE | `/routers/{router_id}` | 删除 Router 路由组 |
+| GET | `/routers` | 列出所有 Router 路由组 |
 | POST | `/sessions` | 创建 Session |
 | DELETE | `/sessions/{session_id}` | 删除 Session |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/todos` | 获取会话待办列表 |
+| GET | `/sessions/{session_id}/todo-segments` | 列出待办段落 |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 获取指定待办段落 |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 设置待办段落标签 |
 | POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
-| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
+| GET | `/summaries` | 获取所有会话摘要 |
+| POST | `/summaries` | 设置会话摘要 |
+| POST | `/summaries/generate` | AI 自动生成摘要 |
+| POST | `/ui/attention` | 触发 Web UI 关注/提醒 |
+| GET / POST | `/ui/prefs/survey` | 查询/保存调查问卷用户偏好 |
+| GET | `/defaults` | 获取 Gateway 默认配置（如 AppData 根路径） |
 | GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/places` | 列出工作区常用位置 |
+| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
+| GET | `/workspace/file` | 读取工作区文件（`?path=...`） |
+| POST | `/workspace/reveal` | 在文件管理器中定位指定路径 |
+| GET | `/oauth/callback` | OAuth 授权回调接口 |
+| GET | `/oauth/code` | 取回 OAuth code 凭证 |
+| GET | `/auth/status` | 获取云端认证状态 |
+| POST | `/auth/send-code` | 发送验证码 |
+| POST | `/auth/verify` | 验证验证码 |
+| POST | `/auth/complete` | 完成注册或登录 |
+| POST | `/auth/bind` | 绑定第三方账号身份 |
+| DELETE | `/auth/identities/{provider}` | 解绑第三方账号身份 |
+| GET | `/auth/me` | 获取当前云端用户个人信息 |
+| POST | `/auth/logout` | 登出当前设备 |
+| GET | `/auth/devices` | 列出已登录设备列表 |
+| DELETE | `/auth/devices/{device_id}` | 移除/撤销指定登录设备 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 

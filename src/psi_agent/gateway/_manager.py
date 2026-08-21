@@ -58,7 +58,9 @@ async def _wait_socket(path: str, timeout_sec: float = _SOCKET_READY_TIMEOUT_SEC
         kind = "Unix socket"
     logger.debug(f"Waiting for {kind} {path!r} to become ready (timeout={timeout_sec}s)")
     deadline = anyio.current_time() + timeout_sec
-    session = aiohttp.ClientSession(connector=connector)
+    # Explicit timeout per GET attempt so connection attempts don't hang indefinitely
+    attempt_timeout = aiohttp.ClientTimeout(total=2.0, connect=1.0)
+    session = aiohttp.ClientSession(connector=connector, timeout=attempt_timeout)
     try:
         while anyio.current_time() < deadline:
             try:
