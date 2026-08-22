@@ -320,18 +320,31 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create Router instance |
+| DELETE | `/routers/{router_id}` | Delete Router |
+| GET | `/routers` | List all Routers |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/todos` | Get session todos |
+| GET | `/sessions/{session_id}/todo-segments` | Get todo subtask segments |
+| GET/POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Get segment / Update segment label |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
-| GET | `/titles` | Get all session titles |
-| POST | `/titles` | Set session title |
+| GET/POST | `/titles` | Get / set all session titles |
 | POST | `/titles/generate` | AI auto-generate title |
+| GET/POST | `/summaries` | Get / set all session summaries |
+| POST | `/summaries/generate` | AI auto-generate summary |
+| GET | `/defaults` | Get default agent, workspace, and appdata paths |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
 | GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | Get PathPicker shortcut locations |
+| GET | `/workspace/file` | Read workspace file (base64) |
+| POST | `/workspace/reveal` | Reveal file/directory in system file manager |
+| POST | `/ui/attention` | Request attention (flash tray / webview window) |
+| GET/POST | `/ui/prefs/survey` | Get / set survey prompt completion status |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 
