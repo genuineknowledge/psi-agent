@@ -9,7 +9,7 @@ from aiohttp import web
 from any_llm.api import ChatCompletionChunk, acompletion
 from loguru import logger
 
-from psi_agent.protocol import make_compaction_signal, make_error_chunk
+from psi_agent.protocol import make_compaction_signal, make_error_chunk, make_usage_signal
 
 
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
@@ -75,6 +75,7 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     upstream_error = False
     client_gone = False
     compaction_needed = False
+    token_usage: dict[str, int] = {}
     stream: AsyncIterator[ChatCompletionChunk] | None = None
     try:
         stream = cast(
@@ -97,19 +98,25 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         max_context_tokens: int = request.app.get("max_context_tokens", 0)
         compaction_usage: dict[str, int] = {}
         async for chunk in stream:
-            if max_context_tokens > 0 and chunk.usage and chunk.usage.prompt_tokens > max_context_tokens:
-                compaction_needed = True
-                compaction_usage = {
+            if chunk.usage:
+                token_usage = {
                     "prompt_tokens": chunk.usage.prompt_tokens,
                     "completion_tokens": chunk.usage.completion_tokens,
                     "total_tokens": chunk.usage.total_tokens,
                 }
+            if max_context_tokens > 0 and chunk.usage and chunk.usage.prompt_tokens > max_context_tokens:
+                compaction_needed = True
+                compaction_usage = dict(token_usage)
                 logger.debug(
                     f"Compaction needed: prompt_tokens={chunk.usage.prompt_tokens} > threshold={max_context_tokens}"
                 )
             data = chunk.model_dump_json()
             logger.debug(f"SSE chunk: {data[:1000]}")
             await response.write(f"data: {data}\n\n".encode())
+        if token_usage:
+            signal = json.dumps(make_usage_signal(**token_usage))
+            logger.debug(f"SSE usage signal: {signal[:500]}")
+            await response.write(f"data: {signal}\n\n".encode())
         if compaction_needed:
             signal = json.dumps(
                 make_compaction_signal(

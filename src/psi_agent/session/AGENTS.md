@@ -146,7 +146,9 @@ Session 层使用两个对称的协议适配器，将 `SessionAgent.run()` 包�
 ### AiClient（`ai_client.py`）
 - 封装 HTTP/SSE 连接管理与原始解析
 - `stream(request_body) → AsyncIterator[AiDelta]`
-- 处理：非 200、多 choice 错误检测、心跳跳过、`[DONE]` 终止
+- 处理：非 200、多 choice 错误检测、心跳跳过、`[DONE]` 终止，以及 `psi_usage` 解析。
+  普通 terminal 顺序保持不变；`tool_calls` terminal 会暂存到流尾，确保 provider 在它之后发送的
+  usage 先被 Agent 统计再执行工具。terminal 自身的 content/tool_calls 与 finish reason 仍在同一 delta。
 
 ### ChannelAdapter（`channel_adapter.py`）
 - 纯无状态编解码——`parse_request()` 和 `write()` 两个入口
@@ -160,7 +162,8 @@ Session 层使用两个对称的协议适配器，将 `SessionAgent.run()` 包�
 | `AiDelta` | AI→SessionAgent | SSE 解析后的内部流元素 |
 | `AgentChunk` | SessionAgent→Channel | 纯语义输出（`content` / `reasoning` + 可选 `kind` provenance） |
 | `AgentError` | SessionAgent→Channel | 不可恢复错误信号 |
-| `AgentRunResult` | SessionAgent→调用方 | 一次 run 的不可变终态（`status` / `stop_cause` / `model_finish_reason` / `model_turns`）；**不进 SSE** |
+| `AgentRunResult` | SessionAgent→调用方 | 一次 run 的不可变终态（含 `token_usage`）；**不进 SSE** |
+| `AgentTokenUsage` | SessionAgent→调用方 | 一次 run 所有模型轮次的 usage；任一轮缺失时 token 合计为 `None` |
 
 `protocol.py` 持有上表这些 Session 专属类型，并重导出 `psi_agent/protocol.py` 的共享线格式与常量（`ChatCompletionChunk` / `FINISH_REASON_*` / `REASONING_KIND_*` 等）。新代码优先从 `psi_agent.protocol` 导入共享名。
 

@@ -293,6 +293,14 @@ uncheckpointed side-effecting Step can run again after resume; workflows should
 not place such a Step concurrently with a Human frontier when exactly-once
 effects matter.
 
+Each run also writes `token-usage.json` beside its artifact and timing state.
+The report aggregates every model call by logical Step, dispatcher attempt, and
+`foreach` iteration across Human waits/resumes. Agent output-repair turns merge
+into the same dispatcher attempt. `complete` is false and token totals are JSON
+`null` whenever any contributing model call omitted provider usage; `model_calls`
+remains available. This sidecar is observability state only and never changes
+workflow Artifacts, checkpoints, or the public result mapping.
+
 Persisted Human-run documents use the strict state-v3 schema, including the
 workflow/plan-bound checkpoint and per-iteration fields. State-v2 documents,
 other versions, and unknown or missing fields fail closed.

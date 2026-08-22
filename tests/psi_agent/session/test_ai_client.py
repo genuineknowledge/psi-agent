@@ -45,6 +45,105 @@ async def test_ai_client_simple_content():
 
 
 @pytest.mark.anyio
+async def test_ai_client_yields_usage_before_tool_terminal_finish() -> None:
+    """A tool run must account for provider usage before executing tools."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        terminal = {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+        usage = {
+            "choices": [{"delta": {}, "finish_reason": "usage"}],
+            "psi_usage": {"prompt_tokens": 101, "completion_tokens": 7, "total_tokens": 108},
+        }
+        compaction = {
+            "choices": [{"delta": {}, "finish_reason": "compaction_needed"}],
+            "psi_compaction": {"needed": True, "prompt_tokens": 101, "threshold": 100},
+        }
+        await resp.write(f"data: {json.dumps(terminal)}\n\n".encode())
+        await resp.write(f"data: {json.dumps(usage)}\n\n".encode())
+        await resp.write(f"data: {json.dumps(compaction)}\n\n".encode())
+        await resp.write(b"data: [DONE]\n\n")
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [delta async for delta in client.stream({"messages": [], "stream": True})]
+        assert [delta.finish_reason for delta in deltas] == ["usage", "compaction_needed", "tool_calls"]
+        assert (deltas[0].input_tokens, deltas[0].output_tokens) == (101, 7)
+        assert deltas[1].compaction_needed
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_ai_client_releases_tool_terminal_before_next_business_frame() -> None:
+    """A provider without usage must retain the original tool-call boundary."""
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        terminal = {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}
+        next_response = {"choices": [{"delta": {"content": "next"}, "finish_reason": "stop"}]}
+        await resp.write(f"data: {json.dumps(terminal)}\n\n".encode())
+        await resp.write(f"data: {json.dumps(next_response)}\n\n".encode())
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [delta async for delta in client.stream({"messages": [], "stream": True})]
+        assert [delta.finish_reason for delta in deltas] == ["tool_calls"]
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
+async def test_ai_client_rejects_malformed_usage_counts() -> None:
+    async def handler(request: web.Request) -> web.StreamResponse:
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        usage = {
+            "choices": [{"delta": {}, "finish_reason": "usage"}],
+            "psi_usage": {"prompt_tokens": True, "completion_tokens": -1, "total_tokens": 0},
+        }
+        await resp.write(f"data: {json.dumps(usage)}\n\n".encode())
+        return resp
+
+    app = web.Application()
+    app.router.add_post("/chat/completions", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    await web.SockSite(runner, sock).start()
+    try:
+        client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
+        deltas = [delta async for delta in client.stream({"messages": [], "stream": True})]
+        assert len(deltas) == 1
+        assert deltas[0].input_tokens is None
+        assert deltas[0].output_tokens is None
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.anyio
 async def test_ai_client_tool_calls():
     """AiClient passes through partial tool_calls without accumulation."""
 

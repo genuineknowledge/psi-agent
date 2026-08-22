@@ -12,6 +12,7 @@ from psi_agent.protocol import (
     FINISH_REASON_ERROR,
     FINISH_REASON_STOP,
     FINISH_REASON_TOOL_CALLS,
+    FINISH_REASON_USAGE,
     SSE_DONE,
     ChatCompletionChunk,
     DeltaMessage,
@@ -20,6 +21,7 @@ from psi_agent.protocol import (
     is_terminal_finish,
     make_compaction_signal,
     make_error_chunk,
+    make_usage_signal,
     parse_sse_data,
 )
 
@@ -57,9 +59,10 @@ def test_is_terminal_finish_accepts_terminal_and_unknown(value: str) -> None:
     assert is_auxiliary_finish(value) is False
 
 
-def test_compaction_is_auxiliary_not_terminal() -> None:
-    assert is_auxiliary_finish(FINISH_REASON_COMPACTION_NEEDED) is True
-    assert is_terminal_finish(FINISH_REASON_COMPACTION_NEEDED) is False
+@pytest.mark.parametrize("value", [FINISH_REASON_COMPACTION_NEEDED, FINISH_REASON_USAGE])
+def test_internal_signals_are_auxiliary_not_terminal(value: str) -> None:
+    assert is_auxiliary_finish(value) is True
+    assert is_terminal_finish(value) is False
 
 
 def test_none_is_neither_terminal_nor_auxiliary() -> None:
@@ -68,8 +71,8 @@ def test_none_is_neither_terminal_nor_auxiliary() -> None:
     assert is_auxiliary_finish(None) is False
 
 
-def test_compaction_is_the_only_auxiliary_reason() -> None:
-    assert frozenset({FINISH_REASON_COMPACTION_NEEDED}) == AUXILIARY_FINISH_REASONS
+def test_internal_signals_are_the_only_auxiliary_reasons() -> None:
+    assert frozenset({FINISH_REASON_COMPACTION_NEEDED, FINISH_REASON_USAGE}) == AUXILIARY_FINISH_REASONS
 
 
 def test_make_error_chunk_matches_shape_used_by_all_three_producers() -> None:
@@ -101,6 +104,18 @@ def test_make_compaction_signal_shape() -> None:
         "id": "compaction",
         "choices": [{"index": 0, "delta": {}, "finish_reason": "compaction_needed"}],
         "psi_compaction": {"needed": True, "prompt_tokens": 1234, "threshold": 1000},
+    }
+
+
+def test_make_usage_signal_shape() -> None:
+    assert make_usage_signal(prompt_tokens=1200, completion_tokens=34, total_tokens=1234) == {
+        "id": "usage",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "usage"}],
+        "psi_usage": {
+            "prompt_tokens": 1200,
+            "completion_tokens": 34,
+            "total_tokens": 1234,
+        },
     }
 
 

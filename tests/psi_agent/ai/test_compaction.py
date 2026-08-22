@@ -124,6 +124,13 @@ async def test_compaction_signal_when_usage_exceeds_threshold(tmp_path: Path, mo
     try:
         chunks = await _read_sse(socket_path)
         assert len(chunks) >= 2
+        usage_chunk = next(chunk for chunk in chunks if "psi_usage" in chunk)
+        assert usage_chunk["choices"][0]["finish_reason"] == "usage"
+        assert usage_chunk["psi_usage"] == {
+            "prompt_tokens": 50000,
+            "completion_tokens": 200,
+            "total_tokens": 50200,
+        }
         compaction_chunk = chunks[-1]
         assert "psi_compaction" in compaction_chunk
         assert compaction_chunk["psi_compaction"]["needed"] is True
@@ -144,6 +151,8 @@ async def test_no_compaction_signal_when_under_threshold(tmp_path: Path, monkeyp
     runner, socket_path = await _serve_compaction_handler(tmp_path, monkeypatch, stream, max_context_tokens=10000)
     try:
         chunks = await _read_sse(socket_path)
+        usage_chunk = next(chunk for chunk in chunks if "psi_usage" in chunk)
+        assert usage_chunk["psi_usage"]["total_tokens"] == 5200
         for chunk in chunks:
             assert "psi_compaction" not in chunk
     finally:
@@ -161,6 +170,7 @@ async def test_no_compaction_when_max_context_tokens_zero(tmp_path: Path, monkey
     runner, socket_path = await _serve_compaction_handler(tmp_path, monkeypatch, stream, max_context_tokens=0)
     try:
         chunks = await _read_sse(socket_path)
+        assert any("psi_usage" in chunk for chunk in chunks)
         for chunk in chunks:
             assert "psi_compaction" not in chunk
     finally:

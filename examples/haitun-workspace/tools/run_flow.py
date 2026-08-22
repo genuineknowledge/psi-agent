@@ -28,6 +28,7 @@ from loguru import logger
 from psi_agent.session.agent import SessionAgent, current_tool_ai_socket
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.conversation import Conversation
+from psi_agent.session.protocol import AgentTokenUsage
 from psi_agent.session.schedule_registry import ScheduleRegistry
 from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
 
@@ -60,6 +61,7 @@ from fusion_flow.job_store import (  # noqa: E402
     new_opaque_id,
 )
 from fusion_flow.step_timing import StepTimingReporter  # noqa: E402
+from fusion_flow.token_usage import TokenUsageReporter  # noqa: E402
 from fusion_flow.workflow_execution import (  # noqa: E402
     ExecutionCheckpoint,
     ExecutionPlanError,
@@ -451,9 +453,11 @@ class _AgentSessionAdapter:
         *,
         ai_socket: str,
         get_tool_registry: Callable[[], Awaitable[ToolRegistry]],
+        token_usage_reporter: TokenUsageReporter,
     ) -> None:
         self._ai_socket = ai_socket
         self._get_tool_registry = get_tool_registry
+        self._token_usage_reporter = token_usage_reporter
         self._handles: dict[str, AgentHandle] = {}
 
     def _handle(self, context: CompletionContext) -> AgentHandle:
@@ -545,6 +549,28 @@ class _AgentSessionAdapter:
         if invocation.context is None or set(invocation.context) != {_AGENT_SESSION_CONTEXT_KEY}:
             raise ExecutionPlanError("G4 Agent SessionRunner received an invalid invocation context")
         _reject_unsupported_agent_routing(config)
+        input_tokens = 0
+        output_tokens = 0
+        usage_complete = True
+
+        def record_usage(usage: AgentTokenUsage) -> None:
+            nonlocal input_tokens, output_tokens, usage_complete
+            if usage.complete:
+                input_tokens += cast(int, usage.input_tokens)
+                output_tokens += cast(int, usage.output_tokens)
+            else:
+                usage_complete = False
+            self._token_usage_reporter.record(
+                step_id=context.step_id,
+                executor_id=context.executor_id,
+                executor_kind="Agent",
+                attempt=context.dispatch.attempt,
+                iteration_index=context.dispatch.iteration_index,
+                model_calls=usage.model_calls,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+
         config_token = _CURRENT_AGENT_CONFIG.set(config)
         try:
             outputs = await _complete_agent_step(
@@ -552,6 +578,7 @@ class _AgentSessionAdapter:
                 context,
                 ai_socket=self._ai_socket,
                 tool_registry=tool_registry,
+                record_usage=record_usage,
             )
         finally:
             _CURRENT_AGENT_CONFIG.reset(config_token)
@@ -574,7 +601,9 @@ class _AgentSessionAdapter:
                 sort_keys=True,
                 separators=(",", ":"),
                 allow_nan=False,
-            )
+            ),
+            input_tokens=input_tokens if usage_complete else None,
+            output_tokens=output_tokens if usage_complete else None,
         )
 
 
@@ -1683,6 +1712,7 @@ async def _complete_program_step(
     *,
     ai_socket: str,
     tool_registry: ToolRegistry,
+    record_usage: Callable[[AgentTokenUsage], None] | None = None,
 ) -> dict[str, object]:
     """Run one Program through a narrow Agent and a deterministic process tool."""
 
@@ -2025,6 +2055,7 @@ async def _complete_program_step(
         conversation,
         "Execute this exact Program contract:\n" + encoded_contract,
         stop_when=lambda: submitted is not None,
+        record_usage=record_usage,
     )
     if submitted is not None:
         return submitted
@@ -2149,14 +2180,19 @@ async def _complete_step_agent(
     *,
     stop_when: Callable[[], bool] | None = None,
     extra_params: Mapping[str, object] | None = None,
+    record_usage: Callable[[AgentTokenUsage], None] | None = None,
 ) -> str:
     run_params = None if extra_params is None else dict(extra_params)
     user_message = {"role": "user", "content": message}
     run = agent.run_streamed(user_message, run_params)
-    async with aclosing(run) as chunks:
-        async for _ in chunks:
-            if stop_when is not None and stop_when():
-                return ""
+    try:
+        async with aclosing(run) as chunks:
+            async for _ in chunks:
+                if stop_when is not None and stop_when():
+                    return ""
+    finally:
+        if record_usage is not None:
+            record_usage(run.token_usage)
 
     result = run.result
     if result is None:
@@ -2183,6 +2219,7 @@ async def _complete_agent_step(
     *,
     ai_socket: str,
     tool_registry: ToolRegistry,
+    record_usage: Callable[[AgentTokenUsage], None] | None = None,
 ) -> dict[str, object]:
     workspace = _workspace_dir()
     agent_config = _CURRENT_AGENT_CONFIG.get()
@@ -2289,6 +2326,7 @@ async def _complete_agent_step(
             message,
             stop_when=stop_after_submission,
             extra_params=extra_params,
+            record_usage=record_usage,
         )
         if submission_error is not None:
             submitted = None
@@ -2347,6 +2385,7 @@ async def _prepare_human_step(
     *,
     ai_socket: str,
     tool_registry: ToolRegistry,
+    record_usage: Callable[[AgentTokenUsage], None] | None = None,
 ) -> str:
     agent, conversation = await _create_step_agent(
         ai_socket,
@@ -2367,7 +2406,12 @@ async def _prepare_human_step(
         "options may contain at most four strings; recommended is a 1-based option index or 0; "
         "default is only for open-ended input. Do not add Markdown or prose."
     )
-    response = await _complete_step_agent(agent, conversation, message)
+    response = await _complete_step_agent(
+        agent,
+        conversation,
+        message,
+        record_usage=record_usage,
+    )
     return _prepared_question_json(_parse_prepared_human_question(response))
 
 
@@ -2432,6 +2476,12 @@ async def _execute_persisted_run(
         workflow_id=run.checkpoint.workflow_id,
         flow_path=run.flow_path,
     )
+    token_usage_reporter = await TokenUsageReporter.open(
+        artifact_store.run_dir,
+        run_id=run.run_id,
+        workflow_id=run.checkpoint.workflow_id,
+        flow_path=run.flow_path,
+    )
     await artifact_store.persist(run.checkpoint.values)
     step_tools: ToolRegistry | None = None
     human_tools: ToolRegistry | None = None
@@ -2456,13 +2506,27 @@ async def _execute_persisted_run(
     agent_sessions = _AgentSessionAdapter(
         ai_socket=ai_socket,
         get_tool_registry=get_step_tools,
+        token_usage_reporter=token_usage_reporter,
     )
 
     async def complete_program(invocation: ProgramInvocation) -> dict[str, object]:
+        def record_usage(usage: AgentTokenUsage) -> None:
+            token_usage_reporter.record(
+                step_id=invocation.binding_name,
+                executor_id=invocation.name,
+                executor_kind="Program",
+                attempt=invocation.dispatch.attempt,
+                iteration_index=invocation.dispatch.iteration_index,
+                model_calls=usage.model_calls,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+
         return await _complete_program_step(
             invocation,
             ai_socket=ai_socket,
             tool_registry=await get_step_tools(),
+            record_usage=record_usage,
         )
 
     async def prepare_human(prompt: str, context: CompletionContext) -> str:
@@ -2474,11 +2538,25 @@ async def _execute_persisted_run(
                 owns_human_gate = False
                 await anyio.sleep_forever()
                 raise AssertionError("sleep_forever returned unexpectedly")
+
+            def record_usage(usage: AgentTokenUsage) -> None:
+                token_usage_reporter.record(
+                    step_id=context.step_id,
+                    executor_id=context.executor_id,
+                    executor_kind="Human",
+                    attempt=context.dispatch.attempt,
+                    iteration_index=context.dispatch.iteration_index,
+                    model_calls=usage.model_calls,
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                )
+
             return await _prepare_human_step(
                 prompt,
                 context,
                 ai_socket=ai_socket,
                 tool_registry=await get_human_tools(),
+                record_usage=record_usage,
             )
         except BaseException:
             if owns_human_gate:
@@ -2513,6 +2591,7 @@ async def _execute_persisted_run(
             await lease.save(updated)
             run_state = updated
             await timing_reporter.persist()
+            await token_usage_reporter.persist()
 
     human_requests: list[HumanRequestSpec] = []
     outputs: dict[str, object] | None = None
@@ -2559,8 +2638,13 @@ async def _execute_persisted_run(
                 await lease.save(recoverable)
                 if _is_cancellation(error):
                     await timing_reporter.persist()
+                    await token_usage_reporter.persist()
                 else:
                     await timing_reporter.finalize(
+                        status="failed",
+                        error_type=type(error).__name__,
+                    )
+                    await token_usage_reporter.finalize(
                         status="failed",
                         error_type=type(error).__name__,
                     )
@@ -2581,6 +2665,7 @@ async def _execute_persisted_run(
         with anyio.CancelScope(shield=True):
             await lease.save(waiting)
             await timing_reporter.persist()
+            await token_usage_reporter.persist()
         return _human_request_payload(waiting.run_id, request)
 
     if outputs is None:
@@ -2594,6 +2679,10 @@ async def _execute_persisted_run(
     with anyio.CancelScope(shield=True):
         await lease.save(completed)
         await timing_reporter.finalize(
+            status="completed",
+            error_type=None,
+        )
+        await token_usage_reporter.finalize(
             status="completed",
             error_type=None,
         )
@@ -2664,10 +2753,23 @@ async def run_flow(
         return step_tools
 
     async def complete_program(invocation: ProgramInvocation) -> dict[str, object]:
+        def record_usage(usage: AgentTokenUsage) -> None:
+            token_usage_reporter.record(
+                step_id=invocation.binding_name,
+                executor_id=invocation.name,
+                executor_kind="Program",
+                attempt=invocation.dispatch.attempt,
+                iteration_index=invocation.dispatch.iteration_index,
+                model_calls=usage.model_calls,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
+
         return await _complete_program_step(
             invocation,
             ai_socket=ai_socket,
             tool_registry=await get_step_tools(),
+            record_usage=record_usage,
         )
 
     artifact_store = await _new_artifact_store(flow_path)
@@ -2677,15 +2779,23 @@ async def run_flow(
         workflow_id=compiled.graph.workflow_id,
         flow_path=flow_path,
     )
+    token_usage_reporter = await TokenUsageReporter.open(
+        artifact_store.run_dir,
+        run_id=artifact_store.run_dir.name,
+        workflow_id=compiled.graph.workflow_id,
+        flow_path=flow_path,
+    )
     await artifact_store.persist(initial_checkpoint.values)
     agent_sessions = _AgentSessionAdapter(
         ai_socket=ai_socket,
         get_tool_registry=get_step_tools,
+        token_usage_reporter=token_usage_reporter,
     )
 
     async def observe_checkpoint(checkpoint: ExecutionCheckpoint) -> None:
         await artifact_store.persist(checkpoint.values)
         await timing_reporter.persist()
+        await token_usage_reporter.persist()
 
     try:
         outputs = await _run_with_agent_sessions(
@@ -2711,9 +2821,17 @@ async def run_flow(
                 status="cancelled" if _is_cancellation(error) else "failed",
                 error_type=type(error).__name__,
             )
+            await token_usage_reporter.finalize(
+                status="cancelled" if _is_cancellation(error) else "failed",
+                error_type=type(error).__name__,
+            )
         raise
     with anyio.CancelScope(shield=True):
         await timing_reporter.finalize(
+            status="completed",
+            error_type=None,
+        )
+        await token_usage_reporter.finalize(
             status="completed",
             error_type=None,
         )
@@ -2792,7 +2910,19 @@ async def run_flow_resume(
                             workflow_id=run.checkpoint.workflow_id,
                             flow_path=run.flow_path,
                         )
+                        token_usage_reporter = await TokenUsageReporter.open(
+                            artifact_store.run_dir,
+                            run_id=run.run_id,
+                            workflow_id=run.checkpoint.workflow_id,
+                            flow_path=run.flow_path,
+                        )
                         await timing_reporter.finalize(
+                            status="failed",
+                            error_type=(
+                                type(definition_error).__name__ if definition_error is not None else "ValueError"
+                            ),
+                        )
+                        await token_usage_reporter.finalize(
                             status="failed",
                             error_type=(
                                 type(definition_error).__name__ if definition_error is not None else "ValueError"

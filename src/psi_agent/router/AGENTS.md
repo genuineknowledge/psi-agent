@@ -58,7 +58,7 @@ Socket 或原始完整请求。
 ## SSE 约束
 
 - 每个有效 event 恰好一个 choice；0 choice 静默跳过，多 choice 抛错。
-- `finish_reason="compaction_needed"` 是辅助帧，不覆盖真实 completion finish。**判定统一用 `psi_agent.protocol.is_terminal_finish()` / `is_auxiliary_finish()`**，不要手写 `!= "compaction_needed"`——这条规则曾在本层被独立实现 5 次（`client.py` 两处、`routing/strategy.py`、`aggregation/strategy.py`、`fallback/strategy.py`）。新增辅助帧类型只改 `protocol.py`。
+- `finish_reason="compaction_needed"` 和 `finish_reason="usage"` 是辅助帧，不覆盖真实 completion finish。**判定统一用 `psi_agent.protocol.is_terminal_finish()` / `is_auxiliary_finish()`**，不要手写 reason 比较——这条规则曾在本层被独立实现 5 次（`client.py` 两处、`routing/strategy.py`、`aggregation/strategy.py`、`fallback/strategy.py`）。新增辅助帧类型只改 `protocol.py`。
 - `finish_reason="error"`（`FINISH_REASON_ERROR`）转换为 Router 错误；向下游发错误帧用 `make_error_chunk()`，前缀 `[Router Error]: ` 由本层拼好后传入。
 - 每个进入/离开 Router 的 chunk 都写 DEBUG 日志。
 - 每个 async generator 必须经 `aclosing()` 消费；提前退出和取消必须关闭上游连接。

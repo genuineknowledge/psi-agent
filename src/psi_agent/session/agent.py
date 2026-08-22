@@ -19,6 +19,7 @@ from psi_agent.protocol import (
     REASONING_KIND_THINKING,
     REASONING_KIND_TOOL_CALL,
     REASONING_KIND_TOOL_RESULT,
+    is_terminal_finish,
 )
 from psi_agent.session.ai_client import AiClient
 from psi_agent.session.channel_adapter import ChannelAdapter
@@ -38,6 +39,7 @@ from psi_agent.session.protocol import (
     AgentRunResult,
     AgentRunStatus,
     AgentStopCause,
+    AgentTokenUsage,
 )
 from psi_agent.session.runtime_context import runtime_scope
 from psi_agent.session.schedule_registry import ScheduleRegistry
@@ -172,6 +174,10 @@ class AgentRun:
         # The loop needs to hand its result back to *this* object, so it is
         # started with the run already in hand rather than wired up afterwards.
         self._result: AgentRunResult | None = None
+        self._model_calls = 0
+        self._usage_calls = 0
+        self._input_tokens = 0
+        self._output_tokens = 0
         self._chunks = start(self)
 
     @property
@@ -182,6 +188,27 @@ class AgentRun:
     def _set_result(self, result: AgentRunResult) -> None:
         """Called by the agent loop at each normal exit.  Internal."""
         self._result = result
+
+    @property
+    def token_usage(self) -> AgentTokenUsage:
+        """Usage observed so far, including normally completed partial runs."""
+
+        complete = self._usage_calls == self._model_calls
+        return AgentTokenUsage(
+            model_calls=self._model_calls,
+            input_tokens=self._input_tokens if complete else None,
+            output_tokens=self._output_tokens if complete else None,
+        )
+
+    def _start_model_call(self) -> None:
+        self._model_calls += 1
+
+    def _record_model_usage(self, input_tokens: int | None, output_tokens: int | None) -> None:
+        if input_tokens is None or output_tokens is None:
+            return
+        self._usage_calls += 1
+        self._input_tokens += input_tokens
+        self._output_tokens += output_tokens
 
     def __aiter__(self) -> AgentRun:
         return self
@@ -469,6 +496,7 @@ class SessionAgent:
                         stop_cause=stop_cause,
                         model_finish_reason=model_finish_reason,
                         model_turns=model_turns,
+                        token_usage=_result_sink.token_usage,
                     )
                 )
 
@@ -526,6 +554,8 @@ class SessionAgent:
                 for _round in range(self._max_tool_rounds):
                     logger.debug(f"Agent loop round {_round + 1}/{self._max_tool_rounds}")
                     model_turns = _round + 1
+                    if _result_sink is not None:
+                        _result_sink._start_model_call()
 
                     tool_defs = [
                         {
@@ -562,6 +592,8 @@ class SessionAgent:
                     _compaction_needed = False
                     _compaction_prompt_tokens = 0
                     _compaction_threshold = 0
+                    _input_tokens: int | None = None
+                    _output_tokens: int | None = None
 
                     async with aclosing(self._ai_client.stream(request_body)) as stream:
                         async for delta in stream:
@@ -585,7 +617,11 @@ class SessionAgent:
                                 _compaction_prompt_tokens = delta.prompt_tokens
                                 _compaction_threshold = delta.compaction_threshold
 
-                            if delta.finish_reason and not finish_reason:
+                            if delta.input_tokens is not None and delta.output_tokens is not None:
+                                _input_tokens = delta.input_tokens
+                                _output_tokens = delta.output_tokens
+
+                            if is_terminal_finish(delta.finish_reason) and not finish_reason:
                                 finish_reason = delta.finish_reason
 
                             if delta.tool_calls:
@@ -710,6 +746,9 @@ class SessionAgent:
                                 await self._conversation.commit()
 
                                 break
+
+                    if _result_sink is not None:
+                        _result_sink._record_model_usage(_input_tokens, _output_tokens)
 
                     if finish_reason == FINISH_REASON_STOP:
                         logger.debug("AI finished with stop")
