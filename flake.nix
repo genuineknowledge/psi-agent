@@ -47,7 +47,7 @@
           python = pkgs.python314;
 
           # Version for hatch-vcs (git may be unavailable in the build sandbox).
-          version = "0.0.1-alpha20260725";
+          version = "0.0.1-alpha20260822";
 
           runtimeTools = with pkgs; [
             uv
