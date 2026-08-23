@@ -320,18 +320,37 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create Router instance |
+| DELETE | `/routers/{router_id}` | Delete Router |
+| GET | `/routers` | List all Routers |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/todos` | Get conversation todo items |
+| GET | `/sessions/{session_id}/todo-segments` | List todo segments |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get specific todo segment details |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Set todo segment label |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
-| GET | `/workspace/browse` | Browse directory (`?path=...`) |
+| GET | `/summaries` | Get all session task summaries |
+| POST | `/summaries` | Set session task summary |
+| POST | `/summaries/generate` | AI auto-generate task summary |
+| POST | `/ui/attention` | Native cues for tray/webview when session finishes in background |
+| GET/POST | `/ui/prefs/survey` | Get/Set survey dialog preference |
+| GET | `/defaults` | Get default agent/workspace/appdata directories |
+| GET | `/workspace/browse` | Browse directory (`?path=...&kind=directory|file|all&q=...`) |
 | GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | Get PathPicker shortcut locations and drive letters |
+| GET | `/workspace/file` | Read workspace file (base64 encoded) |
+| POST | `/workspace/reveal` | Reveal path in system file manager |
+| GET | `/oauth/callback` | Receive third-party OAuth callback Code |
+| GET | `/oauth/code` | Atomically pop OAuth Code for caller |
+| GET/POST/DELETE | `/auth/*` | Cloud authentication/devices/identity endpoints (when auth enabled) |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 
