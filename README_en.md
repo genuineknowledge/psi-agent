@@ -191,6 +191,11 @@ Protocol errors between components take two forms:
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 proxy |
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
 | `PSI_FEISHU_APP_SECRET` | Feishu app secret |
+| `PSI_AGENT` | Agent package directory (capabilities root) |
+| `PSI_APPDATA` | AppData memory area root (histories / todos / Gateway state) |
+| `PSI_AUTH_ENDPOINT` | Cloud authentication service URL (empty string disables auth) |
+| `PSI_AUTH_PREFIX` | Cloud authentication API prefix (defaults to `/auth`) |
+| `PSI_MAX_CONTEXT_TOKENS` | Token threshold to trigger context compaction (defaults to 100K, 0 = disabled) |
 
 CLI args take precedence over environment variables. AI params (provider, model, api_key, base_url) and channel auth params are optional and fall back to env vars when omitted. Socket path params (--session-socket, --channel-socket, --ai-socket) are required.
 
@@ -320,18 +325,46 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create Router |
+| DELETE | `/routers/{router_id}` | Delete Router |
+| GET | `/routers` | List all Routers |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/todos` | Get conversation todos |
+| GET | `/sessions/{session_id}/todo-segments` | List subtask segments |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get single segment |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Set segment label |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
+| GET | `/summaries` | Get all task summaries |
+| POST | `/summaries` | Set task summary |
+| POST | `/summaries/generate` | AI auto-generate task summary |
+| GET | `/defaults` | Get default agent, workspace, and appdata paths |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
 | GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | List quick places and drive letters |
+| GET | `/workspace/file` | Read file content as base64 |
+| POST | `/workspace/reveal` | Reveal file path in OS file manager |
+| POST | `/ui/attention` | Trigger tray/webview attention pulse |
+| GET/POST | `/ui/prefs/survey` | Get/Set survey prompt UI preference |
+| GET | `/oauth/callback` | OAuth callback relay endpoint |
+| GET | `/oauth/code` | Retrieve OAuth authorization code by state |
+| GET | `/auth/status` | Get cloud auth status and device key |
+| POST | `/auth/send-code` | Send phone/email verification code |
+| POST | `/auth/verify` | Verify code and log in |
+| POST | `/auth/complete` | Complete new user registration info |
+| POST | `/auth/bind` | Bind phone or email |
+| DELETE | `/auth/identities/{provider}` | Unbind authentication identity |
+| GET | `/auth/me` | Get current logged-in account info |
+| POST | `/auth/logout` | Log out |
+| GET | `/auth/devices` | List logged-in devices |
+| DELETE | `/auth/devices/{device_id}` | Revoke logged-in device session |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 

@@ -58,6 +58,23 @@ async def test_reveal_missing_path(tmp_path) -> None:
 
 
 @pytest.mark.anyio
+async def test_browse_skips_inaccessible_entries(tmp_path, monkeypatch) -> None:
+    child = tmp_path / "valid_child"
+    child.mkdir()
+    broken = tmp_path / "broken_symlink"
+    try:
+        broken.symlink_to(tmp_path / "non_existent")
+    except OSError:
+        pytest.skip("Symlinks not supported on this environment")
+
+    wm = WorkspaceManager()
+    result = await wm.browse(str(tmp_path), kind="all")
+    names = [e["name"] for e in result["entries"]]
+    assert "valid_child" in names
+    assert "broken_symlink" not in names
+
+
+@pytest.mark.anyio
 async def test_reveal_invokes_platform_launcher(tmp_path, monkeypatch) -> None:
     target = tmp_path / "out.md"
     target.write_text("hi", encoding="utf-8")
