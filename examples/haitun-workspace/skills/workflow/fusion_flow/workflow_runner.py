@@ -117,6 +117,7 @@ class ProgramInvocation:
     instruction: str = ""
     inputs: Mapping[str, object] = field(default_factory=dict)
     output_ids: tuple[str, ...] = ()
+    terminal: bool = False
 
 
 type Completion = Callable[
@@ -139,6 +140,7 @@ _CONCEPT_NAMES = (
     "ApiBase",
     "Artifact",
     "Bool",
+    "BoolArtifact",
     "ComplexNumber",
     "Engine",
     "Executor",
@@ -153,9 +155,14 @@ _CONCEPT_NAMES = (
     "Resource",
     "Step",
     "StepName",
+    "TerminalStep",
     "Tool",
     "Workflow",
 )
+_CONCEPT_SUPERTYPES: Mapping[str, tuple[str, ...]] = {
+    "BoolArtifact": ("Artifact",),
+    "TerminalStep": ("Step",),
+}
 # This is an explicit catalog, not a source-code name discovery mechanism.
 # ``step_executor`` deliberately has no output concept because the minimal
 # parser does not model Agent/Human/Program as sub-concepts of Executor.
@@ -217,7 +224,11 @@ def _default_parse_context() -> ParseContext:
         )
         for name, (inputs, output) in _OPERATOR_SIGNATURES.items()
     }
-    return ParseContext(concepts=concepts, operators=operators)
+    return ParseContext(
+        concepts=concepts,
+        operators=operators,
+        concept_supertypes=_CONCEPT_SUPERTYPES,
+    )
 
 
 def _residual_operator_counts(
@@ -596,7 +607,35 @@ def _normalize_outputs(
     return outputs
 
 
-def _output_contract(output_ids: tuple[str, ...]) -> str:
+def _normalize_terminal_output(
+    step_id: str,
+    output_ids: tuple[str, ...],
+    result: object,
+) -> dict[str, object]:
+    """Normalize the closed TerminalStep result without leaking internal IDs."""
+
+    if len(output_ids) != 1:
+        raise ValueError(f"TerminalStep {step_id!r} must have exactly one output")
+    if isinstance(result, Mapping):
+        outputs = _normalize_outputs(
+            step_id,
+            output_ids,
+            result,
+            named_mapping_required=True,
+        )
+        value = outputs[output_ids[0]]
+    else:
+        value = result
+    if type(value) is not bool:
+        raise ValueError(
+            f"TerminalStep {step_id!r} must return strict Boolean true or false, got {type(value).__name__}"
+        )
+    return {output_ids[0]: value}
+
+
+def _output_contract(output_ids: tuple[str, ...], *, terminal: bool = False) -> str:
+    if terminal:
+        return "Return exactly one Boolean value: true or false."
     if not output_ids:
         return "Return no artifact value for this step."
     if len(output_ids) == 1:
@@ -658,8 +697,17 @@ def _normalize_program_stdout(
     step_id: str,
     output_ids: tuple[str, ...],
     stdout: str,
+    *,
+    terminal: bool = False,
 ) -> dict[str, object]:
     """Map scalar Program stdout to one output and require mappings for many."""
+
+    if terminal:
+        try:
+            result = json.loads(stdout)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"TerminalStep {step_id!r} must write JSON true or false") from error
+        return _normalize_terminal_output(step_id, output_ids, result)
 
     if len(output_ids) <= 1:
         result: object = stdout if output_ids or stdout else None
@@ -724,7 +772,8 @@ def _build_dispatch(
         dispatch_context: DispatchContext,
     ) -> Mapping[str, object]:
         output_ids = tuple(sorted(outputs_by_step[step.step_id]))
-        output_contract = _output_contract(output_ids)
+        terminal = step.step_type == "TerminalStep"
+        output_contract = _output_contract(output_ids, terminal=terminal)
         instruction = instructions[step.step_id]
         executor_kind = compiled.executor_kinds[step.executor_id]
         completion_context = CompletionContext(
@@ -762,12 +811,9 @@ def _build_dispatch(
                 prepared_instruction,
                 completion_context,
             )
-            return _normalize_outputs(
-                step.step_id,
-                output_ids,
-                human_result,
-                named_mapping_required=False,
-            )
+            if terminal:
+                return _normalize_terminal_output(step.step_id, output_ids, human_result)
+            return _normalize_outputs(step.step_id, output_ids, human_result, named_mapping_required=False)
 
         if executor_kind == "Program":
             try:
@@ -795,6 +841,7 @@ def _build_dispatch(
                     instruction=instruction,
                     inputs=dict(inputs),
                     output_ids=output_ids,
+                    terminal=terminal,
                 )
             )
             if isinstance(program_result, str):
@@ -802,7 +849,10 @@ def _build_dispatch(
                     step.step_id,
                     output_ids,
                     program_result,
+                    terminal=terminal,
                 )
+            if terminal:
+                return _normalize_terminal_output(step.step_id, output_ids, program_result)
             return _normalize_outputs(
                 step.step_id,
                 output_ids,
@@ -822,6 +872,8 @@ def _build_dispatch(
             prompt,
             completion_context,
         )
+        if terminal:
+            return _normalize_terminal_output(step.step_id, output_ids, result)
         return _normalize_outputs(
             step.step_id,
             output_ids,
@@ -850,6 +902,7 @@ async def execute_workflow(
     checkpoint: ExecutionCheckpoint | None = None,
     checkpoint_observer: CheckpointObserver | None = None,
     timing_recorder: Callable[[StepTiming], None] | None = None,
+    max_loop_epochs: int | None = None,
 ) -> dict[str, object]:
     """Execute one checked workflow with explicit dispatcher/runtime injection."""
 
@@ -897,6 +950,17 @@ async def execute_workflow(
     if program_paths and run_program is None:
         raise ValueError("Program workflow requires an injected run_program callback")
     plan = generate_plan(graph)
+    loop_step_ids = {step_id for loop in plan.loops for step_id in loop.step_ids}
+    human_loop_steps = sorted(
+        step.step_id
+        for step in graph.steps
+        if step.step_id in loop_step_ids and compiled.executor_kinds[step.executor_id] == "Human"
+    )
+    if human_loop_steps:
+        raise ValueError(
+            "Human executors are not supported in feedback loops because "
+            f"resumable requests have no epoch identity: {human_loop_steps}"
+        )
     dispatch = _build_dispatch(
         compiled,
         instructions=instructions,
@@ -932,4 +996,5 @@ async def execute_workflow(
         checkpoint_observer=checkpoint_observer,
         timing_recorder=timing_recorder,
         timing_metadata=timing_metadata,
+        max_loop_epochs=max_loop_epochs,
     )

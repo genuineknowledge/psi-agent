@@ -5,11 +5,15 @@
  * assertions, formulas, terms, List literals, the three-argument shape of
  * if(...), and the names and owner categories of the preset operators.
  *
- * Concepts and operator signatures come from an external catalog; source files
- * cannot redefine them. The checker and catalog own identity/operator lookup,
- * concept compatibility, ordinary operator arity and types, value constraints,
- * workflow legality, and exact backend support. Lowering/runtime own execution
- * order, dependencies, list-valued data relations, branch evaluation, and
+ * Concepts, their subtype relations, and operator signatures come from an
+ * external catalog; source files cannot redefine them. The canonical workflow
+ * catalog includes TerminalStep <: Step and BoolArtifact <: Artifact. Because
+ * conceptName is deliberately generic, adding these roles changes the catalog
+ * contract rather than the parser's token vocabulary. The checker and catalog
+ * own identity/operator lookup, concept compatibility, ordinary operator arity
+ * and types, value constraints, workflow legality, and exact backend support.
+ * Lowering/runtime own execution order, dependencies, list-valued data
+ * relations, branch evaluation, terminal Boolean evaluation, and
  * retries/timeouts.
  *
  * For a compact, readable BNF and consistency with KEDispatcher, preset
@@ -46,7 +50,14 @@ workflowItem
     : assertion SEMICOLON
     ;
 
-/* Attach concrete identities to concepts already defined by the catalog. */
+/*
+ * Attach concrete identities to concepts already defined by the catalog.
+ * A subtype declaration is sufficient in every base-typed operator position:
+ * `const stop: TerminalStep;` may own consumes/produces/step_* assertions, and
+ * `const done: BoolArtifact;` is an Artifact list item.  The catalog expands
+ * those declarations to their transitive base concepts while retaining the
+ * concrete role for graph lowering.
+ */
 constDecl
     : CONST constantName COLON conceptNameList
     ;
@@ -208,6 +219,13 @@ stepOwnerOperator
  *   produces(Step) -> List                            [arity 1]
  *   foreach_item(Step, Artifact) -> Artifact          [arity 2]
  *   resource_requirement(Step, Resource) -> Integer   [arity 2]
+ *
+ * TerminalStep refines the produces contract without adding an operator:
+ * exactly one BoolArtifact is permitted and no other output is legal.  The
+ * complete produces assertion may be omitted for a TerminalStep; lowering then
+ * creates one internal BoolArtifact that source code cannot name.  Writing an
+ * empty list is explicit and therefore invalid rather than equivalent to
+ * omission.
  */
 dataResourceOperator
     : 'consumes'

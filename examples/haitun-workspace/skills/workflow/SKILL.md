@@ -305,6 +305,7 @@ Read `grammar/FusionFlow.g4` completely before using these patterns. The grammar
 | **Artifact pipeline** | Each Step produces the Artifact consumed by the next Step. Use `max_attempts` only when rerunning that individual Step is safe. | Writing, ETL, and refine-and-check work. |
 | **Per-item map** | Bind one List-valued source Artifact with `foreach_item`; use workflow `max_concurrency` or resources when a limit is needed. | Parallel processing with ordered results; ordinary failures are raised together after siblings finish. |
 | **Named Artifact selection** | Keep every candidate result explicit, then bind `selected_artifact == if(formula, artifact_a, artifact_b)` and use `selected_artifact` in ordinary dataflow. For priority selection, chain named intermediate Artifacts. | Eagerly run all candidate producers, then choose one value for downstream Steps. |
+| **Declarative feedback** | Declare a seeded state as an `input_workflow` Artifact, consume it in the region, and let one Step produce that same Artifact as `state[n+1]`. End the region with one `TerminalStep` whose only result is a strict `BoolArtifact`. | Iterative engineering or agent state transitions with synchronous snapshot reads and final-state publication. |
 | **Composite workflow** | Combine artifact chains, fan-out/fan-in, explicit bounded Agent Steps, and named Artifact selections. | When one simple pattern does not cover the task. |
 
 Before reporting a missing capability for a conditional request, first check whether eager value selection is sufficient. Named Artifact selection runs every candidate producer and only selects the value passed downstream. If the request requires lazy branch activation or guarantees that an unselected producer will not run, report that limitation instead of emitting an approximation. Never invent a keyword or operator to make the source look complete.
@@ -614,6 +615,54 @@ Use free-form quoted text only where the typed catalog expects an `Instruction` 
 7. **Inlining a large source document as an instruction.** Keep the task specification in the instruction and pass source material through an input Artifact.
 8. **Relaying an external tool's secret through workflow source.** Let the tool read its own configuration; never encode credentials in constants.
 9. **Sharing mutable state between parallel branches.** Use artifacts and explicit producer/consumer relations.
+10. **Inventing `while`, `for`, `termination_signal`, or a second feedback-state identity.** The committed feedback state keeps one Artifact identity across epochs. A transient `next_state` produced inside the epoch is valid only when one ordinary commit Step consumes it and remains the unique writer of the original feedback state.
+11. **Using a general Artifact or truthy value as loop control.** A TerminalStep has exactly one `BoolArtifact` output and must return the strict Boolean `true` or `false`.
+
+### Declarative feedback rules
+
+Feedback is a versioned dataflow interpretation, not imperative source syntax.
+Within a valid region, `consumes(step) == [state]` reads `state[n]`, while the
+unique `produces(writer) == [state]` stages `state[n+1]`. All state readers use
+the same snapshot, and all next-state writers commit together.
+
+```fusionflow
+const state: Artifact;
+const evidence: Artifact;
+const done: BoolArtifact;
+const improve: Step;
+const terminal: TerminalStep;
+
+input_workflow(iterative_work) == [state];
+consumes(improve) == [state];
+produces(improve) == [state, evidence];
+consumes(terminal) == [evidence];
+produces(terminal) == [done];
+output_workflow(iterative_work) == [state];
+```
+
+The surrounding workflow still must provide normal Step metadata; the fragment
+only shows the feedback and terminal contracts. The terminal `produces` line
+can be omitted, in which case the compiler creates an internal Boolean output.
+Do not write `[]` to mean omission. The explicit BoolArtifact is traceable loop
+control only; do not consume it from another Step or list it in
+`output_workflow`.
+
+Author feedback only when every state has a workflow input seed and one next
+writer, removing the feedback dependencies makes the epoch graph acyclic, and
+one TerminalStep uniquely depends on the region. The runtime commits `n+1`
+before acting on the predicate: `false` continues and `true` publishes that
+just-committed state. Outside consumers never observe intermediate epochs.
+
+Current execution is intentionally fail closed for multiple/nested feedback
+regions, feedback combined with `if` selection or `foreach`, Human Steps inside
+feedback, and any residual cycle. A host may supply `max_loop_epochs` as a
+safety guard; do not invent an iteration-limit operator in source.
+
+Use `examples/loop_engineering.workflow` and `examples/react_loop.workflow` as
+the complete reference sources. The ReAct example follows the source loop
+literally: `reason` produces `thought` and `action`, `env_step` produces
+`observation` and business `done`, `update` writes the next `prompt`, and a
+separate `TerminalStep` validates `done` as closed loop control.
 
 ### Code template
 

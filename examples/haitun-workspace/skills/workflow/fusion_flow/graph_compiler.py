@@ -14,6 +14,7 @@ from .core_ir import Assertion, CompoundTerm, ConnectiveFormula, Constant, IfTer
 from .workflow_graph.model import (
     ArtifactNode,
     ArtifactOperand,
+    ArtifactType,
     ComparisonCondition,
     ComparisonOperator,
     ConsumesEdge,
@@ -25,6 +26,7 @@ from .workflow_graph.model import (
     SelectCondition,
     SelectNode,
     StepNode,
+    StepType,
     WorkflowEdge,
     WorkflowGraph,
     WorkflowGraphError,
@@ -71,6 +73,14 @@ class _CompiledList:
 
 
 @dataclass(frozen=True, slots=True)
+class _CompiledSelect:
+    """A selector plus concrete Artifact roles erased by ``SelectNode`` IDs."""
+
+    selector: SelectNode
+    artifact_types: tuple[tuple[str, ArtifactType], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _GraphFact:
     """One graph-vocabulary equality normalized for workflow assembly.
 
@@ -103,6 +113,8 @@ class _StepDraft:
     independent: bool | None = None
     resources: dict[str, int] = field(default_factory=dict)
     depends_on: set[str] = field(default_factory=set)
+    produces_declarations: int = 0
+    step_type: StepType = "Step"
 
 
 class WorkflowGraphCompiler(CoreIRCompiler):
@@ -267,6 +279,27 @@ class WorkflowGraphCompiler(CoreIRCompiler):
         edges: set[WorkflowEdge] = set()
         selectors: list[SelectNode] = []
 
+        # Concrete subtype roles must survive base-typed operator positions.
+        # Gather them before lowering facts so assertion order cannot affect
+        # which StepNode/ArtifactNode shape is constructed.
+        step_types: dict[str, StepType] = {}
+        artifact_types: dict[str, ArtifactType] = {}
+        for compiled in assertions:
+            if isinstance(compiled, _GraphFact):
+                self._collect_roles(
+                    (*compiled.arguments, compiled.value),
+                    step_types=step_types,
+                    artifact_types=artifact_types,
+                )
+            elif isinstance(compiled, _CompiledSelect):
+                for artifact_id, artifact_type in compiled.artifact_types:
+                    self._merge_role(
+                        artifact_types,
+                        artifact_id,
+                        artifact_type,
+                        "Artifact",
+                    )
+
         # Workflow-wide policies are optional but singular.
         policy = WorkflowPolicy()
 
@@ -274,11 +307,12 @@ class WorkflowGraphCompiler(CoreIRCompiler):
         residual: list[Assertion] = []
 
         for compiled in assertions:
-            if isinstance(compiled, SelectNode):
-                selectors.append(compiled)
+            if isinstance(compiled, _CompiledSelect):
+                selector = compiled.selector
+                selectors.append(selector)
                 for artifact_id in (
-                    compiled.output_artifact_id,
-                    *compiled.input_artifact_ids(),
+                    selector.output_artifact_id,
+                    *selector.input_artifact_ids(),
                 ):
                     artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
                 continue
@@ -345,7 +379,8 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                     self._require_arity(arguments, 1, operator_name)
                     artifact_ids = self._list_symbols(fact_value, operator_name)
                     step_id = self._symbol(arguments[0], "produces step")
-                    step_drafts.setdefault(step_id, _StepDraft())
+                    step_draft = step_drafts.setdefault(step_id, _StepDraft())
+                    step_draft.produces_declarations += 1
                     for artifact_id in artifact_ids:
                         artifacts.setdefault(artifact_id, ArtifactNode(artifact_id=artifact_id))
                         self._add_unique(
@@ -523,6 +558,49 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                     # without a matching, operator-specific lowering case.
                     raise WorkflowGraphCompilationError(f"unsupported graph operator: {operator_name}")
 
+        # Apply the catalog roles after all facts have been collected.  This
+        # preserves the old graph defaults for untyped hand-built Core IR while
+        # retaining TerminalStep/BoolArtifact on the canonical parser path.
+        for step_id, step_draft in step_drafts.items():
+            step_draft.step_type = step_types.get(step_id, "Step")
+        for artifact_id, artifact in tuple(artifacts.items()):
+            artifacts[artifact_id] = replace(
+                artifact,
+                artifact_type=artifact_types.get(artifact_id, "Artifact"),
+            )
+
+        # A TerminalStep is a predicate-only Step.  Its normalized graph form
+        # always has exactly one BoolArtifact production edge.  Omitting the
+        # source-level produces assertion creates a deterministic, unreachable
+        # source identifier; explicitly writing an empty or multi-output
+        # assertion is an error rather than another spelling of omission.
+        for step_id, step_draft in sorted(step_drafts.items()):
+            if step_draft.step_type != "TerminalStep":
+                continue
+            terminal_outputs = sorted(
+                edge.artifact_id for edge in edges if isinstance(edge, ProducesEdge) and edge.step_id == step_id
+            )
+            if step_draft.produces_declarations == 0:
+                implicit_id = f"$fusion_flow/terminal/{step_id}/done"
+                if implicit_id in artifacts or implicit_id in step_drafts:
+                    raise WorkflowGraphCompilationError(
+                        f"implicit TerminalStep output conflicts with identity: {implicit_id!r}"
+                    )
+                artifacts[implicit_id] = ArtifactNode(
+                    artifact_id=implicit_id,
+                    artifact_type="BoolArtifact",
+                )
+                edges.add(ProducesEdge(step_id=step_id, artifact_id=implicit_id))
+                terminal_outputs = [implicit_id]
+            elif step_draft.produces_declarations != 1 or len(terminal_outputs) != 1:
+                raise WorkflowGraphCompilationError(f"TerminalStep {step_id!r} must produce exactly one BoolArtifact")
+
+            terminal_output = artifacts[terminal_outputs[0]]
+            if terminal_output.artifact_type != "BoolArtifact":
+                raise WorkflowGraphCompilationError(
+                    f"TerminalStep {step_id!r} output {terminal_output.artifact_id!r} must be declared as BoolArtifact"
+                )
+
         try:
             # A StepNode becomes valid only after its required name and executor
             # facts are known.  Construct it once here instead of maintaining a
@@ -561,6 +639,7 @@ class WorkflowGraphCompiler(CoreIRCompiler):
                         resources=tuple(resources),
                         independent=step_draft.independent is True,
                         depends_on=tuple(sorted(step_draft.depends_on)),
+                        step_type=step_draft.step_type,
                     )
                 )
 
@@ -617,7 +696,7 @@ class WorkflowGraphCompiler(CoreIRCompiler):
         return workflows
 
     @classmethod
-    def _compile_select(cls, output: object, conditional: IfTerm) -> SelectNode:
+    def _compile_select(cls, output: object, conditional: IfTerm) -> _CompiledSelect:
         """Lower one named Artifact equality into an eager graph selector."""
 
         if not isinstance(output, Constant) or not cls._has_concept(output, "Artifact"):
@@ -633,11 +712,22 @@ class WorkflowGraphCompiler(CoreIRCompiler):
             raise WorkflowGraphCompilationError("if branches must be Artifact constants")
 
         try:
-            return SelectNode(
-                output_artifact_id=output.symbol,
-                when_true_artifact_id=when_true.symbol,
-                when_false_artifact_id=when_false.symbol,
-                condition=cls._select_condition(conditional.condition),
+            return _CompiledSelect(
+                selector=SelectNode(
+                    output_artifact_id=output.symbol,
+                    when_true_artifact_id=when_true.symbol,
+                    when_false_artifact_id=when_false.symbol,
+                    condition=cls._select_condition(conditional.condition),
+                ),
+                artifact_types=tuple(
+                    (constant.symbol, cls._artifact_type(constant))
+                    for constant in (
+                        output,
+                        when_true,
+                        when_false,
+                        *cls._artifact_constants(conditional.condition),
+                    )
+                ),
             )
         except WorkflowGraphError as error:
             raise WorkflowGraphCompilationError(str(error)) from error
@@ -763,6 +853,81 @@ class WorkflowGraphCompiler(CoreIRCompiler):
         """Whether a constant was declared with one named concept."""
 
         return any(concept.name == concept_name for concept in constant.belong_concepts)
+
+    @classmethod
+    def _artifact_type(cls, constant: Constant) -> ArtifactType:
+        """Return the most specific graph Artifact role on one constant."""
+
+        if cls._has_concept(constant, "BoolArtifact"):
+            return "BoolArtifact"
+        if cls._has_concept(constant, "Artifact"):
+            return "Artifact"
+        raise WorkflowGraphCompilationError(f"constant {constant.symbol!r} must belong to Artifact")
+
+    @classmethod
+    def _artifact_constants(cls, value: object) -> tuple[Constant, ...]:
+        """Collect typed Artifact constants before selector lowering erases roles."""
+
+        if isinstance(value, Constant):
+            return (value,) if cls._has_concept(value, "Artifact") else ()
+        if isinstance(value, CompoundTerm):
+            return tuple(constant for argument in value.arguments for constant in cls._artifact_constants(argument))
+        if isinstance(value, Assertion):
+            return (*cls._artifact_constants(value.lhs), *cls._artifact_constants(value.rhs))
+        if isinstance(value, ConnectiveFormula):
+            right = () if value.formula_right is None else cls._artifact_constants(value.formula_right)
+            return (*cls._artifact_constants(value.formula_left), *right)
+        return ()
+
+    @classmethod
+    def _collect_roles(
+        cls,
+        values: tuple[object, ...],
+        *,
+        step_types: dict[str, StepType],
+        artifact_types: dict[str, ArtifactType],
+    ) -> None:
+        """Collect concrete catalog roles from recursively compiled terms."""
+
+        for value in values:
+            if isinstance(value, Constant):
+                concept_names = {concept.name for concept in value.belong_concepts}
+                step_type: StepType | None = None
+                if "TerminalStep" in concept_names:
+                    step_type = "TerminalStep"
+                elif "Step" in concept_names:
+                    step_type = "Step"
+                if step_type is not None:
+                    cls._merge_role(step_types, value.symbol, step_type, "Step")
+
+                artifact_type: ArtifactType | None = None
+                if "BoolArtifact" in concept_names:
+                    artifact_type = "BoolArtifact"
+                elif "Artifact" in concept_names:
+                    artifact_type = "Artifact"
+                if artifact_type is not None:
+                    cls._merge_role(artifact_types, value.symbol, artifact_type, "Artifact")
+                continue
+            if isinstance(value, _CompiledList):
+                cls._collect_roles(
+                    value.items,
+                    step_types=step_types,
+                    artifact_types=artifact_types,
+                )
+
+    @staticmethod
+    def _merge_role[T: str](
+        roles: dict[str, T],
+        symbol: str,
+        role: T,
+        category: str,
+    ) -> None:
+        existing = roles.get(symbol)
+        if existing is not None and existing != role:
+            raise WorkflowGraphCompilationError(
+                f"conflicting {category} roles for {symbol!r}: {existing!r} and {role!r}"
+            )
+        roles[symbol] = role
 
     @staticmethod
     def _require_arity(arguments: tuple[object, ...], expected: int, operator_name: str) -> None:

@@ -72,6 +72,7 @@ from fusion_flow.workflow_runner import (  # noqa: E402
     CompiledWorkflow,
     CompletionContext,
     ProgramInvocation,
+    _normalize_program_stdout,
     compile_workflow,
 )
 from fusion_flow.workflow_runner import execute_workflow as _execute_workflow  # noqa: E402
@@ -963,6 +964,7 @@ def _checkpoint_human_response(
         completed_step_ids=tuple(sorted((*checkpoint.completed_step_ids, request.step_id))),
         completed_selection_ids=checkpoint.completed_selection_ids,
         foreach_iterations=checkpoint.foreach_iterations,
+        loops=checkpoint.loops,
     )
 
 
@@ -1588,6 +1590,30 @@ def _program_result_outputs(
                 attempts=attempts,
             )
         return {}
+    if invocation.terminal:
+        if len(invocation.output_ids) != 1:
+            return _program_error_outputs(
+                invocation,
+                phase="output_format",
+                kind="invalid_output_contract",
+                message="TerminalStep must have exactly one BoolArtifact output.",
+                attempts=attempts,
+            )
+        try:
+            return _normalize_program_stdout(
+                invocation.binding_name,
+                invocation.output_ids,
+                stdout,
+                terminal=True,
+            )
+        except ValueError as error:
+            return _program_error_outputs(
+                invocation,
+                phase="output_format",
+                kind="invalid_output_contract",
+                message=str(error),
+                attempts=attempts,
+            )
     if len(invocation.output_ids) == 1:
         return {invocation.output_ids[0]: stdout}
 
@@ -1611,7 +1637,9 @@ def _program_result_outputs(
     return outputs
 
 
-def _program_output_mode(output_ids: tuple[str, ...]) -> str:
+def _program_output_mode(output_ids: tuple[str, ...], *, terminal: bool = False) -> str:
+    if terminal:
+        return "strict_json_boolean"
     if not output_ids:
         return "none"
     if len(output_ids) == 1:
@@ -1983,7 +2011,7 @@ async def _complete_program_step(
         "step_instruction": invocation.instruction,
         "input_artifacts": dict(invocation.inputs),
         "output_artifact_ids": list(invocation.output_ids),
-        "output_mode": _program_output_mode(invocation.output_ids),
+        "output_mode": _program_output_mode(invocation.output_ids, terminal=invocation.terminal),
         "reserved_resources": _resource_payload(
             CompletionContext(
                 step_id=invocation.binding_name,
@@ -2592,6 +2620,10 @@ async def _execute_persisted_run(
         outputs=outputs,
     )
     with anyio.CancelScope(shield=True):
+        # Checkpoints expose intermediate epochs to recovery, but final
+        # materialization is published only after successful termination.
+        final_values = outputs if completed.checkpoint is None else completed.checkpoint.values
+        await artifact_store.persist(final_values, overwrite=True)
         await lease.save(completed)
         await timing_reporter.finalize(
             status="completed",
@@ -2678,12 +2710,15 @@ async def run_flow(
         flow_path=flow_path,
     )
     await artifact_store.persist(initial_checkpoint.values)
+    latest_checkpoint = initial_checkpoint
     agent_sessions = _AgentSessionAdapter(
         ai_socket=ai_socket,
         get_tool_registry=get_step_tools,
     )
 
     async def observe_checkpoint(checkpoint: ExecutionCheckpoint) -> None:
+        nonlocal latest_checkpoint
+        latest_checkpoint = checkpoint
         await artifact_store.persist(checkpoint.values)
         await timing_reporter.persist()
 
@@ -2713,6 +2748,9 @@ async def run_flow(
             )
         raise
     with anyio.CancelScope(shield=True):
+        # Publish all final materialized values, including feedback state that
+        # feeds an outside output extractor but is not itself a workflow output.
+        await artifact_store.persist(latest_checkpoint.values, overwrite=True)
         await timing_reporter.finalize(
             status="completed",
             error_type=None,

@@ -10,7 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import isfinite
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
+
+type StepType = Literal["Step", "TerminalStep"]
+type ArtifactType = Literal["Artifact", "BoolArtifact"]
 
 
 class ResourceRequirementDict(TypedDict):
@@ -32,6 +35,7 @@ class StepNodeDict(TypedDict):
     resources: list[ResourceRequirementDict]
     independent: bool
     depends_on: list[str]
+    step_type: NotRequired[StepType]
 
 
 class ArtifactNodeDict(TypedDict):
@@ -41,6 +45,7 @@ class ArtifactNodeDict(TypedDict):
     is_input: bool
     is_output: bool
     binding_step_id: str | None
+    artifact_type: NotRequired[ArtifactType]
 
 
 class ArtifactOperandDict(TypedDict):
@@ -162,6 +167,7 @@ class StepNode:
     resources: tuple[ResourceRequirement, ...] = ()
     independent: bool = False
     depends_on: tuple[str, ...] = ()
+    step_type: StepType = "Step"
 
     def __post_init__(self) -> None:
         """Reject mutable or malformed nested collections early."""
@@ -174,6 +180,8 @@ class StepNode:
             raise WorkflowGraphError("resources must contain only ResourceRequirement")
         if not isinstance(self.depends_on, tuple):
             raise WorkflowGraphError("depends_on must be a tuple")
+        if self.step_type not in ("Step", "TerminalStep"):
+            raise WorkflowGraphError(f"unknown step_type: {self.step_type}")
         seen_dependencies: set[str] = set()
         for predecessor_id in self.depends_on:
             if not isinstance(predecessor_id, str) or not predecessor_id:
@@ -191,6 +199,11 @@ class ArtifactNode:
     is_input: bool = False
     is_output: bool = False
     binding_step_id: str | None = None
+    artifact_type: ArtifactType = "Artifact"
+
+    def __post_init__(self) -> None:
+        if self.artifact_type not in ("Artifact", "BoolArtifact"):
+            raise WorkflowGraphError(f"unknown artifact_type: {self.artifact_type}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -653,6 +666,22 @@ class WorkflowGraph:
                 raise WorkflowGraphError(f"artifact has multiple producers: {selector.output_artifact_id}")
             producers[selector.output_artifact_id] = selector.output_artifact_id
 
+        # TerminalStep is a closed predicate role: exactly one ordinary
+        # production, and that value carries the BoolArtifact runtime contract.
+        for step in self.steps:
+            if step.step_type != "TerminalStep":
+                continue
+            terminal_outputs = sorted(
+                artifact_id for artifact_id, producer_id in producers.items() if producer_id == step.step_id
+            )
+            if len(terminal_outputs) != 1:
+                raise WorkflowGraphError(f"TerminalStep {step.step_id!r} must produce exactly one BoolArtifact")
+            terminal_output = artifacts_by_id[terminal_outputs[0]]
+            if terminal_output.artifact_type != "BoolArtifact":
+                raise WorkflowGraphError(
+                    f"TerminalStep {step.step_id!r} output {terminal_output.artifact_id!r} must be a BoolArtifact"
+                )
+
         # A global value needed by a consumer, foreach, or workflow output must
         # enter through the boundary or have exactly one producer.
         for artifact_id in required_global_artifacts:
@@ -701,21 +730,27 @@ class WorkflowGraph:
                 independent=step.independent,
                 depends_on=sorted(step.depends_on),
             )
+            # Preserve legacy serialized graphs while making specialized roles
+            # part of terminal graph semantics and plan digests.
+            if step.step_type != "Step":
+                step_payload["step_type"] = step.step_type
             step_payloads.append(step_payload)
 
         # Artifacts have one stable identity key.
-        artifact_payloads = [
-            ArtifactNodeDict(
+        artifact_payloads: list[ArtifactNodeDict] = []
+        for artifact in sorted(
+            self.artifacts,
+            key=lambda item: item.artifact_id,
+        ):
+            artifact_payload = ArtifactNodeDict(
                 artifact_id=artifact.artifact_id,
                 is_input=artifact.is_input,
                 is_output=artifact.is_output,
                 binding_step_id=artifact.binding_step_id,
             )
-            for artifact in sorted(
-                self.artifacts,
-                key=lambda item: item.artifact_id,
-            )
-        ]
+            if artifact.artifact_type != "Artifact":
+                artifact_payload["artifact_type"] = artifact.artifact_type
+            artifact_payloads.append(artifact_payload)
 
         # Edges need a total ordering across three dataclass shapes.  The key
         # first orders by kind, then normalizes endpoints into source/target
