@@ -193,9 +193,41 @@ jobs:
             : > examples/haitun-workspace/.env
           fi
           echo "runtime .env prepared (SERPER_API_KEY present: ${SERPER_API_KEY:+yes})"
+      # 公证只在发布路径上跑。这条流水线是宽口径的(任何分支的推送 + PR), 而公证
+      # 是**同步等 Apple 队列**: 实测排到 45 min 仍 In Progress。若每个分支推送
+      # 都等一次, 打包 job 会长期占着 macOS runner 且动辄红在超时上, 而超时和
+      # "包有问题"完全是两回事。
+      #
+      # 判据与 nuitka.yml / oss-publish.yml 一致: 只有 main 和 v* tag 才是发版。
+      # 特性分支照旧产出**签名但未公证**的 dmg —— 签名是本地几秒的事, 跨平台可
+      # 编译性和签名链路仍然每次都验, 只是不排那个队。
+      #
+      # 排除 alpha tag: `auto-alpha-tag.yml` 每天在 main 的最后一个绿色 commit 上
+      # 打一个 `v*-alphaYYYYMMDD`, 用途是发 PyPI, 与安装器发版无关(安装器看
+      # haitun.iss)。而 tag 指向的 commit 推 main 时已经公证过一遍, 再排一次队是
+      # 纯浪费 —— macOS runner 按 10 倍计费, 45 min 等待≈450 计费分钟/天。
+      - name: Decide whether to notarize
+        id: notarize
+        shell: bash
+        run: |
+          enabled=false
+          case "$GITHUB_REF" in
+            refs/heads/main) enabled=true ;;
+            # alpha tag 走 PyPI, 不是安装器发版; 内容已随 main 公证过
+            refs/tags/v*-alpha*) enabled=false ;;
+            refs/tags/v*) enabled=true ;;
+            *) enabled=false ;;
+          esac
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          if [ "$enabled" = "true" ]; then
+            echo "::notice::发布路径 ($GITHUB_REF), 将提交公证"
+          else
+            echo "::notice::非发布路径 ($GITHUB_REF), 只签名不公证"
+          fi
       - name: Build dmg
         env:
           PSI_AGENT_BIN: dist-bin/psi-agent
+          HAITUN_NOTARIZE: ${{ steps.notarize.outputs.enabled }}
           HAITUN_DOWNLOAD_BASE_URL: ${{ vars.HAITUN_DOWNLOAD_BASE_URL }}
           HAITUN_UPDATE_INTERVAL_HOURS: ${{ vars.HAITUN_UPDATE_INTERVAL_HOURS }}
           P12_CERTIFICATE: ${{ secrets.P12_CERTIFICATE }}

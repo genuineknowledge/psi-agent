@@ -188,18 +188,32 @@ if [ "$SIGNED" = "1" ]; then
 fi
 
 # ---- notarization (only with full Apple credentials) ----
-if [ "$SIGNED" = "1" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
-    log "submitting for notarization (this can take several minutes)"
-    xcrun notarytool submit "$DMG_PATH" \
+# HAITUN_NOTARIZE gates the *queue wait*, not the credentials: CI sets it only on
+# the release path (main / v* tags) because notarytool --wait blocks on Apple's
+# queue, measured at 45+ min. Set it to 1 locally to notarize a manual build.
+NOTARIZE="${HAITUN_NOTARIZE:-}"
+case "$NOTARIZE" in true|1|yes) NOTARIZE=1 ;; *) NOTARIZE=0 ;; esac
+
+if [ "$SIGNED" = "1" ] && [ "$NOTARIZE" = "1" ] \
+   && [ -n "${APPLE_ID:-}" ] && [ -n "${APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+    # 3h, not 45m: Apple's queue has no SLA and a timeout here is indistinguishable
+    # from a bad package, which is the worst way to fail a release. The submission
+    # keeps processing server-side regardless, so a shorter timeout buys nothing.
+    log "submitting for notarization (Apple's queue can take tens of minutes)"
+    if ! xcrun notarytool submit "$DMG_PATH" \
         --apple-id "$APPLE_ID" \
         --password "$APP_SPECIFIC_PASSWORD" \
         --team-id "$APPLE_TEAM_ID" \
         --wait \
-        --timeout 45m
+        --timeout 3h; then
+        die "notarization did not complete; check the submission log with: xcrun notarytool log <id> --apple-id ... --team-id ..."
+    fi
     # Staple the ticket so first launch works without a network round-trip.
     xcrun stapler staple "$DMG_PATH"
     xcrun stapler validate "$DMG_PATH"
     log "notarized and stapled"
+elif [ "$SIGNED" = "1" ] && [ "$NOTARIZE" != "1" ]; then
+    log "signed but not notarized (not a release build); Gatekeeper will warn"
 elif [ "$SIGNED" = "1" ]; then
     log "signed but NOT notarized (Apple credentials absent); Gatekeeper will still warn"
 fi
