@@ -200,13 +200,32 @@ if [ "$SIGNED" = "1" ] && [ "$NOTARIZE" = "1" ] \
     # from a bad package, which is the worst way to fail a release. The submission
     # keeps processing server-side regardless, so a shorter timeout buys nothing.
     log "submitting for notarization (Apple's queue can take tens of minutes)"
+    SUBMIT_LOG="$BUILD_DIR/notarytool-submit.log"
     if ! xcrun notarytool submit "$DMG_PATH" \
         --apple-id "$APPLE_ID" \
         --password "$APP_SPECIFIC_PASSWORD" \
         --team-id "$APPLE_TEAM_ID" \
         --wait \
-        --timeout 3h; then
-        die "notarization did not complete; check the submission log with: xcrun notarytool log <id> --apple-id ... --team-id ..."
+        --timeout 3h 2>&1 | tee "$SUBMIT_LOG"; then
+        # Self-diagnose instead of telling the reader to go find a Mac. A bare
+        # "exit code 124" cannot distinguish "Apple's queue is slow" from "our
+        # package is rejected", and the two need opposite responses: retry vs fix.
+        # The submission keeps processing server-side, so info/log may already
+        # have the verdict even though --wait gave up.
+        SUB_ID="$(sed -n 's/^[[:space:]]*id: \([0-9a-fA-F-]\{36\}\)[[:space:]]*$/\1/p' "$SUBMIT_LOG" | head -1)"
+        if [ -n "$SUB_ID" ]; then
+            log "notarization did not complete in time; submission id $SUB_ID"
+            log "--- notarytool info ---"
+            xcrun notarytool info "$SUB_ID" \
+                --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" 2>&1 | sed 's/^/    /' || true
+            log "--- notarytool log (issues, if any) ---"
+            xcrun notarytool log "$SUB_ID" \
+                --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" 2>&1 | sed 's/^/    /' || true
+            die "notarization unfinished (id $SUB_ID); see info/log above"
+        fi
+        die "notarization failed before a submission id was assigned; check credentials"
     fi
     # Staple the ticket so first launch works without a network round-trip.
     xcrun stapler staple "$DMG_PATH"
