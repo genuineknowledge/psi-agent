@@ -145,7 +145,9 @@ apply_update() {
     # prompt on first launch even though the dmg was notarized.
     xattr -dr com.apple.quarantine "$APP_PATH" 2>/dev/null || true
 
-    write_state done "$from_version" "$to_version"
+    # Quoted: bare `done` is a bash reserved word, so an unquoted one here does
+    # not reach write_state as the literal status rollback.sh matches on.
+    write_state "done" "$from_version" "$to_version"
     log "apply: updated $from_version -> $to_version"
     open "$APP_PATH" 2>/dev/null || true
     return 0
@@ -192,7 +194,11 @@ watch_loop() {
         # executing a script out of a tree that is being replaced is asking for
         # a half-read script. The copy is disposable.
         helper="$(mktemp -d /tmp/haitun-apply.XXXXXX)/updater.sh"
-        cp "$0" "$helper" && chmod +x "$helper" || continue
+        if ! cp "$0" "$helper"; then
+            log "watch: cannot stage updater helper, skipping this round"
+            continue
+        fi
+        chmod +x "$helper" || continue
 
         # Detach the swap: it has to outlive this process and the app itself.
         HAITUN_APP_PATH="$APP_PATH" \

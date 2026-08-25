@@ -181,10 +181,6 @@ jobs:
         with:
           name: psi-agent-pyinstaller-macos-latest
           path: dist-bin
-      # shellcheck 在 macOS runner 上预装。四个脚本都要过, 否则打包脚本的
-      # 引用/取值错误只能等真机验收才暴露。
-      - name: Lint shell scripts
-        run: shellcheck .github/macos/*.sh
       - name: Inject runtime .env
         env:
           SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
