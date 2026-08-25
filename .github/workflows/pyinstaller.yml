@@ -164,3 +164,56 @@ jobs:
         with:
           name: haitun-agent-installers
           path: installer-output
+
+  # macOS 侧的组装环节, 对应 Windows 的 `haitun-inno-setup`。
+  #
+  # 编译器同样走 PyInstaller 而非 Nuitka: 除了 17 min vs 2 h 那笔账 (见文件头),
+  # 签名与公证要反复调试, 两小时一轮的反馈周期不可接受。
+  #
+  # 签名/公证按 **secret 有无自动开关**: 证书还在申请, 没配就产出未签名 dmg
+  # (用户需手动绕 Gatekeeper), 证书到位后只加 secrets, 这里和脚本都不用改。
+  haitun-macos-dmg:
+    needs: pyinstaller
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: psi-agent-pyinstaller-macos-latest
+          path: dist-bin
+      # shellcheck 在 macOS runner 上预装。四个脚本都要过, 否则打包脚本的
+      # 引用/取值错误只能等真机验收才暴露。
+      - name: Lint shell scripts
+        run: shellcheck .github/macos/*.sh
+      - name: Inject runtime .env
+        env:
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+        run: |
+          # 与 Windows 侧同一套做法: 只写进打包目录, 不落库; PR 分支没有 secret
+          # 时生成空 .env, 打包照常成功。
+          if [ -n "$SERPER_API_KEY" ]; then
+            printf 'SERPER_API_KEY=%s\n' "$SERPER_API_KEY" > examples/haitun-workspace/.env
+          else
+            : > examples/haitun-workspace/.env
+          fi
+          echo "runtime .env prepared (SERPER_API_KEY present: ${SERPER_API_KEY:+yes})"
+      - name: Build dmg
+        env:
+          PSI_AGENT_BIN: dist-bin/psi-agent
+          HAITUN_DOWNLOAD_BASE_URL: ${{ vars.HAITUN_DOWNLOAD_BASE_URL }}
+          HAITUN_UPDATE_INTERVAL_HOURS: ${{ vars.HAITUN_UPDATE_INTERVAL_HOURS }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          MACOS_KEYCHAIN_PWD: ${{ secrets.MACOS_KEYCHAIN_PWD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          chmod +x dist-bin/psi-agent
+          bash .github/macos/build-dmg.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: haitun-agent-macos
+          path: |
+            macos-dist/HaiTun_Agent.dmg
+            macos-dist/haitun-version.txt

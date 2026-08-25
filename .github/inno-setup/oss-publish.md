@@ -3,14 +3,32 @@
 ## 发版流程
 
 1. 修改 `.github/inno-setup/haitun.iss` 里的 `MyAppVersion`，推送 `main`。
-2. `PyInstaller` workflow 构建 Windows 安装包，产出 `haitun-agent-installers` artifact，内含：
-   - `HaiTun_Agent_Setup.exe`（完整包）
-   - `HaiTun_Agent_App_Setup.exe`（海豚组件包）
-   - `msys-setup.exe`（环境组件包）
-   - `haitun-version.txt` / `msys-version.txt`
+2. `PyInstaller` workflow 构建两平台安装包，产出两个 artifact：
+   - `haitun-agent-installers`（Windows）内含：
+     - `HaiTun_Agent_Setup.exe`（完整包）
+     - `HaiTun_Agent_App_Setup.exe`（海豚组件包）
+     - `msys-setup.exe`（环境组件包）
+     - `haitun-version.txt` / `msys-version.txt`
+   - `haitun-agent-macos`（macOS arm64）内含：
+     - `HaiTun_Agent.dmg`
+     - `haitun-version.txt`
 3. `Publish Haitun Installer to OSS` workflow 检测该 commit 是否改动了 `haitun.iss`：
    - 如果 OSS 上的 `haitun-version.txt` 已等于本次版本，跳过；
-   - 否则按顺序上传三个安装包，最后上传 `haitun-version.txt` 和 `msys-version.txt`。
+   - 否则校验两平台版本号一致，按顺序上传四个安装包，最后上传
+     `haitun-version.txt` 和 `msys-version.txt`。
+
+macOS 的打包细节、所需 secrets 与真机验收清单见
+[`.github/macos/macos-release.md`](../macos/macos-release.md)。
+
+### 两平台共用 haitun-version.txt
+
+macOS 与 Windows 共用同一个版本文件，因此**两个平台必须在同一个 workflow run 内
+打包、同一次 publish 上传**。原因是这个文件同时充当发布闸门（OSS 版本号等于本次版本
+即跳过上传）：若两平台各自 publish，先完成的那个会写上新版本号，把后者永久闸掉——
+「mac 这次没编出来」会静默退化成「mac 再也发不出去」。
+
+所以 `oss-publish.yml` 里下载 macOS artifact 的步骤刻意不设 `continue-on-error`，
+mac 缺席就让整条 publish 变红。
 
 当前使用 OSS bucket 直连下载，不经过 CDN，因此不需要 CDN 刷新权限。
 

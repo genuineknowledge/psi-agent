@@ -104,6 +104,39 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # macOS 的 dmg 来自**同一个 workflow run** (pyinstaller.yml 的
+      # `haitun-macos-dmg` job), 所以能共用 run-id 一次取到。
+      #
+      # 这里刻意不设 `continue-on-error`: 两平台共用 `haitun-version.txt`,
+      # 而这个文件是发布闸门 (OSS 版本 == 本次版本 → 跳过上传)。若 mac 缺席也
+      # 照发, 版本文件会被写成新版, 下一次 run 就把 macOS 永久闸掉 —— 于是
+      # "mac 这次没编出来"静默退化成"mac 再也发不出去"。宁可整条 publish 红。
+      - name: Download macOS artifact
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: haitun-agent-macos
+          path: installer-macos
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 两平台的版本号都来自 haitun.iss 的 MyAppVersion, 各自独立生成一份版本
+      # 文件。对不上说明两个 job 跑在不同 commit 上 (或某一侧解析逻辑漂了),
+      # 此时上传会让 OSS 的版本号与其中一个平台的产物不符。
+      - name: Verify both platforms agree on the version
+        if: steps.check.outputs.skip != 'true'
+        shell: bash
+        env:
+          EXPECTED: ${{ steps.metadata.outputs.version }}
+        run: |
+          WIN="$(tr -d '[:space:]' < installer/haitun-version.txt)"
+          MAC="$(tr -d '[:space:]' < installer-macos/haitun-version.txt)"
+          if [ "$WIN" != "$EXPECTED" ] || [ "$MAC" != "$EXPECTED" ]; then
+            echo "::error::version mismatch: iss=$EXPECTED windows=$WIN macos=$MAC"
+            exit 1
+          fi
+          echo "::notice::both platforms at $EXPECTED"
+
       - name: Read MSYS version
         if: steps.check.outputs.skip != 'true'
         id: msys-version
@@ -126,6 +159,7 @@ jobs:
           INSTALLER_FULL_PATH: installer/HaiTun_Agent_Setup.exe
           INSTALLER_APP_PATH: installer/HaiTun_Agent_App_Setup.exe
           INSTALLER_MSYS_PATH: installer/msys-setup.exe
+          INSTALLER_MACOS_PATH: installer-macos/HaiTun_Agent.dmg
           HAITUN_VERSION_FILE: installer/haitun-version.txt
           MSYS_VERSION_FILE: installer/msys-version.txt
         run: |
