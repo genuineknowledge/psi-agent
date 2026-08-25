@@ -25,9 +25,72 @@ on:
         description: '强制公证 (非发布分支也提交给 Apple, 会等 45 min 以上)'
         type: boolean
         default: false
+      # 查一个**已提交**的单子的结论, 不打包。存在的理由: notarytool --wait 挂在
+      # runner 上, 而 runner 会掉网 (实测 3h 等待走到第 58 min 时 DNS 归零)。提交
+      # 在 Apple 服务端照常处理, 结论已经有了, 只是那次 run 没接到 —— 重跑打包
+      # 要 20 min 且会新开一个单子, 旧单的结论仍然查不到。
+      #
+      # 挂在这条流水线里而不是独立 workflow: workflow_dispatch 必须在默认分支上
+      # 存在才能被调用, 独立文件在特性分支上是 404。
+      notarization_id:
+        description: '只查这个公证单的结论并退出 (填了就不打包)'
+        type: string
+        default: ''
 
 jobs:
+  # 查询模式: 填了 notarization_id 就只查结论, 三平台编译和打包全跳过。
+  notarization-status:
+    if: inputs.notarization_id != ''
+    runs-on: macos-latest
+    steps:
+      - name: Query notarization status
+        env:
+          SUBMISSION_ID: ${{ inputs.notarization_id }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_ID:-}" ] || [ -z "${APP_SPECIFIC_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
+            echo "::error::Apple 凭证缺失, 无法查询"
+            exit 1
+          fi
+          # id 要拼进命令行, 先卡死 UUID 格式再用
+          case "$SUBMISSION_ID" in
+            [0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*) ;;
+            *) echo "::error::submission_id 不像 UUID: $SUBMISSION_ID"; exit 1 ;;
+          esac
+
+          echo "=== notarytool info ==="
+          xcrun notarytool info "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" | tee info.txt
+
+          echo "=== notarytool log ==="
+          # Invalid 时这里才有内容: 逐个文件列出为什么被拒
+          xcrun notarytool log "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" 2>&1 | tee notary-log.json || true
+
+          STATUS="$(sed -n 's/^[[:space:]]*status:[[:space:]]*\(.*\)$/\1/p' info.txt | head -1)"
+          echo "::notice::结论: ${STATUS:-unknown}"
+          case "$STATUS" in
+            Accepted) echo "公证通过" ;;
+            "In Progress") echo "::warning::仍在排队, 稍后再查" ;;
+            *) echo "::error::公证未通过 ($STATUS), 见上面的 log"; exit 1 ;;
+          esac
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: notarization-status
+          path: |
+            info.txt
+            notary-log.json
+          if-no-files-found: warn
+
   pyinstaller:
+    if: inputs.notarization_id == ''
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
