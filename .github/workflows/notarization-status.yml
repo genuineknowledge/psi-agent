@@ -1,0 +1,65 @@
+name: Notarization Status
+
+# 查一个**已提交**的公证单的结论, 不重新打包。
+#
+# 存在的理由: notarytool --wait 挂在 runner 上, 而 runner 会掉网 (实测 3h 等待
+# 走到第 58 min 时 DNS 归零)。提交本身在 Apple 服务端照常处理, 结论已经有了,
+# 只是那次 run 没接到。重跑一遍打包要 20 min 且会**新开一个提交单**, 查旧单只
+# 需要一次 API 调用。
+on:
+  workflow_dispatch:
+    inputs:
+      submission_id:
+        description: '公证提交 id (notarytool 日志里的 id: 那一行)'
+        required: true
+        type: string
+
+jobs:
+  status:
+    runs-on: macos-latest
+    steps:
+      - name: Query notarization status
+        env:
+          SUBMISSION_ID: ${{ inputs.submission_id }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${APPLE_ID:-}" ] || [ -z "${APP_SPECIFIC_PASSWORD:-}" ] || [ -z "${APPLE_TEAM_ID:-}" ]; then
+            echo "::error::Apple 凭证缺失, 无法查询"
+            exit 1
+          fi
+          # id 是要拼进命令行的外部输入, 先卡死格式 (UUID) 再用
+          case "$SUBMISSION_ID" in
+            [0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*-[0-9a-fA-F]*) ;;
+            *) echo "::error::submission_id 不像 UUID: $SUBMISSION_ID"; exit 1 ;;
+          esac
+
+          echo "=== notarytool info ==="
+          xcrun notarytool info "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" | tee info.txt
+
+          echo "=== notarytool log ==="
+          # Invalid 时这里才有内容: 逐个文件列出为什么被拒
+          xcrun notarytool log "$SUBMISSION_ID" \
+            --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" 2>&1 | tee notary-log.json || true
+
+          STATUS="$(sed -n 's/^[[:space:]]*status:[[:space:]]*\(.*\)$/\1/p' info.txt | head -1)"
+          echo "::notice::结论: ${STATUS:-unknown}"
+          case "$STATUS" in
+            Accepted) echo "公证通过" ;;
+            "In Progress") echo "::warning::仍在排队, 稍后再查" ;;
+            *) echo "::error::公证未通过 ($STATUS), 见上面的 log"; exit 1 ;;
+          esac
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: notarization-status
+          path: |
+            info.txt
+            notary-log.json
+          if-no-files-found: warn

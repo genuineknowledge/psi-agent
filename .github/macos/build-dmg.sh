@@ -215,6 +215,17 @@ if [ "$SIGNED" = "1" ] && [ "$NOTARIZE" = "1" ] \
         SUB_ID="$(sed -n 's/^[[:space:]]*id: \([0-9a-fA-F-]\{36\}\)[[:space:]]*$/\1/p' "$SUBMIT_LOG" | head -1)"
         if [ -n "$SUB_ID" ]; then
             log "notarization did not complete in time; submission id $SUB_ID"
+            # A hosted runner losing DNS mid-wait is a real failure mode (observed:
+            # NSURLErrorNotConnectedToInternet at minute 58 of a 3h wait). Without
+            # this the diagnosis inherits the outage and prints three copies of the
+            # same network error instead of Apple's verdict.
+            for _ in 1 2 3 4 5 6; do
+                if nc -z -G 5 appstoreconnect.apple.com 443 2>/dev/null; then
+                    break
+                fi
+                log "waiting for network to come back before diagnosing"
+                sleep 10
+            done
             log "--- notarytool info ---"
             xcrun notarytool info "$SUB_ID" \
                 --apple-id "$APPLE_ID" --password "$APP_SPECIFIC_PASSWORD" \
