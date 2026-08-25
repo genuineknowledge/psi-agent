@@ -1094,7 +1094,9 @@ from _feishu.sheet import (  # noqa: E402,F401
     _sheet_values_to_text,
     _validate_sheet_values,
     append_sheet_impl,
+    find_sheet_columns_impl,
     format_sheet_impl,
+    read_sheet_grid_impl,
     read_sheet_range_impl,
     write_sheet_impl,
 )
