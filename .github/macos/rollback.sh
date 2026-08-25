@@ -77,7 +77,9 @@ if [ -d "$APP_PATH" ] && ! mv "$APP_PATH" "$broken" 2>/dev/null; then
 fi
 if ! mv "$BACKUP_PATH" "$APP_PATH" 2>/dev/null; then
     # Put things back exactly as they were rather than leaving no app installed.
-    [ -d "$broken" ] && mv "$broken" "$APP_PATH" 2>/dev/null || true
+    if [ -d "$broken" ]; then
+        mv "$broken" "$APP_PATH" 2>/dev/null || true
+    fi
     printf '回滚失败: 无法恢复备份。\n'
     exit 1
 fi
