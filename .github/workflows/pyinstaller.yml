@@ -12,9 +12,19 @@ name: PyInstaller
 # 接成 oss-publish.yml 的上游不需要在这里收窄: 下游自己在 `workflow_run` 上有
 # `branches: [main, v*]` 过滤, 特性分支和 PR 的 run 根本到不了它, 再加 job 级的
 # `head_branch == 'main'` 做第二道闸。管住发布面的是下游, 不是这里。
+#
+# workflow_dispatch 只为一件事存在: 在非发布分支上强制走一次公证, 把 Apple 的
+# 结论 (Accepted / Invalid) 提前问出来。默认关, 因为一次要占 45 min 以上的
+# macOS runner (10 倍计费)。
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      force_notarize:
+        description: '强制公证 (非发布分支也提交给 Apple, 会等 45 min 以上)'
+        type: boolean
+        default: false
 
 jobs:
   pyinstaller:
@@ -209,6 +219,8 @@ jobs:
       - name: Decide whether to notarize
         id: notarize
         shell: bash
+        env:
+          FORCE_NOTARIZE: ${{ inputs.force_notarize }}
         run: |
           enabled=false
           case "$GITHUB_REF" in
@@ -218,9 +230,14 @@ jobs:
             refs/tags/v*) enabled=true ;;
             *) enabled=false ;;
           esac
+          # 手动强制: 用来在合入前把 Apple 的结论问出来
+          if [ "$FORCE_NOTARIZE" = "true" ]; then
+            enabled=true
+            echo "::notice::手动强制公证 ($GITHUB_REF)"
+          fi
           echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
           if [ "$enabled" = "true" ]; then
-            echo "::notice::发布路径 ($GITHUB_REF), 将提交公证"
+            echo "::notice::将提交公证 ($GITHUB_REF)"
           else
             echo "::notice::非发布路径 ($GITHUB_REF), 只签名不公证"
           fi
