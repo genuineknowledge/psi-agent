@@ -15,9 +15,9 @@
 #   PSI_AGENT_BIN                 path to the PyInstaller binary (required)
 #   HAITUN_DOWNLOAD_BASE_URL      updater base url; empty disables update checks
 #   HAITUN_UPDATE_INTERVAL_HOURS  updater interval, default 24
-#   MACOS_CERTIFICATE(+_PWD)      base64 p12 and its password -> enables signing
-#   MACOS_KEYCHAIN_PWD            temp keychain password (signing only)
-#   APPLE_ID/APPLE_APP_PASSWORD/APPLE_TEAM_ID -> enables notarization
+#   P12_CERTIFICATE(+P12_PASSWORD) base64 p12 and its password -> enables signing
+#   MACOS_KEYCHAIN_PWD            temp keychain password (optional; has a default)
+#   APPLE_ID/APP_SPECIFIC_PASSWORD/APPLE_TEAM_ID -> enables notarization
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -116,17 +116,21 @@ cleanup_keychain() {
 }
 trap cleanup_keychain EXIT
 
-if [ -n "${MACOS_CERTIFICATE:-}" ] && [ -n "${MACOS_CERTIFICATE_PWD:-}" ]; then
+if [ -n "${P12_CERTIFICATE:-}" ] && [ -n "${P12_PASSWORD:-}" ]; then
     log "signing"
     KEYCHAIN_PATH="$HOME/Library/Keychains/haitun-signing.keychain-db"
     KEYCHAIN_PWD="${MACOS_KEYCHAIN_PWD:-haitun-ci-temp}"
     P12="$BUILD_DIR/cert.p12"
 
-    printf '%s' "$MACOS_CERTIFICATE" | base64 --decode >"$P12"
+    # `base64 -d` rejects embedded newlines on macOS; GitHub secrets round-trip
+    # multi-line values, and a wrapped base64 blob is easy to paste. Strip
+    # whitespace so both flat and wrapped values decode.
+    printf '%s' "$P12_CERTIFICATE" | tr -d '\r\n \t' | base64 --decode >"$P12"
+    [ -s "$P12" ] || die "P12_CERTIFICATE did not decode to anything; is it valid base64?"
     security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
     security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
     security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN_PATH"
-    security import "$P12" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PWD" \
+    security import "$P12" -k "$KEYCHAIN_PATH" -P "$P12_PASSWORD" \
         -T /usr/bin/codesign >/dev/null
     security set-key-partition-list -S apple-tool:,apple:,codesign: \
         -s -k "$KEYCHAIN_PWD" "$KEYCHAIN_PATH" >/dev/null
@@ -184,11 +188,11 @@ if [ "$SIGNED" = "1" ]; then
 fi
 
 # ---- notarization (only with full Apple credentials) ----
-if [ "$SIGNED" = "1" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+if [ "$SIGNED" = "1" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
     log "submitting for notarization (this can take several minutes)"
     xcrun notarytool submit "$DMG_PATH" \
         --apple-id "$APPLE_ID" \
-        --password "$APPLE_APP_PASSWORD" \
+        --password "$APP_SPECIFIC_PASSWORD" \
         --team-id "$APPLE_TEAM_ID" \
         --wait \
         --timeout 45m

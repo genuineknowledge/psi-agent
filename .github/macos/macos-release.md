@@ -34,11 +34,11 @@ matplotlib / pymupdf 这类含 C 扩展的依赖没有完整的 universal2 轮�
 
 | Secret | 说明 | 缺失时 |
 | --- | --- | --- |
-| `MACOS_CERTIFICATE` | Developer ID Application 证书 p12 的 base64 | 跳过签名与公证 |
-| `MACOS_CERTIFICATE_PWD` | p12 密码 | 同上 |
-| `MACOS_KEYCHAIN_PWD` | CI 临时 keychain 密码（自定义任意值） | 用内置默认值 |
+| `P12_CERTIFICATE` | Developer ID Application 证书 p12 的 base64 | 跳过签名与公证 |
+| `P12_PASSWORD` | p12 密码 | 同上 |
+| `MACOS_KEYCHAIN_PWD` | CI 临时 keychain 密码（自定义任意值） | 用内置默认值，不影响安全 |
 | `APPLE_ID` | 公证用 Apple ID | 签名但不公证 |
-| `APPLE_APP_PASSWORD` | app-specific password（**不是** Apple ID 登录密码） | 同上 |
+| `APP_SPECIFIC_PASSWORD` | app-specific password（**不是** Apple ID 登录密码） | 同上 |
 | `APPLE_TEAM_ID` | Team ID | 同上 |
 
 `HAITUN_DOWNLOAD_BASE_URL`、`HAITUN_UPDATE_INTERVAL_HOURS`、`ALIYUN_*` 直接复用
@@ -49,8 +49,30 @@ Windows 侧现有配置，无需新增。
 ```bash
 security find-identity -v -p codesigning        # 确认证书存在
 # 从钥匙串导出 .p12 后：
-base64 -i Certificates.p12 | pbcopy             # 粘贴为 MACOS_CERTIFICATE
+base64 -i Certificates.p12 | pbcopy             # 粘贴为 P12_CERTIFICATE
 ```
+
+`build-dmg.sh` 解码前会剥掉空白字符，所以 base64 是单行还是折行都能用。
+
+本地想核对证书内容时，OpenSSL 3.x 需要加 `-legacy`——Apple 导出的 p12 用
+RC2-40-CBC 加密，新版 OpenSSL 默认不再提供该算法，不加会报
+`unsupported ... RC2-40-CBC` 而不是密码错误。CI 上不受影响，macOS 的
+`security import` 原生认这个格式：
+
+```bash
+openssl pkcs12 -legacy -in Certificates.p12 -nokeys -clcerts \
+  | openssl x509 -noout -subject -dates
+```
+
+### 轮换
+
+证书或密码泄露时（例如误贴进聊天/工单）：
+
+- `APP_SPECIFIC_PASSWORD` 最容易换 —— appleid.apple.com 撤销旧的、生成新的，
+  改一个 secret 即可，不影响已发布的包。
+- `P12_CERTIFICATE` 需在 Developer portal 吊销证书、重新签发并重导 p12。
+  **注意**：换证书会让已有 Keychain 条目失效（见下文「已知风险」）。
+- `APPLE_ID` 和 `APPLE_TEAM_ID` 不是密钥，泄露无需处理。
 
 ## 三种产物形态
 
