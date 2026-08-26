@@ -307,5 +307,116 @@ rejected)
     ;;
 esac
 
+# ---- launch smoke test ----
+# The Gatekeeper block above answers "would the system admit this". It does not
+# answer "does it then run", and those fail differently for the user:
+#   admission failure -> "Apple cannot check it for malicious software"
+#   launch failure    -> "The application HaiTun Agent can't be opened."
+# The second dialog was reported from a real Mac while every CI check was green,
+# because nothing here had ever executed the thing it just built.
+#
+# Installs out of the mounted dmg rather than reusing $APP_BUNDLE: the copy is
+# what users get, and hdiutil round-tripping is itself part of what can break
+# permissions or the signature.
+log "--- launch smoke test ---"
+SMOKE_LOG="$BUILD_DIR/smoke.txt"
+: >"$SMOKE_LOG"
+smoke() { printf '%s\n' "$*" >>"$SMOKE_LOG"; }
+
+MNT="$BUILD_DIR/mnt"
+INSTALLED="$BUILD_DIR/installed"
+rm -rf "$MNT" "$INSTALLED"
+mkdir -p "$MNT" "$INSTALLED"
+
+SMOKE_OK=0
+if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 2>&1; then
+    cp -R "$MNT/$APP_NAME.app" "$INSTALLED/" 2>/dev/null || true
+    hdiutil detach "$MNT" >/dev/null 2>&1 || true
+    RUN_APP="$INSTALLED/$APP_NAME.app"
+    MAIN_EXE="$RUN_APP/Contents/MacOS/haitun"
+
+    # Structural facts first, so a failure below can be read without a Mac in
+    # hand. `file` on the main executable matters: a bundle whose
+    # CFBundleExecutable is a script is signed differently from a Mach-O one.
+    smoke "=== structure ==="
+    smoke "main executable: $(file -b "$MAIN_EXE" 2>&1)"
+    smoke "psi-agent: $(file -b "$RUN_APP/Contents/MacOS/psi-agent" 2>&1)"
+    smoke "arch: $(lipo -archs "$RUN_APP/Contents/MacOS/psi-agent" 2>&1)"
+    smoke "host arch: $(uname -m)"
+    smoke "perms: $(ls -l "$MAIN_EXE" 2>&1)"
+    smoke "=== codesign -dv (installed copy) ==="
+    codesign -dv --verbose=4 "$RUN_APP" >>"$SMOKE_LOG" 2>&1 || true
+
+    # Direct exec, not `open -a`: it bypasses LaunchServices so the failure lands
+    # on our stderr instead of in a GUI dialog, and a runtime/entitlement kill
+    # shows up as a signal rather than a silent no-op.
+    #
+    # The launcher ends in `wait` on the Gateway and never returns, so success
+    # here means "still alive after the grace period", not "exited 0". Killing
+    # the whole process group: the launcher backgrounds children that would
+    # otherwise outlive it and hold the runner's stdio open.
+    smoke "=== direct exec ==="
+    EXE_OUT="$BUILD_DIR/smoke-exec.txt"
+    ( "$MAIN_EXE" >"$EXE_OUT" 2>&1 & echo $! >"$BUILD_DIR/smoke.pid" ) || true
+    SMOKE_PID="$(cat "$BUILD_DIR/smoke.pid" 2>/dev/null || echo)"
+
+    # 40s: the launcher seeds a ~600 MB agent tree on first run before the
+    # Gateway even starts, and a hosted runner's disk is not fast.
+    ALIVE=0
+    for _ in $(seq 1 40); do
+        sleep 1
+        if [ -n "$SMOKE_PID" ] && kill -0 "$SMOKE_PID" 2>/dev/null; then
+            ALIVE=1
+        else
+            ALIVE=0
+            break
+        fi
+    done
+
+    if [ "$ALIVE" = "1" ]; then
+        smoke "process still alive after 40s (expected: launcher waits on the Gateway)"
+        SMOKE_OK=1
+        kill -TERM "-$SMOKE_PID" 2>/dev/null || kill -TERM "$SMOKE_PID" 2>/dev/null || true
+    else
+        # Exit status is the diagnosis: 126/127 point at exec (bad interpreter,
+        # not executable), >128 is a signal -- 137/SIGKILL is what a hardened
+        # runtime or library-validation rejection looks like from out here.
+        wait "$SMOKE_PID" 2>/dev/null
+        smoke "process exited early, status $?"
+    fi
+
+    smoke "=== stdout/stderr ==="
+    tail -c 4000 "$EXE_OUT" >>"$SMOKE_LOG" 2>/dev/null || true
+    smoke "=== gateway logs ==="
+    # The launcher redirects the Gateway's own output into ~/Library/Logs/Haitun,
+    # so nothing above would show a Python-level crash. An absent directory is
+    # itself the finding: the launcher creates it at line 30, so missing means
+    # not a single line of it ran.
+    if [ -d "$HOME/Library/Logs/Haitun" ]; then
+        ls -la "$HOME/Library/Logs/Haitun" >>"$SMOKE_LOG" 2>&1 || true
+        for lf in "$HOME/Library/Logs/Haitun"/*.err.log; do
+            [ -f "$lf" ] || continue
+            smoke "--- $(basename "$lf") ---"
+            tail -c 4000 "$lf" >>"$SMOKE_LOG" 2>/dev/null || true
+        done
+    else
+        smoke "NO LOG DIR: launcher.sh never reached its own mkdir -- failure is at exec"
+    fi
+else
+    smoke "hdiutil attach failed; cannot smoke test"
+fi
+sed 's/^/    /' "$SMOKE_LOG" || true
+
+if [ "$SMOKE_OK" = "1" ]; then
+    log "launch smoke test: ok"
+else
+    # Not fatal yet: this check is new and its own false-negative modes are not
+    # yet characterised on a hosted runner (no window server, no user session).
+    # Turning it into a hard gate before that is understood would block every
+    # build on the probe rather than on the product.
+    log "launch smoke test: FAILED -- see smoke.txt above"
+    log "  this is the \"can't be opened\" class of failure, not a Gatekeeper one"
+fi
+
 log "done: $DMG_PATH"
 log "version file: $OUT_DIR/haitun-version.txt"

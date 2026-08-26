@@ -333,5 +333,7 @@ jobs:
           name: haitun-macos-gatekeeper
           path: |
             macos-dist/build/spctl.txt
+            macos-dist/build/smoke.txt
+            macos-dist/build/smoke-exec.txt
             macos-dist/build/notarytool-submit.log
           if-no-files-found: warn
