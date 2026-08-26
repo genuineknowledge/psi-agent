@@ -51,7 +51,5 @@ async def feishu_review_card_send(
         "ledger_app_token": app_token,
         "ledger_table_id": table_id,
     }
-    outcome = await _review._send_review_card(
-        value=value, title=title, task_guid=task_guid, user_key=user_key
-    )
+    outcome = await _review._send_review_card(value=value, title=title, task_guid=task_guid, user_key=user_key)
     return json.dumps(outcome, ensure_ascii=False, default=str)

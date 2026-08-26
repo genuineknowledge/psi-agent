@@ -167,9 +167,7 @@ async def _provision_direct(
     caller (per ``company-todo-sync``) deletes it via the confirm-code flow, so
     the returned error carries ``cleanup_note``.
     """
-    res = await _core._invoke(
-        _build_create_app_request(base_name, folder_token), user_key=user_key, identity=identity
-    )
+    res = await _core._invoke(_build_create_app_request(base_name, folder_token), user_key=user_key, identity=identity)
     if not res["ok"]:
         return None, res
     data = res["data"] if isinstance(res["data"], dict) else {}
@@ -322,11 +320,9 @@ async def mentor_ledger_ensure_impl(
                 return _core._error(f"Copy succeeded but the response carried no app_token: {data!r}")
             provision_mode = "copy"
         else:
-            app_token, direct = await _provision_direct(
-                folder_token.strip(), base_name, "台账", user_key, identity
-            )
-            if app_token is None:
-                return direct
+            app_token, direct = await _provision_direct(folder_token.strip(), base_name, "台账", user_key, identity)
+            if app_token is None or direct is None:
+                return direct if direct is not None else _core._error("provision direct failed without error detail")
             table_id_direct = direct["table_id"]
             cleanup_note = direct.get("cleanup_note", "")
             provision_mode = "direct"

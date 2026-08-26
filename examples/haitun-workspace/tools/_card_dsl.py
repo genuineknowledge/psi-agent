@@ -52,10 +52,20 @@ existing direct-dispatch tools — this engine only compiles cards.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import xml.etree.ElementTree as ET
 from typing import Any
+from xml.sax.saxutils import escape
+
+from _runtime_paths import agent_dir
+from _todo_card_impl import (
+    _UNDO_ROUNDS,
+    _build_card_from_state,
+    _tick_action_id,
+    _untick_action_id,
+)
 
 # ── Vocabulary constants ──────────────────────────────────────────────────────
 
@@ -97,13 +107,14 @@ _MAX_ROUNDS = 20
 def _parse_round(raw: Any) -> int:
     try:
         return max(0, min(int(raw), _MAX_ROUNDS - 1))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
 
-def _validate(card_xml: str) -> tuple[dict[str, Any] | None, str]:
+
+def _validate(card_xml: str) -> tuple[ET.Element | None, str]:
     """Parse and validate a DSL declaration against the first-version vocabulary.
 
     Returns ``(root, "")`` on success, or ``(None, error)``. Validation is a
@@ -129,13 +140,12 @@ def _validate(card_xml: str) -> tuple[dict[str, Any] | None, str]:
 
 # ── Compilation ───────────────────────────────────────────────────────────────
 
+
 def _markdown_line(label: str, value: str) -> dict[str, Any]:
-    return {"tag": "markdown", "content": f"**{label}**：{value}"}
+    return {"tag": "markdown", "content": f"**{label}**：{value}"}  # noqa: RUF001 (卡片文案使用全角标点)
 
 
-def _base_value(
-    element: ET.Element, action: str, score: int, round_: int, context: dict[str, Any]
-) -> dict[str, Any]:
+def _base_value(element: ET.Element, action: str, score: int, round_: int, context: dict[str, Any]) -> dict[str, Any]:
     """Assemble the callback value shared by one interactive element.
 
     = spec 3.2.2 ring 4 (回调组装):``bind-record`` + caller context + action +
@@ -153,9 +163,7 @@ def _base_value(
     return value
 
 
-def _score_columns(
-    element: ET.Element, round_: int, context: dict[str, Any]
-) -> list[dict[str, Any]]:
+def _score_columns(element: ET.Element, round_: int, context: dict[str, Any]) -> list[dict[str, Any]]:
     min_raw = element.get("min") or "1"
     max_raw = element.get("max") or "5"
     try:
@@ -190,11 +198,9 @@ def _score_columns(
     return columns
 
 
-def _comment_input(
-    element: ET.Element, round_: int, context: dict[str, Any]
-) -> dict[str, Any]:
+def _comment_input(element: ET.Element, round_: int, context: dict[str, Any]) -> dict[str, Any]:
     action = (element.get("action") or _DEFAULT_COMMENT_ACTION).strip()
-    placeholder = (element.get("placeholder") or "写点评语（可选）").strip()
+    placeholder = (element.get("placeholder") or "写点评语（可选）").strip()  # noqa: RUF001 (卡片文案使用全角标点)
     comment_value = str(context.get("comment_value") or "")
     value = _base_value(element, f"{action}_r{round_}", 0, round_, context)
     value["action_id"] = f"{action}_r{round_}"
@@ -210,25 +216,21 @@ def _comment_input(
         "value": comment_value,
         "confirm": {
             "title": {"tag": "plain_text", "content": "确认评语"},
-            "text": {"tag": "plain_text", "content": "把这条评语写入台账？"},
+            "text": {"tag": "plain_text", "content": "把这条评语写入台账？"},  # noqa: RUF001 (卡片文案使用全角标点)
         },
         "behaviors": [{"type": "callback", "value": value}],
     }
     return input_el
 
 
-def _button_element(
-    element: ET.Element, round_: int, context: dict[str, Any]
-) -> dict[str, Any]:
+def _button_element(element: ET.Element, round_: int, context: dict[str, Any]) -> dict[str, Any]:
     text = (element.get("text") or "").strip()
     if not text:
         text = "按钮"
     type_raw = (element.get("type") or "default").strip()
     feishu_type = _BUTTON_TYPES.get(type_raw)
     if feishu_type is None:
-        raise ValueError(
-            f"<button type={type_raw!r}> unknown — use accept/reject/danger/default/primary"
-        )
+        raise ValueError(f"<button type={type_raw!r}> unknown — use accept/reject/danger/default/primary")
     action = (element.get("action") or "").strip()
     if not action:
         raise ValueError("<button> requires an action attribute")
@@ -301,9 +303,7 @@ def _compile(
                 # 先校验 type 取值,报错指向属性本身而非 handler 缺失。
                 type_raw = (btn.get("type") or "default").strip()
                 if type_raw not in _BUTTON_TYPES:
-                    raise ValueError(
-                        f"<button type={type_raw!r}> unknown — use accept/reject/danger/default/primary"
-                    )
+                    raise ValueError(f"<button type={type_raw!r}> unknown — use accept/reject/danger/default/primary")
                 btn_handler = _resolve_handler(btn_action, extra_handlers)
                 for r in range(_MAX_ROUNDS):
                     handlers[f"{btn_action}_r{r}"] = btn_handler
@@ -338,9 +338,7 @@ def _compile(
     return card, handlers
 
 
-def _compile_list_card(
-    root: ET.Element, context: dict[str, Any]
-) -> tuple[dict[str, Any], dict[str, str]]:
+def _compile_list_card(root: ET.Element, context: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     """Compile a <list>-bearing card into the legacy todo-card shape.
 
     The todo card's multi-row tick/untick machinery already exists and is
@@ -350,13 +348,6 @@ def _compile_list_card(
     structure and hand it to ``_build_card_from_state`` — same card bytes, same
     callback tools, zero drift from the hand-written version.
     """
-    from _todo_card_impl import (
-        _UNDO_ROUNDS,
-        _build_card_from_state,
-        _tick_action_id,
-        _untick_action_id,
-    )
-
     list_el = next(child for child in root if child.tag == "list")
     shape_default = (list_el.get("shape") or "circle").strip()
     rows: list[dict[str, Any]] = []
@@ -405,6 +396,7 @@ def _compile_list_card(
 # 这就是 Dustin 第 4 点"卡片定义可能放在数据库"的当前形态:定义与引擎分离,
 # 将来定义挪进数据库,渲染入口(字符串进)与模板内容都不动。
 
+
 def _resolve_template_dir() -> str:
     """Locate the card-dsl templates directory.
 
@@ -415,15 +407,9 @@ def _resolve_template_dir() -> str:
     works when this module runs standalone (local tests).
     """
     candidates: list[str] = []
-    try:
-        from _runtime_paths import agent_dir
-
+    with contextlib.suppress(Exception):
         candidates.append(os.path.join(agent_dir(), "skills", "card-dsl", "templates"))
-    except Exception:
-        pass
-    candidates.append(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skills", "card-dsl", "templates")
-    )
+    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "skills", "card-dsl", "templates"))
     for path in candidates:
         if os.path.isdir(path):
             return path
@@ -434,8 +420,6 @@ _TEMPLATE_DIR = _resolve_template_dir()
 
 
 def _xml_escape(text: str) -> str:
-    from xml.sax.saxutils import escape
-
     return escape(text)
 
 
@@ -515,6 +499,7 @@ def render_template(
 
 # ── Public entry ──────────────────────────────────────────────────────────────
 
+
 def render_card(
     card_xml: str,
     context_json: str = "{}",
@@ -528,8 +513,8 @@ def render_card(
     unknown elements/attributes come back as errors, not exceptions.
     """
     root, error = _validate(card_xml)
-    if error:
-        return {"ok": False, "error": error}
+    if error or root is None:
+        return {"ok": False, "error": error or "validation failed without detail"}
     try:
         context = json.loads(context_json) if isinstance(context_json, str) else context_json
     except ValueError:
@@ -538,9 +523,7 @@ def render_card(
         return {"ok": False, "error": "context_json must be a JSON object"}
     try:
         overrides = (
-            json.loads(handler_overrides_json)
-            if isinstance(handler_overrides_json, str)
-            else handler_overrides_json
+            json.loads(handler_overrides_json) if isinstance(handler_overrides_json, str) else handler_overrides_json
         )
     except ValueError:
         return {"ok": False, "error": "handler_overrides_json is not valid JSON"}
@@ -560,9 +543,7 @@ def render_card(
             # 第一版只支持 <list>(info 等其余元素混用暂不支持,报错而非静默忽略)。
             for child in root:
                 if child.tag != "list":
-                    raise ValueError(
-                        f"list 卡暂只支持 <list> 元素,不支持 <{child.tag}>"
-                    )
+                    raise ValueError(f"list 卡暂只支持 <list> 元素,不支持 <{child.tag}>")
             card, handlers = _compile_list_card(root, dict(context))
         else:
             card, handlers = _compile(root, round_, dict(context), extra_handlers)

@@ -15,13 +15,10 @@ like the first table.
 
 from __future__ import annotations
 
-from typing import Any
-
 import _feishu_impl as _core
+from _feishu.mentor_ledger import _LEDGER_SCHEMA_FIELDS, _build_list_tables_request
 from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
-
-from _feishu.mentor_ledger import _LEDGER_SCHEMA_FIELDS, _build_list_tables_request
 
 
 def _cycle_table_name(cycle_date: str) -> str:
@@ -61,9 +58,9 @@ async def feishu_mentor_ledger_cycle_table(
     the bot is usually not a collaborator on the base.
     """
     if not app_token.strip():
-        return _core._error("app_token is required (the mentor's ledger base app_token).")
+        return _core.dumps_result(_core._error("app_token is required (the mentor's ledger base app_token)."))
     if not cycle_date.strip():
-        return _core._error("cycle_date is required (YYYY-MM-DD).")
+        return _core.dumps_result(_core._error("cycle_date is required (YYYY-MM-DD)."))
 
     list_res = await _core._invoke(
         _build_list_tables_request(app_token.strip()),
@@ -72,7 +69,7 @@ async def feishu_mentor_ledger_cycle_table(
         identity=identity,
     )
     if not list_res["ok"]:
-        return list_res
+        return _core.dumps_result(list_res)
     data = list_res["data"] if isinstance(list_res["data"], dict) else {}
     items = data.get("items", []) if isinstance(data.get("items"), list) else []
     target = _cycle_table_name(cycle_date)
@@ -82,13 +79,17 @@ async def feishu_mentor_ledger_cycle_table(
         if item.get("name", "").strip() == target:
             table_id = item.get("table_id", "")
             if not table_id:
-                return _core._error(f"Table {target!r} found but its table_id was missing: {item!r}")
-            return {
-                "ok": True,
-                "table_id": table_id,
-                "name": target,
-                "created": False,
-            }
+                return _core.dumps_result(
+                    _core._error(f"Table {target!r} found but its table_id was missing: {item!r}")
+                )
+            return _core.dumps_result(
+                {
+                    "ok": True,
+                    "table_id": table_id,
+                    "name": target,
+                    "created": False,
+                }
+            )
 
     create_res = await _core._invoke(
         _build_cycle_table_request(app_token.strip(), target),
@@ -97,15 +98,19 @@ async def feishu_mentor_ledger_cycle_table(
         identity=identity,
     )
     if not create_res["ok"]:
-        return create_res
+        return _core.dumps_result(create_res)
     cdata = create_res["data"] if isinstance(create_res["data"], dict) else {}
     table_id = cdata.get("table_id", "")
     if not table_id:
-        return _core._error(f"Table creation succeeded but the response carried no table_id: {cdata!r}")
-    return {
-        "ok": True,
-        "table_id": table_id,
-        "name": target,
-        "created": True,
-        "schema_fields": len(_LEDGER_SCHEMA_FIELDS),
-    }
+        return _core.dumps_result(
+            _core._error(f"Table creation succeeded but the response carried no table_id: {cdata!r}")
+        )
+    return _core.dumps_result(
+        {
+            "ok": True,
+            "table_id": table_id,
+            "name": target,
+            "created": True,
+            "schema_fields": len(_LEDGER_SCHEMA_FIELDS),
+        }
+    )

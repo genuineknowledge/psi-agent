@@ -213,7 +213,9 @@ def _build_card_from_state(state: dict[str, Any]) -> dict[str, Any]:
     identical (``done=True, round=0``).
     """
     rows_raw = state.get("rows")
-    rows: list[dict[str, Any]] = [row for row in rows_raw if isinstance(row, dict)] if isinstance(rows_raw, list) else []
+    rows: list[dict[str, Any]] = (
+        [row for row in rows_raw if isinstance(row, dict)] if isinstance(rows_raw, list) else []
+    )
     title = str(state.get("title") or "")
     subtitle = str(state.get("subtitle") or "")
     done_count = sum(1 for row in rows if row.get("done"))
@@ -316,9 +318,7 @@ def _action_value(payload: dict[str, Any]) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _rebuild_row_in_card(
-    card: dict[str, Any], index: int, row_elements: list[dict[str, Any]]
-) -> dict[str, Any] | None:
+def _rebuild_row_in_card(card: dict[str, Any], index: int, row_elements: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Splice a freshly rendered row into the card at its ``hr``-delimited slot.
 
     LEGACY-ONLY (see module docstring): used exclusively by the fallback path in

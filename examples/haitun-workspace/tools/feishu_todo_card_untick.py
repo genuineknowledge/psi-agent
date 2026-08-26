@@ -14,11 +14,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import anyio
-
 import _feishu_api_impl as _api
 import _feishu_impl as _f
 import _todo_card_impl as _impl
+import anyio
 
 
 async def feishu_todo_card_untick(card_action_json: str = "", user_key: str = "") -> str:
