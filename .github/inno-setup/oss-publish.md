@@ -71,8 +71,8 @@ Variables：
 
 打包时 `build-haitun-launcher.ps1` 会从 `haitun.iss` 读取版本号，生成
 `examples/haitun-workspace/haitun-update.conf` 和
-`examples/haitun-workspace/haitun-version.txt`；CI 同时计算 msys64 全量文件树指纹并写入
-`examples/haitun-workspace/msys64/msys-version.txt`：
+`examples/haitun-workspace/haitun-version.txt`，并读取 `MyMsysVersion` 写入
+`examples/haitun-workspace/msys64/msys-version.txt`（手填环境版本，例如 `env-1`）：
 
 ```text
 HAITUN_UPDATE_BASE_URL=https://haitun-agent.oss-cn-hangzhou.aliyuncs.com/
@@ -105,7 +105,8 @@ HAITUN_UPDATE_INTERVAL_HOURS=24
 
 - 确认 `haitun.iss` 版本号已递增；
 - 确认协议 HTML 与 `docs/` 下 md 源一致（`python scripts/gen_legal_html.py --check`），协议换版时尤其要查；
-- 确认 OSS 上 `haitun-version.txt` 是纯版本号、`msys-version.txt` 是环境指纹；
+- 确认 OSS 上 `haitun-version.txt` 是纯版本号、`msys-version.txt` 是手填环境版本（如 `env-1`）；
+- 需要更新环境时，修改 `haitun.iss` 的 `MyMsysVersion`（如 `env-1` → `env-2`）并推送；
 - 确认三个安装包均已上传：`HaiTun_Agent_Setup.exe`、`HaiTun_Agent_App_Setup.exe`、`msys-setup.exe`；
 - 确认 launcher（`haitun.c`）包含“下载中提示窗口”的最新实现；1.0.1 及更早版本安装包不含下载中提示；
 - 首次发布时如果 OSS 还没有 `haitun-version.txt`，workflow 会直接上传；

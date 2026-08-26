@@ -214,17 +214,11 @@ jobs:
           Import-Module "$vs\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments "-arch=amd64"
           & ".github\inno-setup\build-haitun-launcher.ps1"
-      - name: Compute MSYS fingerprint
-        shell: pwsh
-        run: |
-          $fp = & ".github\inno-setup\compute-msys-fingerprint.ps1" -MsysDir "examples\haitun-workspace\msys64"
-          Set-Content -LiteralPath "examples\haitun-workspace\msys64\msys-version.txt" -Value $fp -Encoding UTF8 -NoNewline
-          Write-Output "MSYS_FINGERPRINT=$fp" >> $env:GITHUB_ENV
       - shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/ChineseSimplified.isl" -OutFile ".github\inno-setup\ChineseSimplified.isl"
       - shell: pwsh
-        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp /DMSYS_FINGERPRINT="$env:MSYS_FINGERPRINT" /O"installer-output" ".github\inno-setup\haitun.iss"'
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp /O"installer-output" ".github\inno-setup\haitun.iss"'
       - uses: actions/upload-artifact@v7
         with:
           name: haitun-agent-installers-nuitka

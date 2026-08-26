@@ -275,6 +275,8 @@ PSI_DEBUG_MODULES=psi_agent.ai.server,psi_agent.channel._core
 
 10. **每 chunk 都要有 DEBUG 日志**：无论是 AI 返回的 SSE chunk 还是 Channel 发出的 SSE chunk，每经过协议边界都要记录。这匹配 `ai/server.py` 的 `logger.debug(f"SSE chunk: ...")` 模式。**原文行会截断**（`_CHUNK_LOG_LIMIT`），所以 `ai/server.py` 另有一条 `delta keys: ...` 字段清单行（`_describe_delta`）：它只记字段名、长度与存在性，长度由**字段数**而非内容大小决定，故永不截断。这条线是为了让「某个 key 从未出现」与「某个 key 被截断挤掉」可分辨——两者在截断后的原文里长得一模一样。判断字段归属请用这条，别拿正则去捞原文。
 
+    **请求侧同理**：`message census: ...`（`_describe_messages`）按 message 逐条报 role、`reasoning_content`/`reasoning`/`thinking` 的长度、`tool_calls` 数与 `content` 长度，行首给出 `n=<条数> reasoning_carriers=<带 reasoning 字段的条数>`。长度由**message 条数**而非历史大小决定。存在的理由与响应侧一致：`Request body` 那行会截断（实测生产 5 条请求全被砍在整 1000 字符、system prompt 刚开头），于是「`reasoning_content` 没发出去」与「发了但被截断挤掉」无法分辨。查 thinking 泄漏时，两条清单行要**对着看**：请求侧 `reasoning_carriers` 与响应侧 `reasoning=ABSENT` 同时为零，才说明这个通道两个方向都没开。
+
 11. **单个 caller 的 private 方法应内联**：只有一个调用点的私有方法没有存在理由——将其逻辑直接展开到调用处，减少阅读时的跳转。(如 `_build` → inline 到 `ensure`)
 
 12. **模块级函数应尽量放到类上**：如果整个文件的作用就是为一个类服务，工具函数应该作为该类的 `@staticmethod`，而非文件顶级函数。(如 `_extract_async_func` → `SystemPrompt._extract_async_func`)

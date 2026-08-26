@@ -22,6 +22,13 @@ _CHUNK_LOG_LIMIT = 8000
 # census line is for.
 _DELTA_FIELDS = ("content", "reasoning", "reasoning_content", "thinking", "role")
 
+# The same names, looked for on the *request* side. Production measured 7908
+# response chunks with all three reasoning fields ABSENT, which rules out "the
+# model emitted reasoning and we dropped it" but not *why* it never used the
+# channel. Answering that needs the request we sent, and ``Request body`` is
+# truncated — so the outgoing messages get a census of their own.
+_MESSAGE_REASONING_FIELDS = ("reasoning_content", "reasoning", "thinking")
+
 
 def _describe_delta(data: str) -> str:
     """One never-truncated line naming which delta fields exist, and how long.
@@ -66,11 +73,60 @@ def _describe_delta(data: str) -> str:
     return " ".join(parts)
 
 
+def _describe_messages(messages: Any) -> str:
+    """One never-truncated line describing the messages we are about to send.
+
+    The counterpart to ``_describe_delta``, and bounded the same way: by the
+    *number* of messages rather than their size, so a 100 KB history still fits
+    on one line. ``Request body`` truncates, which cannot answer "was
+    ``reasoning_content`` on the wire at all" — a key past the cutoff and a key
+    never sent look identical, the same trap the delta census exists for.
+
+    Reports each message as ``<index><role>`` plus any reasoning-ish key it
+    carries with that key's length, e.g. ``3assistant(reasoning_content=812ch,
+    tool_calls=1)``. Values are never echoed — only names, lengths, and counts.
+    """
+    if not isinstance(messages, list):
+        return f"non-list messages ({type(messages).__name__})"
+    if not messages:
+        return "no messages"
+
+    parts: list[str] = []
+    carriers = 0
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            parts.append(f"{i}non-object({type(msg).__name__})")
+            continue
+        role = msg.get("role")
+        notes: list[str] = []
+        for field in _MESSAGE_REASONING_FIELDS:
+            value = msg.get(field)
+            if value is None:
+                continue
+            carriers += 1
+            notes.append(f"{field}={len(value)}ch" if isinstance(value, str) else f"{field}={type(value).__name__}")
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
+            notes.append(f"tool_calls={len(tool_calls)}")
+        content = msg.get("content")
+        if isinstance(content, str):
+            notes.append(f"content={len(content)}ch")
+        elif content is None:
+            notes.append("content=ABSENT")
+        else:
+            notes.append(f"content={type(content).__name__}")
+        parts.append(f"{i}{role}({', '.join(notes)})" if notes else f"{i}{role}")
+    # The headline number: how many messages carry a reasoning field at all.
+    # Zero here alongside zero on the response side means the channel was never
+    # opened in either direction.
+    return f"n={len(messages)} reasoning_carriers={carriers} | " + " ".join(parts)
+
+
 async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     logger.info("Received chat completion request")
     try:
         body: dict[str, Any] = await request.json()
-        logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:1000]}")
+        logger.debug(f"Request body: {json.dumps(body, ensure_ascii=False)[:_CHUNK_LOG_LIMIT]}")
     except Exception as e:
         logger.error(f"Failed to parse request body: {e!r}")
         # OpenAI-compatible error response.
@@ -94,6 +150,8 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
 
     logger.debug(f"Body keys before pop: {list(body)}")
     messages = body.pop("messages", [])
+    # Logged after the pop so it describes exactly what goes upstream.
+    logger.debug(f"message census: {_describe_messages(messages)}")
     body.pop("stream", None)
     body.pop("provider", None)
     body.pop("model", None)

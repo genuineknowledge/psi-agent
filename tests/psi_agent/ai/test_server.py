@@ -10,7 +10,7 @@ import pytest
 from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
-from psi_agent.ai.server import _describe_delta, handle_chat_completions
+from psi_agent.ai.server import _describe_delta, _describe_messages, handle_chat_completions
 
 
 class _FakeChunk:
@@ -246,6 +246,78 @@ def test_census_survives_malformed_payloads(payload: str, expected: str) -> None
     assert _describe_delta(payload) == expected
 
 
+def test_message_census_distinguishes_reasoning_on_the_wire() -> None:
+    """The request-side judgement: was ``reasoning_content`` sent, or not?
+
+    Production measured every response chunk with reasoning ABSENT. That rules
+    out "the model sent it and we dropped it", but not why the channel stayed
+    shut. This line answers the half we could not see: what *we* sent.
+    """
+    without = _describe_messages([{"role": "user", "content": "继续啊"}])
+    assert "reasoning_carriers=0" in without
+    assert "reasoning_content" not in without
+
+    with_reasoning = _describe_messages(
+        [
+            {"role": "user", "content": "继续啊"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "hmm, the user wants",
+                "tool_calls": [{"id": "a"}],
+            },
+        ]
+    )
+    assert "reasoning_carriers=1" in with_reasoning
+    assert "1assistant(reasoning_content=19ch, tool_calls=1, content=0ch)" in with_reasoning
+
+
+def test_message_census_is_not_truncated_by_a_long_history() -> None:
+    """Bounded by message *count*, not payload size — the whole point.
+
+    ``Request body`` truncates, so a ``reasoning_content`` sitting past the
+    cutoff is indistinguishable from one never sent. This line must stay short
+    no matter how large the history is.
+    """
+    history = [{"role": "user", "content": "x" * 50_000} for _ in range(20)]
+    history.append({"role": "assistant", "content": "y" * 90_000, "reasoning_content": "z" * 40_000})
+    census = _describe_messages(history)
+
+    assert "reasoning_carriers=1" in census
+    assert "reasoning_content=40000ch" in census
+    assert len(census) < 900, f"census grew with payload size: {len(census)} chars"
+
+
+def test_message_census_never_echoes_message_text() -> None:
+    """Logs already carry real conversations; the census must not add more."""
+    census = _describe_messages(
+        [{"role": "user", "content": "sensitive-user-secret", "reasoning_content": "private-thought"}]
+    )
+    assert "sensitive-user-secret" not in census
+    assert "private-thought" not in census
+    assert "content=21ch" in census
+
+
+@pytest.mark.parametrize(
+    ("messages", "expected"),
+    [
+        ("not a list", "non-list messages (str)"),
+        ([], "no messages"),
+        (None, "non-list messages (NoneType)"),
+    ],
+)
+def test_message_census_survives_malformed_input(messages: Any, expected: str) -> None:
+    """Same rule as the delta census: never break the request over a log line."""
+    assert _describe_messages(messages) == expected
+
+
+def test_message_census_tolerates_non_dict_and_odd_content() -> None:
+    """Multimodal ``content`` is a list, and a malformed entry must not raise."""
+    census = _describe_messages(["bare string", {"role": "user", "content": [{"type": "text"}]}])
+    assert "0non-object(str)" in census
+    assert "content=list" in census
+
+
 @pytest.mark.anyio
 async def test_census_is_logged_for_each_chunk(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The census must actually reach the log, once per chunk."""
@@ -263,3 +335,23 @@ async def test_census_is_logged_for_each_chunk(tmp_path: Path, monkeypatch: pyte
     assert len(census_lines) == 1
     assert "content=2ch" in census_lines[0]
     assert "reasoning=ABSENT" in census_lines[0]
+
+
+@pytest.mark.anyio
+async def test_message_census_is_logged_once_per_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The request census must reach the log too — once, describing what we sent."""
+    logged: list[str] = []
+    sink_id = logger.add(lambda m: logged.append(m.record["message"]), level="DEBUG")
+    stream = _TrackingStream([_FakeChunk()])
+    runner, socket_path = await _serve_handler(tmp_path, monkeypatch, stream)
+    try:
+        await _drain(socket_path)
+    finally:
+        await runner.cleanup()
+        logger.remove(sink_id)
+
+    census_lines = [m for m in logged if m.startswith("message census:")]
+    assert len(census_lines) == 1
+    # ``_drain`` sends a single user message with no reasoning field.
+    assert "n=1 reasoning_carriers=0" in census_lines[0]
+    assert "0user(content=2ch)" in census_lines[0]

@@ -7,12 +7,9 @@
 
 #define MyAppName "HaiTun Agent"
 #define MyAppVersion "1.0.10"
+#define MyMsysVersion "env-1"
 #define MyAppPublisher "Hefei Zhenzhi Artificial Intelligence Application Software Co., Ltd"
 #define MyAppExeName "haitun.exe"
-
-#ifndef MSYS_FINGERPRINT
-#define MSYS_FINGERPRINT "msys-unknown"
-#endif
 
 [Setup]
 AppId={{234DFAA2-39F9-4E4C-92C7-680728ADDA4A}
@@ -380,13 +377,13 @@ begin
 
 #ifdef COMPONENT_MSYS
   AppTo := '';
-  MsysTo := '{#MSYS_FINGERPRINT}';
+  MsysTo := '{#MyMsysVersion}';
 #else
   AppTo := '{#MyAppVersion}';
 #ifdef COMPONENT_APP
   MsysTo := '';
 #else
-  MsysTo := '{#MSYS_FINGERPRINT}';
+  MsysTo := '{#MyMsysVersion}';
 #endif
 #endif
 
