@@ -191,12 +191,37 @@ def _consumed_card_content(card: Any, action_value: Any, *, multi_use: bool = Fa
     if not selected_label:
         return None
     if multi_use:
-        # A done row: filled marker, struck through, and no longer interactive. Rows still
-        # open keep their buttons untouched.
-        selected_element: dict[str, Any] = {
-            "tag": "markdown",
-            "content": f"● ~~{selected_label}~~",
-        }
+        # The placeholder IS a button — the two buttons swap in place with no
+        # intermediate text flash: tick → 「撤销」button, untick → 「○ 标记完成」
+        # button (same label the tool's rebuild will render a moment later, so the
+        # swap reads seamlessly). The placeholder reuses the clicked button's own
+        # value: if the user taps it again before the rebuild lands, the callback
+        # carries the already-consumed action id and Channel's mark_seen dedup
+        # ignores it — no side effects.
+        payload = _normalize_card_action_value(action_value)
+        payload = payload if isinstance(payload, dict) else {}
+        action_id = str(payload.get("action") or "")
+        # 按钮互转占位只属于 todo 卡(tick/untick 的撤销往返);
+        # 其他 multi_use 卡(如评价卡的 review_score)不做占位,
+        # 卡片外观由回调处理方(工具/海豚)原位更新决定。
+        if payload and action_id and action_id.startswith("todo_"):
+            next_label = "○ 标记完成" if action_id.startswith("todo_untick") else "撤销"
+            selected_element = {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": next_label},
+                "type": "default",
+                "value": payload,
+            }
+        elif payload and action_id:
+            # 非 todo 动作(如评价卡的 review_score):不做占位替换,
+            # 卡片外观由回调处理方原位更新决定。
+            return None
+        else:
+            # Legacy value shape (no action id) — keep the old struck-through label.
+            selected_element = {
+                "tag": "markdown",
+                "content": f"● ~~{selected_label}~~",
+            }
     elif card.get("schema") == "2.0":
         selected_element = {
             "tag": "markdown",
