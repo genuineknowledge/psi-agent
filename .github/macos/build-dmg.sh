@@ -330,6 +330,7 @@ mkdir -p "$MNT" "$INSTALLED"
 
 SMOKE_OK=0
 LS_OK=0
+QUARANTINE_OK=0
 if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 2>&1; then
     cp -R "$MNT/$APP_NAME.app" "$INSTALLED/" 2>/dev/null || true
     hdiutil detach "$MNT" >/dev/null 2>&1 || true
@@ -385,6 +386,60 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
     fi
     pkill -f "$APP_NAME.app/Contents/MacOS/" 2>/dev/null || true
     smoke "LS_OK=$LS_OK"
+
+    # ---- the same launch, but quarantined ----
+    # Everything above ran on a copy with no com.apple.quarantine, because a
+    # build artifact never has one. A user's copy arrives via a downloader and
+    # does. That attribute is the single biggest difference between this runner
+    # and the machine that reported "can't be opened", so test it explicitly.
+    #
+    # This contradicts an earlier decision in this file's history not to stamp a
+    # fake attribute. That decision was right about `spctl`, which assesses
+    # unconditionally and therefore learns nothing from the xattr. It was wrong
+    # to generalise: LaunchServices *does* read it, and takes a different path
+    # when it is present. So the stamp is pointless for spctl and load-bearing
+    # for `open`.
+    #
+    # Stamped on a second copy so the unquarantined result above stays clean and
+    # the two are directly comparable.
+    QAPP="$BUILD_DIR/quarantined/$APP_NAME.app"
+    rm -rf "$BUILD_DIR/quarantined"
+    mkdir -p "$BUILD_DIR/quarantined"
+    if cp -R "$RUN_APP" "$BUILD_DIR/quarantined/" 2>/dev/null; then
+        smoke "=== quarantined launch (closest thing to a user's copy) ==="
+        # Field order is flags;timestamp-hex;agent;uuid -- what a downloader writes.
+        # -w -r applies it to the whole tree; a bundle carries it on more than the
+        # top directory.
+        xattr -w -r com.apple.quarantine \
+            "0081;$(printf '%x' "$(date +%s)");Safari;$(uuidgen)" "$QAPP" 2>/dev/null || true
+        smoke "attr on bundle: $(xattr -p com.apple.quarantine "$QAPP" 2>&1)"
+
+        smoke "--- spctl ---"
+        spctl -a -vvv -t exec "$QAPP" >>"$SMOKE_LOG" 2>&1 || true
+        if command -v syspolicy_check >/dev/null 2>&1; then
+            smoke "--- syspolicy_check ---"
+            syspolicy_check distribution "$QAPP" >>"$SMOKE_LOG" 2>&1 || true
+        fi
+
+        smoke "--- open -a ---"
+        if open -a "$QAPP" >>"$SMOKE_LOG" 2>&1; then
+            smoke "open: accepted"
+        else
+            smoke "open: FAILED with status $?"
+        fi
+        sleep 20
+        if pgrep -f "quarantined/$APP_NAME.app/Contents/MacOS/psi-agent" >/dev/null 2>&1; then
+            smoke "post-open: psi-agent is running (quarantine changes nothing)"
+            QUARANTINE_OK=1
+        else
+            # The interesting outcome. Same bundle, same machine, only the xattr
+            # differs -- that would reproduce the reported dialog and put the
+            # cause in the policy layer rather than in the bundle.
+            smoke "post-open: NO process -- quarantine alone reproduces the failure"
+        fi
+        pkill -f "quarantined/$APP_NAME.app/Contents/MacOS/" 2>/dev/null || true
+        smoke "QUARANTINE_OK=$QUARANTINE_OK"
+    fi
 
     # Direct exec, not `open -a`: it bypasses LaunchServices so the failure lands
     # on our stderr instead of in a GUI dialog, and a runtime/entitlement kill
@@ -446,8 +501,13 @@ else
 fi
 sed 's/^/    /' "$SMOKE_LOG" || true
 
-if [ "$SMOKE_OK" = "1" ] && [ "$LS_OK" = "1" ]; then
-    log "launch smoke test: ok (both exec and LaunchServices)"
+if [ "$SMOKE_OK" = "1" ] && [ "$LS_OK" = "1" ] && [ "$QUARANTINE_OK" = "1" ]; then
+    log "launch smoke test: ok (exec, LaunchServices, and quarantined)"
+elif [ "$SMOKE_OK" = "1" ] && [ "$LS_OK" = "1" ]; then
+    # Clean copy launches, quarantined copy does not: the bundle is fine and the
+    # policy layer is refusing it. On an unnotarized build that is the expected
+    # state, so this is information rather than a defect.
+    log "launch smoke test: ok unquarantined, FAILED quarantined -- policy layer"
 elif [ "$SMOKE_OK" = "1" ]; then
     # The interesting split. Direct exec bypasses seal validation and the policy
     # layer, so passing it while failing `open` narrows the fault to the bundle
