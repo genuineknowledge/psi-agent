@@ -1,0 +1,20 @@
+<!--
+  评价卡模板(company-todo-review 发卡与重建用)
+  {key} 为占位符,渲染时由 values_json 填充(值自动 XML 转义)。
+  使用方式:feishu_card_render(template="review-card", values_json="{...}", context_json="{...}")
+  values:owner_name / title / delivered_at / record_id / selected_score
+         note(可选状态行,如"已打回重做…";为空则整行不渲染)
+  context(注入回调 value):owner_name / owner_open_id / cycle_date / task_guid /
+    ledger_app_token / ledger_table_id / comment_value(评语框初始文本)
+-->
+<card title="TODO 评价" template="blue">
+  <info label="执行人" value="{owner_name}"/>
+  <info label="任务" value="{title}"/>
+  <info label="交付时间" value="{delivered_at}"/>
+  {note}
+  <score min="1" max="5" rounds="20" bind-record="{record_id}" selected="{selected_score}"/>
+  <comment placeholder="写点评语" bind-record="{record_id}"/>
+  <action-row>
+    <button text="打回重做" type="reject" action="review_reject"/>
+  </action-row>
+</card>
