@@ -1,22 +1,9 @@
 # -*- coding: utf-8 -*-
-"""层 b · 省钱决策提示词 section 常量（v2.5 EN，2026-08-26，提示词内容英文化 + >6000 地方补贴边界）
+"""层 b · 省钱决策提示词 section 常量
 ================================================================
 可合入 Haitun 产品的独立模块。包含 3 个 section 常量 + 组装函数。
 
-接入方式（在 PyCharm 打开 D:\\HaiTun Agent，最小 2 处改动；不改架构、不碰其他 section）：
-1. 本文件复制到 D:\\HaiTun Agent\\systems\\saving_decision_sections.py
-2. system.py 顶部 import：
-       from saving_decision_sections import build_saving_sections
-3. build_system_prompt() 的 stable_parts 末尾（SAFETY_SECTION 之后）加：
-       stable_parts += ["", *build_saving_sections()]
-4. 重启 Haitun / gateway，按「部署验证清单」测试。
-
-变更（v2.4，2026-08-22）：模型可读的提示词内容由中文转为英文；结构 / 隔离设计
-（门控前置 / 强规则条件化 / 优先级声明 / 标签隔离）/ 数字规则 / 工具名 均不变。
-标签英文映射：已确认=Confirmed / 推断=Inferred / 待核验=Pending Verification /
-未核验=Unverified / 无法确认=Cannot Confirm。
-
-设计要点（不变）：
+设计要点：
 - 条件式强制：工具在列表则必须用，不在/失败则标 [Unverified]，不卡死、不凭记忆。
 - 参数不写死：政策参数必须来自本次检索或事实卡快照，不写具体数值进提示词。
 - 检索核验纪律：即使无计算器/事实卡也必须执行，宁少答不错答。
