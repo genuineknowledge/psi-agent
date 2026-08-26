@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# ruff: noqa: RUF001, RUF002, RUF003
 """policy_query v1.3：政策参数查询（结构化政策参数 + 口径标签 + 文号/来源 + 2025 对照 + 时效）
 
 定位：解决 B1（2025 口径 vs 2026）、T01（来源 URL）、T24（文件内容混淆）等
@@ -12,6 +12,7 @@
 - 确定性程序：不联网、不实时检索，回答必须标注「政策口径以官方文件/结算页为准」。
 """
 import json
+
 from _guobu_categories import match_category, supported_text
 
 # 2026 政策参数来源：发改环资〔2025〕1745号 / 商办流通函〔2025〕469号 / 各省商务厅细则
@@ -70,7 +71,8 @@ async def policy_query(subject: str = "", region: str = "", return_json: bool = 
     if not key:
         return json.dumps({
             "ok": False,
-            "reason": "未知品类：%s（支持 %s；电视柜/空调扇/手机壳等非国补品类不算）" % (subject, supported_text()),
+            "reason": (f"未知品类：{subject}（支持 {supported_text()}；"
+           f"电视柜/空调扇/手机壳等非国补品类不算）"),
             "quota_label": "2026 现行",
             "suggest_search": True,
             "hint": "该品类不在内置表，可能不属于 2026 国补范围或尚未收录；"
@@ -103,10 +105,3 @@ async def policy_query(subject: str = "", region: str = "", return_json: bool = 
                  "若 region 为省份，可以该省商务厅细则为准；以下单结算页显示为准。"),
     }
     return json.dumps(result, ensure_ascii=False) if return_json else str(result)
-
-
-if __name__ == "__main__":
-    import asyncio
-    print(asyncio.run(policy_query("电脑", "安徽")))
-    print(asyncio.run(policy_query("手机")))
-    print(asyncio.run(policy_query("电视柜")))

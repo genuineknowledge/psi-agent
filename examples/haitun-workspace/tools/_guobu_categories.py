@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# ruff: noqa: RUF001, RUF002, RUF003
 """国补品类共享常量与匹配（policy_query / subsidy_calc 共用，杜绝分叉）。
 
 v1（2026-08-26，review 修复 #1）：
@@ -35,7 +35,8 @@ def match_category(subject: str):
     best, best_len = None, -1
     for cat, aliases in ALIASES.items():
         for a in aliases:
-            if s == a or s.endswith(a):
+            if (s == a or s.endswith(a)) and len(a) > best_len:
+                best, best_len = cat, len(a)
                 if len(a) > best_len:
                     best, best_len = cat, len(a)
     return best

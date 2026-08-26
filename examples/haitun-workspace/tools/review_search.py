@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# ruff: noqa: RUF001, RUF002, RUF003, ASYNC109, SIM117
 """review_search v3（简化版）：检索并返回候选文章（多源 + 降级 + 兜底 + 防编造）。
 
 职责单一：给定品类/预算/约束，返回 N 篇真实抓取到的候选文章。
@@ -8,8 +8,11 @@
 - 降级：channel 不够时补 bing/ddg，轻量过滤官网/大全/百科。
 - 兜底：全部失败返回 C 端友好话术。
 """
-import json, re
-from typing import Optional
+import json
+import re
+import urllib.parse
+
+import aiohttp
 
 USER_FALLBACK = (
     "当前我没能实时核实到符合你条件的最新机型。为了给你准确的建议，你可以："
@@ -41,11 +44,11 @@ def _category_sources(category: str) -> list[str]:
     return []
 
 
-def _build_query(category: str, budget_min: float, budget_max: Optional[float],
+def _build_query(category: str, budget_min: float, budget_max: float | None,
                  constraints: str, region: str) -> str:
     parts = [category]
     if budget_min or budget_max:
-        parts.append("预算%d-%d元" % (int(budget_min), int(budget_max or budget_min + 5000)))
+        parts.append(f"预算{int(budget_min)}-{int(budget_max or budget_min + 5000)}元")
     if constraints:
         parts.append(constraints)
     if region:
@@ -54,10 +57,12 @@ def _build_query(category: str, budget_min: float, budget_max: Optional[float],
     return " ".join(parts)
 
 
-async def _http_get(url: str, timeout: float = 20) -> Optional[str]:
+async def _http_get(url: str, timeout: float = 20) -> str | None:
     try:
-        import aiohttp
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "Chrome/126 Safari/537.36"
+        }
         async with aiohttp.ClientSession(headers=headers) as sess:
             async with sess.get(url, timeout=aiohttp.ClientTimeout(total=timeout), ssl=False) as resp:
                 if resp.status != 200:
@@ -95,7 +100,6 @@ async def _channel_fetch(category: str) -> list[dict]:
 
 
 async def _bing_rss(query: str) -> list[dict]:
-    import urllib.parse
     url = "https://www.bing.com/search?format=rss&q=" + urllib.parse.quote(query)
     html = await _http_get(url)
     if not html:
@@ -113,7 +117,6 @@ async def _bing_rss(query: str) -> list[dict]:
 
 
 async def _ddg_html(query: str) -> list[dict]:
-    import urllib.parse
     url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(query)
     html = await _http_get(url)
     if not html:
@@ -134,7 +137,7 @@ def _light_filter(articles: list[dict]) -> list[dict]:
 async def review_search(
     category: str,
     budget_min: float = 0.0,
-    budget_max: Optional[float] = None,
+    budget_max: float | None = None,
     constraints: str = "",
     region: str = "",
     max_results: int = 8,
@@ -155,7 +158,7 @@ async def review_search(
             try:
                 more = _light_filter(await fetcher(query))
             except Exception as e:
-                reasons.append("%s: %s" % (src_name, type(e).__name__))
+                reasons.append(f"{src_name}: {type(e).__name__}")
                 continue
             if more:
                 for a in more:
@@ -164,7 +167,7 @@ async def review_search(
                 if len(articles) >= max_results:
                     break
             else:
-                reasons.append("%s: 无有效结果" % src_name)
+                reasons.append(f"{src_name}: 无有效结果")
 
     seen, uniq = set(), []
     for a in articles:
@@ -186,8 +189,3 @@ async def review_search(
                 "articles": [], "note": "",
                 "fallback": {"reasons": reasons, "user_message": USER_FALLBACK}}
     return json.dumps(body, ensure_ascii=False)
-
-
-if __name__ == "__main__":
-    import asyncio
-    print(asyncio.run(review_search("游戏本", 5000, 7000, "1级能效 国补", "安徽")))
