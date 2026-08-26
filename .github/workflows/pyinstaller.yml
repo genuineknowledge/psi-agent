@@ -325,3 +325,13 @@ jobs:
           path: |
             macos-dist/HaiTun_Agent.dmg
             macos-dist/haitun-version.txt
+      # if: always() so the Gatekeeper verdict survives a failed build -- that is
+      # exactly the case you need it in.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: haitun-macos-gatekeeper
+          path: |
+            macos-dist/build/spctl.txt
+            macos-dist/build/notarytool-submit.log
+          if-no-files-found: warn

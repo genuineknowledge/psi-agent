@@ -248,5 +248,64 @@ elif [ "$SIGNED" = "1" ]; then
     log "signed but NOT notarized (Apple credentials absent); Gatekeeper will still warn"
 fi
 
+# ---- Gatekeeper admission check ----
+# Answers the question a signature check cannot: would Gatekeeper admit this,
+# or would a user get "Apple cannot check it for malicious software"? Passing
+# notarization does not by itself guarantee passing Gatekeeper -- dangling load
+# command paths are a documented way to be notarized and still rejected.
+#
+# Commands and their scoping are per Apple DTS (developer.apple.com/forums/thread/130560):
+# `-t open --context context:primary-signature` for disk images,
+# `syspolicy_check distribution` for app bundles on macOS 14+.
+#
+# Two limits, so nobody reads a green line here as a release gate:
+#  - DTS calls the command-line route "a quick, albeit less accurate test".
+#    The authoritative test is downloading via Safari onto a clean machine that
+#    has never seen the product, then pulling the network to prove stapling.
+#  - This runs on the machine that just signed the dmg, whose keychain holds the
+#    signing certificate. That state does not exist on a user's Mac.
+# No quarantine attribute is stamped: spctl assesses unconditionally, so a fake
+# xattr would add nothing but a false impression of fidelity.
+log "--- Gatekeeper admission (indicative, not a substitute for clean-machine test) ---"
+GK_OUT="$BUILD_DIR/spctl.txt"
+if spctl -a -vvv -t open --context context:primary-signature "$DMG_PATH" >"$GK_OUT" 2>&1; then
+    GK_VERDICT=accepted
+else
+    GK_VERDICT=rejected
+fi
+sed 's/^/    /' "$GK_OUT" || true
+
+# syspolicy_check is the accurate one for app bundles, and it is what catches
+# the dangling-load-path class of failure that spctl on the dmg can miss.
+if command -v syspolicy_check >/dev/null 2>&1; then
+    log "--- syspolicy_check distribution (app bundle) ---"
+    syspolicy_check distribution "$APP_BUNDLE" 2>&1 | sed 's/^/    /' || true
+fi
+
+# Re-validate the ticket here as well as after stapling: this is the last touch
+# before upload, so it catches a ticket lost to anything done in between.
+if [ "$NOTARIZE" = "1" ] && [ "$SIGNED" = "1" ]; then
+    log "--- stapler validate ---"
+    xcrun stapler validate "$DMG_PATH" 2>&1 | sed 's/^/    /' || true
+fi
+
+case "$GK_VERDICT" in
+accepted)
+    log "Gatekeeper: accepted"
+    ;;
+rejected)
+    # Not fatal off the release path: unnotarized *is* the expected state there,
+    # and dying would block every branch build. On the release path a rejection
+    # means users hit the malware dialog -- the exact outcome notarization
+    # exists to prevent -- so that one stops the build.
+    if [ "$NOTARIZE" = "1" ] && [ "$SIGNED" = "1" ]; then
+        die "Gatekeeper rejected a notarized build; see spctl output above"
+    fi
+    log "Gatekeeper: rejected (expected without notarization)"
+    log "  users will get: \"Apple cannot check it for malicious software\""
+    log "  tester workaround: right-click the app -> Open"
+    ;;
+esac
+
 log "done: $DMG_PATH"
 log "version file: $OUT_DIR/haitun-version.txt"
