@@ -86,6 +86,7 @@ def setup_logging(*, verbose: bool = False) -> int:
 | V8 | 镜像内产物与 git 一致 | 三层核验（见 A 段），第三层验镜像内 `_logging.py` 含新代码 |
 | V9 | `uv run ty check .` 不引入新诊断 | main 基线 0 条（Windows 本机额外 2 条 `os.killpg` 平台差异不计） |
 | V10 | 同容器多进程各写各的文件，不互相丢行 | 单测：断言路径以本进程 PID 结尾，且写入后 `logs/` 下只有一个文件、文件名含 `os.getpid()` |
+| V11 | 请求侧清单行能分辨 `reasoning_content` 是否上了 wire | 单测：构造无 reasoning 的 history → 断言 `reasoning_carriers=0`；构造带 `reasoning_content` 的 assistant 消息 → 断言 `reasoning_carriers=1` 且报出该消息下标与字段长度；再构造 20×50k 的超长 history → 断言整行 < 900 字符（不随载荷增长） |
 
 ### 3. 明确不做什么
 
@@ -269,6 +270,7 @@ V10 的单测只验「本进程写本进程的文件」这一半 —— 真的�
 | 1.0 | 2026-08-25 | 初稿：定向 DEBUG + 文件轮转 + SSE 字段清单行 |
 | 1.1 | 2026-08-25 | 实现完成。补记一处实现期发现的顺序缺陷（见下）；`retention` 定为 10（负责人要求，从 3 上调，理由是「还没查到就没了」）|
 | 1.2 | 2026-08-26 | 部署前发现生产一容器两进程，改为一进程一文件（V10）。原单文件版已随 `7f45d2fe` 合入 main，本次单独修正 |
+| 1.3 | 2026-08-26 | 已上线（停机 69s），V7/V8/V10 生产实测通过。首次捕到泄漏样本，排除假设 (b)。补请求侧清单行 `_describe_messages`（V11），因请求体截断使根因仍不可观测 |
 
 ### 实现期补记：`logger.remove()` 的顺序
 
@@ -277,3 +279,57 @@ V10 的单测只验「本进程写本进程的文件」这一半 —— 真的�
 修法是把 `logger.remove()` 连同 stderr 安装整体前移到文件 sink 之前。已加回归测试 `test_stderr_removal_does_not_wipe_the_file_sink` 钉住顺序，并写入 `AGENTS.md` 约束第 2 条。
 
 这条值得记下来的原因：它是「静默失效」类缺陷，且恰好发生在一个**为了消除静默失效而做的功能**里 —— 若没有 V2 那条断言落盘内容（而不是只断言 handler id 非空）的测试，它会一路带到生产，在下次泄漏复现时才以「日志开了但是空的」的形式暴露。
+
+***
+
+## 上线后实测：捕到样本，并暴露一个新的观测缺口
+
+**结论先行：假设 (b) 已排除，(a) 得到直接证据但样本很窄；根因仍未坐实，因为请求侧看不见。**
+
+### 实测数据
+
+上线后 10:46–10:48 的窗口，`psi-debug-9.log`（gateway 进程）落了 7908 个 chunk：
+
+| 量 | 值 |
+|---|---|
+| census 行总数 | 7908 |
+| `reasoning` / `reasoning_content` / `thinking` 至少一个有值的 | **0** |
+| 不同请求 id | 5 |
+| 模型 | `deepseek-v4-flash`（单一） |
+
+泄漏样本落在请求 `58c0bc8d-f968-40f5-9d35-fb392f9a1ce8`（789 个 chunk）。把它的 `content` 增量拼回，开头是：
+
+> 你说的"继续啊"——继续什么？我看看上下文：上一次我回答到…后，我还没给你完整答案（上一条回复被触发任务打断了）。所以你是想让我**接着把这个完整讲完**，对吧?那我就把…给你讲透。
+
+「我看看上下文」「对吧?」是推理过程的口气，且出现在正文最前面，后面才接正常的分层回答。该请求首个 census 行同样是三个 reasoning 字段全 `ABSENT`。
+
+### 对两条假设的判定
+
+- **(b) 模型发了 `reasoning_content`，但 `session/ai_client.py:104` 只读 `reasoning` 给丢了** —— **排除**。成立的前提是先看到 `reasoning_content` 有值，实测 7908/7908 都是 ABSENT。
+- **(a) 模型没用 reasoning 通道，自我对话直接进 `content`** —— 与实测吻合，且这次是**直接证据**（此前 8-18 只有「40 个 thinking 轮次里 `reasoning` 与 `reasoning_content` 逐字节相同」这类间接证据）。
+
+判据边界，不要外推：样本只覆盖 **8 分钟、5 个请求、1 个模型**。而且这是**回捞历史**，不是主动触发的复现，运气成分不小。换模型或换供应商，结论不一定照搬。
+
+### 暴露的缺口：请求侧不可观测（V11 的由来）
+
+现象查清了（泄漏从 `content` 出来），但根因要回答的是**模型为什么把自我对话写进 content**，而这需要看我们发上去的东西 —— 恰好看不见：`Request body` 那行截断在 1000 字符，实测 5 条请求**全部**是整 1000，system prompt 刚开头就断了。
+
+关键矛盾在于：`session/AGENTS.md:289-295` 写明 DeepSeek V4 这类 reasoning model 在 tool call 轮次要求 `reasoning` 完整回传，且键名必须改成 `reasoning_content`（`history_display.py:264` 的 `_rename_reasoning_for_wire`）。于是请求侧本该带着 `reasoning_content` 出去，响应侧却一次不回。三种可能，靠现有日志无法区分：
+
+| # | 可能 | 需要什么证据 |
+|---|---|---|
+| 1 | 其实没发出去（rename 没走到，或历史里没存 reasoning） | 请求侧 `reasoning_carriers=0` |
+| 2 | 发出去了但形态不对（挂在不该挂的 message 上） | `reasoning_carriers>0` 且位置异常 |
+| 3 | 发对了，是该模型压根不走 reasoning 通道 | `reasoning_carriers>0` 且位置正常 |
+
+`_describe_messages`（V11）就是为了让这三条塌成一条：按 message 逐条报 role、三个 reasoning 类字段的长度、`tool_calls` 数、`content` 长度，行首给 `n=` 与 `reasoning_carriers=`，长度由**message 条数**而非历史大小决定，故永不截断。同时把 `Request body` 的上限从 1000 抬到与响应侧一致的 `_CHUNK_LOG_LIMIT`。
+
+**刻意不做的事**：不改 `session/ai_client.py:104`、不改 `_rename_reasoning_for_wire`、不动任何行为。根因未坐实前只加观测 —— 这是负责人在本任务和后续追问里都明确要求的（「不要在未确定根因前乱修复」）。
+
+### 下一步的观测顺序
+
+1. 上线 V11，等自然流量攒样本。
+2. 下次泄漏复现时，对着看两条清单行：请求侧 `reasoning_carriers` 与响应侧 `reasoning=ABSENT` 是否同时为零。上表三条可能应立刻塌成一条。
+3. 若指向「我们发错了」，照搬 `session/AGENTS.md` 里已有的单变量实测法（键名作唯一变量、各三次、对线上端点实测），换成「带/不带 `reasoning_content`」作唯一变量。
+
+**时间约束**：`psi-debug-9.log` 上线一小时已 6.0MB。空闲不涨（实测 120 秒 0 字节），但活跃对话每轮几 MB，单份 20MB 就轮转。靠自然流量攒样本别攒太久 —— 真出现泄漏那一轮的证据可能被后来的流量挤掉。
