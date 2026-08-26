@@ -1,53 +1,69 @@
 # -*- coding: utf-8 -*-
-"""subsidy_calc v1.2：确定性补贴计算（精确计算，模型不手算）。
+"""subsidy_calc v1.3：确定性补贴计算（精确计算，模型不手算）。
 
-输入：结算价（扣平台优惠后的成交价）/ 品类 / 能效等级（家电类必传）
-输出：资格 / 补贴金额 / 到手价 / 公式 / 口径标签
+输入：结算价（扣平台优惠后的成交价）/ 品类 / 能效等级（家电类必传）/ region（可选）
+输出：资格 / 补贴金额 / 到手价 / 公式 / 口径标签 / 额度假设
 
 参数：2026 国补口径（事实卡），可按省细则微调：
 - 数码类（手机/平板/智能手表手环/智能眼镜）：15%，单件上限 500 元，结算价 ≤6000 元
 - 家电类（电脑/笔记本/台式机/一体机/游戏本/空调/冰箱/洗衣机/电视/热水器）：
-  15%，单件上限 1500 元，需 1 级能效/水效（能效必传，未提供视为不符合）
-- 计算顺序：扣优惠后结算价 → 补贴 = min(结算价 × 15%, 上限)
-- v1.1（2026-08-26）：品类与 policy_query 对齐（补家电 6 类 + 游戏本）
-- v1.2（2026-08-26）：家电能效改必传校验（漏传不再放行）；数码 >6000 返回提示地方补贴边界
+  15%，单件上限 1500 元，需 1 级能效/水效（能效必传，白名单精确匹配）
+- v1.1：品类与 policy_query 对齐；v1.2：能效必传 + >6000 地方补贴提示；
+- v1.3（2026-08-26，review #1/#2/#3/#4）：品类匹配改共享 _guobu_categories（电视柜/空调扇
+  不误判）；能效白名单精确匹配（「不是1级」「1.5匹」不放行）；region 可选并返回口径声明；
+  返回额度假设 assumption。
 """
 import json
-from typing import Optional
+from _guobu_categories import match_category, is_home, is_digital, supported_text
 
-_DIGITAL_CATS = ("手机", "平板", "智能手表", "手表", "手环", "智能眼镜", "眼镜")
-_HOME_CATS = ("电脑", "笔记本", "台式机", "一体机", "游戏本",
-              "空调", "冰箱", "洗衣机", "电视", "热水器")
+_ENERGY_LEVEL_1 = {"1", "1级", "一级", "1级能效", "一级能效", "1级水效", "一级水效",
+                   "1级能耗", "一级能耗", "1级标准", "一级标准", "国标一级", "一级（能效）"}
+
+
+def _norm_energy(energy_level: str) -> str:
+    s = (energy_level or "").strip().replace(" ", "").replace("：", "").replace(":", "").replace("=", "")
+    for p in ("能效等级", "能效标准", "能耗等级", "国标能效", "能效"):
+        if s.startswith(p):
+            s = s[len(p):].lstrip(":：= ")
+            break
+    return s
 
 
 async def subsidy_calc(
     price: float,
     category: str = "手机",
     energy_level: str = "",
+    region: str = "",
     return_json: bool = True,
 ) -> str:
-    """确定性计算补贴与到手价。price=结算价（扣优惠后）。"""
-    cat = category.strip()
+    """确定性计算补贴与到手价。price=结算价（扣优惠后）；category=品类；region=省份（可选）。"""
+    cat = (category or "").strip()
     price = float(price)
+    kind = match_category(cat)
 
-    # 品类判断
-    if any(k in cat for k in _HOME_CATS):
-        kind = "家电（以旧换新类）"
+    if kind is None:
+        return json.dumps({
+            "ok": False,
+            "reason": "未知品类：%s（支持 %s；电视柜/空调扇/手机壳等非国补品类不算）" % (cat, supported_text()),
+            "suggest_search": True,
+            "subsidy": 0, "final_price": round(price, 2), "quota_label": "2026 现行",
+        }, ensure_ascii=False)
+
+    if is_home(kind):
         pct, cap, gate = 0.15, 1500.0, None
-        # 家电需 1 级能效/水效（必传校验：未提供或非 1 级均视为不符合）
         if not energy_level:
-            reason = "家电需 1 级能效/水效，未提供能效等级，无法确认是否符合 2026 国补条件"
             return json.dumps({
-                "ok": False, "reason": reason, "need_energy_level": True,
+                "ok": False, "reason": "家电需 1 级能效/水效，未提供能效等级，无法确认是否符合 2026 国补条件",
+                "need_energy_level": True,
                 "subsidy": 0, "final_price": round(price, 2), "quota_label": "2026 现行",
             }, ensure_ascii=False)
-        if "1" not in energy_level and "一级" not in energy_level:
+        if _norm_energy(energy_level) not in _ENERGY_LEVEL_1:
             return json.dumps({
-                "ok": False, "reason": "家电需 1 级能效/水效，当前能效为 %s，不符合 2026 国补条件" % energy_level,
+                "ok": False, "reason": "家电需 1 级能效/水效，当前能效「%s」不符合 2026 国补条件（仅认 1级/一级 等白名单写法）" % energy_level,
                 "subsidy": 0, "final_price": round(price, 2), "quota_label": "2026 现行",
             }, ensure_ascii=False)
-    elif any(k in cat for k in _DIGITAL_CATS):
-        kind = "数码（数码智能产品类）"
+        kind_label = "家电（以旧换新类）"
+    elif is_digital(kind):
         pct, cap, gate = 0.15, 500.0, 6000.0
         if price > gate:
             return json.dumps({
@@ -57,9 +73,11 @@ async def subsidy_calc(
                            "需按所在省细则/结算页核实，不得断言『完全无补贴』").format(p=round(price, 2)),
                 "subsidy": 0, "final_price": round(price, 2), "quota_label": "2026 现行",
             }, ensure_ascii=False)
+        kind_label = "数码（数码智能产品类）"
     else:
         return json.dumps({
-            "ok": False, "reason": "未知品类：%s（支持 手机/平板/手表/眼镜 或 家电类：电脑/笔记本/游戏本/空调/冰箱/洗衣机/电视/热水器）" % cat,
+            "ok": False, "reason": "未知品类：%s" % cat,
+            "suggest_search": True,
             "subsidy": 0, "final_price": round(price, 2), "quota_label": "2026 现行",
         }, ensure_ascii=False)
 
@@ -67,7 +85,8 @@ async def subsidy_calc(
     final_price = price - subsidy
     result = {
         "ok": True,
-        "category": kind,
+        "category": kind_label,
+        "kind": kind,
         "结算价": round(price, 2),
         "补贴比例": "15%",
         "单件上限": cap,
@@ -75,6 +94,10 @@ async def subsidy_calc(
         "到手价": round(final_price, 2),
         "公式": "补贴 = min(结算价 × 15%, 上限 {cap}) = min({p} × 0.15, {cap}) = {s}".format(
             cap=cap, p=round(price, 2), s=round(subsidy, 2)),
+        "region": region or "未指定",
+        "region_basis": ("按全国通用口径估算（{r}）；省细则可能不同，以下单结算页为准".format(r=region))
+                        if region else "未指定省份：按全国通用口径估算，省细则可能不同，以下单结算页为准",
+        "assumption": "假定本年度该品类补贴额度尚未使用（每人每类限 1 件）；若用户可能已用额度，需先确认再计算",
         "口径标签": "2026 现行（政策参数非实时，以下单结算页为准）",
         "note": "结算价按扣完平台券/会员/店铺优惠后的成交价传入；省份资格另行确认（eligibility_check）。",
     }
@@ -83,9 +106,10 @@ async def subsidy_calc(
 
 if __name__ == "__main__":
     import asyncio
-    # 回归：T13 / T17 / T38 + 家电类 + 能效必传 + >6000
     print(asyncio.run(subsidy_calc(6499, "电脑", "1级")))      # 应 974.85 / 5524.15
     print(asyncio.run(subsidy_calc(6499, "电脑")))             # 应 ok=false（未提供能效）
-    print(asyncio.run(subsidy_calc(6499, "电脑", "2级")))      # 应 ok=false（能效不符）
-    print(asyncio.run(subsidy_calc(6200, "手机")))             # 应 ok=false（>6000，含地方补贴提示）
-    print(asyncio.run(subsidy_calc(6000, "空调", "1级")))      # 应 900 / 5100
+    print(asyncio.run(subsidy_calc(6499, "电脑", "不是1级")))   # 应 ok=false（白名单拦截）
+    print(asyncio.run(subsidy_calc(6499, "电脑", "1.5匹")))     # 应 ok=false（白名单拦截）
+    print(asyncio.run(subsidy_calc(6200, "手机")))             # 应 ok=false（>6000）
+    print(asyncio.run(subsidy_calc(6000, "空调", "1级", "安徽")))  # 应 900 / 5100 + region
+    print(asyncio.run(subsidy_calc(6499, "电视柜")))           # 应 ok=false（非品类）
