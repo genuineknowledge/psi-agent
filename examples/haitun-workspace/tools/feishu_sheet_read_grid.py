@@ -64,6 +64,13 @@ async def feishu_sheet_read_grid(
     single most common correctness bug here: unread rows look like empty cells, so people
     get reported as not having filled anything when their row was simply never fetched.
     Row numbers are 1-based and line up with the sheet's own rows.
+
+    To decide whether person X wrote on date D: the result carries ``filled_cols`` — a
+    per-row list of column letters whose cells are non-empty, computed in code. Check
+    that list against the header's date column (date → column letter via
+    ``feishu_sheet_find_columns``). **Never infer a date column is filled from a date
+    number inside another cell's text** — e.g. a todo cell mentioning "(8.24)" is just
+    content, not evidence the 8.24 column was written.
     """
     outcome = await _f.read_sheet_grid_impl(
         token=token, range_=range, max_rows=max_rows, start_row=start_row, user_key=user_key

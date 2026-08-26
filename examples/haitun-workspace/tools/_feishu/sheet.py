@@ -408,13 +408,24 @@ def _label_grid(outcome: dict[str, Any]) -> dict[str, Any]:
     cols = outcome.get("cols")
     if isinstance(cols, list):
         header += [str(c) for c in cols]
+    width = len(cols) if isinstance(cols, list) else 0
     labeled: list[list[str]] = [header]
+    filled: dict[str, list[str]] = {}
     for i, row in enumerate(rows):
         if isinstance(row, list):
-            labeled.append([str(start + i), *[str(c) for c in row]])
+            # 行只留到 cols 宽度:飞书按列宽填满空串尾(如 A36:ZZ36 读回 700 格),
+            # 长尾空串淹没结构,数索引数错(实测:空列被相邻文本里的日期带偏)。
+            cells = [str(c) for c in row[:width]]
+            labeled.append([str(start + i), *cells])
+            if isinstance(cols, list):
+                # 每行非空列字母清单,由代码判定——「某人某天是否写过」直接查它,
+                # 别从单元格文本里的日期数字推断(实测:8.21 格内容提到 (8.24),
+                # 被当成 8.24 列写了,漏写的人被报成没漏)。
+                filled[str(start + i)] = [str(cols[j]) for j, cell in enumerate(cells) if cell]
         else:
             labeled.append([str(start + i)])
     outcome["rows"] = labeled
+    outcome["filled_cols"] = filled
     return outcome
 
 
@@ -466,6 +477,9 @@ async def read_sheet_grid_impl(
     raw_rows = value_range.get("values") or []
     rows = [[_flatten_sheet_cell(c) for c in (raw_row if isinstance(raw_row, list) else [])] for raw_row in raw_rows]
     has_more = len(rows) >= max_rows
+    # 没有 truncated 字段:本工具无字符预算、行数据完整,截断只发生在
+    # feishu_sheet_read。曾经把 truncated 直接映射成 has_more,单行读取
+    # (max_rows=1)恒报 truncated=true,被当成「截断警告不适用」而整体无视。
     return {
         "ok": True,
         "sheet": sheet_id,
@@ -475,7 +489,6 @@ async def read_sheet_grid_impl(
         "row_count": len(rows),
         "has_more": has_more,
         "next_start_row": start_row + len(rows) if has_more else None,
-        "truncated": has_more,
         "rows": rows,
     }
 
