@@ -329,6 +329,7 @@ rm -rf "$MNT" "$INSTALLED"
 mkdir -p "$MNT" "$INSTALLED"
 
 SMOKE_OK=0
+LS_OK=0
 if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 2>&1; then
     cp -R "$MNT/$APP_NAME.app" "$INSTALLED/" 2>/dev/null || true
     hdiutil detach "$MNT" >/dev/null 2>&1 || true
@@ -346,6 +347,44 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
     smoke "perms: $(ls -l "$MAIN_EXE" 2>&1)"
     smoke "=== codesign -dv (installed copy) ==="
     codesign -dv --verbose=4 "$RUN_APP" >>"$SMOKE_LOG" 2>&1 || true
+
+    # Verify the *installed copy*, not the pre-dmg bundle the earlier check ran
+    # on. hdiutil round-trips through a filesystem image and `cp -R` re-creates
+    # every file, either of which can invalidate a seal that verified fine at
+    # signing time. LaunchServices does this check on double-click; a direct exec
+    # does not, which is precisely the gap that let a broken bundle look fine.
+    smoke "=== codesign --verify --deep --strict (installed copy) ==="
+    if codesign --verify --deep --strict --verbose=2 "$RUN_APP" >>"$SMOKE_LOG" 2>&1; then
+        smoke "verify: ok"
+    else
+        smoke "verify: FAILED -- this is what makes double-click say \"can't be opened\""
+    fi
+
+    # The launch path users actually take. Everything below exercises
+    # LaunchServices instead of exec(2): bundle-wide seal validation, Info.plist
+    # consumption, and the quarantine/policy layer all live here and nowhere in
+    # a direct exec. `open` returns non-zero and prints the reason (LSOpenURLs...
+    # error -10810 etc) rather than putting up a dialog, so the verdict is
+    # capturable on a runner with no one to click "OK".
+    smoke "=== open -a (LaunchServices path) ==="
+    if open -a "$RUN_APP" >>"$SMOKE_LOG" 2>&1; then
+        smoke "open: accepted the launch request"
+        LS_OK=1
+    else
+        smoke "open: FAILED with status $? -- matches the real-machine dialog"
+        LS_OK=0
+    fi
+    # `open` returns as soon as the request is handed off, so a process check has
+    # to come after a beat. Without this an immediate-exit failure reads as success.
+    sleep 20
+    if pgrep -f "$APP_NAME.app/Contents/MacOS/psi-agent" >/dev/null 2>&1; then
+        smoke "post-open: psi-agent is running"
+    else
+        smoke "post-open: no psi-agent process -- launched then died, or never started"
+        LS_OK=0
+    fi
+    pkill -f "$APP_NAME.app/Contents/MacOS/" 2>/dev/null || true
+    smoke "LS_OK=$LS_OK"
 
     # Direct exec, not `open -a`: it bypasses LaunchServices so the failure lands
     # on our stderr instead of in a GUI dialog, and a runtime/entitlement kill
@@ -407,8 +446,14 @@ else
 fi
 sed 's/^/    /' "$SMOKE_LOG" || true
 
-if [ "$SMOKE_OK" = "1" ]; then
-    log "launch smoke test: ok"
+if [ "$SMOKE_OK" = "1" ] && [ "$LS_OK" = "1" ]; then
+    log "launch smoke test: ok (both exec and LaunchServices)"
+elif [ "$SMOKE_OK" = "1" ]; then
+    # The interesting split. Direct exec bypasses seal validation and the policy
+    # layer, so passing it while failing `open` narrows the fault to the bundle
+    # rather than to the program inside it.
+    log "launch smoke test: exec ok but LaunchServices FAILED -- see smoke.txt"
+    log "  this is the \"can't be opened\" class of failure, not a Gatekeeper one"
 else
     # Not fatal yet: this check is new and its own false-negative modes are not
     # yet characterised on a hosted runner (no window server, no user session).
