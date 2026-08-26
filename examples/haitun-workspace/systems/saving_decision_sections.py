@@ -88,7 +88,7 @@ In saving tasks, apply as appropriate:
 
 
 def build_saving_sections() -> list[str]:
-    """返回可追加进 stable_parts（系统提示词稳定部分）的 section 列表（v2.4 英文版）。"""
+    """返回可追加进 stable_parts（系统提示词稳定部分）的 section 列表。"""
     return [
         SAVING_DECISION_SECTION,
         SCENE_ALIGN_SECTION,
