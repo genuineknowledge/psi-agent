@@ -40,6 +40,7 @@ import importlib
 import json
 import logging
 import os
+from saving_decision_sections import build_saving_sections
 import platform
 import re
 import types
@@ -760,7 +761,7 @@ def _build_datetime_section() -> str:
     tz_name = os.environ.get("TZ", "").strip()
     try:
         now = datetime.now(ZoneInfo(tz_name)) if tz_name else datetime.now().astimezone()
-    except ZoneInfoNotFoundError, ValueError:
+    except (ZoneInfoNotFoundError, ValueError):
         # Unknown tz name: fall back to system local time and label it
         # honestly so the agent knows the zone is unverified.
         now = datetime.now().astimezone()
@@ -921,7 +922,7 @@ async def _run_self_evolution_review(
                 else:
                     try:
                         args = json.loads(args_raw)
-                    except TypeError, json.JSONDecodeError:
+                    except (TypeError, json.JSONDecodeError):
                         args = {}
                     try:
                         result = await executor(**args)
@@ -1243,6 +1244,7 @@ this workspace, generated workflows, instruction files, or committed `.env` file
             stable_parts += ["", BOOTSTRAP_PENDING_SECTION]
 
         stable_parts += ["", SILENT_REPLIES_SECTION]
+        stable_parts += ["", *build_saving_sections()]
 
         model_identity = build_model_identity_line(model)
         if model_identity:
