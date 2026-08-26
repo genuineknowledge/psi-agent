@@ -32,6 +32,12 @@ import _feishu_impl as _f
 async def feishu_sheet_read(token: str, range: str, max_chars: int = 20000, user_key: str = "") -> str:
     """Read one **narrow, already-located** range of a spreadsheet as plain-text cells.
 
+    ⚠️ 事实问答禁用本工具:「谁的 mentor」「谁做了什么」「有几个人」「对比多少」
+    这类问题必须用 ``feishu_sheet_find_columns``(定位表头列)+ ``feishu_sheet_read_grid``
+    (分块读,直到 ``has_more`` 为 false)。本工具按字符预算截断(默认 20000 字符),
+    富文本表格前几行就可能截断,后面的行整段丢失——用残缺数据下结论是已实测的
+    高频事故。本工具只适合读一个已知的小范围(找某人的行、检查某个单元格)。
+
     Use this instead of ``feishu_doc_read(file_type="sheet")`` when you need a
     specific area rather than the whole workbook — e.g. scan just the name column
     to find which row a person is on, or check whether one target cell is already
@@ -65,7 +71,11 @@ async def feishu_sheet_read(token: str, range: str, max_chars: int = 20000, user
             tenant token first and only fall back to this user's identity when the bot
             is denied — pass it whenever the sheet may be user-owned.
     """
-    return _f.dumps_result(await _f.read_sheet_range_impl(token, range, max_chars, user_key))
+    outcome = await _f.read_sheet_range_impl(token, range, max_chars, user_key)
+    if outcome.get("ok"):
+        # 列字母表头 + 行号首列内嵌:对齐由数据自证,LLM 不用手数。
+        outcome = _f._label_grid(outcome)
+    return _f.dumps_result(outcome)
 
 
 async def feishu_sheet_write(token: str, range: str, values_json: str, user_key: str = "", identity: str = "") -> str:

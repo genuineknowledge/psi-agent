@@ -1,20 +1,24 @@
 ---
 name: feishu-sheet
-description: 飞书电子表格（sheets）接口表 —— 建独立表格、改表名、列工作表、工作表增删复制、行列增删插、合并/拆分单元格、查找替换、查保护范围。用 feishu_api 按表调用。读区间、写入、套格式仍然是专用工具（裸 !A1 会静默丢数据）。
+description: 飞书电子表格（sheets）接口表 —— 建独立表格、改表名、列工作表、工作表增删复制、行列增删插、合并/拆分单元格、查找替换、查保护范围。用 feishu_api 按表调用。读区间、写入、套格式仍然是专用工具（裸 !A1 会静默丢数据）。表格事实问题铁律：用 feishu_sheet_find_columns 定位列 + feishu_sheet_read_grid 分块读全（has_more=false 为止），禁止用 feishu_sheet_read 做事实问答（20000 字符静默截断，会漏行）；对齐单元格用返回的 cols 数组（rows 每个 cell 与 cols 列字母一一对应），禁止手数，偏一列全盘错。
 ---
 
 # 飞书电子表格接口
 
 ## 读取铁律(表格事实类问题,违反任一条都是错误答案)
 
-1. **先读再答**:回答任何表格事实(谁的内容、谁的 mentor、几行几列、数量对比),
-   **必须在本轮先调用读取工具读表**,答案标注来源(哪张表、哪列、哪几行);
-   **禁止凭会话历史或记忆直接回答表格数据**——历史答案不算数,每次都要重读。
+1. **每次实时读取**:回答任何表格事实(谁的内容、谁的 mentor、几行几列、数量对比),
+   **必须在本轮调用读取工具重新读表**,答案标注来源(哪张表、哪列、哪几行)。
+   表格是易变的外部数据源,读取结果只在那一刻有效——会话历史里的旧读取结果只能
+   用来定位「该读哪张表、哪几列」,禁止直接作为答案依据;历史答案不算数,每次都要重读。
 2. **读全再下结论**:读取结果带 `truncated` 或 `has_more=true` 时,**必须继续读**
    (用 `feishu_sheet_read_grid` 从 `next_start_row` 接着读,直到 `has_more=false`);
    **禁止用残缺数据下结论**——没读到的行不是"空",是"没读"。
 3. **列定位用工具**:找日期列/人名列用 `feishu_sheet_find_columns`,**禁止自己数表头**
    (数错列是已实测的高频错误:行号横跳、把日期列读成内容列)。
+   **对齐单元格用返回里的 `cols` 数组**:`rows` 每个 cell 与 `cols` 里的列字母一一
+   对应,直接索引对齐;禁止假设第一列是 A 或从 A 开始数——偏一列就全盘错
+   (实测事故:读 A37:S37 却按 B 起数,8.17 的内容被当成 8.14)。
 4. **关系有方向**:mentor 关系是"谁 → 谁的 mentor"(B 列负责人 → C 列 mentor),
    读出来再复述,禁止凭印象倒转方向。
 
@@ -290,10 +294,12 @@ description: 飞书电子表格（sheets）接口表 —— 建独立表格、�
   why: style_json 的形状比一行表格装得下的多, 且同样吃那条区间坐标的坑。
 
 - endpoint: GET /open-apis/sheets/v2/spreadsheets/:spreadsheet_token/values/:range
-  prefer_tool: feishu_sheet_read
+  prefer_tool: feishu_sheet_read / feishu_sheet_read_grid
+  hard: true
   why: >
-    读回来的格子里 @人 和富文本是嵌套结构, 工具把它们压平成可见文字;
-    直接打这个端点拿到的是一堆 mention/text_run 对象, 不是表格内容。
+    读回来的格子里 @人 和富文本是嵌套结构, 工具把它们压平成可见文字并内嵌
+    行号与列字母标签; 直接打这个端点拿到的是一堆 mention/text_run 对象,
+    原始 JSON 超长被截断后手动对齐已实测错位(没写的人被报成写了)。
 ```
 
 授权与权限：需要 `drive:drive` 或 `sheets:spreadsheet` scope（建表也接受

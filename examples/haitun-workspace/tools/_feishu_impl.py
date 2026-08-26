@@ -1104,6 +1104,7 @@ from _feishu.sheet import (  # noqa: E402,F401
     _build_sheet_values_request,
     _build_sheet_write_request,
     _flatten_sheet_cell,
+    _label_grid,
     _parse_values_json,
     _read_sheet,
     _sheet_result,

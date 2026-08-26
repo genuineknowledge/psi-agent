@@ -86,7 +86,24 @@ async def read_sheet_range_impl(token: str, range_: str, max_chars: int = 20000,
         return _core._error("token (spreadsheet_token) is required.")
     if not range_.strip():
         return _core._error("range is required, e.g. 'SHEET_ID!A1:H30' or just 'SHEET_ID'.")
-    res = await _core._invoke(_build_sheet_values_request(token.strip(), range_.strip()), user_key=user_key)
+    # 飞书对单格区间要求 A1:A1 形式:裸 "A1" 直接报 90202 wrong range。
+    # 报错信息若被调用方当作「读到了空单元格」,就会把有内容的格子误判成空
+    # (2026-08-26 实测:J31 报 90202 → 海豚下结论「8.7 没写」,实际 J31 有内容)。
+    # 这里静默补全成单格区间,消灭这类误判。
+    range_value = range_.strip()
+    if "!" in range_value:
+        sheet_part, _, cell_part = range_value.rpartition("!")
+        if cell_part and ":" not in cell_part:
+            range_value = f"{sheet_part}!{cell_part}:{cell_part}"
+    else:
+        # 不带 sheetId 前缀的 range(如 "B25:S25")飞书可能返回空或含糊错误,
+        # 调用方会误读成「数据为空」(2026-08-26 实测:海豚排查数轮才发现
+        # 缺前缀)。显式报错,把「怎么修」直接写进错误信息。
+        return _core._error(
+            f"range {range_value!r} 缺少工作表前缀 — 必须写成 '<sheetId>!{range_value}' 形式;"
+            " sheetId 用 GET /open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query 查询。"
+        )
+    res = await _core._invoke(_build_sheet_values_request(token.strip(), range_value), user_key=user_key)
     if not res["ok"]:
         return res
     value_range = res["data"].get("valueRange", {}) if isinstance(res["data"], dict) else {}
@@ -107,6 +124,7 @@ async def read_sheet_range_impl(token: str, range_: str, max_chars: int = 20000,
         "ok": True,
         "token": token.strip(),
         "range": value_range.get("range", range_.strip()),
+        "cols": _cols_from_range(value_range.get("range", range_.strip()), _data_width(rows)),
         "rows": rows,
         "row_count": len(rows),
         "truncated": truncated,
@@ -334,6 +352,72 @@ def _col_letter(col: int) -> str:
     return out
 
 
+def _col_index(letters: str) -> int:
+    """A → 1, Z → 26, AA → 27 …(Excel 列字母转列号,1-based)"""
+    idx = 0
+    for ch in letters.upper():
+        idx = idx * 26 + (ord(ch) - ord("A") + 1)
+    return idx
+
+
+def _cols_from_range(range_str: str, width: int) -> list[str]:
+    """Derive the per-cell column letters from a valueRange's range string.
+
+    模型对齐列是已实测的高频错误(把 A 当 B、手数表头偏一列全盘错)。返回里带上
+    与每行 cell 一一对应的列字母数组,对齐变成直接索引,不再依赖模型推理。
+    """
+    try:
+        cell_range = range_str.split("!", 1)[1].split(":", 1)[0]
+        start = _col_index("".join(c for c in cell_range if c.isalpha()))
+    except Exception:
+        start = 1
+    return [_col_letter(start + i) for i in range(max(width, 0))]
+
+
+def _data_width(rows: list[list[str]]) -> int:
+    """Width to emit ``cols`` for — up to the last non-empty cell, no trailing noise."""
+    width = 0
+    for row in rows:
+        for i, cell in enumerate(row):
+            if cell:
+                width = max(width, i + 1)
+    return width
+
+
+def _start_row_from_range(range_str: str) -> int:
+    """Parse the first row number out of a valueRange range like ``46a582!R2:R41``."""
+    try:
+        cell = range_str.split("!", 1)[1].split(":", 1)[0]
+        return int("".join(c for c in cell if c.isdigit()))
+    except Exception:
+        return 1
+
+
+def _label_grid(outcome: dict[str, Any]) -> dict[str, Any]:
+    """Embed a column-letter header row and a row-number first column into ``rows``.
+
+    对齐由数据自证:表头行写列字母,每行行首写真实行号。已实测两类事故 ——
+    列对齐手数偏一列(8.17 被当成 8.14)、行对齐分次读取后截断错位(没写的人
+    被报成写了)。LLM 无论怎么数,标签就在数据里,不再依赖推理。
+    """
+    rows = outcome.get("rows")
+    if not isinstance(rows, list):
+        return outcome
+    start = int(outcome.get("start_row") or 0) or _start_row_from_range(str(outcome.get("range", "")))
+    header: list[str] = ["行"]
+    cols = outcome.get("cols")
+    if isinstance(cols, list):
+        header += [str(c) for c in cols]
+    labeled: list[list[str]] = [header]
+    for i, row in enumerate(rows):
+        if isinstance(row, list):
+            labeled.append([str(start + i), *[str(c) for c in row]])
+        else:
+            labeled.append([str(start + i)])
+    outcome["rows"] = labeled
+    return outcome
+
+
 async def _first_sheet_id(token: str, user_key: str) -> tuple[str, str]:
     """Resolve the first worksheet's id (and title) of a spreadsheet."""
     meta = await _core._invoke(_build_sheet_meta_request(token), user_key=user_key)
@@ -386,6 +470,7 @@ async def read_sheet_grid_impl(
         "ok": True,
         "sheet": sheet_id,
         "range": value_range.get("range", block_range),
+        "cols": _cols_from_range(value_range.get("range", block_range), _data_width(rows)),
         "start_row": start_row,
         "row_count": len(rows),
         "has_more": has_more,
