@@ -738,6 +738,7 @@ async def update_bitable_field_impl(
     field_type: int = 0,
     property_json: str = "",
     ui_type: str = "",
+    is_primary: bool | None = None,
     user_key: str = "",
     identity: str = "",
 ) -> dict[str, Any]:
@@ -791,6 +792,14 @@ async def update_bitable_field_impl(
             f"this is the index (primary) column, so type {ftype} is not allowed; "
             f"it must be one of {sorted(_INDEX_FIELD_TYPES)} (Feishu answers 1254012)."
         )
+    if is_primary is not None:
+        if is_primary and ftype not in _INDEX_FIELD_TYPES:
+            return _core._error(
+                f"type {ftype} cannot be the index (primary) column; "
+                f"it must be one of {sorted(_INDEX_FIELD_TYPES)} "
+                "(1=文本, 2=数字, 5=日期, 13=电话, 15=超链接, 20=公式, 22=地理位置)."
+            )
+        field["is_primary"] = is_primary
     if property_json.strip():
         try:
             prop = json.loads(property_json)

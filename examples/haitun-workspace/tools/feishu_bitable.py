@@ -79,6 +79,7 @@ async def feishu_bitable_update_field(
     field_type: int = 0,
     property_json: str = "",
     ui_type: str = "",
+    is_primary: bool | None = None,
     user_key: str = "",
     identity: str = "",
 ) -> str:
@@ -109,12 +110,24 @@ async def feishu_bitable_update_field(
             ``{"formatter":"0.00"}``, date format ``{"date_formatter":"yyyy-MM-dd"}``,
             person multi-select ``{"multiple":true}``. Replaces the old settings.
         ui_type: Optional display variant, e.g. "Progress", "Currency", "Rating".
+        is_primary: Optional; True makes this column the table's index (primary) column
+            (the previous primary column is demoted automatically). Only allowed for
+            index-capable types (1/2/5/13/15/20/22). Omit (None) to leave it unchanged.
         user_key: The sender's open_id (from ``<feishu_context>``).
         identity: ``"user"`` / ``"bot"`` — who performs the edit (see create_record).
     """
     return _f.dumps_result(
         await _f.update_bitable_field_impl(
-            app_token, table_id, field_id, field_name, field_type, property_json, ui_type, user_key, identity
+            app_token,
+            table_id,
+            field_id,
+            field_name,
+            field_type,
+            property_json,
+            ui_type,
+            is_primary,
+            user_key,
+            identity,
         )
     )
 
