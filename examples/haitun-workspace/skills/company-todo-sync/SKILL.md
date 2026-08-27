@@ -27,10 +27,10 @@ category: productivity
 
 - `feishu_api`（GET `/open-apis/wiki/v2/spaces/get_node`）— wiki 链接换 `obj_token`（表格若挂在 wiki 下）
 - `feishu_sheet_read` / `feishu_api`（GET `/open-apis/sheets/v3/spreadsheets/:spreadsheet_token/sheets/query`）— 探结构、定位本周期列、逐人取值
-- `feishu_leave_query`（本方案新增）— 判请假
-- `sync_org_tree`（本方案新增）— 按飞书组织架构（每人自带的 `leader_user_id` 直属上级字段）自动建/更工作树：每人一页写「组织关系」区块（上级+下属），根页《公司工作树》全量重写
+- `feishu_leave_query` — 判请假（事实源是飞书假勤审批：按 `approval_code` 模板 + 时间窗枚举已通过申请）
+- `sync_org_tree`（⚠️ 工具入口未建，已知缺口）— 按飞书组织架构（每人自带的 `leader_user_id` 直属上级字段）自动建/更工作树：每人一页写「组织关系」区块（上级+下属），根页《公司工作树》全量重写
 - `wiki_read` / `wiki_write` / `wiki_links` — 建/更工作树历史快照
-- `feishu_mentor_ledger_ensure`（本方案新增）— 幂等开通 mentor 台账
+- `feishu_mentor_ledger_ensure`（⚠️ 顶层入口未建，底层 `mentor_ledger_ensure_impl` 已实现）— 幂等开通 mentor 台账
 - `feishu_bitable_create_records` / `feishu_bitable_update_records` — 写台账行
 - `feishu_chart` — 渲染统计卡 PNG
 - `feishu_api`（POST `/open-apis/task/v2/tasks`）— 建飞书任务（见 `feishu-task` 技能表；main 上任务域已迁移为端点表，**没有** `feishu_task_create` 这个专用工具）
@@ -66,20 +66,21 @@ category: productivity
 
 请假必须在派发前判定，否则会给休假的人派活并记逾期。
 
-1. `feishu_leave_query(sheet_token, sheet_name="请假表", date_from=<本周期日>, date_to=<下一周期日>, names_json=<本次覆盖名单>)`。
-2. **周期段 = [本周期日 15:00, 下一周期日 15:00]**（如 8.14 周五 15:00 → 8.17 周一 15:00）。
-   用返回的 `covered_full_days` / `covered_half_days`（按日期+时段推算的精确覆盖，权威）与周期段比较，分三档：
+1. `feishu_leave_query(approval_code=<请假模板 code>, date_from=<本周期日>, date_to=<下一周期日>, names_json=<本次覆盖名单>)`。
+   请假事实源是**飞书假勤审批**（`GET /open-apis/approval/v4/instances` 按模板 + 时间窗枚举），不是人工填的请假表。本租户请假模板 code 已探明：`99EEC396-536A-4C7A-8B2D-412584E35CE3`（`approval_code` 是**模板**编号，拿 `process_id` 去查会得空结果）。
+2. **周期段 = [本周期日, 下一周期日]**（两端都算）。用返回的 `on_leave`（每人命中日期 + 每段区间）与周期段比较，分三档：
 
    | 情形 | 判定 | 卡片与任务 | 台账状态 | 报表呈现 |
    |---|---|---|---|---|
-   | 整周期请假 | 请假**完全覆盖**周期段（从 ≤ 本周期日 15:00 起、到 ≥ 下一周期日 15:00 止，整段全天） | 不派卡、不建任务 | 请假顺延 | 该人整块标「请假」，不计入逾期 |
-   | 部分周期请假 | 与周期段**部分重叠**（如只休 8.14 单日、8.15-8.16、或某天半天） | 照常派，截止日顺延 `total_days` 天（**任务 due 与台账截止日期列同步顺延**，不只卡片标注） | 请假顺延（截止日期列同步顺延） | 该条标「截止顺延 N 天」 |
-   | 无请假 | 与周期段无重叠 | 照常派 | 按实际状态 | 不标请假 |
+   | 整周期请假 | `full_period_applicants` 里有该人 | 不派卡、不建任务 | 请假顺延 | 该人整块标「请假」，不计入逾期 |
+   | 部分周期请假 | `on_leave` 命中周期段内**部分**日期 | 照常派，截止日顺延命中天数 N 天（**任务 due 与台账截止日期列同步顺延**，不只卡片标注） | 请假顺延（截止日期列同步顺延） | 该条标「截止顺延 N 天」 |
+   | 无请假 | 未命中 | 照常派 | 按实际状态 | 不标请假 |
 
-   - 覆盖天数以 `total_days`（= `covered_full_days` 数 + `covered_half_days` 数 × 0.5）为准——它由
-     「开始/结束日期 + 开始/结束时段」推算；时长（天）列**可能被填错，仅交叉校验**：
-     `duration_mismatch=true` 时照推算执行，并在报表注明「时长列与日期不符，以日期推算为准」。
-3. `feishu_leave_query` 返回空 `results`（无请假表或本周期无人请假）时视为「无人请假」，不是错误。
+   - 顺延天数 = `on_leave` 落在周期段内的命中日期数。工具只算**已通过**的请假：待审的进
+     `skipped_not_approved`（人还得上班，照常派是对的，批下来后下一周期 audit 自然看到）；
+     日期读不出来的进 `needs_fix`（**必须报出来**，静默丢弃等于把「确实请了假」变成「没请假」）；
+     没走审批流程的请假（口头、HR 后台直改）查不到，按未请假处理、由本人申诉。
+3. 返回里无人命中请假时视为「无人请假」，不是错误。
 4. **无请假是默认态，一律不标注**：卡片与报表只在**有请假**时才写请假字样（部分周期→「截止顺延 N 天」；整周期→「请假」）。无请假时不写「无请假」「无顺延」「照常派」等判假说明——照常派发是默认行为，不需要声明。
 4. 判假结果**必须落进该人快照页的「本周期请假」区块**（见第 3 节第 1 条）——请假信息不只影响派发，
    还要在工作树里可回溯；不要只在内存里判完就丢。
