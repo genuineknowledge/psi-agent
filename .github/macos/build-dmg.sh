@@ -368,6 +368,10 @@ mkdir -p "$MNT" "$INSTALLED"
 SMOKE_OK=0
 LS_OK=0
 QUARANTINE_OK=0
+# Declared here, not only where it is assigned: `set -u` is in force and the
+# assignment sits behind a `cp -R` guard that can be skipped, while the verdict
+# below reads it unconditionally.
+QSPCTL_OK=0
 if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 2>&1; then
     cp -R "$MNT/$APP_NAME.app" "$INSTALLED/" 2>/dev/null || true
     hdiutil detach "$MNT" >/dev/null 2>&1 || true
@@ -455,8 +459,18 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
             "0081;$(printf '%x' "$(date +%s)");Safari;$(uuidgen)" "$QAPP" 2>/dev/null || true
         smoke "attr on bundle: $(xattr -p com.apple.quarantine "$QAPP" 2>&1)"
 
+        # This, not `open`, is the authoritative admission verdict for the
+        # quarantined copy: it returns a status instead of putting up a window,
+        # so it is the only part of this block that works headlessly.
         smoke "--- spctl ---"
-        spctl -a -vvv -t exec "$QAPP" >>"$SMOKE_LOG" 2>&1 || true
+        QGK="$BUILD_DIR/spctl-quarantined.txt"
+        if spctl -a -vvv -t exec "$QAPP" >"$QGK" 2>&1; then
+            QSPCTL_OK=1
+        else
+            QSPCTL_OK=0
+        fi
+        cat "$QGK" >>"$SMOKE_LOG" 2>/dev/null || true
+        smoke "spctl verdict: $([ "$QSPCTL_OK" = 1 ] && echo accepted || echo rejected)"
         # Same expected "not stapled" complaint as the Gatekeeper block above,
         # for the same reason (ticket is on the dmg, not the .app). Annotated
         # here too because smoke.txt gets read on its own, detached from the
@@ -473,35 +487,51 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
             fi
         fi
 
-        # `timeout`, because this exact call hung a job for the full 6h ceiling
+        # Capped, because this exact call hung a job for the full 6h ceiling
         # (run 32986311147, cancelled 22:00:13 after starting 15:59:55). Teardown
-        # named the culprits: orphaned `open`, `osascript` and `Safari` processes.
-        # A quarantined bundle makes LaunchServices put up a dialog, and on a
-        # runner nobody dismisses it, so `open` blocks forever.
+        # named the culprits: orphaned `open`, `osascript` and `Safari`.
         #
-        # That blocking is itself the finding this probe was after -- the clean
-        # copy launched, this one raised a dialog -- so the timeout records it
-        # rather than treating it as an error to hide.
-        smoke "--- open -a (30s cap; a dialog means no one is there to click it) ---"
+        # What the timeout does NOT tell you is whether the app was refused. An
+        # earlier version of this block asserted it did, printing "quarantine is
+        # refused" and "quarantine alone reproduces the failure" on a timeout.
+        # That was wrong, and wrong in the direction that matters: macOS shows a
+        # first-launch *consent* prompt ("downloaded from the Internet, are you
+        # sure") for a quarantined app it fully accepts. Consent prompt and hard
+        # block are indistinguishable from here -- both block `open` and leave no
+        # process -- so a notarized, admitted build reported as a failure. The
+        # honest verdict is "undetermined", and spctl above is what actually
+        # decides admission.
+        smoke "--- open -a (30s cap; headless, so a prompt cannot be answered) ---"
+        QOPEN=undetermined
         if run_capped 30 open -a "$QAPP" >>"$SMOKE_LOG" 2>&1; then
-            smoke "open: accepted"
+            smoke "open: request accepted without a prompt"
+            QOPEN=accepted
         else
             OPEN_ST=$?
             if [ "$OPEN_ST" = "124" ]; then
-                smoke "open: TIMED OUT -- blocked on a GUI dialog, i.e. quarantine is refused"
+                smoke "open: timed out waiting on a window -- consent prompt or block,"
+                smoke "      indistinguishable headlessly; see the spctl verdict above"
             else
-                smoke "open: FAILED with status $OPEN_ST"
+                smoke "open: failed with status $OPEN_ST (no window: a real launch error)"
+                QOPEN=failed
             fi
         fi
         sleep 20
         if pgrep -f "quarantined/$APP_NAME.app/Contents/MacOS/psi-agent" >/dev/null 2>&1; then
             smoke "post-open: psi-agent is running (quarantine changes nothing)"
             QUARANTINE_OK=1
+        elif [ "$QOPEN" = "undetermined" ]; then
+            smoke "post-open: no process, but the launch never got past the window --"
+            smoke "      this says nothing about the bundle either way"
         else
-            # The interesting outcome. Same bundle, same machine, only the xattr
-            # differs -- that would reproduce the reported dialog and put the
-            # cause in the policy layer rather than in the bundle.
-            smoke "post-open: NO process -- quarantine alone reproduces the failure"
+            smoke "post-open: NO process and no window -- launched then died"
+        fi
+        # Admission is the question this block can answer headlessly, so it is the
+        # one that sets the verdict. A build that spctl accepts is not failing.
+        if [ "$QUARANTINE_OK" != "1" ] && [ "$QSPCTL_OK" = "1" ] \
+           && [ "$QOPEN" = "undetermined" ]; then
+            QUARANTINE_OK=1
+            smoke "verdict: accepted by spctl; the GUI step is untestable here"
         fi
         # Kill the dialog machinery too, not just the bundle's own processes. The
         # cancelled run's teardown had to reap osascript, open and Safari, and a
@@ -575,10 +605,15 @@ sed 's/^/    /' "$SMOKE_LOG" || true
 if [ "$SMOKE_OK" = "1" ] && [ "$LS_OK" = "1" ] && [ "$QUARANTINE_OK" = "1" ]; then
     log "launch smoke test: ok (exec, LaunchServices, and quarantined)"
 elif [ "$SMOKE_OK" = "1" ] && [ "$LS_OK" = "1" ]; then
-    # Clean copy launches, quarantined copy does not: the bundle is fine and the
-    # policy layer is refusing it. On an unnotarized build that is the expected
-    # state, so this is information rather than a defect.
-    log "launch smoke test: ok unquarantined, FAILED quarantined -- policy layer"
+    # Clean copy launches, quarantined copy was refused *admission* -- spctl said
+    # rejected, which is a verdict and not a stuck window. On an unnotarized build
+    # that is the expected state, so this is information rather than a defect.
+    # Reaching this branch now requires a real rejection: a headless timeout no
+    # longer lands here, because it proved nothing.
+    log "launch smoke test: ok unquarantined, quarantined REJECTED -- policy layer"
+    if [ "$NOTARIZE" != "1" ]; then
+        log "  expected without notarization; nothing to chase"
+    fi
 elif [ "$SMOKE_OK" = "1" ]; then
     # The interesting split. Direct exec bypasses seal validation and the policy
     # layer, so passing it while failing `open` narrows the fault to the bundle
