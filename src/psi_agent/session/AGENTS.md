@@ -35,6 +35,9 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 1. setup_logging(verbose)
 2. 解析 workspace（空 → cwd）；解析 agent（空 → 同 workspace）
 3. SessionAgent.create(workspace_path=…, agent_path=…, appdata_root=…) → session_id、AiClient、从 agent 加载 tools/schedules/system；history 在 AppData（legacy 双读）
+3b. SystemPrompt.check_exposure() —— 断言提示词宣告的工具/技能 == 运行时实际，
+    不等即抛 ExposureMismatchError（见下方「提示词/运行时暴露一致性检查」）。
+    在 task group 之前，所以启动期失败不会留下半启动的 Session
 4. 启动 anyio.task_group：
    ├── serve_session(agent=agent)  ← 从 agent 读取 channel_socket + handle_request
    └── 每个 schedule 一个 run_one_schedule(schedule, agent) task
@@ -50,6 +53,7 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 - AppData 路径助手在 ``psi_agent._appdata``（与 Gateway 共享；**禁止**经 ContextVar 传递 AppData 根）
 - System prompt 在首次 `run()` 调用时惰性构建（通过 `system_prompt_builder`）
 - `system_prompt_builder` 和 `system_prompt_rebuild_checker` 兼容旧的零参形式；如定义了位置参数，Session 会传入当前原始 `user_message`。这一显式参数只用于本轮动态 prompt，不会改变写入 history 的 `kind` 标记副本
+- `system_prompt_builder` 若声明 `tool_names` 关键字参数（或 `**kwargs`），Session 会把 **`ToolRegistry` 的实际工具名**传进去；没声明的 builder 调用方式**一字不变**（`_accepts_kwarg` 先验签名再决定传不传）。提示词该按这份清单写工具名，而不是自己去数 `tools/*.py` 文件名——**文件名不是工具名**（haitun 实测 95 个文件 / 194 个工具，`feishu_message.py` 一个文件 17 个）
 - 后续请求可调用 `system_prompt_rebuild_checker()`（如果定义），返回 True 则用同一条当前 `user_message` 重建 system prompt
 - 可选 `system_after_turn(user_message, assistant_message)` 在 `finish_reason="stop"` 的最终 assistant 消息已 commit 后执行。它是可恢复的 workspace hook：普通异常记 WARNING，不回滚已成功交付的回合；取消信号仍向外传播。未定义时使用 no-op 默认值
 - 未整段重建时，提示词一字不改；若 agent 包定义了 `turn_context_builder()`，则每回合把易变块挂到**本回合 user 消息**上（见下方「每回合易变上下文」）
@@ -289,6 +293,47 @@ result = run.result   # 正常耗尽后非 None
 多包部署应拆进程。前两条各有一个 pin 住现状的测试（`test_editing_a_helper_does_not_take_effect_until_restart`
 / `test_tool_file_named_after_a_stdlib_module_shadows_it`）——将来若真做了 helper 热重载，
 那个测试会红，应该改写它而不是删掉。
+
+## 提示词/运行时暴露一致性检查（启动即断言）
+
+工具名过去由两条独立管线各算一遍：提示词侧扫 `tools/` 自己拼 `## Tooling`，执行侧
+`ToolRegistry` 导入文件注册 `async def`。没有东西保证两边一致，实际也不一致——
+提示词列的是**文件名**（`browser`），执行侧注册的是**函数名**（`browser_click`），
+于是提示词既宣告了调不通的名字，又漏掉了能调的。技能侧同理：提示词让模型读
+`skills/<name>/SKILL.md`，而 `<name>` 曾取自 frontmatter，文件却在**目录名**下。
+
+- `SessionAgent.create()` 在 registry 与 system prompt 就绪后调
+  `SystemPrompt.check_exposure()`，两侧工具名集合必须**相等**，否则抛
+  `ExposureMismatchError` 中止启动——模型被告知了关于自身能力的假话，不该等三周后从日志里发现
+- agent 包通过两个可选 async hook 参与：`advertised_tool_names()` 返回提示词侧自算的工具名，
+  `indexed_skill_entries()` 返回 `(索引名, SKILL.md 路径)`。两个都没定义则跳过检查（向后兼容——
+  12 个 bundled workspace 里只有 haitun 定义了，其余完全跳过）
+- 技能检查断言索引名等于其所在目录名且文件存在。**修法是改索引而不是改 SKILL.md**：
+  `_build_skills_index` 的 `name` 一律取**目录名**，frontmatter 只供 description/category
+  等元数据。因为「索引名」既是提示词让模型读的路径（`skills/<name>/SKILL.md`），也是
+  `skill_manage` 解析的路径（`skills_dir / skill_name / "SKILL.md"`）——两个都是目录路径，
+  frontmatter 里的 `name` 赢了就等于让它们都指向不存在的目录。`fusion-flow-legacy`
+  声明 `name: flow`，而它是**上游打包的 immutable 运行时技能**（真源在内网 gitea，改了会被覆盖），
+  所以让索引让步、不动文件。改完这条断言基本成了**回归守卫**（名字由构造保证相等），
+  仍然真查「每个索引到的 SKILL.md 还读得到」
+- **`.skills_prompt_snapshot.json` 会缓存渲染结果，且缓存键是 SKILL.md 的内容哈希**，
+  不含渲染逻辑版本。所以已部署的 workspace 在任何 SKILL.md 内容变化之前，索引仍会渲染出旧的
+  `flow`，而断言（读目录名）照样通过——两者不矛盾但会看起来矛盾。排查时先删那个快照再复现
+- hook 自身抛异常只记 WARNING 跳过该项（与 `system_before_turn` / `system_after_turn`
+  这类可选 workspace hook 同级），不把「检查坏了」升级成比它要查的问题更严重的故障
+- `PSI_ALLOW_EXPOSURE_MISMATCH=1` 把 raise 降级为 ERROR 日志继续启动；报错文案里写明该变量
+- hook 要**独立取数**才有意义：`advertised_tool_names()` 用 AST 静态解析，不是回头问注册表——
+  两个输入同源的检查什么都证明不了。AST 必须补两块否则全是假差异：`@mcp` 的展开名（源码里
+  没有，只能读 `tools/.mcp_cache/*.json`）和从 `_` helper 再导出的 async 函数
+- **`@mcp` 的展开必须跟着 `dispatch` 走，不能只照 `.mcp_cache` 全展开**：`dispatch=True` 下
+  `_mcp.mcp` 只注册 `keep` 列表里的名字**加一个** `<decl>_call` 分派入口。haitun 三个声明
+  （browser/canvas/serper）全是 dispatch，缓存里 80 个 schema 而运行时只注册 10 个——
+  全展开会凭空多出 70 个「宣告了但调不通」，在健康的 workspace 上把启动直接拦掉
+- **缓存键是声明函数名而不是文件名**：`search.py` 里声明的是 `serper()`，所以缓存是
+  `serper.json`（`_mcp.mcp` 按 `func.__name__` 取）。按文件名找会全部 miss
+- **成本是一次性的**：haitun 实测 `advertised_tool_names()` 约 170ms、`indexed_skill_entries()`
+  约 35ms，只在 `SessionAgent.create()` 跑一次，**不进每回合路径**。别为了省这 0.2s 把检查挪到
+  lazy 或抽样——它的全部价值在于「启动就拦住」
 
 ## 动态重载
 

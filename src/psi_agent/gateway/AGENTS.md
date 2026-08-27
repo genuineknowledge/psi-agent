@@ -333,6 +333,14 @@ AI → Router（按持久化顺序）→ Session；依赖缺失的 Router 记录
 
 Session 运行时 crash 时，`_run_session` 的 except 块从 `_entries` 中移除该 entry 并调用 `_persist`。
 
+**启动期也会 crash 到这里：`ExposureMismatchError`。** `SessionAgent.create()` 会断言「提示词
+宣告的工具/技能」与「运行时实际加载的」相等，不等即抛（见 `session/AGENTS.md`
+「提示词/运行时暴露一致性检查」）。`Session.run` 在建 task group **之前**就调 `SessionAgent.create`，
+所以它经同一条 except 路径落地，症状是 `Session {id!r} crashed: ExposureMismatchError(...)`
+且该 session 从 `_entries` 消失，**兄弟 session 不受影响**（爆炸半径刻意限制为一个 Session：
+坏掉的 agent 包不该拖垮无关会话，但它自己也不该继续端着一份说谎的提示词服务）。异常正文会列出
+两侧差集与 `PSI_ALLOW_EXPOSURE_MISMATCH=1` 这个降级开关，排查时先读那条 ERROR 再翻别处。
+
 REST ``DELETE /sessions/{id}`` 在 SessionManager.delete 之后还会：
 - 删除 AppData 与 legacy workspace 下的 ``histories/{id}.jsonl``（``HistoryManager.delete``，文件不存在则忽略）
 - 清除 ``TitleManager`` 中该会话标题

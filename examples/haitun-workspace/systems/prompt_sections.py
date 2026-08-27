@@ -89,7 +89,11 @@ CORE_TOOL_SUMMARIES: dict[str, str] = {
     "text_to_speech": "Create an MP3 file with iFLYTEK online TTS and deliver it with [SEND:]",
 }
 
-# Display order - listed tools first, any extra tools (e.g. MCP search) after.
+# Display order for the ## Tooling section. This list is also the *filter*: only
+# these tools are named there, and everything else the registry loaded is collapsed
+# into a trailing count (see build_tooling_section). Adding a name here therefore
+# promotes a tool into the prompt; it needs an entry in CORE_TOOL_SUMMARIES too, or
+# it renders as a bare name.
 TOOL_ORDER: list[str] = [
     "read",
     "write",
@@ -644,7 +648,18 @@ file at {path} and follow it before replying.\
 
 
 def build_tooling_section(tool_names: list[str]) -> str:
-    """Build the ## Tooling section listing available tools in display order.
+    """Build the ## Tooling section: the core tools, in the order they matter.
+
+    Only the tools in ``TOOL_ORDER`` are listed, each with its one-line summary.
+    The rest are counted, not named.
+
+    Every tool already reaches the model as a full JSON schema in the request's
+    ``tools`` field — names, parameters, descriptions. Re-listing all of them here
+    would spend context restating what the schemas say, and most would arrive as a
+    bare name with no summary to add, since only the core set has one. What the
+    schemas *cannot* express is priority: they are an unordered dict, so nothing
+    tells the model to reach for ``read`` before ``bash``. That ordering, plus a
+    sentence on when to use each, is this section's whole job.
 
     Args:
         tool_names: Tool names available in the current session.
@@ -656,25 +671,22 @@ def build_tooling_section(tool_names: list[str]) -> str:
         return "## Tooling\nNo tools are available in this session."
 
     name_set = {n.lower() for n in tool_names}
-
-    ordered: list[str] = []
-    seen: set[str] = set()
-    for canonical in TOOL_ORDER:
-        if canonical.lower() in name_set:
-            ordered.append(canonical)
-            seen.add(canonical.lower())
-    for name in sorted(tool_names):
-        if name.lower() not in seen:
-            ordered.append(name)
-            seen.add(name.lower())
+    core = [canonical for canonical in TOOL_ORDER if canonical.lower() in name_set]
+    remaining = len(name_set) - len(core)
 
     lines = [
         "## Tooling",
         "Names are case-sensitive; call exactly as listed.",
     ]
-    for name in ordered:
+    for name in core:
         summary = CORE_TOOL_SUMMARIES.get(name.lower(), "")
         lines.append(f"- {name}: {summary}" if summary else f"- {name}")
+    if remaining > 0:
+        lines.append(
+            f"Plus {remaining} more tools not listed here (Feishu, browser, canvas, search, "
+            "Discord, wiki, charts, …). Their exact names and parameters are in the tool "
+            "schemas you were given — read those rather than guessing a name from this section."
+        )
     lines.append(TOOLING_FOOTER)
     return "\n".join(lines)
 

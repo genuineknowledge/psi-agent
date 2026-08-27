@@ -230,10 +230,17 @@ async def bash(command: str) -> str:
 - Supported parameter types: `str`, `int`, `float`, `bool`, `list[X]`, `X | None`
 - Google-style docstrings (`Args:` section) are automatically converted to tool descriptions
 - Tools are hot-reloaded before every agent turn — modify files without restarting
+- **A tool's name is its function name, not its file name**: one file may define many (haitun's
+  `feishu_message.py` defines 17). Name tools by function in your prompt
+- **Registration reads `dir(module)`**, so `from _helper import some_async_fn` — a *re-export* —
+  also publishes that helper's coroutine as a callable tool. Prefix with `_` or use
+  `import _helper` plus a qualified call if you don't want it exposed
+- `_`-prefixed files in the same directory are not registered as tools and can serve as helpers;
+  `tools/` is placed at the front of `sys.path` during loading, so bare `from _helper import x` works
 
 ### System Prompt
 
-Define three optional async functions in `systems/system.py`:
+Define optional async functions in `systems/system.py` (the three below are the common ones; see `src/psi_agent/session/AGENTS.md` for the full set):
 
 ```python
 async def system_prompt_builder() -> str:
@@ -265,6 +272,13 @@ async def turn_context_builder() -> str:
 - All three are optional; sensible defaults are used when absent. A `turn_context_builder`
   that raises, returns a non-string, or returns an empty string is treated as "no block" —
   losing a clock line is a far smaller problem than losing the turn
+- If `system_prompt_builder` declares a `tool_names` keyword, the Session passes the tool names
+  the registry actually loaded. Write tool names from that list rather than scanning `tools/`
+  yourself; builders that don't declare it are called exactly as before
+- Further optional hooks: `compact_history`, `system_before_turn`, `system_after_turn`,
+  `advertised_tool_names`, `indexed_skill_entries`. The last two drive a startup consistency
+  assertion — the framework compares what the prompt advertises against what the runtime loaded
+  and refuses to start when they differ (`PSI_ALLOW_EXPOSURE_MISMATCH=1` downgrades it to a log)
 
 ### Scheduled Tasks
 
@@ -294,6 +308,13 @@ skills/
 ```
 
 `system_prompt_builder` should, by convention, scan `skills/*/SKILL.md`, parse YAML front matter, and inject content into the system prompt. The psi-agent framework does not directly parse skill files — the workspace defines how to use them.
+
+> **What a skill is called in the prompt should come from its directory name.** The prompt tells
+> the model to read `skills/<name>/SKILL.md`, so that `<name>` must be a real directory; letting
+> front-matter `name:` override it hands the model a path that does not exist. haitun takes the
+> name from the directory and lets front matter supply description/category only. A workspace that
+> implements `indexed_skill_entries()` gets every indexed name asserted to resolve to a readable
+> `SKILL.md` at Session startup.
 
 ### Conversation History Persistence
 

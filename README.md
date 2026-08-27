@@ -230,10 +230,16 @@ async def bash(command: str) -> str:
 - 参数类型支持：`str`、`int`、`float`、`bool`、`list[X]`、`X | None`
 - 文档字符串用 Google-style（`Args:` 段落），自动转为 tool description
 - Tool 在每次对话回合前自动热重载——修改文件无需重启 Session
+- **工具名是函数名，不是文件名**：一个文件可以定义多个工具（haitun 里 `feishu_message.py` 一个文件 17 个）。
+  提示词里写工具名要用函数名
+- **注册依据是 `dir(module)`**，所以 `from _helper import some_async_fn` 这种**再导出**也会把 helper 里的
+  async 函数注册成模型可调用的工具。不想暴露就给名字加 `_` 前缀，或改用 `import _helper` + 限定调用
+- 同目录的 `_` 前缀文件不注册为 tool，可作 helper；加载期 `tools/` 会被放到 `sys.path` 首位，
+  所以 `from _helper import x` 这种裸导入可用
 
 ### System Prompt
 
-在 `systems/system.py` 中定义三个可选异步函数：
+在 `systems/system.py` 中定义可选异步函数（下面三个最常用，全部 hook 见 `src/psi_agent/session/AGENTS.md`）：
 
 ```python
 async def system_prompt_builder() -> str:
@@ -253,6 +259,11 @@ async def turn_context_builder() -> str:
 - `checker` 每次回合前调用，可用于监控文件变更后自动刷新 prompt
 - `turn_context_builder` 每回合调用，产物**不进 system prompt**，而是随本回合的 user 消息一起送到**请求尾部**。之所以不写进 prompt：一是每回合重建要重扫整个 workspace；二是上游按前缀缓存，而 system prompt 是整个请求的最前面，每回合改它（哪怕只改尾部）就意味着无论怎么配缓存都不可能命中。挂在尾部则变动只落在这一个回合，前缀保持稳定——这是**开启缓存的前提**，框架本身并未开启（Anthropic 的 prompt caching 是 opt-in，需在请求顶层放 `cache_control`）。不定义它则整段 prompt 在会话内永不变——里面所有描述「现在」的内容都会冻结在首次构建那一刻
 - 三个都是可选的，缺失时用合理默认值。`turn_context_builder` 抛异常、返回非字符串或空串时一律当作没有这个块——丢一行时钟远好过丢掉整个回合
+- `system_prompt_builder` 若声明 `tool_names` 关键字参数，Session 会把**注册表实际加载到的工具名**传进去，
+  提示词按这份清单写工具名即可，不必自己去数 `tools/` 目录；没声明的 builder 调用方式不变
+- 还有 `compact_history`、`system_before_turn`、`system_after_turn`、`advertised_tool_names`、
+  `indexed_skill_entries` 等 hook，同样可选。最后两个用于启动期一致性断言：框架会比对「提示词宣告的
+  工具/技能」与「运行时实际加载的」，不等即拒绝启动（`PSI_ALLOW_EXPOSURE_MISMATCH=1` 可降级为日志）
 
 ### 定时任务
 
@@ -282,6 +293,11 @@ skills/
 ```
 
 `system_prompt_builder` 应按约定遍历 `skills/*/SKILL.md`、解析 YAML 头并将内容注入 system prompt。psi-agent 框架本身不直接解析 skill 文件——由 workspace 自行定义如何使用。
+
+> **技能在提示词里叫什么，应当由目录名决定。** 提示词让模型读 `skills/<name>/SKILL.md`，
+> 所以那个 `<name>` 必须是真实目录名；若让 YAML 头的 `name:` 覆盖它，模型拿到的路径就不存在。
+> haitun 的做法是索引一律取目录名、YAML 头只供 description/category。workspace 若实现了
+> `indexed_skill_entries()` hook，Session 启动时会断言每个索引名都能解析到可读的 `SKILL.md`。
 
 ### 对话历史持久化
 
