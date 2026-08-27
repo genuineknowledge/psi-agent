@@ -426,6 +426,13 @@ def _label_grid(outcome: dict[str, Any]) -> dict[str, Any]:
             labeled.append([str(start + i)])
     outcome["rows"] = labeled
     outcome["filled_cols"] = filled
+    if len(rows) == 1 and isinstance(rows[0], list) and isinstance(cols, list) and cols:
+        # 单行读取附 cells 映射(列字母键 → 内容):取某列内容按键查,
+        # 别从 rows 数组数第几个元素——超长文本连排时数错一格即偏一格
+        # (实测:报 R 列内容读成了 Q 列的)。多行读取不附(体积爆炸),取内容
+        # 改用单行/单格读取。
+        only = [str(c) for c in rows[0][:width]]
+        outcome["cells"] = {str(start): {str(cols[j]): cell for j, cell in enumerate(only) if cell}}
     return outcome
 
 

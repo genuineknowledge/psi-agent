@@ -71,6 +71,13 @@ async def feishu_sheet_read_grid(
     ``feishu_sheet_find_columns``). **Never infer a date column is filled from a date
     number inside another cell's text** — e.g. a todo cell mentioning "(8.24)" is just
     content, not evidence the 8.24 column was written.
+
+    To read *what* person X wrote on date D: a single-row read (one data row) also
+    carries ``cells`` — a per-row map of column letter → cell text, computed in code.
+    Fetch the text by its column-letter **key**; **never pick the Nth element out of
+    the ``rows`` array** — adjacent long todo texts all look alike, and miscounting by
+    one lands you on the neighbouring column (a date correctly located but the wrong
+    content). Multi-row reads omit ``cells`` (size); re-read that single row first.
     """
     outcome = await _f.read_sheet_grid_impl(
         token=token, range_=range, max_rows=max_rows, start_row=start_row, user_key=user_key
