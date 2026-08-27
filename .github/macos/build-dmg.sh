@@ -323,6 +323,25 @@ SMOKE_LOG="$BUILD_DIR/smoke.txt"
 : >"$SMOKE_LOG"
 smoke() { printf '%s\n' "$*" >>"$SMOKE_LOG"; }
 
+# `timeout` is GNU coreutils and not present on a stock macOS runner, so it
+# cannot be relied on here -- and a missing guard is worse than no guard, since
+# the failure mode it protects against is a job that hangs to the 6h ceiling.
+# Returns 124 on expiry to match timeout(1), so callers read the same way.
+run_capped() {
+    local secs="$1"
+    shift
+    "$@" &
+    local pid=$!
+    local i=0
+    while [ "$i" -lt "$secs" ]; do
+        kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null; return $?; }
+        sleep 1
+        i=$((i + 1))
+    done
+    kill -TERM "$pid" 2>/dev/null || true
+    return 124
+}
+
 MNT="$BUILD_DIR/mnt"
 INSTALLED="$BUILD_DIR/installed"
 rm -rf "$MNT" "$INSTALLED"
@@ -367,8 +386,12 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
     # a direct exec. `open` returns non-zero and prints the reason (LSOpenURLs...
     # error -10810 etc) rather than putting up a dialog, so the verdict is
     # capturable on a runner with no one to click "OK".
-    smoke "=== open -a (LaunchServices path) ==="
-    if open -a "$RUN_APP" >>"$SMOKE_LOG" 2>&1; then
+    # Capped for the same reason as the quarantined call below: `open` can block
+    # indefinitely on a dialog nobody is there to dismiss. This copy has no
+    # quarantine attribute so it has not blocked in practice, but nothing
+    # structurally prevents it.
+    smoke "=== open -a (LaunchServices path, 30s cap) ==="
+    if run_capped 30 open -a "$RUN_APP" >>"$SMOKE_LOG" 2>&1; then
         smoke "open: accepted the launch request"
         LS_OK=1
     else
@@ -421,11 +444,25 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
             syspolicy_check distribution "$QAPP" >>"$SMOKE_LOG" 2>&1 || true
         fi
 
-        smoke "--- open -a ---"
-        if open -a "$QAPP" >>"$SMOKE_LOG" 2>&1; then
+        # `timeout`, because this exact call hung a job for the full 6h ceiling
+        # (run 32986311147, cancelled 22:00:13 after starting 15:59:55). Teardown
+        # named the culprits: orphaned `open`, `osascript` and `Safari` processes.
+        # A quarantined bundle makes LaunchServices put up a dialog, and on a
+        # runner nobody dismisses it, so `open` blocks forever.
+        #
+        # That blocking is itself the finding this probe was after -- the clean
+        # copy launched, this one raised a dialog -- so the timeout records it
+        # rather than treating it as an error to hide.
+        smoke "--- open -a (30s cap; a dialog means no one is there to click it) ---"
+        if run_capped 30 open -a "$QAPP" >>"$SMOKE_LOG" 2>&1; then
             smoke "open: accepted"
         else
-            smoke "open: FAILED with status $?"
+            OPEN_ST=$?
+            if [ "$OPEN_ST" = "124" ]; then
+                smoke "open: TIMED OUT -- blocked on a GUI dialog, i.e. quarantine is refused"
+            else
+                smoke "open: FAILED with status $OPEN_ST"
+            fi
         fi
         sleep 20
         if pgrep -f "quarantined/$APP_NAME.app/Contents/MacOS/psi-agent" >/dev/null 2>&1; then
@@ -437,7 +474,12 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
             # cause in the policy layer rather than in the bundle.
             smoke "post-open: NO process -- quarantine alone reproduces the failure"
         fi
+        # Kill the dialog machinery too, not just the bundle's own processes. The
+        # cancelled run's teardown had to reap osascript, open and Safari, and a
+        # process holding stdio open is what turns a stuck probe into a stuck job.
         pkill -f "quarantined/$APP_NAME.app/Contents/MacOS/" 2>/dev/null || true
+        pkill -x osascript 2>/dev/null || true
+        pkill -x Safari 2>/dev/null || true
         smoke "QUARANTINE_OK=$QUARANTINE_OK"
     fi
 
