@@ -277,9 +277,27 @@ sed 's/^/    /' "$GK_OUT" || true
 
 # syspolicy_check is the accurate one for app bundles, and it is what catches
 # the dangling-load-path class of failure that spctl on the dmg can miss.
+#
+# One of its complaints is expected here and has to be separated from the rest.
+# The ticket is stapled to the dmg, not to the .app inside it: dmg tickets are
+# keyed on file sha256 and app tickets on cdhash, and only one submission
+# happened. So this prints "A Notarization ticket is not stapled to this
+# application", which made a build that notarized successfully read as broken.
+# Any *other* rejection is not expected, so the two are distinguished rather
+# than both being swallowed by `|| true`.
 if command -v syspolicy_check >/dev/null 2>&1; then
     log "--- syspolicy_check distribution (app bundle) ---"
-    syspolicy_check distribution "$APP_BUNDLE" 2>&1 | sed 's/^/    /' || true
+    SP_OUT="$BUILD_DIR/syspolicy.txt"
+    syspolicy_check distribution "$APP_BUNDLE" >"$SP_OUT" 2>&1 || true
+    sed 's/^/    /' "$SP_OUT" || true
+    if [ "$NOTARIZE" = "1" ] && grep -q 'ticket is not stapled' "$SP_OUT"; then
+        log "  the \"not stapled\" line above is expected, not a failure:"
+        log "  the ticket is on the dmg; the .app inside it carries none."
+        log "  cost: an app dragged to /Applications resolves its ticket by one"
+        log "  online Gatekeeper lookup, so a first launch with no network fails."
+        log "  closing that needs a second submission (notarize+staple the .app"
+        log "  before building the dmg), which is a separate change."
+    fi
 fi
 
 # Re-validate the ticket here as well as after stapling: this is the last touch
@@ -439,9 +457,20 @@ if hdiutil attach "$DMG_PATH" -mountpoint "$MNT" -nobrowse -readonly >/dev/null 
 
         smoke "--- spctl ---"
         spctl -a -vvv -t exec "$QAPP" >>"$SMOKE_LOG" 2>&1 || true
+        # Same expected "not stapled" complaint as the Gatekeeper block above,
+        # for the same reason (ticket is on the dmg, not the .app). Annotated
+        # here too because smoke.txt gets read on its own, detached from the
+        # build log, and an unexplained error line there sends the reader after
+        # the wrong fault.
         if command -v syspolicy_check >/dev/null 2>&1; then
             smoke "--- syspolicy_check ---"
-            syspolicy_check distribution "$QAPP" >>"$SMOKE_LOG" 2>&1 || true
+            QSP="$BUILD_DIR/syspolicy-quarantined.txt"
+            syspolicy_check distribution "$QAPP" >"$QSP" 2>&1 || true
+            cat "$QSP" >>"$SMOKE_LOG" 2>/dev/null || true
+            if [ "$NOTARIZE" = "1" ] && grep -q 'ticket is not stapled' "$QSP"; then
+                smoke "note: \"not stapled\" is expected -- the ticket is on the dmg,"
+                smoke "      not on the .app; it is not why this build would fail."
+            fi
         fi
 
         # `timeout`, because this exact call hung a job for the full 6h ceiling
