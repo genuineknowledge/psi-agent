@@ -582,7 +582,7 @@ async def _oauth_take_code(request: web.Request) -> web.Response:
 
 async def _list_titles(request: web.Request) -> web.Response:
     tm: TitleManager = request.app["tm"]
-    return _json(tm.get_all())
+    return _json(await tm.get_all())
 
 
 async def _set_title(request: web.Request) -> web.Response:
@@ -644,7 +644,7 @@ async def _generate_title(request: web.Request) -> web.Response:
 
 async def _list_summaries(request: web.Request) -> web.Response:
     sum_m: SummaryManager = request.app["sum_m"]
-    return _json(sum_m.get_all())
+    return _json(await sum_m.get_all())
 
 
 async def _set_summary(request: web.Request) -> web.Response:

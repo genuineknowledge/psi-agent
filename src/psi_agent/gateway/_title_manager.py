@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable
 
+import anyio
 from aiohttp import ClientSession, ClientTimeout
 from loguru import logger
 
@@ -15,20 +16,24 @@ class TitleManager:
     def __init__(self, _persist: Callable[[], Awaitable[None]] | None = None) -> None:
         self._titles: dict[str, str] = {}
         self._persist = _persist or _noop
+        self._lock = anyio.Lock()
 
-    def get_all(self) -> dict[str, str]:
-        return dict(self._titles)
+    async def get_all(self) -> dict[str, str]:
+        async with self._lock:
+            return dict(self._titles)
 
     async def set(self, session_id: str, title: str) -> None:
-        self._titles[session_id] = title
-        await self._persist()
+        async with self._lock:
+            self._titles[session_id] = title
+            await self._persist()
 
     async def delete(self, session_id: str) -> None:
-        if session_id not in self._titles:
-            return
-        del self._titles[session_id]
-        await self._persist()
-        logger.debug(f"Title deleted for session {session_id!r}")
+        async with self._lock:
+            if session_id not in self._titles:
+                return
+            del self._titles[session_id]
+            await self._persist()
+            logger.debug(f"Title deleted for session {session_id!r}")
 
     async def generate(self, session_id: str, ai_socket: str, user_text: str, assistant_text: str) -> str | None:
         prompt = (
@@ -43,7 +48,7 @@ class TitleManager:
         }
         try:
             connector, endpoint = resolve_connector_and_endpoint(ai_socket)
-            timeout = ClientTimeout(total=None)
+            timeout = ClientTimeout(total=None, connect=30.0)
             async with (
                 ClientSession(connector=connector, timeout=timeout) as session,
                 session.post(endpoint, json=body) as resp,
@@ -87,8 +92,9 @@ class TitleManager:
                 title = title.strip().strip("'\"")
                 logger.info(f"Title generation result: {title!r}")
                 if title:
-                    self._titles[session_id] = title
-                    await self._persist()
+                    async with self._lock:
+                        self._titles[session_id] = title
+                        await self._persist()
                     return title
                 logger.warning(f"Title generation empty for session {session_id!r}")
                 return None

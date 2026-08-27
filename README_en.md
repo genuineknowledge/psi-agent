@@ -320,18 +320,45 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create and start Router |
+| DELETE | `/routers/{router_id}` | Stop and delete Router |
+| GET | `/routers` | List all Routers |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/todos` | Read session todos list |
+| GET | `/sessions/{session_id}/todo-segments` | Get todo segment list |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get single todo segment |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Set todo segment label |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
-| GET | `/workspace/browse` | Browse directory (`?path=...`) |
+| GET | `/summaries` | Get all session task summaries |
+| POST | `/summaries` | Set session task summary |
+| POST | `/summaries/generate` | AI generate task summary |
+| POST | `/ui/attention` | Trigger tray/webview attention prompt |
+| GET | `/ui/prefs/survey` | Get survey status |
+| POST | `/ui/prefs/survey` | Set survey status |
+| GET | `/defaults` | Get default agent, workspace, and appdata paths |
 | GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/places` | Get PathPicker shortcut places |
+| GET | `/workspace/browse` | Browse directory (`?path=...`) |
+| GET | `/workspace/file` | Read file base64 content |
+| POST | `/workspace/reveal` | Reveal path in system file manager |
+| GET | `/auth/status` | Get auth status and diagnostic details |
+| POST | `/auth/send-code` | Send auth verification code |
+| POST | `/auth/verify` | Verify auth code |
+| POST | `/auth/complete` | Complete registration |
+| POST | `/auth/bind` | Bind phone/email identity |
+| DELETE | `/auth/identities/{provider}` | Unbind auth identity |
+| GET | `/auth/me` | Get current account details |
+| POST | `/auth/logout` | Log out account |
+| GET | `/auth/devices` | List logged-in devices |
+| DELETE | `/auth/devices/{device_id}` | Revoke device |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 
