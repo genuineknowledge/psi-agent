@@ -180,6 +180,25 @@ def test_raw_to_dict_passes_dicts_through() -> None:
     assert raw["uuid"] == "u-9"
 
 
+def test_raw_to_dict_logs_when_normalization_attr_raises(caplog: pytest.LogCaptureFixture) -> None:
+    class _RaisingObject:
+        def __init__(self) -> None:
+            self.a = 1
+
+        def dict(self) -> Any:
+            raise RuntimeError("dict conversion failed")
+
+    obj = _RaisingObject()
+    messages: list[str] = []
+    handle = logger.add(lambda m: messages.append(m.record["message"]))
+    try:
+        raw = _raw_to_dict(obj)
+    finally:
+        logger.remove(handle)
+    assert raw == {"a": 1}
+    assert any("Normalization via dict() failed" in m for m in messages)
+
+
 def test_delivery_id_prefers_header_then_uuid() -> None:
     assert _delivery_id({"header": {"event_id": "evt-7"}}) == "evt-7"
     assert _delivery_id({"uuid": "u-3"}) == "u-3"

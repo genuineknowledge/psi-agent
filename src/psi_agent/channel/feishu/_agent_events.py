@@ -71,8 +71,8 @@ def _raw_to_dict(raw: Any) -> dict[str, Any]:
                 out = fn()
                 if isinstance(out, dict):
                     return {str(k): _plainify(v) for k, v in out.items()}
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Normalization via {attr}() failed: {e!r}")
     # lark events often nest under .event
     nested = getattr(raw, "event", None)
     if nested is not None:

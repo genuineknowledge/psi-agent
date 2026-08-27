@@ -191,6 +191,15 @@ Protocol errors between components take two forms:
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 proxy |
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
 | `PSI_FEISHU_APP_SECRET` | Feishu app secret |
+| `PSI_APPDATA` | Application data root directory |
+| `PSI_AUTH_ENDPOINT` | External auth service endpoint |
+| `PSI_AUTH_PREFIX` | Auth store key prefix |
+| `PSI_MAX_CONTEXT_TOKENS` | Max context tokens threshold for compaction |
+| `PSI_FEISHU_EXTERNAL_SESSIONS` | Feishu cross-container external sessions config |
+| `PSI_PRIVATE_OPEN_IDS` | Private open_id whitelist |
+| `PSI_DEBUG_MODULES` | Whitelist for module-targeted debug logging |
+| `PSI_DEBUG_LOG_PATH` | Explicit output file path for debug logs |
+| `PSI_AGENT` | Default agent package directory |
 
 CLI args take precedence over environment variables. AI params (provider, model, api_key, base_url) and channel auth params are optional and fall back to env vars when omitted. Socket path params (--session-socket, --channel-socket, --ai-socket) are required.
 

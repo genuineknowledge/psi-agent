@@ -978,7 +978,7 @@ async def run_feishu(
 
         provider: _GatewayRouteProvider | None = None
         if gateway_url:
-            http = await stack.enter_async_context(aiohttp.ClientSession())
+            http = await stack.enter_async_context(aiohttp.ClientSession(timeout=_GATEWAY_TIMEOUT))
             provider = _GatewayRouteProvider(gateway_url, http)
             if not appdata.strip():
                 # Only when nothing was passed explicitly: an operator-supplied --appdata

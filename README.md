@@ -191,6 +191,15 @@ AI 和 Session 组件无需关心通信介质——由 `_sockets.py` 统一处�
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 代理 |
 | `PSI_FEISHU_APP_ID` | 飞书 app ID |
 | `PSI_FEISHU_APP_SECRET` | 飞书 app secret |
+| `PSI_APPDATA` | 应用数据根目录 |
+| `PSI_AUTH_ENDPOINT` | 外部 Auth 服务端点 |
+| `PSI_AUTH_PREFIX` | Auth 存储键前缀 |
+| `PSI_MAX_CONTEXT_TOKENS` | 上下文压缩最大 token 数阈值 |
+| `PSI_FEISHU_EXTERNAL_SESSIONS` | 飞书跨容器外部 Session 配置 |
+| `PSI_PRIVATE_OPEN_IDS` | 私有 Open ID 白名单 |
+| `PSI_DEBUG_MODULES` | 模块定向调试日志白名单 |
+| `PSI_DEBUG_LOG_PATH` | 定向调试日志落盘路径 |
+| `PSI_AGENT` | 默认 Agent 代码包目录 |
 
 CLI 参数优先于环境变量。AI 参数（provider、model、api_key、base_url）及 channel 认证参数均可选，未传时回退到环境变量。Socket 路径参数（--session-socket、--channel-socket、--ai-socket）为必填。
 
