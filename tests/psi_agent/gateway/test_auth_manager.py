@@ -119,13 +119,17 @@ async def test_list_devices_normalizes_three_shapes(
         await m.aclose()
 
 
-def _connection_key() -> Any:
-    """造一个 ``ConnectionKey`` —— aiohttp 的连接异常都要求带它。"""
+def _connection_key() -> ConnectionKey:
+    """造一个 ``ConnectionKey`` —— aiohttp 的连接异常都要求带它。
+
+    ``ssl`` 只接受 ``SSLContext | bool | Fingerprint``, 不接受 ``None``。取 ``True``
+    也和真实故障日志里那条 ``ssl=True`` 一致 (见 2026-08-27 的 macOS 证书故障)。
+    """
     return ConnectionKey(
         host="auth.invalid",
         port=443,
         is_ssl=True,
-        ssl=None,
+        ssl=True,
         proxy=None,
         proxy_auth=None,
         proxy_headers_hash=None,
