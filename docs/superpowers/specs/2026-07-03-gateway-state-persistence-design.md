@@ -65,7 +65,9 @@ class GatewayState:
     async def load(self) -> dict[str, list[dict[str, Any]]]:
         """读取 JSON，文件不存在返回 {"ais": [], "sessions": [], "titles": []}"""
 
-    async def save(self, ais: list[dict[str, Any]], sessions: list[dict[str, str]], titles: list[dict[str, str]]) -> None:
+    async def save(
+        self, ais: list[dict[str, Any]], sessions: list[dict[str, str]], titles: list[dict[str, str]]
+    ) -> None:
         """写入 JSON。失败 log warning，不抛异常
 
         ``ais`` 的值类型是 ``Any`` 而非 ``str``——``max_context_tokens`` 是 int。

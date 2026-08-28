@@ -89,7 +89,9 @@ class GatewayWebView:
 ```python
 class GatewayTray:
     def __init__(
-        self, url: str, icon_path: str,
+        self,
+        url: str,
+        icon_path: str,
         on_open: Any = None,
     ):
         ...

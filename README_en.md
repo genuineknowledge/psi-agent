@@ -218,6 +218,7 @@ A tool is just an async function — in each non-`_`-prefixed `.py` file, every 
 # tools/bash.py
 import anyio
 
+
 async def bash(command: str) -> str:
     """Execute a bash command.
     Args:
@@ -240,9 +241,11 @@ async def system_prompt_builder() -> str:
     """Construct the system prompt. Returns a string."""
     return "You are a helpful assistant."
 
+
 async def system_prompt_rebuild_checker() -> bool:
     """Called before every agent turn. Return True to rebuild the system prompt."""
     return False
+
 
 async def turn_context_builder() -> str:
     """Called before every agent turn. Returns this turn's volatile block (the
@@ -320,18 +323,38 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
-| POST | `/sessions` | Create Session |
+| POST | `/routers` | Create and start Router |
+| DELETE | `/routers/{router_id}` | Stop and delete Router |
+| GET | `/routers` | List all Routers |
+| POST | `/sessions` | Create Session (optional `agent` / `workspace`) |
 | DELETE | `/sessions/{session_id}` | Delete Session |
-| GET | `/sessions` | List all Sessions |
+| GET | `/sessions` | List all Sessions (with `agent`) |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
+| GET | `/sessions/{session_id}/todos` | Get session todos |
+| GET | `/sessions/{session_id}/todo-segments` | Get session todo segment list |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get single todo segment history |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Set todo segment label |
 | POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
+| GET | `/summaries` | Get all session summaries |
+| POST | `/summaries` | Set session summary |
+| POST | `/summaries/generate` | AI auto-generate summary |
+| GET | `/defaults` | Get default agent, workspace, appdata paths |
+| GET | `/workspace/cwd` | Get Gateway working directory |
+| GET | `/workspace/places` | Get PathPicker shortcut places and drives |
 | GET | `/workspace/browse` | Browse directory (`?path=...`) |
-| GET | `/workspace/cwd` | Get working directory |
+| GET | `/workspace/file` | Read workspace file as base64 |
+| POST | `/workspace/reveal` | Reveal path in OS file manager |
+| POST | `/ui/attention` | Request tray/webview attention notification |
+| GET | `/ui/prefs/survey` | Get survey modal closed flag |
+| POST | `/ui/prefs/survey` | Record survey modal closed flag |
+| GET | `/oauth/callback` | OAuth callback relay |
+| GET | `/oauth/code` | Retrieve one-time OAuth code by state |
+| GET | `/auth/*` | Cloud auth service APIs (login status, verification code, device list, etc.) |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 

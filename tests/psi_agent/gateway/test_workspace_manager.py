@@ -77,3 +77,23 @@ async def test_reveal_invokes_platform_launcher(tmp_path, monkeypatch) -> None:
     assert calls[0][0] == "explorer"
     assert calls[0][1].startswith("/select,")
     assert "out.md" in calls[0][1]
+
+
+@pytest.mark.anyio
+async def test_browse_skips_inaccessible_entries(tmp_path) -> None:
+    valid_dir = tmp_path / "valid_dir"
+    valid_dir.mkdir()
+
+    # Create a broken symlink if the OS supports symlinks
+    broken_symlink = tmp_path / "broken_link"
+    try:
+        broken_symlink.symlink_to(tmp_path / "non_existent_target")
+    except OSError, NotImplementedError:
+        pytest.skip("Symlinks not supported on this platform/environment")
+
+    wm = WorkspaceManager()
+    result = await wm.browse(str(tmp_path), kind="all")
+
+    names = [e["name"] for e in result["entries"]]
+    assert "valid_dir" in names
+    assert "broken_link" not in names

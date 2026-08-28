@@ -462,34 +462,35 @@ _WARM_THROTTLE_SECONDS = 5.0
 ### Step 4 实现两个方法
 
 ```python
-    async def nudge_warm(self) -> None:
-        """请求把连接焐热。不阻塞调用方 —— 只是往 task group 里塞个任务就返回。"""
-        if self._tg is None or self._warming:
-            return
-        now = anyio.current_time()
-        if now - self._last_warm < _WARM_THROTTLE_SECONDS:
-            return
-        # 检查到置位之间没有 await, 协作式调度下不会被抢占, 因此不需要锁。
-        self._warming = True
-        self._last_warm = now
-        self._tg.start_soon(self._warm)
+async def nudge_warm(self) -> None:
+    """请求把连接焐热。不阻塞调用方 —— 只是往 task group 里塞个任务就返回。"""
+    if self._tg is None or self._warming:
+        return
+    now = anyio.current_time()
+    if now - self._last_warm < _WARM_THROTTLE_SECONDS:
+        return
+    # 检查到置位之间没有 await, 协作式调度下不会被抢占, 因此不需要锁。
+    self._warming = True
+    self._last_warm = now
+    self._tg.start_soon(self._warm)
 
-    async def _warm(self) -> None:
-        """发一次无副作用的 ``GET /me`` 把 TCP+TLS 建好。
 
-        **不带 token** (``auth=False``): 云端回 401, 而 401 不经 ``_on_response``,
-        因此不会把已登录用户踢下线。
+async def _warm(self) -> None:
+    """发一次无副作用的 ``GET /me`` 把 TCP+TLS 建好。
 
-        异常必须在这里吞掉 —— 逃出 ``start_soon`` 会拆掉整个 task group, 连带杀死
-        Gateway。``_call`` 目前自己收敛异常, 但预热的代价太高, 不赌它将来不变。
-        """
-        try:
-            await self._call("GET", "/me", retry=True)
-        except Exception as e:
-            logger.debug(f"连接预热失败, 忽略: {e!r}")
-        finally:
-            # 必须复位, 否则一次失败就永久堵死后续预热。
-            self._warming = False
+    **不带 token** (``auth=False``): 云端回 401, 而 401 不经 ``_on_response``,
+    因此不会把已登录用户踢下线。
+
+    异常必须在这里吞掉 —— 逃出 ``start_soon`` 会拆掉整个 task group, 连带杀死
+    Gateway。``_call`` 目前自己收敛异常, 但预热的代价太高, 不赌它将来不变。
+    """
+    try:
+        await self._call("GET", "/me", retry=True)
+    except Exception as e:
+        logger.debug(f"连接预热失败, 忽略: {e!r}")
+    finally:
+        # 必须复位, 否则一次失败就永久堵死后续预热。
+        self._warming = False
 ```
 
 `_warm` 走 `_call` 而不是 `_attempt`，是为了让 `retry=True` 生效：预热撞上一个陈旧连接时重试一次正好拿到新连接，这本来就是它要干的事。
@@ -546,13 +547,11 @@ async def test_create_accepts_task_group(tmp_path) -> None:
 签名加末位关键字参数（`_auth_manager.py:119`）：
 
 ```python
-    async def create(
-        cls, endpoint: str, appdata_root: str = "", platform: str = "", *, tg: Any = None
-    ) -> AuthManager:
-        """建一个 manager 并从磁盘恢复登录态 (满足 R3: 跨重启保持)。
+async def create(cls, endpoint: str, appdata_root: str = "", platform: str = "", *, tg: Any = None) -> AuthManager:
+    """建一个 manager 并从磁盘恢复登录态 (满足 R3: 跨重启保持)。
 
-        ``tg`` 是 Gateway 的 anyio TaskGroup, 只用于连接预热; 不传则不预热。
-        """
+    ``tg`` 是 Gateway 的 anyio TaskGroup, 只用于连接预热; 不传则不预热。
+    """
 ```
 
 构造时带上 `_tg=tg`。

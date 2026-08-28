@@ -100,11 +100,11 @@ from psi_agent.protocol import (
 @pytest.mark.parametrize(
     ("line", "expected"),
     [
-        ("data: {\"a\":1}", '{"a":1}'),
+        ('data: {"a":1}', '{"a":1}'),
         # The space after the colon is optional per the SSE spec.  Four call
         # sites used to require it and silently dropped whole frames without.
-        ("data:{\"a\":1}", '{"a":1}'),
-        ("data:   {\"a\":1}", '{"a":1}'),
+        ('data:{"a":1}', '{"a":1}'),
+        ('data:   {"a":1}', '{"a":1}'),
         ("data: [DONE]", "[DONE]"),
         ("data:[DONE]", "[DONE]"),
         ("data:", ""),

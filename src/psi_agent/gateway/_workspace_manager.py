@@ -110,15 +110,19 @@ class WorkspaceManager:
                 continue
             if query and query not in name.lower():
                 continue
-            entry_resolved = await entry.resolve()
-            if include_dirs and await entry.is_dir():
-                entries.append({"name": name, "path": _posix(entry_resolved), "kind": "directory"})
-            elif include_files and await entry.is_file():
-                try:
-                    size = (await entry.stat()).st_size
-                except OSError:
-                    size = 0
-                entries.append({"name": name, "path": _posix(entry_resolved), "kind": "file", "size": size})
+            try:
+                entry_resolved = await entry.resolve()
+                if include_dirs and await entry.is_dir():
+                    entries.append({"name": name, "path": _posix(entry_resolved), "kind": "directory"})
+                elif include_files and await entry.is_file():
+                    try:
+                        size = (await entry.stat()).st_size
+                    except OSError:
+                        size = 0
+                    entries.append({"name": name, "path": _posix(entry_resolved), "kind": "file", "size": size})
+            except OSError as err:
+                logger.debug(f"Skipping inaccessible entry {name!r}: {err!r}")
+                continue
 
         entries.sort(key=lambda e: (0 if e["kind"] == "directory" else 1, e["name"].lower()))
 

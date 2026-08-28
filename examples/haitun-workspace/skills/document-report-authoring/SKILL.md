@@ -46,9 +46,9 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 doc = Document()
-doc.add_heading("2026 Q2 运营报告", level=0)          # title
-doc.add_heading("1. 概述", level=1)                    # H1 -> feeds the TOC
-doc.add_paragraph("本季度……")                          # body text
+doc.add_heading("2026 Q2 运营报告", level=0)  # title
+doc.add_heading("1. 概述", level=1)  # H1 -> feeds the TOC
+doc.add_paragraph("本季度……")  # body text
 
 # a data table
 t = doc.add_table(rows=1, cols=3)
@@ -70,6 +70,7 @@ doc.save("report.docx")
 ```python
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+
 
 def add_toc(doc):
     p = doc.add_paragraph()
@@ -98,6 +99,7 @@ heading, and table cell inherits it:
 ```python
 from docx.oxml.ns import qn
 
+
 def set_cjk_font(doc, cjk="微软雅黑", latin="Calibri"):
     """Set East-Asian + Latin fonts on base styles so all text is consistent."""
     for style_name in ("Normal", "Heading 1", "Heading 2", "Heading 3", "Title"):
@@ -112,10 +114,11 @@ def set_cjk_font(doc, cjk="微软雅黑", latin="Calibri"):
             rpr.append(rfonts)
         rfonts.set(qn("w:ascii"), latin)
         rfonts.set(qn("w:hAnsi"), latin)
-        rfonts.set(qn("w:eastAsia"), cjk)   # <-- the line that fixes 字体不齐
+        rfonts.set(qn("w:eastAsia"), cjk)  # <-- the line that fixes 字体不齐
+
 
 doc = Document()
-set_cjk_font(doc)                            # call right after creating the document
+set_cjk_font(doc)  # call right after creating the document
 ```
 
 If you instead style individual runs, set `w:eastAsia` on each run too — setting only
@@ -135,7 +138,7 @@ several CJK fonts in one document unless the user asks.
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
-prs = Presentation()                        # blank 4:3; use pptx.util for 16:9 if asked
+prs = Presentation()  # blank 4:3; use pptx.util for 16:9 if asked
 
 # title slide
 s = prs.slides.add_slide(prs.slide_layouts[0])
@@ -148,7 +151,9 @@ s.shapes.title.text = "本季度要点"
 tf = s.placeholders[1].text_frame
 tf.text = "收入同比 +18%"
 for line in ["新客占比提升", "退款率下降至 2.1%"]:
-    p = tf.add_paragraph(); p.text = line; p.level = 1
+    p = tf.add_paragraph()
+    p.text = line
+    p.level = 1
 
 prs.save("deck.pptx")
 ```
@@ -171,14 +176,15 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.chart import BarChart, Reference
 
 wb = Workbook()
-ws = wb.active; ws.title = "月度"
+ws = wb.active
+ws.title = "月度"
 ws.append(["月份", "收入"])
-for cell in ws[1]:                                   # style header
+for cell in ws[1]:  # style header
     cell.font = Font(bold=True, color="FFFFFF")
     cell.fill = PatternFill("solid", fgColor="4472C4")
 for row in data:
     ws.append(row)
-ws["B14"] = "=SUM(B2:B13)"                            # formula
+ws["B14"] = "=SUM(B2:B13)"  # formula
 wb.save("report.xlsx")
 ```
 

@@ -176,9 +176,7 @@ def _get_client() -> Any:
 async def _invoke(request: Any) -> dict[str, Any]:
     client = _get_client()
     if client is None:
-        return _error(
-            "Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET."
-        )
+        return _error("Feishu app not configured. Set PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET.")
     try:
         resp = await client.arequest(request)
     except Exception as exc:  # SDK/transport failure
@@ -198,7 +196,7 @@ async def _invoke(request: Any) -> dict[str, Any]:
                     code = body.get("code")
                 if not msg:
                     msg = body.get("msg", "") or ""
-        except (ValueError, UnicodeDecodeError):
+        except ValueError, UnicodeDecodeError:
             pass
 
     ok = code == 0
@@ -329,15 +327,11 @@ from lark_channel.core.model import BaseRequest
 
 ```python
 async def add_comment_impl(file_token: str, file_type: str, content: str) -> dict[str, Any]:
-    req = _comment.build_comment_create_request(
-        file_token=file_token, file_type=file_type, content=content
-    )
+    req = _comment.build_comment_create_request(file_token=file_token, file_type=file_type, content=content)
     return await _invoke(req)
 
 
-async def list_comments_impl(
-    file_token: str, file_type: str, page_size: int, page_token: str
-) -> dict[str, Any]:
+async def list_comments_impl(file_token: str, file_type: str, page_size: int, page_token: str) -> dict[str, Any]:
     req = _comment.build_comment_list_request(
         file_token=file_token,
         file_type=file_type,
@@ -490,9 +484,7 @@ async def feishu_drive_add_comment(file_token: str, file_type: str, content: str
     return _f.dumps_result(await _f.add_comment_impl(file_token, file_type, content))
 
 
-async def feishu_drive_list_comments(
-    file_token: str, file_type: str, page_size: int = 50, page_token: str = ""
-) -> str:
+async def feishu_drive_list_comments(file_token: str, file_type: str, page_size: int = 50, page_token: str = "") -> str:
     """List whole-document comments on a Feishu/Lark file, most recent first.
 
     Args:
@@ -501,9 +493,7 @@ async def feishu_drive_list_comments(
         page_size: Max comments to return (default 50).
         page_token: Pagination cursor from a previous call's has_more result (optional).
     """
-    return _f.dumps_result(
-        await _f.list_comments_impl(file_token, file_type, page_size, page_token)
-    )
+    return _f.dumps_result(await _f.list_comments_impl(file_token, file_type, page_size, page_token))
 
 
 async def feishu_drive_list_comment_replies(
@@ -518,11 +508,7 @@ async def feishu_drive_list_comment_replies(
         page_size: Max replies to return (default 50).
         page_token: Pagination cursor from a previous call's has_more result (optional).
     """
-    return _f.dumps_result(
-        await _f.list_comment_replies_impl(
-            file_token, file_type, comment_id, page_size, page_token
-        )
-    )
+    return _f.dumps_result(await _f.list_comment_replies_impl(file_token, file_type, comment_id, page_size, page_token))
 
 
 async def feishu_drive_reply_comment(
@@ -537,9 +523,7 @@ async def feishu_drive_reply_comment(
         content: The reply text.
         at_user_id: open_id/user_id to @-mention at the start of the reply (optional).
     """
-    return _f.dumps_result(
-        await _f.reply_comment_impl(file_token, file_type, comment_id, content, at_user_id)
-    )
+    return _f.dumps_result(await _f.reply_comment_impl(file_token, file_type, comment_id, content, at_user_id))
 ```
 
 - [ ] **Step 4: 运行确认通过**
@@ -641,9 +625,7 @@ def _raw_get(uri: str, path_name: str, path_value: str) -> BaseRequest:
 
 
 def _build_docx_raw_request(document_id: str) -> BaseRequest:
-    return _raw_get(
-        "/open-apis/docx/v1/documents/:document_id/raw_content", "document_id", document_id
-    )
+    return _raw_get("/open-apis/docx/v1/documents/:document_id/raw_content", "document_id", document_id)
 
 
 def _build_doc_raw_request(doc_token: str) -> BaseRequest:

@@ -112,6 +112,7 @@ finally:
 import tempfile
 from PIL import Image as PILImage
 
+
 @pytest.fixture
 def icon_file():
     img = PILImage.new("RGBA", (64, 64), (41, 98, 255, 255))
@@ -119,6 +120,7 @@ def icon_file():
         img.save(f, "PNG")
     yield f.name
     import os
+
     os.unlink(f.name)
 ```
 

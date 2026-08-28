@@ -516,7 +516,7 @@ Gateway 添加静态文件服务：
 
 ```python
 # server.py
-app.router.add_static('/spa/', str(spa_dist), show_index=False)
+app.router.add_static("/spa/", str(spa_dist), show_index=False)
 ```
 
 `GET /` 重定向到 `/spa/index.html`。

@@ -102,10 +102,11 @@ PDB
 就在**出错现场**执行。也可在代码里：
 ```python
 import pdb, sys
+
 try:
     main()
 except Exception:
-    pdb.post_mortem(sys.exc_info()[2])   # 或交互时直接 pdb.pm()
+    pdb.post_mortem(sys.exc_info()[2])  # 或交互时直接 pdb.pm()
 ```
 
 ### 常用 pdb 命令速查
@@ -176,9 +177,10 @@ python -m debugpy --listen 5678 --pid 12345
 
 ```python
 import debugpy
-debugpy.listen(5678)          # 起 DAP 服务端，等价 --listen
-debugpy.wait_for_client()     # 阻塞直到客户端连上（等价 --wait-for-client）
-debugpy.breakpoint()          # 到这行主动断下（客户端会停在此）
+
+debugpy.listen(5678)  # 起 DAP 服务端，等价 --listen
+debugpy.wait_for_client()  # 阻塞直到客户端连上（等价 --wait-for-client）
+debugpy.breakpoint()  # 到这行主动断下（客户端会停在此）
 ```
 能用 CLI（`python -m debugpy ...`）就别改脚本——CLI 的好处正是不用往代码里塞调试 import。
 
@@ -197,10 +199,11 @@ nvim-dap），直接用 `"request": "attach"` + `"connect": {"port": 5678}` 连�
 # dap_probe.py —— 一次性脚本，用 uv run python dap_probe.py 跑
 import anyio, json
 
+
 async def send(stream, seq, cmd, args=None):
-    body = json.dumps({"seq": seq, "type": "request",
-                       "command": cmd, "arguments": args or {}}).encode()
+    body = json.dumps({"seq": seq, "type": "request", "command": cmd, "arguments": args or {}}).encode()
     await stream.send(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+
 
 async def recv(stream, buf):
     while b"\r\n\r\n" not in buf[0]:
@@ -212,17 +215,22 @@ async def recv(stream, buf):
     msg, buf[0] = buf[0][:n], buf[0][n:]
     return json.loads(msg)
 
+
 async def main():
     stream = await anyio.connect_tcp("127.0.0.1", 5678)
     buf = [b""]
     seq = 1
-    await send(stream, seq, "initialize", {"adapterID": "debugpy"}); seq += 1
-    await send(stream, seq, "attach", {}); seq += 1
-    await send(stream, seq, "setBreakpoints",
-               {"source": {"path": "target.py"}, "breakpoints": [{"line": 42}]}); seq += 1
-    await send(stream, seq, "configurationDone", {}); seq += 1
-    for _ in range(20):                     # 读若干条响应/事件
+    await send(stream, seq, "initialize", {"adapterID": "debugpy"})
+    seq += 1
+    await send(stream, seq, "attach", {})
+    seq += 1
+    await send(stream, seq, "setBreakpoints", {"source": {"path": "target.py"}, "breakpoints": [{"line": 42}]})
+    seq += 1
+    await send(stream, seq, "configurationDone", {})
+    seq += 1
+    for _ in range(20):  # 读若干条响应/事件
         print(await recv(stream, buf))
+
 
 anyio.run(main)
 ```

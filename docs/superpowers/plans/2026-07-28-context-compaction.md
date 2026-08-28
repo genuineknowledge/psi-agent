@@ -194,39 +194,36 @@ This forces usage reporting for OpenAI-compatible providers. Providers that don'
 Replace the `async for chunk in stream:` block (lines 79-82) with:
 
 ```python
-        logger.debug("Starting to consume upstream SSE stream")
-        max_context_tokens: int = request.app.get("max_context_tokens", 0)
-        compaction_needed = False
-        compaction_usage: dict[str, Any] = {}
-        async for chunk in stream:
-            if max_context_tokens > 0 and chunk.usage and chunk.usage.prompt_tokens > max_context_tokens:
-                compaction_needed = True
-                compaction_usage = {
-                    "prompt_tokens": chunk.usage.prompt_tokens,
-                    "completion_tokens": chunk.usage.completion_tokens,
-                    "total_tokens": chunk.usage.total_tokens,
-                }
-                logger.info(
-                    f"Compaction needed: "
-                    f"prompt_tokens={chunk.usage.prompt_tokens} > threshold={max_context_tokens}"
-                )
-            data = chunk.model_dump_json()
-            logger.debug(f"SSE chunk: {data[:1000]}")
-            await response.write(f"data: {data}\n\n".encode())
-        if compaction_needed:
-            signal = json.dumps(
-                {
-                    "id": "compaction",
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "compaction_needed"}],
-                    "psi_compaction": {
-                        "needed": True,
-                        "prompt_tokens": compaction_usage.get("prompt_tokens", 0),
-                        "threshold": max_context_tokens,
-                    },
-                }
-            )
-            logger.debug(f"SSE compaction signal: {signal[:500]}")
-            await response.write(f"data: {signal}\n\n".encode())
+logger.debug("Starting to consume upstream SSE stream")
+max_context_tokens: int = request.app.get("max_context_tokens", 0)
+compaction_needed = False
+compaction_usage: dict[str, Any] = {}
+async for chunk in stream:
+    if max_context_tokens > 0 and chunk.usage and chunk.usage.prompt_tokens > max_context_tokens:
+        compaction_needed = True
+        compaction_usage = {
+            "prompt_tokens": chunk.usage.prompt_tokens,
+            "completion_tokens": chunk.usage.completion_tokens,
+            "total_tokens": chunk.usage.total_tokens,
+        }
+        logger.info(f"Compaction needed: prompt_tokens={chunk.usage.prompt_tokens} > threshold={max_context_tokens}")
+    data = chunk.model_dump_json()
+    logger.debug(f"SSE chunk: {data[:1000]}")
+    await response.write(f"data: {data}\n\n".encode())
+if compaction_needed:
+    signal = json.dumps(
+        {
+            "id": "compaction",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "compaction_needed"}],
+            "psi_compaction": {
+                "needed": True,
+                "prompt_tokens": compaction_usage.get("prompt_tokens", 0),
+                "threshold": max_context_tokens,
+            },
+        }
+    )
+    logger.debug(f"SSE compaction signal: {signal[:500]}")
+    await response.write(f"data: {signal}\n\n".encode())
 ```
 
 - [ ] **Step 3: Update the successful completion log message to report compaction**
@@ -310,9 +307,19 @@ async def test_compaction_signal_when_usage_exceeds_threshold(tmp_path: Path, mo
             self.usage = _Usage() if with_usage else None
 
         def model_dump_json(self) -> str:
-            d: dict[str, Any] = {"id": "test", "choices": [{"index": 0, "delta": {}, "finish_reason": self._finish_reason}], "created": 0, "model": "test", "object": "chat.completion.chunk"}
+            d: dict[str, Any] = {
+                "id": "test",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": self._finish_reason}],
+                "created": 0,
+                "model": "test",
+                "object": "chat.completion.chunk",
+            }
             if self.usage:
-                d["usage"] = {"prompt_tokens": self.usage.prompt_tokens, "completion_tokens": self.usage.completion_tokens, "total_tokens": self.usage.total_tokens}
+                d["usage"] = {
+                    "prompt_tokens": self.usage.prompt_tokens,
+                    "completion_tokens": self.usage.completion_tokens,
+                    "total_tokens": self.usage.total_tokens,
+                }
             return json.dumps(d)
 
     class _TrackingStream:
@@ -335,11 +342,13 @@ async def test_compaction_signal_when_usage_exceeds_threshold(tmp_path: Path, mo
 
     async def fake_acompletion(**kwargs: Any):
         received_kwargs.append(kwargs)
-        stream = _TrackingStream([
-            _FakeChunk(finish_reason=None),
-            _FakeChunk(finish_reason="stop"),
-            _FakeChunk(with_usage=True),
-        ])
+        stream = _TrackingStream(
+            [
+                _FakeChunk(finish_reason=None),
+                _FakeChunk(finish_reason="stop"),
+                _FakeChunk(with_usage=True),
+            ]
+        )
         return stream  # type: ignore[return-value]
 
     monkeypatch.setattr(ai_mod, "acompletion", fake_acompletion)
@@ -355,6 +364,7 @@ async def test_compaction_signal_when_usage_exceeds_threshold(tmp_path: Path, mo
     runner = web.AppRunner(app)
     await runner.setup()
     import socket as _s
+
     s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -366,7 +376,7 @@ async def test_compaction_signal_when_usage_exceeds_threshold(tmp_path: Path, mo
         async with (
             anyio.connect_tcp("127.0.0.1", port) as conn,
         ):
-            req = f"POST /chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}]}}"
+            req = f'POST /chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{{"messages":[{{"role":"user","content":"hi"}}]}}'
             await conn.send_all(req.encode())
 
             buffer = b""
@@ -419,9 +429,19 @@ async def test_no_compaction_signal_when_under_threshold(tmp_path: Path, monkeyp
             self.usage = _Usage() if with_usage else None
 
         def model_dump_json(self) -> str:
-            d: dict[str, Any] = {"id": "test", "choices": [{"index": 0, "delta": {}, "finish_reason": self._finish_reason}], "created": 0, "model": "test", "object": "chat.completion.chunk"}
+            d: dict[str, Any] = {
+                "id": "test",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": self._finish_reason}],
+                "created": 0,
+                "model": "test",
+                "object": "chat.completion.chunk",
+            }
             if self.usage:
-                d["usage"] = {"prompt_tokens": self.usage.prompt_tokens, "completion_tokens": self.usage.completion_tokens, "total_tokens": self.usage.total_tokens}
+                d["usage"] = {
+                    "prompt_tokens": self.usage.prompt_tokens,
+                    "completion_tokens": self.usage.completion_tokens,
+                    "total_tokens": self.usage.total_tokens,
+                }
             return json.dumps(d)
 
     class _TrackingStream:
@@ -443,10 +463,12 @@ async def test_no_compaction_signal_when_under_threshold(tmp_path: Path, monkeyp
             self.closed = True
 
     async def fake_acompletion(**kwargs: Any):
-        stream = _TrackingStream([
-            _FakeChunk(finish_reason="stop"),
-            _FakeChunk(with_usage=True),
-        ])
+        stream = _TrackingStream(
+            [
+                _FakeChunk(finish_reason="stop"),
+                _FakeChunk(with_usage=True),
+            ]
+        )
         return stream  # type: ignore[return-value]
 
     monkeypatch.setattr(ai_mod, "acompletion", fake_acompletion)
@@ -462,6 +484,7 @@ async def test_no_compaction_signal_when_under_threshold(tmp_path: Path, monkeyp
     runner = web.AppRunner(app)
     await runner.setup()
     import socket as _s
+
     s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -473,7 +496,7 @@ async def test_no_compaction_signal_when_under_threshold(tmp_path: Path, monkeyp
         async with (
             anyio.connect_tcp("127.0.0.1", port) as conn,
         ):
-            req = f"POST /chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}]}}"
+            req = f'POST /chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{{"messages":[{{"role":"user","content":"hi"}}]}}'
             await conn.send_all(req.encode())
 
             buffer = b""
@@ -507,9 +530,19 @@ async def test_no_compaction_when_max_context_tokens_zero(tmp_path: Path, monkey
             self.usage = _Usage() if with_usage else None
 
         def model_dump_json(self) -> str:
-            d: dict[str, Any] = {"id": "test", "choices": [{"index": 0, "delta": {}, "finish_reason": self._finish_reason}], "created": 0, "model": "test", "object": "chat.completion.chunk"}
+            d: dict[str, Any] = {
+                "id": "test",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": self._finish_reason}],
+                "created": 0,
+                "model": "test",
+                "object": "chat.completion.chunk",
+            }
             if self.usage:
-                d["usage"] = {"prompt_tokens": self.usage.prompt_tokens, "completion_tokens": self.usage.completion_tokens, "total_tokens": self.usage.total_tokens}
+                d["usage"] = {
+                    "prompt_tokens": self.usage.prompt_tokens,
+                    "completion_tokens": self.usage.completion_tokens,
+                    "total_tokens": self.usage.total_tokens,
+                }
             return json.dumps(d)
 
     class _TrackingStream:
@@ -530,10 +563,12 @@ async def test_no_compaction_when_max_context_tokens_zero(tmp_path: Path, monkey
             pass
 
     async def fake_acompletion(**kwargs: Any):
-        stream = _TrackingStream([
-            _FakeChunk(finish_reason="stop"),
-            _FakeChunk(with_usage=True),
-        ])
+        stream = _TrackingStream(
+            [
+                _FakeChunk(finish_reason="stop"),
+                _FakeChunk(with_usage=True),
+            ]
+        )
         return stream  # type: ignore[return-value]
 
     monkeypatch.setattr(ai_mod, "acompletion", fake_acompletion)
@@ -549,6 +584,7 @@ async def test_no_compaction_when_max_context_tokens_zero(tmp_path: Path, monkey
     runner = web.AppRunner(app)
     await runner.setup()
     import socket as _s
+
     s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -560,7 +596,7 @@ async def test_no_compaction_when_max_context_tokens_zero(tmp_path: Path, monkey
         async with (
             anyio.connect_tcp("127.0.0.1", port) as conn,
         ):
-            req = f"POST /chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{{\"messages\":[{{\"role\":\"user\",\"content\":\"hi\"}}]}}"
+            req = f'POST /chat/completions HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{{"messages":[{{"role":"user","content":"hi"}}]}}'
             await conn.send_all(req.encode())
 
             buffer = b""
@@ -610,21 +646,18 @@ git commit -m "feat: AI server emits psi_compaction signal on token threshold ex
 In `stream()`, after `delta_data = c.get("delta")` (line 72-74), add psi_compaction check before the yield:
 
 ```python
-                delta_data = c.get("delta")
-                if not isinstance(delta_data, dict):
-                    delta_data = {}
-                compaction_signal = data.get("psi_compaction", {})
-                compaction_needed = (
-                    isinstance(compaction_signal, dict)
-                    and compaction_signal.get("needed", False)
-                )
-                yield AiDelta(
-                    content=delta_data.get("content"),
-                    reasoning=delta_data.get("reasoning"),
-                    tool_calls=delta_data.get("tool_calls"),
-                    finish_reason=c.get("finish_reason"),
-                    compaction_needed=compaction_needed,
-                )
+delta_data = c.get("delta")
+if not isinstance(delta_data, dict):
+    delta_data = {}
+compaction_signal = data.get("psi_compaction", {})
+compaction_needed = isinstance(compaction_signal, dict) and compaction_signal.get("needed", False)
+yield AiDelta(
+    content=delta_data.get("content"),
+    reasoning=delta_data.get("reasoning"),
+    tool_calls=delta_data.get("tool_calls"),
+    finish_reason=c.get("finish_reason"),
+    compaction_needed=compaction_needed,
+)
 ```
 
 - [ ] **Step 2: Add unit test for psi_compaction parsing**
@@ -669,6 +702,7 @@ async def test_ai_client_parses_compaction_signal() -> None:
     runner = web.AppRunner(app)
     await runner.setup()
     import socket as _s
+
     s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -715,6 +749,7 @@ async def test_ai_client_no_compaction_when_field_absent() -> None:
     runner = web.AppRunner(app)
     await runner.setup()
     import socket as _s
+
     s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -766,11 +801,11 @@ git commit -m "feat: AiClient parses psi_compaction SSE field"
 After the `add()` method (line 110), insert:
 
 ```python
-    def trim_after(self, index: int) -> None:
-        """Delete all messages after the given index (inclusive after).
-        Auto-snapshots on first mutation."""
-        self._begin_if_needed()
-        del self.messages[index + 1:]
+def trim_after(self, index: int) -> None:
+    """Delete all messages after the given index (inclusive after).
+    Auto-snapshots on first mutation."""
+    self._begin_if_needed()
+    del self.messages[index + 1 :]
 ```
 
 - [ ] **Step 2: Add unit test**
@@ -786,12 +821,14 @@ from psi_agent.session.conversation import Conversation
 
 @pytest.mark.anyio
 async def test_trim_after_removes_messages() -> None:
-    conv = Conversation(messages=[
-        {"role": "system", "content": "You are helpful."},
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi there"},
-        {"role": "user", "content": "what's up"},
-    ])
+    conv = Conversation(
+        messages=[
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+            {"role": "user", "content": "what's up"},
+        ]
+    )
     conv.trim_after(0)
     assert len(conv.messages) == 1
     assert conv.messages[0]["role"] == "system"
@@ -799,11 +836,13 @@ async def test_trim_after_removes_messages() -> None:
 
 @pytest.mark.anyio
 async def test_trim_after_keeps_up_to_index() -> None:
-    conv = Conversation(messages=[
-        {"role": "system", "content": "You are helpful."},
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi there"},
-    ])
+    conv = Conversation(
+        messages=[
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+    )
     conv.trim_after(1)
     assert len(conv.messages) == 2
     assert conv.messages[0]["role"] == "system"
@@ -812,11 +851,13 @@ async def test_trim_after_keeps_up_to_index() -> None:
 
 @pytest.mark.anyio
 async def test_trim_after_rollback_restores() -> None:
-    conv = Conversation(messages=[
-        {"role": "system", "content": "system"},
-        {"role": "user", "content": "u1"},
-        {"role": "assistant", "content": "a1"},
-    ])
+    conv = Conversation(
+        messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+    )
     conv.trim_after(0)
     assert len(conv.messages) == 1
     conv.rollback()
@@ -947,12 +988,12 @@ async def test_extracts_compact_history_from_system_py(tmp_path: Path) -> None:
     systems_dir = tmp_path / "systems"
     await anyio.Path(str(systems_dir)).mkdir()
     await anyio.Path(str(systems_dir / "system.py")).write_text(
-        '''async def system_prompt_builder() -> str:
+        """async def system_prompt_builder() -> str:
     return "You are helpful."
 
 async def compact_history(history, complete_fn) -> str:
     return "SUMMARY: " + str(len(history))
-'''
+"""
     )
 
     sp = await SystemPrompt.from_workspace(tmp_path, "test_session")
@@ -1264,55 +1305,49 @@ After the `run()` method (before `# -- delegation` section, around line 111), ad
 Below line 407, add:
 
 ```python
-    async def _maybe_compact(self) -> None:
-        """Invoke compact_history from system.py, merge result into system
-        prompt, delete all non-system messages."""
-        compaction_fn = self._system_prompt.compaction_fn
-        if compaction_fn is None:
-            logger.warning("No compact_history function in system.py, skipping compaction")
-            return
+async def _maybe_compact(self) -> None:
+    """Invoke compact_history from system.py, merge result into system
+    prompt, delete all non-system messages."""
+    compaction_fn = self._system_prompt.compaction_fn
+    if compaction_fn is None:
+        logger.warning("No compact_history function in system.py, skipping compaction")
+        return
 
-        try:
-            complete_fn = self._make_compaction_complete_fn()
-            summary = await compaction_fn(self._conversation.messages, complete_fn)
-            logger.info(f"Compaction summary generated ({len(summary)} chars)")
+    try:
+        complete_fn = self._make_compaction_complete_fn()
+        summary = await compaction_fn(self._conversation.messages, complete_fn)
+        logger.info(f"Compaction summary generated ({len(summary)} chars)")
 
-            has_system = (
-                self._conversation.messages
-                and self._conversation.messages[0].get("role") == "system"
-            )
-            if has_system:
-                old = self._conversation.messages[0].get("content", "")
-                self._conversation.replace_system(
-                    f"{old}\n\n[Compacted History]\n{summary}"
-                )
-            else:
-                self._conversation.replace_system(
-                    f"[Compacted History]\n{summary}"
-                )
+        has_system = self._conversation.messages and self._conversation.messages[0].get("role") == "system"
+        if has_system:
+            old = self._conversation.messages[0].get("content", "")
+            self._conversation.replace_system(f"{old}\n\n[Compacted History]\n{summary}")
+        else:
+            self._conversation.replace_system(f"[Compacted History]\n{summary}")
 
-            self._conversation.trim_after(0)
-            await self._conversation.commit()
-            logger.info("Compaction completed")
-        except Exception as e:
-            logger.error(f"Compaction failed: {e!r}")
+        self._conversation.trim_after(0)
+        await self._conversation.commit()
+        logger.info("Compaction completed")
+    except Exception as e:
+        logger.error(f"Compaction failed: {e!r}")
 
-    def _make_compaction_complete_fn(self):
-        """Build a complete_fn for use by compact_history."""
-        from collections.abc import Callable
-        from typing import Any, Awaitable
 
-        async def complete_fn(messages: list[dict[str, Any]]) -> str:
-            body: dict[str, Any] = {"messages": messages, "stream": True}
-            parts: list[str] = []
-            async for delta in self._ai_client.stream(body):
-                if delta.content:
-                    parts.append(delta.content)
-                if delta.finish_reason == "error":
-                    raise AgentError(delta.content or "Compaction AI call failed")
-            return "".join(parts)
+def _make_compaction_complete_fn(self):
+    """Build a complete_fn for use by compact_history."""
+    from collections.abc import Callable
+    from typing import Any, Awaitable
 
-        return complete_fn
+    async def complete_fn(messages: list[dict[str, Any]]) -> str:
+        body: dict[str, Any] = {"messages": messages, "stream": True}
+        parts: list[str] = []
+        async for delta in self._ai_client.stream(body):
+            if delta.content:
+                parts.append(delta.content)
+            if delta.finish_reason == "error":
+                raise AgentError(delta.content or "Compaction AI call failed")
+        return "".join(parts)
+
+    return complete_fn
 ```
 
 Wait, the `Callable` and `Awaitable` imports should be at the top of the file. Let me add them there. Also I need to import `collections.abc.Callable` and `typing.Awaitable` for the return type.
@@ -1320,19 +1355,20 @@ Wait, the `Callable` and `Awaitable` imports should be at the top of the file. L
 Actually, let me use a simpler approach without explicit type annotation for the return type:
 
 ```python
-    def _make_compaction_complete_fn(self):
-        """Build a complete_fn for use by compact_history."""
-        async def complete_fn(messages: list[dict[str, Any]]) -> str:
-            body: dict[str, Any] = {"messages": messages, "stream": True}
-            parts: list[str] = []
-            async for delta in self._ai_client.stream(body):
-                if delta.content:
-                    parts.append(delta.content)
-                if delta.finish_reason == "error":
-                    raise AgentError(delta.content or "Compaction AI call failed")
-            return "".join(parts)
+def _make_compaction_complete_fn(self):
+    """Build a complete_fn for use by compact_history."""
 
-        return complete_fn
+    async def complete_fn(messages: list[dict[str, Any]]) -> str:
+        body: dict[str, Any] = {"messages": messages, "stream": True}
+        parts: list[str] = []
+        async for delta in self._ai_client.stream(body):
+            if delta.content:
+                parts.append(delta.content)
+            if delta.finish_reason == "error":
+                raise AgentError(delta.content or "Compaction AI call failed")
+        return "".join(parts)
+
+    return complete_fn
 ```
 
 OK, the type checker should be happy since the return annotation is inferred.
@@ -1398,6 +1434,7 @@ async def test_agent_triggers_compaction_on_signal(tmp_path: Path) -> None:
     runner = web.AppRunner(app)
     await runner.setup()
     import socket as _s
+
     s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -1406,11 +1443,13 @@ async def test_agent_triggers_compaction_on_signal(tmp_path: Path) -> None:
     await site.start()
 
     try:
-        conv = Conversation(messages=[
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "old chat 1"},
-            {"role": "assistant", "content": "old reply 1"},
-        ])
+        conv = Conversation(
+            messages=[
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "old chat 1"},
+                {"role": "assistant", "content": "old reply 1"},
+            ]
+        )
         ai_client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
         agent = SessionAgent(
             ai_client=ai_client,
@@ -1418,9 +1457,12 @@ async def test_agent_triggers_compaction_on_signal(tmp_path: Path) -> None:
             system_prompt=sp,
         )
 
-        chunks = [c async for c in agent.run(
-            {"role": "user", "content": "hi"},
-        )]
+        chunks = [
+            c
+            async for c in agent.run(
+                {"role": "user", "content": "hi"},
+            )
+        ]
 
         assert len(chunks) > 0
         all_content = "".join(c.content or "" for c in chunks)
@@ -1464,6 +1506,7 @@ async def test_agent_no_compaction_without_signal(tmp_path: Path) -> None:
     runner = web.AppRunner(app)
     await runner.setup()
     import socket as _s
+
     s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -1472,11 +1515,13 @@ async def test_agent_no_compaction_without_signal(tmp_path: Path) -> None:
     await site.start()
 
     try:
-        conv = Conversation(messages=[
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "old chat 1"},
-            {"role": "assistant", "content": "old reply 1"},
-        ])
+        conv = Conversation(
+            messages=[
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "old chat 1"},
+                {"role": "assistant", "content": "old reply 1"},
+            ]
+        )
         ai_client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
         agent = SessionAgent(
             ai_client=ai_client,
@@ -1484,9 +1529,12 @@ async def test_agent_no_compaction_without_signal(tmp_path: Path) -> None:
             system_prompt=SystemPrompt(builder=lambda: "You are helpful."),
         )
 
-        chunks = [c async for c in agent.run(
-            {"role": "user", "content": "hi"},
-        )]
+        chunks = [
+            c
+            async for c in agent.run(
+                {"role": "user", "content": "hi"},
+            )
+        ]
 
         assert len(chunks) > 0
         all_content = "".join(c.content or "" for c in chunks)
@@ -1530,6 +1578,7 @@ async def test_agent_compaction_creates_system_if_missing(tmp_path: Path) -> Non
     runner = web.AppRunner(app)
     await runner.setup()
     import socket as _s
+
     s = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -1538,10 +1587,12 @@ async def test_agent_compaction_creates_system_if_missing(tmp_path: Path) -> Non
     await site.start()
 
     try:
-        conv = Conversation(messages=[
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
-        ])
+        conv = Conversation(
+            messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+            ]
+        )
         ai_client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
         agent = SessionAgent(
             ai_client=ai_client,
@@ -1550,9 +1601,12 @@ async def test_agent_compaction_creates_system_if_missing(tmp_path: Path) -> Non
         )
 
         await anyio.sleep(0.01)
-        chunks = [c async for c in agent.run(
-            {"role": "user", "content": "hi"},
-        )]
+        chunks = [
+            c
+            async for c in agent.run(
+                {"role": "user", "content": "hi"},
+            )
+        ]
 
         assert len(conv.messages) == 1
         assert conv.messages[0]["role"] == "system"
@@ -1627,20 +1681,20 @@ async def test_full_compaction_flow(tmp_path: Path) -> None:
     systems_dir = workspace / "systems"
     await anyio.Path(str(systems_dir)).mkdir()
     await anyio.Path(str(systems_dir / "system.py")).write_text(
-        '''async def system_prompt_builder() -> str:
+        """async def system_prompt_builder() -> str:
     return "You are a test assistant."
 
 async def compact_history(history, complete_fn) -> str:
     return f"SUMMARY: {len(history)} messages compacted."
-'''
+"""
     )
 
     tools_dir = workspace / "tools"
     await anyio.Path(str(tools_dir)).mkdir()
     await anyio.Path(str(tools_dir / "echo.py")).write_text(
-        '''async def echo(message: str) -> str:
+        """async def echo(message: str) -> str:
     return f"ECHO: {message}"
-'''
+"""
     )
 
     # Mock AI server that sends compaction signal
@@ -1735,6 +1789,7 @@ async def test_full_compaction_flow(tmp_path: Path) -> None:
     )
 
     from psi_agent.session.system_prompt import SystemPrompt
+
     sp = await SystemPrompt.from_workspace(workspace, "test_sid")
     assert sp.compaction_fn is not None
 
@@ -1746,7 +1801,9 @@ async def test_full_compaction_flow(tmp_path: Path) -> None:
         resp = web.StreamResponse(...)
         await resp.prepare(request)
         await resp.write(b'data: {"id":"t","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}},...')
-        await resp.write(b'data: {"id":"comp","choices":[{"index":0,"delta":{},"finish_reason":"compaction_needed"}],"psi_compaction":{"needed":true,...}}')
+        await resp.write(
+            b'data: {"id":"comp","choices":[{"index":0,"delta":{},"finish_reason":"compaction_needed"}],"psi_compaction":{"needed":true,...}}'
+        )
         return resp
 
     app = web.Application()
@@ -1761,11 +1818,13 @@ async def test_full_compaction_flow(tmp_path: Path) -> None:
     await site.start()
 
     try:
-        conv = Conversation(messages=[
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "old msg"},
-            {"role": "assistant", "content": "old reply"},
-        ])
+        conv = Conversation(
+            messages=[
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "old msg"},
+                {"role": "assistant", "content": "old reply"},
+            ]
+        )
         ai_client = AiClient(ai_socket=f"http://127.0.0.1:{port}")
         agent = SessionAgent(
             ai_client=ai_client,

@@ -109,14 +109,16 @@ class ModuleRuntime:
     deps: Mapping[str, Any] = field(default_factory=dict)
     """本模块 requires 声明的模块 ctx，键是模块名。框架填，模块只读。"""
 
-# core/module.py —— Module 加一个字段
+    # core/module.py —— Module 加一个字段
     requires: Sequence[str] = ()
     """依赖的其它模块名。框架保证它们的 ctx 先构造好并从
     ModuleRuntime.deps 传入 —— 模块之间不直接 import。"""
 
+
 # core/registry.py
 def discover(disabled: frozenset[str] = frozenset()) -> list[Module]:
     """返回拓扑序模块列表：被依赖者在前，同层按 name 稳定排序。"""
+
 
 def _topo_sort(modules: list[Module]) -> list[Module]:
     """按 requires 拓扑排序。缺失依赖 → ValueError；成环 → ValueError。
@@ -193,32 +195,41 @@ general_settings:
 # modules/llm/config.py
 @dataclass(frozen=True, slots=True)
 class LlmSettings:
-    upstream_base_url: str      # LLM_UPSTREAM_BASE_URL
-    upstream_master_key: str    # LLM_UPSTREAM_MASTER_KEY
-    default_model: str          # LLM_DEFAULT_MODEL
+    upstream_base_url: str  # LLM_UPSTREAM_BASE_URL
+    upstream_master_key: str  # LLM_UPSTREAM_MASTER_KEY
+    default_model: str  # LLM_DEFAULT_MODEL
     allowed_models: tuple[str, ...]  # LLM_ALLOWED_MODELS，逗号分隔
-    request_timeout: float      # LLM_REQUEST_TIMEOUT，默认 300
+    request_timeout: float  # LLM_REQUEST_TIMEOUT，默认 300
+
 
 def llm_settings() -> LlmSettings: ...
 
+
 # modules/llm/deps.py
 class LlmContext:
-    def __init__(self, *, settings: LlmSettings, client: httpx.AsyncClient,
-                 auth: Any) -> None: ...
+    def __init__(self, *, settings: LlmSettings, client: httpx.AsyncClient, auth: Any) -> None: ...
+
     # auth 是 auth 模块的 ctx，由 manifest 从 runtime.deps["auth"] 传入
 
+
 def get_llm_ctx(request: Request) -> LlmContext: ...
+
+
 Ctx = Annotated[LlmContext, Depends(get_llm_ctx)]
+
 
 # modules/llm/service.py —— 不 import fastapi
 async def authenticate(ctx: LlmContext, token: str) -> str:
     """token → user_id。委托 auth 模块的 resolve_session。"""
 
+
 def resolve_model(ctx: LlmContext, payload: dict[str, Any]) -> dict[str, Any]:
     """填默认 model；清单外 raise InvalidInput（不转发）。返回新 payload。"""
 
+
 async def complete(ctx: LlmContext, payload: dict[str, Any]) -> dict[str, Any]:
     """非流式转发。上游异常映射为 core.errors 里的既有异常。"""
+
 
 def map_upstream_error(status: int, body: str, retry_after: str | None) -> DomainError:
     """上游状态码 → 统一信封。body 只进日志，不进返回值的 message。"""
@@ -252,9 +263,7 @@ def map_upstream_error(status: int, body: str, retry_after: str | None) -> Domai
 
 ```python
 # modules/llm/service.py
-async def stream_completion(
-    ctx: LlmContext, payload: dict[str, Any]
-) -> AsyncIterator[bytes]:
+async def stream_completion(ctx: LlmContext, payload: dict[str, Any]) -> AsyncIterator[bytes]:
     """流式转发。第一个 chunk 之前的失败以异常抛出（router 转 HTTP 错误）；
     之后的失败以 SSE 错误帧发出并终止。
 
@@ -262,6 +271,7 @@ async def stream_completion(
     客户端断连时生成器被 GC/aclose，上下文退出即关闭上游连接（A8）。
     不得在中间攒完整包：攒了首字延迟等于整轮时长。
     """
+
 
 def error_frame(exc: DomainError) -> bytes:
     """流中失败时发的 SSE 帧：data: {"error": code, "message": msg}\\n\\n
@@ -294,6 +304,7 @@ def error_frame(exc: DomainError) -> bytes:
 async def list_models(ctx: LlmContext) -> dict[str, Any]:
     """转发 litellm 的 /v1/models，过滤到 allowed_models。
     ** 不证明上游 key 有效 ** —— 这正是本次踩的坑，故另有 check_upstream。"""
+
 
 async def check_upstream(ctx: LlmContext) -> dict[str, Any]:
     """对上游发一次 max_tokens=1 的真实请求。返回
@@ -365,16 +376,22 @@ export const DEFAULT_REMOTE_AI = {
 
 ```python
 # gateway/_free_model.py（新增）
-PLACEHOLDER_API_KEY = "haitun-default"          # 与两份 SPA 是同一个契约
+PLACEHOLDER_API_KEY = "haitun-default"  # 与两份 SPA 是同一个契约
+
+
 def is_cloud_free_model(api_key: str, base_url: str, auth_endpoint: str) -> bool: ...
 def make_key_resolver(token_of, auth_endpoint) -> Callable[[str, str], str]: ...
 
+
 # gateway/_ai_manager.py
-_resolve_key: Callable[[str, str], str] = _key_as_is   # 注入点，只作用于交给 Ai 的那一份
+_resolve_key: Callable[[str, str], str] = _key_as_is  # 注入点，只作用于交给 Ai 的那一份
+
+
 async def refresh_where(self, predicate) -> list[str]: ...
 
+
 # gateway/_auth_manager.py
-def bearer_token(self) -> str: ...   # 唯一的进程内取值口，不接任何下行响应
+def bearer_token(self) -> str: ...  # 唯一的进程内取值口，不接任何下行响应
 ```
 
 替换条件是**两条同时成立**：`api_key` 是哨兵，且 `base_url` 与认证服务**同源** ——

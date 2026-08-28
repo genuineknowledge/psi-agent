@@ -177,11 +177,7 @@ from typing import Any
 
 
 def copy_public_request_body(*, body: dict[str, Any]) -> dict[str, Any]:
-    forwarded = {
-        key: deepcopy(value)
-        for key, value in body.items()
-        if key not in {"model", "routing"}
-    }
+    forwarded = {key: deepcopy(value) for key, value in body.items() if key not in {"model", "routing"}}
     forwarded["stream"] = True
     return forwarded
 ```
@@ -408,9 +404,7 @@ class FakeAggregationClient:
         self.aggregator_body: dict[str, Any] | None = None
         self.complete_bodies: list[dict[str, Any]] = []
 
-    async def complete(
-        self, *, socket: str, body: dict[str, Any], **options: Any
-    ) -> CompletionResult:
+    async def complete(self, *, socket: str, body: dict[str, Any], **options: Any) -> CompletionResult:
         assert options == {"timeout": 4}
         self.complete_bodies.append(body)
         if socket == "private-three.sock":
@@ -418,15 +412,11 @@ class FakeAggregationClient:
         content = "answer one" if socket == "private-one.sock" else "answer two"
         return CompletionResult(content=content, finish_reason="stop")
 
-    async def stream(
-        self, *, socket: str, body: dict[str, Any], **options: Any
-    ) -> AsyncGenerator[dict[str, Any]]:
+    async def stream(self, *, socket: str, body: dict[str, Any], **options: Any) -> AsyncGenerator[dict[str, Any]]:
         assert socket == "aggregate.sock"
         assert options == {"timeout": 9}
         self.aggregator_body = body
-        yield {
-            "choices": [{"index": 0, "delta": {"content": "combined"}, "finish_reason": None}]
-        }
+        yield {"choices": [{"index": 0, "delta": {"content": "combined"}, "finish_reason": None}]}
         yield {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
 
 
@@ -447,17 +437,13 @@ async def test_partial_failure_builds_ordered_sanitized_feedback_and_calls_aggre
     strategy = AggregationStrategy(config=config, client=client)
     events = [
         event
-        async for event in strategy.stream(
-            body={"messages": [{"role": "user", "content": "solve"}], "stream": True}
-        )
+        async for event in strategy.stream(body={"messages": [{"role": "user", "content": "solve"}], "stream": True})
     ]
     assert events[0]["choices"][0]["delta"]["content"] == "combined"
     assert events[-1]["choices"][0]["finish_reason"] == "stop"
     assert client.aggregator_body is not None
     tail = json.loads(client.aggregator_body["messages"][-1]["content"].split("\n\n", 1)[1])
-    assert [x["candidate_id"] for x in tail["aggregation_feedback"]] == [
-        "candidate-1", "candidate-2", "candidate-3"
-    ]
+    assert [x["candidate_id"] for x in tail["aggregation_feedback"]] == ["candidate-1", "candidate-2", "candidate-3"]
     assert tail["aggregation_feedback"][2]["status"] == "error"
     assert "private-three.sock" not in client.aggregator_body["messages"][-1]["content"]
     assert "<private-socket>" in client.aggregator_body["messages"][-1]["content"]
@@ -657,9 +643,7 @@ async def test_router_assigns_stable_candidate_ids_and_builds_selected_strategy(
         upstream=[("one.sock", "one"), ("two.sock", "two")],
         target_timeout=5,
     ).run()
-    assert [target.candidate_id for target in captured[0].config.targets] == [
-        "candidate-1", "candidate-2"
-    ]
+    assert [target.candidate_id for target in captured[0].config.targets] == ["candidate-1", "candidate-2"]
 ```
 
 Add cases for explicit invalid mode, malformed/non-list upstream pairs, duplicate sockets, aggregation router/upstream collision, session collision, bool/NaN/infinite limits, and a logging spy proving `setup_logging` executes before invalid configuration raises. Assert routing maps `router_timeout → selector_timeout` and `max_context_chars → max_selection_chars`; aggregation maps them to `aggregator_timeout` and `max_context_chars`.
@@ -671,11 +655,24 @@ def test_router_subcommand_parses_timeouts_and_context_budget() -> None:
     command = tyro.cli(
         Command,
         args=[
-            "router", "--session-socket", "router.sock",
-            "--router-socket", "aggregate.sock", "--mode", "aggregation",
-            "--upstream", "one.sock", "coding", "two.sock", "research",
-            "--router-timeout", "30", "--target-timeout", "8",
-            "--max-context-chars", "9000",
+            "router",
+            "--session-socket",
+            "router.sock",
+            "--router-socket",
+            "aggregate.sock",
+            "--mode",
+            "aggregation",
+            "--upstream",
+            "one.sock",
+            "coding",
+            "two.sock",
+            "research",
+            "--router-timeout",
+            "30",
+            "--target-timeout",
+            "8",
+            "--max-context-chars",
+            "9000",
         ],
     )
     assert isinstance(command, Router)
@@ -830,10 +827,7 @@ if normalized_mode == "aggregation" and router_ai_id in candidate_ids:
     raise ValueError("aggregation router_ai_id must not also be an upstream")
 for field_name, value in (("router_timeout", router_timeout), ("target_timeout", target_timeout)):
     if value is not None and (
-        not isinstance(value, int | float)
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        or value <= 0
+        not isinstance(value, int | float) or isinstance(value, bool) or not math.isfinite(value) or value <= 0
     ):
         raise ValueError(f"{field_name} must be a finite positive number or None")
 if not isinstance(max_context_chars, int) or isinstance(max_context_chars, bool) or max_context_chars <= 0:
@@ -884,9 +878,14 @@ git commit -m "feat(gateway): manage broadcast aggregation routers"
 @pytest.mark.anyio
 async def test_state_load_migrates_legacy_router_fields_without_rewriting_source(tmp_path: Path) -> None:
     legacy = {
-        "id": "r1", "name": "legacy", "mode": "routing",
-        "router_ai_id": "selector", "upstreams": [{"ai_id": "one", "description": "one"}],
-        "default_ai_id": "one", "router_timeout": 30, "max_context_length": 7777,
+        "id": "r1",
+        "name": "legacy",
+        "mode": "routing",
+        "router_ai_id": "selector",
+        "upstreams": [{"ai_id": "one", "description": "one"}],
+        "default_ai_id": "one",
+        "router_timeout": 30,
+        "max_context_length": 7777,
     }
     raw = json.dumps({"ais": [], "routers": [legacy], "sessions": [], "titles": []})
     await state._path.parent.mkdir(parents=True)

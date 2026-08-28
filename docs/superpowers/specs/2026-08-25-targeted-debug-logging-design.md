@@ -63,7 +63,7 @@ litellm 侧同样记不到：显式配了 `turn_off_message_logging: true`，且
 def setup_logging(*, verbose: bool = False) -> int:
     global _handler_id
     if _handler_id is not None:
-        return _handler_id          # one-shot: 首个调用者赢
+        return _handler_id  # one-shot: 首个调用者赢
     logger.remove()
     level = "DEBUG" if verbose else "INFO"
     _handler_id = logger.add(sys.stderr, level=level, format=...)

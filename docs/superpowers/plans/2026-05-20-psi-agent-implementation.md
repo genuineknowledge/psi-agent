@@ -315,8 +315,10 @@ ChannelGroup = Annotated[
     conf.subcommand(name="channel", description="User interface channels"),
 ]
 
+
 def main() -> None:
     import anyio
+
     cmd = tyro.cli(Run | Ai | Session | ChannelGroup)
     anyio.run(cmd.run)
 ```

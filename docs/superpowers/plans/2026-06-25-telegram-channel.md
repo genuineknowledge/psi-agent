@@ -153,9 +153,7 @@ class ChannelTelegram:
     async def run(self) -> None:
         token = self.bot_token or os.environ.get("PSI_TELEGRAM_BOT_TOKEN", "")
         if not token:
-            raise ValueError(
-                "No Telegram bot token provided. Set --bot-token or PSI_TELEGRAM_BOT_TOKEN."
-            )
+            raise ValueError("No Telegram bot token provided. Set --bot-token or PSI_TELEGRAM_BOT_TOKEN.")
 
         setup_logging(verbose=self.verbose)
         logger.info(f"Starting Telegram bot, connecting to {self.session_socket}")
@@ -272,10 +270,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "psi-agent Telegram bot ready.\n"
-        "Send a message to interact with the agent."
-    )
+    await update.message.reply_text("psi-agent Telegram bot ready.\nSend a message to interact with the agent.")
 
 
 async def run_telegram(

@@ -52,8 +52,8 @@
 
 - [x] 新增参数：
   ```python
-  history: list[dict] | None = None,
-  history_path: Path | None = None,
+  history: list[dict] | None = (None,)
+  history_path: Path | None = (None,)
   ```
 - [x] `self.history = history if history is not None else []`
 - [x] `self._history_path = history_path` — 由 `create()` 传入，直接构造时默认为 `None`

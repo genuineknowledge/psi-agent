@@ -218,6 +218,7 @@ Tool 就是一个 async 函数——非 `_` 开头的 `.py` 文件中，所有�
 # tools/bash.py
 import anyio
 
+
 async def bash(command: str) -> str:
     """Execute a bash command.
     Args:
@@ -240,9 +241,11 @@ async def system_prompt_builder() -> str:
     """构造 system prompt，返回字符串。"""
     return "You are a helpful assistant."
 
+
 async def system_prompt_rebuild_checker() -> bool:
     """每次对话回合前调用。返回 True 则重建 system prompt。"""
     return False
+
 
 async def turn_context_builder() -> str:
     """每次对话回合前调用。返回本回合的易变块（时间等），挂在本回合 user 消息尾部。"""
@@ -308,18 +311,38 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
-| POST | `/sessions` | 创建 Session |
+| POST | `/routers` | 创建并启动 Router |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router |
+| GET | `/routers` | 列出所有 Router |
+| POST | `/sessions` | 创建 Session（可选 `agent` / `workspace`） |
 | DELETE | `/sessions/{session_id}` | 删除 Session |
-| GET | `/sessions` | 列出所有 Session |
+| GET | `/sessions` | 列出所有 Session（含 `agent`） |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
+| GET | `/sessions/{session_id}/todos` | 获取会话 todos |
+| GET | `/sessions/{session_id}/todo-segments` | 获取会话 todo 分段列表 |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 获取单段 todo 历史 |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 设置 todo 分段标题 |
 | POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
+| GET | `/summaries` | 获取所有会话任务摘要 |
+| POST | `/summaries` | 设置会话任务摘要 |
+| POST | `/summaries/generate` | AI 自动生成任务摘要 |
+| GET | `/defaults` | 获取默认 agent、workspace、appdata 路径 |
+| GET | `/workspace/cwd` | 获取 Gateway 工作目录 |
+| GET | `/workspace/places` | 获取 PathPicker 快捷位置和盘符 |
 | GET | `/workspace/browse` | 浏览目录（`?path=...`） |
-| GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/workspace/file` | 读取 workspace 文件 (base64) |
+| POST | `/workspace/reveal` | 在本机文件管理器中显示路径 |
+| POST | `/ui/attention` | 会话完成时闪烁托盘/webview 注意力 |
+| GET | `/ui/prefs/survey` | 获取问卷弹窗已关闭标记 |
+| POST | `/ui/prefs/survey` | 记录问卷弹窗已关闭 |
+| GET | `/oauth/callback` | OAuth 回调中继 |
+| GET | `/oauth/code` | 按 state 取一次性 OAuth code |
+| GET | `/auth/*` | 云端账号服务 API（登录态 / 验证码 / 设备列表等） |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 

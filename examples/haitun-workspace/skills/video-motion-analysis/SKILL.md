@@ -100,51 +100,62 @@ for your event's discriminating feature; keep the boundary logic.
 ```python
 import cv2, numpy as np
 
+
 def per_frame_signal(video_path):
     """Return list of (frame_idx, signal, present). signal=bottom-y of largest
     blob (the feet) for a jump; present=False when no real subject (incl. frame 0)."""
     cap = cv2.VideoCapture(video_path)
-    fgbg = cv2.createBackgroundSubtractorMOG2(history=10, varThreshold=50,
-                                              detectShadows=False)
+    fgbg = cv2.createBackgroundSubtractorMOG2(history=10, varThreshold=50, detectShadows=False)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     out, i = [], 0
     while True:
         ok, frame = cap.read()
-        if not ok: break
+        if not ok:
+            break
         m = fgbg.apply(cv2.GaussianBlur(frame, (11, 11), 0))
-        if i == 0:                                   # MOG2 1st frame = all-FG
-            out.append((i, None, False)); i += 1; continue
+        if i == 0:  # MOG2 1st frame = all-FG
+            out.append((i, None, False))
+            i += 1
+            continue
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, k)
         m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, k)
         n, lab, stats, _ = cv2.connectedComponentsWithStats((m > 0).astype(np.uint8), 8)
         present, sig = False, None
         if n > 1:
             j = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-            if stats[j, cv2.CC_STAT_AREA] >= 500:    # filter reflections/noise
+            if stats[j, cv2.CC_STAT_AREA] >= 500:  # filter reflections/noise
                 ys = np.nonzero(lab == j)[0]
-                sig = int(ys.max()); present = True   # bottom-y = feet
-        out.append((i, sig, present)); i += 1
-    cap.release(); return out
+                sig = int(ys.max())
+                present = True  # bottom-y = feet
+        out.append((i, sig, present))
+        i += 1
+    cap.release()
+    return out
+
 
 def first_block(sig, max_gap=4):
     idx = [i for i, s, p in sig if p]
-    if not idx: return []
+    if not idx:
+        return []
     block, gap = [idx[0]], 0
     for a, b in zip(idx, idx[1:]):
-        if b - a - 1 <= max_gap: block.append(b)
-        else: break
+        if b - a - 1 <= max_gap:
+            block.append(b)
+        else:
+            break
     return block
+
 
 def detect_event(sig, ground_tol=40):
     blk = first_block(sig)
     vals = {i: s for i, s, p in sig if p}
     ys = np.array([vals[i] for i in blk])
-    baseline = np.percentile(ys, 90)                 # robust resting level
-    apex = blk[int(np.argmin(ys))]                   # feet highest = smallest y
+    baseline = np.percentile(ys, 90)  # robust resting level
+    apex = blk[int(np.argmin(ys))]  # feet highest = smallest y
     grounded = [i for i in blk if vals[i] >= baseline - ground_tol]
     takeoff = max([i for i in grounded if i <= apex], default=apex)
-    land    = min([i for i in grounded if i >= apex], default=apex)
-    return takeoff, land                             # verify ±1 convention on example
+    land = min([i for i in grounded if i >= apex], default=apex)
+    return takeoff, land  # verify ±1 convention on example
 ```
 
 Calibrate `detect_event`'s boundary convention and `ground_tol` against the

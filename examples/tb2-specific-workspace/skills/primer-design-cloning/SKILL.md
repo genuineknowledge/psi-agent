@@ -35,19 +35,30 @@ near-misses into a pass:
 
 ```python
 import subprocess
+
+
 def tm(seq):  # use the EXACT tool + flags the task names as ground truth
-    out = subprocess.run(["oligotm","-tp","1","-sc","1","-mv","50","-dv","2",
-                          "-n","0.8","-d","500", seq], capture_output=True, text=True)
+    out = subprocess.run(
+        ["oligotm", "-tp", "1", "-sc", "1", "-mv", "50", "-dv", "2", "-n", "0.8", "-d", "500", seq],
+        capture_output=True,
+        text=True,
+    )
     return float(out.stdout.strip())
-def rc(s): return s.translate(str.maketrans("atcg","tagc"))[::-1]
+
+
+def rc(s):
+    return s.translate(str.maketrans("atcg", "tagc"))[::-1]
+
 
 # --- 1. derive the AMBIGUITY WINDOW for the cut (insert may share edge bases) ---
 ins_len = len(output) - len(input)
-p = 0                                            # prefix scan -> right edge of window
-while p < len(input) and input[p] == output[p]: p += 1
-s = 0                                            # suffix scan -> left edge of window
-while s < len(input) and input[-1-s] == output[-1-s]: s += 1
-left_edge, right_edge = len(input) - s, p        # any cut here reconstructs output
+p = 0  # prefix scan -> right edge of window
+while p < len(input) and input[p] == output[p]:
+    p += 1
+s = 0  # suffix scan -> left edge of window
+while s < len(input) and input[-1 - s] == output[-1 - s]:
+    s += 1
+left_edge, right_edge = len(input) - s, p  # any cut here reconstructs output
 
 # CANONICAL cut = the LEFT edge: the grader fixes the insert as the LEFT-ALIGNED
 # representation (output[left_edge:left_edge+ins_len]), so its hard-coded flanking
@@ -56,27 +67,33 @@ left_edge, right_edge = len(input) - s, p        # any cut here reconstructs out
 # left-aligned cut makes your anneal arms equal the grader's flanks. So try cuts
 # LEFT-EDGE FIRST, and validate each by reconstructing the product (below).
 
+
 # --- 2. for the chosen cut, joint search over anneal lengths; minimize |Δtm| only ---
 def solve_at(cut):
     left_flank, right_flank = input[:cut], input[cut:]
     best = None
-    for lf in range(15, 37):                      # oligotm rejects >36 nt
-        fwd = right_flank[:lf]; f_tm = tm(fwd)
-        if not (58 <= f_tm <= 72): continue
+    for lf in range(15, 37):  # oligotm rejects >36 nt
+        fwd = right_flank[:lf]
+        f_tm = tm(fwd)
+        if not (58 <= f_tm <= 72):
+            continue
         for lr in range(15, 37):
             rev_anneal = left_flank[-lr:]
-            r_tm = tm(rc(rev_anneal))             # measure the strand the grader passes
-            if not (58 <= r_tm <= 72): continue
-            if abs(f_tm - r_tm) <= 5:             # the decisive pair constraint
-                score = abs(f_tm - r_tm)          # minimize ONLY this — no mid-band term
+            r_tm = tm(rc(rev_anneal))  # measure the strand the grader passes
+            if not (58 <= r_tm <= 72):
+                continue
+            if abs(f_tm - r_tm) <= 5:  # the decisive pair constraint
+                score = abs(f_tm - r_tm)  # minimize ONLY this — no mid-band term
                 if best is None or score < best[0]:
                     best = (score, cut, lf, lr, f_tm, r_tm)
     return best
 
+
 best = None
-for cut in range(left_edge, right_edge + 1):      # LEFT edge first = grader's convention
+for cut in range(left_edge, right_edge + 1):  # LEFT edge first = grader's convention
     best = solve_at(cut)
-    if best: break
+    if best:
+        break
 assert best, "no in-band, ≤5°C-apart pair — re-derive the cut window / flanks"
 # NOTE: do NOT add a "+0.1*(|f-65|+|r-65|)" mid-band term to score: on GC-asymmetric
 # flanks it pulls the GC-rich primer longer and pushes |f_tm-r_tm| back over 5.

@@ -128,51 +128,113 @@ Excalidraw 的"关系"全靠 id 互引,有两处必须**双向**写对,否则拖
 ```python
 import json, random, time, itertools
 
-_ids = ("el-%d" % i for i in itertools.count(1))   # 稳定可读的 id
-def nid(): return next(_ids)
-def rnd(): return random.randint(1, 2**31 - 1)
+_ids = ("el-%d" % i for i in itertools.count(1))  # 稳定可读的 id
+
+
+def nid():
+    return next(_ids)
+
+
+def rnd():
+    return random.randint(1, 2**31 - 1)
+
+
 NOW = int(time.time() * 1000)
 
+
 def base(**kw):
-    d = dict(angle=0, strokeColor="#1e1e1e", backgroundColor="transparent",
-             fillStyle="solid", strokeWidth=2, strokeStyle="solid",
-             roughness=1, opacity=100, seed=rnd(), version=1, versionNonce=rnd(),
-             index=None, isDeleted=False, groupIds=[], frameId=None,
-             boundElements=None, updated=NOW, link=None, locked=False,
-             roundness=None)
-    d.update(kw); return d
+    d = dict(
+        angle=0,
+        strokeColor="#1e1e1e",
+        backgroundColor="transparent",
+        fillStyle="solid",
+        strokeWidth=2,
+        strokeStyle="solid",
+        roughness=1,
+        opacity=100,
+        seed=rnd(),
+        version=1,
+        versionNonce=rnd(),
+        index=None,
+        isDeleted=False,
+        groupIds=[],
+        frameId=None,
+        boundElements=None,
+        updated=NOW,
+        link=None,
+        locked=False,
+        roundness=None,
+    )
+    d.update(kw)
+    return d
+
 
 def box(x, y, w=160, h=60, shape="rectangle", bg="transparent", rounded=True):
-    return base(id=nid(), type=shape, x=x, y=y, width=w, height=h,
-                backgroundColor=bg,
-                roundness={"type": 3} if rounded and shape == "rectangle" else
-                          ({"type": 2} if shape == "diamond" else None))
+    return base(
+        id=nid(),
+        type=shape,
+        x=x,
+        y=y,
+        width=w,
+        height=h,
+        backgroundColor=bg,
+        roundness={"type": 3} if rounded and shape == "rectangle" else ({"type": 2} if shape == "diamond" else None),
+    )
+
 
 def label(cid, s, x, y, w, h, size=20):
     # 绑进容器的居中文本
-    return base(id=nid(), type="text", x=x + 12, y=y + h/2 - size/2,
-                width=w - 24, height=size * 1.25, text=s, originalText=s,
-                fontSize=size, fontFamily=5, textAlign="center",
-                verticalAlign="middle", containerId=cid, autoResize=True,
-                lineHeight=1.25)
+    return base(
+        id=nid(),
+        type="text",
+        x=x + 12,
+        y=y + h / 2 - size / 2,
+        width=w - 24,
+        height=size * 1.25,
+        text=s,
+        originalText=s,
+        fontSize=size,
+        fontFamily=5,
+        textAlign="center",
+        verticalAlign="middle",
+        containerId=cid,
+        autoResize=True,
+        lineHeight=1.25,
+    )
+
 
 def bind(container, *child_ids_types):
     container["boundElements"] = [{"type": t, "id": i} for i, t in child_ids_types]
 
+
 def arrow(x1, y1, x2, y2, src=None, dst=None, dashed=False, head="arrow"):
-    a = base(id=nid(), type="arrow", x=x1, y=y1, width=x2 - x1, height=y2 - y1,
-             strokeStyle="dashed" if dashed else "solid",
-             points=[[0, 0], [x2 - x1, y2 - y1]],
-             startArrowhead=None, endArrowhead=head, elbowed=False,
-             startBinding={"elementId": src, "focus": 0, "gap": 4} if src else None,
-             endBinding={"elementId": dst, "focus": 0, "gap": 4} if dst else None)
+    a = base(
+        id=nid(),
+        type="arrow",
+        x=x1,
+        y=y1,
+        width=x2 - x1,
+        height=y2 - y1,
+        strokeStyle="dashed" if dashed else "solid",
+        points=[[0, 0], [x2 - x1, y2 - y1]],
+        startArrowhead=None,
+        endArrowhead=head,
+        elbowed=False,
+        startBinding={"elementId": src, "focus": 0, "gap": 4} if src else None,
+        endBinding={"elementId": dst, "focus": 0, "gap": 4} if dst else None,
+    )
     return a
 
+
 def dump(elements, path):
-    scene = {"type": "excalidraw", "version": 2,
-             "source": "https://excalidraw.com", "elements": elements,
-             "appState": {"gridSize": None, "viewBackgroundColor": "#ffffff"},
-             "files": {}}
+    scene = {
+        "type": "excalidraw",
+        "version": 2,
+        "source": "https://excalidraw.com",
+        "elements": elements,
+        "appState": {"gridSize": None, "viewBackgroundColor": "#ffffff"},
+        "files": {},
+    }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(scene, f, ensure_ascii=False, indent=2)
 ```
@@ -185,18 +247,23 @@ def dump(elements, path):
 
 ```python
 els = []
-def node(x, y, s, bg, w=180, h=64):
-    b = box(x, y, w, h, bg=bg); t = label(b["id"], s, x, y, w, h)
-    els.extend([b, t]); return b, t
 
-client, _ = node(60,  40, "Web / Mobile", "#a5d8ff")
-gw,     _ = node(60, 180, "API Gateway",  "#b2f2bb")
-svc,    _ = node(60, 320, "Order Service","#ffec99")
-db,     _ = node(320, 320, "PostgreSQL",  "#ffc9c9")
+
+def node(x, y, s, bg, w=180, h=64):
+    b = box(x, y, w, h, bg=bg)
+    t = label(b["id"], s, x, y, w, h)
+    els.extend([b, t])
+    return b, t
+
+
+client, _ = node(60, 40, "Web / Mobile", "#a5d8ff")
+gw, _ = node(60, 180, "API Gateway", "#b2f2bb")
+svc, _ = node(60, 320, "Order Service", "#ffec99")
+db, _ = node(320, 320, "PostgreSQL", "#ffc9c9")
 
 a1 = arrow(150, 104, 150, 180, src=client["id"], dst=gw["id"])
-a2 = arrow(150, 244, 150, 320, src=gw["id"],     dst=svc["id"])
-a3 = arrow(240, 352, 320, 352, src=svc["id"],    dst=db["id"])
+a2 = arrow(150, 244, 150, 320, src=gw["id"], dst=svc["id"])
+a3 = arrow(240, 352, 320, 352, src=svc["id"], dst=db["id"])
 # 双向登记:每个节点记住连在自己身上的箭头 + 自己的文本
 bind(client, (client_t_id := els[1]["id"], "text"), (a1["id"], "arrow"))
 # ↑ 简洁起见实战里在 node() 返回后逐个 bind;关键是"节点.boundElements 要含其 text 和所有相连 arrow"
@@ -212,18 +279,19 @@ dump(els, "/abs/path/arch.excalidraw")
 
 ```python
 els = []
-start, _ = node(120,  40, "开始", "#b2f2bb", w=120, h=50)   # 圆角矩形当起点
-step,  _ = node(100, 150, "读取输入", "#a5d8ff", w=160, h=60)
+start, _ = node(120, 40, "开始", "#b2f2bb", w=120, h=50)  # 圆角矩形当起点
+step, _ = node(100, 150, "读取输入", "#a5d8ff", w=160, h=60)
 dec = box(110, 270, 140, 100, shape="diamond", bg="#ffec99")
-dect = label(dec["id"], "有效?", 110, 270, 140, 100); els += [dec, dect]
-ok,   _ = node(320, 285, "处理并保存", "#b2f2bb", w=160, h=60)
-end,  _ = node(90,  430, "结束", "#ffc9c9", w=120, h=50)
+dect = label(dec["id"], "有效?", 110, 270, 140, 100)
+els += [dec, dect]
+ok, _ = node(320, 285, "处理并保存", "#b2f2bb", w=160, h=60)
+end, _ = node(90, 430, "结束", "#ffc9c9", w=120, h=50)
 
 els += [
-  arrow(180,  90, 180, 150, src=start["id"], dst=step["id"]),
-  arrow(180, 210, 180, 270, src=step["id"],  dst=dec["id"]),
-  arrow(250, 320, 320, 315, src=dec["id"],   dst=ok["id"]),    # Yes →
-  arrow(150, 370, 150, 430, src=dec["id"],   dst=end["id"]),   # No ↓
+    arrow(180, 90, 180, 150, src=start["id"], dst=step["id"]),
+    arrow(180, 210, 180, 270, src=step["id"], dst=dec["id"]),
+    arrow(250, 320, 320, 315, src=dec["id"], dst=ok["id"]),  # Yes →
+    arrow(150, 370, 150, 430, src=dec["id"], dst=end["id"]),  # No ↓
 ]
 dump(els, "/abs/path/flow.excalidraw")
 ```
@@ -239,19 +307,51 @@ els = []
 actors = ["User", "API", "DB"]
 xs = [100, 340, 580]
 for name, x in zip(actors, xs):
-    b = box(x-70, 30, 140, 50, bg="#a5d8ff"); els += [b, label(b["id"], name, x-70, 30, 140, 50)]
+    b = box(x - 70, 30, 140, 50, bg="#a5d8ff")
+    els += [b, label(b["id"], name, x - 70, 30, 140, 50)]
     # 生命线:从框底垂到 y=520 的虚线
-    els.append(base(id=nid(), type="line", x=x, y=80, width=0, height=440,
-                    strokeStyle="dashed", strokeColor="#868e96",
-                    points=[[0,0],[0,440]], startArrowhead=None, endArrowhead=None,
-                    elbowed=False))
+    els.append(
+        base(
+            id=nid(),
+            type="line",
+            x=x,
+            y=80,
+            width=0,
+            height=440,
+            strokeStyle="dashed",
+            strokeColor="#868e96",
+            points=[[0, 0], [0, 440]],
+            startArrowhead=None,
+            endArrowhead=None,
+            elbowed=False,
+        )
+    )
+
+
 def msg(x1, x2, y, s, ret=False):
-    a = arrow(x1, y, x2, y, dashed=ret)          # 消息不绑生命线,直接横线
+    a = arrow(x1, y, x2, y, dashed=ret)  # 消息不绑生命线,直接横线
     els.append(a)
-    els.append(base(id=nid(), type="text", x=min(x1,x2)+10, y=y-22,
-                    width=abs(x2-x1)-20, height=20, text=s, originalText=s,
-                    fontSize=16, fontFamily=5, textAlign="center",
-                    verticalAlign="top", containerId=None, autoResize=True, lineHeight=1.25))
+    els.append(
+        base(
+            id=nid(),
+            type="text",
+            x=min(x1, x2) + 10,
+            y=y - 22,
+            width=abs(x2 - x1) - 20,
+            height=20,
+            text=s,
+            originalText=s,
+            fontSize=16,
+            fontFamily=5,
+            textAlign="center",
+            verticalAlign="top",
+            containerId=None,
+            autoResize=True,
+            lineHeight=1.25,
+        )
+    )
+
+
 msg(100, 340, 140, "GET /orders")
 msg(340, 580, 200, "SELECT *")
 msg(580, 340, 260, "rows", ret=True)
