@@ -188,18 +188,22 @@ if [ "$SIGNED" = "1" ]; then
 fi
 
 # ---- notarization (only with full Apple credentials) ----
-# HAITUN_NOTARIZE gates the *queue wait*, not the credentials: CI sets it only on
-# the release path (main / v* tags) because notarytool --wait blocks on Apple's
-# queue, measured at 45+ min. Set it to 1 locally to notarize a manual build.
+# HAITUN_NOTARIZE gates the *queue wait*, not the credentials. CI now sets it on
+# every branch: a run measured 48s from submit to Accepted, and an unnotarized dmg
+# cannot be opened on a Mac at all, so skipping it saves under a minute and costs
+# you the ability to test the package. Set it to 1 locally to notarize a manual
+# build. Only alpha tags opt out (same content already went through with main).
 NOTARIZE="${HAITUN_NOTARIZE:-}"
 case "$NOTARIZE" in true|1|yes) NOTARIZE=1 ;; *) NOTARIZE=0 ;; esac
 
 if [ "$SIGNED" = "1" ] && [ "$NOTARIZE" = "1" ] \
    && [ -n "${APPLE_ID:-}" ] && [ -n "${APP_SPECIFIC_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
-    # 3h, not 45m: Apple's queue has no SLA and a timeout here is indistinguishable
-    # from a bad package, which is the worst way to fail a release. The submission
-    # keeps processing server-side regardless, so a shorter timeout buys nothing.
-    log "submitting for notarization (Apple's queue can take tens of minutes)"
+    # 3h even though a measured run took 48s: Apple's queue has no SLA, and a
+    # timeout here is indistinguishable from a bad package -- the worst way to fail
+    # a release. One run did sit until minute 58 (the runner's DNS died first). The
+    # submission keeps processing server-side regardless, so a short timeout only
+    # loses you the verdict.
+    log "submitting for notarization (usually under a minute; Apple's queue has no SLA)"
     SUBMIT_LOG="$BUILD_DIR/notarytool-submit.log"
     if ! xcrun notarytool submit "$DMG_PATH" \
         --apple-id "$APPLE_ID" \

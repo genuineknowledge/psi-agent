@@ -84,24 +84,28 @@ openssl pkcs12 -legacy -in Certificates.p12 -nokeys -clcerts \
 2. **已签名未公证**——Gatekeeper 仍会警告，改善有限。这是过渡态，不建议停留。
 3. **签名 + 公证 + 装订**（目标形态）——双击即装，无警告，体验对等 Windows。
 
-### 公证只在发布路径跑
+### 公证默认全开
 
-`pyinstaller.yml` 是宽口径触发（任何分支的推送 + PR），但公证是**同步等 Apple
-队列**，实测排到 45 分钟仍 In Progress。所以只有 `main` 推送和非 alpha 的 `v*`
-tag 会提交公证，其余分支产出**签名但未公证**的 dmg。
+`pyinstaller.yml` 是宽口径触发（任何分支的推送 + PR），每一路都提交公证。
 
-签名是本地几秒的事，所以跨平台可编译性和签名链路仍然每次都验，只是不排队。
+这里曾按「只有 `main` 和非 alpha `v*` tag 才公证」收窄，理由是公证要同步等 Apple
+队列「45 分钟以上」。**那个数字是错的**：实测 run `33033841268` 从提交到 Accepted
+用了 **48 秒**（02:42:34 → 02:43:22）。省下不到一分钟，代价是特性分支的包在 Mac 上
+根本打不开——Gatekeeper 拦在启动前，连功能都验不了。装包本来就是为了验功能，收窄把
+这件事本身给废了，所以取消收窄。
 
-alpha tag 被刻意排除：`auto-alpha-tag.yml` 每天在 main 的最后一个绿色 commit 上
+只有 alpha tag 仍然跳过：`auto-alpha-tag.yml` 每天在 main 的最后一个绿色 commit 上
 打 `v*-alphaYYYYMMDD`，用途是发 PyPI，与安装器发版无关（安装器看 `haitun.iss`）。
-那个 commit 推 main 时已经公证过，再排一次队纯浪费——macOS runner 按 10 倍计费，
-45 分钟等待约等于 450 计费分钟/天。
+那个 commit 推 main 时已经公证过，同一份内容再排一次队纯浪费，且它产出的包没人拿去
+装。想临时问一次结论，用 `workflow_dispatch` 勾 `force_notarize`。
 
-本地想手动公证一个包，设 `HAITUN_NOTARIZE=1` 再跑 `build-dmg.sh`。
+没配 Apple secret 时这个开关是空操作：`build-dmg.sh` 还要求凭证齐全才提交，缺凭证
+照旧产出未签名 dmg，不会红。本地想手动公证，设 `HAITUN_NOTARIZE=1` 再跑它。
 
-超时设 3 小时而非 45 分钟：Apple 队列没有 SLA，而超时失败与「包本身有问题」在日志
-上无法区分，这是最糟的发版失败方式。提交在服务端会继续处理，短超时换不来任何东西。
-排队卡住时用提交 ID 查原因：
+超时设 3 小时而不是照着 48 秒收紧：Apple 队列没有 SLA，曾有一次等到第 58 分钟（那次
+是 runner 的 DNS 先归零）。而超时失败与「包本身有问题」在日志上无法区分，这是最糟的
+发版失败方式。提交在服务端会继续处理，短超时只会让你丢掉结论。排队卡住时用提交 ID
+查原因：
 
 ```bash
 xcrun notarytool log <submission-id> --apple-id <id> --team-id <team>

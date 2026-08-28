@@ -13,16 +13,15 @@ name: PyInstaller
 # `branches: [main, v*]` 过滤, 特性分支和 PR 的 run 根本到不了它, 再加 job 级的
 # `head_branch == 'main'` 做第二道闸。管住发布面的是下游, 不是这里。
 #
-# workflow_dispatch 只为一件事存在: 在非发布分支上强制走一次公证, 把 Apple 的
-# 结论 (Accepted / Invalid) 提前问出来。默认关, 因为一次要占 45 min 以上的
-# macOS runner (10 倍计费)。
+# workflow_dispatch 的 force_notarize 现在只剩一个用处: 在 alpha tag 上临时问一次
+# Apple 的结论。别的分支已经默认公证, 不需要它 (实测一次 48s, 见下面 notarize 那步)。
 on:
   push:
   pull_request:
   workflow_dispatch:
     inputs:
       force_notarize:
-        description: '强制公证 (非发布分支也提交给 Apple, 会等 45 min 以上)'
+        description: '强制公证 (alpha tag 默认跳过, 勾上则也提交给 Apple)'
         type: boolean
         default: false
       # 查一个**已提交**的单子的结论, 不打包。存在的理由: notarytool --wait 挂在
@@ -266,34 +265,37 @@ jobs:
             : > examples/haitun-workspace/.env
           fi
           echo "runtime .env prepared (SERPER_API_KEY present: ${SERPER_API_KEY:+yes})"
-      # 公证只在发布路径上跑。这条流水线是宽口径的(任何分支的推送 + PR), 而公证
-      # 是**同步等 Apple 队列**: 实测排到 45 min 仍 In Progress。若每个分支推送
-      # 都等一次, 打包 job 会长期占着 macOS runner 且动辄红在超时上, 而超时和
-      # "包有问题"完全是两回事。
+      # 公证默认全开, 特性分支和 PR 也公证。
       #
-      # 判据与 nuitka.yml / oss-publish.yml 一致: 只有 main 和 v* tag 才是发版。
-      # 特性分支照旧产出**签名但未公证**的 dmg —— 签名是本地几秒的事, 跨平台可
-      # 编译性和签名链路仍然每次都验, 只是不排那个队。
+      # 这里曾按「只有 main / v* tag 才公证」收窄, 理由是公证要同步等 Apple 队列
+      # 「45 min 以上」。那个数字是错的: 实测 run 33033841268 提交到 Accepted 用了
+      # **48 秒** (02:42:34 -> 02:43:22)。省下不到一分钟, 代价是特性分支的包在 Mac
+      # 上一律打不开 —— Gatekeeper 直接拦在启动前, 连功能都验不了。装包本来就是
+      # 为了验功能, 收窄把这件事本身给废了, 所以取消收窄。
       #
-      # 排除 alpha tag: `auto-alpha-tag.yml` 每天在 main 的最后一个绿色 commit 上
-      # 打一个 `v*-alphaYYYYMMDD`, 用途是发 PyPI, 与安装器发版无关(安装器看
-      # haitun.iss)。而 tag 指向的 commit 推 main 时已经公证过一遍, 再排一次队是
-      # 纯浪费 —— macOS runner 按 10 倍计费, 45 min 等待≈450 计费分钟/天。
+      # 队列偶发会慢: build-dmg.sh 把 --wait 的超时设成 3h 是有来由的 (曾有一次等
+      # 到第 58 min 时 runner DNS 归零)。真慢的时候宁可等, 也不要发一个验不了的包。
+      #
+      # 仍然排除 alpha tag: `auto-alpha-tag.yml` 每天在 main 的最后一个绿色 commit
+      # 上打一个 `v*-alphaYYYYMMDD`, 用途是发 PyPI, 与安装器发版无关(安装器看
+      # haitun.iss)。tag 指向的 commit 推 main 时已经公证过一遍, 同一份内容再排一次
+      # 队是纯浪费, 且它产出的包没人拿去装。
+      #
+      # 没配 Apple secret 时这个开关是空操作: build-dmg.sh 还要求凭证齐全才提交,
+      # 缺凭证照旧产出未签名 dmg, 不会红。
       - name: Decide whether to notarize
         id: notarize
         shell: bash
         env:
           FORCE_NOTARIZE: ${{ inputs.force_notarize }}
         run: |
-          enabled=false
+          # 默认开: 每个包都要能在 Mac 上打开, 否则装了也验不了。
+          enabled=true
           case "$GITHUB_REF" in
-            refs/heads/main) enabled=true ;;
             # alpha tag 走 PyPI, 不是安装器发版; 内容已随 main 公证过
             refs/tags/v*-alpha*) enabled=false ;;
-            refs/tags/v*) enabled=true ;;
-            *) enabled=false ;;
           esac
-          # 手动强制: 用来在合入前把 Apple 的结论问出来
+          # 保留强制开关: alpha tag 上想临时问一次 Apple 的结论时用。
           if [ "$FORCE_NOTARIZE" = "true" ]; then
             enabled=true
             echo "::notice::手动强制公证 ($GITHUB_REF)"
@@ -302,7 +304,7 @@ jobs:
           if [ "$enabled" = "true" ]; then
             echo "::notice::将提交公证 ($GITHUB_REF)"
           else
-            echo "::notice::非发布路径 ($GITHUB_REF), 只签名不公证"
+            echo "::notice::alpha tag ($GITHUB_REF), 内容已随 main 公证过, 跳过"
           fi
       - name: Build dmg
         env:
