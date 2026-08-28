@@ -13,6 +13,9 @@ requires-python = ">=3.14"
 dependencies = [
     "anyio>=4.14.2",
     "aiohttp>=3.14.1",
+    # 直接依赖而非传递依赖: psi_agent._tls 自己 import 它。冻结包在 macOS 上没有
+    # 系统信任库可读, 根证书只能由它提供。
+    "certifi>=2026.6.17",
     "loguru>=0.7.3",
     "tyro>=1.0.15",
     "croniter>=6.2.4",
