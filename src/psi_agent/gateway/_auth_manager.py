@@ -115,6 +115,39 @@ _DNS_CACHE_SECONDS = 600
 _WARM_THROTTLE_SECONDS = 5.0
 
 
+# 连不通的成因分类。前端一律显示「无法连接认证服务」——那是给用户看的, 但排查
+# 需要知道是四种成因里的哪一种, 而它们要改的地方完全不同:
+#   证书   -> 冻结包里的 CA bundle 没打进去/找不到 (PyInstaller 环境特有)
+#   代理   -> 代理配置或代理本身不可达
+#   DNS    -> 域名解析不了
+#   超时   -> 握手包被路径上的设备丢了 (见 psi_agent._tls 那条真实案例)
+# 只写 repr(异常) 也能看出来, 但要求读日志的人认得 aiohttp 的异常层级; 直接落一个
+# 分类词, 定性就不依赖那份知识。
+#
+# 顺序即优先级: ClientConnectorCertificateError 和 ClientProxyConnectionError 都是
+# ClientConnectorError 的子类 (实测 3.14.1 的 mro), 泛类必须排在最后, 否则具体成因
+# 全被它吞成 "connect"。
+_FAILURE_KINDS: tuple[tuple[type[BaseException], str], ...] = (
+    (aiohttp.ClientConnectorCertificateError, "tls-certificate"),
+    (aiohttp.ClientConnectorSSLError, "tls-handshake"),
+    (aiohttp.ClientProxyConnectionError, "proxy"),
+    (aiohttp.ClientConnectorDNSError, "dns"),
+    (aiohttp.ServerTimeoutError, "timeout"),
+    (TimeoutError, "timeout"),
+    (aiohttp.ClientConnectorError, "connect"),
+)
+
+
+def classify_failure(exc: BaseException | None) -> str:
+    """把连接异常归成一个可读的成因词。认不出的回 ``unknown``。"""
+    if exc is None:
+        return "unknown"
+    for exc_type, kind in _FAILURE_KINDS:
+        if isinstance(exc, exc_type):
+            return kind
+    return "unknown"
+
+
 @dataclass
 class AuthManager:
     """持有登录态, 代理云端认证 API。"""
@@ -177,9 +210,15 @@ class AuthManager:
                 ttl_dns_cache=_DNS_CACHE_SECONDS,
                 ssl=client_ssl_context(),
             )
+            # 必须显式 trust_env: aiohttp 的默认值是 False, 即**无视** HTTPS_PROXY
+            # 一类代理环境变量。而同一产品的另一条出站路 (AI 层的 httpx, 见
+            # psi_agent.ai._build_http_client) 默认 True。于是代理后的机器上
+            # 「对话能通、登录不通」, 前端只显示「无法连接认证服务」, 看不出是
+            # 代理没走 —— 两条出站路的默认值不该相反。
             self._session = aiohttp.ClientSession(
                 connector=connector,
                 timeout=aiohttp.ClientTimeout(total=_TIMEOUT_SECONDS),
+                trust_env=True,
             )
         return self._session
 
@@ -259,8 +298,11 @@ class AuthManager:
             except Exception as e:
                 last = e
                 break
-        logger.warning(f"认证服务请求失败 {method} {path}: {last!r}")
-        return 0, {"error": "upstream_unreachable", "detail": repr(last)[:200]}
+        kind = classify_failure(last)
+        logger.warning(f"认证服务请求失败 [{kind}] {method} {path}: {last!r}")
+        # ``kind`` 也进 body: 前端的文案不变 (仍按 upstream_unreachable 走 D3 屏),
+        # 但用户报障时截个图就带上了成因, 不必再去翻日志文件。
+        return 0, {"error": "upstream_unreachable", "kind": kind, "detail": repr(last)[:200]}
 
     async def nudge_warm(self) -> None:
         """请求把连接焐热。不阻塞调用方 —— 只往 task group 里塞个任务就返回。

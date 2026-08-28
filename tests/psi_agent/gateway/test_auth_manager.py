@@ -10,12 +10,16 @@
 
 from __future__ import annotations
 
+import socket
+import ssl
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 import pytest
+from aiohttp.client_reqrep import ConnectionKey
 
-from psi_agent.gateway._auth_manager import AuthManager
+from psi_agent.gateway._auth_manager import AuthManager, classify_failure
 
 
 async def _manager(tmp_path: Path) -> AuthManager:
@@ -111,5 +115,72 @@ async def test_list_devices_normalizes_three_shapes(
         _stub_call(monkeypatch, m, raw)
         _, body = await m.list_devices()
         assert [d["id"] for d in body["devices"]] == ["s1"]
+    finally:
+        await m.aclose()
+
+
+def _connection_key() -> Any:
+    """造一个 ``ConnectionKey`` —— aiohttp 的连接异常都要求带它。"""
+    return ConnectionKey(
+        host="auth.invalid",
+        port=443,
+        is_ssl=True,
+        ssl=None,
+        proxy=None,
+        proxy_auth=None,
+        proxy_headers_hash=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("build", "expected"),
+    [
+        (
+            lambda ck: aiohttp.ClientConnectorCertificateError(
+                ck, ssl.SSLCertVerificationError("unable to get local issuer certificate")
+            ),
+            "tls-certificate",
+        ),
+        (lambda ck: aiohttp.ClientConnectorSSLError(ck, OSError(1, "handshake")), "tls-handshake"),
+        (lambda ck: aiohttp.ClientProxyConnectionError(ck, OSError(1, "refused")), "proxy"),
+        (lambda ck: aiohttp.ClientConnectorDNSError(ck, socket.gaierror("nodename")), "dns"),
+        (lambda ck: aiohttp.ClientConnectorError(ck, OSError(1, "refused")), "connect"),
+        (lambda _ck: aiohttp.ServerTimeoutError("slow"), "timeout"),
+        (lambda _ck: TimeoutError(), "timeout"),
+        (lambda _ck: ValueError("something else"), "unknown"),
+    ],
+)
+def test_classify_failure_separates_causes(build: Any, expected: str) -> None:
+    """四种「连不上」必须落到不同的分类词。
+
+    回归动机: 证书错、代理错都是 ``ClientConnectorError`` 的子类, 泛类若排在具体类
+    之前, 全部会被吞成 ``connect``, 于是日志里再也分不出该改 CA bundle 还是改代理。
+    这个用例把顺序钉住。
+
+    造真实的 aiohttp 异常实例而不是打桩: 要验的正是「本机装的这个 aiohttp 的继承
+    关系下分类仍然正确」, 用假对象测就把被验对象换掉了。
+    """
+    assert classify_failure(build(_connection_key())) == expected
+
+
+def test_classify_failure_handles_none() -> None:
+    assert classify_failure(None) == "unknown"
+
+
+@pytest.mark.anyio
+async def test_session_honours_proxy_env(tmp_path: Path) -> None:
+    """会话必须读 ``HTTPS_PROXY`` —— 否则代理后的机器一律登录不了。
+
+    回归: ``aiohttp.ClientSession`` 的 ``trust_env`` 默认 ``False``, 即默认**无视**
+    代理环境变量; 而同一产品里 AI 层走 httpx, 它默认 ``True``。于是同一台机器上
+    「对话能通、登录不通」, 而前端只显示「无法连接认证服务」, 看不出是代理没走。
+
+    断言 ``trust_env`` 而不是去发请求: 要固定的是「读不读环境」这个契约, 起一个
+    真代理来测等于把一条配置断言换成一个会 flaky 的网络用例。
+    """
+    m = await _manager(tmp_path)
+    try:
+        session = m._ensure_session()
+        assert session.trust_env is True, "trust_env 为假时 HTTPS_PROXY 被忽略"
     finally:
         await m.aclose()
