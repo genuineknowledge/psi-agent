@@ -28,6 +28,7 @@ from loguru import logger
 
 from psi_agent import _private_space
 from psi_agent._appdata import resolve_appdata_root
+from psi_agent._card_markers import SILENT_REPLY
 from psi_agent._feishu_routing import is_group_chat, route_key
 from psi_agent.channel._core import ChannelCore
 from psi_agent.channel._errors import ChannelError
@@ -39,7 +40,9 @@ from ._card_action import CardActionBatcher, handle_card_action
 
 _EMOJI_PROCESSING = "Typing"
 _EMOJI_FAILED = "CrossMark"
-_SILENT_REPLY_TOKEN = "NO_REPLY"
+# 与 session 侧直调共享一份定义(psi_agent._card_markers):两边各持一份曾导致
+# 静默漂移——改名后 session 直调静默失效、或 token 直出对话。
+_SILENT_REPLY_TOKEN = SILENT_REPLY
 
 
 class ResolveCore(Protocol):

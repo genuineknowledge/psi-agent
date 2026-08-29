@@ -30,7 +30,7 @@ category: productivity
 - `feishu_leave_query` — 判请假（事实源是飞书假勤审批：按 `approval_code` 模板 + 时间窗枚举已通过申请）
 - `sync_org_tree`（⚠️ 工具入口未建，已知缺口）— 按飞书组织架构（每人自带的 `leader_user_id` 直属上级字段）自动建/更工作树：每人一页写「组织关系」区块（上级+下属），根页《公司工作树》全量重写
 - `wiki_read` / `wiki_write` / `wiki_links` — 建/更工作树历史快照
-- `feishu_mentor_ledger_ensure`（⚠️ 顶层入口未建，底层 `mentor_ledger_ensure_impl` 已实现）— 幂等开通 mentor 台账
+- `feishu_mentor_ledger_ensure` — 幂等开通 mentor 台账
 - `feishu_bitable_create_records` / `feishu_bitable_update_records` — 写台账行
 - `feishu_chart` — 渲染统计卡 PNG
 - `feishu_api`（POST `/open-apis/task/v2/tasks`）— 建飞书任务（见 `feishu-task` 技能表；main 上任务域已迁移为端点表，**没有** `feishu_task_create` 这个专用工具）

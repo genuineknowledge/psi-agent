@@ -25,12 +25,15 @@ async def feishu_review_card_send(
 
     Args:
         record_id: Ledger record id of the delivered todo.
-        ledger_app_token: Bit table app token (defaults to the test ledger).
-        ledger_table_id: Bit table table id (defaults to the test ledger's cycle table).
+        ledger_app_token: Bit table app token (required; no hardcoded fallback).
+        ledger_table_id: Bit table table id (required; no hardcoded fallback).
         user_key: Clicker's open_id (injected by Session).
     """
-    app_token = ledger_app_token.strip() or "C6sQbhhj1a5BRkslxjOcY2PPnYc"
-    table_id = ledger_table_id.strip() or "tblyPdcD9qzvAMGU"
+    app_token = ledger_app_token.strip()
+    table_id = ledger_table_id.strip()
+    # 坐标缺失时显式报错,不回退到任何硬编码表。
+    if not app_token or not table_id:
+        return json.dumps({"ok": False, "error": "ledger_app_token/ledger_table_id required"}, ensure_ascii=False)
     record_id = record_id.strip()
     if not record_id:
         return json.dumps({"ok": False, "error": "record_id required"}, ensure_ascii=False)

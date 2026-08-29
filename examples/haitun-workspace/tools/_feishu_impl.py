@@ -1002,6 +1002,11 @@ from _feishu.leave import (  # noqa: E402,F401
     _widgets,
     query_leave_impl,
 )
+from _feishu.mentor_ledger import (  # noqa: E402,F401
+    _LEDGER_SCHEMA_FIELDS,
+    _build_list_tables_request,
+    mentor_ledger_ensure_impl,
+)
 from _feishu.message import (  # noqa: E402,F401
     _ANNOUNCEMENT_ERROR_HINTS,
     _AT_TAG_RE,

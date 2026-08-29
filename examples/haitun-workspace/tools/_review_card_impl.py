@@ -32,9 +32,11 @@ from typing import Any
 
 import _feishu_api_impl as _api
 import _feishu_impl as _f
+import anyio
 from _card_dsl import render_template
-from _feishu.bitable import _as_field_map, _build_update_record_request
 from _todo_card_impl import _parse_card_state, _prepare_row_transition
+
+from psi_agent._appdata import resolve_appdata_root
 
 # 每张评价卡最多支持的重建轮数(分数/评语/打回各预注册 _MAX_ROUNDS 个 action)。
 # 点一次分或确认一次评语消耗一轮;20 轮对单条 todo 的评价往返绰绰有余。
@@ -200,10 +202,12 @@ async def _handle_score_select(card_action_json: str, user_key: str = "") -> dic
     owner_open_id = str(value.get("owner_open_id") or "").strip()
     cycle_date = str(value.get("cycle_date") or "").strip()
     task_guid = str(value.get("task_guid") or "").strip()
-    # 台账坐标在函数开头统一解析(写打分与重建卡片都要用;2.0 回调 value 可能不全,
-    # 缺失时回退到当前测试表)。
-    app_token = str(value.get("ledger_app_token") or "").strip() or "C6sQbhhj1a5BRkslxjOcY2PPnYc"
-    table_id = str(value.get("ledger_table_id") or "").strip() or "tblyPdcD9qzvAMGU"
+    # 台账坐标在函数开头统一解析(写打分与重建卡片都要用;2.0 回调 value 可能不全)。
+    # 缺失时显式报错,不回退到任何硬编码表——静默回退会让评分写进错的库且无从察觉。
+    app_token = str(value.get("ledger_app_token") or "").strip()
+    table_id = str(value.get("ledger_table_id") or "").strip()
+    if not app_token or not table_id:
+        return {"ok": False, "error": "ledger_app_token/ledger_table_id missing in callback value"}
     score_raw = value.get("score")
     selected_score = int(score_raw) if isinstance(score_raw, int) and 1 <= score_raw <= 5 else 0
 
@@ -213,8 +217,8 @@ async def _handle_score_select(card_action_json: str, user_key: str = "") -> dic
         # 直调环境不碰 UAT、不会挂起。
         try:
             ledger_result = await _f._invoke(
-                _build_update_record_request(
-                    app_token, table_id, record_id, _as_field_map({"mentor打分": selected_score})
+                _f._build_update_record_request(
+                    app_token, table_id, record_id, _f._as_field_map({"mentor打分": selected_score})
                 ),
                 prefer="tenant",
             )
@@ -282,11 +286,9 @@ async def _handle_review_input(card_action_json: str, user_key: str = "") -> dic
     app_token = str(value.get("ledger_app_token") or "").strip()
     table_id = str(value.get("ledger_table_id") or "").strip()
     # 2.0 回调 payload 里 base 信息可能不全(只有 value 里的 record_id);
-    # app_token/table_id 缺失时回退到当前测试表(固定值)。
-    if not app_token:
-        app_token = "C6sQbhhj1a5BRkslxjOcY2PPnYc"
-    if not table_id:
-        table_id = "tblyPdcD9qzvAMGU"
+    # 坐标缺失时显式报错,不回退到任何硬编码表。
+    if not app_token or not table_id:
+        return {"ok": False, "error": "ledger_app_token/ledger_table_id missing in callback value"}
     if not record_id:
         return {"ok": False, "error": "no record_id in value"}
     comment = str((action.get("input_value") or "") if isinstance(action, dict) else "").strip()
@@ -298,7 +300,9 @@ async def _handle_review_input(card_action_json: str, user_key: str = "") -> dic
             # 解析 UAT,在无 LLM 回合的直调环境里挂起导致整个请求被取消。应用已是
             # 台账协作者,tenant 写不被拒。
             ledger_result = await _core_invoke_update(
-                _build_update_record_request(app_token, table_id, record_id, _as_field_map({"mentor评语": comment})),
+                _f._build_update_record_request(
+                    app_token, table_id, record_id, _f._as_field_map({"mentor评语": comment})
+                ),
                 prefer="tenant",
             )
         except Exception as e:
@@ -353,7 +357,7 @@ async def _handle_review_input(card_action_json: str, user_key: str = "") -> dic
     }
 
 
-def _find_todo_card(record_id: str) -> tuple[str, dict[str, Any], int, dict[str, Any]] | None:
+async def _find_todo_card(record_id: str) -> tuple[str, dict[str, Any], int, dict[str, Any]] | None:
     """Locate the newest TODO card whose ``card_state`` contains ``record_id``.
 
     Returns ``(message_id, row_value, row_index, state)`` — the card message id, the
@@ -365,59 +369,76 @@ def _find_todo_card(record_id: str) -> tuple[str, dict[str, Any], int, dict[str,
     ``card_state`` blob, so the review card can find its sibling TODO card through
     the shared ``ledger_record_id`` — no wiring at send time needed.
     """
-    appdata = os.environ.get("PSI_APPDATA", "").strip()
-    if not appdata:
-        appdata = os.path.join(os.path.expanduser("~"), "AppData", "Local", "Haitun")
-    snap_dir = os.path.join(appdata, "feishu-card-snapshots")
-    if not os.path.isdir(snap_dir):
+    # 与 Channel 侧同一根解析(显式 --appdata → PSI_APPDATA → platformdirs),
+    # 不手写死 %AppData%——自定义 --appdata 部署时两处必须指向同一个目录。
+    appdata = await resolve_appdata_root()
+    snap_dir = anyio.Path(appdata) / "feishu-card-snapshots"
+    if not await snap_dir.is_dir():
         return None
     candidates: list[tuple[float, str, dict[str, Any], int, dict[str, Any]]] = []
     try:
-        entries = os.listdir(snap_dir)
+        async for entry in snap_dir.iterdir():
+            name = entry.name
+            if not name.endswith(".json"):
+                continue
+            try:
+                snap = json.loads(await entry.read_text(encoding="utf-8"))
+                st = await entry.stat()
+            except OSError, ValueError:
+                continue
+            _collect_snapshot_candidate(snap, name, st.st_mtime, record_id, candidates)
     except OSError:
         return None
-    for name in entries:
-        if not name.endswith(".json"):
+    return _pick_best_candidate(candidates)
+
+
+def _collect_snapshot_candidate(
+    snap: Any,
+    name: str,
+    mtime: float,
+    record_id: str,
+    candidates: list[tuple[float, str, dict[str, Any], int, dict[str, Any]]],
+) -> None:
+    """Append one snapshot to ``candidates`` if it matches the todo-card shape.
+
+    ``name`` is the snapshot file name (``<message_id>.json``); ``mtime`` is used
+    to pick the newest among multiple matching cards.
+    """
+    if not isinstance(snap, dict):
+        return
+    card = snap.get("card")
+    if not isinstance(card, dict):
+        return
+    elements = card.get("elements")
+    if not isinstance(elements, list):
+        return
+    for el in elements:
+        if not isinstance(el, dict) or el.get("tag") != "action":
             continue
-        path = os.path.join(snap_dir, name)
-        try:
-            with open(path, encoding="utf-8") as fh:
-                snap = json.load(fh)
-        except OSError, ValueError:
-            continue
-        if not isinstance(snap, dict):
-            continue
-        card = snap.get("card")
-        if not isinstance(card, dict):
-            continue
-        elements = card.get("elements")
-        if not isinstance(elements, list):
-            continue
-        for el in elements:
-            if not isinstance(el, dict) or el.get("tag") != "action":
+        v = el.get("value")
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except ValueError:
                 continue
-            v = el.get("value")
-            if isinstance(v, str):
-                try:
-                    v = json.loads(v)
-                except ValueError:
-                    continue
-            if not isinstance(v, dict):
-                continue
-            state_json = v.get("card_state")
-            if not isinstance(state_json, str):
-                continue
-            state = _parse_card_state(state_json)
-            if state is None:
-                continue
-            for index, row in enumerate(state.get("rows") or []):
-                if isinstance(row, dict) and str(row.get("ledger_record_id") or "") == record_id:
-                    try:
-                        mtime = os.path.getmtime(path)
-                    except OSError:
-                        mtime = 0.0
-                    candidates.append((mtime, name[:-5], v, index, state))
-                    break
+        if not isinstance(v, dict):
+            continue
+        state_json = v.get("card_state")
+        if not isinstance(state_json, str):
+            continue
+        state = _parse_card_state(state_json)
+        if state is None:
+            continue
+        for index, row in enumerate(state.get("rows") or []):
+            if isinstance(row, dict) and str(row.get("ledger_record_id") or "") == record_id:
+                candidates.append((mtime, name[:-5], v, index, state))
+                return
+
+
+def _pick_best_candidate(
+    candidates: list[tuple[float, str, dict[str, Any], int, dict[str, Any]]],
+) -> tuple[str, dict[str, Any], int, dict[str, Any]] | None:
+    """Newest snapshot wins; ``None`` when nothing matched."""
     if not candidates:
         return None
     _, message_id, value, index, state = max(candidates, key=lambda c: c[0])
@@ -475,12 +496,15 @@ async def _handle_review_reject(card_action_json: str, user_key: str = "") -> di
         outcomes["task_error"] = "no task_guid in value"
 
     # 2) 台账状态回「进行中」(打分/评语字段保留)。
-    app_token = str(value.get("ledger_app_token") or "").strip() or "C6sQbhhj1a5BRkslxjOcY2PPnYc"
-    table_id = str(value.get("ledger_table_id") or "").strip() or "tblyPdcD9qzvAMGU"
+    # 坐标缺失时显式报错,不回退到任何硬编码表。
+    app_token = str(value.get("ledger_app_token") or "").strip()
+    table_id = str(value.get("ledger_table_id") or "").strip()
+    if not app_token or not table_id:
+        return {"ok": False, "error": "ledger_app_token/ledger_table_id missing in callback value"}
     if record_id:
         try:
             ledger_result = await _core_invoke_update(
-                _build_update_record_request(app_token, table_id, record_id, _as_field_map({"状态": "进行中"})),
+                _f._build_update_record_request(app_token, table_id, record_id, _f._as_field_map({"状态": "进行中"})),
                 prefer="tenant",
             )
             outcomes["ledger"] = {
@@ -529,7 +553,7 @@ async def _handle_review_reject(card_action_json: str, user_key: str = "") -> di
     # 4) 同步执行人的 TODO 卡:把该行翻回未完成(等价于执行人点了一次「撤销」),
     #    行轮次 +1 生成未消费的「标记完成」按钮——重做后再点即再次触发评价卡。
     outcomes["todo_card"] = {"ok": True, "skipped": "no matching todo card"}
-    todo_located = _find_todo_card(record_id) if record_id else None
+    todo_located = await _find_todo_card(record_id) if record_id else None
     if todo_located is not None:
         todo_message_id, todo_value, todo_index, todo_state = todo_located
         rows = todo_state.get("rows") or []

@@ -16,7 +16,6 @@ like the first table.
 from __future__ import annotations
 
 import _feishu_impl as _core
-from _feishu.mentor_ledger import _LEDGER_SCHEMA_FIELDS, _build_list_tables_request
 from lark_channel.core.enum import AccessTokenType, HttpMethod
 from lark_channel.core.model import BaseRequest
 
@@ -37,7 +36,7 @@ def _build_cycle_table_request(app_token: str, table_name: str) -> BaseRequest:
     req.uri = "/open-apis/bitable/v1/apps/:app_token/tables"
     req.paths["app_token"] = app_token
     req.token_types = {AccessTokenType.TENANT, AccessTokenType.USER}
-    req.body = {"table": {"name": table_name, "fields": _LEDGER_SCHEMA_FIELDS}}
+    req.body = {"table": {"name": table_name, "fields": _core._LEDGER_SCHEMA_FIELDS}}
     return req
 
 
@@ -63,7 +62,7 @@ async def feishu_mentor_ledger_cycle_table(
         return _core.dumps_result(_core._error("cycle_date is required (YYYY-MM-DD)."))
 
     list_res = await _core._invoke(
-        _build_list_tables_request(app_token.strip()),
+        _core._build_list_tables_request(app_token.strip()),
         user_key=user_key,
         prefer="user",
         identity=identity,
@@ -111,6 +110,6 @@ async def feishu_mentor_ledger_cycle_table(
             "table_id": table_id,
             "name": target,
             "created": True,
-            "schema_fields": len(_LEDGER_SCHEMA_FIELDS),
+            "schema_fields": len(_core._LEDGER_SCHEMA_FIELDS),
         }
     )

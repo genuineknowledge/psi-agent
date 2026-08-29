@@ -52,7 +52,7 @@ category: productivity
    `value.round` 字段是当前轮次，重建卡片时用 `round+1`（同 `feishu_review_card_select` 的做法）。
 4. 卡片回调约定：分数按钮与评语输入框的 `action_handlers` 分别映射到
    `feishu_review_card_select` / `feishu_review_input`（工具直调，秒级写台账+重建卡片）；
-   「打回重做」映射到本技能（`company-todo-review`）。
+   「打回重做」映射到工具 `feishu_review_reject`（框架直调），仅直调失败回退到本技能。
    `business_context_json` 携带 `record_id`/`task_guid`/`owner_open_id`/`cycle_date`/`title`；
    按钮 `value` 里带 `action`（`review_score` / `review_input` / `review_reject`）、`score`、
    `record_id`、`title`、`owner_name`、`owner_open_id`、`cycle_date`、`task_guid`。

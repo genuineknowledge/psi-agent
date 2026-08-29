@@ -86,6 +86,22 @@ ContextVar 是**隐式环境态**，比进程全局好（多 Session 不互踩�
 - AI 返回多 choice 时报错（`finish_reason="error"`），0 choice 作为心跳跳过。
 - AI 返回非 200 或 `finish_reason="error"` 时，错误信息不写入 conversation history，且通过 turn 快照回滚机制保证本轮用户消息也不落盘。
 
+### 卡片回调直调短路（`_try_direct_card_dispatch`）
+
+确定性飞书卡片回调（tick/untick/打分等）**不跑 LLM 轮次**，在步骤 3 之前由 Session 直接执行 handler 工具。触发条件**全部满足**才短路，任何一条不满足都回落普通 AI 轮次（与改动前行为等价）：
+
+- 整条 user 消息都是 `<feishu_card_action>` 封装（无其他正文）；
+- 每个 payload 的 `dispatch.matched is True`（**信任边界**：`/chat/completions` 无鉴权，不校验 matched 等于把「以任意身份执行任意卡片工具」开放成纯文本注入面；matched 缺失/非 true 一律回落）；
+- `dispatch.handler` 命中已注册工具，且该工具签名接收 `card_action_json`。
+
+直调路径与普通回合的**刻意差异**（别当成 bug 修回去）：
+
+1. 跳过 `run_before_turn` / `system_prompt.ensure` / turn context——零模型回合，无需提示词；
+2. 跳过 pending schedule 的 peek/clear——pending 的 `schedule.display` 顺延到下一个普通回合交付（延迟非丢失）；
+3. 跳过 end-of-turn 的 schedule registry 刷新——顺延（延迟非丢失）；
+4. 用户消息与 `[card direct] handler: …` 的 assistant 行照常写入 history（Gateway `/history` 可见）；成功时 yield 单条 `NO_REPLY` chunk（Channel 对卡片回调流静默吞掉），失败时 yield 短文案 chunk（异常细节只进日志，不把 repr 直出对话）；
+5. 直调回合同样经 `_finish(COMPLETED, MODEL_COMPLETED, None, 0)` 落终态——`run.result` 为 None 会被 `handle_request` 记成 "failed or abandoned"，成功直调必须带终态。
+
 ## System prompt 生命周期
 
 `SystemPrompt.ensure()` 在**每个回合入口**调用，按优先级走两条路径中的一条：

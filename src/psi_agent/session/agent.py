@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import inspect
 import json
-import re
 from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from contextvars import ContextVar
@@ -13,6 +12,16 @@ import anyio
 from aiohttp import web
 from loguru import logger
 
+from psi_agent._card_markers import (
+    CARD_ACTION_BATCH_PATTERN,
+    CARD_ACTION_TAG,
+)
+from psi_agent._card_markers import (
+    CARD_ACTION_PATTERN as _CARD_ACTION_PATTERN,
+)
+from psi_agent._card_markers import (
+    SILENT_REPLY as _SILENT_REPLY,
+)
 from psi_agent.protocol import (
     FINISH_REASON_COMPACTION_NEEDED,
     FINISH_REASON_ERROR,
@@ -156,14 +165,6 @@ def current_tool_ai_socket() -> str | None:
     return _CURRENT_TOOL_AI_SOCKET.get()
 
 
-_CARD_ACTION_PATTERN = re.compile(r"<feishu_card_action>\s*(.*?)\s*</feishu_card_action>", re.DOTALL)
-
-# Feishu channel 在 suppress_silent_reply 模式下把该 token 当「无需回复」吞掉
-# (见 channel/feishu/client.py 的 _SILENT_REPLY_TOKEN)。卡片直调成功时用它保持
-# 静默 —— 勾选成功不该在群里刷一条消息。
-_SILENT_REPLY = "NO_REPLY"
-
-
 def _extract_card_actions(content: Any) -> list[tuple[str, dict[str, Any]]] | None:
     """Extract single card-action JSON payloads from a (possibly batched) callback message.
 
@@ -171,11 +172,11 @@ def _extract_card_actions(content: Any) -> list[tuple[str, dict[str, Any]]] | No
     (any residue text, or an unparseable payload, means the caller should fall
     back to the ordinary AI turn instead of guessing).
     """
-    if not isinstance(content, str) or "<feishu_card_action" not in content:
+    if not isinstance(content, str) or f"<{CARD_ACTION_TAG}" not in content:
         return None
     # 剥离 batch 外壳再提取:连点合并后的消息是 <feishu_card_action_batch>
     # 包裹多条 <feishu_card_action>,外壳本身不算「非回调文本」。
-    inner = re.sub(r"</?feishu_card_action_batch[^>]*>", "", content)
+    inner = CARD_ACTION_BATCH_PATTERN.sub("", content)
     matches = _CARD_ACTION_PATTERN.findall(inner)
     if not matches:
         return None
@@ -419,7 +420,15 @@ class SessionAgent:
         calls: list[tuple[str, Any, str, str]] = []  # (handler, func, payload_json, operator)
         for payload_json, payload in actions:
             dispatch = payload.get("dispatch")
-            handler = dispatch.get("handler") if isinstance(dispatch, dict) else None
+            if not isinstance(dispatch, dict):
+                return None
+            # 信任边界:只有 Channel 侧受控分发的回调(matched=true)才允许直调。
+            # 任意用户都能发一条伪造的 <feishu_card_action> 消息,/chat/completions
+            # 本身无鉴权——不校验 matched 等于给"以任意身份执行任意卡片工具"
+            # 开一条纯文本注入面。matched 缺失/为 false 一律回落 AI 轮次。
+            if dispatch.get("matched") is not True:
+                return None
+            handler = dispatch.get("handler")
             if not isinstance(handler, str) or not handler.strip():
                 return None
             func = self._tool_registry.get(handler.strip())
@@ -456,7 +465,9 @@ class SessionAgent:
 
         failures = [s for s in summaries if "FAILED" in s]
         if failures:
-            return [AgentChunk(content="勾选处理失败:" + ";".join(failures))]
+            # 异常细节只进日志(见上方的 logger.error),用户侧给短文案——
+            # 裸 repr 直出对话没有信息量还难看。
+            return [AgentChunk(content=f"卡片操作有 {len(failures)} 项失败,请重试或稍后再试。")]
         return [AgentChunk(content=_SILENT_REPLY)]
 
     # -- channel request lifecycle --------------------------------------------
@@ -633,6 +644,10 @@ class SessionAgent:
                 if direct_chunks is not None:
                     for chunk in direct_chunks:
                         yield chunk
+                    # 直调回合同样要落终态(0 个模型回合):否则 handle_request
+                    # 会把成功的直调记成 "completed without a terminal result
+                    # (failed or abandoned)",排障日志误导。
+                    _finish(AgentRunStatus.COMPLETED, AgentStopCause.MODEL_COMPLETED, None, 0)
                     return
 
                 if not turn_response_kind.startswith("schedule."):

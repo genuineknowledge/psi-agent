@@ -144,6 +144,10 @@ async def feishu_todo_card_tick(card_action_json: str = "", user_key: str = "") 
     if task_guid:
         task_result = dict(outcomes[2])
         task_updated = bool(task_result.get("ok"))
+    else:
+        # 行内无 task_guid:按契约返回 task_updated=false 并说明,不是错误。
+        task_result = {}
+        task_updated = False
     # new_card 为 None 时保留 _prepare_row_transition 返回的 skipped_* 状态,
     # 不要用 edit_failed 覆盖(那是「有卡片但发失败」才有的状态)。
     if new_card is not None:
@@ -156,19 +160,7 @@ async def feishu_todo_card_tick(card_action_json: str = "", user_key: str = "") 
         _review._send_review_card(value=value, title=title, task_guid=task_guid, user_key=user_key)
     )
 
-    result = await _api.call_api_impl(
-        "PATCH",
-        "/open-apis/task/v2/tasks/:task_guid",
-        body_json=json.dumps(
-            {
-                "task": {"completed_at": str(int(time.time() * 1000))},
-                "update_fields": ["completed_at"],
-            },
-            ensure_ascii=False,
-        ),
-        paths_json=json.dumps({"task_guid": task_guid}, ensure_ascii=False),
-        prefer="tenant",
-        user_key=user_key,
-    )
-    result = {**result, "task_updated": task_updated, "card_edit": card_edit_status, "review_card": review_outcome}
+    # 旧串行 PATCH 已删除:任务状态只由上面并行块的 _patch_task 写一次,
+    # 否则有 task_guid 的行会重复 PATCH、无 task_guid 的行会拿空路径打飞书报错。
+    result = {**task_result, "task_updated": task_updated, "card_edit": card_edit_status, "review_card": review_outcome}
     return json.dumps(result, ensure_ascii=False, default=str)

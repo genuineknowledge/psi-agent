@@ -14,7 +14,8 @@ TODO 卡把「一次性」的粒度从**整张卡**降到**每一行**。
 | 场景 | 工具 |
 |---|---|
 | 一张卡列多条待办、逐条勾 | `feishu_todo_card_send` |
-| 勾选后的回调（标飞书任务完成） | `feishu_todo_card_tick`（卡片自动派发，不用手调） |
+| 勾选后的回调（标飞书任务完成） | `feishu_todo_card_tick`（卡片自动派发，不用手调；勾选还会**自动给 mentor 发评价卡**，见 `company-todo-review` 技能） |
+| 已完成行的「撤销」回调（重开飞书任务） | `feishu_todo_card_untick`（卡片自动派发，不用手调） |
 | 一张卡只要一个答案（同意/驳回、选一项） | `feishu_message_send_card`，**别用** TODO 卡 |
 | 自己拼多选卡（非待办形状） | `feishu_message_send_card` + `multi_use=True` |
 
@@ -116,7 +117,12 @@ https://applink.feishu.cn/client/todo/detail?guid=<task_guid>
 ## 完成后发生什么
 
 勾选 → 框架把该行改成 `● ~~文字~~` 并原地更新卡片 → 派发 `feishu_todo_card_tick` →
-`PATCH /open-apis/task/v2/tasks/:task_guid` 写 `completed_at`（**毫秒**）+ `update_fields`。
+`PATCH /open-apis/task/v2/tasks/:task_guid` 写 `completed_at`（**毫秒**）+ `update_fields`；
+tick 还会同步台账状态为「已交付」，并**自动给该行的 mentor 发一张 1-5 分评价卡**
+（发卡失败不阻塞勾选本身；评价卡链路见 `company-todo-review` 技能）。
+
+已完成行会带「撤销」按钮 → 派发 `feishu_todo_card_untick` → 重开飞书任务、台账回退、
+卡片改回可勾选。
 
 漏了 `update_fields` 飞书会返回成功但一个字段都不改。这个工具已经带上了，自己调 API 时注意。
 
