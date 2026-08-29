@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import socket
-import webbrowser
 from dataclasses import dataclass
 
 import anyio
@@ -13,21 +12,18 @@ from loguru import logger
 
 from psi_agent._logging import setup_logging
 from psi_agent._sockets import create_site
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._attention import AttentionHub
-from psi_agent.gateway._auth_manager import AuthManager, resolve_endpoint
-from psi_agent.gateway._defaults import resolve_appdata_root, resolve_default_agent, resolve_default_workspace
-from psi_agent.gateway._free_model import make_key_resolver
-from psi_agent.gateway._router_manager import RouterManager, RouterUpstreamInfo
-from psi_agent.gateway._scheduler_manager import SchedulerManager
-from psi_agent.gateway._session_manager import SessionManager
-from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME
-from psi_agent.gateway._state import GatewayState
-from psi_agent.gateway._summary_manager import SummaryManager
-from psi_agent.gateway._title_manager import TitleManager
-from psi_agent.gateway._tray import GatewayTray
-from psi_agent.gateway._webview import GatewayWebView
-from psi_agent.gateway.server import create_app
+from psi_agent.feishu_gateway._ai_manager import AIManager
+from psi_agent.feishu_gateway._auth_store import AuthStore
+from psi_agent.feishu_gateway._defaults import resolve_appdata_root, resolve_default_agent, resolve_default_workspace
+from psi_agent.feishu_gateway._free_model import make_key_resolver
+from psi_agent.feishu_gateway._router_manager import RouterManager, RouterUpstreamInfo
+from psi_agent.feishu_gateway._scheduler_manager import SchedulerManager
+from psi_agent.feishu_gateway._session_manager import SessionManager
+from psi_agent.feishu_gateway._spa_shell import DEFAULT_APP_NAME
+from psi_agent.feishu_gateway._state import GatewayState
+from psi_agent.feishu_gateway._summary_manager import SummaryManager
+from psi_agent.feishu_gateway._title_manager import TitleManager
+from psi_agent.feishu_gateway.server import create_app
 
 
 def _random_port() -> int:
@@ -37,6 +33,19 @@ def _random_port() -> int:
         return s.getsockname()[1]
     finally:
         s.close()
+
+
+_AUTH_DEFAULT_ENDPOINT = "https://account.genuineknowledge.cn"
+
+
+def _resolve_auth_endpoint(raw: str = "") -> str:
+    """Resolve the cloud auth endpoint (explicit flag > env > built-in default)."""
+    if raw.strip():
+        return raw.strip().rstrip("/")
+    env = os.environ.get("PSI_AUTH_ENDPOINT")
+    if env is not None:
+        return env.strip().rstrip("/")
+    return _AUTH_DEFAULT_ENDPOINT
 
 
 @dataclass
@@ -49,20 +58,18 @@ class Gateway:
     socket_path: str = "psi"
     """Prefix for AI/Session socket paths (Unix sockets on POSIX, Named Pipes on Windows)."""
 
-    icon: str | None = None
-    """Path to icon image file (png/jpg/ico). Used as favicon, tray icon (--tray), and webview icon (--webview)."""
-
     app_name: str = DEFAULT_APP_NAME
-    """Browser tab / webview / tray label. Injected into SPA index.html at serve time."""
+    """Feishu page title injected into ``feishu/index.html`` at serve time."""
 
-    browser: bool = False
-    """Open a browser tab on startup."""
+    feishu_ai_id: str = ""
+    """飞书 Session 默认挂载的 AI 实例 id。飞书 channel 经 ``POST /feishu/route`` 按需为每个
+    飞书用户/群 spawn 独立 Session 时用它作缺省 AI (请求体也可逐次覆盖 ``ai_id``)。空 = 未配,
+    此时若请求也不带 ``ai_id`` 则 ``/feishu/route`` 返回 400。"""
 
-    webview: bool = False
-    """Use a native webview window instead of the system browser."""
-
-    tray: bool = False
-    """Show a system tray icon (requires --icon)."""
+    feishu_workspace_root: str = ""
+    """飞书各会话独立 workspace 的父目录。私聊每个 open_id 得到 ``<root>/<open_id>`` 子目录,
+    群聊每个 chat_id 得到 ``<root>/chat-<chat_id>``, 文件/历史互相隔离。空 = 以 Gateway 进程
+    cwd 为父目录。"""
 
     default_agent: str = ""
     """CLI: default agent package for new Sessions / GET /defaults.
@@ -95,19 +102,14 @@ class Gateway:
     定时任务 —— 定时任务从 workspace 加载, 但**触发权是 (session x schedule) 逐条的**,
     一条必须恰好被一个 Session 激活, 否则飞书多用户下一条提醒会被在线会话数乘一遍。
 
-    空则不启动调度 Session (记 warning)。
+    空 = 回落 ``--feishu-ai-id``; 两者都空则不启动调度 Session (记 warning)。
     """
 
     auth_endpoint: str = ""
-    """云端认证服务地址。**留空即取内置默认值** (账号服务的正式地址)。
+    """Cloud auth endpoint used to resolve ``haitun-default`` sentinel AI keys.
 
-    空 ≠ 关闭: 装了包的用户直接 ``psi-agent gateway`` 就该能登录, 要求他先知道并
-    手填一个域名, 等于把部署细节转嫁给使用者。要**关掉**认证 (纯本地单用户, 不注册
-    ``/auth/*``、不读写本机凭证) 请显式设 ``PSI_AUTH_ENDPOINT=""``。
-
-    启用时客户端只做转发与本机凭证管理: 不持任何供应商密钥 (安装包里放阿里云
-    AK/SK 或 Resend key 等于公开发布), 授权判定全在云端 (用户本人即机器管理员,
-    客户端侧校验可被绕过)。见 ``_auth_manager.resolve_endpoint``。
+    Empty -> ``PSI_AUTH_ENDPOINT`` -> built-in default. Feishu Gateway only reads the
+    local login credential (``auth.enc.json``); it does not register ``/auth/*``.
     """
 
     verbose: bool = False
@@ -115,9 +117,6 @@ class Gateway:
 
     async def run(self) -> None:
         setup_logging(verbose=self.verbose)
-
-        if self.browser and self.webview:
-            raise ValueError("--browser and --webview are mutually exclusive")
 
         addr = self.listen or f"http://127.0.0.1:{_random_port()}"
         logger.info(f"Starting Gateway service on {addr} (socket_path={self.socket_path})")
@@ -150,22 +149,21 @@ class Gateway:
             tm = TitleManager()
             sum_m = SummaryManager()
 
-            # 认证是**旁挂**的: 不注入 Session 的构造参数, 不写 ContextVar, 不参与
-            # _do_persist 的 manager 快照 (凭证不进 state/latest.json —— 那里的
-            # api_key 是明文, 登录凭证不再踩这个坑)。地址显式为空则整套不加载。
-            #
-            # ** 必须建在恢复 AI 之前 **: 免费模型的 socket 在构造时就要拿到 token,
-            # 建晚了恢复出来的 socket 会带着哨兵值起来, 第一次对话必然 401。
-            authm: AuthManager | None = None
-            if resolve_endpoint(self.auth_endpoint):
-                authm = await AuthManager.create(self.auth_endpoint, appdata_root=appdata_root, tg=tg)
-                # 免费模型的哨兵值换成登录 token。传的是取值函数而不是 token ——
-                # socket 重建时要拿到当时的新值, 不是接线那一刻的旧值。
-                aim._resolve_key = make_key_resolver(authm.bearer_token, authm.endpoint)
-                # 趁用户还没点「获取验证码」, 先把连接建好, 省下 TCP+TLS 两个 RTT。
-                await authm.nudge_warm()
-            else:
-                logger.info("Auth disabled (PSI_AUTH_ENDPOINT set to empty)")
+            # 机器人生产 AI 常配哨兵 key(haitun-default), 由本机登录态换真 token.
+            # Feishu Gateway 只读凭证(auth.enc.json), 不注册 /auth/*, C 端登录写同一个文件.
+            # 必须建在恢复 AI 之前: 免费模型的 socket 在构造时就要拿到 token.
+            auth_token = ""
+            auth_endpoint = _resolve_auth_endpoint(self.auth_endpoint)
+            try:
+                auth_store = await AuthStore.from_appdata(appdata_root)
+                auth_token = await auth_store.load_token()
+                if auth_token:
+                    logger.info("Feishu Gateway: 已从本机凭证恢复登录态(用于免费模型换 token)")
+                else:
+                    logger.warning("Feishu Gateway: 本机未登录或凭证为空, 哨兵 key 将解析为空(上游会 401)")
+            except Exception as e:
+                logger.warning(f"Feishu Gateway: 读取本机凭证失败: {e!r}")
+            aim._resolve_key = make_key_resolver(lambda: auth_token, auth_endpoint)
 
             for cfg in snapshot.get("ais", []):
                 try:
@@ -223,23 +221,21 @@ class Gateway:
             for row in snapshot.get("summaries", []):
                 await sum_m.set(row["id"], row["summary"])
 
-            attention = AttentionHub()
-            schedm = SchedulerManager(_sm=sm, _ai_id=self.scheduler_ai_id)
+            schedm = SchedulerManager(_sm=sm, _ai_id=self.scheduler_ai_id or self.feishu_ai_id)
             app = await create_app(
                 aim,
                 sm,
                 tm,
                 rm=rm,
-                favicon_path=self.icon,
                 app_name=self.app_name,
-                attention=attention,
+                feishu_ai_id=self.feishu_ai_id,
+                feishu_workspace_root=self.feishu_workspace_root,
                 default_agent=agent_default,
                 default_workspace=workspace_default,
                 appdata=appdata_root,
                 scheduler_ai_id=self.scheduler_ai_id,
                 schedm=schedm,
                 sum_m=sum_m,
-                authm=authm,
             )
 
             # Restored sessions need a scheduler Session for their workspace too
@@ -313,55 +309,10 @@ class Gateway:
                     raise
 
                 logger.info(f"Gateway listening on {addr}")
-
-                wv = None
-                if self.webview:
-                    if self.icon is None:
-                        raise ValueError("--webview requires --icon to be set")
-                    wv = GatewayWebView(addr, has_tray=self.tray, icon=self.icon, app_name=self.app_name)
-                    try:
-                        wv.start()
-                    except Exception as e:
-                        logger.warning(f"Failed to start webview window: {e!r}")
-
-                if self.browser:
-                    await anyio.to_thread.run_sync(webbrowser.open, addr)  # ty: ignore
-
-                tray = None
-                if self.tray:
-                    if self.icon is None:
-                        raise ValueError("--tray requires --icon to be set")
-                    on_open = wv.show if wv is not None and wv.is_running() else None
-                    tray = GatewayTray(addr, self.icon, app_name=self.app_name, on_open=on_open)
-                    try:
-                        tray.start()
-                    except Exception as e:
-                        logger.warning(f"Failed to start system tray: {e!r}")
-
-                if wv is not None and wv.is_running():
-                    attention.bind(webview=wv)
-                if tray is not None and tray.is_running():
-                    attention.bind(tray=tray)
-
-                try:
-                    if tray is not None and tray.is_running():
-                        await anyio.to_thread.run_sync(tray.wait_stop, abandon_on_cancel=True)  # ty: ignore
-                    elif wv is not None and wv.is_running():
-                        await anyio.to_thread.run_sync(wv.wait_closed, abandon_on_cancel=True)  # ty: ignore
-                    else:
-                        await anyio.sleep_forever()
-                finally:
-                    if tray is not None:
-                        tray.stop()
-                    if wv is not None:
-                        wv.stop()
+                await anyio.sleep_forever()
             finally:
                 logger.info("Shutting down Gateway")
                 with anyio.CancelScope(shield=True):
                     await runner.cleanup()
-                    # AuthManager 持有 aiohttp 会话, 必须显式关闭, 否则退出时报
-                    # "Unclosed client session"。放 shield 内: 被取消时也要清。
-                    if authm is not None:
-                        await authm.aclose()
                 tg.cancel_scope.cancel()
         logger.info("Gateway shutdown complete")

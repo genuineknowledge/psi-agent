@@ -18,6 +18,21 @@ jobs:
           java-version: "11"
       - name: Install ANTLR tools
         run: pip install antlr4-tools==0.2.2
+      - name: Fetch ANTLR jar
+        run: |
+          mkdir -p "$HOME/.antlr"
+          jar="$HOME/.antlr/antlr4-4.13.2-complete.jar"
+          for url in \
+            "https://github.com/antlr/antlr4/releases/download/4.13.2/antlr4-4.13.2-complete.jar" \
+            "https://repo1.maven.org/maven2/org/antlr/antlr4/4.13.2/antlr4-4.13.2-complete.jar" \
+            "https://repo.maven.apache.org/maven2/org/antlr/antlr4/4.13.2/antlr4-4.13.2-complete.jar" \
+            "https://www.antlr.org/download/antlr-4.13.2-complete.jar"; do
+            if curl -fsSL --retry 5 --connect-timeout 15 -o "$jar" "$url"; then
+              echo "ANTLR jar downloaded from $url"
+              break
+            fi
+          done
+          test -s "$jar"
       - name: Verify Workflow generated sources
         working-directory: examples/haitun-workspace/skills/workflow
         run: |

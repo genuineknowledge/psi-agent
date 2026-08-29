@@ -238,6 +238,44 @@ OPENAPI_SPEC = {
                 },
             },
         },
+        "/feishu/route": {
+            "post": {
+                "summary": "Route a Feishu chat to its Session (per-chat for groups, per-user for DMs)",
+                "operationId": "feishuRoute",
+                "requestBody": {
+                    "required": True,
+                    "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FeishuRouteRequest"}}},
+                },
+                "responses": {
+                    "201": {
+                        "description": "Routed",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FeishuRoute"}}},
+                    },
+                    "400": {"$ref": "#/components/responses/Error"},
+                    "404": {"$ref": "#/components/responses/Error"},
+                    "500": {"$ref": "#/components/responses/Error"},
+                },
+            },
+        },
+        "/feishu/routes": {
+            "get": {
+                "summary": "List all Feishu chat -> Session routes",
+                "operationId": "listFeishuRoutes",
+                "responses": {
+                    "200": {
+                        "description": "List of routes",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {"$ref": "#/components/schemas/FeishuRouteEntry"},
+                                }
+                            }
+                        },
+                    },
+                },
+            },
+        },
         "/oauth/callback": {
             "get": {
                 "summary": "OAuth redirect landing point (relays the code, no manual copy)",
@@ -510,31 +548,6 @@ OPENAPI_SPEC = {
                 },
             },
         },
-        "/ui/attention": {
-            "post": {
-                "summary": "Flash tray icon / native window when chat completes in background",
-                "operationId": "requestAttention",
-                "responses": {
-                    "200": {"description": "Attention cue dispatched (best-effort)"},
-                },
-            },
-        },
-        "/ui/prefs/survey": {
-            "get": {
-                "summary": "Whether the survey popup was already dismissed on this machine",
-                "operationId": "getSurveyPref",
-                "responses": {
-                    "200": {"description": "Survey flag state"},
-                },
-            },
-            "post": {
-                "summary": "Record that the survey popup was dismissed",
-                "operationId": "setSurveyPref",
-                "responses": {
-                    "200": {"description": "Survey flag persisted"},
-                },
-            },
-        },
         "/defaults": {
             "get": {
                 "summary": "Default agent, workspace, and AppData root paths",
@@ -800,6 +813,55 @@ OPENAPI_SPEC = {
                             "Gateway state under {appdata}/state/ (legacy paths dual-read)."
                         ),
                     },
+                },
+            },
+            "FeishuRouteRequest": {
+                "type": "object",
+                "description": (
+                    "Needs at least one routing key: open_id (DM) or chat_id with a group/topic chat_type."
+                ),
+                "properties": {
+                    "open_id": {
+                        "type": "string",
+                        "description": "Sender's open_id. Required unless routing a group chat by chat_id.",
+                    },
+                    "chat_id": {
+                        "type": "string",
+                        "description": "Feishu chat id. With chat_type group/topic, the whole chat shares one Session.",
+                    },
+                    "chat_type": {
+                        "type": "string",
+                        "description": "p2p | group | topic. group/topic routes by chat_id, anything else by open_id.",
+                    },
+                    "ai_id": {
+                        "type": "string",
+                        "description": "Optional, overrides Gateway --feishu-ai-id",
+                    },
+                    "workspace": {
+                        "type": "string",
+                        "description": (
+                            "Optional, defaults to <feishu_workspace_root>/<open_id> "
+                            "(or /chat-<chat_id> for group chats)"
+                        ),
+                    },
+                },
+            },
+            "FeishuRoute": {
+                "type": "object",
+                "properties": {
+                    "open_id": {"type": "string"},
+                    "chat_id": {"type": "string"},
+                    "session_id": {"type": "string"},
+                    "channel_socket": {"type": "string"},
+                },
+            },
+            "FeishuRouteEntry": {
+                "type": "object",
+                "description": "One route. Group entries carry chat_id with an empty open_id; DMs the reverse.",
+                "properties": {
+                    "open_id": {"type": "string"},
+                    "chat_id": {"type": "string"},
+                    "session_id": {"type": "string"},
                 },
             },
             "DeleteResponse": {

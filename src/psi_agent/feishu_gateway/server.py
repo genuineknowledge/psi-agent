@@ -1,38 +1,37 @@
 from __future__ import annotations
 
 import json
+import os
 from base64 import b64encode
 from collections.abc import AsyncGenerator
 from contextlib import aclosing, suppress
 from dataclasses import asdict
 from typing import Any
 
+import aiohttp
 import anyio
 from aiohttp import web
 from loguru import logger
 
-from psi_agent.gateway._ai_manager import AIManager
-from psi_agent.gateway._attention import AttentionHub
-from psi_agent.gateway._auth_manager import AuthManager
-from psi_agent.gateway._chat_manager import ChatManager
-from psi_agent.gateway._defaults import (
+from psi_agent.feishu_gateway._ai_manager import AIManager
+from psi_agent.feishu_gateway._chat_manager import ChatManager
+from psi_agent.feishu_gateway._defaults import (
     resolve_appdata_root,
     resolve_default_agent,
     resolve_default_workspace,
 )
-from psi_agent.gateway._free_model import is_cloud_free_model
-from psi_agent.gateway._history_manager import HistoryManager
-from psi_agent.gateway._oauth_manager import OAuthRelay
-from psi_agent.gateway._openapi import render_openapi
-from psi_agent.gateway._router_manager import RouterDependencyError, RouterManager, RouterUpstreamInfo
-from psi_agent.gateway._scheduler_manager import SchedulerManager
-from psi_agent.gateway._session_manager import SessionInfo, SessionManager
-from psi_agent.gateway._spa_shell import DEFAULT_APP_NAME, inject_app_name, read_spa_index_template
-from psi_agent.gateway._summary_manager import SummaryManager
-from psi_agent.gateway._title_manager import TitleManager
-from psi_agent.gateway._todo_manager import TodoManager
-from psi_agent.gateway._ui_prefs import UIPrefs
-from psi_agent.gateway._workspace_manager import WorkspaceManager
+from psi_agent.feishu_gateway._feishu_manager import FeishuManager
+from psi_agent.feishu_gateway._history_manager import HistoryManager
+from psi_agent.feishu_gateway._oauth_manager import OAuthRelay
+from psi_agent.feishu_gateway._openapi import render_openapi
+from psi_agent.feishu_gateway._router_manager import RouterDependencyError, RouterManager, RouterUpstreamInfo
+from psi_agent.feishu_gateway._scheduler_manager import SchedulerManager
+from psi_agent.feishu_gateway._session_manager import SessionInfo, SessionManager
+from psi_agent.feishu_gateway._spa_shell import DEFAULT_APP_NAME, inject_app_name, read_spa_index_template
+from psi_agent.feishu_gateway._summary_manager import SummaryManager
+from psi_agent.feishu_gateway._title_manager import TitleManager
+from psi_agent.feishu_gateway._todo_manager import TodoManager
+from psi_agent.feishu_gateway._workspace_manager import WorkspaceManager
 
 # Browser fetch often dies during multi-minute tool silence; SSE comments keep it open.
 _SSE_KEEPALIVE_SEC = 15.0
@@ -78,85 +77,32 @@ async def _write_chat_sse_with_keepalive(
                 logger.debug(f"Chat SSE chunk: {data[:1000]}")
 
 
-async def _handle_spa(request: web.Request) -> web.HTTPFound:
-    raise web.HTTPFound("/spa/index.html")
-
-
-async def _handle_spa_v2(request: web.Request) -> web.HTTPFound:
-    raise web.HTTPFound("/spa-v2/index.html")
+async def _handle_feishu(request: web.Request) -> web.HTTPFound:
+    raise web.HTTPFound("/feishu/index.html")
 
 
 async def _handle_openapi(request: web.Request) -> web.Response:
     return web.Response(text=render_openapi(), content_type="application/json")
 
 
-async def _handle_spa_index(request: web.Request) -> web.Response:
+async def _handle_feishu_index(request: web.Request) -> web.Response:
     app_name: str = request.app["app_name"]
     template = await read_spa_index_template()
     if template is None:
-        return _error("SPA index.html not found", status=404)
+        return _error("feishu index.html not found", status=404)
     body = inject_app_name(template, app_name)
     return web.Response(text=body, content_type="text/html", charset="utf-8")
 
 
-def _gateway_spa_root() -> anyio.Path:
-    """Package dir that owns ``spa/`` and ``spa-v2/`` (tests may monkeypatch)."""
+def _gateway_feishu_root() -> anyio.Path:
+    """Package dir that owns the Feishu B-side page (tests may monkeypatch)."""
     return anyio.Path(__file__).parent
-
-
-async def _handle_spa_v2_index(request: web.Request) -> web.Response:
-    app_name: str = request.app["app_name"]
-    base = _gateway_spa_root() / "spa-v2"
-    template: str | None = None
-    for rel in ("dist/index.html", "index.html"):
-        path = base / rel
-        if await path.is_file():
-            template = await path.read_text(encoding="utf-8")
-            break
-    if template is None:
-        return _error("SPA v2 index.html not found", status=404)
-    body = inject_app_name(template, app_name)
-    return web.Response(text=body, content_type="text/html", charset="utf-8")
 
 
 async def _handle_favicon(request: web.Request) -> web.FileResponse:
     favicon_path: str = request.app["favicon_path"]
     logger.debug(f"Serving favicon from {favicon_path!r}")
     return web.FileResponse(favicon_path)
-
-
-async def _request_attention(request: web.Request) -> web.Response:
-    """SPA pings this when a background chat turn finishes — flash tray/webview."""
-    attention: AttentionHub = request.app["attention"]
-    # schedule_notify is non-blocking; do not await tray pulse on the request path.
-    attention.schedule_notify()
-    return _json({"ok": True})
-
-
-async def _get_survey_pref(request: web.Request) -> web.Response:
-    """GET /ui/prefs/survey — has the user already dismissed the survey popup?
-
-    Server-side because the SPA origin's port changes every startup (random port),
-    which silently voids any ``localStorage`` flag. See ``_ui_prefs``.
-    """
-    prefs: UIPrefs = request.app["uiprefs"]
-    return _json({"done": await prefs.survey_done()})
-
-
-async def _set_survey_pref(request: web.Request) -> web.Response:
-    """POST /ui/prefs/survey — record that the survey popup was dismissed.
-
-    Body ``{"done": bool}``; missing/non-bool ``done`` is treated as ``true``
-    since the only caller is the dismiss action.
-    """
-    prefs: UIPrefs = request.app["uiprefs"]
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        body = {}
-    done = body.get("done") if isinstance(body, dict) else None
-    await prefs.set_survey_done(done if isinstance(done, bool) else True)
-    return _json({"done": await prefs.survey_done()})
 
 
 def _json(data: object, status: int = 200) -> web.Response:
@@ -203,14 +149,14 @@ async def create_app(
     rm: RouterManager | None = None,
     favicon_path: str | None = None,
     app_name: str = DEFAULT_APP_NAME,
-    attention: AttentionHub | None = None,
+    feishu_ai_id: str = "",
+    feishu_workspace_root: str = "",
     default_agent: str = "",
     default_workspace: str = "",
     appdata: str = "",
     scheduler_ai_id: str = "",
     schedm: SchedulerManager | None = None,
     sum_m: SummaryManager | None = None,
-    authm: AuthManager | None = None,
 ) -> web.Application:
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app["aim"] = aim
@@ -221,7 +167,8 @@ async def create_app(
     # Owns the scheduler Sessions: one per workspace, created on demand, hidden
     # from SPA / state. Gateway.run passes its own instance (also needed by
     # startup restore); standalone tests may omit it.
-    app["schedm"] = schedm or SchedulerManager(_sm=sm, _ai_id=scheduler_ai_id)
+    app["schedm"] = schedm or SchedulerManager(_sm=sm, _ai_id=scheduler_ai_id or feishu_ai_id)
+    app["fm"] = FeishuManager(_sm=sm, _ai_id=feishu_ai_id, _workspace_root=feishu_workspace_root)
     app["oauth"] = OAuthRelay()
     app["wm"] = WorkspaceManager()
     app["cm"] = ChatManager()
@@ -229,34 +176,23 @@ async def create_app(
     app["todom"] = TodoManager()
     app["favicon_path"] = favicon_path
     app["app_name"] = app_name
-    app["attention"] = attention if attention is not None else AttentionHub()
     app["default_agent"] = default_agent
     app["default_workspace"] = default_workspace
     app["appdata"] = appdata
     # Built from *appdata* rather than taken as a parameter: prefs are a plain
     # file, no lifecycle to own and nothing for callers to inject or fake.
-    app["uiprefs"] = await UIPrefs.from_appdata(appdata)
 
-    spa_root = _gateway_spa_root()
-    spa_dist = spa_root / "spa" / "dist"
-    spa_v2_dist = spa_root / "spa-v2" / "dist"
+    feishu_root = _gateway_feishu_root()
+    feishu_index = feishu_root / "index.html"
     # Register directory redirects before add_static: aiohttp matches static
-    # ``/spa-v2/`` first when registered earlier, and show_index=False → 403.
-    app.router.add_get("/spa/index.html", _handle_spa_index)
-    app.router.add_get("/spa", _handle_spa)
-    app.router.add_get("/spa/", _handle_spa)
-    if await spa_dist.exists():
-        app.router.add_static("/spa/", str(spa_dist), show_index=False)
-
-    app.router.add_get("/spa-v2/index.html", _handle_spa_v2_index)
-    if await spa_v2_dist.exists():
-        logger.info(f"SPA v2 (default) enabled, serving {spa_v2_dist}")
-        app.router.add_get("/", _handle_spa_v2)
-        app.router.add_get("/spa-v2", _handle_spa_v2)
-        app.router.add_get("/spa-v2/", _handle_spa_v2)
-        app.router.add_static("/spa-v2/", str(spa_v2_dist), show_index=False)
-    else:
-        app.router.add_get("/", _handle_spa)
+    # ``/feishu/`` first when registered earlier, and show_index=False -> 403.
+    app.router.add_get("/feishu/index.html", _handle_feishu_index)
+    app.router.add_get("/", _handle_feishu)
+    app.router.add_get("/feishu", _handle_feishu)
+    app.router.add_get("/feishu/", _handle_feishu)
+    if await feishu_index.exists():
+        logger.info(f"Feishu page (default) enabled, serving {feishu_root}")
+        app.router.add_static("/feishu/", str(feishu_root), show_index=False)
     if favicon_path is not None:
         logger.info(f"Favicon enabled, serving {favicon_path!r} at /favicon.ico")
         app.router.add_get("/favicon.ico", _handle_favicon)
@@ -276,9 +212,6 @@ async def create_app(
     app.router.add_get("/summaries", _list_summaries)
     app.router.add_post("/summaries", _set_summary)
     app.router.add_post("/summaries/generate", _generate_summary)
-    app.router.add_post("/ui/attention", _request_attention)
-    app.router.add_get("/ui/prefs/survey", _get_survey_pref)
-    app.router.add_post("/ui/prefs/survey", _set_survey_pref)
     app.router.add_get("/workspace/cwd", _get_cwd)
     app.router.add_get("/defaults", _get_defaults)
     app.router.add_get("/workspace/places", _list_workspace_places)
@@ -291,24 +224,14 @@ async def create_app(
     app.router.add_get("/sessions/{session_id}/todo-segments/{segment_id}", _get_todo_segment)
     app.router.add_post("/sessions/{session_id}/todo-segments/{segment_id}", _set_todo_segment_label)
     app.router.add_post("/sessions/{session_id}/chat", _handle_chat)
+    app.router.add_post("/feishu/route", _feishu_route)
+    app.router.add_get("/feishu/routes", _list_feishu_routes)
+    app.router.add_post("/auth/feishu", _auth_feishu)
     app.router.add_get("/oauth/callback", _oauth_callback)
     app.router.add_get("/oauth/code", _oauth_take_code)
 
     # 认证路由: 只在配了云端地址时才注册。authm 为 None 时**一条都不注册**,
     # 现有本地单用户流程零回归。
-    if authm is not None:
-        app["authm"] = authm
-        app.router.add_get("/auth/status", _auth_status)
-        app.router.add_post("/auth/send-code", _auth_send_code)
-        app.router.add_post("/auth/verify", _auth_verify)
-        app.router.add_post("/auth/complete", _auth_complete)
-        app.router.add_post("/auth/bind", _auth_bind)
-        app.router.add_delete("/auth/identities/{provider}", _auth_unbind)
-        app.router.add_get("/auth/me", _auth_me)
-        app.router.add_post("/auth/logout", _auth_logout)
-        app.router.add_get("/auth/devices", _auth_devices)
-        app.router.add_delete("/auth/devices/{device_id}", _auth_revoke_device)
-        logger.info(f"Auth enabled, proxying to {authm.endpoint}{authm.prefix}")
 
     return app
 
@@ -458,6 +381,123 @@ async def _delete_session(request: web.Request) -> web.Response:
 async def _list_sessions(request: web.Request) -> web.Response:
     sm: SessionManager = request.app["sm"]
     return _json([_session_data(info) for info in await sm.list_all()])
+
+
+async def _feishu_route(request: web.Request) -> web.Response:
+    """幂等地把一次飞书会话路由到其 Session, 首次见到时按需 spawn。
+
+    body: ``{open_id, chat_id?, chat_type?, ai_id?, workspace?}`` →
+    ``201 {open_id, chat_id, session_id, channel_socket}``。群聊 (``chat_type`` 为 group/topic
+    且 ``chat_id`` 非空) 整群共用一个 Session, 其余按 ``open_id`` 一人一个。channel 拿回
+    ``channel_socket`` 连接即得对应会话。
+    """
+    fm: FeishuManager = request.app["fm"]
+    schedm: SchedulerManager = request.app["schedm"]
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            return _error("Request body must be a JSON object", status=400)
+        open_id = body.get("open_id") or ""
+        chat_id = body.get("chat_id") or ""
+        chat_type = body.get("chat_type") or ""
+        socket, session_id = await fm.route(
+            open_id,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            ai_id=body.get("ai_id"),
+            workspace=body.get("workspace"),
+        )
+        # Schedules under this session's workspace belong to its dedicated scheduler
+        # Session, not to the user/group session.
+        sm: SessionManager = request.app["sm"]
+        await schedm.ensure(
+            sm.get_workspace(session_id),
+            ai_id=sm.get_backend_id(session_id),
+            agent=sm.get_agent(session_id),
+        )
+        return _json(
+            {
+                "open_id": open_id,
+                "chat_id": chat_id,
+                "session_id": session_id,
+                "channel_socket": socket,
+            },
+            status=201,
+        )
+    except (TypeError, ValueError, KeyError) as e:
+        return _error(str(e), status=400)
+    except LookupError as e:
+        return _error(str(e), status=404)
+    except Exception as e:
+        logger.error(f"Unexpected error routing feishu open_id: {e!r}")
+        return _error(str(e), status=500)
+
+
+async def _list_feishu_routes(request: web.Request) -> web.Response:
+    fm: FeishuManager = request.app["fm"]
+    return _json([asdict(r) for r in fm.list_routes()])
+
+
+async def _auth_feishu(request: web.Request) -> web.Response:
+    """B-end Feishu identity login: exchange an H5 auth code for the open_id.
+
+    Real flow body: ``{"code": "..."}``. For local browser development (the
+    prototype is not running inside the Feishu client), the frontend can pass
+    ``{"dev_open_id": "..."}`` and the server returns a demo identity.
+    """
+    try:
+        body = await request.json()
+    except ValueError, TypeError:
+        return _error("Invalid request body", status=400)
+    if not isinstance(body, dict):
+        return _error("Request body must be a JSON object", status=400)
+
+    dev_open_id = str(body.get("dev_open_id") or body.get("dev", "")).strip()
+    if dev_open_id:
+        return _json({"open_id": dev_open_id, "name": "本机演示用户", "dev": True})
+
+    code = str(body.get("code") or "").strip()
+    if not code:
+        return _error("code is required (or dev_open_id for local development)", status=400)
+
+    app_id = os.environ.get("PSI_FEISHU_APP_ID", "")
+    app_secret = os.environ.get("PSI_FEISHU_APP_SECRET", "")
+    if not app_id or not app_secret:
+        return _error("PSI_FEISHU_APP_ID / PSI_FEISHU_APP_SECRET not configured", status=500)
+
+    basic = b64encode(f"{app_id}:{app_secret}".encode()).decode()
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as http:
+        async with http.post(
+            "https://open.feishu.cn/open-apis/authen/v1/oidc/access_token",
+            headers={"Authorization": f"Basic {basic}"},
+            json={"grant_type": "authorization_code", "code": code},
+        ) as resp:
+            payload = await resp.json()
+        if payload.get("code", 0) != 0:
+            return _error(f"Feishu auth failed: {payload}", status=502)
+        access_token = (payload.get("data") or {}).get("access_token", "")
+        if not access_token:
+            return _error(f"Feishu auth returned no access_token: {payload}", status=502)
+        async with http.get(
+            "https://open.feishu.cn/open-apis/authen/v1/user_info",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ) as resp:
+            info = await resp.json()
+        if info.get("code", 0) != 0:
+            return _error(f"Feishu user_info failed: {info}", status=502)
+        data = info.get("data") or {}
+        open_id = str(data.get("open_id") or "")
+        if not open_id:
+            return _error(f"Feishu user_info returned no open_id: {info}", status=502)
+        return _json(
+            {
+                "open_id": open_id,
+                "name": str(data.get("name") or data.get("en_name") or ""),
+                "avatar_url": str(data.get("avatar_url") or ""),
+                "dev": False,
+            }
+        )
 
 
 _OAUTH_DONE_HTML = (
@@ -834,128 +874,3 @@ async def _handle_chat(request: web.Request) -> web.StreamResponse:
 # Gateway 侧刻意只做**转发 + 本机凭证管理**: 不持任何供应商密钥 (安装包里放阿里云
 # AK/SK 或 Resend key 等于公开发布), 不做授权判定 (用户本人即机器管理员, 客户端侧
 # 校验可被绕过)。发码与鉴权都在云端。
-
-
-def _auth(request: web.Request) -> AuthManager:
-    return request.app["authm"]
-
-
-def _auth_reply(status: int, body: dict[str, Any]) -> web.Response:
-    """把云端响应原样转给 SPA。
-
-    ``status == 0`` 表示云端不可达 —— 转成 502, 而不是把 0 当 HTTP 状态码
-    (aiohttp 会抛), 也不掩饰成 200。
-    """
-    if status == 0:
-        return _json(body, status=502)
-    return _json(body, status=status)
-
-
-async def _auth_status(request: web.Request) -> web.Response:
-    """当前登录态。SPA 据此决定显示登录引导还是身份信息; 不含 token。
-
-    顺手把连接焐热: SPA 挂载登录面板时必然探这个端点, 是最自然的预热时机 ——
-    因此前端一行都不用改。它本身只读内存、不打云端, 而 ``nudge_warm`` 只是往
-    task group 里塞个任务就返回, 所以加上预热也不会让这个响应变慢。
-    """
-    authm = _auth(request)
-    await authm.nudge_warm()
-    return _json(authm.status())
-
-
-async def _auth_send_code(request: web.Request) -> web.Response:
-    """请云端发验证码 (手机号或邮箱)。"""
-    body = await _read_json(request)
-    if body is None:
-        return _error("invalid_request", status=400)
-    status, data = await _auth(request).send_code(
-        phone=str(body.get("phone", "")),
-        email=str(body.get("email", "")),
-    )
-    return _auth_reply(status, data)
-
-
-async def _refresh_free_models(request: web.Request) -> None:
-    """登录态变了, 让免费模型的 socket 重新取一次 token。
-
-    ** 为什么要显式做 **: 交给 ``Ai`` 的 key 在 socket 构造时就定了, 而
-    ``AiInfo.api_key`` 里存的是哨兵 —— 去重键看不见 token 变化, 不会自然重建。
-    不做的话: 换账号登录后仍拿旧 token (已被云端吊销) 去请求, 一路 401;
-    登出后仍能继续用, 更糟。
-
-    只重建、不删除: 模型列表与 Session 绑定都不动, 用户看不到任何抖动。
-    """
-    authm: AuthManager = request.app["authm"]
-    aim: AIManager = request.app["aim"]
-    await aim.refresh_where(lambda info: is_cloud_free_model(info.api_key, info.base_url, authm.endpoint))
-
-
-async def _auth_verify(request: web.Request) -> web.Response:
-    """校验验证码。老用户直接登录; 新用户的 tempToken 由 manager 扣住不下发。"""
-    body = await _read_json(request)
-    if body is None:
-        return _error("invalid_request", status=400)
-    status, data = await _auth(request).verify(
-        code=str(body.get("code", "")),
-        phone=str(body.get("phone", "")),
-        email=str(body.get("email", "")),
-    )
-    # 老用户在这一步就拿到了正式 token; 新用户要走 /complete, 那边也刷。
-    if status == 200:
-        await _refresh_free_models(request)
-    return _auth_reply(status, data)
-
-
-async def _auth_bind(request: web.Request) -> web.Response:
-    """已登录态下把手机号/邮箱绑定到当前账号。复用发码, 校验走云端 /identities/*。"""
-    body = await _read_json(request)
-    if body is None:
-        return _error("invalid_request", status=400)
-    status, data = await _auth(request).bind(
-        code=str(body.get("code", "")),
-        phone=str(body.get("phone", "")),
-        email=str(body.get("email", "")),
-    )
-    return _auth_reply(status, data)
-
-
-async def _auth_unbind(request: web.Request) -> web.Response:
-    """解绑一种登录方式。云端拦截「解绑最后一个身份」并回 last_identity。"""
-    status, data = await _auth(request).unbind(request.match_info.get("provider", ""))
-    return _auth_reply(status, data)
-
-
-async def _auth_complete(request: web.Request) -> web.Response:
-    """两段式注册的第二段: 建号并换正式 token。tempToken 取自进程内暂存。"""
-    body = await _read_json(request)
-    if body is None:
-        return _error("invalid_request", status=400)
-    status, data = await _auth(request).complete(display_name=str(body.get("displayName", "")))
-    if status == 200:
-        await _refresh_free_models(request)
-    return _auth_reply(status, data)
-
-
-async def _auth_me(request: web.Request) -> web.Response:
-    status, data = await _auth(request).me()
-    return _auth_reply(status, data)
-
-
-async def _auth_logout(request: web.Request) -> web.Response:
-    status, data = await _auth(request).logout()
-    # 无条件刷: 云端不可达时本机凭证也已清掉 (logout_local), socket 必须跟着走,
-    # 否则登出后免费模型还能继续用。
-    await _refresh_free_models(request)
-    return _auth_reply(status, data)
-
-
-async def _auth_devices(request: web.Request) -> web.Response:
-    """列出已登录设备。"""
-    status, data = await _auth(request).list_devices()
-    return _auth_reply(status, data)
-
-
-async def _auth_revoke_device(request: web.Request) -> web.Response:
-    """踢掉某台设备, 该设备下次请求即 401。"""
-    status, data = await _auth(request).revoke_device(request.match_info.get("device_id", ""))
-    return _auth_reply(status, data)

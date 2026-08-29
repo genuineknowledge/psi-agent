@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
@@ -471,6 +472,18 @@ async def _stream_reply(
 ) -> None:
     """Stream agent text and files into one Feishu chat."""
 
+    if os.environ.get("PSI_FEISHU_TEXT_REPLY", "").strip().lower() in {"1", "true", "yes", "on"}:
+        await _stream_text_reply(
+            channel,
+            core,
+            chat_id,
+            chunks,
+            reply_to=reply_to,
+            suppress_silent_reply=suppress_silent_reply,
+            sender_open_id=sender_open_id,
+        )
+        return
+
     async def _produce(stream: Any) -> None:
         silent_candidate = ""
         checking_silent_reply = suppress_silent_reply
@@ -532,6 +545,70 @@ async def _stream_reply(
 
     options = {"reply_to": reply_to} if reply_to else {}
     await channel.stream(chat_id, {"markdown": _produce}, options)
+
+
+async def _stream_text_reply(
+    channel: Any,
+    core: ChannelCore,
+    chat_id: str,
+    chunks: list[InputChunk],
+    *,
+    reply_to: str | None,
+    suppress_silent_reply: bool = False,
+    sender_open_id: str | None = None,
+) -> None:
+    """Plain-text fallback: collect the full reply, then send it as one message."""
+    parts: list[str] = []
+    silent_candidate = ""
+    checking_silent_reply = suppress_silent_reply
+
+    def flush_silent_candidate() -> None:
+        nonlocal silent_candidate
+        if not silent_candidate:
+            return
+        candidate = silent_candidate
+        silent_candidate = ""
+        normalized = candidate.strip()
+        if not normalized:
+            return
+        if normalized == _SILENT_REPLY_TOKEN:
+            return
+        parts.append(candidate)
+
+    async with aclosing(core.post(chunks)) as gen:
+        async for chunk in gen:
+            if isinstance(chunk, TextChunk):
+                if checking_silent_reply:
+                    silent_candidate += chunk.text
+                    normalized = silent_candidate.strip()
+                    if not normalized or _SILENT_REPLY_TOKEN.startswith(normalized):
+                        continue
+                    flush_silent_candidate()
+                    checking_silent_reply = False
+                else:
+                    parts.append(chunk.text)
+            elif isinstance(chunk, ReasoningChunk):
+                if suppress_silent_reply and chunk.kind == "tool_result":
+                    flush_silent_candidate()
+                    checking_silent_reply = True
+            elif isinstance(chunk, FileChunk):
+                logger.debug(f"received FileChunk ({chunk.path})")
+                if _private_space.blocks_send(chunk.path, sender_open_id):
+                    logger.warning(f"private file withheld from {sender_open_id!r}: {chunk.path}")
+                    continue
+                try:
+                    await _send_file(channel, chat_id, chunk.path, chunk.source)
+                except OutboundFileError as e:
+                    logger.error(f"outbound file failed - {e}")
+                    await channel.send(chat_id, {"text": str(e)})
+    flush_silent_candidate()
+
+    text = "".join(parts).strip()
+    if not text:
+        logger.debug("text reply: nothing to send")
+        return
+    options = {"reply_to": reply_to} if reply_to else {}
+    await channel.send(chat_id, {"text": text}, options)
 
 
 async def _handle_and_stream(

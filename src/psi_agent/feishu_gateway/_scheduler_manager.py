@@ -2,8 +2,8 @@
 
 **为什么 (刻意为之)**
 
-定时任务归属 **workspace**, 触发权归属 **(session x schedule)**。channel 会给不同用户/会话
-spawn 独立 Session (飞书侧由 ``psi_agent.feishu_gateway`` 负责), SPA 也可能对同一
+定时任务归属 **workspace**, 触发权归属 **(session x schedule)**。飞书 channel 按
+open_id 给每个用户 spawn 一个独立 Session (``_feishu_manager.py``), SPA 也可能对同一
 workspace 开多个会话; 每个 Session 都能读到 ``{workspace}/schedules`` 的全部条目, 但
 一条 schedule 必须**恰好被一个 Session 激活**, 否则一条定时提醒会被在线会话数乘一遍。
 
@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 import anyio
 from loguru import logger
 
-from psi_agent.gateway._session_manager import SessionManager
+from psi_agent.feishu_gateway._session_manager import SessionManager
 from psi_agent.session.schedule_registry import ACTIVATE_ALL
 
 

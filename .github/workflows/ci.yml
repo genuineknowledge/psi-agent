@@ -11,6 +11,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
+          uv-version: "0.11.32"
           python-version: "3.14"
       - run: uv sync
       - run: uv run ruff check .
@@ -24,6 +25,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
+          uv-version: "0.11.32"
           python-version: "3.14"
       - run: uv sync
       - run: uv run pytest -v
@@ -50,6 +52,7 @@ jobs:
         working-directory: src/psi_agent/gateway/spa-v2
       - uses: astral-sh/setup-uv@v7
         with:
+          uv-version: "0.11.32"
           python-version: "3.14"
       - run: uv build
       - uses: pypa/gh-action-pypi-publish@release/v1
