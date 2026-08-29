@@ -23,12 +23,13 @@ REASONING_KIND_THINKING = "thinking"
 REASONING_KIND_TOOL_CALL = "tool_call"
 REASONING_KIND_TOOL_RESULT = "tool_result"
 
-# ``stop`` / ``tool_calls`` are OpenAI standard.  ``error`` and
+# ``stop`` / ``tool_calls`` are OpenAI standard.  ``error``, ``usage``, and
 # ``compaction_needed`` are psi-agent extensions used only between our own
 # layers -- never exposed to an external caller.
 FINISH_REASON_STOP = "stop"
 FINISH_REASON_TOOL_CALLS = "tool_calls"
 FINISH_REASON_ERROR = "error"
+FINISH_REASON_USAGE = "usage"
 FINISH_REASON_COMPACTION_NEEDED = "compaction_needed"
 
 SSE_DONE = "[DONE]"
@@ -36,7 +37,12 @@ SSE_DONE = "[DONE]"
 # Auxiliary frames do not end the stream: they ride along *after* the model's
 # real terminal frame and must never overwrite it.  Everything else -- including
 # reasons we do not know about -- terminates.
-AUXILIARY_FINISH_REASONS = frozenset({FINISH_REASON_COMPACTION_NEEDED})
+AUXILIARY_FINISH_REASONS = frozenset(
+    {
+        FINISH_REASON_COMPACTION_NEEDED,
+        FINISH_REASON_USAGE,
+    }
+)
 
 
 def is_auxiliary_finish(value: str | None) -> bool:
@@ -162,6 +168,32 @@ def make_compaction_signal(*, prompt_tokens: int, threshold: int) -> dict[str, A
         "id": "compaction",
         "choices": [{"index": 0, "delta": {}, "finish_reason": FINISH_REASON_COMPACTION_NEEDED}],
         "psi_compaction": {"needed": True, "prompt_tokens": prompt_tokens, "threshold": threshold},
+    }
+
+
+def make_usage_signal(
+    *,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+) -> dict[str, Any]:
+    """Build the auxiliary token-usage frame emitted after one model call.
+
+    OpenAI-compatible providers commonly report streaming usage in a chunk
+    with zero choices.  psi-agent intentionally treats zero-choice chunks as
+    heartbeats at component boundaries, so the AI layer normalizes provider
+    usage into this single-choice internal frame.  Routers can then preserve
+    usage without weakening the one-choice invariant.
+    """
+
+    return {
+        "id": "usage",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": FINISH_REASON_USAGE}],
+        "psi_usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+        },
     }
 
 

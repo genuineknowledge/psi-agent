@@ -195,6 +195,15 @@ SSE 流中的特殊字段：
    其中 `prompt_tokens` / `threshold` **不是纯日志字段**：Session 用它们做压缩冷却判断
    （`session/AGENTS.md`「压缩冷却」），省略会让冷却退化成 fail-open、退回连续重压。
 
+4. **Usage 信号（SSE 层面）**：provider 的流式 token 用量通常位于 `choices=[]` 的尾帧，
+   而内部协议把 0 choice 当心跳跳过。AI 层因此把最后一份有效 usage 规范化为单 choice 辅助帧：
+   ```json
+   {"choices": [{"delta": {}, "finish_reason": "usage"}],
+    "psi_usage": {"prompt_tokens": N, "completion_tokens": M, "total_tokens": T}}
+   ```
+   `usage` 属于 `AUXILIARY_FINISH_REASONS`，不得覆盖真实终止原因。Session 在一次 Agent run
+   内累加每轮模型请求；任一轮没有有效 usage 时，聚合 token 值保持未知，不能把已知部分当精确总量。
+
 ### 协议归属
 
 上述格式的**唯一定义处**是 `psi_agent/protocol.py`（与五个组件平级，因为它描述的是层与层之间的约定）：

@@ -219,6 +219,7 @@ Paths are relative to the workspace:
 | `flows/workflows/<slug>/<slug>.workflow` or `<slug>.g4` | reusable G4 source (`.workflow` preferred when both exist) |
 | `flows/workflows/<slug>/instructions/*.md` | optional long-form instructions for that reusable source |
 | `<workflow-bundle>/runs/<run-id>/artifacts/*.md` | one Markdown file for every materialized Artifact in one run |
+| `<workflow-bundle>/runs/<run-id>/token-usage.json` | private per-Step model-call and token-usage observability for that run |
 | `.psi/fusion-flow/runs/<run-id>.json` | private resumable state for workflows containing Human Steps |
 
 ## Authoring Mode

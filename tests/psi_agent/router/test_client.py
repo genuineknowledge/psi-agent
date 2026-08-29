@@ -73,12 +73,18 @@ async def test_buffered_complete_preserves_events_and_compaction_metadata() -> N
         "choices": [{"index": 0, "delta": {}, "finish_reason": "compaction_needed"}],
         "psi_compaction": {"needed": True, "prompt_tokens": 100, "threshold": 80},
     }
+    usage_event = {
+        "id": "usage",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "usage"}],
+        "psi_usage": {"prompt_tokens": 100, "completion_tokens": 5, "total_tokens": 105},
+    }
 
     async def handler(request: web.Request) -> web.StreamResponse:
         return await _sse_response(
             request,
             [
                 f"data: {json.dumps(content_event)}\n\n".encode(),
+                f"data: {json.dumps(usage_event)}\n\n".encode(),
                 f"data: {json.dumps(compaction_event)}\n\n".encode(),
                 b"data: [DONE]\n\n",
             ],
@@ -91,7 +97,7 @@ async def test_buffered_complete_preserves_events_and_compaction_metadata() -> N
             timeout=None,
         )
 
-    assert result.events == (content_event, compaction_event)
+    assert result.events == (content_event, usage_event, compaction_event)
     assert result.completion.content == "ok"
     assert result.completion.reasoning == "why"
     assert result.completion.finish_reason == "stop"

@@ -48,6 +48,19 @@ def _sse_chunk(content: str = "", reasoning: str = "", finish: str | None = None
     return f"data: {json.dumps(chunk)}\n\n"
 
 
+def _sse_usage(input_tokens: int, output_tokens: int) -> str:
+    chunk = {
+        "id": "usage",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "usage"}],
+        "psi_usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    }
+    return f"data: {json.dumps(chunk)}\n\n"
+
+
 class MockAIServer:
     """Helper to create and cleanup a mock AI Unix socket server."""
 
@@ -1464,6 +1477,97 @@ async def test_run_streamed_result_completed_on_model_stop(tmp_path: Path) -> No
     assert result.model_finish_reason == "stop"
     assert result.model_turns == 1
     assert result.is_complete
+
+
+@pytest.mark.anyio
+async def test_run_streamed_aggregates_single_model_usage(tmp_path: Path) -> None:
+    run = await _run_streamed_against(
+        tmp_path,
+        (_sse_chunk(content="done", finish="stop") + _sse_usage(120, 9)).encode(),
+    )
+
+    result = run.result
+    assert result is not None
+    assert result.token_usage.model_calls == 1
+    assert result.token_usage.input_tokens == 120
+    assert result.token_usage.output_tokens == 9
+    assert result.token_usage.total_tokens == 129
+    assert result.token_usage.complete
+
+
+@pytest.mark.anyio
+async def test_run_streamed_marks_usage_incomplete_when_provider_omits_it(tmp_path: Path) -> None:
+    run = await _run_streamed_against(tmp_path, _sse_chunk(content="done", finish="stop").encode())
+
+    assert run.token_usage.model_calls == 1
+    assert run.token_usage.input_tokens is None
+    assert run.token_usage.output_tokens is None
+    assert not run.token_usage.complete
+
+
+@pytest.mark.anyio
+async def test_run_streamed_accumulates_usage_across_tool_rounds(tmp_path: Path) -> None:
+    request_count = 0
+
+    async def handler(request: web.Request) -> web.StreamResponse:
+        nonlocal request_count
+        request_count += 1
+        response = web.StreamResponse(status=200, headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        if request_count == 1:
+            tool_call = {
+                "id": "tool-call",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {"name": "echo", "arguments": '{"message":"hello"}'},
+                                }
+                            ]
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+            }
+            await response.write(f"data: {json.dumps(tool_call)}\n\n".encode())
+            await response.write(_sse_usage(80, 6).encode())
+        else:
+            await response.write(_sse_chunk(content="done", finish="stop").encode())
+            await response.write(_sse_usage(110, 8).encode())
+        await response.write(b"data: [DONE]\n\n")
+        return response
+
+    async def echo(message: str) -> str:
+        return message
+
+    tool = ToolFunction.from_callable(echo)
+    server = MockAIServer(tmp_path)
+    socket_path = await server.start(handler)
+    try:
+        agent = SessionAgent(
+            ai_client=AiClient(socket_path),
+            tool_registry=ToolRegistry(
+                files={"__test__": FileEntry(file_hash="", tools={"echo": tool}, funcs={"echo": echo})}
+            ),
+            conversation=Conversation(path=tmp_path / "usage.jsonl"),
+        )
+        run = agent.run_streamed({"role": "user", "content": "use the tool"})
+        async for _ in run:
+            pass
+    finally:
+        await server.cleanup()
+
+    assert request_count == 2
+    assert run.result is not None
+    assert run.result.token_usage.model_calls == 2
+    assert run.result.token_usage.input_tokens == 190
+    assert run.result.token_usage.output_tokens == 14
+    assert run.result.token_usage.total_tokens == 204
 
 
 @pytest.mark.anyio
