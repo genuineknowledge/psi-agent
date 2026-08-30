@@ -191,6 +191,15 @@ Protocol errors between components take two forms:
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 proxy |
 | `PSI_FEISHU_APP_ID` | Feishu app ID |
 | `PSI_FEISHU_APP_SECRET` | Feishu app secret |
+| `PSI_FEISHU_EXTERNAL_SESSIONS` | External session routing mode for Feishu |
+| `PSI_PRIVATE_OPEN_IDS` | Feishu private chat open_id whitelist (comma-separated) |
+| `PSI_APPDATA` | AppData memory root directory path |
+| `PSI_AGENT` | Default Agent package directory path |
+| `PSI_MAX_CONTEXT_TOKENS` | Token threshold for triggering AI context compaction |
+| `PSI_AUTH_ENDPOINT` | Cloud auth service endpoint URL |
+| `PSI_AUTH_PREFIX` | Cloud auth service API prefix (defaults to `/auth`) |
+| `PSI_DEBUG_MODULES` | Targeted DEBUG logging module whitelist (comma-separated) |
+| `PSI_DEBUG_LOG_PATH` | Targeted DEBUG logging output file path |
 
 CLI args take precedence over environment variables. AI params (provider, model, api_key, base_url) and channel auth params are optional and fall back to env vars when omitted. Socket path params (--session-socket, --channel-socket, --ai-socket) are required.
 
@@ -320,18 +329,47 @@ Gateway exposes the following REST endpoints (see [Gateway layer docs](src/psi_a
 | POST | `/ais` | Create AI instance |
 | DELETE | `/ais/{ai_id}` | Delete AI |
 | GET | `/ais` | List all AIs |
+| POST | `/routers` | Create and start Router |
+| DELETE | `/routers/{router_id}` | Stop and delete Router |
+| GET | `/routers` | List all Routers |
 | POST | `/sessions` | Create Session |
 | DELETE | `/sessions/{session_id}` | Delete Session |
 | GET | `/sessions` | List all Sessions |
 | POST | `/sessions/{session_id}/chat` | Web UI chat (SSE stream) |
 | GET | `/sessions/{session_id}/history` | Get conversation history |
-| POST | `/feishu/route` | Idempotently route a Feishu chat to a Session: group chats by chat_id (whole chat shares one), DMs by open_id (one per user); spawn on first use |
+| GET | `/sessions/{session_id}/todos` | Get session todos checklist |
+| GET | `/sessions/{session_id}/todo-segments` | List subtask segments |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | Get specific subtask segment details |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | Update subtask segment title |
+| POST | `/feishu/route` | Idempotently route a Feishu chat to a Session |
 | GET | `/feishu/routes` | List Feishu chat → Session routes |
+| GET | `/oauth/callback` | OAuth redirect handler and stashing |
+| GET | `/oauth/code` | Retrieve stashed OAuth code |
+| GET | `/auth/status` | Get auth status and connection diagnostic details |
+| POST | `/auth/send-code` | Send phone/email verification code |
+| POST | `/auth/verify` | Verify auth code for login/registration flow |
+| POST | `/auth/complete` | Complete registration profile |
+| POST | `/auth/bind` | Bind phone/email identity |
+| DELETE | `/auth/identities/{provider}` | Unbind phone/email identity |
+| GET | `/auth/me` | Get current user identity and bound accounts |
+| POST | `/auth/logout` | Logout and clear local auth credentials |
+| GET | `/auth/devices` | List logged-in devices |
+| DELETE | `/auth/devices/{device_id}` | Revoke logged-in device |
+| GET | `/defaults` | Get default agent, workspace, and appdata paths |
+| GET | `/workspace/cwd` | Get Gateway current working directory |
+| GET | `/workspace/places` | List PathPicker quick places and drive letters |
+| GET | `/workspace/browse` | Browse filesystem directory (`?path=...`) |
+| GET | `/workspace/file` | Read specific file content in base64 |
+| POST | `/workspace/reveal` | Reveal path in system file manager |
 | GET | `/titles` | Get all session titles |
 | POST | `/titles` | Set session title |
 | POST | `/titles/generate` | AI auto-generate title |
-| GET | `/workspace/browse` | Browse directory (`?path=...`) |
-| GET | `/workspace/cwd` | Get working directory |
+| GET | `/summaries` | Get all session task summaries |
+| POST | `/summaries` | Set session task summary |
+| POST | `/summaries/generate` | AI auto-generate task summary |
+| POST | `/ui/attention` | Trigger tray/window attention pulse on session completion |
+| GET | `/ui/prefs/survey` | Query UI survey preference |
+| POST | `/ui/prefs/survey` | Save UI survey preference |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | Favicon (available only with `--icon`; returns 404 otherwise) |
 

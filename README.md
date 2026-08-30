@@ -191,6 +191,15 @@ AI 和 Session 组件无需关心通信介质——由 `_sockets.py` 统一处�
 | `PSI_TELEGRAM_PROXY` | Telegram SOCKS5 代理 |
 | `PSI_FEISHU_APP_ID` | 飞书 app ID |
 | `PSI_FEISHU_APP_SECRET` | 飞书 app secret |
+| `PSI_FEISHU_EXTERNAL_SESSIONS` | 飞书外部会话路由模式配置 |
+| `PSI_PRIVATE_OPEN_IDS` | 飞书私聊 open_id 白名单（逗号分隔） |
+| `PSI_APPDATA` | AppData 记忆区根目录路径 |
+| `PSI_AGENT` | 默认 Agent 包目录路径 |
+| `PSI_MAX_CONTEXT_TOKENS` | AI 上下文 Compaction 触发 Token 阈值 |
+| `PSI_AUTH_ENDPOINT` | 云端认证服务地址 |
+| `PSI_AUTH_PREFIX` | 云端认证服务 API 前缀（默认 `/auth`） |
+| `PSI_DEBUG_MODULES` | 定向 DEBUG 日志模块白名单（逗号分隔） |
+| `PSI_DEBUG_LOG_PATH` | 定向 DEBUG 日志输出文件路径 |
 
 CLI 参数优先于环境变量。AI 参数（provider、model、api_key、base_url）及 channel 认证参数均可选，未传时回退到环境变量。Socket 路径参数（--session-socket、--channel-socket、--ai-socket）为必填。
 
@@ -308,18 +317,47 @@ Gateway 暴露以下 REST 端点（详细信息见 [Gateway 层设计文档](src
 | POST | `/ais` | 创建 AI 实例 |
 | DELETE | `/ais/{ai_id}` | 删除 AI |
 | GET | `/ais` | 列出所有 AI |
+| POST | `/routers` | 创建并启动 Router |
+| DELETE | `/routers/{router_id}` | 停止并删除 Router |
+| GET | `/routers` | 列出所有 Router |
 | POST | `/sessions` | 创建 Session |
 | DELETE | `/sessions/{session_id}` | 删除 Session |
 | GET | `/sessions` | 列出所有 Session |
 | POST | `/sessions/{session_id}/chat` | Web UI 对话（SSE 流式） |
 | GET | `/sessions/{session_id}/history` | 获取会话历史 |
-| POST | `/feishu/route` | 幂等路由飞书会话到 Session：群聊按 chat_id（整群共用），私聊按 open_id（一人一个），首次按需 spawn |
+| GET | `/sessions/{session_id}/todos` | 读取会话 todos 清单 |
+| GET | `/sessions/{session_id}/todo-segments` | 读取子任务分段列表 |
+| GET | `/sessions/{session_id}/todo-segments/{segment_id}` | 读取特定子任务分段详情 |
+| POST | `/sessions/{session_id}/todo-segments/{segment_id}` | 修改子任务分段标题 |
+| POST | `/feishu/route` | 幂等路由飞书会话到 Session |
 | GET | `/feishu/routes` | 列出飞书会话 → Session 路由 |
+| GET | `/oauth/callback` | OAuth 重定向接收与暂存 |
+| GET | `/oauth/code` | 发起方获取 OAuth 授权码 |
+| GET | `/auth/status` | 获取云端登录态与链路自检状态 |
+| POST | `/auth/send-code` | 发送手机/邮箱验证码 |
+| POST | `/auth/verify` | 校验验证码进行登录或注册引导 |
+| POST | `/auth/complete` | 补全注册个人信息 |
+| POST | `/auth/bind` | 绑定手机/邮箱账号 |
+| DELETE | `/auth/identities/{provider}` | 解绑手机/邮箱账号 |
+| GET | `/auth/me` | 获取当前用户身份与绑定账号 |
+| POST | `/auth/logout` | 退出登录并清除本机凭证 |
+| GET | `/auth/devices` | 获取已登录设备列表 |
+| DELETE | `/auth/devices/{device_id}` | 强退指定已登录设备 |
+| GET | `/defaults` | 获取默认 agent、workspace 及 appdata 路径 |
+| GET | `/workspace/cwd` | 获取 Gateway 当前工作目录 |
+| GET | `/workspace/places` | 获取 PathPicker 快捷位置与盘符列表 |
+| GET | `/workspace/browse` | 浏览文件系统目录（`?path=...`） |
+| GET | `/workspace/file` | 读取特定文件 base64 内容 |
+| POST | `/workspace/reveal` | 在系统文件管理器中定位指定路径 |
 | GET | `/titles` | 获取所有会话标题 |
 | POST | `/titles` | 设置会话标题 |
 | POST | `/titles/generate` | AI 自动生成标题 |
-| GET | `/workspace/browse` | 浏览目录（`?path=...`） |
-| GET | `/workspace/cwd` | 获取工作目录 |
+| GET | `/summaries` | 获取所有会话任务摘要 |
+| POST | `/summaries` | 设置会话任务摘要 |
+| POST | `/summaries/generate` | AI 自动生成任务摘要 |
+| POST | `/ui/attention` | 会话完成时触发托盘/窗口脉冲提醒 |
+| GET | `/ui/prefs/survey` | 查询 UI 问卷偏好设置 |
+| POST | `/ui/prefs/survey` | 保存 UI 问卷偏好设置 |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | favicon（仅当 `--icon` 设置时有效，否则返回 404） |
 

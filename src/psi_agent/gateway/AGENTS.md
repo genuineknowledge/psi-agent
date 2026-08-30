@@ -513,6 +513,13 @@ OAuth 回调中继（`_oauth_manager.py`）：让**授权码自己回到发起�
 | POST | `/ui/prefs/survey` | 记录问卷弹窗已关闭；body `{"done": bool}`，缺省/非 bool 视作 `true`（唯一调用方是"关闭"动作） |
 | GET | `/openapi.json` | OpenAPI schema |
 | GET | `/favicon.ico` | 托盘图标（仅当 `--icon` 设置时注册，返回该图标文件） |
+| GET | `/` | 根路径重定向到默认 SPA 首页（`/spa-v2/` 或 `/spa/`） |
+| GET | `/spa` | 重定向到 `/spa/` |
+| GET | `/spa/` | Vue 3 SPA 前端 HTML |
+| GET | `/spa/index.html` | Vue 3 SPA 入口 HTML （注入 `__GATEWAY_APP_NAME__`） |
+| GET | `/spa-v2` | 重定向到 `/spa-v2/` |
+| GET | `/spa-v2/` | React 19 SPA 前端 HTML |
+| GET | `/spa-v2/index.html` | React 19 SPA 入口 HTML |
 
 AI 和 Session 的 `id` 字段可选，不传自动生成 UUID。
 
