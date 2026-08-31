@@ -1452,11 +1452,18 @@ async def system_before_turn(
 
 
 _SAVING_GATE_SECTION = """\
-## Saving-decision gate
+## Saving-decision core rules
 For purchase / money-saving requests (national subsidy, coupons, price comparison, bank instant discounts,
-recommendations, cart-filling), you MUST load and follow `skills/saving-decision/SKILL.md`
-(read it with the read tool) and call its tools (policy_query / subsidy_calc / review_search)
-as instructed there. Ignore this gate for non-saving tasks.
+recommendations, cart-filling), these core rules ALWAYS apply:
+1. Policy parameters (rate / cap / threshold / energy-efficiency / categories) come ONLY from this session's
+   retrieval or a fact-card snapshot (with verification date) - never from memory, never by reverse-engineering
+   from product price.
+2. Computing money (subsidy / final price): call subsidy_calc when available; if unavailable or failed, mark
+   [Unverified] - do NOT hand-compute.
+3. Recommendation / guide tasks: first call review_search for candidate articles; only if it returns empty or
+   fails may you search on your own.
+4. Also load and follow `skills/saving-decision/SKILL.md` (read it with the read tool) for the full rule set.
+Ignore this section for non-saving tasks.
 """
 
 
