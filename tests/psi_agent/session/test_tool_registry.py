@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib
+import os
+import sys
 import textwrap
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -7,7 +10,13 @@ from typing import Annotated, Any, Literal
 import anyio
 import pytest
 
-from psi_agent.session.tool_registry import FileEntry, ToolFunction, ToolRegistry
+from psi_agent.session.tool_registry import (
+    _SYS_PATH_DEPTH,
+    FileEntry,
+    ToolFunction,
+    ToolRegistry,
+    _tools_dir_on_sys_path,
+)
 
 # ── FileEntry ─────────────────────────────────────────────────────────────────
 
@@ -670,3 +679,324 @@ async def test_get_last_file_wins(tmp_path: Path) -> None:
     func = tr.get("echo")
     assert func is not None
     assert await func() in ("a", "b")  # glob order is filesystem-dependent
+
+
+# ── helper imports / sys.path ─────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_tool_can_import_a_sibling_helper(tmp_path: Path) -> None:
+    """Bare ``from _helper import x`` resolves because tools/ goes on sys.path.
+
+    Without it, whether this worked depended on glob order and on whether some
+    earlier tool file had patched ``sys.path`` as an import side effect — the same
+    file would register on one run and raise ModuleNotFoundError on the next.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "_helper.py").write_text("VALUE = 'from helper'\n", encoding="utf-8")
+    await anyio.Path(tools_dir / "uses_helper.py").write_text(
+        "from _helper import VALUE\n\n\nasync def read_value() -> str:\n    return VALUE\n",
+        encoding="utf-8",
+    )
+
+    tr = await ToolRegistry.load(tools_dir)
+
+    assert set(tr.tools) == {"read_value"}
+    func = tr.get("read_value")
+    assert func is not None
+    assert await func() == "from helper"
+
+
+@pytest.mark.anyio
+async def test_sys_path_is_restored_after_loading(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "t.py").write_text("async def t() -> str:\n    return 't'\n", encoding="utf-8")
+    before = list(sys.path)
+
+    await ToolRegistry.load(tools_dir)
+
+    assert sys.path == before
+
+
+@pytest.mark.anyio
+async def test_import_failure_is_recorded_with_its_reason(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "broken.py").write_text(
+        "import definitely_not_installed\n\n\nasync def never() -> str:\n    return 'x'\n",
+        encoding="utf-8",
+    )
+    await anyio.Path(tools_dir / "fine.py").write_text("async def fine() -> str:\n    return 'ok'\n", encoding="utf-8")
+
+    tr = await ToolRegistry.load(tools_dir)
+
+    assert set(tr.tools) == {"fine"}
+    assert "broken.py" in tr.load_failures
+    assert "definitely_not_installed" in tr.load_failures["broken.py"]
+
+
+@pytest.mark.anyio
+async def test_overlapping_loads_of_one_dir_do_not_duplicate_the_path_entry() -> None:
+    """Overlapping loaders on one dir keep exactly one entry, not two.
+
+    Two Sessions on one agent pack overlap routinely: Gateway starts them together
+    and every ``await py_file.read_bytes()`` is a yield point. Inserting
+    unconditionally would leave the entry on ``sys.path`` twice for the overlap
+    window — a longer path is cost paid on every import lookup, and it makes
+    ``sys.path`` misleading to read while debugging.
+    """
+    entry = "/overlap-test-tools-dir"
+    before = list(sys.path)
+    counts_while_nested: list[int] = []
+
+    async def outer() -> None:
+        async with _tools_dir_on_sys_path(entry):
+            await anyio.sleep(0.05)
+
+    async def inner() -> None:
+        await anyio.sleep(0.01)  # enter after `outer` has inserted
+        async with _tools_dir_on_sys_path(entry):
+            counts_while_nested.append(sys.path.count(entry))
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(outer)
+        tg.start_soon(inner)
+
+    assert counts_while_nested == [1], "overlapping loads stacked duplicate sys.path entries"
+    assert sys.path == before, "entry outlived both loaders"
+
+
+@pytest.mark.anyio
+async def test_first_loader_to_exit_does_not_strand_a_still_running_one() -> None:
+    """The entry survives until the *last* overlapping loader leaves.
+
+    Regression guard for a refcount that was once a boolean: with "remove only what
+    I inserted", the loader that inserted could finish first and pull the entry out
+    from under a second one still mid-scan, whose bare ``from _helper import ...``
+    then raised ModuleNotFoundError. Timing is the reverse of the test above — here
+    the *inserter* is short-lived and the follower outlives it.
+    """
+    entry = "/strand-test-tools-dir"
+    before = list(sys.path)
+    follower_saw_entry: list[bool] = []
+
+    async def inserter() -> None:
+        async with _tools_dir_on_sys_path(entry):
+            await anyio.sleep(0.03)
+
+    async def follower() -> None:
+        await anyio.sleep(0.01)  # enter while `inserter` holds it
+        async with _tools_dir_on_sys_path(entry):
+            await anyio.sleep(0.06)  # outlive `inserter`
+            follower_saw_entry.append(entry in sys.path)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(inserter)
+        tg.start_soon(follower)
+
+    assert follower_saw_entry == [True], "an exiting loader stranded one that was still importing"
+    assert sys.path == before
+
+
+@pytest.mark.anyio
+async def test_cancelled_load_still_removes_its_path_entry() -> None:
+    """Cancellation must not leak the entry for the life of the process.
+
+    Regression guard: an earlier version re-acquired the lock inside ``finally``.
+    That ``await`` is a cancellation checkpoint, so a cancelled scan skipped the
+    removal entirely and the entry stayed on ``sys.path`` forever. The cleanup must
+    stay ``await``-free.
+    """
+    entry = "/cancelled-load-tools-dir"
+    before = list(sys.path)
+
+    async def victim() -> None:
+        async with _tools_dir_on_sys_path(entry):
+            await anyio.sleep(10)
+
+    with anyio.move_on_after(0.05):
+        await victim()
+
+    assert entry not in sys.path, "cancelled load leaked its sys.path entry"
+    assert sys.path == before
+
+
+@pytest.mark.anyio
+async def test_editing_a_helper_does_not_take_effect_until_restart(tmp_path: Path) -> None:
+    """Documents a known limit: hot reload covers tool files, not their helpers.
+
+    Helpers are cached in ``sys.modules`` under their bare name and nothing evicts
+    them, so a re-imported tool file still binds the *old* helper. This test asserts
+    the stale behaviour on purpose — if someone later makes helpers reload, this test
+    should fail and be rewritten, not deleted.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    helper = anyio.Path(tools_dir / "_hot.py")
+    await helper.write_text("VALUE = 'v1'\n", encoding="utf-8")
+    await anyio.Path(tools_dir / "uses_hot.py").write_text(
+        "from _hot import VALUE\n\n\nasync def read_hot() -> str:\n    return VALUE\n",
+        encoding="utf-8",
+    )
+    registry = await ToolRegistry.load(tools_dir, "hot")
+    func = registry.get("read_hot")
+    assert func is not None
+    assert await func() == "v1"
+
+    await helper.write_text("VALUE = 'v2'\n", encoding="utf-8")
+    await anyio.Path(tools_dir / "uses_hot.py").write_text(
+        "from _hot import VALUE\n\n\nasync def read_hot() -> str:\n    return VALUE  # touched\n",
+        encoding="utf-8",
+    )
+    await registry.refresh()
+
+    refreshed = registry.get("read_hot")
+    assert refreshed is not None
+    assert await refreshed() == "v1", "helper unexpectedly reloaded — update this test and the docs"
+
+
+@pytest.mark.anyio
+async def test_tool_file_named_after_a_stdlib_module_shadows_it(tmp_path: Path) -> None:
+    """Documents the sharpest hazard of putting ``tools/`` on ``sys.path``.
+
+    A ``tools/<stdlib name>.py`` wins over the stdlib for any importer in the
+    process while the entry is in front, and the result is cached in ``sys.modules``
+    so it outlasts the load window. Pinned here so the constraint "do not name a
+    tool after a stdlib module" is enforced by a failing test if it ever changes.
+    """
+    stdlib_name = "secrets"
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / f"{stdlib_name}.py").write_text(
+        "SHADOW_MARKER = True\n\n\nasync def shadowing_tool() -> str:\n    return 'shadow'\n",
+        encoding="utf-8",
+    )
+    had_it = sys.modules.pop(stdlib_name, None)
+    try:
+        entry = str(await anyio.Path(tools_dir).absolute())
+        async with _tools_dir_on_sys_path(entry):
+            shadowed = importlib.import_module(stdlib_name)
+            assert getattr(shadowed, "SHADOW_MARKER", False) is True, "expected the tool file to win"
+        # Still poisoned after the window, because sys.modules kept it.
+        assert getattr(sys.modules[stdlib_name], "SHADOW_MARKER", False) is True
+    finally:
+        sys.modules.pop(stdlib_name, None)
+        if had_it is not None:
+            sys.modules[stdlib_name] = had_it
+
+
+@pytest.mark.anyio
+async def test_load_leaves_a_preexisting_path_entry_alone(tmp_path: Path) -> None:
+    """An entry this load did not insert must survive the load, exactly once."""
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "t.py").write_text("async def t() -> str:\n    return 't'\n", encoding="utf-8")
+    entry = str(await anyio.Path(tools_dir).absolute())
+    sys.path.insert(0, entry)
+    try:
+        await ToolRegistry.load(tools_dir)
+        assert sys.path.count(entry) == 1, "load duplicated or removed a pre-existing entry"
+    finally:
+        sys.path.remove(entry)
+
+
+@pytest.mark.anyio
+async def test_load_failures_empty_when_everything_imports(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "ok.py").write_text("async def ok() -> str:\n    return 'ok'\n", encoding="utf-8")
+
+    tr = await ToolRegistry.load(tools_dir)
+
+    assert tr.load_failures == {}
+
+
+@pytest.mark.anyio
+async def test_refresh_recomputes_load_failures(tmp_path: Path) -> None:
+    """A fixed file must clear its failure, not leave a stale one behind."""
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    broken = anyio.Path(tools_dir / "later_fixed.py")
+    await broken.write_text("import definitely_not_installed\n", encoding="utf-8")
+    tr = await ToolRegistry.load(tools_dir)
+    assert "later_fixed.py" in tr.load_failures
+
+    await broken.write_text("async def now_works() -> str:\n    return 'ok'\n", encoding="utf-8")
+    await tr.refresh()
+
+    assert tr.load_failures == {}
+    assert set(tr.tools) == {"now_works"}
+
+
+@pytest.mark.anyio
+async def test_refresh_evicts_the_module_it_supersedes(tmp_path: Path) -> None:
+    """``sys.modules`` must not grow by one dead module per edit.
+
+    The module name embeds the file's content hash, so each edit mints a new key.
+    Before eviction, one file edited six times left seven modules resident for the
+    life of the process — unbounded growth in a long-lived Gateway.
+    """
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    target = anyio.Path(tools_dir / "evictme.py")
+    await target.write_text("async def evictme() -> str:\n    return 'v0'\n", encoding="utf-8")
+    registry = await ToolRegistry.load(tools_dir, "evict")
+
+    def live() -> int:
+        return len([k for k in sys.modules if k.startswith("psi_tool_evictme_evict")])
+
+    for i in range(1, 5):
+        await target.write_text(f"async def evictme() -> str:\n    return 'v{i}'\n", encoding="utf-8")
+        await registry.refresh()
+        assert live() == 1, f"module count grew to {live()} after edit {i}"
+
+    func = registry.get("evictme")
+    assert func is not None
+    assert await func() == "v4", "eviction must not break the surviving tool"
+
+    await target.unlink()
+    await registry.refresh()
+    assert live() == 0, "deleting a tool file should evict its module too"
+
+
+@pytest.mark.anyio
+async def test_the_path_entry_is_normalized_before_being_used_as_a_key() -> None:
+    """The refcount key must be a resolved path, or one dir gets two counters.
+
+    ``_load_from_dir`` passes ``await anyio.Path(...).resolve()`` precisely because
+    the string is a refcount key: the same directory reached through a symlink, a
+    ``.`` segment, or different case would otherwise take its own slot and put a
+    second spelling of one directory on ``sys.path``. This pins that the helper is
+    key-faithful — two *distinct* strings really do get two entries, which is why
+    the caller must normalize rather than relying on the helper to do it.
+    """
+    plain = os.path.join("C:" + os.sep, "aliased", "tools")
+    dotted = os.path.join(plain, "sub", "..")
+    assert plain != dotted, "test needs two distinct spellings"
+    before = list(sys.path)
+
+    async with _tools_dir_on_sys_path(plain), _tools_dir_on_sys_path(dotted):
+        assert _SYS_PATH_DEPTH.get(plain) == 1
+        assert _SYS_PATH_DEPTH.get(dotted) == 1, "distinct strings are distinct keys — hence caller-side resolve()"
+
+    assert _SYS_PATH_DEPTH == {}
+    assert sys.path == before
+
+
+@pytest.mark.anyio
+async def test_loading_one_dir_twice_reuses_a_single_path_entry(tmp_path: Path) -> None:
+    """Two Sessions on the same resolved directory share one entry and one counter."""
+    tools_dir = tmp_path / "tools"
+    await anyio.Path(tools_dir).mkdir()
+    await anyio.Path(tools_dir / "t.py").write_text("async def t() -> str:\n    return 't'\n", encoding="utf-8")
+    before = list(sys.path)
+
+    first = await ToolRegistry.load(tools_dir, "spell-a")
+    second = await ToolRegistry.load(tools_dir, "spell-b")
+
+    assert set(first.tools) == {"t"}
+    assert set(second.tools) == {"t"}
+    assert _SYS_PATH_DEPTH == {}, "refcount table should be empty once both loads finish"
+    assert sys.path == before, "no spelling of the directory should be left behind"

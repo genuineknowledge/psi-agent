@@ -254,6 +254,41 @@ result = run.result   # 正常耗尽后非 None
 - 用 `inspect.signature()` 提取参数（类型注解 → JSON Schema 类型）
 - 用 `inspect.getdoc()` 提取描述（支持 Google-style 的 `Args:` 格式）
 - 跨文件同名 tool 以后加载者覆盖（`tools` property 展平时 `dict.update` 自然行为）
+- 加载期间 `tools/` 会被放到 `sys.path` 首位并在结束后移除（只移除本次插入的那一条），让 `from _helper import x` 这类**裸导入同目录 helper** 稳定可用。此前能否解析取决于 glob 顺序和前面文件有没有顺手 `sys.path.insert`，同一文件可能这次注册成功、下次 `ModuleNotFoundError`
+- **entry 用「按路径计数」而非布尔（刻意为之，两种更简单的写法各错一个方向，均已实测）**：
+  无条件插+总是摘 → 并发加载会把同一条 entry 叠成两份；「原来没有才插、只摘自己插的」**更糟** ——
+  先插的那个先退出时会把 entry 从**仍在扫描**的另一个脚下抽走，它的裸导入当场 `ModuleNotFoundError`。
+  一个按路径的计数器解决两边：不论多少并发只有一条 entry，最后一个退出才摘。**加载前就已在 path 上的
+  entry 只借不计数**（工具文件自己会插同一条，摘掉别人的是另一种破坏）
+- **计数的 key 必须是 `resolve()` 过的路径**：调用方传进来前先
+  `await anyio.Path(...).resolve()`（不是 `absolute()`）。这个字符串是计数键 ——
+  同一目录经软链、`.`/`..` 片段或不同大小写抵达会各占一个槽位，于是**一个目录的两种拼法同时在
+  `sys.path` 上**、各自计数。规范化放调用方是因为它读文件系统，`anyio.Path` 才能把这活挪出事件循环线程
+- **`_SYS_PATH_LOCK` 用 `threading.Lock` 而非 `anyio.Lock`（刻意为之）**：取它不是 `await`，所以
+  `finally` 里摘除 entry 时能用同一把锁。用 `anyio.Lock` 会让 `finally` 变成取消检查点 —— 扫描被
+  cancel 时摘除整段跳过，entry **泄漏到进程结束**（实测复现后才修）。顺带也不用再去论证「改 dict/list
+  在 GIL 下恰好原子」这种微妙假设
+- **锁只锁计数的「读了再改」，不锁整个扫描（勿"修"成锁全程）**：满载 haitun 194 个工具，
+  冷启实测 **3.6s**（同进程内再加载一次是 0.3s——`sys.modules` 已有 helper；`.mcp_cache`
+  未命中时 `@mcp` 还会在 import 期 spawn `npx`，更久）。锁全程会让 N 个 Session 同时启动排成
+  N x 冷启耗时
+- 导入失败的文件记进 `ToolRegistry.load_failures`（`文件名 → 错误 repr`），用于区分「缺依赖」和「名字根本不存在」
+
+### 裸导入的三个已知隐患（都实测过，锁一个都挡不住）
+
+1. **helper 改了不生效，必须重启 Session**。helper 以**裸名**长驻 `sys.modules`，没有任何地方摘除它
+   （只有出错路径会摘 `psi_tool_*`）。改 `_helper.py` 后即使 `refresh()` 重新导入了工具文件，
+   工具拿到的仍是**旧 helper**。热重载覆盖工具文件，**不覆盖它们的 helper**
+2. **同名 helper 跨 agent 包互相顶替**。谁先 import `_fusion_memory_config` 谁赢，后来的静默拿到前者
+   （bundled 示例 workspace 间已有 5 个这样的重名）。串行化只改变「谁碰巧第一个」
+3. **工具文件名与 stdlib 撞名会污染整个进程**。`tools/` 在 `sys.path` 首位时，一个
+   `tools/secrets.py` 会让进程里**任何** `import secrets` 拿到该工具文件；且结果进 `sys.modules`，
+   **活过加载窗口**，之后连框架自己 import 都中招。`_` 前缀约定救不了这条 —— 工具文件本来就不带 `_`
+
+诚实的边界：**一进程一个 agent 包，且不要用 stdlib 的名字给工具文件命名**。两条都不是加锁能解决的，
+多包部署应拆进程。前两条各有一个 pin 住现状的测试（`test_editing_a_helper_does_not_take_effect_until_restart`
+/ `test_tool_file_named_after_a_stdlib_module_shadows_it`）——将来若真做了 helper 热重载，
+那个测试会红，应该改写它而不是删掉。
 
 ## 动态重载
 
@@ -270,6 +305,14 @@ result = run.result   # 正常耗尽后非 None
   - 文件删除 → 其所有 tool 标记 `removed`
   - 文件内 tool 增删 → 分别标记 `added` / `removed`
 - `fresh` 标志保证 skipped 文件不被误删
+- **被取代的 tool 模块要从 `sys.modules` 摘掉**：module name 里嵌了内容 hash，所以**每改一次文件就铸一个
+  新 key**，旧的不摘就常驻到进程结束。实测一个文件改 6 次：修复前 `sys.modules` 里留下 **7 个**
+  `psi_tool_*`，修复后只剩 **1 个**（当前那个）——长跑 Gateway 上原本是无上界增长。
+  `FileEntry.module_name` 记住这个 key，`_do_refresh` 在「文件被替换」和「文件被删」两条路径上调
+  `_evict_module`。hash 未变而复制旧 entry 时**必须把 `module_name` 一起带过去**，否则下次就摘不掉了
+- **只摘 tool 模块，不摘 helper（刻意为之）**：helper 按裸名缓存，仍活着的 tool 还持有它的引用；摘掉
+  只会让下一个导入者另建一份分叉的副本。「helper 不热重载」是记录在案的限制（见上文三个隐患），
+  不是这个摘除想解决的问题
 - `ScheduleRegistry` 以 per-file `ScheduleEntry` 存储（含 hash），`refresh()` 支持 add/update/remove/skip。每个 schedule 有独立 `CancelScope`，update/remove 时取消旧 runner 并启动新 runner。`refresh()` 内部已 try/except，失败时 log warning 返回 `{}`，不修改内部状态，调用方可直接 await 无需自行容错
 - Schedule 刷新的两个时机：
   1. 每次 `run()` 入口（turn 开始），与 tool 一并刷新
